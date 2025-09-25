@@ -4,6 +4,13 @@
 - DICOM: `TotalSegmentator_DICOM/segmentations.dcm` (DICOM‑SEG when supported, sometimes RTSTRUCT depending on version).
 - NIfTI: `TotalSegmentator_NIFTI/` with label maps.
 
+## Models
+- The pipeline always runs the default TotalSegmentator "total" model for CT courses and does not modify that behavior.
+- You can additionally request other models using `--extra-seg-models`.
+  - CT: only models without `_mr` suffix are run per course (`TotalSegmentator_<MODEL>_{DICOM,NIFTI}/`).
+  - MR: only models with `_mr` suffix are run per MR series under `--dicom-root` (`<outdir>/<PatientID>/MR_<SeriesInstanceUID>/TotalSegmentator_<MODEL>_{DICOM,NIFTI}/`).
+  - Tip: choose models that match the modality (e.g., `total_mr`, `body_mr`, `vertebrae_mr` for MR; `lung_vessels`, `body`, `cerebral_bleed` for CT).
+
 ## Resume and force
 - Default: If DICOM or NIfTI outputs exist, segmentation is skipped.
 - Force re-run: `--force-segmentation` reruns TotalSegmentator regardless of existing outputs.
@@ -23,3 +30,9 @@
 
 ## Why RS_auto?
 DVH requires RTSTRUCT for ROI definitions. RS_auto mirrors TotalSegmentator segments as RTSTRUCT aligned to `CT_DICOM`, enabling DVH for auto segmentation even if no manual RS is available.
+
+## License key
+- If your TotalSegmentator variant requires a license, pass it with `--totalseg-license KEY`. The key is exported as `TOTALSEG_LICENSE` and `TOTALSEGMENTATOR_LICENSE` during segmentation runs.
+## Performance on CPU
+- Use `--totalseg-fast` to add TotalSegmentator’s `--fast` flag.
+- Use `--totalseg-roi-subset <roi1,roi2,...>` to restrict to a subset of ROIs.

@@ -15,4 +15,4 @@
 Notes
 - Masks are rasterized via rt-utils from the RTSTRUCT onto the `CT_DICOM` geometry.
 - If structures don’t appear: ensure `RS.dcm` or `RS_auto.dcm` exists and rt-utils is installed in your environment.
-
+- MR: There is no MR viewer by default. If you need one, consider exporting NIfTI overlays or open an issue to request an MR viewer similar to Axial.html.

@@ -28,6 +28,10 @@ rtpipeline doctor [--logs PATH] [--conda-activate CMD] [--dcm2niix NAME] [--tota
 - `--conda-activate CMD`  Prefix segmentation commands (e.g. activate env).
 - `--dcm2niix NAME`  Override dcm2niix command name.
 - `--totalseg NAME`  Override TotalSegmentator command name.
+- `--totalseg-license KEY`  Optional license key for TotalSegmentator (exported as env var during runs).
+- `--extra-seg-models`  Additional TotalSegmentator tasks to run besides the default 'total'. Accepts comma-separated values and can be repeated.
+- `--totalseg-fast`  Adds `--fast` to TotalSegmentator calls (recommended on CPU).
+- `--totalseg-roi-subset LIST`  Passes `--roi_subset LIST` to TotalSegmentator (comma-separated ROI names).
 
 Note: `dcm2niix` is an external CLI (not installed via pip). If it is not available, NIfTI conversion is skipped and the pipeline continues with DICOM-mode segmentation only.
 
