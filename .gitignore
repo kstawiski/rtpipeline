@@ -1,0 +1,54 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+.Python
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Virtual environments
+.env
+.venv
+env/
+venv/
+
+# IDE/editor
+.idea/
+.vscode/
+.DS_Store
+
+# Testing / coverage
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Project outputs (prevent committing patient data / heavy artifacts)
+Logs/
+Logs_Test/
+Data/
+Data_Organized/
+Data_Organized_Test/
+DICOM_OrganizedCT/
+Example_data/
+
+# Generated reports and data
+*.xlsx
+*.csv
+*.json
+*.log
+
+# Medical imaging data
+**/*.dcm
+**/*.nii
+**/*.nii.gz
+
