@@ -11,7 +11,6 @@ from .organize import organize_and_merge
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="rtpipeline", description="End-to-end DICOM-RT pipeline")
-    p.add_argument("run", nargs="?", help="Run the pipeline", default="run")
     p.add_argument("--dicom-root", required=True, help="Path to root with DICOM files")
     p.add_argument("--outdir", default="./Data_Organized", help="Output directory for organized data")
     p.add_argument("--logs", default="./Logs", help="Logs directory")
@@ -34,9 +33,83 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def _doctor(argv: list[str]) -> int:
+    import platform
+    import shutil
+    from importlib import metadata as importlib_metadata
+    p = argparse.ArgumentParser(prog="rtpipeline doctor", description="Check environment for rtpipeline")
+    p.add_argument("--logs", default="./Logs", help="Logs directory (used for fallback extraction)")
+    p.add_argument("--conda-activate", default=None, help="Conda activation prefix to consider")
+    p.add_argument("--dcm2niix", default="dcm2niix", help="dcm2niix command name to check")
+    p.add_argument("--totalseg", default="TotalSegmentator", help="TotalSegmentator command name to check")
+    args = p.parse_args(argv)
+
+    print("rtpipeline doctor")
+    print(f"- Python: {platform.python_version()} on {platform.system()} {platform.release()}")
+    # Core Python packages and versions
+    def ver(name: str) -> str:
+        try:
+            return importlib_metadata.version(name)
+        except Exception:
+            return "not installed"
+    print(f"- pydicom: {ver('pydicom')}")
+    print(f"- SimpleITK: {ver('SimpleITK')}")
+    print(f"- dicompyler-core: {ver('dicompyler-core')}")
+    print(f"- pydicom-seg: {ver('pydicom-seg')}")
+    print(f"- rt-utils: {ver('rt-utils')}")
+    print(f"- TotalSegmentator (pkg): {ver('TotalSegmentator')}")
+
+    # CLI tools
+    conda_prefix = args.conda_activate
+    dcm2 = shutil.which(args.dcm2niix) if not conda_prefix else None
+    totseg = shutil.which(args.totalseg) if not conda_prefix else None
+    print(f"- dcm2niix in PATH: {dcm2 or ('requires conda env' if conda_prefix else 'not found')}")
+    print(f"- TotalSegmentator in PATH: {totseg or ('requires conda env' if conda_prefix else 'not found')}")
+
+    # Bundled zips
+    from importlib import resources as importlib_resources
+    bundled = []
+    for nm in ("dcm2niix_lnx.zip", "dcm2niix_mac.zip", "dcm2niix_win.zip"):
+        try:
+            res = importlib_resources.files('rtpipeline').joinpath('ext', nm)
+            if res.is_file():
+                bundled.append(nm)
+        except Exception:
+            pass
+    print(f"- Bundled dcm2niix zips in package: {', '.join(bundled) if bundled else 'none'}")
+
+    # Fallback decision
+    from .segmentation import _ensure_local_dcm2niix
+    cfg = PipelineConfig(
+        dicom_root=Path('.'),
+        output_root=Path('.'),
+        logs_root=Path(args.logs).resolve(),
+        conda_activate=conda_prefix,
+    )
+    # Do not actually run any conversion; just see if fallback can be prepared
+    fallback_possible = False
+    if not conda_prefix and dcm2 is None:
+        # Try dry-run: if bundle exists, we can extract when needed
+        for nm in ("dcm2niix_lnx.zip", "dcm2niix_mac.zip", "dcm2niix_win.zip"):
+            try:
+                res = importlib_resources.files('rtpipeline').joinpath('ext', nm)
+                if res.is_file():
+                    fallback_possible = True
+                    break
+            except Exception:
+                continue
+    print(f"- dcm2niix fallback available: {'yes' if fallback_possible else 'no'}")
+    if not conda_prefix and dcm2 is None and not fallback_possible:
+        print("  -> NIfTI conversion will be skipped; DICOM-mode segmentation still runs.")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     if argv is None:
         argv = sys.argv[1:]
+    # Lightweight subcommand dispatch to preserve backward compatibility
+    if argv and argv[0] == "doctor":
+        return _doctor(argv[1:])
     args = build_parser().parse_args(argv)
     level = logging.INFO if args.verbose == 0 else logging.DEBUG
     logging.basicConfig(level=level, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -54,6 +127,16 @@ def main(argv: list[str] | None = None) -> int:
         dcm2niix_cmd=args.dcm2niix,
         totalseg_cmd=args.totalseg,
     )
+    # Ensure directories and also route logs to a file for traceability
+    try:
+        cfg.ensure_dirs()
+        fh = logging.FileHandler(cfg.logs_root / "rtpipeline.log", encoding="utf-8")
+        fh.setLevel(level)
+        fh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
+        logging.getLogger().addHandler(fh)
+    except Exception:
+        # Non-fatal; continue with console-only logging
+        pass
 
     # 0) Metadata extraction (XLSX) if desired
     if not args.no_metadata:

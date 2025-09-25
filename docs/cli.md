@@ -2,6 +2,7 @@
 
 ```bash
 rtpipeline --dicom-root PATH --outdir PATH --logs PATH [options]
+rtpipeline doctor [--logs PATH] [--conda-activate CMD] [--dcm2niix NAME] [--totalseg NAME]
 ```
 
 ## Required
@@ -28,6 +29,16 @@ rtpipeline --dicom-root PATH --outdir PATH --logs PATH [options]
 - `--dcm2niix NAME`  Override dcm2niix command name.
 - `--totalseg NAME`  Override TotalSegmentator command name.
 
+Note: `dcm2niix` is an external CLI (not installed via pip). If it is not available, NIfTI conversion is skipped and the pipeline continues with DICOM-mode segmentation only.
+
+## Doctor
+- `rtpipeline doctor` prints environment diagnostics:
+  - Python and OS info
+  - Installed versions of key Python packages
+  - Presence of `dcm2niix` and `TotalSegmentator` in PATH (unless `--conda-activate` is provided)
+  - Availability of bundled `rtpipeline/ext/dcm2niix_*.zip` inside the package (used as fallback)
+  - Whether NIfTI conversion will fallback to bundled dcm2niix or be skipped
+
 ## Outputs (per course)
 - `RP.dcm`, `RD.dcm`, `RS.dcm` (if present)
 - `RS_auto.dcm` (auto RTSTRUCT from TotalSegmentator)
@@ -39,4 +50,3 @@ rtpipeline --dicom-root PATH --outdir PATH --logs PATH [options]
 - `outdir/Data/*.xlsx` (plans, doses, structures, fractions, CT_images, merged metadata)
 - `outdir/DVH_metrics_all.xlsx` (all courses)
 - `outdir/Data/case_metadata_all.{xlsx,json}` (all courses)
-

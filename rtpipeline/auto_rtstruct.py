@@ -100,7 +100,10 @@ def _load_seg_nifti(nifti_dir: Path) -> tuple[Optional[sitk.Image], Dict[int, st
                         continue
         except Exception:
             pass
-    return seg_img, label_map if seg_img is not None else (None, {})
+    # Ensure correct tuple shape regardless of seg_img presence
+    if seg_img is None:
+        return None, {}
+    return seg_img, label_map
 
 
 def _resample_to_reference(seg_img: sitk.Image, ref_img: sitk.Image) -> sitk.Image:

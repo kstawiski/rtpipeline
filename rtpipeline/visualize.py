@@ -1,7 +1,4 @@
 from __future__ import annotations
-
-import base64
-import io
 import logging
 import os
 import re
@@ -48,10 +45,10 @@ def _extract_curve(row: pd.Series) -> Tuple[List[float], List[float]]:
 
 
 def _fig_to_b64(fig) -> str:
-    buf = io.BytesIO()
+    buf = _io.BytesIO()
     fig.savefig(buf, format="png", bbox_inches="tight")
     buf.seek(0)
-    enc = base64.b64encode(buf.read()).decode("utf-8")
+    enc = _b64.b64encode(buf.read()).decode("utf-8")
     plt.close(fig)
     return enc
 

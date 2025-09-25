@@ -31,7 +31,9 @@ Design principles:
 Install
 - From the repo root:
   - `pip install -e .`
-  - Installs core deps: pydicom (>=2.4,<3), dicompyler-core (DVH), SimpleITK, pydicom-seg, matplotlib, scipy, pandas, TotalSegmentator, nested-lookup, plotly, rt-utils, dcm2niix.
+  - Installs core deps: pydicom (>=2.4,<3), dicompyler-core (DVH), SimpleITK, pydicom-seg, matplotlib, scipy, pandas, TotalSegmentator, nested-lookup, plotly, rt-utils.
+- Note: `dcm2niix` is an external CLI, not a Python package. Install it via your OS package manager or conda (e.g., `conda install -c conda-forge dcm2niix`). The pipeline will skip NIfTI conversion if it is not available.
+ - Optional: if you keep platform ZIPs in `rtpipeline/ext/` (e.g., `rtpipeline/ext/dcm2niix_lnx.zip`, `..._mac.zip`, `..._win.zip`), they are included in wheels and the pipeline auto‑extracts and uses the bundled `dcm2niix` when a global install is not found. Extraction happens under `--logs/bin/`.
   - TotalSegmentator does not require a license key.
 
 CLI Usage

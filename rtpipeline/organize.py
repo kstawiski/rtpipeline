@@ -46,7 +46,7 @@ def _safe_copy(src: Path, dst: Path) -> None:
 def _create_summed_plan(plan_files: List[Path], total_dose_gy: float, out_plan_path: Path) -> None:
     if not plan_files:
         raise ValueError("No plan files to sum")
-    ds_plan = pydicom.dcmread(str(plan_files[0]))
+    ds_plan = pydicom.dcmread(str(plan_files[0]), stop_before_pixels=True)
     new_plan = copy.deepcopy(ds_plan)
 
     new_plan.SeriesInstanceUID = generate_uid()
@@ -182,7 +182,7 @@ def _sum_doses_with_resample(dose_files: List[Path], out_dose_path: Path) -> Non
     new_ds.BitsAllocated = 32
     new_ds.BitsStored = 32
     new_ds.HighBit = 31
-    new_ds.PixelRepresentation = 1
+    new_ds.PixelRepresentation = 0  # unsigned
     new_ds.DoseGridScaling = 1.0 / scaling_factor
     for tag in [(0x0028, 0x0106), (0x0028, 0x0107)]:
         if tag in new_ds:
