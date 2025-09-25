@@ -31,6 +31,16 @@ class PipelineConfig:
     totalseg_fast: bool = False
     totalseg_roi_subset: str | None = None
 
+    # Concurrency
+    workers: int | None = None  # None => auto (min(8, os.cpu_count() or 4))
+
     def ensure_dirs(self) -> None:
         self.output_root.mkdir(parents=True, exist_ok=True)
         self.logs_root.mkdir(parents=True, exist_ok=True)
+
+    def effective_workers(self) -> int:
+        import os as _os
+        if self.workers and self.workers > 0:
+            return int(self.workers)
+        cpu = _os.cpu_count() or 4
+        return max(1, min(8, cpu))

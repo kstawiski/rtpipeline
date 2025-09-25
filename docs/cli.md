@@ -32,8 +32,17 @@ rtpipeline doctor [--logs PATH] [--conda-activate CMD] [--dcm2niix NAME] [--tota
 - `--extra-seg-models`  Additional TotalSegmentator tasks to run besides the default 'total'. Accepts comma-separated values and can be repeated.
 - `--totalseg-fast`  Adds `--fast` to TotalSegmentator calls (recommended on CPU).
 - `--totalseg-roi-subset LIST`  Passes `--roi_subset LIST` to TotalSegmentator (comma-separated ROI names).
+- `--workers N`  Number of parallel workers for non-segmentation phases (organize, DVH, visualization, metadata). Default: auto.
 
 Note: `dcm2niix` is an external CLI (not installed via pip). If it is not available, NIfTI conversion is skipped and the pipeline continues with DICOM-mode segmentation only.
+
+## Progress & ETA
+- The CLI reports progress and estimated time remaining for long-running phases:
+  - Organize (per-course)
+  - Build RS_auto (after segmentation)
+  - DVH (per-course)
+  - Visualization (per-course)
+  - Segmentation phases print progress as they complete (sequential by design)
 
 ## Doctor
 - `rtpipeline doctor` prints environment diagnostics:

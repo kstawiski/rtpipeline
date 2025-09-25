@@ -299,6 +299,12 @@ def segment_extra_models_mr(config: PipelineConfig, force: bool = False) -> None
     models_mr = [m for m in (config.extra_seg_models or []) if m.endswith("_mr")]
     if not models_mr:
         return
+    total = len(series) * len(models_mr)
+    if total == 0:
+        return
+    import time as _time
+    t0 = _time.time()
+    done = 0
     for pid, suid, sdir in series:
         base_out = config.output_root / (pid or "unknown") / f"MR_{suid}"
         for model in models_mr:
@@ -310,3 +316,8 @@ def segment_extra_models_mr(config: PipelineConfig, force: bool = False) -> None
             out_n = base_out / f"TotalSegmentator_{model}_NIFTI"
             if force or not (out_n.exists() and any(out_n.glob("*.nii*"))):
                 run_totalsegmentator(config, sdir, out_n, "nifti", task=model)
+            done += 1
+            elapsed = _time.time() - t0
+            rate = done / elapsed if elapsed > 0 else 0
+            eta = (total - done) / rate if rate > 0 else float('inf')
+            logger.info("Segmentation (MR extra: %s): %d/%d (%.0f%%) elapsed %.0fs ETA %.0fs", model, done, total, 100*done/total, elapsed, eta)

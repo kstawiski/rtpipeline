@@ -57,3 +57,8 @@ rtpipeline ... --totalseg-license YOUR_KEY --totalseg-fast --totalseg-roi-subset
 ```bash
 rtpipeline doctor --logs ./Logs
 ```
+- Parallel workers (non-segmentation phases):
+
+```bash
+rtpipeline --dicom-root /path/to/DICOM --outdir ./Data_Organized --logs ./Logs --workers 8
+```
