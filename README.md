@@ -46,6 +46,12 @@ CLI Usage
   - `--no-dvh`, `--no-visualize`, `--no-metadata` to skip phases
   - `--conda-activate "source ~/miniconda3/etc/profile.d/conda.sh && conda activate rt"` to run dcm2niix/TotalSegmentator from a conda env
   - `--dcm2niix`, `--totalseg` to override command names
+  - `--totalseg-license KEY` to pass a license key when required
+  - `--extra-seg-models model1,model2` to run additional TotalSegmentator tasks (besides the default 'total').
+    - CT: tasks without `_mr` suffix run for each CT course into `TotalSegmentator_<MODEL>_{DICOM,NIFTI}/`.
+    - MR: tasks ending in `_mr` run for each MR series found under `--dicom-root` into `outdir/<PatientID>/MR_<SeriesInstanceUID>/TotalSegmentator_<MODEL>_{DICOM,NIFTI}/`.
+  - `--totalseg-fast` to add `--fast` (recommended on CPU), `--totalseg-roi-subset roi1,roi2` to restrict ROIs
+  - `doctor` subcommand: `rtpipeline doctor` prints environment checks and bundled dcm2niix fallbacks
 
 Outputs
 - Per patient: `outdir/<patient_id>/course_<course_key>/`
@@ -56,6 +62,7 @@ Outputs
   - `dvh_metrics.xlsx` (includes IntegralDose, D1ccGy, V95%Rx, V100%Rx, …) and `DVH_Report.html` (interactive Plotly DVH)
   - `Axial.html` (scrollable axial CT QA viewer with manual/auto overlays)
   - `case_metadata.json` and `case_metadata.xlsx` (per-course clinical/research metadata)
+- MR series (when extra MR models requested): `outdir/<patient_id>/MR_<SeriesInstanceUID>/TotalSegmentator_<MODEL>_{DICOM,NIFTI}/`
 
 Course Merging Logic
 - By default, plans/doses are merged only if they refer to the same CT StudyInstanceUID. This captures primary+boost on the same CT and prevents merging subsequent treatments planned on a new CT (e.g., progression SBRT).

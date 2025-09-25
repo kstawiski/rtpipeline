@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
@@ -22,6 +22,14 @@ class PipelineConfig:
     conda_activate: str | None = None  # e.g. "source ~/miniconda3/etc/profile.d/conda.sh && conda activate rt"
     dcm2niix_cmd: str = "dcm2niix"
     totalseg_cmd: str = "TotalSegmentator"
+    totalseg_license_key: str | None = None
+
+    # Additional segmentation models (in addition to default 'total')
+    extra_seg_models: list[str] = field(default_factory=list)
+
+    # Performance/CPU options
+    totalseg_fast: bool = False
+    totalseg_roi_subset: str | None = None
 
     def ensure_dirs(self) -> None:
         self.output_root.mkdir(parents=True, exist_ok=True)

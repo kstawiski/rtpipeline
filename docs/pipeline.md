@@ -17,9 +17,11 @@
 - Writes `case_metadata.{json,xlsx}` including clinical/research fields (see docs/metadata.md).
 
 ## 4) Segmentation (optional)
-- Runs TotalSegmentator in DICOM and NIfTI modes.
+- Default CT model: runs TotalSegmentator "total" per course (DICOM and NIfTI outputs). This is always performed when segmentation is enabled.
+- Extra CT models: specify with `--extra-seg-models` (only tasks without `_mr` suffix); outputs saved in each course directory as `TotalSegmentator_<MODEL>_{DICOM,NIFTI}/`.
+- MR models: specify with `--extra-seg-models` (tasks ending with `_mr`); the pipeline scans MR series under `--dicom-root` and saves results under `outdir/<PatientID>/MR_<SeriesInstanceUID>/TotalSegmentator_<MODEL>_{DICOM,NIFTI}/`.
 - Resume-safe: reuses outputs. Use `--force-segmentation` to redo.
-- Builds `RS_auto.dcm` from DICOM-SEG or NIfTI aligned to `CT_DICOM`.
+- Builds `RS_auto.dcm` from DICOM-SEG or NIfTI aligned to `CT_DICOM` (used for DVH).
 
 ## 5) DVH
 - Uses dicompyler-core to compute DVH for both `RS.dcm` (manual) and `RS_auto.dcm`.
@@ -28,4 +30,4 @@
 ## 6) Viewers
 - `DVH_Report.html`: Interactive Plotly DVH.
 - `Axial.html`: axial CT viewer with togglable overlays for manual/auto ROIs.
-
+ - MR series are not visualized by default.

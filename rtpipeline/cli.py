@@ -29,6 +29,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--conda-activate", default=None, help="Prefix shell with conda activate (segmentation)")
     p.add_argument("--dcm2niix", default="dcm2niix", help="dcm2niix command name")
     p.add_argument("--totalseg", default="TotalSegmentator", help="TotalSegmentator command name")
+    p.add_argument("--totalseg-license", default=None, help="TotalSegmentator license key (if required)")
+    p.add_argument(
+        "--extra-seg-models",
+        action="append",
+        default=[],
+        help="Extra TotalSegmentator tasks to run in addition to 'total' (comma-separated or repeat)"
+    )
+    p.add_argument("--totalseg-fast", action="store_true", help="Add --fast for CPU runs to improve runtime")
+    p.add_argument("--totalseg-roi-subset", default=None, help="Restrict to subset of ROIs (comma-separated)")
     p.add_argument("-v", "--verbose", action="count", default=0, help="Increase verbosity")
     return p
 
@@ -126,6 +135,10 @@ def main(argv: list[str] | None = None) -> int:
         conda_activate=args.conda_activate,
         dcm2niix_cmd=args.dcm2niix,
         totalseg_cmd=args.totalseg,
+        totalseg_license_key=args.totalseg_license,
+        extra_seg_models=[m.strip() for part in (args.extra_seg_models or []) for m in part.split(",") if m.strip()],
+        totalseg_fast=args.totalseg_fast,
+        totalseg_roi_subset=args.totalseg_roi_subset,
     )
     # Ensure directories and also route logs to a file for traceability
     try:
@@ -148,13 +161,16 @@ def main(argv: list[str] | None = None) -> int:
 
     # 2) Optional segmentation (TotalSegmentator)
     if cfg.do_segmentation:
-        from .segmentation import segment_course  # lazy import
+        from .segmentation import segment_course, segment_extra_models_mr  # lazy import
         for c in courses:
             segment_course(cfg, c.dir, force=args.force_segmentation)
         # Build auto RTSTRUCTs so DVH can include TotalSegmentator output
         from .auto_rtstruct import build_auto_rtstruct
         for c in courses:
             build_auto_rtstruct(c.dir)
+        # If extra models were requested, also run them for MR series found in dicom_root
+        if cfg.extra_seg_models:
+            segment_extra_models_mr(cfg, force=args.force_segmentation)
 
     # 3) DVH per course
     if cfg.do_dvh:
