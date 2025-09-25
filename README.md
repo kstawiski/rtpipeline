@@ -27,6 +27,7 @@ Design principles:
 - DVH driven by RTDOSE/RTPLAN with manual and auto RTSTRUCT.
 - Visual QA tools built for rapid review of structure coverage and auto‑seg quality.
 - Rich metadata to support downstream clinical and research analyses.
+ - Parallelized non‑segmentation phases (organize, DVH, visualization, metadata) with `--workers` control.
 
 Install
 - From the repo root:

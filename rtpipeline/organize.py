@@ -18,7 +18,7 @@ from scipy.ndimage import map_coordinates
 from .config import PipelineConfig
 from .ct import index_ct_series, pick_primary_series, copy_ct_series
 from .metadata import LinkedSet, group_by_course, link_rt_sets
-from .rt_details import extract_rt
+from .rt_details import extract_rt, StructInfo
 from .utils import ensure_dir
 
 logger = logging.getLogger(__name__)
@@ -207,7 +207,8 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
         for s in structs:
             key = (s.patient_id, s.study_uid or f"FOR:{s.frame_of_reference_uid or 'unknown'}")
             rs_groups.setdefault(key, []).append(s)
-        for (patient_id, course_key_raw), s_list in rs_groups.items():
+        from concurrent.futures import ThreadPoolExecutor
+        def _process_rs_group(patient_id: str, course_key_raw: str, s_list: list[StructInfo]) -> CourseOutput:
             course_key = "".join(ch if ch.isalnum() else "_" for ch in str(course_key_raw))[:64]
             patient_dir = config.output_root / str(patient_id) / f"course_{course_key}"
             ensure_dir(patient_dir)
@@ -219,20 +220,38 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
                 if series:
                     ct_dir_out = patient_dir / "CT_DICOM"
                     copy_ct_series(series, ct_dir_out)
-            outputs.append(
-                CourseOutput(
-                    patient_id=patient_id,
-                    course_key=course_key,
-                    dir=patient_dir,
-                    rp_path=patient_dir / "RP.dcm",
-                    rd_path=patient_dir / "RD.dcm",
-                    rs_path=rs_dst,
-                    ct_dir=ct_dir_out,
-                    total_prescription_gy=None,
-                )
+            return CourseOutput(
+                patient_id=patient_id,
+                course_key=course_key,
+                dir=patient_dir,
+                rp_path=patient_dir / "RP.dcm",
+                rd_path=patient_dir / "RD.dcm",
+                rs_path=rs_dst,
+                ct_dir=ct_dir_out,
+                total_prescription_gy=None,
             )
+        workers = config.effective_workers()
+        from concurrent.futures import as_completed
+        total = len(rs_groups)
+        done = 0
+        t0 = datetime.datetime.now().timestamp()
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            futures = {ex.submit(_process_rs_group, pid, key, s_list): (pid, key)
+                       for (pid, key), s_list in rs_groups.items()}
+            for f in as_completed(futures):
+                try:
+                    outputs.append(f.result())
+                except Exception:
+                    pass
+                finally:
+                    done += 1
+                    elapsed = datetime.datetime.now().timestamp() - t0
+                    rate = done / elapsed if elapsed > 0 else 0
+                    eta = (total - done) / rate if rate > 0 else float('inf')
+                    logger.info("Organize (RS-only): %d/%d (%.0f%%) elapsed %.0fs ETA %.0fs", done, total, 100*done/total, elapsed, eta)
 
-    for (patient_id, course_key_raw), items in courses.items():
+    from concurrent.futures import ThreadPoolExecutor
+    def _process_course(patient_id: str, course_key_raw: str, items: list[LinkedSet]) -> CourseOutput:
         course_key = "".join(ch if ch.isalnum() else "_" for ch in str(course_key_raw))[:64]
         items_sorted = sorted(items, key=lambda it: it.plan.plan_date or "")
 
@@ -288,25 +307,53 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
                 ct_dir_out = patient_dir / "CT_DICOM"
                 copy_ct_series(series, ct_dir_out)
 
-        outputs.append(
-            CourseOutput(
-                patient_id=patient_id,
-                course_key=course_key,
-                dir=patient_dir,
-                rp_path=rp_dst,
-                rd_path=rd_dst,
-                rs_path=rs_dst if rs_dst.exists() else None,
-                ct_dir=ct_dir_out,
-                total_prescription_gy=None,
-            )
+        return CourseOutput(
+            patient_id=patient_id,
+            course_key=course_key,
+            dir=patient_dir,
+            rp_path=rp_dst,
+            rd_path=rd_dst,
+            rs_path=rs_dst if rs_dst.exists() else None,
+            ct_dir=ct_dir_out,
+            total_prescription_gy=None,
         )
 
-        logger.info("Organized patient %s course %s at %s", patient_id, course_key, patient_dir)
+    workers = config.effective_workers()
+    from concurrent.futures import as_completed
+    total = len(courses)
+    done = 0
+    t0 = datetime.datetime.now().timestamp()
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        futures = {ex.submit(_process_course, pid, key, items): (pid, key)
+                   for (pid, key), items in courses.items()}
+        for f in as_completed(futures):
+            try:
+                co = f.result()
+                logger.info("Organized patient %s course %s at %s", co.patient_id, co.course_key, co.dir)
+                outputs.append(co)
+            except Exception as e:
+                logger.debug("Course build failed: %s", e)
+            finally:
+                done += 1
+                elapsed = datetime.datetime.now().timestamp() - t0
+                rate = done / elapsed if elapsed > 0 else 0
+                eta = (total - done) / rate if rate > 0 else float('inf')
+                logger.info("Organize: %d/%d (%.0f%%) elapsed %.0fs ETA %.0fs", done, total, 100*done/total, elapsed, eta)
 
+    for co in outputs:
+        patient_dir = co.dir
         try:
-            plan_uids = {it.plan.sop_instance_uid for it in items_sorted if it.plan and it.plan.sop_instance_uid}
+            plan_uids = set()
+            items_sorted = []
+            try:
+                rp_path = patient_dir / "RP.dcm"
+                if rp_path.exists():
+                    ds_tmp = pydicom.dcmread(str(rp_path), stop_before_pixels=True)
+                    plan_uids = {str(getattr(ds_tmp, 'SOPInstanceUID', ''))}
+            except Exception:
+                pass
             plan_total_rx = 0.0
-            for pth in plan_paths:
+            for pth in [co.rp_path]:
                 try:
                     ds_p = pydicom.dcmread(str(pth), stop_before_pixels=True)
                     if hasattr(ds_p, "DoseReferenceSequence") and ds_p.DoseReferenceSequence:
@@ -321,8 +368,9 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
             beam_energies = []
             beams_count = 0
             try:
-                if plan_paths:
-                    ds0 = pydicom.dcmread(str(plan_paths[0]), stop_before_pixels=True)
+                rp0 = co.rp_path
+                if rp0.exists():
+                    ds0 = pydicom.dcmread(str(rp0), stop_before_pixels=True)
                     if hasattr(ds0, 'FractionGroupSequence') and ds0.FractionGroupSequence:
                         fg = ds0.FractionGroupSequence[0]
                         if hasattr(fg, 'NumberOfFractionsPlanned'):
@@ -352,7 +400,7 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
                             ds_rt = pydicom.dcmread(str(p), stop_before_pixels=True)
                         except Exception:
                             continue
-                        if getattr(ds_rt, 'PatientID', None) and str(ds_rt.PatientID) != str(patient_id):
+                        if getattr(ds_rt, 'PatientID', None) and str(ds_rt.PatientID) != str(co.patient_id):
                             continue
                         ref_uid = None
                         try:
@@ -382,8 +430,8 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
 
             dose_grid = {}
             try:
-                if rd_dst.exists():
-                    ds_rd = pydicom.dcmread(str(rd_dst), stop_before_pixels=False)
+                if co.rd_path.exists():
+                    ds_rd = pydicom.dcmread(str(co.rd_path), stop_before_pixels=False)
                     dose_grid = {
                         'DoseSummationType': str(getattr(ds_rd, 'DoseSummationType', '')),
                         'Rows': int(getattr(ds_rd, 'Rows', 0) or 0),
@@ -400,8 +448,8 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
 
             ct_summary = {}
             try:
-                if ct_dir_out and Path(ct_dir_out).exists():
-                    ct_files = sorted([p for p in Path(ct_dir_out).iterdir() if p.suffix.lower() == '.dcm'])
+                if co.ct_dir and Path(co.ct_dir).exists():
+                    ct_files = sorted([p for p in Path(co.ct_dir).iterdir() if p.suffix.lower() == '.dcm'])
                     if ct_files:
                         ds_ct = pydicom.dcmread(str(ct_files[0]), stop_before_pixels=True)
                         ct_summary = {
@@ -411,6 +459,7 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
                             'ct_kvp': float(getattr(ds_ct, 'KVP', 0.0) or 0.0) if hasattr(ds_ct, 'KVP') else None,
                             'ct_convolution_kernel': str(getattr(ds_ct, 'ConvolutionKernel', '')),
                             'ct_slice_thickness': float(getattr(ds_ct, 'SliceThickness', 0.0) or 0.0) if hasattr(ds_ct, 'SliceThickness') else None,
+                            'ct_study_uid': str(getattr(ds_ct, 'StudyInstanceUID', '')),
                         }
                         try:
                             ps = getattr(ds_ct, 'PixelSpacing', [None, None])
@@ -421,16 +470,16 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
                 pass
 
             case_meta = {
-                "patient_id": str(patient_id),
-                "course_key": course_key,
-                "rp_path": str(rp_dst) if rp_dst.exists() else "",
-                "rd_path": str(rd_dst) if rd_dst.exists() else "",
-                "rs_path": str(rs_dst) if rs_dst.exists() else "",
+                "patient_id": str(co.patient_id),
+                "course_key": co.course_key,
+                "rp_path": str(co.rp_path) if co.rp_path.exists() else "",
+                "rd_path": str(co.rd_path) if co.rd_path.exists() else "",
+                "rs_path": str((patient_dir / "RS.dcm")) if (patient_dir / "RS.dcm").exists() else "",
                 "rs_auto_path": str((patient_dir / "RS_auto.dcm")) if (patient_dir / "RS_auto.dcm").exists() else "",
                 "seg_dicom_path": str((patient_dir / "TotalSegmentator_DICOM" / "segmentations.dcm")) if (patient_dir / "TotalSegmentator_DICOM" / "segmentations.dcm").exists() else "",
                 "seg_nifti_dir": str((patient_dir / "TotalSegmentator_NIFTI")) if (patient_dir / "TotalSegmentator_NIFTI").exists() else "",
-                "ct_dir": str(ct_dir_out) if ct_dir_out and Path(ct_dir_out).exists() else "",
-                "ct_study_uid": items_sorted[0].ct_study_uid if items_sorted else "",
+                "ct_dir": str(co.ct_dir) if co.ct_dir and Path(co.ct_dir).exists() else "",
+                "ct_study_uid": ct_summary.get('ct_study_uid', ''),
                 "planned_fractions": planned_fractions,
                 "beams_count": beams_count,
                 "beam_energies": beam_energies,
@@ -443,8 +492,8 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
             }
             case_meta.update(ct_summary)
             try:
-                if rp_dst.exists():
-                    ds_rp = pydicom.dcmread(str(rp_dst), stop_before_pixels=True)
+                if co.rp_path.exists():
+                    ds_rp = pydicom.dcmread(str(co.rp_path), stop_before_pixels=True)
                     prescriptions = []
                     try:
                         for dr in getattr(ds_rp, 'DoseReferenceSequence', []) or []:
@@ -710,7 +759,7 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
                 case_meta['dose_units'] = None
                 case_meta['dose_type'] = None
                 try:
-                    ds_rd2 = pydicom.dcmread(str(rd_dst), stop_before_pixels=True)
+                    ds_rd2 = pydicom.dcmread(str(co.rd_path), stop_before_pixels=True)
                     case_meta['dose_units'] = str(getattr(ds_rd2, 'DoseUnits', ''))
                     case_meta['dose_type'] = str(getattr(ds_rd2, 'DoseType', ''))
                 except Exception:

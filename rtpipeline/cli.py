@@ -6,6 +6,8 @@ import sys
 from pathlib import Path
 
 from .config import PipelineConfig
+from time import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from .organize import organize_and_merge
 
 
@@ -38,6 +40,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--totalseg-fast", action="store_true", help="Add --fast for CPU runs to improve runtime")
     p.add_argument("--totalseg-roi-subset", default=None, help="Restrict to subset of ROIs (comma-separated)")
+    p.add_argument("--workers", type=int, default=None, help="Parallel workers for non-segmentation phases (default: auto)")
     p.add_argument("-v", "--verbose", action="count", default=0, help="Increase verbosity")
     return p
 
@@ -139,6 +142,7 @@ def main(argv: list[str] | None = None) -> int:
         extra_seg_models=[m.strip() for part in (args.extra_seg_models or []) for m in part.split(",") if m.strip()],
         totalseg_fast=args.totalseg_fast,
         totalseg_roi_subset=args.totalseg_roi_subset,
+        workers=args.workers,
     )
     # Ensure directories and also route logs to a file for traceability
     try:
@@ -162,12 +166,34 @@ def main(argv: list[str] | None = None) -> int:
     # 2) Optional segmentation (TotalSegmentator)
     if cfg.do_segmentation:
         from .segmentation import segment_course, segment_extra_models_mr  # lazy import
-        for c in courses:
-            segment_course(cfg, c.dir, force=args.force_segmentation)
+        # Keep segmentation sequential (resource heavy) with progress/ETA
+        total_seg = len(courses)
+        if total_seg:
+            t0 = time()
+            for i, c in enumerate(courses, start=1):
+                segment_course(cfg, c.dir, force=args.force_segmentation)
+                elapsed = time() - t0
+                rate = i / elapsed if elapsed > 0 else 0
+                eta = (total_seg - i) / rate if rate > 0 else float('inf')
+                logging.info("Segmentation: %d/%d (%.0f%%) elapsed %.0fs ETA %.0fs", i, total_seg, 100*i/total_seg, elapsed, eta)
         # Build auto RTSTRUCTs so DVH can include TotalSegmentator output
         from .auto_rtstruct import build_auto_rtstruct
-        for c in courses:
-            build_auto_rtstruct(c.dir)
+        # Parallelize RTSTRUCT builds with progress/ETA
+        def _run_pool(label: str, items, func):
+            total = len(items)
+            if total == 0:
+                return
+            t0 = time()
+            done = 0
+            with ThreadPoolExecutor(max_workers=cfg.effective_workers()) as ex:
+                futs = {ex.submit(func, it): it for it in items}
+                for _ in as_completed(futs):
+                    done += 1
+                    elapsed = time() - t0
+                    rate = done / elapsed if elapsed > 0 else 0
+                    eta = (total - done) / rate if rate > 0 else float('inf')
+                    logging.info("%s: %d/%d (%.0f%%) elapsed %.0fs ETA %.0fs", label, done, total, 100*done/total, elapsed, eta)
+        _run_pool("Build RS_auto", courses, lambda c: build_auto_rtstruct(c.dir))
         # If extra models were requested, also run them for MR series found in dicom_root
         if cfg.extra_seg_models:
             segment_extra_models_mr(cfg, force=args.force_segmentation)
@@ -175,15 +201,55 @@ def main(argv: list[str] | None = None) -> int:
     # 3) DVH per course
     if cfg.do_dvh:
         from .dvh import dvh_for_course  # lazy import
-        for c in courses:
-            dvh_for_course(c.dir)
+        def _dvh(c):
+            return dvh_for_course(c.dir)
+        # Parallel with progress
+        def _run_pool(label: str, items, func):
+            total = len(items)
+            if total == 0:
+                return []
+            results = []
+            t0 = time()
+            done = 0
+            with ThreadPoolExecutor(max_workers=cfg.effective_workers()) as ex:
+                futs = {ex.submit(func, it): it for it in items}
+                for f in as_completed(futs):
+                    done += 1
+                    try:
+                        results.append(f.result())
+                    except Exception:
+                        results.append(None)
+                    elapsed = time() - t0
+                    rate = done / elapsed if elapsed > 0 else 0
+                    eta = (total - done) / rate if rate > 0 else float('inf')
+                    logging.info("%s: %d/%d (%.0f%%) elapsed %.0fs ETA %.0fs", label, done, total, 100*done/total, elapsed, eta)
+            return results
+        _run_pool("DVH", courses, _dvh)
 
     # 4) Visualization
     if cfg.do_visualize:
         from .visualize import visualize_course, generate_axial_review  # lazy import
-        for c in courses:
-            visualize_course(c.dir)
-            generate_axial_review(c.dir)
+        def _both(c):
+            try:
+                visualize_course(c.dir)
+            finally:
+                generate_axial_review(c.dir)
+        # Parallel with progress
+        def _run_pool(label: str, items, func):
+            total = len(items)
+            if total == 0:
+                return
+            t0 = time()
+            done = 0
+            with ThreadPoolExecutor(max_workers=cfg.effective_workers()) as ex:
+                futs = {ex.submit(func, it): it for it in items}
+                for _ in as_completed(futs):
+                    done += 1
+                    elapsed = time() - t0
+                    rate = done / elapsed if elapsed > 0 else 0
+                    eta = (total - done) / rate if rate > 0 else float('inf')
+                    logging.info("%s: %d/%d (%.0f%%) elapsed %.0fs ETA %.0fs", label, done, total, 100*done/total, elapsed, eta)
+        _run_pool("Visualization", courses, _both)
 
     # 5) Merge DVH metrics across all courses (if any)
     try:
