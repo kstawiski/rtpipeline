@@ -2,9 +2,31 @@ rtpipeline – DICOM‑RT Processing Pipeline
 ========================================
 
 Overview
-- Organizes DICOM‑RT/CT per patient and merges plans within the same treatment course.
-- Course definition defaults to “same CT StudyInstanceUID” (primary + boost). This avoids merging subsequent treatments (e.g., SBRT after progression) that are planned on a different CT.
-- Optional: run TotalSegmentator on the CT, compute DVH metrics (manual + auto), and generate HTML visualizations.
+rtpipeline is an end‑to‑end DICOM‑RT processing pipeline that turns a folder of raw DICOMs (CT/RTPLAN/RTDOSE/RTSTRUCT/RT treatment records) into clean, per‑patient “courses” with organized data, segmentation, quantitative DVH metrics, visual QA, and rich metadata for clinical and research use.
+
+At a glance, the pipeline:
+- Scans a DICOM root (one or many patients) and extracts global metadata into Excel.
+- Groups each patient’s data into treatment “courses” by the CT StudyInstanceUID (primary + boost on the same CT are merged; subsequent treatments on a different CT are separated).
+- Organizes each course into a canonical structure (CT_DICOM, RP/RD/RS), sums multi‑stage doses into a single RD, and synthesizes a “summed” RP with total Rx.
+- Runs TotalSegmentator on the course CT (resume‑safe; re-run with `--force-segmentation`) and auto‑generates RTSTRUCT (RS_auto) aligned to the CT, so DVH can include auto‑segmentation even if no manual RS exists.
+- Computes DVH metrics for manual and auto structures using dicompyler‑core, including integral dose, hottest small volumes (D1cc, D0.1cc), and coverage at Rx, and writes per‑course and merged workbooks.
+- Generates interactive reports: Plotly‑based DVH report (toggle structures) and an Axial viewer to scroll CT slices with semi‑transparent overlays for manual/auto structures.
+- Saves comprehensive per‑case metadata (JSON/XLSX) for clinical/research queries (plan approvals, clinicians, prescriptions per ROI, beam geometry and MUs, dose grid, CT acquisition, course dates, etc.) and merges all cases into a single workbook/JSON for cohort analysis.
+
+Typical flow (per patient):
+1) Discover → extract global metadata (plans/doses/structures/fractions/CT index) to `outdir/Data/*.xlsx`.
+2) Group → courses by CT StudyInstanceUID to avoid merging unrelated treatments.
+3) Organize → copy CT, sum RD (with resampling), synthesize RP (total Rx), pick RS; write per‑case metadata.
+4) Segment (optional) → run TotalSegmentator (DICOM + NIfTI), resume‑safe; build RS_auto from SEG/RTSTRUCT/NIfTI.
+5) DVH → compute metrics for RS and RS_auto; save per‑course and merged across all courses.
+6) Visualize → DVH_Report.html (Plotly) and Axial.html (CT viewer + overlays) per course.
+
+Design principles:
+- Clinically meaningful course grouping and dose summation.
+- Idempotent, resume‑safe segmentation and RTSTRUCT generation.
+- DVH driven by RTDOSE/RTPLAN with manual and auto RTSTRUCT.
+- Visual QA tools built for rapid review of structure coverage and auto‑seg quality.
+- Rich metadata to support downstream clinical and research analyses.
 
 Install
 - From the repo root:
