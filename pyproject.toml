@@ -22,7 +22,6 @@ dependencies = [
   "TotalSegmentator",
   "nested-lookup",
   "rt-utils",
-  "dcm2niix",
   "plotly",
 ]
 
@@ -31,3 +30,7 @@ rtpipeline = "rtpipeline.cli:main"
 
 [tool.setuptools]
 packages = ["rtpipeline"]
+include-package-data = true
+
+[tool.setuptools.package-data]
+rtpipeline = ["ext/*.zip"]
