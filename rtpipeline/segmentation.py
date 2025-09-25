@@ -17,9 +17,9 @@ from .config import PipelineConfig
 logger = logging.getLogger(__name__)
 
 
-def _run(cmd: str) -> bool:
+def _run(cmd: str, env: Optional[dict] = None) -> bool:
     try:
-        subprocess.run(cmd, check=True, shell=True, capture_output=True, executable="/bin/bash")
+        subprocess.run(cmd, check=True, shell=True, capture_output=True, executable="/bin/bash", env=env)
         return True
     except subprocess.CalledProcessError as e:
         logger.error("Command failed: %s\n%s", cmd, e.stderr.decode(errors="ignore") if e.stderr else "")
@@ -142,16 +142,35 @@ def run_dcm2niix(config: PipelineConfig, dicom_dir: Path, nifti_out: Path) -> Op
     return None
 
 
-def run_totalsegmentator(config: PipelineConfig, inp: Path, out_dir: Path, out_type: str) -> bool:
+def run_totalsegmentator(config: PipelineConfig, inp: Path, out_dir: Path, out_type: str, task: Optional[str] = None) -> bool:
     out_dir.mkdir(parents=True, exist_ok=True)
     # Verify command availability (when no conda prefix is used)
     if not config.conda_activate and shutil.which(config.totalseg_cmd) is None:
         logger.error("TotalSegmentator command '%s' not found; cannot run segmentation", config.totalseg_cmd)
         return False
-    # Use minimal, broadly-compatible CLI flags; avoid potentially invalid '-ta total'
-    cmd = f"{_prefix(config)}{config.totalseg_cmd} -i '{inp}' -o '{out_dir}' -ot {out_type}"
-    logger.info("Running TotalSegmentator (%s): %s", out_type, cmd)
-    return _run(cmd)
+    # Prepare environment (license if provided)
+    env = os.environ.copy()
+    if config.totalseg_license_key:
+        env.setdefault("TOTALSEG_LICENSE", config.totalseg_license_key)
+        env.setdefault("TOTALSEGMENTATOR_LICENSE", config.totalseg_license_key)
+    extra_flags = []
+    if config.totalseg_fast:
+        extra_flags.append("--fast")
+    if config.totalseg_roi_subset:
+        extra_flags.append(f"--roi_subset {config.totalseg_roi_subset}")
+    base = f"{_prefix(config)}{config.totalseg_cmd} -i '{inp}' -o '{out_dir}' -ot {out_type} {' '.join(extra_flags)}".strip()
+    if not task:
+        cmd = base
+        logger.info("Running TotalSegmentator (%s): %s", out_type, cmd)
+        return _run(cmd, env=env)
+    # Try a few different task flags for compatibility across versions
+    for flag in ("-ta", "--task", "-m"):
+        cmd = f"{base} {flag} {task}"
+        logger.info("Running TotalSegmentator (%s, task=%s): %s", out_type, task, cmd)
+        if _run(cmd, env=env):
+            return True
+    logger.error("TotalSegmentator failed for task '%s' with all known flags", task)
+    return False
 
 
 def segment_course(config: PipelineConfig, course_dir: Path, force: bool = False) -> dict:
@@ -197,7 +216,8 @@ def segment_course(config: PipelineConfig, course_dir: Path, force: bool = False
         results["nifti"] = str(nii)
 
     # Run DICOM-SEG (force or not present)
-    ok1 = run_totalsegmentator(config, ct_dir, dicom_seg_dir, "dicom")
+    # Always run default 'total' model and never modify it
+    ok1 = run_totalsegmentator(config, ct_dir, dicom_seg_dir, "dicom", task=None)
     if ok1:
         seg_file = dicom_seg_dir / "segmentations.dcm"
         if seg_file.exists():
@@ -217,8 +237,76 @@ def segment_course(config: PipelineConfig, course_dir: Path, force: bool = False
 
     # Run NIfTI segmentation (force or not present)
     if nii is not None and (force or not (nifti_seg_dir.exists() and any(nifti_seg_dir.glob("*.nii*")))):
-        ok2 = run_totalsegmentator(config, nii, nifti_seg_dir, "nifti")
+        ok2 = run_totalsegmentator(config, nii, nifti_seg_dir, "nifti", task=None)
         if ok2:
             results["nifti_seg_dir"] = str(nifti_seg_dir)
-    
+
+    # Extra models (in addition to default 'total'): run both dicom and nifti outputs
+    for model in (m for m in (config.extra_seg_models or []) if not m.endswith("_mr")):
+        # DICOM
+        out_d = course_dir / f"TotalSegmentator_{model}_DICOM"
+        need = force or not (out_d.exists() and any(out_d.glob("*.dcm")))
+        if need:
+            run_totalsegmentator(config, ct_dir, out_d, "dicom", task=model)
+        # NIfTI
+        out_n = course_dir / f"TotalSegmentator_{model}_NIFTI"
+        need = nii is not None and (force or not (out_n.exists() and any(out_n.glob("*.nii*"))))
+        if need and nii is not None:
+            run_totalsegmentator(config, nii, out_n, "nifti", task=model)
+
     return results
+
+
+def _scan_mr_series(dicom_root: Path) -> list[tuple[str, str, Path]]:
+    """Return list of (patient_id, series_uid, series_dir) for MR series under dicom_root."""
+    found = {}
+    for base, _, files in os.walk(dicom_root):
+        series_uid = None
+        patient_id = None
+        any_mr = False
+        for fn in files:
+            p = Path(base) / fn
+            ds = None
+            try:
+                import pydicom
+                ds = pydicom.dcmread(str(p), stop_before_pixels=True)
+            except Exception:
+                continue
+            if getattr(ds, "Modality", None) != "MR":
+                continue
+            any_mr = True
+            if series_uid is None:
+                try:
+                    series_uid = str(getattr(ds, "SeriesInstanceUID", ""))
+                    patient_id = str(getattr(ds, "PatientID", ""))
+                except Exception:
+                    series_uid = None
+        if any_mr and series_uid:
+            found[(patient_id or "", series_uid)] = Path(base)
+    return [(pid, suid, pth) for (pid, suid), pth in found.items()]
+
+
+def segment_extra_models_mr(config: PipelineConfig, force: bool = False) -> None:
+    """Run extra TotalSegmentator models for MR series found in dicom_root.
+    Results are stored under output_root/<patient_id>/MR_<series_uid>/TotalSegmentator_<model>_{DICOM,NIFTI}
+    """
+    if not config.extra_seg_models:
+        return
+    series = _scan_mr_series(config.dicom_root)
+    if not series:
+        return
+    # Only models ending with _mr are considered for MR
+    models_mr = [m for m in (config.extra_seg_models or []) if m.endswith("_mr")]
+    if not models_mr:
+        return
+    for pid, suid, sdir in series:
+        base_out = config.output_root / (pid or "unknown") / f"MR_{suid}"
+        for model in models_mr:
+            # DICOM output
+            out_d = base_out / f"TotalSegmentator_{model}_DICOM"
+            if force or not (out_d.exists() and any(out_d.glob("*.dcm"))):
+                run_totalsegmentator(config, sdir, out_d, "dicom", task=model)
+            # NIfTI output
+            out_n = base_out / f"TotalSegmentator_{model}_NIFTI"
+            if force or not (out_n.exists() and any(out_n.glob("*.nii*"))):
+                run_totalsegmentator(config, sdir, out_n, "nifti", task=model)

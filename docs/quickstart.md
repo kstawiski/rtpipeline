@@ -30,3 +30,30 @@ This will:
 ```bash
 rtpipeline --dicom-root /path/to/DICOM --outdir ./Data_Organized --logs ./Logs --force-segmentation
 ```
+## Optional: extra models and MR
+
+- Run extra CT tasks (alongside default CT total):
+
+```bash
+rtpipeline --dicom-root /path/to/DICOM --outdir ./Data_Organized --logs ./Logs \
+  --extra-seg-models lung_vessels,body
+```
+
+- Run MR tasks across MR series (tasks ending with `_mr`):
+
+```bash
+rtpipeline --dicom-root /path/to/DICOM --outdir ./Data_Organized --logs ./Logs \
+  --extra-seg-models total_mr,body_mr
+```
+
+- Add license and CPU optimizations:
+
+```bash
+rtpipeline ... --totalseg-license YOUR_KEY --totalseg-fast --totalseg-roi-subset liver,pancreas
+```
+
+- Check environment:
+
+```bash
+rtpipeline doctor --logs ./Logs
+```
