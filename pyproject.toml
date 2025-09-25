@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rtpipeline"
+version = "0.1.0"
+description = "DICOM-RT end-to-end pipeline: organize, merge by course, segment, DVH, visualize"
+authors = [{ name = "Project", email = "noreply@example.com" }]
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "pydicom>=2.4,<3",
+  "dicompyler-core==0.5.6",
+  "numpy",
+  "pandas",
+  "scipy",
+  "SimpleITK",
+  "pydicom-seg==0.4.1",
+  "matplotlib",
+  "openpyxl",
+  "TotalSegmentator",
+  "nested-lookup",
+  "rt-utils",
+  "dcm2niix",
+  "plotly",
+]
+
+[project.scripts]
+rtpipeline = "rtpipeline.cli:main"
+
+[tool.setuptools]
+packages = ["rtpipeline"]
