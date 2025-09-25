@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Dict, List
 
 import pandas as pd
+from concurrent.futures import ThreadPoolExecutor
 from dicompylercore import dicomparser
 from nested_lookup import nested_lookup
 import pydicom
@@ -74,13 +75,12 @@ def export_metadata(config: PipelineConfig) -> Dict[str, Path]:
 
     # Collect RP
     rp_files = _list_files(dicom_root, 'RP')
-    rp_rows = []
-    for p in rp_files:
+    def _rp_row(p: Path) -> dict | None:
         try:
             ds = pydicom.dcmread(str(p), stop_before_pixels=True)
         except Exception:
-            continue
-        row = {
+            return None
+        return {
             'file_path': str(p),
             'plan_name': _nested_get(ds, '300A0002'),
             'plan_date': _nested_get(ds, '300A0006'),
@@ -93,35 +93,35 @@ def export_metadata(config: PipelineConfig) -> Dict[str, Path]:
             'patient_gender': _nested_get(ds, '00100040'),
             'patient_pesel': _nested_get(ds, '00101000'),
         }
-        rp_rows.append(row)
+    with ThreadPoolExecutor(max_workers=config.effective_workers()) as ex:
+        rp_rows = [r for r in ex.map(_rp_row, rp_files) if r]
     plans_df = pd.DataFrame(rp_rows)
     if not plans_df.empty:
         plans_df.to_excel(paths.plans_xlsx, index=False)
 
     # Collect RD
     rd_files = _list_files(dicom_root, 'RD')
-    rd_rows = []
-    for p in rd_files:
+    def _rd_row(p: Path) -> dict | None:
         try:
             ds = pydicom.dcmread(str(p), stop_before_pixels=True)
         except Exception:
-            continue
-        row = {
+            return None
+        return {
             'file_path': str(p),
             'CT_series': _nested_get(ds, '0020000E'),
             'CT_study': _nested_get(ds, '0020000D'),
             'plan_id': _nested_get(ds, '00081155'),
             'patient_id': _nested_get(ds, '00100020'),
         }
-        rd_rows.append(row)
+    with ThreadPoolExecutor(max_workers=config.effective_workers()) as ex:
+        rd_rows = [r for r in ex.map(_rd_row, rd_files) if r]
     doses_df = pd.DataFrame(rd_rows)
     if not doses_df.empty:
         doses_df.to_excel(paths.doses_xlsx, index=False)
 
     # Collect RS
     rs_files = _list_files(dicom_root, 'RS')
-    rs_rows = []
-    for p in rs_files:
+    def _rs_row(p: Path) -> dict | None:
         try:
             ds = pydicom.dcmread(str(p), stop_before_pixels=True)
             structs = []
@@ -131,8 +131,8 @@ def export_metadata(config: PipelineConfig) -> Dict[str, Path]:
                     if nm:
                         structs.append(str(nm))
         except Exception:
-            continue
-        row = {
+            return None
+        return {
             'file_path': str(p),
             'CT_series': _nested_get(ds, '0020000E'),
             'CT_study': _nested_get(ds, '0020000D'),
@@ -140,20 +140,20 @@ def export_metadata(config: PipelineConfig) -> Dict[str, Path]:
             'patient_id': _nested_get(ds, '00100020'),
             'available_structures': ', '.join(structs) if structs else ''
         }
-        rs_rows.append(row)
+    with ThreadPoolExecutor(max_workers=config.effective_workers()) as ex:
+        rs_rows = [r for r in ex.map(_rs_row, rs_files) if r]
     structs_df = pd.DataFrame(rs_rows)
     if not structs_df.empty:
         structs_df.to_excel(paths.structures_xlsx, index=False)
 
     # Collect RT* (fractions/treatment records)
     rt_files = _list_files(dicom_root, 'RT')
-    rt_rows = []
-    for p in rt_files:
+    def _rt_row(p: Path) -> dict | None:
         try:
             ds = pydicom.dcmread(str(p), stop_before_pixels=True)
         except Exception:
-            continue
-        row = {
+            return None
+        return {
             'file_path': str(p),
             'fraction_id': _nested_get(ds, '00080018'),
             'date': _nested_get(ds, '30080024'),
@@ -167,20 +167,20 @@ def export_metadata(config: PipelineConfig) -> Dict[str, Path]:
             'machine': _nested_get(ds, '300A00B2'),
             'patient_id': _nested_get(ds, '00100020'),
         }
-        rt_rows.append(row)
+    with ThreadPoolExecutor(max_workers=config.effective_workers()) as ex:
+        rt_rows = [r for r in ex.map(_rt_row, rt_files) if r]
     fractions_df = pd.DataFrame(rt_rows)
     if not fractions_df.empty:
         fractions_df.to_excel(paths.fractions_xlsx, index=False)
 
     # CT images index (PatientID, Study, Series, Instance)
     ct_files = _list_files(dicom_root, 'CT')
-    ct_rows = []
-    for p in ct_files:
+    def _ct_row(p: Path) -> dict | None:
         try:
             ds = pydicom.dcmread(str(p), stop_before_pixels=True)
         except Exception:
-            continue
-        row = {
+            return None
+        return {
             'original_path': str(p),
             'PatientID': _nested_get(ds, '00100020'),
             'CT_study': _nested_get(ds, '0020000D'),
@@ -188,7 +188,8 @@ def export_metadata(config: PipelineConfig) -> Dict[str, Path]:
             'SeriesNumber': _nested_get(ds, '00200011'),
             'InstanceNumber': _nested_get(ds, '00200013'),
         }
-        ct_rows.append(row)
+    with ThreadPoolExecutor(max_workers=config.effective_workers()) as ex:
+        ct_rows = [r for r in ex.map(_ct_row, ct_files) if r]
     ct_df = pd.DataFrame(ct_rows)
     if not ct_df.empty:
         ct_df.to_excel(paths.ct_images_xlsx, index=False)
@@ -218,4 +219,3 @@ def export_metadata(config: PipelineConfig) -> Dict[str, Path]:
         'ct_images': paths.ct_images_xlsx,
         'metadata': paths.metadata_xlsx,
     }
-
