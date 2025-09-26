@@ -6,7 +6,7 @@
 pip install -e .
 ```
 
-This installs pydicom (>=2.4,<3), dicompyler-core, SimpleITK, pydicom-seg, plotly, TotalSegmentator, rt-utils, etc.
+This installs pydicom (>=3.0,<4), dicompyler-core, SimpleITK, pydicom-seg, plotly, dicom2nifti, TotalSegmentator (from GitHub via VCS), rt-utils, etc. Ensure your pip supports VCS dependencies (pip >= 21.1).
 Note: `dcm2niix` is an external CLI (not a Python package). Install it via your OS package manager or conda (e.g., `conda install -c conda-forge dcm2niix`). If missing, the pipeline still runs DICOM-mode segmentation and skips NIfTI conversion. Alternatively, place platform ZIPs in `rtpipeline/ext/` (e.g., `dcm2niix_lnx.zip`, `dcm2niix_mac.zip`, `dcm2niix_win.zip`) and the tool will auto‑extract and use them when `dcm2niix` is not found.
 
 ## Minimal run

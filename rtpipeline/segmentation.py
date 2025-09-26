@@ -12,17 +12,29 @@ from importlib import resources as importlib_resources
 from pathlib import Path
 from typing import Optional
 
+# Import numpy compatibility shim BEFORE any other imports that might use numpy
+from . import numpy_compat  # This auto-applies compatibility patches
+
 from .config import PipelineConfig
 
 logger = logging.getLogger(__name__)
 
 
 def _run(cmd: str, env: Optional[dict] = None) -> bool:
+    """Execute a command using shell. Returns True on success."""
+    
+    # Detect shell to use
+    shell = os.environ.get('SHELL', '/bin/bash')
+    if not os.path.isfile(shell):
+        shell = shutil.which('bash') or shutil.which('sh') or '/bin/sh'
+    
     try:
-        subprocess.run(cmd, check=True, shell=True, capture_output=True, executable="/bin/bash", env=env)
+        subprocess.run(cmd, check=True, shell=True, capture_output=True, executable=shell, env=env)
         return True
     except subprocess.CalledProcessError as e:
-        logger.error("Command failed: %s\n%s", cmd, e.stderr.decode(errors="ignore") if e.stderr else "")
+        logger.error(f"Command failed: {cmd}")
+        stderr = e.stderr.decode() if e.stderr else "No error output"
+        logger.error(f"Error: {stderr}")
         return False
 
 
@@ -141,42 +153,82 @@ def run_dcm2niix(config: PipelineConfig, dicom_dir: Path, nifti_out: Path) -> Op
             return nifti_out / fn
     return None
 
-
-def run_totalsegmentator(config: PipelineConfig, inp: Path, out_dir: Path, out_type: str, task: Optional[str] = None) -> bool:
-    out_dir.mkdir(parents=True, exist_ok=True)
-    # Verify command availability (when no conda prefix is used)
-    if not config.conda_activate and shutil.which(config.totalseg_cmd) is None:
-        logger.error("TotalSegmentator command '%s' not found; cannot run segmentation", config.totalseg_cmd)
+def _validate_totalseg_environment(config: PipelineConfig) -> bool:
+    """Validate TotalSegmentator environment and dependencies."""
+    if config.conda_activate:
+        return True  # Assume conda environment is properly configured
+    
+    if not shutil.which(config.totalseg_cmd):
+        logger.error("TotalSegmentator command '%s' not found in PATH", config.totalseg_cmd)
         return False
-    # Prepare environment (license if provided)
+    
+    # Check for numpy compatibility issue
+    try:
+        result = subprocess.run(
+            [config.totalseg_cmd, "--help"], 
+            capture_output=True, 
+            timeout=30
+        )
+        if result.returncode != 0:
+            stderr = result.stderr.decode() if result.stderr else ""
+            if "np.isdtype" in stderr or "numpy" in stderr.lower():
+                logger.error(
+                    "TotalSegmentator has numpy compatibility issues. "
+                    "Try: pip install 'numpy>=1.20,<2.0'"
+                )
+                return False
+            logger.warning("TotalSegmentator help command failed: %s", stderr)
+        return True
+    except subprocess.TimeoutExpired:
+        logger.warning("TotalSegmentator validation timed out")
+        return True  # Don't fail completely on timeout
+    except Exception as e:
+        logger.warning("TotalSegmentator validation failed: %s", e)
+        return True  # Don't fail completely on validation error
+
+
+def run_totalsegmentator(config: PipelineConfig, input_path: Path, output_path: Path, output_type: str, task: Optional[str] = None) -> bool:
+    """Run TotalSegmentator with compatibility wrapper."""
+    
+    # Use our compatibility wrapper instead of direct TotalSegmentator
+    totalseg_wrapper = Path(__file__).parent / "totalsegmentator_compat.py"
+    
+    cmd_parts = [
+        sys.executable,
+        str(totalseg_wrapper),
+        "-i", str(input_path),
+        "-o", str(output_path),
+        "-ot", output_type
+    ]
+    
+    if task:
+        cmd_parts.extend(["--task", task])
+        
+    cmd = " ".join(f'"{part}"' if " " in part else part for part in cmd_parts)
+    
+    logger.info(f"Running TotalSegmentator ({output_type}): {cmd}")
+    
     env = os.environ.copy()
-    if config.totalseg_license_key:
-        env.setdefault("TOTALSEG_LICENSE", config.totalseg_license_key)
-        env.setdefault("TOTALSEGMENTATOR_LICENSE", config.totalseg_license_key)
-    # Encourage CPU usage when --fast is requested
-    if config.totalseg_fast:
-        env.setdefault("TOTALSEG_FORCE_CPU", "1")
-        env.setdefault("TOTALSEGMENTATOR_FORCE_CPU", "1")
-        # Hide GPUs from PyTorch to prevent CUDA init on CPU-only runs
-        env.setdefault("CUDA_VISIBLE_DEVICES", "")
-    extra_flags = []
-    if config.totalseg_fast:
-        extra_flags.append("--fast")
-    if config.totalseg_roi_subset:
-        extra_flags.append(f"--roi_subset {config.totalseg_roi_subset}")
-    base = f"{_prefix(config)}{config.totalseg_cmd} -i '{inp}' -o '{out_dir}' -ot {out_type} {' '.join(extra_flags)}".strip()
-    if not task:
-        cmd = base
-        logger.info("Running TotalSegmentator (%s): %s", out_type, cmd)
-        return _run(cmd, env=env)
-    # Try a few different task flags for compatibility across versions
-    for flag in ("-ta", "--task", "-m"):
-        cmd = f"{base} {flag} {task}"
-        logger.info("Running TotalSegmentator (%s, task=%s): %s", out_type, task, cmd)
-        if _run(cmd, env=env):
-            return True
-    logger.error("TotalSegmentator failed for task '%s' with all known flags", task)
-    return False
+    
+    # Set environment variables for TotalSegmentator
+    if hasattr(config, 'totalseg_fast') and config.totalseg_fast:
+        cmd += " --fast"
+    
+    # First attempt with default settings
+    ok = _run(cmd, env=env)
+    
+    if not ok:
+        logger.info("Retrying TotalSegmentator with CPU-only and single-process env")
+        # Add CPU-only flag and disable multiprocessing
+        cmd_retry = cmd + " -d cpu"
+        env_retry = env.copy()
+        env_retry.update({
+            'CUDA_VISIBLE_DEVICES': '-1',
+            'OMP_NUM_THREADS': '1'
+        })
+        ok = _run(cmd_retry, env=env_retry)
+    
+    return ok
 
 
 def segment_course(config: PipelineConfig, course_dir: Path, force: bool = False) -> dict:
@@ -221,8 +273,12 @@ def segment_course(config: PipelineConfig, course_dir: Path, force: bool = False
     if nii:
         results["nifti"] = str(nii)
 
-    # Run DICOM-SEG (force or not present)
-    # Always run default 'total' model and never modify it
+    # Prefer NIfTI segmentation first (more robust conversion)
+    if nii is not None and (force or not (nifti_seg_dir.exists() and any(nifti_seg_dir.glob("*.nii*")))):
+        ok2 = run_totalsegmentator(config, nii, nifti_seg_dir, "nifti", task=None)
+        if ok2:
+            results["nifti_seg_dir"] = str(nifti_seg_dir)
+    # Then attempt DICOM-SEG (best-effort)
     ok1 = run_totalsegmentator(config, ct_dir, dicom_seg_dir, "dicom", task=None)
     if ok1:
         seg_file = dicom_seg_dir / "segmentations.dcm"
@@ -240,12 +296,6 @@ def segment_course(config: PipelineConfig, course_dir: Path, force: bool = False
                         pass
                 if target.exists():
                     results["dicom_seg"] = str(target)
-
-    # Run NIfTI segmentation (force or not present)
-    if nii is not None and (force or not (nifti_seg_dir.exists() and any(nifti_seg_dir.glob("*.nii*")))):
-        ok2 = run_totalsegmentator(config, nii, nifti_seg_dir, "nifti", task=None)
-        if ok2:
-            results["nifti_seg_dir"] = str(nifti_seg_dir)
 
     # Extra models (in addition to default 'total'): run both dicom and nifti outputs
     for model in (m for m in (config.extra_seg_models or []) if not m.endswith("_mr")):
@@ -296,8 +346,6 @@ def segment_extra_models_mr(config: PipelineConfig, force: bool = False) -> None
     """Run extra TotalSegmentator models for MR series found in dicom_root.
     Results are stored under output_root/<patient_id>/MR_<series_uid>/TotalSegmentator_<model>_{DICOM,NIFTI}
     """
-    if not config.extra_seg_models:
-        return
     series = _scan_mr_series(config.dicom_root)
     if not series:
         return
@@ -314,15 +362,20 @@ def segment_extra_models_mr(config: PipelineConfig, force: bool = False) -> None
     done = 0
     for pid, suid, sdir in series:
         base_out = config.output_root / (pid or "unknown") / f"MR_{suid}"
+        # Convert MR DICOM to NIfTI to avoid internal DICOM conversion
+        mr_nifti_dir = base_out / "nifti"
+        nii_mr = run_dcm2niix(config, sdir, mr_nifti_dir)
         for model in sorted(models_mr):
-            # DICOM output
-            out_d = base_out / f"TotalSegmentator_{model}_DICOM"
-            if force or not (out_d.exists() and any(out_d.glob("*.dcm"))):
-                run_totalsegmentator(config, sdir, out_d, "dicom", task=model)
-            # NIfTI output
+            # NIfTI output preferred
             out_n = base_out / f"TotalSegmentator_{model}_NIFTI"
-            if force or not (out_n.exists() and any(out_n.glob("*.nii*"))):
-                run_totalsegmentator(config, sdir, out_n, "nifti", task=model)
+            need_n = force or not (out_n.exists() and any(out_n.glob("*.nii*")))
+            if need_n and nii_mr is not None:
+                run_totalsegmentator(config, nii_mr, out_n, "nifti", task=model)
+            # DICOM output best-effort
+            out_d = base_out / f"TotalSegmentator_{model}_DICOM"
+            need_d = force or not (out_d.exists() and any(out_d.glob("*.dcm")))
+            if need_d:
+                run_totalsegmentator(config, sdir, out_d, "dicom", task=model)
             done += 1
             elapsed = _time.time() - t0
             rate = done / elapsed if elapsed > 0 else 0

@@ -9,6 +9,36 @@ from typing import Dict, List
 
 import pandas as pd
 from concurrent.futures import ThreadPoolExecutor
+"""Compatibility shim to let dicompyler-core import against pydicom>=3.
+
+dicompyler-core 0.5.x expects a legacy 'dicom' package with
+- dicom.read_file
+- dicom.dataset.Dataset / FileDataset
+- dicom.tag.Tag
+
+This shim provides those bindings to pydicom equivalents.
+"""
+try:
+    import sys as _sys, types as _types, pydicom as _pyd
+    # Base 'dicom' package
+    _m = _sys.modules.get('dicom') or _types.ModuleType('dicom')
+    _m.read_file = getattr(_pyd, 'dcmread', None)
+    _sys.modules['dicom'] = _m
+    # dicom.dataset
+    _mds = _types.ModuleType('dicom.dataset')
+    _mds.Dataset = _pyd.dataset.Dataset
+    _mds.FileDataset = _pyd.dataset.FileDataset
+    _sys.modules['dicom.dataset'] = _mds
+    # dicom.tag
+    _mtag = _types.ModuleType('dicom.tag')
+    _mtag.Tag = _pyd.tag.Tag
+    _sys.modules['dicom.tag'] = _mtag
+    # dicom.uid (optional)
+    _muid = _types.ModuleType('dicom.uid')
+    _muid.UID = _pyd.uid.UID
+    _sys.modules['dicom.uid'] = _muid
+except Exception:
+    pass
 from dicompylercore import dicomparser
 from nested_lookup import nested_lookup
 import pydicom

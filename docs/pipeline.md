@@ -43,3 +43,4 @@
 - MRI normalization toggles automatically based on detected weighting:
   - T2-weighted: normalization disabled
   - T1-weighted: normalization enabled
+- Radiomics is parallelized across courses and ROIs/labels to improve runtime. A cohort merge is saved to `outdir/Data/radiomics_all.xlsx`.

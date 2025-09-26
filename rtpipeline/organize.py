@@ -61,8 +61,8 @@ def _create_summed_plan(plan_files: List[Path], total_dose_gy: float, out_plan_p
             for dose_ref in new_plan.DoseReferenceSequence:
                 if hasattr(dose_ref, "TargetPrescriptionDose"):
                     dose_ref.TargetPrescriptionDose = float(total_dose_gy)
-    except Exception:
-        pass
+    except (AttributeError, ValueError, TypeError) as e:
+        logger.warning("Failed to update prescription dose in summed plan: %s", e)
 
     # Update fraction group meterset proportionally if possible
     try:
@@ -77,8 +77,8 @@ def _create_summed_plan(plan_files: List[Path], total_dose_gy: float, out_plan_p
                     for beam_ref in fg.ReferencedBeamSequence:
                         if hasattr(beam_ref, "BeamMeterset"):
                             beam_ref.BeamMeterset = float(beam_ref.BeamMeterset) * ratio
-    except Exception:
-        pass
+    except (AttributeError, ValueError, TypeError, ZeroDivisionError) as e:
+        logger.warning("Failed to update meterset in summed plan: %s", e)
 
     new_plan.save_as(str(out_plan_path))
 

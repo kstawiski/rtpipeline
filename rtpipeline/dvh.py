@@ -8,9 +8,35 @@ from typing import Dict, List, Optional
 import numpy as np
 import pandas as pd
 import pydicom
-from dicompylercore import dvhcalc
 
 logger = logging.getLogger(__name__)
+
+# Compatibility shim for dicompyler-core with pydicom>=3
+try:
+    import sys as _sys, types as _types, pydicom as _pyd
+    _m = _sys.modules.get('dicom') or _types.ModuleType('dicom')
+    _m.read_file = getattr(_pyd, 'dcmread', None)
+    _sys.modules['dicom'] = _m
+    _mds = _types.ModuleType('dicom.dataset')
+    _mds.Dataset = _pyd.dataset.Dataset
+    _mds.FileDataset = _pyd.dataset.FileDataset
+    _sys.modules['dicom.dataset'] = _mds
+    _mtag = _types.ModuleType('dicom.tag')
+    _mtag.Tag = _pyd.tag.Tag
+    _sys.modules['dicom.tag'] = _mtag
+    _muid = _types.ModuleType('dicom.uid')
+    _muid.UID = _pyd.uid.UID
+    _sys.modules['dicom.uid'] = _muid
+except (ImportError, AttributeError) as e:
+    logger.warning("Failed to set up dicompyler-core compatibility: %s", e)
+except Exception as e:
+    logger.error("Unexpected error in dicompyler-core compatibility setup: %s", e)
+
+try:
+    from dicompylercore import dvhcalc
+except ImportError as e:
+    logger.error("Failed to import dicompylercore: %s. Install with: pip install dicompyler-core", e)
+    raise
 
 
 def _dose_at_fraction(bins, cumulative, fraction: float) -> float:
