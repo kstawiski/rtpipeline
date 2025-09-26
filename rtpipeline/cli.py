@@ -68,6 +68,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--totalseg-fast", action="store_true", help="Add --fast for CPU runs to improve runtime")
     p.add_argument("--totalseg-roi-subset", default=None, help="Restrict to subset of ROIs (comma-separated)")
     p.add_argument("--workers", type=int, default=None, help="Parallel workers for non-segmentation phases (default: auto)")
+    p.add_argument("--resume", action="store_true", help="Resume: skip per-course steps with existing outputs")
     p.add_argument("-v", "--verbose", action="count", default=0, help="Increase verbosity")
     return p
 
@@ -197,6 +198,7 @@ def main(argv: list[str] | None = None) -> int:
         totalseg_roi_subset=args.totalseg_roi_subset,
         workers=args.workers,
         radiomics_params_file=Path(args.radiomics_params).resolve() if args.radiomics_params else None,
+        resume=bool(args.resume),
     )
     # Ensure directories and also route logs to a file for traceability
     try:
@@ -220,11 +222,25 @@ def main(argv: list[str] | None = None) -> int:
     # 2) Optional segmentation (TotalSegmentator)
     if cfg.do_segmentation:
         from .segmentation import segment_course, segment_extra_models_mr  # lazy import
-        # Keep segmentation sequential (resource heavy) with progress/ETA
-        total_seg = len(courses)
+        # Keep segmentation sequential (resource heavy) with progress/ETA. Apply resume filtering.
+        def _needs_segmentation(cdir: Path) -> bool:
+            if args.force_segmentation:
+                return True
+            seg_dcm = cdir / "TotalSegmentator_DICOM" / "segmentations.dcm"
+            if seg_dcm.exists():
+                return False
+            nifti_dir = cdir / "TotalSegmentator_NIFTI"
+            try:
+                if nifti_dir.exists() and any(nifti_dir.glob("*.nii*")):
+                    return False
+            except Exception:
+                pass
+            return True
+        seg_courses = [c for c in courses if _needs_segmentation(c.dir)]
+        total_seg = len(seg_courses)
         if total_seg:
             t0 = time()
-            for i, c in enumerate(courses, start=1):
+            for i, c in enumerate(seg_courses, start=1):
                 segment_course(cfg, c.dir, force=args.force_segmentation)
                 elapsed = time() - t0
                 rate = i / elapsed if elapsed > 0 else 0
@@ -247,7 +263,10 @@ def main(argv: list[str] | None = None) -> int:
                     rate = done / elapsed if elapsed > 0 else 0
                     eta = (total - done) / rate if rate > 0 else float('inf')
                     logging.info("%s: %d/%d (%.0f%%) elapsed %.0fs ETA %.0fs", label, done, total, 100*done/total, elapsed, eta)
-        _run_pool("Build RS_auto", courses, lambda c: build_auto_rtstruct(c.dir))
+        rs_items = courses
+        if cfg.resume:
+            rs_items = [c for c in courses if not (c.dir / "RS_auto.dcm").exists()]
+        _run_pool("Build RS_auto", rs_items, lambda c: build_auto_rtstruct(c.dir))
         # Run default MR model 'total_mr' and additional MR models if requested
         segment_extra_models_mr(cfg, force=args.force_segmentation)
 
@@ -277,7 +296,10 @@ def main(argv: list[str] | None = None) -> int:
                     eta = (total - done) / rate if rate > 0 else float('inf')
                     logging.info("%s: %d/%d (%.0f%%) elapsed %.0fs ETA %.0fs", label, done, total, 100*done/total, elapsed, eta)
             return results
-        _run_pool("DVH", courses, _dvh)
+        dvh_items = courses
+        if cfg.resume:
+            dvh_items = [c for c in courses if not (c.dir / "dvh_metrics.xlsx").exists()]
+        _run_pool("DVH", dvh_items, _dvh)
 
     # 4) Visualization
     if cfg.do_visualize:
@@ -302,7 +324,12 @@ def main(argv: list[str] | None = None) -> int:
                     rate = done / elapsed if elapsed > 0 else 0
                     eta = (total - done) / rate if rate > 0 else float('inf')
                     logging.info("%s: %d/%d (%.0f%%) elapsed %.0fs ETA %.0fs", label, done, total, 100*done/total, elapsed, eta)
-        _run_pool("Visualization", courses, _both)
+        viz_items = courses
+        if cfg.resume:
+            def _viz_done(c):
+                return (c.dir / "DVH_Report.html").exists() and (c.dir / "Axial.html").exists()
+            viz_items = [c for c in courses if not _viz_done(c)]
+        _run_pool("Visualization", viz_items, _both)
 
     # 5) Radiomics (CT courses and MR series)
     if cfg.do_radiomics:

@@ -72,6 +72,16 @@ CLI Usage
     - MR: `_mr` tasks per MR series into `outdir/<PatientID>/MR_<SeriesInstanceUID>/TotalSegmentator_<MODEL>_{DICOM,NIFTI}/`.
   - `--totalseg-fast` to add `--fast` (recommended on CPU), `--totalseg-roi-subset roi1,roi2` to restrict ROIs
   - `doctor` subcommand: `rtpipeline doctor` prints environment checks and bundled dcm2niix fallbacks
+  - `--resume` to skip per-course steps that already produced outputs (idempotent resume)
+
+Resuming
+- Use `--resume` to continue after an interruption. The pipeline will skip per-course work when key outputs already exist:
+  - Segmentation: skipped if `TotalSegmentator_DICOM/segmentations.dcm` or `TotalSegmentator_NIFTI/*.nii*` exists (unless `--force-segmentation`).
+  - RS_auto: skipped if `RS_auto.dcm` exists.
+  - DVH: skipped if `dvh_metrics.xlsx` exists.
+  - Visualization: skipped if both `DVH_Report.html` and `Axial.html` exist.
+  - Radiomics: skipped if `radiomics_features_CT.xlsx` (CT courses) or `radiomics_features_MR.xlsx` (MR series) exists.
+  - MR extra models honor existing outputs in their directories.
 
 Outputs
 - Per patient: `outdir/<patient_id>/course_<course_key>/`
