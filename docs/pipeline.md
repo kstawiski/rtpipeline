@@ -17,9 +17,11 @@
 - Writes `case_metadata.{json,xlsx}` including clinical/research fields (see docs/metadata.md).
 
 ## 4) Segmentation (optional)
-- Default CT model: runs TotalSegmentator "total" per course (DICOM and NIfTI outputs). This is always performed when segmentation is enabled.
-- Extra CT models: specify with `--extra-seg-models` (only tasks without `_mr` suffix); outputs saved in each course directory as `TotalSegmentator_<MODEL>_{DICOM,NIFTI}/`.
-- MR models: specify with `--extra-seg-models` (tasks ending with `_mr`); the pipeline scans MR series under `--dicom-root` and saves results under `outdir/<PatientID>/MR_<SeriesInstanceUID>/TotalSegmentator_<MODEL>_{DICOM,NIFTI}/`.
+- Default CT: runs TotalSegmentator "total" per course (DICOM and NIfTI outputs).
+- Default MR: runs `total_mr` for each MR series found under `--dicom-root`.
+- Extra models: specify additional tasks with `--extra-seg-models`.
+  - CT: tasks without `_mr` suffix; outputs saved in each course directory as `TotalSegmentator_<MODEL>_{DICOM,NIFTI}/`.
+  - MR: tasks ending with `_mr`; outputs under `outdir/<PatientID>/MR_<SeriesInstanceUID>/TotalSegmentator_<MODEL>_{DICOM,NIFTI}/`.
 - Resume-safe: reuses outputs. Use `--force-segmentation` to redo.
 - Builds `RS_auto.dcm` from DICOM-SEG or NIfTI aligned to `CT_DICOM` (used for DVH).
 
@@ -31,3 +33,13 @@
 - `DVH_Report.html`: Interactive Plotly DVH.
 - `Axial.html`: axial CT viewer with togglable overlays for manual/auto ROIs.
  - MR series are not visualized by default.
+
+## 7) Radiomics (optional)
+- If pyradiomics is installed, extracts radiomics features:
+  - CT courses: manual RS and AutoRTS_total (RS_auto) → `radiomics_features_CT.xlsx`
+  - MR series: manual MR RTSTRUCT (if available) and TotalSegmentator `total_mr` outputs → `radiomics_features_MR.xlsx`
+- Disable with `--no-radiomics`.
+- Use `--radiomics-params PATH` to pass a custom YAML parameter file.
+- MRI normalization toggles automatically based on detected weighting:
+  - T2-weighted: normalization disabled
+  - T1-weighted: normalization enabled

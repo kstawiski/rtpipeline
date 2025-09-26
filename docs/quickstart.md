@@ -57,6 +57,20 @@ rtpipeline ... --totalseg-license YOUR_KEY --totalseg-fast --totalseg-roi-subset
 ```bash
 rtpipeline doctor --logs ./Logs
 ```
+
+## Optional: radiomics
+
+Install pyradiomics from GitHub:
+
+```bash
+pip install git+https://github.com/AIM-Harvard/pyradiomics
+```
+
+Radiomics outputs:
+- CT courses → `radiomics_features_CT.xlsx`
+- MR series (with manual RS or `total_mr` seg) → `radiomics_features_MR.xlsx`
+
+Disable with `--no-radiomics`.
 - Parallel workers (non-segmentation phases):
 
 ```bash
