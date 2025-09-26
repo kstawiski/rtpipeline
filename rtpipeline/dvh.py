@@ -27,6 +27,15 @@ try:
     _muid = _types.ModuleType('dicom.uid')
     _muid.UID = _pyd.uid.UID
     _sys.modules['dicom.uid'] = _muid
+    # Patch pydicom.filewriter API expected by older libs
+    try:
+        import pydicom.filewriter as _fw
+        if not hasattr(_fw, 'validate_file_meta'):
+            def validate_file_meta(*args, **kwargs):  # type: ignore
+                return True
+            _fw.validate_file_meta = validate_file_meta  # type: ignore[attr-defined]
+    except Exception:
+        pass
 except (ImportError, AttributeError) as e:
     logger.warning("Failed to set up dicompyler-core compatibility: %s", e)
 except Exception as e:
@@ -34,6 +43,30 @@ except Exception as e:
 
 try:
     from dicompylercore import dvhcalc
+    # Patch missing validate_file_meta into dicompyler-core modules for pydicom>=3
+    try:
+        import sys as _sys2, types as _types2, pydicom as _pyd2
+        import pydicom.filewriter as _fw2
+        if not hasattr(_fw2, 'validate_file_meta'):
+            def _validate_file_meta(*args, **kwargs):  # type: ignore
+                return True
+            _fw2.validate_file_meta = _validate_file_meta  # type: ignore[attr-defined]
+        # Also expose via builtins for modules that reference it unqualified
+        try:
+            import builtins as _bi
+            if not hasattr(_bi, 'validate_file_meta'):
+                _bi.validate_file_meta = _fw2.validate_file_meta  # type: ignore[attr-defined]
+        except Exception:
+            pass
+        for _name, _mod in list(_sys2.modules.items()):
+            if _name and _name.startswith('dicompylercore') and hasattr(_mod, '__dict__'):
+                if 'validate_file_meta' not in _mod.__dict__:
+                    try:
+                        _mod.validate_file_meta = _fw2.validate_file_meta  # type: ignore[attr-defined]
+                    except Exception:
+                        pass
+    except Exception:
+        pass
 except ImportError as e:
     logger.error("Failed to import dicompylercore: %s. Install with: pip install dicompyler-core", e)
     raise

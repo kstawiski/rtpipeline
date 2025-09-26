@@ -70,7 +70,13 @@ def patch_numpy_bool():
     
     # Only patch if NumPy < 2.0 and bool doesn't exist as an attribute
     if numpy_version < (2, 0):
-        if not hasattr(np, 'bool'):
+        # Suppress FutureWarning when checking for np.bool existence
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", FutureWarning)
+            has_bool = hasattr(np, 'bool')
+        
+        if not has_bool:
             # Create bool alias pointing to bool_
             np.bool = np.bool_
             print(f"Applied NumPy bool compatibility alias for NumPy {np.__version__}")

@@ -36,6 +36,7 @@ rtpipeline doctor [--logs PATH] [--conda-activate CMD] [--dcm2niix NAME] [--tota
 - `--totalseg-fast`  Adds `--fast` to TotalSegmentator calls (recommended on CPU).
 - `--totalseg-roi-subset LIST`  Passes `--roi_subset LIST` to TotalSegmentator (comma-separated ROI names).
 - `--workers N`  Number of parallel workers for non-segmentation phases (organize, DVH, visualization, metadata). Default: auto.
+- `--resume`  Resume mode: skip per-course steps with existing outputs (idempotent).
 
 Note: `dcm2niix` is an external CLI (not installed via pip). If it is not available, NIfTI conversion is skipped and the pipeline continues with DICOM-mode segmentation only.
 
@@ -46,6 +47,14 @@ Note: `dcm2niix` is an external CLI (not installed via pip). If it is not availa
   - DVH (per-course)
   - Visualization (per-course)
   - Segmentation phases print progress as they complete (sequential by design)
+
+## Resuming
+- Use `--resume` to continue after an interruption. The CLI skips work when outputs already exist:
+  - Segmentation: `TotalSegmentator_DICOM/segmentations.dcm` or `TotalSegmentator_NIFTI/*.nii*`
+  - RS_auto: `RS_auto.dcm`
+  - DVH: `dvh_metrics.xlsx`
+  - Visualization: both `DVH_Report.html` and `Axial.html`
+  - Radiomics: `radiomics_features_CT.xlsx` (CT) and `radiomics_features_MR.xlsx` (MR series)
 
 ## Doctor
 - `rtpipeline doctor` prints environment diagnostics:

@@ -18,6 +18,8 @@ class PipelineConfig:
     do_dvh: bool = True
     do_visualize: bool = True
     do_radiomics: bool = True
+    # Resume mode
+    resume: bool = False
 
     # External tools (segmentation)
     conda_activate: str | None = None  # e.g. "source ~/miniconda3/etc/profile.d/conda.sh && conda activate rt"
