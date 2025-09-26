@@ -5,11 +5,12 @@
 - NIfTI: `TotalSegmentator_NIFTI/` with label maps.
 
 ## Models
-- The pipeline always runs the default TotalSegmentator "total" model for CT courses and does not modify that behavior.
+- Default CT: always runs TotalSegmentator "total" per course.
+- Default MR: when MR series are present under `--dicom-root`, runs `total_mr` for each MR series.
 - You can additionally request other models using `--extra-seg-models`.
   - CT: only models without `_mr` suffix are run per course (`TotalSegmentator_<MODEL>_{DICOM,NIFTI}/`).
-  - MR: only models with `_mr` suffix are run per MR series under `--dicom-root` (`<outdir>/<PatientID>/MR_<SeriesInstanceUID>/TotalSegmentator_<MODEL>_{DICOM,NIFTI}/`).
-  - Tip: choose models that match the modality (e.g., `total_mr`, `body_mr`, `vertebrae_mr` for MR; `lung_vessels`, `body`, `cerebral_bleed` for CT).
+  - MR: models with `_mr` suffix are run per MR series (`<outdir>/<PatientID>/MR_<SeriesInstanceUID>/TotalSegmentator_<MODEL>_{DICOM,NIFTI}/`).
+  - Tip: choose models that match the modality (e.g., `body_mr`, `vertebrae_mr` for MR; `lung_vessels`, `body`, `cerebral_bleed` for CT).
 
 ## Resume and force
 - Default: If DICOM or NIfTI outputs exist, segmentation is skipped.

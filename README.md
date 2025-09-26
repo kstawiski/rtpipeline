@@ -48,9 +48,10 @@ CLI Usage
   - `--conda-activate "source ~/miniconda3/etc/profile.d/conda.sh && conda activate rt"` to run dcm2niix/TotalSegmentator from a conda env
   - `--dcm2niix`, `--totalseg` to override command names
   - `--totalseg-license KEY` to pass a license key when required
-  - `--extra-seg-models model1,model2` to run additional TotalSegmentator tasks (besides the default 'total').
-    - CT: tasks without `_mr` suffix run for each CT course into `TotalSegmentator_<MODEL>_{DICOM,NIFTI}/`.
-    - MR: tasks ending in `_mr` run for each MR series found under `--dicom-root` into `outdir/<PatientID>/MR_<SeriesInstanceUID>/TotalSegmentator_<MODEL>_{DICOM,NIFTI}/`.
+  - Default segmentation: `total` (CT courses) and `total_mr` (MR series under `--dicom-root`).
+  - `--extra-seg-models model1,model2` to run additional TotalSegmentator tasks.
+    - CT: non-`_mr` tasks per course into `TotalSegmentator_<MODEL>_{DICOM,NIFTI}/`.
+    - MR: `_mr` tasks per MR series into `outdir/<PatientID>/MR_<SeriesInstanceUID>/TotalSegmentator_<MODEL>_{DICOM,NIFTI}/`.
   - `--totalseg-fast` to add `--fast` (recommended on CPU), `--totalseg-roi-subset roi1,roi2` to restrict ROIs
   - `doctor` subcommand: `rtpipeline doctor` prints environment checks and bundled dcm2niix fallbacks
 
@@ -61,9 +62,11 @@ Outputs
   - `nifti/` (from dcm2niix), `TotalSegmentator_{DICOM,NIFTI}/` (if segmentation enabled)
   - `RS_auto.dcm` (auto-generated RTSTRUCT from TotalSegmentator for DVH)
   - `dvh_metrics.xlsx` (includes IntegralDose, D1ccGy, V95%Rx, V100%Rx, …) and `DVH_Report.html` (interactive Plotly DVH)
-  - `Axial.html` (scrollable axial CT QA viewer with manual/auto overlays)
-  - `case_metadata.json` and `case_metadata.xlsx` (per-course clinical/research metadata)
+- `Axial.html` (scrollable axial CT QA viewer with manual/auto overlays)
+- `case_metadata.json` and `case_metadata.xlsx` (per-course clinical/research metadata)
+- `radiomics_features_CT.xlsx` (pyradiomics features on CT for manual RS and RS_auto, if pyradiomics installed)
 - MR series (when extra MR models requested): `outdir/<patient_id>/MR_<SeriesInstanceUID>/TotalSegmentator_<MODEL>_{DICOM,NIFTI}/`
+  - plus `radiomics_features_MR.xlsx` (pyradiomics features on MR for manual RS and TotalSegmentator total_mr, if available)
 
 Course Merging Logic
 - By default, plans/doses are merged only if they refer to the same CT StudyInstanceUID. This captures primary+boost on the same CT and prevents merging subsequent treatments planned on a new CT (e.g., progression SBRT).
@@ -76,6 +79,7 @@ Notes
 - dcm2niix is optional; if missing, DICOM‑mode segmentation still runs and NIfTI segmentation is skipped.
 - DVH uses dicompyler-core and includes both manual RTSTRUCT and auto RTSTRUCT (RS_auto.dcm) when present. Manual prescribed dose is estimated from CTV1 D95 if present, else defaults to 50 Gy.
  - Segmentation is resume-safe (reused if present). Use `--force-segmentation` to re-run.
+ - Radiomics (optional): Install pyradiomics via `pip install git+https://github.com/AIM-Harvard/pyradiomics`. Disable with `--no-radiomics`. Provide a custom YAML via `--radiomics-params PATH`. MRI normalization toggles based on detected weighting (T2: off, T1: on).
 
 Documentation
 - See docs/ for detailed guides:

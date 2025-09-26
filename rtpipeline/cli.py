@@ -27,6 +27,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--force-segmentation", action="store_true", help="Re-run TotalSegmentator even if outputs exist")
     p.add_argument("--no-dvh", action="store_true", help="Skip DVH computation")
     p.add_argument("--no-visualize", action="store_true", help="Skip HTML visualization")
+    p.add_argument("--no-radiomics", action="store_true", help="Skip pyradiomics extraction")
+    p.add_argument("--radiomics-params", default=None, help="Path to custom pyradiomics YAML parameter file")
     p.add_argument("--no-metadata", action="store_true", help="Skip XLSX metadata extraction")
     p.add_argument("--conda-activate", default=None, help="Prefix shell with conda activate (segmentation)")
     p.add_argument("--dcm2niix", default="dcm2niix", help="dcm2niix command name")
@@ -135,6 +137,7 @@ def main(argv: list[str] | None = None) -> int:
         do_segmentation=not args.no_segmentation,
         do_dvh=not args.no_dvh,
         do_visualize=not args.no_visualize,
+        do_radiomics=not args.no_radiomics,
         conda_activate=args.conda_activate,
         dcm2niix_cmd=args.dcm2niix,
         totalseg_cmd=args.totalseg,
@@ -143,6 +146,7 @@ def main(argv: list[str] | None = None) -> int:
         totalseg_fast=args.totalseg_fast,
         totalseg_roi_subset=args.totalseg_roi_subset,
         workers=args.workers,
+        radiomics_params_file=Path(args.radiomics_params).resolve() if args.radiomics_params else None,
     )
     # Ensure directories and also route logs to a file for traceability
     try:
@@ -194,9 +198,8 @@ def main(argv: list[str] | None = None) -> int:
                     eta = (total - done) / rate if rate > 0 else float('inf')
                     logging.info("%s: %d/%d (%.0f%%) elapsed %.0fs ETA %.0fs", label, done, total, 100*done/total, elapsed, eta)
         _run_pool("Build RS_auto", courses, lambda c: build_auto_rtstruct(c.dir))
-        # If extra models were requested, also run them for MR series found in dicom_root
-        if cfg.extra_seg_models:
-            segment_extra_models_mr(cfg, force=args.force_segmentation)
+        # Run default MR model 'total_mr' and additional MR models if requested
+        segment_extra_models_mr(cfg, force=args.force_segmentation)
 
     # 3) DVH per course
     if cfg.do_dvh:
@@ -251,7 +254,15 @@ def main(argv: list[str] | None = None) -> int:
                     logging.info("%s: %d/%d (%.0f%%) elapsed %.0fs ETA %.0fs", label, done, total, 100*done/total, elapsed, eta)
         _run_pool("Visualization", courses, _both)
 
-    # 5) Merge DVH metrics across all courses (if any)
+    # 5) Radiomics (CT courses and MR series)
+    if cfg.do_radiomics:
+        try:
+            from .radiomics import run_radiomics  # lazy import
+            run_radiomics(cfg, courses)
+        except Exception as e:
+            logging.getLogger(__name__).warning("Radiomics failed: %s", e)
+
+    # 6) Merge DVH metrics across all courses (if any)
     try:
         import pandas as _pd
         merged = []
@@ -273,7 +284,7 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as e:
         logging.getLogger(__name__).warning("Failed to write merged DVH metrics: %s", e)
 
-    # 6) Merge per-case metadata across all courses (if any)
+    # 7) Merge per-case metadata across all courses (if any)
     try:
         import json as _json
         import pandas as _pd

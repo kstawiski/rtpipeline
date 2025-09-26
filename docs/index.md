@@ -18,6 +18,7 @@ rtpipeline is a DICOM‑RT processing pipeline that:
 - DVH metrics: Computed via dicompyler‑core from RD/RP for both manual RS and RS_auto.
 - Viewers: DVH (Plotly) + Axial CT viewer with overlays to visually verify segmentation quality.
 - MR handling: MR images are not part of RT “courses” or DVH, but you can run MR‑specific TotalSegmentator models (tasks ending with `_mr`) across all MR series in `--dicom-root`; outputs are organized by patient and SeriesInstanceUID.
+ - Radiomics: Optional pyradiomics extraction on CT (manual/auto) and MR (manual/total_mr), saved as per‑course or per‑series workbooks.
 
 Tip: Use `rtpipeline doctor` to check tools and whether bundled `dcm2niix` fallbacks are available.
 
