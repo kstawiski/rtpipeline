@@ -1,0 +1,106 @@
+# =================================================================================================
+# Comprehensive and Recommended pyRadiomics Parameter File
+#
+# This configuration is based on a synthesis of validation studies, prioritizing features 
+# with high stability (ICC > 0.75) and implementing best practices for pre-processing.
+# =================================================================================================
+
+setting:
+  # ----------------------------------------------------------
+  # Image Pre-processing and Harmonization
+  # ----------------------------------------------------------
+  
+  # Resampling to a common isotropic spacing is crucial for making texture features
+  # rotationally invariant and independent of acquisition slice thickness [2-4].
+  resampledPixelSpacing: [1.0, 1.0, 1.0]
+  
+  # B-spline interpolation is generally recommended for its accuracy in preserving image information [2, 4-6].
+  interpolator: 'sitkBSpline'
+  
+  # Z-score normalization standardizes intensity values across subjects/scanners [2, 5, 7].
+  # NOTE: Should be set to 'false' for T2-weighted MRI to avoid contrast degradation [8, 9].
+  normalize: True
+  
+  # Includes detailed provenance information in the output, which is essential for reproducibility [10, 11].
+  additionalInfo: True
+  
+  # Default padding distance for ensuring kernels are fully contained, typically 10 for IBSI compliance [4, 12].
+  padDistance: 10
+  
+  # Set to 'false' for stricter IBSI compliance, as it avoids pyRadiomics attempting to resample the mask [4].
+  correctMask: false
+  
+  # Default tolerance for geometry checks [5].
+  geometryTolerance: 1e-5
+
+  # ----------------------------------------------------------
+  # Intensity Discretization (Gray Level Binning)
+  # ----------------------------------------------------------
+  
+  # A fixed bin width is generally more robust for multi-center or multi-modal studies [2, 13, 14].
+  # 25 is a common starting point for CT (HU) applications [5, 15].
+  binWidth: 25
+  
+  # Alternative for specific modalities: uncomment binCount for MRI or if strict IBSI alignment is prioritized [4, 16].
+  # binCount: 64 # Recommended for MRI applications [7, 17].
+  # binWidth: 0.5 # Recommended for PET applications (SUV) [7, 15].
+  
+  # ----------------------------------------------------------
+  # ROI Constraints (Quality Control)
+  # ----------------------------------------------------------
+  
+  # Ensures features are calculated only for true 3D ROIs [2, 4, 5].
+  minimumROIDimensions: 3
+  
+  # Prevents feature extraction from very small ROIs where texture statistics would be unstable [2, 4, 5].
+  minimumROISize: 100
+  
+  # Standard neighbor distance for texture matrices [15].
+  distances: [18]
+  
+  # Use C-extensions for faster computation [5].
+  enableCExtensions: True
+
+# ============================================================
+# Enabled Image Types (`imageType`): Filter Selection
+# Prioritizes powerful, validated multi-scale filters [3, 4].
+# ============================================================
+imageType:
+  # Essential baseline [11].
+  Original: {}
+
+  Wavelet:
+    # Wavelet features often yield the most powerful predictors, characterizing tumor heterogeneity across resolutions [19, 20].
+    # Biorthogonal 1.1 provides optimal performance validation [4], or 'coif1' is also a robust option [11].
+    wavelet: 'bior1.1'
+    # IBSI guidelines explicitly recommend single-level decomposition to prevent noise amplification [4, 21].
+    levels: 1
+    start_level: 0
+    
+  LoG:
+    # Laplacian of Gaussian probes texture at specific physical scales (sigma in mm) [22, 23].
+    # This multi-scale approach (1.0, 3.0, 5.0) is recommended to capture lesion characteristics across scales [4, 17, 23].
+    sigma: [1.0, 3.0, 5.0]
+    
+  # Other specialized filters (Square, LBP, Gradient) are disabled by default to encourage a hypothesis-driven workflow [3, 11].
+  # Square: {}
+  # Gradient: {}
+
+# ============================================================
+# Enabled Feature Classes (`featureClass`):
+# All feature classes are enabled to allow comprehensive filtering after extraction [11].
+# ============================================================
+featureClass:
+  shape: [] # Shape features are highly robust (Tier 1) [24, 25].
+  firstorder: [] # First-order features like Mean, Median, and Entropy are exceptionally stable (Tier 1) [24, 26].
+  glcm: [] # Gray Level Co-occurrence Matrix (Tier 2 stability) [25].
+  glrlm: [] # Gray Level Run Length Matrix (Tier 3 stability) [27].
+  glszm: [] # Gray Level Size Zone Matrix (Tier 3 stability) [27].
+  gldm: [] # Gray Level Dependence Matrix (Low to Moderate stability) [24].
+  ngtdm: []
+  # WARNING: NGTDM features consistently show poor stability (ICC < 0.75 in >60% of studies) and should be excluded 
+  # post-extraction unless specifically validated [24, 27].
+  
+  # WARNING: Post-extraction, features must be filtered. A 'robustness-first' approach requires removing all features 
+  # with stability (ICC) < 0.75 before model building [1]. Features mathematically confounded by ROI volume, 
+  # such as Energy and RMS, should also be used with extreme caution [24, 27, 28].

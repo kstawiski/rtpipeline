@@ -17,6 +17,7 @@ class PipelineConfig:
     do_segmentation: bool = True
     do_dvh: bool = True
     do_visualize: bool = True
+    do_radiomics: bool = True
 
     # External tools (segmentation)
     conda_activate: str | None = None  # e.g. "source ~/miniconda3/etc/profile.d/conda.sh && conda activate rt"
@@ -33,6 +34,9 @@ class PipelineConfig:
 
     # Concurrency
     workers: int | None = None  # None => auto (min(8, os.cpu_count() or 4))
+
+    # Radiomics
+    radiomics_params_file: Path | None = None
 
     def ensure_dirs(self) -> None:
         self.output_root.mkdir(parents=True, exist_ok=True)

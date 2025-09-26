@@ -153,6 +153,12 @@ def run_totalsegmentator(config: PipelineConfig, inp: Path, out_dir: Path, out_t
     if config.totalseg_license_key:
         env.setdefault("TOTALSEG_LICENSE", config.totalseg_license_key)
         env.setdefault("TOTALSEGMENTATOR_LICENSE", config.totalseg_license_key)
+    # Encourage CPU usage when --fast is requested
+    if config.totalseg_fast:
+        env.setdefault("TOTALSEG_FORCE_CPU", "1")
+        env.setdefault("TOTALSEGMENTATOR_FORCE_CPU", "1")
+        # Hide GPUs from PyTorch to prevent CUDA init on CPU-only runs
+        env.setdefault("CUDA_VISIBLE_DEVICES", "")
     extra_flags = []
     if config.totalseg_fast:
         extra_flags.append("--fast")
@@ -295,8 +301,9 @@ def segment_extra_models_mr(config: PipelineConfig, force: bool = False) -> None
     series = _scan_mr_series(config.dicom_root)
     if not series:
         return
-    # Only models ending with _mr are considered for MR
-    models_mr = [m for m in (config.extra_seg_models or []) if m.endswith("_mr")]
+    # Default MR task 'total_mr' is always included; add any extra _mr models
+    models_mr = set(m for m in (config.extra_seg_models or []) if m.endswith("_mr"))
+    models_mr.add("total_mr")
     if not models_mr:
         return
     total = len(series) * len(models_mr)
@@ -307,7 +314,7 @@ def segment_extra_models_mr(config: PipelineConfig, force: bool = False) -> None
     done = 0
     for pid, suid, sdir in series:
         base_out = config.output_root / (pid or "unknown") / f"MR_{suid}"
-        for model in models_mr:
+        for model in sorted(models_mr):
             # DICOM output
             out_d = base_out / f"TotalSegmentator_{model}_DICOM"
             if force or not (out_d.exists() and any(out_d.glob("*.dcm"))):

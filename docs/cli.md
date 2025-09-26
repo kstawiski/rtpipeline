@@ -23,6 +23,8 @@ rtpipeline doctor [--logs PATH] [--conda-activate CMD] [--dcm2niix NAME] [--tota
 - `--force-segmentation` Re-run TotalSegmentator even if outputs exist.
 - `--no-dvh`          Skip DVH computation.
 - `--no-visualize`    Skip HTML reports (DVH + Axial viewer).
+- `--no-radiomics`    Skip pyradiomics extraction.
+- `--radiomics-params PATH`  Use a custom pyradiomics YAML parameter file instead of the packaged defaults.
 
 ## Environment
 - `--conda-activate CMD`  Prefix segmentation commands (e.g. activate env).
@@ -51,6 +53,27 @@ Note: `dcm2niix` is an external CLI (not installed via pip). If it is not availa
   - Presence of `dcm2niix` and `TotalSegmentator` in PATH (unless `--conda-activate` is provided)
   - Availability of bundled `rtpipeline/ext/dcm2niix_*.zip` inside the package (used as fallback)
   - Whether NIfTI conversion will fallback to bundled dcm2niix or be skipped
+
+## Progress & ETA
+- The CLI reports progress and estimated time remaining for long-running phases:
+  - Organize (per-course)
+  - Build RS_auto (after segmentation)
+  - DVH (per-course)
+  - Visualization (per-course)
+  - Segmentation phases print progress as they complete (sequential by design)
+
+## Radiomics
+- The pipeline can compute pyradiomics features for:
+  - CT courses: manual RS (RS.dcm) and AutoRTS_total (RS_auto.dcm) → `radiomics_features_CT.xlsx`
+  - MR series: manual MR RTSTRUCT (if available) and TotalSegmentator `total_mr` outputs → `radiomics_features_MR.xlsx`
+- Install pyradiomics from GitHub:
+
+```
+pip install git+https://github.com/AIM-Harvard/pyradiomics
+```
+
+- Disable via `--no-radiomics`.
+- You can provide a custom parameter file via `--radiomics-params PATH`.
 
 ## Outputs (per course)
 - `RP.dcm`, `RD.dcm`, `RS.dcm` (if present)
