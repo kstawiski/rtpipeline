@@ -166,6 +166,10 @@ def _rtstruct_masks(dicom_series_path: Path, rs_path: Path) -> Dict[str, np.ndar
 
 def radiomics_for_course(config: PipelineConfig, course_dir: Path) -> Optional[Path]:
     """Run pyradiomics on CT course with manual RS and RS_auto if present."""
+    # Resume-friendly: skip if output exists
+    out_path = course_dir / 'radiomics_features_CT.xlsx'
+    if getattr(config, 'resume', False) and out_path.exists():
+        return out_path
     extractor = _extractor(config, 'CT')
     if extractor is None:
         return None
@@ -206,7 +210,7 @@ def radiomics_for_course(config: PipelineConfig, course_dir: Path) -> Optional[P
     try:
         import pandas as pd
         df = pd.DataFrame(rows)
-        out = course_dir / 'radiomics_features_CT.xlsx'
+        out = out_path
         df.to_excel(out, index=False)
         return out
     except Exception as e:
@@ -314,6 +318,9 @@ def radiomics_for_mr_series(config: PipelineConfig, series: MRSeries) -> Optiona
         logger.info("No MR image for radiomics in %s", series.dir)
         return None
     out_root = config.output_root / series.patient_id / f"MR_{series.series_uid}"
+    out_feat = out_root / 'radiomics_features_MR.xlsx'
+    if getattr(config, 'resume', False) and out_feat.exists():
+        return out_feat
     out_root.mkdir(parents=True, exist_ok=True)
     rows: List[Dict] = []
     # Manual MR RS (if any)
@@ -403,7 +410,7 @@ def radiomics_for_mr_series(config: PipelineConfig, series: MRSeries) -> Optiona
     try:
         import pandas as pd
         df = pd.DataFrame(rows)
-        out = out_root / 'radiomics_features_MR.xlsx'
+        out = out_feat
         df.to_excel(out, index=False)
         return out
     except Exception as e:
