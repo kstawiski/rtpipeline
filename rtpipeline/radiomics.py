@@ -18,11 +18,18 @@ logger = logging.getLogger(__name__)
 
 
 def _have_pyradiomics() -> bool:
+    """Check if pyradiomics is available and properly installed."""
     try:
         import radiomics  # noqa: F401
+        from radiomics import featureextractor  # noqa: F401
         return True
+    except ImportError:
+        logger.info("pyradiomics not available. Install with: pip install pyradiomics")
+        logger.info("Or install rtpipeline with radiomics support: pip install -e '.[radiomics]'")
+        return False
     except Exception as e:
-        logger.warning("pyradiomics not available: %s", e)
+        logger.warning("pyradiomics import failed (possibly Python version compatibility): %s", e)
+        logger.info("Try using Python 3.11: conda create -n rtpipeline python=3.11")
         return False
 
 
@@ -48,26 +55,50 @@ def _resample_to_reference(img: sitk.Image, ref: sitk.Image, nn: bool = True) ->
 
 
 def _mask_from_array_like(ct_img: sitk.Image, mask3d: np.ndarray) -> sitk.Image:
-    m = sitk.GetImageFromArray(mask3d.astype(np.uint8))
+    # Radiomics expects a label image with same geometry as ct_img.
+    # SimpleITK GetImageFromArray expects [z,y,x] order. rt-utils may return [y,x,z].
+    sx, sy, sz = ct_img.GetSize()
+    zyx = mask3d
+    if mask3d.shape == (sz, sy, sx):
+        zyx = mask3d
+    elif mask3d.shape == (sy, sx, sz):
+        zyx = np.transpose(mask3d, (2, 0, 1))
+    elif mask3d.shape == (sx, sy, sz):
+        zyx = np.transpose(mask3d, (2, 1, 0))
+    m = sitk.GetImageFromArray(zyx.astype(np.uint8))
     m.SetSpacing(ct_img.GetSpacing())
     m.SetDirection(ct_img.GetDirection())
     m.SetOrigin(ct_img.GetOrigin())
     return m
 
 
-def _load_params_yaml(config: PipelineConfig | None) -> Optional[dict]:
+def _get_params_file(config: PipelineConfig | None) -> Optional[Path]:
+    """Return a filesystem path to a radiomics params YAML.
+    Prefers user-provided file; else copies packaged defaults into logs_root for reuse.
+    """
     try:
-        # Prefer user-provided file if present
-        if config and config.radiomics_params_file:
-            pth = Path(config.radiomics_params_file)
-            if pth.exists():
-                return yaml.safe_load(pth.read_text(encoding='utf-8'))
-        # Fallback to packaged file
-        p = importlib_resources.files('rtpipeline').joinpath('radiomics_params.yaml')
-        if p.is_file():
-            return yaml.safe_load(p.read_bytes())
+        if config and config.radiomics_params_file and Path(config.radiomics_params_file).exists():
+            return Path(config.radiomics_params_file)
+        # Copy packaged file to logs_root for stable path
+        packaged = importlib_resources.files('rtpipeline').joinpath('radiomics_params.yaml')
+        if packaged.is_file():
+            target_root = config.logs_root if (config and config.logs_root) else Path('.')
+            target_root.mkdir(parents=True, exist_ok=True)
+            out = Path(target_root) / 'radiomics_params.yaml'
+            try:
+                out.write_bytes(packaged.read_bytes())
+            except Exception:
+                # Fallback: return a temp-like path via as_file context
+                try:
+                    from importlib.resources import as_file
+                except Exception:
+                    as_file = None  # type: ignore
+                if as_file is not None:
+                    with as_file(packaged) as p:
+                        return Path(p)
+            return out
     except Exception as e:
-        logger.warning("Failed to load radiomics params YAML: %s", e)
+        logger.warning("Failed to prepare radiomics params file: %s", e)
     return None
 
 
@@ -76,9 +107,9 @@ def _extractor(config: PipelineConfig, modality: str = 'CT', normalize_override:
         return None
     from radiomics.featureextractor import RadiomicsFeatureExtractor
     try:
-            params = _load_params_yaml(config)
-            if params is not None:
-                ext = RadiomicsFeatureExtractor(**params)
+            pfile = _get_params_file(config)
+            if pfile is not None:
+                ext = RadiomicsFeatureExtractor(parameterFile=str(pfile))
             else:
                 ext = RadiomicsFeatureExtractor()
             # Adjust per-modality recommendations
@@ -111,7 +142,16 @@ def _rtstruct_masks(dicom_series_path: Path, rs_path: Path) -> Dict[str, np.ndar
         rt = RTStructBuilder.create_from(dicom_series_path=str(dicom_series_path), rt_struct_path=str(rs_path))
         out: Dict[str, np.ndarray] = {}
         for name in rt.get_roi_names():
-            mask = rt.get_mask_for_roi(name)
+            mask = None
+            try:
+                if hasattr(rt, 'get_mask_for_roi'):
+                    mask = rt.get_mask_for_roi(name)
+                elif hasattr(rt, 'get_roi_mask'):
+                    mask = rt.get_roi_mask(name)  # alternative API name
+                elif hasattr(rt, 'get_roi_mask_by_name'):
+                    mask = rt.get_roi_mask_by_name(name)
+            except Exception:
+                mask = None
             if mask is None:
                 continue
             if mask.dtype != np.bool_:
@@ -134,26 +174,33 @@ def radiomics_for_course(config: PipelineConfig, course_dir: Path) -> Optional[P
         logger.info("No CT image for radiomics in %s", course_dir)
         return None
     rows: List[Dict] = []
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    tasks = []
     for source, rs_name in (("Manual", "RS.dcm"), ("AutoRTS_total", "RS_auto.dcm")):
         rs_path = course_dir / rs_name
         if not rs_path.exists():
             continue
         masks = _rtstruct_masks(course_dir / 'CT_DICOM', rs_path)
         for roi, mask in masks.items():
-            try:
-                m_img = _mask_from_array_like(img, mask)
-                res = extractor.execute(img, m_img)
-                rec = {k: (float(v) if isinstance(v, (int, float, np.floating)) else str(v)) for k, v in res.items()}
-                rec.update({
-                    'modality': 'CT',
-                    'segmentation_source': source,
-                    'roi_name': roi,
-                    'course_dir': str(course_dir),
-                })
-                rows.append(rec)
-            except Exception as e:
-                logger.debug("Radiomics failed for %s/%s: %s", source, roi, e)
-                continue
+            tasks.append((source, roi, mask))
+    def _do_ct_task(t):
+        source, roi, mask = t
+        try:
+            ext = _extractor(config, 'CT')
+            m_img = _mask_from_array_like(img, mask)
+            res = ext.execute(img, m_img)
+            rec = {k: (float(v) if isinstance(v, (int, float, np.floating)) else str(v)) for k, v in res.items()}
+            rec.update({'modality': 'CT','segmentation_source': source,'roi_name': roi,'course_dir': str(course_dir)})
+            return rec
+        except Exception as e:
+            logger.debug("Radiomics failed for %s/%s: %s", source, roi, e)
+            return None
+    if tasks:
+        with ThreadPoolExecutor(max_workers=config.effective_workers()) as ex:
+            for f in as_completed([ex.submit(_do_ct_task, t) for t in tasks]):
+                r = f.result()
+                if r:
+                    rows.append(r)
     if not rows:
         return None
     try:
@@ -303,25 +350,26 @@ def radiomics_for_mr_series(config: PipelineConfig, series: MRSeries) -> Optiona
                 seg_img = _resample_to_reference(seg_img, img, nn=True)
                 arr = sitk.GetArrayFromImage(seg_img)
                 labels = [int(v) for v in np.unique(arr) if int(v) != 0]
-                for lab in labels:
+                from concurrent.futures import ThreadPoolExecutor, as_completed
+                def _do_lab(lab:int):
                     try:
                         mask = (arr == lab)
                         if not mask.any():
-                            continue
+                            return None
+                        ext = _extractor(config, 'MR', normalize_override=normalize_override)
                         m_img = _mask_from_array_like(img, mask)
-                        res = extractor.execute(img, m_img)
+                        res = ext.execute(img, m_img)
                         rec = {k: (float(v) if isinstance(v, (int, float, np.floating)) else str(v)) for k, v in res.items()}
-                        rec.update({
-                            'modality': 'MR',
-                            'segmentation_source': 'AutoTS_total_mr',
-                            'roi_name': label_map.get(lab, f'Segment_{lab}'),
-                            'series_dir': str(series.dir),
-                            'series_uid': series.series_uid,
-                        })
-                        rows.append(rec)
+                        rec.update({'modality':'MR','segmentation_source':'AutoTS_total_mr','roi_name':label_map.get(lab,f'Segment_{lab}'),'series_dir':str(series.dir),'series_uid':series.series_uid})
+                        return rec
                     except Exception as e:
                         logger.debug("Radiomics MR total_mr failed for label %s: %s", lab, e)
-                        continue
+                        return None
+                with ThreadPoolExecutor(max_workers=max(1, min(config.effective_workers(), 4))) as ex:
+                    for f in as_completed([ex.submit(_do_lab, lab) for lab in labels]):
+                        rr=f.result()
+                        if rr:
+                            rows.append(rr)
     # NIfTI fallback
     if _load_seg_nifti is not None:
         seg_nifti_dir = out_root / 'TotalSegmentator_total_mr_NIFTI'
@@ -330,25 +378,26 @@ def radiomics_for_mr_series(config: PipelineConfig, series: MRSeries) -> Optiona
             seg_img = _resample_to_reference(seg_img, img, nn=True)
             arr = sitk.GetArrayFromImage(seg_img)
             labels = [int(v) for v in np.unique(arr) if int(v) != 0]
-            for lab in labels:
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            def _do_lab(lab:int):
                 try:
                     mask = (arr == lab)
                     if not mask.any():
-                        continue
+                        return None
+                    ext = _extractor(config, 'MR', normalize_override=normalize_override)
                     m_img = _mask_from_array_like(img, mask)
-                    res = extractor.execute(img, m_img)
+                    res = ext.execute(img, m_img)
                     rec = {k: (float(v) if isinstance(v, (int, float, np.floating)) else str(v)) for k, v in res.items()}
-                    rec.update({
-                        'modality': 'MR',
-                        'segmentation_source': 'AutoTS_total_mr',
-                        'roi_name': label_map.get(lab, f'Segment_{lab}'),
-                        'series_dir': str(series.dir),
-                        'series_uid': series.series_uid,
-                    })
-                    rows.append(rec)
+                    rec.update({'modality':'MR','segmentation_source':'AutoTS_total_mr','roi_name':label_map.get(lab,f'Segment_{lab}'),'series_dir':str(series.dir),'series_uid':series.series_uid})
+                    return rec
                 except Exception as e:
                     logger.debug("Radiomics MR total_mr (NIfTI) failed for label %s: %s", lab, e)
-                    continue
+                    return None
+            with ThreadPoolExecutor(max_workers=max(1, min(config.effective_workers(), 4))) as ex:
+                for f in as_completed([ex.submit(_do_lab, lab) for lab in labels]):
+                    rr=f.result()
+                    if rr:
+                        rows.append(rr)
     if not rows:
         return None
     try:
@@ -385,3 +434,44 @@ def run_radiomics(config: PipelineConfig, courses: List["object"]) -> None:
     series = _scan_mr_series(config.dicom_root)
     for pid, suid, sdir in series:
         radiomics_for_mr_series(config, MRSeries(pid, suid, sdir))
+    # Cohort merge
+    try:
+        import pandas as _pd
+        out_rows = []
+        # CT cohort
+        for c in courses:
+            p = Path(c.dir) / 'radiomics_features_CT.xlsx'
+            if p.exists():
+                try:
+                    df = _pd.read_excel(p)
+                    df.insert(0, 'patient_id', getattr(c, 'patient_id', Path(c.dir).parts[-2]))
+                    df.insert(1, 'course_key', getattr(c, 'course_key', Path(c.dir).name))
+                    df.insert(2, 'course_dir', str(c.dir))
+                    out_rows.append(df)
+                except Exception:
+                    pass
+        # MR cohort
+        for p in config.output_root.rglob('MR_*/radiomics_features_MR.xlsx'):
+            try:
+                df = _pd.read_excel(p)
+                # Attempt to infer patient_id and series_uid from path
+                parts = p.parts
+                try:
+                    idx = parts.index(str(config.output_root))
+                except ValueError:
+                    idx = len(parts)-4
+                patient_id = parts[-4]
+                series_uid = parts[-2].replace('MR_','')
+                df.insert(0, 'patient_id', patient_id)
+                df.insert(1, 'series_uid', series_uid)
+                df.insert(2, 'series_dir', str(p.parent))
+                out_rows.append(df)
+            except Exception:
+                pass
+        if out_rows:
+            all_df = _pd.concat(out_rows, ignore_index=True)
+            data_dir = config.output_root / 'Data'
+            data_dir.mkdir(parents=True, exist_ok=True)
+            all_df.to_excel(data_dir / 'radiomics_all.xlsx', index=False)
+    except Exception as e:
+        logger.warning("Failed to write cohort radiomics: %s", e)

@@ -31,6 +31,7 @@ rtpipeline doctor [--logs PATH] [--conda-activate CMD] [--dcm2niix NAME] [--tota
 - `--dcm2niix NAME`  Override dcm2niix command name.
 - `--totalseg NAME`  Override TotalSegmentator command name.
 - `--totalseg-license KEY`  Optional license key for TotalSegmentator (exported as env var during runs).
+- `--totalseg-weights PATH`  Path to pretrained weights (nnUNet_pretrained_models). Use this for offline environments.
 - `--extra-seg-models`  Additional TotalSegmentator tasks to run besides the default 'total'. Accepts comma-separated values and can be repeated.
 - `--totalseg-fast`  Adds `--fast` to TotalSegmentator calls (recommended on CPU).
 - `--totalseg-roi-subset LIST`  Passes `--roi_subset LIST` to TotalSegmentator (comma-separated ROI names).

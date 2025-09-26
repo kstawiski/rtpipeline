@@ -30,12 +30,30 @@ Design principles:
  - Parallelized non‑segmentation phases (organize, DVH, visualization, metadata) with `--workers` control.
 
 Install
-- From the repo root:
-  - `pip install -e .`
-  - Installs core deps: pydicom (>=2.4,<3), dicompyler-core (DVH), SimpleITK, pydicom-seg, matplotlib, scipy, pandas, TotalSegmentator, nested-lookup, plotly, rt-utils.
-- Note: `dcm2niix` is an external CLI, not a Python package. Install it via your OS package manager or conda (e.g., `conda install -c conda-forge dcm2niix`). The pipeline will skip NIfTI conversion if it is not available.
+- **Quick Setup**: Run the automated environment setup:
+  ```bash
+  ./setup_environment.sh
+  conda activate rtpipeline
+  pip install -e .
+  ```
+
+- **Manual Installation**: From the repo root:
+  - `pip install -e .` (core functionality)
+  - `pip install -e ".[radiomics]"` (with optional radiomics support)
+  - Installs core deps: pydicom (>=3.0,<4), numpy (<2.0 for TotalSegmentator compatibility), dicompyler-core (DVH), SimpleITK, pydicom-seg, matplotlib, scipy, pandas, nested-lookup, plotly, rt-utils, dicom2nifti, nbformat, ipython.
+  - TotalSegmentator is pulled from GitHub via VCS dependency: `TotalSegmentator @ git+https://github.com/wasserth/TotalSegmentator`. Ensure your pip supports VCS requirements (pip >= 21.1 recommended).
+  - **Note on pyradiomics**: This is optional and may fail on Python 3.12+. Use Python 3.11 or skip radiomics with `--no-radiomics`.
+  - Note: `dcm2niix` is an external CLI, not a Python package. Install it via your OS package manager or conda (e.g., `conda install -c conda-forge dcm2niix`). The pipeline will skip NIfTI conversion if it is not available (or use bundled zips included in the wheel).
  - Optional: if you keep platform ZIPs in `rtpipeline/ext/` (e.g., `rtpipeline/ext/dcm2niix_lnx.zip`, `..._mac.zip`, `..._win.zip`), they are included in wheels and the pipeline auto‑extracts and uses the bundled `dcm2niix` when a global install is not found. Extraction happens under `--logs/bin/`.
   - TotalSegmentator does not require a license key.
+
+- **Environment Validation**: 
+  ```bash
+  rtpipeline doctor
+  ```
+  This checks your environment and reports any issues.
+
+- **Troubleshooting**: See `TROUBLESHOOTING.md` for common issues and solutions.
 
 CLI Usage
 - Minimal run:
@@ -67,6 +85,7 @@ Outputs
 - `radiomics_features_CT.xlsx` (pyradiomics features on CT for manual RS and RS_auto, if pyradiomics installed)
 - MR series (when extra MR models requested): `outdir/<patient_id>/MR_<SeriesInstanceUID>/TotalSegmentator_<MODEL>_{DICOM,NIFTI}/`
   - plus `radiomics_features_MR.xlsx` (pyradiomics features on MR for manual RS and TotalSegmentator total_mr, if available)
+ - Cohort radiomics merge: `outdir/Data/radiomics_all.xlsx`
 
 Course Merging Logic
 - By default, plans/doses are merged only if they refer to the same CT StudyInstanceUID. This captures primary+boost on the same CT and prevents merging subsequent treatments planned on a new CT (e.g., progression SBRT).
@@ -80,6 +99,7 @@ Notes
 - DVH uses dicompyler-core and includes both manual RTSTRUCT and auto RTSTRUCT (RS_auto.dcm) when present. Manual prescribed dose is estimated from CTV1 D95 if present, else defaults to 50 Gy.
  - Segmentation is resume-safe (reused if present). Use `--force-segmentation` to re-run.
  - Radiomics (optional): Install pyradiomics via `pip install git+https://github.com/AIM-Harvard/pyradiomics`. Disable with `--no-radiomics`. Provide a custom YAML via `--radiomics-params PATH`. MRI normalization toggles based on detected weighting (T2: off, T1: on).
+ - Radiomics is parallelized across courses and ROIs/labels to speed up extraction.
 
 Documentation
 - See docs/ for detailed guides:

@@ -24,6 +24,7 @@ class PipelineConfig:
     dcm2niix_cmd: str = "dcm2niix"
     totalseg_cmd: str = "TotalSegmentator"
     totalseg_license_key: str | None = None
+    totalseg_weights_dir: Path | None = None
 
     # Additional segmentation models (in addition to default 'total')
     extra_seg_models: list[str] = field(default_factory=list)

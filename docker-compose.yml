@@ -1,0 +1,65 @@
+version: '3.8'
+
+services:
+  rtpipeline:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: rtpipeline-container
+    volumes:
+      # Mount your data directory
+      - ./Data_Organized:/app/data:ro
+      - ./Example_data:/app/example_data:ro
+      # Mount output directory for results
+      - ./output:/app/output:rw
+      # Mount logs directory
+      - ./Logs:/app/logs:rw
+      # Optional: mount notebooks for development
+      - ./Code:/app/notebooks:ro
+    environment:
+      - PYTHONPATH=/app
+      - RTPIPELINE_DATA_DIR=/app/data
+      - RTPIPELINE_OUTPUT_DIR=/app/output
+      - RTPIPELINE_LOG_DIR=/app/logs
+    working_dir: /app
+    # Keep container running for interactive use
+    tty: true
+    stdin_open: true
+    # Optional: expose Jupyter port
+    ports:
+      - "8888:8888"
+    
+    # Add resource limits to prevent OOM issues
+    deploy:
+      resources:
+        limits:
+          memory: 8G
+          cpus: '4.0'
+        reservations:
+          memory: 2G
+          cpus: '1.0'
+
+  # Optional: separate service for Jupyter
+  jupyter:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: rtpipeline-jupyter
+    volumes:
+      - ./Code:/app/notebooks:rw
+      - ./Data_Organized:/app/data:ro
+      - ./Example_data:/app/example_data:ro
+      - ./output:/app/output:rw
+      - ./Logs:/app/logs:rw
+    environment:
+      - PYTHONPATH=/app
+    working_dir: /app/notebooks
+    ports:
+      - "8889:8888"
+    command: >
+      bash -c "
+        pip install jupyter jupyterlab &&
+        jupyter lab --ip=0.0.0.0 --port=8888 --no-browser --allow-root
+      "
+    profiles:
+      - jupyter

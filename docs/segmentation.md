@@ -23,6 +23,11 @@
   - `rtpipeline/ext/dcm2niix_win.zip` (Windows)
 - When found, it auto‑extracts to `Logs/bin/` and uses the bundled binary. Otherwise, NIfTI conversion is skipped and DICOM‑mode segmentation still runs.
 
+## Offline weights
+- In offline or restricted environments, TotalSegmentator needs pretrained weights available locally.
+- Put them under `--logs/nnunet/` (default) or pass a custom path via `--totalseg-weights PATH`.
+- The pipeline redirects TS caches and weights to `--logs` by default (`HOME`, `TOTALSEGMENTATOR_HOME`, `nnUNet_{results,pretrained_models}`, `TORCH_HOME`, `XDG_CACHE_HOME`).
+
 ## Auto RTSTRUCT (RS_auto.dcm)
 - Built per course after segmentation.
 - If DICOM‑SEG present → convert to RTSTRUCT via rt-utils.
@@ -37,3 +42,9 @@ DVH requires RTSTRUCT for ROI definitions. RS_auto mirrors TotalSegmentator segm
 ## Performance on CPU
 - Use `--totalseg-fast` to add TotalSegmentator’s `--fast` flag.
 - Use `--totalseg-roi-subset <roi1,roi2,...>` to restrict to a subset of ROIs.
+- The pipeline also sets conservative environment variables to improve stability in restricted environments (CPU‑only + single process):
+  - `CUDA_VISIBLE_DEVICES=""`, `TOTALSEG{,MENTATOR}_FORCE_CPU=1`
+  - `OMP_NUM_THREADS=1`, `MKL_NUM_THREADS=1`, `OPENBLAS_NUM_THREADS=1`, `ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS=1`
+  - `nnUNet_n_proc=1`, `nnUNetv2_n_proc=1`, `NUM_WORKERS=1`
+  - `TMPDIR` points to `--logs/tmp` (writable temp dir)
+  These reduce chances of CUDA initialization or multiprocessing semaphore errors on locked‑down systems.
