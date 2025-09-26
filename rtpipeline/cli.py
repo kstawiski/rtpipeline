@@ -5,6 +5,30 @@ import logging
 import sys
 from pathlib import Path
 
+# Import numpy compatibility shim BEFORE any dependency validation
+try:
+    from . import numpy_compat  # This auto-applies compatibility patches
+except ImportError:
+    pass  # Skip if not available
+
+# Early dependency validation
+def _validate_dependencies() -> None:
+    """Validate critical dependencies and versions."""
+    try:
+        import numpy as np
+        if hasattr(np, '__version__'):
+            major_version = int(np.__version__.split('.')[0])
+            if major_version >= 2:
+                print("WARNING: NumPy 2.x detected. TotalSegmentator may fail.", file=sys.stderr)
+                print("Consider: pip install 'numpy>=1.20,<2.0'", file=sys.stderr)
+                print("Or use: rtpipeline --no-segmentation to skip segmentation", file=sys.stderr)
+                print("See TROUBLESHOOTING.md for more details.\n", file=sys.stderr)
+    except ImportError:
+        pass  # numpy will be checked later in normal flow
+
+# Validate early to give user immediate feedback
+_validate_dependencies()
+
 from .config import PipelineConfig
 from time import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -34,6 +58,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--dcm2niix", default="dcm2niix", help="dcm2niix command name")
     p.add_argument("--totalseg", default="TotalSegmentator", help="TotalSegmentator command name")
     p.add_argument("--totalseg-license", default=None, help="TotalSegmentator license key (if required)")
+    p.add_argument("--totalseg-weights", default=None, help="Path to pretrained weights (nnUNet_pretrained_models) for TotalSegmentator (offline)")
     p.add_argument(
         "--extra-seg-models",
         action="append",
@@ -79,6 +104,30 @@ def _doctor(argv: list[str]) -> int:
     totseg = shutil.which(args.totalseg) if not conda_prefix else None
     print(f"- dcm2niix in PATH: {dcm2 or ('requires conda env' if conda_prefix else 'not found')}")
     print(f"- TotalSegmentator in PATH: {totseg or ('requires conda env' if conda_prefix else 'not found')}")
+
+    # GPU diagnostics
+    try:
+        import subprocess as _sp
+        out = _sp.check_output(["python","-c","import torch;print('torch_cuda',getattr(torch,'cuda',None) is not None);print('cuda_available',getattr(torch,'cuda',None) and torch.cuda.is_available());print('cuda_count',getattr(torch,'cuda',None) and torch.cuda.device_count())"], stderr=_sp.STDOUT)
+        print(out.decode().strip())
+    except Exception:
+        print("- PyTorch CUDA diagnostics: unavailable")
+    # Weights path
+    try:
+        from pathlib import Path as _P
+        weights = _P(args.logs) / 'nnunet'
+        print(f"- Expected TS weights dir: {weights} (exists={weights.exists()})")
+    except Exception:
+        pass
+    try:
+        import shutil as _sh
+        if _sh.which('nvidia-smi'):
+            out = _sp.check_output(['nvidia-smi','-L'])
+            print('- nvidia-smi:', out.decode().strip().splitlines()[0])
+        else:
+            print('- nvidia-smi not found in PATH')
+    except Exception:
+        print('- nvidia-smi check failed')
 
     # Bundled zips
     from importlib import resources as importlib_resources
@@ -142,6 +191,7 @@ def main(argv: list[str] | None = None) -> int:
         dcm2niix_cmd=args.dcm2niix,
         totalseg_cmd=args.totalseg,
         totalseg_license_key=args.totalseg_license,
+        totalseg_weights_dir=Path(args.totalseg_weights).resolve() if args.totalseg_weights else None,
         extra_seg_models=[m.strip() for part in (args.extra_seg_models or []) for m in part.split(",") if m.strip()],
         totalseg_fast=args.totalseg_fast,
         totalseg_roi_subset=args.totalseg_roi_subset,
@@ -257,8 +307,31 @@ def main(argv: list[str] | None = None) -> int:
     # 5) Radiomics (CT courses and MR series)
     if cfg.do_radiomics:
         try:
-            from .radiomics import run_radiomics  # lazy import
-            run_radiomics(cfg, courses)
+            # Check if radiomics is available first
+            from .radiomics import _have_pyradiomics
+            if not _have_pyradiomics():
+                logging.getLogger(__name__).warning(
+                    "pyradiomics not available - skipping radiomics extraction. "
+                    "Install with: pip install -e '.[radiomics]' or use --no-radiomics"
+                )
+            else:
+                # Ensure auto segmentation exists for CT courses
+                from .segmentation import segment_course  # lazy import
+                from .auto_rtstruct import build_auto_rtstruct
+                for c in courses:
+                    rs_auto = c.dir / "RS_auto.dcm"
+                    if not rs_auto.exists():
+                        logging.info("RS_auto missing for %s; attempting segmentation before radiomics", c.dir)
+                        try:
+                            segment_course(cfg, c.dir, force=False)
+                            build_auto_rtstruct(c.dir)
+                        except Exception as _e:
+                            logging.getLogger(__name__).warning("Segmentation fallback failed for %s: %s", c.dir, _e)
+                from .radiomics import run_radiomics  # lazy import
+                run_radiomics(cfg, courses)
+        except ImportError as e:
+            logging.getLogger(__name__).warning("Radiomics module import failed: %s", e)
+            logging.getLogger(__name__).info("Use --no-radiomics to skip radiomics extraction")
         except Exception as e:
             logging.getLogger(__name__).warning("Radiomics failed: %s", e)
 

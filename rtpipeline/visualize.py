@@ -233,9 +233,26 @@ def generate_axial_review(course_dir: Path) -> Optional[Path]:
         try:
             rt = RTStructBuilder.create_from(dicom_series_path=str(ct_dir), rt_struct_path=str(rs_manual))
             for roi in rt.get_roi_names():
-                m3d = rt.get_mask_for_roi(roi)
+                try:
+                    if hasattr(rt, 'get_mask_for_roi'):
+                        m3d = rt.get_mask_for_roi(roi)
+                    elif hasattr(rt, 'get_roi_mask'):
+                        m3d = rt.get_roi_mask(roi)
+                    elif hasattr(rt, 'get_roi_mask_by_name'):
+                        m3d = rt.get_roi_mask_by_name(roi)
+                    else:
+                        m3d = None
+                except Exception:
+                    m3d = None
                 if m3d is None:
                     continue
+                # Ensure [z,y,x] orientation and boolean mask
+                ct_z, ct_y, ct_x = ct_arr.shape
+                if m3d.shape != (ct_z, ct_y, ct_x):
+                    if m3d.shape == (ct_y, ct_x, ct_z):
+                        m3d = np.transpose(m3d, (2, 0, 1))
+                    elif m3d.shape == (ct_x, ct_y, ct_z):
+                        m3d = np.transpose(m3d, (2, 1, 0))
                 m3d = m3d.astype(bool)
                 pal = _roi_palette([roi])
                 color = pal[roi]
@@ -256,9 +273,26 @@ def generate_axial_review(course_dir: Path) -> Optional[Path]:
         try:
             rt = RTStructBuilder.create_from(dicom_series_path=str(ct_dir), rt_struct_path=str(rs_auto))
             for roi in rt.get_roi_names():
-                m3d = rt.get_mask_for_roi(roi)
+                try:
+                    if hasattr(rt, 'get_mask_for_roi'):
+                        m3d = rt.get_mask_for_roi(roi)
+                    elif hasattr(rt, 'get_roi_mask'):
+                        m3d = rt.get_roi_mask(roi)
+                    elif hasattr(rt, 'get_roi_mask_by_name'):
+                        m3d = rt.get_roi_mask_by_name(roi)
+                    else:
+                        m3d = None
+                except Exception:
+                    m3d = None
                 if m3d is None:
                     continue
+                # Ensure [z,y,x] orientation and boolean mask
+                ct_z, ct_y, ct_x = ct_arr.shape
+                if m3d.shape != (ct_z, ct_y, ct_x):
+                    if m3d.shape == (ct_y, ct_x, ct_z):
+                        m3d = np.transpose(m3d, (2, 0, 1))
+                    elif m3d.shape == (ct_x, ct_y, ct_z):
+                        m3d = np.transpose(m3d, (2, 1, 0))
                 m3d = m3d.astype(bool)
                 pal = _roi_palette([roi])
                 color = pal[roi]
