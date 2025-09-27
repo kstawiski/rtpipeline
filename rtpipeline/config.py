@@ -36,7 +36,7 @@ class PipelineConfig:
     totalseg_roi_subset: str | None = None
 
     # Concurrency
-    workers: int | None = None  # None => auto (min(8, os.cpu_count() or 4))
+    workers: int | None = None  # None => auto (cpu_count - 1)
 
     # Radiomics
     radiomics_params_file: Path | None = None
@@ -52,5 +52,5 @@ class PipelineConfig:
         import os as _os
         if self.workers and self.workers > 0:
             return int(self.workers)
-        cpu = _os.cpu_count() or 4
-        return max(1, min(8, cpu))
+        cpu = _os.cpu_count() or 2
+        return max(1, cpu - 1)

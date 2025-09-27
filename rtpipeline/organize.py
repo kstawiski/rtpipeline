@@ -19,7 +19,7 @@ from .config import PipelineConfig
 from .ct import index_ct_series, pick_primary_series, copy_ct_series
 from .metadata import LinkedSet, group_by_course, link_rt_sets
 from .rt_details import extract_rt, StructInfo
-from .utils import ensure_dir
+from .utils import ensure_dir, run_tasks_with_adaptive_workers
 
 logger = logging.getLogger(__name__)
 
@@ -212,7 +212,6 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
         for s in structs:
             key = (s.patient_id, s.study_uid or f"FOR:{s.frame_of_reference_uid or 'unknown'}")
             rs_groups.setdefault(key, []).append(s)
-        from concurrent.futures import ThreadPoolExecutor
         def _process_rs_group(patient_id: str, course_key_raw: str, s_list: list[StructInfo]) -> CourseOutput:
             course_key = "".join(ch if ch.isalnum() else "_" for ch in str(course_key_raw))[:64]
             patient_dir = config.output_root / str(patient_id) / f"course_{course_key}"
@@ -235,27 +234,19 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
                 ct_dir=ct_dir_out,
                 total_prescription_gy=None,
             )
-        workers = config.effective_workers()
-        from concurrent.futures import as_completed
-        total = len(rs_groups)
-        done = 0
-        t0 = datetime.datetime.now().timestamp()
-        with ThreadPoolExecutor(max_workers=workers) as ex:
-            futures = {ex.submit(_process_rs_group, pid, key, s_list): (pid, key)
-                       for (pid, key), s_list in rs_groups.items()}
-            for f in as_completed(futures):
-                try:
-                    outputs.append(f.result())
-                except Exception:
-                    pass
-                finally:
-                    done += 1
-                    elapsed = datetime.datetime.now().timestamp() - t0
-                    rate = done / elapsed if elapsed > 0 else 0
-                    eta = (total - done) / rate if rate > 0 else float('inf')
-                    logger.info("Organize (RS-only): %d/%d (%.0f%%) elapsed %.0fs ETA %.0fs", done, total, 100*done/total, elapsed, eta)
+        rs_items = [ (pid, key, s_list) for (pid, key), s_list in rs_groups.items() ]
+        results = run_tasks_with_adaptive_workers(
+            "Organize (RS-only)",
+            rs_items,
+            lambda task: _process_rs_group(task[0], task[1], task[2]),
+            max_workers=config.effective_workers(),
+            logger=logger,
+            show_progress=True,
+        )
+        for res in results:
+            if res:
+                outputs.append(res)
 
-    from concurrent.futures import ThreadPoolExecutor
     def _process_course(patient_id: str, course_key_raw: str, items: list[LinkedSet]) -> CourseOutput:
         # sanitize course key for filesystem
         course_key = "".join(ch if ch.isalnum() else "_" for ch in str(course_key_raw))[:64]
@@ -330,27 +321,19 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
             total_prescription_gy=None,  # optional to compute separately
         )
 
-    workers = config.effective_workers()
-    from concurrent.futures import as_completed
-    total = len(courses)
-    done = 0
-    t0 = datetime.datetime.now().timestamp()
-    with ThreadPoolExecutor(max_workers=workers) as ex:
-        futures = {ex.submit(_process_course, pid, key, items): (pid, key)
-                   for (pid, key), items in courses.items()}
-        for f in as_completed(futures):
-            try:
-                co = f.result()
-                logger.info("Organized patient %s course %s at %s", co.patient_id, co.course_key, co.dir)
-                outputs.append(co)
-            except Exception as e:
-                logger.debug("Course build failed: %s", e)
-            finally:
-                done += 1
-                elapsed = datetime.datetime.now().timestamp() - t0
-                rate = done / elapsed if elapsed > 0 else 0
-                eta = (total - done) / rate if rate > 0 else float('inf')
-                logger.info("Organize: %d/%d (%.0f%%) elapsed %.0fs ETA %.0fs", done, total, 100*done/total, elapsed, eta)
+    course_items = [ (pid, key, items) for (pid, key), items in courses.items() ]
+    results = run_tasks_with_adaptive_workers(
+        "Organize",
+        course_items,
+        lambda task: _process_course(task[0], task[1], task[2]),
+        max_workers=config.effective_workers(),
+        logger=logger,
+        show_progress=True,
+    )
+    for co in results:
+        if co:
+            logger.info("Organized patient %s course %s at %s", co.patient_id, co.course_key, co.dir)
+            outputs.append(co)
 
     # After course-level copying and plan/dose synthesis, write per-case metadata serially to avoid overwhelming IO
     for co in outputs:

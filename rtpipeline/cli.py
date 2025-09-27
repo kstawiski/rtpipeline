@@ -30,8 +30,10 @@ _validate_dependencies()
 
 from .config import PipelineConfig
 from time import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from .organize import organize_and_merge
+from .utils import run_tasks_with_adaptive_workers
+
+logger = logging.getLogger(__name__)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -52,6 +54,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-visualize", action="store_true", help="Skip HTML visualization")
     p.add_argument("--no-radiomics", action="store_true", help="Skip pyradiomics extraction")
     p.add_argument("--radiomics-params", default=None, help="Path to custom pyradiomics YAML parameter file")
+    p.add_argument("--sequential-radiomics", action="store_true", help="Use sequential radiomics processing (parallel is default)")
     p.add_argument("--custom-structures", default=None, help="Path to YAML configuration file for custom structures (uses pelvic template by default)")
     p.add_argument("--no-metadata", action="store_true", help="Skip XLSX metadata extraction")
     p.add_argument("--conda-activate", default=None, help="Prefix shell with conda activate (segmentation)")
@@ -68,7 +71,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--totalseg-fast", action="store_true", help="Add --fast for CPU runs to improve runtime")
     p.add_argument("--totalseg-roi-subset", default=None, help="Restrict to subset of ROIs (comma-separated)")
     p.add_argument("--workers", type=int, default=None, help="Parallel workers for non-segmentation phases (default: auto)")
-    p.add_argument("--resume", action="store_true", help="Resume: skip per-course steps with existing outputs")
+    p.add_argument("--force-redo", action="store_true", help="Force redo all steps, even if outputs exist (resume is default)")
     p.add_argument("-v", "--verbose", action="count", default=0, help="Increase verbosity")
     return p
 
@@ -199,7 +202,7 @@ def main(argv: list[str] | None = None) -> int:
         workers=args.workers,
         radiomics_params_file=Path(args.radiomics_params).resolve() if args.radiomics_params else None,
         custom_structures_config=None,  # Will be set below
-        resume=bool(args.resume),
+        resume=not args.force_redo,  # Resume is default, disable only with --force-redo
     )
 
     # Parse custom structures configuration
@@ -221,6 +224,12 @@ def main(argv: list[str] | None = None) -> int:
 
     # Update config object
     cfg.custom_structures_config = custom_structures_config
+
+    # Log resume behavior
+    if cfg.resume:
+        logging.getLogger(__name__).info("Resume mode enabled (default): skipping existing outputs")
+    else:
+        logging.getLogger(__name__).info("Force redo mode enabled: regenerating all outputs")
 
     # Ensure directories and also route logs to a file for traceability
     try:
@@ -270,25 +279,17 @@ def main(argv: list[str] | None = None) -> int:
                 logging.info("Segmentation: %d/%d (%.0f%%) elapsed %.0fs ETA %.0fs", i, total_seg, 100*i/total_seg, elapsed, eta)
         # Build auto RTSTRUCTs so DVH can include TotalSegmentator output
         from .auto_rtstruct import build_auto_rtstruct
-        # Parallelize RTSTRUCT builds with progress/ETA
-        def _run_pool(label: str, items, func):
-            total = len(items)
-            if total == 0:
-                return
-            t0 = time()
-            done = 0
-            with ThreadPoolExecutor(max_workers=cfg.effective_workers()) as ex:
-                futs = {ex.submit(func, it): it for it in items}
-                for _ in as_completed(futs):
-                    done += 1
-                    elapsed = time() - t0
-                    rate = done / elapsed if elapsed > 0 else 0
-                    eta = (total - done) / rate if rate > 0 else float('inf')
-                    logging.info("%s: %d/%d (%.0f%%) elapsed %.0fs ETA %.0fs", label, done, total, 100*done/total, elapsed, eta)
         rs_items = courses
         if cfg.resume:
             rs_items = [c for c in courses if not (c.dir / "RS_auto.dcm").exists()]
-        _run_pool("Build RS_auto", rs_items, lambda c: build_auto_rtstruct(c.dir))
+        run_tasks_with_adaptive_workers(
+            "Build RS_auto",
+            rs_items,
+            lambda c: build_auto_rtstruct(c.dir),
+            max_workers=cfg.effective_workers(),
+            logger=logging.getLogger(__name__),
+            show_progress=True,
+        )
         # Run default MR model 'total_mr' and additional MR models if requested
         segment_extra_models_mr(cfg, force=args.force_segmentation)
 
@@ -297,31 +298,17 @@ def main(argv: list[str] | None = None) -> int:
         from .dvh import dvh_for_course  # lazy import
         def _dvh(c):
             return dvh_for_course(c.dir, cfg.custom_structures_config)
-        # Parallel with progress
-        def _run_pool(label: str, items, func):
-            total = len(items)
-            if total == 0:
-                return []
-            results = []
-            t0 = time()
-            done = 0
-            with ThreadPoolExecutor(max_workers=cfg.effective_workers()) as ex:
-                futs = {ex.submit(func, it): it for it in items}
-                for f in as_completed(futs):
-                    done += 1
-                    try:
-                        results.append(f.result())
-                    except Exception:
-                        results.append(None)
-                    elapsed = time() - t0
-                    rate = done / elapsed if elapsed > 0 else 0
-                    eta = (total - done) / rate if rate > 0 else float('inf')
-                    logging.info("%s: %d/%d (%.0f%%) elapsed %.0fs ETA %.0fs", label, done, total, 100*done/total, elapsed, eta)
-            return results
         dvh_items = courses
         if cfg.resume:
             dvh_items = [c for c in courses if not (c.dir / "dvh_metrics.xlsx").exists()]
-        _run_pool("DVH", dvh_items, _dvh)
+        run_tasks_with_adaptive_workers(
+            "DVH",
+            dvh_items,
+            _dvh,
+            max_workers=cfg.effective_workers(),
+            logger=logging.getLogger(__name__),
+            show_progress=True,
+        )
 
     # 4) Visualization
     if cfg.do_visualize:
@@ -331,31 +318,42 @@ def main(argv: list[str] | None = None) -> int:
                 visualize_course(c.dir)
             finally:
                 generate_axial_review(c.dir)
-        # Parallel with progress
-        def _run_pool(label: str, items, func):
-            total = len(items)
-            if total == 0:
-                return
-            t0 = time()
-            done = 0
-            with ThreadPoolExecutor(max_workers=cfg.effective_workers()) as ex:
-                futs = {ex.submit(func, it): it for it in items}
-                for _ in as_completed(futs):
-                    done += 1
-                    elapsed = time() - t0
-                    rate = done / elapsed if elapsed > 0 else 0
-                    eta = (total - done) / rate if rate > 0 else float('inf')
-                    logging.info("%s: %d/%d (%.0f%%) elapsed %.0fs ETA %.0fs", label, done, total, 100*done/total, elapsed, eta)
         viz_items = courses
         if cfg.resume:
             def _viz_done(c):
                 return (c.dir / "DVH_Report.html").exists() and (c.dir / "Axial.html").exists()
             viz_items = [c for c in courses if not _viz_done(c)]
-        _run_pool("Visualization", viz_items, _both)
+        run_tasks_with_adaptive_workers(
+            "Visualization",
+            viz_items,
+            _both,
+            max_workers=cfg.effective_workers(),
+            logger=logging.getLogger(__name__),
+            show_progress=True,
+        )
 
     # 5) Radiomics (CT courses and MR series)
     if cfg.do_radiomics:
         try:
+            # Enable parallel radiomics by default (disable only if sequential flag is used)
+            import os
+            if args.sequential_radiomics:
+                os.environ['RTPIPELINE_RADIOMICS_SEQUENTIAL'] = '1'
+                logging.getLogger(__name__).info("Using sequential radiomics processing (--sequential-radiomics specified)")
+            else:
+                try:
+                    from .radiomics_parallel import enable_parallel_radiomics_processing
+                    enable_parallel_radiomics_processing()
+                    logging.getLogger(__name__).info("Using enhanced parallel radiomics processing (default)")
+                except ImportError:
+                    logging.getLogger(__name__).debug("Enhanced parallel radiomics unavailable; using basic threading")
+                    try:
+                        from .radiomics_parallel import configure_parallel_radiomics
+                        configure_parallel_radiomics()
+                    except ImportError:
+                        logging.getLogger(__name__).debug("radiomics_parallel configure unavailable; continuing")
+                    logging.getLogger(__name__).info("Using threaded radiomics processing (fallback)")
+
             # Check if radiomics is available first
             from .radiomics import _have_pyradiomics
             if not _have_pyradiomics():
@@ -401,7 +399,9 @@ def main(argv: list[str] | None = None) -> int:
                     continue
         if merged:
             all_df = _pd.concat(merged, ignore_index=True)
-            out_all = cfg.output_root / "DVH_metrics_all.xlsx"
+            data_dir = cfg.output_root / "Data"
+            data_dir.mkdir(parents=True, exist_ok=True)
+            out_all = data_dir / "DVH_metrics_all.xlsx"
             all_df.to_excel(out_all, index=False)
     except Exception as e:
         logging.getLogger(__name__).warning("Failed to write merged DVH metrics: %s", e)

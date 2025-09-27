@@ -63,34 +63,36 @@ def _numpy_isdtype_shim(dtype: Any, kind: Union[str, type, tuple] = None) -> boo
 
 def patch_numpy_bool():
     """
-    Monkey-patch numpy to add 'bool' alias if it doesn't exist (NumPy < 2.0)
-    In NumPy 2.0, np.bool was deprecated and replaced with np.bool_
+    Monkey-patch numpy to add 'bool' alias for backward compatibility
+    In NumPy 2.0, np.bool was removed and replaced with np.bool_
     """
     numpy_version = tuple(map(int, np.__version__.split('.')[:2]))
-    
-    # Only patch if NumPy < 2.0 and bool doesn't exist as an attribute
-    if numpy_version < (2, 0):
-        # Suppress FutureWarning when checking for np.bool existence
+
+    # Patch if NumPy >= 2.0 and bool doesn't exist as an attribute
+    if numpy_version >= (2, 0):
+        # Suppress warnings when checking attributes
         import warnings
         with warnings.catch_warnings():
-            warnings.simplefilter("ignore", FutureWarning)
+            warnings.simplefilter("ignore")
             has_bool = hasattr(np, 'bool')
-        
+
         if not has_bool:
-            # Create bool alias pointing to bool_
+            # Create bool alias pointing to bool_ for backward compatibility
             np.bool = np.bool_
-            print(f"Applied NumPy bool compatibility alias for NumPy {np.__version__}")
+            print(f"Applied NumPy bool backward compatibility alias for NumPy {np.__version__}")
 
 def patch_numpy_isdtype():
     """
-    Monkey-patch numpy to add isdtype function if it doesn't exist (NumPy < 2.0)
+    Ensure isdtype is available (built-in for NumPy >= 2.0, shim for < 2.0)
     """
     numpy_version = tuple(map(int, np.__version__.split('.')[:2]))
-    
+
     # Only patch if NumPy < 2.0 and isdtype doesn't exist
     if numpy_version < (2, 0) and not hasattr(np, 'isdtype'):
         np.isdtype = _numpy_isdtype_shim
         print(f"Applied NumPy isdtype compatibility shim for NumPy {np.__version__}")
+    elif numpy_version >= (2, 0) and hasattr(np, 'isdtype'):
+        print(f"NumPy isdtype available natively in NumPy {np.__version__}")
     
 def apply_numpy_compatibility():
     """
