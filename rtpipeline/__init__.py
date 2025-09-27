@@ -1,5 +1,5 @@
-# Import numpy compatibility shim early to patch before any imports
-from . import numpy_compat
+# Import numpy legacy compatibility shim early to provide NumPy 2.x support with legacy shims
+from . import numpy_legacy_compat
 
 __all__ = [
     "config",
@@ -10,6 +10,6 @@ __all__ = [
     "segmentation",
     "dvh",
     "visualize",
-    "numpy_compat",
+    "numpy_legacy_compat",
 ]
 

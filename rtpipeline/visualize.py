@@ -83,7 +83,7 @@ def _plotly_dvh(df: pd.DataFrame, title: str) -> str:
 def _window_ct(arr: np.ndarray, wl: float = 40.0, ww: float = 400.0) -> np.ndarray:
     lo = wl - ww / 2.0
     hi = wl + ww / 2.0
-    a = np.clip(arr.astype(np.float32), lo, hi)
+    a = np.clip(arr.astype('float32'), lo, hi)
     a = ((a - lo) / (hi - lo) * 255.0).astype(np.uint8)
     return a
 

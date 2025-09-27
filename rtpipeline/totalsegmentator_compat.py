@@ -1,19 +1,18 @@
 #!/usr/bin/env python3
 """
-Wrapper for TotalSegmentator with runtime compatibility shims.
+Wrapper for TotalSegmentator with NumPy 2.x compatibility shims for legacy libraries.
 
 Features:
-- Applies NumPy 1.x compatibility patches used by TotalSegmentator/nnUNet.
-- Forces a headless Matplotlib backend to avoid GUI requirements.
-- Injects a lightweight stub for `seaborn` to avoid importing the full
-  seaborn/scipy stack at inference time (nnUNet logger imports seaborn
-  but plotting is not needed during prediction). This sidesteps SciPy import
-  issues in some environments.
+- Uses NumPy 2.x as the base (modern, fast, compatible with newer libraries)
+- Provides backward compatibility shims for legacy libraries that expect NumPy 1.x behavior
+- Forces a headless Matplotlib backend to avoid GUI requirements
+- Enhanced error handling and logging for debugging DICOM-SEG issues
 """
 
 import sys
 import os
 import types
+import warnings
 from importlib.machinery import ModuleSpec
 try:
     from importlib.abc import Loader as _LoaderABC  # py3.11+
@@ -33,16 +32,22 @@ sys.path.insert(0, rtpipeline_dir)
 # Force headless plotting
 os.environ.setdefault("MPLBACKEND", "Agg")
 
-# Apply numpy compatibility patches before importing anything else
+# Apply comprehensive warning suppression for compatibility
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+warnings.filterwarnings("ignore", category=FutureWarning, message=".*numpy.*")
+warnings.filterwarnings("ignore", category=UserWarning, message=".*numpy.*")
+
+# Apply NumPy 2.x with legacy compatibility shims for older libraries
 try:
-    # Suppress warnings during compatibility patching
-    import warnings
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", FutureWarning)
-        from rtpipeline.numpy_compat import apply_numpy_compatibility
-        apply_numpy_compatibility()
-except ImportError:
-    pass
+    # Import our new legacy compatibility module
+    from rtpipeline.numpy_legacy_compat import apply_all_legacy_compatibility, verify_compatibility
+    apply_all_legacy_compatibility()
+    verify_compatibility()
+except ImportError as e:
+    print(f"Warning: Could not apply NumPy legacy compatibility shims: {e}")
+    # Fallback to basic NumPy import
+    import numpy as np
+    print(f"Using NumPy {np.__version__} without compatibility shims")
 
 # Provide a minimal seaborn stub to satisfy nnUNet logger imports without
 # triggering heavy SciPy imports in environments where SciPy may be problematic.
@@ -118,9 +123,24 @@ if 'sklearn' not in sys.modules:
 
 # Now run the actual TotalSegmentator
 if __name__ == "__main__":
+    import sys
     try:
-        from totalsegmentator.bin.TotalSegmentator import main
-        main()
-    except ImportError:
-        print("Error: TotalSegmentator not found. Please install it with: pip install TotalSegmentator")
+        # Print command line args for debugging
+        print("TotalSegmentator args:", sys.argv[1:])
+        
+        # Suppress additional warnings during execution
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", FutureWarning)
+            warnings.simplefilter("ignore", DeprecationWarning)
+            
+            from totalsegmentator.bin.TotalSegmentator import main
+            main()
+            
+    except ImportError as e:
+        print(f"Error: TotalSegmentator not found: {e}")
+        sys.exit(1)
+    except Exception as e:
+        print(f"TotalSegmentator execution failed: {e}")
+        import traceback
+        traceback.print_exc()
         sys.exit(1)

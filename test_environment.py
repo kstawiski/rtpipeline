@@ -76,11 +76,21 @@ def test_numpy_version():
         print(f"NumPy version: {version}")
         
         if major >= 2:
-            print("⚠ NumPy 2.x detected - may cause TotalSegmentator issues")
-            print("  Recommendation: pip install 'numpy>=1.20,<2.0'")
-            return False
+            print("✓ NumPy 2.x detected with legacy compatibility support")
+            # Test if our legacy shims work
+            try:
+                from rtpipeline.numpy_legacy_compat import verify_compatibility
+                if verify_compatibility():
+                    print("✓ NumPy legacy compatibility shims working")
+                    return True
+                else:
+                    print("⚠ NumPy legacy compatibility shims failed")
+                    return False
+            except ImportError:
+                print("⚠ NumPy legacy compatibility shims not available")
+                return False
         else:
-            print("✓ NumPy version compatible with TotalSegmentator")
+            print("✓ NumPy 1.x version - direct compatibility")
             return True
     except Exception as e:
         print(f"✗ NumPy check failed: {e}")
