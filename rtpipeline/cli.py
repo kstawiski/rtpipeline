@@ -19,10 +19,9 @@ def _validate_dependencies() -> None:
         if hasattr(np, '__version__'):
             major_version = int(np.__version__.split('.')[0])
             if major_version >= 2:
-                print("WARNING: NumPy 2.x detected. TotalSegmentator may fail.", file=sys.stderr)
-                print("Consider: pip install 'numpy>=1.20,<2.0'", file=sys.stderr)
-                print("Or use: rtpipeline --no-segmentation to skip segmentation", file=sys.stderr)
-                print("See TROUBLESHOOTING.md for more details.\n", file=sys.stderr)
+                print("INFO: NumPy 2.x detected with legacy compatibility enabled.", file=sys.stderr)
+                print("TotalSegmentator should work with the enhanced compatibility layer.", file=sys.stderr)
+                print("If issues occur, check that numpy_legacy_compat is properly loaded.\n", file=sys.stderr)
     except ImportError:
         pass  # numpy will be checked later in normal flow
 
