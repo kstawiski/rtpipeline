@@ -135,11 +135,21 @@ def test_numpy_compatibility():
         
         major, minor = map(int, version.split('.')[:2])
         if major < 2:
-            print_success("NumPy version < 2.0 - TotalSegmentator compatible")
+            print_success("NumPy version < 2.0 - Direct compatibility")
             return True
         else:
-            print_warning("NumPy version >= 2.0 - May cause TotalSegmentator issues")
-            return False
+            print(f"NumPy version >= 2.0 - Testing legacy compatibility...")
+            try:
+                from rtpipeline.numpy_legacy_compat import verify_compatibility
+                if verify_compatibility():
+                    print_success("NumPy 2.x with legacy compatibility shims working")
+                    return True
+                else:
+                    print_error("NumPy 2.x legacy compatibility failed")
+                    return False
+            except ImportError as e:
+                print_error(f"NumPy legacy compatibility shims not available: {e}")
+                return False
     except ImportError:
         print_error("NumPy not available")
         return False

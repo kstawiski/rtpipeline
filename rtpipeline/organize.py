@@ -103,7 +103,7 @@ def _sum_doses_with_resample(dose_files: List[Path], out_dose_path: Path) -> Non
             ref_idx = i
 
     ds_ref = pydicom.dcmread(str(dose_files[ref_idx]))
-    arr_ref = ds_ref.pixel_array.astype(np.float32)
+    arr_ref = ds_ref.pixel_array.astype('float32')
     dose_scaling_ref = float(getattr(ds_ref, "DoseGridScaling", 1.0))
     arr_ref *= dose_scaling_ref
 
@@ -125,7 +125,7 @@ def _sum_doses_with_resample(dose_files: List[Path], out_dose_path: Path) -> Non
         if i == ref_idx:
             continue
         ds = pydicom.dcmread(str(p))
-        arr = ds.pixel_array.astype(np.float32)
+        arr = ds.pixel_array.astype('float32')
         arr *= float(getattr(ds, "DoseGridScaling", 1.0))
 
         rows, cols = ds.Rows, ds.Columns
@@ -169,7 +169,7 @@ def _sum_doses_with_resample(dose_files: List[Path], out_dose_path: Path) -> Non
         scaling_factor = 1000.0
 
     accumulated = np.nan_to_num(accumulated, nan=0.0)
-    accumulated_int = np.rint(accumulated * scaling_factor).astype(np.int32)
+    accumulated_int = np.rint(accumulated * scaling_factor).astype('int32')
 
     new_ds = copy.deepcopy(ds_ref)
     new_ds.SOPInstanceUID = generate_uid()

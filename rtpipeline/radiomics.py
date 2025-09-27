@@ -20,13 +20,55 @@ logger = logging.getLogger(__name__)
 def _have_pyradiomics() -> bool:
     """Check if pyradiomics is available and properly installed."""
     try:
-        import radiomics  # noqa: F401
-        from radiomics import featureextractor  # noqa: F401
-        return True
-    except ImportError:
-        logger.info("pyradiomics not available. Install with: pip install pyradiomics")
-        logger.info("Or install rtpipeline with radiomics support: pip install -e '.[radiomics]'")
-        return False
+        # First check if we can import without C extensions
+        import os
+        original_env = os.environ.get('PYRADIOMICS_USE_CEXTENSIONS')
+        
+        try:
+            # Try importing pyradiomics normally first
+            import radiomics  # noqa: F401
+            from radiomics import featureextractor  # noqa: F401
+            logger.info("pyradiomics loaded successfully with full C extensions support")
+            return True
+        except ImportError as e:
+            error_msg = str(e)
+            
+            # Check if this is a NumPy 2.x compatibility issue with C extensions
+            if "NumPy 1.x cannot be run in" in error_msg or "_multiarray_umath" in error_msg:
+                logger.warning("pyradiomics C extensions incompatible with NumPy 2.x - attempting fallback")
+                
+                # Try disabling C extensions
+                os.environ['PYRADIOMICS_USE_CEXTENSIONS'] = '0'
+                
+                try:
+                    # Clear any cached imports
+                    import sys
+                    modules_to_clear = [k for k in sys.modules.keys() if k.startswith('radiomics')]
+                    for mod in modules_to_clear:
+                        del sys.modules[mod]
+                    
+                    # Try importing again with C extensions disabled
+                    import radiomics  # noqa: F401
+                    from radiomics import featureextractor  # noqa: F401
+                    
+                    logger.warning("pyradiomics loaded with C extensions disabled due to NumPy 2.x compatibility")
+                    logger.info("Radiomics will work but may be slower without C extensions")
+                    return True
+                    
+                except Exception as fallback_error:
+                    logger.error(f"pyradiomics failed even with C extensions disabled: {fallback_error}")
+                    return False
+                finally:
+                    # Restore original environment
+                    if original_env is None:
+                        os.environ.pop('PYRADIOMICS_USE_CEXTENSIONS', None)
+                    else:
+                        os.environ['PYRADIOMICS_USE_CEXTENSIONS'] = original_env
+            else:
+                logger.info("pyradiomics not available. Install with: pip install pyradiomics")
+                logger.info("Or install rtpipeline with radiomics support: pip install -e '.[radiomics]'")
+                return False
+                
     except Exception as e:
         logger.warning("pyradiomics import failed (possibly Python version compatibility): %s", e)
         logger.info("Try using Python 3.11: conda create -n rtpipeline python=3.11")
@@ -178,7 +220,6 @@ def radiomics_for_course(config: PipelineConfig, course_dir: Path) -> Optional[P
         logger.info("No CT image for radiomics in %s", course_dir)
         return None
     rows: List[Dict] = []
-    from concurrent.futures import ThreadPoolExecutor, as_completed
     tasks = []
     for source, rs_name in (("Manual", "RS.dcm"), ("AutoRTS_total", "RS_auto.dcm")):
         rs_path = course_dir / rs_name
@@ -190,7 +231,11 @@ def radiomics_for_course(config: PipelineConfig, course_dir: Path) -> Optional[P
     def _do_ct_task(t):
         source, roi, mask = t
         try:
+            # Create fresh extractor instance for each task to avoid threading issues
             ext = _extractor(config, 'CT')
+            if ext is None:
+                logger.debug("No radiomics extractor available for %s/%s", source, roi)
+                return None
             m_img = _mask_from_array_like(img, mask)
             res = ext.execute(img, m_img)
             rec = {k: (float(v) if isinstance(v, (int, float, np.floating)) else str(v)) for k, v in res.items()}
@@ -199,12 +244,18 @@ def radiomics_for_course(config: PipelineConfig, course_dir: Path) -> Optional[P
         except Exception as e:
             logger.debug("Radiomics failed for %s/%s: %s", source, roi, e)
             return None
+            return None
     if tasks:
-        with ThreadPoolExecutor(max_workers=config.effective_workers()) as ex:
-            for f in as_completed([ex.submit(_do_ct_task, t) for t in tasks]):
-                r = f.result()
-                if r:
-                    rows.append(r)
+        # Force sequential radiomics processing to prevent segmentation faults
+        # Parallel processing causes memory issues with pyradiomics/OpenMP interactions
+        max_radiomics_workers = 1
+        logger.info("Using sequential radiomics processing (enforced to prevent segmentation faults)")
+        
+        # Process tasks sequentially to avoid threading issues
+        for t in tasks:
+            r = _do_ct_task(t)
+            if r:
+                rows.append(r)
     if not rows:
         return None
     try:
@@ -372,7 +423,7 @@ def radiomics_for_mr_series(config: PipelineConfig, series: MRSeries) -> Optiona
                     except Exception as e:
                         logger.debug("Radiomics MR total_mr failed for label %s: %s", lab, e)
                         return None
-                with ThreadPoolExecutor(max_workers=max(1, min(config.effective_workers(), 4))) as ex:
+                with ThreadPoolExecutor(max_workers=max(1, min(config.effective_workers(), 2))) as ex:
                     for f in as_completed([ex.submit(_do_lab, lab) for lab in labels]):
                         rr=f.result()
                         if rr:
@@ -400,7 +451,7 @@ def radiomics_for_mr_series(config: PipelineConfig, series: MRSeries) -> Optiona
                 except Exception as e:
                     logger.debug("Radiomics MR total_mr (NIfTI) failed for label %s: %s", lab, e)
                     return None
-            with ThreadPoolExecutor(max_workers=max(1, min(config.effective_workers(), 4))) as ex:
+            with ThreadPoolExecutor(max_workers=max(1, min(config.effective_workers(), 2))) as ex:
                 for f in as_completed([ex.submit(_do_lab, lab) for lab in labels]):
                     rr=f.result()
                     if rr:
@@ -424,10 +475,17 @@ def run_radiomics(config: PipelineConfig, courses: List["object"]) -> None:
     """
     if not _have_pyradiomics():
         return
-    # CT per course (parallel)
+    # CT per course (parallel, but limited for memory safety)
     from concurrent.futures import ThreadPoolExecutor, as_completed
-    workers = config.effective_workers()
-    with ThreadPoolExecutor(max_workers=workers) as ex:
+    # Limit course-level parallelization for radiomics to prevent memory issues
+    if os.environ.get('RTPIPELINE_RADIOMICS_SEQUENTIAL', '').lower() in ('1', 'true', 'yes'):
+        max_course_workers = 1
+        logger.info("Using sequential course processing for radiomics (RTPIPELINE_RADIOMICS_SEQUENTIAL set)")
+    else:
+        max_course_workers = min(2, config.effective_workers())
+        logger.info("Processing radiomics with %d course workers (limited for memory safety)", max_course_workers)
+    
+    with ThreadPoolExecutor(max_workers=max_course_workers) as ex:
         futs = {ex.submit(radiomics_for_course, config, c.dir): c for c in courses}
         for _ in as_completed(futs):
             pass
