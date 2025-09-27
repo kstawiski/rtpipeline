@@ -41,6 +41,9 @@ class PipelineConfig:
     # Radiomics
     radiomics_params_file: Path | None = None
 
+    # Custom structures
+    custom_structures_config: Path | None = None
+
     def ensure_dirs(self) -> None:
         self.output_root.mkdir(parents=True, exist_ok=True)
         self.logs_root.mkdir(parents=True, exist_ok=True)

@@ -3,7 +3,7 @@ from . import numpy_legacy_compat
 
 __all__ = [
     "config",
-    "ct", 
+    "ct",
     "rt_details",
     "metadata",
     "organize",
@@ -11,5 +11,6 @@ __all__ = [
     "dvh",
     "visualize",
     "numpy_legacy_compat",
+    "custom_structures",
 ]
 

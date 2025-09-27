@@ -206,8 +206,8 @@ def _rtstruct_masks(dicom_series_path: Path, rs_path: Path) -> Dict[str, np.ndar
         return {}
 
 
-def radiomics_for_course(config: PipelineConfig, course_dir: Path) -> Optional[Path]:
-    """Run pyradiomics on CT course with manual RS and RS_auto if present."""
+def radiomics_for_course(config: PipelineConfig, course_dir: Path, custom_structures_config: Optional[Path] = None) -> Optional[Path]:
+    """Run pyradiomics on CT course with manual RS, RS_auto, and custom structures if present."""
     # Resume-friendly: skip if output exists
     out_path = course_dir / 'radiomics_features_CT.xlsx'
     if getattr(config, 'resume', False) and out_path.exists():
@@ -221,6 +221,8 @@ def radiomics_for_course(config: PipelineConfig, course_dir: Path) -> Optional[P
         return None
     rows: List[Dict] = []
     tasks = []
+
+    # Process standard RTSTRUCTs
     for source, rs_name in (("Manual", "RS.dcm"), ("AutoRTS_total", "RS_auto.dcm")):
         rs_path = course_dir / rs_name
         if not rs_path.exists():
@@ -228,6 +230,26 @@ def radiomics_for_course(config: PipelineConfig, course_dir: Path) -> Optional[P
         masks = _rtstruct_masks(course_dir / 'CT_DICOM', rs_path)
         for roi, mask in masks.items():
             tasks.append((source, roi, mask))
+
+    # Process custom structures if configuration provided
+    if custom_structures_config and custom_structures_config.exists():
+        try:
+            # Check if custom RTSTRUCT exists or create it
+            rs_custom = course_dir / "RS_custom.dcm"
+            if not rs_custom.exists():
+                from .dvh import _create_custom_structures_rtstruct
+                rs_custom = _create_custom_structures_rtstruct(
+                    course_dir,
+                    custom_structures_config,
+                    course_dir / "RS.dcm",
+                    course_dir / "RS_auto.dcm"
+                )
+            if rs_custom and rs_custom.exists():
+                masks = _rtstruct_masks(course_dir / 'CT_DICOM', rs_custom)
+                for roi, mask in masks.items():
+                    tasks.append(("Custom", roi, mask))
+        except Exception as e:
+            logger.warning("Failed to process custom structures for radiomics: %s", e)
     def _do_ct_task(t):
         source, roi, mask = t
         try:
@@ -469,7 +491,7 @@ def radiomics_for_mr_series(config: PipelineConfig, series: MRSeries) -> Optiona
         return None
 
 
-def run_radiomics(config: PipelineConfig, courses: List["object"]) -> None:
+def run_radiomics(config: PipelineConfig, courses: List["object"], custom_structures_config: Optional[Path] = None) -> None:
     """Top-level orchestrator: per-course CT radiomics and per-series MR radiomics.
     'courses' elements are CourseOutput-like with attributes patient_id, course_key, dir.
     """
@@ -484,9 +506,9 @@ def run_radiomics(config: PipelineConfig, courses: List["object"]) -> None:
     else:
         max_course_workers = min(2, config.effective_workers())
         logger.info("Processing radiomics with %d course workers (limited for memory safety)", max_course_workers)
-    
+
     with ThreadPoolExecutor(max_workers=max_course_workers) as ex:
-        futs = {ex.submit(radiomics_for_course, config, c.dir): c for c in courses}
+        futs = {ex.submit(radiomics_for_course, config, c.dir, custom_structures_config): c for c in courses}
         for _ in as_completed(futs):
             pass
     # MR per series (sequential; number of series is usually small)
