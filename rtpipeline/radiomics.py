@@ -124,7 +124,7 @@ def _get_params_file(config: PipelineConfig | None) -> Optional[Path]:
         # Copy packaged file to logs_root for stable path
         packaged = importlib_resources.files('rtpipeline').joinpath('radiomics_params.yaml')
         if packaged.is_file():
-            target_root = config.logs_root if (config and config.logs_root) else Path('.')
+            target_root = Path(config.logs_root) if (config and config.logs_root) else Path('.')
             target_root.mkdir(parents=True, exist_ok=True)
             out = Path(target_root) / 'radiomics_params.yaml'
             try:
@@ -151,7 +151,7 @@ def _extractor(config: PipelineConfig, modality: str = 'CT', normalize_override:
     try:
             pfile = _get_params_file(config)
             if pfile is not None:
-                ext = RadiomicsFeatureExtractor(parameterFile=str(pfile))
+                ext = RadiomicsFeatureExtractor(str(pfile))
             else:
                 ext = RadiomicsFeatureExtractor()
             # Adjust per-modality recommendations

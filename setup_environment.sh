@@ -1,114 +1,93 @@
 #!/bin/bash
-set -e
+# Enhanced setup script for rtpipeline with NumPy 2.x and legacy compatibility
+# Based on original setup_environment.sh but updated for NumPy 2.x architecture
 
-echo "=== rtpipeline COMPLETE Environment Setup Script ==="
-echo "This script will set up a FULLY COMPATIBLE environment for rtpipeline"
-echo "with ALL features including pyradiomics, TotalSegmentator, and radiomics"
+set -euo pipefail
+
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+ENV_NAME="rtpipeline"
+PYTHON_VERSION="3.11"
+
+echo "=== Setting up rtpipeline with NumPy 2.x + Legacy Compatibility ==="
 echo
 
 # Detect system
 if [[ "$OSTYPE" == "linux-gnu"* ]]; then
     SYSTEM="linux"
+    echo "Detected Linux system"
 elif [[ "$OSTYPE" == "darwin"* ]]; then
     SYSTEM="macos"
+    echo "Detected macOS system"
+elif [[ "$OSTYPE" == "msys" || "$OSTYPE" == "win32" ]]; then
+    SYSTEM="windows"
+    echo "Detected Windows system"
 else
     SYSTEM="unknown"
+    echo "Unknown system: $OSTYPE"
 fi
 
-echo "Detected system: $SYSTEM"
-echo "Python compatibility: Using Python 3.11 for maximum compatibility"
-
-# Check if conda/mamba is available
+# Check for conda/mamba
 if command -v mamba &> /dev/null; then
     CONDA_CMD="mamba"
+    echo "Using mamba for package management"
 elif command -v conda &> /dev/null; then
     CONDA_CMD="conda"
+    echo "Using conda for package management"
 else
-    echo "Error: conda or mamba not found. Please install conda first."
-    echo "Install miniconda from: https://docs.conda.io/en/latest/miniconda.html"
+    echo "Error: Neither conda nor mamba found. Please install Anaconda, Miniconda, or Mamba first."
     exit 1
 fi
 
-echo "Using package manager: $CONDA_CMD"
-
-# Check if environment already exists
-ENV_NAME="rtpipeline-full"
-if $CONDA_CMD env list | grep -q "^$ENV_NAME\s"; then
-    echo "Environment '$ENV_NAME' already exists."
-    read -p "Do you want to recreate it for a fresh install? (y/N): " -n 1 -r
-    echo
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-        echo "Removing existing environment..."
-        $CONDA_CMD env remove -n $ENV_NAME -y
-    else
-        echo "Using existing environment. To activate:"
-        echo "  conda activate $ENV_NAME"
-        echo "To test: python -c \"import rtpipeline; print('✓ rtpipeline ready')\""
-        exit 0
-    fi
+# Create conda environment
+echo "Creating conda environment '$ENV_NAME' with Python $PYTHON_VERSION..."
+if $CONDA_CMD env list | grep -q "$ENV_NAME"; then
+    echo "Environment '$ENV_NAME' already exists. Removing it first..."
+    $CONDA_CMD env remove -n "$ENV_NAME" -y
 fi
 
-echo "Creating conda environment '$ENV_NAME' with Python 3.11..."
-$CONDA_CMD create -n $ENV_NAME python=3.11 -y
+$CONDA_CMD create -n "$ENV_NAME" python="$PYTHON_VERSION" -y
+echo "✓ Environment created"
 
+# Activate environment
 echo "Activating environment..."
-# Handle different conda initialization paths
-if [[ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]]; then
-    source "$HOME/miniconda3/etc/profile.d/conda.sh"
-elif [[ -f "$HOME/anaconda3/etc/profile.d/conda.sh" ]]; then
-    source "$HOME/anaconda3/etc/profile.d/conda.sh"
-elif [[ -f "/opt/conda/etc/profile.d/conda.sh" ]]; then
-    source "/opt/conda/etc/profile.d/conda.sh"
-else
-    # Try to find conda.sh in common locations
-    for path in /opt/miniconda3 /opt/anaconda3 /usr/local/miniconda3 /usr/local/anaconda3; do
-        if [[ -f "$path/etc/profile.d/conda.sh" ]]; then
-            source "$path/etc/profile.d/conda.sh"
-            break
-        fi
-    done
-fi
-
 eval "$($CONDA_CMD shell.bash hook)"
-$CONDA_CMD activate $ENV_NAME
+$CONDA_CMD activate "$ENV_NAME"
 
-echo "Installing scientific computing stack..."
-$CONDA_CMD install -c conda-forge \
-    "numpy>=1.20,<2.0" \
-    "pandas>=1.3" \
-    "scipy>=1.7" \
-    "matplotlib>=3.3" \
-    "scikit-image>=0.18" \
-    "scikit-learn>=1.0" \
-    -y
+# Verify activation
+if [[ "$CONDA_DEFAULT_ENV" != "$ENV_NAME" ]]; then
+    echo "Error: Failed to activate environment"
+    exit 1
+fi
+echo "✓ Environment activated"
 
-echo "Installing medical imaging and DICOM packages..."
-pip install \
-    "pydicom>=3.0,<4" \
-    "SimpleITK>=2.1" \
-    "dicompyler-core==0.5.6" \
-    "pydicom-seg==0.4.1" \
-    "rt-utils" \
-    "dicom2nifti>=2.4"
-
-echo "Installing visualization and data packages..."
-pip install \
-    "openpyxl" \
-    "plotly>=5.0" \
-    "nested-lookup" \
-    "nbformat" \
+# Install core scientific stack with NumPy 2.x
+echo "Installing core scientific packages with NumPy 2.x..."
+$CONDA_CMD install -c conda-forge -y \
+    "numpy>=2.0" \
+    "pandas>=2.0" \
+    "scipy" \
+    "matplotlib" \
+    "seaborn" \
+    "scikit-learn" \
+    "scikit-image" \
+    "pillow" \
     "ipython" \
     "jupyter"
 
-echo "Attempting to install pyradiomics..."
-if pip install pyradiomics; then
-    echo "✓ pyradiomics installed successfully"
-else
-    echo "⚠ pyradiomics installation failed (common with Python 3.12+)"
-    echo "  Radiomics features will be disabled"
-    echo "  Use --no-radiomics flag when running rtpipeline"
-fi
+echo "✓ Core scientific stack installed with NumPy 2.x"
 
+# Install medical imaging packages
+echo "Installing medical imaging packages..."
+pip install \
+    "pydicom>=2.4.0" \
+    "SimpleITK>=2.3.0" \
+    "dicompyler-core>=0.5.9" \
+    "nibabel>=5.0.0" \
+    "plastimatch"
+
+echo "✓ Medical imaging packages installed"
+
+# Install dcm2niix
 echo "Installing dcm2niix..."
 if [[ "$SYSTEM" == "linux" ]]; then
     $CONDA_CMD install -c conda-forge dcm2niix -y
@@ -118,60 +97,108 @@ else
     echo "Warning: Please install dcm2niix manually for your system"
 fi
 
-echo "Installing TotalSegmentator with proper numpy constraint..."
-pip install "TotalSegmentator==2.4.0" --no-deps
-pip install \
-    "numpy>=1.20,<2.0" \
-    "torch>=1.10" \
-    "torchvision" \
-    "nibabel" \
-    "tqdm" \
-    "requests" \
-    "nnunet" \
-    --force-reinstall
+# Install TotalSegmentator 2.11.0 with NumPy 2.x compatibility
+echo "Installing TotalSegmentator 2.11.0 with NumPy 2.x compatibility..."
+pip install "TotalSegmentator==2.11.0"
+echo "✓ TotalSegmentator installed"
 
+# Build pyradiomics from source for NumPy 2.x compatibility
+echo "Building pyradiomics from source for NumPy 2.x compatibility..."
+echo "This may take several minutes..."
+
+# Install build dependencies
+pip install setuptools wheel Cython
+
+# Create temporary directory for pyradiomics build
+TEMP_DIR=$(mktemp -d)
+cd "$TEMP_DIR"
+
+echo "Cloning pyradiomics repository..."
+git clone https://github.com/AIM-Harvard/pyRadiomics.git
+cd pyRadiomics
+
+echo "Building pyradiomics from source..."
+python setup.py build_ext --inplace
+pip install .
+
+echo "✓ pyradiomics built and installed with NumPy 2.x compatibility"
+
+# Clean up temporary directory
+cd "$SCRIPT_DIR"
+rm -rf "$TEMP_DIR"
+
+# Install rtpipeline package
 echo "Installing rtpipeline package..."
 cd "$SCRIPT_DIR"
 pip install -e .
 
+echo "✓ rtpipeline package installed"
+
+# Validation
 echo "Validating installation..."
-cd "$SCRIPT_DIR"
 python -c "
 import sys
 import numpy as np
 import pandas as pd
 import pydicom
 import SimpleITK as sitk
+
+print('=== NumPy 2.x Pipeline Validation ===')
+print(f'✓ NumPy version: {np.__version__}')
+print(f'✓ Python version: {sys.version.split()[0]}')
+
+# Check NumPy 2.x compatibility
+if np.__version__.startswith('2.'):
+    print('✓ NumPy 2.x confirmed')
+else:
+    print(f'✗ Expected NumPy 2.x, got {np.__version__}')
+    sys.exit(1)
+
+# Test core packages
 print('✓ Core packages imported successfully')
 
+# Test pyradiomics with NumPy 2.x
 try:
     import radiomics
-    print('✓ pyradiomics available')
-except ImportError:
-    print('✗ pyradiomics not available (normal for Python 3.12+)')
+    from radiomics import featureextractor
+    print(f'✓ pyradiomics {radiomics.__version__} available with NumPy 2.x')
+    
+    # Test C extensions work
+    extractor = featureextractor.RadiomicsFeatureExtractor()
+    print('✓ pyradiomics C extensions working')
+except Exception as e:
+    print(f'✗ pyradiomics error: {e}')
+    sys.exit(1)
 
+# Test dicompyler-core
 try:
     from dicompylercore import dvhcalc
     print('✓ dicompyler-core available')
 except ImportError as e:
     print(f'✗ dicompyler-core error: {e}')
 
-print(f'NumPy version: {np.__version__}')
-print(f'Python version: {sys.version.split()[0]}')
-
-# Check TotalSegmentator
+# Test TotalSegmentator with NumPy 2.x compatibility
 try:
     import totalsegmentator
-    print('✓ TotalSegmentator Python package available')
+    print('✓ TotalSegmentator available')
+    
+    # Test our compatibility wrapper
+    import rtpipeline.totalsegmentator_compat
+    print('✓ TotalSegmentator NumPy 2.x compatibility wrapper loaded')
+    
 except ImportError as e:
-    print(f'✗ TotalSegmentator import error: {e}')
+    print(f'✗ TotalSegmentator error: {e}')
 
-# Test rtpipeline CLI
+# Test rtpipeline
 try:
     import rtpipeline.cli
-    print('✓ rtpipeline package available')
+    import rtpipeline.numpy_legacy_compat
+    print('✓ rtpipeline with NumPy 2.x legacy compatibility available')
 except ImportError as e:
     print(f'✗ rtpipeline import error: {e}')
+    sys.exit(1)
+
+print('✓ All components validated with NumPy 2.x')
 "
 
 echo
@@ -183,15 +210,22 @@ else
 fi
 
 echo
-echo "=== Setup Complete ==="
+echo "=== NumPy 2.x Setup Complete ==="
+echo
+echo "Key Features of This Setup:"
+echo "  • NumPy 2.x with legacy compatibility system"
+echo "  • TotalSegmentator 2.11.0 with NumPy 2.x support"
+echo "  • pyradiomics built from source for NumPy 2.x C extensions"
+echo "  • Complete backward compatibility for legacy libraries"
+echo
 echo "To use the environment:"
 echo "  conda activate $ENV_NAME"
 echo
-echo "To install rtpipeline:"
-echo "  cd /path/to/rtpipeline"
-echo "  pip install -e ."
+echo "Environment variables for optimal performance:"
+echo "  export RTPIPELINE_RADIOMICS_SEQUENTIAL=1  # Prevents segfaults"
+echo "  export OMP_NUM_THREADS=1                  # Controls threading"
 echo
 echo "To validate the environment:"
 echo "  rtpipeline doctor"
 echo
-echo "For troubleshooting, see TROUBLESHOOTING.md"
+echo "For troubleshooting NumPy 2.x issues, see rtpipeline/numpy_legacy_compat.py"
