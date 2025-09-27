@@ -3,11 +3,12 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Union
 
 import numpy as np
 import pandas as pd
 import pydicom
+import SimpleITK as sitk
 
 logger = logging.getLogger(__name__)
 
@@ -205,6 +206,92 @@ def _compute_metrics(abs_dvh, rx_dose: float) -> Optional[Dict[str, float]]:
     return metrics
 
 
+def _create_custom_structures_rtstruct(
+    course_dir: Path,
+    config_path: Union[str, Path],
+    rs_manual: Optional[Path] = None,
+    rs_auto: Optional[Path] = None
+) -> Optional[Path]:
+    """Create a new RTSTRUCT with custom structures from boolean operations."""
+    try:
+        from .custom_structures import CustomStructureProcessor
+        from rt_utils import RTStructBuilder
+    except ImportError as e:
+        logger.warning("rt-utils not available for custom structures: %s", e)
+        return None
+
+    # Choose base RTSTRUCT (prefer manual over auto)
+    base_rs = None
+    if rs_manual and rs_manual.exists():
+        base_rs = rs_manual
+    elif rs_auto and rs_auto.exists():
+        base_rs = rs_auto
+    else:
+        logger.warning("No base RTSTRUCT available for custom structures")
+        return None
+
+    ct_dir = course_dir / "CT_DICOM"
+    if not ct_dir.exists():
+        logger.warning("CT_DICOM not found for custom structures")
+        return None
+
+    try:
+        # Load the base RTSTRUCT
+        rtstruct = RTStructBuilder.create_from(
+            dicom_series_path=str(ct_dir),
+            rt_struct_path=str(base_rs)
+        )
+
+        # Get existing masks
+        available_masks = {}
+        for roi_name in rtstruct.get_roi_names():
+            try:
+                mask = rtstruct.get_roi_mask_by_name(roi_name)
+                if mask is not None and mask.any():
+                    available_masks[roi_name] = mask
+            except Exception as e:
+                logger.debug("Failed to get mask for ROI %s: %s", roi_name, e)
+
+        # Get spacing from CT
+        reader = sitk.ImageSeriesReader()
+        series_ids = reader.GetGDCMSeriesIDs(str(ct_dir))
+        if not series_ids:
+            logger.warning("No CT series found for spacing calculation")
+            return None
+
+        dicom_files = reader.GetGDCMSeriesFileNames(str(ct_dir), series_ids[0])
+        reader.SetFileNames(dicom_files)
+        ct_image = reader.Execute()
+        spacing = ct_image.GetSpacing()
+
+        # Process custom structures
+        processor = CustomStructureProcessor(spacing=spacing)
+        processor.load_config(config_path)
+
+        custom_masks = processor.process_all_custom_structures(available_masks)
+
+        # Add custom structures to RTSTRUCT
+        for name, mask in custom_masks.items():
+            try:
+                rtstruct.add_roi(
+                    mask=mask,
+                    name=name,
+                    color=[255, 0, 0]  # Red color for custom structures
+                )
+                logger.info("Added custom structure: %s", name)
+            except Exception as e:
+                logger.warning("Failed to add custom structure %s: %s", name, e)
+
+        # Save the new RTSTRUCT
+        out_path = course_dir / "RS_custom.dcm"
+        rtstruct.save(str(out_path))
+        return out_path
+
+    except Exception as e:
+        logger.error("Failed to create custom structures RTSTRUCT: %s", e)
+        return None
+
+
 def _estimate_rx_from_ctv1(rtstruct: pydicom.dataset.FileDataset, rtdose: pydicom.dataset.FileDataset) -> float:
     default_rx = 50.0
     try:
@@ -221,7 +308,7 @@ def _estimate_rx_from_ctv1(rtstruct: pydicom.dataset.FileDataset, rtdose: pydico
     return default_rx
 
 
-def dvh_for_course(course_dir: Path) -> Optional[Path]:
+def dvh_for_course(course_dir: Path, custom_structures_config: Optional[Union[str, Path]] = None) -> Optional[Path]:
     rp = course_dir / "RP.dcm"
     rd = course_dir / "RD.dcm"
     rs_manual = course_dir / "RS.dcm"
@@ -273,6 +360,18 @@ def dvh_for_course(course_dir: Path) -> Optional[Path]:
         process_struct(rs_manual, "Manual", rx_est)
     if rs_auto.exists():
         process_struct(rs_auto, "AutoRTS", rx_est)
+
+    # Process custom structures if configuration provided
+    if custom_structures_config:
+        try:
+            from .custom_structures import CustomStructureProcessor
+            rs_custom = _create_custom_structures_rtstruct(
+                course_dir, custom_structures_config, rs_manual, rs_auto
+            )
+            if rs_custom and rs_custom.exists():
+                process_struct(rs_custom, "Custom", rx_est)
+        except Exception as e:
+            logger.warning("Failed to process custom structures: %s", e)
 
     if not results:
         logger.info("No DVH results for %s", course_dir)

@@ -52,6 +52,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-visualize", action="store_true", help="Skip HTML visualization")
     p.add_argument("--no-radiomics", action="store_true", help="Skip pyradiomics extraction")
     p.add_argument("--radiomics-params", default=None, help="Path to custom pyradiomics YAML parameter file")
+    p.add_argument("--custom-structures", default=None, help="Path to YAML configuration file for custom structures (uses pelvic template by default)")
     p.add_argument("--no-metadata", action="store_true", help="Skip XLSX metadata extraction")
     p.add_argument("--conda-activate", default=None, help="Prefix shell with conda activate (segmentation)")
     p.add_argument("--dcm2niix", default="dcm2niix", help="dcm2niix command name")
@@ -197,8 +198,30 @@ def main(argv: list[str] | None = None) -> int:
         totalseg_roi_subset=args.totalseg_roi_subset,
         workers=args.workers,
         radiomics_params_file=Path(args.radiomics_params).resolve() if args.radiomics_params else None,
+        custom_structures_config=None,  # Will be set below
         resume=bool(args.resume),
     )
+
+    # Parse custom structures configuration
+    custom_structures_config = None
+    if args.custom_structures:
+        # User provided custom config
+        custom_structures_config = Path(args.custom_structures).resolve()
+        if not custom_structures_config.exists():
+            logger.warning("Custom structures config file not found: %s", custom_structures_config)
+            custom_structures_config = None
+    else:
+        # Use default pelvic template if it exists
+        default_pelvic_config = Path(__file__).parent.parent / "custom_structures_pelvic.yaml"
+        if default_pelvic_config.exists():
+            custom_structures_config = default_pelvic_config
+            logger.info("Using default pelvic custom structures template: %s", custom_structures_config)
+        else:
+            logger.info("No custom structures configuration provided")
+
+    # Update config object
+    cfg.custom_structures_config = custom_structures_config
+
     # Ensure directories and also route logs to a file for traceability
     try:
         cfg.ensure_dirs()
@@ -273,7 +296,7 @@ def main(argv: list[str] | None = None) -> int:
     if cfg.do_dvh:
         from .dvh import dvh_for_course  # lazy import
         def _dvh(c):
-            return dvh_for_course(c.dir)
+            return dvh_for_course(c.dir, cfg.custom_structures_config)
         # Parallel with progress
         def _run_pool(label: str, items, func):
             total = len(items)
@@ -354,7 +377,7 @@ def main(argv: list[str] | None = None) -> int:
                         except Exception as _e:
                             logging.getLogger(__name__).warning("Segmentation fallback failed for %s: %s", c.dir, _e)
                 from .radiomics import run_radiomics  # lazy import
-                run_radiomics(cfg, courses)
+                run_radiomics(cfg, courses, cfg.custom_structures_config)
         except ImportError as e:
             logging.getLogger(__name__).warning("Radiomics module import failed: %s", e)
             logging.getLogger(__name__).info("Use --no-radiomics to skip radiomics extraction")
