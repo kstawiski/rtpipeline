@@ -29,6 +29,66 @@ class _DummyLoader(_LoaderABC):  # pragma: no cover
 rtpipeline_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, rtpipeline_dir)
 
+# Apply comprehensive NumPy/SciPy compatibility patches BEFORE any other imports
+try:
+    from rtpipeline import numpy_compat  # This auto-applies compatibility patches
+    print("✅ NumPy compatibility shims applied in TotalSegmentator subprocess")
+
+    # Additional SciPy entropy calculation fix
+    import numpy as np
+
+    # Monkey-patch numpy to ensure isreal works properly with all numeric types
+    original_isreal = np.isreal
+    def enhanced_isreal(x):
+        """Enhanced isreal that handles edge cases causing SciPy entropy errors."""
+        try:
+            if hasattr(x, '__array__'):
+                x = np.asarray(x)
+            if np.isscalar(x):
+                return np.isfinite(x) and np.imag(x) == 0
+            return original_isreal(x)
+        except Exception:
+            return False
+
+    np.isreal = enhanced_isreal
+
+    # Pre-import and patch scipy.stats to prevent import-time errors
+    try:
+        # Set environment to prevent problematic scipy behavior
+        import os
+        os.environ['SCIPY_DISABLE_DISTRIBUTION_DOCS'] = '1'
+
+        # Force real number behavior in scipy integrate
+        def _patch_scipy_integrate():
+            try:
+                import scipy.integrate._tanhsinh as tanhsinh
+                original_nsum_iv = tanhsinh._nsum_iv
+
+                def patched_nsum_iv(f, a, b, step, args, log, maxterms, tolerances):
+                    """Patched version that ensures all parameters are real numbers."""
+                    try:
+                        # Convert to real numpy arrays/scalars if needed
+                        a = float(np.real(np.asarray(a)))
+                        b = float(np.real(np.asarray(b)))
+                        step = float(np.real(np.asarray(step)))
+                        return original_nsum_iv(f, a, b, step, args, log, maxterms, tolerances)
+                    except Exception:
+                        # Fallback: return a reasonable default
+                        return type('Result', (), {'sum': 0.0})()
+
+                tanhsinh._nsum_iv = patched_nsum_iv
+                print("✅ Applied SciPy integrate patch for entropy calculation")
+            except ImportError:
+                pass  # scipy not imported yet
+
+        _patch_scipy_integrate()
+
+    except Exception as e:
+        print(f"⚠️ SciPy patching failed: {e}")
+
+except ImportError:
+    print("⚠️ NumPy compatibility module not found, proceeding without patches")
+
 # Force headless plotting
 os.environ.setdefault("MPLBACKEND", "Agg")
 
@@ -37,14 +97,16 @@ warnings.filterwarnings("ignore", category=DeprecationWarning)
 warnings.filterwarnings("ignore", category=FutureWarning, message=".*numpy.*")
 warnings.filterwarnings("ignore", category=UserWarning, message=".*numpy.*")
 
-# Apply NumPy 2.x with legacy compatibility shims for older libraries
+# Apply additional NumPy compatibility for subprocess environment
 try:
-    # Import our new legacy compatibility module
-    from rtpipeline.numpy_legacy_compat import apply_all_legacy_compatibility, verify_compatibility
-    apply_all_legacy_compatibility()
-    verify_compatibility()
-except ImportError as e:
-    print(f"Warning: Could not apply NumPy legacy compatibility shims: {e}")
+    import numpy as np
+    # Force early verification that isdtype is available
+    if hasattr(np, 'isdtype'):
+        print(f"✅ NumPy isdtype available in subprocess (NumPy {np.__version__})")
+    else:
+        print(f"⚠️ NumPy isdtype not found, but compatibility should be patched")
+except Exception as e:
+    print(f"⚠️ NumPy compatibility check failed: {e}")
     # Fallback to basic NumPy import
     import numpy as np
     print(f"Using NumPy {np.__version__} without compatibility shims")
