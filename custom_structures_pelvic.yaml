@@ -1,0 +1,286 @@
+# Custom Structures Configuration for Pelvic RT Planning
+# Based on Boolean operations notebook implementation
+# This template creates clinically relevant structures for pelvic radiotherapy
+
+custom_structures:
+  # ============================================
+  # VASCULAR STRUCTURES
+  # ============================================
+
+  # Iliac vessels - union of all iliac arteries and veins
+  - name: "iliac_vess"
+    operation: "union"
+    source_structures:
+      - "iliac_artery_left"
+      - "iliac_artery_right"
+      - "iliac_vena_left"
+      - "iliac_vena_right"
+    description: "Combined iliac vessels (arteries and veins)"
+
+  # Iliac area - 7mm expansion for dose constraints
+  - name: "iliac_area"
+    operation: "union"
+    source_structures: ["iliac_vess"]
+    margin: 7
+    description: "Iliac vessels with 7mm margin for dose planning"
+
+  # All major vessels
+  - name: "major_vessels"
+    operation: "union"
+    source_structures:
+      - "aorta"
+      - "inferior_vena_cava"
+      - "iliac_vess"
+      - "portal_vein_and_splenic_vein"
+    description: "All major blood vessels in treatment area"
+
+  # Major vessels with margin
+  - name: "major_vessels_5mm"
+    operation: "union"
+    source_structures: ["major_vessels"]
+    margin: 5
+    description: "Major vessels with 5mm planning margin"
+
+  # ============================================
+  # BONE STRUCTURES
+  # ============================================
+
+  # Pelvic bones - main pelvic bone structures
+  - name: "pelvic_bones"
+    operation: "union"
+    source_structures:
+      - "sacrum"
+      - "hip_left"
+      - "hip_right"
+      - "vertebrae_S1"
+    description: "Combined pelvic bone structures"
+
+  # Pelvic bones with 3mm margin for bone marrow sparing
+  - name: "pelvic_bones_3mm"
+    operation: "union"
+    source_structures: ["pelvic_bones"]
+    margin: 3
+    description: "Pelvic bones with 3mm margin for bone marrow considerations"
+
+  # Extended pelvic bones including lower vertebrae
+  - name: "pelvic_bones_extended"
+    operation: "union"
+    source_structures:
+      - "pelvic_bones"
+      - "vertebrae_L5"
+      - "vertebrae_L4"
+      - "femur_left"
+      - "femur_right"
+    description: "Extended pelvic bone structures including proximal femurs"
+
+  # Lumbar spine
+  - name: "lumbar_spine"
+    operation: "union"
+    source_structures:
+      - "vertebrae_L1"
+      - "vertebrae_L2"
+      - "vertebrae_L3"
+      - "vertebrae_L4"
+      - "vertebrae_L5"
+    description: "Lumbar spine for dose evaluation"
+
+  # ============================================
+  # MUSCLE STRUCTURES
+  # ============================================
+
+  # Gluteal muscles
+  - name: "gluteus_muscles"
+    operation: "union"
+    source_structures:
+      - "gluteus_maximus_left"
+      - "gluteus_maximus_right"
+      - "gluteus_medius_left"
+      - "gluteus_medius_right"
+      - "gluteus_minimus_left"
+      - "gluteus_minimus_right"
+    description: "All gluteal muscles combined"
+
+  # Iliopsoas muscles
+  - name: "iliopsoas_muscles"
+    operation: "union"
+    source_structures:
+      - "iliopsoas_left"
+      - "iliopsoas_right"
+    description: "Combined iliopsoas muscles"
+
+  # All pelvic muscles
+  - name: "pelvic_muscles"
+    operation: "union"
+    source_structures:
+      - "gluteus_muscles"
+      - "iliopsoas_muscles"
+      - "autochthon_left"
+      - "autochthon_right"
+    description: "All pelvic region muscles"
+
+  # ============================================
+  # BOWEL STRUCTURES
+  # ============================================
+
+  # Bowel bag (all bowel structures)
+  - name: "bowel_bag"
+    operation: "union"
+    source_structures:
+      - "colon"
+      - "small_bowel"
+      - "duodenum"
+    description: "Combined bowel structures for dose constraints"
+
+  # Bowel with margin for PRV
+  - name: "bowel_PRV"
+    operation: "union"
+    source_structures: ["bowel_bag"]
+    margin: 5
+    description: "Bowel planning risk volume with 5mm margin"
+
+  # ============================================
+  # ORGAN AT RISK COMBINATIONS
+  # ============================================
+
+  # Critical pelvic OARs
+  - name: "pelvic_OARs"
+    operation: "union"
+    source_structures:
+      - "urinary_bladder"
+      - "bowel_bag"
+      - "femur_left"
+      - "femur_right"
+    description: "Critical organs at risk in pelvic region"
+
+  # OARs with planning margin
+  - name: "pelvic_OARs_PRV"
+    operation: "union"
+    source_structures: ["pelvic_OARs"]
+    margin: 3
+    description: "Pelvic OARs with 3mm planning risk volume"
+
+  # ============================================
+  # KIDNEY AND UPPER ABDOMINAL STRUCTURES
+  # ============================================
+
+  # Combined kidneys
+  - name: "kidneys_combined"
+    operation: "union"
+    source_structures:
+      - "kidney_left"
+      - "kidney_right"
+    description: "Both kidneys combined"
+
+  # Kidneys with margin
+  - name: "kidneys_PRV"
+    operation: "union"
+    source_structures: ["kidneys_combined"]
+    margin: 5
+    description: "Kidneys with 5mm planning margin"
+
+  # ============================================
+  # TREATMENT PLANNING STRUCTURES
+  # ============================================
+
+  # Ring structure example (requires PTV to be defined)
+  # Uncomment if PTV structures exist
+  # - name: "Ring_5mm"
+  #   operation: "subtract"
+  #   source_structures: ["PTV_5mm", "PTV"]
+  #   description: "5mm ring around PTV for dose gradient control"
+
+  # - name: "Ring_10mm"
+  #   operation: "subtract"
+  #   source_structures: ["PTV_10mm", "PTV_5mm"]
+  #   description: "5-10mm ring around PTV"
+
+  # ============================================
+  # AVOIDANCE STRUCTURES
+  # ============================================
+
+  # Non-target normal tissue
+  - name: "normal_tissue"
+    operation: "subtract"
+    source_structures:
+      - "body"  # Assuming body contour exists
+      - "pelvic_OARs_PRV"
+    description: "Normal tissue excluding critical OARs"
+
+  # Bone marrow sparing region
+  - name: "bone_marrow_region"
+    operation: "union"
+    source_structures:
+      - "pelvic_bones_3mm"
+      - "lumbar_spine"
+      - "femur_left"
+      - "femur_right"
+    margin: 2
+    description: "Bone marrow containing regions with margin"
+
+  # ============================================
+  # LYMPH NODE REGIONS (if CTV_LN defined)
+  # ============================================
+
+  # Example nodal regions - uncomment if CTVs exist
+  # - name: "CTV_nodes_5mm"
+  #   operation: "union"
+  #   source_structures: ["CTV_LN"]
+  #   margin: 5
+  #   description: "Lymph node CTV with 5mm margin"
+
+  # ============================================
+  # SPECIAL ANALYSIS STRUCTURES
+  # ============================================
+
+  # Overlap analysis structures
+  - name: "bladder_bowel_interface"
+    operation: "intersection"
+    source_structures:
+      - "urinary_bladder"
+      - "bowel_bag"
+    margin: 5
+    description: "Interface region between bladder and bowel with margin"
+
+  # High dose region analysis (if dose structures available)
+  # - name: "high_dose_normal_tissue"
+  #   operation: "subtract"
+  #   source_structures: ["V95", "PTV"]
+  #   description: "High dose region outside target"
+
+  # ============================================
+  # FEMALE-SPECIFIC STRUCTURES
+  # ============================================
+
+  # Uncomment for female patients
+  # - name: "gyn_CTV"
+  #   operation: "union"
+  #   source_structures:
+  #     - "uterus"
+  #     - "cervix"
+  #     - "ovaries"
+  #   margin: 7
+  #   description: "Gynecological CTV with margin"
+
+  # ============================================
+  # MALE-SPECIFIC STRUCTURES
+  # ============================================
+
+  # Uncomment for male patients
+  # - name: "prostate_SV"
+  #   operation: "union"
+  #   source_structures:
+  #     - "prostate"
+  #     - "seminal_vesicles"
+  #   description: "Prostate and seminal vesicles"
+
+  # - name: "prostate_SV_margin"
+  #   operation: "union"
+  #   source_structures: ["prostate_SV"]
+  #   margin:
+  #     anterior_mm: 7
+  #     posterior_mm: 5
+  #     left_mm: 7
+  #     right_mm: 7
+  #     superior_mm: 7
+  #     inferior_mm: 7
+  #   description: "Prostate CTV with anisotropic margins"
