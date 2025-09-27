@@ -12,5 +12,6 @@ __all__ = [
     "visualize",
     "numpy_legacy_compat",
     "custom_structures",
+    "radiomics_parallel",
 ]
 

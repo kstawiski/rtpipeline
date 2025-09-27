@@ -2,12 +2,19 @@ rtpipeline – DICOM‑RT Processing Pipeline
 ========================================
 
 Overview
-rtpipeline is an end‑to‑end DICOM‑RT processing pipeline that turns a folder of raw DICOMs (CT/RTPLAN/RTDOSE/RTSTRUCT/RT treatment records) into clean, per‑patient “courses” with organized data, segmentation, quantitative DVH metrics, visual QA, and rich metadata for clinical and research use.
+rtpipeline is an end-to-end DICOM-RT processing pipeline that turns a folder of raw DICOMs (CT/RTPLAN/RTDOSE/RTSTRUCT/RT treatment records) into clean, per-patient “courses” with organized data, segmentation, quantitative DVH metrics, visual QA, and rich metadata for clinical and research use.
+
+## Documentation
+- [Pipeline overview](docs/pipeline.md) — stage-by-stage breakdown of discovery, grouping, organization, segmentation, DVH, visualization, and radiomics.
+- [Quickstart](docs/quickstart.md) — environment setup and first run.
+- [CLI reference](docs/cli.md) — exhaustive command-line options with examples.
+- [Metadata fields](docs/metadata.md) — global and per-case exports.
+- [Segmentation](docs/segmentation.md), [DVH](docs/dvh.md), [Viewers](docs/viewers.md) — deeper dives into optional modules.
 
 At a glance, the pipeline:
 - Scans a DICOM root (one or many patients) and extracts global metadata into Excel.
 - Groups each patient’s data into treatment “courses” by the CT StudyInstanceUID (primary + boost on the same CT are merged; subsequent treatments on a different CT are separated).
-- Organizes each course into a canonical structure (CT_DICOM, RP/RD/RS), sums multi‑stage doses into a single RD, and synthesizes a “summed” RP with total Rx.
+- Organizes each course into a canonical structure (CT_DICOM, RP/RD/RS), sums multi-stage doses into a single RD, and synthesizes a “summed” RP with total Rx.
 - Runs TotalSegmentator on the course CT (resume‑safe; re-run with `--force-segmentation`) and auto‑generates RTSTRUCT (RS_auto) aligned to the CT, so DVH can include auto‑segmentation even if no manual RS exists.
 - Computes DVH metrics for manual and auto structures using dicompyler‑core, including integral dose, hottest small volumes (D1cc, D0.1cc), and coverage at Rx, and writes per‑course and merged workbooks.
 - Generates interactive reports: Plotly‑based DVH report (toggle structures) and an Axial viewer to scroll CT slices with semi‑transparent overlays for manual/auto structures.
@@ -111,13 +118,5 @@ Notes
  - Radiomics (optional): Install pyradiomics via `pip install git+https://github.com/AIM-Harvard/pyradiomics`. Disable with `--no-radiomics`. Provide a custom YAML via `--radiomics-params PATH`. MRI normalization toggles based on detected weighting (T2: off, T1: on).
  - Radiomics is parallelized across courses and ROIs/labels to speed up extraction.
 
-Documentation
-- See docs/ for detailed guides:
-  - docs/index.md — Overview & concepts
-  - docs/quickstart.md — Install and first run
-  - docs/cli.md — CLI options and examples
-  - docs/pipeline.md — End-to-end pipeline details
-  - docs/metadata.md — Global and per-case metadata fields
-  - docs/segmentation.md — Segmentation, resume, RS_auto
-  - docs/dvh.md — DVH metrics & formulas
-  - docs/viewers.md — DVH (Plotly) and Axial viewer
+Additional references live under [`docs/`](docs/). Start with
+[`docs/index.md`](docs/index.md) for concepts and navigation tips.

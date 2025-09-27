@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Dict, List
 
 import pandas as pd
-from concurrent.futures import ThreadPoolExecutor
 """Compatibility shim to let dicompyler-core import against pydicom>=3.
 
 dicompyler-core 0.5.x expects a legacy 'dicom' package with
@@ -44,6 +43,7 @@ from nested_lookup import nested_lookup
 import pydicom
 
 from .config import PipelineConfig
+from .utils import run_tasks_with_adaptive_workers
 
 logger = logging.getLogger(__name__)
 
@@ -123,8 +123,17 @@ def export_metadata(config: PipelineConfig) -> Dict[str, Path]:
             'patient_gender': _nested_get(ds, '00100040'),
             'patient_pesel': _nested_get(ds, '00101000'),
         }
-    with ThreadPoolExecutor(max_workers=config.effective_workers()) as ex:
-        rp_rows = [r for r in ex.map(_rp_row, rp_files) if r]
+    rp_rows = [
+        r
+        for r in run_tasks_with_adaptive_workers(
+            "Metadata (RP)",
+            rp_files,
+            _rp_row,
+            max_workers=config.effective_workers(),
+            logger=logger,
+        )
+        if r
+    ]
     plans_df = pd.DataFrame(rp_rows)
     if not plans_df.empty:
         plans_df.to_excel(paths.plans_xlsx, index=False)
@@ -143,8 +152,17 @@ def export_metadata(config: PipelineConfig) -> Dict[str, Path]:
             'plan_id': _nested_get(ds, '00081155'),
             'patient_id': _nested_get(ds, '00100020'),
         }
-    with ThreadPoolExecutor(max_workers=config.effective_workers()) as ex:
-        rd_rows = [r for r in ex.map(_rd_row, rd_files) if r]
+    rd_rows = [
+        r
+        for r in run_tasks_with_adaptive_workers(
+            "Metadata (RD)",
+            rd_files,
+            _rd_row,
+            max_workers=config.effective_workers(),
+            logger=logger,
+        )
+        if r
+    ]
     doses_df = pd.DataFrame(rd_rows)
     if not doses_df.empty:
         doses_df.to_excel(paths.doses_xlsx, index=False)
@@ -170,8 +188,17 @@ def export_metadata(config: PipelineConfig) -> Dict[str, Path]:
             'patient_id': _nested_get(ds, '00100020'),
             'available_structures': ', '.join(structs) if structs else ''
         }
-    with ThreadPoolExecutor(max_workers=config.effective_workers()) as ex:
-        rs_rows = [r for r in ex.map(_rs_row, rs_files) if r]
+    rs_rows = [
+        r
+        for r in run_tasks_with_adaptive_workers(
+            "Metadata (RS)",
+            rs_files,
+            _rs_row,
+            max_workers=config.effective_workers(),
+            logger=logger,
+        )
+        if r
+    ]
     structs_df = pd.DataFrame(rs_rows)
     if not structs_df.empty:
         structs_df.to_excel(paths.structures_xlsx, index=False)
@@ -197,8 +224,17 @@ def export_metadata(config: PipelineConfig) -> Dict[str, Path]:
             'machine': _nested_get(ds, '300A00B2'),
             'patient_id': _nested_get(ds, '00100020'),
         }
-    with ThreadPoolExecutor(max_workers=config.effective_workers()) as ex:
-        rt_rows = [r for r in ex.map(_rt_row, rt_files) if r]
+    rt_rows = [
+        r
+        for r in run_tasks_with_adaptive_workers(
+            "Metadata (RT)",
+            rt_files,
+            _rt_row,
+            max_workers=config.effective_workers(),
+            logger=logger,
+        )
+        if r
+    ]
     fractions_df = pd.DataFrame(rt_rows)
     if not fractions_df.empty:
         fractions_df.to_excel(paths.fractions_xlsx, index=False)
@@ -218,8 +254,17 @@ def export_metadata(config: PipelineConfig) -> Dict[str, Path]:
             'SeriesNumber': _nested_get(ds, '00200011'),
             'InstanceNumber': _nested_get(ds, '00200013'),
         }
-    with ThreadPoolExecutor(max_workers=config.effective_workers()) as ex:
-        ct_rows = [r for r in ex.map(_ct_row, ct_files) if r]
+    ct_rows = [
+        r
+        for r in run_tasks_with_adaptive_workers(
+            "Metadata (CT)",
+            ct_files,
+            _ct_row,
+            max_workers=config.effective_workers(),
+            logger=logger,
+        )
+        if r
+    ]
     ct_df = pd.DataFrame(ct_rows)
     if not ct_df.empty:
         ct_df.to_excel(paths.ct_images_xlsx, index=False)

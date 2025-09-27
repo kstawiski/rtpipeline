@@ -3,12 +3,19 @@
 ## What is rtpipeline?
 
 rtpipeline is a DICOM‑RT processing pipeline that:
-- Organizes and merges RT plans into per‑patient, per‑course folders.
-- Runs TotalSegmentator and auto‑generates RTSTRUCT (RS_auto) for DVH use.
+- Organizes and merges RT plans into per-patient, per-course folders.
+- Runs TotalSegmentator and auto-generates RTSTRUCT (RS_auto) for DVH use.
 - Computes DVH metrics (manual and auto structures) and generates interactive DVH reports.
 - Provides an Axial QA viewer with manual/auto overlays.
-- Extracts both global and per‑case metadata for clinical and research analysis.
- - Optionally runs additional TotalSegmentator tasks for CT courses and MR series.
+- Extracts both global and per-case metadata for clinical and research analysis.
+- Optionally runs additional TotalSegmentator tasks for CT courses and MR series.
+
+## Pipeline at a Glance
+
+Start with [`docs/pipeline.md`](pipeline.md) for a stage-by-stage walkthrough of
+how discovery, grouping, organization, segmentation, DVH, viewers, and radiomics
+fit together. Each module can be toggled via CLI flags and supports `--resume`
+for incremental runs.
 
 ## Core Concepts
 

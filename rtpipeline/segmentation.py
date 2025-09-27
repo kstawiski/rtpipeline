@@ -12,7 +12,6 @@ from importlib import resources as importlib_resources
 from pathlib import Path
 from typing import Optional
 
-from . import numpy_compat
 
 from .config import PipelineConfig
 
@@ -132,7 +131,11 @@ def run_dcm2niix(config: PipelineConfig, dicom_dir: Path, nifti_out: Path) -> Op
             return None
         local_cmd = str(local)
     cmd_name = local_cmd or config.dcm2niix_cmd
-    cmd = f"{_prefix(config)}{cmd_name} -z y -o '{nifti_out}' '{dicom_dir}'"
+
+    if local_cmd:
+        cmd = f"{_prefix(config)}bash '{cmd_name}' -z y -o '{nifti_out}' '{dicom_dir}'"
+    else:
+        cmd = f"{_prefix(config)}{cmd_name} -z y -o '{nifti_out}' '{dicom_dir}'"
     logger.info("Running dcm2niix: %s", cmd)
     ok = _run(cmd)
     if not ok:
@@ -177,32 +180,34 @@ def _validate_totalseg_environment(config: PipelineConfig) -> bool:
 
 
 def run_totalsegmentator(config: PipelineConfig, input_path: Path, output_path: Path, output_type: str, task: Optional[str] = None) -> bool:
-    """Run TotalSegmentator with compatibility wrapper."""
-    
-    totalseg_wrapper = Path(__file__).parent / "totalsegmentator_compat.py"
-    
+    """Run TotalSegmentator directly without compatibility wrapper."""
+
     cmd_parts = [
-        sys.executable,
-        str(totalseg_wrapper),
+        "TotalSegmentator",
         "-i", str(input_path),
         "-o", str(output_path),
         "-ot", output_type
     ]
-    
+
     if task:
         cmd_parts.extend(["--task", task])
-        
-    cmd = " ".join(f'"{part}"' if " " in part else part for part in cmd_parts)
-    
-    logger.info(f"Running TotalSegmentator ({output_type}): {cmd}")
-    
-    env = os.environ.copy()
-    
+
     if hasattr(config, 'totalseg_fast') and config.totalseg_fast:
-        cmd += " --fast"
-    
+        cmd_parts.append("--fast")
+
+    cmd = " ".join(f'"{part}"' if " " in part else part for part in cmd_parts)
+
+    logger.info(f"Running TotalSegmentator ({output_type}): {cmd}")
+
+    env = os.environ.copy()
+    env.setdefault('OMP_NUM_THREADS', '1')
+    env.setdefault('OPENBLAS_NUM_THREADS', '1')
+    env.setdefault('MKL_NUM_THREADS', '1')
+    env.setdefault('NUMEXPR_NUM_THREADS', '1')
+    env.setdefault('NUMBA_NUM_THREADS', '1')
+
     ok = _run(cmd, env=env)
-    
+
     if not ok:
         logger.info("Retrying TotalSegmentator with CPU-only and single-process env")
         cmd_retry = cmd + " -d cpu"
@@ -212,7 +217,7 @@ def run_totalsegmentator(config: PipelineConfig, input_path: Path, output_path: 
             'OMP_NUM_THREADS': '1'
         })
         ok = _run(cmd_retry, env=env_retry)
-    
+
     return ok
 
 
