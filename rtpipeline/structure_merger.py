@@ -1,0 +1,442 @@
+"""Structure merger for combining manual, automated, and custom DICOM-RT structures."""
+
+from __future__ import annotations
+import logging
+import json
+import yaml
+from pathlib import Path
+from typing import Dict, List, Optional, Set, Tuple, Any
+import pydicom
+import numpy as np
+from datetime import datetime
+from scipy import ndimage
+from skimage import morphology
+
+logger = logging.getLogger(__name__)
+
+
+class StructureMerger:
+    """Merges multiple DICOM-RT structure sources with priority rules and naming conventions."""
+
+    def __init__(self, patient_dir: Path):
+        self.patient_dir = patient_dir
+        self.rs_manual_path = patient_dir / "RS.dcm"
+        self.rs_auto_path = patient_dir / "RS_auto.dcm"
+        self.rs_custom_path = patient_dir / "RS_custom.dcm"
+
+        # Priority rules from clinical recommendations
+        self.priority_rules = {
+            # Target volumes - manual takes priority
+            "ptv": "manual",
+            "ctv": "manual",
+            "gtv": "manual",
+            "target": "manual",
+            "tumor": "manual",
+            "planning": "manual",
+
+            # Organs at risk - automated takes priority
+            "bladder": "auto",
+            "rectum": "auto",
+            "femur": "auto",
+            "bowel": "auto",
+            "kidney": "auto",
+            "liver": "auto",
+            "spinal": "auto",
+            "cord": "auto",
+            "brain": "auto",
+            "heart": "auto",
+            "lung": "auto",
+            "prostate": "auto",
+            "uterus": "auto",
+            "ovary": "auto",
+        }
+
+    def load_structures_from_dicom(self, dicom_path: Path, suffix: str) -> Dict[str, Dict]:
+        """Load structures from DICOM file and add suffix to names."""
+        if not dicom_path.exists():
+            logger.info(f"DICOM file not found: {dicom_path}")
+            return {}
+
+        try:
+            ds = pydicom.dcmread(dicom_path)
+            structures = {}
+
+            if hasattr(ds, 'StructureSetROISequence'):
+                for roi_seq in ds.StructureSetROISequence:
+                    roi_name = str(roi_seq.ROIName).strip()
+                    roi_number = int(roi_seq.ROINumber)
+
+                    # Standardize naming (capitalize first letter, handle spaces)
+                    standardized_name = self._standardize_name(roi_name)
+                    final_name = f"{standardized_name}_{suffix}"
+
+                    structures[final_name] = {
+                        "original_name": roi_name,
+                        "roi_number": roi_number,
+                        "standardized_name": standardized_name,
+                        "suffix": suffix,
+                        "source_file": str(dicom_path)
+                    }
+
+            logger.info(f"Loaded {len(structures)} structures from {dicom_path} with suffix '{suffix}'")
+            return structures
+
+        except Exception as e:
+            logger.error(f"Error loading structures from {dicom_path}: {e}")
+            return {}
+
+    def _standardize_name(self, name: str) -> str:
+        """Standardize structure names for consistent processing."""
+        # Remove extra spaces and standardize capitalization
+        standardized = " ".join(name.split()).title()
+
+        # Handle common variations
+        replacements = {
+            "Bladder": "Bladder",
+            "bladder": "Bladder",
+            "BLADDER": "Bladder",
+            "Rectum": "Rectum",
+            "rectum": "Rectum",
+            "RECTUM": "Rectum",
+            "Femur": "Femur",
+            "femur": "Femur",
+            "FEMUR": "Femur",
+            "Femoral_Head": "Femur_Head",
+            "femoral_head": "Femur_Head",
+            "FemoralHead": "Femur_Head",
+        }
+
+        return replacements.get(standardized, standardized)
+
+    def determine_priority(self, structure_name: str) -> str:
+        """Determine priority (manual/auto) for a given structure."""
+        name_lower = structure_name.lower()
+
+        for keyword, priority in self.priority_rules.items():
+            if keyword in name_lower:
+                return priority
+
+        # Default to manual for unknown structures
+        return "manual"
+
+    def resolve_conflicts(self, all_structures: Dict[str, Dict]) -> Dict[str, Dict]:
+        """Resolve naming conflicts using priority rules."""
+        resolved_structures = {}
+        conflict_groups = {}
+
+        # Group structures by base name (without suffix)
+        for full_name, info in all_structures.items():
+            base_name = info["standardized_name"]
+            if base_name not in conflict_groups:
+                conflict_groups[base_name] = []
+            conflict_groups[base_name].append((full_name, info))
+
+        # Resolve conflicts for each group
+        for base_name, candidates in conflict_groups.items():
+            if len(candidates) == 1:
+                # No conflict - keep as is
+                full_name, info = candidates[0]
+                resolved_structures[full_name] = info
+            else:
+                # Conflict - apply priority rules
+                priority = self.determine_priority(base_name)
+                logger.info(f"Resolving conflict for '{base_name}' - priority: {priority}")
+
+                selected = None
+                alternatives = []
+
+                for full_name, info in candidates:
+                    if info["suffix"] == priority:
+                        selected = (full_name, info)
+                    else:
+                        alternatives.append((full_name, info))
+
+                if selected:
+                    full_name, info = selected
+                    # Remove suffix for final name since conflict is resolved
+                    final_name = base_name
+                    info["final_name"] = final_name
+                    info["alternatives"] = [alt[0] for alt in alternatives]
+                    resolved_structures[final_name] = info
+                    logger.info(f"Selected '{full_name}' as '{final_name}' (discarded: {[alt[0] for alt in alternatives]})")
+                else:
+                    # No preferred suffix found, keep first one
+                    full_name, info = candidates[0]
+                    final_name = base_name
+                    info["final_name"] = final_name
+                    info["alternatives"] = [alt[0] for alt in candidates[1:]]
+                    resolved_structures[final_name] = info
+                    logger.warning(f"No {priority} version found for '{base_name}', using '{full_name}'")
+
+        return resolved_structures
+
+    def create_merged_rtstruct(self, structures: Dict[str, Dict], custom_config_path: Optional[Path] = None) -> Path:
+        """Create a new DICOM-RT structure file with merged structures."""
+
+        # Start with manual structures as base if available
+        if self.rs_manual_path.exists():
+            base_ds = pydicom.dcmread(self.rs_manual_path)
+            logger.info(f"Using manual structures as base: {self.rs_manual_path}")
+        elif self.rs_auto_path.exists():
+            base_ds = pydicom.dcmread(self.rs_auto_path)
+            logger.info(f"Using auto structures as base: {self.rs_auto_path}")
+        else:
+            raise RuntimeError("No base structure file found (RS.dcm or RS_auto.dcm)")
+
+        # Create new structure set
+        new_ds = pydicom.dcmread(self.rs_auto_path)  # Use auto as template for now
+
+        # Update metadata
+        new_ds.StructureSetLabel = "Merged_Structures"
+        new_ds.StructureSetName = "Combined Manual + Auto + Custom Structures"
+        new_ds.StructureSetDescription = f"Generated by rtpipeline on {datetime.now().isoformat()}"
+
+        # For now, just copy the auto structures and add metadata about merging
+        # Full DICOM structure merging requires complex geometric operations
+        # This is a placeholder for the structure merging logic
+
+        # Save the merged file
+        output_path = self.rs_custom_path
+        new_ds.save_as(output_path)
+
+        # Save structure mapping information
+        mapping_path = self.patient_dir / "structure_mapping.json"
+        mapping_info = {
+            "timestamp": datetime.now().isoformat(),
+            "structures": structures,
+            "priority_rules": self.priority_rules,
+            "output_file": str(output_path)
+        }
+
+        with open(mapping_path, 'w') as f:
+            json.dump(mapping_info, f, indent=2, default=str)
+
+        logger.info(f"Merged structure file saved to: {output_path}")
+        logger.info(f"Structure mapping saved to: {mapping_path}")
+
+        return output_path
+
+    def generate_comparison_report(self, structures: Dict[str, Dict]) -> Path:
+        """Generate a comparison report for structure volumes and overlaps."""
+        report_data = {
+            "patient_id": self.patient_dir.name,
+            "timestamp": datetime.now().isoformat(),
+            "structure_comparison": [],
+            "summary": {
+                "total_structures": len(structures),
+                "manual_count": sum(1 for s in structures.values() if s["suffix"] == "manual"),
+                "auto_count": sum(1 for s in structures.values() if s["suffix"] == "auto"),
+                "conflicts_resolved": sum(1 for s in structures.values() if "alternatives" in s)
+            }
+        }
+
+        for name, info in structures.items():
+            structure_info = {
+                "final_name": name,
+                "original_name": info["original_name"],
+                "source": info["suffix"],
+                "source_file": info["source_file"],
+                "priority_applied": self.determine_priority(name),
+                "alternatives": info.get("alternatives", [])
+            }
+            report_data["structure_comparison"].append(structure_info)
+
+        report_path = self.patient_dir / "structure_comparison_report.json"
+        with open(report_path, 'w') as f:
+            json.dump(report_data, f, indent=2)
+
+        logger.info(f"Structure comparison report saved to: {report_path}")
+        return report_path
+
+    def load_custom_structure_config(self, config_path: Path) -> Dict[str, Any]:
+        """Load custom structure configuration from YAML file."""
+        try:
+            with open(config_path, 'r') as f:
+                config = yaml.safe_load(f)
+            return config.get('custom_structures', [])
+        except Exception as e:
+            logger.error(f"Failed to load custom structure config from {config_path}: {e}")
+            return []
+
+    def get_structure_mask(self, structure_name: str, rtstruct_ds: pydicom.Dataset) -> Optional[np.ndarray]:
+        """Extract binary mask for a structure from RT Structure dataset."""
+        # Find structure by name (case-insensitive partial match)
+        target_seq = None
+        structure_name_lower = structure_name.lower()
+
+        for roi_seq in rtstruct_ds.StructureSetROISequence:
+            roi_name = roi_seq.ROIName.lower()
+            # Check for exact match or partial match with common variations
+            if (roi_name == structure_name_lower or
+                structure_name_lower in roi_name or
+                roi_name.replace('_', '').replace(' ', '') == structure_name_lower.replace('_', '').replace(' ', '')):
+                target_seq = roi_seq
+                break
+
+        if target_seq is None:
+            logger.warning(f"Structure '{structure_name}' not found in RT Structure")
+            return None
+
+        # For this implementation, we'll return a placeholder
+        # In practice, you'd need to extract the actual contour data and rasterize it
+        # This would require the referenced CT series and proper coordinate transformation
+        logger.info(f"Found structure '{structure_name}' (ROI Number: {target_seq.ROINumber})")
+        return None  # Placeholder - actual mask extraction would go here
+
+    def apply_margin_to_mask(self, mask: np.ndarray, margin_mm: float, pixel_spacing: List[float]) -> np.ndarray:
+        """Apply margin expansion to a binary mask."""
+        if margin_mm <= 0:
+            return mask
+
+        # Convert margin from mm to pixels
+        margin_pixels = [margin_mm / spacing for spacing in pixel_spacing]
+
+        # Create structuring element for dilation
+        # Use spherical structuring element for 3D
+        if len(mask.shape) == 3:
+            # 3D case
+            radius = max(margin_pixels)
+            structuring_element = morphology.ball(int(np.ceil(radius)))
+        else:
+            # 2D case
+            radius = max(margin_pixels[:2])
+            structuring_element = morphology.disk(int(np.ceil(radius)))
+
+        # Apply binary dilation
+        expanded_mask = ndimage.binary_dilation(mask, structure=structuring_element)
+        return expanded_mask.astype(mask.dtype)
+
+    def perform_boolean_operation(self, operation: str, masks: List[np.ndarray]) -> Optional[np.ndarray]:
+        """Perform boolean operation on list of masks."""
+        if not masks:
+            return None
+
+        result = masks[0].copy()
+
+        for mask in masks[1:]:
+            if operation == "union":
+                result = np.logical_or(result, mask)
+            elif operation == "intersection":
+                result = np.logical_and(result, mask)
+            elif operation == "subtract":
+                result = np.logical_and(result, np.logical_not(mask))
+            else:
+                logger.error(f"Unknown boolean operation: {operation}")
+                return None
+
+        return result.astype(np.uint8)
+
+    def create_custom_structures(self, custom_config: List[Dict], all_structures: Dict[str, Dict]) -> Dict[str, Dict]:
+        """Create custom structures based on configuration."""
+        custom_structures = {}
+
+        # Load RT Structure datasets for mask operations
+        try:
+            manual_ds = pydicom.dcmread(self.rs_manual_path)
+            auto_ds = pydicom.dcmread(self.rs_auto_path)
+        except Exception as e:
+            logger.error(f"Failed to load RT Structure files for custom structure creation: {e}")
+            return custom_structures
+
+        for custom_struct in custom_config:
+            struct_name = custom_struct.get('name')
+            operation = custom_struct.get('operation', 'union')
+            source_structures = custom_struct.get('source_structures', [])
+            margin = custom_struct.get('margin', 0)
+            description = custom_struct.get('description', '')
+
+            logger.info(f"Creating custom structure: {struct_name}")
+
+            # For now, we'll create a placeholder structure entry
+            # Full implementation would require proper mask operations
+            source_masks = []
+            missing_sources = []
+
+            for source_name in source_structures:
+                # Try to find source structure in manual or auto structures
+                mask = None
+                found = False
+                source_name_clean = source_name.lower().replace('_', '').replace(' ', '').replace('.nii', '')
+
+                for existing_name in all_structures.keys():
+                    existing_clean = existing_name.lower().replace('_', '').replace(' ', '').replace('.nii', '')
+
+                    # Check multiple matching patterns
+                    if (source_name.lower() == existing_name.lower() or
+                        source_name.lower() in existing_name.lower() or
+                        existing_name.lower() in source_name.lower() or
+                        source_name_clean == existing_clean or
+                        source_name_clean in existing_clean or
+                        existing_clean in source_name_clean):
+
+                        found = True
+                        logger.info(f"Found source structure: {source_name} -> {existing_name}")
+                        break
+
+                if not found:
+                    missing_sources.append(source_name)
+                    logger.warning(f"Source structure not found: {source_name}")
+
+            if missing_sources:
+                logger.warning(f"Skipping custom structure '{struct_name}' due to missing sources: {missing_sources}")
+                continue
+
+            # Create placeholder custom structure entry
+            custom_structures[f"{struct_name}_custom"] = {
+                "original_name": struct_name,
+                "suffix": "custom",
+                "source_file": "custom_config",
+                "alternatives": [],
+                "operation": operation,
+                "sources": source_structures,
+                "margin": margin,
+                "description": description
+            }
+
+            logger.info(f"Created custom structure placeholder: {struct_name}_custom")
+
+        return custom_structures
+
+    def merge_all_structures(self, custom_config_path: Optional[Path] = None) -> Tuple[Path, Path]:
+        """Main method to merge all structure sources."""
+        all_structures = {}
+
+        # Load manual structures
+        manual_structures = self.load_structures_from_dicom(self.rs_manual_path, "manual")
+        all_structures.update(manual_structures)
+
+        # Load automated structures
+        auto_structures = self.load_structures_from_dicom(self.rs_auto_path, "auto")
+        all_structures.update(auto_structures)
+
+        logger.info(f"Total structures before conflict resolution: {len(all_structures)}")
+
+        # Resolve conflicts using priority rules
+        resolved_structures = self.resolve_conflicts(all_structures)
+
+        logger.info(f"Total structures after conflict resolution: {len(resolved_structures)}")
+
+        # Process custom structures if config provided
+        if custom_config_path and custom_config_path.exists():
+            logger.info(f"Processing custom structures from: {custom_config_path}")
+            custom_config = self.load_custom_structure_config(custom_config_path)
+            if custom_config:
+                custom_structures = self.create_custom_structures(custom_config, resolved_structures)
+                resolved_structures.update(custom_structures)
+                logger.info(f"Added {len(custom_structures)} custom structures")
+        else:
+            logger.info("No custom structure config provided or file not found")
+
+        # Create merged DICOM file
+        merged_file = self.create_merged_rtstruct(resolved_structures, custom_config_path)
+
+        # Generate comparison report
+        report_file = self.generate_comparison_report(resolved_structures)
+
+        return merged_file, report_file
+
+
+def merge_patient_structures(patient_dir: Path, custom_config_path: Optional[Path] = None) -> Tuple[Path, Path]:
+    """Convenience function to merge structures for a single patient."""
+    merger = StructureMerger(patient_dir)
+    return merger.merge_all_structures(custom_config_path)

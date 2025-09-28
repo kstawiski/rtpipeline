@@ -209,13 +209,14 @@ def build_auto_rtstruct(course_dir: Path) -> Optional[Path]:
         # Resample segmentation to CT geometry and add each label present
         seg_res = _resample_to_reference(seg_img, ct_img)
         seg_arr = sitk.GetArrayFromImage(seg_res)  # [z,y,x] integer labels
+        seg_arr = np.moveaxis(seg_arr, 0, -1)  # -> [y,x,z] for rt-utils
         labels = [int(v) for v in np.unique(seg_arr) if int(v) != 0]
         if not labels:
             logger.info("Segmentation contains no labels in %s", course_dir)
         else:
             for idx in labels:
                 name = label_map.get(idx, f'Segment_{idx}')
-                mask = (seg_arr == idx)
+                mask = seg_arr == idx
                 if not np.any(mask):
                     continue
                 try:
@@ -223,23 +224,25 @@ def build_auto_rtstruct(course_dir: Path) -> Optional[Path]:
                     added_any = True
                 except Exception as e:
                     logger.debug("Failed to add ROI %s: %s", name, e)
-    else:
+
+    if not added_any:
         # Fall back to per-ROI binary masks produced by TotalSegmentator
         for name, mask_img in _iter_binary_masks(nifti_dir):
             try:
                 resampled = _resample_to_reference(mask_img, ct_img)
                 mask_arr = sitk.GetArrayFromImage(resampled)
+                mask_arr = np.moveaxis(mask_arr, 0, -1)  # -> [y,x,z]
             except Exception as e:
                 logger.debug("Failed to resample mask %s: %s", name, e)
                 continue
 
-            mask_bin = (mask_arr > 0)
+            mask_bin = mask_arr > 0
             if not np.any(mask_bin):
                 continue
 
             roi_name = name
             try:
-                rtstruct.add_roi(mask=mask_bin.astype(np.uint8), name=roi_name)
+                rtstruct.add_roi(mask=mask_bin, name=roi_name)
                 added_any = True
             except Exception as e:
                 logger.debug("Failed to add ROI %s: %s", roi_name, e)

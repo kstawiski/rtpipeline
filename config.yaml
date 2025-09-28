@@ -13,7 +13,7 @@ segmentation:
 
 radiomics:
   sequential: false
-  params_file: "radiomics_params.yaml"
+  params_file: "rtpipeline/radiomics_params.yaml"
 
 # Environment names
 environments:
