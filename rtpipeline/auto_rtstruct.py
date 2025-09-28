@@ -11,6 +11,8 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
+from .utils import sanitize_rtstruct
+
 
 def _load_ct_image(ct_dir: Path) -> Optional[sitk.Image]:
     try:
@@ -259,6 +261,7 @@ def build_auto_rtstruct(course_dir: Path) -> Optional[Path]:
 
     try:
         rtstruct.save(str(out_path))
+        sanitize_rtstruct(out_path)
         logger.info("Wrote auto RTSTRUCT: %s", out_path)
         return out_path
     except Exception as e:

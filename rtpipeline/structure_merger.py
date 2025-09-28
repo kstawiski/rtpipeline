@@ -14,6 +14,7 @@ from scipy import ndimage
 from skimage import morphology
 
 from .dvh import _create_custom_structures_rtstruct
+from .utils import sanitize_rtstruct
 
 logger = logging.getLogger(__name__)
 
@@ -577,6 +578,11 @@ class StructureMerger:
             },
         }
         mapping_path.write_text(json.dumps(mapping_info, indent=2))
+
+        try:
+            sanitize_rtstruct(merged_path)
+        except Exception as exc:
+            logger.debug("Failed to sanitize merged RTSTRUCT %s: %s", merged_path, exc)
 
         return merged_path, report_path
 

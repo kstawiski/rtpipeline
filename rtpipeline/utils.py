@@ -10,6 +10,7 @@ from typing import Any, Callable, Iterable, List, Optional, Sequence, TypeVar
 
 import pydicom
 from pydicom.dataset import FileDataset
+from pydicom.sequence import Sequence
 from pydicom.tag import Tag
 
 logger = logging.getLogger(__name__)
@@ -60,6 +61,82 @@ def list_files(root: Path, patterns: Iterable[str] | None = None) -> list[Path]:
             if any(path.match(pat) for pat in patterns):
                 out.append(path)
     return out
+
+
+def sanitize_rtstruct(rtstruct_path: Path | str, *, minimum_points: int = 3) -> bool:
+    """Remove degenerate contour items from an RTSTRUCT file.
+
+    Contours with fewer than ``minimum_points`` XYZ points (i.e. a single point or
+    line) confuse downstream voxelisation code. This helper strips them in-place and
+    normalises the ``NumberOfContourPoints`` metadata.
+
+    Returns
+    -------
+    bool
+        True when the file was modified, False otherwise.
+    """
+
+    path = Path(rtstruct_path)
+    if not path.exists():
+        logger.debug("sanitize_rtstruct: %s missing", path)
+        return False
+
+    try:
+        ds = pydicom.dcmread(str(path))
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("sanitize_rtstruct: unable to read %s (%s)", path, exc)
+        return False
+
+    changed = False
+    roi_names = {
+        int(roi.ROINumber): str(getattr(roi, "ROIName", ""))
+        for roi in getattr(ds, "StructureSetROISequence", [])
+    }
+
+    for roi_contour in list(getattr(ds, "ROIContourSequence", []) or []):
+        contour_seq = getattr(roi_contour, "ContourSequence", None)
+        if not contour_seq:
+            continue
+
+        filtered = []
+        for contour in contour_seq:
+            try:
+                data = list(contour.ContourData)
+            except Exception:
+                changed = True
+                continue
+            points = len(data) // 3
+            if points >= minimum_points:
+                if getattr(contour, "NumberOfContourPoints", points) != points:
+                    contour.NumberOfContourPoints = points
+                    changed = True
+                filtered.append(contour)
+            else:
+                roi_name = roi_names.get(getattr(roi_contour, "ReferencedROINumber", -1), "")
+                logger.debug(
+                    "sanitize_rtstruct: dropping contour for ROI '%s' (points=%d) in %s",
+                    roi_name,
+                    points,
+                    path,
+                )
+                changed = True
+
+        if filtered:
+            if len(filtered) != len(contour_seq):
+                roi_contour.ContourSequence = Sequence(filtered)
+                changed = True
+        else:
+            del roi_contour.ContourSequence
+            changed = True
+
+    if changed:
+        try:
+            ds.save_as(str(path))
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("sanitize_rtstruct: failed saving %s (%s)", path, exc)
+            return False
+
+    return changed
 
 
 _MEMORY_PATTERNS = (

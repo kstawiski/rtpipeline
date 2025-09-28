@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
@@ -33,6 +34,9 @@ METADATA_EXPORT_FILES = [
     METADATA_EXPORT_DIR / "case_metadata_all.json",
 ]
 
+MR_SEGMENT_SENTINEL = LOGS_DIR / "segment_mr.done"
+MR_RADIOMICS_SENTINEL = LOGS_DIR / "radiomics_mr.done"
+
 SEG_CONFIG = config.get("segmentation", {}) or {}
 SEG_FAST = bool(SEG_CONFIG.get("fast", False))
 SEG_ROI_SUBSET = SEG_CONFIG.get("roi_subset") or []
@@ -43,6 +47,22 @@ if SEG_FAST:
     SEG_FLAGS.append("-f")
 if SEG_ROI_SUBSET:
     SEG_FLAGS.extend(["-rs", *SEG_ROI_SUBSET])
+
+SEG_EXTRA_MODELS = SEG_CONFIG.get("extra_models") or []
+if isinstance(SEG_EXTRA_MODELS, str):
+    SEG_EXTRA_MODELS = [m.strip() for m in SEG_EXTRA_MODELS.replace(",", " ").split() if m.strip()]
+else:
+    SEG_EXTRA_MODELS = [str(m).strip() for m in SEG_EXTRA_MODELS if str(m).strip()]
+
+try:
+    sys.path.insert(0, str(ROOT_DIR))
+    from rtpipeline.segmentation import _scan_mr_series  # type: ignore
+    MR_SERIES_PRESENT = bool(_scan_mr_series(DICOM_ROOT))
+except Exception:
+    MR_SERIES_PRESENT = False
+finally:
+    if sys.path and sys.path[0] == str(ROOT_DIR):
+        sys.path.pop(0)
 
 RADIOMICS_CONFIG = config.get("radiomics", {}) or {}
 RADIOMICS_SEQUENTIAL = bool(RADIOMICS_CONFIG.get("sequential", False))
@@ -86,7 +106,8 @@ rule all:
         str(OUTPUT_DIR / "radiomics_summary.xlsx"),
         str(OUTPUT_DIR / "dvh_summary.xlsx"),
         str(OUTPUT_DIR / "qc_summary.xlsx"),
-        *(str(p) for p in METADATA_EXPORT_FILES)
+        *(str(p) for p in METADATA_EXPORT_FILES),
+        *(str(path) for path in ([MR_SEGMENT_SENTINEL, MR_RADIOMICS_SENTINEL] if MR_SERIES_PRESENT else []))
 
 
 rule organize_data:
@@ -216,25 +237,13 @@ rule segment_nifti:
             shutil.rmtree(nifti_dir)
 
         job_threads = threads
-        cmd = [
-            "TotalSegmentator",
-            "-i", str(Path(input.ct_dir)),
-            "-o", str(nifti_dir),
-            "-ot", "nifti",
-            "-nr", str(job_threads),
-            "-ns", str(job_threads),
-        ]
-        if SEG_FLAGS:
-            cmd.extend(SEG_FLAGS)
-
-        # Add GPU support if available
         import subprocess
         try:
             subprocess.run(["nvidia-smi"], check=True, capture_output=True, timeout=5)
-            cmd.extend(["--device", "gpu"])
+            device = "gpu"
             print("GPU detected, using GPU acceleration for TotalSegmentator")
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
-            cmd.extend(["--device", "cpu"])
+            device = "cpu"
             print("No GPU detected, using CPU for TotalSegmentator")
 
         lock_path = LOGS_DIR / ".totalsegmentator.lock"
@@ -257,8 +266,33 @@ rule segment_nifti:
 
         try:
             with open(log[0], "w") as logf, redirect_stdout(logf), redirect_stderr(logf):
-                subprocess.run(cmd, check=True, env=env)
-                print(f"TotalSegmentator NIFTI generation completed for {wildcards.patient}")
+                def run_totalseg(target_dir: Path, task: str | None = None) -> None:
+                    if target_dir.exists():
+                        shutil.rmtree(target_dir)
+                    command = [
+                        "TotalSegmentator",
+                        "-i", str(Path(input.ct_dir)),
+                        "-o", str(target_dir),
+                        "-ot", "nifti",
+                        "-nr", str(job_threads),
+                        "-ns", str(job_threads),
+                        "--device", device,
+                    ]
+                    if SEG_FLAGS:
+                        command.extend(SEG_FLAGS)
+                    if task:
+                        command.extend(["--task", task])
+                    subprocess.run(command, check=True, env=env)
+                    print(f"TotalSegmentator {task or 'total'} NIFTI generation completed for {wildcards.patient}")
+
+                run_totalseg(nifti_dir)
+
+                for model in SEG_EXTRA_MODELS:
+                    model_dir = Path(input.ct_dir).parent / f"TotalSegmentator_{model}_NIFTI"
+                    try:
+                        run_totalseg(model_dir, task=model)
+                    except subprocess.CalledProcessError as exc:
+                        print(f"TotalSegmentator extra model '{model}' failed for {wildcards.patient}: {exc}")
         finally:
             try:
                 lock_path.unlink()
@@ -365,6 +399,46 @@ rule merge_structures:
                     json.dump(empty_report, f)
 
 
+rule segment_mr:
+    output:
+        done=str(MR_SEGMENT_SENTINEL)
+    conda:
+        "envs/rtpipeline.yaml"
+    threads:
+        SEGMENTATION_THREADS
+    log:
+        str(LOGS_DIR / "segment_mr.log")
+    run:
+        import sys as _sys
+        from pathlib import Path as _Path
+
+        done_path = _Path(output.done)
+        done_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with open(log[0], "w") as logf, redirect_stdout(logf), redirect_stderr(logf):
+            _sys.path.insert(0, str(ROOT_DIR))
+            try:
+                from rtpipeline.config import PipelineConfig
+                from rtpipeline.segmentation import segment_extra_models_mr
+
+                cfg = PipelineConfig(
+                    dicom_root=DICOM_ROOT.resolve(),
+                    output_root=OUTPUT_DIR.resolve(),
+                    logs_root=LOGS_DIR.resolve(),
+                    extra_seg_models=SEG_EXTRA_MODELS,
+                    resume=True,
+                )
+
+                segment_extra_models_mr(cfg, force=False)
+                print("MR segmentation step completed (see logs for details)")
+            except Exception as exc:
+                print(f"MR segmentation step encountered an error: {exc}")
+            finally:
+                _sys.path.pop(0)
+
+        done_path.write_text("ok\n")
+
+
 rule radiomics:
     input:
         ct_dir=str(OUTPUT_DIR / "{patient}" / "CT_DICOM"),
@@ -417,6 +491,54 @@ rule radiomics:
                 raise RuntimeError("Radiomics extraction failed")
             if Path(result) != output_path:
                 shutil.copy2(result, output_path)
+
+
+rule radiomics_mr:
+    input:
+        segment_mr=str(MR_SEGMENT_SENTINEL)
+    output:
+        done=str(MR_RADIOMICS_SENTINEL)
+    conda:
+        "envs/rtpipeline-radiomics.yaml"
+    threads:
+        RADIOMICS_THREADS
+    log:
+        str(LOGS_DIR / "radiomics_mr.log")
+    run:
+        import sys as _sys
+        from pathlib import Path as _Path
+
+        done_path = _Path(output.done)
+        done_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with open(log[0], "w") as logf, redirect_stdout(logf), redirect_stderr(logf):
+            _sys.path.insert(0, str(ROOT_DIR))
+            try:
+                from rtpipeline.config import PipelineConfig
+                from rtpipeline.radiomics import MRSeries, radiomics_for_mr_series
+                from rtpipeline.segmentation import _scan_mr_series
+
+                cfg = PipelineConfig(
+                    dicom_root=DICOM_ROOT.resolve(),
+                    output_root=OUTPUT_DIR.resolve(),
+                    logs_root=LOGS_DIR.resolve(),
+                    extra_seg_models=SEG_EXTRA_MODELS,
+                    resume=True,
+                )
+
+                series = _scan_mr_series(DICOM_ROOT)
+                processed = 0
+                for pid, suid, sdir in series:
+                    result = radiomics_for_mr_series(cfg, MRSeries(pid, suid, sdir))
+                    if result:
+                        processed += 1
+                print(f"MR radiomics completed for {processed} series")
+            except Exception as exc:
+                print(f"MR radiomics step encountered an error: {exc}")
+            finally:
+                _sys.path.pop(0)
+
+        done_path.write_text("ok\n")
 
 
 rule dvh:
