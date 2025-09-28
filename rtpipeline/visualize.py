@@ -3,7 +3,7 @@ import logging
 import os
 import re
 from pathlib import Path
-from typing import List, Tuple, Dict
+from typing import List, Tuple, Dict, Optional
 
 import matplotlib.pyplot as plt
 import numpy as np

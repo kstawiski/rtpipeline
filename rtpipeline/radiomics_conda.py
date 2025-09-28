@@ -175,7 +175,7 @@ print(json.dumps(output))
             ["conda", "run", "-n", RADIOMICS_ENV, "python", "-c", extraction_script_with_file],
             capture_output=True,
             text=True,
-            timeout=300  # 5 minute timeout
+            timeout=900  # allow up to 15 minutes for large ROIs
         )
 
         if result.returncode != 0:
@@ -220,7 +220,8 @@ print(json.dumps(output))
 def process_radiomics_batch(
     tasks: List[Tuple[str, str, str, Optional[str], Optional[int]]],
     output_path: Path,
-    sequential: bool = False
+    sequential: bool = False,
+    max_workers: Optional[int] = None,
 ) -> Optional[Path]:
     """
     Process a batch of radiomics tasks.
@@ -229,6 +230,7 @@ def process_radiomics_batch(
         tasks: List of (image_path, mask_path, roi_name, params_file, label) tuples
         output_path: Path to save the radiomics Excel file
         sequential: If True, process sequentially instead of in parallel
+        max_workers: Optional cap on parallel worker processes
 
     Returns:
         Path to the output file if successful, None otherwise
@@ -262,7 +264,8 @@ def process_radiomics_batch(
 
         logger.info(f"Processing {len(tasks)} radiomics tasks in parallel")
 
-        with ProcessPoolExecutor(max_workers=min(len(tasks), os.cpu_count() or 4)) as executor:
+        worker_limit = max_workers if max_workers and max_workers > 0 else (os.cpu_count() or 4)
+        with ProcessPoolExecutor(max_workers=min(len(tasks), worker_limit)) as executor:
             # Submit all tasks
             future_to_roi = {}
             for image_path, mask_path, roi_name, params_file, label in tasks:
@@ -276,7 +279,7 @@ def process_radiomics_batch(
             for future in as_completed(future_to_roi):
                 roi_name = future_to_roi[future]
                 try:
-                    features = future.result(timeout=300)
+                    features = future.result(timeout=900)
                     features['roi_name'] = roi_name
                     results.append(features)
                     logger.debug(f"Completed radiomics for {roi_name}")
@@ -359,7 +362,13 @@ def radiomics_for_course(
         # Get all ROI names
         roi_names = rtstruct.get_roi_names()
 
+        skip_rois = {"body", "couchsurface", "couchinterior"}
+
         for roi_name in roi_names:
+            normalized = roi_name.replace(" ", "").lower()
+            if normalized in skip_rois:
+                logger.debug(f"Skipping radiomics for ROI {roi_name} (heuristic filter)")
+                continue
             try:
                 # Get mask for ROI
                 mask = rtstruct.get_roi_mask_by_name(roi_name)
@@ -392,7 +401,19 @@ def radiomics_for_course(
     output_path = course_dir / "Radiomics_CT.xlsx"
     sequential = os.environ.get('RTPIPELINE_RADIOMICS_SEQUENTIAL', '').lower() in ('1', 'true', 'yes')
 
-    result = process_radiomics_batch(tasks, output_path, sequential=sequential)
+    max_workers = None
+    if getattr(config, "workers", None):
+        try:
+            max_workers = int(config.workers)
+        except Exception:
+            max_workers = None
+
+    result = process_radiomics_batch(
+        tasks,
+        output_path,
+        sequential=sequential,
+        max_workers=max_workers,
+    )
 
     # Clean up temporary files
     try:

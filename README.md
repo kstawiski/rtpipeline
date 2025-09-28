@@ -8,9 +8,19 @@ rtpipeline is an end-to-end DICOM-RT processing pipeline that turns a folder of 
 
 ### Using Snakemake (Recommended)
 ```bash
-# Snakemake automatically manages conda environments
-snakemake --use-conda --cores 4
+# Snakemake automatically manages per-stage conda environments
+XDG_CACHE_HOME=$PWD/.cache \
+snakemake --use-conda --cores 4 --conda-prefix $HOME/.snakemake_conda_store
 ```
+
+- Adjust `--cores` to match the CPU budget you want Snakemake to parallelise across.
+- Set `workers` in `config.yaml` if you want radiomics and metadata stages to launch
+  more (or fewer) worker processes than the default.
+- The shared `--conda-prefix` caches environments so subsequent runs do not
+  rebuild them; change the path if you prefer a different location.
+- Segmentation is intentionally serialized: the workflow uses a simple lock so
+  only one TotalSegmentator job runs at a time (while still giving it the
+  configured thread budget).
 
 ### Direct CLI Usage
 ```bash
@@ -44,11 +54,13 @@ Typical flow (per patient):
 
 Design principles:
 - Clinically meaningful course grouping and dose summation.
-- Idempotent, resume‑safe segmentation and RTSTRUCT generation.
+- Idempotent, resume-safe segmentation and RTSTRUCT generation.
 - DVH driven by RTDOSE/RTPLAN with manual and auto RTSTRUCT.
 - Visual QA tools built for rapid review of structure coverage and auto‑seg quality.
 - Rich metadata to support downstream clinical and research analyses.
-- Parallelized non‑segmentation phases (organize, DVH, visualization, metadata) with `--workers` control.
+- Smarter multicore usage: Snakemake’s `--cores` controls global parallelism while
+  `config.yaml:workers` governs per-rule worker pools (organise, radiomics,
+  metadata); segmentation honours thread caps via `OMP_NUM_THREADS`, etc.
 
 ## Installation
 
@@ -84,13 +96,14 @@ The pipeline includes a Snakemake workflow that automatically manages conda envi
 ### Snakemake Usage
 ```bash
 # Run complete pipeline
-snakemake --use-conda --cores 4
+XDG_CACHE_HOME=$PWD/.cache \
+snakemake --use-conda --cores 4 --conda-prefix $HOME/.snakemake_conda_store
 
 # Dry run to see planned actions
 snakemake -n
 
 # Run specific rules
-snakemake radiomics --use-conda --cores 4
+snakemake radiomics --use-conda --cores 4 --conda-prefix $HOME/.snakemake_conda_store
 
 # Clean intermediate files
 snakemake clean
@@ -107,6 +120,10 @@ output_dir: "Data_Snakemake"
 logs_dir: "Logs_Snakemake"
 workers: 4
 ```
+
+- `workers` limits the pool size used by organise/metadata/radiomics steps.
+- Snakemake’s `--cores` controls how many rules can run concurrently; set it to
+  a value at least as large as `workers` when radiomics concurrency matters.
 
 ## CLI Usage
 - Minimal run:
@@ -136,6 +153,11 @@ workers: 4
   - `Axial.html` (scrollable axial CT QA viewer with manual/auto overlays)
   - `case_metadata.json` and `case_metadata.xlsx` (per-course clinical/research metadata)
   - `radiomics_features_CT.xlsx` (pyradiomics features if enabled)
+- Cohort-level exports under `outdir/Data/`:
+  - `metadata.xlsx`, `plans.xlsx`, `structure_sets.xlsx`, `dosimetrics.xlsx`,
+    `fractions.xlsx`, `CT_images.xlsx`
+  - `case_metadata_all.{xlsx,json}` (flattened per-course metadata across the cohort)
+  - `radiomics_summary.xlsx`, `dvh_summary.xlsx`, `metadata_summary.xlsx`
 
 ## Course Merging Logic
 - By default, plans/doses are merged only if they refer to the same CT StudyInstanceUID
