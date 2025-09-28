@@ -12,11 +12,6 @@ import numpy as np
 import SimpleITK as sitk
 import pydicom
 
-# Apply NumPy 2.x compatibility patches before importing PyRadiomics
-try:
-    from . import numpy2_compat
-except ImportError:
-    pass
 
 from .config import PipelineConfig
 from importlib import resources as importlib_resources
@@ -132,61 +127,30 @@ def _apply_params_to_extractor(ext: "radiomics.featureextractor.RadiomicsFeature
 
 
 def _have_pyradiomics() -> bool:
-    """Check if pyradiomics is available and properly installed."""
-    try:
-        # First check if we can import without C extensions
-        import os
-        original_env = os.environ.get('PYRADIOMICS_USE_CEXTENSIONS')
-        
+    """Check if pyradiomics is available - works with both NumPy 1.x and 2.x via wrappers."""
+    import numpy as np
+    numpy_version = tuple(map(int, np.__version__.split('.')[:2]))
+
+    if numpy_version[0] >= 2:
+        # Check if we have conda-based execution available
         try:
-            # Try importing pyradiomics normally first
-            import radiomics  # noqa: F401
-            from radiomics import featureextractor  # noqa: F401
-            logger.debug("pyradiomics loaded successfully with full C extensions support")
-            return True
-        except ImportError as e:
-            error_msg = str(e)
-            
-            # Check if this is a NumPy 2.x compatibility issue with C extensions
-            if "NumPy 1.x cannot be run in" in error_msg or "_multiarray_umath" in error_msg:
-                logger.warning("pyradiomics C extensions incompatible with NumPy 2.x - attempting fallback")
-                
-                # Try disabling C extensions
-                os.environ['PYRADIOMICS_USE_CEXTENSIONS'] = '0'
-                
-                try:
-                    # Clear any cached imports
-                    import sys
-                    modules_to_clear = [k for k in sys.modules.keys() if k.startswith('radiomics')]
-                    for mod in modules_to_clear:
-                        del sys.modules[mod]
-                    
-                    # Try importing again with C extensions disabled
-                    import radiomics  # noqa: F401
-                    from radiomics import featureextractor  # noqa: F401
-                    
-                    logger.warning("pyradiomics loaded with C extensions disabled due to NumPy 2.x compatibility")
-                    logger.debug("Radiomics will work but may be slower without C extensions")
-                    return True
-                    
-                except Exception as fallback_error:
-                    logger.error(f"pyradiomics failed even with C extensions disabled: {fallback_error}")
-                    return False
-                finally:
-                    # Restore original environment
-                    if original_env is None:
-                        os.environ.pop('PYRADIOMICS_USE_CEXTENSIONS', None)
-                    else:
-                        os.environ['PYRADIOMICS_USE_CEXTENSIONS'] = original_env
-            else:
-                logger.info("pyradiomics not available. Install with: pip install pyradiomics")
-                logger.info("Or install rtpipeline with radiomics support: pip install -e '.[radiomics]'")
-                return False
-                
-    except Exception as e:
-        logger.warning("pyradiomics import failed (possibly Python version compatibility): %s", e)
-        logger.info("Try using Python 3.11: conda create -n rtpipeline python=3.11")
+            from .radiomics_conda import check_radiomics_env
+            if check_radiomics_env():
+                logger.debug("NumPy 2.x detected, conda environment available for PyRadiomics")
+                return True
+        except ImportError:
+            pass
+        logger.warning("NumPy 2.x detected but no PyRadiomics environment found")
         return False
+    else:
+        # NumPy 1.x - check direct PyRadiomics availability
+        try:
+            from radiomics import featureextractor
+            logger.debug("NumPy 1.x detected, PyRadiomics available directly")
+            return True
+        except ImportError:
+            logger.warning("NumPy 1.x detected but PyRadiomics not installed")
+            return False
 
 
 def _load_series_image(dicom_dir: Path, series_uid: Optional[str] = None) -> Optional[sitk.Image]:
@@ -259,36 +223,50 @@ def _get_params_file(config: PipelineConfig | None) -> Optional[Path]:
 
 
 def _extractor(config: PipelineConfig, modality: str = 'CT', normalize_override: Optional[bool] = None) -> Optional["radiomics.featureextractor.RadiomicsFeatureExtractor"]:
-    if not _have_pyradiomics():
-        return None
-    from radiomics.featureextractor import RadiomicsFeatureExtractor
-    logging.getLogger('radiomics.featureextractor').setLevel(logging.WARNING)
+    # Check NumPy version to decide which approach to use
+    import numpy as np
+    numpy_version = tuple(map(int, np.__version__.split('.')[:2]))
+
+    if numpy_version[0] >= 2:
+        # For NumPy 2.x, return None to use conda-based execution at call sites
+        logger.info("NumPy 2.x detected (%s), will use conda-based PyRadiomics execution", np.__version__)
+        return None  # Signals to use conda-based execution
+
+    # Direct usage with NumPy 1.x
+    logger.debug("NumPy 1.x detected (%s), using PyRadiomics directly", np.__version__)
     try:
-            pfile = _get_params_file(config)
-            params_dict: Optional[Dict[str, Any]] = None
-            if pfile is not None:
-                params_dict = _load_radiomics_params_dict(pfile)
-            ext = RadiomicsFeatureExtractor()
-            if params_dict is not None:
-                _apply_params_to_extractor(ext, params_dict)
-            elif pfile is not None:
-                # Fallback to the library parser if caching fails for any reason
-                ext.loadParams(str(pfile))
-            # Adjust per-modality recommendations
-            if modality.upper() == 'MR':
-                # Prefer binCount=64 for MRI; toggle normalization based on detected weighting
+        from radiomics.featureextractor import RadiomicsFeatureExtractor
+        logging.getLogger('radiomics.featureextractor').setLevel(logging.WARNING)
+
+        pfile = _get_params_file(config)
+        params_dict: Optional[Dict[str, Any]] = None
+        if pfile is not None:
+            params_dict = _load_radiomics_params_dict(pfile)
+
+        ext = RadiomicsFeatureExtractor()
+
+        if params_dict is not None:
+            _apply_params_to_extractor(ext, params_dict)
+        elif pfile is not None:
+            # Fallback to the library parser if caching fails for any reason
+            ext.loadParams(str(pfile))
+
+        # Adjust per-modality recommendations
+        if modality.upper() == 'MR':
+            # Prefer binCount=64 for MRI; toggle normalization based on detected weighting
+            try:
+                ext.settings['binCount'] = 64
+                if 'binWidth' in ext.settings:
+                    del ext.settings['binWidth']
+            except Exception:
+                pass
+            if normalize_override is not None:
                 try:
-                    ext.settings['binCount'] = 64
-                    if 'binWidth' in ext.settings:
-                        del ext.settings['binWidth']
+                    ext.settings['normalize'] = bool(normalize_override)
                 except Exception:
                     pass
-                if normalize_override is not None:
-                    try:
-                        ext.settings['normalize'] = bool(normalize_override)
-                    except Exception:
-                        pass
-            return ext
+
+        return ext
     except Exception as e:
         logger.warning("Failed to create RadiomicsFeatureExtractor: %s", e)
         return None
@@ -651,7 +629,11 @@ def run_radiomics(config: PipelineConfig, courses: List["object"], custom_struct
     """Top-level orchestrator: per-course CT radiomics and per-series MR radiomics.
     'courses' elements are CourseOutput-like with attributes patient_id, course_key, dir.
     """
-    if not _have_pyradiomics():
+    # Check if we can use PyRadiomics
+    can_use_radiomics = _have_pyradiomics()
+
+    if not can_use_radiomics:
+        logger.warning("PyRadiomics not available - skipping radiomics extraction")
         return
 
     # Check if enhanced parallel radiomics processing is enabled

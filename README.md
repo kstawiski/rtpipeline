@@ -1,8 +1,22 @@
 rtpipeline – DICOM‑RT Processing Pipeline
-========================================
+==========================================
 
-Overview
-rtpipeline is an end-to-end DICOM-RT processing pipeline that turns a folder of raw DICOMs (CT/RTPLAN/RTDOSE/RTSTRUCT/RT treatment records) into clean, per-patient “courses” with organized data, segmentation, quantitative DVH metrics, visual QA, and rich metadata for clinical and research use.
+## Overview
+rtpipeline is an end-to-end DICOM-RT processing pipeline that turns a folder of raw DICOMs (CT/RTPLAN/RTDOSE/RTSTRUCT/RT treatment records) into clean, per-patient "courses" with organized data, segmentation, quantitative DVH metrics, visual QA, and rich metadata for clinical and research use.
+
+## Quick Start
+
+### Using Snakemake (Recommended)
+```bash
+# Snakemake automatically manages conda environments
+snakemake --use-conda --cores 4
+```
+
+### Direct CLI Usage
+```bash
+pip install -e .
+rtpipeline --dicom-root Example_data --outdir Data --logs Logs
+```
 
 ## Documentation
 - [Pipeline overview](docs/pipeline.md) — stage-by-stage breakdown of discovery, grouping, organization, segmentation, DVH, visualization, and radiomics.
@@ -13,8 +27,8 @@ rtpipeline is an end-to-end DICOM-RT processing pipeline that turns a folder of 
 
 At a glance, the pipeline:
 - Scans a DICOM root (one or many patients) and extracts global metadata into Excel.
-- Groups each patient’s data into treatment “courses” by the CT StudyInstanceUID (primary + boost on the same CT are merged; subsequent treatments on a different CT are separated).
-- Organizes each course into a canonical structure (CT_DICOM, RP/RD/RS), sums multi-stage doses into a single RD, and synthesizes a “summed” RP with total Rx.
+- Groups each patient's data into treatment "courses" by the CT StudyInstanceUID (primary + boost on the same CT are merged; subsequent treatments on a different CT are separated).
+- Organizes each course into a canonical structure (CT_DICOM, RP/RD/RS), sums multi-stage doses into a single RD, and synthesizes a "summed" RP with total Rx.
 - Runs TotalSegmentator on the course CT (resume‑safe; re-run with `--force-segmentation`) and auto‑generates RTSTRUCT (RS_auto) aligned to the CT, so DVH can include auto‑segmentation even if no manual RS exists.
 - Computes DVH metrics for manual and auto structures using dicompyler‑core, including integral dose, hottest small volumes (D1cc, D0.1cc), and coverage at Rx, and writes per‑course and merged workbooks.
 - Generates interactive reports: Plotly‑based DVH report (toggle structures) and an Axial viewer to scroll CT slices with semi‑transparent overlays for manual/auto structures.
@@ -34,89 +48,108 @@ Design principles:
 - DVH driven by RTDOSE/RTPLAN with manual and auto RTSTRUCT.
 - Visual QA tools built for rapid review of structure coverage and auto‑seg quality.
 - Rich metadata to support downstream clinical and research analyses.
- - Parallelized non‑segmentation phases (organize, DVH, visualization, metadata) with `--workers` control.
+- Parallelized non‑segmentation phases (organize, DVH, visualization, metadata) with `--workers` control.
 
-Install
-- **Quick Setup**: Run the automated environment setup:
-  ```bash
-  ./setup_environment.sh
-  conda activate rtpipeline
-  pip install -e .
-  ```
+## Installation
 
-- **Manual Installation**: From the repo root:
-  - `pip install -e .` (core functionality)
-  - `pip install -e ".[radiomics]"` (with optional radiomics support)
-  - Installs core deps: pydicom (>=3.0,<4), numpy (<2.0 for TotalSegmentator compatibility), dicompyler-core (DVH), SimpleITK, pydicom-seg, matplotlib, scipy, pandas, nested-lookup, plotly, rt-utils, dicom2nifti, nbformat, ipython.
-  - TotalSegmentator is pulled from GitHub via VCS dependency: `TotalSegmentator @ git+https://github.com/wasserth/TotalSegmentator`. Ensure your pip supports VCS requirements (pip >= 21.1 recommended).
-  - **Note on pyradiomics**: This is optional and may fail on Python 3.12+. Use Python 3.11 or skip radiomics with `--no-radiomics`.
-  - Note: `dcm2niix` is an external CLI, not a Python package. Install it via your OS package manager or conda (e.g., `conda install -c conda-forge dcm2niix`). The pipeline will skip NIfTI conversion if it is not available (or use bundled zips included in the wheel).
- - Optional: if you keep platform ZIPs in `rtpipeline/ext/` (e.g., `rtpipeline/ext/dcm2niix_lnx.zip`, `..._mac.zip`, `..._win.zip`), they are included in wheels and the pipeline auto‑extracts and uses the bundled `dcm2niix` when a global install is not found. Extraction happens under `--logs/bin/`.
-  - TotalSegmentator does not require a license key.
+### Dependencies
+- Python 3.11 recommended
+- Core deps: pydicom (>=3.0,<4), dicompyler-core (DVH), SimpleITK, pydicom-seg, matplotlib, scipy, pandas, nested-lookup, plotly, rt-utils, dicom2nifti, nbformat, ipython.
+- TotalSegmentator is pulled from GitHub: `TotalSegmentator @ git+https://github.com/wasserth/TotalSegmentator`
+- Optional: pyradiomics for radiomics features extraction
+- External: `dcm2niix` via OS package manager or conda (e.g., `conda install -c conda-forge dcm2niix`)
 
-- **Environment Validation**: 
-  ```bash
-  rtpipeline doctor
-  ```
-  This checks your environment and reports any issues.
+### Installation Steps
+```bash
+# Clone repository
+git clone <repository-url>
+cd rtpipeline
 
-- **Troubleshooting**: See `TROUBLESHOOTING.md` for common issues and solutions.
+# Install package
+pip install -e .
 
-CLI Usage
+# Or with radiomics support
+pip install -e ".[radiomics]"
+
+# Verify installation
+rtpipeline doctor
+```
+
+## Snakemake Workflow
+
+The pipeline includes a Snakemake workflow that automatically manages conda environments for optimal compatibility:
+- Main environment with NumPy 2.x for TotalSegmentator
+- Radiomics environment with NumPy 1.x for PyRadiomics
+
+### Snakemake Usage
+```bash
+# Run complete pipeline
+snakemake --use-conda --cores 4
+
+# Dry run to see planned actions
+snakemake -n
+
+# Run specific rules
+snakemake radiomics --use-conda --cores 4
+
+# Clean intermediate files
+snakemake clean
+
+# Clean all outputs
+snakemake clean_all
+```
+
+### Configuration
+Edit `config.yaml` to customize:
+```yaml
+dicom_root: "Example_data"
+output_dir: "Data_Snakemake"
+logs_dir: "Logs_Snakemake"
+workers: 4
+```
+
+## CLI Usage
 - Minimal run:
-  - `rtpipeline --dicom-root /path/to/DICOM --outdir ./Data_Organized --logs ./Logs`
+  ```bash
+  rtpipeline --dicom-root /path/to/DICOM --outdir ./Data_Organized --logs ./Logs
+  ```
+
 - Options:
   - `--merge-criteria {same_ct_study,frame_of_reference}`
-  - `--max-days N` to split plans that are far apart in time even if they share the same CT
+  - `--max-days N` to split plans that are far apart in time
   - `--no-segmentation`, `--force-segmentation` to skip or re-run segmentation
   - `--no-dvh`, `--no-visualize`, `--no-metadata` to skip phases
-  - `--conda-activate "source ~/miniconda3/etc/profile.d/conda.sh && conda activate rt"` to run dcm2niix/TotalSegmentator from a conda env
-  - `--dcm2niix`, `--totalseg` to override command names
-  - `--totalseg-license KEY` to pass a license key when required
-  - Default segmentation: `total` (CT courses) and `total_mr` (MR series under `--dicom-root`).
-  - `--extra-seg-models model1,model2` to run additional TotalSegmentator tasks.
-    - CT: non-`_mr` tasks per course into `TotalSegmentator_<MODEL>_{DICOM,NIFTI}/`.
-    - MR: `_mr` tasks per MR series into `outdir/<PatientID>/MR_<SeriesInstanceUID>/TotalSegmentator_<MODEL>_{DICOM,NIFTI}/`.
-  - `--totalseg-fast` to add `--fast` (recommended on CPU), `--totalseg-roi-subset roi1,roi2` to restrict ROIs
-  - `doctor` subcommand: `rtpipeline doctor` prints environment checks and bundled dcm2niix fallbacks
-  - `--resume` to skip per-course steps that already produced outputs (idempotent resume)
+  - `--workers N` for parallel processing control
+  - `--totalseg-fast` to add `--fast` (recommended on CPU)
+  - `--totalseg-roi-subset roi1,roi2` to restrict ROIs
+  - `--resume` to skip completed steps (idempotent resume)
+  - `doctor` subcommand: `rtpipeline doctor` prints environment checks
 
-Resuming
-- Use `--resume` to continue after an interruption. The pipeline will skip per-course work when key outputs already exist:
-  - Segmentation: skipped if `TotalSegmentator_DICOM/segmentations.dcm` or `TotalSegmentator_NIFTI/*.nii*` exists (unless `--force-segmentation`).
-  - RS_auto: skipped if `RS_auto.dcm` exists.
-  - DVH: skipped if `dvh_metrics.xlsx` exists.
-  - Visualization: skipped if both `DVH_Report.html` and `Axial.html` exist.
-  - Radiomics: skipped if `radiomics_features_CT.xlsx` (CT courses) or `radiomics_features_MR.xlsx` (MR series) exists.
-  - MR extra models honor existing outputs in their directories.
-
-Outputs
+## Outputs
 - Per patient: `outdir/<patient_id>/course_<course_key>/`
   - `RP.dcm`, `RD.dcm` (summed if multiple), `RS.dcm` (manual if available)
   - `CT_DICOM/` (CT slices matching the course study)
   - `nifti/` (from dcm2niix), `TotalSegmentator_{DICOM,NIFTI}/` (if segmentation enabled)
   - `RS_auto.dcm` (auto-generated RTSTRUCT from TotalSegmentator for DVH)
-  - `dvh_metrics.xlsx` (includes IntegralDose, D1ccGy, V95%Rx, V100%Rx, …) and `DVH_Report.html` (interactive Plotly DVH)
-- `Axial.html` (scrollable axial CT QA viewer with manual/auto overlays)
-- `case_metadata.json` and `case_metadata.xlsx` (per-course clinical/research metadata)
-- `radiomics_features_CT.xlsx` (pyradiomics features on CT for manual RS and RS_auto, if pyradiomics installed)
-- MR series (when extra MR models requested): `outdir/<patient_id>/MR_<SeriesInstanceUID>/TotalSegmentator_<MODEL>_{DICOM,NIFTI}/`
-  - plus `radiomics_features_MR.xlsx` (pyradiomics features on MR for manual RS and TotalSegmentator total_mr, if available)
- - Cohort radiomics merge: `outdir/Data/radiomics_all.xlsx`
+  - `dvh_metrics.xlsx` (includes IntegralDose, D1ccGy, V95%Rx, V100%Rx, …)
+  - `DVH_Report.html` (interactive Plotly DVH)
+  - `Axial.html` (scrollable axial CT QA viewer with manual/auto overlays)
+  - `case_metadata.json` and `case_metadata.xlsx` (per-course clinical/research metadata)
+  - `radiomics_features_CT.xlsx` (pyradiomics features if enabled)
 
-Course Merging Logic
-- By default, plans/doses are merged only if they refer to the same CT StudyInstanceUID. This captures primary+boost on the same CT and prevents merging subsequent treatments planned on a new CT (e.g., progression SBRT).
-- Alternative policy: `--merge-criteria frame_of_reference` groups by FrameOfReferenceUID instead.
-- You can also set `--max-days` to impose a time window for course grouping.
+## Course Merging Logic
+- By default, plans/doses are merged only if they refer to the same CT StudyInstanceUID
+- Alternative: `--merge-criteria frame_of_reference` groups by FrameOfReferenceUID
+- Use `--max-days` to impose a time window for course grouping
 
-Notes
-- The pipeline assumes reasonably consistent DICOMs (Modality = CT/RTPLAN/RTDOSE/RTSTRUCT) and that RTDOSE references the RTPLAN (ReferencedRTPlanSequence).
-- TotalSegmentator is installed via pip. Set `--conda-activate` if your environment needs it.
-- dcm2niix is optional; if missing, DICOM‑mode segmentation still runs and NIfTI segmentation is skipped.
-- DVH uses dicompyler-core and includes both manual RTSTRUCT and auto RTSTRUCT (RS_auto.dcm) when present. Manual prescribed dose is estimated from CTV1 D95 if present, else defaults to 50 Gy.
- - Segmentation is resume-safe (reused if present). Use `--force-segmentation` to re-run.
- - Radiomics (optional): Install pyradiomics via `pip install git+https://github.com/AIM-Harvard/pyradiomics`. Disable with `--no-radiomics`. Provide a custom YAML via `--radiomics-params PATH`. MRI normalization toggles based on detected weighting (T2: off, T1: on).
- - Radiomics is parallelized across courses and ROIs/labels to speed up extraction.
+## Notes
+- TotalSegmentator does not require a license key
+- Segmentation is resume-safe (reused if present). Use `--force-segmentation` to re-run
+- Radiomics is parallelized across courses and ROIs/labels to speed up extraction
+- When using Snakemake, PyRadiomics runs in a separate conda environment with NumPy 1.x for full compatibility
 
-Additional references live under [`docs/`](docs/). Start with
-[`docs/index.md`](docs/index.md) for concepts and navigation tips.
+## Troubleshooting
+See `TROUBLESHOOTING.md` for common issues and solutions.
+
+## License
+MIT

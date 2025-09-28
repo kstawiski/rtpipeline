@@ -1,0 +1,14 @@
+name: rtpipeline-radiomics
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - numpy=1.26.*
+  - scipy
+  - pandas
+  - SimpleITK
+  - pip
+  - pip:
+    - pyradiomics
+    - xlsxwriter

@@ -1,5 +1,9 @@
-# Import numpy legacy compatibility shim early to provide NumPy 2.x support with legacy shims
-from . import numpy_legacy_compat
+# RTpipeline package initialization
+# Version 2.0: Dual environment approach
+# - Main environment: NumPy 2.x for TotalSegmentator
+# - Radiomics environment: NumPy 1.x for PyRadiomics (via conda run)
+
+__version__ = "2.0.0"
 
 __all__ = [
     "config",
@@ -10,8 +14,8 @@ __all__ = [
     "segmentation",
     "dvh",
     "visualize",
-    "numpy_legacy_compat",
     "custom_structures",
-    "radiomics_parallel",
+    "radiomics",
+    "radiomics_conda",  # New conda-based radiomics module
 ]
 

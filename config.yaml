@@ -1,0 +1,24 @@
+# Snakemake configuration for rtpipeline
+
+# Input/Output directories
+dicom_root: "Example_data"
+output_dir: "Data_Snakemake"
+logs_dir: "Logs_Snakemake"
+
+# Processing parameters
+workers: 4
+segmentation:
+  fast: false
+  roi_subset: null
+
+radiomics:
+  sequential: false
+  params_file: "radiomics_params.yaml"
+
+# Environment names
+environments:
+  main: "rtpipeline"          # NumPy 2.x for TotalSegmentator
+  radiomics: "rtpipeline-radiomics"  # NumPy 1.x for PyRadiomics
+
+# Custom structures configuration
+custom_structures: "custom_structures_pelvic.yaml"
