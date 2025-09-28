@@ -12,6 +12,8 @@ import SimpleITK as sitk
 
 logger = logging.getLogger(__name__)
 
+from .utils import sanitize_rtstruct
+
 # Compatibility shim for dicompyler-core with pydicom>=3
 try:
     import sys as _sys, types as _types, pydicom as _pyd
@@ -328,6 +330,10 @@ def _create_custom_structures_rtstruct(
         # Save the new RTSTRUCT
         out_path = course_dir / "RS_custom.dcm"
         rtstruct.save(str(out_path))
+        try:
+            sanitize_rtstruct(out_path)
+        except Exception as exc:
+            logger.debug("Sanitising RS_custom failed for %s: %s", out_path, exc)
         return out_path
 
     except Exception as e:

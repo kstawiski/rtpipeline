@@ -217,88 +217,203 @@ print(json.dumps(output))
         raise RuntimeError(f"Radiomics extraction failed: {e}")
 
 
+def _write_mask_to_file(mask_array: np.ndarray, mask_path: str, ct_info: Dict[str, Any]) -> None:
+    """Write a binary mask with CT geometry metadata."""
+
+    arr = np.ascontiguousarray(mask_array.astype(np.uint8).transpose(2, 0, 1))
+    img = sitk.GetImageFromArray(arr, isVector=False)
+
+    spacing = tuple(ct_info.get('spacing', (1.0, 1.0, 1.0)))
+    if len(spacing) < 3:
+        spacing = tuple(list(spacing) + [1.0] * (3 - len(spacing)))
+    img.SetSpacing(spacing)
+
+    origin = ct_info.get('origin')
+    if origin is not None:
+        img.SetOrigin(tuple(origin))
+
+    direction = ct_info.get('direction')
+    if direction is not None:
+        img.SetDirection(tuple(direction))
+
+    sitk.WriteImage(img, mask_path, useCompression=True)
+
+
+def _ensure_mask_has_three_dimensions(mask_path: str, ct_info: Dict[str, Any]) -> bool:
+    """Ensure mask stored at ``mask_path`` has three dimensions.
+
+    Returns True when the mask was rewritten.
+    """
+
+    try:
+        mask_img = sitk.ReadImage(mask_path)
+    except Exception as exc:
+        logger.debug("Failed to read mask %s for dimension fix: %s", mask_path, exc)
+        return False
+
+    if mask_img.GetDimension() >= 3:
+        return False
+
+    arr2d = sitk.GetArrayFromImage(mask_img)
+    arr3d = np.ascontiguousarray(np.expand_dims(arr2d, axis=0).astype(np.uint8))
+    img3d = sitk.GetImageFromArray(arr3d, isVector=False)
+
+    spacing = tuple(ct_info.get('spacing', (1.0, 1.0, 1.0)))
+    if len(spacing) < 3:
+        spacing = tuple(list(spacing) + [1.0] * (3 - len(spacing)))
+    img3d.SetSpacing(spacing)
+
+    origin = ct_info.get('origin')
+    if origin is not None:
+        img3d.SetOrigin(tuple(origin))
+
+    direction = ct_info.get('direction')
+    if direction is not None:
+        img3d.SetDirection(tuple(direction))
+
+    sitk.WriteImage(img3d, mask_path, useCompression=True)
+    return True
+
+
+def _combine_feature_record(features: Dict[str, Any], metadata: Dict[str, Any]) -> Dict[str, Any]:
+    record: Dict[str, Any] = {}
+    record.update(features)
+    record.update(metadata)
+    return record
+
+
 def process_radiomics_batch(
-    tasks: List[Tuple[str, str, str, Optional[str], Optional[int]]],
+    tasks: List[Dict[str, Any]],
     output_path: Path,
     sequential: bool = False,
     max_workers: Optional[int] = None,
 ) -> Optional[Path]:
-    """
-    Process a batch of radiomics tasks.
+    """Process radiomics extraction tasks and persist them as an Excel sheet."""
 
-    Args:
-        tasks: List of (image_path, mask_path, roi_name, params_file, label) tuples
-        output_path: Path to save the radiomics Excel file
-        sequential: If True, process sequentially instead of in parallel
-        max_workers: Optional cap on parallel worker processes
-
-    Returns:
-        Path to the output file if successful, None otherwise
-    """
     if not tasks:
         logger.warning("No radiomics tasks to process")
         return None
 
     if not check_radiomics_env():
-        logger.error(f"Radiomics conda environment '{RADIOMICS_ENV}' not found or not functional")
-        logger.error(f"Please run: conda create -n {RADIOMICS_ENV} python=3.11 numpy=1.26.* pyradiomics SimpleITK -c conda-forge")
+        logger.error(
+            "Radiomics conda environment '%s' not found or not functional",
+            RADIOMICS_ENV,
+        )
+        logger.error(
+            "Please run: conda create -n %s python=3.11 numpy=1.26.* pyradiomics SimpleITK -c conda-forge",
+            RADIOMICS_ENV,
+        )
         return None
 
-    results = []
+    cleanup_paths = {
+        task.get('mask_path')
+        for task in tasks
+        if task.get('mask_path') and task.get('cleanup', True)
+    }
 
-    if sequential:
-        logger.info(f"Processing {len(tasks)} radiomics tasks sequentially")
-        for i, (image_path, mask_path, roi_name, params_file, label) in enumerate(tasks, 1):
-            logger.info(f"Processing {i}/{len(tasks)}: {roi_name}")
-            try:
-                features = extract_radiomics_with_conda(
-                    image_path, mask_path, params_file, label
-                )
-                features['roi_name'] = roi_name
-                results.append(features)
-            except Exception as e:
-                logger.error(f"Failed to extract features for {roi_name}: {e}")
+    def _execute(task: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        roi_name = task.get('roi_name', 'ROI')
+        image_path = task.get('image_path')
+        mask_path = task.get('mask_path')
+        params_file = task.get('params_file')
+        label = task.get('label')
+        metadata = dict(task.get('metadata', {}))
+        metadata.setdefault('roi_name', roi_name)
+
+        if not image_path or not mask_path:
+            logger.error("Radiomics task is missing required paths for %s", roi_name)
+            return None
+
+        try:
+            features = extract_radiomics_with_conda(image_path, mask_path, params_file, label)
+        except Exception as exc:
+            msg = str(exc).lower()
+            if 'mask has too few dimensions' in msg and task.get('ct_info'):
+                repaired = _ensure_mask_has_three_dimensions(mask_path, task['ct_info'])
+                if repaired:
+                    logger.debug("Rewrote 2D mask for ROI %s", roi_name)
+                    try:
+                        features = extract_radiomics_with_conda(image_path, mask_path, params_file, label)
+                    except Exception as inner_exc:
+                        logger.error("Radiomics retry failed for %s: %s", roi_name, inner_exc)
+                        return None
+                else:
+                    logger.error("Unable to repair mask dimensionality for %s", roi_name)
+                    return None
+            else:
+                logger.error("Failed to extract features for %s: %s", roi_name, exc)
+                return None
+
+        metadata.setdefault('modality', 'CT')
+        return _combine_feature_record(features, metadata)
+
+    results: List[Dict[str, Any]] = []
+
+    def _run_sequential(seq: List[Dict[str, Any]]) -> None:
+        for idx, task in enumerate(seq, 1):
+            roi_name = task.get('roi_name', 'ROI')
+            logger.info("Processing %d/%d: %s", idx, len(seq), roi_name)
+            rec = _execute(task)
+            if rec:
+                results.append(rec)
+
+    tasks_list = list(tasks)
+    worker_limit = max_workers if max_workers and max_workers > 0 else (os.cpu_count() or 4)
+    worker_limit = max(1, min(worker_limit, len(tasks_list)))
+
+    if sequential or len(tasks_list) == 1 or worker_limit == 1:
+        _run_sequential(tasks_list)
     else:
-        # Use multiprocessing with proper error handling
-        from concurrent.futures import ProcessPoolExecutor, as_completed
+        logger.info(
+            "Processing %d radiomics tasks with up to %d worker threads",
+            len(tasks_list),
+            worker_limit,
+        )
+        from concurrent.futures import ThreadPoolExecutor, as_completed
 
-        logger.info(f"Processing {len(tasks)} radiomics tasks in parallel")
-
-        worker_limit = max_workers if max_workers and max_workers > 0 else (os.cpu_count() or 4)
-        with ProcessPoolExecutor(max_workers=min(len(tasks), worker_limit)) as executor:
-            # Submit all tasks
-            future_to_roi = {}
-            for image_path, mask_path, roi_name, params_file, label in tasks:
-                future = executor.submit(
-                    extract_radiomics_with_conda,
-                    image_path, mask_path, params_file, label
-                )
-                future_to_roi[future] = roi_name
-
-            # Collect results as they complete
-            for future in as_completed(future_to_roi):
-                roi_name = future_to_roi[future]
+        with ThreadPoolExecutor(max_workers=worker_limit) as executor:
+            future_to_task = {executor.submit(_execute, task): task for task in tasks_list}
+            for future in as_completed(future_to_task):
+                task = future_to_task[future]
+                roi_name = task.get('roi_name', 'ROI')
                 try:
-                    features = future.result(timeout=900)
-                    features['roi_name'] = roi_name
-                    results.append(features)
-                    logger.debug(f"Completed radiomics for {roi_name}")
-                except Exception as e:
-                    logger.error(f"Failed to extract features for {roi_name}: {e}")
+                    rec = future.result()
+                    if rec:
+                        results.append(rec)
+                        logger.debug("Completed radiomics for %s", roi_name)
+                except Exception as exc:  # pragma: no cover - defensive
+                    logger.error("Radiomics task crashed for %s: %s", roi_name, exc)
 
     if not results:
         logger.warning("No radiomics features extracted")
+        for mask_path in cleanup_paths:
+            try:
+                if mask_path:
+                    os.unlink(mask_path)
+            except FileNotFoundError:
+                pass
+            except Exception as exc:
+                logger.debug("Cleanup failed for %s: %s", mask_path, exc)
         return None
 
-    # Convert to DataFrame and save
     try:
         df = pd.DataFrame(results)
         df.to_excel(output_path, index=False)
-        logger.info(f"Saved {len(results)} radiomics results to {output_path}")
-        return output_path
-    except Exception as e:
-        logger.error(f"Failed to save radiomics results: {e}")
+        logger.info("Saved %d radiomics rows to %s", len(df), output_path)
+    except Exception as exc:
+        logger.error("Failed to save radiomics results: %s", exc)
         return None
+    finally:
+        for mask_path in cleanup_paths:
+            try:
+                if mask_path:
+                    os.unlink(mask_path)
+            except FileNotFoundError:
+                continue
+            except Exception as exc:
+                logger.debug("Cleanup failed for %s: %s", mask_path, exc)
+
+    return output_path
 
 
 def radiomics_for_course(
@@ -344,63 +459,108 @@ def radiomics_for_course(
         logger.error(f"Failed to load CT image: {e}")
         return None
 
+    ct_info = {
+        'spacing': tuple(ct_image.GetSpacing()),
+        'origin': tuple(ct_image.GetOrigin()),
+        'direction': tuple(ct_image.GetDirection()),
+    }
+
+    # Map ROI names to their originating source if structure mapping is available
+    source_map: Dict[str, str] = {}
+    mapping_path = course_dir / "structure_mapping.json"
+    if mapping_path.exists():
+        try:
+            mapping_data = json.loads(mapping_path.read_text(encoding='utf-8'))
+            source_config = mapping_data.get('sources', {}) or {}
+            source_labels = {
+                'manual': 'Manual',
+                'auto': 'AutoTS',
+                'custom_config': 'Custom',
+            }
+            for key, names in source_config.items():
+                label = source_labels.get(key, str(key).title())
+                for name in names or []:
+                    source_map[str(name)] = label
+        except Exception as exc:
+            logger.debug("Failed to parse structure_mapping.json for %s: %s", course_dir, exc)
+
+    default_source = 'Merged' if rs_file == rs_custom else ('AutoTS' if rs_file == rs_auto else 'Manual')
+    params_file = str(config.radiomics_params_file) if config.radiomics_params_file else None
+
     # Save CT image to temporary NRRD file
     with tempfile.NamedTemporaryFile(suffix='.nrrd', delete=False) as ct_file:
         sitk.WriteImage(ct_image, ct_file.name, useCompression=True)
         ct_image_path = ct_file.name
 
-    # Extract ROIs and create tasks
-    tasks = []
+    tasks: List[Dict[str, Any]] = []
     try:
-        # Load RTSTRUCT
         from rt_utils import RTStructBuilder
+
         rtstruct = RTStructBuilder.create_from(
             dicom_series_path=str(ct_dir),
             rt_struct_path=str(rs_file)
         )
 
-        # Get all ROI names
-        roi_names = rtstruct.get_roi_names()
-
         skip_rois = {"body", "couchsurface", "couchinterior"}
 
-        for roi_name in roi_names:
+        for roi_name in rtstruct.get_roi_names():
             normalized = roi_name.replace(" ", "").lower()
             if normalized in skip_rois:
-                logger.debug(f"Skipping radiomics for ROI {roi_name} (heuristic filter)")
+                logger.debug("Skipping radiomics for ROI %s (skip list)", roi_name)
                 continue
             try:
-                # Get mask for ROI
                 mask = rtstruct.get_roi_mask_by_name(roi_name)
-                if mask is None or not mask.any():
-                    logger.debug(f"Skipping radiomics for ROI {roi_name}: mask empty")
-                    continue
+            except Exception as exc:
+                logger.debug("Failed to obtain mask for %s: %s", roi_name, exc)
+                continue
+            if mask is None:
+                continue
+            mask_bool = mask.astype(bool)
+            if not mask_bool.any():
+                logger.debug("Skipping radiomics for ROI %s: empty mask", roi_name)
+                continue
 
-                # Convert to SimpleITK image
-                mask_sitk = sitk.GetImageFromArray(mask.astype(np.uint8).transpose(2, 0, 1))
-                mask_sitk.CopyInformation(ct_image)
-
-                # Save mask to temporary NRRD file
+            try:
                 with tempfile.NamedTemporaryFile(suffix='.nrrd', delete=False) as mask_file:
-                    sitk.WriteImage(mask_sitk, mask_file.name, useCompression=True)
+                    _write_mask_to_file(mask_bool, mask_file.name, ct_info)
                     mask_path = mask_file.name
+            except Exception as exc:
+                logger.debug("Failed to serialise mask for %s: %s", roi_name, exc)
+                continue
 
-                # Add task
-                params_file = str(config.radiomics_params_file) if config.radiomics_params_file else None
-                tasks.append((ct_image_path, mask_path, roi_name, params_file, None))
+            metadata = {
+                'segmentation_source': source_map.get(roi_name, default_source),
+                'course_dir': str(course_dir),
+                'patient_id': course_dir.name,
+            }
 
-            except Exception as e:
-                logger.debug(f"Could not process ROI {roi_name}: {e}")
+            tasks.append({
+                'image_path': ct_image_path,
+                'mask_path': mask_path,
+                'roi_name': roi_name,
+                'params_file': params_file,
+                'label': None,
+                'metadata': metadata,
+                'cleanup': True,
+                'ct_info': ct_info,
+            })
 
-    except Exception as e:
-        logger.error(f"Failed to process RTSTRUCT: {e}")
+    except Exception as exc:
+        logger.error("Failed to prepare radiomics masks for %s: %s", course_dir, exc)
+        try:
+            os.unlink(ct_image_path)
+        except Exception:
+            pass
         return None
 
     if not tasks:
-        logger.warning(f"No valid ROIs found in {rs_file}")
+        logger.warning("No valid ROIs found in %s", rs_file)
+        try:
+            os.unlink(ct_image_path)
+        except Exception:
+            pass
         return None
 
-    # Process radiomics
     output_path = course_dir / "Radiomics_CT.xlsx"
     sequential = os.environ.get('RTPIPELINE_RADIOMICS_SEQUENTIAL', '').lower() in ('1', 'true', 'yes')
 
@@ -418,15 +578,9 @@ def radiomics_for_course(
         max_workers=max_workers,
     )
 
-    # Clean up temporary files
     try:
         os.unlink(ct_image_path)
-        for _, mask_path, _, _, _ in tasks:
-            try:
-                os.unlink(mask_path)
-            except:
-                pass
-    except:
+    except Exception:
         pass
 
     return result

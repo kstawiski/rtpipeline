@@ -307,6 +307,48 @@ def generate_axial_review(course_dir: Path) -> Optional[Path]:
         except Exception:
             pass
 
+    overlays_custom = {}
+    rs_custom = course_dir / 'RS_custom.dcm'
+    if RTStructBuilder is not None and rs_custom.exists():
+        seen = set(overlays_manual.keys()) | set(overlays_auto.keys())
+        try:
+            rt = RTStructBuilder.create_from(dicom_series_path=str(ct_dir), rt_struct_path=str(rs_custom))
+            for roi in rt.get_roi_names():
+                if roi in seen:
+                    continue
+                try:
+                    if hasattr(rt, 'get_mask_for_roi'):
+                        m3d = rt.get_mask_for_roi(roi)
+                    elif hasattr(rt, 'get_roi_mask'):
+                        m3d = rt.get_roi_mask(roi)
+                    elif hasattr(rt, 'get_roi_mask_by_name'):
+                        m3d = rt.get_roi_mask_by_name(roi)
+                    else:
+                        m3d = None
+                except Exception:
+                    m3d = None
+                if m3d is None:
+                    continue
+                ct_z, ct_y, ct_x = ct_arr.shape
+                if m3d.shape != (ct_z, ct_y, ct_x):
+                    if m3d.shape == (ct_y, ct_x, ct_z):
+                        m3d = np.transpose(m3d, (2, 0, 1))
+                    elif m3d.shape == (ct_x, ct_y, ct_z):
+                        m3d = np.transpose(m3d, (2, 1, 0))
+                m3d = m3d.astype(bool)
+                pal = _roi_palette([roi])
+                color = pal[roi]
+                slmap = {}
+                for z in range(m3d.shape[0]):
+                    m = m3d[z]
+                    if not m.any():
+                        continue
+                    slmap[z] = _rgba_mask_b64(m, color)
+                if slmap:
+                    overlays_custom[roi] = slmap
+        except Exception:
+            pass
+
     # HTML
     import json
     html = []
@@ -318,6 +360,8 @@ def generate_axial_review(course_dir: Path) -> Optional[Path]:
     html.append(" Opacity: <input type='range' id='opacity' min='0' max='1' value='0.4' step='0.05' oninput='updateOpacity()'/><br/>")
     html.append("<div class='panel'><h3>Manual (RS)</h3><div id='manualList'></div></div>")
     html.append("<div class='panel'><h3>Auto (RS_auto)</h3><div id='autoList'></div></div>")
+    if overlays_custom:
+        html.append("<div class='panel'><h3>Merged (RS_custom)</h3><div id='customList'></div></div>")
     html.append("<div id='view'>")
     html.append(f"<img id='ct' width='{w}' height='{h}' src='data:image/png;base64,{ct_png[zs//2]}'/>")
     html.append("<div id='overlays'></div>")
@@ -326,6 +370,7 @@ def generate_axial_review(course_dir: Path) -> Optional[Path]:
     html.append(f"const CT_SLICES = {json.dumps(ct_png)};")
     html.append(f"const OVERLAYS_MANUAL = {json.dumps(overlays_manual)};")
     html.append(f"const OVERLAYS_AUTO = {json.dumps(overlays_auto)};")
+    html.append(f"const OVERLAYS_CUSTOM = {json.dumps(overlays_custom)};")
     html.append('''
 const overlaysDiv = document.getElementById('overlays');
 const ctImg = document.getElementById('ct');
@@ -376,9 +421,13 @@ function updateOverlays(){
     });
   }
   addImgs(OVERLAYS_MANUAL, 'm'); addImgs(OVERLAYS_AUTO, 'a');
+  addImgs(OVERLAYS_CUSTOM, 'c');
 }
 buildList('manualList', OVERLAYS_MANUAL, 'm');
 buildList('autoList', OVERLAYS_AUTO, 'a');
+if (Object.keys(OVERLAYS_CUSTOM).length) {
+  buildList('customList', OVERLAYS_CUSTOM, 'c');
+}
 update();
 ''')
     html.append("</script>")
