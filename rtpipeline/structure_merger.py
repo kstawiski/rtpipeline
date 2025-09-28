@@ -326,19 +326,78 @@ class StructureMerger:
 
         return result.astype(np.uint8)
 
+    def _resolve_dependencies(self, custom_config: List[Dict]) -> List[Dict]:
+        """Resolve dependencies and return custom structures in correct creation order."""
+        # Build dependency graph
+        dependency_graph = {}
+        struct_configs = {cfg['name']: cfg for cfg in custom_config}
+
+        for cfg in custom_config:
+            struct_name = cfg['name']
+            dependencies = []
+
+            # Check if any source structure is a custom structure
+            for source in cfg.get('source_structures', []):
+                # Check if source refers to another custom structure
+                if source in struct_configs:
+                    dependencies.append(source)
+
+            dependency_graph[struct_name] = dependencies
+
+        # Topological sort
+        sorted_order = []
+        visited = set()
+        temp_mark = set()
+
+        def visit(node):
+            if node in temp_mark:
+                logger.warning(f"Circular dependency detected involving {node}")
+                return False
+            if node not in visited:
+                temp_mark.add(node)
+                for dep in dependency_graph.get(node, []):
+                    if not visit(dep):
+                        return False
+                temp_mark.remove(node)
+                visited.add(node)
+                sorted_order.append(node)
+            return True
+
+        # Visit all nodes
+        for node in dependency_graph:
+            if node not in visited:
+                if not visit(node):
+                    logger.error("Failed to resolve dependencies due to circular references")
+                    return custom_config  # Return original order if circular dependency
+
+        # Return configs in dependency order
+        ordered_configs = []
+        for name in sorted_order:
+            if name in struct_configs:
+                ordered_configs.append(struct_configs[name])
+
+        logger.info(f"Resolved dependency order: {sorted_order}")
+        return ordered_configs
+
     def create_custom_structures(self, custom_config: List[Dict], all_structures: Dict[str, Dict]) -> Dict[str, Dict]:
         """Create custom structures based on configuration."""
         custom_structures = {}
 
+        # Resolve dependencies first
+        ordered_config = self._resolve_dependencies(custom_config)
+
         # Load RT Structure datasets for mask operations
         try:
-            manual_ds = pydicom.dcmread(self.rs_manual_path)
-            auto_ds = pydicom.dcmread(self.rs_auto_path)
+            manual_ds = pydicom.dcmread(self.rs_manual_path) if self.rs_manual_path.exists() else None
+            auto_ds = pydicom.dcmread(self.rs_auto_path) if self.rs_auto_path.exists() else None
         except Exception as e:
             logger.error(f"Failed to load RT Structure files for custom structure creation: {e}")
             return custom_structures
 
-        for custom_struct in custom_config:
+        # Keep track of all available structures (initial + created)
+        available_structures = dict(all_structures)
+
+        for custom_struct in ordered_config:
             struct_name = custom_struct.get('name')
             operation = custom_struct.get('operation', 'union')
             source_structures = custom_struct.get('source_structures', [])
@@ -351,27 +410,36 @@ class StructureMerger:
             # Full implementation would require proper mask operations
             source_masks = []
             missing_sources = []
+            resolved_sources = []
 
             for source_name in source_structures:
-                # Try to find source structure in manual or auto structures
-                mask = None
                 found = False
-                source_name_clean = source_name.lower().replace('_', '').replace(' ', '').replace('.nii', '')
 
-                for existing_name in all_structures.keys():
-                    existing_clean = existing_name.lower().replace('_', '').replace(' ', '').replace('.nii', '')
+                # First check if it's a custom structure we already created
+                custom_key = f"{source_name}_custom"
+                if custom_key in available_structures:
+                    found = True
+                    resolved_sources.append(custom_key)
+                    logger.info(f"Found custom source structure: {source_name} -> {custom_key}")
+                else:
+                    # Try to find source structure in existing structures
+                    source_name_clean = source_name.lower().replace('_', '').replace(' ', '').replace('.nii', '')
 
-                    # Check multiple matching patterns
-                    if (source_name.lower() == existing_name.lower() or
-                        source_name.lower() in existing_name.lower() or
-                        existing_name.lower() in source_name.lower() or
-                        source_name_clean == existing_clean or
-                        source_name_clean in existing_clean or
-                        existing_clean in source_name_clean):
+                    for existing_name in available_structures.keys():
+                        existing_clean = existing_name.lower().replace('_', '').replace(' ', '').replace('.nii', '')
 
-                        found = True
-                        logger.info(f"Found source structure: {source_name} -> {existing_name}")
-                        break
+                        # Check multiple matching patterns
+                        if (source_name.lower() == existing_name.lower() or
+                            source_name.lower() in existing_name.lower() or
+                            existing_name.lower() in source_name.lower() or
+                            source_name_clean == existing_clean or
+                            source_name_clean in existing_clean or
+                            existing_clean in source_name_clean):
+
+                            found = True
+                            resolved_sources.append(existing_name)
+                            logger.info(f"Found source structure: {source_name} -> {existing_name}")
+                            break
 
                 if not found:
                     missing_sources.append(source_name)
@@ -381,19 +449,23 @@ class StructureMerger:
                 logger.warning(f"Skipping custom structure '{struct_name}' due to missing sources: {missing_sources}")
                 continue
 
-            # Create placeholder custom structure entry
-            custom_structures[f"{struct_name}_custom"] = {
+            # Create custom structure entry
+            custom_key = f"{struct_name}_custom"
+            custom_structures[custom_key] = {
                 "original_name": struct_name,
                 "suffix": "custom",
                 "source_file": "custom_config",
                 "alternatives": [],
                 "operation": operation,
-                "sources": source_structures,
+                "sources": resolved_sources,  # Use resolved source names
                 "margin": margin,
                 "description": description
             }
 
-            logger.info(f"Created custom structure placeholder: {struct_name}_custom")
+            # Add to available structures for subsequent custom structures
+            available_structures[custom_key] = custom_structures[custom_key]
+
+            logger.info(f"Created custom structure: {custom_key} from sources: {resolved_sources}")
 
         return custom_structures
 
