@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
@@ -11,6 +12,26 @@ DICOM_ROOT = ROOT_DIR / config.get("dicom_root", "Example_data")
 OUTPUT_DIR = ROOT_DIR / config.get("output_dir", "Data_Snakemake")
 LOGS_DIR = ROOT_DIR / config.get("logs_dir", "Logs_Snakemake")
 WORKERS = int(config.get("workers", 4))
+
+MAX_LOCAL_CORES = os.cpu_count() or 1
+DEFAULT_RULE_THREADS = max(1, min(WORKERS, MAX_LOCAL_CORES))
+
+# Dynamic thread allocation based on rule type
+SEGMENTATION_THREADS = min(8, MAX_LOCAL_CORES)  # TotalSegmentator benefits from 4-8 cores
+RADIOMICS_THREADS = min(4, MAX_LOCAL_CORES)     # PyRadiomics works well with 2-4 cores
+IO_THREADS = min(2, MAX_LOCAL_CORES)           # I/O bound tasks need fewer cores
+
+METADATA_EXPORT_DIR = OUTPUT_DIR / "Data"
+METADATA_EXPORT_FILES = [
+    METADATA_EXPORT_DIR / "metadata.xlsx",
+    METADATA_EXPORT_DIR / "plans.xlsx",
+    METADATA_EXPORT_DIR / "structure_sets.xlsx",
+    METADATA_EXPORT_DIR / "dosimetrics.xlsx",
+    METADATA_EXPORT_DIR / "fractions.xlsx",
+    METADATA_EXPORT_DIR / "CT_images.xlsx",
+    METADATA_EXPORT_DIR / "case_metadata_all.xlsx",
+    METADATA_EXPORT_DIR / "case_metadata_all.json",
+]
 
 SEG_CONFIG = config.get("segmentation", {}) or {}
 SEG_FAST = bool(SEG_CONFIG.get("fast", False))
@@ -53,14 +74,19 @@ rule all:
     input:
         expand(str(OUTPUT_DIR / "{patient}" / "metadata.json"), patient=PATIENTS),
         expand(str(OUTPUT_DIR / "{patient}" / "CT_DICOM"), patient=PATIENTS),
+        expand(str(OUTPUT_DIR / "{patient}" / "TotalSegmentator_NIFTI"), patient=PATIENTS),
         expand(str(OUTPUT_DIR / "{patient}" / "RS_auto.dcm"), patient=PATIENTS),
         expand(str(OUTPUT_DIR / "{patient}" / "RS_custom.dcm"), patient=PATIENTS),
+        expand(str(OUTPUT_DIR / "{patient}" / "structure_comparison_report.json"), patient=PATIENTS),
         expand(str(OUTPUT_DIR / "{patient}" / "Radiomics_CT.xlsx"), patient=PATIENTS),
         expand(str(OUTPUT_DIR / "{patient}" / "dvh_metrics.xlsx"), patient=PATIENTS),
         expand(str(OUTPUT_DIR / "{patient}" / "Axial.html"), patient=PATIENTS),
+        expand(str(OUTPUT_DIR / "{patient}" / "qc_report.json"), patient=PATIENTS),
         str(OUTPUT_DIR / "metadata_summary.xlsx"),
         str(OUTPUT_DIR / "radiomics_summary.xlsx"),
-        str(OUTPUT_DIR / "dvh_summary.xlsx")
+        str(OUTPUT_DIR / "dvh_summary.xlsx"),
+        str(OUTPUT_DIR / "qc_summary.xlsx"),
+        *(str(p) for p in METADATA_EXPORT_FILES)
 
 
 rule organize_data:
@@ -75,11 +101,15 @@ rule organize_data:
         "envs/rtpipeline.yaml"
     log:
         str(LOGS_DIR / "organize_{patient}.log")
+    threads:
+        IO_THREADS
     run:
         import json
         import shutil
         import subprocess
         import tempfile
+
+        job_threads = threads
 
         dicom_dir = Path(input.dicom_dir)
         if not dicom_dir.exists():
@@ -99,10 +129,21 @@ rule organize_data:
                 "--no-dvh",
                 "--no-visualize",
                 "--no-radiomics",
-                "--workers", "1",
+                "--workers", str(max(1, job_threads)),
             ]
+
+            # Set environment variables for numerical libraries
+            env = os.environ.copy()
+            thread_str = str(max(1, job_threads))
+            env["OMP_NUM_THREADS"] = thread_str
+            env["MKL_NUM_THREADS"] = thread_str
+            env["NUMEXPR_NUM_THREADS"] = thread_str
+            env["NUMEXPR_MAX_THREADS"] = str(MAX_LOCAL_CORES)
+            env["OPENBLAS_NUM_THREADS"] = thread_str
+            env["BLAS_NUM_THREADS"] = thread_str
+
             with open(log[0], "w") as logf, redirect_stdout(logf), redirect_stderr(logf):
-                subprocess.run(cmd, check=True)
+                subprocess.run(cmd, check=True, env=env)
 
             course_dirs = sorted(p for p in tmp_dir.glob("**/course_*") if p.is_dir())
             if not course_dirs:
@@ -149,64 +190,124 @@ rule organize_data:
             shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
-rule segmentation:
+rule segment_nifti:
+    cache: True
     input:
         ct_dir=str(OUTPUT_DIR / "{patient}" / "CT_DICOM"),
         metadata=str(OUTPUT_DIR / "{patient}" / "metadata.json")
     output:
-        nifti_dir=directory(str(OUTPUT_DIR / "{patient}" / "TotalSegmentator_NIFTI")),
-        rs_auto=str(OUTPUT_DIR / "{patient}" / "RS_auto.dcm")
+        nifti_dir=directory(str(OUTPUT_DIR / "{patient}" / "TotalSegmentator_NIFTI"))
     conda:
         "envs/rtpipeline.yaml"
+    threads:
+        SEGMENTATION_THREADS
     log:
-        str(LOGS_DIR / "segmentation_{patient}.log")
+        str(LOGS_DIR / "segment_nifti_{patient}.log")
     run:
         import shutil
         import subprocess
         import sys
+        import time
 
-        course_dir = OUTPUT_DIR / wildcards.patient
         nifti_dir = Path(output.nifti_dir)
-        rs_auto = Path(output.rs_auto)
-        rs_auto.parent.mkdir(parents=True, exist_ok=True)
+        nifti_dir.parent.mkdir(parents=True, exist_ok=True)
 
-        if rs_auto.exists():
-            rs_auto.unlink()
         if nifti_dir.exists():
             shutil.rmtree(nifti_dir)
 
+        job_threads = threads
         cmd = [
             "TotalSegmentator",
             "-i", str(Path(input.ct_dir)),
             "-o", str(nifti_dir),
             "-ot", "nifti",
+            "-nr", str(job_threads),
+            "-ns", str(job_threads),
         ]
         if SEG_FLAGS:
             cmd.extend(SEG_FLAGS)
 
+        # Add GPU support if available
+        import subprocess
+        try:
+            subprocess.run(["nvidia-smi"], check=True, capture_output=True, timeout=5)
+            cmd.extend(["--device", "gpu"])
+            print("GPU detected, using GPU acceleration for TotalSegmentator")
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
+            cmd.extend(["--device", "cpu"])
+            print("No GPU detected, using CPU for TotalSegmentator")
+
+        lock_path = LOGS_DIR / ".totalsegmentator.lock"
+        while True:
+            try:
+                lock_path.touch(exist_ok=False)
+                break
+            except FileExistsError:
+                time.sleep(2)
+
+        env = os.environ.copy()
+        thread_str = str(max(1, job_threads))
+        # Set appropriate thread limits for numerical libraries
+        env["OMP_NUM_THREADS"] = thread_str
+        env["MKL_NUM_THREADS"] = thread_str
+        env["NUMEXPR_NUM_THREADS"] = thread_str
+        env["NUMEXPR_MAX_THREADS"] = str(MAX_LOCAL_CORES)  # Use system's max cores for the upper limit
+        env["OPENBLAS_NUM_THREADS"] = thread_str
+        env["BLAS_NUM_THREADS"] = thread_str
+
+        try:
+            with open(log[0], "w") as logf, redirect_stdout(logf), redirect_stderr(logf):
+                subprocess.run(cmd, check=True, env=env)
+                print(f"TotalSegmentator NIFTI generation completed for {wildcards.patient}")
+        finally:
+            try:
+                lock_path.unlink()
+            except FileNotFoundError:
+                pass
+
+
+rule nifti_to_rtstruct:
+    cache: True
+    input:
+        nifti_dir=str(OUTPUT_DIR / "{patient}" / "TotalSegmentator_NIFTI"),
+        ct_dir=str(OUTPUT_DIR / "{patient}" / "CT_DICOM")
+    output:
+        rs_auto=str(OUTPUT_DIR / "{patient}" / "RS_auto.dcm")
+    conda:
+        "envs/rtpipeline.yaml"
+    log:
+        str(LOGS_DIR / "nifti_to_rtstruct_{patient}.log")
+    run:
+        import sys
+        import shutil
+
+        course_dir = OUTPUT_DIR / wildcards.patient
+        rs_auto = Path(output.rs_auto)
+        rs_auto.parent.mkdir(parents=True, exist_ok=True)
+
         with open(log[0], "w") as logf, redirect_stdout(logf), redirect_stderr(logf):
-            subprocess.run(cmd, check=True)
+            sys.path.insert(0, str(ROOT_DIR))
+            from rtpipeline.auto_rtstruct import build_auto_rtstruct
 
-        sys.path.insert(0, str(ROOT_DIR))
-        from rtpipeline.auto_rtstruct import build_auto_rtstruct
-
-        rs_path = build_auto_rtstruct(course_dir)
-        if not rs_path or not Path(rs_path).exists():
-            raise RuntimeError(f"Failed to create RS_auto for {wildcards.patient}")
-        if Path(rs_path) != rs_auto:
-            shutil.copy2(rs_path, rs_auto)
+            rs_path = build_auto_rtstruct(course_dir)
+            if not rs_path or not Path(rs_path).exists():
+                raise RuntimeError(f"Failed to create RS_auto for {wildcards.patient}")
+            if Path(rs_path) != rs_auto:
+                shutil.copy2(rs_path, rs_auto)
+            print(f"DICOM RT structure generation completed for {wildcards.patient}")
 
 
-rule custom_structures:
+rule merge_structures:
     input:
         rs_auto=str(OUTPUT_DIR / "{patient}" / "RS_auto.dcm"),
         ct_dir=str(OUTPUT_DIR / "{patient}" / "CT_DICOM")
     output:
-        rs_custom=str(OUTPUT_DIR / "{patient}" / "RS_custom.dcm")
+        rs_custom=str(OUTPUT_DIR / "{patient}" / "RS_custom.dcm"),
+        structure_report=str(OUTPUT_DIR / "{patient}" / "structure_comparison_report.json")
     conda:
         "envs/rtpipeline.yaml"
     log:
-        str(LOGS_DIR / "custom_structures_{patient}.log")
+        str(LOGS_DIR / "merge_structures_{patient}.log")
     run:
         import shutil
         import sys
@@ -217,23 +318,51 @@ rule custom_structures:
 
         with open(log[0], "w") as logf, redirect_stdout(logf), redirect_stderr(logf):
             sys.path.insert(0, str(ROOT_DIR))
-            if CUSTOM_STRUCTURES_CONFIG:
-                from rtpipeline.dvh import _create_custom_structures_rtstruct
 
-                rs_manual = course_dir / "RS.dcm"
-                rs_custom = _create_custom_structures_rtstruct(
-                    course_dir,
-                    Path(CUSTOM_STRUCTURES_CONFIG),
-                    rs_manual if rs_manual.exists() else None,
-                    Path(input.rs_auto)
-                )
-                if rs_custom and Path(rs_custom).exists():
-                    shutil.copy2(rs_custom, output_path)
+            try:
+                # First try the new structure merger
+                from rtpipeline.structure_merger import merge_patient_structures
+
+                custom_config_path = Path(CUSTOM_STRUCTURES_CONFIG) if CUSTOM_STRUCTURES_CONFIG else None
+                merged_file, report_file = merge_patient_structures(course_dir, custom_config_path)
+
+                if merged_file != output_path:
+                    shutil.copy2(merged_file, output_path)
+                if report_file != Path(output.structure_report):
+                    shutil.copy2(report_file, output.structure_report)
+
+                print(f"Successfully merged structures using new merger for {wildcards.patient}")
+
+            except Exception as e:
+                print(f"New structure merger failed: {e}")
+                print("Falling back to legacy method")
+
+                # Fallback to legacy method
+                if CUSTOM_STRUCTURES_CONFIG:
+                    from rtpipeline.dvh import _create_custom_structures_rtstruct
+
+                    rs_manual = course_dir / "RS.dcm"
+                    rs_custom = _create_custom_structures_rtstruct(
+                        course_dir,
+                        Path(CUSTOM_STRUCTURES_CONFIG),
+                        rs_manual if rs_manual.exists() else None,
+                        Path(input.rs_auto)
+                    )
+                    src_path = Path(rs_custom) if rs_custom else None
+                    if src_path and src_path.exists():
+                        if src_path.resolve() != output_path.resolve():
+                            shutil.copy2(src_path, output_path)
+                    else:
+                        shutil.copy2(input.rs_auto, output_path)
+                        print("Custom structure generation failed; falling back to RS_auto")
                 else:
                     shutil.copy2(input.rs_auto, output_path)
-                    print("Custom structure generation failed; falling back to RS_auto")
-            else:
-                shutil.copy2(input.rs_auto, output_path)
+
+                # Create empty report for consistency
+                import json
+                empty_report = {"error": str(e), "fallback_used": True}
+                with open(output.structure_report, 'w') as f:
+                    json.dump(empty_report, f)
 
 
 rule radiomics:
@@ -244,7 +373,8 @@ rule radiomics:
         radiomics=str(OUTPUT_DIR / "{patient}" / "Radiomics_CT.xlsx")
     conda:
         "envs/rtpipeline-radiomics.yaml"
-    threads: 4
+    threads:
+        RADIOMICS_THREADS
     log:
         str(LOGS_DIR / "radiomics_{patient}.log")
     run:
@@ -270,11 +400,13 @@ rule radiomics:
         from rtpipeline.config import PipelineConfig
         from rtpipeline.radiomics_conda import radiomics_for_course
 
+        job_threads = RADIOMICS_THREADS
+
         cfg = PipelineConfig(
             dicom_root=DICOM_ROOT.resolve(),
             output_root=OUTPUT_DIR.resolve(),
             logs_root=LOGS_DIR.resolve(),
-            workers=WORKERS,
+            workers=max(1, job_threads),
             radiomics_params_file=params_path,
             custom_structures_config=custom_cfg,
         )
@@ -302,17 +434,44 @@ rule dvh:
     run:
         import shutil
         import sys
+        import pandas as pd
 
         course_dir = OUTPUT_DIR / wildcards.patient
-        sys.path.insert(0, str(ROOT_DIR))
-        from rtpipeline.dvh import dvh_for_course
+        output_path = Path(output.dvh)
 
         with open(log[0], "w") as logf, redirect_stdout(logf), redirect_stderr(logf):
-            result = dvh_for_course(course_dir, CUSTOM_STRUCTURES_CONFIG or None)
-            if not result or not Path(result).exists():
-                raise RuntimeError("DVH computation failed")
-            if Path(result) != Path(output.dvh):
-                shutil.copy2(result, output.dvh)
+            try:
+                # Check if required dose files exist
+                rp_path = Path(input.rp)
+                rd_path = Path(input.rd)
+
+                if not rp_path.exists() or not rd_path.exists():
+                    print(f"Missing dose files for {wildcards.patient}: RP={rp_path.exists()}, RD={rd_path.exists()}")
+                    print("Creating empty DVH metrics file")
+                    # Create empty DataFrame with expected columns
+                    empty_df = pd.DataFrame(columns=["ROI_Name", "Volume (cm³)", "Mean Dose (Gy)", "Max Dose (Gy)"])
+                    empty_df.to_excel(output_path, index=False)
+                    print(f"Empty DVH file created: {output_path}")
+                else:
+                    sys.path.insert(0, str(ROOT_DIR))
+                    from rtpipeline.dvh import dvh_for_course
+
+                    result = dvh_for_course(course_dir, CUSTOM_STRUCTURES_CONFIG or None)
+                    if not result or not Path(result).exists():
+                        print("DVH computation failed, creating empty file")
+                        empty_df = pd.DataFrame(columns=["ROI_Name", "Volume (cm³)", "Mean Dose (Gy)", "Max Dose (Gy)"])
+                        empty_df.to_excel(output_path, index=False)
+                    else:
+                        if Path(result) != output_path:
+                            shutil.copy2(result, output_path)
+                        print(f"DVH computation successful: {output_path}")
+
+            except Exception as e:
+                print(f"Error in DVH computation for {wildcards.patient}: {str(e)}")
+                # Create empty file so pipeline can continue
+                empty_df = pd.DataFrame(columns=["ROI_Name", "Volume (cm³)", "Mean Dose (Gy)", "Max Dose (Gy)"])
+                empty_df.to_excel(output_path, index=False)
+                print(f"Emergency empty DVH file created: {output_path}")
 
 
 rule visualization:
@@ -335,11 +494,111 @@ rule visualization:
         from rtpipeline.visualize import visualize_course
 
         with open(log[0], "w") as logf, redirect_stdout(logf), redirect_stderr(logf):
-            result = visualize_course(course_dir)
-            if result:
-                shutil.copy2(result, output.viz)
-            else:
-                Path(output.viz).write_text("<html><body><p>No DVH data available.</p></body></html>")
+            try:
+                # Try both visualization functions
+                from rtpipeline.visualize import visualize_course, generate_axial_review
+
+                # First try the full visualization with DVH
+                result = visualize_course(course_dir)
+
+                if result and Path(result).exists():
+                    if Path(result) != Path(output.viz):
+                        shutil.copy2(result, output.viz)
+                    print(f"DVH visualization created: {output.viz}")
+                else:
+                    # Fall back to axial review without DVH
+                    print("DVH visualization failed, trying axial review")
+                    axial_result = generate_axial_review(course_dir)
+                    if axial_result and Path(axial_result).exists():
+                        if Path(axial_result) != Path(output.viz):
+                            shutil.copy2(axial_result, output.viz)
+                        print(f"Axial review created: {output.viz}")
+                    else:
+                        # Create minimal HTML
+                        fallback_html = f"""
+                        <html>
+                        <head><title>Visualization - {wildcards.patient}</title></head>
+                        <body>
+                        <h1>Patient {wildcards.patient}</h1>
+                        <p>No visualization data available.</p>
+                        <p>This may be due to missing dose files or visualization errors.</p>
+                        </body>
+                        </html>
+                        """
+                        Path(output.viz).write_text(fallback_html)
+                        print(f"Fallback HTML created: {output.viz}")
+
+            except Exception as e:
+                print(f"Error in visualization for {wildcards.patient}: {str(e)}")
+                # Create error HTML
+                error_html = f"""
+                <html>
+                <head><title>Visualization Error - {wildcards.patient}</title></head>
+                <body>
+                <h1>Patient {wildcards.patient}</h1>
+                <p>Visualization failed with error:</p>
+                <pre>{str(e)}</pre>
+                </body>
+                </html>
+                """
+                Path(output.viz).write_text(error_html)
+                print(f"Error HTML created: {output.viz}")
+
+
+rule metadata_exports:
+    input:
+        expand(str(OUTPUT_DIR / "{patient}" / "metadata.json"), patient=PATIENTS)
+    output:
+        [str(p) for p in METADATA_EXPORT_FILES]
+    conda:
+        "envs/rtpipeline.yaml"
+    run:
+        import json
+        import sys
+        from pathlib import Path
+
+        import pandas as pd
+
+        sys.path.insert(0, str(ROOT_DIR))
+        from rtpipeline.config import PipelineConfig
+        from rtpipeline.meta import export_metadata
+
+        cfg = PipelineConfig(
+            dicom_root=DICOM_ROOT.resolve(),
+            output_root=OUTPUT_DIR.resolve(),
+            logs_root=LOGS_DIR.resolve(),
+            workers=WORKERS,
+        )
+
+        export_metadata(cfg)
+
+        rows = []
+        for meta_path in input:
+            meta_file = Path(meta_path)
+            if not meta_file.exists():
+                continue
+            data = json.loads(meta_file.read_text())
+            flattened = {}
+            for key, value in data.items():
+                if isinstance(value, (dict, list)):
+                    flattened[key] = json.dumps(value, ensure_ascii=False)
+                else:
+                    flattened[key] = value
+            flattened.setdefault("patient_id", data.get("patient_id", meta_file.parent.name))
+            flattened.setdefault("patient_dir", meta_file.parent.name)
+            rows.append(flattened)
+
+        METADATA_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+        case_xlsx = METADATA_EXPORT_DIR / "case_metadata_all.xlsx"
+        case_json = METADATA_EXPORT_DIR / "case_metadata_all.json"
+
+        if rows:
+            df = pd.DataFrame(rows)
+            df.to_excel(case_xlsx, index=False)
+            case_json.write_text(json.dumps(rows, indent=2, ensure_ascii=False))
+        else:
+            pd.DataFrame().to_excel(case_xlsx, index=False)
+            case_json.write_text("[]\n")
 
 
 rule summarize:
@@ -365,19 +624,20 @@ rule summarize:
             if not p.exists():
                 continue
             data = json.loads(p.read_text())
-            row = {
-                "patient": p.parent.name,
-                "plan_name": data.get("plan_name"),
-                "plan_date": data.get("plan_date"),
-                "course_start_date": data.get("course_start_date"),
-                "course_end_date": data.get("course_end_date"),
-                "total_prescription_gy": data.get("total_prescription_gy"),
-                "fractions_count": data.get("fractions_count"),
-                "ptv_count": data.get("ptv_count"),
-                "ct_study_uid": data.get("ct_study_uid"),
-            }
-            meta_rows.append(row)
-        pd.DataFrame(meta_rows).to_excel(output.metadata_summary, index=False)
+            flattened = {}
+            for key, value in data.items():
+                if isinstance(value, (dict, list)):
+                    flattened[key] = json.dumps(value, ensure_ascii=False)
+                else:
+                    flattened[key] = value
+            flattened.setdefault("patient_id", data.get("patient_id", p.parent.name))
+            flattened.setdefault("patient_dir", p.parent.name)
+            meta_rows.append(flattened)
+
+        if meta_rows:
+            pd.DataFrame(meta_rows).to_excel(output.metadata_summary, index=False)
+        else:
+            pd.DataFrame().to_excel(output.metadata_summary, index=False)
 
         radiomics_files = [Path(p) for p in input.radiomics if Path(p).exists()]
         if radiomics_files:
@@ -400,6 +660,69 @@ rule summarize:
             pd.concat(dfs, ignore_index=True).to_excel(output.dvh_summary, index=False)
         else:
             pd.DataFrame().to_excel(output.dvh_summary, index=False)
+
+
+rule quality_control:
+    input:
+        ct_dir=str(OUTPUT_DIR / "{patient}" / "CT_DICOM"),
+        metadata=str(OUTPUT_DIR / "{patient}" / "metadata.json")
+    output:
+        qc_report=str(OUTPUT_DIR / "{patient}" / "qc_report.json")
+    conda:
+        "envs/rtpipeline.yaml"
+    log:
+        str(LOGS_DIR / "qc_{patient}.log")
+    run:
+        import sys
+        import shutil
+        sys.path.insert(0, str(ROOT_DIR))
+        from rtpipeline.quality_control import generate_qc_report
+
+        patient_dir = OUTPUT_DIR / wildcards.patient
+        qc_dir = OUTPUT_DIR / "QC"
+        qc_dir.mkdir(exist_ok=True)
+
+        with open(log[0], "w") as logf, redirect_stdout(logf), redirect_stderr(logf):
+            report_path = generate_qc_report(patient_dir, qc_dir)
+            if report_path != Path(output.qc_report):
+                shutil.copy2(report_path, output.qc_report)
+
+
+rule qc_summary:
+    input:
+        qc_reports=expand(str(OUTPUT_DIR / "{patient}" / "qc_report.json"), patient=PATIENTS)
+    output:
+        qc_summary=str(OUTPUT_DIR / "qc_summary.xlsx")
+    conda:
+        "envs/rtpipeline.yaml"
+    run:
+        import json
+        import pandas as pd
+
+        qc_data = []
+        for report_path in input.qc_reports:
+            with open(report_path, 'r') as f:
+                data = json.load(f)
+
+            # Flatten the nested structure
+            flat_data = {
+                "patient_id": data.get("patient_id", ""),
+                "timestamp": data.get("timestamp", ""),
+                "overall_status": data.get("overall_status", ""),
+            }
+
+            # Add check results
+            checks = data.get("checks", {})
+            for check_name, check_data in checks.items():
+                if isinstance(check_data, dict):
+                    flat_data[f"{check_name}_status"] = check_data.get("status", "")
+                    if "issues" in check_data:
+                        flat_data[f"{check_name}_issues"] = "; ".join(check_data["issues"])
+
+            qc_data.append(flat_data)
+
+        df = pd.DataFrame(qc_data)
+        df.to_excel(output.qc_summary, index=False)
 
 
 rule clean:

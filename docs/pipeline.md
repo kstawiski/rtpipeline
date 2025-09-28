@@ -10,7 +10,7 @@ together, and where to find the resulting artifacts.
 
 | Stage | Purpose | Key CLI Switches | Primary Outputs |
 | --- | --- | --- | --- |
-| 1. Global discovery | Index every DICOM object and extract metadata | `--no-metadata` (skip) | `outdir/Data/*.xlsx`, `metadata.xlsx`
+| 1. Global discovery | Index every DICOM object and extract metadata | `--no-metadata` (skip) | `outdir/Data/{plans,structure_sets,dosimetrics,fractions,CT_images,metadata}.xlsx`, `case_metadata_all.{xlsx,json}` |
 | 2. Course grouping | Decide which plans/doses belong together | `--merge-criteria`, `--max-days` | In-memory grouping manifest written into per-course folders |
 | 3. Course organization | Normalize files per course and curate metadata | `--no-metadata`, `--resume` | `CT_DICOM/`, `RP.dcm`, `RD.dcm`, `RS.dcm`, `case_metadata.{json,xlsx}` |
 | 4. Segmentation *(optional)* | Generate auto contours on CT and MR | `--no-segmentation`, `--force-segmentation`, `--extra-seg-models`, `--totalseg-fast` | `TotalSegmentator_{DICOM,NIFTI}/`, `RS_auto.dcm`, MR task directories |
@@ -18,17 +18,21 @@ together, and where to find the resulting artifacts.
 | 6. Interactive QA | Produce web viewers for review | `--no-visualize` | `DVH_Report.html`, `Axial.html` |
 | 7. Radiomics *(optional)* | Derive feature tables for CT and MR | `--no-radiomics`, `--radiomics-params` | `radiomics_features_{CT,MR}.xlsx`, `outdir/Data/radiomics_all.xlsx` |
 
-The pipeline is parallelized where possible (`--workers N`) and is designed to
-be resume-safe; reruns keep previous outputs unless you force-regenerate them.
+The pipeline is parallelized where possible. When you drive it via Snakemake,
+`--cores` limits concurrent rules and `config.yaml:workers` caps per-rule worker
+pools (metadata/radiomics). CLI invocations accept `--workers N` for the same
+effect. In all cases the flow is resume-safe; reruns keep previous outputs unless
+you force-regenerate them.
 
 ## 1. Global Discovery & Metadata Extraction
 
 1. Walks the entire DICOM tree supplied via `--dicom-root`.
 2. Indexes CT, RTPLAN, RTDOSE, RTSTRUCT, MR, and treatment record series.
 3. Writes global summary workbooks under `outdir/Data/`:
-   - `plans.xlsx`, `dosimetrics.xlsx`, `fractions.xlsx`, `structure_sets.xlsx`, `CT_images.xlsx`.
-   - `metadata.xlsx` cross-references RTPLAN↔RTDOSE by SOPInstanceUID prefixes and decorates
-     each plan with patient-level context.
+   - `plans.xlsx`, `dosimetrics.xlsx`, `fractions.xlsx`, `structure_sets.xlsx`,
+     `CT_images.xlsx`, `metadata.xlsx`.
+   - `case_metadata_all.xlsx` (and `.json`) aggregate every course’s
+     `case_metadata.json` into cohort-wide tables.
 
 You can skip this stage with `--no-metadata`, though later phases rely on the
 in-memory results to stay consistent.
@@ -77,6 +81,10 @@ Segmentation adds automated contours to support DVH comparisons and radiomics.
 - Additional tasks: pass a comma-separated list via `--extra-seg-models`.
   - CT tasks omit the `_mr` suffix and execute inside each course folder.
   - MR tasks end with `_mr` and run per series alongside the default MR task.
+- Segmentation is deliberately serialized: the workflow acquires a lock so only
+  one TotalSegmentator invocation runs at a time (which keeps memory use
+  predictable). Each job can still leverage multiple threads via the rule’s
+  `threads` setting.
 - Use `--totalseg-fast` to append `--fast` for CPU-heavy workloads, or
   `--totalseg-roi-subset` to limit labels.
 - Segmentation is resume-safe; existing outputs are reused unless
