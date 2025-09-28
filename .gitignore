@@ -33,13 +33,13 @@ htmlcov/
 .ipynb_checkpoints/
 
 # Project outputs (prevent committing patient data / heavy artifacts)
-Logs/
-Logs_Test/
-Data/
-Data_Organized/
-Data_Organized_Test/
+Logs*/
+Data*/
 DICOM_OrganizedCT/
 Example_data/
+
+# Snakemake
+.snakemake/
 
 # Generated reports and data
 *.xlsx
@@ -52,3 +52,6 @@ Example_data/
 **/*.nii
 **/*.nii.gz
 
+.claude/
+.cache/
+Data_Snakemake/

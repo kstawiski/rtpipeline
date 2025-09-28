@@ -365,7 +365,8 @@ def parallel_radiomics_for_course(
             # Use spawn context to avoid issues with forked processes
             ctx = get_context('spawn')
 
-            with ctx.Pool(max_workers, initializer=_worker_initializer) as pool:
+            # Don't use initializer with spawn context as it causes pickling issues
+            with ctx.Pool(max_workers) as pool:
                 # Submit all tasks with retry wrapper
                 future_results = pool.map(_isolated_radiomics_extraction_with_retry, prepared_tasks)
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Iterable, Optional, Tuple
 
 import pydicom
 import SimpleITK as sitk
@@ -106,6 +106,26 @@ def _load_seg_nifti(nifti_dir: Path) -> tuple[Optional[sitk.Image], Dict[int, st
     return seg_img, label_map
 
 
+def _iter_binary_masks(nifti_dir: Path) -> Iterable[Tuple[str, sitk.Image]]:
+    """Yield (name, image) pairs for TotalSegmentator-style binary mask outputs."""
+    if not nifti_dir.exists():
+        return []
+
+    masks: list[Tuple[str, sitk.Image]] = []
+    for mask_path in sorted(nifti_dir.glob("*.nii*")):
+        name_lower = mask_path.name.lower()
+        if name_lower in {"segmentations.nii", "segmentations.nii.gz", "segmentation.nii", "segmentation.nii.gz"}:
+            # Skip potential multi-label files handled separately
+            continue
+        try:
+            img = sitk.ReadImage(str(mask_path))
+        except Exception as e:
+            logger.debug("Skipping mask %s: %s", mask_path.name, e)
+            continue
+        masks.append((mask_path.stem, img))
+    return masks
+
+
 def _resample_to_reference(seg_img: sitk.Image, ref_img: sitk.Image) -> sitk.Image:
     if (seg_img.GetSize() == ref_img.GetSize() and
         seg_img.GetSpacing() == ref_img.GetSpacing() and
@@ -144,8 +164,10 @@ def build_auto_rtstruct(course_dir: Path) -> Optional[Path]:
     # Prefer DICOM-SEG, detect if RTSTRUCT already produced, fallback to NIfTI
     seg_img: Optional[sitk.Image] = None
     label_map: Dict[int, str] = {}
+    nifti_dir = course_dir / 'TotalSegmentator_NIFTI'
     dicom_dir = course_dir / 'TotalSegmentator_DICOM'
     dicom_seg_path = dicom_dir / 'segmentations.dcm'
+
     if dicom_seg_path.exists():
         # Check whether this is SEG or RTSTRUCT; handle both
         try:
@@ -171,36 +193,60 @@ def build_auto_rtstruct(course_dir: Path) -> Optional[Path]:
                 return out_path
         except Exception as e:
             logger.debug('Inspecting DICOM output failed: %s', e)
-    if seg_img is None:
-        seg_img, label_map = _load_seg_nifti(course_dir / 'TotalSegmentator_NIFTI')
-    if seg_img is None:
-        logger.info("No segmentation outputs found to build RTSTRUCT in %s", course_dir)
-        return None
 
-    # Resample segmentation to CT geometry
-    seg_res = _resample_to_reference(seg_img, ct_img)
-    seg_arr = sitk.GetArrayFromImage(seg_res)  # [z,y,x] integer labels
-    labels = [int(v) for v in np.unique(seg_arr) if int(v) != 0]
-    if not labels:
-        logger.info("Segmentation contains no labels in %s", course_dir)
-        return None
+    if seg_img is None:
+        seg_img, label_map = _load_seg_nifti(nifti_dir)
 
-    # Create RTSTRUCT
     try:
         rtstruct = RTStructBuilder.create_new(dicom_series_path=str(ct_dir))
     except Exception as e:
         logger.error("Failed to create RTSTRUCT: %s", e)
         return None
 
-    # Add each label as ROI
-    for idx in labels:
-        name = label_map.get(idx, f'Segment_{idx}')
-        mask = (seg_arr == idx)
-        try:
-            rtstruct.add_roi(mask=mask, name=name)
-        except Exception as e:
-            logger.debug("Failed to add ROI %s: %s", name, e)
-            continue
+    added_any = False
+
+    if seg_img is not None:
+        # Resample segmentation to CT geometry and add each label present
+        seg_res = _resample_to_reference(seg_img, ct_img)
+        seg_arr = sitk.GetArrayFromImage(seg_res)  # [z,y,x] integer labels
+        labels = [int(v) for v in np.unique(seg_arr) if int(v) != 0]
+        if not labels:
+            logger.info("Segmentation contains no labels in %s", course_dir)
+        else:
+            for idx in labels:
+                name = label_map.get(idx, f'Segment_{idx}')
+                mask = (seg_arr == idx)
+                if not np.any(mask):
+                    continue
+                try:
+                    rtstruct.add_roi(mask=mask, name=name)
+                    added_any = True
+                except Exception as e:
+                    logger.debug("Failed to add ROI %s: %s", name, e)
+    else:
+        # Fall back to per-ROI binary masks produced by TotalSegmentator
+        for name, mask_img in _iter_binary_masks(nifti_dir):
+            try:
+                resampled = _resample_to_reference(mask_img, ct_img)
+                mask_arr = sitk.GetArrayFromImage(resampled)
+            except Exception as e:
+                logger.debug("Failed to resample mask %s: %s", name, e)
+                continue
+
+            mask_bin = (mask_arr > 0)
+            if not np.any(mask_bin):
+                continue
+
+            roi_name = name
+            try:
+                rtstruct.add_roi(mask=mask_bin.astype(np.uint8), name=roi_name)
+                added_any = True
+            except Exception as e:
+                logger.debug("Failed to add ROI %s: %s", roi_name, e)
+
+    if not added_any:
+        logger.info("No RTSTRUCT ROIs added for %s", course_dir)
+        return None
 
     try:
         rtstruct.save(str(out_path))

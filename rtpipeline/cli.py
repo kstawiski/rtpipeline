@@ -5,28 +5,6 @@ import logging
 import sys
 from pathlib import Path
 
-# Import numpy compatibility shim BEFORE any dependency validation
-try:
-    from . import numpy_compat  # This auto-applies compatibility patches
-except ImportError:
-    pass  # Skip if not available
-
-# Early dependency validation
-def _validate_dependencies() -> None:
-    """Validate critical dependencies and versions."""
-    try:
-        import numpy as np
-        if hasattr(np, '__version__'):
-            major_version = int(np.__version__.split('.')[0])
-            if major_version >= 2:
-                print("INFO: NumPy 2.x detected with legacy compatibility enabled.", file=sys.stderr)
-                print("TotalSegmentator should work with the enhanced compatibility layer.", file=sys.stderr)
-                print("If issues occur, check that numpy_legacy_compat is properly loaded.\n", file=sys.stderr)
-    except ImportError:
-        pass  # numpy will be checked later in normal flow
-
-# Validate early to give user immediate feedback
-_validate_dependencies()
 
 from .config import PipelineConfig
 from time import time
@@ -354,14 +332,29 @@ def main(argv: list[str] | None = None) -> int:
                         logging.getLogger(__name__).debug("radiomics_parallel configure unavailable; continuing")
                     logging.getLogger(__name__).info("Using threaded radiomics processing (fallback)")
 
-            # Check if radiomics is available first
+            # Check if radiomics is available
             from .radiomics import _have_pyradiomics
-            if not _have_pyradiomics():
-                logging.getLogger(__name__).warning(
-                    "pyradiomics not available - skipping radiomics extraction. "
-                    "Install with: pip install -e '.[radiomics]' or use --no-radiomics"
-                )
-            else:
+            can_use_radiomics = _have_pyradiomics()
+
+            if not can_use_radiomics:
+                # Try conda-based execution
+                try:
+                    from .radiomics_conda import check_radiomics_env
+                    can_use_radiomics = check_radiomics_env()
+                    if can_use_radiomics:
+                        logging.getLogger(__name__).info(
+                            "PyRadiomics will use conda environment for execution"
+                        )
+                except ImportError:
+                    pass
+
+                if not can_use_radiomics:
+                    logging.getLogger(__name__).warning(
+                        "pyradiomics not available - skipping radiomics extraction. "
+                        "Install with: pip install pyradiomics or use --no-radiomics"
+                    )
+
+            if can_use_radiomics:
                 # Ensure auto segmentation exists for CT courses
                 from .segmentation import segment_course  # lazy import
                 from .auto_rtstruct import build_auto_rtstruct

@@ -1,0 +1,25 @@
+name: rtpipeline
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - numpy>=2.0
+  - scipy>=1.11
+  - pandas>=2.0
+  - matplotlib>=3.8
+  - scikit-learn
+  - scikit-image
+  - pydicom>=3.0.0
+  - SimpleITK>=2.5.0
+  - nibabel
+  - dcm2niix
+  - pip
+  - pip:
+    - TotalSegmentator
+    - dicompyler-core>=0.5.6
+    - rt-utils
+    - xlsxwriter
+    - openpyxl
+    - plotly
+    - pydicom-seg
