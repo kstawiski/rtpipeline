@@ -135,8 +135,11 @@ class DICOMValidator:
             }
 
             # Check SOP Class UID for RTPLAN
-            expected_rtplan_uid = "1.2.840.10008.5.1.4.1.1.481.5"
-            if validation["sop_class_uid"] != expected_rtplan_uid:
+            expected_rtplan_uids = [
+                "1.2.840.10008.5.1.4.1.1.481.5",  # Standard DICOM RTPLAN
+                "1.2.246.352.70.1.70"  # Vendor-specific RTPLAN (commonly used)
+            ]
+            if validation["sop_class_uid"] not in expected_rtplan_uids:
                 validation["issues"].append(f"Unexpected SOP Class UID for RTPLAN: {validation['sop_class_uid']}")
 
             if validation["modality"] != "RTPLAN":

@@ -1,23 +1,43 @@
 # DVH Metrics
 
-## Source
-- dicompyler-core is used to compute absolute DVHs for each ROI in `RS.dcm` (manual) and `RS_auto.dcm` (auto).
-- Dose from organized `RD.dcm`; plan context from `RP.dcm`.
+`rtpipeline.dvh.dvh_for_course` computes absolute and relative dose–volume
+metrics for every ROI in the available structure sets. The Snakemake rule `dvh`
+invokes this function per patient directory after structure merging completes.
 
-## Metrics (per ROI)
-- Absolute (Gy): DmeanGy, DmaxGy, DminGy, D95Gy, D98Gy, D2Gy, D50Gy, SpreadGy (max-min)
-- Relative (% of Rx): Dmean%, Dmax%, Dmin%, D95%, D98%, D2%, D50%, HI%
-- Homogeneity Index: HI = (D2Gy - D98Gy)/D50Gy
-- Volume: `Volume (cm³)`
-- Integral dose: `IntegralDose_Gycm3 = DmeanGy × Volume (cm³)`
-- Small hottest volumes: D1ccGy, D0.1ccGy (if structure is large enough)
-- Coverage at Rx: V95%Rx (cm³ and %), V100%Rx (cm³ and %)
-- VxGy (cm³ and %) for x = 1..60 Gy
+## Inputs
+- `RP.dcm` (summed or copied by `organize_data`).
+- `RD.dcm` (dose grid).
+- `RS_custom.dcm` when merging succeeded, otherwise `RS_auto.dcm` or the manual
+  `RS.dcm`.
+- `CT_DICOM` is required implicitly for dicompyler-core to resolve geometry.
 
-## Rx estimation
-- For target-relative percentages, Rx is estimated from manual CTV1 D95 when present; fallback is 50 Gy.
-- You can adjust this logic in code if you have a site‑specific policy.
+The rule creates an empty Excel workbook if `RP.dcm` or `RD.dcm` is missing so
+that downstream steps remain resumable.
 
-## Merged output
-- `outdir/DVH_metrics_all.xlsx`: concatenation of all per‑course `dvh_metrics.xlsx` with identifiers.
+## Metric set (per ROI)
+- Absolute dose statistics: `DmeanGy`, `DmaxGy`, `DminGy`, `D95Gy`, `D98Gy`,
+  `D2Gy`, `D50Gy`, dose spread, `D1ccGy`, `D0.1ccGy` (when the structure volume
+  allows computation).
+- Relative dose (percentage of prescription): `Dmean%`, `Dmax%`, `D95%`,
+  `D98%`, `D2%`, `D50%`, homogeneity index in percent, spread in percent.
+- Volume summary: `Volume (cm³)`, integral dose (`IntegralDose_Gycm3`).
+- Coverage at prescription: `V95%Rx (cm³/%), V100%Rx (cm³/%)`.
+- Binned volumes: `VxGy (cm³)` and `VxGy (%)` for x = 1…60 Gy.
 
+## Prescription handling
+When a manual RTSTRUCT is present, the code looks for an ROI whose name contains
+`ctv1` (case-insensitive, whitespace ignored) and uses its `D95` value as the
+prescription dose. Failing that, it falls back to 50 Gy. The same reference dose
+is then applied to manual, auto, and custom structures so relative values are
+comparable.
+
+## Outputs
+- Per patient: `dvh_metrics.xlsx` in the patient directory with one row per ROI
+  and a `Segmentation_Source` column indicating `Manual`, `AutoRTS`, or
+  `Custom`.
+- Aggregated: the Snakemake `summarize` rule concatenates all per-patient files
+  into `dvh_summary.xlsx` at the root of `output_dir`. The CLI additionally
+  writes `Data/DVH_metrics_all.xlsx` when multiple courses are processed.
+
+If you extend the metric set, update both this document and
+`rtpipeline/dvh.py` so the fields stay aligned.

@@ -122,7 +122,13 @@ def _iter_binary_masks(nifti_dir: Path) -> Iterable[Tuple[str, sitk.Image]]:
         except Exception as e:
             logger.debug("Skipping mask %s: %s", mask_path.name, e)
             continue
-        masks.append((mask_path.stem, img))
+        # Clean name: remove .nii and .nii.gz suffixes
+        name = mask_path.name
+        if name.endswith('.nii.gz'):
+            name = name[:-7]  # Remove .nii.gz
+        elif name.endswith('.nii'):
+            name = name[:-4]  # Remove .nii
+        masks.append((name, img))
     return masks
 
 
