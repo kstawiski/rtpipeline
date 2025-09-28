@@ -1,50 +1,56 @@
-# Segmentation
+# Segmentation Stage
 
-## Modes
-- DICOM: `TotalSegmentator_DICOM/segmentations.dcm` (DICOM‑SEG when supported, sometimes RTSTRUCT depending on version).
-- NIfTI: `TotalSegmentator_NIFTI/` with label maps.
+Segmentation is responsible for generating automatic contours via
+TotalSegmentator and converting them into an RTSTRUCT (`RS_auto.dcm`). The
+Snakemake workflow separates the work into two rules; the CLI follows a similar
+pattern internally.
 
-## Models
-- Default CT: always runs TotalSegmentator "total" per course.
-- Default MR: when MR series are present under `--dicom-root`, runs `total_mr` for each MR series.
-- You can additionally request other models using `--extra-seg-models`.
-  - CT: only models without `_mr` suffix are run per course (`TotalSegmentator_<MODEL>_{DICOM,NIFTI}/`).
-  - MR: models with `_mr` suffix are run per MR series (`<outdir>/<PatientID>/MR_<SeriesInstanceUID>/TotalSegmentator_<MODEL>_{DICOM,NIFTI}/`).
-  - Tip: choose models that match the modality (e.g., `body_mr`, `vertebrae_mr` for MR; `lung_vessels`, `body`, `cerebral_bleed` for CT).
+## `segment_nifti` (Snakemake)
+- **Inputs**: `CT_DICOM` folder from `organize_data` and the accompanying
+  `metadata.json`.
+- **Execution**: runs `TotalSegmentator` directly on the CT directory. The rule
+  honours the `segmentation` section of `config.yaml`:
+  - `fast: true` adds `--fast` to TotalSegmentator (useful on CPU-only hosts).
+  - `roi_subset` restricts the run to the listed structures.
+- **Resource control**: thread count comes from the `SEGMENTATION_THREADS`
+  constant in the `Snakefile`. A lock file under `Logs_Snakemake` serialises
+  TotalSegmentator invocations so only one patient is processed at a time.
+- **GPU detection**: the rule probes `nvidia-smi`; if available, segmentation is
+  executed on GPU (`--device gpu`), otherwise `--device cpu` is used.
+- **Outputs**: a fresh `TotalSegmentator_NIFTI/` directory containing the
+  generated masks. Existing directories are removed before regeneration so that
+  stale files do not leak in.
 
-## Resume and force
-- Default: If DICOM or NIfTI outputs exist, segmentation is skipped.
-- Force re-run: `--force-segmentation` reruns TotalSegmentator regardless of existing outputs.
+## `nifti_to_rtstruct`
+- Reads the NIfTI masks and CT geometry, then calls
+  `rtpipeline.auto_rtstruct.build_auto_rtstruct` to emit `RS_auto.dcm` in the
+  patient directory.
+- Multi-label NIfTI volumes and per-ROI masks are both supported. When a
+  TotalSegmentator DICOM-SEG is present, it is copied/normalised instead of
+  rerasterised.
 
-## dcm2niix availability
-- If `dcm2niix` is not found in PATH and no `--conda-activate` is provided, the pipeline looks for platform ZIPs in `rtpipeline/ext/` (packaged with the wheel):
-  - `rtpipeline/ext/dcm2niix_lnx.zip` (Linux)
-  - `rtpipeline/ext/dcm2niix_mac.zip` (macOS)
-  - `rtpipeline/ext/dcm2niix_win.zip` (Windows)
-- When found, it auto‑extracts to `Logs/bin/` and uses the bundled binary. Otherwise, NIfTI conversion is skipped and DICOM‑mode segmentation still runs.
+## `merge_structures`
+- Invokes `rtpipeline.structure_merger.merge_patient_structures` to reconcile
+  manual `RS.dcm`, automated `RS_auto.dcm`, and optional custom definitions from
+  `custom_structures` in `config.yaml`.
+- Priority rules favour manual targets (PTV/CTV/GTV) while letting automated
+  contours win for common OARs. A fallback path uses legacy code when the new
+  merger raises an exception.
+- Outputs `RS_custom.dcm`, `structure_comparison_report.json`, and
+  `structure_mapping.json`. If merging fails, the rule copies `RS_auto.dcm` to
+  keep the pipeline flowing and notes the error in the report.
 
-## Offline weights
-- In offline or restricted environments, TotalSegmentator needs pretrained weights available locally.
-- Put them under `--logs/nnunet/` (default) or pass a custom path via `--totalseg-weights PATH`.
-- The pipeline redirects TS caches and weights to `--logs` by default (`HOME`, `TOTALSEGMENTATOR_HOME`, `nnUNet_{results,pretrained_models}`, `TORCH_HOME`, `XDG_CACHE_HOME`).
+## CLI behaviour
+When you run `rtpipeline` directly, the segmentation stage (`segment_course` in
+`rtpipeline/segmentation.py`) performs similar steps:
+- Optionally converts CT DICOM to NIfTI via `dcm2niix` (with bundled fallbacks
+  when available).
+- Runs TotalSegmentator in both DICOM and NIfTI modes, respecting
+  `--extra-seg-models`, `--totalseg-fast`, `--totalseg-roi-subset`, and
+  `--force-segmentation` flags.
+- Creates `RS_auto.dcm` from the produced masks.
+- Leaves existing outputs untouched unless forced.
 
-## Auto RTSTRUCT (RS_auto.dcm)
-- Built per course after segmentation.
-- If DICOM‑SEG present → convert to RTSTRUCT via rt-utils.
-- If TotalSegmentator wrote RTSTRUCT → normalize/copy to `RS_auto.dcm`.
-- Else if NIfTI present → resample to CT geometry and convert via rt-utils.
-
-## Why RS_auto?
-DVH requires RTSTRUCT for ROI definitions. RS_auto mirrors TotalSegmentator segments as RTSTRUCT aligned to `CT_DICOM`, enabling DVH for auto segmentation even if no manual RS is available.
-
-## License key
-- If your TotalSegmentator variant requires a license, pass it with `--totalseg-license KEY`. The key is exported as `TOTALSEG_LICENSE` and `TOTALSEGMENTATOR_LICENSE` during segmentation runs.
-## Performance on CPU
-- Use `--totalseg-fast` to add TotalSegmentator’s `--fast` flag.
-- Use `--totalseg-roi-subset <roi1,roi2,...>` to restrict to a subset of ROIs.
-- The pipeline also sets conservative environment variables to improve stability in restricted environments (CPU‑only + single process):
-  - `CUDA_VISIBLE_DEVICES=""`, `TOTALSEG{,MENTATOR}_FORCE_CPU=1`
-  - `OMP_NUM_THREADS=1`, `MKL_NUM_THREADS=1`, `OPENBLAS_NUM_THREADS=1`, `ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS=1`
-  - `nnUNet_n_proc=1`, `nnUNetv2_n_proc=1`, `NUM_WORKERS=1`
-  - `TMPDIR` points to `--logs/tmp` (writable temp dir)
-  These reduce chances of CUDA initialization or multiprocessing semaphore errors on locked‑down systems.
+Regardless of whether you drive the process via Snakemake or the CLI, `RS_auto`
+provides a consistent RTSTRUCT aligned to the organised `CT_DICOM` that enables
+DVH, radiomics, and QA visualisation even when no manual structures are present.

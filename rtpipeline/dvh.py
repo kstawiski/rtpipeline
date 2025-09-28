@@ -208,7 +208,7 @@ def _compute_metrics(abs_dvh, rx_dose: float) -> Optional[Dict[str, float]]:
 
 def _create_custom_structures_rtstruct(
     course_dir: Path,
-    config_path: Union[str, Path],
+    config_path: Optional[Union[str, Path]] = None,
     rs_manual: Optional[Path] = None,
     rs_auto: Optional[Path] = None
 ) -> Optional[Path]:
@@ -222,10 +222,13 @@ def _create_custom_structures_rtstruct(
 
     # Choose base RTSTRUCT (prefer manual over auto)
     base_rs = None
-    if rs_manual and rs_manual.exists():
-        base_rs = rs_manual
-    elif rs_auto and rs_auto.exists():
-        base_rs = rs_auto
+    base_source = ""
+    if rs_manual and Path(rs_manual).exists():
+        base_rs = Path(rs_manual)
+        base_source = "manual"
+    elif rs_auto and Path(rs_auto).exists():
+        base_rs = Path(rs_auto)
+        base_source = "auto"
     else:
         logger.warning("No base RTSTRUCT available for custom structures")
         return None
@@ -242,15 +245,54 @@ def _create_custom_structures_rtstruct(
             rt_struct_path=str(base_rs)
         )
 
-        # Get existing masks
-        available_masks = {}
-        for roi_name in rtstruct.get_roi_names():
+        existing_names = set()
+        available_masks: Dict[str, np.ndarray] = {}
+
+        def _harvest_masks(builder: "RTStructBuilder", label: str, add_missing: bool = False) -> None:
+            nonlocal existing_names, available_masks
+            for roi_name in builder.get_roi_names():
+                try:
+                    mask = builder.get_roi_mask_by_name(roi_name)
+                except Exception as exc:  # pragma: no cover - safety
+                    logger.debug("Failed to fetch mask for %s from %s: %s", roi_name, label, exc)
+                    continue
+                if mask is None or not np.any(mask):
+                    continue
+                mask_bool = mask.astype(bool)
+                available_masks.setdefault(roi_name, mask_bool)
+                already_present = roi_name in existing_names
+                if add_missing and not already_present:
+                    try:
+                        rtstruct.add_roi(mask=mask_bool, name=roi_name)
+                        existing_names.add(roi_name)
+                    except Exception as exc:
+                        logger.debug("Unable to add ROI %s from %s: %s", roi_name, label, exc)
+                elif not already_present:
+                    existing_names.add(roi_name)
+
+        # Harvest base masks first (manual preferred)
+        _harvest_masks(rtstruct, f"base:{base_source}")
+
+        # Integrate additional sources so that downstream custom operations can reference them
+        if rs_manual and Path(rs_manual).exists() and base_source != "manual":
             try:
-                mask = rtstruct.get_roi_mask_by_name(roi_name)
-                if mask is not None and mask.any():
-                    available_masks[roi_name] = mask
-            except Exception as e:
-                logger.debug("Failed to get mask for ROI %s: %s", roi_name, e)
+                manual_builder = RTStructBuilder.create_from(
+                    dicom_series_path=str(ct_dir),
+                    rt_struct_path=str(rs_manual)
+                )
+                _harvest_masks(manual_builder, "manual", add_missing=True)
+            except Exception as exc:
+                logger.warning("Failed to integrate manual structures: %s", exc)
+
+        if rs_auto and Path(rs_auto).exists() and base_source != "auto":
+            try:
+                auto_builder = RTStructBuilder.create_from(
+                    dicom_series_path=str(ct_dir),
+                    rt_struct_path=str(rs_auto)
+                )
+                _harvest_masks(auto_builder, "auto", add_missing=True)
+            except Exception as exc:
+                logger.warning("Failed to integrate auto structures: %s", exc)
 
         # Get spacing from CT
         reader = sitk.ImageSeriesReader()
@@ -266,7 +308,8 @@ def _create_custom_structures_rtstruct(
 
         # Process custom structures
         processor = CustomStructureProcessor(spacing=spacing)
-        processor.load_config(config_path)
+        if config_path:
+            processor.load_config(config_path)
 
         custom_masks = processor.process_all_custom_structures(available_masks)
 
@@ -274,7 +317,7 @@ def _create_custom_structures_rtstruct(
         for name, mask in custom_masks.items():
             try:
                 rtstruct.add_roi(
-                    mask=mask,
+                    mask=mask.astype(bool),
                     name=name,
                     color=[255, 0, 0]  # Red color for custom structures
                 )
@@ -356,22 +399,28 @@ def dvh_for_course(course_dir: Path, custom_structures_config: Optional[Union[st
         except Exception:
             pass
 
-    if rs_manual.exists():
-        process_struct(rs_manual, "Manual", rx_est)
-    if rs_auto.exists():
-        process_struct(rs_auto, "AutoRTS", rx_est)
+    # Use RS_custom.dcm if it exists (created by structure merger)
+    rs_custom = course_dir / "RS_custom.dcm"
+    if rs_custom.exists():
+        process_struct(rs_custom, "Merged", rx_est)
+    else:
+        # Fallback to individual files if RS_custom doesn't exist
+        if rs_manual.exists():
+            process_struct(rs_manual, "Manual", rx_est)
+        if rs_auto.exists():
+            process_struct(rs_auto, "AutoRTS", rx_est)
 
-    # Process custom structures if configuration provided
-    if custom_structures_config:
-        try:
-            from .custom_structures import CustomStructureProcessor
-            rs_custom = _create_custom_structures_rtstruct(
-                course_dir, custom_structures_config, rs_manual, rs_auto
-            )
-            if rs_custom and rs_custom.exists():
-                process_struct(rs_custom, "Custom", rx_est)
-        except Exception as e:
-            logger.warning("Failed to process custom structures: %s", e)
+        # Process custom structures if configuration provided (legacy approach)
+        if custom_structures_config:
+            try:
+                from .custom_structures import CustomStructureProcessor
+                rs_custom_legacy = _create_custom_structures_rtstruct(
+                    course_dir, custom_structures_config, rs_manual, rs_auto
+                )
+                if rs_custom_legacy and rs_custom_legacy.exists():
+                    process_struct(rs_custom_legacy, "Custom", rx_est)
+            except Exception as e:
+                logger.warning("Failed to process custom structures: %s", e)
 
     if not results:
         logger.info("No DVH results for %s", course_dir)

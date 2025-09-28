@@ -1,18 +1,29 @@
 # Viewers
 
-## DVH Report (DVH_Report.html)
-- Interactive Plotly chart with one line per ROI (Manual and Auto if both present).
-- Toggle structures via the legend. Hover shows Dose and Volume%.
+The Snakemake `visualization` rule generates HTML dashboards to support QA and
+review. It first attempts the full DVH report and then falls back to simpler
+artefacts if inputs are missing.
 
-## Axial Viewer (Axial.html)
+## DVH Report (`DVH_Report.html`)
+- Plotly-based interactive chart with one trace per ROI.
+- Legend toggles allow you to hide/show structures; hover text displays dose and
+  relative volume for the selected point.
+- Generated only when `dvh_metrics.xlsx` exists and contains data. If the DVH
+  stage produced an empty workbook, the report gracefully omits missing curves.
+
+## Axial Viewer (`Axial.html`)
 - Scrollable axial CT viewer with opacity control for overlays.
-- Two ROI panels:
-  - Manual (RS): structures from `RS.dcm`.
-  - Auto (RS_auto): structures from `RS_auto.dcm`.
-- Check any combination of structures to overlay; overlays are semi‑transparent and color‑coded.
-- Preselects common targets/OARs (PTV/CTV/prostate/rectum/bladder) for quick QA.
+- Separate checklists for manual (`RS.dcm`) and automatic (`RS_auto.dcm`) ROIs.
+  Common targets/OARs (PTV, CTV, prostate, bladder, rectum) are pre-selected for
+  convenience.
+- Supports simultaneous display of multiple ROIs; overlays are colour-coded and
+  rendered as semi-transparent RGBA masks.
+- Slice slider and opacity slider update the view instantly without reloading.
+- Requires `rt-utils` to rasterise structures onto the CT grid. If `RS.dcm` or
+  `RS_auto.dcm` is missing, the corresponding panel remains empty.
 
-Notes
-- Masks are rasterized via rt-utils from the RTSTRUCT onto the `CT_DICOM` geometry.
-- If structures don’t appear: ensure `RS.dcm` or `RS_auto.dcm` exists and rt-utils is installed in your environment.
-- MR: There is no MR viewer by default. If you need one, consider exporting NIfTI overlays or open an issue to request an MR viewer similar to Axial.html.
+## Fallbacks
+If Plotly generation fails or DVH data are unavailable, the pipeline continues
+with Axial-only output or, as a last resort, writes a minimal HTML stub noting
+that no visualisation data could be produced. Errors are logged to the
+patient-specific log file under `logs_dir`.

@@ -372,6 +372,9 @@ def radiomics_for_course(
             try:
                 # Get mask for ROI
                 mask = rtstruct.get_roi_mask_by_name(roi_name)
+                if mask is None or not mask.any():
+                    logger.debug(f"Skipping radiomics for ROI {roi_name}: mask empty")
+                    continue
 
                 # Convert to SimpleITK image
                 mask_sitk = sitk.GetImageFromArray(mask.astype(np.uint8).transpose(2, 0, 1))

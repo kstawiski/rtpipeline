@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 import json
 import yaml
+import shutil
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple, Any
 import pydicom
@@ -11,6 +12,8 @@ import numpy as np
 from datetime import datetime
 from scipy import ndimage
 from skimage import morphology
+
+from .dvh import _create_custom_structures_rtstruct
 
 logger = logging.getLogger(__name__)
 
@@ -470,42 +473,112 @@ class StructureMerger:
         return custom_structures
 
     def merge_all_structures(self, custom_config_path: Optional[Path] = None) -> Tuple[Path, Path]:
-        """Main method to merge all structure sources."""
-        all_structures = {}
+        """Combine manual, auto and custom structures into RS_custom and emit a report."""
 
-        # Load manual structures
-        manual_structures = self.load_structures_from_dicom(self.rs_manual_path, "manual")
-        all_structures.update(manual_structures)
+        logger.info("Building merged RTSTRUCT for %s", self.patient_dir)
 
-        # Load automated structures
-        auto_structures = self.load_structures_from_dicom(self.rs_auto_path, "auto")
-        all_structures.update(auto_structures)
+        try:
+            merged_file = _create_custom_structures_rtstruct(
+                self.patient_dir,
+                custom_config_path,
+                self.rs_manual_path if self.rs_manual_path.exists() else None,
+                self.rs_auto_path if self.rs_auto_path.exists() else None,
+            )
+        except Exception as exc:
+            logger.error("Custom structure generation failed: %s", exc)
+            merged_file = None
 
-        logger.info(f"Total structures before conflict resolution: {len(all_structures)}")
-
-        # Resolve conflicts using priority rules
-        resolved_structures = self.resolve_conflicts(all_structures)
-
-        logger.info(f"Total structures after conflict resolution: {len(resolved_structures)}")
-
-        # Process custom structures if config provided
-        if custom_config_path and custom_config_path.exists():
-            logger.info(f"Processing custom structures from: {custom_config_path}")
-            custom_config = self.load_custom_structure_config(custom_config_path)
-            if custom_config:
-                custom_structures = self.create_custom_structures(custom_config, resolved_structures)
-                resolved_structures.update(custom_structures)
-                logger.info(f"Added {len(custom_structures)} custom structures")
+        if not merged_file or not Path(merged_file).exists():
+            logger.warning("Falling back to existing RTSTRUCT due to custom merge failure")
+            fallback = None
+            if self.rs_auto_path.exists():
+                fallback = self.rs_auto_path
+            elif self.rs_manual_path.exists():
+                fallback = self.rs_manual_path
+            if not fallback:
+                raise RuntimeError("Neither manual nor auto RTSTRUCT available for fallback")
+            shutil.copy2(fallback, self.rs_custom_path)
+            merged_path = self.rs_custom_path
+            fallback_used = True
         else:
-            logger.info("No custom structure config provided or file not found")
+            merged_path = Path(merged_file)
+            fallback_used = False
 
-        # Create merged DICOM file
-        merged_file = self.create_merged_rtstruct(resolved_structures, custom_config_path)
+        # Derive source labels for reporting
+        def _roi_names(path: Path) -> Set[str]:
+            if not path or not path.exists():
+                return set()
+            try:
+                ds = pydicom.dcmread(str(path), stop_before_pixels=True)
+                return {
+                    str(getattr(roi, "ROIName", "")).strip()
+                    for roi in getattr(ds, "StructureSetROISequence", [])
+                }
+            except Exception as exc:  # pragma: no cover - safety
+                logger.debug("Failed reading ROI names from %s: %s", path, exc)
+                return set()
 
-        # Generate comparison report
-        report_file = self.generate_comparison_report(resolved_structures)
+        manual_names = _roi_names(self.rs_manual_path)
+        auto_names = _roi_names(self.rs_auto_path)
 
-        return merged_file, report_file
+        custom_names: Set[str] = set()
+        if custom_config_path and Path(custom_config_path).exists():
+            try:
+                cfg = yaml.safe_load(Path(custom_config_path).read_text()) or {}
+                for item in cfg.get("custom_structures", []):
+                    name = item.get("name")
+                    if name:
+                        custom_names.add(str(name))
+            except Exception as exc:
+                logger.warning("Failed to parse custom structure config %s: %s", custom_config_path, exc)
+
+        try:
+            ds_final = pydicom.dcmread(str(merged_path), stop_before_pixels=True)
+            final_rois = getattr(ds_final, "StructureSetROISequence", []) or []
+        except Exception as exc:
+            logger.error("Unable to read merged RTSTRUCT for reporting: %s", exc)
+            final_rois = []
+
+        comparison: List[Dict[str, Any]] = []
+        for roi in final_rois:
+            name = str(getattr(roi, "ROIName", "")).strip()
+            sources = []
+            if name in custom_names:
+                sources.append("custom")
+            if name in manual_names:
+                sources.append("manual")
+            if name in auto_names and "auto" not in sources:
+                sources.append("auto")
+            if not sources:
+                sources.append("unknown")
+            comparison.append({
+                "final_name": name,
+                "sources": sources,
+            })
+
+        report_data = {
+            "patient_dir": str(self.patient_dir),
+            "timestamp": datetime.now().isoformat(),
+            "fallback_used": fallback_used,
+            "structure_comparison": comparison,
+        }
+
+        report_path = self.patient_dir / "structure_comparison_report.json"
+        report_path.write_text(json.dumps(report_data, indent=2))
+
+        mapping_path = self.patient_dir / "structure_mapping.json"
+        mapping_info = {
+            "timestamp": datetime.now().isoformat(),
+            "output_file": str(merged_path.resolve()),
+            "sources": {
+                "manual": sorted(manual_names),
+                "auto": sorted(auto_names),
+                "custom_config": sorted(custom_names),
+            },
+        }
+        mapping_path.write_text(json.dumps(mapping_info, indent=2))
+
+        return merged_path, report_path
 
 
 def merge_patient_structures(patient_dir: Path, custom_config_path: Optional[Path] = None) -> Tuple[Path, Path]:
