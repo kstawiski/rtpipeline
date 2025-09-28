@@ -1,98 +1,99 @@
 # CLI Reference
 
+The `rtpipeline` command wraps the Python package so you can process a DICOM
+study without Snakemake. It organises plans/doses/structures into per-course
+folders, optionally runs TotalSegmentator, builds RTSTRUCTs, computes DVH,
+produces visualisations, extracts radiomics features, and exports metadata.
+Resume mode is **enabled by default**: existing outputs are reused unless you
+explicitly force regeneration.
+
 ```bash
 rtpipeline --dicom-root PATH --outdir PATH --logs PATH [options]
 rtpipeline doctor [--logs PATH] [--conda-activate CMD] [--dcm2niix NAME] [--totalseg NAME]
 ```
 
-## Required
-- `--dicom-root PATH`  Root folder with DICOM files (may contain multiple patients).
-
-## Common
-- `--outdir PATH`  Output directory (default `./Data_Organized`).
-- `--logs PATH`    Logs directory.
-- `-v`/`--verbose` Increase log verbosity (repeat for more).
+## Core options
+- `--dicom-root PATH` (required) – root containing patient subdirectories with
+  DICOM files.
+- `--outdir PATH` – destination for organised courses (default `./Data_Organized`).
+- `--logs PATH` – log directory (default `./Logs`). A summary log is also written
+  to `rtpipeline.log` under this directory.
+- `-v/--verbose` – increase logging verbosity (repeatable).
 
 ## Course grouping
-- `--merge-criteria {same_ct_study,frame_of_reference}`  Default `same_ct_study`.
-- `--max-days N`  Optional time window for grouping.
+- `--merge-criteria {same_ct_study,frame_of_reference}` – grouping strategy for
+  RT courses (default `same_ct_study`).
+- `--max-days N` – split a course when consecutive plans are separated by more
+  than *N* days.
 
-## Phase control
-- `--no-metadata`     Skip global metadata extraction.
-- `--no-segmentation` Skip TotalSegmentator.
-- `--force-segmentation` Re-run TotalSegmentator even if outputs exist.
-- `--no-dvh`          Skip DVH computation.
-- `--no-visualize`    Skip HTML reports (DVH + Axial viewer).
-- `--no-radiomics`    Skip pyradiomics extraction.
-- `--radiomics-params PATH`  Use a custom pyradiomics YAML parameter file instead of the packaged defaults.
+## Stage toggles
+- `--no-metadata` – skip XLSX/JSON metadata exports.
+- `--no-segmentation` – do not invoke TotalSegmentator.
+- `--force-segmentation` – re-run TotalSegmentator even when outputs exist.
+- `--no-dvh` – skip DVH calculation.
+- `--no-visualize` – skip HTML viewer generation (`DVH_Report.html`, `Axial.html`).
+- `--no-radiomics` – skip radiomics extraction.
+- `--force-redo` – rebuild every stage regardless of existing outputs. Without
+  this flag, the pipeline operates in resume mode.
 
-## Environment
-- `--conda-activate CMD`  Prefix segmentation commands (e.g. activate env).
-- `--dcm2niix NAME`  Override dcm2niix command name.
-- `--totalseg NAME`  Override TotalSegmentator command name.
-- `--totalseg-license KEY`  Optional license key for TotalSegmentator (exported as env var during runs).
-- `--totalseg-weights PATH`  Path to pretrained weights (nnUNet_pretrained_models). Use this for offline environments.
-- `--extra-seg-models`  Additional TotalSegmentator tasks to run besides the default 'total'. Accepts comma-separated values and can be repeated.
-- `--totalseg-fast`  Adds `--fast` to TotalSegmentator calls (recommended on CPU).
-- `--totalseg-roi-subset LIST`  Passes `--roi_subset LIST` to TotalSegmentator (comma-separated ROI names).
-- `--workers N`  Number of parallel workers for non-segmentation phases (organize, DVH, visualization, metadata). Default: auto.
-- `--resume`  Resume mode: skip per-course steps with existing outputs (idempotent).
+## Segmentation controls
+- `--conda-activate CMD` – shell prefix (e.g. `"source ~/miniconda/etc/profile.d/conda.sh && conda activate ts"`).
+- `--dcm2niix NAME` – explicit `dcm2niix` command (default `dcm2niix`).
+- `--totalseg NAME` – TotalSegmentator command (default `TotalSegmentator`).
+- `--totalseg-license KEY` – licence key exported during segmentation runs.
+- `--totalseg-weights PATH` – location of pre-trained weights (nnUNet
+  pretrained models) for offline setups.
+- `--extra-seg-models MODEL[,MODEL...]` – request additional TotalSegmentator
+  tasks alongside the default `total`. Repeat the flag or provide a
+  comma-separated list. `_mr` suffixed models apply to MR series.
+- `--totalseg-fast` – append `--fast` to TotalSegmentator for CPU-friendly runs.
+- `--totalseg-roi-subset ROI[,ROI...]` – restrict TotalSegmentator to specific
+  ROIs.
 
-Note: `dcm2niix` is an external CLI (not installed via pip). If it is not available, NIfTI conversion is skipped and the pipeline continues with DICOM-mode segmentation only.
+## Radiomics and structures
+- `--radiomics-params FILE` – YAML settings for PyRadiomics (otherwise the
+  packaged `rtpipeline/radiomics_params.yaml` is used).
+- `--sequential-radiomics` – disable process-level parallelism for PyRadiomics.
+- `--custom-structures FILE` – YAML describing Boolean or margin-derived
+  structures. When omitted, the CLI tries the bundled
+  `custom_structures_pelvic.yaml`.
 
-## Progress & ETA
-- The CLI reports progress and estimated time remaining for long-running phases:
-  - Organize (per-course)
-  - Build RS_auto (after segmentation)
-  - DVH (per-course)
-  - Visualization (per-course)
-  - Segmentation phases print progress as they complete (sequential by design)
+## Parallelism
+- `--workers N` – cap for non-segmentation worker pools (metadata, DVH,
+  visualisation, radiomics). Defaults to an auto value based on CPU count.
 
-## Resuming
-- Use `--resume` to continue after an interruption. The CLI skips work when outputs already exist:
-  - Segmentation: `TotalSegmentator_DICOM/segmentations.dcm` or `TotalSegmentator_NIFTI/*.nii*`
-  - RS_auto: `RS_auto.dcm`
-  - DVH: `dvh_metrics.xlsx`
-  - Visualization: both `DVH_Report.html` and `Axial.html`
-  - Radiomics: `radiomics_features_CT.xlsx` (CT) and `radiomics_features_MR.xlsx` (MR series)
+## Outputs on disk
+Each course is stored under `outdir/<PatientID>/course_<key>/` with:
+- `CT_DICOM/` – copied planning CT series.
+- `RP.dcm`, `RD.dcm` – summed or copied plan/dose files.
+- `RS.dcm` (if a manual structure set was present at input).
+- `TotalSegmentator_{DICOM,NIFTI}/`, optional extra-model folders, and `nifti/`
+  (dcm2niix output).
+- `RS_auto.dcm` – generated from TotalSegmentator outputs.
+- `RS_custom.dcm` – merged manual/auto/custom structures plus
+  `structure_comparison_report.json` and `structure_mapping.json`.
+- Analytic artefacts: `dvh_metrics.xlsx`, `Radiomics_CT.xlsx`, `Axial.html`,
+  `DVH_Report.html`, `qc_report.json`, metadata JSON/XLSX.
+- Aggregated Excel files (e.g. `DVH_metrics_all.xlsx`) live under
+  `outdir/Data/`.
 
-## Doctor
-- `rtpipeline doctor` prints environment diagnostics:
-  - Python and OS info
-  - Installed versions of key Python packages
-  - Presence of `dcm2niix` and `TotalSegmentator` in PATH (unless `--conda-activate` is provided)
-  - Availability of bundled `rtpipeline/ext/dcm2niix_*.zip` inside the package (used as fallback)
-  - Whether NIfTI conversion will fallback to bundled dcm2niix or be skipped
+## `doctor` subcommand
+`rtpipeline doctor` checks whether core binaries and Python packages are
+available. Use it to diagnose environments before running full jobs.
 
-## Progress & ETA
-- The CLI reports progress and estimated time remaining for long-running phases:
-  - Organize (per-course)
-  - Build RS_auto (after segmentation)
-  - DVH (per-course)
-  - Visualization (per-course)
-  - Segmentation phases print progress as they complete (sequential by design)
+- Verifies Python version and prints package versions (`pydicom`, `SimpleITK`,
+  `dicompyler-core`, `pydicom-seg`, `rt-utils`, `TotalSegmentator`).
+- Checks `dcm2niix` and `TotalSegmentator` in `PATH` (or notes that a conda
+  activation prefix is required).
+- Reports CUDA availability via `nvidia-smi` and prints expected locations for
+  bundled `dcm2niix` archives.
+- Indicates whether a fallback extraction of `dcm2niix` from
+  `rtpipeline/ext/*.zip` is possible when the binary is missing.
 
-## Radiomics
-- The pipeline can compute pyradiomics features for:
-  - CT courses: manual RS (RS.dcm) and AutoRTS_total (RS_auto.dcm) → `radiomics_features_CT.xlsx`
-  - MR series: manual MR RTSTRUCT (if available) and TotalSegmentator `total_mr` outputs → `radiomics_features_MR.xlsx`
-- Install pyradiomics from GitHub:
-
-```
-pip install git+https://github.com/AIM-Harvard/pyradiomics
-```
-
-- Disable via `--no-radiomics`.
-- You can provide a custom parameter file via `--radiomics-params PATH`.
-
-## Outputs (per course)
-- `RP.dcm`, `RD.dcm`, `RS.dcm` (if present)
-- `RS_auto.dcm` (auto RTSTRUCT from TotalSegmentator)
-- `CT_DICOM/`, `TotalSegmentator_{DICOM,NIFTI}/`, `nifti/`
-- `dvh_metrics.xlsx`, `DVH_Report.html`, `Axial.html`
-- `case_metadata.json` and `case_metadata.xlsx`
-
-## Global outputs
-- `outdir/Data/*.xlsx` (plans, doses, structures, fractions, CT_images, merged metadata)
-- `outdir/DVH_metrics_all.xlsx` (all courses)
-- `outdir/Data/case_metadata_all.{xlsx,json}` (all courses)
+## Behaviour to remember
+- Resume is default: the CLI only recomputes stages whose key outputs are
+  missing. Combine `--force-redo` with stage toggles for selective rebuilds.
+- Segmentation is sequential by design; DVH, visualisation, metadata, and
+  radiomics use adaptive worker pools capped by `--workers`.
+- Radiomics falls back to a conda-based execution when PyRadiomics is not
+  importable in the main environment.

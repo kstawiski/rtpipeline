@@ -1,32 +1,37 @@
 # rtpipeline Documentation
 
-## What is rtpipeline?
+The repository bundles a Snakemake workflow and the `rtpipeline` Python package
+for transforming raw DICOM-RT studies into analysable research datasets. Source
+code is the ultimate reference for behaviour; this documentation summarizes the
+current implementation so you can navigate the pipeline without reverse
+engineering every module.
 
-rtpipeline is a DICOM‑RT processing pipeline that:
-- Organizes and merges RT plans into per-patient, per-course folders.
-- Runs TotalSegmentator and auto-generates RTSTRUCT (RS_auto) for DVH use.
-- Computes DVH metrics (manual and auto structures) and generates interactive DVH reports.
-- Provides an Axial QA viewer with manual/auto overlays.
-- Extracts both global and per-case metadata for clinical and research analysis.
-- Optionally runs additional TotalSegmentator tasks for CT courses and MR series.
+## Start Here
+- [Quickstart](quickstart.md) – environment preparation and first run using
+  Snakemake or the CLI.
+- [Pipeline Architecture](pipeline_architecture.md) – detailed description of
+  the Snakemake rules, produced artefacts, configuration knobs, and execution
+  order.
+- [CLI Reference](cli.md) – options exposed by the `rtpipeline` command-line
+  interface and how they map to internal modules.
 
-## Pipeline at a Glance
+## Stage Guides
+- [Segmentation](segmentation.md) – how TotalSegmentator is invoked, resume
+  behaviour, and RS_auto creation.
+- [DVH Metrics](dvh.md) – the metrics computed per ROI and where summaries are
+  written.
+- [Metadata Outputs](metadata.md) – structure of the JSON/XLSX exports created
+  during organisation.
+- [Viewers](viewers.md) – features of the generated HTML dashboards.
 
-Start with [`docs/pipeline.md`](pipeline.md) for a stage-by-stage walkthrough of
-how discovery, grouping, organization, segmentation, DVH, viewers, and radiomics
-fit together. Each module can be toggled via CLI flags and supports `--resume`
-for incremental runs.
+## Repository Layout
+- `Snakefile` orchestrates the workflow described in the architecture guide.
+- `config.yaml` supplies runtime paths, degree of parallelism, segmentation and
+  radiomics settings, and the custom structure template.
+- `rtpipeline/` contains the implementation modules used by both Snakemake and
+  the CLI. Consult this package when you need the authoritative behaviour of a
+  given stage.
 
-## Core Concepts
-
-- Course grouping: By default, a course is defined by the CT StudyInstanceUID. Plans/doses on the same CT are merged; different CTs become separate courses.
-- Resume‑safe segmentation: Existing outputs are reused. Use `--force-segmentation` to re‑run.
-- Auto RTSTRUCT: TotalSegmentator outputs (DICOM‑SEG or NIfTI) are converted into RS_auto.dcm aligned to the course CT, enabling DVH.
-- DVH metrics: Computed via dicompyler‑core from RD/RP for both manual RS and RS_auto.
-- Viewers: DVH (Plotly) + Axial CT viewer with overlays to visually verify segmentation quality.
-- MR handling: MR images are not part of RT “courses” or DVH, but you can run MR‑specific TotalSegmentator models (tasks ending with `_mr`) across all MR series in `--dicom-root`; outputs are organized by patient and SeriesInstanceUID.
- - Radiomics: Optional pyradiomics extraction on CT (manual/auto) and MR (manual/total_mr), saved as per‑course or per‑series workbooks.
-
-Tip: Use `rtpipeline doctor` to check tools and whether bundled `dcm2niix` fallbacks are available.
-
-See the rest of the docs for details.
+All documentation in this folder is backed by the current code. If you add new
+features or change the pipeline flow, update the relevant guide or remove the
+section to keep the repo tidy.

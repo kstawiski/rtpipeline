@@ -1,99 +1,80 @@
 # Quickstart
 
-## Install
+This project targets Python 3.10+ and assumes access to TotalSegmentator and
+`dcm2niix`. The easiest way to run the pipeline is via Snakemake, which
+constructs the required conda environments and handles parallel execution.
+
+## 1. Clone and inspect configuration
+
+```bash
+git clone <repo-url>
+cd KONSTA_DICOMRT_Processing
+```
+
+Edit `config.yaml` to point `dicom_root` at your study tree and to adjust
+`output_dir`, `logs_dir`, worker counts, segmentation flags, or radiomics
+parameters. The defaults write results into `Data_Snakemake` and logs into
+`Logs_Snakemake` underneath the project root.
+
+## 2. Run the Snakemake workflow
+
+```bash
+XDG_CACHE_HOME=$PWD/.cache \
+snakemake --use-conda --cores 4 --conda-prefix $HOME/.snakemake_envs
+```
+
+- `--use-conda` tells Snakemake to create the two environments declared under
+  `envs/` (`rtpipeline` with NumPy 2.x for TotalSegmentator and
+  `rtpipeline-radiomics` with NumPy 1.26 for PyRadiomics).
+- `--cores` limits how many rules Snakemake schedules concurrently. Individual
+  rules also respect the `workers` value from `config.yaml` and internal thread
+  caps defined in the `Snakefile`.
+- Outputs land under `output_dir/<PatientID>/`, one directory per patient, and
+  aggregated XLSX/JSON files are written into `output_dir/Data/`.
+- Logs for each rule are stored in `logs_dir` with filenames such as
+  `segment_nifti_<patient>.log`.
+
+Rerunning the command is safe: Snakemake skips rules whose outputs already
+exist. Use the `clean` or `clean_all` rules from the `Snakefile` if you need to
+purge intermediate data first.
+
+## 3. Optional: use the CLI directly
+
+Install the package in editable mode (handy for development):
 
 ```bash
 pip install -e .
 ```
 
-This installs pydicom (>=3.0,<4), dicompyler-core, SimpleITK, pydicom-seg, plotly, dicom2nifti, TotalSegmentator (from GitHub via VCS), rt-utils, etc. Ensure your pip supports VCS dependencies (pip >= 21.1).
-Note: `dcm2niix` is an external CLI (not a Python package). Install it via your OS package manager or conda (e.g., `conda install -c conda-forge dcm2niix`). If missing, the pipeline still runs DICOM-mode segmentation and skips NIfTI conversion. Alternatively, place platform ZIPs in `rtpipeline/ext/` (e.g., `dcm2niix_lnx.zip`, `dcm2niix_mac.zip`, `dcm2niix_win.zip`) and the tool will auto‑extract and use them when `dcm2niix` is not found.
-
-## Run with Snakemake (recommended)
-
-The repository ships with a Snakemake workflow that creates and pins the two
-required conda environments (NumPy 2.x for TotalSegmentator, NumPy 1.x for
-PyRadiomics). It also parallelises independent rules automatically.
+Then invoke the CLI:
 
 ```bash
-cd /path/to/rtpipeline
-XDG_CACHE_HOME=$PWD/.cache \
-snakemake --use-conda --cores 4 --conda-prefix $HOME/.snakemake_conda_store
+rtpipeline --dicom-root /path/to/DICOM --outdir ./Data_Organized --logs ./Logs
 ```
 
-- Increase `--cores` if you want Snakemake to schedule more rules at once.
-- `config.yaml:workers` controls how many worker processes stages such as
-  radiomics or metadata aggregation may spawn; keep it ≤ `--cores` for best
-  throughput.
-- The shared `--conda-prefix` caches environments under your home directory so
-  reruns do not rebuild them.
-- Segmentation is resource-heavy; the workflow enforces a lock so only one
-  TotalSegmentator job runs at a time. Other rules may execute in parallel
-  while segmentation is idle.
+The CLI organises data into course directories inside `--outdir` and, by
+default, skips work for courses that already contain expected artefacts (metadata,
+segmentation, DVH, visualisation, radiomics). Pass `--force-redo` to rebuild
+everything or `--force-segmentation` to rerun TotalSegmentator while leaving
+other stages cached.
 
-## Minimal CLI run
+## 4. Radiomics dependency notes
 
-```bash
-rtpipeline --dicom-root /path/to/DICOM --outdir ./Data_Organized --logs ./Logs -v
-```
+The Snakemake workflow launches radiomics extraction through a dedicated conda
+environment that pins NumPy 1.26. If you operate the CLI outside Snakemake,
+ensure `conda run -n rtpipeline-radiomics` works or install PyRadiomics in a
+compatible environment yourself. Radiomics can be disabled for CLI runs via
+`--no-radiomics`; with Snakemake you would need to edit the workflow if you want
+to skip the rule entirely.
 
-This will:
-- Extract metadata (global XLSX under `outdir/Data/`)
-- Organize per-patient, per-course folders under `outdir/<PatientID>/course_<key>/`
-- (Optional) Run segmentation + auto RTSTRUCT (RS_auto)
-- Compute DVH (manual + auto) and generate `DVH_Report.html`
-- Generate `Axial.html` (CT + manual/auto overlays)
+## 5. After the run
 
-## Resume and force
+Key outputs include:
+- Per-patient folders with DICOM copies, `RS_auto.dcm`, merged
+  `RS_custom.dcm`, DVH/radiomics/QC spreadsheets, and HTML viewers.
+- Aggregated spreadsheets (`metadata_summary.xlsx`, `radiomics_summary.xlsx`,
+  `dvh_summary.xlsx`, `qc_summary.xlsx`) plus raw exports in
+  `output_dir/Data/`.
 
-- Segmentation is resume-safe: if outputs exist, it’s skipped.
-- Force re-run:
-
-```bash
-rtpipeline --dicom-root /path/to/DICOM --outdir ./Data_Organized --logs ./Logs --force-segmentation
-```
-## Optional: extra models and MR
-
-- Run extra CT tasks (alongside default CT total):
-
-```bash
-rtpipeline --dicom-root /path/to/DICOM --outdir ./Data_Organized --logs ./Logs \
-  --extra-seg-models lung_vessels,body
-```
-
-- Run MR tasks across MR series (tasks ending with `_mr`):
-
-```bash
-rtpipeline --dicom-root /path/to/DICOM --outdir ./Data_Organized --logs ./Logs \
-  --extra-seg-models total_mr,body_mr
-```
-
-- Add license and CPU optimizations:
-
-```bash
-rtpipeline ... --totalseg-license YOUR_KEY --totalseg-fast --totalseg-roi-subset liver,pancreas
-```
-
-- Check environment:
-
-```bash
-rtpipeline doctor --logs ./Logs
-```
-
-## Optional: radiomics
-
-Install pyradiomics from GitHub:
-
-```bash
-pip install git+https://github.com/AIM-Harvard/pyradiomics
-```
-
-Radiomics outputs:
-- CT courses → `radiomics_features_CT.xlsx`
-- MR series (with manual RS or `total_mr` seg) → `radiomics_features_MR.xlsx`
-
-Disable with `--no-radiomics`.
-
-When using the CLI directly, `--workers N` controls the non-segmentation
-parallelism (organise/metadata/radiomics). With Snakemake, the value in
-`config.yaml` is forwarded automatically.
+Review the [Pipeline Architecture](pipeline_architecture.md) guide for a
+stage-by-stage explanation of how these files are generated.
