@@ -12,6 +12,7 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 from .utils import sanitize_rtstruct
+from .roi_fixer import fix_rtstruct_rois
 
 
 def _load_ct_image(ct_dir: Path) -> Optional[sitk.Image]:
@@ -262,6 +263,13 @@ def build_auto_rtstruct(course_dir: Path) -> Optional[Path]:
     try:
         rtstruct.save(str(out_path))
         sanitize_rtstruct(out_path)
+        summary = fix_rtstruct_rois(ct_dir, out_path)
+        if summary and summary.changed:
+            logger.info(
+                "Auto RTSTRUCT ROI fix: %d repaired, %d still problematic",
+                len(summary.fixed),
+                len(summary.failed),
+            )
         logger.info("Wrote auto RTSTRUCT: %s", out_path)
         return out_path
     except Exception as e:
