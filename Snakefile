@@ -9,9 +9,42 @@ from pathlib import Path
 configfile: "config.yaml"
 
 ROOT_DIR = Path.cwd()
+
+
+def _ensure_writable_dir(candidate: Path, fallback_name: str) -> Path:
+    """Return a directory path we can write to, falling back inside the repo if needed."""
+
+    fallback = ROOT_DIR / fallback_name
+    test_file = candidate / ".write_test"
+
+    try:
+        candidate.mkdir(parents=True, exist_ok=True)
+        with open(test_file, "w", encoding="utf-8") as fh:
+            fh.write("")
+        test_file.unlink(missing_ok=True)
+        return candidate
+    except OSError as exc:
+        sys.stderr.write(
+            f"[rtpipeline] Warning: unable to write to {candidate}: {exc}. "
+            f"Using fallback {fallback}\n"
+        )
+        fallback.mkdir(parents=True, exist_ok=True)
+        fallback_test = fallback / ".write_test"
+        with open(fallback_test, "w", encoding="utf-8") as fh:
+            fh.write("")
+        fallback_test.unlink(missing_ok=True)
+        return fallback
+
+
 DICOM_ROOT = ROOT_DIR / config.get("dicom_root", "Example_data")
-OUTPUT_DIR = ROOT_DIR / config.get("output_dir", "Data_Snakemake")
-LOGS_DIR = ROOT_DIR / config.get("logs_dir", "Logs_Snakemake")
+OUTPUT_DIR = _ensure_writable_dir(
+    ROOT_DIR / config.get("output_dir", "Data_Snakemake"),
+    "Data_Snakemake_fallback",
+)
+LOGS_DIR = _ensure_writable_dir(
+    ROOT_DIR / config.get("logs_dir", "Logs_Snakemake"),
+    "Logs_Snakemake_fallback",
+)
 WORKERS = int(config.get("workers", 4))
 
 MAX_LOCAL_CORES = os.cpu_count() or 1
@@ -84,8 +117,7 @@ if _custom_structures_cfg:
 else:
     CUSTOM_STRUCTURES_CONFIG = ""
 
-OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-LOGS_DIR.mkdir(parents=True, exist_ok=True)
+# Directories are already ensured writable by _ensure_writable_dir
 
 PATIENTS = sorted([p.name for p in DICOM_ROOT.iterdir() if p.is_dir()])
 
