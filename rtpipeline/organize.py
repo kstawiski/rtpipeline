@@ -9,7 +9,7 @@ import shutil
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, cast
 
 import numpy as np
 import pydicom
@@ -280,24 +280,62 @@ def _index_series_and_registrations(
             modality = str(getattr(ds, 'Modality', '') or '')
             if modality != 'REG' or not patient_id:
                 continue
-            reg_item = {
+            reg_item: Dict[str, object] = {
                 'path': p,
                 'for_uids': set(),
                 'referenced_series': set(),
+                'series_by_for': {},
             }
+
+            def _add_for(uid: str | None) -> None:
+                if not uid:
+                    return
+                cast(set, reg_item['for_uids']).add(uid)
+
+            def _add_series(series_uid: str | None, for_uid: str | None = None) -> None:
+                if not series_uid:
+                    return
+                cast(set, reg_item['referenced_series']).add(series_uid)
+                if for_uid:
+                    series_by_for = cast(Dict[str, set[str]], reg_item.setdefault('series_by_for', {}))
+                    series_by_for.setdefault(for_uid, set()).add(series_uid)
+
             try:
                 for ref_for in getattr(ds, 'ReferencedFrameOfReferenceSequence', []) or []:
                     for_uid = str(getattr(ref_for, 'FrameOfReferenceUID', '') or '')
                     if for_uid:
-                        reg_item['for_uids'].add(for_uid)
+                        _add_for(for_uid)
                     for study in getattr(ref_for, 'RTReferencedStudySequence', []) or []:
                         for series in getattr(study, 'RTReferencedSeriesSequence', []) or []:
                             series_uid_ref = str(getattr(series, 'SeriesInstanceUID', '') or '')
                             if series_uid_ref:
-                                reg_item['referenced_series'].add(series_uid_ref)
+                                _add_series(series_uid_ref, for_uid)
+
+                for reg_seq in getattr(ds, 'RegistrationSequence', []) or []:
+                    reg_for_uid = str(getattr(reg_seq, 'FrameOfReferenceUID', '') or '')
+                    if reg_for_uid:
+                        _add_for(reg_for_uid)
+                    for ref_study in getattr(reg_seq, 'ReferencedStudySequence', []) or []:
+                        for ref_series in getattr(ref_study, 'ReferencedSeriesSequence', []) or []:
+                            series_uid_ref = str(getattr(ref_series, 'SeriesInstanceUID', '') or '')
+                            if series_uid_ref:
+                                _add_series(series_uid_ref, reg_for_uid)
+
+                for ref_series in getattr(ds, 'ReferencedSeriesSequence', []) or []:
+                    series_uid_ref = str(getattr(ref_series, 'SeriesInstanceUID', '') or '')
+                    if series_uid_ref:
+                        _add_series(series_uid_ref)
+
+                for other_study in getattr(ds, 'StudiesContainingOtherReferencedInstancesSequence', []) or []:
+                    for ref_series in getattr(other_study, 'ReferencedSeriesSequence', []) or []:
+                        series_uid_ref = str(getattr(ref_series, 'SeriesInstanceUID', '') or '')
+                        if series_uid_ref:
+                            _add_series(series_uid_ref)
+
             except Exception as exc:
                 logger.debug("Failed indexing registration %s: %s", p, exc)
                 continue
+
             registrations.setdefault(patient_id, []).append(reg_item)
     return series_index, registrations
 
@@ -526,6 +564,7 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
         primary_nifti: Optional[Path] = None
         related_outputs: List[Path] = []
         seen_related: set[Path] = set()
+        course_ct_series_uids: set[str] = set()
 
         rp_dst = course_dir / "RP.dcm"
         rd_dst = course_dir / "RD.dcm"
@@ -584,6 +623,9 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
         if course_study and patient_id in ct_index and course_study in ct_index[patient_id]:
             series = pick_primary_series(ct_index[patient_id][course_study])
             if series:
+                first_inst = series[0] if series else None
+                if first_inst is not None and getattr(first_inst, 'series_uid', None):
+                    course_ct_series_uids.add(str(first_inst.series_uid))
                 copy_ct_series(series, course_dirs.dicom_ct)
                 try:
                     primary_nifti = _ensure_ct_nifti(
@@ -605,6 +647,8 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
                     related_outputs.append(_copy_into(reg_path, course_dirs.dicom_related / "REG"))
                     seen_related.add(reg_path)
                 for series_uid in reg.get('referenced_series', set()):
+                    if series_uid in course_ct_series_uids:
+                        continue
                     for src in series_index.get((patient_id, series_uid), []):
                         if src not in seen_related and src.exists():
                             dest_dir = course_dirs.dicom_related / _sanitize_name(series_uid, "series")
@@ -732,6 +776,7 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
             related_outputs: List[Path] = []
             seen_related: set[Path] = set()
             course_for_uids = {s.frame_of_reference_uid for s in s_list if s.frame_of_reference_uid}
+            course_ct_series_uids: set[str] = set()
 
             rs_dst = course_dir / "RS.dcm"
             primary_struct = s_list[0].path
@@ -743,6 +788,9 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
             if course_study and patient_id in ct_index and course_study in ct_index[patient_id]:
                 series = pick_primary_series(ct_index[patient_id][course_study])
                 if series:
+                    first_inst = series[0] if series else None
+                    if first_inst is not None and getattr(first_inst, 'series_uid', None):
+                        course_ct_series_uids.add(str(first_inst.series_uid))
                     copy_ct_series(series, course_dirs.dicom_ct)
                     try:
                         primary_nifti = _ensure_ct_nifti(
@@ -764,6 +812,8 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
                         related_outputs.append(_copy_into(reg_path, course_dirs.dicom_related / "REG"))
                         seen_related.add(reg_path)
                     for series_uid in reg.get('referenced_series', set()):
+                        if series_uid in course_ct_series_uids:
+                            continue
                         for src in series_index.get((patient_id, series_uid), []):
                             if src not in seen_related and src.exists():
                                 dest_dir = course_dirs.dicom_related / _sanitize_name(series_uid, "series")

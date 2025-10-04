@@ -18,6 +18,7 @@ segmentation:
 radiomics:
   sequential: false
   params_file: "rtpipeline/radiomics_params.yaml"
+  thread_limit: 1  # CPU threads per radiomics worker (null => no limit)
 
 # Environment names
 environments:
