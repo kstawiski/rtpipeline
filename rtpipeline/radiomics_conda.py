@@ -16,20 +16,38 @@ import numpy as np
 import pandas as pd
 import SimpleITK as sitk
 
+from .layout import build_course_dirs
+from .utils import mask_is_cropped
+
 logger = logging.getLogger(__name__)
 
 RADIOMICS_ENV = "rtpipeline-radiomics"
+
+
+def _conda_subprocess_env() -> Dict[str, str]:
+    env = os.environ.copy()
+    env.setdefault("CONDA_NO_PLUGINS", "1")
+    env.setdefault("CONDA_OVERRIDE_CUDA", "0")
+    return env
 
 
 def check_radiomics_env() -> bool:
     """Check if the radiomics conda environment exists and is functional."""
     try:
         result = subprocess.run(
-            ["conda", "run", "-n", RADIOMICS_ENV, "python", "-c",
-             "import radiomics; import numpy; print('OK')"],
+            [
+                "conda",
+                "run",
+                "-n",
+                RADIOMICS_ENV,
+                "python",
+                "-c",
+                "import radiomics; import numpy; print('OK')",
+            ],
             capture_output=True,
             text=True,
-            timeout=10
+            timeout=10,
+            env=_conda_subprocess_env(),
         )
         return result.returncode == 0 and "OK" in result.stdout
     except Exception as e:
@@ -175,7 +193,8 @@ print(json.dumps(output))
             ["conda", "run", "-n", RADIOMICS_ENV, "python", "-c", extraction_script_with_file],
             capture_output=True,
             text=True,
-            timeout=900  # allow up to 15 minutes for large ROIs
+            timeout=900,  # allow up to 15 minutes for large ROIs
+            env=_conda_subprocess_env(),
         )
 
         if result.returncode != 0:
@@ -432,8 +451,10 @@ def radiomics_for_course(
     Returns:
         Path to the radiomics Excel file if successful, None otherwise
     """
+    course_dirs = build_course_dirs(course_dir)
+
     # Check for CT DICOM files
-    ct_dir = course_dir / "CT_DICOM"
+    ct_dir = course_dirs.dicom_ct
     if not ct_dir.exists():
         logger.warning(f"No CT_DICOM directory found in {course_dir}")
         return None
@@ -467,7 +488,7 @@ def radiomics_for_course(
 
     # Map ROI names to their originating source if structure mapping is available
     source_map: Dict[str, str] = {}
-    mapping_path = course_dir / "structure_mapping.json"
+    mapping_path = course_dir / "metadata" / "structure_mapping.json"
     if mapping_path.exists():
         try:
             mapping_data = json.loads(mapping_path.read_text(encoding='utf-8'))
@@ -531,7 +552,9 @@ def radiomics_for_course(
             metadata = {
                 'segmentation_source': source_map.get(roi_name, default_source),
                 'course_dir': str(course_dir),
-                'patient_id': course_dir.name,
+                'patient_id': course_dir.parent.name,
+                'course_id': course_dir.name,
+                'structure_cropped': mask_is_cropped(mask_bool),
             }
 
             tasks.append({
@@ -561,7 +584,7 @@ def radiomics_for_course(
             pass
         return None
 
-    output_path = course_dir / "Radiomics_CT.xlsx"
+    output_path = course_dir / "radiomics_ct.xlsx"
     sequential = os.environ.get('RTPIPELINE_RADIOMICS_SEQUENTIAL', '').lower() in ('1', 'true', 'yes')
 
     max_workers = None

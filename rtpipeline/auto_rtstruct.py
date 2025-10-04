@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
 from pathlib import Path
 from typing import Dict, Iterable, Optional, Tuple
 
@@ -11,8 +12,10 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
+from .layout import build_course_dirs
 from .utils import sanitize_rtstruct
 from .roi_fixer import fix_rtstruct_rois
+from .layout import build_course_dirs
 
 
 def _load_ct_image(ct_dir: Path) -> Optional[sitk.Image]:
@@ -56,60 +59,74 @@ def _load_seg_dicom(seg_path: Path) -> tuple[Optional[sitk.Image], Dict[int, str
         return None, {}
 
 
-def _load_seg_nifti(nifti_dir: Path) -> tuple[Optional[sitk.Image], Dict[int, str]]:
-    if not nifti_dir.exists():
-        return None, {}
-    label_map: Dict[int, str] = {}
-    # Try TotalSegmentator's segmentations.nii.gz and segmentations.json
-    json_path = nifti_dir / 'segmentations.json'
-    nii_candidates = [nifti_dir / 'segmentations.nii.gz', nifti_dir / 'segmentation.nii.gz']
-    seg_img = None
-    try:
-        for p in nii_candidates:
-            if p.exists():
-                seg_img = sitk.ReadImage(str(p))
-                break
-        if seg_img is None:
-            for p in nifti_dir.iterdir():
-                if p.name.endswith('.nii') or p.name.endswith('.nii.gz'):
-                    try:
-                        seg_img = sitk.ReadImage(str(p))
-                        break
-                    except Exception:
-                        continue
-    except Exception as e:
-        logger.error("NIfTI seg load failed: %s", e)
+def _strip_nifti_base(nifti_path: Path) -> str:
+    name = nifti_path.name
+    if name.endswith('.nii.gz'):
+        return name[:-7]
+    if name.endswith('.nii'):
+        return name[:-4]
+    return nifti_path.stem
+
+
+def _load_seg_nifti(seg_dir: Path, base_name: Optional[str]) -> tuple[Optional[sitk.Image], Dict[int, str]]:
+    if not seg_dir.exists():
         return None, {}
 
-    if json_path.exists():
+    label_map: Dict[int, str] = {}
+    seg_img: Optional[sitk.Image] = None
+
+    candidates: list[Path] = []
+    if base_name:
+        specific = seg_dir / f"{base_name}_total_multilabel.nii.gz"
+        if specific.exists():
+            candidates.append(specific)
+    if not candidates:
+        candidates = sorted(seg_dir.glob("*_total_multilabel.nii.gz"))
+
+    try:
+        for p in candidates:
+            seg_img = sitk.ReadImage(str(p))
+            break
+    except Exception as e:
+        logger.error("NIfTI seg load failed: %s", e)
+        seg_img = None
+
+    json_candidates: list[Path] = []
+    if base_name:
+        json_specific = seg_dir / f"{base_name}_total_segmentations.json"
+        if json_specific.exists():
+            json_candidates.append(json_specific)
+    if not json_candidates:
+        json_candidates = sorted(seg_dir.glob("*_total_segmentations.json"))
+
+    for json_path in json_candidates:
         try:
             data = json.loads(json_path.read_text(encoding='utf-8'))
-            # Expect mapping label name -> index or list of objects with 'id'/'name'
-            if isinstance(data, dict):
-                # e.g., {"organ_name": index}
-                for k, v in data.items():
-                    try:
-                        idx = int(v)
-                        label_map[idx] = str(k)
-                    except Exception:
-                        continue
-            elif isinstance(data, list):
-                for item in data:
-                    try:
-                        idx = int(item.get('id'))
-                        name = str(item.get('name', f'Segment_{idx}'))
-                        label_map[idx] = name
-                    except Exception:
-                        continue
         except Exception:
-            pass
-    # Ensure correct tuple shape regardless of seg_img presence
+            continue
+        if isinstance(data, dict):
+            for k, v in data.items():
+                try:
+                    idx = int(v)
+                    label_map[idx] = str(k)
+                except Exception:
+                    continue
+        elif isinstance(data, list):
+            for item in data:
+                try:
+                    idx = int(item.get('id'))
+                    name = str(item.get('name', f'Segment_{idx}'))
+                    label_map[idx] = name
+                except Exception:
+                    continue
+        break
+
     if seg_img is None:
         return None, {}
     return seg_img, label_map
 
 
-def _iter_binary_masks(nifti_dir: Path) -> Iterable[Tuple[str, sitk.Image]]:
+def _iter_binary_masks(nifti_dir: Path, prefix: Optional[str] = None) -> Iterable[Tuple[str, sitk.Image]]:
     """Yield (name, image) pairs for TotalSegmentator-style binary mask outputs."""
     if not nifti_dir.exists():
         return []
@@ -131,6 +148,9 @@ def _iter_binary_masks(nifti_dir: Path) -> Iterable[Tuple[str, sitk.Image]]:
             name = name[:-7]  # Remove .nii.gz
         elif name.endswith('.nii'):
             name = name[:-4]  # Remove .nii
+        if prefix and name.startswith(prefix):
+            stripped = name[len(prefix):]
+            name = stripped or name
         masks.append((name, img))
     return masks
 
@@ -155,9 +175,10 @@ def build_auto_rtstruct(course_dir: Path) -> Optional[Path]:
         logger.error("rt-utils not available: %s", e)
         return None
 
-    ct_dir = course_dir / 'CT_DICOM'
+    course_dirs = build_course_dirs(course_dir)
+    ct_dir = course_dirs.dicom_ct
     if not ct_dir.exists():
-        logger.info("No CT_DICOM for %s", course_dir)
+        logger.info("No CT DICOM for %s", course_dir)
         return None
 
     # Resume-friendly: if already built, skip
@@ -173,38 +194,48 @@ def build_auto_rtstruct(course_dir: Path) -> Optional[Path]:
     # Prefer DICOM-SEG, detect if RTSTRUCT already produced, fallback to NIfTI
     seg_img: Optional[sitk.Image] = None
     label_map: Dict[int, str] = {}
-    nifti_dir = course_dir / 'TotalSegmentator_NIFTI'
-    dicom_dir = course_dir / 'TotalSegmentator_DICOM'
-    dicom_seg_path = dicom_dir / 'segmentations.dcm'
+    seg_root = course_dirs.segmentation_totalseg
+    dicom_seg_path: Optional[Path] = None
+    base_name: Optional[str] = None
+    selected_dir: Optional[Path] = None
 
-    if dicom_seg_path.exists():
-        # Check whether this is SEG or RTSTRUCT; handle both
+    if seg_root.exists():
+        candidate_dirs = sorted(p for p in seg_root.iterdir() if p.is_dir())
+        for base_dir in candidate_dirs:
+            cand = base_dir / f"{base_dir.name}--total.dcm"
+            if cand.exists():
+                selected_dir = base_dir
+                dicom_seg_path = cand
+                base_name = base_dir.name
+                break
+        if selected_dir is None and candidate_dirs:
+            selected_dir = candidate_dirs[0]
+            base_name = selected_dir.name
+            cand = selected_dir / f"{base_name}--total.dcm"
+            if cand.exists():
+                dicom_seg_path = cand
+
+    if dicom_seg_path and dicom_seg_path.exists():
         try:
             ds = pydicom.dcmread(str(dicom_seg_path), stop_before_pixels=True)
             sop = str(getattr(ds, 'SOPClassUID', ''))
             if sop == '1.2.840.10008.5.1.4.1.1.66.4':
                 seg_img, label_map = _load_seg_dicom(dicom_seg_path)
             elif sop == '1.2.840.10008.5.1.4.1.1.481.3':
-                # Already an RTSTRUCT from TotalSegmentator: copy/normalize as RS_auto
-                out_path = course_dir / 'RS_auto.dcm'
                 try:
                     if out_path.exists():
                         out_path.unlink()
-                    dicom_seg_path.rename(out_path)
-                except Exception:
-                    try:
-                        import shutil as _sh
-                        _sh.copy2(str(dicom_seg_path), str(out_path))
-                    except Exception as e:
-                        logger.error('Failed to copy RTSTRUCT to RS_auto: %s', e)
-                        return None
+                    shutil.copy2(str(dicom_seg_path), str(out_path))
+                except Exception as e:
+                    logger.error('Failed to copy RTSTRUCT to RS_auto: %s', e)
+                    return None
                 logger.info("Wrote auto RTSTRUCT (from RTSTRUCT): %s", out_path)
                 return out_path
         except Exception as e:
             logger.debug('Inspecting DICOM output failed: %s', e)
 
     if seg_img is None:
-        seg_img, label_map = _load_seg_nifti(nifti_dir)
+        seg_img, label_map = _load_seg_nifti(selected_dir or seg_root, base_name)
 
     try:
         rtstruct = RTStructBuilder.create_new(dicom_series_path=str(ct_dir))
@@ -234,9 +265,11 @@ def build_auto_rtstruct(course_dir: Path) -> Optional[Path]:
                 except Exception as e:
                     logger.debug("Failed to add ROI %s: %s", name, e)
 
-    if not added_any:
+    fallback_dir = selected_dir or seg_root
+    if not added_any and fallback_dir.exists():
         # Fall back to per-ROI binary masks produced by TotalSegmentator
-        for name, mask_img in _iter_binary_masks(nifti_dir):
+        mask_prefix = f"{base_name}--total--" if base_name else None
+        for name, mask_img in _iter_binary_masks(fallback_dir, prefix=mask_prefix):
             try:
                 resampled = _resample_to_reference(mask_img, ct_img)
                 mask_arr = sitk.GetArrayFromImage(resampled)
