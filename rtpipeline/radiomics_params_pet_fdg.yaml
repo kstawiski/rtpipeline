@@ -1,0 +1,68 @@
+# =================================================================================================
+# IBSI-Compliant PyRadiomics Configuration for 18F-FDG PET Feature Extraction
+#
+# Based on Knowledge/Pyradiomics PET Configuration Research.md and cross-validated with
+# Gemini & Claude guidance. Designed for direct extractor-driven resampling/discretization.
+# =================================================================================================
+
+setting:
+  # ----------------------------------------------------------
+  # Geometry Standardization
+  # ----------------------------------------------------------
+  resampledPixelSpacing: [3.0, 3.0, 3.0]  # Whole-body PET harmonization target (IBSI workflow).
+  interpolator: 'sitkBSpline'            # Smooth intensity interpolation; mask uses nearest neighbor.
+
+  # ----------------------------------------------------------
+  # Intensity Discretization (SUV-based)
+  # ----------------------------------------------------------
+  binWidth: 0.25                         # Fixed bin size keeps FDG SUV range (~0-20) within ~80 bins.
+  normalize: false                       # SUV already normalized by acquisition protocol.
+
+  # ----------------------------------------------------------
+  # ROI Quality Controls
+  # ----------------------------------------------------------
+  minimumROIDimensions: 2
+  minimumROISize: 64                     # Discourage noisy micro-ROIs post-resampling.
+
+  # ----------------------------------------------------------
+  # Texture Neighborhoods & IBSI Compliance
+  # ----------------------------------------------------------
+  distances: [1, 2]                      # Include short & medium offsets for texture robustness.
+  force2D: false
+  padDistance: 5
+  geometryTolerance: 1e-6
+  correctMask: true
+  weightingNorm: null
+  voxelArrayShift: 0                     # Maintain SUV scale; aligns firstorder_Energy with IBSI.
+  additionalInfo: true
+  label: 1
+  preCrop: false
+
+imageType:
+  Original: {}
+
+  # Laplacian of Gaussian filters (mm) capture heterogeneous uptake patterns across scales.
+  LoG:
+    sigma: [1.0, 2.0, 3.0]
+
+  # Wavelet decomposition (IBSI Chapter 2) extends multi-frequency analysis; monitor feature volume.
+  Wavelet:
+    wavelet: 'coif1'
+    start_level: 0
+    level: 1
+
+featureClass:
+  shape: []
+  firstorder: []
+  glcm: []
+  glrlm: []
+  glszm: []
+  gldm: []
+  ngtdm: []
+
+# =================================================================================================
+# Post-Extraction Guidance:
+# - Audit per-case bin counts via additionalInfo to confirm 30-130 gray levels; adjust binWidth if needed.
+# - Perform SUV-based perturbation or test-retest ICC filtering prior to modeling.
+# - Document segmentation methodology (threshold, gradient, DL) alongside this config for reproducibility.
+# =================================================================================================

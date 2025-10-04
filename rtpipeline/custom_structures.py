@@ -178,6 +178,10 @@ class CustomStructureProcessor:
 
         return result.astype(np.uint8)
 
+    @staticmethod
+    def _normalize_name(name: str) -> str:
+        return "".join(ch.lower() for ch in name if ch.isalnum())
+
     def process_custom_structure(
         self,
         config: CustomStructureConfig,
@@ -193,13 +197,23 @@ class CustomStructureProcessor:
         Returns:
             Processed mask or None if source structures not available
         """
+        # Build lookup table with normalized keys for resilient matching
+        normalization_map: Dict[str, str] = {
+            self._normalize_name(key): key for key in available_masks.keys()
+        }
+
         # Check if all source structures are available
         source_masks = []
         for source_name in config.source_structures:
-            if source_name not in available_masks:
-                logger.warning(f"Source structure '{source_name}' not found for custom structure '{config.name}'")
+            actual_key = source_name if source_name in available_masks else normalization_map.get(self._normalize_name(source_name))
+            if actual_key is None or actual_key not in available_masks:
+                logger.warning(
+                    "Source structure '%s' not found for custom structure '%s'",
+                    source_name,
+                    config.name,
+                )
                 return None
-            source_masks.append(available_masks[source_name])
+            source_masks.append(available_masks[actual_key])
 
         # Apply boolean operation
         if config.operation == 'union':

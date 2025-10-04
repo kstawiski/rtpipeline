@@ -471,9 +471,11 @@ def segment_course(config: PipelineConfig, course_dir: Path, force: bool = False
     results["nifti"] = str(nifti_path)
 
     def _model_ready(model: str) -> bool:
-        dicom_file = base_dir / f"{model}.dcm"
-        mask_files = list(base_dir.glob(f"{model}--*.nii*"))
-        return dicom_file.exists() and len(mask_files) > 0
+        legacy_dicom = base_dir / f"{model}.dcm"
+        named_dicom = base_dir / f"{base_name}--{model}.dcm"
+        dicom_file = named_dicom if named_dicom.exists() else legacy_dicom
+        mask_files = list(base_dir.glob(f"{model}--*.nii*")) or list(base_dir.glob(f"{base_name}--{model}--*.nii*"))
+        return dicom_file.exists() and bool(mask_files)
 
     models = ["total"] + [m for m in (config.extra_seg_models or []) if not m.endswith("_mr")]
 
@@ -496,18 +498,33 @@ def segment_course(config: PipelineConfig, course_dir: Path, force: bool = False
 
             model_entry: Dict[str, object] = {"model": model, "rtstruct": "", "masks": []}
 
-            dest_dicom = base_dir / f"{model}.dcm"
+            dest_dicom = base_dir / f"{base_name}--{model}.dcm"
             ok_dicom = run_totalsegmentator(config, ct_dir, dicom_tmp, "dicom", task=task_name)
             ok_nifti = run_totalsegmentator(config, nifti_path, nifti_tmp, "nifti", task=task_name)
 
             if ok_dicom:
                 dicom_files = sorted(dicom_tmp.glob("*.dcm"))
                 if dicom_files:
+                    target = dicom_files[0]
                     if dest_dicom.exists():
                         dest_dicom.unlink()
-                    shutil.copy2(dicom_files[0], dest_dicom)
+                    shutil.copy2(target, dest_dicom)
                     if model == "total":
                         results["dicom_seg"] = str(dest_dicom)
+                elif dicom_tmp.exists():
+                    dicom_files = sorted(dicom_tmp.rglob("*.dcm"))
+                    if dicom_files:
+                        if dest_dicom.exists():
+                            dest_dicom.unlink()
+                        shutil.copy2(dicom_files[0], dest_dicom)
+                        if model == "total":
+                            results["dicom_seg"] = str(dest_dicom)
+            legacy_dicom = base_dir / f"{model}.dcm"
+            if legacy_dicom.exists() and legacy_dicom != dest_dicom:
+                try:
+                    legacy_dicom.unlink()
+                except Exception:
+                    logger.debug("Unable to remove legacy RTSTRUCT %s", legacy_dicom)
 
             if dest_dicom.exists():
                 model_entry["rtstruct"] = str(dest_dicom.relative_to(base_dir))

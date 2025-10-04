@@ -36,6 +36,14 @@ RESULTS_DIR = OUTPUT_DIR / "_RESULTS"
 
 WORKERS = int(config.get("workers", os.cpu_count() or 4))
 
+def _coerce_int(value, default=None):
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except Exception:
+        return default
+
 SEG_CONFIG = config.get("segmentation", {}) or {}
 SEG_EXTRA_MODELS = SEG_CONFIG.get("extra_models") or []
 if isinstance(SEG_EXTRA_MODELS, str):
@@ -50,6 +58,9 @@ elif _seg_subset:
     SEG_ROI_SUBSET = ",".join(str(x) for x in _seg_subset)
 else:
     SEG_ROI_SUBSET = None
+SEG_MAX_WORKERS = _coerce_int(SEG_CONFIG.get("workers") or SEG_CONFIG.get("max_workers"), 1)
+if SEG_MAX_WORKERS is not None and SEG_MAX_WORKERS < 1:
+    SEG_MAX_WORKERS = 1
 
 RADIOMICS_CONFIG = config.get("radiomics", {}) or {}
 RADIOMICS_SEQUENTIAL = bool(RADIOMICS_CONFIG.get("sequential", False))
@@ -67,14 +78,6 @@ if isinstance(_radiomics_skip_cfg, str):
     RADIOMICS_SKIP_ROIS = [item.strip() for item in _radiomics_skip_cfg.replace(";", ",").split(",") if item.strip()]
 else:
     RADIOMICS_SKIP_ROIS = [str(item).strip() for item in _radiomics_skip_cfg if str(item).strip()]
-
-def _coerce_int(value, default=None):
-    if value is None:
-        return default
-    try:
-        return int(value)
-    except Exception:
-        return default
 
 RADIOMICS_MAX_VOXELS = _coerce_int(RADIOMICS_CONFIG.get("max_voxels"), 15_000_000)
 if RADIOMICS_MAX_VOXELS is not None and RADIOMICS_MAX_VOXELS < 1:
@@ -183,6 +186,8 @@ rule segmentation:
             cmd.extend(["--extra-seg-models", model])
         if SEG_ROI_SUBSET:
             cmd.extend(["--totalseg-roi-subset", SEG_ROI_SUBSET])
+        if SEG_MAX_WORKERS:
+            cmd.extend(["--seg-workers", str(SEG_MAX_WORKERS)])
         with open(log[0], "w") as logf:
             subprocess.run(cmd, check=True, stdout=logf, stderr=subprocess.STDOUT)
         sentinel_path.write_text("ok\n", encoding="utf-8")
@@ -314,6 +319,7 @@ rule aggregate_results:
     run:
         import json
         import os
+        import shutil
         from concurrent.futures import ThreadPoolExecutor
         import pandas as pd  # type: ignore
 
@@ -486,6 +492,23 @@ rule aggregate_results:
             pd.concat(meta_frames, ignore_index=True).to_excel(output.metadata, index=False)
         else:
             pd.DataFrame(columns=["patient_id", "course_id"]).to_excel(output.metadata, index=False)
+
+        # Persist supplemental metadata exports from Data/ if present
+        supplemental_sources = {
+            "plans.xlsx": OUTPUT_DIR / "Data" / "plans.xlsx",
+            "structure_sets.xlsx": OUTPUT_DIR / "Data" / "structure_sets.xlsx",
+            "dosimetrics.xlsx": OUTPUT_DIR / "Data" / "dosimetrics.xlsx",
+            "fractions.xlsx": OUTPUT_DIR / "Data" / "fractions.xlsx",
+            "metadata.xlsx": OUTPUT_DIR / "Data" / "metadata.xlsx",
+            "CT_images.xlsx": OUTPUT_DIR / "Data" / "CT_images.xlsx",
+        }
+        for fname, src_path in supplemental_sources.items():
+            if src_path.exists():
+                dst_path = RESULTS_DIR / fname
+                try:
+                    shutil.copy2(src_path, dst_path)
+                except Exception as exc:
+                    print(f"[aggregate_results] Warning: failed to copy {src_path} -> {dst_path}: {exc}")
 
         # QC aggregation
         qc_rows = []

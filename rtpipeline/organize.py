@@ -841,27 +841,98 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
         try:
             # Aggregate course-level details for research/clinic
             # Rebuild context from files on disk
-            plan_uids = set()
+            plan_uids: set[str] = set()
             items_sorted = []  # Not available here; we use on-disk RP only where needed below
             try:
                 rp_path = patient_dir / "RP.dcm"
                 if rp_path.exists():
                     ds_tmp = pydicom.dcmread(str(rp_path), stop_before_pixels=True)
-                    plan_uids = {str(getattr(ds_tmp, 'SOPInstanceUID', ''))}
+                    sop_uid = str(getattr(ds_tmp, 'SOPInstanceUID', ''))
+                    if sop_uid:
+                        plan_uids.add(sop_uid)
             except Exception:
                 pass
             # Total prescription dose across plans
+            def _infer_plan_rx(ds_plan: pydicom.dataset.FileDataset) -> float | None:
+                dose_seq = getattr(ds_plan, "DoseReferenceSequence", None) or []
+                for dr in dose_seq:
+                    dtype = str(getattr(dr, "DoseReferenceType", ""))
+                    dtype_norm = dtype.upper()
+                    if dtype_norm and dtype_norm not in {"TARGET", "TREATED_VOLUME", "PLANNED_TARGET_VOLUME"}:
+                        continue
+                    target = getattr(dr, "TargetPrescriptionDose", None)
+                    if target not in (None, ""):
+                        try:
+                            return float(target)
+                        except Exception:
+                            pass
+                # fallback to alternative dose fields (common in some planners)
+                for dr in dose_seq:
+                    alt_fields = [
+                        getattr(dr, "DeliveredDoseReferenceDoseValue", None),
+                        getattr(dr, "DeliveryMaximumDose", None),
+                        getattr(dr, "OrganAtRiskMaximumDose", None),
+                    ]
+                    for val in alt_fields:
+                        if val not in (None, ""):
+                            try:
+                                return float(val)
+                            except Exception:
+                                continue
+
+                fg_seq = getattr(ds_plan, "FractionGroupSequence", None) or []
+                for fg in fg_seq:
+                    fractions = getattr(fg, "NumberOfFractionsPlanned", None)
+                    if fractions in (None, "", 0):
+                        continue
+                    try:
+                        fractions = float(fractions)
+                    except Exception:
+                        continue
+                    per_fraction = 0.0
+                    has_dose = False
+                    if hasattr(fg, "ReferencedDoseReferenceSequence") and fg.ReferencedDoseReferenceSequence:
+                        for ref in fg.ReferencedDoseReferenceSequence:
+                            dose_val = getattr(ref, "TargetPrescriptionDose", None)
+                            if dose_val not in (None, ""):
+                                try:
+                                    per_fraction = float(dose_val)
+                                    has_dose = True
+                                    break
+                                except Exception:
+                                    pass
+                    if not has_dose and hasattr(fg, "ReferencedBeamSequence") and fg.ReferencedBeamSequence:
+                        beam_doses = []
+                        for ref in fg.ReferencedBeamSequence:
+                            dose_val = getattr(ref, "BeamDose", None)
+                            if dose_val not in (None, ""):
+                                try:
+                                    beam_doses.append(float(dose_val))
+                                except Exception:
+                                    continue
+                        if beam_doses:
+                            per_fraction = sum(beam_doses)
+                            has_dose = True
+                    if has_dose and per_fraction:
+                        return float(per_fraction * fractions)
+
+                return None
+
             plan_total_rx = 0.0
-            for pth in [co.rp_path]:
-                try:
-                    ds_p = pydicom.dcmread(str(pth), stop_before_pixels=True)
-                    if hasattr(ds_p, "DoseReferenceSequence") and ds_p.DoseReferenceSequence:
-                        for dr in ds_p.DoseReferenceSequence:
-                            if hasattr(dr, "TargetPrescriptionDose") and dr.TargetPrescriptionDose is not None:
-                                plan_total_rx += float(dr.TargetPrescriptionDose)
-                                break
-                except Exception:
-                    continue
+            try:
+                ds_plan = pydicom.dcmread(str(co.rp_path), stop_before_pixels=True)
+            except Exception:
+                ds_plan = None
+            if ds_plan is not None:
+                inferred = _infer_plan_rx(ds_plan)
+                if inferred is not None:
+                    plan_total_rx += inferred
+            logger.info(
+                "[organize] %s/%s inferred total prescription=%.3f",
+                co.patient_id,
+                co.course_id,
+                plan_total_rx,
+            )
             # Planned fractions, machine, beam energies, beams count
             planned_fractions = None
             machine_name = None
@@ -930,16 +1001,28 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
                             if d:
                                 start_date = d if start_date is None or d < start_date else start_date
                                 end_date = d if end_date is None or d > end_date else end_date
+                        machine_name_rt = machine
+                        try:
+                            seq = getattr(ds_rt, 'TreatmentMachineSequence', None)
+                            if seq:
+                                tm = getattr(seq[0], 'TreatmentMachineName', None)
+                                if tm:
+                                    machine_name_rt = str(tm)
+                        except Exception:
+                            pass
+
                         frac_entry: Dict[str, object] = {
                             "treatment_date": d.isoformat() if d else str(rt_date),
                             "treatment_time": str(rt_time or ""),
                             "plan_sop": ref_uid or "",
                             "fraction_number": int(frac_num) if frac_num is not None else None,
-                            "treatment_machine": str(machine or ""),
+                            "treatment_machine": str(machine_name_rt or ""),
                             "source_path": str(p),
                             "sop_instance_uid": str(getattr(ds_rt, "SOPInstanceUID", "")),
                             "delivered_dose_gy": None,
                             "beam_meterset": None,
+                            "delivered_meterset": None,
+                            "beam_delivery": [],
                         }
                         try:
                             delivered = getattr(ds_rt, "ReferencedDoseReferenceSequence", None)
@@ -950,15 +1033,49 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
                                     frac_entry["delivered_dose_gy"] = float(dose_value)
                         except Exception:
                             pass
+                        delivered_total = 0.0
                         try:
-                            if hasattr(ds_rt, "BeamSequence") and ds_rt.BeamSequence:
-                                meterset = 0.0
-                                for beam in ds_rt.BeamSequence:
-                                    delivered = getattr(beam, "AccumulatedDose", None)
-                                    if delivered is not None:
-                                        meterset += float(delivered)
-                                if meterset:
-                                    frac_entry["beam_meterset"] = meterset
+                            tsb_seq = getattr(ds_rt, 'TreatmentSessionBeamSequence', None) or []
+                            beam_deliveries = []
+                            for beam in tsb_seq:
+                                beam_num = getattr(beam, 'ReferencedBeamNumber', None)
+                                delivered_mu = getattr(beam, 'DeliveredMeterset', None)
+                                if delivered_mu not in (None, ""):
+                                    try:
+                                        delivered_val = float(delivered_mu)
+                                        delivered_total += delivered_val
+                                    except Exception:
+                                        delivered_val = None
+                                else:
+                                    delivered_val = None
+                                cp_seq = getattr(beam, 'ControlPointDeliverySequence', None) or []
+                                gantries = []
+                                meterset_weights = []
+                                for cp in cp_seq:
+                                    if hasattr(cp, 'GantryAngle'):
+                                        try:
+                                            gantries.append(float(cp.GantryAngle))
+                                        except Exception:
+                                            pass
+                                    if hasattr(cp, 'CumulativeMetersetWeight'):
+                                        try:
+                                            meterset_weights.append(float(cp.CumulativeMetersetWeight))
+                                        except Exception:
+                                            pass
+                                beam_deliveries.append({
+                                    'beam_number': int(beam_num) if beam_num is not None else None,
+                                    'delivered_meterset': delivered_val,
+                                    'gantry_start': float(gantries[0]) if gantries else None,
+                                    'gantry_end': float(gantries[-1]) if gantries else None,
+                                    'control_points': len(cp_seq),
+                                    'meterset_weights': meterset_weights or None,
+                                })
+                            if beam_deliveries:
+                                frac_entry['beam_delivery'] = beam_deliveries
+                            if delivered_total > 0:
+                                frac_entry['delivered_meterset'] = delivered_total
+                                if not frac_entry.get('beam_meterset'):
+                                    frac_entry['beam_meterset'] = delivered_total
                         except Exception:
                             pass
                         fractions_details.append(frac_entry)
@@ -973,7 +1090,7 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
                     df_frac_raw = _pd.DataFrame(fractions_details)
                     if not df_frac_raw.empty:
                         df_frac_raw["treatment_time"] = df_frac_raw["treatment_time"].fillna("")
-                        plan_primary = plan_uids[0] if plan_uids else ""
+                        plan_primary = next(iter(plan_uids), "")
                         df_frac_raw["plan_key"] = df_frac_raw["plan_sop"].fillna("")
                         if plan_primary:
                             df_frac_raw.loc[df_frac_raw["plan_key"] == "", "plan_key"] = plan_primary
@@ -1073,11 +1190,21 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
                         except Exception:
                             logger.debug("Failed to export raw fractions detail for %s", patient_dir)
 
-                        fractions_count = len(df_frac)
+                        frac_numbers = df_frac.get("fraction_number")
+                        if frac_numbers is not None:
+                            fractions_count = int(frac_numbers.dropna().nunique())
+                        else:
+                            fractions_count = len(df_frac)
                     else:
                         df_frac_raw.to_excel(fractions_path, index=False)
+                        fractions_count = 0
                 except Exception as exc:
-                    logger.warning("Failed to write fractions summary for %s: %s", patient_dir, exc)
+                    logger.warning(
+                        "Failed to write fractions summary for %s: %s",
+                        patient_dir,
+                        exc,
+                        exc_info=True,
+                    )
             elif fractions_path.exists():
                 try:
                     fractions_path.unlink()
@@ -1098,6 +1225,35 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
                     try:
                         ps = getattr(ds_rd, 'PixelSpacing', [None, None])
                         dose_grid['PixelSpacing'] = [float(ps[0]), float(ps[1])] if ps and len(ps) >= 2 else []
+                    except Exception:
+                        pass
+                    try:
+                        ipv = getattr(ds_rd, 'ImagePositionPatient', None)
+                        if ipv and len(ipv) == 3:
+                            dose_grid['ImagePositionPatient'] = [float(x) for x in ipv]
+                    except Exception:
+                        pass
+                    try:
+                        offsets = getattr(ds_rd, 'GridFrameOffsetVector', None)
+                        if offsets:
+                            dose_grid['GridFrameOffsetVector'] = [float(x) for x in offsets]
+                    except Exception:
+                        pass
+                    try:
+                        if hasattr(ds_rd, 'DoseGridScaling') and ds_rd.DoseGridScaling is not None:
+                            dose_grid['DoseGridScaling'] = float(ds_rd.DoseGridScaling)
+                    except Exception:
+                        pass
+                    try:
+                        import numpy as _np
+                        px = getattr(ds_rd, 'PixelData', None)
+                        if px is not None:
+                            arr = ds_rd.pixel_array.astype(float) * float(getattr(ds_rd, 'DoseGridScaling', 1.0))
+                            dose_grid['DoseStats'] = {
+                                'minGy': float(_np.min(arr)),
+                                'maxGy': float(_np.max(arr)),
+                                'meanGy': float(_np.mean(arr)),
+                            }
                     except Exception:
                         pass
             except Exception:
