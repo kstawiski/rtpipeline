@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 import SimpleITK as sitk
+import pydicom
 
 from .layout import build_course_dirs
 from .utils import mask_is_cropped
@@ -505,6 +506,52 @@ def radiomics_for_course(
         except Exception as exc:
             logger.debug("Failed to parse structure_mapping.json for %s: %s", course_dir, exc)
 
+    def _norm(name: str) -> str:
+        return ''.join(ch for ch in name.lower() if ch.isalnum())
+
+    manual_rs = course_dir / "RS.dcm"
+    auto_rs = course_dir / "RS_auto.dcm"
+    manual_names: set[str] = set()
+    auto_names: set[str] = set()
+
+    def _load_roi_names(rs_path: Path) -> set[str]:
+        if not rs_path.exists():
+            return set()
+        try:
+            ds = pydicom.dcmread(str(rs_path), stop_before_pixels=True)
+            names = {
+                str(getattr(roi, "ROIName", ""))
+                for roi in getattr(ds, "StructureSetROISequence", []) or []
+            }
+            return {name for name in names if name}
+        except Exception as exc:
+            logger.debug("Failed to read ROI names from %s: %s", rs_path, exc)
+            return set()
+
+    manual_names = _load_roi_names(manual_rs)
+    auto_names = _load_roi_names(auto_rs)
+    manual_norm = {_norm(name): "Manual" for name in manual_names}
+    auto_norm = {_norm(name): "AutoTS" for name in auto_names}
+
+    custom_config = config.custom_structures_config if getattr(config, "custom_structures_config", None) else None
+    custom_norm: set[str] = set()
+    if custom_config and Path(custom_config).exists():
+        try:
+            custom_data = json.loads(Path(custom_config).read_text())
+        except json.JSONDecodeError:
+            try:
+                import yaml
+                custom_yaml = yaml.safe_load(Path(custom_config).read_text())  # type: ignore
+            except Exception:
+                custom_yaml = None
+            if custom_yaml and isinstance(custom_yaml, dict):
+                for item in custom_yaml.get("custom_structures", []) or []:
+                    name = str(item.get("name", ""))
+                    if name:
+                        custom_norm.add(_norm(name))
+        except Exception:
+            pass
+
     default_source = 'Merged' if rs_file == rs_custom else ('AutoTS' if rs_file == rs_auto else 'Manual')
     params_file = str(config.radiomics_params_file) if config.radiomics_params_file else None
 
@@ -522,11 +569,41 @@ def radiomics_for_course(
             rt_struct_path=str(rs_file)
         )
 
-        skip_rois = {"body", "couchsurface", "couchinterior"}
+        skip_rois_default = {
+            "body",
+            "couchsurface",
+            "couchinterior",
+            "couchexterior",
+            "bones",
+            "entirebody",
+            "entirebodyroi",
+            "m1",
+            "m2",
+            "table",
+            "support",
+        }
+        cfg_skip = {
+            _norm(item)
+            for item in getattr(config, "radiomics_skip_rois", [])
+            if isinstance(item, str) and item.strip()
+        }
+        skip_rois = skip_rois_default | cfg_skip
+
+        max_voxels_limit = getattr(config, "radiomics_max_voxels", None)
+        if max_voxels_limit is None:
+            max_voxels_limit = 15_000_000
+        elif max_voxels_limit < 1:
+            max_voxels_limit = 15_000_000
+
+        min_voxels_limit = getattr(config, "radiomics_min_voxels", None)
+        if min_voxels_limit is None:
+            min_voxels_limit = 120
+        elif min_voxels_limit < 1:
+            min_voxels_limit = 1
 
         for roi_name in rtstruct.get_roi_names():
-            normalized = roi_name.replace(" ", "").lower()
-            if normalized in skip_rois:
+            norm_key = _norm(roi_name)
+            if norm_key in skip_rois:
                 logger.debug("Skipping radiomics for ROI %s (skip list)", roi_name)
                 continue
             try:
@@ -541,6 +618,24 @@ def radiomics_for_course(
                 logger.debug("Skipping radiomics for ROI %s: empty mask", roi_name)
                 continue
 
+            voxel_count = int(mask_bool.sum())
+            if voxel_count < min_voxels_limit:
+                logger.info(
+                    "Skipping radiomics for ROI %s: %d voxels below minimum %d",
+                    roi_name,
+                    voxel_count,
+                    min_voxels_limit,
+                )
+                continue
+            if voxel_count > max_voxels_limit:
+                logger.info(
+                    "Skipping radiomics for ROI %s: %d voxels exceeds limit %d",
+                    roi_name,
+                    voxel_count,
+                    max_voxels_limit,
+                )
+                continue
+
             try:
                 with tempfile.NamedTemporaryFile(suffix='.nrrd', delete=False) as mask_file:
                     _write_mask_to_file(mask_bool, mask_file.name, ct_info)
@@ -549,8 +644,17 @@ def radiomics_for_course(
                 logger.debug("Failed to serialise mask for %s: %s", roi_name, exc)
                 continue
 
+            seg_source = source_map.get(roi_name)
+            if not seg_source:
+                norm = norm_key
+                seg_source = manual_norm.get(norm)
+                if not seg_source:
+                    seg_source = auto_norm.get(norm)
+                if not seg_source:
+                    seg_source = 'Custom' if norm in custom_norm else default_source
+
             metadata = {
-                'segmentation_source': source_map.get(roi_name, default_source),
+                'segmentation_source': seg_source,
                 'course_dir': str(course_dir),
                 'patient_id': course_dir.parent.name,
                 'course_id': course_dir.name,

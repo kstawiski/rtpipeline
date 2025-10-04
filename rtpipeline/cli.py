@@ -32,6 +32,24 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-radiomics", action="store_true", help="Skip pyradiomics extraction")
     p.add_argument("--radiomics-params", default=None, help="Path to custom pyradiomics YAML parameter file")
     p.add_argument("--sequential-radiomics", action="store_true", help="Use sequential radiomics processing (parallel is default)")
+    p.add_argument(
+        "--radiomics-skip-roi",
+        action="append",
+        default=[],
+        help="ROI name(s) to exclude from radiomics. Accepts comma-separated values; provide multiple times to add more.",
+    )
+    p.add_argument(
+        "--radiomics-max-voxels",
+        type=int,
+        default=None,
+        help="Skip radiomics for ROIs exceeding this voxel count (default: 15,000,000)",
+    )
+    p.add_argument(
+        "--radiomics-min-voxels",
+        type=int,
+        default=None,
+        help="Skip radiomics for ROIs smaller than this voxel count (default: 120)",
+    )
     p.add_argument("--custom-structures", default=None, help="Path to YAML configuration file for custom structures (uses pelvic template by default)")
     p.add_argument("--no-metadata", action="store_true", help="Skip XLSX metadata extraction")
     p.add_argument("--conda-activate", default=None, help="Prefix shell with conda activate (segmentation)")
@@ -164,6 +182,13 @@ def main(argv: list[str] | None = None) -> int:
     level = logging.INFO if args.verbose == 0 else logging.DEBUG
     logging.basicConfig(level=level, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
+    skip_rois: list[str] = []
+    for item in args.radiomics_skip_roi or []:
+        if not item:
+            continue
+        parts = [seg.strip() for seg in str(item).replace(";", ",").split(",") if seg.strip()]
+        skip_rois.extend(parts)
+
     cfg = PipelineConfig(
         dicom_root=Path(args.dicom_root).resolve(),
         output_root=Path(args.outdir).resolve(),
@@ -184,6 +209,9 @@ def main(argv: list[str] | None = None) -> int:
         totalseg_roi_subset=args.totalseg_roi_subset,
         workers=args.workers,
         radiomics_params_file=Path(args.radiomics_params).resolve() if args.radiomics_params else None,
+        radiomics_skip_rois=skip_rois,
+        radiomics_max_voxels=args.radiomics_max_voxels,
+        radiomics_min_voxels=args.radiomics_min_voxels,
         custom_structures_config=None,  # Will be set below
         resume=not args.force_redo,  # Resume is default, disable only with --force-redo
     )
@@ -275,7 +303,11 @@ def main(argv: list[str] | None = None) -> int:
 
         def _dvh(course):
             try:
-                return dvh_for_course(course.dirs.root, cfg.custom_structures_config)
+                return dvh_for_course(
+                    course.dirs.root,
+                    cfg.custom_structures_config,
+                    parallel_workers=cfg.effective_workers(),
+                )
             except Exception as exc:
                 logger.warning("DVH failed for %s: %s", course.dirs.root, exc)
                 return None
