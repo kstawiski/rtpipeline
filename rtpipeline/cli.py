@@ -70,8 +70,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--seg-proc-threads",
         type=int,
-        default=1,
+        default=None,
         help="CPU threads per TotalSegmentator invocation (<=0 to disable limit)",
+    )
+    p.add_argument(
+        "--radiomics-proc-threads",
+        type=int,
+        default=None,
+        help="CPU threads per radiomics worker (<=0 to disable limit)",
     )
     p.add_argument(
         "--course-filter",
@@ -207,6 +213,10 @@ def main(argv: list[str] | None = None) -> int:
     if seg_proc_threads is not None and seg_proc_threads < 1:
         seg_proc_threads = None
 
+    rad_proc_threads = args.radiomics_proc_threads
+    if rad_proc_threads is not None and rad_proc_threads < 1:
+        rad_proc_threads = None
+
     raw_course_filters = args.course_filter or []
     patient_filter_ids: set[str] = set()
     course_filter_pairs: set[tuple[str, str]] = set()
@@ -267,6 +277,7 @@ def main(argv: list[str] | None = None) -> int:
         radiomics_skip_rois=skip_rois,
         radiomics_max_voxels=args.radiomics_max_voxels,
         radiomics_min_voxels=args.radiomics_min_voxels,
+        radiomics_thread_limit=rad_proc_threads,
         custom_structures_config=None,  # Will be set below
         resume=not args.force_redo,  # Resume is default, disable only with --force-redo
     )
@@ -435,7 +446,7 @@ def main(argv: list[str] | None = None) -> int:
         else:
             try:
                 from .radiomics_parallel import enable_parallel_radiomics_processing
-                enable_parallel_radiomics_processing()
+                enable_parallel_radiomics_processing(cfg.radiomics_thread_limit)
                 logger.info("Enabled parallel radiomics processing")
             except ImportError:
                 logger.debug("Parallel radiomics helpers unavailable; proceeding with default extractor")

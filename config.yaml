@@ -6,7 +6,7 @@ output_dir: "Data_Snakemake"
 logs_dir: "Logs_Snakemake"
 
 # Processing parameters
-workers: 8
+workers: 2
 segmentation:
   workers: 4  # TotalSegmentator concurrency (set per-course parallelism)
   threads_per_worker: null  # CPU threads allowed per TotalSegmentator invocation (null => no limit)
@@ -18,6 +18,7 @@ segmentation:
 radiomics:
   sequential: false
   params_file: "rtpipeline/radiomics_params.yaml"
+  thread_limit: 4  # CPU threads per radiomics worker (null => no limit)
   skip_rois:
     - body
     - couchsurface

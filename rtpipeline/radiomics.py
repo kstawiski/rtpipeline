@@ -19,6 +19,43 @@ from importlib import resources as importlib_resources
 import yaml
 from .utils import run_tasks_with_adaptive_workers, mask_is_cropped
 
+_THREAD_ENV_VARS = (
+    'OMP_NUM_THREADS',
+    'OPENBLAS_NUM_THREADS',
+    'MKL_NUM_THREADS',
+    'NUMEXPR_NUM_THREADS',
+    'NUMBA_NUM_THREADS',
+)
+_THREAD_LIMIT_ENV = 'RTPIPELINE_RADIOMICS_THREAD_LIMIT'
+
+
+def _resolve_thread_limit(value: Optional[int]) -> Optional[int]:
+    if value is not None:
+        try:
+            coerced = int(value)
+        except (TypeError, ValueError):
+            coerced = None
+    else:
+        env_raw = os.environ.get(_THREAD_LIMIT_ENV)
+        try:
+            coerced = int(env_raw) if env_raw is not None else None
+        except (TypeError, ValueError):
+            coerced = None
+    if coerced is None or coerced <= 0:
+        return None
+    return coerced
+
+
+def _apply_radiomics_thread_limit(limit: Optional[int]) -> None:
+    if limit is None:
+        for var in _THREAD_ENV_VARS:
+            os.environ.pop(var, None)
+        return
+    limit = max(1, int(limit))
+    value = str(limit)
+    for var in _THREAD_ENV_VARS:
+        os.environ[var] = value
+
 logger = logging.getLogger(__name__)
 
 
@@ -336,6 +373,8 @@ def _rtstruct_masks(dicom_series_path: Path, rs_path: Path) -> Dict[str, np.ndar
 def radiomics_for_course(config: PipelineConfig, course_dir: Path, custom_structures_config: Optional[Path] = None) -> Optional[Path]:
     """Run pyradiomics on CT course with manual RS, RS_auto, and custom structures if present."""
 
+    _apply_radiomics_thread_limit(_resolve_thread_limit(getattr(config, 'radiomics_thread_limit', None)))
+
     course_dirs = build_course_dirs(course_dir)
     # Resume-friendly: skip if output exists
     out_path = course_dir / 'radiomics_ct.xlsx'
@@ -533,6 +572,7 @@ def _infer_mr_weighting(series_dir: Path, series_uid: str) -> Optional[str]:
 
 
 def radiomics_for_mr_series(config: PipelineConfig, series: MRSeries) -> Optional[Path]:
+    _apply_radiomics_thread_limit(_resolve_thread_limit(getattr(config, 'radiomics_thread_limit', None)))
     # Determine weighting to toggle normalization: T2 -> False, T1 -> True, else default False
     wt = _infer_mr_weighting(series.dir, series.series_uid)
     normalize_override = True if wt == 'T1' else False if wt == 'T2' else False

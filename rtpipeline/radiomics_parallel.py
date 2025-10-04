@@ -27,6 +27,14 @@ logger = logging.getLogger(__name__)
 _OPTIMAL_WORKERS_CACHE = None
 _MAX_RETRIES = 3
 _RETRY_DELAY = 0.5  # seconds
+_THREAD_VARS = (
+    'OMP_NUM_THREADS',
+    'OPENBLAS_NUM_THREADS',
+    'MKL_NUM_THREADS',
+    'NUMEXPR_NUM_THREADS',
+    'NUMBA_NUM_THREADS',
+)
+_THREAD_LIMIT_ENV = 'RTPIPELINE_RADIOMICS_THREAD_LIMIT'
 
 
 def _calculate_optimal_workers() -> int:
@@ -93,6 +101,7 @@ def _isolated_radiomics_extraction(task_data: Tuple[str, Dict[str, Any]]) -> Opt
     temp_file_path, task_params = task_data
 
     try:
+        _apply_thread_limit(_resolve_thread_limit())
         # Import in process to avoid module state issues
         from .radiomics import _extractor, _mask_from_array_like
         import numpy as np
@@ -271,6 +280,9 @@ def parallel_radiomics_for_course(
         logger.error("Failed to import radiomics modules: %s", e)
         return None
 
+    # Apply any configured thread limit in the parent process
+    _apply_thread_limit(_resolve_thread_limit(getattr(config, 'radiomics_thread_limit', None)))
+
     # Resume-friendly: skip if output exists
     course_dirs = build_course_dirs(course_dir)
     out_path = course_dir / 'radiomics_ct.xlsx'
@@ -421,17 +433,7 @@ def parallel_radiomics_for_course(
 
 def _worker_initializer():
     """Initialize worker process with optimal settings."""
-    # Configure environment for this worker process
-    env_vars = {
-        'OMP_NUM_THREADS': '1',           # OpenMP
-        'OPENBLAS_NUM_THREADS': '1',      # OpenBLAS
-        'MKL_NUM_THREADS': '1',           # Intel MKL
-        'NUMEXPR_NUM_THREADS': '1',       # NumExpr
-        'NUMBA_NUM_THREADS': '1',         # Numba
-    }
-
-    for var, value in env_vars.items():
-        os.environ[var] = value
+    _apply_thread_limit(_resolve_thread_limit())
 
     # Set process priority to normal to avoid system slowdown
     try:
@@ -441,24 +443,13 @@ def _worker_initializer():
         pass  # psutil not available, continue without priority adjustment
 
 
-def configure_parallel_radiomics():
+def configure_parallel_radiomics(thread_limit: Optional[int] = None):
     """Configure environment for parallel radiomics processing."""
-    # Set environment variables to control threading libraries
-    env_vars = {
-        'OMP_NUM_THREADS': '1',           # OpenMP
-        'OPENBLAS_NUM_THREADS': '1',      # OpenBLAS
-        'MKL_NUM_THREADS': '1',           # Intel MKL
-        'NUMEXPR_NUM_THREADS': '1',       # NumExpr
-        'NUMBA_NUM_THREADS': '1',         # Numba
-    }
-
-    for var, value in env_vars.items():
-        if var not in os.environ:
-            os.environ[var] = value
-            logger.debug("Set %s=%s", var, value)
+    limit = _resolve_thread_limit(thread_limit)
+    _apply_thread_limit(limit)
 
 
-def enable_parallel_radiomics_processing():
+def enable_parallel_radiomics_processing(thread_limit: Optional[int] = None):
     """
     Enable parallel radiomics processing by setting environment variable.
 
@@ -466,7 +457,11 @@ def enable_parallel_radiomics_processing():
     the new parallel radiomics implementation.
     """
     os.environ['RTPIPELINE_USE_PARALLEL_RADIOMICS'] = '1'
-    configure_parallel_radiomics()
+    if thread_limit is not None and thread_limit > 0:
+        os.environ[_THREAD_LIMIT_ENV] = str(int(thread_limit))
+    else:
+        os.environ.pop(_THREAD_LIMIT_ENV, None)
+    configure_parallel_radiomics(thread_limit)
 
     # Pre-calculate optimal workers
     optimal_workers = _calculate_optimal_workers()
@@ -476,3 +471,33 @@ def enable_parallel_radiomics_processing():
 def is_parallel_radiomics_enabled() -> bool:
     """Check if parallel radiomics processing is enabled."""
     return os.environ.get('RTPIPELINE_USE_PARALLEL_RADIOMICS', '').lower() in ('1', 'true', 'yes')
+
+
+def _coerce_thread_limit(raw: Any) -> Optional[int]:
+    if raw is None:
+        return None
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return None
+    if value <= 0:
+        return None
+    return value
+
+
+def _resolve_thread_limit(explicit: Optional[int] = None) -> Optional[int]:
+    if explicit is not None:
+        return _coerce_thread_limit(explicit)
+    env_value = os.environ.get(_THREAD_LIMIT_ENV)
+    return _coerce_thread_limit(env_value)
+
+
+def _apply_thread_limit(limit: Optional[int]) -> None:
+    if limit is None:
+        for var in _THREAD_VARS:
+            os.environ.pop(var, None)
+        return
+    limit = max(1, int(limit))
+    value = str(limit)
+    for var in _THREAD_VARS:
+        os.environ[var] = value
