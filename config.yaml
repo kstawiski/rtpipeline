@@ -8,6 +8,7 @@ logs_dir: "Logs_Snakemake"
 # Processing parameters
 workers: 4
 segmentation:
+  workers: 4  # TotalSegmentator concurrency (set per-course parallelism)
   fast: false
   roi_subset: null
   extra_models: []   # Optional list of additional TotalSegmentator tasks, e.g. ["lung_vessels"]

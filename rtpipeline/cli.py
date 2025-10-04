@@ -66,6 +66,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--totalseg-fast", action="store_true", help="Add --fast for CPU runs to improve runtime")
     p.add_argument("--totalseg-roi-subset", default=None, help="Restrict to subset of ROIs (comma-separated)")
     p.add_argument("--workers", type=int, default=None, help="Parallel workers for non-segmentation phases (default: auto)")
+    p.add_argument("--seg-workers", type=int, default=None, help="Maximum concurrent courses for TotalSegmentator (default: 1)")
     p.add_argument("--force-redo", action="store_true", help="Force redo all steps, even if outputs exist (resume is default)")
     p.add_argument("-v", "--verbose", action="count", default=0, help="Increase verbosity")
     p.add_argument(
@@ -153,6 +154,7 @@ def _doctor(argv: list[str]) -> int:
         output_root=Path('.'),
         logs_root=Path(args.logs).resolve(),
         conda_activate=conda_prefix,
+        segmentation_workers=None,
     )
     # Do not actually run any conversion; just see if fallback can be prepared
     fallback_possible = False
@@ -205,6 +207,7 @@ def main(argv: list[str] | None = None) -> int:
         totalseg_license_key=args.totalseg_license,
         totalseg_weights_dir=Path(args.totalseg_weights).resolve() if args.totalseg_weights else None,
         extra_seg_models=[m.strip() for part in (args.extra_seg_models or []) for m in part.split(",") if m.strip()],
+        segmentation_workers=args.seg_workers,
         totalseg_fast=args.totalseg_fast,
         totalseg_roi_subset=args.totalseg_roi_subset,
         workers=args.workers,
@@ -287,11 +290,20 @@ def main(argv: list[str] | None = None) -> int:
                 logger.warning("Segmentation failed for %s: %s", course.dirs.root, exc)
             return None
 
+        seg_worker_limit = cfg.segmentation_workers if cfg.segmentation_workers is not None else 1
+        try:
+            seg_worker_limit = int(seg_worker_limit)
+        except Exception:
+            seg_worker_limit = 1
+        if seg_worker_limit < 1:
+            seg_worker_limit = 1
+        seg_worker_limit = min(seg_worker_limit, max(1, cfg.effective_workers()))
+
         run_tasks_with_adaptive_workers(
             "Segmentation",
             courses,
             _segment,
-            max_workers=1,
+            max_workers=seg_worker_limit,
             logger=logging.getLogger(__name__),
             show_progress=True,
         )
