@@ -16,6 +16,8 @@ from PIL import Image
 import base64 as _b64
 import io as _io
 
+from .layout import build_course_dirs
+
 logger = logging.getLogger(__name__)
 
 
@@ -213,7 +215,8 @@ def generate_axial_review(course_dir: Path) -> Optional[Path]:
         from rt_utils import RTStructBuilder
     except Exception:
         RTStructBuilder = None
-    ct_dir = course_dir / 'CT_DICOM'
+    course_dirs = build_course_dirs(course_dir)
+    ct_dir = course_dirs.dicom_ct
     if not ct_dir.exists():
         return None
     ct_img = _load_ct_sitk(ct_dir)

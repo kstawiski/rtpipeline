@@ -7,7 +7,6 @@ from pathlib import Path
 
 
 from .config import PipelineConfig
-from time import time
 from .organize import organize_and_merge
 from .utils import run_tasks_with_adaptive_workers
 
@@ -51,6 +50,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--workers", type=int, default=None, help="Parallel workers for non-segmentation phases (default: auto)")
     p.add_argument("--force-redo", action="store_true", help="Force redo all steps, even if outputs exist (resume is default)")
     p.add_argument("-v", "--verbose", action="count", default=0, help="Increase verbosity")
+    p.add_argument(
+        "--stage",
+        action="append",
+        choices=["organize", "segmentation", "dvh", "visualize", "radiomics", "qc"],
+        help="Execute only the selected pipeline stage(s); may be provided multiple times. Default: full pipeline.",
+    )
     return p
 
 
@@ -220,214 +225,147 @@ def main(argv: list[str] | None = None) -> int:
         # Non-fatal; continue with console-only logging
         pass
 
-    # 0) Metadata extraction (XLSX) if desired
-    if not args.no_metadata:
-        from .meta import export_metadata
-        export_metadata(cfg)
+    default_order = ["organize", "segmentation", "dvh", "visualize", "radiomics", "qc"]
+    requested = [stage.lower() for stage in (args.stage or default_order)]
+    stages = [stage for stage in default_order if stage in requested]
+    if not stages:
+        stages = default_order
 
-    # 1) Organize courses (primary+boost only, by same CT study by default)
-    courses = organize_and_merge(cfg)
+    courses: list | None = None
 
-    # 2) Optional segmentation (TotalSegmentator)
-    if cfg.do_segmentation:
-        from .segmentation import segment_course, segment_extra_models_mr  # lazy import
-        # Keep segmentation sequential (resource heavy) with progress/ETA. Apply resume filtering.
-        def _needs_segmentation(cdir: Path) -> bool:
-            if args.force_segmentation:
-                return True
-            seg_dcm = cdir / "TotalSegmentator_DICOM" / "segmentations.dcm"
-            if seg_dcm.exists():
-                return False
-            nifti_dir = cdir / "TotalSegmentator_NIFTI"
-            try:
-                if nifti_dir.exists() and any(nifti_dir.glob("*.nii*")):
-                    return False
-            except Exception:
-                pass
-            return True
-        seg_courses = [c for c in courses if _needs_segmentation(c.dir)]
-        total_seg = len(seg_courses)
-        if total_seg:
-            t0 = time()
-            for i, c in enumerate(seg_courses, start=1):
-                segment_course(cfg, c.dir, force=args.force_segmentation)
-                elapsed = time() - t0
-                rate = i / elapsed if elapsed > 0 else 0
-                eta = (total_seg - i) / rate if rate > 0 else float('inf')
-                logging.info("Segmentation: %d/%d (%.0f%%) elapsed %.0fs ETA %.0fs", i, total_seg, 100*i/total_seg, elapsed, eta)
-        # Build auto RTSTRUCTs so DVH can include TotalSegmentator output
+    def ensure_courses() -> list:
+        nonlocal courses
+        if courses is None:
+            courses = organize_and_merge(cfg)
+        return courses
+
+    if "organize" in stages:
+        courses = organize_and_merge(cfg)
+        if not args.no_metadata:
+            from .meta import export_metadata
+            export_metadata(cfg)
+
+    if "segmentation" in stages:
+        from .segmentation import segment_course  # lazy import
         from .auto_rtstruct import build_auto_rtstruct
-        rs_items = courses
-        if cfg.resume:
-            rs_items = [c for c in courses if not (c.dir / "RS_auto.dcm").exists()]
+
+        courses = ensure_courses()
+
+        def _segment(course):
+            try:
+                segment_course(cfg, course.dirs.root, force=args.force_segmentation)
+                build_auto_rtstruct(course.dirs.root)
+            except Exception as exc:
+                logger.warning("Segmentation failed for %s: %s", course.dirs.root, exc)
+            return None
+
         run_tasks_with_adaptive_workers(
-            "Build RS_auto",
-            rs_items,
-            lambda c: build_auto_rtstruct(c.dir),
-            max_workers=cfg.effective_workers(),
+            "Segmentation",
+            courses,
+            _segment,
+            max_workers=1,
             logger=logging.getLogger(__name__),
             show_progress=True,
         )
-        # Run default MR model 'total_mr' and additional MR models if requested
-        segment_extra_models_mr(cfg, force=args.force_segmentation)
 
-    # 3) DVH per course
-    if cfg.do_dvh:
+    if "dvh" in stages:
         from .dvh import dvh_for_course  # lazy import
-        def _dvh(c):
-            return dvh_for_course(c.dir, cfg.custom_structures_config)
-        dvh_items = courses
-        if cfg.resume:
-            dvh_items = [c for c in courses if not (c.dir / "dvh_metrics.xlsx").exists()]
+
+        courses = ensure_courses()
+
+        def _dvh(course):
+            try:
+                return dvh_for_course(course.dirs.root, cfg.custom_structures_config)
+            except Exception as exc:
+                logger.warning("DVH failed for %s: %s", course.dirs.root, exc)
+                return None
+
         run_tasks_with_adaptive_workers(
             "DVH",
-            dvh_items,
+            courses,
             _dvh,
             max_workers=cfg.effective_workers(),
             logger=logging.getLogger(__name__),
             show_progress=True,
         )
 
-    # 4) Visualization
-    if cfg.do_visualize:
-        from .visualize import visualize_course, generate_axial_review  # lazy import
-        def _both(c):
+    if "visualize" in stages:
+        from .visualize import generate_axial_review, visualize_course  # lazy import
+
+        courses = ensure_courses()
+
+        def _visualize(course):
             try:
-                visualize_course(c.dir)
+                visualize_course(course.dirs.root)
             finally:
-                generate_axial_review(c.dir)
-        viz_items = courses
-        if cfg.resume:
-            def _viz_done(c):
-                return (c.dir / "DVH_Report.html").exists() and (c.dir / "Axial.html").exists()
-            viz_items = [c for c in courses if not _viz_done(c)]
+                try:
+                    generate_axial_review(course.dirs.root)
+                except Exception as exc:
+                    logger.debug("Axial review failed for %s: %s", course.dirs.root, exc)
+            return None
+
         run_tasks_with_adaptive_workers(
             "Visualization",
-            viz_items,
-            _both,
+            courses,
+            _visualize,
             max_workers=cfg.effective_workers(),
             logger=logging.getLogger(__name__),
             show_progress=True,
         )
 
-    # 5) Radiomics (CT courses and MR series)
-    if cfg.do_radiomics:
-        try:
-            # Enable parallel radiomics by default (disable only if sequential flag is used)
-            import os
-            if args.sequential_radiomics:
-                os.environ['RTPIPELINE_RADIOMICS_SEQUENTIAL'] = '1'
-                logging.getLogger(__name__).info("Using sequential radiomics processing (--sequential-radiomics specified)")
-            else:
-                try:
-                    from .radiomics_parallel import enable_parallel_radiomics_processing
-                    enable_parallel_radiomics_processing()
-                    logging.getLogger(__name__).info("Using enhanced parallel radiomics processing (default)")
-                except ImportError:
-                    logging.getLogger(__name__).debug("Enhanced parallel radiomics unavailable; using basic threading")
-                    try:
-                        from .radiomics_parallel import configure_parallel_radiomics
-                        configure_parallel_radiomics()
-                    except ImportError:
-                        logging.getLogger(__name__).debug("radiomics_parallel configure unavailable; continuing")
-                    logging.getLogger(__name__).info("Using threaded radiomics processing (fallback)")
+    if "radiomics" in stages:
+        import os
 
-            # Check if radiomics is available
+        courses = ensure_courses()
+
+        if args.sequential_radiomics:
+            os.environ['RTPIPELINE_RADIOMICS_SEQUENTIAL'] = '1'
+            logger.info("Using sequential radiomics processing (--sequential-radiomics specified)")
+        else:
+            try:
+                from .radiomics_parallel import enable_parallel_radiomics_processing
+                enable_parallel_radiomics_processing()
+                logger.info("Enabled parallel radiomics processing")
+            except ImportError:
+                logger.debug("Parallel radiomics helpers unavailable; proceeding with default extractor")
+
+        can_use_radiomics = False
+        try:
             from .radiomics import _have_pyradiomics
             can_use_radiomics = _have_pyradiomics()
+        except ImportError:
+            can_use_radiomics = False
 
-            if not can_use_radiomics:
-                # Try conda-based execution
-                try:
-                    from .radiomics_conda import check_radiomics_env
-                    can_use_radiomics = check_radiomics_env()
-                    if can_use_radiomics:
-                        logging.getLogger(__name__).info(
-                            "PyRadiomics will use conda environment for execution"
-                        )
-                except ImportError:
-                    pass
+        if not can_use_radiomics:
+            try:
+                from .radiomics_conda import check_radiomics_env
+                can_use_radiomics = check_radiomics_env()
+                if can_use_radiomics:
+                    logger.info("PyRadiomics will run via dedicated conda environment")
+            except ImportError:
+                can_use_radiomics = False
 
-                if not can_use_radiomics:
-                    logging.getLogger(__name__).warning(
-                        "pyradiomics not available - skipping radiomics extraction. "
-                        "Install with: pip install pyradiomics or use --no-radiomics"
-                    )
-
-            if can_use_radiomics:
-                # Ensure auto segmentation exists for CT courses
-                from .segmentation import segment_course  # lazy import
-                from .auto_rtstruct import build_auto_rtstruct
-                for c in courses:
-                    rs_auto = c.dir / "RS_auto.dcm"
-                    if not rs_auto.exists():
-                        logging.info("RS_auto missing for %s; attempting segmentation before radiomics", c.dir)
-                        try:
-                            segment_course(cfg, c.dir, force=False)
-                            build_auto_rtstruct(c.dir)
-                        except Exception as _e:
-                            logging.getLogger(__name__).warning("Segmentation fallback failed for %s: %s", c.dir, _e)
-                from .radiomics import run_radiomics  # lazy import
+        if not can_use_radiomics:
+            logger.warning("Radiomics dependencies unavailable; skipping radiomics stage")
+        else:
+            from .radiomics import run_radiomics
+            try:
                 run_radiomics(cfg, courses, cfg.custom_structures_config)
-        except ImportError as e:
-            logging.getLogger(__name__).warning("Radiomics module import failed: %s", e)
-            logging.getLogger(__name__).info("Use --no-radiomics to skip radiomics extraction")
-        except Exception as e:
-            logging.getLogger(__name__).warning("Radiomics failed: %s", e)
+            except Exception as exc:
+                logger.warning("Radiomics stage failed: %s", exc)
 
-    # 6) Merge DVH metrics across all courses (if any)
-    try:
-        import pandas as _pd
-        merged = []
-        for c in courses:
-            dvh_path = c.dir / "dvh_metrics.xlsx"
-            if dvh_path.exists():
-                try:
-                    df = _pd.read_excel(dvh_path)
-                    df.insert(0, "patient_id", c.patient_id)
-                    df.insert(1, "course_key", c.course_key)
-                    df.insert(2, "course_dir", str(c.dir))
-                    merged.append(df)
-                except Exception:
-                    continue
-        if merged:
-            all_df = _pd.concat(merged, ignore_index=True)
-            data_dir = cfg.output_root / "Data"
-            data_dir.mkdir(parents=True, exist_ok=True)
-            out_all = data_dir / "DVH_metrics_all.xlsx"
-            all_df.to_excel(out_all, index=False)
-    except Exception as e:
-        logging.getLogger(__name__).warning("Failed to write merged DVH metrics: %s", e)
+    if "qc" in stages:
+        from .quality_control import generate_qc_report
 
-    # 7) Merge per-case metadata across all courses (if any)
-    try:
-        import json as _json
-        import pandas as _pd
-        data_dir = cfg.output_root / "Data"
-        data_dir.mkdir(parents=True, exist_ok=True)
-        rows = []
-        for c in courses:
-            meta_json = c.dir / "case_metadata.json"
-            if meta_json.exists():
-                try:
-                    with open(meta_json, "r", encoding="utf-8") as f:
-                        d = _json.load(f)
-                    # Ensure identifiers are present
-                    d.setdefault('patient_id', c.patient_id)
-                    d.setdefault('course_key', c.course_key)
-                    d.setdefault('course_dir', str(c.dir))
-                    rows.append(d)
-                except Exception:
-                    continue
-        if rows:
-            df = _pd.DataFrame(rows)
-            (data_dir / "case_metadata_all.xlsx").parent.mkdir(parents=True, exist_ok=True)
-            df.to_excel(data_dir / "case_metadata_all.xlsx", index=False)
-            # Also write JSON for machine consumption
-            with open(data_dir / "case_metadata_all.json", "w", encoding="utf-8") as f:
-                _json.dump(rows, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        logging.getLogger(__name__).warning("Failed to write merged case metadata: %s", e)
+        courses = ensure_courses()
+
+        for course in courses:
+            try:
+                qc_dir = course.dirs.qc_reports
+                qc_dir.mkdir(parents=True, exist_ok=True)
+                generate_qc_report(course.dirs.root, qc_dir)
+            except Exception as exc:
+                logger.warning("QC stage failed for %s: %s", course.dirs.root, exc)
 
     return 0
 

@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import json
 import os
 import sys
-from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
 configfile: "config.yaml"
@@ -12,16 +10,12 @@ ROOT_DIR = Path.cwd()
 
 
 def _ensure_writable_dir(candidate: Path, fallback_name: str) -> Path:
-    """Return a directory path we can write to, falling back inside the repo if needed."""
-
     fallback = ROOT_DIR / fallback_name
-    test_file = candidate / ".write_test"
-
     try:
         candidate.mkdir(parents=True, exist_ok=True)
-        with open(test_file, "w", encoding="utf-8") as fh:
-            fh.write("")
-        test_file.unlink(missing_ok=True)
+        probe = candidate / ".write_test"
+        probe.write_text("", encoding="utf-8")
+        probe.unlink(missing_ok=True)
         return candidate
     except OSError as exc:
         sys.stderr.write(
@@ -29,73 +23,33 @@ def _ensure_writable_dir(candidate: Path, fallback_name: str) -> Path:
             f"Using fallback {fallback}\n"
         )
         fallback.mkdir(parents=True, exist_ok=True)
-        fallback_test = fallback / ".write_test"
-        with open(fallback_test, "w", encoding="utf-8") as fh:
-            fh.write("")
-        fallback_test.unlink(missing_ok=True)
+        probe = fallback / ".write_test"
+        probe.write_text("", encoding="utf-8")
+        probe.unlink(missing_ok=True)
         return fallback
 
 
-DICOM_ROOT = ROOT_DIR / config.get("dicom_root", "Example_data")
-OUTPUT_DIR = _ensure_writable_dir(
-    ROOT_DIR / config.get("output_dir", "Data_Snakemake"),
-    "Data_Snakemake_fallback",
-)
-LOGS_DIR = _ensure_writable_dir(
-    ROOT_DIR / config.get("logs_dir", "Logs_Snakemake"),
-    "Logs_Snakemake_fallback",
-)
-WORKERS = int(config.get("workers", 4))
+DICOM_ROOT = (ROOT_DIR / config.get("dicom_root", "Example_data")).resolve()
+OUTPUT_DIR = _ensure_writable_dir((ROOT_DIR / config.get("output_dir", "Data_Snakemake")).resolve(), "Data_Snakemake_fallback")
+LOGS_DIR = _ensure_writable_dir((ROOT_DIR / config.get("logs_dir", "Logs_Snakemake")).resolve(), "Logs_Snakemake_fallback")
+RESULTS_DIR = OUTPUT_DIR / "_RESULTS"
 
-MAX_LOCAL_CORES = os.cpu_count() or 1
-DEFAULT_RULE_THREADS = max(1, min(WORKERS, MAX_LOCAL_CORES))
-
-# Dynamic thread allocation based on rule type
-SEGMENTATION_THREADS = min(8, MAX_LOCAL_CORES)  # TotalSegmentator benefits from 4-8 cores
-RADIOMICS_THREADS = min(4, MAX_LOCAL_CORES)     # PyRadiomics works well with 2-4 cores
-IO_THREADS = min(2, MAX_LOCAL_CORES)           # I/O bound tasks need fewer cores
-
-METADATA_EXPORT_DIR = OUTPUT_DIR / "Data"
-METADATA_EXPORT_FILES = [
-    METADATA_EXPORT_DIR / "metadata.xlsx",
-    METADATA_EXPORT_DIR / "plans.xlsx",
-    METADATA_EXPORT_DIR / "structure_sets.xlsx",
-    METADATA_EXPORT_DIR / "dosimetrics.xlsx",
-    METADATA_EXPORT_DIR / "fractions.xlsx",
-    METADATA_EXPORT_DIR / "CT_images.xlsx",
-    METADATA_EXPORT_DIR / "case_metadata_all.xlsx",
-    METADATA_EXPORT_DIR / "case_metadata_all.json",
-]
-
-MR_SEGMENT_SENTINEL = LOGS_DIR / "segment_mr.done"
-MR_RADIOMICS_SENTINEL = LOGS_DIR / "radiomics_mr.done"
+WORKERS = int(config.get("workers", os.cpu_count() or 4))
 
 SEG_CONFIG = config.get("segmentation", {}) or {}
-SEG_FAST = bool(SEG_CONFIG.get("fast", False))
-SEG_ROI_SUBSET = SEG_CONFIG.get("roi_subset") or []
-if isinstance(SEG_ROI_SUBSET, str):
-    SEG_ROI_SUBSET = [s.strip() for s in SEG_ROI_SUBSET.replace(",", " ").split() if s.strip()]
-SEG_FLAGS: list[str] = []
-if SEG_FAST:
-    SEG_FLAGS.append("-f")
-if SEG_ROI_SUBSET:
-    SEG_FLAGS.extend(["-rs", *SEG_ROI_SUBSET])
-
 SEG_EXTRA_MODELS = SEG_CONFIG.get("extra_models") or []
 if isinstance(SEG_EXTRA_MODELS, str):
     SEG_EXTRA_MODELS = [m.strip() for m in SEG_EXTRA_MODELS.replace(",", " ").split() if m.strip()]
 else:
     SEG_EXTRA_MODELS = [str(m).strip() for m in SEG_EXTRA_MODELS if str(m).strip()]
-
-try:
-    sys.path.insert(0, str(ROOT_DIR))
-    from rtpipeline.segmentation import _scan_mr_series  # type: ignore
-    MR_SERIES_PRESENT = bool(_scan_mr_series(DICOM_ROOT))
-except Exception:
-    MR_SERIES_PRESENT = False
-finally:
-    if sys.path and sys.path[0] == str(ROOT_DIR):
-        sys.path.pop(0)
+SEG_FAST = bool(SEG_CONFIG.get("fast", False))
+_seg_subset = SEG_CONFIG.get("roi_subset")
+if isinstance(_seg_subset, str):
+    SEG_ROI_SUBSET = _seg_subset
+elif _seg_subset:
+    SEG_ROI_SUBSET = ",".join(str(x) for x in _seg_subset)
+else:
+    SEG_ROI_SUBSET = None
 
 RADIOMICS_CONFIG = config.get("radiomics", {}) or {}
 RADIOMICS_SEQUENTIAL = bool(RADIOMICS_CONFIG.get("sequential", False))
@@ -115,783 +69,362 @@ if _custom_structures_cfg:
         cs_path = ROOT_DIR / cs_path
     CUSTOM_STRUCTURES_CONFIG = str(cs_path.resolve())
 else:
-    CUSTOM_STRUCTURES_CONFIG = ""
+    default_pelvic = ROOT_DIR / "custom_structures_pelvic.yaml"
+    CUSTOM_STRUCTURES_CONFIG = str(default_pelvic.resolve()) if default_pelvic.exists() else ""
 
-# Directories are already ensured writable by _ensure_writable_dir
+STAGE_SENTINELS = {
+    "organize": OUTPUT_DIR / ".stage_organize",
+    "segmentation": OUTPUT_DIR / ".stage_segmentation",
+    "dvh": OUTPUT_DIR / ".stage_dvh",
+    "radiomics": OUTPUT_DIR / ".stage_radiomics",
+    "qc": OUTPUT_DIR / ".stage_qc",
+}
 
-PATIENTS = sorted([p.name for p in DICOM_ROOT.iterdir() if p.is_dir()])
+AGG_OUTPUTS = {
+    "dvh": RESULTS_DIR / "dvh_metrics.xlsx",
+    "radiomics": RESULTS_DIR / "radiomics_ct.xlsx",
+    "fractions": RESULTS_DIR / "fractions.xlsx",
+    "metadata": RESULTS_DIR / "case_metadata.xlsx",
+    "qc": RESULTS_DIR / "qc_reports.xlsx",
+}
 
 
 rule all:
     input:
-        expand(str(OUTPUT_DIR / "{patient}" / "metadata.json"), patient=PATIENTS),
-        expand(str(OUTPUT_DIR / "{patient}" / "CT_DICOM"), patient=PATIENTS),
-        expand(str(OUTPUT_DIR / "{patient}" / "TotalSegmentator_NIFTI"), patient=PATIENTS),
-        expand(str(OUTPUT_DIR / "{patient}" / "RS_auto.dcm"), patient=PATIENTS),
-        expand(str(OUTPUT_DIR / "{patient}" / "RS_custom.dcm"), patient=PATIENTS),
-        expand(str(OUTPUT_DIR / "{patient}" / "structure_comparison_report.json"), patient=PATIENTS),
-        expand(str(OUTPUT_DIR / "{patient}" / "Radiomics_CT.xlsx"), patient=PATIENTS),
-        expand(str(OUTPUT_DIR / "{patient}" / "dvh_metrics.xlsx"), patient=PATIENTS),
-        expand(str(OUTPUT_DIR / "{patient}" / "Axial.html"), patient=PATIENTS),
-        expand(str(OUTPUT_DIR / "{patient}" / "qc_report.json"), patient=PATIENTS),
-        str(OUTPUT_DIR / "metadata_summary.xlsx"),
-        str(OUTPUT_DIR / "radiomics_summary.xlsx"),
-        str(OUTPUT_DIR / "dvh_summary.xlsx"),
-        str(OUTPUT_DIR / "qc_summary.xlsx"),
-        *(str(p) for p in METADATA_EXPORT_FILES),
-        *(str(path) for path in ([MR_SEGMENT_SENTINEL, MR_RADIOMICS_SENTINEL] if MR_SERIES_PRESENT else []))
+        *(str(path) for path in AGG_OUTPUTS.values())
 
 
-rule organize_data:
-    input:
-        dicom_dir=lambda wildcards: str(DICOM_ROOT / wildcards.patient)
+rule organize:
     output:
-        ct_dir=directory(str(OUTPUT_DIR / "{patient}" / "CT_DICOM")),
-        metadata=str(OUTPUT_DIR / "{patient}" / "metadata.json"),
-        rp=str(OUTPUT_DIR / "{patient}" / "RP.dcm"),
-        rd=str(OUTPUT_DIR / "{patient}" / "RD.dcm")
+        sentinel=str(STAGE_SENTINELS["organize"])
+    log:
+        str(LOGS_DIR / "stage_organize.log")
+    threads:
+        max(1, WORKERS)
     conda:
         "envs/rtpipeline.yaml"
-    log:
-        str(LOGS_DIR / "organize_{patient}.log")
-    threads:
-        IO_THREADS
     run:
-        import json
-        import shutil
         import subprocess
-        import tempfile
-
-        job_threads = threads
-
-        dicom_dir = Path(input.dicom_dir)
-        if not dicom_dir.exists():
-            raise FileNotFoundError(f"DICOM directory not found: {dicom_dir}")
-
-        patient_dir = OUTPUT_DIR / wildcards.patient
-        patient_dir.mkdir(parents=True, exist_ok=True)
-
-        tmp_dir = Path(tempfile.mkdtemp(prefix=f"{wildcards.patient}_", dir=str(OUTPUT_DIR)))
-        try:
-            cmd = [
-                "rtpipeline",
-                "--dicom-root", str(dicom_dir),
-                "--outdir", str(tmp_dir),
-                "--logs", str(LOGS_DIR),
-                "--no-segmentation",
-                "--no-dvh",
-                "--no-visualize",
-                "--no-radiomics",
-                "--workers", str(max(1, job_threads)),
-            ]
-
-            # Set environment variables for numerical libraries
-            env = os.environ.copy()
-            thread_str = str(max(1, job_threads))
-            env["OMP_NUM_THREADS"] = thread_str
-            env["MKL_NUM_THREADS"] = thread_str
-            env["NUMEXPR_NUM_THREADS"] = thread_str
-            env["NUMEXPR_MAX_THREADS"] = str(MAX_LOCAL_CORES)
-            env["OPENBLAS_NUM_THREADS"] = thread_str
-            env["BLAS_NUM_THREADS"] = thread_str
-
-            with open(log[0], "w") as logf, redirect_stdout(logf), redirect_stderr(logf):
-                subprocess.run(cmd, check=True, env=env)
-
-            course_dirs = sorted(p for p in tmp_dir.glob("**/course_*") if p.is_dir())
-            if not course_dirs:
-                raise RuntimeError(f"rtpipeline did not produce a course directory under {tmp_dir}")
-            course_dir = course_dirs[0]
-
-            src_ct = course_dir / "CT_DICOM"
-            if not src_ct.exists():
-                raise FileNotFoundError(f"CT_DICOM missing in {course_dir}")
-            if Path(output.ct_dir).exists():
-                shutil.rmtree(Path(output.ct_dir))
-            shutil.copytree(src_ct, Path(output.ct_dir))
-
-            for name, target in (("RP.dcm", Path(output.rp)), ("RD.dcm", Path(output.rd)), ("RS.dcm", patient_dir / "RS.dcm")):
-                src = course_dir / name
-                if src.exists():
-                    shutil.copy2(src, target)
-                else:
-                    if name != "RS.dcm":
-                        raise FileNotFoundError(f"Required file {name} missing in {course_dir}")
-
-            meta_src = course_dir / "case_metadata.json"
-            metadata_path = Path(output.metadata)
-            if meta_src.exists():
-                shutil.copy2(meta_src, metadata_path)
-            else:
-                metadata_path.write_text(json.dumps({
-                    "patient_id": wildcards.patient,
-                    "ct_dir": str(Path(output.ct_dir).resolve()),
-                }, indent=2))
-
-            data = json.loads(metadata_path.read_text())
-            data.update({
-                "patient_id": wildcards.patient,
-                "ct_dir": str(Path(output.ct_dir).resolve()),
-                "rp_path": str(Path(output.rp).resolve()),
-                "rd_path": str(Path(output.rd).resolve()),
-                "rs_path": str((patient_dir / "RS.dcm").resolve()),
-                "rs_auto_path": str((patient_dir / "RS_auto.dcm").resolve()),
-                "seg_nifti_dir": str((patient_dir / "TotalSegmentator_NIFTI").resolve()),
-            })
-            metadata_path.write_text(json.dumps(data, indent=2))
-        finally:
-            shutil.rmtree(tmp_dir, ignore_errors=True)
+        sentinel_path = Path(output.sentinel)
+        sentinel_path.parent.mkdir(parents=True, exist_ok=True)
+        if sentinel_path.exists():
+            sentinel_path.unlink()
+        LOGS_DIR.mkdir(parents=True, exist_ok=True)
+        cmd = [
+            "rtpipeline",
+            "--dicom-root", str(DICOM_ROOT),
+            "--outdir", str(OUTPUT_DIR),
+            "--logs", str(LOGS_DIR),
+            "--workers", str(max(1, threads)),
+            "--stage", "organize",
+        ]
+        if CUSTOM_STRUCTURES_CONFIG:
+            cmd.extend(["--custom-structures", CUSTOM_STRUCTURES_CONFIG])
+        with open(log[0], "w") as logf:
+            subprocess.run(cmd, check=True, stdout=logf, stderr=subprocess.STDOUT)
+        sentinel_path.write_text("ok\n", encoding="utf-8")
 
 
-rule segment_nifti:
-    cache: True
+rule segmentation:
     input:
-        ct_dir=str(OUTPUT_DIR / "{patient}" / "CT_DICOM"),
-        metadata=str(OUTPUT_DIR / "{patient}" / "metadata.json")
+        STAGE_SENTINELS["organize"]
     output:
-        nifti_dir=directory(str(OUTPUT_DIR / "{patient}" / "TotalSegmentator_NIFTI"))
+        sentinel=str(STAGE_SENTINELS["segmentation"])
+    log:
+        str(LOGS_DIR / "stage_segmentation.log")
+    threads:
+        max(1, WORKERS)
     conda:
         "envs/rtpipeline.yaml"
-    threads:
-        SEGMENTATION_THREADS
-    log:
-        str(LOGS_DIR / "segment_nifti_{patient}.log")
     run:
-        import shutil
         import subprocess
-        import sys
-        import time
-
-        nifti_dir = Path(output.nifti_dir)
-        nifti_dir.parent.mkdir(parents=True, exist_ok=True)
-
-        if nifti_dir.exists():
-            shutil.rmtree(nifti_dir)
-
-        job_threads = threads
-        import subprocess
-        try:
-            subprocess.run(["nvidia-smi"], check=True, capture_output=True, timeout=5)
-            device = "gpu"
-            print("GPU detected, using GPU acceleration for TotalSegmentator")
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
-            device = "cpu"
-            print("No GPU detected, using CPU for TotalSegmentator")
-
-        lock_path = LOGS_DIR / ".totalsegmentator.lock"
-        while True:
-            try:
-                lock_path.touch(exist_ok=False)
-                break
-            except FileExistsError:
-                time.sleep(2)
-
-        env = os.environ.copy()
-        thread_str = str(max(1, job_threads))
-        # Set appropriate thread limits for numerical libraries
-        env["OMP_NUM_THREADS"] = thread_str
-        env["MKL_NUM_THREADS"] = thread_str
-        env["NUMEXPR_NUM_THREADS"] = thread_str
-        env["NUMEXPR_MAX_THREADS"] = str(MAX_LOCAL_CORES)  # Use system's max cores for the upper limit
-        env["OPENBLAS_NUM_THREADS"] = thread_str
-        env["BLAS_NUM_THREADS"] = thread_str
-
-        try:
-            with open(log[0], "w") as logf, redirect_stdout(logf), redirect_stderr(logf):
-                def run_totalseg(target_dir: Path, task: str | None = None) -> None:
-                    if target_dir.exists():
-                        shutil.rmtree(target_dir)
-                    command = [
-                        "TotalSegmentator",
-                        "-i", str(Path(input.ct_dir)),
-                        "-o", str(target_dir),
-                        "-ot", "nifti",
-                        "-nr", str(job_threads),
-                        "-ns", str(job_threads),
-                        "--device", device,
-                    ]
-                    if SEG_FLAGS:
-                        command.extend(SEG_FLAGS)
-                    if task:
-                        command.extend(["--task", task])
-                    subprocess.run(command, check=True, env=env)
-                    print(f"TotalSegmentator {task or 'total'} NIFTI generation completed for {wildcards.patient}")
-
-                run_totalseg(nifti_dir)
-
-                for model in SEG_EXTRA_MODELS:
-                    model_dir = Path(input.ct_dir).parent / f"TotalSegmentator_{model}_NIFTI"
-                    try:
-                        run_totalseg(model_dir, task=model)
-                    except subprocess.CalledProcessError as exc:
-                        print(f"TotalSegmentator extra model '{model}' failed for {wildcards.patient}: {exc}")
-        finally:
-            try:
-                lock_path.unlink()
-            except FileNotFoundError:
-                pass
-
-
-rule nifti_to_rtstruct:
-    cache: True
-    input:
-        nifti_dir=str(OUTPUT_DIR / "{patient}" / "TotalSegmentator_NIFTI"),
-        ct_dir=str(OUTPUT_DIR / "{patient}" / "CT_DICOM")
-    output:
-        rs_auto=str(OUTPUT_DIR / "{patient}" / "RS_auto.dcm")
-    conda:
-        "envs/rtpipeline.yaml"
-    log:
-        str(LOGS_DIR / "nifti_to_rtstruct_{patient}.log")
-    run:
-        import sys
-        import shutil
-
-        course_dir = OUTPUT_DIR / wildcards.patient
-        rs_auto = Path(output.rs_auto)
-        rs_auto.parent.mkdir(parents=True, exist_ok=True)
-
-        with open(log[0], "w") as logf, redirect_stdout(logf), redirect_stderr(logf):
-            sys.path.insert(0, str(ROOT_DIR))
-            from rtpipeline.auto_rtstruct import build_auto_rtstruct
-
-            rs_path = build_auto_rtstruct(course_dir)
-            if not rs_path or not Path(rs_path).exists():
-                raise RuntimeError(f"Failed to create RS_auto for {wildcards.patient}")
-            if Path(rs_path) != rs_auto:
-                shutil.copy2(rs_path, rs_auto)
-            print(f"DICOM RT structure generation completed for {wildcards.patient}")
-
-
-rule merge_structures:
-    input:
-        rs_auto=str(OUTPUT_DIR / "{patient}" / "RS_auto.dcm"),
-        ct_dir=str(OUTPUT_DIR / "{patient}" / "CT_DICOM")
-    output:
-        rs_custom=str(OUTPUT_DIR / "{patient}" / "RS_custom.dcm"),
-        structure_report=str(OUTPUT_DIR / "{patient}" / "structure_comparison_report.json")
-    conda:
-        "envs/rtpipeline.yaml"
-    log:
-        str(LOGS_DIR / "merge_structures_{patient}.log")
-    run:
-        import shutil
-        import sys
-
-        course_dir = OUTPUT_DIR / wildcards.patient
-        output_path = Path(output.rs_custom)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-
-        with open(log[0], "w") as logf, redirect_stdout(logf), redirect_stderr(logf):
-            sys.path.insert(0, str(ROOT_DIR))
-
-            try:
-                # First try the new structure merger
-                from rtpipeline.structure_merger import merge_patient_structures
-
-                custom_config_path = Path(CUSTOM_STRUCTURES_CONFIG) if CUSTOM_STRUCTURES_CONFIG else None
-                merged_file, report_file = merge_patient_structures(course_dir, custom_config_path)
-
-                if merged_file != output_path:
-                    shutil.copy2(merged_file, output_path)
-                if report_file != Path(output.structure_report):
-                    shutil.copy2(report_file, output.structure_report)
-
-                print(f"Successfully merged structures using new merger for {wildcards.patient}")
-
-            except Exception as e:
-                print(f"New structure merger failed: {e}")
-                print("Falling back to legacy method")
-
-                # Fallback to legacy method
-                if CUSTOM_STRUCTURES_CONFIG:
-                    from rtpipeline.dvh import _create_custom_structures_rtstruct
-
-                    rs_manual = course_dir / "RS.dcm"
-                    rs_custom = _create_custom_structures_rtstruct(
-                        course_dir,
-                        Path(CUSTOM_STRUCTURES_CONFIG),
-                        rs_manual if rs_manual.exists() else None,
-                        Path(input.rs_auto)
-                    )
-                    src_path = Path(rs_custom) if rs_custom else None
-                    if src_path and src_path.exists():
-                        if src_path.resolve() != output_path.resolve():
-                            shutil.copy2(src_path, output_path)
-                    else:
-                        shutil.copy2(input.rs_auto, output_path)
-                        print("Custom structure generation failed; falling back to RS_auto")
-                else:
-                    shutil.copy2(input.rs_auto, output_path)
-
-                # Create empty report for consistency
-                import json
-                empty_report = {"error": str(e), "fallback_used": True}
-                with open(output.structure_report, 'w') as f:
-                    json.dump(empty_report, f)
-
-
-rule segment_mr:
-    output:
-        done=str(MR_SEGMENT_SENTINEL)
-    conda:
-        "envs/rtpipeline.yaml"
-    threads:
-        SEGMENTATION_THREADS
-    log:
-        str(LOGS_DIR / "segment_mr.log")
-    run:
-        import sys as _sys
-        from pathlib import Path as _Path
-
-        done_path = _Path(output.done)
-        done_path.parent.mkdir(parents=True, exist_ok=True)
-
-        with open(log[0], "w") as logf, redirect_stdout(logf), redirect_stderr(logf):
-            _sys.path.insert(0, str(ROOT_DIR))
-            try:
-                from rtpipeline.config import PipelineConfig
-                from rtpipeline.segmentation import segment_extra_models_mr
-
-                cfg = PipelineConfig(
-                    dicom_root=DICOM_ROOT.resolve(),
-                    output_root=OUTPUT_DIR.resolve(),
-                    logs_root=LOGS_DIR.resolve(),
-                    extra_seg_models=SEG_EXTRA_MODELS,
-                    resume=True,
-                )
-
-                segment_extra_models_mr(cfg, force=False)
-                print("MR segmentation step completed (see logs for details)")
-            except Exception as exc:
-                print(f"MR segmentation step encountered an error: {exc}")
-            finally:
-                _sys.path.pop(0)
-
-        done_path.write_text("ok\n")
-
-
-rule radiomics:
-    input:
-        ct_dir=str(OUTPUT_DIR / "{patient}" / "CT_DICOM"),
-        rs_custom=str(OUTPUT_DIR / "{patient}" / "RS_custom.dcm")
-    output:
-        radiomics=str(OUTPUT_DIR / "{patient}" / "Radiomics_CT.xlsx")
-    conda:
-        "envs/rtpipeline-radiomics.yaml"
-    threads:
-        RADIOMICS_THREADS
-    log:
-        str(LOGS_DIR / "radiomics_{patient}.log")
-    run:
-        import contextlib
-        import os
-        import shutil
-        import sys
-        from pathlib import Path as _Path
-
-        course_dir = OUTPUT_DIR / wildcards.patient
-        output_path = Path(output.radiomics)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-
-        if RADIOMICS_SEQUENTIAL:
-            os.environ["RTPIPELINE_RADIOMICS_SEQUENTIAL"] = "1"
-        else:
-            os.environ.pop("RTPIPELINE_RADIOMICS_SEQUENTIAL", None)
-
-        params_path = _Path(RADIOMICS_PARAMS) if RADIOMICS_PARAMS else None
-        custom_cfg = _Path(CUSTOM_STRUCTURES_CONFIG) if CUSTOM_STRUCTURES_CONFIG else None
-
-        sys.path.insert(0, str(ROOT_DIR))
-        from rtpipeline.config import PipelineConfig
-        from rtpipeline.radiomics_conda import radiomics_for_course
-
-        job_threads = RADIOMICS_THREADS
-
-        cfg = PipelineConfig(
-            dicom_root=DICOM_ROOT.resolve(),
-            output_root=OUTPUT_DIR.resolve(),
-            logs_root=LOGS_DIR.resolve(),
-            workers=max(1, job_threads),
-            radiomics_params_file=params_path,
-            custom_structures_config=custom_cfg,
-        )
-
-        with open(log[0], "w") as logf, redirect_stdout(logf), redirect_stderr(logf):
-            result = radiomics_for_course(course_dir, cfg, str(custom_cfg) if custom_cfg else None)
-            if not result or not Path(result).exists():
-                raise RuntimeError("Radiomics extraction failed")
-            if Path(result) != output_path:
-                shutil.copy2(result, output_path)
-
-
-rule radiomics_mr:
-    input:
-        segment_mr=str(MR_SEGMENT_SENTINEL)
-    output:
-        done=str(MR_RADIOMICS_SENTINEL)
-    conda:
-        "envs/rtpipeline-radiomics.yaml"
-    threads:
-        RADIOMICS_THREADS
-    log:
-        str(LOGS_DIR / "radiomics_mr.log")
-    run:
-        import sys as _sys
-        from pathlib import Path as _Path
-
-        done_path = _Path(output.done)
-        done_path.parent.mkdir(parents=True, exist_ok=True)
-
-        with open(log[0], "w") as logf, redirect_stdout(logf), redirect_stderr(logf):
-            _sys.path.insert(0, str(ROOT_DIR))
-            try:
-                from rtpipeline.config import PipelineConfig
-                from rtpipeline.radiomics import MRSeries, radiomics_for_mr_series
-                from rtpipeline.segmentation import _scan_mr_series
-
-                cfg = PipelineConfig(
-                    dicom_root=DICOM_ROOT.resolve(),
-                    output_root=OUTPUT_DIR.resolve(),
-                    logs_root=LOGS_DIR.resolve(),
-                    extra_seg_models=SEG_EXTRA_MODELS,
-                    resume=True,
-                )
-
-                series = _scan_mr_series(DICOM_ROOT)
-                processed = 0
-                for pid, suid, sdir in series:
-                    result = radiomics_for_mr_series(cfg, MRSeries(pid, suid, sdir))
-                    if result:
-                        processed += 1
-                print(f"MR radiomics completed for {processed} series")
-            except Exception as exc:
-                print(f"MR radiomics step encountered an error: {exc}")
-            finally:
-                _sys.path.pop(0)
-
-        done_path.write_text("ok\n")
+        sentinel_path = Path(output.sentinel)
+        sentinel_path.parent.mkdir(parents=True, exist_ok=True)
+        if sentinel_path.exists():
+            sentinel_path.unlink()
+        cmd = [
+            "rtpipeline",
+            "--dicom-root", str(DICOM_ROOT),
+            "--outdir", str(OUTPUT_DIR),
+            "--logs", str(LOGS_DIR),
+            "--workers", str(max(1, threads)),
+            "--stage", "segmentation"
+        ]
+        if SEG_FAST:
+            cmd.append("--totalseg-fast")
+        for model in SEG_EXTRA_MODELS:
+            cmd.extend(["--extra-seg-models", model])
+        if SEG_ROI_SUBSET:
+            cmd.extend(["--totalseg-roi-subset", SEG_ROI_SUBSET])
+        with open(log[0], "w") as logf:
+            subprocess.run(cmd, check=True, stdout=logf, stderr=subprocess.STDOUT)
+        sentinel_path.write_text("ok\n", encoding="utf-8")
 
 
 rule dvh:
     input:
-        ct_dir=str(OUTPUT_DIR / "{patient}" / "CT_DICOM"),
-        rp=str(OUTPUT_DIR / "{patient}" / "RP.dcm"),
-        rd=str(OUTPUT_DIR / "{patient}" / "RD.dcm"),
-        rs_custom=str(OUTPUT_DIR / "{patient}" / "RS_custom.dcm")
+        STAGE_SENTINELS["segmentation"]
     output:
-        dvh=str(OUTPUT_DIR / "{patient}" / "dvh_metrics.xlsx")
+        sentinel=str(STAGE_SENTINELS["dvh"])
+    log:
+        str(LOGS_DIR / "stage_dvh.log")
     conda:
         "envs/rtpipeline.yaml"
-    log:
-        str(LOGS_DIR / "dvh_{patient}.log")
+    threads:
+        max(1, WORKERS)
     run:
-        import shutil
-        import sys
-        import pandas as pd
-
-        course_dir = OUTPUT_DIR / wildcards.patient
-        output_path = Path(output.dvh)
-
-        with open(log[0], "w") as logf, redirect_stdout(logf), redirect_stderr(logf):
-            try:
-                # Check if required dose files exist
-                rp_path = Path(input.rp)
-                rd_path = Path(input.rd)
-
-                if not rp_path.exists() or not rd_path.exists():
-                    print(f"Missing dose files for {wildcards.patient}: RP={rp_path.exists()}, RD={rd_path.exists()}")
-                    print("Creating empty DVH metrics file")
-                    # Create empty DataFrame with expected columns
-                    empty_df = pd.DataFrame(columns=["ROI_Name", "Volume (cm³)", "Mean Dose (Gy)", "Max Dose (Gy)"])
-                    empty_df.to_excel(output_path, index=False)
-                    print(f"Empty DVH file created: {output_path}")
-                else:
-                    sys.path.insert(0, str(ROOT_DIR))
-                    from rtpipeline.dvh import dvh_for_course
-
-                    result = dvh_for_course(course_dir, CUSTOM_STRUCTURES_CONFIG or None)
-                    if not result or not Path(result).exists():
-                        print("DVH computation failed, creating empty file")
-                        empty_df = pd.DataFrame(columns=["ROI_Name", "Volume (cm³)", "Mean Dose (Gy)", "Max Dose (Gy)"])
-                        empty_df.to_excel(output_path, index=False)
-                    else:
-                        if Path(result) != output_path:
-                            shutil.copy2(result, output_path)
-                        print(f"DVH computation successful: {output_path}")
-
-            except Exception as e:
-                print(f"Error in DVH computation for {wildcards.patient}: {str(e)}")
-                # Create empty file so pipeline can continue
-                empty_df = pd.DataFrame(columns=["ROI_Name", "Volume (cm³)", "Mean Dose (Gy)", "Max Dose (Gy)"])
-                empty_df.to_excel(output_path, index=False)
-                print(f"Emergency empty DVH file created: {output_path}")
+        import subprocess
+        sentinel_path = Path(output.sentinel)
+        sentinel_path.parent.mkdir(parents=True, exist_ok=True)
+        if sentinel_path.exists():
+            sentinel_path.unlink()
+        cmd = [
+            "rtpipeline",
+            "--dicom-root", str(DICOM_ROOT),
+            "--outdir", str(OUTPUT_DIR),
+            "--logs", str(LOGS_DIR),
+            "--workers", str(max(1, threads)),
+            "--stage", "dvh",
+        ]
+        if CUSTOM_STRUCTURES_CONFIG:
+            cmd.extend(["--custom-structures", CUSTOM_STRUCTURES_CONFIG])
+        with open(log[0], "w") as logf:
+            subprocess.run(cmd, check=True, stdout=logf, stderr=subprocess.STDOUT)
+        sentinel_path.write_text("ok\n", encoding="utf-8")
 
 
-rule visualization:
+rule radiomics:
     input:
-        ct_dir=str(OUTPUT_DIR / "{patient}" / "CT_DICOM"),
-        dvh=str(OUTPUT_DIR / "{patient}" / "dvh_metrics.xlsx"),
-        rs_custom=str(OUTPUT_DIR / "{patient}" / "RS_custom.dcm")
+        STAGE_SENTINELS["segmentation"]
     output:
-        viz=str(OUTPUT_DIR / "{patient}" / "Axial.html")
+        sentinel=str(STAGE_SENTINELS["radiomics"])
+    log:
+        str(LOGS_DIR / "stage_radiomics.log")
+    threads:
+        max(1, WORKERS)
+    conda:
+        "envs/rtpipeline-radiomics.yaml"
+    run:
+        import os
+        import subprocess
+        sentinel_path = Path(output.sentinel)
+        sentinel_path.parent.mkdir(parents=True, exist_ok=True)
+        if sentinel_path.exists():
+            sentinel_path.unlink()
+        if RADIOMICS_SEQUENTIAL:
+            env_sequential = True
+        else:
+            env_sequential = False
+        cmd = [
+            "rtpipeline",
+            "--dicom-root", str(DICOM_ROOT),
+            "--outdir", str(OUTPUT_DIR),
+            "--logs", str(LOGS_DIR),
+            "--workers", str(max(1, threads)),
+            "--stage", "radiomics",
+        ]
+        if env_sequential:
+            cmd.append("--sequential-radiomics")
+        if RADIOMICS_PARAMS:
+            cmd.extend(["--radiomics-params", RADIOMICS_PARAMS])
+        if CUSTOM_STRUCTURES_CONFIG:
+            cmd.extend(["--custom-structures", CUSTOM_STRUCTURES_CONFIG])
+        with open(log[0], "w") as logf:
+            subprocess.run(cmd, check=True, stdout=logf, stderr=subprocess.STDOUT)
+        sentinel_path.write_text("ok\n", encoding="utf-8")
+
+
+rule qc:
+    input:
+        STAGE_SENTINELS["segmentation"]
+    output:
+        sentinel=str(STAGE_SENTINELS["qc"])
+    log:
+        str(LOGS_DIR / "stage_qc.log")
     conda:
         "envs/rtpipeline.yaml"
-    log:
-        str(LOGS_DIR / "visualization_{patient}.log")
+    threads:
+        max(1, WORKERS)
     run:
-        import shutil
-        import sys
-
-        course_dir = OUTPUT_DIR / wildcards.patient
-        sys.path.insert(0, str(ROOT_DIR))
-        from rtpipeline.visualize import visualize_course
-
-        with open(log[0], "w") as logf, redirect_stdout(logf), redirect_stderr(logf):
-            try:
-                # Try both visualization functions
-                from rtpipeline.visualize import visualize_course, generate_axial_review
-
-                # First try the full visualization with DVH
-                result = visualize_course(course_dir)
-
-                if result and Path(result).exists():
-                    if Path(result) != Path(output.viz):
-                        shutil.copy2(result, output.viz)
-                    print(f"DVH visualization created: {output.viz}")
-                else:
-                    # Fall back to axial review without DVH
-                    print("DVH visualization failed, trying axial review")
-                    axial_result = generate_axial_review(course_dir)
-                    if axial_result and Path(axial_result).exists():
-                        if Path(axial_result) != Path(output.viz):
-                            shutil.copy2(axial_result, output.viz)
-                        print(f"Axial review created: {output.viz}")
-                    else:
-                        # Create minimal HTML
-                        fallback_html = f"""
-                        <html>
-                        <head><title>Visualization - {wildcards.patient}</title></head>
-                        <body>
-                        <h1>Patient {wildcards.patient}</h1>
-                        <p>No visualization data available.</p>
-                        <p>This may be due to missing dose files or visualization errors.</p>
-                        </body>
-                        </html>
-                        """
-                        Path(output.viz).write_text(fallback_html)
-                        print(f"Fallback HTML created: {output.viz}")
-
-            except Exception as e:
-                print(f"Error in visualization for {wildcards.patient}: {str(e)}")
-                # Create error HTML
-                error_html = f"""
-                <html>
-                <head><title>Visualization Error - {wildcards.patient}</title></head>
-                <body>
-                <h1>Patient {wildcards.patient}</h1>
-                <p>Visualization failed with error:</p>
-                <pre>{str(e)}</pre>
-                </body>
-                </html>
-                """
-                Path(output.viz).write_text(error_html)
-                print(f"Error HTML created: {output.viz}")
+        import subprocess
+        sentinel_path = Path(output.sentinel)
+        sentinel_path.parent.mkdir(parents=True, exist_ok=True)
+        if sentinel_path.exists():
+            sentinel_path.unlink()
+        cmd = [
+            "rtpipeline",
+            "--dicom-root", str(DICOM_ROOT),
+            "--outdir", str(OUTPUT_DIR),
+            "--logs", str(LOGS_DIR),
+            "--workers", str(max(1, threads)),
+            "--stage", "qc",
+        ]
+        with open(log[0], "w") as logf:
+            subprocess.run(cmd, check=True, stdout=logf, stderr=subprocess.STDOUT)
+        sentinel_path.write_text("ok\n", encoding="utf-8")
 
 
-rule metadata_exports:
+rule aggregate_results:
     input:
-        expand(str(OUTPUT_DIR / "{patient}" / "metadata.json"), patient=PATIENTS)
+        organize=STAGE_SENTINELS["organize"],
+        dvh=STAGE_SENTINELS["dvh"],
+        radiomics=STAGE_SENTINELS["radiomics"],
+        qc=STAGE_SENTINELS["qc"]
     output:
-        [str(p) for p in METADATA_EXPORT_FILES]
+        dvh=str(AGG_OUTPUTS["dvh"]),
+        radiomics=str(AGG_OUTPUTS["radiomics"]),
+        fractions=str(AGG_OUTPUTS["fractions"]),
+        metadata=str(AGG_OUTPUTS["metadata"]),
+        qc=str(AGG_OUTPUTS["qc"])
     conda:
         "envs/rtpipeline.yaml"
     run:
         import json
-        import sys
-        from pathlib import Path
+        import pandas as pd  # type: ignore
 
-        import pandas as pd
+        RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
-        sys.path.insert(0, str(ROOT_DIR))
-        from rtpipeline.config import PipelineConfig
-        from rtpipeline.meta import export_metadata
+        def iter_courses() -> list[tuple[str, str, Path]]:
+            courses = []
+            for patient_dir in sorted(OUTPUT_DIR.iterdir()):
+                if not patient_dir.is_dir():
+                    continue
+                if patient_dir.name.startswith("_") or patient_dir.name.startswith("."):
+                    continue
+                if patient_dir.name in {"Data", "Data_Snakemake_fallback", "Logs_Snakemake_fallback", "_RESULTS"}:
+                    continue
+                for course_dir in sorted(patient_dir.iterdir()):
+                    if not course_dir.is_dir():
+                        continue
+                    if course_dir.name.startswith("_"):
+                        continue
+                    courses.append((patient_dir.name, course_dir.name, course_dir))
+            return courses
 
-        cfg = PipelineConfig(
-            dicom_root=DICOM_ROOT.resolve(),
-            output_root=OUTPUT_DIR.resolve(),
-            logs_root=LOGS_DIR.resolve(),
-            workers=WORKERS,
-        )
+        courses = iter_courses()
 
-        export_metadata(cfg)
-
-        rows = []
-        for meta_path in input:
-            meta_file = Path(meta_path)
-            if not meta_file.exists():
+        # DVH aggregation
+        dvh_frames = []
+        for pid, cid, cdir in courses:
+            path = cdir / "dvh_metrics.xlsx"
+            if not path.exists():
                 continue
-            data = json.loads(meta_file.read_text())
-            flattened = {}
-            for key, value in data.items():
-                if isinstance(value, (dict, list)):
-                    flattened[key] = json.dumps(value, ensure_ascii=False)
-                else:
-                    flattened[key] = value
-            flattened.setdefault("patient_id", data.get("patient_id", meta_file.parent.name))
-            flattened.setdefault("patient_dir", meta_file.parent.name)
-            rows.append(flattened)
-
-        METADATA_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
-        case_xlsx = METADATA_EXPORT_DIR / "case_metadata_all.xlsx"
-        case_json = METADATA_EXPORT_DIR / "case_metadata_all.json"
-
-        if rows:
-            df = pd.DataFrame(rows)
-            df.to_excel(case_xlsx, index=False)
-            case_json.write_text(json.dumps(rows, indent=2, ensure_ascii=False))
-        else:
-            pd.DataFrame().to_excel(case_xlsx, index=False)
-            case_json.write_text("[]\n")
-
-
-rule summarize:
-    input:
-        metadata=expand(str(OUTPUT_DIR / "{patient}" / "metadata.json"), patient=PATIENTS),
-        radiomics=expand(str(OUTPUT_DIR / "{patient}" / "Radiomics_CT.xlsx"), patient=PATIENTS),
-        dvh=expand(str(OUTPUT_DIR / "{patient}" / "dvh_metrics.xlsx"), patient=PATIENTS)
-    output:
-        metadata_summary=str(OUTPUT_DIR / "metadata_summary.xlsx"),
-        radiomics_summary=str(OUTPUT_DIR / "radiomics_summary.xlsx"),
-        dvh_summary=str(OUTPUT_DIR / "dvh_summary.xlsx")
-    conda:
-        "envs/rtpipeline.yaml"
-    run:
-        import json
-        from pathlib import Path
-
-        import pandas as pd
-
-        meta_rows = []
-        for meta_path in input.metadata:
-            p = Path(meta_path)
-            if not p.exists():
+            try:
+                df = pd.read_excel(path)
+            except Exception:
                 continue
-            data = json.loads(p.read_text())
-            flattened = {}
-            for key, value in data.items():
-                if isinstance(value, (dict, list)):
-                    flattened[key] = json.dumps(value, ensure_ascii=False)
-                else:
-                    flattened[key] = value
-            flattened.setdefault("patient_id", data.get("patient_id", p.parent.name))
-            flattened.setdefault("patient_dir", p.parent.name)
-            meta_rows.append(flattened)
-
-        if meta_rows:
-            pd.DataFrame(meta_rows).to_excel(output.metadata_summary, index=False)
+            if "patient_id" in df.columns:
+                df["patient_id"] = df["patient_id"].fillna(pid)
+            else:
+                df.insert(0, "patient_id", pid)
+            if "course_id" in df.columns:
+                df["course_id"] = df["course_id"].fillna(cid)
+            else:
+                df.insert(1, "course_id", cid)
+            if "structure_cropped" not in df.columns:
+                df["structure_cropped"] = False
+            dvh_frames.append(df)
+        if dvh_frames:
+            pd.concat(dvh_frames, ignore_index=True).to_excel(output.dvh, index=False)
         else:
-            pd.DataFrame().to_excel(output.metadata_summary, index=False)
+            pd.DataFrame(columns=["patient_id", "course_id", "ROI_Name", "structure_cropped"]).to_excel(output.dvh, index=False)
 
-        radiomics_files = [Path(p) for p in input.radiomics if Path(p).exists()]
-        if radiomics_files:
-            dfs = []
-            for f in radiomics_files:
-                df = pd.read_excel(f)
-                df["patient"] = f.parent.name
-                dfs.append(df)
-            pd.concat(dfs, ignore_index=True).to_excel(output.radiomics_summary, index=False)
+        # Radiomics aggregation
+        rad_frames = []
+        for pid, cid, cdir in courses:
+            path = cdir / "radiomics_ct.xlsx"
+            if not path.exists():
+                continue
+            try:
+                df = pd.read_excel(path)
+            except Exception:
+                continue
+            if "patient_id" not in df.columns:
+                df.insert(0, "patient_id", pid)
+            else:
+                df["patient_id"] = df["patient_id"].fillna(pid)
+            if "course_id" not in df.columns:
+                df.insert(1, "course_id", cid)
+            else:
+                df["course_id"] = df["course_id"].fillna(cid)
+            if "structure_cropped" not in df.columns:
+                df["structure_cropped"] = False
+            rad_frames.append(df)
+        if rad_frames:
+            pd.concat(rad_frames, ignore_index=True).to_excel(output.radiomics, index=False)
         else:
-            pd.DataFrame().to_excel(output.radiomics_summary, index=False)
+            pd.DataFrame(columns=["patient_id", "course_id", "roi_name", "structure_cropped"]).to_excel(output.radiomics, index=False)
 
-        dvh_files = [Path(p) for p in input.dvh if Path(p).exists()]
-        if dvh_files:
-            dfs = []
-            for f in dvh_files:
-                df = pd.read_excel(f)
-                df["patient"] = f.parent.name
-                dfs.append(df)
-            pd.concat(dfs, ignore_index=True).to_excel(output.dvh_summary, index=False)
+        # Fractions aggregation
+        frac_frames = []
+        for pid, cid, cdir in courses:
+            path = cdir / "fractions.xlsx"
+            if not path.exists():
+                continue
+            try:
+                df = pd.read_excel(path)
+            except Exception:
+                continue
+            if "patient_id" in df.columns:
+                df["patient_id"] = df["patient_id"].fillna(pid)
+            else:
+                df.insert(0, "patient_id", pid)
+            if "course_id" in df.columns:
+                df["course_id"] = df["course_id"].fillna(cid)
+            else:
+                df.insert(1, "course_id", cid)
+            frac_frames.append(df)
+        if frac_frames:
+            pd.concat(frac_frames, ignore_index=True).to_excel(output.fractions, index=False)
         else:
-            pd.DataFrame().to_excel(output.dvh_summary, index=False)
+            pd.DataFrame(columns=["patient_id", "course_id", "treatment_date", "source_path"]).to_excel(output.fractions, index=False)
 
+        # Metadata aggregation
+        meta_frames = []
+        for pid, cid, cdir in courses:
+            path = cdir / "metadata" / "case_metadata.xlsx"
+            if not path.exists():
+                continue
+            try:
+                df = pd.read_excel(path)
+            except Exception:
+                continue
+            if "patient_id" in df.columns:
+                df["patient_id"] = df["patient_id"].fillna(pid)
+            else:
+                df.insert(0, "patient_id", pid)
+            if "course_id" in df.columns:
+                df["course_id"] = df["course_id"].fillna(cid)
+            else:
+                df.insert(1, "course_id", cid)
+            meta_frames.append(df)
+        if meta_frames:
+            pd.concat(meta_frames, ignore_index=True).to_excel(output.metadata, index=False)
+        else:
+            pd.DataFrame(columns=["patient_id", "course_id"]).to_excel(output.metadata, index=False)
 
-rule quality_control:
-    input:
-        ct_dir=str(OUTPUT_DIR / "{patient}" / "CT_DICOM"),
-        metadata=str(OUTPUT_DIR / "{patient}" / "metadata.json")
-    output:
-        qc_report=str(OUTPUT_DIR / "{patient}" / "qc_report.json")
-    conda:
-        "envs/rtpipeline.yaml"
-    log:
-        str(LOGS_DIR / "qc_{patient}.log")
-    run:
-        import sys
-        import shutil
-        sys.path.insert(0, str(ROOT_DIR))
-        from rtpipeline.quality_control import generate_qc_report
-
-        patient_dir = OUTPUT_DIR / wildcards.patient
-        qc_dir = OUTPUT_DIR / "QC"
-        qc_dir.mkdir(exist_ok=True)
-
-        with open(log[0], "w") as logf, redirect_stdout(logf), redirect_stderr(logf):
-            report_path = generate_qc_report(patient_dir, qc_dir)
-            if report_path != Path(output.qc_report):
-                shutil.copy2(report_path, output.qc_report)
-
-
-rule qc_summary:
-    input:
-        qc_reports=expand(str(OUTPUT_DIR / "{patient}" / "qc_report.json"), patient=PATIENTS)
-    output:
-        qc_summary=str(OUTPUT_DIR / "qc_summary.xlsx")
-    conda:
-        "envs/rtpipeline.yaml"
-    run:
-        import json
-        import pandas as pd
-
-        qc_data = []
-        for report_path in input.qc_reports:
-            with open(report_path, 'r') as f:
-                data = json.load(f)
-
-            # Flatten the nested structure
-            flat_data = {
-                "patient_id": data.get("patient_id", ""),
-                "timestamp": data.get("timestamp", ""),
-                "overall_status": data.get("overall_status", ""),
-            }
-
-            # Add check results
-            checks = data.get("checks", {})
-            for check_name, check_data in checks.items():
-                if isinstance(check_data, dict):
-                    flat_data[f"{check_name}_status"] = check_data.get("status", "")
-                    if "issues" in check_data:
-                        flat_data[f"{check_name}_issues"] = "; ".join(check_data["issues"])
-
-            qc_data.append(flat_data)
-
-        df = pd.DataFrame(qc_data)
-        df.to_excel(output.qc_summary, index=False)
-
-
-rule clean:
-    shell:
-        """
-        rm -rf {OUTPUT_DIR}/*/nifti
-        rm -rf {OUTPUT_DIR}/*/TotalSegmentator_NIFTI
-        echo "Cleaned intermediate files"
-        """
-
-
-rule clean_all:
-    shell:
-        """
-        rm -rf {OUTPUT_DIR}
-        rm -rf {LOGS_DIR}
-        echo "Cleaned all outputs"
-        """
+        # QC aggregation
+        qc_rows = []
+        for pid, cid, cdir in courses:
+            qc_dir = cdir / "qc_reports"
+            if not qc_dir.exists():
+                continue
+            for report_path in qc_dir.glob("*.json"):
+                try:
+                    data = json.loads(report_path.read_text(encoding="utf-8"))
+                except Exception:
+                    continue
+                qc_rows.append(
+                    {
+                        "patient_id": pid,
+                        "course_id": cid,
+                        "report_name": report_path.name,
+                        "overall_status": data.get("overall_status"),
+                        "structure_cropping": json.dumps(data.get("checks", {}).get("structure_cropping", {})),
+                        "checks": json.dumps(data.get("checks", {})),
+                    }
+                )
+        if qc_rows:
+            pd.DataFrame(qc_rows).to_excel(output.qc, index=False)
+        else:
+            pd.DataFrame(columns=["patient_id", "course_id", "report_name", "overall_status"]).to_excel(output.qc, index=False)

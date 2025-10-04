@@ -107,7 +107,7 @@ def _isolated_radiomics_extraction(task_data: Tuple[str, Dict[str, Any]]) -> Opt
         config = data['config']
         source = data['source']
         roi = data['roi']
-        course_dir = data['course_dir']
+        course_dir = Path(data['course_dir'])
 
         # Reconstruct SimpleITK image
         img = sitk.GetImageFromArray(img_array)
@@ -137,11 +137,15 @@ def _isolated_radiomics_extraction(task_data: Tuple[str, Dict[str, Any]]) -> Opt
 
         # Convert results to serializable format
         rec = {k: (float(v) if isinstance(v, (int, float, np.floating)) else str(v)) for k, v in res.items()}
+        patient_id = course_dir.parent.name if course_dir.parent != course_dir else course_dir.name
         rec.update({
             'modality': 'CT',
             'segmentation_source': source,
             'roi_name': roi,
-            'course_dir': str(course_dir)
+            'course_dir': str(course_dir),
+            'patient_id': patient_id,
+            'course_id': course_dir.name,
+            'structure_cropped': bool(task_params.get('structure_cropped', False)),
         })
 
         return rec
@@ -170,7 +174,8 @@ def _prepare_radiomics_task(
     source: str,
     roi: str,
     course_dir: Path,
-    temp_dir: Path
+    temp_dir: Path,
+    structure_cropped: bool,
 ) -> Tuple[str, Dict[str, Any]]:
     """
     Prepare a radiomics task for parallel processing.
@@ -207,7 +212,8 @@ def _prepare_radiomics_task(
             'config': config,
             'source': source,
             'roi': roi,
-            'course_dir': course_dir
+            'course_dir': course_dir,
+            'structure_cropped': bool(structure_cropped),
         }
 
         # Write to temporary file
@@ -218,7 +224,8 @@ def _prepare_radiomics_task(
         task_params = {
             'source': source,
             'roi': roi,
-            'course_dir': str(course_dir)
+            'course_dir': str(course_dir),
+            'structure_cropped': bool(structure_cropped),
         }
 
         return temp_file_path, task_params
@@ -231,6 +238,10 @@ def _prepare_radiomics_task(
         except Exception:
             pass
         raise
+
+
+from .layout import build_course_dirs
+from .utils import mask_is_cropped
 
 
 def parallel_radiomics_for_course(
@@ -261,32 +272,39 @@ def parallel_radiomics_for_course(
         return None
 
     # Resume-friendly: skip if output exists
-    out_path = course_dir / 'radiomics_features_CT.xlsx'
+    course_dirs = build_course_dirs(course_dir)
+    out_path = course_dir / 'radiomics_ct.xlsx'
     if getattr(config, 'resume', False) and out_path.exists():
         return out_path
 
     # Check if pyradiomics is available
     extractor = _extractor(config, 'CT')
     if extractor is None:
-        return None
+        try:
+            from .radiomics_conda import radiomics_for_course as conda_radiomics_for_course
+        except ImportError as exc:
+            logger.warning("Conda-based radiomics helper unavailable: %s", exc)
+            return None
+        logger.info("Delegating CT radiomics for %s to conda environment", course_dir)
+        return conda_radiomics_for_course(course_dir, config, custom_structures_config)
 
     # Load CT image
-    img = _load_series_image(course_dir / 'CT_DICOM')
+    img = _load_series_image(course_dirs.dicom_ct)
     if img is None:
         logger.info("No CT image for radiomics in %s", course_dir)
         return None
 
     # Collect all tasks
-    tasks = []
+    tasks: List[tuple[str, str, np.ndarray, bool]] = []
 
     # Process standard RTSTRUCTs
     for source, rs_name in (("Manual", "RS.dcm"), ("AutoRTS_total", "RS_auto.dcm")):
         rs_path = course_dir / rs_name
         if not rs_path.exists():
             continue
-        masks = _rtstruct_masks(course_dir / 'CT_DICOM', rs_path)
+        masks = _rtstruct_masks(course_dirs.dicom_ct, rs_path)
         for roi, mask in masks.items():
-            tasks.append((source, roi, mask))
+            tasks.append((source, roi, mask, mask_is_cropped(mask)))
 
     # Process custom structures if configuration provided
     if custom_structures_config and custom_structures_config.exists():
@@ -301,9 +319,9 @@ def parallel_radiomics_for_course(
                     course_dir / "RS_auto.dcm"
                 )
             if rs_custom and rs_custom.exists():
-                masks = _rtstruct_masks(course_dir / 'CT_DICOM', rs_custom)
+                masks = _rtstruct_masks(course_dirs.dicom_ct, rs_custom)
                 for roi, mask in masks.items():
-                    tasks.append(("Custom", roi, mask))
+                    tasks.append(("Custom", roi, mask, mask_is_cropped(mask)))
         except Exception as e:
             logger.warning("Failed to process custom structures for radiomics: %s", e)
 
@@ -333,10 +351,10 @@ def parallel_radiomics_for_course(
     try:
         # Prepare all tasks
         prepared_tasks = []
-        for source, roi, mask in tasks:
+        for source, roi, mask, cropped in tasks:
             try:
                 task_file, task_params = _prepare_radiomics_task(
-                    img, mask, config, source, roi, course_dir, temp_dir
+                    img, mask, config, source, roi, course_dir, temp_dir, cropped
                 )
                 prepared_tasks.append((task_file, task_params))
             except Exception as e:

@@ -11,6 +11,9 @@ import numpy as np
 import pandas as pd
 from datetime import datetime
 
+from .layout import build_course_dirs
+from .utils import mask_is_cropped
+
 logger = logging.getLogger(__name__)
 
 
@@ -22,18 +25,20 @@ class QualityControlError(Exception):
 class DICOMValidator:
     """Validates DICOM files for consistency and integrity."""
 
-    def __init__(self, patient_dir: Path):
-        self.patient_dir = patient_dir
-        self.ct_dir = patient_dir / "CT_DICOM"
-        self.rp_path = patient_dir / "RP.dcm"
-        self.rd_path = patient_dir / "RD.dcm"
-        self.rs_path = patient_dir / "RS.dcm"
-        self.rs_auto_path = patient_dir / "RS_auto.dcm"
+    def __init__(self, course_dir: Path):
+        self.course_dir = course_dir
+        self.dirs = build_course_dirs(course_dir)
+        self.ct_dir = self.dirs.dicom_ct
+        self.rp_path = course_dir / "RP.dcm"
+        self.rd_path = course_dir / "RD.dcm"
+        self.rs_path = course_dir / "RS.dcm"
+        self.rs_auto_path = course_dir / "RS_auto.dcm"
 
     def validate_all(self) -> Dict[str, Any]:
         """Run all validation checks and return summary."""
         results = {
-            "patient_id": self.patient_dir.name,
+            "patient_id": self.course_dir.parent.name,
+            "course_id": self.course_dir.name,
             "timestamp": datetime.now().isoformat(),
             "checks": {}
         }
@@ -55,11 +60,14 @@ class DICOMValidator:
             # Cross-modality consistency
             results["checks"]["consistency"] = self._check_consistency()
 
+            # Segmentation cropping detection
+            results["checks"]["structure_cropping"] = self._segmentation_cropping()
+
             # Calculate overall status
             results["overall_status"] = self._calculate_overall_status(results["checks"])
 
         except Exception as e:
-            logger.error(f"Quality control failed for {self.patient_dir.name}: {e}")
+            logger.error(f"Quality control failed for {self.course_dir}: {e}")
             results["error"] = str(e)
             results["overall_status"] = "ERROR"
 
@@ -224,6 +232,49 @@ class DICOMValidator:
 
         return consistency
 
+    def _segmentation_cropping(self) -> Dict[str, Any]:
+        info = {
+            "status": "PASS",
+            "structures": [],
+        }
+        try:
+            from rt_utils import RTStructBuilder
+        except Exception:
+            info["status"] = "SKIP"
+            return info
+
+        if not self.ct_dir.exists():
+            info["status"] = "SKIP"
+            return info
+
+        def _evaluate(rs_path: Path, source: str) -> None:
+            if not rs_path.exists():
+                return
+            try:
+                builder = RTStructBuilder.create_from(
+                    dicom_series_path=str(self.ct_dir),
+                    rt_struct_path=str(rs_path),
+                )
+            except Exception as exc:
+                info.setdefault("errors", []).append({"source": source, "error": str(exc)})
+                return
+            for roi_name in builder.get_roi_names():
+                try:
+                    mask = builder.get_roi_mask_by_name(roi_name)
+                except Exception:
+                    continue
+                if mask is None:
+                    continue
+                if mask_is_cropped(mask):
+                    info["structures"].append({"source": source, "roi_name": roi_name})
+
+        _evaluate(self.rs_path, "manual")
+        _evaluate(self.rs_auto_path, "auto")
+
+        if info["structures"]:
+            info["status"] = "WARNING"
+        return info
+
     def _calculate_overall_status(self, checks: Dict[str, Any]) -> str:
         """Calculate overall validation status."""
         statuses = []
@@ -269,16 +320,16 @@ def validate_segmentation_volumes(course_dir: Path) -> Dict[str, Any]:
     return validation
 
 
-def generate_qc_report(patient_dir: Path, output_dir: Path) -> Path:
-    """Generate a comprehensive QC report for a patient."""
-    validator = DICOMValidator(patient_dir)
+def generate_qc_report(course_dir: Path, output_dir: Path) -> Path:
+    """Generate a comprehensive QC report for a course."""
+    validator = DICOMValidator(course_dir)
     qc_results = validator.validate_all()
 
     # Add segmentation volume validation
-    qc_results["segmentation_validation"] = validate_segmentation_volumes(patient_dir)
+    qc_results["segmentation_validation"] = validate_segmentation_volumes(course_dir)
 
     # Save report
-    report_path = output_dir / f"qc_report_{patient_dir.name}.json"
+    report_path = output_dir / f"qc_report_{course_dir.parent.name}_{course_dir.name}.json"
     with open(report_path, 'w') as f:
         json.dump(qc_results, f, indent=2, default=str)
 

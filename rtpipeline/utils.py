@@ -8,6 +8,7 @@ from pathlib import Path
 from time import perf_counter
 from typing import Any, Callable, Iterable, List, Optional, Sequence, TypeVar
 
+import numpy as np
 import pydicom
 from pydicom.dataset import FileDataset
 from pydicom.sequence import Sequence
@@ -137,6 +138,31 @@ def sanitize_rtstruct(rtstruct_path: Path | str, *, minimum_points: int = 3) -> 
             return False
 
     return changed
+
+
+def mask_is_cropped(mask: np.ndarray) -> bool:
+    """Determine whether a binary mask touches the image boundary.
+
+    Accepts masks in either [z, y, x] or [y, x, z] orientation.
+    """
+
+    if mask is None:
+        return False
+    arr = np.asarray(mask)
+    if arr.ndim != 3:
+        return False
+    arr = arr.astype(bool)
+    if not arr.any():
+        return False
+    for axis in range(arr.ndim):
+        slicer = [slice(None)] * arr.ndim
+        slicer[axis] = 0
+        if arr[tuple(slicer)].any():
+            return True
+        slicer[axis] = arr.shape[axis] - 1
+        if arr[tuple(slicer)].any():
+            return True
+    return False
 
 
 _MEMORY_PATTERNS = (
