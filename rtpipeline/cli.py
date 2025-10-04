@@ -67,6 +67,18 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--totalseg-roi-subset", default=None, help="Restrict to subset of ROIs (comma-separated)")
     p.add_argument("--workers", type=int, default=None, help="Parallel workers for non-segmentation phases (default: auto)")
     p.add_argument("--seg-workers", type=int, default=None, help="Maximum concurrent courses for TotalSegmentator (default: 1)")
+    p.add_argument(
+        "--seg-proc-threads",
+        type=int,
+        default=1,
+        help="CPU threads per TotalSegmentator invocation (<=0 to disable limit)",
+    )
+    p.add_argument(
+        "--course-filter",
+        action="append",
+        default=[],
+        help="Restrict stages to specific courses. Accepts PATIENT or PATIENT/COURSE; may be passed multiple times.",
+    )
     p.add_argument("--force-redo", action="store_true", help="Force redo all steps, even if outputs exist (resume is default)")
     p.add_argument("-v", "--verbose", action="count", default=0, help="Increase verbosity")
     p.add_argument(
@@ -191,6 +203,45 @@ def main(argv: list[str] | None = None) -> int:
         parts = [seg.strip() for seg in str(item).replace(";", ",").split(",") if seg.strip()]
         skip_rois.extend(parts)
 
+    seg_proc_threads = args.seg_proc_threads
+    if seg_proc_threads is not None and seg_proc_threads < 1:
+        seg_proc_threads = None
+
+    raw_course_filters = args.course_filter or []
+    patient_filter_ids: set[str] = set()
+    course_filter_pairs: set[tuple[str, str]] = set()
+    for raw_entry in raw_course_filters:
+        if not raw_entry:
+            continue
+        token = str(raw_entry).strip()
+        if not token:
+            continue
+        if "/" in token:
+            patient_part, course_part = token.split("/", 1)
+            patient_part = patient_part.strip()
+            course_part = course_part.strip()
+            if patient_part and course_part:
+                course_filter_pairs.add((patient_part, course_part))
+        else:
+            patient_filter_ids.add(token)
+
+    filters_active = bool(course_filter_pairs or patient_filter_ids)
+
+    def _filter_courses(seq):
+        selected = []
+        for course in seq:
+            pid = str(getattr(course, "patient_id", ""))
+            cid = str(getattr(course, "course_id", ""))
+            if not filters_active:
+                selected.append(course)
+            elif (pid, cid) in course_filter_pairs or pid in patient_filter_ids:
+                selected.append(course)
+        return selected
+
+    def _log_skip(stage_name: str) -> None:
+        if filters_active:
+            logger.info("%s: no courses matched course filter; skipping stage", stage_name)
+
     cfg = PipelineConfig(
         dicom_root=Path(args.dicom_root).resolve(),
         output_root=Path(args.outdir).resolve(),
@@ -208,6 +259,7 @@ def main(argv: list[str] | None = None) -> int:
         totalseg_weights_dir=Path(args.totalseg_weights).resolve() if args.totalseg_weights else None,
         extra_seg_models=[m.strip() for part in (args.extra_seg_models or []) for m in part.split(",") if m.strip()],
         segmentation_workers=args.seg_workers,
+        segmentation_thread_limit=seg_proc_threads,
         totalseg_fast=args.totalseg_fast,
         totalseg_roi_subset=args.totalseg_roi_subset,
         workers=args.workers,
@@ -281,86 +333,101 @@ def main(argv: list[str] | None = None) -> int:
         from .auto_rtstruct import build_auto_rtstruct
 
         courses = ensure_courses()
+        selected_courses = _filter_courses(courses)
+        if not selected_courses:
+            _log_skip("Segmentation")
+        else:
 
-        def _segment(course):
+            def _segment(course):
+                try:
+                    segment_course(cfg, course.dirs.root, force=args.force_segmentation)
+                    build_auto_rtstruct(course.dirs.root)
+                except Exception as exc:
+                    logger.warning("Segmentation failed for %s: %s", course.dirs.root, exc)
+                return None
+
+            seg_worker_limit = cfg.segmentation_workers if cfg.segmentation_workers is not None else 1
             try:
-                segment_course(cfg, course.dirs.root, force=args.force_segmentation)
-                build_auto_rtstruct(course.dirs.root)
-            except Exception as exc:
-                logger.warning("Segmentation failed for %s: %s", course.dirs.root, exc)
-            return None
+                seg_worker_limit = int(seg_worker_limit)
+            except Exception:
+                seg_worker_limit = 1
+            if seg_worker_limit < 1:
+                seg_worker_limit = 1
+            seg_worker_limit = min(seg_worker_limit, max(1, cfg.effective_workers()))
 
-        seg_worker_limit = cfg.segmentation_workers if cfg.segmentation_workers is not None else 1
-        try:
-            seg_worker_limit = int(seg_worker_limit)
-        except Exception:
-            seg_worker_limit = 1
-        if seg_worker_limit < 1:
-            seg_worker_limit = 1
-        seg_worker_limit = min(seg_worker_limit, max(1, cfg.effective_workers()))
-
-        run_tasks_with_adaptive_workers(
-            "Segmentation",
-            courses,
-            _segment,
-            max_workers=seg_worker_limit,
-            logger=logging.getLogger(__name__),
-            show_progress=True,
-        )
+            run_tasks_with_adaptive_workers(
+                "Segmentation",
+                selected_courses,
+                _segment,
+                max_workers=seg_worker_limit,
+                logger=logging.getLogger(__name__),
+                show_progress=True,
+            )
 
     if "dvh" in stages:
         from .dvh import dvh_for_course  # lazy import
 
         courses = ensure_courses()
+        selected_courses = _filter_courses(courses)
 
-        def _dvh(course):
-            try:
-                return dvh_for_course(
-                    course.dirs.root,
-                    cfg.custom_structures_config,
-                    parallel_workers=cfg.effective_workers(),
-                )
-            except Exception as exc:
-                logger.warning("DVH failed for %s: %s", course.dirs.root, exc)
-                return None
+        if not selected_courses:
+            _log_skip("DVH")
+        else:
 
-        run_tasks_with_adaptive_workers(
-            "DVH",
-            courses,
-            _dvh,
-            max_workers=cfg.effective_workers(),
-            logger=logging.getLogger(__name__),
-            show_progress=True,
-        )
+            def _dvh(course):
+                try:
+                    return dvh_for_course(
+                        course.dirs.root,
+                        cfg.custom_structures_config,
+                        parallel_workers=cfg.effective_workers(),
+                    )
+                except Exception as exc:
+                    logger.warning("DVH failed for %s: %s", course.dirs.root, exc)
+                    return None
+
+            run_tasks_with_adaptive_workers(
+                "DVH",
+                selected_courses,
+                _dvh,
+                max_workers=cfg.effective_workers(),
+                logger=logging.getLogger(__name__),
+                show_progress=True,
+            )
 
     if "visualize" in stages:
         from .visualize import generate_axial_review, visualize_course  # lazy import
 
         courses = ensure_courses()
+        selected_courses = _filter_courses(courses)
 
-        def _visualize(course):
-            try:
-                visualize_course(course.dirs.root)
-            finally:
+        if not selected_courses:
+            _log_skip("Visualization")
+        else:
+
+            def _visualize(course):
                 try:
-                    generate_axial_review(course.dirs.root)
-                except Exception as exc:
-                    logger.debug("Axial review failed for %s: %s", course.dirs.root, exc)
-            return None
+                    visualize_course(course.dirs.root)
+                finally:
+                    try:
+                        generate_axial_review(course.dirs.root)
+                    except Exception as exc:
+                        logger.debug("Axial review failed for %s: %s", course.dirs.root, exc)
+                return None
 
-        run_tasks_with_adaptive_workers(
-            "Visualization",
-            courses,
-            _visualize,
-            max_workers=cfg.effective_workers(),
-            logger=logging.getLogger(__name__),
-            show_progress=True,
-        )
+            run_tasks_with_adaptive_workers(
+                "Visualization",
+                selected_courses,
+                _visualize,
+                max_workers=cfg.effective_workers(),
+                logger=logging.getLogger(__name__),
+                show_progress=True,
+            )
 
     if "radiomics" in stages:
         import os
 
         courses = ensure_courses()
+        selected_courses = _filter_courses(courses)
 
         if args.sequential_radiomics:
             os.environ['RTPIPELINE_RADIOMICS_SEQUENTIAL'] = '1'
@@ -392,24 +459,31 @@ def main(argv: list[str] | None = None) -> int:
         if not can_use_radiomics:
             logger.warning("Radiomics dependencies unavailable; skipping radiomics stage")
         else:
-            from .radiomics import run_radiomics
-            try:
-                run_radiomics(cfg, courses, cfg.custom_structures_config)
-            except Exception as exc:
-                logger.warning("Radiomics stage failed: %s", exc)
+            if not selected_courses:
+                _log_skip("Radiomics")
+            else:
+                from .radiomics import run_radiomics
+                try:
+                    run_radiomics(cfg, selected_courses, cfg.custom_structures_config)
+                except Exception as exc:
+                    logger.warning("Radiomics stage failed: %s", exc)
 
     if "qc" in stages:
         from .quality_control import generate_qc_report
 
         courses = ensure_courses()
+        selected_courses = _filter_courses(courses)
 
-        for course in courses:
-            try:
-                qc_dir = course.dirs.qc_reports
-                qc_dir.mkdir(parents=True, exist_ok=True)
-                generate_qc_report(course.dirs.root, qc_dir)
-            except Exception as exc:
-                logger.warning("QC stage failed for %s: %s", course.dirs.root, exc)
+        if not selected_courses:
+            _log_skip("QC")
+        else:
+            for course in selected_courses:
+                try:
+                    qc_dir = course.dirs.qc_reports
+                    qc_dir.mkdir(parents=True, exist_ok=True)
+                    generate_qc_report(course.dirs.root, qc_dir)
+                except Exception as exc:
+                    logger.warning("QC stage failed for %s: %s", course.dirs.root, exc)
 
     return 0
 

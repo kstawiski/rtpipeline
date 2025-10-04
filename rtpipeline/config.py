@@ -31,6 +31,7 @@ class PipelineConfig:
     # Additional segmentation models (in addition to default 'total')
     extra_seg_models: list[str] = field(default_factory=list)
     segmentation_workers: int | None = None
+    segmentation_thread_limit: int | None = None
 
     # Performance/CPU options
     totalseg_fast: bool = False
