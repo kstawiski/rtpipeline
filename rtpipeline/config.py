@@ -40,6 +40,9 @@ class PipelineConfig:
 
     # Radiomics
     radiomics_params_file: Path | None = None
+    radiomics_skip_rois: list[str] = field(default_factory=list)
+    radiomics_max_voxels: int | None = None
+    radiomics_min_voxels: int | None = None
 
     # Custom structures
     custom_structures_config: Path | None = None
