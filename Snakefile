@@ -62,6 +62,27 @@ if _radiomics_params:
 else:
     RADIOMICS_PARAMS = ""
 
+_radiomics_skip_cfg = RADIOMICS_CONFIG.get("skip_rois") or []
+if isinstance(_radiomics_skip_cfg, str):
+    RADIOMICS_SKIP_ROIS = [item.strip() for item in _radiomics_skip_cfg.replace(";", ",").split(",") if item.strip()]
+else:
+    RADIOMICS_SKIP_ROIS = [str(item).strip() for item in _radiomics_skip_cfg if str(item).strip()]
+
+def _coerce_int(value, default=None):
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except Exception:
+        return default
+
+RADIOMICS_MAX_VOXELS = _coerce_int(RADIOMICS_CONFIG.get("max_voxels"), 15_000_000)
+if RADIOMICS_MAX_VOXELS is not None and RADIOMICS_MAX_VOXELS < 1:
+    RADIOMICS_MAX_VOXELS = 15_000_000
+RADIOMICS_MIN_VOXELS = _coerce_int(RADIOMICS_CONFIG.get("min_voxels"), 120)
+if RADIOMICS_MIN_VOXELS is not None and RADIOMICS_MIN_VOXELS < 1:
+    RADIOMICS_MIN_VOXELS = 1
+
 _custom_structures_cfg = config.get("custom_structures")
 if _custom_structures_cfg:
     cs_path = Path(_custom_structures_cfg)
@@ -71,6 +92,12 @@ if _custom_structures_cfg:
 else:
     default_pelvic = ROOT_DIR / "custom_structures_pelvic.yaml"
     CUSTOM_STRUCTURES_CONFIG = str(default_pelvic.resolve()) if default_pelvic.exists() else ""
+
+AGGREGATION_CONFIG = config.get("aggregation", {}) or {}
+_agg_threads_raw = AGGREGATION_CONFIG.get("threads")
+AGGREGATION_THREADS = _coerce_int(_agg_threads_raw, None)
+if AGGREGATION_THREADS is not None and AGGREGATION_THREADS < 1:
+    AGGREGATION_THREADS = 1
 
 STAGE_SENTINELS = {
     "organize": OUTPUT_DIR / ".stage_organize",
@@ -168,10 +195,10 @@ rule dvh:
         sentinel=str(STAGE_SENTINELS["dvh"])
     log:
         str(LOGS_DIR / "stage_dvh.log")
-    conda:
-        "envs/rtpipeline.yaml"
     threads:
         max(1, WORKERS)
+    conda:
+        "envs/rtpipeline.yaml"
     run:
         import subprocess
         sentinel_path = Path(output.sentinel)
@@ -227,6 +254,12 @@ rule radiomics:
             cmd.append("--sequential-radiomics")
         if RADIOMICS_PARAMS:
             cmd.extend(["--radiomics-params", RADIOMICS_PARAMS])
+        if RADIOMICS_MAX_VOXELS:
+            cmd.extend(["--radiomics-max-voxels", str(RADIOMICS_MAX_VOXELS)])
+        if RADIOMICS_MIN_VOXELS:
+            cmd.extend(["--radiomics-min-voxels", str(RADIOMICS_MIN_VOXELS)])
+        for roi in RADIOMICS_SKIP_ROIS:
+            cmd.extend(["--radiomics-skip-roi", roi])
         if CUSTOM_STRUCTURES_CONFIG:
             cmd.extend(["--custom-structures", CUSTOM_STRUCTURES_CONFIG])
         with open(log[0], "w") as logf:
@@ -241,10 +274,10 @@ rule qc:
         sentinel=str(STAGE_SENTINELS["qc"])
     log:
         str(LOGS_DIR / "stage_qc.log")
-    conda:
-        "envs/rtpipeline.yaml"
     threads:
         max(1, WORKERS)
+    conda:
+        "envs/rtpipeline.yaml"
     run:
         import subprocess
         sentinel_path = Path(output.sentinel)
@@ -280,6 +313,8 @@ rule aggregate_results:
         "envs/rtpipeline.yaml"
     run:
         import json
+        import os
+        from concurrent.futures import ThreadPoolExecutor
         import pandas as pd  # type: ignore
 
         RESULTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -303,16 +338,34 @@ rule aggregate_results:
 
         courses = iter_courses()
 
-        # DVH aggregation
-        dvh_frames = []
-        for pid, cid, cdir in courses:
+        def _max_workers(default: int) -> int:
+            if not courses:
+                return 1
+            if AGGREGATION_THREADS is not None:
+                return min(len(courses), max(1, AGGREGATION_THREADS))
+            return min(len(courses), max(1, default))
+
+        worker_count = _max_workers(os.cpu_count() or 4)
+
+        def _collect_frames(loader):
+            frames = []
+            if not courses:
+                return frames
+            with ThreadPoolExecutor(max_workers=max(1, worker_count)) as pool:
+                for df in pool.map(loader, courses):
+                    if df is not None and not df.empty:
+                        frames.append(df)
+            return frames
+
+        def _load_dvh(course):
+            pid, cid, cdir = course
             path = cdir / "dvh_metrics.xlsx"
             if not path.exists():
-                continue
+                return None
             try:
                 df = pd.read_excel(path)
             except Exception:
-                continue
+                return None
             if "patient_id" in df.columns:
                 df["patient_id"] = df["patient_id"].fillna(pid)
             else:
@@ -323,22 +376,47 @@ rule aggregate_results:
                 df.insert(1, "course_id", cid)
             if "structure_cropped" not in df.columns:
                 df["structure_cropped"] = False
-            dvh_frames.append(df)
+            return df
+
+        # DVH aggregation
+        dvh_frames = _collect_frames(_load_dvh)
         if dvh_frames:
-            pd.concat(dvh_frames, ignore_index=True).to_excel(output.dvh, index=False)
+            dvh_all = pd.concat(dvh_frames, ignore_index=True)
+            if "Segmentation_Source" not in dvh_all.columns:
+                dvh_all["Segmentation_Source"] = "Unknown"
+            if "ROI_Name" in dvh_all.columns:
+                roi_series = dvh_all["ROI_Name"].astype(str)
+            else:
+                roi_series = pd.Series(["" for _ in range(len(dvh_all))], index=dvh_all.index)
+                dvh_all.insert(len(dvh_all.columns), "ROI_Name", roi_series)
+            dvh_all["_roi_key"] = roi_series.str.strip().str.lower()
+            manual_keys = set(
+                dvh_all.loc[
+                    dvh_all["Segmentation_Source"].astype(str).str.lower() == "manual",
+                    "_roi_key",
+                ].dropna()
+            )
+            drop_mask = (
+                dvh_all["Segmentation_Source"].astype(str).str.lower().isin({"custom", "merged"})
+                & dvh_all["_roi_key"].isin(manual_keys)
+            )
+            if drop_mask.any():
+                dvh_all = dvh_all.loc[~drop_mask].copy()
+            dvh_all.drop(columns=["_roi_key"], errors="ignore", inplace=True)
+            dvh_all.to_excel(output.dvh, index=False)
         else:
             pd.DataFrame(columns=["patient_id", "course_id", "ROI_Name", "structure_cropped"]).to_excel(output.dvh, index=False)
 
         # Radiomics aggregation
-        rad_frames = []
-        for pid, cid, cdir in courses:
+        def _load_radiomics(course):
+            pid, cid, cdir = course
             path = cdir / "radiomics_ct.xlsx"
             if not path.exists():
-                continue
+                return None
             try:
                 df = pd.read_excel(path)
             except Exception:
-                continue
+                return None
             if "patient_id" not in df.columns:
                 df.insert(0, "patient_id", pid)
             else:
@@ -349,22 +427,24 @@ rule aggregate_results:
                 df["course_id"] = df["course_id"].fillna(cid)
             if "structure_cropped" not in df.columns:
                 df["structure_cropped"] = False
-            rad_frames.append(df)
+            return df
+
+        rad_frames = _collect_frames(_load_radiomics)
         if rad_frames:
             pd.concat(rad_frames, ignore_index=True).to_excel(output.radiomics, index=False)
         else:
             pd.DataFrame(columns=["patient_id", "course_id", "roi_name", "structure_cropped"]).to_excel(output.radiomics, index=False)
 
         # Fractions aggregation
-        frac_frames = []
-        for pid, cid, cdir in courses:
+        def _load_fraction(course):
+            pid, cid, cdir = course
             path = cdir / "fractions.xlsx"
             if not path.exists():
-                continue
+                return None
             try:
                 df = pd.read_excel(path)
             except Exception:
-                continue
+                return None
             if "patient_id" in df.columns:
                 df["patient_id"] = df["patient_id"].fillna(pid)
             else:
@@ -373,22 +453,24 @@ rule aggregate_results:
                 df["course_id"] = df["course_id"].fillna(cid)
             else:
                 df.insert(1, "course_id", cid)
-            frac_frames.append(df)
+            return df
+
+        frac_frames = _collect_frames(_load_fraction)
         if frac_frames:
             pd.concat(frac_frames, ignore_index=True).to_excel(output.fractions, index=False)
         else:
             pd.DataFrame(columns=["patient_id", "course_id", "treatment_date", "source_path"]).to_excel(output.fractions, index=False)
 
         # Metadata aggregation
-        meta_frames = []
-        for pid, cid, cdir in courses:
+        def _load_metadata(course):
+            pid, cid, cdir = course
             path = cdir / "metadata" / "case_metadata.xlsx"
             if not path.exists():
-                continue
+                return None
             try:
                 df = pd.read_excel(path)
             except Exception:
-                continue
+                return None
             if "patient_id" in df.columns:
                 df["patient_id"] = df["patient_id"].fillna(pid)
             else:
@@ -397,7 +479,9 @@ rule aggregate_results:
                 df["course_id"] = df["course_id"].fillna(cid)
             else:
                 df.insert(1, "course_id", cid)
-            meta_frames.append(df)
+            return df
+
+        meta_frames = _collect_frames(_load_metadata)
         if meta_frames:
             pd.concat(meta_frames, ignore_index=True).to_excel(output.metadata, index=False)
         else:

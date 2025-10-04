@@ -15,6 +15,19 @@ segmentation:
 radiomics:
   sequential: false
   params_file: "rtpipeline/radiomics_params.yaml"
+  skip_rois:
+    - body
+    - couchsurface
+    - couchinterior
+    - couchexterior
+    - bones
+    - m1
+    - m2
+  max_voxels: 1500000000  # 1.5 billion voxels max (approx 1500x1000x1000)
+  min_voxels: 10
+
+aggregation:
+  threads: null
 
 # Environment names
 environments:

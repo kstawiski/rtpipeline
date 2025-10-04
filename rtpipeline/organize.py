@@ -970,9 +970,112 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
                 try:
                     import pandas as _pd
 
-                    df_frac = _pd.DataFrame(fractions_details)
-                    df_frac.sort_values(by=["treatment_date", "treatment_time"], inplace=True, ignore_index=True)
-                    df_frac.to_excel(fractions_path, index=False)
+                    df_frac_raw = _pd.DataFrame(fractions_details)
+                    if not df_frac_raw.empty:
+                        df_frac_raw["treatment_time"] = df_frac_raw["treatment_time"].fillna("")
+                        plan_primary = plan_uids[0] if plan_uids else ""
+                        df_frac_raw["plan_key"] = df_frac_raw["plan_sop"].fillna("")
+                        if plan_primary:
+                            df_frac_raw.loc[df_frac_raw["plan_key"] == "", "plan_key"] = plan_primary
+                        else:
+                            df_frac_raw.loc[df_frac_raw["plan_key"] == "", "plan_key"] = "NO_PLAN"
+                        df_frac_raw["treatment_date"] = df_frac_raw["treatment_date"].astype(str)
+                        df_frac_raw.sort_values(
+                            by=["plan_key", "treatment_date", "treatment_time", "sop_instance_uid"],
+                            inplace=True,
+                            ignore_index=True,
+                        )
+
+                        def _dense_rank_dates(values: _pd.Series) -> _pd.Series:
+                            order: dict[str, int] = {}
+                            seq: list[int] = []
+                            next_idx = 1
+                            for date_str in values.astype(str):
+                                key = date_str
+                                if key not in order:
+                                    order[key] = next_idx
+                                    next_idx += 1
+                                seq.append(order[key])
+                            return _pd.Series(seq, index=values.index)
+
+                        inferred = df_frac_raw.groupby("plan_key")['treatment_date'].transform(_dense_rank_dates)
+                        df_frac_raw["fraction_number_inferred"] = inferred
+
+                        if df_frac_raw["fraction_number"].notna().any():
+                            filled = df_frac_raw.groupby(["plan_key", "treatment_date"])['fraction_number'].transform(
+                                lambda s: s.dropna().iloc[0] if not s.dropna().empty else None
+                            )
+                            df_frac_raw["fraction_number"] = filled.where(
+                                filled.notna(),
+                                df_frac_raw["fraction_number_inferred"],
+                            )
+                        else:
+                            df_frac_raw["fraction_number"] = df_frac_raw["fraction_number_inferred"]
+
+                        df_frac_raw["fraction_number"] = df_frac_raw["fraction_number"].astype("Int64")
+
+                        aggregated_rows: list[dict[str, object]] = []
+                        for (plan_key, frac_num), grp in df_frac_raw.groupby(["plan_key", "fraction_number"], dropna=False):
+                            grp_sorted = grp.sort_values(by=["treatment_date", "treatment_time"], kind="stable")
+                            first_row = grp_sorted.iloc[0]
+                            treatment_date = str(first_row["treatment_date"])
+                            start_time = str(grp_sorted["treatment_time"].min()) if not grp_sorted["treatment_time"].isna().all() else ""
+                            end_time = str(grp_sorted["treatment_time"].max()) if not grp_sorted["treatment_time"].isna().all() else ""
+                            machines = [
+                                str(x).strip()
+                                for x in grp_sorted["treatment_machine"].tolist()
+                                if str(x).strip()
+                            ]
+                            machine_repr = ";".join(sorted(set(machines))) if machines else str(first_row["treatment_machine"])
+                            source_paths_all = ";".join([
+                                str(x)
+                                for x in _pd.unique(grp_sorted["source_path"])
+                                if str(x)
+                            ])
+                            sops_all = ";".join([
+                                str(x)
+                                for x in _pd.unique(grp_sorted["sop_instance_uid"])
+                                if str(x)
+                            ])
+                            dose_sum = grp_sorted["delivered_dose_gy"].dropna()
+                            meterset_sum = grp_sorted["beam_meterset"].dropna()
+                            component_times = ";".join([
+                                str(t)
+                                for t in grp_sorted["treatment_time"].astype(str)
+                                if str(t)
+                            ])
+
+                            aggregated_rows.append({
+                                "treatment_date": treatment_date,
+                                "treatment_time": start_time,
+                                "treatment_time_end": end_time,
+                                "plan_sop": first_row["plan_sop"] or ("" if plan_key in {"", "NO_PLAN"} else str(plan_key)),
+                                "fraction_number": int(frac_num) if _pd.notna(frac_num) else None,
+                                "treatment_machine": machine_repr,
+                                "source_path": first_row["source_path"],
+                                "source_paths_all": source_paths_all,
+                                "sop_instance_uid": first_row["sop_instance_uid"],
+                                "sop_instance_uids_all": sops_all,
+                                "delivered_dose_gy": float(dose_sum.sum()) if not dose_sum.empty else None,
+                                "beam_meterset": float(meterset_sum.sum()) if not meterset_sum.empty else None,
+                                "records_merged": int(len(grp_sorted)),
+                                "component_times": component_times,
+                            })
+
+                        df_frac = _pd.DataFrame(aggregated_rows)
+                        df_frac.sort_values(by=["treatment_date", "fraction_number"], inplace=True, ignore_index=True)
+                        df_frac.to_excel(fractions_path, index=False)
+
+                        raw_export_path = patient_dir / "metadata" / "fractions_raw.xlsx"
+                        try:
+                            raw_export_path.parent.mkdir(parents=True, exist_ok=True)
+                            df_frac_raw.to_excel(raw_export_path, index=False)
+                        except Exception:
+                            logger.debug("Failed to export raw fractions detail for %s", patient_dir)
+
+                        fractions_count = len(df_frac)
+                    else:
+                        df_frac_raw.to_excel(fractions_path, index=False)
                 except Exception as exc:
                     logger.warning("Failed to write fractions summary for %s: %s", patient_dir, exc)
             elif fractions_path.exists():

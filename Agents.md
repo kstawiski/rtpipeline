@@ -3,7 +3,7 @@ Continue working on our pipeline. Learn how pipeline works now, what was already
 # DICOM-RT Processing Pipeline Specification
 
 ## Goal
-Pipeline runs using snakemake and axillary rtpipeline package. Read README.md for setup instructions.
+Pipeline runs using snakemake (with config.yaml) and axillary rtpipeline package. Read README.md for setup instructions.
 Process DICOM-RT data, analyze it, and produce analysis-ready tabular outputs for research purposes.
 
 ## Expected Output Directory Layout
@@ -44,6 +44,7 @@ For each patient and radiotherapy course:
 Notes:
 - <YYYY-MM> is the course_start_date in year-month format (UTC or a clearly defined timezone; be consistent).
 - <nifti_name> must match exactly the source NIfTI filename (without extension) used for segmentation.
+- Files with DVH and radiomics results must include all structures from both original RTSTRUCT and TotalSegmentator outputs.
 
 Output directory shouldn't contain any symlinks or hardlinks; all files should be real files.
 
@@ -71,7 +72,9 @@ Output directory shouldn't contain any symlinks or hardlinks; all files should b
 ## Testing
 - Run tests in conda base env. Envs "rtpipeline" and "rtpipeline-radiomics" are already created and funcitional! Test the pipeline on Example_data/ using test.sh. You can examine current outputs (Data_Snakemake/) and logs (Logs_Snakemake/).
 - Current example inputs/outputs are illustrative only; do not rely on them as ground truth.
-- Assess results if they make sense clinically and technically.
+- Assess results if they make sense clinically and technically. Create/update PROBLEMS.md to track any issues found.
+- Fix issues iteratively, re-run tests as needed.
 - Clean Data_Snakemake/ and Logs_Snakemake/ before re-running tests only if deep changes were made and it is necessary.
+
 
 If eveything works as expected, write/update README.md and docs/ to reflect any changes in usage or configuration. README can link to docs/ for detailed documentation.

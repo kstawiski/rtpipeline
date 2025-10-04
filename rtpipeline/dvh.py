@@ -13,7 +13,7 @@ import SimpleITK as sitk
 logger = logging.getLogger(__name__)
 
 from .layout import build_course_dirs
-from .utils import sanitize_rtstruct, mask_is_cropped
+from .utils import sanitize_rtstruct, mask_is_cropped, run_tasks_with_adaptive_workers
 from .layout import build_course_dirs
 
 # Compatibility shim for dicompyler-core with pydicom>=3
@@ -360,7 +360,11 @@ def _estimate_rx_from_ctv1(rtstruct: pydicom.dataset.FileDataset, rtdose: pydico
     return default_rx
 
 
-def dvh_for_course(course_dir: Path, custom_structures_config: Optional[Union[str, Path]] = None) -> Optional[Path]:
+def dvh_for_course(
+    course_dir: Path,
+    custom_structures_config: Optional[Union[str, Path]] = None,
+    parallel_workers: Optional[int] = None,
+) -> Optional[Path]:
     course_dirs = build_course_dirs(course_dir)
     rp = course_dir / "RP.dcm"
     rd = course_dir / "RD.dcm"
@@ -404,6 +408,42 @@ def dvh_for_course(course_dir: Path, custom_structures_config: Optional[Union[st
         builder_cache[rs_path] = builder
         return builder
 
+    def _calc_roi(task: tuple) -> Optional[Dict]:
+        (
+            roi_number,
+            roi_name,
+            source_label,
+            rx_value,
+            rtstruct_ds,
+            builder_obj,
+        ) = task
+        try:
+            abs_dvh = dvhcalc.get_dvh(rtstruct_ds, rtdose, roi_number)
+        except Exception as exc:
+            logger.debug("DVH failed for ROI %s: %s", roi_name, exc)
+            return None
+        if abs_dvh.volume == 0:
+            return None
+        metrics = _compute_metrics(abs_dvh, rx_value)
+        if metrics is None:
+            return None
+        cropped = False
+        if builder_obj is not None:
+            try:
+                mask = builder_obj.get_roi_mask_by_name(roi_name)
+                cropped = mask_is_cropped(mask)
+            except Exception:
+                cropped = False
+        metrics.update(
+            {
+                "ROI_Number": int(roi_number),
+                "ROI_Name": roi_name,
+                "Segmentation_Source": source_label,
+                "structure_cropped": cropped,
+            }
+        )
+        return metrics
+
     def process_struct(rs_path: Path, source: str, rx_dose: float) -> None:
         try:
             rtstruct = pydicom.dcmread(str(rs_path))
@@ -411,30 +451,34 @@ def dvh_for_course(course_dir: Path, custom_structures_config: Optional[Union[st
             logger.warning("Cannot read RTSTRUCT %s: %s", rs_path, e)
             return
         builder = _get_builder(rs_path)
-        for roi in getattr(rtstruct, "StructureSetROISequence", []):
+        rois = list(getattr(rtstruct, "StructureSetROISequence", []) or [])
+        if not rois:
+            return
+        tasks = []
+        for roi in rois:
+            roi_name = str(getattr(roi, "ROIName", ""))
             try:
-                abs_dvh = dvhcalc.get_dvh(rtstruct, rtdose, roi.ROINumber)
-                if abs_dvh.volume == 0:
-                    continue
-                m = _compute_metrics(abs_dvh, rx_dose)
-                if m is None:
-                    continue
-                cropped = False
-                if builder is not None:
-                    try:
-                        mask = builder.get_roi_mask_by_name(str(getattr(roi, "ROIName", "")))
-                        cropped = mask_is_cropped(mask)
-                    except Exception:
-                        cropped = False
-                m.update({
-                    "ROI_Number": int(roi.ROINumber),
-                    "ROI_Name": str(getattr(roi, "ROIName", "")),
-                    "Segmentation_Source": source,
-                    "structure_cropped": cropped,
-                })
-                results.append(m)
-            except Exception as e:
-                logger.debug("DVH failed for ROI %s: %s", getattr(roi, "ROIName", ""), e)
+                roi_number = int(roi.ROINumber)
+            except Exception:
+                roi_number = int(getattr(roi, "ROINumber", 0) or 0)
+            if roi_number <= 0:
+                continue
+            tasks.append((roi_number, roi_name, source, rx_dose, rtstruct, builder))
+
+        if not tasks:
+            return
+
+        worker_cap = max(1, parallel_workers or max(1, (os.cpu_count() or 2) // 2))
+        task_results = run_tasks_with_adaptive_workers(
+            f"DVH ({source})",
+            tasks,
+            _calc_roi,
+            max_workers=worker_cap,
+            logger=logger,
+        )
+        for item in task_results:
+            if item:
+                results.append(item)
 
     # Estimate rx from manual if present; else default
     rx_est = 50.0
