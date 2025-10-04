@@ -231,11 +231,22 @@ def run_totalsegmentator(config: PipelineConfig, input_path: Path, output_path: 
     logger.info("Running TotalSegmentator (%s): %s", output_type, cmd)
 
     env = os.environ.copy()
-    env.setdefault('OMP_NUM_THREADS', '1')
-    env.setdefault('OPENBLAS_NUM_THREADS', '1')
-    env.setdefault('MKL_NUM_THREADS', '1')
-    env.setdefault('NUMEXPR_NUM_THREADS', '1')
-    env.setdefault('NUMBA_NUM_THREADS', '1')
+    thread_limit = getattr(config, "segmentation_thread_limit", None)
+    thread_vars = (
+        'OMP_NUM_THREADS',
+        'OPENBLAS_NUM_THREADS',
+        'MKL_NUM_THREADS',
+        'NUMEXPR_NUM_THREADS',
+        'NUMBA_NUM_THREADS',
+    )
+    if thread_limit is not None:
+        try:
+            thread_limit_int = max(1, int(thread_limit))
+        except (TypeError, ValueError):
+            thread_limit_int = 1
+        thread_str = str(thread_limit_int)
+        for var in thread_vars:
+            env[var] = thread_str
 
     if getattr(config, "totalseg_license_key", None):
         env.setdefault("TOTALSEG_LICENSE", str(config.totalseg_license_key))
@@ -250,10 +261,7 @@ def run_totalsegmentator(config: PipelineConfig, input_path: Path, output_path: 
         # Add CPU-only flag and disable multiprocessing
         cmd_retry = cmd + " -d cpu"
         env_retry = env.copy()
-        env_retry.update({
-            'CUDA_VISIBLE_DEVICES': '-1',
-            'OMP_NUM_THREADS': '1'
-        })
+        env_retry['CUDA_VISIBLE_DEVICES'] = '-1'
         ok = _run(cmd_retry, env=env_retry)
 
     return ok

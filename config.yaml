@@ -6,9 +6,11 @@ output_dir: "Data_Snakemake"
 logs_dir: "Logs_Snakemake"
 
 # Processing parameters
-workers: 4
+workers: 8
 segmentation:
   workers: 4  # TotalSegmentator concurrency (set per-course parallelism)
+  threads_per_worker: null  # CPU threads allowed per TotalSegmentator invocation (null => no limit)
+  force: false  # Set true to re-run segmentation even when outputs exist
   fast: false
   roi_subset: null
   extra_models: []   # Optional list of additional TotalSegmentator tasks, e.g. ["lung_vessels"]
