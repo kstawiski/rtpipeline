@@ -1,0 +1,76 @@
+# =================================================================================================
+# IBSI-Aligned PyRadiomics Configuration for MRI Feature Extraction
+#
+# Assumptions:
+# - Upstream preprocessing targets 1.0x1.0x1.0 mm voxels; extractor enforces the same grid as a safeguard.
+# - ROI-wise Z-score normalization (mean 0, std 1) has been applied externally.
+#
+# Goals:
+# - Preserve the validated MRI baseline from Knowledge/PyRadiomics MR Image Configuration.md.
+# - Incorporate limited LoG filtering (per Gemini & Claude consensus) for multi-scale texture cues.
+# - Maintain a compact, reproducible feature space ready for downstream robustness screening.
+# =================================================================================================
+
+setting:
+  # ----------------------------------------------------------
+  # Geometry & Interpolation (handled upstream, documented here)
+  # ----------------------------------------------------------
+  resampledPixelSpacing: [1.0, 1.0, 1.0]  # Guarantees isotropic geometry even if upstream resample is skipped.
+  interpolator: 'sitkBSpline'              # High-order interpolation for any required resampling.
+
+  # ----------------------------------------------------------
+  # Intensity Discretization & Normalization
+  # ----------------------------------------------------------
+  normalize: false                   # Z-score standardization performed prior to extraction.
+  binWidth: 0.5                      # Fixed bin width suited to Z-scored MRI (≈16-128 gray levels).
+
+  # ----------------------------------------------------------
+  # ROI Quality Controls
+  # ----------------------------------------------------------
+  minimumROIDimensions: 2           # Enforce at least 2D support; exclude single-voxel ROIs.
+  minimumROISize: 64                # Guard against unstable texture statistics in tiny lesions.
+
+  # ----------------------------------------------------------
+  # Texture Offsets & Neighborhoods
+  # ----------------------------------------------------------
+  distances: [1]                    # Short-range offsets provide the most reproducible MRI textures.
+  force2D: false
+  force2Ddimension: 0
+
+  # ----------------------------------------------------------
+  # IBSI Compliance & Provenance
+  # ----------------------------------------------------------
+  padDistance: 5
+  geometryTolerance: 1e-6
+  correctMask: false                # Expect geometrically aligned masks; prefer upstream fixes.
+  weightingNorm: null               # Match IBSI definition of energy features.
+  voxelArrayShift: 0                # Preserve signed Z-score intensities.
+  additionalInfo: true              # Emit provenance metadata for audit trails.
+  label: 1                          # Default tumor label; adjust per segmentation schema.
+  preCrop: false                    # Keep full field-of-view to respect prior preprocessing.
+
+imageType:
+  # Baseline MR features; Original image remains highest-stability source.
+  Original: {}
+
+  # Limited Laplacian of Gaussian filtering captures coarse/fine heterogeneity.
+  # Review feature repeatability (e.g., ICC, perturbations) before clinical use.
+  LoG:
+    sigma: [2.0, 3.0, 4.0]
+
+featureClass:
+  # Enable full IBSI-compliant families; prune via stability analysis post-extraction.
+  shape: []
+  firstorder: []
+  glcm: []
+  glrlm: []
+  glszm: []
+  gldm: []
+  ngtdm: []
+
+# =================================================================================================
+# Post-Extraction Guidance:
+# - Validate feature robustness on sequence-specific test/retest or perturbation cohorts.
+# - Expect shape/first-order metrics to dominate stable sets; scrutinize gldm/ngtdm features.
+# - Consider enabling Wavelet filters only after baseline features prove reliable and sample size allows.
+# =================================================================================================

@@ -20,15 +20,19 @@ These are the outstanding clinical/technical concerns flagged after reviewing th
 - Indicates mismatched naming between expected TotalSegmentator outputs and custom structure definitions.
 - **Action:** Align custom-structure YAML with actual RTSTRUCT ROI names or adjust the importer to sanitize names before Boolean ops.
 
-## Prescription Dose Missing for Some Courses
-- `case_metadata.xlsx` shows `total_prescription_gy = 0` for 480007/2024-08 and 487009/2025-03.
-- DVH normalization may be unreliable for these courses.
-- **Action:** Extend prescription parser to capture `DoseReference` info for all plans/beam sets.
+## Prescription Dose Missing for Some Courses ✅
+- **Status:** Fixed 2025-10-04. Prescription inference now falls back to FractionGroup / ReferencedBeam dose totals when `TargetPrescriptionDose` is absent. Current metadata shows 50 Gy (480007/2024-08) and 62 Gy (487009/2025-03).
+- **Follow-up:** Double-check atypical totals (e.g., 62 Gy) with clinical team; confirm multi-plan sums remain correct when additional boosts are present.
 
 ## Metadata: Reconstruction Algorithm Empty
 - `ct_reconstruction_algorithm` column is blank for all courses despite docs requiring it.
 - **Action:** Map vendor-specific DICOM tags (e.g. `ReconstructionAlgorithm`, `ConvolutionKernel`, `IterativeReconstructionMethod`) into the metadata exporter.
 
-## In case_metadata.xlsx fractions_count like 75, 90  don't make sense. Is muti-stage treatment being handled correctly in all steps of pipeline?
+## Fraction Count Inflation in `case_metadata.xlsx`
+- **Status:** Fixed 2025-10-04. Fraction aggregation now deduplicates delivery records by plan/fraction number, so course counts match clinical schedules (25/30 fractions etc.).
+- **Follow-up:** Monitor `Logs_Snakemake/stage_organize.log` for the residual `'set' object is not subscriptable'` warning while building the summary—this indicates the pandas-based rollup still hits an edge case. Need to trace and remove the warning path so the organizer can run cleanly without falling back to manual corrections.
+
+## Snakemake Segmentation Parallelism
+- Currently segmentation still runs sequentially because the CLI didn't expose a worker limit. Configuration now allows `segmentation.workers` in `config.yaml`, but this needs validation with a full pipeline run to confirm multiple courses execute in parallel without overrunning GPU/CPU resources.
 
 Keep this file updated as issues are fixed or new ones surface.

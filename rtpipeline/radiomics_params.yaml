@@ -1,12 +1,12 @@
 # =================================================================================================
-# Evidence-Based pyRadiomics Configuration for Clinical Research
+# IBSI-Aligned PyRadiomics Configuration for CT Feature Extraction
 #
-# Based on comprehensive literature review and clinical validation studies:
-# - Tier 1 features prioritized (ICC >0.9): First-order, Shape, Select GLCM
-# - Biorthogonal 1.1 wavelet for optimal clinical performance (97% accuracy)
-# - IBSI-compliant settings with clinical adaptations
-# - Multi-scale LoG filtering for edge enhancement (sigma 1.0-5.0mm validated)
-# - Quality control parameters to ensure stable feature extraction
+# Grounded in the validated baseline defined in Knowledge/PyRadiomics CT Configuration Research.md,
+# reinforced by prior Claude and Gemini reviews:
+# - Focus on Original image signal for maximum reproducibility.
+# - Standardized preprocessing (1 mm isotropic resampling, B-spline interpolation, 25 HU bin width).
+# - No global normalization or outlier clipping for CT to preserve HU fidelity.
+# - Complete IBSI feature classes enabled; downstream robustness filtering happens post-extraction.
 # =================================================================================================
 
 setting:
@@ -21,13 +21,11 @@ setting:
   # B-spline interpolation preserves image information during resampling
   interpolator: 'sitkBSpline'
   
-  # Z-score normalization standardizes intensities across scanners/subjects
-  # Critical for MRI; beneficial for multi-center CT studies
-  normalize: True
-  normalizeScale: 1
-  
-  # Remove outliers for improved stability (3 standard deviations)
-  removeOutliers: 3
+  # HU scale already normalized for CT; retain raw contrast
+  normalize: False
+
+  # Maintain native HU range without global offset; ensure downstream pipeline tolerates negatives
+  voxelArrayShift: 0
   
   # ----------------------------------------------------------
   # Intensity Discretization (Evidence-Based)
@@ -44,14 +42,14 @@ setting:
   # ROI Quality Control and Validation
   # ----------------------------------------------------------
   
-  # Ensure true 3D analysis for stable texture statistics
-  minimumROIDimensions: 3
+  # Enforce at least 2D ROI support; single-voxel masks excluded per IBSI guidance
+  minimumROIDimensions: 2
   
-  # Minimum voxels for stable texture features (clinical threshold)
-  minimumROISize: 100
+  # Guardrail against extremely small volumes that destabilize texture statistics
+  minimumROISize: 64
   
-  # First-order neighbors standard for texture matrices
-  distances: [1]
+  # Include short and medium-range offsets to stabilize texture matrices
+  distances: [1, 2]
   
   # 3D texture analysis preferred over 2D
   force2D: False
@@ -71,7 +69,7 @@ setting:
   correctMask: True
   
   # IBSI energy calculation compliance
-  voxelArrayShift: 0
+  weightingNorm: null
   
   # ----------------------------------------------------------
   # Provenance and Quality Assurance
@@ -91,26 +89,18 @@ setting:
 # Prioritizes clinically-validated filters with proven biomarker performance
 # ============================================================
 imageType:
-  # Essential baseline - always include original images
+  # Baseline extraction restricted to the Original signal for highest stability
   Original: {}
   
-  # Biorthogonal 1.1 wavelet for optimal clinical performance (97% accuracy)
-  # Provides multi-resolution texture analysis with superior stability
-  Wavelet:
-    wavelet: 'bior1.1'
-    
-  # Multi-scale Laplacian of Gaussian for edge enhancement
-  # Sigma 1.0-5.0mm captures lesion characteristics across scales
+  # Optional multi-scale edge emphasis; retain modest sigma set to manage feature growth
   LoG:
-    sigma: [1.0, 3.0, 5.0]
-    
-  # Advanced filters disabled by default - enable for specific hypotheses
-  # Square: {}        # Amplifies high-intensity regions
-  # SquareRoot: {}    # Enhances low-intensity contrast
-  # Logarithm: {}     # Wide dynamic range compression
-  # Exponential: {}   # Extreme value emphasis
-  # Gradient: {}      # Edge strength quantification
-  # LBP3D: {}         # Micro-texture patterns (specialized use)
+    sigma: [1.0, 2.0, 3.0, 5.0]
+  
+  # Wavelet decomposition reintroduced for downstream multi-frequency analysis; monitor robustness
+  Wavelet:
+    wavelet: 'coif1'
+    start_level: 0
+    level: 1
 
 # ============================================================
 # Feature Classes: Tier-Based Selection for Clinical Robustness
@@ -118,27 +108,19 @@ imageType:
 # filtering should prioritize Tier 1 features (ICC >0.9) for clinical models
 # ============================================================
 featureClass:
-  # Tier 1: Highest Clinical Utility (ICC >0.9)
-  shape: []      # Volume, sphericity, compactness - 94% stability
-  firstorder: [] # Mean, median, entropy - 91-95% stability
-  
-  # Tier 2: Good Clinical Utility (ICC 0.8-0.9)  
-  glcm: []       # Contrast, correlation, joint entropy validated
-  
-  # Tier 3: Moderate Utility (ICC 0.75-0.85) - Use with caution
-  glrlm: []      # Run length patterns
-  glszm: []      # Size zone patterns
-  gldm: []       # Dependence patterns
-  
-  # WARNING: NGTDM features show poor stability (ICC <0.75 in >60% studies)
-  # Include only if specifically validated for your application
+  # Enable full IBSI-compliant feature families; prune during robustness analysis
+  shape: []
+  firstorder: []
+  glcm: []
+  glrlm: []
+  glszm: []
+  gldm: []
   ngtdm: []
   
 # =================================================================================================
 # POST-EXTRACTION RECOMMENDATIONS:
-# 1. Apply robustness filtering: Remove features with ICC <0.75
-# 2. Exclude volume-confounded features: Energy, TotalEnergy, RMS
-# 3. Handle correlated features: Remove pairs with r >0.95
-# 4. Consider ComBat harmonization for multi-center studies (26% → 91% stability)
-# 5. Prioritize validated feature combinations from clinical literature
+# 1. Apply robustness filtering (e.g., ICC or repeatability analysis) before modeling.
+# 2. Control for ROI volume confounding when interpreting first-order energy-like metrics.
+# 3. Remove highly collinear features (|r| > 0.95) to stabilize models.
+# 4. Use ComBat or equivalent harmonization when scanner/protocol heterogeneity remains.
 # =================================================================================================

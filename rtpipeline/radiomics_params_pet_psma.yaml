@@ -1,0 +1,67 @@
+# =================================================================================================
+# IBSI-Compliant PyRadiomics Configuration for 68Ga/18F-PSMA PET Feature Extraction
+#
+# Anchored in Knowledge/Pyradiomics PET Configuration Research.md with Gemini & Claude consensus.
+# Tailored for high-contrast PSMA uptake patterns while controlling feature proliferation.
+# =================================================================================================
+
+setting:
+  # ----------------------------------------------------------
+  # Geometry Standardization
+  # ----------------------------------------------------------
+  resampledPixelSpacing: [3.0, 3.0, 3.0]
+  interpolator: 'sitkBSpline'
+
+  # ----------------------------------------------------------
+  # Intensity Discretization (SUV-based)
+  # ----------------------------------------------------------
+  binWidth: 0.5                          # Wider bin width keeps extreme PSMA SUVs within IBSI gray-count range.
+  normalize: false
+
+  # ----------------------------------------------------------
+  # ROI Quality Controls
+  # ----------------------------------------------------------
+  minimumROIDimensions: 2
+  minimumROISize: 64                      # Conservative threshold to stabilize texture metrics; revisit if small nodal lesions dominate.
+
+  # ----------------------------------------------------------
+  # Texture Neighborhoods & IBSI Compliance
+  # ----------------------------------------------------------
+  distances: [1, 2]
+  force2D: false
+  padDistance: 5
+  geometryTolerance: 1e-6
+  correctMask: true
+  weightingNorm: null
+  voxelArrayShift: 0
+  additionalInfo: true
+  label: 1
+  preCrop: false
+
+imageType:
+  Original: {}
+
+  # LoG sigmas emphasize sharp PSMA lesion boundaries across coarse scales.
+  LoG:
+    sigma: [2.0, 3.0, 4.0]
+
+  Wavelet:
+    wavelet: 'coif1'
+    start_level: 0
+    level: 1
+
+featureClass:
+  shape: []
+  firstorder: []
+  glcm: []
+  glrlm: []
+  glszm: []
+  gldm: []
+  ngtdm: []
+
+# =================================================================================================
+# Post-Extraction Guidance:
+# - Monitor per-lesion bin counts; if gray levels exceed ~200, consider per-study binWidth tuning or SUV capping.
+# - Evaluate robustness separately for nodal vs. soft-tissue lesions given differing partial-volume effects.
+# - Harmonize segmentation (e.g., SUV thresholding vs. contouring) across centers to control primary variance source.
+# =================================================================================================

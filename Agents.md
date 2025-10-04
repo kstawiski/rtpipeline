@@ -73,7 +73,7 @@ Output directory shouldn't contain any symlinks or hardlinks; all files should b
 - Run tests in conda base env. Envs "rtpipeline" and "rtpipeline-radiomics" are already created and funcitional! Test the pipeline on Example_data/ using test.sh. You can examine current outputs (Data_Snakemake/) and logs (Logs_Snakemake/).
 - Current example inputs/outputs are illustrative only; do not rely on them as ground truth.
 - Assess results if they make sense clinically and technically. Create/update PROBLEMS.md to track any issues found.
-- Fix issues iteratively, re-run tests as needed.
+- Fix issues iteratively, re-run tests as needed. Kill all snakemake commands before running again. Commands pile up and you cannot proceed without checking.
 - Clean Data_Snakemake/ and Logs_Snakemake/ before re-running tests only if deep changes were made and it is necessary.
 
 
