@@ -1,20 +1,27 @@
 from __future__ import annotations
 
+import datetime
+import io
+import json
+import hashlib
 import logging
 import os
 import shutil
+import stat
 import subprocess
 import sys
+import tempfile
 import zipfile
-import stat
-import io
 from importlib import resources as importlib_resources
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Dict, List
+
+import pydicom
 
 # Modern NumPy/SciPy work fine with TotalSegmentator - no compatibility shims needed
 
 from .config import PipelineConfig
+from .layout import build_course_dirs
 
 logger = logging.getLogger(__name__)
 
@@ -195,23 +202,33 @@ def run_totalsegmentator(config: PipelineConfig, input_path: Path, output_path: 
     """Run TotalSegmentator directly without compatibility wrapper."""
 
     # Use TotalSegmentator directly - modern NumPy/SciPy work fine
+    import shlex
+
     cmd_parts = [
-        "TotalSegmentator",
+        config.totalseg_cmd or "TotalSegmentator",
         "-i", str(input_path),
         "-o", str(output_path),
-        "-ot", output_type
+        "-ot", output_type,
     ]
 
     if task:
         cmd_parts.extend(["--task", task])
 
-    # Set environment variables for TotalSegmentator
-    if hasattr(config, 'totalseg_fast') and config.totalseg_fast:
+    if getattr(config, "totalseg_fast", False):
         cmd_parts.append("--fast")
 
-    cmd = " ".join(f'"{part}"' if " " in part else part for part in cmd_parts)
+    if getattr(config, "totalseg_roi_subset", None):
+        cmd_parts.extend(["--roi_subset", str(config.totalseg_roi_subset)])
 
-    logger.info(f"Running TotalSegmentator ({output_type}): {cmd}")
+    if getattr(config, "totalseg_license_key", None):
+        logger.debug("Using TotalSegmentator license key from config")
+
+    cmd = "{}{}".format(
+        _prefix(config),
+        " ".join(shlex.quote(part) for part in cmd_parts),
+    )
+
+    logger.info("Running TotalSegmentator (%s): %s", output_type, cmd)
 
     env = os.environ.copy()
     env.setdefault('OMP_NUM_THREADS', '1')
@@ -219,6 +236,11 @@ def run_totalsegmentator(config: PipelineConfig, input_path: Path, output_path: 
     env.setdefault('MKL_NUM_THREADS', '1')
     env.setdefault('NUMEXPR_NUM_THREADS', '1')
     env.setdefault('NUMBA_NUM_THREADS', '1')
+
+    if getattr(config, "totalseg_license_key", None):
+        env.setdefault("TOTALSEG_LICENSE", str(config.totalseg_license_key))
+    if getattr(config, "totalseg_weights_dir", None):
+        env.setdefault("TOTALSEG_WEIGHTS_PATH", str(config.totalseg_weights_dir))
 
     # First attempt with default settings
     ok = _run(cmd, env=env)
@@ -237,84 +259,375 @@ def run_totalsegmentator(config: PipelineConfig, input_path: Path, output_path: 
     return ok
 
 
-def segment_course(config: PipelineConfig, course_dir: Path, force: bool = False) -> dict:
-    """Runs dcm2niix + TotalSegmentator for a course directory that contains CT_DICOM."""
-    results = {"nifti": None, "dicom_seg": None, "nifti_seg_dir": None}
-    ct_dir = course_dir / "CT_DICOM"
-    if not ct_dir.exists():
-        logger.warning("CT_DICOM not found for %s; skipping segmentation", course_dir)
-        return results
-
-    # Check for existing outputs to support resume
-    dicom_seg_dir = course_dir / "TotalSegmentator_DICOM"
-    seg_file = dicom_seg_dir / "segmentations.dcm"
-    nifti_seg_dir = course_dir / "TotalSegmentator_NIFTI"
-    existing_dicom = seg_file.exists() or any(dicom_seg_dir.glob("*.dcm"))
-    existing_nifti = nifti_seg_dir.exists() and any(nifti_seg_dir.glob("*.nii*"))
-    if (existing_dicom or existing_nifti) and not force:
-        logger.info("Segmentation outputs already present for %s; skipping run", course_dir)
-        if seg_file.exists():
-            results["dicom_seg"] = str(seg_file)
-        if existing_nifti:
-            results["nifti_seg_dir"] = str(nifti_seg_dir)
-        # Also capture input NIfTI series if previously converted
-        nifti_out_dir = course_dir / "nifti"
-        if nifti_out_dir.exists():
-            for fn in nifti_out_dir.iterdir():
-                if fn.suffix in (".nii", ".gz") and fn.name.endswith((".nii", ".nii.gz")):
-                    results["nifti"] = str(fn)
-                    break
-        return results
-
-    # Convert CT to NIfTI if not yet available for NIfTI-mode segmentation
-    nifti_out_dir = course_dir / "nifti"
-    nii = None
-    if nifti_out_dir.exists() and any(nifti_out_dir.glob("*.nii*")):
-        for fn in nifti_out_dir.iterdir():
-            if fn.suffix in (".nii", ".gz") and fn.name.endswith((".nii", ".nii.gz")):
-                nii = fn
-                break
-    else:
-        nii = run_dcm2niix(config, ct_dir, nifti_out_dir)
-    if nii:
-        results["nifti"] = str(nii)
-
-    # Prefer NIfTI segmentation first (more robust conversion)
-    if nii is not None and (force or not (nifti_seg_dir.exists() and any(nifti_seg_dir.glob("*.nii*")))):
-        ok2 = run_totalsegmentator(config, nii, nifti_seg_dir, "nifti", task=None)
-        if ok2:
-            results["nifti_seg_dir"] = str(nifti_seg_dir)
-    # Then attempt DICOM-SEG (best-effort)
-    ok1 = run_totalsegmentator(config, ct_dir, dicom_seg_dir, "dicom", task=None)
-    if ok1:
-        seg_file = dicom_seg_dir / "segmentations.dcm"
-        if seg_file.exists():
-            results["dicom_seg"] = str(seg_file)
+def _sanitize_token(token: str) -> str:
+    token = token.strip().replace(" ", "_")
+    cleaned = []
+    for ch in token:
+        if ch.isalnum() or ch in {'.', '-', '_'}:
+            cleaned.append(ch)
         else:
-            # Some TotalSegmentator versions may produce different filenames; pick first .dcm
-            dcms = [p for p in dicom_seg_dir.glob("*.dcm")]
-            if dcms:
-                target = dicom_seg_dir / "segmentations.dcm"
-                if dcms[0] != target:
-                    try:
-                        dcms[0].rename(target)
-                    except Exception:
-                        pass
-                if target.exists():
-                    results["dicom_seg"] = str(target)
+            cleaned.append('_')
+    result = ''.join(cleaned)
+    while '__' in result:
+        result = result.replace('__', '_')
+    return result.strip('_')[:80] or "CT"
 
-    # Extra models (in addition to default 'total'): run both dicom and nifti outputs
-    for model in (m for m in (config.extra_seg_models or []) if not m.endswith("_mr")):
-        # DICOM
-        out_d = course_dir / f"TotalSegmentator_{model}_DICOM"
-        need = force or not (out_d.exists() and any(out_d.glob("*.dcm")))
-        if need:
-            run_totalsegmentator(config, ct_dir, out_d, "dicom", task=model)
-        # NIfTI
-        out_n = course_dir / f"TotalSegmentator_{model}_NIFTI"
-        need = nii is not None and (force or not (out_n.exists() and any(out_n.glob("*.nii*"))))
-        if need and nii is not None:
-            run_totalsegmentator(config, nii, out_n, "nifti", task=model)
+
+def _derive_nifti_name(ct_dir: Path) -> str:
+    try:
+        first_file = next(p for p in sorted(ct_dir.iterdir()) if p.is_file())
+    except StopIteration:
+        return "CT"
+    try:
+        ds = pydicom.dcmread(str(first_file), stop_before_pixels=True)
+    except Exception:
+        return "CT"
+
+    desc = (
+        str(getattr(ds, "SeriesDescription", ""))
+        or str(getattr(ds, "StudyDescription", ""))
+        or str(getattr(ds, "BodyPartExamined", ""))
+    )
+    desc = _sanitize_token(desc)
+
+    thickness_token = ""
+    try:
+        thickness = getattr(ds, "SliceThickness", None)
+        if thickness not in (None, ""):
+            thickness_token = f"{float(thickness):.1f}".rstrip("0").rstrip(".")
+    except Exception:
+        pass
+
+    study_date = str(getattr(ds, "StudyDate", "") or getattr(ds, "SeriesDate", ""))
+    series_uid = str(getattr(ds, "SeriesInstanceUID", ""))
+    parts = []
+    if desc:
+        parts.append(desc)
+    if thickness_token:
+        parts.append(thickness_token)
+    if study_date:
+        parts.append(_sanitize_token(study_date))
+    elif series_uid:
+        parts.append(_sanitize_token(series_uid[-6:]))
+    name = "_".join(part for part in parts if part)
+    if not name:
+        name = _sanitize_token(series_uid[-8:] if series_uid else "CT")
+    return name or "CT"
+
+
+def _collect_series_metadata(ct_dir: Path) -> dict:
+    metadata = {
+        "study_instance_uid": "",
+        "series_instance_uid": "",
+        "instances": [],
+        "modality": "",
+    }
+    for dcm_path in sorted(p for p in ct_dir.iterdir() if p.is_file()):
+        try:
+            ds = pydicom.dcmread(str(dcm_path), stop_before_pixels=True)
+        except Exception:
+            continue
+        if not metadata["study_instance_uid"]:
+            metadata["study_instance_uid"] = str(getattr(ds, "StudyInstanceUID", ""))
+        if not metadata["series_instance_uid"]:
+            metadata["series_instance_uid"] = str(getattr(ds, "SeriesInstanceUID", ""))
+        if not metadata["modality"]:
+            metadata["modality"] = str(getattr(ds, "Modality", ""))
+        sop = getattr(ds, "SOPInstanceUID", None)
+        if sop:
+            metadata["instances"].append(str(sop))
+    metadata["instance_count"] = len(metadata["instances"])
+    concat = "".join(metadata["instances"])
+    metadata["sop_hash"] = hashlib.sha1(concat.encode("utf-8")).hexdigest() if concat else ""
+    return metadata
+
+
+def _ensure_ct_nifti(
+    config: PipelineConfig,
+    ct_dir: Path,
+    nifti_dir: Path,
+    force: bool = False,
+) -> Optional[Path]:
+    nifti_dir.mkdir(parents=True, exist_ok=True)
+    metadata = _collect_series_metadata(ct_dir)
+    base = _derive_nifti_name(ct_dir)
+    candidate = base
+    suffix_counter = 1
+    while True:
+        target = nifti_dir / f"{candidate}.nii.gz"
+        meta_path = nifti_dir / f"{candidate}.metadata.json"
+        if target.exists() and meta_path.exists():
+            try:
+                existing = json.loads(meta_path.read_text(encoding='utf-8'))
+            except Exception:
+                existing = {}
+            if existing.get("series_instance_uid") == metadata["series_instance_uid"]:
+                base = candidate
+                break
+        if not target.exists():
+            base = candidate
+            break
+        suffix_counter += 1
+        candidate = f"{base}_{suffix_counter}"
+
+    target = nifti_dir / f"{base}.nii.gz"
+    if not target.exists() or force:
+        tmp_dir = nifti_dir / ".tmp_dcm2niix"
+        if tmp_dir.exists():
+            shutil.rmtree(tmp_dir)
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        generated = run_dcm2niix(config, ct_dir, tmp_dir)
+        if generated is None:
+            logger.error("dcm2niix failed for %s", ct_dir)
+            return None
+        if target.exists():
+            target.unlink()
+        shutil.move(str(generated), str(target))
+        for leftover in tmp_dir.iterdir():
+            if leftover.is_file():
+                leftover.unlink()
+        tmp_dir.rmdir()
+
+    metadata.update(
+        {
+            "nifti_path": str(target),
+            "source_directory": str(ct_dir),
+            "generated_at": datetime.datetime.utcnow().isoformat() + "Z",
+            "modality": metadata.get("modality") or "CT",
+        }
+    )
+    meta_path = nifti_dir / f"{base}.metadata.json"
+    meta_path.write_text(json.dumps(metadata, indent=2), encoding='utf-8')
+    return target
+
+
+def _strip_nifti_base(nifti_path: Path) -> str:
+    name = nifti_path.name
+    if name.endswith('.nii.gz'):
+        return name[:-7]
+    if name.endswith('.nii'):
+        return name[:-4]
+    return nifti_path.stem
+
+
+def _clear_previous_masks(seg_dir: Path, base_name: str, model: str) -> None:
+    prefix = f"{model}--"
+    for existing in list(seg_dir.glob(f"{prefix}*")):
+        try:
+            existing.unlink()
+        except Exception:
+            pass
+
+
+def _materialize_masks(source: Path, dest: Path, base_name: str, model: str) -> None:
+    dest.mkdir(parents=True, exist_ok=True)
+    _clear_previous_masks(dest, base_name, model)
+
+    multi_label = source / "segmentations.nii.gz"
+    if multi_label.exists():
+        shutil.copy2(multi_label, dest / f"{model}--multilabel.nii.gz")
+
+    json_path = source / "segmentations.json"
+    if json_path.exists():
+        shutil.copy2(json_path, dest / f"{model}--segmentations.json")
+
+    masks_root = source / "segmentations"
+    if masks_root.exists():
+        for mask in masks_root.glob("*.nii*"):
+            dest_mask = dest / f"{model}--{mask.name}"
+            shutil.copy2(mask, dest_mask)
+
+    for mask in source.glob("*.nii*"):
+        if mask.name in {"segmentations.nii", "segmentations.nii.gz"}:
+            continue
+        if (source / "segmentations").exists() and mask.parent == source / "segmentations":
+            continue
+        dest_mask = dest / f"{model}--{mask.name}"
+        shutil.copy2(mask, dest_mask)
+
+def segment_course(config: PipelineConfig, course_dir: Path, force: bool = False) -> dict:
+    """Run TotalSegmentator for a course organised under the new directory layout."""
+
+    course_dirs = build_course_dirs(course_dir)
+    course_dirs.ensure()
+
+    results = {"nifti": None, "dicom_seg": None, "nifti_seg_dir": None}
+    ct_dir = course_dirs.dicom_ct
+    if not ct_dir.exists():
+        logger.warning("CT DICOM not found for %s; skipping segmentation", course_dir)
+        return results
+
+    nifti_path = _ensure_ct_nifti(config, ct_dir, course_dirs.nifti, force=force)
+    if nifti_path is None:
+        return results
+
+    base_name = _strip_nifti_base(nifti_path)
+    seg_root = course_dirs.segmentation_totalseg
+    seg_root.mkdir(parents=True, exist_ok=True)
+    base_dir = seg_root / base_name
+    base_dir.mkdir(parents=True, exist_ok=True)
+    manifest_entries: List[Dict[str, object]] = []
+
+    results["nifti"] = str(nifti_path)
+
+    def _model_ready(model: str) -> bool:
+        dicom_file = base_dir / f"{model}.dcm"
+        mask_files = list(base_dir.glob(f"{model}--*.nii*"))
+        return dicom_file.exists() and len(mask_files) > 0
+
+    models = ["total"] + [m for m in (config.extra_seg_models or []) if not m.endswith("_mr")]
+
+    if not force and all(_model_ready(model) for model in models):
+        default_dicom = base_dir / f"total.dcm"
+        if default_dicom.exists():
+            results["dicom_seg"] = str(default_dicom)
+        results["nifti_seg_dir"] = str(base_dir)
+        return results
+
+    with tempfile.TemporaryDirectory(prefix="seg_", dir=str(course_dir)) as tmp_root_str:
+        tmp_root = Path(tmp_root_str)
+        for model in models:
+            task_name = None if model == "total" else model
+            model_tmp = tmp_root / model
+            dicom_tmp = model_tmp / "dicom"
+            nifti_tmp = model_tmp / "nifti"
+            dicom_tmp.mkdir(parents=True, exist_ok=True)
+            nifti_tmp.mkdir(parents=True, exist_ok=True)
+
+            model_entry: Dict[str, object] = {"model": model, "rtstruct": "", "masks": []}
+
+            dest_dicom = base_dir / f"{model}.dcm"
+            ok_dicom = run_totalsegmentator(config, ct_dir, dicom_tmp, "dicom", task=task_name)
+            ok_nifti = run_totalsegmentator(config, nifti_path, nifti_tmp, "nifti", task=task_name)
+
+            if ok_dicom:
+                dicom_files = sorted(dicom_tmp.glob("*.dcm"))
+                if dicom_files:
+                    if dest_dicom.exists():
+                        dest_dicom.unlink()
+                    shutil.copy2(dicom_files[0], dest_dicom)
+                    if model == "total":
+                        results["dicom_seg"] = str(dest_dicom)
+
+            if dest_dicom.exists():
+                model_entry["rtstruct"] = str(dest_dicom.relative_to(base_dir))
+
+            if ok_nifti:
+                _materialize_masks(nifti_tmp, base_dir, base_name, model)
+
+            masks_for_model = sorted(base_dir.glob(f"{model}--*.nii*"))
+            if masks_for_model:
+                model_entry["masks"] = [str(p.relative_to(base_dir)) for p in masks_for_model]
+            if model_entry["rtstruct"] or model_entry["masks"]:
+                manifest_entries.append(model_entry)
+
+    default_dicom = base_dir / "total.dcm"
+    if default_dicom.exists():
+        results["dicom_seg"] = str(default_dicom)
+
+    if manifest_entries:
+        try:
+            manifest = {
+                "source_nifti": f"{base_name}.nii.gz",
+                "generated_at": datetime.datetime.utcnow().isoformat() + "Z",
+                "models": manifest_entries,
+            }
+            (base_dir / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+        except Exception as exc:
+            logger.debug("Failed to persist segmentation manifest for %s: %s", course_dir, exc)
+
+    results["nifti_seg_dir"] = str(base_dir)
+
+    # ------------------------------------------------------------------
+    # MR segmentation for auxiliary series in DICOM_related/
+    # ------------------------------------------------------------------
+    mr_models = [m for m in (config.extra_seg_models or []) if m.endswith("_mr")]
+    if "total_mr" not in mr_models:
+        mr_models.append("total_mr")
+    mr_models = sorted({m.strip() for m in mr_models if m.strip()})
+
+    if mr_models:
+        for meta_file in sorted(course_dirs.nifti.glob("*.metadata.json")):
+            try:
+                meta = json.loads(meta_file.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            modality = str(meta.get("modality", "")).upper()
+            if modality != "MR":
+                continue
+            nifti_str = meta.get("nifti_path")
+            source_str = meta.get("source_directory")
+            if not isinstance(nifti_str, str) or not nifti_str:
+                continue
+            nifti_path = Path(nifti_str)
+            if not nifti_path.exists():
+                continue
+            source_dir = Path(source_str) if isinstance(source_str, str) else None
+            base_name_mr = _strip_nifti_base(nifti_path)
+            base_dir_mr = seg_root / base_name_mr
+            base_dir_mr.mkdir(parents=True, exist_ok=True)
+
+            def _mr_ready(model: str) -> bool:
+                rt_path = base_dir_mr / f"{base_name_mr}--{model}.dcm"
+                mask_paths = list(base_dir_mr.glob(f"{base_name_mr}--{model}--*.nii*"))
+                return rt_path.exists() and len(mask_paths) > 0
+
+            if not force and all(_mr_ready(model) for model in mr_models):
+                continue
+
+            with tempfile.TemporaryDirectory(prefix="seg_mr_", dir=str(course_dir)) as tmp_root_str:
+                tmp_root = Path(tmp_root_str)
+                manifest_mr: List[Dict[str, object]] = []
+                for model in mr_models:
+                    task_name = model
+                    model_tmp = tmp_root / model
+                    dicom_tmp = model_tmp / "dicom"
+                    nifti_tmp = model_tmp / "nifti"
+                    dicom_tmp.mkdir(parents=True, exist_ok=True)
+                    nifti_tmp.mkdir(parents=True, exist_ok=True)
+
+                    rt_out = base_dir_mr / f"{base_name_mr}--{model}.dcm"
+                    ok_dicom = False
+                    if source_dir and source_dir.exists():
+                        ok_dicom = run_totalsegmentator(config, source_dir, dicom_tmp, "dicom", task=task_name)
+                    ok_nifti = run_totalsegmentator(config, nifti_path, nifti_tmp, "nifti", task=task_name)
+
+                    entry = {"model": model, "rtstruct": "", "masks": []}
+
+                    if ok_dicom:
+                        dicom_files = sorted(dicom_tmp.glob("*.dcm"))
+                        if dicom_files:
+                            if rt_out.exists():
+                                rt_out.unlink()
+                            shutil.copy2(dicom_files[0], rt_out)
+                    if rt_out.exists():
+                        entry["rtstruct"] = str(rt_out.relative_to(base_dir_mr))
+
+                    if ok_nifti:
+                        _materialize_masks(nifti_tmp, base_dir_mr, base_name_mr, model)
+
+                    masks_for_model = sorted(base_dir_mr.glob(f"{base_name_mr}--{model}--*.nii*"))
+                    if masks_for_model:
+                        entry["masks"] = [str(p.relative_to(base_dir_mr)) for p in masks_for_model]
+                    if entry["rtstruct"] or entry["masks"]:
+                        manifest_mr.append(entry)
+
+                if manifest_mr:
+                    try:
+                        manifest_path = base_dir_mr / "manifest.json"
+                        manifest_path.write_text(
+                            json.dumps(
+                                {
+                                    "source_nifti": str(nifti_path.name),
+                                    "generated_at": datetime.datetime.utcnow().isoformat() + "Z",
+                                    "models": manifest_mr,
+                                },
+                                indent=2,
+                            ),
+                            encoding="utf-8",
+                        )
+                    except Exception as exc:
+                        logger.debug("Failed to persist MR segmentation manifest for %s: %s", base_dir_mr, exc)
 
     return results
 
@@ -349,41 +662,5 @@ def _scan_mr_series(dicom_root: Path) -> list[tuple[str, str, Path]]:
 
 
 def segment_extra_models_mr(config: PipelineConfig, force: bool = False) -> None:
-    """Run extra TotalSegmentator models for MR series found in dicom_root.
-    Results are stored under output_root/<patient_id>/MR_<series_uid>/TotalSegmentator_<model>_{DICOM,NIFTI}
-    """
-    series = _scan_mr_series(config.dicom_root)
-    if not series:
-        return
-    # Default MR task 'total_mr' is always included; add any extra _mr models
-    models_mr = set(m for m in (config.extra_seg_models or []) if m.endswith("_mr"))
-    models_mr.add("total_mr")
-    if not models_mr:
-        return
-    total = len(series) * len(models_mr)
-    if total == 0:
-        return
-    import time as _time
-    t0 = _time.time()
-    done = 0
-    for pid, suid, sdir in series:
-        base_out = config.output_root / (pid or "unknown") / f"MR_{suid}"
-        # Convert MR DICOM to NIfTI to avoid internal DICOM conversion
-        mr_nifti_dir = base_out / "nifti"
-        nii_mr = run_dcm2niix(config, sdir, mr_nifti_dir)
-        for model in sorted(models_mr):
-            # NIfTI output preferred
-            out_n = base_out / f"TotalSegmentator_{model}_NIFTI"
-            need_n = force or not (out_n.exists() and any(out_n.glob("*.nii*")))
-            if need_n and nii_mr is not None:
-                run_totalsegmentator(config, nii_mr, out_n, "nifti", task=model)
-            # DICOM output best-effort
-            out_d = base_out / f"TotalSegmentator_{model}_DICOM"
-            need_d = force or not (out_d.exists() and any(out_d.glob("*.dcm")))
-            if need_d:
-                run_totalsegmentator(config, sdir, out_d, "dicom", task=model)
-            done += 1
-            elapsed = _time.time() - t0
-            rate = done / elapsed if elapsed > 0 else 0
-            eta = (total - done) / rate if rate > 0 else float('inf')
-            logger.info("Segmentation (MR extra: %s): %d/%d (%.0f%%) elapsed %.0fs ETA %.0fs", model, done, total, 100*done/total, elapsed, eta)
+    """Legacy helper retained for backward compatibility (no-op)."""
+    logger.info("segment_extra_models_mr is deprecated; MR segmentations are handled per-course.")

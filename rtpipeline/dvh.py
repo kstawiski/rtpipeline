@@ -12,7 +12,9 @@ import SimpleITK as sitk
 
 logger = logging.getLogger(__name__)
 
-from .utils import sanitize_rtstruct
+from .layout import build_course_dirs
+from .utils import sanitize_rtstruct, mask_is_cropped
+from .layout import build_course_dirs
 
 # Compatibility shim for dicompyler-core with pydicom>=3
 try:
@@ -235,7 +237,8 @@ def _create_custom_structures_rtstruct(
         logger.warning("No base RTSTRUCT available for custom structures")
         return None
 
-    ct_dir = course_dir / "CT_DICOM"
+    course_dirs = build_course_dirs(course_dir)
+    ct_dir = course_dirs.dicom_ct
     if not ct_dir.exists():
         logger.warning("CT_DICOM not found for custom structures")
         return None
@@ -358,6 +361,7 @@ def _estimate_rx_from_ctv1(rtstruct: pydicom.dataset.FileDataset, rtdose: pydico
 
 
 def dvh_for_course(course_dir: Path, custom_structures_config: Optional[Union[str, Path]] = None) -> Optional[Path]:
+    course_dirs = build_course_dirs(course_dir)
     rp = course_dir / "RP.dcm"
     rd = course_dir / "RD.dcm"
     rs_manual = course_dir / "RS.dcm"
@@ -374,12 +378,39 @@ def dvh_for_course(course_dir: Path, custom_structures_config: Optional[Union[st
 
     results: List[Dict] = []
 
+    try:
+        from rt_utils import RTStructBuilder
+    except Exception:
+        RTStructBuilder = None  # type: ignore
+
+    builder_cache: Dict[Path, Optional["RTStructBuilder"]] = {}  # type: ignore[name-defined]
+
+    def _get_builder(rs_path: Path) -> Optional["RTStructBuilder"]:  # type: ignore[name-defined]
+        if RTStructBuilder is None:
+            return None
+        if rs_path in builder_cache:
+            return builder_cache[rs_path]
+        if not course_dirs.dicom_ct.exists():
+            builder_cache[rs_path] = None
+            return None
+        try:
+            builder = RTStructBuilder.create_from(
+                dicom_series_path=str(course_dirs.dicom_ct),
+                rt_struct_path=str(rs_path),
+            )
+        except Exception as exc:
+            logger.debug("RTStructBuilder create_from failed for %s: %s", rs_path, exc)
+            builder = None
+        builder_cache[rs_path] = builder
+        return builder
+
     def process_struct(rs_path: Path, source: str, rx_dose: float) -> None:
         try:
             rtstruct = pydicom.dcmread(str(rs_path))
         except Exception as e:
             logger.warning("Cannot read RTSTRUCT %s: %s", rs_path, e)
             return
+        builder = _get_builder(rs_path)
         for roi in getattr(rtstruct, "StructureSetROISequence", []):
             try:
                 abs_dvh = dvhcalc.get_dvh(rtstruct, rtdose, roi.ROINumber)
@@ -388,10 +419,18 @@ def dvh_for_course(course_dir: Path, custom_structures_config: Optional[Union[st
                 m = _compute_metrics(abs_dvh, rx_dose)
                 if m is None:
                     continue
+                cropped = False
+                if builder is not None:
+                    try:
+                        mask = builder.get_roi_mask_by_name(str(getattr(roi, "ROIName", "")))
+                        cropped = mask_is_cropped(mask)
+                    except Exception:
+                        cropped = False
                 m.update({
                     "ROI_Number": int(roi.ROINumber),
                     "ROI_Name": str(getattr(roi, "ROIName", "")),
                     "Segmentation_Source": source,
+                    "structure_cropped": cropped,
                 })
                 results.append(m)
             except Exception as e:

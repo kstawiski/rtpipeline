@@ -14,9 +14,10 @@ import pydicom
 
 
 from .config import PipelineConfig
+from .layout import build_course_dirs
 from importlib import resources as importlib_resources
 import yaml
-from .utils import run_tasks_with_adaptive_workers
+from .utils import run_tasks_with_adaptive_workers, mask_is_cropped
 
 logger = logging.getLogger(__name__)
 
@@ -127,30 +128,55 @@ def _apply_params_to_extractor(ext: "radiomics.featureextractor.RadiomicsFeature
 
 
 def _have_pyradiomics() -> bool:
-    """Check if pyradiomics is available - works with both NumPy 1.x and 2.x via wrappers."""
-    import numpy as np
-    numpy_version = tuple(map(int, np.__version__.split('.')[:2]))
+    """Return True when radiomics features can be extracted (directly or via conda)."""
 
-    if numpy_version[0] >= 2:
-        # Check if we have conda-based execution available
+    import numpy as np
+
+    major_version = int(np.__version__.split('.')[0])
+
+    if major_version >= 2:
         try:
-            from .radiomics_conda import check_radiomics_env
-            if check_radiomics_env():
-                logger.debug("NumPy 2.x detected, conda environment available for PyRadiomics")
-                return True
+            from .radiomics_conda import check_radiomics_env, RADIOMICS_ENV
         except ImportError:
-            pass
-        logger.warning("NumPy 2.x detected but no PyRadiomics environment found")
-        return False
-    else:
-        # NumPy 1.x - check direct PyRadiomics availability
-        try:
-            from radiomics import featureextractor
-            logger.debug("NumPy 1.x detected, PyRadiomics available directly")
-            return True
-        except ImportError:
-            logger.warning("NumPy 1.x detected but PyRadiomics not installed")
+            logger.warning(
+                "NumPy %s detected but conda fallback helpers are unavailable",
+                np.__version__,
+            )
             return False
+        if check_radiomics_env():
+            logger.info(
+                "NumPy %s detected; will route PyRadiomics calls through conda environment '%s'",
+                np.__version__,
+                RADIOMICS_ENV,
+            )
+            return True
+        logger.warning(
+            "NumPy %s detected and radiomics conda environment '%s' is not available",
+            np.__version__,
+            RADIOMICS_ENV,
+        )
+        return False
+
+    try:
+        from radiomics import featureextractor  # type: ignore
+        logger.debug("Native PyRadiomics available under NumPy %s", np.__version__)
+        return True
+    except ImportError:
+        logger.debug("Native PyRadiomics unavailable; probing conda fallback")
+        try:
+            from .radiomics_conda import check_radiomics_env, RADIOMICS_ENV
+        except ImportError:
+            logger.warning("PyRadiomics missing and conda fallback helpers not importable")
+            return False
+        if check_radiomics_env():
+            logger.info(
+                "Using conda-based PyRadiomics fallback (env '%s') under NumPy %s",
+                RADIOMICS_ENV,
+                np.__version__,
+            )
+            return True
+        logger.warning("PyRadiomics missing and conda fallback environment unavailable")
+        return False
 
 
 def _load_series_image(dicom_dir: Path, series_uid: Optional[str] = None) -> Optional[sitk.Image]:
@@ -228,8 +254,11 @@ def _extractor(config: PipelineConfig, modality: str = 'CT', normalize_override:
     numpy_version = tuple(map(int, np.__version__.split('.')[:2]))
 
     if numpy_version[0] >= 2:
-        # For NumPy 2.x, return None to use conda-based execution at call sites
-        logger.info("NumPy 2.x detected (%s), will use conda-based PyRadiomics execution", np.__version__)
+        # For NumPy 2.x we always delegate to the conda executor.
+        logger.debug(
+            "NumPy %s detected – returning None to trigger conda-based radiomics",
+            np.__version__,
+        )
         return None  # Signals to use conda-based execution
 
     # Direct usage with NumPy 1.x
@@ -307,28 +336,35 @@ def _rtstruct_masks(dicom_series_path: Path, rs_path: Path) -> Dict[str, np.ndar
 def radiomics_for_course(config: PipelineConfig, course_dir: Path, custom_structures_config: Optional[Path] = None) -> Optional[Path]:
     """Run pyradiomics on CT course with manual RS, RS_auto, and custom structures if present."""
 
+    course_dirs = build_course_dirs(course_dir)
     # Resume-friendly: skip if output exists
-    out_path = course_dir / 'radiomics_features_CT.xlsx'
+    out_path = course_dir / 'radiomics_ct.xlsx'
     if getattr(config, 'resume', False) and out_path.exists():
         return out_path
     extractor = _extractor(config, 'CT')
     if extractor is None:
-        return None
-    img = _load_series_image(course_dir / 'CT_DICOM')
+        try:
+            from .radiomics_conda import radiomics_for_course as conda_radiomics_for_course
+        except ImportError as exc:
+            logger.warning("Conda-based radiomics helper unavailable: %s", exc)
+            return None
+        logger.info("Delegating CT radiomics for %s to conda environment", course_dir)
+        return conda_radiomics_for_course(course_dir, config, custom_structures_config)
+    img = _load_series_image(course_dirs.dicom_ct)
     if img is None:
         logger.info("No CT image for radiomics in %s", course_dir)
         return None
     rows: List[Dict] = []
-    tasks = []
+    tasks: List[tuple[str, str, np.ndarray, bool]] = []
 
     # Process standard RTSTRUCTs
     for source, rs_name in (("Manual", "RS.dcm"), ("AutoRTS_total", "RS_auto.dcm")):
         rs_path = course_dir / rs_name
         if not rs_path.exists():
             continue
-        masks = _rtstruct_masks(course_dir / 'CT_DICOM', rs_path)
+        masks = _rtstruct_masks(course_dirs.dicom_ct, rs_path)
         for roi, mask in masks.items():
-            tasks.append((source, roi, mask))
+            tasks.append((source, roi, mask, mask_is_cropped(mask)))
 
     # Process custom structures if configuration provided
     if custom_structures_config and custom_structures_config.exists():
@@ -344,13 +380,13 @@ def radiomics_for_course(config: PipelineConfig, course_dir: Path, custom_struct
                     course_dir / "RS_auto.dcm"
                 )
             if rs_custom and rs_custom.exists():
-                masks = _rtstruct_masks(course_dir / 'CT_DICOM', rs_custom)
+                masks = _rtstruct_masks(course_dirs.dicom_ct, rs_custom)
                 for roi, mask in masks.items():
-                    tasks.append(("Custom", roi, mask))
+                    tasks.append(("Custom", roi, mask, mask_is_cropped(mask)))
         except Exception as e:
             logger.warning("Failed to process custom structures for radiomics: %s", e)
     def _do_ct_task(t):
-        source, roi, mask = t
+        source, roi, mask, cropped = t
         try:
             # Create fresh extractor instance for each task to avoid threading issues
             ext = _extractor(config, 'CT')
@@ -360,11 +396,18 @@ def radiomics_for_course(config: PipelineConfig, course_dir: Path, custom_struct
             m_img = _mask_from_array_like(img, mask)
             res = ext.execute(img, m_img)
             rec = {k: (float(v) if isinstance(v, (int, float, np.floating)) else str(v)) for k, v in res.items()}
-            rec.update({'modality': 'CT','segmentation_source': source,'roi_name': roi,'course_dir': str(course_dir)})
+            rec.update({
+                'modality': 'CT',
+                'segmentation_source': source,
+                'roi_name': roi,
+                'course_dir': str(course_dir),
+                'patient_id': course_dir.parent.name,
+                'course_id': course_dir.name,
+                'structure_cropped': bool(cropped),
+            })
             return rec
         except Exception as e:
             logger.debug("Radiomics failed for %s/%s: %s", source, roi, e)
-            return None
             return None
     if tasks:
         sequential_env = os.environ.get('RTPIPELINE_RADIOMICS_SEQUENTIAL', '').lower() in ('1', 'true', 'yes')
@@ -627,7 +670,7 @@ def radiomics_for_mr_series(config: PipelineConfig, series: MRSeries) -> Optiona
 
 def run_radiomics(config: PipelineConfig, courses: List["object"], custom_structures_config: Optional[Path] = None) -> None:
     """Top-level orchestrator: per-course CT radiomics and per-series MR radiomics.
-    'courses' elements are CourseOutput-like with attributes patient_id, course_key, dir.
+    'courses' elements are CourseOutput-like with patient_id, course_key, dirs.root.
     """
     # Check if we can use PyRadiomics
     can_use_radiomics = _have_pyradiomics()
@@ -647,14 +690,14 @@ def run_radiomics(config: PipelineConfig, courses: List["object"], custom_struct
         logger.info("Using enhanced parallel radiomics implementation")
         # Use the new parallel implementation for each course
         def _parallel_radiomics_wrapper(course):
-            return parallel_radiomics_for_course(config, course.dir, custom_structures_config)
+            return parallel_radiomics_for_course(config, course.dirs.root, custom_structures_config)
 
         radiomics_func = _parallel_radiomics_wrapper
         # Reduce course workers when using internal parallelization
         max_course_workers = max(1, min(2, len(courses)))
     else:
         # Use traditional implementation
-        radiomics_func = lambda course: radiomics_for_course(config, course.dir, custom_structures_config)
+        radiomics_func = lambda course: radiomics_for_course(config, course.dirs.root, custom_structures_config)
 
         # CT per course (parallel, but limited for memory safety)
         if os.environ.get('RTPIPELINE_RADIOMICS_SEQUENTIAL', '').lower() in ('1', 'true', 'yes'):
@@ -692,13 +735,13 @@ def run_radiomics(config: PipelineConfig, courses: List["object"], custom_struct
         out_rows = []
         # CT cohort
         for c in courses:
-            p = Path(c.dir) / 'radiomics_features_CT.xlsx'
+            p = Path(c.dirs.root) / 'radiomics_ct.xlsx'
             if p.exists():
                 try:
                     df = _pd.read_excel(p)
-                    df.insert(0, 'patient_id', getattr(c, 'patient_id', Path(c.dir).parts[-2]))
-                    df.insert(1, 'course_key', getattr(c, 'course_key', Path(c.dir).name))
-                    df.insert(2, 'course_dir', str(c.dir))
+                    df.insert(0, 'patient_id', getattr(c, 'patient_id', Path(c.dirs.root).parts[-2]))
+                    df.insert(1, 'course_key', getattr(c, 'course_key', Path(c.dirs.root).name))
+                    df.insert(2, 'course_dir', str(c.dirs.root))
                     out_rows.append(df)
                 except Exception:
                     pass
