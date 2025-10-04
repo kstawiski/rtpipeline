@@ -35,6 +35,19 @@ OUTPUT_DIR = _ensure_writable_dir((ROOT_DIR / config.get("output_dir", "Data_Sna
 LOGS_DIR = _ensure_writable_dir((ROOT_DIR / config.get("logs_dir", "Logs_Snakemake")).resolve(), "Logs_Snakemake_fallback")
 RESULTS_DIR = OUTPUT_DIR / "_RESULTS"
 
+
+def _rt_env():
+    env = os.environ.copy()
+    repo_path = str(ROOT_DIR)
+    existing_py_path = env.get("PYTHONPATH")
+    if existing_py_path:
+        if repo_path not in existing_py_path.split(os.pathsep):
+            env["PYTHONPATH"] = os.pathsep.join([repo_path, existing_py_path])
+    else:
+        env["PYTHONPATH"] = repo_path
+    return env
+
+
 WORKERS = int(config.get("workers", os.cpu_count() or 4))
 
 def _coerce_int(value, default=None):
@@ -69,6 +82,9 @@ SEG_FORCE_SEGMENTATION = bool(SEG_CONFIG.get("force", False))
 
 RADIOMICS_CONFIG = config.get("radiomics", {}) or {}
 RADIOMICS_SEQUENTIAL = bool(RADIOMICS_CONFIG.get("sequential", False))
+RADIOMICS_THREAD_LIMIT = _coerce_int(RADIOMICS_CONFIG.get("thread_limit"), None)
+if RADIOMICS_THREAD_LIMIT is not None and RADIOMICS_THREAD_LIMIT < 1:
+    RADIOMICS_THREAD_LIMIT = 1
 _radiomics_params = RADIOMICS_CONFIG.get("params_file")
 if _radiomics_params:
     params_path = Path(_radiomics_params)
@@ -200,8 +216,11 @@ checkpoint organize_courses:
         manifest_path = Path(output.manifest)
         manifest_path.parent.mkdir(parents=True, exist_ok=True)
         LOGS_DIR.mkdir(parents=True, exist_ok=True)
+        env = _rt_env()
         cmd = [
-            "rtpipeline",
+            sys.executable,
+            "-m",
+            "rtpipeline.cli",
             "--dicom-root", str(DICOM_ROOT),
             "--outdir", str(OUTPUT_DIR),
             "--logs", str(LOGS_DIR),
@@ -211,7 +230,7 @@ checkpoint organize_courses:
         if CUSTOM_STRUCTURES_CONFIG:
             cmd.extend(["--custom-structures", CUSTOM_STRUCTURES_CONFIG])
         with open(log[0], "w") as logf:
-            subprocess.run(cmd, check=True, stdout=logf, stderr=subprocess.STDOUT)
+            subprocess.run(cmd, check=True, stdout=logf, stderr=subprocess.STDOUT, env=env)
         courses = []
         for patient_id, course_id, course_path in _iter_course_dirs():
             flag = course_sentinel_path(patient_id, course_id, ".organized")
@@ -243,8 +262,11 @@ rule segmentation_course:
         sentinel_path.parent.mkdir(parents=True, exist_ok=True)
         log_path = Path(log[0])
         log_path.parent.mkdir(parents=True, exist_ok=True)
+        env = _rt_env()
         cmd = [
-            "rtpipeline",
+            sys.executable,
+            "-m",
+            "rtpipeline.cli",
             "--dicom-root", str(DICOM_ROOT),
             "--outdir", str(OUTPUT_DIR),
             "--logs", str(LOGS_DIR),
@@ -265,7 +287,7 @@ rule segmentation_course:
         if SEG_FORCE_SEGMENTATION:
             cmd.append("--force-segmentation")
         with log_path.open("w") as logf:
-            subprocess.run(cmd, check=True, stdout=logf, stderr=subprocess.STDOUT)
+            subprocess.run(cmd, check=True, stdout=logf, stderr=subprocess.STDOUT, env=env)
         sentinel_path.write_text("ok\n", encoding="utf-8")
 
 
@@ -288,8 +310,11 @@ rule dvh_course:
         sentinel_path.parent.mkdir(parents=True, exist_ok=True)
         log_path = Path(log[0])
         log_path.parent.mkdir(parents=True, exist_ok=True)
+        env = _rt_env()
         cmd = [
-            "rtpipeline",
+            sys.executable,
+            "-m",
+            "rtpipeline.cli",
             "--dicom-root", str(DICOM_ROOT),
             "--outdir", str(OUTPUT_DIR),
             "--logs", str(LOGS_DIR),
@@ -300,7 +325,7 @@ rule dvh_course:
         if CUSTOM_STRUCTURES_CONFIG:
             cmd.extend(["--custom-structures", CUSTOM_STRUCTURES_CONFIG])
         with log_path.open("w") as logf:
-            subprocess.run(cmd, check=True, stdout=logf, stderr=subprocess.STDOUT)
+            subprocess.run(cmd, check=True, stdout=logf, stderr=subprocess.STDOUT, env=env)
         sentinel_path.write_text("ok\n", encoding="utf-8")
 
 
@@ -323,8 +348,11 @@ rule radiomics_course:
         sentinel_path.parent.mkdir(parents=True, exist_ok=True)
         log_path = Path(log[0])
         log_path.parent.mkdir(parents=True, exist_ok=True)
+        env = _rt_env()
         cmd = [
-            "rtpipeline",
+            sys.executable,
+            "-m",
+            "rtpipeline.cli",
             "--dicom-root", str(DICOM_ROOT),
             "--outdir", str(OUTPUT_DIR),
             "--logs", str(LOGS_DIR),
@@ -344,8 +372,10 @@ rule radiomics_course:
             cmd.extend(["--radiomics-skip-roi", roi])
         if CUSTOM_STRUCTURES_CONFIG:
             cmd.extend(["--custom-structures", CUSTOM_STRUCTURES_CONFIG])
+        if RADIOMICS_THREAD_LIMIT is not None:
+            cmd.extend(["--radiomics-proc-threads", str(RADIOMICS_THREAD_LIMIT)])
         with log_path.open("w") as logf:
-            subprocess.run(cmd, check=True, stdout=logf, stderr=subprocess.STDOUT)
+            subprocess.run(cmd, check=True, stdout=logf, stderr=subprocess.STDOUT, env=env)
         sentinel_path.write_text("ok\n", encoding="utf-8")
 
 
@@ -368,8 +398,11 @@ rule qc_course:
         sentinel_path.parent.mkdir(parents=True, exist_ok=True)
         log_path = Path(log[0])
         log_path.parent.mkdir(parents=True, exist_ok=True)
+        env = _rt_env()
         cmd = [
-            "rtpipeline",
+            sys.executable,
+            "-m",
+            "rtpipeline.cli",
             "--dicom-root", str(DICOM_ROOT),
             "--outdir", str(OUTPUT_DIR),
             "--logs", str(LOGS_DIR),
@@ -378,7 +411,7 @@ rule qc_course:
             "--course-filter", f"{wildcards.patient}/{wildcards.course}",
         ]
         with log_path.open("w") as logf:
-            subprocess.run(cmd, check=True, stdout=logf, stderr=subprocess.STDOUT)
+            subprocess.run(cmd, check=True, stdout=logf, stderr=subprocess.STDOUT, env=env)
         sentinel_path.write_text("ok\n", encoding="utf-8")
 
 
