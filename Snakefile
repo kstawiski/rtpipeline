@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import sys
 from pathlib import Path
@@ -61,6 +62,10 @@ else:
 SEG_MAX_WORKERS = _coerce_int(SEG_CONFIG.get("workers") or SEG_CONFIG.get("max_workers"), 1)
 if SEG_MAX_WORKERS is not None and SEG_MAX_WORKERS < 1:
     SEG_MAX_WORKERS = 1
+SEG_THREADS_PER_WORKER = _coerce_int(SEG_CONFIG.get("threads_per_worker"), None)
+if SEG_THREADS_PER_WORKER is not None and SEG_THREADS_PER_WORKER < 1:
+    SEG_THREADS_PER_WORKER = 1
+SEG_FORCE_SEGMENTATION = bool(SEG_CONFIG.get("force", False))
 
 RADIOMICS_CONFIG = config.get("radiomics", {}) or {}
 RADIOMICS_SEQUENTIAL = bool(RADIOMICS_CONFIG.get("sequential", False))
@@ -102,13 +107,8 @@ AGGREGATION_THREADS = _coerce_int(_agg_threads_raw, None)
 if AGGREGATION_THREADS is not None and AGGREGATION_THREADS < 1:
     AGGREGATION_THREADS = 1
 
-STAGE_SENTINELS = {
-    "organize": OUTPUT_DIR / ".stage_organize",
-    "segmentation": OUTPUT_DIR / ".stage_segmentation",
-    "dvh": OUTPUT_DIR / ".stage_dvh",
-    "radiomics": OUTPUT_DIR / ".stage_radiomics",
-    "qc": OUTPUT_DIR / ".stage_qc",
-}
+COURSE_META_DIR = OUTPUT_DIR / "_COURSES"
+COURSE_MANIFEST = COURSE_META_DIR / "manifest.json"
 
 AGG_OUTPUTS = {
     "dvh": RESULTS_DIR / "dvh_metrics.xlsx",
@@ -118,15 +118,76 @@ AGG_OUTPUTS = {
     "qc": RESULTS_DIR / "qc_reports.xlsx",
 }
 
+SEG_WORKER_POOL = SEG_MAX_WORKERS if SEG_MAX_WORKERS is not None else max(1, WORKERS)
+workflow.global_resources.update({"seg_workers": max(1, SEG_WORKER_POOL)})
+
+def course_dir(patient: str, course: str) -> Path:
+    return OUTPUT_DIR / patient / course
+
+def course_sentinel_path(patient: str, course: str, name: str) -> Path:
+    return course_dir(patient, course) / name
+
+def _iter_course_dirs():
+    for patient_dir in sorted(OUTPUT_DIR.iterdir()):
+        if not patient_dir.is_dir():
+            continue
+        if patient_dir.name.startswith("_") or patient_dir.name.startswith("."):
+            continue
+        if patient_dir.name in {"Data", "Data_Snakemake_fallback", "Logs_Snakemake_fallback", "_RESULTS"}:
+            continue
+        for course_dir in sorted(patient_dir.iterdir()):
+            if not course_dir.is_dir():
+                continue
+            if course_dir.name.startswith("_"):
+                continue
+            yield patient_dir.name, course_dir.name, course_dir
+
+def _manifest_path() -> Path:
+    return Path(checkpoints.organize_courses.get().output.manifest)
+
+def _load_course_records() -> list[dict[str, str]]:
+    manifest = _manifest_path()
+    if not manifest.exists():
+        return []
+    try:
+        data = json.loads(manifest.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    records: list[dict[str, str]] = []
+    for entry in data.get("courses", []):
+        patient = str(entry.get("patient") or "").strip()
+        course = str(entry.get("course") or "").strip()
+        if not patient or not course:
+            continue
+        records.append({"patient": patient, "course": course})
+    return records
+
+def _per_course_sentinels(suffix: str):
+    def _inner(wildcards):
+        return [
+            str(course_sentinel_path(rec["patient"], rec["course"], suffix))
+            for rec in _load_course_records()
+        ]
+    return _inner
+
+def _manifest_input(wildcards):
+    return str(_manifest_path())
+
+ORGANIZED_SENTINEL_PATTERN = str(OUTPUT_DIR / "{patient}" / "{course}" / ".organized")
+SEGMENTATION_SENTINEL_PATTERN = str(OUTPUT_DIR / "{patient}" / "{course}" / ".segmentation_done")
+DVH_SENTINEL_PATTERN = str(OUTPUT_DIR / "{patient}" / "{course}" / ".dvh_done")
+RADIOMICS_SENTINEL_PATTERN = str(OUTPUT_DIR / "{patient}" / "{course}" / ".radiomics_done")
+QC_SENTINEL_PATTERN = str(OUTPUT_DIR / "{patient}" / "{course}" / ".qc_done")
+
 
 rule all:
     input:
         *(str(path) for path in AGG_OUTPUTS.values())
 
 
-rule organize:
+checkpoint organize_courses:
     output:
-        sentinel=str(STAGE_SENTINELS["organize"])
+        manifest=str(COURSE_MANIFEST)
     log:
         str(LOGS_DIR / "stage_organize.log")
     threads:
@@ -135,50 +196,61 @@ rule organize:
         "envs/rtpipeline.yaml"
     run:
         import subprocess
-        sentinel_path = Path(output.sentinel)
-        sentinel_path.parent.mkdir(parents=True, exist_ok=True)
-        if sentinel_path.exists():
-            sentinel_path.unlink()
+        worker_count = max(1, int(threads))
+        manifest_path = Path(output.manifest)
+        manifest_path.parent.mkdir(parents=True, exist_ok=True)
         LOGS_DIR.mkdir(parents=True, exist_ok=True)
         cmd = [
             "rtpipeline",
             "--dicom-root", str(DICOM_ROOT),
             "--outdir", str(OUTPUT_DIR),
             "--logs", str(LOGS_DIR),
-            "--workers", str(max(1, threads)),
+            "--workers", str(worker_count),
             "--stage", "organize",
         ]
         if CUSTOM_STRUCTURES_CONFIG:
             cmd.extend(["--custom-structures", CUSTOM_STRUCTURES_CONFIG])
         with open(log[0], "w") as logf:
             subprocess.run(cmd, check=True, stdout=logf, stderr=subprocess.STDOUT)
-        sentinel_path.write_text("ok\n", encoding="utf-8")
+        courses = []
+        for patient_id, course_id, course_path in _iter_course_dirs():
+            flag = course_sentinel_path(patient_id, course_id, ".organized")
+            flag.parent.mkdir(parents=True, exist_ok=True)
+            flag.write_text("ok\n", encoding="utf-8")
+            courses.append({"patient": patient_id, "course": course_id, "path": str(course_path)})
+        COURSE_META_DIR.mkdir(parents=True, exist_ok=True)
+        manifest_path.write_text(json.dumps({"courses": courses}, indent=2), encoding="utf-8")
 
 
-rule segmentation:
+rule segmentation_course:
     input:
-        STAGE_SENTINELS["organize"]
+        manifest=_manifest_input,
+        organized=ORGANIZED_SENTINEL_PATTERN
     output:
-        sentinel=str(STAGE_SENTINELS["segmentation"])
+        sentinel=SEGMENTATION_SENTINEL_PATTERN
     log:
-        str(LOGS_DIR / "stage_segmentation.log")
+        str(LOGS_DIR / "segmentation" / "{patient}_{course}.log")
     threads:
-        max(1, WORKERS)
+        max(1, SEG_THREADS_PER_WORKER if SEG_THREADS_PER_WORKER is not None else WORKERS)
+    resources:
+        seg_workers=1
     conda:
         "envs/rtpipeline.yaml"
     run:
         import subprocess
+        worker_count = max(1, int(threads))
         sentinel_path = Path(output.sentinel)
         sentinel_path.parent.mkdir(parents=True, exist_ok=True)
-        if sentinel_path.exists():
-            sentinel_path.unlink()
+        log_path = Path(log[0])
+        log_path.parent.mkdir(parents=True, exist_ok=True)
         cmd = [
             "rtpipeline",
             "--dicom-root", str(DICOM_ROOT),
             "--outdir", str(OUTPUT_DIR),
             "--logs", str(LOGS_DIR),
-            "--workers", str(max(1, threads)),
-            "--stage", "segmentation"
+            "--workers", str(worker_count),
+            "--stage", "segmentation",
+            "--course-filter", f"{wildcards.patient}/{wildcards.course}",
         ]
         if SEG_FAST:
             cmd.append("--totalseg-fast")
@@ -187,75 +259,80 @@ rule segmentation:
         if SEG_ROI_SUBSET:
             cmd.extend(["--totalseg-roi-subset", SEG_ROI_SUBSET])
         if SEG_MAX_WORKERS:
-            cmd.extend(["--seg-workers", str(SEG_MAX_WORKERS)])
-        with open(log[0], "w") as logf:
+            cmd.extend(["--seg-workers", str(max(1, SEG_MAX_WORKERS))])
+        if SEG_THREADS_PER_WORKER is not None:
+            cmd.extend(["--seg-proc-threads", str(SEG_THREADS_PER_WORKER)])
+        if SEG_FORCE_SEGMENTATION:
+            cmd.append("--force-segmentation")
+        with log_path.open("w") as logf:
             subprocess.run(cmd, check=True, stdout=logf, stderr=subprocess.STDOUT)
         sentinel_path.write_text("ok\n", encoding="utf-8")
 
 
-rule dvh:
+rule dvh_course:
     input:
-        STAGE_SENTINELS["segmentation"]
+        manifest=_manifest_input,
+        segmentation=SEGMENTATION_SENTINEL_PATTERN
     output:
-        sentinel=str(STAGE_SENTINELS["dvh"])
+        sentinel=DVH_SENTINEL_PATTERN
     log:
-        str(LOGS_DIR / "stage_dvh.log")
+        str(LOGS_DIR / "dvh" / "{patient}_{course}.log")
     threads:
         max(1, WORKERS)
     conda:
         "envs/rtpipeline.yaml"
     run:
         import subprocess
+        worker_count = max(1, int(threads))
         sentinel_path = Path(output.sentinel)
         sentinel_path.parent.mkdir(parents=True, exist_ok=True)
-        if sentinel_path.exists():
-            sentinel_path.unlink()
+        log_path = Path(log[0])
+        log_path.parent.mkdir(parents=True, exist_ok=True)
         cmd = [
             "rtpipeline",
             "--dicom-root", str(DICOM_ROOT),
             "--outdir", str(OUTPUT_DIR),
             "--logs", str(LOGS_DIR),
-            "--workers", str(max(1, threads)),
+            "--workers", str(worker_count),
             "--stage", "dvh",
+            "--course-filter", f"{wildcards.patient}/{wildcards.course}",
         ]
         if CUSTOM_STRUCTURES_CONFIG:
             cmd.extend(["--custom-structures", CUSTOM_STRUCTURES_CONFIG])
-        with open(log[0], "w") as logf:
+        with log_path.open("w") as logf:
             subprocess.run(cmd, check=True, stdout=logf, stderr=subprocess.STDOUT)
         sentinel_path.write_text("ok\n", encoding="utf-8")
 
 
-rule radiomics:
+rule radiomics_course:
     input:
-        STAGE_SENTINELS["segmentation"]
+        manifest=_manifest_input,
+        segmentation=SEGMENTATION_SENTINEL_PATTERN
     output:
-        sentinel=str(STAGE_SENTINELS["radiomics"])
+        sentinel=RADIOMICS_SENTINEL_PATTERN
     log:
-        str(LOGS_DIR / "stage_radiomics.log")
+        str(LOGS_DIR / "radiomics" / "{patient}_{course}.log")
     threads:
         max(1, WORKERS)
     conda:
         "envs/rtpipeline-radiomics.yaml"
     run:
-        import os
         import subprocess
+        worker_count = max(1, int(threads))
         sentinel_path = Path(output.sentinel)
         sentinel_path.parent.mkdir(parents=True, exist_ok=True)
-        if sentinel_path.exists():
-            sentinel_path.unlink()
-        if RADIOMICS_SEQUENTIAL:
-            env_sequential = True
-        else:
-            env_sequential = False
+        log_path = Path(log[0])
+        log_path.parent.mkdir(parents=True, exist_ok=True)
         cmd = [
             "rtpipeline",
             "--dicom-root", str(DICOM_ROOT),
             "--outdir", str(OUTPUT_DIR),
             "--logs", str(LOGS_DIR),
-            "--workers", str(max(1, threads)),
+            "--workers", str(worker_count),
             "--stage", "radiomics",
+            "--course-filter", f"{wildcards.patient}/{wildcards.course}",
         ]
-        if env_sequential:
+        if RADIOMICS_SEQUENTIAL:
             cmd.append("--sequential-radiomics")
         if RADIOMICS_PARAMS:
             cmd.extend(["--radiomics-params", RADIOMICS_PARAMS])
@@ -267,47 +344,50 @@ rule radiomics:
             cmd.extend(["--radiomics-skip-roi", roi])
         if CUSTOM_STRUCTURES_CONFIG:
             cmd.extend(["--custom-structures", CUSTOM_STRUCTURES_CONFIG])
-        with open(log[0], "w") as logf:
+        with log_path.open("w") as logf:
             subprocess.run(cmd, check=True, stdout=logf, stderr=subprocess.STDOUT)
         sentinel_path.write_text("ok\n", encoding="utf-8")
 
 
-rule qc:
+rule qc_course:
     input:
-        STAGE_SENTINELS["segmentation"]
+        manifest=_manifest_input,
+        segmentation=SEGMENTATION_SENTINEL_PATTERN
     output:
-        sentinel=str(STAGE_SENTINELS["qc"])
+        sentinel=QC_SENTINEL_PATTERN
     log:
-        str(LOGS_DIR / "stage_qc.log")
+        str(LOGS_DIR / "qc" / "{patient}_{course}.log")
     threads:
         max(1, WORKERS)
     conda:
         "envs/rtpipeline.yaml"
     run:
         import subprocess
+        worker_count = max(1, int(threads))
         sentinel_path = Path(output.sentinel)
         sentinel_path.parent.mkdir(parents=True, exist_ok=True)
-        if sentinel_path.exists():
-            sentinel_path.unlink()
+        log_path = Path(log[0])
+        log_path.parent.mkdir(parents=True, exist_ok=True)
         cmd = [
             "rtpipeline",
             "--dicom-root", str(DICOM_ROOT),
             "--outdir", str(OUTPUT_DIR),
             "--logs", str(LOGS_DIR),
-            "--workers", str(max(1, threads)),
+            "--workers", str(worker_count),
             "--stage", "qc",
+            "--course-filter", f"{wildcards.patient}/{wildcards.course}",
         ]
-        with open(log[0], "w") as logf:
+        with log_path.open("w") as logf:
             subprocess.run(cmd, check=True, stdout=logf, stderr=subprocess.STDOUT)
         sentinel_path.write_text("ok\n", encoding="utf-8")
 
 
 rule aggregate_results:
     input:
-        organize=STAGE_SENTINELS["organize"],
-        dvh=STAGE_SENTINELS["dvh"],
-        radiomics=STAGE_SENTINELS["radiomics"],
-        qc=STAGE_SENTINELS["qc"]
+        manifest=_manifest_input,
+        dvh=_per_course_sentinels(".dvh_done"),
+        radiomics=_per_course_sentinels(".radiomics_done"),
+        qc=_per_course_sentinels(".qc_done")
     output:
         dvh=str(AGG_OUTPUTS["dvh"]),
         radiomics=str(AGG_OUTPUTS["radiomics"]),
@@ -325,24 +405,7 @@ rule aggregate_results:
 
         RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
-        def iter_courses() -> list[tuple[str, str, Path]]:
-            courses = []
-            for patient_dir in sorted(OUTPUT_DIR.iterdir()):
-                if not patient_dir.is_dir():
-                    continue
-                if patient_dir.name.startswith("_") or patient_dir.name.startswith("."):
-                    continue
-                if patient_dir.name in {"Data", "Data_Snakemake_fallback", "Logs_Snakemake_fallback", "_RESULTS"}:
-                    continue
-                for course_dir in sorted(patient_dir.iterdir()):
-                    if not course_dir.is_dir():
-                        continue
-                    if course_dir.name.startswith("_"):
-                        continue
-                    courses.append((patient_dir.name, course_dir.name, course_dir))
-            return courses
-
-        courses = iter_courses()
+        courses = list(_iter_course_dirs())
 
         def _max_workers(default: int) -> int:
             if not courses:
@@ -384,7 +447,6 @@ rule aggregate_results:
                 df["structure_cropped"] = False
             return df
 
-        # DVH aggregation
         dvh_frames = _collect_frames(_load_dvh)
         if dvh_frames:
             dvh_all = pd.concat(dvh_frames, ignore_index=True)
@@ -413,7 +475,6 @@ rule aggregate_results:
         else:
             pd.DataFrame(columns=["patient_id", "course_id", "ROI_Name", "structure_cropped"]).to_excel(output.dvh, index=False)
 
-        # Radiomics aggregation
         def _load_radiomics(course):
             pid, cid, cdir = course
             path = cdir / "radiomics_ct.xlsx"
@@ -441,7 +502,6 @@ rule aggregate_results:
         else:
             pd.DataFrame(columns=["patient_id", "course_id", "roi_name", "structure_cropped"]).to_excel(output.radiomics, index=False)
 
-        # Fractions aggregation
         def _load_fraction(course):
             pid, cid, cdir = course
             path = cdir / "fractions.xlsx"
@@ -467,7 +527,6 @@ rule aggregate_results:
         else:
             pd.DataFrame(columns=["patient_id", "course_id", "treatment_date", "source_path"]).to_excel(output.fractions, index=False)
 
-        # Metadata aggregation
         def _load_metadata(course):
             pid, cid, cdir = course
             path = cdir / "metadata" / "case_metadata.xlsx"
@@ -493,7 +552,6 @@ rule aggregate_results:
         else:
             pd.DataFrame(columns=["patient_id", "course_id"]).to_excel(output.metadata, index=False)
 
-        # Persist supplemental metadata exports from Data/ if present
         supplemental_sources = {
             "plans.xlsx": OUTPUT_DIR / "Data" / "plans.xlsx",
             "structure_sets.xlsx": OUTPUT_DIR / "Data" / "structure_sets.xlsx",
@@ -510,7 +568,6 @@ rule aggregate_results:
                 except Exception as exc:
                     print(f"[aggregate_results] Warning: failed to copy {src_path} -> {dst_path}: {exc}")
 
-        # QC aggregation
         qc_rows = []
         for pid, cid, cdir in courses:
             qc_dir = cdir / "qc_reports"
