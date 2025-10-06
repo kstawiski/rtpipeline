@@ -435,10 +435,12 @@ def radiomics_for_course(config: PipelineConfig, course_dir: Path, custom_struct
             m_img = _mask_from_array_like(img, mask)
             res = ext.execute(img, m_img)
             rec = {k: (float(v) if isinstance(v, (int, float, np.floating)) else str(v)) for k, v in res.items()}
+            display_roi = roi if (not cropped or roi.endswith("__partial")) else f"{roi}__partial"
             rec.update({
                 'modality': 'CT',
                 'segmentation_source': source,
-                'roi_name': roi,
+                'roi_name': display_roi,
+                'roi_original_name': roi,
                 'course_dir': str(course_dir),
                 'patient_id': course_dir.parent.name,
                 'course_id': course_dir.name,

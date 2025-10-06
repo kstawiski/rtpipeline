@@ -38,9 +38,10 @@ try:
     _sys.modules['dicom.uid'] = _muid
 except Exception:
     pass
-from dicompylercore import dicomparser
-from nested_lookup import nested_lookup
 import pydicom
+from pydicom.multival import MultiValue
+from pydicom.sequence import Sequence
+from pydicom.tag import Tag
 
 from .config import PipelineConfig
 from .utils import run_tasks_with_adaptive_workers
@@ -48,20 +49,33 @@ from .utils import run_tasks_with_adaptive_workers
 logger = logging.getLogger(__name__)
 
 
+def _format_value(value: object) -> str:
+    if value is None:
+        return "NA"
+    if isinstance(value, MultiValue) or isinstance(value, (list, tuple)):
+        parts = [str(v).strip() for v in value if str(v).strip()]
+        return "NA" if not parts else "\\".join(parts)
+    text = str(value).strip()
+    return text if text else "NA"
+
+
 def _nested_get(ds: pydicom.dataset.FileDataset, tag: str) -> str:
-    """Fetch a DICOM tag using dicompylercore JSON dict to mimic notebook behavior."""
+    """Fetch a DICOM tag by walking the dataset, including sequences."""
     try:
-        dd = dicomparser.DicomParser(ds).ds.to_json_dict()
-        v = nested_lookup(tag, dd)
-        if not v:
-            return "NA"
-        v0 = v[0]
-        # Standard JSON schema uses {'vr':'XX','Value':[...]} per tag
-        if isinstance(v0, dict) and 'Value' in v0 and v0['Value']:
-            return str(v0['Value'][0])
-        return str(v0)
+        target = Tag(int(tag[:4], 16), int(tag[4:], 16))
     except Exception:
         return "NA"
+
+    for element in ds.iterall():
+        if element.tag != target:
+            continue
+        value = element.value
+        if isinstance(value, pydicom.dataset.Dataset):
+            continue
+        if isinstance(value, Sequence):
+            continue
+        return _format_value(value)
+    return "NA"
 
 
 @dataclass
