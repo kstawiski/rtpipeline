@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import os
 from pathlib import Path
@@ -317,18 +318,64 @@ def _create_custom_structures_rtstruct(
             processor.load_config(config_path)
 
         custom_masks = processor.process_all_custom_structures(available_masks)
+        partial_map = getattr(processor, "partial_structures", {})
+        warning_entries = []
 
         # Add custom structures to RTSTRUCT
         for name, mask in custom_masks.items():
+            missing_sources = partial_map.get(name, [])
+            cropped_flag = mask_is_cropped(mask)
+            final_name = name
+            if missing_sources:
+                logger.warning(
+                    "Custom structure %s built with missing sources %s; marking as partial",
+                    name,
+                    ", ".join(missing_sources),
+                )
+                final_name = f"{final_name}__partial"
+            if cropped_flag and not final_name.endswith("__partial"):
+                logger.warning(
+                    "Custom structure %s is cropped at image boundary; marking as partial",
+                    name,
+                )
+                final_name = f"{final_name}__partial"
+            if missing_sources or cropped_flag:
+                warning_entries.append(
+                    {
+                        "structure": final_name,
+                        "original_structure": name,
+                        "missing_sources": missing_sources,
+                        "cropped": bool(cropped_flag),
+                    }
+                )
             try:
                 rtstruct.add_roi(
                     mask=mask.astype(bool),
-                    name=name,
+                    name=final_name,
                     color=[255, 0, 0]  # Red color for custom structures
                 )
-                logger.info("Added custom structure: %s", name)
+                logger.info("Added custom structure: %s", final_name)
             except Exception as e:
-                logger.warning("Failed to add custom structure %s: %s", name, e)
+                logger.warning("Failed to add custom structure %s: %s", final_name, e)
+
+        if warning_entries:
+            try:
+                meta_dir = course_dir / "metadata"
+                meta_dir.mkdir(parents=True, exist_ok=True)
+                flag_path = meta_dir / "custom_structure_warnings.json"
+                payload = {
+                    "note": "Custom structures generated with incomplete inputs or cropped masks; treat listed structures as partial",
+                    "entries": warning_entries,
+                }
+                flag_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+            except Exception as exc:
+                logger.warning("Failed to record custom structure warnings: %s", exc)
+        else:
+            try:
+                flag_path = course_dir / "metadata" / "custom_structure_warnings.json"
+                flag_path.unlink(missing_ok=True)
+            except Exception:
+                pass
 
         # Save the new RTSTRUCT
         out_path = course_dir / "RS_custom.dcm"
@@ -434,10 +481,14 @@ def dvh_for_course(
                 cropped = mask_is_cropped(mask)
             except Exception:
                 cropped = False
+        display_name = roi_name
+        if cropped and not display_name.endswith("__partial"):
+            display_name = f"{display_name}__partial"
         metrics.update(
             {
                 "ROI_Number": int(roi_number),
-                "ROI_Name": roi_name,
+                "ROI_Name": display_name,
+                "ROI_OriginalName": roi_name,
                 "Segmentation_Source": source_label,
                 "structure_cropped": cropped,
             }

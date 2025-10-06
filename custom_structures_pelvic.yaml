@@ -15,6 +15,11 @@ custom_structures:
       - "iliac_artery_right"
       - "iliac_vena_left"
       - "iliac_vena_right"
+      - "common_iliac_artery_left"
+      - "common_iliac_artery_right"
+      - "common_iliac_vein_left"
+      - "common_iliac_vein_right"
+      - "inferior_vena_cava"
     description: "Combined iliac vessels (arteries and veins)"
 
   # Iliac area - 7mm expansion for dose constraints
@@ -32,6 +37,8 @@ custom_structures:
       - "inferior_vena_cava"
       - "iliac_vess"
       - "portal_vein_and_splenic_vein"
+      - "Zyla Glowna Dolna"
+      - "Zyla Glowna Gorna"
     description: "All major blood vessels in treatment area"
 
   # Major vessels with margin
@@ -53,6 +60,10 @@ custom_structures:
       - "hip_left"
       - "hip_right"
       - "vertebrae_S1"
+      - "vertebrae_L5"
+      - "vertebrae_L4"
+      - "Kosci"
+      - "Bones"
     description: "Combined pelvic bone structures"
 
   # Pelvic bones with 3mm margin for bone marrow sparing
@@ -71,6 +82,8 @@ custom_structures:
       - "vertebrae_L4"
       - "femur_left"
       - "femur_right"
+      - "vertebrae_L3"
+      - "vertebrae_L2"
     description: "Extended pelvic bone structures including proximal femurs"
 
   # Lumbar spine
@@ -82,14 +95,27 @@ custom_structures:
       - "vertebrae_L3"
       - "vertebrae_L4"
       - "vertebrae_L5"
+      - "pelvic_bones"
+      - "pelvic_bones_extended"
+      - "spinal_cord"
     description: "Lumbar spine for dose evaluation"
 
   # ============================================
   # MUSCLE STRUCTURES
   # ============================================
 
-  # Gluteal muscles
-  - name: "gluteus_muscles"
+  # Iliopsoas muscles
+  - name: "iliopsoas_muscles"
+    operation: "union"
+    source_structures:
+      - "iliopsoas_left"
+      - "iliopsoas_right"
+      - "miesien biodrowo-ledzwiowy lewy"
+      - "miesien biodrowo-ledzwiowy prawy"
+    description: "Combined iliopsoas muscles"
+
+  # All pelvic muscles
+  - name: "pelvic_muscles"
     operation: "union"
     source_structures:
       - "gluteus_maximus_left"
@@ -98,21 +124,8 @@ custom_structures:
       - "gluteus_medius_right"
       - "gluteus_minimus_left"
       - "gluteus_minimus_right"
-    description: "All gluteal muscles combined"
-
-  # Iliopsoas muscles
-  - name: "iliopsoas_muscles"
-    operation: "union"
-    source_structures:
-      - "iliopsoas_left"
-      - "iliopsoas_right"
-    description: "Combined iliopsoas muscles"
-
-  # All pelvic muscles
-  - name: "pelvic_muscles"
-    operation: "union"
-    source_structures:
-      - "gluteus_muscles"
+      - "gl"
+      - "gp"
       - "iliopsoas_muscles"
       - "autochthon_left"
       - "autochthon_right"
@@ -129,6 +142,10 @@ custom_structures:
       - "colon"
       - "small_bowel"
       - "duodenum"
+      - "Jelita"
+      - "Jelita - PTV"
+      - "Jelita - PTV1"
+      - "Odbytnica"
     description: "Combined bowel structures for dose constraints"
 
   # Bowel with margin for PRV
@@ -150,6 +167,11 @@ custom_structures:
       - "bowel_bag"
       - "femur_left"
       - "femur_right"
+      - "Pecherz"
+      - "Pecherz - PTV"
+      - "Pecherz - PTV1"
+      - "FemurLeft"
+      - "FemurRight"
     description: "Critical organs at risk in pelvic region"
 
   # OARs with planning margin
@@ -169,6 +191,8 @@ custom_structures:
     source_structures:
       - "kidney_left"
       - "kidney_right"
+      - "Nerka Lewa"
+      - "Nerka Prawa"
     description: "Both kidneys combined"
 
   # Kidneys with margin
