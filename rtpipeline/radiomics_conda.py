@@ -339,6 +339,7 @@ def process_radiomics_batch(
         label = task.get('label')
         metadata = dict(task.get('metadata', {}))
         metadata.setdefault('roi_name', roi_name)
+        metadata.setdefault('roi_original_name', roi_name)
 
         if not image_path or not mask_path:
             logger.error("Radiomics task is missing required paths for %s", roi_name)
@@ -653,18 +654,22 @@ def radiomics_for_course(
                 if not seg_source:
                     seg_source = 'Custom' if norm in custom_norm else default_source
 
+            cropped_flag = mask_is_cropped(mask_bool)
+            display_roi = roi_name if (not cropped_flag or roi_name.endswith("__partial")) else f"{roi_name}__partial"
+
             metadata = {
                 'segmentation_source': seg_source,
                 'course_dir': str(course_dir),
                 'patient_id': course_dir.parent.name,
                 'course_id': course_dir.name,
-                'structure_cropped': mask_is_cropped(mask_bool),
+                'structure_cropped': cropped_flag,
+                'roi_original_name': roi_name,
             }
 
             tasks.append({
                 'image_path': ct_image_path,
                 'mask_path': mask_path,
-                'roi_name': roi_name,
+                'roi_name': display_roi,
                 'params_file': params_file,
                 'label': None,
                 'metadata': metadata,

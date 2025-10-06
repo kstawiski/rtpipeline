@@ -115,7 +115,8 @@ def _isolated_radiomics_extraction(task_data: Tuple[str, Dict[str, Any]]) -> Opt
         mask = data['mask']
         config = data['config']
         source = data['source']
-        roi = data['roi']
+        roi_original = data.get('roi_original', data['roi'])
+        roi_display = data.get('roi_display', roi_original)
         course_dir = Path(data['course_dir'])
 
         # Reconstruct SimpleITK image
@@ -127,7 +128,7 @@ def _isolated_radiomics_extraction(task_data: Tuple[str, Dict[str, Any]]) -> Opt
         # Create fresh extractor instance for this process
         ext = _extractor(config, 'CT')
         if ext is None:
-            logger.debug("No radiomics extractor available for %s/%s", source, roi)
+            logger.debug("No radiomics extractor available for %s/%s", source, roi_display)
             return None
 
         # Create mask image
@@ -150,7 +151,8 @@ def _isolated_radiomics_extraction(task_data: Tuple[str, Dict[str, Any]]) -> Opt
         rec.update({
             'modality': 'CT',
             'segmentation_source': source,
-            'roi_name': roi,
+            'roi_name': roi_display,
+            'roi_original_name': roi_original,
             'course_dir': str(course_dir),
             'patient_id': patient_id,
             'course_id': course_dir.name,
@@ -214,16 +216,20 @@ def _prepare_radiomics_task(
 
     try:
         # Package data for serialization
-        task_data = {
-            'img_array': img_array,
-            'img_info': img_info,
-            'mask': mask,
-            'config': config,
-            'source': source,
-            'roi': roi,
-            'course_dir': course_dir,
-            'structure_cropped': bool(structure_cropped),
-        }
+    display_roi = roi if (not structure_cropped or roi.endswith("__partial")) else f"{roi}__partial"
+
+    task_data = {
+        'img_array': img_array,
+        'img_info': img_info,
+        'mask': mask,
+        'config': config,
+        'source': source,
+        'roi': roi,
+        'roi_display': display_roi,
+        'roi_original': roi,
+        'course_dir': course_dir,
+        'structure_cropped': bool(structure_cropped),
+    }
 
         # Write to temporary file
         with os.fdopen(temp_fd, 'wb') as f:
@@ -232,7 +238,8 @@ def _prepare_radiomics_task(
         # Task parameters for tracking
         task_params = {
             'source': source,
-            'roi': roi,
+            'roi': display_roi,
+            'roi_original': roi,
             'course_dir': str(course_dir),
             'structure_cropped': bool(structure_cropped),
         }

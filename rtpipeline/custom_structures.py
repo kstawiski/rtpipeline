@@ -55,6 +55,7 @@ class CustomStructureProcessor:
         """
         self.spacing = spacing
         self.custom_configs: List[CustomStructureConfig] = []
+        self.partial_structures: dict[str, list[str]] = {}
 
     def load_config(self, config_path: Union[str, Path]) -> None:
         """
@@ -202,18 +203,37 @@ class CustomStructureProcessor:
             self._normalize_name(key): key for key in available_masks.keys()
         }
 
-        # Check if all source structures are available
-        source_masks = []
+        missing_sources: list[str] = []
+        source_masks: list[np.ndarray] = []
         for source_name in config.source_structures:
             actual_key = source_name if source_name in available_masks else normalization_map.get(self._normalize_name(source_name))
             if actual_key is None or actual_key not in available_masks:
-                logger.warning(
-                    "Source structure '%s' not found for custom structure '%s'",
-                    source_name,
-                    config.name,
-                )
-                return None
-            source_masks.append(available_masks[actual_key])
+                missing_sources.append(source_name)
+                continue
+            mask = available_masks[actual_key]
+            if mask is None or not np.any(mask):
+                missing_sources.append(source_name)
+                continue
+            source_masks.append(mask)
+
+        if not source_masks:
+            logger.warning(
+                "No usable source structures found for custom structure '%s' (requested: %s)",
+                config.name,
+                ", ".join(config.source_structures),
+            )
+            self.partial_structures.pop(config.name, None)
+            return None
+
+        if missing_sources:
+            logger.debug(
+                "Custom structure '%s': skipping unavailable sources: %s",
+                config.name,
+                ", ".join(sorted({src for src in missing_sources})),
+            )
+            self.partial_structures[config.name] = sorted({src for src in missing_sources})
+        else:
+            self.partial_structures.pop(config.name, None)
 
         # Apply boolean operation
         if config.operation == 'union':
