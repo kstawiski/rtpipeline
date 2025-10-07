@@ -1,73 +1,145 @@
-# Guide to Results Interpretation (KONSTA_DICOMRT_Processing)
+# Guide to Results Interpretation
 
-## 1. Overview of deliverables
-After running `./test.sh` (Snakemake full workflow), the pipeline populates `Data_Snakemake/` with course-level folders and aggregates under `_RESULTS/`. The key artefacts and recommended uses are:
+The pipeline produces a rich hierarchy of artefacts for each patient course. This document explains where to find them, how to interpret key columns, and which sanity checks you should perform before downstream analyses.
 
-- **Course-specific workbooks**
-  - `Data_Snakemake/<patient>/<course>/dvh_metrics.xlsx`: per-ROI dose–volume metrics (absolute and relative). Source provenance (`Segmentation_Source`) and truncation flags (`structure_cropped`, `ROI_Name` suffix) are embedded alongside standard DVH outputs.
-  - `Data_Snakemake/<patient>/<course>/radiomics_ct.xlsx`: PyRadiomics feature matrix for CT-derived masks. Columns include ROI identifiers, segmentation source, structure cropping status, and all extracted features.
-  - `Data_Snakemake/<patient>/<course>/radiomics_mr.xlsx`: PyRadiomics feature matrix for MR-derived masks (TotalSegmentator `total_mr`). Columns parallel the CT export with modality set to `MR`.
-  - `Data_Snakemake/<patient>/<course>/fractions.xlsx` and `metadata/case_metadata.xlsx`: treatment delivery schedule and DICOM metadata (machine, acquisition parameters, patient demographics).
-  - `Data_Snakemake/<patient>/<course>/qc_reports/*.json`: structured QC checks—file integrity, frame-of-reference consistency, and boundary-touch alerts for each ROI.
-  - `Data_Snakemake/<patient>/<course>/Segmentation_CustomModels/<model>/`: custom nnUNet masks (`*.nii.gz`), `rtstruct.dcm`, and manifest metadata powering the `CustomModel:<model>` entries in DVH/radiomics tables.
+---
 
-- **Aggregation directory (`Data_Snakemake/_RESULTS/`)**
-  - `dvh_metrics.xlsx`, `radiomics_ct.xlsx`, `fractions.xlsx`, `case_metadata.xlsx`, `qc_reports.xlsx`: concatenated versions of the per-course tables with added course/patient identifiers for cohort-level analysis.
-  - `plans.xlsx`, `structure_sets.xlsx`, `metadata.xlsx`, etc., copied from `Data_Snakemake/Data/`, providing global listings of plans, structure sets, CT images, and related metadata.
+## 1. Course Directory Overview
 
-- **Metadata breadcrumbs**
-  - `Data_Snakemake/_COURSES/manifest.json`: master index of patient/course directories.
-  - `Data_Snakemake/<patient>/<course>/.<stage>_done`: sentinel files for Snakemake bookkeeping.
-  - `Data_Snakemake/<patient>/<course>/metadata/custom_structure_warnings.json`: enumerates custom ROIs built from incomplete or cropped sources (see Section 3).
+Each course lives under `Data_Snakemake/<patient>/<course>/` and contains:
 
-## 2. Applying the `__partial` convention
-From the 6 October 2025 run onward, any contour deemed geometrically incomplete is renamed with a `__partial` suffix in all downstream artefacts. Two conditions trigger this label:
+```
+DICOM/CT/…                          # planning CT slices
+DICOM/MR/…                          # MR slices copied directly under the course
+MR/<SeriesInstanceUID>/
+    DICOM/…                         # MR source series
+    NIFTI/<name>.nii.gz             # compressed NIfTI + metadata JSON
+    Segmentation_TotalSegmentator/
+        total_mr--<roi>.nii.gz      # MR binary masks
+        <name>--total_mr.dcm        # MR RTSTRUCT
+Segmentation_TotalSegmentator/…     # CT TotalSegmentator outputs
+Segmentation_CustomModels/<model>/… # nnUNet masks (e.g. cardiac_STOPSTORM, HN_lymph_nodes)
+Segmentation_Original/…             # manual RTSTRUCT converted to masks (if available)
+RS.dcm / RS_auto.dcm / RS_custom.dcm
+radiomics_ct.xlsx
+MR/radiomics_mr.xlsx
+dvh_metrics.xlsx
+fractions.xlsx
+metadata/case_metadata.xlsx
+qc_reports/*.json
+```
 
-1. The input mask touches the CT image boundary (`mask_is_cropped` evaluates to true).
-2. A custom Boolean structure lacks one or more requested source ROIs or inherits a cropped mask.
+Aggregated artefacts reside in `Data_Snakemake/_RESULTS/`:
 
-Columns to monitor:
-- `ROI_Name` (DVH) / `roi_name` (radiomics): use `str.endswith('__partial')` to filter incomplete ROIs.
-- `Segmentation_Source` / `segmentation_source`: values include `Manual`, `AutoRTS`, `Merged`, and `CustomModel:<model>`, enabling head-to-head comparisons between planning, TotalSegmentator, Boolean composites, and custom nnUNet outputs.
-- `structure_cropped` (boolean): remains true for all boundary-touching masks; aligns with the suffix for rapid verification.
-- `ROI_OriginalName` / `roi_original_name`: original labels prior to suffixing, useful when mapping back to planning nomenclature or QC reports.
+* `dvh_metrics.xlsx`
+* `radiomics_ct.xlsx`, `radiomics_mr.xlsx`
+* `fractions.xlsx`
+* `case_metadata.xlsx`
+* `qc_reports.xlsx`
 
-**Recommended practice:** exclude `__partial` entries from primary quantitative analyses unless your study explicitly targets truncated anatomies. Retain the original names for traceability and documentation.
+---
 
-## 3. Interpreting custom structure warnings
-Custom composites (e.g., `pelvic_bones`, `iliac_vess`) are generated via Boolean operations. If prerequisite masks are missing or cropped, the pipeline retains the available data but:
-- Renames the derived contour with `__partial`.
-- Writes `metadata/custom_structure_warnings.json` containing structured entries such as:
-  ```json
-  {
-    "structure": "pelvic_bones__partial",
-    "original_structure": "pelvic_bones",
-    "missing_sources": ["sacrum", "hip_left"],
-    "cropped": true
-  }
-  ```
-Researchers should parse this file before using composite structures; if clinically critical components are absent, consider reconstructing the ROI manually or omitting it from analyses.
+## 2. Radiotherapy Metrics (DVH)
 
-## 4. Quality control signals
-- `qc_reports.xlsx` aggregates each course’s QC JSON into tabular form. Key fields:
-  - `overall_status`: `PASS`, `WARNING`, or `FAIL` (demo data typically sit at `WARNING` due to truncated anatomic coverage).
-  - `checks.structure_cropping.structures`: JSON-encoded list of cropped ROIs with their segmentation source. Cross-reference with the `__partial` suffix to confirm exclusions.
-- `Logs_Snakemake/<stage>`: stage-specific execution logs (organize, segmentation, DVH, radiomics, QC). Inspect these if a stage fails or produces unexpected counts.
+**File**: `dvh_metrics.xlsx`
 
-## 5. Clinical sanity checks before analysis
-1. **Prescription and fractions** (`case_metadata.xlsx` vs. `fractions.xlsx`): ensure total dose and delivered fractions match study design (e.g., 50 Gy / 25 fx). Outliers may indicate multi-plan boosts or incomplete exports.
-2. **Contour integrity**: confirm essential targets (`PTV`, `CTV`, `GTV`) and key pelvic OARs (`Bladder`, `Rectum`, `Femur`, `Bowel`) lack the `__partial` suffix. If they appear cropped, revisit DICOM coverage or segmentation logs.
-3. **Radiomics cohort balance**: count features per segmentation source and partial flag. High `__partial` ratios can bias statistical models; filter or stratify accordingly.
+Key columns:
 
-## 6. Common downstream workflows
-- **DVH analytics**: load `_RESULTS/dvh_metrics.xlsx` into Python/R, filter out `__partial`, and compute dose statistics (Dmean, Dmax, Vx). Use `Segmentation_Source` to separate manual, TotalSegmentator, Boolean custom, and nnUNet ensembles (`CustomModel:*`).
-- **Radiomics modeling**: subset `_RESULTS/radiomics_ct.xlsx` by organ class, drop `__partial`, normalize features, and integrate metadata (age, machine, acquisition parameters) as covariates.
-- **QC reporting**: summarize cropped ROIs per course via `qc_reports.xlsx`, and document exclusion criteria in publications or clinical briefs.
+| Column | Meaning |
+| --- | --- |
+| `ROI_Name` | Clean display name (cropped structures append `__partial`). |
+| `ROI_OriginalName` | Raw name from RTSTRUCT / segmentation output. |
+| `Segmentation_Source` | Provenance: `Manual`, `AutoRTS_total`, `AutoRTS_total_mr`, `Merged`, `Custom`, `CustomModel:<name>`. |
+| `structure_cropped` | `True` when the mask touches the image boundary (quality flag). |
+| `DmeanGy`, `DmaxGy`, … | Standard DVH metrics. |
 
-## 7. Troubleshooting tips
-- Missing aggregates: rerun `snakemake aggregate_results` or inspect stage logs for failures.
-- Excessive `__partial` counts on critical ROIs: check CT coverage or RTSTRUCT integrity; consider re-exporting from the planning system.
-- Radiomics failures (`No module named 'radiomics'`): ensure the `rtpipeline-radiomics` conda environment is available (see `Logs_Snakemake/radiomics/*.log`).
+**Recommended checks**
 
-## 8. Provenance reminder
-All outputs are intended for research analysis. Do **not** re-import derived RTSTRUCTs (`RS_custom.dcm`) into clinical TPS workflows: these files may contain renamed (`__partial`) contours and serve analytical—not treatment—purposes.
+1. Filter out `__partial` structures unless your analysis explicitly handles cropped contours.
+2. Cross-check `Segmentation_Source` to ensure you understand which model produced each ROI.
+3. Review `_RESULTS/qc_reports.xlsx` for courses marked `WARNING` or `FAIL`.
+
+---
+
+## 3. Radiomics Outputs
+
+### CT (`radiomics_ct.xlsx`)
+* Parameters from `rtpipeline/radiomics_params.yaml`.
+* Includes manual, TotalSegmentator, custom structures, and nnUNet outputs.
+* Important columns: `roi_name`, `segmentation_source`, `structure_cropped`, feature columns (GLCM, GLRLM, etc.).
+
+### MR (`MR/radiomics_mr.xlsx`)
+* Parameters from `rtpipeline/radiomics_params_mr.yaml`.
+* Rows correspond to masks produced by TotalSegmentator `total_mr`.
+* Columns: `roi_name`, `series_uid`, `segmentation_source` (`AutoTS_total_mr`), feature columns.
+
+Aggregated copies are in `_RESULTS/radiomics_ct.xlsx` and `_RESULTS/radiomics_mr.xlsx` with additional `patient_id` / `course_id` context.
+
+**Usage tips**
+* Drop or flag rows where `structure_cropped == True`.
+* When merging CT and MR features, include `modality` and `segmentation_source` to avoid mixing sources inadvertently.
+
+---
+
+## 4. Segmentation Manifests
+
+* `Segmentation_TotalSegmentator/<base>/manifest.json` – CT segmentation manifest listing models and masks.
+* `MR/<series>/Segmentation_TotalSegmentator/manifest.json` – MR counterpart for `total_mr`.
+* `Segmentation_CustomModels/<model>/manifest.json` – nnUNet model manifest (structures + originating networks).
+
+These files are useful when auditing which masks exist, the order they were combined in, or updating post-processing pipelines.
+
+---
+
+## 5. MR-Specific Layout
+
+For every referenced MR series:
+
+```
+MR/<SeriesInstanceUID>/DICOM/…                     # original slices
+MR/<SeriesInstanceUID>/NIFTI/<name>.nii.gz         # compressed volume
+MR/<SeriesInstanceUID>/NIFTI/<name>.metadata.json  # modality + linkage
+MR/<SeriesInstanceUID>/Segmentation_TotalSegmentator/
+    total_mr--<ROI>.nii.gz
+    <name>--total_mr.dcm
+```
+
+The metadata JSON contains:
+
+* `modality: "MR"`
+* `series_instance_uid`
+* `nifti_path`/`source_directory`
+* Timestamp of conversion
+
+Radiomics results for the whole course are consolidated into `MR/radiomics_mr.xlsx`.
+
+---
+
+## 6. Quality Control
+
+* `qc_reports/*.json` – per-course, structured QC results (`overall_status`, `checks.structure_cropping`, etc.).
+* `_RESULTS/qc_reports.xlsx` – flattened version for cohort summaries.
+* `metadata/custom_structure_warnings.json` – lists composite structures built from missing sources or cropped inputs (look for `__partial` suffixes).
+
+**Recommended practice**
+* Investigate any course with `overall_status != PASS`.
+* When `structure_cropping` lists critical OARs or targets, consider excluding them or regenerating masks with manual corrections.
+
+---
+
+## 7. Anonymisation Footprint
+
+If you run `scripts/anonymize_pipeline_results.py`, the anonymised tree mirrors the structure above with remapped identifiers. Keep the generated key file secure; it restores patient/course mappings if needed.
+
+---
+
+## 8. Quick Checklist Before Analysis
+
+1. **Course completeness** – verify expected CT/MR series and check QC status.
+2. **Segmentation provenance** – filter by `Segmentation_Source` to separate manual vs automated contours.
+3. **Partial structures** – remove or flag `__partial` entries in DVH and radiomics tables.
+4. **MR availability** – confirm `MR/<series>/Segmentation_TotalSegmentator/` exists before using MR radiomics.
+5. **Custom models** – inspect `Segmentation_CustomModels/<model>/manifest.json` to confirm network and label names.
+
+With these checks you can confidently use the pipeline outputs for statistical modelling, quality monitoring, or downstream AI experiments.
+

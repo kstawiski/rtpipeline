@@ -571,25 +571,29 @@ def segment_course(config: PipelineConfig, course_dir: Path, force: bool = False
         mr_models.append("total_mr")
     mr_models = sorted({m.strip() for m in mr_models if m.strip()})
 
-    if mr_models:
-        for meta_file in sorted(course_dirs.nifti.glob("*.metadata.json")):
+    if mr_models and course_dirs.dicom_mr.exists():
+        for series_root in sorted(p for p in course_dirs.dicom_mr.iterdir() if p.is_dir()):
+            dicom_dir = series_root / "DICOM"
+            nifti_dir = series_root / "NIFTI"
+            if not dicom_dir.exists() or not nifti_dir.exists():
+                continue
+            meta_files = sorted(nifti_dir.glob("*.metadata.json"))
+            if not meta_files:
+                continue
             try:
-                meta = json.loads(meta_file.read_text(encoding="utf-8"))
+                meta = json.loads(meta_files[0].read_text(encoding="utf-8"))
             except Exception:
                 continue
-            modality = str(meta.get("modality", "")).upper()
-            if modality != "MR":
+            if str(meta.get("modality", "")).upper() != "MR":
                 continue
-            nifti_str = meta.get("nifti_path")
-            source_str = meta.get("source_directory")
-            if not isinstance(nifti_str, str) or not nifti_str:
-                continue
-            nifti_path = Path(nifti_str)
+            nifti_path = Path(meta.get("nifti_path") or "")
             if not nifti_path.exists():
                 continue
-            source_dir = Path(source_str) if isinstance(source_str, str) else None
+            source_dir = Path(meta.get("source_directory") or dicom_dir)
+            if not source_dir.exists():
+                continue
             base_name_mr = _strip_nifti_base(nifti_path)
-            base_dir_mr = seg_root / base_name_mr
+            base_dir_mr = series_root / "Segmentation_TotalSegmentator"
             base_dir_mr.mkdir(parents=True, exist_ok=True)
 
             def _mr_ready(model: str) -> bool:
@@ -612,9 +616,7 @@ def segment_course(config: PipelineConfig, course_dir: Path, force: bool = False
                     nifti_tmp.mkdir(parents=True, exist_ok=True)
 
                     rt_out = base_dir_mr / f"{base_name_mr}--{model}.dcm"
-                    ok_dicom = False
-                    if source_dir and source_dir.exists():
-                        ok_dicom = run_totalsegmentator(config, source_dir, dicom_tmp, "dicom", task=task_name)
+                    ok_dicom = run_totalsegmentator(config, source_dir, dicom_tmp, "dicom", task=task_name)
                     ok_nifti = run_totalsegmentator(config, nifti_path, nifti_tmp, "nifti", task=task_name)
 
                     entry = {"model": model, "rtstruct": "", "masks": []}
