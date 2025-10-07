@@ -31,6 +31,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-visualize", action="store_true", help="Skip HTML visualization")
     p.add_argument("--no-radiomics", action="store_true", help="Skip pyradiomics extraction")
     p.add_argument("--radiomics-params", default=None, help="Path to custom pyradiomics YAML parameter file")
+    p.add_argument("--radiomics-params-mr", default=None, help="Path to pyradiomics YAML parameters for MR segmentation")
     p.add_argument("--sequential-radiomics", action="store_true", help="Use sequential radiomics processing (parallel is default)")
     p.add_argument(
         "--radiomics-skip-roi",
@@ -286,6 +287,7 @@ def main(argv: list[str] | None = None) -> int:
         totalseg_roi_subset=args.totalseg_roi_subset,
         workers=args.workers,
         radiomics_params_file=Path(args.radiomics_params).resolve() if args.radiomics_params else None,
+        radiomics_params_file_mr=Path(args.radiomics_params_mr).resolve() if args.radiomics_params_mr else None,
         radiomics_skip_rois=skip_rois,
         radiomics_max_voxels=args.radiomics_max_voxels,
         radiomics_min_voxels=args.radiomics_min_voxels,

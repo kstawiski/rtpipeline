@@ -118,6 +118,16 @@ if _radiomics_params:
 else:
     RADIOMICS_PARAMS = ""
 
+_radiomics_params_mr_cfg = RADIOMICS_CONFIG.get("mr_params_file")
+if _radiomics_params_mr_cfg:
+    params_mr_path = Path(_radiomics_params_mr_cfg)
+    if not params_mr_path.is_absolute():
+        params_mr_path = ROOT_DIR / params_mr_path
+    RADIOMICS_PARAMS_MR = str(params_mr_path.resolve())
+else:
+    default_mr = ROOT_DIR / "rtpipeline" / "radiomics_params_mr.yaml"
+    RADIOMICS_PARAMS_MR = str(default_mr.resolve()) if default_mr.exists() else ""
+
 _radiomics_skip_cfg = RADIOMICS_CONFIG.get("skip_rois") or []
 if isinstance(_radiomics_skip_cfg, str):
     RADIOMICS_SKIP_ROIS = [item.strip() for item in _radiomics_skip_cfg.replace(";", ",").split(",") if item.strip()]
@@ -153,6 +163,7 @@ COURSE_MANIFEST = COURSE_META_DIR / "manifest.json"
 AGG_OUTPUTS = {
     "dvh": RESULTS_DIR / "dvh_metrics.xlsx",
     "radiomics": RESULTS_DIR / "radiomics_ct.xlsx",
+    "radiomics_mr": RESULTS_DIR / "radiomics_mr.xlsx",
     "fractions": RESULTS_DIR / "fractions.xlsx",
     "metadata": RESULTS_DIR / "case_metadata.xlsx",
     "qc": RESULTS_DIR / "qc_reports.xlsx",
@@ -453,6 +464,8 @@ rule radiomics_course:
             cmd.append("--sequential-radiomics")
         if RADIOMICS_PARAMS:
             cmd.extend(["--radiomics-params", RADIOMICS_PARAMS])
+        if RADIOMICS_PARAMS_MR:
+            cmd.extend(["--radiomics-params-mr", RADIOMICS_PARAMS_MR])
         if RADIOMICS_MAX_VOXELS:
             cmd.extend(["--radiomics-max-voxels", str(RADIOMICS_MAX_VOXELS)])
         if RADIOMICS_MIN_VOXELS:
@@ -514,6 +527,7 @@ rule aggregate_results:
     output:
         dvh=str(AGG_OUTPUTS["dvh"]),
         radiomics=str(AGG_OUTPUTS["radiomics"]),
+        radiomics_mr=str(AGG_OUTPUTS["radiomics_mr"]),
         fractions=str(AGG_OUTPUTS["fractions"]),
         metadata=str(AGG_OUTPUTS["metadata"]),
         qc=str(AGG_OUTPUTS["qc"])
@@ -624,6 +638,29 @@ rule aggregate_results:
             pd.concat(rad_frames, ignore_index=True).to_excel(output.radiomics, index=False)
         else:
             pd.DataFrame(columns=["patient_id", "course_id", "roi_name", "structure_cropped"]).to_excel(output.radiomics, index=False)
+        def _load_radiomics_mr(course):
+            pid, cid, cdir = course
+            path = cdir / "radiomics_mr.xlsx"
+            if not path.exists():
+                return None
+            try:
+                df = pd.read_excel(path)
+            except Exception:
+                return None
+            if "patient_id" not in df.columns:
+                df.insert(0, "patient_id", pid)
+            else:
+                df["patient_id"] = df["patient_id"].fillna(pid)
+            if "course_id" not in df.columns:
+                df.insert(1, "course_id", cid)
+            else:
+                df["course_id"] = df["course_id"].fillna(cid)
+            return df
+        rad_mr_frames = _collect_frames(_load_radiomics_mr)
+        if rad_mr_frames:
+            pd.concat(rad_mr_frames, ignore_index=True).to_excel(output.radiomics_mr, index=False)
+        else:
+            pd.DataFrame(columns=["patient_id", "course_id", "roi_name"]).to_excel(output.radiomics_mr, index=False)
 
         def _load_fraction(course):
             pid, cid, cdir = course
