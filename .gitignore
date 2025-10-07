@@ -53,7 +53,13 @@ Example_data/
 **/*.nii.gz
 
 # Custom model artefacts (nnUNet weights, caches, temp outputs)
-custom_models/
+custom_models/**
+!custom_models/*/
+!custom_models/**/
+!custom_models/**/custom_model.yaml
+custom_models/**/2d/
+custom_models/**/3d_fullres/
+custom_models/**/HNLNL_autosegmentation_trained_models/
 Segmentation_*/
 
 .claude/

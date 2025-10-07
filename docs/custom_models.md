@@ -30,14 +30,20 @@ nnunet:
   command: nnUNetv2_predict         # optional, defaults to CLI --nnunet-predict
   model: 3d_fullres                 # optional, defaults to 3d_fullres
   folds: all                        # optional, defaults to all
+  interface: nnunetv1|nnunetv2      # optional, defaults to nnunetv2
   env:                              # optional environment overrides
     nnUNet_results: ./nnUNet_results
     nnUNet_raw: ./nnUNet_raw
     nnUNet_preprocessed: ./nnUNet_preprocessed
   networks:
-    - id: "603"                     # nnUNet dataset / task identifier
+    - id: "603"                     # nnUNet dataset/task identifier
+      alias: 603                    # optional shorthand used elsewhere in the config
       archive: model603.zip         # zip containing the nnUNet weights
-      dataset_directory: Dataset603_STST_small_full   # folder created by the archive
+      source_directory: null        # optional pre-unpacked weight location (relative to model)
+      dataset_directory: Dataset603_STST_small_full   # folder created or copied into nnUNet_results
+      architecture: 3d_fullres      # optional override for CLI (v1) / model selection (v2)
+      trainer: nnUNetTrainerV2      # optional trainer name (v1)
+      plans: nnUNetPlansv2.1        # optional plan identifier (v1)
       label_order:                  # list of class labels in order of nnUNet output IDs
         - Structure_A
         - Structure_B
@@ -57,18 +63,26 @@ nnunet:
 - `description`: Optional documentation string shown in manifests.
 - `nnunet.command`: Command used to launch inference. Defaults to the pipeline
   flag `--nnunet-predict` (default `nnUNetv2_predict`).
+- `nnunet.interface`: Choose between `nnunetv2` (default) and `nnunetv1`. v1 enables
+  legacy commands such as `nnUNet_predict`/`nnUNet_ensemble`.
 - `nnunet.model` / `nnunet.folds`: Passed directly to `nnUNetv2_predict`.
 - `nnunet.env`: Environment variables applied before running nnU-Net. Relative
   paths are resolved inside the model directory. `nnUNet_results`,
   `nnUNet_raw`, and `nnUNet_preprocessed` default to subdirectories in the
   model folder if not supplied.
 - `nnunet.networks`: One or more nnUNet datasets to run. Each entry must provide
-  an `id`, the `archive` that contains the weights, the `dataset_directory`
-  created by that archive, and a `label_order` list describing the structures in
+  an `id`, the desired `alias`, the weights location (`archive` for ZIPs or
+  `source_directory` for pre-unpacked models), the `dataset_directory` to create
+  under `nnUNet_results`, and a `label_order` list describing the structures in
   the order produced by nnU-Net (label index `1` corresponds to the first name).
 - `nnunet.combine.ordered_networks`: Optional list that specifies the precedence
   when multiple networks produce the same structure name. Later entries take
   priority. Defaults to the order defined under `networks`.
+- `nnunet.ensemble`: Optional block describing an `nnUNet_ensemble` call. Specify
+  a command, the list of input network aliases, an optional
+  `postprocessing_json`, and (when it differs from individual networks) a
+  `label_order` that enumerates the expected structures in the final combined
+  output.
 
 ## Generated Outputs
 
