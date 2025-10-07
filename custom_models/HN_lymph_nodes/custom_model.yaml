@@ -1,0 +1,101 @@
+name: HN_lymph_nodes
+description: >
+  Ensemble of 2D and 3D nnU-Net v1 models for head-and-neck lymph node level
+  segmentation as released with the HNLNL autosegmentation project.
+nnunet:
+  interface: nnunetv1
+  command: nnUNet_predict
+  model: 3d_fullres
+  folds: all
+  env:
+    nnUNet_results: ./nnUNet_results
+    nnUNet_raw: ./nnUNet_raw
+    nnUNet_preprocessed: ./nnUNet_preprocessed
+    RESULTS_FOLDER: ./nnUNet_results
+  ensemble:
+    command: nnUNet_ensemble
+    inputs: ["3d_fullres", "2d"]
+    postprocessing_json: HNLNL_autosegmentation_trained_models/ensemble/postprocessing.json
+    label_order:
+      - Level_1a
+      - Level_1b_left
+      - Level_1b_right
+      - Level_2_left
+      - Level_2_right
+      - Level_3_left
+      - Level_3_right
+      - Level_4a_left
+      - Level_4a_right
+      - Level_4b_left
+      - Level_4b_right
+      - Level_5_left
+      - Level_5_right
+      - Level_6a
+      - Level_6b
+      - Level_7a
+      - Level_7b_left
+      - Level_7b_right
+      - Level_8_left
+      - Level_8_right
+  networks:
+    - id: Task110_HNLNFixed_MirrorBest
+      alias: 3d_fullres
+      task: Task110_HNLNFixed_MirrorBest
+      architecture: 3d_fullres
+      trainer: nnUNetTrainerV2
+      cascade_trainer: nnUNetTrainerV2CascadeFullRes
+      plans: nnUNetPlansv2.1
+      source_directory: 3d_fullres/Task110_HNLNFixed_MirrorBest
+      dataset_directory: nnUNet/3d_fullres/Task110_HNLNFixed_MirrorBest
+      label_order:
+        - Level_1a
+        - Level_1b_left
+        - Level_1b_right
+        - Level_2_left
+        - Level_2_right
+        - Level_3_left
+        - Level_3_right
+        - Level_4a_left
+        - Level_4a_right
+        - Level_4b_left
+        - Level_4b_right
+        - Level_5_left
+        - Level_5_right
+        - Level_6a
+        - Level_6b
+        - Level_7a
+        - Level_7b_left
+        - Level_7b_right
+        - Level_8_left
+        - Level_8_right
+    - id: Task110_HNLNFixed_MirrorBest
+      alias: 2d
+      task: Task110_HNLNFixed_MirrorBest
+      architecture: 2d
+      trainer: nnUNetTrainerV2
+      plans: nnUNetPlansv2.1
+      source_directory: 2d/Task110_HNLNFixed_MirrorBest
+      dataset_directory: nnUNet/2d/Task110_HNLNFixed_MirrorBest
+      label_order:
+        - Level_1a
+        - Level_1b_left
+        - Level_1b_right
+        - Level_2_left
+        - Level_2_right
+        - Level_3_left
+        - Level_3_right
+        - Level_4a_left
+        - Level_4a_right
+        - Level_4b_left
+        - Level_4b_right
+        - Level_5_left
+        - Level_5_right
+        - Level_6a
+        - Level_6b
+        - Level_7a
+        - Level_7b_left
+        - Level_7b_right
+        - Level_8_left
+        - Level_8_right
+  combine:
+    ordered_networks: ["ensemble"]

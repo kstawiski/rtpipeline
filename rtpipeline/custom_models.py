@@ -30,10 +30,26 @@ logger = logging.getLogger(__name__)
 @dataclass(slots=True)
 class NetworkDefinition:
     network_id: str
-    archive_path: Path
+    alias: str
+    archive_path: Optional[Path]
     dataset_dir: str
     label_names: List[str]
     env: Dict[str, str] = field(default_factory=dict)
+    source_dir: Optional[str] = None
+    architecture: Optional[str] = None
+    trainer: Optional[str] = None
+    cascade_trainer: Optional[str] = None
+    plans: Optional[str] = None
+    folds: str = "all"
+    task: Optional[str] = None
+
+
+@dataclass(slots=True)
+class EnsembleDefinition:
+    command: str
+    inputs: List[str]
+    postprocessing_json: Optional[str] = None
+    label_names: Optional[List[str]] = None
 
 
 @dataclass(slots=True)
@@ -47,16 +63,23 @@ class CustomModelDefinition:
     networks: List[NetworkDefinition]
     combine_order: List[str]
     description: str = ""
+    interface: str = "nnunetv2"
+    ensemble: Optional[EnsembleDefinition] = None
 
     def get_network(self, network_id: str) -> Optional[NetworkDefinition]:
         for net in self.networks:
-            if net.network_id == network_id:
+            if net.network_id == network_id or net.alias == network_id:
                 return net
         return None
 
     def expected_structures(self) -> List[str]:
         seen: List[str] = []
         for network_id in self.combine_order:
+            if network_id == "ensemble" and self.ensemble and self.ensemble.label_names:
+                for name in self.ensemble.label_names:
+                    if name not in seen:
+                        seen.append(name)
+                continue
             net = self.get_network(network_id)
             if net is None:
                 continue
@@ -137,7 +160,8 @@ def _parse_custom_model(model_dir: Path, data: dict, default_command: str) -> Cu
     if not isinstance(nnunet_cfg, dict):
         raise ValueError("Missing 'nnunet' section")
 
-    command = str(nnunet_cfg.get("command") or default_command or "nnUNetv2_predict")
+    interface = str(nnunet_cfg.get("interface") or "nnunetv2").strip().lower()
+    command = str(nnunet_cfg.get("command") or default_command or ("nnunet_predict" if interface == "nnunetv1" else "nnUNetv2_predict"))
     model_type = str(nnunet_cfg.get("model") or "3d_fullres")
     folds = str(nnunet_cfg.get("folds") or "all")
 
@@ -158,16 +182,21 @@ def _parse_custom_model(model_dir: Path, data: dict, default_command: str) -> Cu
         if raw_id is None:
             raise ValueError("Network entry missing 'id'")
         network_id = str(raw_id).strip()
+        alias = str(entry.get("alias") or entry.get("name") or entry.get("architecture") or network_id).strip()
         archive = entry.get("archive") or entry.get("weights")
-        if not archive:
-            raise ValueError(f"Network {network_id}: missing 'archive'")
-        archive_path = (model_dir / str(archive)).resolve()
+        archive_path = (model_dir / str(archive)).resolve() if archive else None
 
         dataset_dir_raw = entry.get("dataset_directory") or entry.get("dataset_dir") or entry.get("dataset")
         if dataset_dir_raw:
             dataset_dir = str(dataset_dir_raw).strip()
-        else:
+        elif archive:
             dataset_dir = Path(str(archive)).stem
+        else:
+            dataset_dir = alias
+
+        source_dir = entry.get("source_directory") or entry.get("source_dir")
+        if source_dir:
+            source_dir = str(source_dir).strip()
 
         labels = entry.get("label_order") or entry.get("structures") or entry.get("labels")
         if not isinstance(labels, list) or not labels:
@@ -179,13 +208,30 @@ def _parse_custom_model(model_dir: Path, data: dict, default_command: str) -> Cu
             raise ValueError(f"Network {network_id}: env must be a mapping when provided")
         net_env = {str(k): str(v) for k, v in net_env_cfg.items() if v is not None}
 
+        architecture = entry.get("architecture") or entry.get("model")
+        trainer = entry.get("trainer")
+        cascade_trainer = entry.get("cascade_trainer") or entry.get("cascade_trainer_fullres")
+        plans = entry.get("plans")
+        folds_override = str(entry.get("folds") or nnunet_cfg.get("folds") or folds)
+        task = entry.get("task")
+        if task:
+            task = str(task).strip()
+
         networks.append(
             NetworkDefinition(
                 network_id=network_id,
+                alias=alias,
                 archive_path=archive_path,
                 dataset_dir=dataset_dir,
                 label_names=label_names,
                 env=net_env,
+                source_dir=source_dir,
+                architecture=str(architecture).strip() if architecture else None,
+                trainer=str(trainer).strip() if trainer else None,
+                cascade_trainer=str(cascade_trainer).strip() if cascade_trainer else None,
+                plans=str(plans).strip() if plans else None,
+                folds=folds_override,
+                task=task,
             )
         )
 
@@ -194,13 +240,36 @@ def _parse_custom_model(model_dir: Path, data: dict, default_command: str) -> Cu
     if isinstance(order_raw, list) and order_raw:
         combine_order = [str(item).strip() for item in order_raw if str(item).strip()]
     else:
-        combine_order = [net.network_id for net in networks]
+        combine_order = [net.alias for net in networks]
 
     # Keep only known networks in the final order (preserving duplicates for precedence)
-    known_ids = {net.network_id for net in networks}
+    known_ids = {net.alias for net in networks} | {net.network_id for net in networks}
+
+    ensemble_cfg = nnunet_cfg.get("ensemble")
+    ensemble_def: Optional[EnsembleDefinition] = None
+    if isinstance(ensemble_cfg, dict):
+        ensemble_command = str(ensemble_cfg.get("command") or "nnUNet_ensemble")
+        inputs_raw = ensemble_cfg.get("inputs") or [net.alias for net in networks]
+        if not isinstance(inputs_raw, list) or not inputs_raw:
+            raise ValueError("ensemble.inputs must be a non-empty list when ensemble is defined")
+        ensemble_inputs = [str(item).strip() for item in inputs_raw if str(item).strip()]
+        post_json = ensemble_cfg.get("postprocessing_json") or ensemble_cfg.get("postprocessing")
+        label_order = ensemble_cfg.get("label_order") or ensemble_cfg.get("labels")
+        if label_order is not None and (not isinstance(label_order, list) or not label_order):
+            raise ValueError("ensemble.label_order must be a non-empty list when provided")
+        ensemble_def = EnsembleDefinition(
+            command=ensemble_command,
+            inputs=ensemble_inputs,
+            postprocessing_json=str(post_json).strip() if post_json else None,
+            label_names=[str(l).strip() for l in label_order] if label_order else None,
+        )
+        known_ids.add("ensemble")
+        if "ensemble" not in combine_order:
+            combine_order = ["ensemble"] + combine_order
+
     combine_order = [nid for nid in combine_order if nid in known_ids]
     if not combine_order:
-        combine_order = [net.network_id for net in networks]
+        combine_order = [net.alias for net in networks]
 
     description = str(data.get("description") or data.get("summary") or "")
 
@@ -214,6 +283,8 @@ def _parse_custom_model(model_dir: Path, data: dict, default_command: str) -> Cu
         networks=networks,
         combine_order=combine_order,
         description=description,
+        interface=interface,
+        ensemble=ensemble_def,
     )
 
 
@@ -284,20 +355,37 @@ def _prepare_network_weights(model: CustomModelDefinition, network: NetworkDefin
     if dataset_dir.exists():
         return dataset_dir
 
-    archive_path = network.archive_path
-    if not archive_path.exists():
-        raise FileNotFoundError(f"Required archive not found for network {network.network_id}: {archive_path}")
-
     results_root.mkdir(parents=True, exist_ok=True)
-    logger.info("Extracting weights for model %s network %s", model.name, network.network_id)
-    with zipfile.ZipFile(archive_path, "r") as zf:
-        zf.extractall(results_root)
+    archive_path = network.archive_path
+    if archive_path and archive_path.exists() and archive_path.is_file():
+        logger.info("Extracting weights for model %s network %s", model.name, network.network_id)
+        with zipfile.ZipFile(archive_path, "r") as zf:
+            zf.extractall(results_root)
+    else:
+        source_dir = network.source_dir
+        candidate_source: Optional[Path] = None
+        if source_dir:
+            candidate = (model.directory / source_dir).resolve()
+            if candidate.exists():
+                candidate_source = candidate
+        if candidate_source is None and archive_path and archive_path.exists() and archive_path.is_dir():
+            candidate_source = archive_path.resolve()
+        if candidate_source is None:
+            raise FileNotFoundError(
+                f"Unable to locate weights for network {network.network_id}: "
+                f"archive={archive_path}, source_dir={network.source_dir}"
+            )
+        dest_parent = dataset_dir.parent
+        dest_parent.mkdir(parents=True, exist_ok=True)
+        if dataset_dir.exists():
+            return dataset_dir
+        logger.info("Copying weights for model %s network %s", model.name, network.network_id)
+        shutil.copytree(candidate_source, dataset_dir)
 
     if not dataset_dir.exists():
-        available = sorted(p.name for p in results_root.iterdir())
+        available = sorted(str(p.relative_to(results_root)) for p in results_root.rglob("*"))
         raise FileNotFoundError(
-            f"After extracting {archive_path.name}, expected directory '{network.dataset_dir}' "
-            f"under {results_root} but found {available}"
+            f"After preparing weights, expected directory '{network.dataset_dir}' under {results_root} but it is missing."
         )
     return dataset_dir
 
@@ -317,19 +405,42 @@ def _run_nnunet_prediction(
 ) -> None:
     import shlex
 
-    cmd_parts = [
-        model.command or cfg.nnunet_predict_cmd,
-        "-i",
-        str(input_dir),
-        "-o",
-        str(output_dir),
-        "-d",
-        str(network.network_id),
-        "-c",
-        model.model,
-        "-f",
-        model.folds,
-    ]
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    if model.interface == "nnunetv1":
+        cmd_parts = [
+            model.command or "nnUNet_predict",
+            "-i",
+            str(input_dir),
+            "-o",
+            str(output_dir),
+            "-m",
+            str(network.architecture or model.model),
+            "-t",
+            str(network.task or network.network_id),
+            "-f",
+            str(network.folds or model.folds),
+        ]
+        if network.trainer:
+            cmd_parts.extend(["-tr", str(network.trainer)])
+        if network.cascade_trainer:
+            cmd_parts.extend(["-ctr", str(network.cascade_trainer)])
+        if network.plans:
+            cmd_parts.extend(["-p", str(network.plans)])
+    else:
+        cmd_parts = [
+            model.command or cfg.nnunet_predict_cmd,
+            "-i",
+            str(input_dir),
+            "-o",
+            str(output_dir),
+            "-d",
+            str(network.network_id),
+            "-c",
+            str(network.architecture or model.model),
+            "-f",
+            str(network.folds or model.folds),
+        ]
 
     cmd = f"{_command_prefix(cfg)}{' '.join(shlex.quote(part) for part in cmd_parts)}"
     logger.info("Running nnUNet prediction: %s", cmd)
@@ -444,13 +555,6 @@ def _build_rtstruct(
     except Exception as exc:
         logger.debug("RTSTRUCT ROI fix failed for %s: %s", rtstruct_path, exc)
 
-    try:
-        if alias_path.exists():
-            alias_path.unlink()
-        shutil.copy2(rtstruct_path, alias_path)
-    except Exception as exc:
-        logger.debug("Unable to copy RTSTRUCT to %s: %s", alias_path, exc)
-
     manifest = {
         "generated_at": datetime.datetime.utcnow().isoformat() + "Z",
         "rtstruct": "rtstruct.dcm",
@@ -471,6 +575,8 @@ def _run_single_model(
     ct_dir: Path,
     model: CustomModelDefinition,
 ) -> None:
+    import shlex
+
     output_root = course.dirs.segmentation_custom_models / model.name
     output_root.mkdir(parents=True, exist_ok=True)
 
@@ -484,6 +590,8 @@ def _run_single_model(
     env = os.environ.copy()
     resolved_env = model.resolved_env()
     env.update(resolved_env)
+    if model.interface == "nnunetv1":
+        env.setdefault("RESULTS_FOLDER", resolved_env.get("nnUNet_results", ""))
     for key in ("nnUNet_results", "nnUNet_raw", "nnUNet_preprocessed"):
         try:
             Path(resolved_env[key]).mkdir(parents=True, exist_ok=True)
@@ -502,20 +610,59 @@ def _run_single_model(
         shutil.copy2(nifti_path, input_case)
 
         structures_by_network: Dict[str, Dict[str, sitk.Image]] = {}
+        output_dirs: Dict[str, Path] = {}
 
         for network in model.networks:
             network_env = _combined_env(env, network.env)
             _prepare_network_weights(model, network)
-            output_dir = tmp_root / f"output_{network.network_id}"
+            output_dir = tmp_root / f"output_{_sanitize_token(network.alias)}"
             output_dir.mkdir(parents=True, exist_ok=True)
             _run_nnunet_prediction(cfg, model, network, input_dir, output_dir, network_env)
             seg_img = _load_segmentation_output(output_dir)
-            structures_by_network[network.network_id] = _make_binary_masks(seg_img, network.label_names)
+            structures_by_network[network.alias] = _make_binary_masks(seg_img, network.label_names)
+            output_dirs[network.alias] = output_dir
+
+        if model.ensemble:
+            ensemble_inputs: List[Path] = []
+            for alias in model.ensemble.inputs:
+                key = alias
+                if alias not in output_dirs:
+                    net = model.get_network(alias)
+                    if net and net.alias in output_dirs:
+                        key = net.alias
+                if key not in output_dirs:
+                    raise RuntimeError(f"Ensemble input {alias} not available for model {model.name}")
+                ensemble_inputs.append(output_dirs[key])
+            ensemble_out = tmp_root / "ensemble_output"
+            ensemble_out.mkdir(parents=True, exist_ok=True)
+            ensemble_cmd_parts = [model.ensemble.command, "-f"]
+            ensemble_cmd_parts.extend(str(p) for p in ensemble_inputs)
+            ensemble_cmd_parts.extend(["-o", str(ensemble_out)])
+            if model.ensemble.postprocessing_json:
+                pp_path = Path(model.ensemble.postprocessing_json)
+                if not pp_path.is_absolute():
+                    pp_path = (model.directory / pp_path).resolve()
+                ensemble_cmd_parts.extend(["-pp", str(pp_path)])
+            ensemble_cmd = f"{_command_prefix(cfg)}{' '.join(shlex.quote(part) for part in ensemble_cmd_parts)}"
+            logger.info("Running nnUNet ensemble: %s", ensemble_cmd)
+            if not _run_shell(ensemble_cmd, env=env):
+                raise RuntimeError(f"nnUNet ensemble failed for model {model.name}")
+            ensemble_img = _load_segmentation_output(ensemble_out)
+            label_names = model.ensemble.label_names or (model.networks[0].label_names if model.networks else [])
+            structures_by_network["ensemble"] = _make_binary_masks(ensemble_img, label_names)
+            output_dirs["ensemble"] = ensemble_out
 
     combined_structures: Dict[str, sitk.Image] = {}
     structure_source: Dict[str, str] = {}
     for network_id in model.combine_order:
-        for name, img in structures_by_network.get(network_id, {}).items():
+        masks = structures_by_network.get(network_id)
+        if masks is None:
+            net = model.get_network(network_id)
+            if net:
+                masks = structures_by_network.get(net.alias)
+        if masks is None:
+            continue
+        for name, img in masks.items():
             combined_structures[name] = img
             structure_source[name] = network_id
 
