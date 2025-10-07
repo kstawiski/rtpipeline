@@ -19,6 +19,7 @@ class CourseDirs:
     nifti: Path
     segmentation_original: Path
     segmentation_totalseg: Path
+    segmentation_custom_models: Path
     metadata: Path
     qc_reports: Path
 
@@ -33,6 +34,7 @@ class CourseDirs:
             self.nifti,
             self.segmentation_original,
             self.segmentation_totalseg,
+            self.segmentation_custom_models,
             self.metadata,
             self.qc_reports,
         ):
@@ -52,6 +54,7 @@ def build_course_dirs(root: Path) -> CourseDirs:
         nifti=root / "NIFTI",
         segmentation_original=root / "Segmentation_Original",
         segmentation_totalseg=root / "Segmentation_TotalSegmentator",
+        segmentation_custom_models=root / "Segmentation_CustomModels",
         metadata=root / "metadata",
         qc_reports=root / "qc_reports",
     )
