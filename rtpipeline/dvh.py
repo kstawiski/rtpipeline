@@ -254,6 +254,85 @@ def _create_custom_structures_rtstruct(
         existing_names = set()
         available_masks: Dict[str, np.ndarray] = {}
 
+        totalseg_mask_cache: Dict[str, Optional[np.ndarray]] = {}
+        ct_image: Optional[sitk.Image] = None
+
+        def _ensure_ct_image() -> Optional[sitk.Image]:
+            nonlocal ct_image
+            if ct_image is not None:
+                return ct_image
+            reader = sitk.ImageSeriesReader()
+            series_ids = reader.GetGDCMSeriesIDs(str(ct_dir))
+            if not series_ids:
+                logger.warning("No CT series found for spacing calculation")
+                return None
+            dicom_files = reader.GetGDCMSeriesFileNames(str(ct_dir), series_ids[0])
+            reader.SetFileNames(dicom_files)
+            try:
+                ct_image = reader.Execute()
+            except Exception as exc:
+                logger.warning("Failed to load CT series for %s: %s", course_dir, exc)
+                ct_image = None
+            return ct_image
+
+        def _totalseg_mask(roi_name: str) -> Optional[np.ndarray]:
+            key = roi_name.strip().lower()
+            if key in totalseg_mask_cache:
+                return totalseg_mask_cache[key]
+            seg_root = course_dir / "Segmentation_TotalSegmentator"
+            if not seg_root.exists():
+                totalseg_mask_cache[key] = None
+                return None
+            mask_path: Optional[Path] = None
+            for subdir in seg_root.iterdir():
+                if not subdir.is_dir():
+                    continue
+                manifest_path = subdir / "manifest.json"
+                if not manifest_path.exists():
+                    continue
+                try:
+                    data = json.loads(manifest_path.read_text(encoding="utf-8"))
+                except Exception:
+                    continue
+                for model in data.get("models", []):
+                    for mask_file in model.get("masks", []):
+                        if "--" not in mask_file:
+                            continue
+                        _, roi_part = mask_file.split("--", 1)
+                        roi_base = roi_part.replace('.nii.gz', '').strip().lower()
+                        if roi_base == key:
+                            candidate = subdir / mask_file
+                            if candidate.exists():
+                                mask_path = candidate
+                                break
+                    if mask_path:
+                        break
+                if mask_path:
+                    break
+            if not mask_path:
+                totalseg_mask_cache[key] = None
+                return None
+            try:
+                img = sitk.ReadImage(str(mask_path))
+                reference_ct = _ensure_ct_image()
+                if reference_ct is not None:
+                    img = sitk.Resample(
+                        img,
+                        reference_ct,
+                        sitk.Transform(),
+                        sitk.sitkNearestNeighbor,
+                        0,
+                        img.GetPixelID(),
+                    )
+                arr = sitk.GetArrayFromImage(img)
+                mask = np.moveaxis(arr.astype(bool), 0, -1)
+            except Exception as exc:
+                logger.debug("TotalSegmentator fallback failed for %s: %s", roi_name, exc)
+                totalseg_mask_cache[key] = None
+                return None
+            totalseg_mask_cache[key] = mask
+            return mask
+
         def _harvest_masks(builder: "RTStructBuilder", label: str, add_missing: bool = False) -> None:
             nonlocal existing_names, available_masks
             for roi_name in builder.get_roi_names():
@@ -261,10 +340,14 @@ def _create_custom_structures_rtstruct(
                     mask = builder.get_roi_mask_by_name(roi_name)
                 except Exception as exc:  # pragma: no cover - safety
                     logger.debug("Failed to fetch mask for %s from %s: %s", roi_name, label, exc)
-                    continue
+                    mask = None
                 if mask is None or not np.any(mask):
-                    continue
-                mask_bool = mask.astype(bool)
+                    fallback = _totalseg_mask(roi_name)
+                    if fallback is None or not np.any(fallback):
+                        continue
+                    mask_bool = fallback.astype(bool)
+                else:
+                    mask_bool = mask.astype(bool)
                 available_masks.setdefault(roi_name, mask_bool)
                 already_present = roi_name in existing_names
                 if add_missing and not already_present:
@@ -300,16 +383,9 @@ def _create_custom_structures_rtstruct(
             except Exception as exc:
                 logger.warning("Failed to integrate auto structures: %s", exc)
 
-        # Get spacing from CT
-        reader = sitk.ImageSeriesReader()
-        series_ids = reader.GetGDCMSeriesIDs(str(ct_dir))
-        if not series_ids:
-            logger.warning("No CT series found for spacing calculation")
+        ct_image = _ensure_ct_image()
+        if ct_image is None:
             return None
-
-        dicom_files = reader.GetGDCMSeriesFileNames(str(ct_dir), series_ids[0])
-        reader.SetFileNames(dicom_files)
-        ct_image = reader.Execute()
         spacing = ct_image.GetSpacing()
 
         # Process custom structures
