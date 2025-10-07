@@ -28,6 +28,7 @@ custom_models:
 radiomics:
   sequential: false
   params_file: "rtpipeline/radiomics_params.yaml"
+  mr_params_file: "rtpipeline/radiomics_params_mr.yaml"
   thread_limit: 4  # CPU threads per radiomics worker (null => no limit)
   skip_rois:
     - body

@@ -5,10 +5,10 @@ KONSTA_DICOMRT_Processing provides an end-to-end radiotherapy imaging pipeline t
 
 ## Workflow Architecture
 1. **Organize** – `rtpipeline.cli --stage organize` indexes CT, RTPLAN, RTDOSE, and RTSTRUCT objects, infers course boundaries, and exports harmonized metadata workbooks under `Data_Snakemake/Data`.
-2. **Segmentation (TotalSegmentator)** – TotalSegmentator runs both DICOM and NIfTI pathways to construct auto-segmentation masks; bespoke structures are synthesized from Boolean operations defined in `custom_structures_*.yaml`. Auto-contours are written as `RS_auto.dcm` and mirrored into Excel summaries.
+2. **Segmentation (TotalSegmentator)** – TotalSegmentator runs both DICOM and NIfTI pathways to construct auto-segmentation masks; bespoke structures are synthesized from Boolean operations defined in `custom_structures_*.yaml`. Course-associated MR series discovered via REG mappings are copied into `<patient>/<course>/MR/`, converted to NIfTI, and processed with the `total_mr` task alongside CT auto-contours. Auto-contours are written as `RS_auto.dcm` and mirrored into Excel summaries.
 3. **Custom nnU-Net models** – The `segmentation_custom_models` stage scans `custom_models/` for nnUNetv2 configurations (see `custom_models.md`), extracts bundled weights, performs inference, and writes per-model masks plus `rtstruct.dcm` into `Data_Snakemake/<patient>/<course>/Segmentation_CustomModels/<model>/`. DVH and radiomics stages now ingest these outputs automatically, tagging metrics with `Segmentation_Source = CustomModel:<name>`.
 4. **DVH computation** – Dose–volume metrics are computed per structure, merged with segmentation provenance (manual, TotalSegmentator, merged custom structures, and custom nnU-Net models), and exported as `dvh_metrics.xlsx` per course and in `_RESULTS/dvh_metrics.xlsx`.
-5. **Radiomics extraction** – PyRadiomics executes via the dedicated `rtpipeline-radiomics` conda environment when native imports fail, producing per-ROI feature matrices across all segmentation sources and noting voxel-based exclusion criteria.
+5. **Radiomics extraction** – PyRadiomics executes via the dedicated `rtpipeline-radiomics` conda environment when native imports fail, producing per-ROI feature matrices across all segmentation sources (CT → `radiomics_ct.xlsx`, MR → `radiomics_mr.xlsx`) while applying modality-specific parameter sets (`radiomics_params.yaml` for CT, `radiomics_params_mr.yaml` for MR).
 6. **Quality control** – Structured JSON reports and aggregated Excel sheets capture modality checks, frame-of-reference consistency, and structural cropping audits.
 7. **Aggregation** – Course-level Excel workbooks (dose, fractions, metadata, QC) are collated into `_RESULTS`, with supplemental modality manifests surfaced under `Data_Snakemake/Data` for downstream statistical analysis.
 
@@ -36,7 +36,7 @@ Conda environments are materialized dynamically by Snakemake under `$HOME/.snake
 Key tunables reside in `config.yaml`:
 - `dicom_root`, `output_dir`, `logs_dir`: define input and output roots; defaults target `Example_data` → `Data_Snakemake`.
 - `workers`: maximum CPU workers for non-segmentation stages; segmentation has dedicated controls (`segmentation.workers`, `threads_per_worker`, `fast`, `extra_models`, `roi_subset`, `force`).
-- `radiomics`: governs sequential vs. parallel execution, parameter file (`radiomics_params.yaml`), thread limits, ROI exclusion lists, and voxel-count thresholds.
+- `radiomics`: governs sequential vs. parallel execution, CT/MR parameter files (`radiomics_params.yaml`, `radiomics_params_mr.yaml`), thread limits, ROI exclusion lists, and voxel-count thresholds.
 - `aggregation.threads`: optional override for aggregation parallelism.
 - `custom_structures`: YAML describing Boolean composites merged into DVH and radiomics outputs.
 - `custom_models`: enables/disables custom nnU-Net inference, nominates a model root, concurrency limits, nnUNet CLI command, and cache retention. Set `retain_weights: false` to purge extracted `nnUNet_results`, `nnUNet_raw`, and `nnUNet_preprocessed` directories after each run (the default `true` caches weights to avoid re-extraction).

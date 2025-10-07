@@ -6,6 +6,7 @@ After running `./test.sh` (Snakemake full workflow), the pipeline populates `Dat
 - **Course-specific workbooks**
   - `Data_Snakemake/<patient>/<course>/dvh_metrics.xlsx`: per-ROI dose–volume metrics (absolute and relative). Source provenance (`Segmentation_Source`) and truncation flags (`structure_cropped`, `ROI_Name` suffix) are embedded alongside standard DVH outputs.
   - `Data_Snakemake/<patient>/<course>/radiomics_ct.xlsx`: PyRadiomics feature matrix for CT-derived masks. Columns include ROI identifiers, segmentation source, structure cropping status, and all extracted features.
+  - `Data_Snakemake/<patient>/<course>/radiomics_mr.xlsx`: PyRadiomics feature matrix for MR-derived masks (TotalSegmentator `total_mr`). Columns parallel the CT export with modality set to `MR`.
   - `Data_Snakemake/<patient>/<course>/fractions.xlsx` and `metadata/case_metadata.xlsx`: treatment delivery schedule and DICOM metadata (machine, acquisition parameters, patient demographics).
   - `Data_Snakemake/<patient>/<course>/qc_reports/*.json`: structured QC checks—file integrity, frame-of-reference consistency, and boundary-touch alerts for each ROI.
   - `Data_Snakemake/<patient>/<course>/Segmentation_CustomModels/<model>/`: custom nnUNet masks (`*.nii.gz`), `rtstruct.dcm`, and manifest metadata powering the `CustomModel:<model>` entries in DVH/radiomics tables.

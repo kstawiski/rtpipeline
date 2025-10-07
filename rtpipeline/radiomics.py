@@ -256,19 +256,27 @@ def _mask_from_array_like(ct_img: sitk.Image, mask3d: np.ndarray) -> sitk.Image:
     return m
 
 
-def _get_params_file(config: PipelineConfig | None) -> Optional[Path]:
+def _get_params_file(config: PipelineConfig | None, modality: str = 'CT') -> Optional[Path]:
     """Return a filesystem path to a radiomics params YAML.
     Prefers user-provided file; else copies packaged defaults into logs_root for reuse.
     """
     try:
-        if config and config.radiomics_params_file and Path(config.radiomics_params_file).exists():
-            return Path(config.radiomics_params_file)
+        modality_upper = (modality or 'CT').upper()
+        if modality_upper == 'MR':
+            candidate = getattr(config, 'radiomics_params_file_mr', None) if config else None
+            packaged_name = 'radiomics_params_mr.yaml'
+        else:
+            candidate = getattr(config, 'radiomics_params_file', None) if config else None
+            packaged_name = 'radiomics_params.yaml'
+
+        if candidate and Path(candidate).exists():
+            return Path(candidate)
         # Copy packaged file to logs_root for stable path
-        packaged = importlib_resources.files('rtpipeline').joinpath('radiomics_params.yaml')
+        packaged = importlib_resources.files('rtpipeline').joinpath(packaged_name)
         if packaged.is_file():
             target_root = Path(config.logs_root) if (config and config.logs_root) else Path('.')
             target_root.mkdir(parents=True, exist_ok=True)
-            out = Path(target_root) / 'radiomics_params.yaml'
+            out = Path(target_root) / packaged_name
             try:
                 out.write_bytes(packaged.read_bytes())
             except Exception:
@@ -305,7 +313,7 @@ def _extractor(config: PipelineConfig, modality: str = 'CT', normalize_override:
         from radiomics.featureextractor import RadiomicsFeatureExtractor
         logging.getLogger('radiomics.featureextractor').setLevel(logging.WARNING)
 
-        pfile = _get_params_file(config)
+        pfile = _get_params_file(config, modality)
         params_dict: Optional[Dict[str, Any]] = None
         if pfile is not None:
             params_dict = _load_radiomics_params_dict(pfile)
@@ -500,6 +508,115 @@ class MRSeries:
     patient_id: str
     series_uid: str
     dir: Path
+
+
+def _strip_nii_name(nifti_path: Path) -> str:
+    name = nifti_path.name
+    if name.endswith('.nii.gz'):
+        return name[:-7]
+    if name.endswith('.nii'):
+        return name[:-4]
+    return nifti_path.stem
+
+
+def _collect_total_mr_masks(series_dir: Path, seg_dir: Path) -> Dict[str, np.ndarray]:
+    masks: Dict[str, np.ndarray] = {}
+    if not seg_dir.exists():
+        return masks
+    candidates = sorted(seg_dir.glob("*--total_mr.dcm"))
+    for rtstruct_path in candidates:
+        try:
+            masks.update(_rtstruct_masks(series_dir, rtstruct_path))
+            if masks:
+                return masks
+        except Exception as exc:
+            logger.debug("Failed reading MR RTSTRUCT %s: %s", rtstruct_path, exc)
+    for mask_path in sorted(seg_dir.glob("total_mr--*.nii*")):
+        try:
+            img = sitk.ReadImage(str(mask_path))
+            arr = sitk.GetArrayFromImage(img)
+            arr = np.moveaxis(arr, 0, -1)
+            mask = arr > 0
+            if not mask.any():
+                continue
+            name = mask_path.name
+            if name.endswith('.nii.gz'):
+                name = name[:-7]
+            elif name.endswith('.nii'):
+                name = name[:-4]
+            if name.startswith('total_mr--'):
+                name = name[len('total_mr--'):]
+            masks[name] = mask
+        except Exception as exc:
+            logger.debug("Failed reading MR mask %s: %s", mask_path, exc)
+    return masks
+
+
+def radiomics_for_course_mr(config: PipelineConfig, course) -> Optional[Path]:
+    course_dirs = course.dirs if hasattr(course, 'dirs') else build_course_dirs(Path(course))
+    out_path = course_dirs.root / 'radiomics_mr.xlsx'
+    meta_files = sorted(course_dirs.nifti.glob('*.metadata.json'))
+    rows: List[Dict[str, object]] = []
+    for meta_file in meta_files:
+        try:
+            data = json.loads(meta_file.read_text(encoding='utf-8'))
+        except Exception:
+            continue
+        if str(data.get('modality', '')).upper() != 'MR':
+            continue
+        nifti_path = Path(data.get('nifti_path') or '')
+        source_dir = Path(data.get('source_directory') or '')
+        if not nifti_path.exists() or not source_dir.exists():
+            continue
+        series_uid = str(data.get('series_instance_uid') or source_dir.name)
+        weighting = _infer_mr_weighting(source_dir, series_uid)
+        normalize_override = True if weighting == 'T1' else False if weighting == 'T2' else False
+        extractor = _extractor(config, 'MR', normalize_override=normalize_override)
+        if extractor is None:
+            continue
+        img = _load_series_image(source_dir, series_uid)
+        if img is None:
+            logger.debug("No MR image for radiomics in %s", source_dir)
+            continue
+        base_name = _strip_nii_name(nifti_path)
+        seg_dir = course_dirs.segmentation_totalseg / base_name
+        masks = _collect_total_mr_masks(source_dir, seg_dir)
+        if not masks:
+            continue
+        for roi_name, mask in masks.items():
+            try:
+                m_img = _mask_from_array_like(img, mask)
+                res = extractor.execute(img, m_img)
+                rec = {k: (float(v) if isinstance(v, (int, float, np.floating)) else str(v)) for k, v in res.items()}
+                rec.update({
+                    'patient_id': getattr(course, 'patient_id', course_dirs.root.parent.name),
+                    'course_id': getattr(course, 'course_id', course_dirs.root.name),
+                    'modality': 'MR',
+                    'segmentation_source': 'AutoTS_total_mr',
+                    'roi_name': roi_name,
+                    'series_dir': str(source_dir),
+                    'series_uid': series_uid,
+                    'nifti_path': str(nifti_path),
+                })
+                rows.append(rec)
+            except Exception as exc:
+                logger.debug("Radiomics MR failed for %s/%s: %s", series_uid, roi_name, exc)
+                continue
+    if not rows:
+        if out_path.exists() and not getattr(config, 'resume', False):
+            try:
+                out_path.unlink()
+            except Exception:
+                pass
+        return None
+    try:
+        import pandas as pd
+        df = pd.DataFrame(rows)
+        df.to_excel(out_path, index=False)
+        return out_path
+    except Exception as exc:
+        logger.warning("Failed to write MR radiomics for %s: %s", course_dirs.root, exc)
+        return None
 
 
 def _find_mr_manual_rs(dicom_root: Path, patient_id: str, mr_for_uid: str) -> List[Path]:
@@ -771,16 +888,11 @@ def run_radiomics(config: PipelineConfig, courses: List["object"], custom_struct
         logger=logger,
         show_progress=True,
     )
-    # MR per series (sequential; number of series is usually small)
-    try:
-        from .segmentation import _scan_mr_series
-    except Exception:
-        _scan_mr_series = None  # type: ignore
-    if _scan_mr_series is None:
-        return
-    series = _scan_mr_series(config.dicom_root)
-    for pid, suid, sdir in series:
-        radiomics_for_mr_series(config, MRSeries(pid, suid, sdir))
+    for course in courses:
+        try:
+            radiomics_for_course_mr(config, course)
+        except Exception as exc:
+            logger.warning("MR radiomics failed for course %s: %s", getattr(course, 'dirs', course), exc)
     # Cohort merge
     try:
         import pandas as _pd

@@ -265,6 +265,7 @@ def _index_series_and_registrations(
 ) -> tuple[Dict[tuple[str, str], List[Path]], Dict[str, List[Dict[str, object]]]]:
     series_index: Dict[tuple[str, str], List[Path]] = {}
     registrations: Dict[str, List[Dict[str, object]]] = {}
+    series_meta: Dict[tuple[str, str], Dict[str, object]] = {}
     for base, _, files in os.walk(dicom_root):
         for name in files:
             if not name.lower().endswith('.dcm'):
@@ -273,10 +274,14 @@ def _index_series_and_registrations(
             ds = read_dicom(p)
             if ds is None:
                 continue
+            modality = str(getattr(ds, 'Modality', '') or '')
             patient_id = str(get(ds, (0x0010, 0x0020), "")) or ""
             series_uid = str(get(ds, (0x0020, 0x000E), "")) or ""
             if patient_id and series_uid:
                 series_index.setdefault((patient_id, series_uid), []).append(p)
+                meta = series_meta.setdefault((patient_id, series_uid), {})
+                if "modality" not in meta and modality:
+                    meta["modality"] = modality
             modality = str(getattr(ds, 'Modality', '') or '')
             if modality != 'REG' or not patient_id:
                 continue
@@ -337,7 +342,7 @@ def _index_series_and_registrations(
                 continue
 
             registrations.setdefault(patient_id, []).append(reg_item)
-    return series_index, registrations
+    return series_index, registrations, series_meta
 
 def _create_summed_plan(plan_files: List[Path], total_dose_gy: float, out_plan_path: Path) -> None:
     if not plan_files:
@@ -499,7 +504,7 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
     plans, doses, structs = extract_rt(config.dicom_root)
     linked_sets = link_rt_sets(plans, doses, structs)
     courses = group_by_course(linked_sets, config.merge_criteria, config.max_days_between_plans)
-    series_index, registrations_index = _index_series_and_registrations(config.dicom_root)
+    series_index, registrations_index, series_meta = _index_series_and_registrations(config.dicom_root)
 
     outputs: List[CourseOutput] = []
 
@@ -649,9 +654,19 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
                 for series_uid in reg.get('referenced_series', set()):
                     if series_uid in course_ct_series_uids:
                         continue
-                    for src in series_index.get((patient_id, series_uid), []):
+                    series_paths = series_index.get((patient_id, series_uid), [])
+                    if not series_paths:
+                        continue
+                    modality = str(series_meta.get((patient_id, series_uid), {}).get("modality", "")).upper()
+                    if modality == "MR":
+                        dest_parent = course_dirs.dicom_mr
+                        fallback = "mr"
+                    else:
+                        dest_parent = course_dirs.dicom_related
+                        fallback = "series"
+                    dest_dir = dest_parent / _sanitize_name(series_uid, fallback)
+                    for src in series_paths:
                         if src not in seen_related and src.exists():
-                            dest_dir = course_dirs.dicom_related / _sanitize_name(series_uid, "series")
                             related_outputs.append(_copy_into(src, dest_dir))
                             seen_related.add(src)
 
@@ -814,43 +829,60 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
                     for series_uid in reg.get('referenced_series', set()):
                         if series_uid in course_ct_series_uids:
                             continue
-                        for src in series_index.get((patient_id, series_uid), []):
+                        series_paths = series_index.get((patient_id, series_uid), [])
+                        if not series_paths:
+                            continue
+                        modality = str(series_meta.get((patient_id, series_uid), {}).get("modality", "")).upper()
+                        if modality == "MR":
+                            dest_parent = course_dirs.dicom_mr
+                            fallback = "mr"
+                        else:
+                            dest_parent = course_dirs.dicom_related
+                            fallback = "series"
+                        dest_dir = dest_parent / _sanitize_name(series_uid, fallback)
+                        for src in series_paths:
                             if src not in seen_related and src.exists():
-                                dest_dir = course_dirs.dicom_related / _sanitize_name(series_uid, "series")
                                 related_outputs.append(_copy_into(src, dest_dir))
                                 seen_related.add(src)
 
-            for series_subdir in sorted(p for p in course_dirs.dicom_related.iterdir() if p.is_dir() and p.name != "REG"):
-                try:
-                    target_name = _derive_nifti_name(series_subdir)
-                    meta_path = course_dirs.nifti / f"{target_name}.metadata.json"
-                    if meta_path.exists() and not config.resume:
-                        continue
-                    tmp_out = course_dirs.nifti / f".tmp_{series_subdir.name}"
-                    tmp_out.mkdir(parents=True, exist_ok=True)
-                    generated = run_dcm2niix(config, series_subdir, tmp_out)
-                    if generated is None:
+            def _convert_related_series(parent: Path, *, modality_hint: Optional[str] = None) -> None:
+                for series_subdir in sorted(p for p in parent.iterdir() if p.is_dir() and p.name != "REG"):
+                    try:
+                        target_name = _derive_nifti_name(series_subdir)
+                        meta_path = course_dirs.nifti / f"{target_name}.metadata.json"
+                        if meta_path.exists() and not config.resume:
+                            continue
+                        tmp_out = course_dirs.nifti / f".tmp_{series_subdir.name}"
+                        tmp_out.mkdir(parents=True, exist_ok=True)
+                        generated = run_dcm2niix(config, series_subdir, tmp_out)
+                        if generated is None:
+                            shutil.rmtree(tmp_out, ignore_errors=True)
+                            continue
+                        target_path = course_dirs.nifti / f"{target_name}.nii.gz"
+                        if target_path.exists():
+                            target_path.unlink()
+                        shutil.move(str(generated), str(target_path))
+                        metadata = _collect_series_metadata(series_subdir)
+                        if modality_hint and not metadata.get("modality"):
+                            metadata["modality"] = modality_hint
+                        metadata.update(
+                            {
+                                "nifti_path": str(target_path),
+                                "source_directory": str(series_subdir),
+                                "generated_at": datetime.datetime.utcnow().isoformat() + "Z",
+                            }
+                        )
+                        meta_path.write_text(
+                            json.dumps(metadata, indent=2),
+                            encoding="utf-8",
+                        )
                         shutil.rmtree(tmp_out, ignore_errors=True)
-                        continue
-                    target_path = course_dirs.nifti / f"{target_name}.nii.gz"
-                    if target_path.exists():
-                        target_path.unlink()
-                    shutil.move(str(generated), str(target_path))
-                    metadata = _collect_series_metadata(series_subdir)
-                    metadata.update(
-                        {
-                            "nifti_path": str(target_path),
-                            "source_directory": str(series_subdir),
-                            "generated_at": datetime.datetime.utcnow().isoformat() + "Z",
-                        }
-                    )
-                    meta_path.write_text(
-                        json.dumps(metadata, indent=2),
-                        encoding="utf-8",
-                    )
-                    shutil.rmtree(tmp_out, ignore_errors=True)
-                except Exception as exc:
-                    logger.debug("Failed converting related series %s: %s", series_subdir, exc)
+                    except Exception as exc:
+                        logger.debug("Failed converting related series %s: %s", series_subdir, exc)
+
+            _convert_related_series(course_dirs.dicom_related)
+            if course_dirs.dicom_mr.exists():
+                _convert_related_series(course_dirs.dicom_mr, modality_hint="MR")
 
             return CourseOutput(
                 patient_id=patient_id,
