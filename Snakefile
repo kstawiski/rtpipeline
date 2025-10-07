@@ -640,7 +640,7 @@ rule aggregate_results:
             pd.DataFrame(columns=["patient_id", "course_id", "roi_name", "structure_cropped"]).to_excel(output.radiomics, index=False)
         def _load_radiomics_mr(course):
             pid, cid, cdir = course
-            path = cdir / "radiomics_mr.xlsx"
+            path = cdir / "MR" / "radiomics_mr.xlsx"
             if not path.exists():
                 return None
             try:
