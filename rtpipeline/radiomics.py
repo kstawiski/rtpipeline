@@ -553,19 +553,35 @@ def _collect_total_mr_masks(series_dir: Path, seg_dir: Path) -> Dict[str, np.nda
 
 
 def radiomics_for_course_mr(config: PipelineConfig, course) -> Optional[Path]:
+    _apply_radiomics_thread_limit(_resolve_thread_limit(getattr(config, 'radiomics_thread_limit', None)))
     course_dirs = course.dirs if hasattr(course, 'dirs') else build_course_dirs(Path(course))
-    out_path = course_dirs.root / 'radiomics_mr.xlsx'
-    meta_files = sorted(course_dirs.nifti.glob('*.metadata.json'))
+    mr_root = course_dirs.dicom_mr
+    out_path = mr_root / 'radiomics_mr.xlsx'
+    if not mr_root.exists():
+        if out_path.exists() and not getattr(config, 'resume', False):
+            try:
+                out_path.unlink()
+            except Exception:
+                pass
+        return None
     rows: List[Dict[str, object]] = []
-    for meta_file in meta_files:
+    for series_root in sorted(p for p in mr_root.iterdir() if p.is_dir()):
+        nifti_dir = series_root / 'NIFTI'
+        dicom_dir = series_root / 'DICOM'
+        seg_dir = series_root / 'Segmentation_TotalSegmentator'
+        if not nifti_dir.exists() or not dicom_dir.exists() or not seg_dir.exists():
+            continue
+        meta_files = sorted(nifti_dir.glob('*.metadata.json'))
+        if not meta_files:
+            continue
         try:
-            data = json.loads(meta_file.read_text(encoding='utf-8'))
+            data = json.loads(meta_files[0].read_text(encoding='utf-8'))
         except Exception:
             continue
         if str(data.get('modality', '')).upper() != 'MR':
             continue
         nifti_path = Path(data.get('nifti_path') or '')
-        source_dir = Path(data.get('source_directory') or '')
+        source_dir = Path(data.get('source_directory') or dicom_dir)
         if not nifti_path.exists() or not source_dir.exists():
             continue
         series_uid = str(data.get('series_instance_uid') or source_dir.name)
@@ -579,7 +595,6 @@ def radiomics_for_course_mr(config: PipelineConfig, course) -> Optional[Path]:
             logger.debug("No MR image for radiomics in %s", source_dir)
             continue
         base_name = _strip_nii_name(nifti_path)
-        seg_dir = course_dirs.segmentation_totalseg / base_name
         masks = _collect_total_mr_masks(source_dir, seg_dir)
         if not masks:
             continue
