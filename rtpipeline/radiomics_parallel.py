@@ -216,20 +216,20 @@ def _prepare_radiomics_task(
 
     try:
         # Package data for serialization
-    display_roi = roi if (not structure_cropped or roi.endswith("__partial")) else f"{roi}__partial"
+        display_roi = roi if (not structure_cropped or roi.endswith("__partial")) else f"{roi}__partial"
 
-    task_data = {
-        'img_array': img_array,
-        'img_info': img_info,
-        'mask': mask,
-        'config': config,
-        'source': source,
-        'roi': roi,
-        'roi_display': display_roi,
-        'roi_original': roi,
-        'course_dir': course_dir,
-        'structure_cropped': bool(structure_cropped),
-    }
+        task_data = {
+            'img_array': img_array,
+            'img_info': img_info,
+            'mask': mask,
+            'config': config,
+            'source': source,
+            'roi': roi,
+            'roi_display': display_roi,
+            'roi_original': roi,
+            'course_dir': course_dir,
+            'structure_cropped': bool(structure_cropped),
+        }
 
         # Write to temporary file
         with os.fdopen(temp_fd, 'wb') as f:
