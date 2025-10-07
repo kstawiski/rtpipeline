@@ -52,6 +52,13 @@ Example_data/
 **/*.nii
 **/*.nii.gz
 
+# Custom model artefacts (nnUNet weights, caches, temp outputs)
+custom_models/**/model*.zip
+custom_models/**/nnUNet_results/
+custom_models/**/nnUNet_raw/
+custom_models/**/nnUNet_preprocessed/
+Segmentation_*/
+
 .claude/
 .cache/
 Data_Snakemake/

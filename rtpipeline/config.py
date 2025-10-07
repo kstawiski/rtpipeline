@@ -36,6 +36,7 @@ class PipelineConfig:
     # Performance/CPU options
     totalseg_fast: bool = False
     totalseg_roi_subset: str | None = None
+    nnunet_predict_cmd: str = "nnUNetv2_predict"
 
     # Concurrency
     workers: int | None = None  # None => auto (cpu_count - 1)
@@ -49,6 +50,14 @@ class PipelineConfig:
 
     # Custom structures
     custom_structures_config: Path | None = None
+
+    # Custom segmentation models
+    custom_models_root: Path | None = None
+    custom_model_names: list[str] = field(default_factory=list)
+    custom_models_force: bool = False
+    custom_models_workers: int | None = None
+    custom_models_conda_activate: str | None = None
+    custom_models_retain_weights: bool = True
 
     def ensure_dirs(self) -> None:
         self.output_root.mkdir(parents=True, exist_ok=True)

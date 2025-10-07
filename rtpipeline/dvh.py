@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 from .layout import build_course_dirs
 from .utils import sanitize_rtstruct, mask_is_cropped, run_tasks_with_adaptive_workers
 from .layout import build_course_dirs
+from .custom_models import list_custom_model_outputs
 
 # Compatibility shim for dicompyler-core with pydicom>=3
 try:
@@ -637,6 +638,14 @@ def dvh_for_course(
                     process_struct(rs_custom_legacy, "Custom", rx_est)
             except Exception as e:
                 logger.warning("Failed to process custom structures: %s", e)
+
+    # Always include per-model custom segmentation outputs if present
+    for model_name, model_course_dir in list_custom_model_outputs(course_dir):
+        rs_model = model_course_dir / "rtstruct.dcm"
+        if not rs_model.exists():
+            continue
+        source_label = f"CustomModel:{model_name}"
+        process_struct(rs_model, source_label, rx_est)
 
     if not results:
         logger.info("No DVH results for %s", course_dir)

@@ -238,6 +238,18 @@ def replace_identifiers(value: str, replacements: Sequence[Tuple[str, str]]) -> 
     return result
 
 
+def dedupe_replacements(replacements: Sequence[Tuple[str, str]]) -> List[Tuple[str, str]]:
+    seen: set[Tuple[str, str]] = set()
+    ordered: List[Tuple[str, str]] = []
+    for pair in sorted(replacements, key=lambda p: len(p[0]), reverse=True):
+        if not pair[0]:
+            continue
+        if pair not in seen:
+            seen.add(pair)
+            ordered.append(pair)
+    return ordered
+
+
 def anonymize_patient_directories(context: GlobalContext) -> None:
     for patient in context.patients:
         src = patient.path
@@ -255,6 +267,9 @@ def anonymize_patient_dir(src: Path, dest: Path, patient: PatientInfo, context: 
                 target_dir = dest / course.anon_course_id
                 target_dir.mkdir(parents=True, exist_ok=True)
                 anonymize_course_dir(item, target_dir, patient, course, context)
+            elif item.name.startswith("Segmentation_"):
+                target_dir = dest / replace_identifiers(item.name, patient.identifier_replacements())
+                anonymize_segmentation_dir(item, target_dir, patient, context)
             else:
                 target_dir = dest / replace_identifiers(item.name, patient.identifier_replacements())
                 target_dir.mkdir(parents=True, exist_ok=True)
@@ -271,8 +286,7 @@ def anonymize_course_dir(
     course: CourseInfo,
     context: GlobalContext,
 ) -> None:
-    replacements = patient.identifier_replacements() + course.identifier_replacements()
-    replacements.sort(key=lambda pair: len(pair[0]), reverse=True)
+    replacements = dedupe_replacements(list(patient.identifier_replacements()) + list(course.identifier_replacements()))
     for path in sorted(src.rglob("*")):
         rel = path.relative_to(src)
         dest_rel = Path(*(replace_identifiers(part, replacements) for part in rel.parts))
@@ -291,6 +305,48 @@ def anonymize_course_dir(
             anonymize_csv_file(path, target, replacements, context)
         else:
             copy_file_generic(path, target, replacements)
+
+
+def anonymize_segmentation_dir(
+    src: Path,
+    dest: Path,
+    patient: PatientInfo,
+    context: GlobalContext,
+) -> None:
+    combined_repl = dedupe_replacements(
+        list(patient.identifier_replacements())
+        + [pair for course in patient.courses for pair in course.identifier_replacements()]
+    )
+    dest.mkdir(parents=True, exist_ok=True)
+    for item in sorted(src.iterdir()):
+        if item.is_dir():
+            course = next((c for c in patient.courses if c.course_dir_name == item.name), None)
+            if course:
+                sub_dest = dest / course.anon_course_id
+                sub_dest.mkdir(parents=True, exist_ok=True)
+                anonymize_course_dir(item, sub_dest, patient, course, context)
+            else:
+                sub_dest = dest / replace_identifiers(item.name, combined_repl)
+                sub_dest.mkdir(parents=True, exist_ok=True)
+                copy_directory_generic(item, sub_dest, combined_repl)
+        else:
+            target = dest / replace_identifiers(item.name, combined_repl)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            suffix = item.suffix.lower()
+            fallback_course = patient.courses[0] if patient.courses else None
+            if suffix == ".dcm":
+                if fallback_course is not None:
+                    anonymize_dicom(item, target, patient, fallback_course)
+                else:
+                    copy_file_generic(item, target, combined_repl)
+            elif suffix == ".json":
+                anonymize_json_file(item, target, combined_repl, patient, None, context)
+            elif suffix in {".xlsx", ".xls"}:
+                anonymize_excel_file(item, target, combined_repl, context)
+            elif suffix == ".csv":
+                anonymize_csv_file(item, target, combined_repl, context)
+            else:
+                copy_file_generic(item, target, combined_repl)
 
 
 def copy_directory_generic(src: Path, dest: Path, replacements: Sequence[Tuple[str, str]]) -> None:
@@ -376,7 +432,7 @@ def anonymize_json_file(
     dest: Path,
     replacements: Sequence[Tuple[str, str]],
     patient: PatientInfo,
-    course: CourseInfo,
+    course: Optional[CourseInfo],
     context: GlobalContext,
 ) -> None:
     with src.open("r", encoding="utf-8") as f:
@@ -387,7 +443,7 @@ def anonymize_json_file(
         patient,
         course,
         context,
-    )
+        )
     dest.parent.mkdir(parents=True, exist_ok=True)
     with dest.open("w", encoding="utf-8") as f:
         json.dump(sanitized, f, indent=2, ensure_ascii=False)
@@ -397,7 +453,7 @@ def sanitize_structure(
     value: Any,
     replacements: Sequence[Tuple[str, str]],
     patient: PatientInfo,
-    course: CourseInfo,
+    course: Optional[CourseInfo],
     context: GlobalContext,
     key_hint: Optional[str] = None,
 ) -> Any:
@@ -425,9 +481,17 @@ def sanitize_structure(
         if lower_key in SENSITIVE_ID_KEYS:
             return patient.anon_patient_id
         if lower_key == "course_id":
-            return course.anon_course_id
+            if course:
+                return course.anon_course_id
+            mapped = context.course_id_map.get(value)
+            if mapped:
+                return mapped.anon_course_id
         if lower_key == "course_key":
-            return course.anon_course_key
+            if course and course.course_key:
+                return course.anon_course_key
+            mapped = context.course_key_map.get(value)
+            if mapped:
+                return mapped.anon_course_key
         if lower_key in SENSITIVE_DATE_KEYS:
             return ""
         if lower_key == "patient_sex":

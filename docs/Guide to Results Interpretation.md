@@ -8,6 +8,7 @@ After running `./test.sh` (Snakemake full workflow), the pipeline populates `Dat
   - `Data_Snakemake/<patient>/<course>/radiomics_ct.xlsx`: PyRadiomics feature matrix for CT-derived masks. Columns include ROI identifiers, segmentation source, structure cropping status, and all extracted features.
   - `Data_Snakemake/<patient>/<course>/fractions.xlsx` and `metadata/case_metadata.xlsx`: treatment delivery schedule and DICOM metadata (machine, acquisition parameters, patient demographics).
   - `Data_Snakemake/<patient>/<course>/qc_reports/*.json`: structured QC checks—file integrity, frame-of-reference consistency, and boundary-touch alerts for each ROI.
+  - `Data_Snakemake/<patient>/Segmentation_<model>/<course>/`: custom nnUNet masks (`*.nii.gz`), `rtstruct.dcm`, and manifest metadata powering the `CustomModel:<model>` entries in DVH/radiomics tables.
 
 - **Aggregation directory (`Data_Snakemake/_RESULTS/`)**
   - `dvh_metrics.xlsx`, `radiomics_ct.xlsx`, `fractions.xlsx`, `case_metadata.xlsx`, `qc_reports.xlsx`: concatenated versions of the per-course tables with added course/patient identifiers for cohort-level analysis.
@@ -26,6 +27,7 @@ From the 6 October 2025 run onward, any contour deemed geometrically incomplete 
 
 Columns to monitor:
 - `ROI_Name` (DVH) / `roi_name` (radiomics): use `str.endswith('__partial')` to filter incomplete ROIs.
+- `Segmentation_Source` / `segmentation_source`: values include `Manual`, `AutoRTS`, `Merged`, and `CustomModel:<model>`, enabling head-to-head comparisons between planning, TotalSegmentator, Boolean composites, and custom nnUNet outputs.
 - `structure_cropped` (boolean): remains true for all boundary-touching masks; aligns with the suffix for rapid verification.
 - `ROI_OriginalName` / `roi_original_name`: original labels prior to suffixing, useful when mapping back to planning nomenclature or QC reports.
 
@@ -57,7 +59,7 @@ Researchers should parse this file before using composite structures; if clinica
 3. **Radiomics cohort balance**: count features per segmentation source and partial flag. High `__partial` ratios can bias statistical models; filter or stratify accordingly.
 
 ## 6. Common downstream workflows
-- **DVH analytics**: load `_RESULTS/dvh_metrics.xlsx` into Python/R, filter out `__partial`, and compute dose statistics (Dmean, Dmax, Vx). Use `Segmentation_Source` to separate manual, TotalSegmentator, and custom contours.
+- **DVH analytics**: load `_RESULTS/dvh_metrics.xlsx` into Python/R, filter out `__partial`, and compute dose statistics (Dmean, Dmax, Vx). Use `Segmentation_Source` to separate manual, TotalSegmentator, Boolean custom, and nnUNet ensembles (`CustomModel:*`).
 - **Radiomics modeling**: subset `_RESULTS/radiomics_ct.xlsx` by organ class, drop `__partial`, normalize features, and integrate metadata (age, machine, acquisition parameters) as covariates.
 - **QC reporting**: summarize cropped ROIs per course via `qc_reports.xlsx`, and document exclusion criteria in publications or clinical briefs.
 

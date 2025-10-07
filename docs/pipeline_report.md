@@ -17,16 +17,17 @@ This document summarizes the behavior of the KONSTA_DICOMRT_Processing workflow 
 ### 3.2 Segmentation
 - TotalSegmentator completed for all courses with sequential scheduling (`segmentation.workers = 4`, but Snakemake resource `seg_workers=1` limited simultaneous courses). Individual courses required 8–12 minutes wall-clock, with combined DICOM and NIfTI passes logged.
 - Auto contours were consolidated into `RS_auto.dcm` and merged with manual RTSTRUCTs to yield 796 DVH-ready ROIs. Distribution: 342 AutoRTS, 307 custom Boolean composites, 147 manual ROIs.
+- The new `segmentation_custom_models` stage detected `custom_models/cardiac_STOPSTORM`, extracted nnUNet weights into the local cache, and produced 16 cardiac substructures (7 non-empty for patient 487009/2025-03). Outputs are stored under `Data_Snakemake/487009/Segmentation_cardiac_STOPSTORM/2025-03/` with accompanying manifest and RTSTRUCT files.
 - Warnings noted previously: absent prerequisites for custom structures (e.g. `pelvic_bones_3mm`, `bowel_bag`). After expanding `custom_structures_pelvic.yaml` with TotalSegmentator label variants and enhancing the processor to tolerate missing/empty masks (5 Oct 2025 update), the DVH stage now completes without “Source structure not found” spam. Any contour that is cropped or assembled from incomplete inputs is now tagged with a `__partial` suffix, and custom-structure warnings (missing sources, cropping) are recorded in `metadata/custom_structure_warnings.json` for each course.
 
 ### 3.3 Dose–volume analysis
-- Per-course `dvh_metrics.xlsx` files contained 85–188 rows each. Aggregated data retained `Segmentation_Source`, `structure_cropped`, and manual/auto flags for downstream filtering.
+- Per-course `dvh_metrics.xlsx` files contained 85–188 rows each. Aggregated data retained `Segmentation_Source`, `structure_cropped`, and manual/auto flags for downstream filtering. Custom nnU-Net contours appear with `Segmentation_Source = CustomModel:cardiac_STOPSTORM` and are now part of the default DVH export.
 - Cropping burden remained high (30–63 structures per course). Dominant truncated ROIs are summarized in Table 1.
 
 ### 3.4 Radiomics extraction
 - Native PyRadiomics imports failed in the main environment; the fallback conda executor (`rtpipeline.radiomics_conda`) generated 279 feature rows across 97 unique ROIs.
 - `radiomics.skip_rois` (body, couch, bones, etc.) and voxel thresholds (10–1.5×10^9 voxels) prevented oversized non-clinical regions from prolonging runtime.
-- Output stored as `radiomics_ct.xlsx` per course and `_RESULTS/radiomics_ct.xlsx` globally.
+- Output stored as `radiomics_ct.xlsx` per course and `_RESULTS/radiomics_ct.xlsx` globally. Custom nnU-Net structures are included automatically and labelled with `segmentation_source = CustomModel:cardiac_STOPSTORM`.
 
 ### 3.5 Quality control
 - All six JSON reports registered `overall_status = WARNING` owing to structure cropping, while file and frame-of-reference checks passed.
@@ -63,6 +64,7 @@ The pipeline executed deterministically across all stages, validating the integr
 3. Implement automated FOV audits that either crop ROIs before QC evaluation or flag images for reacquisition to reduce systematic `WARNING` statuses.
 4. Package PyRadiomics dependencies inside the primary environment (or pre-warm the radiomics conda env) to avoid repeated import failures when new courses are added.
 5. Increase `segmentation.workers` alongside Snakemake resource adjustments if hardware permits parallel segmentation, reducing total runtime for future cohorts.
+6. Monitor disk usage under `custom_models/<model>/nnUNet_*`; set `custom_models.retain_weights: false` when one-off runs are preferred over cached nnUNet weights.
 
 ## References
 1. Köster J, Rahmann S. Snakemake—a scalable bioinformatics workflow engine. *Bioinformatics.* 2012;28(19):2520–2522. doi:10.1093/bioinformatics/bts480. PMID: 22908215.
