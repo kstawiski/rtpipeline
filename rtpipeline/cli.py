@@ -65,6 +65,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--totalseg-fast", action="store_true", help="Add --fast for CPU runs to improve runtime")
     p.add_argument("--totalseg-roi-subset", default=None, help="Restrict to subset of ROIs (comma-separated)")
+    p.add_argument("--custom-models-root", default=None, help="Directory containing custom segmentation model definitions (default: ./custom_models)")
+    p.add_argument(
+        "--custom-model",
+        action="append",
+        default=[],
+        help="Restrict custom segmentation to selected model names (comma-separated or repeat)",
+    )
+    p.add_argument("--custom-model-workers", type=int, default=None, help="Maximum concurrent courses for custom segmentation models")
+    p.add_argument("--force-custom-models", action="store_true", help="Force re-run custom segmentation models even if outputs exist")
+    p.add_argument("--custom-model-conda-activate", default=None, help="Override conda activation prefix for custom segmentation models")
+    p.add_argument("--nnunet-predict", default="nnUNetv2_predict", help="nnUNetv2 prediction command (default: nnUNetv2_predict)")
+    p.add_argument("--purge-custom-model-weights", action="store_true", help="Delete extracted nnUNet caches after each custom model run")
     p.add_argument("--workers", type=int, default=None, help="Parallel workers for non-segmentation phases (default: auto)")
     p.add_argument("--seg-workers", type=int, default=None, help="Maximum concurrent courses for TotalSegmentator (default: 1)")
     p.add_argument(
@@ -90,7 +102,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--stage",
         action="append",
-        choices=["organize", "segmentation", "dvh", "visualize", "radiomics", "qc"],
+        choices=["organize", "segmentation", "segmentation_custom", "dvh", "visualize", "radiomics", "qc"],
         help="Execute only the selected pipeline stage(s); may be provided multiple times. Default: full pipeline.",
     )
     return p
@@ -302,6 +314,34 @@ def main(argv: list[str] | None = None) -> int:
     # Update config object
     cfg.custom_structures_config = custom_structures_config
 
+    # Configure custom segmentation models
+    custom_models_root: Path | None = None
+    if args.custom_models_root:
+        custom_models_root = Path(args.custom_models_root).resolve()
+    else:
+        default_models_root = Path.cwd() / "custom_models"
+        if default_models_root.exists():
+            custom_models_root = default_models_root
+    if custom_models_root and not custom_models_root.exists():
+        logger.warning("Custom models root not found: %s", custom_models_root)
+        custom_models_root = None
+
+    selected_models: list[str] = []
+    for entry in args.custom_model or []:
+        if not entry:
+            continue
+        parts = [seg.strip() for seg in str(entry).replace(";", ",").split(",") if seg.strip()]
+        selected_models.extend(parts)
+
+    cfg.custom_models_root = custom_models_root
+    cfg.custom_model_names = selected_models
+    cfg.custom_models_force = bool(args.force_custom_models)
+    cfg.custom_models_workers = args.custom_model_workers
+    if args.nnunet_predict:
+        cfg.nnunet_predict_cmd = args.nnunet_predict
+    cfg.custom_models_conda_activate = args.custom_model_conda_activate or cfg.conda_activate
+    cfg.custom_models_retain_weights = not bool(args.purge_custom_model_weights)
+
     # Log resume behavior
     if cfg.resume:
         logging.getLogger(__name__).info("Resume mode enabled (default): skipping existing outputs")
@@ -319,7 +359,7 @@ def main(argv: list[str] | None = None) -> int:
         # Non-fatal; continue with console-only logging
         pass
 
-    default_order = ["organize", "segmentation", "dvh", "visualize", "radiomics", "qc"]
+    default_order = ["organize", "segmentation", "segmentation_custom", "dvh", "visualize", "radiomics", "qc"]
     requested = [stage.lower() for stage in (args.stage or default_order)]
     stages = [stage for stage in default_order if stage in requested]
     if not stages:
@@ -374,6 +414,55 @@ def main(argv: list[str] | None = None) -> int:
                 logger=logging.getLogger(__name__),
                 show_progress=True,
             )
+
+    if "segmentation_custom" in stages:
+        from .custom_models import discover_custom_models, run_custom_models_for_course  # lazy import
+
+        models_root = cfg.custom_models_root
+        available_models = []
+        if models_root is None:
+            logger.info("Custom segmentation stage skipped: no custom models root configured")
+        else:
+            try:
+                available_models = discover_custom_models(models_root, cfg.custom_model_names, cfg.nnunet_predict_cmd)
+            except Exception as exc:
+                logger.warning("Failed to discover custom models in %s: %s", models_root, exc)
+                available_models = []
+
+        if not available_models:
+            logger.info("No custom segmentation models found; skipping custom stage")
+        else:
+            courses = ensure_courses()
+            selected_courses = _filter_courses(courses)
+            if not selected_courses:
+                _log_skip("Custom Segmentation")
+            else:
+                force_custom = cfg.custom_models_force
+
+                def _custom(course):
+                    try:
+                        run_custom_models_for_course(cfg, course, available_models, force=force_custom)
+                    except Exception as exc:
+                        logger.warning("Custom segmentation failed for %s: %s", course.dirs.root, exc)
+                    return None
+
+                custom_worker_limit = cfg.custom_models_workers or 1
+                try:
+                    custom_worker_limit = int(custom_worker_limit)
+                except Exception:
+                    custom_worker_limit = 1
+                if custom_worker_limit < 1:
+                    custom_worker_limit = 1
+                custom_worker_limit = min(custom_worker_limit, max(1, cfg.effective_workers()))
+
+                run_tasks_with_adaptive_workers(
+                    "CustomSegmentation",
+                    selected_courses,
+                    _custom,
+                    max_workers=custom_worker_limit,
+                    logger=logging.getLogger(__name__),
+                    show_progress=True,
+                )
 
     if "dvh" in stages:
         from .dvh import dvh_for_course  # lazy import
