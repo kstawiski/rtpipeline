@@ -12,6 +12,7 @@ class CourseDirs:
     root: Path
     dicom: Path
     dicom_ct: Path
+    dicom_mr: Path
     dicom_rtplan: Path
     dicom_rtdose: Path
     dicom_rtstruct: Path
@@ -27,6 +28,7 @@ class CourseDirs:
         for path in (
             self.dicom,
             self.dicom_ct,
+            self.dicom_mr,
             self.dicom_rtplan,
             self.dicom_rtdose,
             self.dicom_rtstruct,
@@ -47,6 +49,7 @@ def build_course_dirs(root: Path) -> CourseDirs:
         root=root,
         dicom=dicom,
         dicom_ct=dicom / "CT",
+        dicom_mr=root / "MR",
         dicom_rtplan=dicom / "RTPLAN",
         dicom_rtdose=dicom / "RTDOSE",
         dicom_rtstruct=dicom / "RTSTRUCT",
