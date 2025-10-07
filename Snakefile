@@ -80,6 +80,30 @@ if SEG_THREADS_PER_WORKER is not None and SEG_THREADS_PER_WORKER < 1:
     SEG_THREADS_PER_WORKER = 1
 SEG_FORCE_SEGMENTATION = bool(SEG_CONFIG.get("force", False))
 
+CUSTOM_MODELS_CONFIG = config.get("custom_models", {}) or {}
+CUSTOM_MODELS_ENABLED = bool(CUSTOM_MODELS_CONFIG.get("enabled", True))
+_custom_root = CUSTOM_MODELS_CONFIG.get("root")
+if _custom_root:
+    cm_path = Path(_custom_root)
+    if not cm_path.is_absolute():
+        cm_path = ROOT_DIR / cm_path
+    CUSTOM_MODELS_ROOT = str(cm_path.resolve())
+else:
+    default_custom_root = ROOT_DIR / "custom_models"
+    CUSTOM_MODELS_ROOT = str(default_custom_root.resolve()) if default_custom_root.exists() else ""
+_custom_models_raw = CUSTOM_MODELS_CONFIG.get("models") or []
+if isinstance(_custom_models_raw, str):
+    CUSTOM_MODELS_SELECTED = [item.strip() for item in _custom_models_raw.replace(",", " ").split() if item.strip()]
+else:
+    CUSTOM_MODELS_SELECTED = [str(item).strip() for item in _custom_models_raw if str(item).strip()]
+CUSTOM_MODELS_FORCE = bool(CUSTOM_MODELS_CONFIG.get("force", False))
+CUSTOM_MODELS_WORKERS = _coerce_int(CUSTOM_MODELS_CONFIG.get("workers") or CUSTOM_MODELS_CONFIG.get("max_workers"), 1)
+if CUSTOM_MODELS_WORKERS is not None and CUSTOM_MODELS_WORKERS < 1:
+    CUSTOM_MODELS_WORKERS = 1
+CUSTOM_MODELS_PREDICT = str(CUSTOM_MODELS_CONFIG.get("nnunet_predict") or "nnUNetv2_predict")
+CUSTOM_MODELS_CONDA = CUSTOM_MODELS_CONFIG.get("conda_activate")
+CUSTOM_MODELS_RETAIN = bool(CUSTOM_MODELS_CONFIG.get("retain_weights", True))
+
 RADIOMICS_CONFIG = config.get("radiomics", {}) or {}
 RADIOMICS_SEQUENTIAL = bool(RADIOMICS_CONFIG.get("sequential", False))
 RADIOMICS_THREAD_LIMIT = _coerce_int(RADIOMICS_CONFIG.get("thread_limit"), None)
@@ -135,7 +159,13 @@ AGG_OUTPUTS = {
 }
 
 SEG_WORKER_POOL = SEG_MAX_WORKERS if SEG_MAX_WORKERS is not None else max(1, WORKERS)
-workflow.global_resources.update({"seg_workers": max(1, SEG_WORKER_POOL)})
+CUSTOM_SEG_WORKER_POOL = CUSTOM_MODELS_WORKERS if CUSTOM_MODELS_WORKERS is not None else 1
+workflow.global_resources.update(
+    {
+        "seg_workers": max(1, SEG_WORKER_POOL),
+        "custom_seg_workers": max(1, CUSTOM_SEG_WORKER_POOL),
+    }
+)
 
 def course_dir(patient: str, course: str) -> Path:
     return OUTPUT_DIR / patient / course
@@ -191,6 +221,7 @@ def _manifest_input(wildcards):
 
 ORGANIZED_SENTINEL_PATTERN = str(OUTPUT_DIR / "{patient}" / "{course}" / ".organized")
 SEGMENTATION_SENTINEL_PATTERN = str(OUTPUT_DIR / "{patient}" / "{course}" / ".segmentation_done")
+CUSTOM_SEG_SENTINEL_PATTERN = str(OUTPUT_DIR / "{patient}" / "{course}" / ".custom_models_done")
 DVH_SENTINEL_PATTERN = str(OUTPUT_DIR / "{patient}" / "{course}" / ".dvh_done")
 RADIOMICS_SENTINEL_PATTERN = str(OUTPUT_DIR / "{patient}" / "{course}" / ".radiomics_done")
 QC_SENTINEL_PATTERN = str(OUTPUT_DIR / "{patient}" / "{course}" / ".qc_done")
@@ -291,10 +322,67 @@ rule segmentation_course:
         sentinel_path.write_text("ok\n", encoding="utf-8")
 
 
-rule dvh_course:
+rule segmentation_custom_models:
     input:
         manifest=_manifest_input,
         segmentation=SEGMENTATION_SENTINEL_PATTERN
+    output:
+        sentinel=CUSTOM_SEG_SENTINEL_PATTERN
+    log:
+        str(LOGS_DIR / "segmentation_custom" / "{patient}_{course}.log")
+    threads:
+        max(1, WORKERS)
+    resources:
+        custom_seg_workers=1
+    conda:
+        "envs/rtpipeline.yaml"
+    run:
+        import subprocess
+        worker_count = max(1, int(threads))
+        sentinel_path = Path(output.sentinel)
+        sentinel_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path = Path(log[0])
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        if not CUSTOM_MODELS_ENABLED:
+            sentinel_path.write_text("disabled\n", encoding="utf-8")
+            return
+        env = _rt_env()
+        cmd = [
+            sys.executable,
+            "-m",
+            "rtpipeline.cli",
+            "--dicom-root", str(DICOM_ROOT),
+            "--outdir", str(OUTPUT_DIR),
+            "--logs", str(LOGS_DIR),
+            "--workers", str(worker_count),
+            "--stage", "segmentation_custom",
+            "--course-filter", f"{wildcards.patient}/{wildcards.course}",
+        ]
+        if CUSTOM_MODELS_ROOT:
+            cmd.extend(["--custom-models-root", CUSTOM_MODELS_ROOT])
+        if CUSTOM_MODELS_SELECTED:
+            for name in CUSTOM_MODELS_SELECTED:
+                cmd.extend(["--custom-model", name])
+        if CUSTOM_MODELS_FORCE:
+            cmd.append("--force-custom-models")
+        if CUSTOM_MODELS_WORKERS:
+            cmd.extend(["--custom-model-workers", str(max(1, CUSTOM_MODELS_WORKERS))])
+        if CUSTOM_MODELS_PREDICT:
+            cmd.extend(["--nnunet-predict", CUSTOM_MODELS_PREDICT])
+        if CUSTOM_MODELS_CONDA:
+            cmd.extend(["--custom-model-conda-activate", CUSTOM_MODELS_CONDA])
+        if not CUSTOM_MODELS_RETAIN:
+            cmd.append("--purge-custom-model-weights")
+        with log_path.open("w") as logf:
+            subprocess.run(cmd, check=True, stdout=logf, stderr=subprocess.STDOUT, env=env)
+        sentinel_path.write_text("ok\n", encoding="utf-8")
+
+
+rule dvh_course:
+    input:
+        manifest=_manifest_input,
+        segmentation=SEGMENTATION_SENTINEL_PATTERN,
+        custom=CUSTOM_SEG_SENTINEL_PATTERN
     output:
         sentinel=DVH_SENTINEL_PATTERN
     log:
@@ -332,7 +420,8 @@ rule dvh_course:
 rule radiomics_course:
     input:
         manifest=_manifest_input,
-        segmentation=SEGMENTATION_SENTINEL_PATTERN
+        segmentation=SEGMENTATION_SENTINEL_PATTERN,
+        custom=CUSTOM_SEG_SENTINEL_PATTERN
     output:
         sentinel=RADIOMICS_SENTINEL_PATTERN
     log:
@@ -420,7 +509,8 @@ rule aggregate_results:
         manifest=_manifest_input,
         dvh=_per_course_sentinels(".dvh_done"),
         radiomics=_per_course_sentinels(".radiomics_done"),
-        qc=_per_course_sentinels(".qc_done")
+        qc=_per_course_sentinels(".qc_done"),
+        custom=_per_course_sentinels(".custom_models_done")
     output:
         dvh=str(AGG_OUTPUTS["dvh"]),
         radiomics=str(AGG_OUTPUTS["radiomics"]),

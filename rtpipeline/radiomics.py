@@ -18,6 +18,7 @@ from .layout import build_course_dirs
 from importlib import resources as importlib_resources
 import yaml
 from .utils import run_tasks_with_adaptive_workers, mask_is_cropped
+from .custom_models import list_custom_model_outputs
 
 _THREAD_ENV_VARS = (
     'OMP_NUM_THREADS',
@@ -424,6 +425,15 @@ def radiomics_for_course(config: PipelineConfig, course_dir: Path, custom_struct
                     tasks.append(("Custom", roi, mask, mask_is_cropped(mask)))
         except Exception as e:
             logger.warning("Failed to process custom structures for radiomics: %s", e)
+
+    # Include segmentation outputs from custom nnUNet models by default
+    for model_name, model_course_dir in list_custom_model_outputs(course_dir):
+        rs_path = model_course_dir / "rtstruct.dcm"
+        if not rs_path.exists():
+            continue
+        masks = _rtstruct_masks(course_dirs.dicom_ct, rs_path)
+        for roi, mask in masks.items():
+            tasks.append((f"CustomModel:{model_name}", roi, mask, mask_is_cropped(mask)))
     def _do_ct_task(t):
         source, roi, mask, cropped = t
         try:
