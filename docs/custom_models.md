@@ -75,22 +75,18 @@ nnunet:
 For each patient/course pair the pipeline produces:
 
 ```
-<output_root>/<patient>/Segmentation_<model_name>/
-  <course_id>/
-    <structure>.nii.gz
-    manifest.json
-    rtstruct.dcm
-    rtstruct_manifest.json
-  <structure>.nii.gz              # copy of the latest course output
-  manifest.json                   # summary pointing to the latest course
-  rtstruct.dcm                    # copy of the latest course RTSTRUCT
+<output_root>/<patient>/<course>/Segmentation_CustomModels/<model_name>/
+  <structure>.nii.gz
+  manifest.json
+  rtstruct.dcm
+  rtstruct_manifest.json
 ```
 
 Structure filenames are sanitized versions of the labels provided in the YAML.
-The per-course manifest records which nnUNet network produced each structure,
-the command that was run, and the path to the source CT NIfTI. The top-level
-copies (`rtstruct.dcm`, `<structure>.nii.gz`) are overwritten with the most
-recent course processed for that patient.
+The manifest records which nnUNet network produced each structure, the command
+that was run, and the path to the source CT NIfTI. No duplicate copies are kept
+at the patient root—each course owns its own custom-model directory alongside
+`Segmentation_TotalSegmentator/`.
 
 To add another model, replicate the directory layout, adjust the YAML to point
 to the proper nnUNet archives and label names, and re-run the Snakemake rule
@@ -119,4 +115,5 @@ courses reuse the weights without re-extracting ~500 MB archives. Set
 `custom_models.retain_weights: false` in `config.yaml` (or launch the CLI with
 `--purge-custom-model-weights`) to delete these directories after each
 successful run. The original `model*.zip` files remain in place so the next
-invocation can restore the caches if needed.
+invocation can restore the caches if needed; course outputs under
+`Segmentation_CustomModels/<model>/` are unaffected by this cleanup option.

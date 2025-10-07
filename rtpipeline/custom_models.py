@@ -232,13 +232,11 @@ def run_custom_models_for_course(
         logger.warning("Custom segmentation skipped for %s/%s: no CT DICOM found", course.patient_id, course.course_id)
         return
 
-    patient_dir = cfg.output_root / course.patient_id
-    patient_dir.mkdir(parents=True, exist_ok=True)
-
+    course.dirs.ensure()
     sentinel_path = course.dirs.root / ".custom_models_done"
     models_to_run = []
     for model in models:
-        if force or not _model_outputs_ready(patient_dir, course.course_id, model):
+        if force or not _model_outputs_ready(course.dirs.root, model):
             models_to_run.append(model)
 
     if not models_to_run and sentinel_path.exists():
@@ -254,21 +252,22 @@ def run_custom_models_for_course(
         raise RuntimeError(f"Unable to obtain NIfTI for course {course.patient_id}/{course.course_id}")
 
     for model in models_to_run or models:
-        _run_single_model(cfg, course, patient_dir, nifti_path, ct_dir, model)
+        _run_single_model(cfg, course, nifti_path, ct_dir, model)
 
     sentinel_path.write_text("ok\n", encoding="utf-8")
 
 
-def _model_outputs_ready(patient_dir: Path, course_id: str, model: CustomModelDefinition) -> bool:
-    model_dir = patient_dir / f"Segmentation_{model.name}"
-    course_dir = model_dir / course_id
-    rtstruct_path = course_dir / "rtstruct.dcm"
+def _model_outputs_ready(course_root: Path, model: CustomModelDefinition) -> bool:
+    output_dir = course_root / "Segmentation_CustomModels" / model.name
+    if not output_dir.exists():
+        return False
+    rtstruct_path = output_dir / "rtstruct.dcm"
     if not rtstruct_path.exists():
         return False
     expected_structures = model.expected_structures()
     for struct_name in expected_structures:
         fname = f"{_structure_filename(struct_name)}.nii.gz"
-        if not (course_dir / fname).exists():
+        if not (output_dir / fname).exists():
             return False
     return True
 
@@ -362,17 +361,15 @@ def _make_binary_masks(seg_img: sitk.Image, label_names: List[str]) -> Dict[str,
 def _write_structure_masks(
     combined_structures: Dict[str, sitk.Image],
     structure_source: Dict[str, str],
-    model_dir: Path,
-    course_dir: Path,
+    output_dir: Path,
 ) -> Tuple[List[Dict[str, str]], Dict[str, Path]]:
-    model_dir.mkdir(parents=True, exist_ok=True)
-    course_dir.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     manifest_entries: List[Dict[str, str]] = []
     paths: Dict[str, Path] = {}
 
     # Clean previous structures for this course
-    for existing in course_dir.glob("*.nii*"):
+    for existing in output_dir.glob("*.nii*"):
         try:
             existing.unlink()
         except Exception:
@@ -380,15 +377,8 @@ def _write_structure_masks(
 
     for name, img in combined_structures.items():
         filename = f"{_structure_filename(name)}.nii.gz"
-        out_path = course_dir / filename
+        out_path = output_dir / filename
         sitk.WriteImage(img, str(out_path))
-        alias_path = model_dir / filename
-        try:
-            if alias_path.exists():
-                alias_path.unlink()
-            shutil.copy2(out_path, alias_path)
-        except Exception as exc:
-            logger.debug("Unable to copy %s to %s: %s", out_path, alias_path, exc)
 
         manifest_entries.append(
             {
@@ -405,8 +395,7 @@ def _write_structure_masks(
 def _build_rtstruct(
     ct_dir: Path,
     structure_masks: Dict[str, sitk.Image],
-    course_dir: Path,
-    model_dir: Path,
+    output_dir: Path,
     structure_paths: Dict[str, Path],
 ) -> Path:
     try:
@@ -418,8 +407,7 @@ def _build_rtstruct(
     if ct_img is None:
         raise RuntimeError(f"Failed to load CT series at {ct_dir}")
 
-    rtstruct_path = course_dir / "rtstruct.dcm"
-    alias_path = model_dir / "rtstruct.dcm"
+    rtstruct_path = output_dir / "rtstruct.dcm"
 
     if rtstruct_path.exists():
         try:
@@ -471,15 +459,7 @@ def _build_rtstruct(
             for name in sorted(structure_paths)
         ],
     }
-    (course_dir / "rtstruct_manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
-
-    alias_manifest = {
-        "latest_course": course_dir.name,
-        "rtstruct": "rtstruct.dcm",
-        "structures": manifest["structures"],
-        "updated_at": manifest["generated_at"],
-    }
-    (model_dir / "manifest.json").write_text(json.dumps(alias_manifest, indent=2), encoding="utf-8")
+    (output_dir / "rtstruct_manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
     return rtstruct_path
 
@@ -487,15 +467,12 @@ def _build_rtstruct(
 def _run_single_model(
     cfg: PipelineConfig,
     course: "CourseOutput",
-    patient_dir: Path,
     nifti_path: Path,
     ct_dir: Path,
     model: CustomModelDefinition,
 ) -> None:
-    model_dir = patient_dir / f"Segmentation_{model.name}"
-    course_dir = model_dir / course.course_id
-    model_dir.mkdir(parents=True, exist_ok=True)
-    course_dir.mkdir(parents=True, exist_ok=True)
+    output_root = course.dirs.segmentation_custom_models / model.name
+    output_root.mkdir(parents=True, exist_ok=True)
 
     logger.info(
         "Running custom model '%s' for patient %s course %s",
@@ -545,14 +522,13 @@ def _run_single_model(
     manifest_entries, structure_paths = _write_structure_masks(
         combined_structures,
         structure_source,
-        model_dir,
-        course_dir,
+        output_root,
     )
 
     if not manifest_entries:
         raise RuntimeError(f"No structures were produced for model {model.name}")
 
-    rtstruct_path = _build_rtstruct(ct_dir, combined_structures, course_dir, model_dir, structure_paths)
+    rtstruct_path = _build_rtstruct(ct_dir, combined_structures, output_root, structure_paths)
 
     manifest = {
         "model": model.name,
@@ -570,7 +546,7 @@ def _run_single_model(
         "rtstruct": str(rtstruct_path.name),
         "source_nifti": str(nifti_path),
     }
-    (course_dir / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    (output_root / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     if not cfg.custom_models_retain_weights:
         _cleanup_model_cache(model)
 
@@ -613,15 +589,13 @@ def _cleanup_model_cache(model: CustomModelDefinition) -> None:
 def list_custom_model_outputs(course_dir: Path) -> List[Tuple[str, Path]]:
     """Return (model_name, model_course_dir) for all custom model outputs available for a course."""
     outputs: List[Tuple[str, Path]] = []
-    patient_dir = course_dir.parent
-    if not patient_dir.exists():
+    custom_root = course_dir / "Segmentation_CustomModels"
+    if not custom_root.exists():
         return outputs
-    prefix = "Segmentation_"
-    for seg_dir in sorted(patient_dir.glob(f"{prefix}*")):
+    for seg_dir in sorted(custom_root.iterdir()):
         if not seg_dir.is_dir():
             continue
-        model_name = seg_dir.name[len(prefix):]
-        candidate = seg_dir / course_dir.name
-        if candidate.is_dir() and (candidate / "rtstruct.dcm").exists():
-            outputs.append((model_name, candidate))
+        if not (seg_dir / "rtstruct.dcm").exists():
+            continue
+        outputs.append((seg_dir.name, seg_dir))
     return outputs

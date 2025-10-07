@@ -8,7 +8,7 @@ After running `./test.sh` (Snakemake full workflow), the pipeline populates `Dat
   - `Data_Snakemake/<patient>/<course>/radiomics_ct.xlsx`: PyRadiomics feature matrix for CT-derived masks. Columns include ROI identifiers, segmentation source, structure cropping status, and all extracted features.
   - `Data_Snakemake/<patient>/<course>/fractions.xlsx` and `metadata/case_metadata.xlsx`: treatment delivery schedule and DICOM metadata (machine, acquisition parameters, patient demographics).
   - `Data_Snakemake/<patient>/<course>/qc_reports/*.json`: structured QC checks—file integrity, frame-of-reference consistency, and boundary-touch alerts for each ROI.
-  - `Data_Snakemake/<patient>/Segmentation_<model>/<course>/`: custom nnUNet masks (`*.nii.gz`), `rtstruct.dcm`, and manifest metadata powering the `CustomModel:<model>` entries in DVH/radiomics tables.
+  - `Data_Snakemake/<patient>/<course>/Segmentation_CustomModels/<model>/`: custom nnUNet masks (`*.nii.gz`), `rtstruct.dcm`, and manifest metadata powering the `CustomModel:<model>` entries in DVH/radiomics tables.
 
 - **Aggregation directory (`Data_Snakemake/_RESULTS/`)**
   - `dvh_metrics.xlsx`, `radiomics_ct.xlsx`, `fractions.xlsx`, `case_metadata.xlsx`, `qc_reports.xlsx`: concatenated versions of the per-course tables with added course/patient identifiers for cohort-level analysis.
