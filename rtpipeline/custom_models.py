@@ -40,7 +40,7 @@ class NetworkDefinition:
     trainer: Optional[str] = None
     cascade_trainer: Optional[str] = None
     plans: Optional[str] = None
-    folds: str = "all"
+    folds: object = "all"
     task: Optional[str] = None
 
 
@@ -58,7 +58,7 @@ class CustomModelDefinition:
     directory: Path
     command: str
     model: str
-    folds: str
+    folds: object
     env: Dict[str, str]
     networks: List[NetworkDefinition]
     combine_order: List[str]
@@ -163,7 +163,16 @@ def _parse_custom_model(model_dir: Path, data: dict, default_command: str) -> Cu
     interface = str(nnunet_cfg.get("interface") or "nnunetv2").strip().lower()
     command = str(nnunet_cfg.get("command") or default_command or ("nnunet_predict" if interface == "nnunetv1" else "nnUNetv2_predict"))
     model_type = str(nnunet_cfg.get("model") or "3d_fullres")
-    folds = str(nnunet_cfg.get("folds") or "all")
+    folds_cfg = nnunet_cfg.get("folds")
+    if isinstance(folds_cfg, (list, tuple, set)):
+        folds = [int(f) for f in folds_cfg]
+    elif folds_cfg in (None, "all"):
+        folds = "all"
+    else:
+        try:
+            folds = [int(x) for x in str(folds_cfg).replace(',', ' ').split()]
+        except Exception:
+            folds = str(folds_cfg)
 
     env_cfg = nnunet_cfg.get("env") or {}
     if not isinstance(env_cfg, dict):
@@ -212,7 +221,16 @@ def _parse_custom_model(model_dir: Path, data: dict, default_command: str) -> Cu
         trainer = entry.get("trainer")
         cascade_trainer = entry.get("cascade_trainer") or entry.get("cascade_trainer_fullres")
         plans = entry.get("plans")
-        folds_override = str(entry.get("folds") or nnunet_cfg.get("folds") or folds)
+        folds_override_cfg = entry.get("folds") or nnunet_cfg.get("folds") or folds
+        if isinstance(folds_override_cfg, (list, tuple, set)):
+            folds_override = [int(f) for f in folds_override_cfg]
+        elif folds_override_cfg in (None, "all"):
+            folds_override = "all"
+        else:
+            try:
+                folds_override = [int(x) for x in str(folds_override_cfg).replace(',', ' ').split()]
+            except Exception:
+                folds_override = str(folds_override_cfg)
         task = entry.get("task")
         if task:
             task = str(task).strip()
@@ -408,8 +426,19 @@ def _run_nnunet_prediction(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     if model.interface == "nnunetv1":
+        base_cmd = model.command or "nnUNet_predict"
+        folds_arg = network.folds or model.folds
+        if isinstance(folds_arg, (list, tuple, set)):
+            fold_parts = [str(int(f)) for f in folds_arg]
+        else:
+            raw = str(folds_arg) if folds_arg is not None else "all"
+            if raw.strip().lower() == "all":
+                fold_parts = ["all"]
+            else:
+                fold_parts = [tok for tok in raw.replace(',', ' ').split() if tok]
+
         cmd_parts = [
-            model.command or "nnUNet_predict",
+            base_cmd,
             "-i",
             str(input_dir),
             "-o",
@@ -419,8 +448,7 @@ def _run_nnunet_prediction(
             "-t",
             str(network.task or network.network_id),
             "-f",
-            str(network.folds or model.folds),
-        ]
+        ] + fold_parts
         if network.trainer:
             cmd_parts.extend(["-tr", str(network.trainer)])
         if network.cascade_trainer:
@@ -428,8 +456,19 @@ def _run_nnunet_prediction(
         if network.plans:
             cmd_parts.extend(["-p", str(network.plans)])
     else:
+        base_cmd = model.command or cfg.nnunet_predict_cmd
+        folds_arg = network.folds or model.folds
+        if isinstance(folds_arg, (list, tuple, set)):
+            fold_parts = [str(int(f)) for f in folds_arg]
+        else:
+            raw = str(folds_arg) if folds_arg is not None else "all"
+            if raw.strip().lower() == "all":
+                fold_parts = ["all"]
+            else:
+                fold_parts = [tok for tok in raw.replace(',', ' ').split() if tok]
+
         cmd_parts = [
-            model.command or cfg.nnunet_predict_cmd,
+            base_cmd,
             "-i",
             str(input_dir),
             "-o",
@@ -439,8 +478,18 @@ def _run_nnunet_prediction(
             "-c",
             str(network.architecture or model.model),
             "-f",
-            str(network.folds or model.folds),
-        ]
+        ] + fold_parts
+
+    import shutil as _shutil
+
+    executable = shlex.split(base_cmd)[0]
+    need_path_check = not (cfg.custom_models_conda_activate or cfg.conda_activate)
+    if need_path_check and _shutil.which(executable) is None:
+        raise RuntimeError(
+            f"nnU-Net command '{executable}' is not available on PATH. "
+            "Ensure the custom models environment provides this executable or "
+            "set 'custom_models.nnunet_predict' in the configuration to the correct command."
+        )
 
     cmd = f"{_command_prefix(cfg)}{' '.join(shlex.quote(part) for part in cmd_parts)}"
     logger.info("Running nnUNet prediction: %s", cmd)

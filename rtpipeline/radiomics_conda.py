@@ -349,6 +349,13 @@ def process_radiomics_batch(
             features = extract_radiomics_with_conda(image_path, mask_path, params_file, label)
         except Exception as exc:
             msg = str(exc).lower()
+            if 'size of the roi is too small' in msg:
+                logger.info(
+                    "Skipping radiomics for ROI %s: %s",
+                    roi_name,
+                    str(exc).strip(),
+                )
+                return None
             if 'mask has too few dimensions' in msg and task.get('ct_info'):
                 repaired = _ensure_mask_has_three_dimensions(mask_path, task['ct_info'])
                 if repaired:

@@ -14,7 +14,7 @@ import SimpleITK as sitk
 logger = logging.getLogger(__name__)
 
 from .layout import build_course_dirs
-from .utils import sanitize_rtstruct, mask_is_cropped, run_tasks_with_adaptive_workers
+from .utils import sanitize_rtstruct, mask_is_cropped, run_tasks_with_adaptive_workers, snap_rtstruct_to_dose_grid
 from .layout import build_course_dirs
 from .custom_models import list_custom_model_outputs
 
@@ -471,6 +471,7 @@ def _create_custom_structures_rtstruct(
 def _estimate_rx_from_ctv1(rtstruct: pydicom.dataset.FileDataset, rtdose: pydicom.dataset.FileDataset) -> float:
     default_rx = 50.0
     try:
+        snap_rtstruct_to_dose_grid(rtstruct, rtdose)
         for roi in rtstruct.StructureSetROISequence:
             name = str(getattr(roi, "ROIName", "") or "")
             if "ctv1" in name.replace(" ", "").lower():
@@ -578,6 +579,7 @@ def dvh_for_course(
         except Exception as e:
             logger.warning("Cannot read RTSTRUCT %s: %s", rs_path, e)
             return
+        snap_rtstruct_to_dose_grid(rtstruct, rtdose)
         builder = _get_builder(rs_path)
         rois = list(getattr(rtstruct, "StructureSetROISequence", []) or [])
         if not rois:

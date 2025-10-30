@@ -21,7 +21,7 @@ custom_models:
   models: []           # Optional allowlist of model names; leave empty to run all
   workers: 1           # Concurrent courses for custom models (GPU intensive; default 1)
   force: false         # Force re-run even if outputs already exist
-  nnunet_predict: "nnUNetv2_predict"
+  nnunet_predict: "nnUNet_predict"
   retain_weights: true # Keep extracted nnUNet caches between runs (set false to purge after each run)
   conda_activate: null  # Override conda activation for custom models (default: segmentation setting)
 
