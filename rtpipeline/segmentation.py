@@ -571,13 +571,53 @@ def segment_course(config: PipelineConfig, course_dir: Path, force: bool = False
         mr_models.append("total_mr")
     mr_models = sorted({m.strip() for m in mr_models if m.strip()})
 
+    def _detect_series_uid(dicom_root: Path) -> Optional[str]:
+        for candidate in sorted(dicom_root.rglob("*.dcm")):
+            try:
+                ds = pydicom.dcmread(str(candidate), stop_before_pixels=True)
+            except Exception:
+                continue
+            uid = str(getattr(ds, "SeriesInstanceUID", "") or "")
+            if uid:
+                return uid
+        return None
+
     if mr_models and course_dirs.dicom_mr.exists():
         for series_root in sorted(p for p in course_dirs.dicom_mr.iterdir() if p.is_dir()):
             dicom_dir = series_root / "DICOM"
-            nifti_dir = series_root / "NIFTI"
-            if not dicom_dir.exists() or not nifti_dir.exists():
+            if dicom_dir.exists():
+                source_dir = dicom_dir
+            else:
+                source_dir = series_root
+            if not any(source_dir.glob("*.dcm")):
                 continue
+
+            nifti_dir = series_root / "NIFTI"
+            nifti_dir.mkdir(parents=True, exist_ok=True)
+
             meta_files = sorted(nifti_dir.glob("*.metadata.json"))
+            if not meta_files:
+                tmp_out = nifti_dir / f".tmp_{series_root.name}"
+                tmp_out.mkdir(parents=True, exist_ok=True)
+                generated = run_dcm2niix(config, source_dir, tmp_out)
+                if generated is not None:
+                    target_path = nifti_dir / generated.name
+                    if target_path.exists():
+                        target_path.unlink()
+                    shutil.move(str(generated), target_path)
+                    series_uid = _detect_series_uid(source_dir)
+                    metadata = {
+                        "modality": "MR",
+                        "nifti_path": str(target_path),
+                        "source_directory": str(source_dir),
+                        "series_instance_uid": series_uid or "",
+                        "generated_at": datetime.datetime.utcnow().isoformat() + "Z",
+                    }
+                    meta_path = nifti_dir / f"{target_path.stem}.metadata.json"
+                    meta_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+                shutil.rmtree(tmp_out, ignore_errors=True)
+                meta_files = sorted(nifti_dir.glob("*.metadata.json"))
+
             if not meta_files:
                 continue
             try:
@@ -589,9 +629,9 @@ def segment_course(config: PipelineConfig, course_dir: Path, force: bool = False
             nifti_path = Path(meta.get("nifti_path") or "")
             if not nifti_path.exists():
                 continue
-            source_dir = Path(meta.get("source_directory") or dicom_dir)
+            source_dir = Path(meta.get("source_directory") or source_dir)
             if not source_dir.exists():
-                continue
+                source_dir = series_root
             base_name_mr = _strip_nifti_base(nifti_path)
             base_dir_mr = series_root / "Segmentation_TotalSegmentator"
             base_dir_mr.mkdir(parents=True, exist_ok=True)

@@ -165,6 +165,78 @@ def mask_is_cropped(mask: np.ndarray) -> bool:
     return False
 
 
+def snap_rtstruct_to_dose_grid(
+    rtstruct: FileDataset,
+    rtdose: FileDataset,
+    tolerance_mm: float = 1.0,
+) -> bool:
+    """Snap RTSTRUCT contour plane positions to the closest dose grid plane.
+
+    Many TPS export contours with sub-millimetre deviations from the dose grid.
+    dicompyler-core expects an exact match and otherwise falls back to extrema,
+    degrading DVH accuracy. This helper adjusts each contour ``z`` coordinate to
+    the nearest plane within ``tolerance_mm``. Returns True when any coordinate
+    was updated.
+    """
+
+    if rtstruct is None or rtdose is None:
+        return False
+
+    try:
+        ipp = getattr(rtdose, "ImagePositionPatient", None)
+        offsets = getattr(rtdose, "GridFrameOffsetVector", [])
+        if ipp is None or len(ipp) < 3:
+            return False
+        base_z = float(ipp[2])
+        planes = base_z + np.asarray([float(v) for v in offsets], dtype=float)
+    except Exception:
+        return False
+
+    if planes.size == 0:
+        return False
+
+    tolerance = abs(float(tolerance_mm)) if tolerance_mm is not None else 0.0
+    if tolerance == 0.0:
+        tolerance = 0.5
+    try:
+        spacings = np.diff(np.unique(planes))
+        min_spacing = float(np.min(spacings)) if spacings.size else None
+    except Exception:
+        min_spacing = None
+    if min_spacing is not None:
+        spacing_tol = min_spacing * 1.5
+        if tolerance < spacing_tol:
+            tolerance = spacing_tol
+
+    changed = False
+    roi_sequence = getattr(rtstruct, "ROIContourSequence", []) or []
+    for roi_contour in roi_sequence:
+        contour_seq = getattr(roi_contour, "ContourSequence", None)
+        if not contour_seq:
+            continue
+        for contour in contour_seq:
+            data = getattr(contour, "ContourData", None)
+            if not data:
+                continue
+            updated = False
+            for idx in range(2, len(data), 3):
+                try:
+                    current_z = float(data[idx])
+                except Exception:
+                    continue
+                nearest = float(planes[np.abs(planes - current_z).argmin()])
+                if abs(nearest - current_z) <= tolerance and not np.isclose(nearest, current_z, atol=1e-3):
+                    rounded = round(nearest, 6)
+                    try:
+                        data[idx] = type(data[idx])(rounded)
+                    except Exception:
+                        data[idx] = rounded
+                    updated = True
+            if updated:
+                changed = True
+    return changed
+
+
 _MEMORY_PATTERNS = (
     "out of memory",
     "cuda out of memory",
