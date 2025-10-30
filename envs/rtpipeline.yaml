@@ -12,8 +12,14 @@ dependencies:
   - scikit-image
   - pydicom>=3.0.0
   - SimpleITK>=2.5.0
+  - pytorch=2.5.*
+  - torchvision=0.20.*
+  - torchaudio=2.5.*
   - nibabel
   - dcm2niix
+  - nnunet=1.7.*
+  - batchgenerators
+  - future
   - pip
   - pip:
     - TotalSegmentator

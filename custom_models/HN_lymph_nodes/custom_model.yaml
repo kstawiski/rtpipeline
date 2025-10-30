@@ -6,12 +6,11 @@ nnunet:
   interface: nnunetv1
   command: nnUNet_predict
   model: 3d_fullres
-  folds: all
+  folds: [0]
   env:
     nnUNet_results: ./nnUNet_results
     nnUNet_raw: ./nnUNet_raw
     nnUNet_preprocessed: ./nnUNet_preprocessed
-    RESULTS_FOLDER: ./nnUNet_results
   ensemble:
     command: nnUNet_ensemble
     inputs: ["3d_fullres", "2d"]

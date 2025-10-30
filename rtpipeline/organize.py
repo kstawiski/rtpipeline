@@ -7,12 +7,14 @@ import logging
 import os
 import shutil
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, cast
 
 import numpy as np
 import pydicom
+from pydicom.dataset import Dataset
+from pydicom.sequence import Sequence
 import SimpleITK as sitk
 from pydicom.uid import generate_uid
 from scipy.ndimage import map_coordinates
@@ -41,6 +43,10 @@ class CourseOutput:
     primary_nifti: Optional[Path]
     related_dicom: List[Path]
     total_prescription_gy: float | None
+    plan_sop_uid: str | None = None
+    dose_sop_uid: str | None = None
+    source_plan_uids: list[str] = field(default_factory=list)
+    source_dose_uids: list[str] = field(default_factory=list)
 
 
 def _safe_copy(src: Path, dst: Path) -> None:
@@ -126,6 +132,35 @@ def _hydrate_existing_course(
     except (TypeError, ValueError):
         total_rx_val = None
 
+    plan_uid: Optional[str] = None
+    dose_uid: Optional[str] = None
+    source_plan_uids: set[str] = set()
+    source_dose_uids: set[str] = set()
+
+    try:
+        ds_plan = pydicom.dcmread(str(rp_path), stop_before_pixels=True)
+        plan_uid = str(getattr(ds_plan, "SOPInstanceUID", "") or None)
+        for ref in getattr(ds_plan, "ReferencedRTPlanSequence", []) or []:
+            uid = getattr(ref, "ReferencedSOPInstanceUID", None)
+            if uid:
+                source_plan_uids.add(str(uid))
+    except Exception:
+        plan_uid = None
+
+    try:
+        ds_dose = pydicom.dcmread(str(rd_path), stop_before_pixels=True)
+        dose_uid = str(getattr(ds_dose, "SOPInstanceUID", "") or None)
+        for ref in getattr(ds_dose, "ReferencedRTPlanSequence", []) or []:
+            uid = getattr(ref, "ReferencedSOPInstanceUID", None)
+            if uid:
+                source_plan_uids.add(str(uid))
+        for ref in getattr(ds_dose, "ReferencedInstanceSequence", []) or []:
+            uid = getattr(ref, "ReferencedSOPInstanceUID", None)
+            if uid:
+                source_dose_uids.add(str(uid))
+    except Exception:
+        dose_uid = None
+
     return CourseOutput(
         patient_id=patient_id,
         course_key=course_key,
@@ -138,6 +173,10 @@ def _hydrate_existing_course(
         primary_nifti=primary_nifti,
         related_dicom=related_files,
         total_prescription_gy=total_rx_val,
+        plan_sop_uid=plan_uid,
+        dose_sop_uid=dose_uid,
+        source_plan_uids=sorted(source_plan_uids) if source_plan_uids else [],
+        source_dose_uids=sorted(source_dose_uids) if source_dose_uids else [],
     )
 
 
@@ -344,72 +383,203 @@ def _index_series_and_registrations(
             registrations.setdefault(patient_id, []).append(reg_item)
     return series_index, registrations, series_meta
 
-def _create_summed_plan(plan_files: List[Path], total_dose_gy: float, out_plan_path: Path) -> None:
+def _create_summed_plan(plan_files: List[Path], total_dose_gy: float | None = None) -> tuple[pydicom.dataset.FileDataset, list[pydicom.dataset.FileDataset], list[str]]:
+    """Build an evaluation-only plan sum dataset that references all source RTPLANs."""
+
     if not plan_files:
         raise ValueError("No plan files to sum")
-    ds_plan = pydicom.dcmread(str(plan_files[0]), stop_before_pixels=True)
-    new_plan = copy.deepcopy(ds_plan)
 
-    new_plan.SeriesInstanceUID = generate_uid()
-    new_plan.SOPInstanceUID = generate_uid()
-    new_plan.SeriesDescription = f"Summed Plan ({len(plan_files)} fractions)"
-    new_plan.InstanceCreationDate = datetime.datetime.now().strftime("%Y%m%d")
-    new_plan.InstanceCreationTime = datetime.datetime.now().strftime("%H%M%S")
+    plan_datasets: list[pydicom.dataset.FileDataset] = [
+        pydicom.dcmread(str(path), stop_before_pixels=False)
+        for path in plan_files
+    ]
 
-    # Update prescription
-    try:
-        if hasattr(new_plan, "DoseReferenceSequence") and new_plan.DoseReferenceSequence:
-            for dose_ref in new_plan.DoseReferenceSequence:
-                if hasattr(dose_ref, "TargetPrescriptionDose"):
-                    dose_ref.TargetPrescriptionDose = float(total_dose_gy)
-    except (AttributeError, ValueError, TypeError) as e:
-        logger.warning("Failed to update prescription dose in summed plan: %s", e)
+    base_plan = plan_datasets[0]
+    plan_sum = copy.deepcopy(base_plan)
 
-    # Update fraction group meterset proportionally if possible
-    try:
-        if hasattr(ds_plan, "DoseReferenceSequence") and ds_plan.DoseReferenceSequence:
-            base_rx = float(ds_plan.DoseReferenceSequence[0].TargetPrescriptionDose)
-        else:
-            base_rx = float(total_dose_gy)
-        if hasattr(new_plan, "FractionGroupSequence") and new_plan.FractionGroupSequence and base_rx > 0:
-            ratio = float(total_dose_gy) / base_rx
-            for fg in new_plan.FractionGroupSequence:
-                if hasattr(fg, "ReferencedBeamSequence") and fg.ReferencedBeamSequence:
-                    for beam_ref in fg.ReferencedBeamSequence:
-                        if hasattr(beam_ref, "BeamMeterset"):
-                            beam_ref.BeamMeterset = float(beam_ref.BeamMeterset) * ratio
-    except (AttributeError, ValueError, TypeError, ZeroDivisionError) as e:
-        logger.warning("Failed to update meterset in summed plan: %s", e)
+    now = datetime.datetime.now()
+    plan_sum.SeriesInstanceUID = generate_uid()
+    plan_sum.SOPInstanceUID = generate_uid()
+    plan_sum.InstanceCreationDate = now.strftime("%Y%m%d")
+    plan_sum.InstanceCreationTime = now.strftime("%H%M%S")
+    plan_sum.SeriesDescription = f"Plan Sum ({len(plan_files)} plans)"
 
-    new_plan.save_as(str(out_plan_path))
+    def _suffix(value: Optional[str], suffix: str, limit: Optional[int] = None) -> Optional[str]:
+        if not value:
+            return value
+        new_val = f"{value}{suffix}"
+        if limit is not None and len(new_val) > limit:
+            return new_val[:limit]
+        return new_val
+
+    if hasattr(plan_sum, "RTPlanLabel"):
+        plan_sum.RTPlanLabel = _suffix(str(getattr(plan_sum, "RTPlanLabel", "")), "_SUM", limit=16) or "PLAN_SUM"
+    if hasattr(plan_sum, "RTPlanName"):
+        plan_sum.RTPlanName = _suffix(str(getattr(plan_sum, "RTPlanName", "")), "_SUM", limit=64) or "PlanSum"
+    if hasattr(plan_sum, "RTPlanDescription"):
+        plan_sum.RTPlanDescription = f"Summation of {len(plan_files)} plans generated on {now.isoformat()}"
+
+    if hasattr(plan_sum, "PlanIntent"):
+        plan_sum.PlanIntent = "REVIEW"
+    if hasattr(plan_sum, "PlanStatus"):
+        plan_sum.PlanStatus = "UNPLANNED"
+    if hasattr(plan_sum, "ApprovalStatus"):
+        plan_sum.ApprovalStatus = "APPROVED"
+
+    beam_mappings: dict[str, dict[int, int]] = {}
+    new_beams: list[Dataset] = []
+    new_beam_number = 1
+    for plan_index, ds_plan in enumerate(plan_datasets):
+        plan_uid = str(getattr(ds_plan, "SOPInstanceUID", ""))
+        if not plan_uid:
+            plan_uid = generate_uid()
+            ds_plan.SOPInstanceUID = plan_uid
+        beam_mappings.setdefault(plan_uid, {})
+        for beam in getattr(ds_plan, "BeamSequence", []) or []:
+            beam_copy = copy.deepcopy(beam)
+            try:
+                original_number = int(getattr(beam_copy, "BeamNumber", new_beam_number))
+            except Exception:
+                original_number = new_beam_number
+            beam_copy.BeamNumber = new_beam_number
+            beam_mappings[plan_uid][original_number] = new_beam_number
+
+            beam_name = str(getattr(beam_copy, "BeamName", "") or "")
+            suffix = f"_P{plan_index + 1}"
+            if beam_name:
+                new_name = beam_name + suffix
+            else:
+                new_name = f"BEAM{new_beam_number:02d}{suffix}"
+            if len(new_name) > 16:
+                new_name = new_name[:16]
+            beam_copy.BeamName = new_name
+
+            new_beams.append(beam_copy)
+            new_beam_number += 1
+    if new_beams:
+        plan_sum.BeamSequence = Sequence(new_beams)
+        plan_sum.NumberOfBeams = len(new_beams)
+
+    total_fractions = 0
+    for ds_plan in plan_datasets:
+        for fg in getattr(ds_plan, "FractionGroupSequence", []) or []:
+            val = getattr(fg, "NumberOfFractionsPlanned", None)
+            if val not in (None, ""):
+                try:
+                    total_fractions += int(val)
+                except Exception:
+                    continue
+    if total_fractions <= 0:
+        total_fractions = len(plan_datasets)
+
+    fg_dataset = Dataset()
+    fg_dataset.FractionGroupNumber = 1
+    fg_dataset.NumberOfFractionsPlanned = int(total_fractions)
+    fg_dataset.NumberOfBeams = len(new_beams)
+    fg_dataset.ReferencedBeamSequence = Sequence()
+
+    ref_beam_items: list[Dataset] = []
+    for ds_plan in plan_datasets:
+        plan_uid = str(ds_plan.SOPInstanceUID)
+        mapping = beam_mappings.get(plan_uid, {})
+        for beam in getattr(ds_plan, "BeamSequence", []) or []:
+            ref_item = Dataset()
+            original_number = int(getattr(beam, "BeamNumber", 0) or 0)
+            new_number = mapping.get(original_number)
+            if new_number is None:
+                continue
+            ref_item.ReferencedBeamNumber = new_number
+            if hasattr(beam, "BeamMeterset") and beam.BeamMeterset not in (None, ""):
+                try:
+                    ref_item.BeamMeterset = float(beam.BeamMeterset)
+                except Exception:
+                    pass
+            if hasattr(beam, "BeamDose") and beam.BeamDose not in (None, ""):
+                try:
+                    ref_item.BeamDose = float(beam.BeamDose)
+                except Exception:
+                    pass
+            ref_beam_items.append(ref_item)
+    fg_dataset.ReferencedBeamSequence = Sequence(ref_beam_items)
+
+    plan_sum.FractionGroupSequence = Sequence([fg_dataset])
+    plan_sum.NumberOfFractionsPlanned = int(total_fractions)
+
+    if total_dose_gy is not None:
+        try:
+            if hasattr(plan_sum, "DoseReferenceSequence") and plan_sum.DoseReferenceSequence:
+                for dose_ref in plan_sum.DoseReferenceSequence:
+                    if hasattr(dose_ref, "TargetPrescriptionDose"):
+                        dose_ref.TargetPrescriptionDose = float(total_dose_gy)
+        except Exception as exc:
+            logger.warning("Failed to update prescription dose in plan sum: %s", exc)
+
+    ref_plan_items: list[Dataset] = []
+    for ds_plan in plan_datasets:
+        item = Dataset()
+        item.ReferencedSOPClassUID = str(getattr(ds_plan, "SOPClassUID", "1.2.840.10008.5.1.4.1.1.481.5"))
+        item.ReferencedSOPInstanceUID = str(ds_plan.SOPInstanceUID)
+        mapping = beam_mappings.get(str(ds_plan.SOPInstanceUID), {})
+        beam_refs: list[Dataset] = []
+        for original_number, new_number in sorted(mapping.items()):
+            ref_beam = Dataset()
+            ref_beam.ReferencedBeamNumber = int(new_number)
+            beam_refs.append(ref_beam)
+        if beam_refs:
+            item.ReferencedBeamSequence = Sequence(beam_refs)
+        ref_plan_items.append(item)
+    if ref_plan_items:
+        plan_sum.ReferencedRTPlanSequence = Sequence(ref_plan_items)
+
+    source_uid_order: list[str] = []
+    for ds in plan_datasets:
+        uid = str(ds.SOPInstanceUID)
+        if uid and uid not in source_uid_order:
+            source_uid_order.append(uid)
+
+    return plan_sum, plan_datasets, source_uid_order
 
 
-def _sum_doses_with_resample(dose_files: List[Path], out_dose_path: Path) -> None:
+def _sum_doses_with_resample(
+    dose_files: List[Path],
+    plan_sum: pydicom.dataset.FileDataset,
+    plan_datasets: list[pydicom.dataset.FileDataset],
+) -> tuple[pydicom.dataset.FileDataset, list[pydicom.dataset.FileDataset], list[str]]:
     if not dose_files:
         raise ValueError("No dose files to sum")
 
+    dose_datasets: list[pydicom.dataset.FileDataset] = [
+        pydicom.dcmread(str(path), stop_before_pixels=False)
+        for path in dose_files
+    ]
+
     ref_idx = 0
     best_resolution = float("inf")
-    for i, p in enumerate(dose_files):
-        ds = pydicom.dcmread(str(p))
+    for i, ds in enumerate(dose_datasets):
         if not hasattr(ds, "PixelSpacing") or len(ds.PixelSpacing) < 2:
             continue
-        pixel_spacing = list(map(float, ds.PixelSpacing))
+        try:
+            pixel_spacing = list(map(float, ds.PixelSpacing))
+        except Exception:
+            continue
         slice_thickness = 1.0
         if hasattr(ds, "GridFrameOffsetVector") and len(ds.GridFrameOffsetVector) > 1:
-            slice_thickness = abs(float(ds.GridFrameOffsetVector[1] - ds.GridFrameOffsetVector[0]))
+            try:
+                slice_thickness = abs(float(ds.GridFrameOffsetVector[1] - ds.GridFrameOffsetVector[0]))
+            except Exception:
+                slice_thickness = 1.0
         voxel_volume = pixel_spacing[0] * pixel_spacing[1] * slice_thickness
         if voxel_volume < best_resolution:
             best_resolution = voxel_volume
             ref_idx = i
 
-    ds_ref = pydicom.dcmread(str(dose_files[ref_idx]))
-    arr_ref = ds_ref.pixel_array.astype('float32')
+    ds_ref = dose_datasets[ref_idx]
+    arr_ref = ds_ref.pixel_array.astype("float32")
     dose_scaling_ref = float(getattr(ds_ref, "DoseGridScaling", 1.0))
     arr_ref *= dose_scaling_ref
 
     rows_ref, cols_ref = ds_ref.Rows, ds_ref.Columns
-    frames_ref = getattr(ds_ref, "NumberOfFrames", 1)
+    frames_ref = int(getattr(ds_ref, "NumberOfFrames", 1) or 1)
     origin_ref = list(map(float, getattr(ds_ref, "ImagePositionPatient", [0, 0, 0])))
     pixel_spacing_ref = list(map(float, getattr(ds_ref, "PixelSpacing", [1.0, 1.0])))
     offsets_ref = getattr(ds_ref, "GridFrameOffsetVector", None)
@@ -422,15 +592,14 @@ def _sum_doses_with_resample(dose_files: List[Path], out_dose_path: Path) -> Non
 
     accumulated = arr_ref.copy()
 
-    for i, p in enumerate(dose_files):
+    for i, ds in enumerate(dose_datasets):
         if i == ref_idx:
             continue
-        ds = pydicom.dcmread(str(p))
-        arr = ds.pixel_array.astype('float32')
+        arr = ds.pixel_array.astype("float32")
         arr *= float(getattr(ds, "DoseGridScaling", 1.0))
 
         rows, cols = ds.Rows, ds.Columns
-        frames = getattr(ds, "NumberOfFrames", 1)
+        frames = int(getattr(ds, "NumberOfFrames", 1) or 1)
         origin = list(map(float, getattr(ds, "ImagePositionPatient", [0, 0, 0])))
         pixel_spacing = list(map(float, getattr(ds, "PixelSpacing", [1.0, 1.0])))
         offsets = getattr(ds, "GridFrameOffsetVector", None)
@@ -460,7 +629,6 @@ def _sum_doses_with_resample(dose_files: List[Path], out_dose_path: Path) -> Non
         resampled = resampled.reshape((frames_ref, rows_ref, cols_ref))
         accumulated += resampled
 
-    # Convert to int representation with scaling
     max_dose = float(np.nanmax(accumulated)) if accumulated.size else 0.0
     if max_dose > 1000:
         scaling_factor = 10.0
@@ -470,15 +638,19 @@ def _sum_doses_with_resample(dose_files: List[Path], out_dose_path: Path) -> Non
         scaling_factor = 1000.0
 
     accumulated = np.nan_to_num(accumulated, nan=0.0)
-    accumulated_int = np.rint(accumulated * scaling_factor).astype('int32')
+    accumulated_int = np.rint(accumulated * scaling_factor).astype("int32")
 
     new_ds = copy.deepcopy(ds_ref)
+    now = datetime.datetime.now()
     new_ds.SOPInstanceUID = generate_uid()
     new_ds.SeriesInstanceUID = generate_uid()
-    new_ds.SeriesDescription = f"Summed Dose ({len(dose_files)} fractions)"
-    new_ds.DoseSummationType = "PLAN"
-    new_ds.InstanceCreationDate = datetime.datetime.now().strftime("%Y%m%d")
-    new_ds.InstanceCreationTime = datetime.datetime.now().strftime("%H%M%S")
+    new_ds.InstanceCreationDate = now.strftime("%Y%m%d")
+    new_ds.InstanceCreationTime = now.strftime("%H%M%S")
+    new_ds.SeriesDescription = f"Dose Sum ({len(dose_files)} plans)"
+    if len(dose_files) > 1:
+        new_ds.DoseSummationType = "PLAN_SUM"
+    else:
+        new_ds.DoseSummationType = str(getattr(new_ds, "DoseSummationType", "PLAN"))
 
     new_ds.BitsAllocated = 32
     new_ds.BitsStored = 32
@@ -491,8 +663,52 @@ def _sum_doses_with_resample(dose_files: List[Path], out_dose_path: Path) -> Non
     if hasattr(new_ds, "PerFrameFunctionalGroupsSequence"):
         del new_ds.PerFrameFunctionalGroupsSequence
 
+    fores = {str(getattr(ds, "FrameOfReferenceUID", "")) for ds in dose_datasets if getattr(ds, "FrameOfReferenceUID", None)}
+    fores.discard("")
+    if fores:
+        if len(fores) > 1:
+            logger.warning("Dose sum encountered multiple FrameOfReferenceUIDs: %s", sorted(fores))
+        new_ds.FrameOfReferenceUID = sorted(fores)[0]
+
     new_ds.PixelData = accumulated_int.tobytes()
-    new_ds.save_as(str(out_dose_path))
+
+    # Update references to plans and source doses
+    ref_plan_items: list[Dataset] = []
+    sum_item = Dataset()
+    sum_item.ReferencedSOPClassUID = str(getattr(plan_sum, "SOPClassUID", "1.2.840.10008.5.1.4.1.1.481.5"))
+    sum_item.ReferencedSOPInstanceUID = str(plan_sum.SOPInstanceUID)
+    ref_plan_items.append(sum_item)
+    for ds_plan in plan_datasets:
+        item = Dataset()
+        item.ReferencedSOPClassUID = str(getattr(ds_plan, "SOPClassUID", "1.2.840.10008.5.1.4.1.1.481.5"))
+        item.ReferencedSOPInstanceUID = str(ds_plan.SOPInstanceUID)
+        ref_plan_items.append(item)
+    new_ds.ReferencedRTPlanSequence = Sequence(ref_plan_items)
+
+    ref_instances: list[Dataset] = []
+    for ds in dose_datasets:
+        ref_item = Dataset()
+        ref_item.ReferencedSOPClassUID = str(getattr(ds, "SOPClassUID", "1.2.840.10008.5.1.4.1.1.481.2"))
+        ref_item.ReferencedSOPInstanceUID = str(ds.SOPInstanceUID)
+        ref_instances.append(ref_item)
+    if ref_instances:
+        new_ds.ReferencedInstanceSequence = Sequence(ref_instances)
+
+    comment = (
+        f"Summed from {len(dose_files)} dose distributions on {now.isoformat()}"
+    )
+    if hasattr(new_ds, "DoseComment"):
+        new_ds.DoseComment = comment
+    else:
+        setattr(new_ds, "DoseComment", comment)
+
+    source_dose_uids: list[str] = []
+    for ds in dose_datasets:
+        uid = str(getattr(ds, "SOPInstanceUID", ""))
+        if uid and uid not in source_dose_uids:
+            source_dose_uids.append(uid)
+
+    return new_ds, dose_datasets, source_dose_uids
 
 
 def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
@@ -606,13 +822,62 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
             except Exception:
                 continue
 
+        plan_sop_uid: Optional[str] = None
+        dose_sop_uid: Optional[str] = None
+        source_plan_uids: list[str] = []
+        source_dose_uids: list[str] = []
+
         if plan_paths and dose_paths:
             if len(plan_paths) == 1 and len(dose_paths) == 1:
                 _safe_copy(plan_paths[0], rp_dst)
                 _safe_copy(dose_paths[0], rd_dst)
+                try:
+                    ds_plan_single = pydicom.dcmread(str(plan_paths[0]), stop_before_pixels=True)
+                    plan_sop_uid = str(getattr(ds_plan_single, "SOPInstanceUID", "") or None)
+                except Exception:
+                    plan_sop_uid = None
+                try:
+                    ds_dose_single = pydicom.dcmread(str(dose_paths[0]), stop_before_pixels=False)
+                    dose_sop_uid = str(getattr(ds_dose_single, "SOPInstanceUID", "") or None)
+                except Exception:
+                    dose_sop_uid = None
+                if plan_sop_uid:
+                    source_plan_uids.append(plan_sop_uid)
+                if dose_sop_uid:
+                    source_dose_uids.append(dose_sop_uid)
             else:
-                _sum_doses_with_resample(dose_paths, rd_dst)
-                _create_summed_plan(plan_paths, total_rx, rp_dst)
+                plan_sum_ds, plan_ds_list, source_plan_uids = _create_summed_plan(plan_paths, total_rx if total_rx else None)
+                dose_sum_ds, dose_ds_list, source_dose_uids = _sum_doses_with_resample(dose_paths, plan_sum_ds, plan_ds_list)
+
+                ref_dose_item = Dataset()
+                ref_dose_item.ReferencedSOPClassUID = str(getattr(dose_sum_ds, "SOPClassUID", "1.2.840.10008.5.1.4.1.1.481.2"))
+                ref_dose_item.ReferencedSOPInstanceUID = str(dose_sum_ds.SOPInstanceUID)
+                plan_sum_ds.ReferencedDoseSequence = Sequence([ref_dose_item])
+
+                plan_sum_ds.save_as(str(rp_dst))
+                dose_sum_ds.save_as(str(rd_dst))
+
+                plan_sop_uid = str(plan_sum_ds.SOPInstanceUID)
+                dose_sop_uid = str(dose_sum_ds.SOPInstanceUID)
+        else:
+            if plan_paths:
+                _safe_copy(plan_paths[0], rp_dst)
+                try:
+                    ds_plan_single = pydicom.dcmread(str(plan_paths[0]), stop_before_pixels=True)
+                    plan_sop_uid = str(getattr(ds_plan_single, "SOPInstanceUID", "") or None)
+                except Exception:
+                    plan_sop_uid = None
+                if plan_sop_uid:
+                    source_plan_uids.append(plan_sop_uid)
+            if dose_paths:
+                _safe_copy(dose_paths[0], rd_dst)
+                try:
+                    ds_dose_single = pydicom.dcmread(str(dose_paths[0]), stop_before_pixels=False)
+                    dose_sop_uid = str(getattr(ds_dose_single, "SOPInstanceUID", "") or None)
+                except Exception:
+                    dose_sop_uid = None
+                if dose_sop_uid:
+                    source_dose_uids.append(dose_sop_uid)
 
         course_study = items_sorted[0].ct_study_uid if items_sorted else None
         struct_path = struct_candidates[0] if struct_candidates else None
@@ -714,6 +979,10 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
             primary_nifti=Path(primary_nifti) if primary_nifti else None,
             related_dicom=related_outputs,
             total_prescription_gy=total_rx or None,
+            plan_sop_uid=plan_sop_uid,
+            dose_sop_uid=dose_sop_uid,
+            source_plan_uids=source_plan_uids,
+            source_dose_uids=source_dose_uids,
         )
 
     if course_tasks:
@@ -846,12 +1115,18 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
             def _convert_related_series(parent: Path, *, modality_hint: Optional[str] = None) -> None:
                 for series_root in sorted(p for p in parent.iterdir() if p.is_dir() and p.name != "REG"):
                     try:
-                        if modality_hint == "MR" and (series_root / "DICOM").exists():
+                        if modality_hint == "MR":
                             dicom_dir = series_root / "DICOM"
+                            if not dicom_dir.exists():
+                                dicom_dir = series_root
+                            if not any(dicom_dir.glob("*.dcm")):
+                                continue
                             target_root = series_root / "NIFTI"
                             sanitized_sid = _sanitize_name(series_root.name, "mr")
                         else:
                             dicom_dir = series_root
+                            if not any(dicom_dir.glob("*.dcm")):
+                                continue
                             target_root = course_dirs.nifti
                             sanitized_sid = None
                         target_root.mkdir(parents=True, exist_ok=True)
@@ -933,6 +1208,11 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
             # Aggregate course-level details for research/clinic
             # Rebuild context from files on disk
             plan_uids: set[str] = set()
+            if co.plan_sop_uid:
+                plan_uids.add(str(co.plan_sop_uid))
+            for uid in co.source_plan_uids or []:
+                if uid:
+                    plan_uids.add(str(uid))
             items_sorted = []  # Not available here; we use on-disk RP only where needed below
             try:
                 rp_path = patient_dir / "RP.dcm"
@@ -1181,7 +1461,7 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
                     df_frac_raw = _pd.DataFrame(fractions_details)
                     if not df_frac_raw.empty:
                         df_frac_raw["treatment_time"] = df_frac_raw["treatment_time"].fillna("")
-                        plan_primary = next(iter(plan_uids), "")
+                        plan_primary = str(co.plan_sop_uid) if co.plan_sop_uid else next(iter(plan_uids), "")
                         df_frac_raw["plan_key"] = df_frac_raw["plan_sop"].fillna("")
                         if plan_primary:
                             df_frac_raw.loc[df_frac_raw["plan_key"] == "", "plan_key"] = plan_primary
@@ -1457,6 +1737,10 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
                 "rp_path": str(co.rp_path) if co.rp_path.exists() else "",
                 "rd_path": str(co.rd_path) if co.rd_path.exists() else "",
                 "rs_path": str(co.rs_path) if co.rs_path and co.rs_path.exists() else "",
+                "plan_sop_uid": str(co.plan_sop_uid or ""),
+                "dose_sop_uid": str(co.dose_sop_uid or ""),
+                "source_plan_uids": co.source_plan_uids or [],
+                "source_dose_uids": co.source_dose_uids or [],
                 "rs_auto_path": str((patient_dir / "RS_auto.dcm")) if (patient_dir / "RS_auto.dcm").exists() else "",
                 "seg_dicom_path": seg_dicom_path,
                 "seg_dir": str(co.dirs.segmentation_totalseg) if co.dirs.segmentation_totalseg.exists() else "",
