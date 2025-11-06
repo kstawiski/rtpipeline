@@ -1836,23 +1836,29 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
                                 for cp in cps:
                                     if hasattr(cp, 'GantryAngle'):
                                         try: gantry_angles.append(float(cp.GantryAngle))
-                                        except Exception: pass
+                                        except (ValueError, TypeError) as e:
+                                            logger.debug("Failed to parse GantryAngle: %s", e)
                                     if hasattr(cp, 'BeamLimitingDeviceAngle'):
                                         try: coll_angles.append(float(cp.BeamLimitingDeviceAngle))
-                                        except Exception: pass
+                                        except (ValueError, TypeError) as e:
+                                            logger.debug("Failed to parse BeamLimitingDeviceAngle: %s", e)
                                     if hasattr(cp, 'PatientSupportAngle'):
                                         try: couch_angles.append(float(cp.PatientSupportAngle))
-                                        except Exception: pass
+                                        except (ValueError, TypeError) as e:
+                                            logger.debug("Failed to parse PatientSupportAngle: %s", e)
                             else:
                                 if hasattr(b, 'GantryAngle'):
                                     try: gantry_angles.append(float(b.GantryAngle))
-                                    except Exception: pass
+                                    except (ValueError, TypeError) as e:
+                                        logger.debug("Failed to parse GantryAngle: %s", e)
                                 if hasattr(b, 'BeamLimitingDeviceAngle'):
                                     try: coll_angles.append(float(b.BeamLimitingDeviceAngle))
-                                    except Exception: pass
+                                    except (ValueError, TypeError) as e:
+                                        logger.debug("Failed to parse BeamLimitingDeviceAngle: %s", e)
                                 if hasattr(b, 'PatientSupportAngle'):
                                     try: couch_angles.append(float(b.PatientSupportAngle))
-                                    except Exception: pass
+                                    except (ValueError, TypeError) as e:
+                                        logger.debug("Failed to parse PatientSupportAngle: %s", e)
                     except Exception:
                         pass
                     def _stats(arr):
@@ -1961,11 +1967,13 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
                                 for cp in cps:
                                     if hasattr(cp, 'GantryAngle'):
                                         try: gantry_angles.append(float(cp.GantryAngle))
-                                        except Exception: pass
+                                        except (ValueError, TypeError) as e:
+                                            logger.debug("Failed to parse GantryAngle: %s", e)
                             else:
                                 if hasattr(b, 'GantryAngle'):
                                     try: gantry_angles.append(float(b.GantryAngle))
-                                    except Exception: pass
+                                    except (ValueError, TypeError) as e:
+                                        logger.debug("Failed to parse GantryAngle: %s", e)
                             gantry_span = float(np.ptp(gantry_angles)) if gantry_angles else None
                             is_arc = bool(num_cps >= 30 and (gantry_span or 0) > 80)
                             bnum = int(getattr(b, 'BeamNumber', 0) or 0)
