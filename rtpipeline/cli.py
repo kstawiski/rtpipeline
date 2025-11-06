@@ -1,16 +1,68 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import sys
 from pathlib import Path
 
 
 from .config import PipelineConfig
-from .organize import organize_and_merge
+from .organize import CourseOutput, organize_and_merge, _hydrate_existing_course
 from .utils import run_tasks_with_adaptive_workers
 
 logger = logging.getLogger(__name__)
+
+
+def _load_courses_from_manifest(
+    cfg: PipelineConfig,
+    manifest_path: Path,
+    patient_filter_ids: set[str],
+    course_filter_pairs: set[tuple[str, str]],
+) -> list[CourseOutput]:
+    path = manifest_path.expanduser()
+    if not path.exists():
+        logger.warning("Manifest %s not found; falling back to full organize stage", path)
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001 - log and fallback
+        logger.warning("Unable to parse manifest %s: %s", path, exc)
+        return []
+
+    filters_active = bool(patient_filter_ids or course_filter_pairs)
+    results: list[CourseOutput] = []
+
+    for entry in data.get("courses", []):
+        patient = str(entry.get("patient") or "").strip()
+        course = str(entry.get("course") or "").strip()
+        if not patient or not course:
+            continue
+        if filters_active and (patient, course) not in course_filter_pairs and patient not in patient_filter_ids:
+            continue
+
+        path_str = entry.get("path")
+        course_dir = None
+        if isinstance(path_str, str) and path_str.strip():
+            course_dir = Path(path_str).expanduser()
+        if course_dir is None or not course_dir.exists():
+            course_dir = cfg.output_root / patient / course
+        if not course_dir.exists():
+            logger.debug("Manifest course missing directory %s/%s at %s", patient, course, course_dir)
+            continue
+
+        hydrated = _hydrate_existing_course(patient, course, course_dir, {"dir_name": course_dir.name})
+        if hydrated is None:
+            logger.debug("Manifest course hydration failed for %s/%s", patient, course)
+            continue
+        results.append(hydrated)
+
+    if results:
+        logger.info("Loaded %d course(s) from manifest %s", len(results), path)
+    else:
+        logger.warning("Manifest %s did not yield any usable courses", path)
+
+    return results
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -18,6 +70,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--dicom-root", required=True, help="Path to root with DICOM files")
     p.add_argument("--outdir", default="./Data_Organized", help="Output directory for organized data")
     p.add_argument("--logs", default="./Logs", help="Logs directory")
+    p.add_argument("--manifest", default=None, help="Optional manifest JSON produced by organize stage to reuse course metadata")
     p.add_argument(
         "--merge-criteria",
         choices=["same_ct_study", "frame_of_reference"],
@@ -86,6 +139,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="CPU threads per TotalSegmentator invocation (<=0 to disable limit)",
     )
+    p.add_argument("--seg-temp-dir", default=None, help="Optional scratch directory for TotalSegmentator intermediates (defaults to course directory)")
     p.add_argument(
         "--radiomics-proc-threads",
         type=int,
@@ -265,6 +319,21 @@ def main(argv: list[str] | None = None) -> int:
         if filters_active:
             logger.info("%s: no courses matched course filter; skipping stage", stage_name)
 
+    seg_temp_root: Path | None = None
+    if args.seg_temp_dir:
+        seg_temp_candidate = Path(args.seg_temp_dir).expanduser()
+        if not seg_temp_candidate.is_absolute():
+            seg_temp_candidate = Path.cwd() / seg_temp_candidate
+        try:
+            seg_temp_root = seg_temp_candidate.resolve(strict=False)
+        except TypeError:
+            try:
+                seg_temp_root = seg_temp_candidate.resolve()
+            except FileNotFoundError:
+                seg_temp_root = seg_temp_candidate
+        except FileNotFoundError:
+            seg_temp_root = seg_temp_candidate
+
     cfg = PipelineConfig(
         dicom_root=Path(args.dicom_root).resolve(),
         output_root=Path(args.outdir).resolve(),
@@ -283,6 +352,7 @@ def main(argv: list[str] | None = None) -> int:
         extra_seg_models=[m.strip() for part in (args.extra_seg_models or []) for m in part.split(",") if m.strip()],
         segmentation_workers=args.seg_workers,
         segmentation_thread_limit=seg_proc_threads,
+        segmentation_temp_root=seg_temp_root,
         totalseg_fast=args.totalseg_fast,
         totalseg_roi_subset=args.totalseg_roi_subset,
         workers=args.workers,
@@ -367,12 +437,39 @@ def main(argv: list[str] | None = None) -> int:
     if not stages:
         stages = default_order
 
+    manifest_path: Path | None = None
+    if args.manifest:
+        manifest_candidate = Path(args.manifest).expanduser()
+        if not manifest_candidate.is_absolute():
+            manifest_candidate = Path.cwd() / manifest_candidate
+        try:
+            manifest_path = manifest_candidate.resolve(strict=False)
+        except TypeError:  # Python <3.6 compatibility
+            try:
+                manifest_path = manifest_candidate.resolve()
+            except FileNotFoundError:
+                manifest_path = manifest_candidate
+        except FileNotFoundError:
+            manifest_path = manifest_candidate
+
+    manifest_attempted = False
     courses: list | None = None
 
     def ensure_courses() -> list:
-        nonlocal courses
+        nonlocal courses, manifest_attempted
         if courses is None:
-            courses = organize_and_merge(cfg)
+            if manifest_path and cfg.resume and not manifest_attempted:
+                manifest_attempted = True
+                manifest_courses = _load_courses_from_manifest(
+                    cfg,
+                    manifest_path,
+                    patient_filter_ids,
+                    course_filter_pairs,
+                )
+                if manifest_courses:
+                    courses = manifest_courses
+            if courses is None:
+                courses = organize_and_merge(cfg)
         return courses
 
     if "organize" in stages:

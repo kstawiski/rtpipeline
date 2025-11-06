@@ -80,6 +80,18 @@ if SEG_THREADS_PER_WORKER is not None and SEG_THREADS_PER_WORKER < 1:
     SEG_THREADS_PER_WORKER = 1
 SEG_FORCE_SEGMENTATION = bool(SEG_CONFIG.get("force", False))
 
+_seg_tmp_dir = SEG_CONFIG.get("temp_dir")
+if _seg_tmp_dir:
+    seg_tmp_path = Path(_seg_tmp_dir)
+    if not seg_tmp_path.is_absolute():
+        seg_tmp_path = ROOT_DIR / seg_tmp_path
+    try:
+        SEG_TEMP_DIR = str(seg_tmp_path.resolve())
+    except FileNotFoundError:
+        SEG_TEMP_DIR = str(seg_tmp_path)
+else:
+    SEG_TEMP_DIR = ""
+
 CUSTOM_MODELS_CONFIG = config.get("custom_models", {}) or {}
 CUSTOM_MODELS_ENABLED = bool(CUSTOM_MODELS_CONFIG.get("enabled", True))
 _custom_root = CUSTOM_MODELS_CONFIG.get("root")
@@ -316,6 +328,9 @@ rule segmentation_course:
             "--stage", "segmentation",
             "--course-filter", f"{wildcards.patient}/{wildcards.course}",
         ]
+        cmd.extend(["--manifest", str(input.manifest)])
+        if SEG_TEMP_DIR:
+            cmd.extend(["--seg-temp-dir", SEG_TEMP_DIR])
         if SEG_FAST:
             cmd.append("--totalseg-fast")
         for model in SEG_EXTRA_MODELS:
