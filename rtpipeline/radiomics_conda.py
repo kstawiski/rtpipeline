@@ -117,7 +117,7 @@ for key, value in features.items():
             output[key] = value.tolist()
         else:
             output[key] = value
-    except:
+    except Exception:
         output[key] = str(value)
 
 # Output as JSON
@@ -182,7 +182,7 @@ for key, value in features.items():
             output[key] = value.tolist()
         else:
             output[key] = value
-    except:
+    except Exception:
         output[key] = str(value)
 
 # Output as JSON
@@ -207,7 +207,7 @@ print(json.dumps(output))
         # Clean up temporary parameter file
         try:
             os.unlink(param_file_path)
-        except:
+        except OSError:
             pass
 
         return features
@@ -218,21 +218,21 @@ print(json.dumps(output))
         # Clean up temporary parameter file
         try:
             os.unlink(param_file_path)
-        except:
+        except OSError:
             pass
         raise
     except subprocess.TimeoutExpired:
         # Clean up temporary parameter file
         try:
             os.unlink(param_file_path)
-        except:
+        except OSError:
             pass
         raise RuntimeError("Radiomics extraction timed out")
     except Exception as e:
         # Clean up temporary parameter file
         try:
             os.unlink(param_file_path)
-        except:
+        except OSError:
             pass
         raise RuntimeError(f"Radiomics extraction failed: {e}")
 
