@@ -494,7 +494,13 @@ def segment_course(config: PipelineConfig, course_dir: Path, force: bool = False
         results["nifti_seg_dir"] = str(base_dir)
         return results
 
-    with tempfile.TemporaryDirectory(prefix="seg_", dir=str(course_dir)) as tmp_root_str:
+    tmp_parent = Path(config.segmentation_temp_root) if getattr(config, "segmentation_temp_root", None) else course_dir
+    try:
+        Path(tmp_parent).mkdir(parents=True, exist_ok=True)
+    except Exception:
+        tmp_parent = course_dir
+
+    with tempfile.TemporaryDirectory(prefix="seg_", dir=str(tmp_parent)) as tmp_root_str:
         tmp_root = Path(tmp_root_str)
         for model in models:
             task_name = None if model == "total" else model

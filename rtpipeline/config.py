@@ -32,6 +32,7 @@ class PipelineConfig:
     extra_seg_models: list[str] = field(default_factory=list)
     segmentation_workers: int | None = None
     segmentation_thread_limit: int | None = None
+    segmentation_temp_root: Path | None = None
 
     # Performance/CPU options
     totalseg_fast: bool = False
