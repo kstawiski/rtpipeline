@@ -141,7 +141,7 @@ def run_dcm2niix(config: PipelineConfig, dicom_dir: Path, nifti_out: Path) -> Op
     cmd_name = local_cmd or config.dcm2niix_cmd
 
     if local_cmd:
-        inner_cmd = f'{cmd_name} -z y -o {shlex.quote(str(nifti_out))} {shlex.quote(str(dicom_dir))}'
+        inner_cmd = f'{shlex.quote(cmd_name)} -z y -o {shlex.quote(str(nifti_out))} {shlex.quote(str(dicom_dir))}'
         cmd = f"{_prefix(config)}bash -c {shlex.quote(inner_cmd)}"
     else:
         cmd = f"{_prefix(config)}{shlex.quote(cmd_name)} -z y -o {shlex.quote(str(nifti_out))} {shlex.quote(str(dicom_dir))}"
