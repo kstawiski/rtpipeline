@@ -151,7 +151,7 @@ def run_dcm2niix(config: PipelineConfig, dicom_dir: Path, nifti_out: Path) -> Op
 
     # Use bash to run dcm2niix to avoid permission issues with bundled binaries
     if local_cmd:
-        cmd = f"{_prefix(config)}bash {shlex.quote(cmd_name)} -z y -o {shlex.quote(str(nifti_out))} {shlex.quote(str(dicom_dir))}"
+        cmd = f"{_prefix(config)}bash -c {shlex.quote(f'{cmd_name} -z y -o {shlex.quote(str(nifti_out))} {shlex.quote(str(dicom_dir))}')}"
     else:
         cmd = f"{_prefix(config)}{shlex.quote(cmd_name)} -z y -o {shlex.quote(str(nifti_out))} {shlex.quote(str(dicom_dir))}"
     logger.info("Running dcm2niix: %s", cmd)
