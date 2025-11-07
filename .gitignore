@@ -57,8 +57,20 @@ custom_models/**
 !custom_models/*/
 !custom_models/**/
 !custom_models/**/custom_model.yaml
+!custom_models/**/script.py
+!custom_models/**/README.md
+!custom_models/**/download_weights_example.sh
+!custom_models/README.md
+!custom_models/download_weights_example.sh
+custom_models/**/*.zip
+custom_models/**/*.tar
+custom_models/**/*.tar.gz
+custom_models/**/*.pth
+custom_models/**/*.pkl
 custom_models/**/2d/
 custom_models/**/3d_fullres/
+custom_models/**/nnUNet_*/
+custom_models/**/Dataset*/
 custom_models/**/HNLNL_autosegmentation_trained_models/
 Segmentation_*/
 
