@@ -142,13 +142,75 @@ def discover_custom_models(
             continue
         if selected and definition.name.lower() not in selected:
             continue
+
+        # Validate that weights are available
+        weights_valid, missing_weights = _validate_model_weights(definition)
+        if not weights_valid:
+            logger.warning(
+                "Custom model '%s' is configured but weights are missing: %s. "
+                "Model will be skipped. Please provide weights or disable this model.",
+                definition.name,
+                ", ".join(missing_weights)
+            )
+            continue
+
         models.append(definition)
 
     if selected:
         missing = selected - {model.name.lower() for model in models}
         for name in sorted(missing):
             logger.warning("Requested custom segmentation model '%s' not found under %s", name, root)
+
+    if models:
+        logger.info("Discovered %d custom model(s): %s", len(models), ", ".join(m.name for m in models))
     return models
+
+
+def _validate_model_weights(model: CustomModelDefinition) -> tuple[bool, List[str]]:
+    """
+    Validate that all required weight files for a model are present.
+
+    Returns:
+        (weights_valid, missing_files) tuple
+    """
+    missing_files: List[str] = []
+
+    for network in model.networks:
+        # Check if weights exist via archive file
+        if network.archive_path:
+            if not network.archive_path.exists():
+                missing_files.append(f"{network.alias}: {network.archive_path.name}")
+                continue
+            if network.archive_path.is_file():
+                # Archive file exists, should be good
+                continue
+
+        # Check if weights exist via source directory
+        if network.source_dir:
+            source_path = (model.directory / network.source_dir).resolve()
+            if not source_path.exists():
+                missing_files.append(f"{network.alias}: source_dir={network.source_dir}")
+                continue
+
+        # Check if weights already extracted in results directory
+        try:
+            results_root = model.results_root()
+            dataset_dir = results_root / network.dataset_dir
+            if dataset_dir.exists():
+                # Already extracted, OK
+                continue
+        except Exception:
+            pass
+
+        # If we get here and archive_path exists as directory, that's OK too
+        if network.archive_path and network.archive_path.exists() and network.archive_path.is_dir():
+            continue
+
+        # No valid weight source found
+        if not network.archive_path and not network.source_dir:
+            missing_files.append(f"{network.alias}: no archive or source_dir specified")
+
+    return (len(missing_files) == 0, missing_files)
 
 
 def _parse_custom_model(model_dir: Path, data: dict, default_command: str) -> CustomModelDefinition:
@@ -724,6 +786,35 @@ def _run_single_model(
     if not manifest_entries:
         raise RuntimeError(f"No structures were produced for model {model.name}")
 
+    # Verify expected structures were produced
+    expected_structures = model.expected_structures()
+    produced_structures = list(combined_structures.keys())
+    missing_structures = set(expected_structures) - set(produced_structures)
+    extra_structures = set(produced_structures) - set(expected_structures)
+
+    if missing_structures:
+        logger.warning(
+            "Custom model '%s' did not produce %d expected structure(s): %s",
+            model.name,
+            len(missing_structures),
+            ", ".join(sorted(missing_structures))
+        )
+
+    if extra_structures:
+        logger.info(
+            "Custom model '%s' produced %d additional structure(s) not in config: %s",
+            model.name,
+            len(extra_structures),
+            ", ".join(sorted(extra_structures))
+        )
+
+    logger.info(
+        "Custom model '%s' completed: %d/%d expected structures produced",
+        model.name,
+        len(produced_structures) - len(extra_structures),
+        len(expected_structures)
+    )
+
     rtstruct_path = _build_rtstruct(ct_dir, combined_structures, output_root, structure_paths)
 
     manifest = {
@@ -741,6 +832,10 @@ def _run_single_model(
         "structures": manifest_entries,
         "rtstruct": str(rtstruct_path.name),
         "source_nifti": str(nifti_path),
+        "expected_structures": expected_structures,
+        "produced_structures": produced_structures,
+        "missing_structures": sorted(list(missing_structures)),
+        "extra_structures": sorted(list(extra_structures)),
     }
     (output_root / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     if not cfg.custom_models_retain_weights:
