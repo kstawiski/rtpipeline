@@ -208,6 +208,7 @@ print(json.dumps(output))
         try:
             os.unlink(param_file_path)
         except OSError:
+            # Ignore errors when deleting the temporary file; not critical if removal fails.
             pass
 
         return features
@@ -219,6 +220,7 @@ print(json.dumps(output))
         try:
             os.unlink(param_file_path)
         except OSError:
+            # Ignore errors when deleting the temporary file; not critical if removal fails.
             pass
         raise
     except subprocess.TimeoutExpired:
@@ -226,6 +228,7 @@ print(json.dumps(output))
         try:
             os.unlink(param_file_path)
         except OSError:
+            # Ignore errors when deleting the temporary file; not critical if removal fails.
             pass
         raise RuntimeError("Radiomics extraction timed out")
     except Exception as e:
@@ -233,6 +236,7 @@ print(json.dumps(output))
         try:
             os.unlink(param_file_path)
         except OSError:
+            # Ignore errors when deleting the temporary file; not critical if removal fails.
             pass
         raise RuntimeError(f"Radiomics extraction failed: {e}")
 
