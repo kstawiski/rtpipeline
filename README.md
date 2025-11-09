@@ -156,22 +156,40 @@ Custom configuration files can be supplied via `--configfile myconfig.yaml`.
 
 ## Custom nnU-Net Models
 
+⚠️ **Model weights are not included in this repository** due to their size. Users must download weights separately.
+
 Each folder under `custom_models/` must contain:
 
 ```
 custom_models/<name>/
-  custom_model.yaml        # configuration
-  modelXXXX.zip            # nnUNet weight archives (or unpacked directories)
-  ...
+  custom_model.yaml               # configuration (included in repo)
+  modelXXXX.zip                   # nnUNet weight archives (NOT in repo - download separately)
+  download_weights_example.sh     # optional download script template
+  README.md                       # installation instructions
 ```
 
-`custom_model.yaml` supports both nnUNet v2 and v1 interfaces, multiple networks, and optional ensembles. Details and examples: `docs/custom_models.md`.
+`custom_model.yaml` supports both nnUNet v2 and v1 interfaces, multiple networks, and optional ensembles.
 
-To add a model:
+**Quick Start**:
 
-1. Download/prepare the nnUNet weights (zip or directory).
-2. Author `custom_model.yaml` describing networks, labels, environment paths, and optional ensemble.
-3. Run the pipeline (`snakemake segmentation_custom_models`)—results appear under `<course>/Segmentation_CustomModels/<model>/`.
+1. **Download model weights** - See [`custom_models/README.md`](custom_models/README.md) for detailed instructions
+   - Weights are too large for git and must be obtained separately
+   - Place `.zip` archives in the respective model directories
+   - Or extract weights to configured directories
+2. **Verify installation** - Run `rtpipeline doctor` or test model discovery:
+   ```bash
+   python -c "from rtpipeline.custom_models import discover_custom_models; from pathlib import Path; print(discover_custom_models(Path('custom_models')))"
+   ```
+3. **Run custom models** - Execute the pipeline:
+   ```bash
+   snakemake --cores 4 segmentation_custom_models
+   ```
+   Results appear under `<course>/Segmentation_CustomModels/<model>/`
+
+**Documentation**:
+- Installation guide: [`custom_models/README.md`](custom_models/README.md)
+- Configuration reference: `docs/custom_models.md`
+- Example download script: [`custom_models/download_weights_example.sh`](custom_models/download_weights_example.sh)
 
 ---
 

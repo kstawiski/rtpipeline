@@ -6,6 +6,7 @@ import json
 import hashlib
 import logging
 import os
+import shlex
 import shutil
 import stat
 import subprocess
@@ -150,9 +151,10 @@ def run_dcm2niix(config: PipelineConfig, dicom_dir: Path, nifti_out: Path) -> Op
 
     # Use bash to run dcm2niix to avoid permission issues with bundled binaries
     if local_cmd:
-        cmd = f"{_prefix(config)}bash '{cmd_name}' -z y -o '{nifti_out}' '{dicom_dir}'"
+        inner_cmd = f'{shlex.quote(cmd_name)} -z y -o {shlex.quote(str(nifti_out))} {shlex.quote(str(dicom_dir))}'
+        cmd = f"{_prefix(config)}bash -c {shlex.quote(inner_cmd)}"
     else:
-        cmd = f"{_prefix(config)}{cmd_name} -z y -o '{nifti_out}' '{dicom_dir}'"
+        cmd = f"{_prefix(config)}{shlex.quote(cmd_name)} -z y -o {shlex.quote(str(nifti_out))} {shlex.quote(str(dicom_dir))}"
     logger.info("Running dcm2niix: %s", cmd)
     ok = _run(cmd)
     if not ok:

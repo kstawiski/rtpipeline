@@ -48,7 +48,13 @@ def _rt_env():
     return env
 
 
-WORKERS = int(config.get("workers", os.cpu_count() or 4))
+WORKERS_CFG = config.get("workers", "auto")
+if isinstance(WORKERS_CFG, str) and WORKERS_CFG.lower() == "auto":
+    # Auto-detect: use CPU count - 2, minimum 4, maximum 32 for safety
+    detected_cpus = os.cpu_count() or 4
+    WORKERS = max(4, min(32, detected_cpus - 2))
+else:
+    WORKERS = int(WORKERS_CFG)
 
 def _coerce_int(value, default=None):
     if value is None:
@@ -165,7 +171,11 @@ else:
 
 AGGREGATION_CONFIG = config.get("aggregation", {}) or {}
 _agg_threads_raw = AGGREGATION_CONFIG.get("threads")
-AGGREGATION_THREADS = _coerce_int(_agg_threads_raw, None)
+if isinstance(_agg_threads_raw, str) and _agg_threads_raw.lower() == "auto":
+    # Auto: use all CPUs for aggregation (I/O bound)
+    AGGREGATION_THREADS = os.cpu_count() or 4
+else:
+    AGGREGATION_THREADS = _coerce_int(_agg_threads_raw, None)
 if AGGREGATION_THREADS is not None and AGGREGATION_THREADS < 1:
     AGGREGATION_THREADS = 1
 
@@ -568,38 +578,131 @@ rule aggregate_results:
 
         worker_count = _max_workers(os.cpu_count() or 4)
 
-        def _collect_frames(loader):
-            frames = []
+        # Optimized: use single thread pool for all I/O operations
+        def _collect_all_frames():
+            """Collect all file types in parallel using single thread pool."""
+            import pandas as pd
+            from collections import defaultdict
+
+            results = defaultdict(list)
+
+            def _load_all(course):
+                """Load all file types for a single course."""
+                pid, cid, cdir = course
+                course_results = {}
+
+                # DVH
+                dvh_path = cdir / "dvh_metrics.xlsx"
+                if dvh_path.exists():
+                    try:
+                        df = pd.read_excel(dvh_path)
+                        if "patient_id" in df.columns:
+                            df["patient_id"] = df["patient_id"].fillna(pid)
+                        else:
+                            df.insert(0, "patient_id", pid)
+                        if "course_id" in df.columns:
+                            df["course_id"] = df["course_id"].fillna(cid)
+                        else:
+                            df.insert(1, "course_id", cid)
+                        if "structure_cropped" not in df.columns:
+                            df["structure_cropped"] = False
+                        course_results['dvh'] = df
+                    except Exception:
+                        pass
+
+                # Radiomics CT
+                rad_path = cdir / "radiomics_ct.xlsx"
+                if rad_path.exists():
+                    try:
+                        df = pd.read_excel(rad_path)
+                        if "patient_id" not in df.columns:
+                            df.insert(0, "patient_id", pid)
+                        else:
+                            df["patient_id"] = df["patient_id"].fillna(pid)
+                        if "course_id" not in df.columns:
+                            df.insert(1, "course_id", cid)
+                        else:
+                            df["course_id"] = df["course_id"].fillna(cid)
+                        if "structure_cropped" not in df.columns:
+                            df["structure_cropped"] = False
+                        course_results['radiomics'] = df
+                    except Exception:
+                        pass
+
+                # Radiomics MR
+                rad_mr_path = cdir / "MR" / "radiomics_mr.xlsx"
+                if rad_mr_path.exists():
+                    try:
+                        df = pd.read_excel(rad_mr_path)
+                        if "patient_id" not in df.columns:
+                            df.insert(0, "patient_id", pid)
+                        else:
+                            df["patient_id"] = df["patient_id"].fillna(pid)
+                        if "course_id" not in df.columns:
+                            df.insert(1, "course_id", cid)
+                        else:
+                            df["course_id"] = df["course_id"].fillna(cid)
+                        course_results['radiomics_mr'] = df
+                    except Exception:
+                        pass
+
+                # Fractions
+                frac_path = cdir / "fractions.xlsx"
+                if frac_path.exists():
+                    try:
+                        df = pd.read_excel(frac_path)
+                        if "patient_id" in df.columns:
+                            df["patient_id"] = df["patient_id"].fillna(pid)
+                        else:
+                            df.insert(0, "patient_id", pid)
+                        if "course_id" in df.columns:
+                            df["course_id"] = df["course_id"].fillna(cid)
+                        else:
+                            df.insert(1, "course_id", cid)
+                        course_results['fractions'] = df
+                    except Exception:
+                        pass
+
+                # Metadata
+                meta_path = cdir / "metadata" / "case_metadata.xlsx"
+                if meta_path.exists():
+                    try:
+                        df = pd.read_excel(meta_path)
+                        if "patient_id" in df.columns:
+                            df["patient_id"] = df["patient_id"].fillna(pid)
+                        else:
+                            df.insert(0, "patient_id", pid)
+                        if "course_id" in df.columns:
+                            df["course_id"] = df["course_id"].fillna(cid)
+                        else:
+                            df.insert(1, "course_id", cid)
+                        course_results['metadata'] = df
+                    except Exception:
+                        pass
+
+                return course_results
+
             if not courses:
-                return frames
+                return results
+
+            # Load all files in parallel
             with ThreadPoolExecutor(max_workers=max(1, worker_count)) as pool:
-                for df in pool.map(loader, courses):
-                    if df is not None and not df.empty:
-                        frames.append(df)
-            return frames
+                for course_data in pool.map(_load_all, courses):
+                    for key, df in course_data.items():
+                        if df is not None and not df.empty:
+                            results[key].append(df)
 
-        def _load_dvh(course):
-            pid, cid, cdir = course
-            path = cdir / "dvh_metrics.xlsx"
-            if not path.exists():
-                return None
-            try:
-                df = pd.read_excel(path)
-            except Exception:
-                return None
-            if "patient_id" in df.columns:
-                df["patient_id"] = df["patient_id"].fillna(pid)
-            else:
-                df.insert(0, "patient_id", pid)
-            if "course_id" in df.columns:
-                df["course_id"] = df["course_id"].fillna(cid)
-            else:
-                df.insert(1, "course_id", cid)
-            if "structure_cropped" not in df.columns:
-                df["structure_cropped"] = False
-            return df
+            return results
 
-        dvh_frames = _collect_frames(_load_dvh)
+        # Collect all frames at once
+        all_frames = _collect_all_frames()
+        dvh_frames = all_frames.get('dvh', [])
+        rad_frames = all_frames.get('radiomics', [])
+        rad_mr_frames = all_frames.get('radiomics_mr', [])
+        frac_frames = all_frames.get('fractions', [])
+        meta_frames = all_frames.get('metadata', [])
+
+        # DVH frames already collected above
         if dvh_frames:
             dvh_all = pd.concat(dvh_frames, ignore_index=True)
             if "Segmentation_Source" not in dvh_all.columns:
@@ -627,101 +730,25 @@ rule aggregate_results:
         else:
             pd.DataFrame(columns=["patient_id", "course_id", "ROI_Name", "structure_cropped"]).to_excel(output.dvh, index=False)
 
-        def _load_radiomics(course):
-            pid, cid, cdir = course
-            path = cdir / "radiomics_ct.xlsx"
-            if not path.exists():
-                return None
-            try:
-                df = pd.read_excel(path)
-            except Exception:
-                return None
-            if "patient_id" not in df.columns:
-                df.insert(0, "patient_id", pid)
-            else:
-                df["patient_id"] = df["patient_id"].fillna(pid)
-            if "course_id" not in df.columns:
-                df.insert(1, "course_id", cid)
-            else:
-                df["course_id"] = df["course_id"].fillna(cid)
-            if "structure_cropped" not in df.columns:
-                df["structure_cropped"] = False
-            return df
-
-        rad_frames = _collect_frames(_load_radiomics)
+        # Radiomics frames already collected above
         if rad_frames:
             pd.concat(rad_frames, ignore_index=True).to_excel(output.radiomics, index=False)
         else:
             pd.DataFrame(columns=["patient_id", "course_id", "roi_name", "structure_cropped"]).to_excel(output.radiomics, index=False)
-        def _load_radiomics_mr(course):
-            pid, cid, cdir = course
-            path = cdir / "MR" / "radiomics_mr.xlsx"
-            if not path.exists():
-                return None
-            try:
-                df = pd.read_excel(path)
-            except Exception:
-                return None
-            if "patient_id" not in df.columns:
-                df.insert(0, "patient_id", pid)
-            else:
-                df["patient_id"] = df["patient_id"].fillna(pid)
-            if "course_id" not in df.columns:
-                df.insert(1, "course_id", cid)
-            else:
-                df["course_id"] = df["course_id"].fillna(cid)
-            return df
-        rad_mr_frames = _collect_frames(_load_radiomics_mr)
+
+        # Radiomics MR frames already collected above
         if rad_mr_frames:
             pd.concat(rad_mr_frames, ignore_index=True).to_excel(output.radiomics_mr, index=False)
         else:
             pd.DataFrame(columns=["patient_id", "course_id", "roi_name"]).to_excel(output.radiomics_mr, index=False)
 
-        def _load_fraction(course):
-            pid, cid, cdir = course
-            path = cdir / "fractions.xlsx"
-            if not path.exists():
-                return None
-            try:
-                df = pd.read_excel(path)
-            except Exception:
-                return None
-            if "patient_id" in df.columns:
-                df["patient_id"] = df["patient_id"].fillna(pid)
-            else:
-                df.insert(0, "patient_id", pid)
-            if "course_id" in df.columns:
-                df["course_id"] = df["course_id"].fillna(cid)
-            else:
-                df.insert(1, "course_id", cid)
-            return df
-
-        frac_frames = _collect_frames(_load_fraction)
+        # Fraction frames already collected above
         if frac_frames:
             pd.concat(frac_frames, ignore_index=True).to_excel(output.fractions, index=False)
         else:
             pd.DataFrame(columns=["patient_id", "course_id", "treatment_date", "source_path"]).to_excel(output.fractions, index=False)
 
-        def _load_metadata(course):
-            pid, cid, cdir = course
-            path = cdir / "metadata" / "case_metadata.xlsx"
-            if not path.exists():
-                return None
-            try:
-                df = pd.read_excel(path)
-            except Exception:
-                return None
-            if "patient_id" in df.columns:
-                df["patient_id"] = df["patient_id"].fillna(pid)
-            else:
-                df.insert(0, "patient_id", pid)
-            if "course_id" in df.columns:
-                df["course_id"] = df["course_id"].fillna(cid)
-            else:
-                df.insert(1, "course_id", cid)
-            return df
-
-        meta_frames = _collect_frames(_load_metadata)
+        # Metadata frames already collected above
         if meta_frames:
             pd.concat(meta_frames, ignore_index=True).to_excel(output.metadata, index=False)
         else:
