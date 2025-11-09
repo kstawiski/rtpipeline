@@ -23,6 +23,52 @@ import SimpleITK as sitk
 
 logger = logging.getLogger(__name__)
 
+
+# SECURITY: Restricted unpickler to prevent arbitrary code execution
+class RestrictedUnpickler(pickle.Unpickler):
+    """
+    Restricted unpickler that only allows safe classes to prevent code execution attacks.
+
+    Only allows:
+    - NumPy types (ndarray, dtype, generic numeric types)
+    - Python built-in types (dict, list, tuple, str, int, float, bool, None)
+    - pathlib.Path
+    """
+    ALLOWED_MODULES = {
+        'numpy': {'ndarray', 'dtype', 'int64', 'int32', 'float64', 'float32', 'bool_', 'generic'},
+        'builtins': {'dict', 'list', 'tuple', 'str', 'int', 'float', 'bool', 'NoneType'},
+        'pathlib': {'Path', 'PosixPath', 'WindowsPath'},
+    }
+
+    def find_class(self, module, name):
+        """Override find_class to restrict allowed classes."""
+        # Allow only specific safe modules and classes
+        if module in self.ALLOWED_MODULES:
+            if name in self.ALLOWED_MODULES[module]:
+                return super().find_class(module, name)
+
+        # Raise error for any other module/class
+        raise pickle.UnpicklingError(
+            f"Global '{module}.{name}' is forbidden for security reasons. "
+            f"Only numpy arrays, built-in types, and pathlib.Path are allowed."
+        )
+
+
+def restricted_pickle_load(file_obj):
+    """
+    Safe pickle load using RestrictedUnpickler.
+
+    Args:
+        file_obj: File object opened in binary read mode
+
+    Returns:
+        Unpickled object (only if it contains safe types)
+
+    Raises:
+        pickle.UnpicklingError: If forbidden classes are encountered
+    """
+    return RestrictedUnpickler(file_obj).load()
+
 # Global constants for optimization
 _OPTIMAL_WORKERS_CACHE = None
 _MAX_RETRIES = 3
@@ -106,9 +152,9 @@ def _isolated_radiomics_extraction(task_data: Tuple[str, Dict[str, Any]]) -> Opt
         from .radiomics import _extractor, _mask_from_array_like
         import numpy as np
 
-        # Load task data from temporary file
+        # Load task data from temporary file (SECURITY: using restricted unpickler)
         with open(temp_file_path, 'rb') as f:
-            data = pickle.load(f)
+            data = restricted_pickle_load(f)
 
         img_array = data['img_array']
         img_info = data['img_info']
