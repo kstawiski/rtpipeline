@@ -538,12 +538,33 @@ def dvh_for_course(
     course_dir: Path,
     custom_structures_config: Optional[Union[str, Path]] = None,
     parallel_workers: Optional[int] = None,
+    use_cropped: bool = True,
 ) -> Optional[Path]:
     course_dirs = build_course_dirs(course_dir)
     rp = course_dir / "RP.dcm"
     rd = course_dir / "RD.dcm"
     rs_manual = course_dir / "RS.dcm"
     rs_auto = course_dir / "RS_auto.dcm"
+
+    # Check for systematically cropped RTSTRUCT
+    rs_auto_cropped = course_dir / "RS_auto_cropped.dcm"
+    cropping_metadata_path = course_dir / "cropping_metadata.json"
+
+    if use_cropped and rs_auto_cropped.exists() and cropping_metadata_path.exists():
+        try:
+            with open(cropping_metadata_path) as f:
+                crop_meta = json.load(f)
+            logger.info(
+                f"Using systematically cropped RTSTRUCT for DVH "
+                f"(region: {crop_meta.get('region', 'unknown')}, "
+                f"superior: {crop_meta.get('superior_z_mm', 0):.1f}mm, "
+                f"inferior: {crop_meta.get('inferior_z_mm', 0):.1f}mm)"
+            )
+            # Replace RS_auto with cropped version
+            rs_auto = rs_auto_cropped
+        except Exception as e:
+            logger.warning(f"Failed to load cropping metadata: {e}")
+
     if not rd.exists() or not rp.exists():
         logger.warning("Missing RP/RD in %s; skipping DVH", course_dir)
         return None

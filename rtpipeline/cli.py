@@ -534,6 +534,28 @@ def main(argv: list[str] | None = None) -> int:
     # Update config object
     cfg.custom_structures_config = custom_structures_config
 
+    # Load CT cropping settings from config.yaml
+    try:
+        import yaml
+        config_file_path = Path("config.yaml")
+        if config_file_path.exists():
+            with open(config_file_path) as f:
+                yaml_config = yaml.safe_load(f) or {}
+
+            ct_cropping = yaml_config.get("ct_cropping", {})
+            cfg.ct_cropping_enabled = ct_cropping.get("enabled", False)
+            cfg.ct_cropping_region = ct_cropping.get("region", "pelvis")
+            cfg.ct_cropping_inferior_margin_cm = ct_cropping.get("inferior_margin_cm", 10.0)
+            cfg.ct_cropping_use_for_dvh = ct_cropping.get("use_cropped_for_dvh", True)
+            cfg.ct_cropping_use_for_radiomics = ct_cropping.get("use_cropped_for_radiomics", True)
+            cfg.ct_cropping_keep_original = ct_cropping.get("keep_original", True)
+
+            if cfg.ct_cropping_enabled:
+                logger.info("CT cropping enabled: region=%s, margin=%scm",
+                           cfg.ct_cropping_region, cfg.ct_cropping_inferior_margin_cm)
+    except Exception as e:
+        logger.debug("Could not load CT cropping config from YAML: %s", e)
+
     # Configure custom segmentation models
     custom_models_root: Path | None = None
     if args.custom_models_root:
@@ -579,7 +601,7 @@ def main(argv: list[str] | None = None) -> int:
         # Non-fatal; continue with console-only logging
         pass
 
-    default_order = ["organize", "segmentation", "segmentation_custom", "dvh", "visualize", "radiomics", "qc"]
+    default_order = ["organize", "segmentation", "segmentation_custom", "crop_ct", "dvh", "visualize", "radiomics", "qc"]
     requested = [stage.lower() for stage in (args.stage or default_order)]
     stages = [stage for stage in default_order if stage in requested]
     if not stages:
@@ -711,6 +733,40 @@ def main(argv: list[str] | None = None) -> int:
                     show_progress=True,
                 )
 
+    if "crop_ct" in stages:
+        from .anatomical_cropping import apply_systematic_cropping  # lazy import
+
+        if not cfg.ct_cropping_enabled:
+            logger.info("CT cropping disabled in config; skipping crop_ct stage")
+        else:
+            courses = ensure_courses()
+            selected_courses = _filter_courses(courses)
+
+            if not selected_courses:
+                _log_skip("CT Cropping")
+            else:
+
+                def _crop(course):
+                    try:
+                        apply_systematic_cropping(
+                            course.dirs.root,
+                            region=cfg.ct_cropping_region,
+                            inferior_margin_cm=cfg.ct_cropping_inferior_margin_cm,
+                            keep_original=cfg.ct_cropping_keep_original,
+                        )
+                    except Exception as exc:
+                        logger.warning("CT cropping failed for %s: %s", course.dirs.root, exc)
+                    return None
+
+                run_tasks_with_adaptive_workers(
+                    "CT_Cropping",
+                    selected_courses,
+                    _crop,
+                    max_workers=cfg.effective_workers(),
+                    logger=logging.getLogger(__name__),
+                    show_progress=True,
+                )
+
     if "dvh" in stages:
         from .dvh import dvh_for_course  # lazy import
 
@@ -727,6 +783,7 @@ def main(argv: list[str] | None = None) -> int:
                         course.dirs.root,
                         cfg.custom_structures_config,
                         parallel_workers=cfg.effective_workers(),
+                        use_cropped=cfg.ct_cropping_use_for_dvh,
                     )
                 except Exception as exc:
                     logger.warning("DVH failed for %s: %s", course.dirs.root, exc)

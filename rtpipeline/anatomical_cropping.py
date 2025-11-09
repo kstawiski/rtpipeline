@@ -280,9 +280,35 @@ def crop_image_to_boundaries(
     superior_idx = int(round((superior_z - origin[2]) / spacing[2]))
     inferior_idx = int(round((inferior_z - origin[2]) / spacing[2]))
 
+    # Check if requested boundaries are within CT extent
+    requested_superior_idx = int(round((superior_z - origin[2]) / spacing[2]))
+    requested_inferior_idx = int(round((inferior_z - origin[2]) / spacing[2]))
+
     # Clamp to valid range
-    superior_idx = max(0, min(size[2] - 1, superior_idx))
-    inferior_idx = max(0, min(size[2] - 1, inferior_idx))
+    clamped_superior_idx = max(0, min(size[2] - 1, requested_superior_idx))
+    clamped_inferior_idx = max(0, min(size[2] - 1, requested_inferior_idx))
+
+    # Warn if clamping occurred
+    if clamped_superior_idx != requested_superior_idx:
+        actual_superior_z = origin[2] + clamped_superior_idx * spacing[2]
+        logger.warning(
+            f"Superior boundary ({superior_z:.1f}mm) exceeds CT extent. "
+            f"Clamped to {actual_superior_z:.1f}mm (CT boundary)"
+        )
+        superior_idx = clamped_superior_idx
+    else:
+        superior_idx = requested_superior_idx
+
+    if clamped_inferior_idx != requested_inferior_idx:
+        actual_inferior_z = origin[2] + clamped_inferior_idx * spacing[2]
+        logger.warning(
+            f"Inferior boundary ({inferior_z:.1f}mm) exceeds CT extent. "
+            f"Clamped to {actual_inferior_z:.1f}mm (CT boundary). "
+            f"This may affect cross-patient consistency."
+        )
+        inferior_idx = clamped_inferior_idx
+    else:
+        inferior_idx = requested_inferior_idx
 
     # Ensure superior > inferior in index space (depends on direction)
     # If superior_z > inferior_z in physical space but direction[8] < 0,
@@ -424,6 +450,137 @@ def apply_systematic_cropping(
         json.dump(metadata, f, indent=2)
 
     logger.info(f"Saved cropping metadata: {metadata_path}")
-    logger.info(f"Cropped {len(cropped_files)} files total")
+    logger.info(f"Cropped {len(cropped_files)} NIfTI files total")
+
+    # Create cropped RTSTRUCT from cropped masks
+    rs_auto_cropped = _create_rtstruct_from_cropped_masks(
+        course_dir,
+        course_dirs,
+        output_suffix
+    )
+
+    if rs_auto_cropped:
+        logger.info(f"Created cropped RTSTRUCT: {rs_auto_cropped}")
+        metadata['rs_auto_cropped'] = str(rs_auto_cropped)
+
+        # Save updated metadata
+        with open(metadata_path, 'w') as f:
+            json.dump(metadata, f, indent=2)
 
     return cropped_files
+
+
+def _create_rtstruct_from_cropped_masks(
+    course_dir: Path,
+    course_dirs,
+    output_suffix: str
+) -> Optional[Path]:
+    """
+    Create RTSTRUCT file from cropped NIfTI masks.
+
+    This creates RS_auto_cropped.dcm from the systematically cropped masks,
+    ensuring that all structure volumes are consistently defined across patients.
+
+    Args:
+        course_dir: Course directory
+        course_dirs: Course directory structure
+        output_suffix: Suffix used for cropped files
+
+    Returns:
+        Path to created RTSTRUCT or None
+    """
+    try:
+        from rt_utils import RTStructBuilder
+    except ImportError:
+        logger.warning("rt_utils not available; skipping cropped RTSTRUCT creation")
+        return None
+
+    # Check if CT DICOM exists
+    if not course_dirs.dicom_ct.exists():
+        logger.warning("CT DICOM not found; cannot create cropped RTSTRUCT")
+        return None
+
+    # Find cropped masks directory
+    seg_root = course_dirs.segmentation_totalseg
+    if not seg_root.exists():
+        logger.warning("Segmentation directory not found")
+        return None
+
+    candidate_dirs = sorted(p for p in seg_root.iterdir() if p.is_dir())
+    if not candidate_dirs:
+        logger.warning("No segmentation directories found")
+        return None
+
+    seg_dir = candidate_dirs[0]
+
+    # Find cropped masks
+    cropped_masks = list(seg_dir.glob(f"*{output_suffix}.nii.gz"))
+    if not cropped_masks:
+        logger.warning("No cropped masks found")
+        return None
+
+    # Load CT image for geometry reference
+    try:
+        reader = sitk.ImageSeriesReader()
+        series_ids = reader.GetGDCMSeriesIDs(str(course_dirs.dicom_ct))
+        if not series_ids:
+            logger.warning("No DICOM series found in CT directory")
+            return None
+        files = reader.GetGDCMSeriesFileNames(str(course_dirs.dicom_ct), series_ids[0])
+        reader.SetFileNames(files)
+        ct_img = reader.Execute()
+    except Exception as e:
+        logger.error(f"Failed to load CT DICOM: {e}")
+        return None
+
+    # Create new RTSTRUCT
+    try:
+        rtstruct = RTStructBuilder.create_new(dicom_series_path=str(course_dirs.dicom_ct))
+        rtstruct.ds.SeriesDescription = "Auto-segmented (Systematically Cropped)"
+    except Exception as e:
+        logger.error(f"Failed to create RTStructBuilder: {e}")
+        return None
+
+    # Add each cropped mask as an ROI
+    added_count = 0
+    for mask_path in cropped_masks:
+        # Extract ROI name (remove suffix and prefixes)
+        roi_name = mask_path.stem.replace('.nii', '').replace(output_suffix, '')
+
+        # Remove model prefix if present (e.g., "total--" or "<basename>--total--")
+        if '--' in roi_name:
+            parts = roi_name.split('--')
+            roi_name = parts[-1]  # Take last part after all prefixes
+
+        try:
+            # Read cropped mask
+            mask_img = sitk.ReadImage(str(mask_path))
+            mask_array = sitk.GetArrayFromImage(mask_img)  # [z, y, x]
+
+            if not np.any(mask_array):
+                continue  # Skip empty masks
+
+            # Convert to [y, x, z] for rt-utils
+            mask_array = np.moveaxis(mask_array, 0, -1)
+
+            rtstruct.add_roi(mask=mask_array > 0, name=roi_name)
+            added_count += 1
+            logger.debug(f"Added cropped ROI: {roi_name}")
+
+        except Exception as e:
+            logger.warning(f"Failed to add ROI {roi_name}: {e}")
+            continue
+
+    if added_count == 0:
+        logger.warning("No ROIs added to cropped RTSTRUCT")
+        return None
+
+    # Save cropped RTSTRUCT
+    output_path = course_dir / "RS_auto_cropped.dcm"
+    try:
+        rtstruct.save(str(output_path))
+        logger.info(f"Created RS_auto_cropped.dcm with {added_count} ROIs")
+        return output_path
+    except Exception as e:
+        logger.error(f"Failed to save cropped RTSTRUCT: {e}")
+        return None
