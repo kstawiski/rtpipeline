@@ -8,6 +8,7 @@ metadata = pd.read_excel("../Data/metadata_checked20250302_withImages.xlsx")
 metadata
 
 import os
+import shlex
 import subprocess
 import pandas as pd
 
@@ -50,14 +51,16 @@ def run_command(command):
 def convert_dicom_to_nifti(dicom_dir, output_dir):
     """Convert DICOM series to NIfTI format using dcm2niix."""
     os.makedirs(output_dir, exist_ok=True)
-    command = f"source ~/miniconda3/etc/profile.d/conda.sh && conda activate rt && dcm2niix -z y -o {output_dir} {dicom_dir}"
+    # SECURITY FIX: Use shlex.quote() to prevent command injection
+    command = f"source ~/miniconda3/etc/profile.d/conda.sh && conda activate rt && dcm2niix -z y -o {shlex.quote(str(output_dir))} {shlex.quote(str(dicom_dir))}"
     print(f"Executing DICOM to NIfTI conversion: {command}")
     return run_command(command)
 
 def run_totalsegmentator(input_path, output_dir, output_type):
     """Run TotalSegmentator on the given input path."""
     os.makedirs(output_dir, exist_ok=True)
-    command = f"source ~/miniconda3/etc/profile.d/conda.sh && conda activate rt && TotalSegmentator -i {input_path} -o {output_dir} -ta total -ot {output_type}"
+    # SECURITY FIX: Use shlex.quote() to prevent command injection
+    command = f"source ~/miniconda3/etc/profile.d/conda.sh && conda activate rt && TotalSegmentator -i {shlex.quote(str(input_path))} -o {shlex.quote(str(output_dir))} -ta total -ot {shlex.quote(str(output_type))}"
     print(f"Executing TotalSegmentator: {command}")
     return run_command(command)
 

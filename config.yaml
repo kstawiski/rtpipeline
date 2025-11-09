@@ -19,7 +19,7 @@ segmentation:
   extra_models: []   # Optional list of additional TotalSegmentator tasks, e.g. ["lung_vessels"]
 
 custom_models:
-  enabled: true
+  enabled: false       # SECURITY: Disabled by default - model weights are missing and will cause runtime failures
   root: "custom_models"
   models: []           # Optional allowlist of model names; leave empty to run all
   workers: 1           # Concurrent courses for custom models (GPU intensive; default 1, increase if multiple GPUs)
