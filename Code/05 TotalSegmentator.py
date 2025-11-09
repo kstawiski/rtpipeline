@@ -111,10 +111,10 @@ for patient_dir in metadata['organized_path']:
         continue
     nifti_file = os.path.join(nifti_output_dir, nifti_files[0])
 
-    # Run TotalSegmentator in DICOM mode
+    # Run TotalSegmentator in DICOM RTSTRUCT mode
     dicom_output_dir = f"{patient_dir}_total_dicom"
-    if not run_totalsegmentator(patient_dir, dicom_output_dir, 'dicom'):
-        print(f"Failed to run TotalSegmentator in DICOM mode for directory: {patient_dir}. Skipping.")
+    if not run_totalsegmentator(patient_dir, dicom_output_dir, 'dicom_rtstruct'):
+        print(f"Failed to run TotalSegmentator in DICOM RTSTRUCT mode for directory: {patient_dir}. Skipping.")
         continue
 
     # Run TotalSegmentator in NIfTI mode

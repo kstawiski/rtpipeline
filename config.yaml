@@ -54,3 +54,14 @@ environments:
 
 # Custom structures configuration
 custom_structures: "custom_structures_pelvic.yaml"
+
+# Systematic CT cropping for consistent volume analysis
+# Crops all CTs to same anatomical boundaries (e.g., L1 to femur+10cm)
+# This makes percentage DVH metrics (V95%, V20Gy) meaningful across patients
+ct_cropping:
+  enabled: false  # Enable to crop CTs to consistent anatomical boundaries
+  region: "pelvis"  # Currently only "pelvis" is supported
+  inferior_margin_cm: 10.0  # Margin below femoral heads for pelvic region
+  use_cropped_for_dvh: true  # Use cropped volumes for DVH analysis
+  use_cropped_for_radiomics: true  # Use cropped volumes for radiomics
+  keep_original: true  # Keep original uncropped files
