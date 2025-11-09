@@ -6,9 +6,12 @@ output_dir: "Data_Snakemake"
 logs_dir: "Logs_Snakemake"
 
 # Processing parameters
-workers: 2
+# Default: auto (uses CPU count - 2, minimum 4)
+# Set to a specific number to override (e.g., workers: 8)
+workers: auto
+
 segmentation:
-  workers: 2  # TotalSegmentator concurrency (set per-course parallelism)
+  workers: 4  # TotalSegmentator concurrency (4 allows good CPU/GPU mix)
   threads_per_worker: null  # CPU threads allowed per TotalSegmentator invocation (null => no limit)
   force: false  # Set true to re-run segmentation even when outputs exist
   fast: false
@@ -19,7 +22,7 @@ custom_models:
   enabled: true
   root: "custom_models"
   models: []           # Optional allowlist of model names; leave empty to run all
-  workers: 1           # Concurrent courses for custom models (GPU intensive; default 1)
+  workers: 1           # Concurrent courses for custom models (GPU intensive; default 1, increase if multiple GPUs)
   force: false         # Force re-run even if outputs already exist
   nnunet_predict: "nnUNet_predict"
   retain_weights: true # Keep extracted nnUNet caches between runs (set false to purge after each run)
@@ -42,7 +45,7 @@ radiomics:
   min_voxels: 10
 
 aggregation:
-  threads: null
+  threads: auto  # auto = use CPU count, or set specific number
 
 # Environment names
 environments:

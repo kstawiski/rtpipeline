@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -210,6 +211,54 @@ def _compute_metrics(abs_dvh, rx_dose: float) -> Optional[Dict[str, float]]:
     metrics.update(V_abs)
     metrics.update(V_rel)
     return metrics
+
+
+def _is_rs_custom_stale(
+    rs_custom_path: Path,
+    config_path: Optional[Union[str, Path]],
+    rs_manual: Optional[Path],
+    rs_auto: Optional[Path]
+) -> bool:
+    """
+    Check if RS_custom.dcm needs to be regenerated.
+
+    Returns True if RS_custom.dcm is stale (needs regeneration), False if it's current.
+    """
+    if not rs_custom_path.exists():
+        return True  # Doesn't exist, needs to be created
+
+    try:
+        rs_custom_mtime = rs_custom_path.stat().st_mtime
+
+        # Check if config file is newer
+        if config_path:
+            config_path = Path(config_path)
+            if config_path.exists() and config_path.stat().st_mtime > rs_custom_mtime:
+                logger.info("Custom structures config is newer than RS_custom.dcm, regenerating")
+                return True
+
+        # Check if source RTSTRUCT files are newer
+        for source_rs in [rs_manual, rs_auto]:
+            if source_rs and Path(source_rs).exists():
+                if Path(source_rs).stat().st_mtime > rs_custom_mtime:
+                    logger.info("Source RTSTRUCT %s is newer than RS_custom.dcm, regenerating", source_rs.name)
+                    return True
+
+        # Check for TotalSegmentator output changes
+        course_dir = rs_custom_path.parent
+        seg_root = course_dir / "Segmentation_TotalSegmentator"
+        if seg_root.exists():
+            for item in seg_root.rglob("*.nii.gz"):
+                if item.stat().st_mtime > rs_custom_mtime:
+                    logger.info("TotalSegmentator output is newer than RS_custom.dcm, regenerating")
+                    return True
+
+        logger.debug("RS_custom.dcm is up-to-date, reusing existing file")
+        return False  # RS_custom is current
+
+    except Exception as e:
+        logger.warning("Failed to check RS_custom.dcm staleness: %s, regenerating", e)
+        return True  # If we can't check, regenerate to be safe
 
 
 def _create_custom_structures_rtstruct(
@@ -618,9 +667,24 @@ def dvh_for_course(
         except Exception:
             pass
 
-    # Use RS_custom.dcm if it exists (created by structure merger)
+    # Use RS_custom.dcm if it exists and is up-to-date
     rs_custom = course_dir / "RS_custom.dcm"
-    if rs_custom.exists():
+
+    # Check if RS_custom needs regeneration
+    if custom_structures_config and _is_rs_custom_stale(
+        rs_custom, custom_structures_config, rs_manual, rs_auto
+    ):
+        try:
+            logger.info("Regenerating RS_custom.dcm for %s", course_dir.name)
+            from .custom_structures import CustomStructureProcessor
+            rs_custom = _create_custom_structures_rtstruct(
+                course_dir, custom_structures_config, rs_manual, rs_auto
+            )
+        except Exception as e:
+            logger.warning("Failed to create custom structures: %s", e)
+            rs_custom = None
+
+    if rs_custom and rs_custom.exists():
         process_struct(rs_custom, "Merged", rx_est)
     else:
         # Fallback to individual files if RS_custom doesn't exist
@@ -628,18 +692,6 @@ def dvh_for_course(
             process_struct(rs_manual, "Manual", rx_est)
         if rs_auto.exists():
             process_struct(rs_auto, "AutoRTS", rx_est)
-
-        # Process custom structures if configuration provided (legacy approach)
-        if custom_structures_config:
-            try:
-                from .custom_structures import CustomStructureProcessor
-                rs_custom_legacy = _create_custom_structures_rtstruct(
-                    course_dir, custom_structures_config, rs_manual, rs_auto
-                )
-                if rs_custom_legacy and rs_custom_legacy.exists():
-                    process_struct(rs_custom_legacy, "Custom", rx_est)
-            except Exception as e:
-                logger.warning("Failed to process custom structures: %s", e)
 
     # Always include per-model custom segmentation outputs if present
     for model_name, model_course_dir in list_custom_model_outputs(course_dir):
