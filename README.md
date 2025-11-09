@@ -9,14 +9,16 @@ Modern radiotherapy departments produce a rich set of DICOM-RT objects (CT, MR, 
 
 * **Course organisation** – automatically groups series/RT objects per patient course, reconciles registrations, and copies all referenced MR images.
 * **Segmentation**
-  * **TotalSegmentator (CT + MR)** – generates `total` (CT) and `total_mr` (MR) masks, DICOM-SEG/RTSTRUCT files, and binary NIfTI masks.
+  * **TotalSegmentator (CT + MR)** – generates `total` (CT) and `total_mr` (MR) masks with **DICOM RTSTRUCT output** (directly compatible with clinical systems) plus binary NIfTI masks.
   * **Custom nnU-Net models** – arbitrary nnUNet v1 or v2 predictors and ensembles (e.g. `cardiac_STOPSTORM`, `HN_lymph_nodes`) run automatically with per-model manifests.
   * **Boolean structure synthesis** – optional composite structures via YAML (`custom_structures_*.yaml`).
+* **Systematic CT cropping** (NEW) – crops all CTs to consistent anatomical boundaries (e.g., L1 vertebra to femoral heads + 10cm) using TotalSegmentator landmarks, ensuring percentage DVH metrics (V95%, V20Gy) have meaningful denominators for cross-patient comparison.
 * **DVH analytics** – generates per-course DVH workbooks and an aggregated `_RESULTS/dvh_metrics.xlsx` with segmentation provenance (manual / TotalSegmentator / custom / nnUNet).
 * **Radiomics**
   * **CT** – PyRadiomics with `radiomics_params.yaml` → `radiomics_ct.xlsx` (per course + aggregated).
   * **MR** – PyRadiomics with `radiomics_params_mr.yaml` over `total_mr` masks → `MR/radiomics_mr.xlsx` (per course) and `_RESULTS/radiomics_mr.xlsx`.
 * **Quality control** – JSON + Excel reports flag structure cropping, frame-of-reference mismatches, and file-level issues.
+* **Pre-flight validation** – `rtpipeline validate` command checks environment configuration before running pipeline.
 * **Aggregation** – consolidates DVH, radiomics (CT & MR), fractions, metadata, and QC into `_RESULTS/`.
 * **Anonymisation** – `scripts/anonymize_pipeline_results.py` rewrites IDs/names across the data tree.
 
@@ -144,8 +146,9 @@ All stages write sentinel files (`.organized`, `.segmentation_done`, `.custom_mo
 | --- | --- |
 | `dicom_root`, `output_dir`, `logs_dir` | Path configuration (relative to repo by default). |
 | `workers` | Default CPU worker count for non-segmentation stages. |
-| `segmentation` | Controls TotalSegmentator (`workers`, `threads_per_worker`, `fast`, `roi_subset`, `force`). |
+| `segmentation` | Controls TotalSegmentator (`workers`, `threads_per_worker`, `fast`, `roi_subset`, `force`).<br>⚡ **NEW**: TotalSegmentator now outputs DICOM RTSTRUCT directly (requires `rt_utils`). |
 | `custom_models` | Configure nnUNet models (`enabled`, `root`, `models` allowlist, `workers`, `retain_weights`, `nnunet_predict`, optional `conda_activate`). |
+| `ct_cropping` | **NEW**: Systematic anatomical cropping options:<br>• `enabled` – enable/disable cropping (default: false)<br>• `region` – anatomical region (currently `"pelvis"` only)<br>• `inferior_margin_cm` – margin below femoral heads (default: 10 cm)<br>• `use_cropped_for_dvh` / `use_cropped_for_radiomics` – use cropped volumes<br>• `keep_original` – preserve uncropped files |
 | `radiomics` | Radiomics options:<br>• `params_file` (CT) and `mr_params_file` (MR)<br>• `thread_limit` / `skip_rois`<br>• `max_voxels` / `min_voxels` filters. |
 | `aggregation` | Optional thread override for aggregation tasks. |
 | `custom_structures` | Path to Boolean structure definition YAML (default pelvic template). |
@@ -204,6 +207,88 @@ This structure keeps MR artefacts separate from CT analysis while allowing DVH a
 
 ---
 
+## Systematic CT Cropping (NEW)
+
+**Problem**: DVH percentage metrics (V95%, V20Gy) become meaningless when CT field-of-view varies across patients, because the volume denominators are inconsistent.
+
+**Example Issue**:
+```
+Patient A CT captures 18,000 cm³ → V20Gy = 500 cm³ / 18,000 cm³ = 2.8%
+Patient B CT captures 15,000 cm³ → V20Gy = 500 cm³ / 15,000 cm³ = 3.3%
+Same absolute dose volume, but different percentages! ❌
+```
+
+**Solution**: Systematically crop all CTs to the same anatomical boundaries defined by TotalSegmentator landmarks.
+
+### How It Works
+
+1. **Landmark Extraction**: After TotalSegmentator runs, the pipeline extracts anatomical landmarks from segmentation masks:
+   - **Superior boundary**: L1 vertebra (superior edge)
+   - **Inferior boundary**: Femoral heads (inferior edge) + configurable margin (default: 10 cm)
+
+2. **Cropping**: All CT images and segmentation masks are cropped to these boundaries:
+   ```python
+   # Automatically applied when ct_cropping.enabled = true
+   apply_systematic_cropping(
+       course_dir,
+       region="pelvis",
+       inferior_margin_cm=10.0
+   )
+   ```
+
+3. **Consistent Volumes**: All patients now have the same analysis volume (~12,000 cm³ for pelvis):
+   ```
+   Patient A: V20Gy = 500 cm³ / 12,000 cm³ = 4.2% ✅
+   Patient B: V20Gy = 500 cm³ / 12,000 cm³ = 4.2% ✅
+   Now comparable across patients!
+   ```
+
+### Configuration
+
+Enable in `config.yaml`:
+```yaml
+ct_cropping:
+  enabled: true              # Enable systematic cropping
+  region: "pelvis"           # Currently only "pelvis" supported
+  inferior_margin_cm: 10.0   # Margin below femoral heads
+  use_cropped_for_dvh: true  # Use cropped volumes for DVH
+  use_cropped_for_radiomics: true  # Use cropped volumes for radiomics
+  keep_original: true        # Keep uncropped files
+```
+
+### Benefits
+
+- ✅ **Percentage DVH metrics** (V%, D%) are now meaningful for cross-patient comparison
+- ✅ **Statistical analysis** on percentage-based metrics is valid
+- ✅ **Radiomics models** benefit from standardized input volumes
+- ✅ **Automatic** – no manual intervention required
+- ✅ **Anatomically defined** – clinically interpretable boundaries
+- ✅ **Backward compatible** – original files preserved if `keep_original: true`
+
+### When to Use
+
+**Use for**:
+- Multi-patient DVH studies requiring comparable metrics
+- Statistical analysis of percentage-based endpoints
+- Machine learning / radiomics studies
+- Quality assurance across cohorts
+
+**Don't use for**:
+- Single-patient treatment planning verification
+- Research requiring full anatomical extent
+- Structures outside the cropped region
+
+### Technical Details
+
+- **Module**: `rtpipeline/anatomical_cropping.py`
+- **Output**: Cropped files with `_cropped` suffix + `cropping_metadata.json`
+- **Coordinate system**: Handles all DICOM orientation conventions
+- **Error handling**: Graceful degradation if landmarks not found
+
+See `SYSTEMATIC_CT_CROPPING.md` for complete technical documentation.
+
+---
+
 ## Quality Assurance & Interpretation
 
 See **docs/Guide to Results Interpretation.md** for:
@@ -244,6 +329,9 @@ The script rewrites patient/course identifiers, anonymises DICOM headers, update
 * **docs/Guide to Results Interpretation.md** – deep dive into the per-course outputs and how to use them.
 * **docs/custom_models.md** – nnUNet configuration schema and examples.
 * **docs/pipeline_report.md** – narrative summary of the latest validation run and known issues.
+* **SYSTEMATIC_CT_CROPPING.md** – complete technical documentation for anatomical cropping feature.
+* **IMPROVEMENTS_SUMMARY.md** – summary of recent security fixes and feature additions.
+* **DEEP_DEBUG_REPORT.md** – comprehensive security audit and code quality analysis.
 * **scripts/anonymize_pipeline_results.py --help** – anonymisation usage.
 
 ---
