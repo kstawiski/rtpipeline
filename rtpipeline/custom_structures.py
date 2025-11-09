@@ -205,34 +205,70 @@ class CustomStructureProcessor:
 
         missing_sources: list[str] = []
         source_masks: list[np.ndarray] = []
+        found_mappings: Dict[str, str] = {}  # requested name -> actual name
+
         for source_name in config.source_structures:
-            actual_key = source_name if source_name in available_masks else normalization_map.get(self._normalize_name(source_name))
+            actual_key = None
+
+            # Try exact match first
+            if source_name in available_masks:
+                actual_key = source_name
+            # Try normalized match
+            elif self._normalize_name(source_name) in normalization_map:
+                actual_key = normalization_map[self._normalize_name(source_name)]
+
             if actual_key is None or actual_key not in available_masks:
                 missing_sources.append(source_name)
+                # Log available alternatives that might be close
+                normalized_requested = self._normalize_name(source_name)
+                similar = [k for k in available_masks.keys()
+                          if normalized_requested in self._normalize_name(k)
+                          or self._normalize_name(k) in normalized_requested]
+                if similar:
+                    logger.debug(
+                        "Custom structure '%s': source '%s' not found. Similar available: %s",
+                        config.name, source_name, ", ".join(similar[:3])
+                    )
                 continue
+
             mask = available_masks[actual_key]
             if mask is None or not np.any(mask):
                 missing_sources.append(source_name)
+                logger.debug(
+                    "Custom structure '%s': source '%s' exists but is empty",
+                    config.name, source_name
+                )
                 continue
+
             source_masks.append(mask)
+            found_mappings[source_name] = actual_key
 
         if not source_masks:
             logger.warning(
-                "No usable source structures found for custom structure '%s' (requested: %s)",
+                "No usable source structures found for custom structure '%s' (requested: %s). Available structures: %s",
                 config.name,
                 ", ".join(config.source_structures),
+                ", ".join(sorted(list(available_masks.keys())[:10]))  # Show first 10
             )
             self.partial_structures.pop(config.name, None)
             return None
 
         if missing_sources:
-            logger.debug(
-                "Custom structure '%s': skipping unavailable sources: %s",
+            logger.warning(
+                "Custom structure '%s': missing %d/%d source structures: %s (found: %s)",
                 config.name,
+                len(missing_sources),
+                len(config.source_structures),
                 ", ".join(sorted({src for src in missing_sources})),
+                ", ".join(f"{req}->{act}" for req, act in found_mappings.items())
             )
             self.partial_structures[config.name] = sorted({src for src in missing_sources})
         else:
+            logger.info(
+                "Custom structure '%s': successfully matched all %d source structures",
+                config.name,
+                len(source_masks)
+            )
             self.partial_structures.pop(config.name, None)
 
         # Apply boolean operation
@@ -248,11 +284,53 @@ class CustomStructureProcessor:
             logger.error(f"Unknown operation: {config.operation}")
             return None
 
+        # Validate structure size before margin
+        voxel_count_pre = int(np.sum(result > 0))
+        if voxel_count_pre == 0:
+            logger.warning(
+                "Custom structure '%s': %s operation resulted in empty structure. "
+                "Check if source structures overlap correctly.",
+                config.name, config.operation
+            )
+            return None
+        elif voxel_count_pre < 10:
+            logger.warning(
+                "Custom structure '%s': only %d voxels after %s operation. "
+                "This structure may be too small for meaningful analysis.",
+                config.name, voxel_count_pre, config.operation
+            )
+
         # Apply margin if specified
         if config.margin:
             result = self.apply_margin(result, config.margin)
+            voxel_count_post = int(np.sum(result > 0))
+            if voxel_count_post == 0:
+                logger.warning(
+                    "Custom structure '%s': margin operation resulted in empty structure",
+                    config.name
+                )
+                return None
+            logger.debug(
+                "Custom structure '%s': margin changed voxel count from %d to %d",
+                config.name, voxel_count_pre, voxel_count_post
+            )
 
-        logger.info(f"Created custom structure '{config.name}' using {config.operation} of {config.source_structures}")
+        # Calculate and log final structure size
+        final_voxel_count = int(np.sum(result > 0))
+        volume_ml = None
+        if self.spacing:
+            voxel_volume_mm3 = self.spacing[0] * self.spacing[1] * self.spacing[2]
+            volume_ml = (final_voxel_count * voxel_volume_mm3) / 1000.0
+            logger.info(
+                "Created custom structure '%s': %s of %d sources, %d voxels (%.2f mL)",
+                config.name, config.operation, len(source_masks),
+                final_voxel_count, volume_ml
+            )
+        else:
+            logger.info(
+                "Created custom structure '%s': %s of %d sources, %d voxels",
+                config.name, config.operation, len(source_masks), final_voxel_count
+            )
 
         return result
 

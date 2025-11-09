@@ -328,15 +328,21 @@ def parallel_radiomics_for_course(
     # Process custom structures if configuration provided
     if custom_structures_config and custom_structures_config.exists():
         try:
+            from .dvh import _create_custom_structures_rtstruct, _is_rs_custom_stale
             rs_custom = course_dir / "RS_custom.dcm"
-            if not rs_custom.exists():
-                from .dvh import _create_custom_structures_rtstruct
+            rs_manual = course_dir / "RS.dcm"
+            rs_auto = course_dir / "RS_auto.dcm"
+
+            # Check if RS_custom needs regeneration
+            if _is_rs_custom_stale(rs_custom, custom_structures_config, rs_manual, rs_auto):
+                logger.info("Regenerating RS_custom.dcm for radiomics in %s", course_dir.name)
                 rs_custom = _create_custom_structures_rtstruct(
                     course_dir,
                     custom_structures_config,
-                    course_dir / "RS.dcm",
-                    course_dir / "RS_auto.dcm"
+                    rs_manual,
+                    rs_auto
                 )
+
             if rs_custom and rs_custom.exists():
                 masks = _rtstruct_masks(course_dirs.dicom_ct, rs_custom)
                 for roi, mask in masks.items():
