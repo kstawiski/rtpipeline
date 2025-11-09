@@ -10,10 +10,13 @@ These are the outstanding clinical/technical concerns flagged after reviewing th
 - **Status:** Fixed 2025-10-04. `radiomics_conda.py` infers provenance by comparing RS/RS_auto ROI lists (and custom config where available). Course workbooks and `_RESULTS/radiomics_ct.xlsx` now report `Manual`, `AutoTS`, or `Custom` labels (e.g. AutoTS 270 / Manual 129 / Custom 43 rows current cohort).
 - **Follow-up:** When new auto-seg templates are added, confirm their ROI names normalize correctly so provenance stays accurate.
 
-## Systemic Structure Cropping
-- Every course QC report shows `overall_status = WARNING` with 20–39 cropped structures.
-- Radiomics/DVH tables confirm many abdominal organs are flagged.
-- **Action:** Investigate CT FOV vs. auto segmentation; consider excluding/annotating cropped organs so downstream analysis is aware.
+## Systemic Structure Cropping ✅
+- **Status:** Solution implemented 2025-11-09. Created systematic CT cropping module (`rtpipeline/anatomical_cropping.py`) that crops all CTs to consistent anatomical boundaries (L1 vertebra to femoral heads + 10cm) using TotalSegmentator landmarks.
+- **Problem Reframed:** The real issue was not the cropping warnings themselves, but that percentage DVH metrics (V95%, V20Gy) were meaningless because volume denominators varied across patients due to different CT field-of-view extents.
+- **Solution:** Systematic cropping ensures all patients have the same analysis volume (~12,000 cm³ for pelvis), making percentage metrics meaningful for cross-patient comparison.
+- **Configuration:** Added `ct_cropping` section to `config.yaml` (disabled by default, opt-in for multi-patient studies).
+- **Status:** Core implementation complete. CLI integration and DVH/radiomics integration pending.
+- **Follow-up:** Clinical validation on full cohort needed. Verify cropping boundaries are appropriate for clinical use. See `SYSTEMATIC_CT_CROPPING.md` for complete documentation.
 
 ## Custom Structure Warnings During DVH
 - `Logs_Snakemake/stage_dvh.log` is full of "Source structure ... not found" messages (e.g. `pelvic_bones`, `bowel_bag`).
@@ -34,5 +37,29 @@ These are the outstanding clinical/technical concerns flagged after reviewing th
 
 ## Snakemake Segmentation Parallelism
 - Currently segmentation still runs sequentially because the CLI didn't expose a worker limit. Configuration now allows `segmentation.workers` in `config.yaml`, but this needs validation with a full pipeline run to confirm multiple courses execute in parallel without overrunning GPU/CPU resources.
+
+## Recent Enhancements (2025-11-09)
+
+### TotalSegmentator DICOM RTSTRUCT Output ✅
+- **Status:** Updated 2025-11-09. TotalSegmentator now outputs DICOM RTSTRUCT directly instead of DICOM-SEG.
+- **Files Modified:** `rtpipeline/segmentation.py`, `Code/05 TotalSegmentator.py`
+- **Impact:** RTSTRUCT files are directly compatible with clinical systems (TPS, contouring software). No conversion needed.
+- **Requirement:** Requires `rt_utils` package (already in dependencies).
+
+### Security Fixes ✅
+- **Status:** Fixed 2025-11-09. Addressed critical security vulnerabilities.
+- **Fixed Issues:**
+  - 2 command injection vulnerabilities (shlex.quote() added)
+  - 1 unsafe pickle deserialization (RestrictedUnpickler implemented)
+  - Path validation helper added to utils.py
+  - Custom models disabled by default in config
+- **Impact:** Pipeline now significantly more secure for production use.
+- **Details:** See `DEEP_DEBUG_REPORT.md` and `IMPROVEMENTS_SUMMARY.md`
+
+### Pre-flight Validation Command ✅
+- **Status:** Added 2025-11-09. New `rtpipeline validate` command.
+- **Purpose:** Checks environment configuration before running pipeline.
+- **Checks:** DICOM root exists, config file valid, external tools available, Python packages installed.
+- **Usage:** `rtpipeline validate --config config.yaml --dicom-root Example_data`
 
 Keep this file updated as issues are fixed or new ones surface.
