@@ -13,15 +13,20 @@ services:
     hostname: rtpipeline
     volumes:
       # Mount your DICOM input data
-      - ./Input:/data/input:ro
+      - ./Input:/data/input:rw
       # Mount output directory for pipeline results
       - ./Output:/data/output:rw
       # Mount logs directory
       - ./Logs:/data/logs:rw
       # Mount custom models directory (for nnUNet weights)
       - ./custom_models:/data/models:rw
+      # Mount uploads directory for web UI
+      - ./Uploads:/data/uploads:rw
       # Optional: mount notebooks for development
       - ./Code:/app/Code:rw
+    ports:
+      # Web UI port
+      - "8080:8080"
     environment:
       # Pipeline configuration
       - PYTHONPATH=/app
@@ -33,10 +38,16 @@ services:
       # GPU support (DEFAULT)
       - NVIDIA_VISIBLE_DEVICES=all
       - CUDA_VISIBLE_DEVICES=all
+      # Web UI configuration
+      - PORT=8080
+      - DEBUG=false
     working_dir: /app
-    # Keep container running for interactive use
-    stdin_open: true
-    tty: true
+    # Start web UI by default
+    command: >
+      bash -c "
+        cd /app/webui &&
+        python app.py
+      "
     # GPU support - DEFAULT configuration
     deploy:
       resources:
@@ -64,20 +75,28 @@ services:
     container_name: rtpipeline-cpu
     hostname: rtpipeline-cpu
     volumes:
-      - ./Input:/data/input:ro
+      - ./Input:/data/input:rw
       - ./Output:/data/output:rw
       - ./Logs:/data/logs:rw
       - ./custom_models:/data/models:rw
+      - ./Uploads:/data/uploads:rw
       - ./Code:/app/Code:rw
+    ports:
+      - "8080:8080"
     environment:
       - PYTHONPATH=/app
       - NUMBA_CACHE_DIR=/tmp/cache
       - MPLCONFIGDIR=/tmp/cache
       - CONDA_DIR=/opt/conda
       - PATH=/opt/conda/bin:$PATH
+      - PORT=8080
+      - DEBUG=false
     working_dir: /app
-    stdin_open: true
-    tty: true
+    command: >
+      bash -c "
+        cd /app/webui &&
+        python app.py
+      "
     # CPU-only: no GPU resources requested
     deploy:
       resources:

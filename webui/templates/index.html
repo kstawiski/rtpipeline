@@ -1,0 +1,833 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>rtpipeline Web UI</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        .header {
+            background: white;
+            border-radius: 10px;
+            padding: 30px;
+            margin-bottom: 20px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+        }
+
+        .header h1 {
+            color: #333;
+            margin-bottom: 10px;
+        }
+
+        .header p {
+            color: #666;
+            font-size: 14px;
+        }
+
+        .main-content {
+            background: white;
+            border-radius: 10px;
+            padding: 30px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+        }
+
+        .upload-section {
+            border: 3px dashed #cbd5e0;
+            border-radius: 10px;
+            padding: 40px;
+            text-align: center;
+            background: #f7fafc;
+            margin-bottom: 30px;
+            transition: all 0.3s;
+            cursor: pointer;
+        }
+
+        .upload-section:hover,
+        .upload-section.dragover {
+            border-color: #667eea;
+            background: #edf2f7;
+        }
+
+        .upload-icon {
+            font-size: 48px;
+            color: #667eea;
+            margin-bottom: 20px;
+        }
+
+        .upload-section h2 {
+            color: #2d3748;
+            margin-bottom: 10px;
+        }
+
+        .upload-section p {
+            color: #718096;
+            margin-bottom: 20px;
+        }
+
+        .btn {
+            background: #667eea;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 6px;
+            font-size: 16px;
+            cursor: pointer;
+            transition: all 0.3s;
+            margin: 5px;
+        }
+
+        .btn:hover {
+            background: #5a67d8;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+        }
+
+        .btn:disabled {
+            background: #cbd5e0;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .btn-secondary {
+            background: #48bb78;
+        }
+
+        .btn-secondary:hover {
+            background: #38a169;
+        }
+
+        .btn-danger {
+            background: #f56565;
+        }
+
+        .btn-danger:hover {
+            background: #e53e3e;
+        }
+
+        .config-section {
+            margin-top: 30px;
+            padding: 20px;
+            background: #f7fafc;
+            border-radius: 8px;
+        }
+
+        .config-section h3 {
+            margin-bottom: 15px;
+            color: #2d3748;
+        }
+
+        .config-option {
+            margin-bottom: 15px;
+        }
+
+        .config-option label {
+            display: block;
+            margin-bottom: 5px;
+            color: #4a5568;
+            font-weight: 500;
+        }
+
+        .config-option input[type="checkbox"] {
+            margin-right: 10px;
+        }
+
+        .validation-results {
+            margin-top: 20px;
+            padding: 20px;
+            border-radius: 8px;
+            background: #f7fafc;
+        }
+
+        .validation-results.valid {
+            background: #c6f6d5;
+            border: 2px solid #48bb78;
+        }
+
+        .validation-results.invalid {
+            background: #fed7d7;
+            border: 2px solid #f56565;
+        }
+
+        .validation-results h3 {
+            margin-bottom: 10px;
+        }
+
+        .validation-item {
+            margin: 5px 0;
+            padding: 8px;
+            background: white;
+            border-radius: 4px;
+        }
+
+        .warning {
+            color: #ed8936;
+            padding: 10px;
+            background: #feebc8;
+            border-radius: 4px;
+            margin: 5px 0;
+        }
+
+        .suggestion {
+            color: #4299e1;
+            padding: 10px;
+            background: #bee3f8;
+            border-radius: 4px;
+            margin: 5px 0;
+        }
+
+        .jobs-list {
+            margin-top: 30px;
+        }
+
+        .job-card {
+            background: #f7fafc;
+            border: 1px solid #e2e8f0;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 15px;
+            transition: all 0.3s;
+        }
+
+        .job-card:hover {
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+        }
+
+        .job-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+
+        .job-id {
+            font-weight: bold;
+            color: #2d3748;
+        }
+
+        .job-status {
+            padding: 6px 12px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: bold;
+            text-transform: uppercase;
+        }
+
+        .job-status.uploaded {
+            background: #bee3f8;
+            color: #2c5282;
+        }
+
+        .job-status.running {
+            background: #feebc8;
+            color: #7c2d12;
+        }
+
+        .job-status.completed {
+            background: #c6f6d5;
+            color: #22543d;
+        }
+
+        .job-status.failed {
+            background: #fed7d7;
+            color: #742a2a;
+        }
+
+        .job-status.cancelled {
+            background: #e2e8f0;
+            color: #4a5568;
+        }
+
+        .progress-bar {
+            width: 100%;
+            height: 8px;
+            background: #e2e8f0;
+            border-radius: 4px;
+            overflow: hidden;
+            margin: 10px 0;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #667eea, #764ba2);
+            transition: width 0.3s;
+        }
+
+        .job-actions {
+            margin-top: 15px;
+        }
+
+        .file-list {
+            margin-top: 15px;
+            max-height: 200px;
+            overflow-y: auto;
+            background: white;
+            padding: 10px;
+            border-radius: 4px;
+        }
+
+        .file-item {
+            padding: 5px;
+            margin: 3px 0;
+            background: #f7fafc;
+            border-radius: 3px;
+            font-size: 13px;
+        }
+
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.5);
+            z-index: 1000;
+        }
+
+        .modal-content {
+            background: white;
+            max-width: 800px;
+            max-height: 80vh;
+            margin: 50px auto;
+            padding: 30px;
+            border-radius: 10px;
+            overflow-y: auto;
+        }
+
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+
+        .close-modal {
+            font-size: 24px;
+            cursor: pointer;
+            color: #718096;
+        }
+
+        .close-modal:hover {
+            color: #2d3748;
+        }
+
+        .log-viewer {
+            background: #1a202c;
+            color: #e2e8f0;
+            padding: 20px;
+            border-radius: 8px;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            max-height: 500px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+
+        .hidden {
+            display: none;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 20px;
+        }
+
+        .spinner {
+            border: 4px solid #e2e8f0;
+            border-top: 4px solid #667eea;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 20px auto;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        #file-input {
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🏥 rtpipeline Web UI</h1>
+            <p>Upload DICOM files for automated radiotherapy data processing</p>
+        </div>
+
+        <div class="main-content">
+            <div class="upload-section" id="upload-section">
+                <div class="upload-icon">📁</div>
+                <h2>Upload DICOM Files</h2>
+                <p>Drag and drop files or folders here, or click to browse</p>
+                <p style="font-size: 12px; color: #a0aec0;">
+                    Supported: .dcm files, .zip archives, directories, DICOMDIR
+                </p>
+                <input type="file" id="file-input" multiple webkitdirectory directory>
+                <button class="btn" onclick="document.getElementById('file-input').click()">
+                    Browse Files
+                </button>
+            </div>
+
+            <div id="validation-container"></div>
+
+            <div id="config-container" class="hidden">
+                <div class="config-section">
+                    <h3>⚙️ Processing Configuration</h3>
+
+                    <div class="config-option">
+                        <label>
+                            <input type="checkbox" id="fast-mode" checked>
+                            Fast Mode (CPU-friendly segmentation)
+                        </label>
+                    </div>
+
+                    <div class="config-option">
+                        <label>
+                            <input type="checkbox" id="radiomics-enabled" checked>
+                            Enable Radiomics Extraction
+                        </label>
+                    </div>
+
+                    <div class="config-option">
+                        <label>
+                            <input type="checkbox" id="custom-models-enabled">
+                            Enable Custom Models (if available)
+                        </label>
+                    </div>
+
+                    <div class="config-option">
+                        <label>
+                            <input type="checkbox" id="ct-cropping-enabled">
+                            Enable CT Anatomical Cropping
+                        </label>
+                    </div>
+
+                    <div style="margin-top: 20px;">
+                        <button class="btn btn-secondary" id="start-processing-btn" onclick="startProcessing()">
+                            🚀 Start Processing
+                        </button>
+                        <button class="btn btn-danger" onclick="cancelUpload()">
+                            ❌ Cancel
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="jobs-list">
+                <h2>Processing Jobs</h2>
+                <div id="jobs-container">
+                    <div class="loading">
+                        <div class="spinner"></div>
+                        <p>Loading jobs...</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Log Viewer Modal -->
+    <div id="log-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Job Logs</h2>
+                <span class="close-modal" onclick="closeLogModal()">&times;</span>
+            </div>
+            <div class="log-viewer" id="log-content">Loading logs...</div>
+        </div>
+    </div>
+
+    <script>
+        let currentJobId = null;
+        let uploadedFiles = [];
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', () => {
+            setupUploadHandlers();
+            loadJobs();
+            setInterval(updateJobStatuses, 3000); // Update every 3 seconds
+        });
+
+        function setupUploadHandlers() {
+            const uploadSection = document.getElementById('upload-section');
+            const fileInput = document.getElementById('file-input');
+
+            // Click to upload
+            uploadSection.addEventListener('click', (e) => {
+                if (e.target.tagName !== 'BUTTON') {
+                    fileInput.click();
+                }
+            });
+
+            // File input change
+            fileInput.addEventListener('change', handleFileSelect);
+
+            // Drag and drop
+            uploadSection.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                uploadSection.classList.add('dragover');
+            });
+
+            uploadSection.addEventListener('dragleave', () => {
+                uploadSection.classList.remove('dragover');
+            });
+
+            uploadSection.addEventListener('drop', (e) => {
+                e.preventDefault();
+                uploadSection.classList.remove('dragover');
+                handleFileDrop(e);
+            });
+        }
+
+        async function handleFileSelect(e) {
+            const files = Array.from(e.target.files);
+            await uploadFiles(files);
+        }
+
+        async function handleFileDrop(e) {
+            const items = Array.from(e.dataTransfer.items);
+            const files = [];
+
+            for (const item of items) {
+                if (item.kind === 'file') {
+                    const file = item.getAsFile();
+                    if (file) files.push(file);
+                }
+            }
+
+            await uploadFiles(files);
+        }
+
+        async function uploadFiles(files) {
+            if (files.length === 0) return;
+
+            const formData = new FormData();
+            files.forEach(file => {
+                formData.append('files[]', file);
+            });
+
+            try {
+                document.getElementById('upload-section').innerHTML = `
+                    <div class="loading">
+                        <div class="spinner"></div>
+                        <p>Uploading and validating files...</p>
+                    </div>
+                `;
+
+                const response = await fetch('/api/upload', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const result = await response.json();
+
+                if (response.ok) {
+                    currentJobId = result.job_id;
+                    displayValidationResults(result.validation);
+                    document.getElementById('config-container').classList.remove('hidden');
+                    loadJobs();
+                } else {
+                    alert('Upload failed: ' + (result.error || 'Unknown error'));
+                    resetUploadSection();
+                }
+            } catch (error) {
+                console.error('Upload error:', error);
+                alert('Upload failed: ' + error.message);
+                resetUploadSection();
+            }
+        }
+
+        function displayValidationResults(validation) {
+            const container = document.getElementById('validation-container');
+            const isValid = validation.valid && validation.dicom_count > 0;
+
+            let html = `
+                <div class="validation-results ${isValid ? 'valid' : 'invalid'}">
+                    <h3>${isValid ? '✅ Validation Successful' : '⚠️ Validation Issues'}</h3>
+            `;
+
+            if (validation.dicom_count > 0) {
+                html += `
+                    <div class="validation-item">
+                        <strong>DICOM Files:</strong> ${validation.dicom_count}
+                    </div>
+                    <div class="validation-item">
+                        <strong>Patients:</strong> ${validation.patient_count || 0}
+                    </div>
+                    <div class="validation-item">
+                        <strong>Studies:</strong> ${validation.study_count || 0}
+                    </div>
+                    <div class="validation-item">
+                        <strong>Modalities:</strong> ${Object.keys(validation.modalities || {}).join(', ') || 'None'}
+                    </div>
+                `;
+
+                // Display warnings
+                if (validation.warnings && validation.warnings.length > 0) {
+                    validation.warnings.forEach(warning => {
+                        html += `<div class="warning">⚠️ ${warning}</div>`;
+                    });
+                }
+
+                // Display suggestions
+                if (validation.suggestions && validation.suggestions.length > 0) {
+                    validation.suggestions.forEach(suggestion => {
+                        html += `<div class="suggestion">💡 ${suggestion}</div>`;
+                    });
+                }
+            } else {
+                html += `<div class="validation-item">❌ ${validation.error || 'No DICOM files found'}</div>`;
+
+                if (validation.suggestions) {
+                    validation.suggestions.forEach(suggestion => {
+                        html += `<div class="suggestion">💡 ${suggestion}</div>`;
+                    });
+                }
+            }
+
+            html += '</div>';
+            container.innerHTML = html;
+        }
+
+        async function startProcessing() {
+            if (!currentJobId) {
+                alert('No job to process');
+                return;
+            }
+
+            const config = {
+                segmentation: {
+                    fast: document.getElementById('fast-mode').checked
+                },
+                radiomics: {
+                    enabled: document.getElementById('radiomics-enabled').checked
+                },
+                custom_models_enabled: document.getElementById('custom-models-enabled').checked,
+                ct_cropping: {
+                    enabled: document.getElementById('ct-cropping-enabled').checked
+                }
+            };
+
+            try {
+                const response = await fetch(`/api/jobs/${currentJobId}/start`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(config)
+                });
+
+                const result = await response.json();
+
+                if (response.ok) {
+                    alert('Processing started!');
+                    resetUploadSection();
+                    loadJobs();
+                } else {
+                    alert('Failed to start processing: ' + (result.error || 'Unknown error'));
+                }
+            } catch (error) {
+                console.error('Start processing error:', error);
+                alert('Failed to start processing: ' + error.message);
+            }
+        }
+
+        function cancelUpload() {
+            resetUploadSection();
+        }
+
+        function resetUploadSection() {
+            currentJobId = null;
+            document.getElementById('upload-section').innerHTML = `
+                <div class="upload-icon">📁</div>
+                <h2>Upload DICOM Files</h2>
+                <p>Drag and drop files or folders here, or click to browse</p>
+                <p style="font-size: 12px; color: #a0aec0;">
+                    Supported: .dcm files, .zip archives, directories, DICOMDIR
+                </p>
+                <button class="btn" onclick="document.getElementById('file-input').click()">
+                    Browse Files
+                </button>
+            `;
+            document.getElementById('validation-container').innerHTML = '';
+            document.getElementById('config-container').classList.add('hidden');
+            document.getElementById('file-input').value = '';
+        }
+
+        async function loadJobs() {
+            try {
+                const response = await fetch('/api/jobs');
+                const result = await response.json();
+
+                if (response.ok) {
+                    displayJobs(result.jobs);
+                }
+            } catch (error) {
+                console.error('Load jobs error:', error);
+            }
+        }
+
+        function displayJobs(jobs) {
+            const container = document.getElementById('jobs-container');
+
+            if (jobs.length === 0) {
+                container.innerHTML = '<p>No jobs yet</p>';
+                return;
+            }
+
+            jobs.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+
+            let html = '';
+            jobs.forEach(job => {
+                const progress = job.progress || { percent: 0, message: '' };
+                html += `
+                    <div class="job-card">
+                        <div class="job-header">
+                            <div class="job-id">Job: ${job.job_id.substring(0, 8)}...</div>
+                            <div class="job-status ${job.status}">${job.status}</div>
+                        </div>
+
+                        ${job.status === 'running' ? `
+                            <div class="progress-bar">
+                                <div class="progress-fill" style="width: ${progress.percent}%"></div>
+                            </div>
+                            <p style="font-size: 13px; color: #718096; margin-top: 5px;">
+                                ${progress.message || 'Processing...'}
+                            </p>
+                        ` : ''}
+
+                        <p style="font-size: 12px; color: #a0aec0; margin-top: 10px;">
+                            Created: ${new Date(job.created_at).toLocaleString()}
+                        </p>
+
+                        <div class="job-actions">
+                            ${job.status === 'running' ? `
+                                <button class="btn btn-danger" onclick="cancelJob('${job.job_id}')">
+                                    Cancel
+                                </button>
+                            ` : ''}
+
+                            ${job.status === 'completed' ? `
+                                <button class="btn btn-secondary" onclick="downloadResults('${job.job_id}')">
+                                    Download Results
+                                </button>
+                            ` : ''}
+
+                            <button class="btn" onclick="viewLogs('${job.job_id}')">
+                                View Logs
+                            </button>
+
+                            ${job.status !== 'running' ? `
+                                <button class="btn btn-danger" onclick="deleteJob('${job.job_id}')">
+                                    Delete
+                                </button>
+                            ` : ''}
+                        </div>
+                    </div>
+                `;
+            });
+
+            container.innerHTML = html;
+        }
+
+        async function updateJobStatuses() {
+            const jobCards = document.querySelectorAll('.job-card');
+            if (jobCards.length === 0) return;
+
+            // Reload jobs to get latest status
+            await loadJobs();
+        }
+
+        async function cancelJob(jobId) {
+            if (!confirm('Are you sure you want to cancel this job?')) return;
+
+            try {
+                const response = await fetch(`/api/jobs/${jobId}/cancel`, {
+                    method: 'POST'
+                });
+
+                if (response.ok) {
+                    loadJobs();
+                } else {
+                    const result = await response.json();
+                    alert('Failed to cancel job: ' + (result.error || 'Unknown error'));
+                }
+            } catch (error) {
+                console.error('Cancel job error:', error);
+                alert('Failed to cancel job: ' + error.message);
+            }
+        }
+
+        async function downloadResults(jobId) {
+            window.location.href = `/api/jobs/${jobId}/download`;
+        }
+
+        async function viewLogs(jobId) {
+            try {
+                const response = await fetch(`/api/jobs/${jobId}/logs`);
+                const result = await response.json();
+
+                if (response.ok) {
+                    document.getElementById('log-content').textContent = result.logs || 'No logs available';
+                    document.getElementById('log-modal').style.display = 'block';
+                }
+            } catch (error) {
+                console.error('View logs error:', error);
+                alert('Failed to load logs: ' + error.message);
+            }
+        }
+
+        function closeLogModal() {
+            document.getElementById('log-modal').style.display = 'none';
+        }
+
+        async function deleteJob(jobId) {
+            if (!confirm('Are you sure you want to delete this job? All data will be removed.')) return;
+
+            try {
+                const response = await fetch(`/api/jobs/${jobId}`, {
+                    method: 'DELETE'
+                });
+
+                if (response.ok) {
+                    loadJobs();
+                } else {
+                    const result = await response.json();
+                    alert('Failed to delete job: ' + (result.error || 'Unknown error'));
+                }
+            } catch (error) {
+                console.error('Delete job error:', error);
+                alert('Failed to delete job: ' + error.message);
+            }
+        }
+
+        // Close modal when clicking outside
+        window.onclick = function(event) {
+            const modal = document.getElementById('log-modal');
+            if (event.target === modal) {
+                closeLogModal();
+            }
+        }
+    </script>
+</body>
+</html>
