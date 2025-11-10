@@ -1,6 +1,13 @@
 # Custom Structures Configuration for Pelvic RT Planning
 # Based on Boolean operations notebook implementation
 # This template creates clinically relevant structures for pelvic radiotherapy
+#
+# NOTE: Structure names must match TotalSegmentator output exactly.
+# Check TotalSegmentator documentation for available structure names:
+# https://github.com/wasserth/TotalSegmentator#class-details
+#
+# TotalSegmentator uses underscores in names (e.g., "iliac_artery_left")
+# If structures are missing, they will be marked as "__partial" in outputs
 
 custom_structures:
   # ============================================
@@ -8,6 +15,7 @@ custom_structures:
   # ============================================
 
   # Iliac vessels - union of all iliac arteries and veins
+  # NOTE: These structures are available in TotalSegmentator v2 "total" task
   - name: "iliac_vess"
     operation: "union"
     source_structures:
@@ -18,14 +26,15 @@ custom_structures:
     description: "Combined iliac vessels (arteries and veins)"
 
   # Iliac area - 7mm expansion for dose constraints
+  # Depends on iliac_vess being successfully created
   - name: "iliac_area"
     operation: "union"
     source_structures: ["iliac_vess"]
     margin: 7
     description: "Iliac vessels with 7mm margin for dose planning"
 
-
   # Pelvic bones - main pelvic bone structures
+  # These structures are available in TotalSegmentator "total" task
   - name: "pelvic_bones"
     operation: "union"
     source_structures:
@@ -42,4 +51,12 @@ custom_structures:
     margin: 3
     description: "Pelvic bones with 3mm margin for bone marrow considerations"
 
- 
+  # Bowel structures for pelvic RT planning
+  # NOTE: TotalSegmentator provides "colon" and "small_bowel"
+  - name: "bowel_bag"
+    operation: "union"
+    source_structures:
+      - "colon"
+      - "small_bowel"
+      - "duodenum"
+    description: "Combined bowel structures for dose constraints"
