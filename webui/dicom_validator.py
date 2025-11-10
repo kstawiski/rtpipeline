@@ -170,6 +170,7 @@ class DICOMValidator:
         # Check by reading file header
         try:
             # Try to read as DICOM
+            logger.debug(f"Using force=True for DICOM validation on {file_path.name} - bypassing strict checks for compatibility")
             pydicom.dcmread(file_path, stop_before_pixels=True, force=True)
             return True
         except (InvalidDicomError, Exception):
