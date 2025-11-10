@@ -12,26 +12,21 @@ services:
     container_name: rtpipeline
     hostname: rtpipeline
     volumes:
-      # Mount your DICOM input data (read-only)
-      # Use any host directory - it maps to /app/Example_data inside container
-      - ./Input:/app/Example_data:ro
+      # Mount your DICOM input data
+      - ./Input:/data/input:ro
       # Mount output directory for pipeline results
-      - ./Output:/app/Data_Snakemake:rw
+      - ./Output:/data/output:rw
       # Mount logs directory
-      - ./Logs:/app/Logs_Snakemake:rw
+      - ./Logs:/data/logs:rw
       # Mount custom models directory (for nnUNet weights)
-      - ./custom_models:/app/custom_models:rw
-      # Mount configuration file
-      - ./config.yaml:/app/config.yaml:ro
-      # Optional: mount custom structures definition
-      - ./custom_structures_pelvic.yaml:/app/custom_structures_pelvic.yaml:ro
+      - ./custom_models:/data/models:rw
       # Optional: mount notebooks for development
       - ./Code:/app/Code:rw
     environment:
       # Pipeline configuration
       - PYTHONPATH=/app
-      - NUMBA_CACHE_DIR=/tmp/numba_cache
-      - MPLCONFIGDIR=/tmp/matplotlib
+      - NUMBA_CACHE_DIR=/tmp/cache
+      - MPLCONFIGDIR=/tmp/cache
       # Conda environment
       - CONDA_DIR=/opt/conda
       - PATH=/opt/conda/bin:$PATH
@@ -69,17 +64,15 @@ services:
     container_name: rtpipeline-cpu
     hostname: rtpipeline-cpu
     volumes:
-      - ./Input:/app/Example_data:ro
-      - ./Output:/app/Data_Snakemake:rw
-      - ./Logs:/app/Logs_Snakemake:rw
-      - ./custom_models:/app/custom_models:rw
-      - ./config.yaml:/app/config.yaml:ro
-      - ./custom_structures_pelvic.yaml:/app/custom_structures_pelvic.yaml:ro
+      - ./Input:/data/input:ro
+      - ./Output:/data/output:rw
+      - ./Logs:/data/logs:rw
+      - ./custom_models:/data/models:rw
       - ./Code:/app/Code:rw
     environment:
       - PYTHONPATH=/app
-      - NUMBA_CACHE_DIR=/tmp/numba_cache
-      - MPLCONFIGDIR=/tmp/matplotlib
+      - NUMBA_CACHE_DIR=/tmp/cache
+      - MPLCONFIGDIR=/tmp/cache
       - CONDA_DIR=/opt/conda
       - PATH=/opt/conda/bin:$PATH
     working_dir: /app
@@ -108,10 +101,9 @@ services:
     container_name: rtpipeline-jupyter
     volumes:
       - ./Code:/app/Code:rw
-      - ./Output:/app/Data_Snakemake:ro
-      - ./Input:/app/Example_data:ro
-      - ./custom_models:/app/custom_models:ro
-      - ./config.yaml:/app/config.yaml:ro
+      - ./Output:/data/output:ro
+      - ./Input:/data/input:ro
+      - ./custom_models:/data/models:ro
     environment:
       - PYTHONPATH=/app
       - CONDA_DIR=/opt/conda
