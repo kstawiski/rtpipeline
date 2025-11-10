@@ -1,114 +1,178 @@
-# Multi-stage Docker build for rtpipeline with full feature support
-FROM python:3.11-slim as builder
+# Dockerfile for rtpipeline - Radiotherapy DICOM Processing Pipeline
+# Compatible with Docker and Singularity
+# Supports both CPU and GPU execution
+
+FROM condaforge/mambaforge:latest
+
+LABEL maintainer="kstawiski"
+LABEL description="DICOM-RT pipeline with TotalSegmentator, nnUNet, and Snakemake"
+LABEL version="1.0"
+
+# Set environment variables
+ENV DEBIAN_FRONTEND=noninteractive \
+    LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8 \
+    PYTHONUNBUFFERED=1 \
+    CONDA_DIR=/opt/conda \
+    PATH=/opt/conda/bin:$PATH
 
 # Install system dependencies
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
-    cmake \
     git \
     wget \
     curl \
-    pkg-config \
-    libffi-dev \
-    libssl-dev \
-    libjpeg-dev \
-    libpng-dev \
-    libtiff-dev \
-    libgtk-3-dev \
+    ca-certificates \
+    libgl1-mesa-glx \
+    libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender1 \
+    libgomp1 \
+    libglu1-mesa \
+    pigz \
+    unzip \
     && rm -rf /var/lib/apt/lists/*
 
-# Install dcm2niix
-RUN wget https://github.com/rordenlab/dcm2niix/releases/download/v1.0.20230411/dcm2niix_lnx.zip \
+# Install dcm2niix (required for DICOM to NIfTI conversion)
+RUN wget -q https://github.com/rordenlab/dcm2niix/releases/download/v1.0.20230411/dcm2niix_lnx.zip \
     && unzip dcm2niix_lnx.zip -d /usr/local/bin/ \
     && chmod +x /usr/local/bin/dcm2niix \
     && rm dcm2niix_lnx.zip
 
-# Create virtual environment
-RUN python -m venv /opt/venv
-ENV PATH="/opt/venv/bin:$PATH"
+# Configure conda with strict channel priority
+RUN conda config --set channel_priority strict && \
+    conda config --add channels conda-forge && \
+    conda config --add channels bioconda && \
+    conda config --add channels defaults
 
-# Upgrade pip and install wheel
-RUN pip install --upgrade pip wheel setuptools
-
-# Install scientific computing stack with version constraints
-RUN pip install \
-    "numpy>=1.20,<2.0" \
-    "pandas>=1.3" \
-    "scipy>=1.7" \
-    "matplotlib>=3.3" \
-    "scikit-image>=0.18" \
-    "scikit-learn>=1.0"
-
-# Install medical imaging packages
-RUN pip install \
-    "pydicom>=3.0,<4" \
-    "SimpleITK>=2.1" \
-    "dicompyler-core==0.5.6" \
-    "pydicom-seg==0.4.1" \
-    "rt-utils" \
-    "dicom2nifti>=2.4"
-
-# Install visualization and data packages
-RUN pip install \
-    "openpyxl" \
-    "plotly>=5.0" \
-    "nested-lookup" \
-    "nbformat" \
-    "ipython" \
-    "jupyter"
-
-# Install TotalSegmentator with proper dependencies
-RUN pip install "TotalSegmentator==2.4.0" --no-deps && \
-    pip install \
-        "torch>=1.10" \
-        "torchvision" \
-        "nibabel" \
-        "tqdm" \
-        "requests" \
-        "nnunet"
-
-# Install pyradiomics (should work on Python 3.11)
-RUN pip install "pyradiomics>=3.0" || echo "pyradiomics installation failed"
-
-# Final stage
-FROM python:3.11-slim
-
-# Install minimal runtime dependencies
-RUN apt-get update && apt-get install -y \
-    libgomp1 \
-    libglib2.0-0 \
-    libsm6 \
-    libxext6 \
-    libxrender-dev \
-    libgl1-mesa-glx \
-    && rm -rf /var/lib/apt/lists/*
-
-# Copy virtual environment from builder
-COPY --from=builder /opt/venv /opt/venv
-COPY --from=builder /usr/local/bin/dcm2niix /usr/local/bin/dcm2niix
-
-# Set environment variables
-ENV PATH="/opt/venv/bin:$PATH"
-ENV PYTHONPATH="/app:$PYTHONPATH"
+# Install Snakemake in base environment
+RUN mamba install -y -c conda-forge -c bioconda \
+    snakemake>=7.0 \
+    && mamba clean -afy
 
 # Create app directory
 WORKDIR /app
 
-# Copy rtpipeline source
+# Copy environment files first for better layer caching
+COPY envs/ /app/envs/
+COPY .condarc /root/.condarc
+
+# Create conda environments (Snakemake will activate them as needed)
+RUN mamba env create -f /app/envs/rtpipeline.yaml && \
+    mamba env create -f /app/envs/rtpipeline-radiomics.yaml && \
+    mamba env create -f /app/envs/rtpipeline-custom-models.yaml && \
+    mamba clean -afy
+
+# Copy project files
 COPY . /app/
 
-# Install rtpipeline in development mode
-RUN pip install -e .
+# Install rtpipeline package in base and rtpipeline environments
+RUN pip install -e . && \
+    /opt/conda/envs/rtpipeline/bin/pip install -e .
 
-# Create data and output directories
-RUN mkdir -p /app/data /app/output /app/logs
+# Create professional directory structure
+RUN mkdir -p \
+    /data/input \
+    /data/output \
+    /data/logs \
+    /data/models \
+    /tmp/cache
 
-# Expose port for Jupyter (optional)
+# Create container-specific config that uses proper paths
+RUN cat > /app/config.container.yaml << 'EOF'
+# Container-optimized configuration for rtpipeline
+# This config uses professional container paths
+
+# Input/Output directories (container paths)
+dicom_root: "/data/input"
+output_dir: "/data/output"
+logs_dir: "/data/logs"
+
+# Processing parameters
+workers: auto
+
+segmentation:
+  workers: 4
+  threads_per_worker: null
+  force: false
+  fast: false
+  roi_subset: null
+  extra_models: []
+
+custom_models:
+  enabled: false
+  root: "/data/models"
+  models: []
+  workers: 1
+  force: false
+  nnunet_predict: "nnUNet_predict"
+  retain_weights: true
+  conda_activate: null
+
+radiomics:
+  sequential: false
+  params_file: "rtpipeline/radiomics_params.yaml"
+  mr_params_file: "rtpipeline/radiomics_params_mr.yaml"
+  thread_limit: 4
+  skip_rois:
+    - body
+    - couchsurface
+    - couchinterior
+    - couchexterior
+    - bones
+    - m1
+    - m2
+  max_voxels: 1500000000
+  min_voxels: 10
+
+aggregation:
+  threads: auto
+
+environments:
+  main: "rtpipeline"
+  radiomics: "rtpipeline-radiomics"
+
+custom_structures: "custom_structures_pelvic.yaml"
+
+ct_cropping:
+  enabled: false
+  region: "pelvis"
+  superior_margin_cm: 2.0
+  inferior_margin_cm: 10.0
+  use_cropped_for_dvh: true
+  use_cropped_for_radiomics: true
+  keep_original: true
+EOF
+
+# Set working directory
+WORKDIR /app
+
+# Environment variables for runtime
+ENV SNAKEMAKE_OUTPUT_CACHE="" \
+    TMPDIR=/tmp \
+    HOME=/root \
+    NUMBA_CACHE_DIR=/tmp/cache \
+    MPLCONFIGDIR=/tmp/cache
+
+# Expose Jupyter port (optional)
 EXPOSE 8888
 
-# Set default command
-CMD ["bash"]
+# Default command - interactive bash
+CMD ["/bin/bash"]
 
-# Add health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-  CMD python -c "import rtpipeline; rtpipeline.cli.main(['doctor'])" || exit 1
+# Health check
+HEALTHCHECK --interval=60s --timeout=30s --start-period=120s --retries=3 \
+    CMD conda info && python -c "import rtpipeline" || exit 1
+
+# Singularity-specific labels
+LABEL org.label-schema.build-date=$BUILD_DATE \
+      org.label-schema.name="rtpipeline" \
+      org.label-schema.description="Radiotherapy DICOM processing pipeline" \
+      org.label-schema.url="https://github.com/kstawiski/rtpipeline" \
+      org.label-schema.vcs-url="https://github.com/kstawiski/rtpipeline" \
+      org.label-schema.schema-version="1.0"
+
+# Add help for Singularity users
+LABEL org.label-schema.usage.singularity.run.command="singularity run rtpipeline.sif snakemake --cores all --configfile /app/config.container.yaml" \
+      org.label-schema.usage.singularity.exec.command="singularity exec rtpipeline.sif snakemake --help"

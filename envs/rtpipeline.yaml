@@ -22,7 +22,7 @@ dependencies:
   - future
   - pip
   - pip:
-    - TotalSegmentator
+    - TotalSegmentator>=2.4.0  # Use latest stable version
     - dicompyler-core>=0.5.6
     - rt-utils
     - xlsxwriter
