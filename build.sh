@@ -126,13 +126,17 @@ if [ "$PUSH" = true ]; then
     # Push both tags
     echo -e "${YELLOW}Pushing ${FULL_IMAGE_NAME}:${TAG}...${NC}"
     docker push "${FULL_IMAGE_NAME}:${TAG}"
+    PUSH_TAG_STATUS=$?
 
     if [ "$TAG" != "latest" ]; then
         echo -e "${YELLOW}Pushing ${FULL_IMAGE_NAME}:latest...${NC}"
         docker push "${FULL_IMAGE_NAME}:latest"
+        PUSH_LATEST_STATUS=$?
+    else
+        PUSH_LATEST_STATUS=0
     fi
 
-    if [ $? -eq 0 ]; then
+    if [ $PUSH_TAG_STATUS -eq 0 ] && [ $PUSH_LATEST_STATUS -eq 0 ]; then
         echo -e "${GREEN}✓ Push completed successfully${NC}"
         echo ""
         echo "Image available at: ${FULL_IMAGE_NAME}:${TAG}"
