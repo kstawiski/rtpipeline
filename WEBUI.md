@@ -1,8 +1,24 @@
 # rtpipeline Web UI Documentation
 
+## Table of Contents
+
+- [Overview](#overview)
+- [Features](#features)
+- [Quick Start](#quick-start)
+- [Output Structure](#output-structure)
+- [Advanced Configuration](#advanced-configuration)
+- [Troubleshooting](#troubleshooting)
+- [API Reference](#api-reference)
+- [Security Considerations](#security-considerations)
+- [Performance Tips](#performance-tips)
+- [Examples](#examples)
+- [Support](#support)
+
 ## Overview
 
 The rtpipeline Web UI provides a browser-based interface for uploading DICOM files and processing them through the rtpipeline automated radiotherapy data processing workflow. This eliminates the need for command-line interaction and provides a user-friendly way to manage multiple processing jobs.
+
+**Access the Web UI:** After starting the container with `docker-compose up -d`, open your browser to **http://localhost:8080**
 
 ## Features
 
