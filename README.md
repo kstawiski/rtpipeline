@@ -128,7 +128,32 @@ docker-compose --profile cpu-only up -d
 docker exec -it rtpipeline-cpu bash
 ```
 
-**4. Run standalone container:**
+**4. Web UI (NEW - Recommended for most users):**
+
+rtpipeline now includes a browser-based web interface for easy file upload and job management:
+
+```bash
+# Start the container with Web UI (GPU mode)
+docker-compose up -d
+
+# Or CPU-only mode
+docker-compose --profile cpu-only up -d
+
+# Access the Web UI in your browser:
+# http://localhost:8080
+```
+
+**Features:**
+- 🎯 Drag-and-drop DICOM upload (.dcm, .zip, directories, DICOMDIR)
+- ✅ Automatic DICOM validation with suggestions
+- ⚙️ Configurable processing options (segmentation, radiomics, CT cropping)
+- 📊 Real-time progress monitoring
+- 📥 One-click results download
+- 🔍 Integrated log viewer
+
+See [WEBUI.md](WEBUI.md) for complete documentation.
+
+**5. Run standalone container:**
 ```bash
 # With GPU support (requires nvidia-docker or Docker >=19.03 with nvidia-container-toolkit)
 docker run -it --rm --gpus all \
@@ -147,12 +172,12 @@ docker run -it --rm \
   kstawiski/rtpipeline:latest bash
 ```
 
-**5. Build and push to Docker Hub:**
+**6. Build and push to Docker Hub:**
 ```bash
 ./build.sh --push --tag v1.0.0
 ```
 
-**6. Pull from Docker Hub:**
+**7. Pull from Docker Hub:**
 ```bash
 docker pull kstawiski/rtpipeline:latest
 ```
