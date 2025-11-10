@@ -21,7 +21,7 @@ PUSH=false
 NO_CACHE=""
 TAG="latest"
 REGISTRY="docker.io"
-USERNAME=""
+USERNAME="kstawiski"
 IMAGE_NAME="rtpipeline"
 
 # Parse arguments
@@ -54,12 +54,13 @@ while [[ $# -gt 0 ]]; do
             echo "  --no-cache          Build without cache"
             echo "  --tag <tag>         Specify tag (default: latest)"
             echo "  --registry <reg>    Docker registry (default: docker.io)"
-            echo "  --username <user>   Docker Hub username (required for push)"
+            echo "  --username <user>   Docker Hub username (default: kstawiski)"
             echo ""
             echo "Examples:"
-            echo "  ./build.sh                                    # Build locally"
-            echo "  ./build.sh --push --username myuser           # Build and push"
-            echo "  ./build.sh --tag v1.0.0 --no-cache            # Build with specific tag"
+            echo "  ./build.sh                                    # Build locally as kstawiski/rtpipeline:latest"
+            echo "  ./build.sh --push                             # Build and push to kstawiski/rtpipeline"
+            echo "  ./build.sh --push --tag v1.0.0                # Build and push with specific tag"
+            echo "  ./build.sh --tag v1.0.0 --no-cache            # Build with specific tag, no cache"
             exit 0
             ;;
         *)
@@ -69,12 +70,7 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Check if pushing without username
-if [ "$PUSH" = true ] && [ -z "$USERNAME" ]; then
-    echo -e "${RED}Error: --username is required when using --push${NC}"
-    echo "Example: ./build.sh --push --username your-dockerhub-username"
-    exit 1
-fi
+# Note: Username defaults to kstawiski but can be overridden
 
 # Set full image name
 if [ -n "$USERNAME" ]; then
@@ -157,9 +153,12 @@ echo ""
 echo "Or use docker-compose:"
 echo "  docker-compose up -d"
 echo ""
-echo "For GPU support:"
-echo "  docker-compose --profile gpu up -d"
+echo "For CPU-only (no GPU):"
+echo "  docker-compose --profile cpu-only up -d"
 echo ""
 echo "To convert to Singularity:"
 echo "  singularity build rtpipeline.sif docker-daemon://${FULL_IMAGE_NAME}:${TAG}"
+echo ""
+echo "To pull from Docker Hub:"
+echo "  docker pull ${FULL_IMAGE_NAME}:${TAG}"
 echo ""
