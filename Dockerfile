@@ -4,7 +4,7 @@
 
 FROM condaforge/mambaforge:latest
 
-LABEL maintainer="rtpipeline"
+LABEL maintainer="kstawiski"
 LABEL description="DICOM-RT pipeline with TotalSegmentator, nnUNet, and Snakemake"
 LABEL version="1.0"
 
@@ -30,17 +30,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxrender1 \
     libgomp1 \
     libglu1-mesa \
+    pigz \
+    unzip \
     && rm -rf /var/lib/apt/lists/*
 
-# Install dcm2niix
+# Install dcm2niix (required for DICOM to NIfTI conversion)
 RUN wget -q https://github.com/rordenlab/dcm2niix/releases/download/v1.0.20230411/dcm2niix_lnx.zip \
     && unzip dcm2niix_lnx.zip -d /usr/local/bin/ \
     && chmod +x /usr/local/bin/dcm2niix \
     && rm dcm2niix_lnx.zip
 
-# Configure conda
+# Configure conda with strict channel priority
 RUN conda config --set channel_priority strict && \
     conda config --add channels conda-forge && \
+    conda config --add channels bioconda && \
     conda config --add channels defaults
 
 # Install Snakemake in base environment
@@ -56,8 +59,7 @@ WORKDIR /app
 COPY envs/ /app/envs/
 COPY .condarc /root/.condarc
 
-# Create conda environments (they will be activated as needed by Snakemake)
-# Note: We don't activate them here as Snakemake will manage them
+# Create conda environments (Snakemake will activate them as needed)
 RUN mamba env create -f /app/envs/rtpipeline.yaml && \
     mamba env create -f /app/envs/rtpipeline-radiomics.yaml && \
     mamba env create -f /app/envs/rtpipeline-custom-models.yaml && \
@@ -66,25 +68,93 @@ RUN mamba env create -f /app/envs/rtpipeline.yaml && \
 # Copy project files
 COPY . /app/
 
-# Install rtpipeline package in the base environment and rtpipeline conda env
+# Install rtpipeline package in base and rtpipeline environments
 RUN pip install -e . && \
     /opt/conda/envs/rtpipeline/bin/pip install -e .
 
-# Create necessary directories
-RUN mkdir -p /app/Data_Snakemake \
-    /app/Logs_Snakemake \
-    /app/Example_data \
-    /data \
-    /output \
-    /models
+# Create professional directory structure
+RUN mkdir -p \
+    /data/input \
+    /data/output \
+    /data/logs \
+    /data/models \
+    /tmp/cache
+
+# Create container-specific config that uses proper paths
+RUN cat > /app/config.container.yaml << 'EOF'
+# Container-optimized configuration for rtpipeline
+# This config uses professional container paths
+
+# Input/Output directories (container paths)
+dicom_root: "/data/input"
+output_dir: "/data/output"
+logs_dir: "/data/logs"
+
+# Processing parameters
+workers: auto
+
+segmentation:
+  workers: 4
+  threads_per_worker: null
+  force: false
+  fast: false
+  roi_subset: null
+  extra_models: []
+
+custom_models:
+  enabled: false
+  root: "/data/models"
+  models: []
+  workers: 1
+  force: false
+  nnunet_predict: "nnUNet_predict"
+  retain_weights: true
+  conda_activate: null
+
+radiomics:
+  sequential: false
+  params_file: "rtpipeline/radiomics_params.yaml"
+  mr_params_file: "rtpipeline/radiomics_params_mr.yaml"
+  thread_limit: 4
+  skip_rois:
+    - body
+    - couchsurface
+    - couchinterior
+    - couchexterior
+    - bones
+    - m1
+    - m2
+  max_voxels: 1500000000
+  min_voxels: 10
+
+aggregation:
+  threads: auto
+
+environments:
+  main: "rtpipeline"
+  radiomics: "rtpipeline-radiomics"
+
+custom_structures: "custom_structures_pelvic.yaml"
+
+ct_cropping:
+  enabled: false
+  region: "pelvis"
+  superior_margin_cm: 2.0
+  inferior_margin_cm: 10.0
+  use_cropped_for_dvh: true
+  use_cropped_for_radiomics: true
+  keep_original: true
+EOF
 
 # Set working directory
 WORKDIR /app
 
-# Environment variables for Singularity compatibility
+# Environment variables for runtime
 ENV SNAKEMAKE_OUTPUT_CACHE="" \
     TMPDIR=/tmp \
-    HOME=/root
+    HOME=/root \
+    NUMBA_CACHE_DIR=/tmp/cache \
+    MPLCONFIGDIR=/tmp/cache
 
 # Expose Jupyter port (optional)
 EXPOSE 8888
@@ -94,7 +164,7 @@ CMD ["/bin/bash"]
 
 # Health check
 HEALTHCHECK --interval=60s --timeout=30s --start-period=120s --retries=3 \
-    CMD conda info || exit 1
+    CMD conda info && python -c "import rtpipeline" || exit 1
 
 # Singularity-specific labels
 LABEL org.label-schema.build-date=$BUILD_DATE \
@@ -105,5 +175,5 @@ LABEL org.label-schema.build-date=$BUILD_DATE \
       org.label-schema.schema-version="1.0"
 
 # Add help for Singularity users
-LABEL org.label-schema.usage.singularity.run.command="singularity run rtpipeline.sif snakemake --cores all" \
+LABEL org.label-schema.usage.singularity.run.command="singularity run rtpipeline.sif snakemake --cores all --configfile /app/config.container.yaml" \
       org.label-schema.usage.singularity.exec.command="singularity exec rtpipeline.sif snakemake --help"

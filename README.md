@@ -117,8 +117,8 @@ docker-compose up -d
 # Access the container
 docker exec -it rtpipeline bash
 
-# Inside container: run pipeline
-snakemake --cores all --use-conda
+# Inside container: run pipeline with container config
+snakemake --cores all --use-conda --configfile /app/config.container.yaml
 ```
 
 **3. Run with docker-compose (CPU-only):**
@@ -132,21 +132,19 @@ docker exec -it rtpipeline-cpu bash
 ```bash
 # With GPU support (requires nvidia-docker or Docker >=19.03 with nvidia-container-toolkit)
 docker run -it --rm --gpus all \
-  -v $(pwd)/Input:/app/Example_data:ro \
-  -v $(pwd)/Output:/app/Data_Snakemake:rw \
-  -v $(pwd)/Logs:/app/Logs_Snakemake:rw \
+  -v $(pwd)/Input:/data/input:ro \
+  -v $(pwd)/Output:/data/output:rw \
+  -v $(pwd)/Logs:/data/logs:rw \
   kstawiski/rtpipeline:latest bash
+
+# Inside container, run pipeline with container config:
+snakemake --cores all --use-conda --configfile /app/config.container.yaml
 
 # CPU-only (no GPU)
 docker run -it --rm \
-  -v $(pwd)/Input:/app/Example_data:ro \
-  -v $(pwd)/Output:/app/Data_Snakemake:rw \
+  -v $(pwd)/Input:/data/input:ro \
+  -v $(pwd)/Output:/data/output:rw \
   kstawiski/rtpipeline:latest bash
-
-# Note: You can use any host directory names - they map to container paths:
-# - Your Input directory → /app/Example_data (DICOM data)
-# - Your Output directory → /app/Data_Snakemake (results)
-# - Your Logs directory → /app/Logs_Snakemake (pipeline logs)
 ```
 
 **5. Build and push to Docker Hub:**
@@ -174,26 +172,26 @@ singularity build rtpipeline.sif docker://kstawiski/rtpipeline:latest
 ```bash
 # Interactive shell
 singularity shell \
-  --bind $(pwd)/Input:/app/Example_data:ro \
-  --bind $(pwd)/Output:/app/Data_Snakemake:rw \
-  --bind $(pwd)/Logs:/app/Logs_Snakemake:rw \
+  --bind $(pwd)/Input:/data/input:ro \
+  --bind $(pwd)/Output:/data/output:rw \
+  --bind $(pwd)/Logs:/data/logs:rw \
   rtpipeline.sif
 
 # Execute command directly
 singularity exec \
-  --bind $(pwd)/Input:/app/Example_data:ro \
-  --bind $(pwd)/Output:/app/Data_Snakemake:rw \
+  --bind $(pwd)/Input:/data/input:ro \
+  --bind $(pwd)/Output:/data/output:rw \
   rtpipeline.sif \
-  snakemake --cores all --use-conda
+  snakemake --cores all --use-conda --configfile /app/config.container.yaml
 ```
 
 **3. Run with GPU (if available):**
 ```bash
 singularity exec --nv \
-  --bind $(pwd)/Input:/app/Example_data:ro \
-  --bind $(pwd)/Output:/app/Data_Snakemake:rw \
+  --bind $(pwd)/Input:/data/input:ro \
+  --bind $(pwd)/Output:/data/output:rw \
   rtpipeline.sif \
-  snakemake --cores 8 --use-conda
+  snakemake --cores 8 --use-conda --configfile /app/config.container.yaml
 ```
 
 **4. HPC/SLURM example:**
@@ -214,10 +212,10 @@ INPUT_DIR=/path/to/your/dicom/data
 OUTPUT_DIR=/scratch/$USER/rtpipeline_output
 
 singularity exec --nv \
-  --bind ${INPUT_DIR}:/app/Example_data:ro \
-  --bind ${OUTPUT_DIR}:/app/Data_Snakemake:rw \
+  --bind ${INPUT_DIR}:/data/input:ro \
+  --bind ${OUTPUT_DIR}:/data/output:rw \
   rtpipeline.sif \
-  snakemake --cores $SLURM_CPUS_PER_TASK --use-conda
+  snakemake --cores $SLURM_CPUS_PER_TASK --use-conda --configfile /app/config.container.yaml
 ```
 
 #### Jupyter Notebook (Optional)
