@@ -1,12 +1,33 @@
 # rtpipeline
 
-Modern radiotherapy departments produce a rich set of DICOM-RT objects (CT, MR, RTPLAN, RTDOSE, RTSTRUCT, REG).  
+Modern radiotherapy departments produce a rich set of DICOM-RT objects (CT, MR, RTPLAN, RTDOSE, RTSTRUCT, REG).
 **rtpipeline** turns those raw exports into analysis-ready data tables, volumetric masks, DVH metrics, and quality-control reports, while keeping a reproducible record of every step. The workflow is implemented with **Snakemake** and the companion **rtpipeline** Python package.
+
+## 🚀 Quick Start
+
+**New to rtpipeline?** Start here:
+
+```bash
+# 1. Start the container with Web UI
+docker-compose up -d
+
+# 2. Open your browser to http://localhost:8080
+
+# 3. Drag and drop your DICOM files
+
+# 4. Click "Start Processing"
+
+# 5. Download your results when complete
+```
+
+📖 **[Getting Started Guide](GETTING_STARTED.md)** - Complete beginner's guide
+🌐 **[Web UI Documentation](WEBUI.md)** - Detailed Web UI features and usage
 
 ---
 
 ## Feature Highlights
 
+* **Web UI** (NEW) – browser-based interface with drag-and-drop upload, automatic DICOM validation, real-time progress monitoring, and one-click results download. No command-line experience required!
 * **Course organisation** – automatically groups series/RT objects per patient course, reconciles registrations, and copies all referenced MR images.
 * **Segmentation**
   * **TotalSegmentator (CT + MR)** – generates `total` (CT) and `total_mr` (MR) masks with **DICOM RTSTRUCT output** (directly compatible with clinical systems) plus binary NIfTI masks.
@@ -30,6 +51,7 @@ Modern radiotherapy departments produce a rich set of DICOM-RT objects (CT, MR, 
 | --- | --- |
 | `Snakefile` | Snakemake workflow orchestrating all stages. |
 | `config.yaml` | Default configuration (paths, segmentation settings, radiomics options, custom models). |
+| `webui/` | Web UI application (Flask-based) for browser-based DICOM upload and processing. |
 | `envs/` | Conda environment definitions (`rtpipeline.yaml`, `rtpipeline-radiomics.yaml`). |
 | `rtpipeline/` | Python package powering organisation, segmentation, DVH, radiomics, and QC. |
 | `custom_models/` | nnUNet bundles. Each model folder contains `custom_model.yaml` plus weights (zipped or unpacked). |
@@ -128,7 +150,32 @@ docker-compose --profile cpu-only up -d
 docker exec -it rtpipeline-cpu bash
 ```
 
-**4. Run standalone container:**
+**4. Web UI (NEW - Recommended for most users):**
+
+rtpipeline now includes a browser-based web interface for easy file upload and job management:
+
+```bash
+# Start the container with Web UI (GPU mode)
+docker-compose up -d
+
+# Or CPU-only mode
+docker-compose --profile cpu-only up -d
+
+# Access the Web UI in your browser:
+# http://localhost:8080
+```
+
+**Features:**
+- 🎯 Drag-and-drop DICOM upload (.dcm, .zip, directories, DICOMDIR)
+- ✅ Automatic DICOM validation with suggestions
+- ⚙️ Configurable processing options (segmentation, radiomics, CT cropping)
+- 📊 Real-time progress monitoring
+- 📥 One-click results download
+- 🔍 Integrated log viewer
+
+See [WEBUI.md](WEBUI.md) for complete documentation.
+
+**5. Run standalone container:**
 ```bash
 # With GPU support (requires nvidia-docker or Docker >=19.03 with nvidia-container-toolkit)
 docker run -it --rm --gpus all \
@@ -147,12 +194,12 @@ docker run -it --rm \
   kstawiski/rtpipeline:latest bash
 ```
 
-**5. Build and push to Docker Hub:**
+**6. Build and push to Docker Hub:**
 ```bash
 ./build.sh --push --tag v1.0.0
 ```
 
-**6. Pull from Docker Hub:**
+**7. Pull from Docker Hub:**
 ```bash
 docker pull kstawiski/rtpipeline:latest
 ```
