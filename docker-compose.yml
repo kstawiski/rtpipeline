@@ -12,17 +12,18 @@ services:
     container_name: rtpipeline
     hostname: rtpipeline
     volumes:
-      # Mount DICOM input data (read-only)
-      - ./Example_data:/app/Example_data:ro
+      # Mount your DICOM input data (read-only)
+      # Use any host directory - it maps to /app/Example_data inside container
+      - ./Input:/app/Example_data:ro
       # Mount output directory for pipeline results
-      - ./Data_Snakemake:/app/Data_Snakemake:rw
+      - ./Output:/app/Data_Snakemake:rw
       # Mount logs directory
-      - ./Logs_Snakemake:/app/Logs_Snakemake:rw
-      # Mount custom models directory
+      - ./Logs:/app/Logs_Snakemake:rw
+      # Mount custom models directory (for nnUNet weights)
       - ./custom_models:/app/custom_models:rw
-      # Mount configuration
+      # Mount configuration file
       - ./config.yaml:/app/config.yaml:ro
-      # Optional: mount custom structures
+      # Optional: mount custom structures definition
       - ./custom_structures_pelvic.yaml:/app/custom_structures_pelvic.yaml:ro
       # Optional: mount notebooks for development
       - ./Code:/app/Code:rw
@@ -68,9 +69,9 @@ services:
     container_name: rtpipeline-cpu
     hostname: rtpipeline-cpu
     volumes:
-      - ./Example_data:/app/Example_data:ro
-      - ./Data_Snakemake:/app/Data_Snakemake:rw
-      - ./Logs_Snakemake:/app/Logs_Snakemake:rw
+      - ./Input:/app/Example_data:ro
+      - ./Output:/app/Data_Snakemake:rw
+      - ./Logs:/app/Logs_Snakemake:rw
       - ./custom_models:/app/custom_models:rw
       - ./config.yaml:/app/config.yaml:ro
       - ./custom_structures_pelvic.yaml:/app/custom_structures_pelvic.yaml:ro
@@ -107,8 +108,8 @@ services:
     container_name: rtpipeline-jupyter
     volumes:
       - ./Code:/app/Code:rw
-      - ./Data_Snakemake:/app/Data_Snakemake:ro
-      - ./Example_data:/app/Example_data:ro
+      - ./Output:/app/Data_Snakemake:ro
+      - ./Input:/app/Example_data:ro
       - ./custom_models:/app/custom_models:ro
       - ./config.yaml:/app/config.yaml:ro
     environment:
