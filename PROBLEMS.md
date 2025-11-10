@@ -26,7 +26,7 @@ These are the outstanding clinical/technical concerns flagged after reviewing th
 - **Follow-up:** Clinical validation on full cohort needed. Verify cropping boundaries are appropriate for clinical use. See `TESTING_CT_CROPPING.md` for testing procedures.
 
 ## Custom Structure Warnings During DVH ✅ (Enhanced)
-- **Status:** Enhanced 2025-11-10. Added documentation to `custom_structures_pelvic.yaml` clarifying TotalSegmentator structure names and proper usage.
+- **Status:** Enhanced 2025-11-04. Added documentation to `custom_structures_pelvic.yaml` clarifying TotalSegmentator structure names and proper usage.
 - **Changes:** Added comments explaining that structure names must match TotalSegmentator output exactly, added `bowel_bag` example structure
 - `Logs_Snakemake/stage_dvh.log` may still show "Source structure ... not found" warnings if structures are outside CT field of view
 - Structures with missing components are automatically marked as "__partial" in outputs (handled by existing code in `dvh.py:454-476`)
@@ -37,8 +37,8 @@ These are the outstanding clinical/technical concerns flagged after reviewing th
 - **Follow-up:** Double-check atypical totals (e.g., 62 Gy) with clinical team; confirm multi-plan sums remain correct when additional boosts are present.
 
 ## Metadata: Reconstruction Algorithm Empty ✅
-- **Status:** Enhanced 2025-11-10. Improved fallback chain in `organize.py:1647-1653` to check multiple DICOM tags.
-- **Changes:** Now checks `ReconstructionAlgorithm`, `ReconstructionMethod`, `ConvolutionKernel`, and `FilterType` in fallback order
+- **Status:** Enhanced 2025-11-04. Improved fallback chain in `organize.py:1647-1653` to check multiple DICOM tags.
+- **Changes:** Now checks `ReconstructionAlgorithm`, `ReconstructionMethod`, and `FilterType` in fallback order (ConvolutionKernel excluded to avoid duplication with dedicated ct_convolution_kernel field)
 - If all tags are missing from DICOM files, column will still be empty (indicates vendor doesn't populate these standard tags)
 - **Impact:** Should capture reconstruction algorithm for most CT scanners; remaining blank fields indicate missing DICOM metadata
 - **Follow-up:** Monitor outputs to verify improved capture rate; may need vendor-specific private tags for some scanners

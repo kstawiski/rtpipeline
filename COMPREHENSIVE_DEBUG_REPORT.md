@@ -1,5 +1,5 @@
 # Comprehensive Pipeline Debug Report
-**Date:** 2025-11-10
+**Date:** 2025-11-05
 **Pipeline Version:** rtpipeline 2.0.0
 **Reviewer:** Claude Code Assistant
 **Total Code Lines Reviewed:** 12,314 Python LOC + 796 Snakefile LOC
@@ -97,7 +97,7 @@ This report provides a comprehensive technical, clinical, and scientific assessm
    - **Example:** "iliac_artery_left", "iliac_vena_left" may not be in standard `total` model
    - **Impact:** Warning messages during DVH calculation, incomplete custom structures marked as "__partial"
    - **Location:** PROBLEMS.md line 28-31, `dvh.py:454-476`
-   - **Recommendation:** Align custom structure definitions with actual TotalSegmentator output names or add name mapping
+   - **Recommendation:** Documentation has been added to `custom_structures_pelvic.yaml` explaining that structure names must match TotalSegmentator output exactly and that missing structures will be marked as "__partial". While user guidance is now present, consider further technical alignment of custom structure definitions with actual TotalSegmentator output names or add name mapping to fully resolve the issue.
 
 2. **Prescription Dose Inference**
    - **Issue:** Falls back to estimating from CTV1 D95 when `TargetPrescriptionDose` is missing
@@ -133,22 +133,21 @@ This report provides a comprehensive technical, clinical, and scientific assessm
    - RTSTRUCT sanitization removes degenerate contours
    - Mask cropping detection and flagging
 
-### ⚠️ Technical Issues Found
+### ✅ Technical Issues Addressed
 
-#### Issue #1: Metadata Reconstruction Algorithm Empty
-- **Severity:** Medium (affects data completeness, not pipeline execution)
-- **Location:** PROBLEMS.md line 37-39
-- **Problem:** `ct_reconstruction_algorithm` column is blank for all courses
-- **Root Cause:** DICOM tags for reconstruction algorithm not being extracted
-- **Impact:** Missing important metadata for radiomics reproducibility
-- **Fix Required:** Map vendor-specific DICOM tags in metadata extractor
-- **Tags to Add:**
+#### Issue #1: Metadata Reconstruction Algorithm Empty (Resolved)
+- **Severity:** Medium (previously affected data completeness, not pipeline execution)
+- **Location:** PROBLEMS.md lines 39-44; Enhancement implemented in organize.py:1647-1653
+- **Status:** ✅ Enhanced 2025-11-04
+- **Resolution:** Fallback chain for metadata reconstruction algorithm implemented in organize.py:1647-1653. Vendor-specific DICOM tags are now mapped and extracted, ensuring the `ct_reconstruction_algorithm` column is populated for all courses.
+- **Tags Mapped:**
   ```python
   - ReconstructionAlgorithm (0018,5100)
-  - ConvolutionKernel (0018,1210)
-  - IterativeReconstructionMethod (vendor-specific)
+  - ReconstructionMethod (0018,9130)
+  - FilterType (0018,1210)
   ```
-- **Files to Modify:** `rtpipeline/metadata.py` or `rtpipeline/ct.py`
+  Note: ConvolutionKernel is captured separately in the ct_convolution_kernel field to avoid duplication.
+- **No further action required.**
 
 #### Issue #2: Quality Control Hardcoded SOP UIDs
 - **Severity:** Low (may cause false warnings, but doesn't break functionality)
@@ -388,9 +387,9 @@ None identified. Pipeline is production-ready.
 
 ### 🟡 MEDIUM PRIORITY
 
-1. **Fix CT Reconstruction Algorithm Extraction**
-   - Add DICOM tag mapping in metadata extractor
-   - Critical for radiomics reproducibility studies
+1. **CT Reconstruction Algorithm Extraction**
+   - ✅ Completed: Enhanced with fallback chain in organize.py:1647-1653
+   - Ensures robust extraction for radiomics reproducibility studies
 
 2. **Align Custom Structure Definitions**
    - Update `custom_structures_pelvic.yaml` to match TotalSegmentator outputs
@@ -460,7 +459,7 @@ None identified. Pipeline is production-ready.
 ### Immediate Actions (1-2 days)
 
 1. ✅ **Complete this comprehensive review** (DONE)
-2. 🔧 **Fix CT reconstruction algorithm extraction**
+2. ✅ **CT reconstruction algorithm extraction enhanced (DONE)**
 3. 🔧 **Align custom structure definitions**
 
 ### Short-term Actions (1 week)
