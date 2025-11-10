@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import os
 import threading
@@ -397,7 +398,6 @@ def radiomics_for_course(config: PipelineConfig, course_dir: Path, custom_struct
 
     if use_cropped and rs_auto_cropped.exists() and cropping_metadata_path.exists():
         try:
-            import json
             with open(cropping_metadata_path) as f:
                 crop_meta = json.load(f)
             logger.info(
@@ -408,7 +408,7 @@ def radiomics_for_course(config: PipelineConfig, course_dir: Path, custom_struct
             )
             using_cropped = True
         except Exception as e:
-            logger.warning(f"Failed to load cropping metadata: {e}")
+            logger.warning(f"Failed to load cropping metadata from {cropping_metadata_path}: {e}")
 
     extractor = _extractor(config, 'CT')
     if extractor is None:
@@ -418,7 +418,7 @@ def radiomics_for_course(config: PipelineConfig, course_dir: Path, custom_struct
             logger.warning("Conda-based radiomics helper unavailable: %s", exc)
             return None
         logger.info("Delegating CT radiomics for %s to conda environment", course_dir)
-        return conda_radiomics_for_course(course_dir, config, custom_structures_config, use_cropped=use_cropped)
+        return conda_radiomics_for_course(course_dir, config, custom_structures_config)
     img = _load_series_image(course_dirs.dicom_ct)
     if img is None:
         logger.info("No CT image for radiomics in %s", course_dir)

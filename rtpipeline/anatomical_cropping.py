@@ -17,7 +17,6 @@ from typing import Dict, Tuple, Optional
 
 import SimpleITK as sitk
 import numpy as np
-import pydicom
 
 logger = logging.getLogger(__name__)
 
@@ -624,9 +623,6 @@ def crop_image_to_boundaries(
     # z_physical = origin[2] + index * spacing[2]
     # index = (z_physical - origin[2]) / spacing[2]
 
-    superior_idx = int(round((superior_z - origin[2]) / spacing[2]))
-    inferior_idx = int(round((inferior_z - origin[2]) / spacing[2]))
-
     # Check if requested boundaries are within CT extent
     requested_superior_idx = int(round((superior_z - origin[2]) / spacing[2]))
     requested_inferior_idx = int(round((inferior_z - origin[2]) / spacing[2]))
@@ -911,7 +907,7 @@ def _create_rtstruct_from_cropped_masks(
             return None
         files = reader.GetGDCMSeriesFileNames(str(course_dirs.dicom_ct), series_ids[0])
         reader.SetFileNames(files)
-        ct_img = reader.Execute()
+        reader.Execute()
     except Exception as e:
         logger.error(f"Failed to load CT DICOM: {e}")
         return None
