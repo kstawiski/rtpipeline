@@ -1644,7 +1644,12 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
                             'ct_institution': str(getattr(ds_ct, 'InstitutionName', '')),
                             'ct_kvp': float(getattr(ds_ct, 'KVP', 0.0) or 0.0) if hasattr(ds_ct, 'KVP') else None,
                             'ct_convolution_kernel': str(getattr(ds_ct, 'ConvolutionKernel', '')),
-                            'ct_reconstruction_algorithm': str(getattr(ds_ct, 'ReconstructionAlgorithm', '')) if hasattr(ds_ct, 'ReconstructionAlgorithm') else str(getattr(ds_ct, 'ReconstructionMethod', '')),
+                            'ct_reconstruction_algorithm': (
+                                str(getattr(ds_ct, 'ReconstructionAlgorithm', '')) or
+                                str(getattr(ds_ct, 'ReconstructionMethod', '')) or
+                                str(getattr(ds_ct, 'FilterType', '')) or
+                                ''
+                            ),
                             'ct_slice_thickness': float(getattr(ds_ct, 'SliceThickness', 0.0) or 0.0) if hasattr(ds_ct, 'SliceThickness') else None,
                             'ct_study_uid': str(getattr(ds_ct, 'StudyInstanceUID', '')),
                             'ct_slice_increment': None,
