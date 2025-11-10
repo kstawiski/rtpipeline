@@ -115,19 +115,20 @@ for Nifty in NiftiNames:
     
     # Run required networks:
     for OneNNU in Networks:
-        
+
         OutputNNU = OutputFolder + "Labels" + f"Network_{OneNNU}"
+        # SECURITY FIX: Use proper command list without shell=True to prevent command injection
         ActiveCommand = [
-            'nnUNetv2_predict '
-            f"-i {NiftyInput} "       # Input image
-            f"-o {OutputNNU} "        # Output directory (not a single .nii file. Will also contain plan and predictions)
-            f"-d {OneNNU} "                 # Dataset ID or task number
-            "-c 3d_fullres "            # Specify the model (2d, 3d_lowres, 3d_fullres)
-            "-f all "                   # Specify which folds to use, e.g., 'all', '0', '1'
+            'nnUNetv2_predict',
+            '-i', str(NiftyInput),      # Input image
+            '-o', str(OutputNNU),       # Output directory (not a single .nii file. Will also contain plan and predictions)
+            '-d', str(OneNNU),          # Dataset ID or task number
+            '-c', '3d_fullres',         # Specify the model (2d, 3d_lowres, 3d_fullres)
+            '-f', 'all',                # Specify which folds to use, e.g., 'all', '0', '1'
         ]
-        
+
         print(f"Running nnUNet {OneNNU} for {NiftyInput}...")
-        result = subprocess.run(ActiveCommand, capture_output=True, text=True, shell=True)
+        result = subprocess.run(ActiveCommand, capture_output=True, text=True)
         # print(result.stdout) # Full output that you would get on commandline. Too much to have here I would say.
         print(f"Completed NNUNET run for: {OutputNNU}")
         NNUNames.append(OutputNNU)

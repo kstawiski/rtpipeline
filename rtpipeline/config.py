@@ -53,6 +53,15 @@ class PipelineConfig:
     # Custom structures
     custom_structures_config: Path | None = None
 
+    # Systematic CT cropping for consistent volume analysis
+    ct_cropping_enabled: bool = False
+    ct_cropping_region: str = "pelvis"  # "pelvis", "thorax", "abdomen", "head_neck", "brain"
+    ct_cropping_superior_margin_cm: float = 2.0
+    ct_cropping_inferior_margin_cm: float = 10.0
+    ct_cropping_use_for_dvh: bool = True
+    ct_cropping_use_for_radiomics: bool = True
+    ct_cropping_keep_original: bool = True
+
     # Custom segmentation models
     custom_models_root: Path | None = None
     custom_model_names: list[str] = field(default_factory=list)
