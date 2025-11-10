@@ -71,12 +71,16 @@ COPY . /app/
 RUN pip install -e . && \
     /opt/conda/envs/rtpipeline/bin/pip install -e .
 
+# Install Web UI dependencies
+RUN pip install -r /app/webui/requirements.txt
+
 # Create professional directory structure
 RUN mkdir -p \
     /data/input \
     /data/output \
     /data/logs \
     /data/models \
+    /data/uploads \
     /tmp/cache
 
 # Create container-specific config that uses proper paths
@@ -155,8 +159,8 @@ ENV SNAKEMAKE_OUTPUT_CACHE="" \
     NUMBA_CACHE_DIR=/tmp/cache \
     MPLCONFIGDIR=/tmp/cache
 
-# Expose Jupyter port (optional)
-EXPOSE 8888
+# Expose ports
+EXPOSE 8888 8080
 
 # Default command - interactive bash
 CMD ["/bin/bash"]
