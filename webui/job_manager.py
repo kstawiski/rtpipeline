@@ -180,7 +180,7 @@ class JobManager:
                     stdout=log,
                     stderr=subprocess.STDOUT,
                     cwd='/app',
-                    preexec_fn=os.setsid  # Create new process group for cleanup
+                    start_new_session=True  # Create new process group for cleanup
                 )
 
                 # Store process for potential cancellation
@@ -263,6 +263,8 @@ class JobManager:
         if 'segmentation' in user_config:
             config['segmentation'] = user_config['segmentation']
         else:
+            # Default to 2 workers. This value is hardcoded but could be made configurable
+            # through the Web UI to allow users to optimize for their hardware.
             config['segmentation'] = {
                 'workers': 2,
                 'fast': True  # Default to CPU-friendly mode
