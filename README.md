@@ -109,9 +109,9 @@ rtpipeline is fully containerized for easy deployment. Both Docker and Singulari
 ./build.sh
 ```
 
-**2. Run with docker-compose (CPU):**
+**2. Run with docker-compose (GPU - DEFAULT):**
 ```bash
-# Start the container
+# Start the container with GPU support (default)
 docker-compose up -d
 
 # Access the container
@@ -121,37 +121,37 @@ docker exec -it rtpipeline bash
 snakemake --cores all --use-conda
 ```
 
-**3. Run with docker-compose (GPU):**
+**3. Run with docker-compose (CPU-only):**
 ```bash
-# Requires nvidia-docker or Docker with GPU support
-docker-compose --profile gpu up -d
-docker exec -it rtpipeline-gpu bash
+# For systems without GPU, use the cpu-only profile
+docker-compose --profile cpu-only up -d
+docker exec -it rtpipeline-cpu bash
 ```
 
 **4. Run standalone container:**
 ```bash
-# Basic run
-docker run -it --rm \
-  -v $(pwd)/Example_data:/app/Example_data:ro \
-  -v $(pwd)/Data_Snakemake:/app/Data_Snakemake:rw \
-  -v $(pwd)/Logs_Snakemake:/app/Logs_Snakemake:rw \
-  rtpipeline:latest bash
-
-# With GPU support
+# With GPU support (requires nvidia-docker or Docker >=19.03 with nvidia-container-toolkit)
 docker run -it --rm --gpus all \
   -v $(pwd)/Example_data:/app/Example_data:ro \
   -v $(pwd)/Data_Snakemake:/app/Data_Snakemake:rw \
-  rtpipeline:latest bash
+  -v $(pwd)/Logs_Snakemake:/app/Logs_Snakemake:rw \
+  kstawiski/rtpipeline:latest bash
+
+# CPU-only (no GPU)
+docker run -it --rm \
+  -v $(pwd)/Example_data:/app/Example_data:ro \
+  -v $(pwd)/Data_Snakemake:/app/Data_Snakemake:rw \
+  kstawiski/rtpipeline:latest bash
 ```
 
 **5. Build and push to Docker Hub:**
 ```bash
-./build.sh --push --username YOUR_DOCKERHUB_USERNAME --tag v1.0.0
+./build.sh --push --tag v1.0.0
 ```
 
 **6. Pull from Docker Hub:**
 ```bash
-docker pull YOUR_DOCKERHUB_USERNAME/rtpipeline:latest
+docker pull kstawiski/rtpipeline:latest
 ```
 
 #### Singularity Setup
@@ -159,10 +159,10 @@ docker pull YOUR_DOCKERHUB_USERNAME/rtpipeline:latest
 **1. Convert from Docker image:**
 ```bash
 # From local Docker image
-singularity build rtpipeline.sif docker-daemon://rtpipeline:latest
+singularity build rtpipeline.sif docker-daemon://kstawiski/rtpipeline:latest
 
 # Or from Docker Hub
-singularity build rtpipeline.sif docker://YOUR_DOCKERHUB_USERNAME/rtpipeline:latest
+singularity build rtpipeline.sif docker://kstawiski/rtpipeline:latest
 ```
 
 **2. Run the pipeline:**
