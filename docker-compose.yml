@@ -1,14 +1,14 @@
 version: '3.8'
 
 services:
-  # Main rtpipeline service with GPU support
+  # Main rtpipeline service with GPU support (DEFAULT)
   rtpipeline:
     build:
       context: .
       dockerfile: Dockerfile
       args:
         BUILD_DATE: ${BUILD_DATE:-$(date -u +'%Y-%m-%dT%H:%M:%SZ')}
-    image: rtpipeline:latest
+    image: kstawiski/rtpipeline:latest
     container_name: rtpipeline
     hostname: rtpipeline
     volumes:
@@ -34,14 +34,57 @@ services:
       # Conda environment
       - CONDA_DIR=/opt/conda
       - PATH=/opt/conda/bin:$PATH
-      # GPU support (will be ignored if no GPU available)
+      # GPU support (DEFAULT)
       - NVIDIA_VISIBLE_DEVICES=all
-      - CUDA_VISIBLE_DEVICES=0
+      - CUDA_VISIBLE_DEVICES=all
     working_dir: /app
     # Keep container running for interactive use
     stdin_open: true
     tty: true
-    # Resource limits
+    # GPU support - DEFAULT configuration
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+          cpus: '4.0'
+          memory: 8G
+        limits:
+          cpus: '24.0'
+          memory: 64G
+    shm_size: '4gb'  # Increased shared memory for PyTorch
+    restart: unless-stopped
+
+  # CPU-only service (use --profile cpu-only to activate)
+  rtpipeline-cpu:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        BUILD_DATE: ${BUILD_DATE:-$(date -u +'%Y-%m-%dT%H:%M:%SZ')}
+    image: kstawiski/rtpipeline:latest
+    container_name: rtpipeline-cpu
+    hostname: rtpipeline-cpu
+    volumes:
+      - ./Example_data:/app/Example_data:ro
+      - ./Data_Snakemake:/app/Data_Snakemake:rw
+      - ./Logs_Snakemake:/app/Logs_Snakemake:rw
+      - ./custom_models:/app/custom_models:rw
+      - ./config.yaml:/app/config.yaml:ro
+      - ./custom_structures_pelvic.yaml:/app/custom_structures_pelvic.yaml:ro
+      - ./Code:/app/Code:rw
+    environment:
+      - PYTHONPATH=/app
+      - NUMBA_CACHE_DIR=/tmp/numba_cache
+      - MPLCONFIGDIR=/tmp/matplotlib
+      - CONDA_DIR=/opt/conda
+      - PATH=/opt/conda/bin:$PATH
+    working_dir: /app
+    stdin_open: true
+    tty: true
+    # CPU-only: no GPU resources requested
     deploy:
       resources:
         limits:
@@ -50,50 +93,17 @@ services:
         reservations:
           cpus: '4.0'
           memory: 8G
-    # Uncomment for GPU support (requires nvidia-docker or Docker with GPU support)
-    # deploy:
-    #   resources:
-    #     reservations:
-    #       devices:
-    #         - driver: nvidia
-    #           count: 1
-    #           capabilities: [gpu]
-    shm_size: '4gb'  # Increased shared memory for PyTorch
+    shm_size: '4gb'
     restart: unless-stopped
-
-  # GPU-enabled service (requires nvidia-docker)
-  rtpipeline-gpu:
-    extends:
-      service: rtpipeline
-    image: rtpipeline:latest
-    container_name: rtpipeline-gpu
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-        limits:
-          cpus: '24.0'
-          memory: 64G
-    environment:
-      - PYTHONPATH=/app
-      - NUMBA_CACHE_DIR=/tmp/numba_cache
-      - MPLCONFIGDIR=/tmp/matplotlib
-      - CONDA_DIR=/opt/conda
-      - PATH=/opt/conda/bin:$PATH
-      - NVIDIA_VISIBLE_DEVICES=all
-      - CUDA_VISIBLE_DEVICES=all
     profiles:
-      - gpu
+      - cpu-only
 
   # Jupyter notebook service for interactive analysis
   jupyter:
     build:
       context: .
       dockerfile: Dockerfile
-    image: rtpipeline:latest
+    image: kstawiski/rtpipeline:latest
     container_name: rtpipeline-jupyter
     volumes:
       - ./Code:/app/Code:rw
@@ -105,6 +115,9 @@ services:
       - PYTHONPATH=/app
       - CONDA_DIR=/opt/conda
       - PATH=/opt/conda/bin:$PATH
+      # GPU support for Jupyter
+      - NVIDIA_VISIBLE_DEVICES=all
+      - CUDA_VISIBLE_DEVICES=0
     working_dir: /app/Code
     ports:
       - "8888:8888"
@@ -120,6 +133,11 @@ services:
       "
     deploy:
       resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
         limits:
           cpus: '8.0'
           memory: 16G
