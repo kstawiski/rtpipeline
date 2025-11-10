@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import os
 import threading
@@ -379,7 +380,7 @@ def _rtstruct_masks(dicom_series_path: Path, rs_path: Path) -> Dict[str, np.ndar
         return {}
 
 
-def radiomics_for_course(config: PipelineConfig, course_dir: Path, custom_structures_config: Optional[Path] = None) -> Optional[Path]:
+def radiomics_for_course(config: PipelineConfig, course_dir: Path, custom_structures_config: Optional[Path] = None, use_cropped: bool = True) -> Optional[Path]:
     """Run pyradiomics on CT course with manual RS, RS_auto, and custom structures if present."""
 
     _apply_radiomics_thread_limit(_resolve_thread_limit(getattr(config, 'radiomics_thread_limit', None)))
@@ -389,6 +390,26 @@ def radiomics_for_course(config: PipelineConfig, course_dir: Path, custom_struct
     out_path = course_dir / 'radiomics_ct.xlsx'
     if getattr(config, 'resume', False) and out_path.exists():
         return out_path
+
+    # Check for systematically cropped RTSTRUCT
+    rs_auto_cropped = course_dir / "RS_auto_cropped.dcm"
+    cropping_metadata_path = course_dir / "cropping_metadata.json"
+    using_cropped = False
+
+    if use_cropped and rs_auto_cropped.exists() and cropping_metadata_path.exists():
+        try:
+            with open(cropping_metadata_path) as f:
+                crop_meta = json.load(f)
+            logger.info(
+                f"Using systematically cropped RTSTRUCT for radiomics "
+                f"(region: {crop_meta.get('region', 'unknown')}, "
+                f"superior: {crop_meta.get('superior_z_mm', 0):.1f}mm, "
+                f"inferior: {crop_meta.get('inferior_z_mm', 0):.1f}mm)"
+            )
+            using_cropped = True
+        except Exception as e:
+            logger.warning(f"Failed to load cropping metadata from {cropping_metadata_path}: {e}")
+
     extractor = _extractor(config, 'CT')
     if extractor is None:
         try:
@@ -405,8 +426,11 @@ def radiomics_for_course(config: PipelineConfig, course_dir: Path, custom_struct
     rows: List[Dict] = []
     tasks: List[tuple[str, str, np.ndarray, bool]] = []
 
-    # Process standard RTSTRUCTs
-    for source, rs_name in (("Manual", "RS.dcm"), ("AutoRTS_total", "RS_auto.dcm")):
+    # Process standard RTSTRUCTs (use cropped version if available)
+    rs_manual = "RS.dcm"
+    rs_auto = "RS_auto_cropped.dcm" if using_cropped else "RS_auto.dcm"
+
+    for source, rs_name in (("Manual", rs_manual), ("AutoRTS_total", rs_auto)):
         rs_path = course_dir / rs_name
         if not rs_path.exists():
             continue
@@ -875,18 +899,21 @@ def run_radiomics(config: PipelineConfig, courses: List["object"], custom_struct
     except ImportError:
         use_parallel_impl = False
 
+    # Determine if we should use cropped volumes
+    use_cropped = getattr(config, 'ct_cropping_use_for_radiomics', True)
+
     if use_parallel_impl:
         logger.info("Using enhanced parallel radiomics implementation")
         # Use the new parallel implementation for each course
         def _parallel_radiomics_wrapper(course):
-            return parallel_radiomics_for_course(config, course.dirs.root, custom_structures_config)
+            return parallel_radiomics_for_course(config, course.dirs.root, custom_structures_config, use_cropped=use_cropped)
 
         radiomics_func = _parallel_radiomics_wrapper
         # Reduce course workers when using internal parallelization
         max_course_workers = max(1, min(2, len(courses)))
     else:
         # Use traditional implementation
-        radiomics_func = lambda course: radiomics_for_course(config, course.dirs.root, custom_structures_config)
+        radiomics_func = lambda course: radiomics_for_course(config, course.dirs.root, custom_structures_config, use_cropped=use_cropped)
 
         # CT per course (parallel, but limited for memory safety)
         if os.environ.get('RTPIPELINE_RADIOMICS_SEQUENTIAL', '').lower() in ('1', 'true', 'yes'):

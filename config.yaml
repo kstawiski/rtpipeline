@@ -19,7 +19,7 @@ segmentation:
   extra_models: []   # Optional list of additional TotalSegmentator tasks, e.g. ["lung_vessels"]
 
 custom_models:
-  enabled: true
+  enabled: false       # SECURITY: Disabled by default - model weights are missing and will cause runtime failures
   root: "custom_models"
   models: []           # Optional allowlist of model names; leave empty to run all
   workers: 1           # Concurrent courses for custom models (GPU intensive; default 1, increase if multiple GPUs)
@@ -54,3 +54,25 @@ environments:
 
 # Custom structures configuration
 custom_structures: "custom_structures_pelvic.yaml"
+
+# Systematic CT cropping for consistent volume analysis
+# Crops all CTs to same anatomical boundaries
+# This makes percentage DVH metrics (V95%, V20Gy) meaningful across patients
+ct_cropping:
+  enabled: false  # Enable to crop CTs to consistent anatomical boundaries
+
+  # Supported regions:
+  #   "pelvis"     - L1 vertebra to femoral heads + margin
+  #   "thorax"     - C7/lung apex to L1/diaphragm
+  #   "abdomen"    - T12/L1 to L5 vertebra
+  #   "head_neck"  - Brain/skull apex to C7/clavicles
+  #   "brain"      - Brain boundaries (minimal margins)
+  region: "pelvis"
+
+  # Margins (in cm) - different defaults for different regions:
+  superior_margin_cm: 2.0   # Margin above superior landmark (1 cm for brain, 2 cm for others)
+  inferior_margin_cm: 10.0  # Margin below inferior landmark (1 cm for brain, 2 cm for thorax/abdomen/head_neck, 10 cm for pelvis)
+
+  use_cropped_for_dvh: true       # Use cropped volumes for DVH analysis
+  use_cropped_for_radiomics: true # Use cropped volumes for radiomics
+  keep_original: true             # Keep original uncropped files

@@ -515,7 +515,7 @@ def segment_course(config: PipelineConfig, course_dir: Path, force: bool = False
             model_entry: Dict[str, object] = {"model": model, "rtstruct": "", "masks": []}
 
             dest_dicom = base_dir / f"{base_name}--{model}.dcm"
-            ok_dicom = run_totalsegmentator(config, ct_dir, dicom_tmp, "dicom", task=task_name)
+            ok_dicom = run_totalsegmentator(config, ct_dir, dicom_tmp, "dicom_rtstruct", task=task_name)
             ok_nifti = run_totalsegmentator(config, nifti_path, nifti_tmp, "nifti", task=task_name)
 
             if ok_dicom:
@@ -664,7 +664,7 @@ def segment_course(config: PipelineConfig, course_dir: Path, force: bool = False
                     nifti_tmp.mkdir(parents=True, exist_ok=True)
 
                     rt_out = base_dir_mr / f"{base_name_mr}--{model}.dcm"
-                    ok_dicom = run_totalsegmentator(config, source_dir, dicom_tmp, "dicom", task=task_name)
+                    ok_dicom = run_totalsegmentator(config, source_dir, dicom_tmp, "dicom_rtstruct", task=task_name)
                     ok_nifti = run_totalsegmentator(config, nifti_path, nifti_tmp, "nifti", task=task_name)
 
                     entry = {"model": model, "rtstruct": "", "masks": []}

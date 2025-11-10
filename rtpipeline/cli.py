@@ -259,12 +259,160 @@ def _doctor(argv: list[str]) -> int:
     return 0
 
 
+def _validate(argv: list[str]) -> int:
+    """Validate configuration and environment before running pipeline."""
+    import shutil
+    from pathlib import Path
+
+    p = argparse.ArgumentParser(prog="rtpipeline validate", description="Validate pipeline configuration and environment")
+    p.add_argument("--dicom-root", default="Example_data", help="Path to root with DICOM files")
+    p.add_argument("--config", default="config.yaml", help="Path to configuration file")
+    p.add_argument("--strict", action="store_true", help="Exit with error on any validation failure")
+    args = p.parse_args(argv)
+
+    print("rtpipeline validation")
+    print("=" * 60)
+
+    errors = []
+    warnings = []
+
+    # Check DICOM root
+    dicom_root = Path(args.dicom_root)
+    if not dicom_root.exists():
+        errors.append(f"DICOM root directory not found: {dicom_root}")
+        print(f"❌ DICOM root: {dicom_root} (NOT FOUND)")
+    elif not dicom_root.is_dir():
+        errors.append(f"DICOM root is not a directory: {dicom_root}")
+        print(f"❌ DICOM root: {dicom_root} (NOT A DIRECTORY)")
+    else:
+        print(f"✅ DICOM root: {dicom_root}")
+
+    # Check configuration file
+    config_path = Path(args.config)
+    if not config_path.exists():
+        warnings.append(f"Configuration file not found: {config_path} (will use defaults)")
+        print(f"⚠️  Config file: {config_path} (NOT FOUND, will use defaults)")
+    else:
+        print(f"✅ Config file: {config_path}")
+
+        # Parse configuration
+        try:
+            import yaml
+            with open(config_path) as f:
+                config = yaml.safe_load(f)
+
+            # Check custom models configuration
+            custom_models = config.get("custom_models", {})
+            if custom_models.get("enabled", False):
+                models_root = Path(custom_models.get("root", "custom_models"))
+                if not models_root.exists():
+                    errors.append(f"Custom models enabled but root directory not found: {models_root}")
+                    print(f"❌ Custom models root: {models_root} (NOT FOUND)")
+                else:
+                    print(f"✅ Custom models root: {models_root}")
+
+                    # Check for model weights
+                    model_dirs = [d for d in models_root.iterdir() if d.is_dir() and not d.name.startswith('.')]
+                    if not model_dirs:
+                        warnings.append(f"No custom model directories found in {models_root}")
+                        print(f"⚠️  Custom models: No model directories found")
+                    else:
+                        for model_dir in model_dirs:
+                            config_file = model_dir / "custom_model.yaml"
+                            if not config_file.exists():
+                                warnings.append(f"Model {model_dir.name} missing config file")
+                                print(f"⚠️  Model {model_dir.name}: missing custom_model.yaml")
+                                continue
+
+                            # Check for weight files
+                            weight_files = list(model_dir.glob("*.zip")) + list(model_dir.glob("model*/"))
+                            if not weight_files:
+                                errors.append(f"Model {model_dir.name} missing weight files")
+                                print(f"❌ Model {model_dir.name}: missing weight files")
+                            else:
+                                print(f"✅ Model {model_dir.name}: found {len(weight_files)} weight file(s)")
+            else:
+                print(f"ℹ️  Custom models: disabled")
+
+        except Exception as e:
+            errors.append(f"Failed to parse configuration: {e}")
+            print(f"❌ Config parsing failed: {e}")
+
+    # Check for required external tools
+    print("\nExternal tools:")
+    tools = {
+        "dcm2niix": "DICOM to NIfTI conversion",
+        "TotalSegmentator": "Auto-segmentation",
+        "nnUNet_predict": "Custom model predictions (optional)",
+        "nnUNetv2_predict": "Custom model predictions v2 (optional)",
+    }
+
+    for tool, description in tools.items():
+        if shutil.which(tool):
+            print(f"✅ {tool}: found ({description})")
+        else:
+            if tool.startswith("nnUNet"):
+                warnings.append(f"{tool} not found - custom models may not work")
+                print(f"⚠️  {tool}: not found ({description})")
+            else:
+                warnings.append(f"{tool} not found in PATH")
+                print(f"⚠️  {tool}: not found in PATH ({description})")
+
+    # Check Python packages
+    print("\nPython packages:")
+    required_packages = ["numpy", "pandas", "pydicom", "SimpleITK", "matplotlib"]
+    optional_packages = ["radiomics"]
+
+    for pkg in required_packages:
+        try:
+            __import__(pkg)
+            print(f"✅ {pkg}: installed")
+        except ImportError:
+            errors.append(f"Required package {pkg} not installed")
+            print(f"❌ {pkg}: NOT INSTALLED (required)")
+
+    for pkg in optional_packages:
+        try:
+            __import__(pkg)
+            print(f"✅ {pkg}: installed (optional)")
+        except ImportError:
+            print(f"ℹ️  {pkg}: not installed (optional)")
+
+    # Summary
+    print("\n" + "=" * 60)
+    print(f"Validation summary:")
+    print(f"  Errors: {len(errors)}")
+    print(f"  Warnings: {len(warnings)}")
+
+    if errors:
+        print("\n❌ ERRORS:")
+        for error in errors:
+            print(f"  - {error}")
+
+    if warnings:
+        print("\n⚠️  WARNINGS:")
+        for warning in warnings:
+            print(f"  - {warning}")
+
+    if not errors and not warnings:
+        print("\n✅ All checks passed! Pipeline is ready to run.")
+        return 0
+    elif errors:
+        print("\n❌ Validation failed. Please fix the errors above before running the pipeline.")
+        return 1 if args.strict else 0
+    else:
+        print("\n⚠️  Validation completed with warnings. Pipeline may run with limited functionality.")
+        return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     if argv is None:
         argv = sys.argv[1:]
     # Lightweight subcommand dispatch to preserve backward compatibility
     if argv and argv[0] == "doctor":
         return _doctor(argv[1:])
+    if argv and argv[0] == "validate":
+        return _validate(argv[1:])
     args = build_parser().parse_args(argv)
     level = logging.INFO if args.verbose == 0 else logging.DEBUG
     logging.basicConfig(level=level, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -386,6 +534,30 @@ def main(argv: list[str] | None = None) -> int:
     # Update config object
     cfg.custom_structures_config = custom_structures_config
 
+    # Load CT cropping settings from config.yaml
+    try:
+        import yaml
+        config_file_path = Path("config.yaml")
+        if config_file_path.exists():
+            with open(config_file_path) as f:
+                yaml_config = yaml.safe_load(f) or {}
+
+            ct_cropping = yaml_config.get("ct_cropping", {})
+            cfg.ct_cropping_enabled = ct_cropping.get("enabled", False)
+            cfg.ct_cropping_region = ct_cropping.get("region", "pelvis")
+            cfg.ct_cropping_superior_margin_cm = ct_cropping.get("superior_margin_cm", 2.0)
+            cfg.ct_cropping_inferior_margin_cm = ct_cropping.get("inferior_margin_cm", 10.0)
+            cfg.ct_cropping_use_for_dvh = ct_cropping.get("use_cropped_for_dvh", True)
+            cfg.ct_cropping_use_for_radiomics = ct_cropping.get("use_cropped_for_radiomics", True)
+            cfg.ct_cropping_keep_original = ct_cropping.get("keep_original", True)
+
+            if cfg.ct_cropping_enabled:
+                logger.info("CT cropping enabled: region=%s, superior_margin=%scm, inferior_margin=%scm",
+                           cfg.ct_cropping_region, cfg.ct_cropping_superior_margin_cm,
+                           cfg.ct_cropping_inferior_margin_cm)
+    except Exception as e:
+        logger.debug("Could not load CT cropping config from YAML: %s", e)
+
     # Configure custom segmentation models
     custom_models_root: Path | None = None
     if args.custom_models_root:
@@ -431,7 +603,7 @@ def main(argv: list[str] | None = None) -> int:
         # Non-fatal; continue with console-only logging
         pass
 
-    default_order = ["organize", "segmentation", "segmentation_custom", "dvh", "visualize", "radiomics", "qc"]
+    default_order = ["organize", "segmentation", "segmentation_custom", "crop_ct", "dvh", "visualize", "radiomics", "qc"]
     requested = [stage.lower() for stage in (args.stage or default_order)]
     stages = [stage for stage in default_order if stage in requested]
     if not stages:
@@ -563,6 +735,41 @@ def main(argv: list[str] | None = None) -> int:
                     show_progress=True,
                 )
 
+    if "crop_ct" in stages:
+        from .anatomical_cropping import apply_systematic_cropping  # lazy import
+
+        if not cfg.ct_cropping_enabled:
+            logger.info("CT cropping disabled in config; skipping crop_ct stage")
+        else:
+            courses = ensure_courses()
+            selected_courses = _filter_courses(courses)
+
+            if not selected_courses:
+                _log_skip("CT Cropping")
+            else:
+
+                def _crop(course):
+                    try:
+                        apply_systematic_cropping(
+                            course.dirs.root,
+                            region=cfg.ct_cropping_region,
+                            superior_margin_cm=cfg.ct_cropping_superior_margin_cm,
+                            inferior_margin_cm=cfg.ct_cropping_inferior_margin_cm,
+                            keep_original=cfg.ct_cropping_keep_original,
+                        )
+                    except Exception as exc:
+                        logger.warning("CT cropping failed for %s: %s", course.dirs.root, exc)
+                    return None
+
+                run_tasks_with_adaptive_workers(
+                    "CT_Cropping",
+                    selected_courses,
+                    _crop,
+                    max_workers=cfg.effective_workers(),
+                    logger=logging.getLogger(__name__),
+                    show_progress=True,
+                )
+
     if "dvh" in stages:
         from .dvh import dvh_for_course  # lazy import
 
@@ -579,6 +786,7 @@ def main(argv: list[str] | None = None) -> int:
                         course.dirs.root,
                         cfg.custom_structures_config,
                         parallel_workers=cfg.effective_workers(),
+                        use_cropped=cfg.ct_cropping_use_for_dvh,
                     )
                 except Exception as exc:
                     logger.warning("DVH failed for %s: %s", course.dirs.root, exc)
