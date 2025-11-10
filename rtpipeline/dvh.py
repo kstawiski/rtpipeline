@@ -563,7 +563,7 @@ def dvh_for_course(
             # Replace RS_auto with cropped version
             rs_auto = rs_auto_cropped
         except Exception as e:
-            logger.warning(f"Failed to load cropping metadata: {e}")
+            logger.warning(f"Failed to load cropping metadata from {cropping_metadata_path}: {e}")
 
     if not rd.exists() or not rp.exists():
         logger.warning("Missing RP/RD in %s; skipping DVH", course_dir)
