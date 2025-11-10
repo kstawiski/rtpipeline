@@ -545,14 +545,16 @@ def main(argv: list[str] | None = None) -> int:
             ct_cropping = yaml_config.get("ct_cropping", {})
             cfg.ct_cropping_enabled = ct_cropping.get("enabled", False)
             cfg.ct_cropping_region = ct_cropping.get("region", "pelvis")
+            cfg.ct_cropping_superior_margin_cm = ct_cropping.get("superior_margin_cm", 2.0)
             cfg.ct_cropping_inferior_margin_cm = ct_cropping.get("inferior_margin_cm", 10.0)
             cfg.ct_cropping_use_for_dvh = ct_cropping.get("use_cropped_for_dvh", True)
             cfg.ct_cropping_use_for_radiomics = ct_cropping.get("use_cropped_for_radiomics", True)
             cfg.ct_cropping_keep_original = ct_cropping.get("keep_original", True)
 
             if cfg.ct_cropping_enabled:
-                logger.info("CT cropping enabled: region=%s, margin=%scm",
-                           cfg.ct_cropping_region, cfg.ct_cropping_inferior_margin_cm)
+                logger.info("CT cropping enabled: region=%s, superior_margin=%scm, inferior_margin=%scm",
+                           cfg.ct_cropping_region, cfg.ct_cropping_superior_margin_cm,
+                           cfg.ct_cropping_inferior_margin_cm)
     except Exception as e:
         logger.debug("Could not load CT cropping config from YAML: %s", e)
 
@@ -751,6 +753,7 @@ def main(argv: list[str] | None = None) -> int:
                         apply_systematic_cropping(
                             course.dirs.root,
                             region=cfg.ct_cropping_region,
+                            superior_margin_cm=cfg.ct_cropping_superior_margin_cm,
                             inferior_margin_cm=cfg.ct_cropping_inferior_margin_cm,
                             keep_original=cfg.ct_cropping_keep_original,
                         )

@@ -252,6 +252,353 @@ def determine_pelvic_crop_boundaries(
     return superior_z, inferior_z
 
 
+def extract_organ_boundaries(course_dir: Path, organ_patterns: list) -> Dict[str, Dict[str, float]]:
+    """
+    Extract superior/inferior z-coordinates for organs from TotalSegmentator.
+
+    Args:
+        course_dir: Course directory containing Segmentation_TotalSegmentator
+        organ_patterns: List of organ name patterns to search for
+
+    Returns:
+        Dictionary mapping organ names to {'superior': z, 'inferior': z}
+    """
+    from .layout import build_course_dirs
+
+    course_dirs = build_course_dirs(course_dir)
+    seg_root = course_dirs.segmentation_totalseg
+
+    if not seg_root.exists():
+        raise ValueError(f"TotalSegmentator output not found: {seg_root}")
+
+    candidate_dirs = sorted(p for p in seg_root.iterdir() if p.is_dir())
+    if not candidate_dirs:
+        raise ValueError(f"No segmentation directories found in: {seg_root}")
+
+    seg_dir = candidate_dirs[0]
+    landmarks = {}
+
+    for organ in organ_patterns:
+        # Look for masks with model prefix (e.g., "total--lung_upper_lobe_left.nii.gz")
+        mask_candidates = list(seg_dir.glob(f"*--{organ}.nii.gz"))
+        if not mask_candidates:
+            # Try without prefix
+            mask_candidates = list(seg_dir.glob(f"{organ}.nii.gz"))
+
+        if not mask_candidates:
+            logger.debug(f"Organ mask not found: {organ}")
+            continue
+
+        mask_path = mask_candidates[0]
+
+        try:
+            mask_img = sitk.ReadImage(str(mask_path))
+            mask_array = sitk.GetArrayFromImage(mask_img)
+
+            if not mask_array.any():
+                logger.debug(f"Organ mask is empty: {organ}")
+                continue
+
+            z_indices = np.where(mask_array.any(axis=(1, 2)))[0]
+            if len(z_indices) == 0:
+                continue
+
+            origin = mask_img.GetOrigin()
+            spacing = mask_img.GetSpacing()
+            direction = mask_img.GetDirection()
+            z_direction = direction[8]
+
+            superior_idx = z_indices.max()
+            inferior_idx = z_indices.min()
+
+            superior_z = origin[2] + superior_idx * spacing[2]
+            inferior_z = origin[2] + inferior_idx * spacing[2]
+
+            if z_direction < 0:
+                superior_z, inferior_z = inferior_z, superior_z
+
+            landmarks[organ] = {
+                'superior': float(superior_z),
+                'inferior': float(inferior_z),
+                'center': float((superior_z + inferior_z) / 2)
+            }
+
+            logger.debug(f"Extracted {organ}: superior={superior_z:.1f}mm, inferior={inferior_z:.1f}mm")
+
+        except Exception as e:
+            logger.warning(f"Failed to process organ mask {organ}: {e}")
+            continue
+
+    return landmarks
+
+
+def determine_thorax_crop_boundaries(
+    course_dir: Path,
+    superior_margin_cm: float = 2.0,
+    inferior_margin_cm: float = 2.0
+) -> Tuple[float, float]:
+    """
+    Determine superior and inferior boundaries for thoracic cropping.
+
+    Uses C7 vertebra (or lung apex) as superior boundary and L1 vertebra
+    (or diaphragm/liver superior edge) as inferior boundary.
+
+    Args:
+        course_dir: Course directory
+        superior_margin_cm: Margin above C7/lungs in cm (default: 2 cm)
+        inferior_margin_cm: Margin below L1/diaphragm in cm (default: 2 cm)
+
+    Returns:
+        Tuple of (superior_z, inferior_z) in mm (patient coordinates)
+
+    Raises:
+        ValueError: If required landmarks are not found
+    """
+    vertebrae = extract_vertebrae_boundaries(course_dir)
+
+    # Try to get lung boundaries for reference
+    lung_patterns = ['lung_upper_lobe_left', 'lung_upper_lobe_right',
+                     'lung_lower_lobe_left', 'lung_lower_lobe_right']
+    organs = extract_organ_boundaries(course_dir, lung_patterns + ['heart', 'liver'])
+
+    # Superior boundary: C7 vertebra or lung apex
+    superior_z = None
+    if 'vertebrae_C7' in vertebrae:
+        superior_z = vertebrae['vertebrae_C7']['superior'] + (superior_margin_cm * 10)
+        logger.info(f"Using C7 superior edge + {superior_margin_cm}cm for superior boundary")
+    else:
+        # Fallback to lung apex
+        lung_superiors = [
+            organs[key]['superior']
+            for key in organs
+            if 'lung_upper' in key and 'superior' in organs[key]
+        ]
+        if lung_superiors:
+            superior_z = max(lung_superiors) + (superior_margin_cm * 10)
+            logger.info(f"Using lung apex + {superior_margin_cm}cm for superior boundary")
+
+    if superior_z is None:
+        raise ValueError(
+            "Neither C7 vertebra nor lung segmentations found - "
+            "required for thorax cropping. Available structures: "
+            f"vertebrae={list(vertebrae.keys())}, organs={list(organs.keys())}"
+        )
+
+    # Inferior boundary: L1 vertebra or liver/diaphragm
+    inferior_z = None
+    if 'vertebrae_L1' in vertebrae:
+        inferior_z = vertebrae['vertebrae_L1']['inferior'] - (inferior_margin_cm * 10)
+        logger.info(f"Using L1 inferior edge - {inferior_margin_cm}cm for inferior boundary")
+    elif 'liver' in organs:
+        inferior_z = organs['liver']['superior'] - (inferior_margin_cm * 10)
+        logger.info(f"Using liver superior edge - {inferior_margin_cm}cm for inferior boundary")
+    else:
+        # Fallback to lung base
+        lung_inferiors = [
+            organs[key]['inferior']
+            for key in organs
+            if 'lung_lower' in key and 'inferior' in organs[key]
+        ]
+        if lung_inferiors:
+            inferior_z = min(lung_inferiors) - (inferior_margin_cm * 10)
+            logger.info(f"Using lung base - {inferior_margin_cm}cm for inferior boundary")
+
+    if inferior_z is None:
+        raise ValueError(
+            "Neither L1 vertebra, liver, nor lung segmentations found - "
+            "required for thorax cropping"
+        )
+
+    logger.info(
+        f"Thorax crop boundaries: superior={superior_z:.1f}mm, "
+        f"inferior={inferior_z:.1f}mm (span={(superior_z-inferior_z)/10:.1f}cm)"
+    )
+
+    return superior_z, inferior_z
+
+
+def determine_abdomen_crop_boundaries(
+    course_dir: Path,
+    superior_margin_cm: float = 2.0,
+    inferior_margin_cm: float = 2.0
+) -> Tuple[float, float]:
+    """
+    Determine superior and inferior boundaries for abdominal cropping.
+
+    Uses T12/L1 vertebra (diaphragm level) as superior boundary and
+    L5 vertebra (pelvic inlet) as inferior boundary.
+
+    Args:
+        course_dir: Course directory
+        superior_margin_cm: Margin above T12/L1 in cm (default: 2 cm)
+        inferior_margin_cm: Margin below L5 in cm (default: 2 cm)
+
+    Returns:
+        Tuple of (superior_z, inferior_z) in mm (patient coordinates)
+
+    Raises:
+        ValueError: If required landmarks are not found
+    """
+    vertebrae = extract_vertebrae_boundaries(course_dir)
+
+    # Get abdominal organ boundaries for validation
+    organ_patterns = ['liver', 'spleen', 'kidney_left', 'kidney_right', 'stomach']
+    organs = extract_organ_boundaries(course_dir, organ_patterns)
+
+    # Superior boundary: T12 or L1 vertebra (diaphragm level)
+    superior_z = None
+    if 'vertebrae_T12' in vertebrae:
+        superior_z = vertebrae['vertebrae_T12']['superior'] + (superior_margin_cm * 10)
+        logger.info(f"Using T12 superior edge + {superior_margin_cm}cm for superior boundary")
+    elif 'vertebrae_L1' in vertebrae:
+        superior_z = vertebrae['vertebrae_L1']['superior'] + (superior_margin_cm * 10)
+        logger.info(f"Using L1 superior edge + {superior_margin_cm}cm for superior boundary")
+    elif 'liver' in organs:
+        superior_z = organs['liver']['superior'] + (superior_margin_cm * 10)
+        logger.info(f"Using liver superior edge + {superior_margin_cm}cm for superior boundary")
+
+    if superior_z is None:
+        raise ValueError(
+            "Neither T12/L1 vertebrae nor liver found - "
+            "required for abdomen cropping. Available vertebrae: "
+            f"{list(vertebrae.keys())}, organs: {list(organs.keys())}"
+        )
+
+    # Inferior boundary: L5 vertebra (pelvic inlet)
+    if 'vertebrae_L5' not in vertebrae:
+        raise ValueError(
+            "L5 vertebra not found in TotalSegmentator output - "
+            "required for abdomen cropping. Available vertebrae: "
+            f"{list(vertebrae.keys())}"
+        )
+
+    inferior_z = vertebrae['vertebrae_L5']['inferior'] - (inferior_margin_cm * 10)
+
+    logger.info(
+        f"Abdomen crop boundaries: superior={superior_z:.1f}mm, "
+        f"inferior={inferior_z:.1f}mm (span={(superior_z-inferior_z)/10:.1f}cm)"
+    )
+
+    return superior_z, inferior_z
+
+
+def determine_head_neck_crop_boundaries(
+    course_dir: Path,
+    superior_margin_cm: float = 2.0,
+    inferior_margin_cm: float = 2.0
+) -> Tuple[float, float]:
+    """
+    Determine superior and inferior boundaries for head & neck cropping.
+
+    Uses brain/skull superior edge as superior boundary and C7/T1 vertebra
+    or clavicles as inferior boundary.
+
+    Args:
+        course_dir: Course directory
+        superior_margin_cm: Margin above skull/brain in cm (default: 2 cm)
+        inferior_margin_cm: Margin below C7/clavicles in cm (default: 2 cm)
+
+    Returns:
+        Tuple of (superior_z, inferior_z) in mm (patient coordinates)
+
+    Raises:
+        ValueError: If required landmarks are not found
+    """
+    vertebrae = extract_vertebrae_boundaries(course_dir)
+
+    # Get head/neck structures
+    organ_patterns = ['brain', 'skull', 'mandible', 'clavicle_left', 'clavicle_right']
+    organs = extract_organ_boundaries(course_dir, organ_patterns)
+
+    # Superior boundary: skull or brain apex
+    superior_z = None
+    if 'brain' in organs:
+        superior_z = organs['brain']['superior'] + (superior_margin_cm * 10)
+        logger.info(f"Using brain apex + {superior_margin_cm}cm for superior boundary")
+    elif 'skull' in organs:
+        superior_z = organs['skull']['superior'] + (superior_margin_cm * 10)
+        logger.info(f"Using skull apex + {superior_margin_cm}cm for superior boundary")
+
+    if superior_z is None:
+        raise ValueError(
+            "Neither brain nor skull segmentations found - "
+            "required for head & neck cropping. Available structures: "
+            f"{list(organs.keys())}"
+        )
+
+    # Inferior boundary: C7/T1 vertebra or clavicles
+    inferior_z = None
+    if 'vertebrae_C7' in vertebrae:
+        inferior_z = vertebrae['vertebrae_C7']['inferior'] - (inferior_margin_cm * 10)
+        logger.info(f"Using C7 inferior edge - {inferior_margin_cm}cm for inferior boundary")
+    else:
+        # Fallback to clavicles
+        clavicle_inferiors = [
+            organs[key]['inferior']
+            for key in organs
+            if 'clavicle' in key and 'inferior' in organs[key]
+        ]
+        if clavicle_inferiors:
+            inferior_z = min(clavicle_inferiors) - (inferior_margin_cm * 10)
+            logger.info(f"Using clavicles inferior edge - {inferior_margin_cm}cm for inferior boundary")
+
+    if inferior_z is None:
+        raise ValueError(
+            "Neither C7 vertebra nor clavicles found - "
+            "required for head & neck cropping. Available structures: "
+            f"vertebrae={list(vertebrae.keys())}, organs={list(organs.keys())}"
+        )
+
+    logger.info(
+        f"Head & neck crop boundaries: superior={superior_z:.1f}mm, "
+        f"inferior={inferior_z:.1f}mm (span={(superior_z-inferior_z)/10:.1f}cm)"
+    )
+
+    return superior_z, inferior_z
+
+
+def determine_brain_crop_boundaries(
+    course_dir: Path,
+    superior_margin_cm: float = 1.0,
+    inferior_margin_cm: float = 1.0
+) -> Tuple[float, float]:
+    """
+    Determine superior and inferior boundaries for brain cropping.
+
+    Uses brain segmentation boundaries with minimal margins.
+
+    Args:
+        course_dir: Course directory
+        superior_margin_cm: Margin above brain apex in cm (default: 1 cm)
+        inferior_margin_cm: Margin below brain base in cm (default: 1 cm)
+
+    Returns:
+        Tuple of (superior_z, inferior_z) in mm (patient coordinates)
+
+    Raises:
+        ValueError: If brain segmentation not found
+    """
+    organ_patterns = ['brain']
+    organs = extract_organ_boundaries(course_dir, organ_patterns)
+
+    if 'brain' not in organs:
+        raise ValueError(
+            "Brain segmentation not found in TotalSegmentator output - "
+            "required for brain cropping. Available structures: "
+            f"{list(organs.keys())}"
+        )
+
+    superior_z = organs['brain']['superior'] + (superior_margin_cm * 10)
+    inferior_z = organs['brain']['inferior'] - (inferior_margin_cm * 10)
+
+    logger.info(
+        f"Brain crop boundaries: superior={superior_z:.1f}mm, "
+        f"inferior={inferior_z:.1f}mm (span={(superior_z-inferior_z)/10:.1f}cm)"
+    )
+
+    return superior_z, inferior_z
+
+
 def crop_image_to_boundaries(
     image: sitk.Image,
     superior_z: float,
@@ -346,7 +693,8 @@ def apply_systematic_cropping(
     region: str = "pelvis",
     output_suffix: str = "_cropped",
     keep_original: bool = True,
-    inferior_margin_cm: float = 10.0
+    inferior_margin_cm: float = 10.0,
+    superior_margin_cm: float = 2.0
 ) -> Dict[str, Path]:
     """
     Apply systematic anatomical cropping to CT and all segmentations.
@@ -356,10 +704,16 @@ def apply_systematic_cropping(
 
     Args:
         course_dir: Course directory
-        region: Anatomical region ("pelvis" supported currently)
+        region: Anatomical region - one of:
+            - "pelvis": L1 vertebra to femoral heads + margin
+            - "thorax": C7/lung apex to L1/diaphragm
+            - "abdomen": T12/L1 to L5 vertebra
+            - "head_neck": brain/skull apex to C7/clavicles
+            - "brain": brain boundaries with minimal margins
         output_suffix: Suffix for cropped files (default: "_cropped")
         keep_original: Whether to keep original files (default: True)
-        inferior_margin_cm: Margin below femurs for pelvic region (default: 10 cm)
+        inferior_margin_cm: Margin below inferior landmark in cm (default: 10 cm for pelvis, 2 cm for others)
+        superior_margin_cm: Margin above superior landmark in cm (default: 2 cm, used for non-pelvic regions)
 
     Returns:
         Dictionary of cropped file paths: {'ct': Path, 'mask_name': Path, ...}
@@ -372,13 +726,41 @@ def apply_systematic_cropping(
     course_dirs = build_course_dirs(course_dir)
 
     # Determine boundaries based on region
+    supported_regions = {
+        "pelvis": determine_pelvic_crop_boundaries,
+        "thorax": determine_thorax_crop_boundaries,
+        "abdomen": determine_abdomen_crop_boundaries,
+        "head_neck": determine_head_neck_crop_boundaries,
+        "brain": determine_brain_crop_boundaries
+    }
+
+    if region not in supported_regions:
+        raise ValueError(
+            f"Unsupported region: {region}. "
+            f"Supported regions: {', '.join(supported_regions.keys())}"
+        )
+
+    # Call appropriate boundary function based on region
     if region == "pelvis":
         superior_z, inferior_z = determine_pelvic_crop_boundaries(
             course_dir,
             inferior_margin_cm=inferior_margin_cm
         )
+    elif region == "brain":
+        # Brain uses minimal margins (defaults: 1 cm)
+        superior_z, inferior_z = determine_brain_crop_boundaries(
+            course_dir,
+            superior_margin_cm=superior_margin_cm if superior_margin_cm != 2.0 else 1.0,
+            inferior_margin_cm=inferior_margin_cm if inferior_margin_cm != 10.0 else 1.0
+        )
     else:
-        raise ValueError(f"Unsupported region: {region}. Currently only 'pelvis' is supported.")
+        # Thorax, abdomen, head_neck use symmetric margins (default: 2 cm)
+        boundary_func = supported_regions[region]
+        superior_z, inferior_z = boundary_func(
+            course_dir,
+            superior_margin_cm=superior_margin_cm,
+            inferior_margin_cm=inferior_margin_cm if inferior_margin_cm != 10.0 else 2.0
+        )
 
     logger.info(
         f"Cropping {course_dir.name} to {region} region: "
@@ -440,6 +822,7 @@ def apply_systematic_cropping(
         'region': region,
         'superior_z_mm': superior_z,
         'inferior_z_mm': inferior_z,
+        'superior_margin_cm': superior_margin_cm,
         'inferior_margin_cm': inferior_margin_cm,
         'cropped_files': {k: str(v) for k, v in cropped_files.items()},
         'original_kept': keep_original

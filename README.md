@@ -222,21 +222,27 @@ Same absolute dose volume, but different percentages! ❌
 
 ### How It Works
 
-1. **Landmark Extraction**: After TotalSegmentator runs, the pipeline extracts anatomical landmarks from segmentation masks:
-   - **Superior boundary**: L1 vertebra (superior edge)
-   - **Inferior boundary**: Femoral heads (inferior edge) + configurable margin (default: 10 cm)
+1. **Landmark Extraction**: After TotalSegmentator runs, the pipeline extracts anatomical landmarks from segmentation masks based on the selected region:
+
+   **Supported Regions**:
+   - **Pelvis**: L1 vertebra (superior) → Femoral heads + margin (inferior)
+   - **Thorax**: C7/lung apex (superior) → L1/diaphragm (inferior)
+   - **Abdomen**: T12/L1 (superior) → L5 vertebra (inferior)
+   - **Head & Neck**: Brain/skull apex (superior) → C7/clavicles (inferior)
+   - **Brain**: Brain boundaries with minimal margins
 
 2. **Cropping**: All CT images and segmentation masks are cropped to these boundaries:
    ```python
    # Automatically applied when ct_cropping.enabled = true
    apply_systematic_cropping(
        course_dir,
-       region="pelvis",
+       region="pelvis",  # or "thorax", "abdomen", "head_neck", "brain"
+       superior_margin_cm=2.0,
        inferior_margin_cm=10.0
    )
    ```
 
-3. **Consistent Volumes**: All patients now have the same analysis volume (~12,000 cm³ for pelvis):
+3. **Consistent Volumes**: All patients now have the same analysis volume (e.g., ~12,000 cm³ for pelvis):
    ```
    Patient A: V20Gy = 500 cm³ / 12,000 cm³ = 4.2% ✅
    Patient B: V20Gy = 500 cm³ / 12,000 cm³ = 4.2% ✅
@@ -249,12 +255,20 @@ Enable in `config.yaml`:
 ```yaml
 ct_cropping:
   enabled: true              # Enable systematic cropping
-  region: "pelvis"           # Currently only "pelvis" supported
-  inferior_margin_cm: 10.0   # Margin below femoral heads
+  region: "pelvis"           # Options: "pelvis", "thorax", "abdomen", "head_neck", "brain"
+  superior_margin_cm: 2.0    # Margin above superior landmark (cm)
+  inferior_margin_cm: 10.0   # Margin below inferior landmark (cm)
   use_cropped_for_dvh: true  # Use cropped volumes for DVH
   use_cropped_for_radiomics: true  # Use cropped volumes for radiomics
   keep_original: true        # Keep uncropped files
 ```
+
+**Recommended Margins by Region**:
+- **Pelvis**: `superior_margin_cm: 2.0`, `inferior_margin_cm: 10.0`
+- **Thorax**: `superior_margin_cm: 2.0`, `inferior_margin_cm: 2.0`
+- **Abdomen**: `superior_margin_cm: 2.0`, `inferior_margin_cm: 2.0`
+- **Head & Neck**: `superior_margin_cm: 2.0`, `inferior_margin_cm: 2.0`
+- **Brain**: `superior_margin_cm: 1.0`, `inferior_margin_cm: 1.0`
 
 ### Benefits
 
