@@ -4,15 +4,13 @@ Provides a web interface for uploading DICOM files and processing them through r
 """
 
 import os
-import json
 import uuid
 import shutil
 import zipfile
 from datetime import datetime
 from pathlib import Path
-from flask import Flask, render_template, request, jsonify, send_file, send_from_directory
+from flask import Flask, render_template, request, jsonify, send_file
 from werkzeug.utils import secure_filename
-import threading
 import logging
 
 from dicom_validator import DICOMValidator
@@ -28,6 +26,9 @@ logger = logging.getLogger(__name__)
 # Initialize Flask app
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', str(uuid.uuid4()))
+# 50GB max upload - large limit to handle complete patient imaging datasets
+# Note: For very large uploads, consider splitting into smaller batches to avoid
+# browser timeouts and reduce memory consumption
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024 * 1024  # 50GB max upload
 
 # Directories configuration
@@ -116,7 +117,7 @@ def upload_files():
         )
 
         # Create job
-        job_info = job_manager.create_job(
+        job_manager.create_job(
             job_id=job_id,
             dicom_dir=extraction_result['dicom_dir'],
             validation_result=validation_result,
