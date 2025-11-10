@@ -1647,7 +1647,6 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
                             'ct_reconstruction_algorithm': (
                                 str(getattr(ds_ct, 'ReconstructionAlgorithm', '')) or
                                 str(getattr(ds_ct, 'ReconstructionMethod', '')) or
-                                str(getattr(ds_ct, 'ConvolutionKernel', '')) or
                                 str(getattr(ds_ct, 'FilterType', '')) or
                                 ''
                             ),
