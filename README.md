@@ -98,6 +98,130 @@ All stages write sentinel files (`.organized`, `.segmentation_done`, `.custom_mo
 
 ## Running the Workflow
 
+### Docker / Singularity (Recommended)
+
+rtpipeline is fully containerized for easy deployment. Both Docker and Singularity are supported.
+
+#### Docker Setup
+
+**1. Build the image:**
+```bash
+./build.sh
+```
+
+**2. Run with docker-compose (CPU):**
+```bash
+# Start the container
+docker-compose up -d
+
+# Access the container
+docker exec -it rtpipeline bash
+
+# Inside container: run pipeline
+snakemake --cores all --use-conda
+```
+
+**3. Run with docker-compose (GPU):**
+```bash
+# Requires nvidia-docker or Docker with GPU support
+docker-compose --profile gpu up -d
+docker exec -it rtpipeline-gpu bash
+```
+
+**4. Run standalone container:**
+```bash
+# Basic run
+docker run -it --rm \
+  -v $(pwd)/Example_data:/app/Example_data:ro \
+  -v $(pwd)/Data_Snakemake:/app/Data_Snakemake:rw \
+  -v $(pwd)/Logs_Snakemake:/app/Logs_Snakemake:rw \
+  rtpipeline:latest bash
+
+# With GPU support
+docker run -it --rm --gpus all \
+  -v $(pwd)/Example_data:/app/Example_data:ro \
+  -v $(pwd)/Data_Snakemake:/app/Data_Snakemake:rw \
+  rtpipeline:latest bash
+```
+
+**5. Build and push to Docker Hub:**
+```bash
+./build.sh --push --username YOUR_DOCKERHUB_USERNAME --tag v1.0.0
+```
+
+**6. Pull from Docker Hub:**
+```bash
+docker pull YOUR_DOCKERHUB_USERNAME/rtpipeline:latest
+```
+
+#### Singularity Setup
+
+**1. Convert from Docker image:**
+```bash
+# From local Docker image
+singularity build rtpipeline.sif docker-daemon://rtpipeline:latest
+
+# Or from Docker Hub
+singularity build rtpipeline.sif docker://YOUR_DOCKERHUB_USERNAME/rtpipeline:latest
+```
+
+**2. Run the pipeline:**
+```bash
+# Interactive shell
+singularity shell \
+  --bind $(pwd)/Example_data:/app/Example_data:ro \
+  --bind $(pwd)/Data_Snakemake:/app/Data_Snakemake:rw \
+  --bind $(pwd)/Logs_Snakemake:/app/Logs_Snakemake:rw \
+  rtpipeline.sif
+
+# Execute command directly
+singularity exec \
+  --bind $(pwd)/Example_data:/app/Example_data:ro \
+  --bind $(pwd)/Data_Snakemake:/app/Data_Snakemake:rw \
+  rtpipeline.sif \
+  snakemake --cores all --use-conda
+```
+
+**3. Run with GPU (if available):**
+```bash
+singularity exec --nv \
+  --bind $(pwd)/Example_data:/app/Example_data:ro \
+  --bind $(pwd)/Data_Snakemake:/app/Data_Snakemake:rw \
+  rtpipeline.sif \
+  snakemake --cores 8 --use-conda
+```
+
+**4. HPC/SLURM example:**
+```bash
+#!/bin/bash
+#SBATCH --job-name=rtpipeline
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=16
+#SBATCH --mem=64G
+#SBATCH --time=48:00:00
+#SBATCH --gres=gpu:1  # Optional: request GPU
+
+module load singularity
+
+singularity exec --nv \
+  --bind /path/to/data:/app/Example_data:ro \
+  --bind /path/to/output:/app/Data_Snakemake:rw \
+  rtpipeline.sif \
+  snakemake --cores $SLURM_CPUS_PER_TASK --use-conda
+```
+
+#### Jupyter Notebook (Optional)
+
+```bash
+# Start Jupyter service
+docker-compose --profile jupyter up -d
+
+# Access at http://localhost:8888
+```
+
+### Native Installation
+
 1. **Prerequisites**
    * Python ≥ 3.11, Snakemake `>=7`.
    * Conda (or mamba) with `channel_priority strict`.
