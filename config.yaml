@@ -59,7 +59,7 @@ custom_structures: "custom_structures_pelvic.yaml"
 # Crops all CTs to same anatomical boundaries
 # This makes percentage DVH metrics (V95%, V20Gy) meaningful across patients
 ct_cropping:
-  enabled: false  # Enable to crop CTs to consistent anatomical boundaries
+  enabled: true  # Enable to crop CTs to consistent anatomical boundaries
 
   # Supported regions:
   #   "pelvis"     - L1 vertebra to femoral heads + margin
