@@ -17,7 +17,12 @@ This document provides testing procedures for the systematic CT cropping feature
 2. Sample patient course with:
    - CT DICOM files
    - Segmentation completed (RS_auto.dcm exists)
-   - L1 vertebra and femoral heads segmented
+   - Appropriate anatomical structures segmented based on region:
+     - **Pelvis**: L1 vertebra, femoral heads
+     - **Thorax**: C7 vertebra (or lungs), L1 vertebra (or liver)
+     - **Abdomen**: T12/L1 vertebra, L5 vertebra, liver
+     - **Head & Neck**: Brain/skull, C7 vertebra (or clavicles)
+     - **Brain**: Brain segmentation
 
 ---
 
@@ -135,6 +140,76 @@ Test what happens when CT doesn't extend far enough for the requested margin.
 
 ---
 
+### Test 6: Different Anatomical Regions
+
+Test cropping for thorax, abdomen, head & neck, and brain regions.
+
+#### Thorax Region
+1. **Edit config.yaml**:
+   ```yaml
+   ct_cropping:
+     enabled: true
+     region: "thorax"
+     superior_margin_cm: 2.0
+     inferior_margin_cm: 2.0
+   ```
+
+2. **Run cropping**:
+   ```bash
+   rtpipeline --stage crop_ct --dicom-root Example_data
+   ```
+
+3. **Verify boundaries**:
+   - Superior: C7 vertebra or lung apex + 2cm
+   - Inferior: L1 vertebra or diaphragm/liver - 2cm
+   - Check logs for: "Using C7 superior edge + 2.0cm for superior boundary"
+
+#### Abdomen Region
+1. **Edit config.yaml**:
+   ```yaml
+   ct_cropping:
+     enabled: true
+     region: "abdomen"
+     superior_margin_cm: 2.0
+     inferior_margin_cm: 2.0
+   ```
+
+2. **Expected boundaries**:
+   - Superior: T12/L1 vertebra + 2cm
+   - Inferior: L5 vertebra - 2cm
+
+#### Head & Neck Region
+1. **Edit config.yaml**:
+   ```yaml
+   ct_cropping:
+     enabled: true
+     region: "head_neck"
+     superior_margin_cm: 2.0
+     inferior_margin_cm: 2.0
+   ```
+
+2. **Expected boundaries**:
+   - Superior: Brain/skull apex + 2cm
+   - Inferior: C7 vertebra or clavicles - 2cm
+
+#### Brain Region
+1. **Edit config.yaml**:
+   ```yaml
+   ct_cropping:
+     enabled: true
+     region: "brain"
+     superior_margin_cm: 1.0
+     inferior_margin_cm: 1.0
+   ```
+
+2. **Expected boundaries**:
+   - Superior: Brain apex + 1cm (minimal margin)
+   - Inferior: Brain base - 1cm (minimal margin)
+
+3. **Note**: Brain region uses smaller default margins (1cm) compared to other regions
+
+---
+
 ## Validation Checklist
 
 - [ ] Cropping creates all expected output files
@@ -146,6 +221,14 @@ Test what happens when CT doesn't extend far enough for the requested margin.
 - [ ] Warning logged when CT extent is insufficient
 - [ ] Cropping can be disabled via config
 - [ ] Original files are preserved when keep_original=true
+- [ ] All anatomical regions work correctly:
+  - [ ] Pelvis (L1 → femurs)
+  - [ ] Thorax (C7/lungs → L1/diaphragm)
+  - [ ] Abdomen (T12/L1 → L5)
+  - [ ] Head & Neck (brain/skull → C7/clavicles)
+  - [ ] Brain (brain boundaries)
+- [ ] Superior and inferior margins are correctly applied
+- [ ] Metadata includes both superior_margin_cm and inferior_margin_cm
 
 ---
 
@@ -158,6 +241,7 @@ Test what happens when CT doesn't extend far enough for the requested margin.
   "region": "pelvis",
   "superior_z_mm": 245.5,
   "inferior_z_mm": -54.8,
+  "superior_margin_cm": 2.0,
   "inferior_margin_cm": 10.0,
   "cropped_files": {
     "ct": "/path/to/ct_cropped.nii.gz",

@@ -55,7 +55,8 @@ class PipelineConfig:
 
     # Systematic CT cropping for consistent volume analysis
     ct_cropping_enabled: bool = False
-    ct_cropping_region: str = "pelvis"
+    ct_cropping_region: str = "pelvis"  # "pelvis", "thorax", "abdomen", "head_neck", "brain"
+    ct_cropping_superior_margin_cm: float = 2.0
     ct_cropping_inferior_margin_cm: float = 10.0
     ct_cropping_use_for_dvh: bool = True
     ct_cropping_use_for_radiomics: bool = True

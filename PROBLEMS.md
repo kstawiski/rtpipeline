@@ -11,12 +11,19 @@ These are the outstanding clinical/technical concerns flagged after reviewing th
 - **Follow-up:** When new auto-seg templates are added, confirm their ROI names normalize correctly so provenance stays accurate.
 
 ## Systemic Structure Cropping ✅
-- **Status:** Solution implemented 2025-11-09. Created systematic CT cropping module (`rtpipeline/anatomical_cropping.py`) that crops all CTs to consistent anatomical boundaries (L1 vertebra to femoral heads + 10cm) using TotalSegmentator landmarks.
+- **Status:** Solution fully implemented 2025-11-09, expanded with multi-region support 2025-11-10.
 - **Problem Reframed:** The real issue was not the cropping warnings themselves, but that percentage DVH metrics (V95%, V20Gy) were meaningless because volume denominators varied across patients due to different CT field-of-view extents.
-- **Solution:** Systematic cropping ensures all patients have the same analysis volume (~12,000 cm³ for pelvis), making percentage metrics meaningful for cross-patient comparison.
+- **Solution:** Systematic CT cropping module (`rtpipeline/anatomical_cropping.py`) that crops all CTs to consistent anatomical boundaries using TotalSegmentator landmarks.
+- **Supported Regions:**
+  - **Pelvis**: L1 vertebra → femoral heads + margin (default: 10cm inferior)
+  - **Thorax**: C7/lung apex → L1/diaphragm (default: 2cm margins)
+  - **Abdomen**: T12/L1 → L5 vertebra (default: 2cm margins)
+  - **Head & Neck**: Brain/skull apex → C7/clavicles (default: 2cm margins)
+  - **Brain**: Brain boundaries (default: 1cm margins)
+- **Integration:** Complete CLI, DVH, and radiomics integration. Automatically uses cropped structures when enabled.
 - **Configuration:** Added `ct_cropping` section to `config.yaml` (disabled by default, opt-in for multi-patient studies).
-- **Status:** Core implementation complete. CLI integration and DVH/radiomics integration pending.
-- **Follow-up:** Clinical validation on full cohort needed. Verify cropping boundaries are appropriate for clinical use. See `SYSTEMATIC_CT_CROPPING.md` for complete documentation.
+- **Benefits:** Makes percentage DVH metrics (V%, D%) meaningful for cross-patient comparison. Enables valid statistical analysis on percentage-based endpoints.
+- **Follow-up:** Clinical validation on full cohort needed. Verify cropping boundaries are appropriate for clinical use. See `TESTING_CT_CROPPING.md` for testing procedures.
 
 ## Custom Structure Warnings During DVH
 - `Logs_Snakemake/stage_dvh.log` is full of "Source structure ... not found" messages (e.g. `pelvic_bones`, `bowel_bag`).
