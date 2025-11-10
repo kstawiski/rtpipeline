@@ -253,7 +253,7 @@ Test cropping for thorax, abdomen, head & neck, and brain regions.
 }
 ```
 
-###DVH Consistency (Before vs After)
+### DVH Consistency (Before vs After)
 
 **Before Cropping**:
 ```
@@ -307,7 +307,7 @@ WARNING: Inferior boundary exceeds CT extent. Clamped to YYYmm. This may affect 
 
 ---
 
-##Performance Considerations
+## Performance Considerations
 
 - Cropping adds ~30 seconds per course (landmark extraction + RTSTRUCT creation)
 - Parallelizes across courses (uses `effective_workers()`)
