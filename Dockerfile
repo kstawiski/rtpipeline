@@ -49,7 +49,6 @@ RUN conda config --set channel_priority strict && \
 # Install Snakemake in base environment
 RUN mamba install -y -c conda-forge -c bioconda \
     snakemake>=7.0 \
-    snakemake-minimal \
     && mamba clean -afy
 
 # Create app directory
