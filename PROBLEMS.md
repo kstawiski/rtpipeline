@@ -25,18 +25,23 @@ These are the outstanding clinical/technical concerns flagged after reviewing th
 - **Benefits:** Makes percentage DVH metrics (V%, D%) meaningful for cross-patient comparison. Enables valid statistical analysis on percentage-based endpoints.
 - **Follow-up:** Clinical validation on full cohort needed. Verify cropping boundaries are appropriate for clinical use. See `TESTING_CT_CROPPING.md` for testing procedures.
 
-## Custom Structure Warnings During DVH
-- `Logs_Snakemake/stage_dvh.log` is full of "Source structure ... not found" messages (e.g. `pelvic_bones`, `bowel_bag`).
-- Indicates mismatched naming between expected TotalSegmentator outputs and custom structure definitions.
-- **Action:** Align custom-structure YAML with actual RTSTRUCT ROI names or adjust the importer to sanitize names before Boolean ops.
+## Custom Structure Warnings During DVH ✅ (Enhanced)
+- **Status:** Enhanced 2025-11-10. Added documentation to `custom_structures_pelvic.yaml` clarifying TotalSegmentator structure names and proper usage.
+- **Changes:** Added comments explaining that structure names must match TotalSegmentator output exactly, added `bowel_bag` example structure
+- `Logs_Snakemake/stage_dvh.log` may still show "Source structure ... not found" warnings if structures are outside CT field of view
+- Structures with missing components are automatically marked as "__partial" in outputs (handled by existing code in `dvh.py:454-476`)
+- **Follow-up:** Users should verify their custom structure definitions match their TotalSegmentator model output
 
 ## Prescription Dose Missing for Some Courses ✅
 - **Status:** Fixed 2025-10-04. Prescription inference now falls back to FractionGroup / ReferencedBeam dose totals when `TargetPrescriptionDose` is absent. Current metadata shows 50 Gy (480007/2024-08) and 62 Gy (487009/2025-03).
 - **Follow-up:** Double-check atypical totals (e.g., 62 Gy) with clinical team; confirm multi-plan sums remain correct when additional boosts are present.
 
-## Metadata: Reconstruction Algorithm Empty
-- `ct_reconstruction_algorithm` column is blank for all courses despite docs requiring it.
-- **Action:** Map vendor-specific DICOM tags (e.g. `ReconstructionAlgorithm`, `ConvolutionKernel`, `IterativeReconstructionMethod`) into the metadata exporter.
+## Metadata: Reconstruction Algorithm Empty ✅
+- **Status:** Enhanced 2025-11-10. Improved fallback chain in `organize.py:1647-1653` to check multiple DICOM tags.
+- **Changes:** Now checks `ReconstructionAlgorithm`, `ReconstructionMethod`, `ConvolutionKernel`, and `FilterType` in fallback order
+- If all tags are missing from DICOM files, column will still be empty (indicates vendor doesn't populate these standard tags)
+- **Impact:** Should capture reconstruction algorithm for most CT scanners; remaining blank fields indicate missing DICOM metadata
+- **Follow-up:** Monitor outputs to verify improved capture rate; may need vendor-specific private tags for some scanners
 
 ## Fraction Count Inflation in `case_metadata.xlsx`
 - **Status:** Fixed 2025-10-04. Fraction aggregation now deduplicates delivery records by plan/fraction number, so course counts match clinical schedules (25/30 fractions etc.).
