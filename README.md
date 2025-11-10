@@ -1,12 +1,33 @@
 # rtpipeline
 
-Modern radiotherapy departments produce a rich set of DICOM-RT objects (CT, MR, RTPLAN, RTDOSE, RTSTRUCT, REG).  
+Modern radiotherapy departments produce a rich set of DICOM-RT objects (CT, MR, RTPLAN, RTDOSE, RTSTRUCT, REG).
 **rtpipeline** turns those raw exports into analysis-ready data tables, volumetric masks, DVH metrics, and quality-control reports, while keeping a reproducible record of every step. The workflow is implemented with **Snakemake** and the companion **rtpipeline** Python package.
+
+## 🚀 Quick Start
+
+**New to rtpipeline?** Start here:
+
+```bash
+# 1. Start the container with Web UI
+docker-compose up -d
+
+# 2. Open your browser to http://localhost:8080
+
+# 3. Drag and drop your DICOM files
+
+# 4. Click "Start Processing"
+
+# 5. Download your results when complete
+```
+
+📖 **[Getting Started Guide](GETTING_STARTED.md)** - Complete beginner's guide
+🌐 **[Web UI Documentation](WEBUI.md)** - Detailed Web UI features and usage
 
 ---
 
 ## Feature Highlights
 
+* **Web UI** (NEW) – browser-based interface with drag-and-drop upload, automatic DICOM validation, real-time progress monitoring, and one-click results download. No command-line experience required!
 * **Course organisation** – automatically groups series/RT objects per patient course, reconciles registrations, and copies all referenced MR images.
 * **Segmentation**
   * **TotalSegmentator (CT + MR)** – generates `total` (CT) and `total_mr` (MR) masks with **DICOM RTSTRUCT output** (directly compatible with clinical systems) plus binary NIfTI masks.
@@ -30,6 +51,7 @@ Modern radiotherapy departments produce a rich set of DICOM-RT objects (CT, MR, 
 | --- | --- |
 | `Snakefile` | Snakemake workflow orchestrating all stages. |
 | `config.yaml` | Default configuration (paths, segmentation settings, radiomics options, custom models). |
+| `webui/` | Web UI application (Flask-based) for browser-based DICOM upload and processing. |
 | `envs/` | Conda environment definitions (`rtpipeline.yaml`, `rtpipeline-radiomics.yaml`). |
 | `rtpipeline/` | Python package powering organisation, segmentation, DVH, radiomics, and QC. |
 | `custom_models/` | nnUNet bundles. Each model folder contains `custom_model.yaml` plus weights (zipped or unpacked). |
