@@ -20,6 +20,52 @@ T = TypeVar('T')
 R = TypeVar('R')
 
 
+def validate_path(path: Path | str, base: Path | str, allow_absolute: bool = False) -> Path:
+    """
+    Validate that a path doesn't escape the base directory (path traversal protection).
+
+    Args:
+        path: Path to validate (can be relative or absolute)
+        base: Base directory that path must be within
+        allow_absolute: If True, allow absolute paths outside base (default: False)
+
+    Returns:
+        Resolved path if validation passes
+
+    Raises:
+        ValueError: If path attempts to escape base directory
+
+    Example:
+        >>> validate_path(Path("data/file.txt"), Path("/app/data"))
+        PosixPath('/app/data/file.txt')
+
+        >>> validate_path(Path("../../etc/passwd"), Path("/app/data"))
+        ValueError: Path traversal attempt detected: ../../etc/passwd
+    """
+    path = Path(path)
+    base = Path(base).resolve()
+
+    # If path is absolute and we allow it, just check it exists within base
+    if path.is_absolute():
+        if not allow_absolute:
+            raise ValueError(f"Absolute paths not allowed: {path}")
+        resolved = path.resolve()
+    else:
+        # For relative paths, resolve against base
+        resolved = (base / path).resolve()
+
+    # Security check: ensure resolved path is within base directory
+    try:
+        resolved.relative_to(base)
+    except ValueError:
+        raise ValueError(
+            f"Path traversal attempt detected: {path} resolves to {resolved} "
+            f"which is outside base directory {base}"
+        )
+
+    return resolved
+
+
 def read_dicom(path: str | os.PathLike) -> FileDataset | None:
     try:
         return pydicom.dcmread(str(path), force=True)

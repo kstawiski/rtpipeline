@@ -26,6 +26,7 @@ dependencies = [
   "plotly",
   "nbformat",     # For notebook processing support
   "ipython",      # For notebook processing support
+  "filelock",     # For thread-safe file operations in parallel processing
 ]
 
 [project.optional-dependencies]
