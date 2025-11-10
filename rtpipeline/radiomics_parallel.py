@@ -38,6 +38,7 @@ class RestrictedUnpickler(pickle.Unpickler):
         'numpy': {'ndarray', 'dtype', 'int64', 'int32', 'float64', 'float32', 'bool_', 'generic'},
         'builtins': {'dict', 'list', 'tuple', 'str', 'int', 'float', 'bool', 'NoneType'},
         'pathlib': {'Path', 'PosixPath', 'WindowsPath'},
+        'collections': {'OrderedDict'},  # Used internally by numpy
     }
 
     def find_class(self, module, name):
