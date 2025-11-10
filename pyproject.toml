@@ -19,7 +19,7 @@ dependencies = [
   "pydicom-seg==0.4.1",
   "matplotlib",
   "openpyxl",
-  "TotalSegmentator @ git+https://github.com/wasserth/TotalSegmentator",
+  "TotalSegmentator>=2.4.0",  # Use latest stable version from PyPI
   "dicom2nifti>=2.4",
   "nested-lookup",
   "rt-utils",
