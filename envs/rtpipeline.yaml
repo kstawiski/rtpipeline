@@ -1,5 +1,7 @@
 name: rtpipeline
 channels:
+  - pytorch
+  - nvidia
   - conda-forge
   - defaults
 dependencies:
@@ -12,9 +14,10 @@ dependencies:
   - scikit-image
   - pydicom>=3.0.0
   - SimpleITK>=2.5.0
-  - pytorch=2.5.*
-  - torchvision=0.20.*
-  - torchaudio=2.5.*
+  - pytorch=2.3.*
+  - torchvision=0.18.*
+  - torchaudio=2.3.*
+  - pytorch-cuda=12.1
   - nibabel
   - dcm2niix
   - nnunet=1.7.*
