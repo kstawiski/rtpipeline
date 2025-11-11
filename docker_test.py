@@ -27,11 +27,10 @@ def test_cpu_detection():
     # Check CPU affinity (actual available CPUs)
     try:
         import psutil
-        cpu_affinity = len(psutil.Process().cpu_affinity())
-        print(f"CPU affinity (actual available): {cpu_affinity}")
+        cpu_affinity_count = len(psutil.Process().cpu_affinity())
+        print(f"CPU affinity (actual available): {cpu_affinity_count}")
     except ImportError:
         print("psutil not available - install for better CPU detection")
-        cpu_affinity = None
 
     # Check cgroup CPU limits (Docker-specific)
     try:
@@ -228,7 +227,7 @@ def main():
 
     # Run tests
     try:
-        cpu_count, effective_workers = test_cpu_detection()
+        test_cpu_detection()
         results['cpu_detection'] = True
     except Exception as e:
         print(f"❌ CPU detection failed: {e}")

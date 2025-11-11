@@ -86,14 +86,3 @@ class PipelineConfig:
             return int(self.workers)
         cpu = _os.cpu_count() or 2
         return max(1, cpu - 1)
-
-    def optimal_thread_limit(self) -> int:
-        """Calculate optimal thread limit per worker for I/O-bound operations.
-
-        Returns a reasonable thread count for operations like resampling and saving
-        that benefit from parallelization but shouldn't saturate all cores.
-        """
-        import os as _os
-        cpu = _os.cpu_count() or 2
-        # Use 25-50% of cores for internal threading, minimum 2, maximum 8
-        return max(2, min(8, cpu // 2))
