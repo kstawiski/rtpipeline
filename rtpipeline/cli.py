@@ -531,7 +531,10 @@ def main(argv: list[str] | None = None) -> int:
     totalseg_num_proc_pre = _positive_or_none(args.totalseg_num_proc_pre) or 1
     totalseg_num_proc_export = _positive_or_none(args.totalseg_num_proc_export) or 1
 
-    # Set timeout environment variables
+    # Set timeout environment variables for subprocess communication
+    # Note: These environment variables are used by subprocess calls and persist for the
+    # entire process lifetime. This is intentional for subprocess timeout configuration.
+    # If the pipeline is imported as a module, these values will affect subsequent operations.
     os.environ['TOTALSEG_TIMEOUT'] = str(args.totalseg_timeout)
     os.environ['DCM2NIIX_TIMEOUT'] = str(args.dcm2niix_timeout)
     if args.radiomics_task_timeout:
