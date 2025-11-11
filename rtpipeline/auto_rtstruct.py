@@ -155,6 +155,39 @@ def _iter_binary_masks(nifti_dir: Path, prefix: Optional[str] = None) -> Iterabl
     return masks
 
 
+def _pretty_roi_name(name: str) -> str:
+    """Strip TotalSegmentator prefixes (e.g., 'total--') from ROI names."""
+    if not name:
+        return name
+
+    working = name.strip()
+    suffix = ""
+    if working.endswith("__partial"):
+        working = working[:-9]
+        suffix = "__partial"
+
+    dash_parts = [part for part in working.split("--") if part]
+    if dash_parts:
+        candidate = dash_parts[-1]
+    else:
+        candidate = working
+
+    # Remove known TotalSegmentator prefixes
+    lowered = candidate.lower()
+    for prefix in ("total__", "total_", "total-"):
+        if lowered.startswith(prefix):
+            candidate = candidate[len(prefix):]
+            lowered = candidate.lower()
+            break
+    if lowered.startswith("total"):
+        trimmed = candidate[5:].lstrip("_-")
+        if trimmed:
+            candidate = trimmed
+
+    cleaned = candidate or working
+    return cleaned + suffix
+
+
 def _resample_to_reference(seg_img: sitk.Image, ref_img: sitk.Image) -> sitk.Image:
     if (seg_img.GetSize() == ref_img.GetSize() and
         seg_img.GetSpacing() == ref_img.GetSpacing() and
@@ -244,6 +277,7 @@ def build_auto_rtstruct(course_dir: Path) -> Optional[Path]:
         return None
 
     added_any = False
+    added_names: set[str] = set()
 
     if seg_img is not None:
         # Resample segmentation to CT geometry and add each label present
@@ -256,11 +290,16 @@ def build_auto_rtstruct(course_dir: Path) -> Optional[Path]:
         else:
             for idx in labels:
                 name = label_map.get(idx, f'Segment_{idx}')
+                name = _pretty_roi_name(name)
                 mask = seg_arr == idx
                 if not np.any(mask):
                     continue
                 try:
-                    rtstruct.add_roi(mask=mask, name=name)
+                    roi_name = name
+                    while roi_name in added_names:
+                        roi_name = f"{roi_name}_dup"
+                    rtstruct.add_roi(mask=mask, name=roi_name)
+                    added_names.add(roi_name)
                     added_any = True
                 except Exception as e:
                     logger.debug("Failed to add ROI %s: %s", name, e)
@@ -282,9 +321,13 @@ def build_auto_rtstruct(course_dir: Path) -> Optional[Path]:
             if not np.any(mask_bin):
                 continue
 
-            roi_name = name
+            roi_name = _pretty_roi_name(name)
+            base_roi = roi_name
+            while roi_name in added_names:
+                roi_name = f"{base_roi}_dup"
             try:
                 rtstruct.add_roi(mask=mask_bin, name=roi_name)
+                added_names.add(roi_name)
                 added_any = True
             except Exception as e:
                 logger.debug("Failed to add ROI %s: %s", roi_name, e)

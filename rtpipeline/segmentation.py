@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import datetime
+import functools
 import io
 import json
 import hashlib
 import logging
 import os
+import re
 import shlex
 import shutil
 import stat
@@ -200,14 +202,60 @@ def _validate_totalseg_environment(config: PipelineConfig) -> bool:
         return True  # Don't fail completely on validation error
 
 
+@functools.lru_cache(maxsize=None)
+def _totalseg_supported_output_types_cached(prefix: str, cmd: str) -> set[str]:
+    """Inspect TotalSegmentator CLI to determine supported output types."""
+    shell = os.environ.get('SHELL', '/bin/bash')
+    if not os.path.isfile(shell):
+        shell = shutil.which('bash') or shutil.which('sh') or '/bin/sh'
+    base_command = cmd.strip() or "TotalSegmentator"
+    probe = f"{prefix}{base_command} --help"
+    try:
+        result = subprocess.run(
+            probe,
+            shell=True,
+            executable=shell,
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=20,
+        )
+    except Exception as exc:
+        logger.debug("Failed to inspect TotalSegmentator CLI: %s", exc)
+        return {"nifti", "dicom"}
+
+    output = result.stdout or ""
+    match = re.search(r"-ot\s*\{\s*([^}]*)\}", output)
+    if not match:
+        return {"nifti", "dicom"}
+
+    options = {opt.strip() for opt in match.group(1).split(",") if opt.strip()}
+    return options or {"nifti", "dicom"}
+
+
+def _totalseg_supported_output_types(config: PipelineConfig) -> set[str]:
+    prefix = f"{config.conda_activate} && " if config.conda_activate else ""
+    cmd = config.totalseg_cmd or "TotalSegmentator"
+    return _totalseg_supported_output_types_cached(prefix, cmd)
+
+
 def run_totalsegmentator(config: PipelineConfig, input_path: Path, output_path: Path, output_type: str, task: Optional[str] = None) -> bool:
     """Run TotalSegmentator directly without compatibility wrapper."""
 
     # Use TotalSegmentator directly - modern NumPy/SciPy work fine
-    import shlex
+    supported_types = _totalseg_supported_output_types(config)
+    if output_type and output_type not in supported_types:
+        logger.info(
+            "TotalSegmentator output_type '%s' not supported by current CLI; skipping direct export",
+            output_type,
+        )
+        return False
 
+    totalseg_cmd = config.totalseg_cmd or "TotalSegmentator"
+    device = getattr(config, "totalseg_device", "gpu") or "gpu"
     cmd_parts = [
-        config.totalseg_cmd or "TotalSegmentator",
+        totalseg_cmd,
         "-i", str(input_path),
         "-o", str(output_path),
         "-ot", output_type,
@@ -224,6 +272,28 @@ def run_totalsegmentator(config: PipelineConfig, input_path: Path, output_path: 
 
     if getattr(config, "totalseg_license_key", None):
         logger.debug("Using TotalSegmentator license key from config")
+
+    if getattr(config, "totalseg_force_split", True):
+        cmd_parts.append("--force_split")
+
+    if device:
+        cmd_parts.extend(["-d", device])
+
+    nr_thr_resamp = getattr(config, "totalseg_nr_thr_resamp", None)
+    if nr_thr_resamp:
+        try:
+            nr_thr_resamp_int = max(1, int(nr_thr_resamp))
+            cmd_parts.extend(["--nr_thr_resamp", str(nr_thr_resamp_int)])
+        except (TypeError, ValueError):
+            pass
+
+    nr_thr_saving = getattr(config, "totalseg_nr_thr_saving", None)
+    if nr_thr_saving:
+        try:
+            nr_thr_saving_int = max(1, int(nr_thr_saving))
+            cmd_parts.extend(["--nr_thr_saving", str(nr_thr_saving_int)])
+        except (TypeError, ValueError):
+            pass
 
     cmd = "{}{}".format(
         _prefix(config),
@@ -254,6 +324,30 @@ def run_totalsegmentator(config: PipelineConfig, input_path: Path, output_path: 
         env.setdefault("TOTALSEG_LICENSE", str(config.totalseg_license_key))
     if getattr(config, "totalseg_weights_dir", None):
         env.setdefault("TOTALSEG_WEIGHTS_PATH", str(config.totalseg_weights_dir))
+
+    # Constrain TotalSegmentator worker behaviour to avoid Docker spawning issues
+    def _to_env_int(value: Optional[int], fallback: int) -> str:
+        try:
+            if value is None:
+                return str(fallback)
+            coerced = int(value)
+            return str(coerced if coerced > 0 else fallback)
+        except (TypeError, ValueError):
+            return str(fallback)
+
+    env.setdefault("TOTALSEG_NUM_PROCESSES_PREPROCESSING", _to_env_int(getattr(config, "totalseg_num_proc_pre", None), 1))
+    env.setdefault("TOTALSEG_NUM_PROCESSES_SEGMENTATION_EXPORT", _to_env_int(getattr(config, "totalseg_num_proc_export", None), 1))
+    env.setdefault("TOTALSEG_FORCE_TORCH_NUM_THREADS", "1")
+    env.setdefault("TOTALSEG_PRELOAD_WEIGHTS", "1")
+    if device:
+        env.setdefault("TOTALSEG_ACCELERATOR", device if device != "gpu" else "cuda")
+        env.setdefault("TOTALSEG_DEVICE", device)
+    # Mirror nnU-Net expectations (helps when env variables missing)
+    weights_env = env.get("TOTALSEG_WEIGHTS_PATH")
+    if weights_env:
+        env.setdefault("nnUNet_results", weights_env)
+        env.setdefault("nnUNet_preprocessed", weights_env)
+        env.setdefault("nnUNet_raw", weights_env)
 
     # First attempt with default settings
     ok = _run(cmd, env=env)

@@ -183,6 +183,51 @@ class CustomStructureProcessor:
     def _normalize_name(name: str) -> str:
         return "".join(ch.lower() for ch in name if ch.isalnum())
 
+    def _alias_candidates(self, name: str) -> list[str]:
+        """Generate fall-back aliases for matching structure names."""
+        candidates: set[str] = set()
+
+        def _add(candidate: Optional[str]) -> None:
+            if candidate:
+                candidates.add(candidate)
+
+        _add(name)
+
+        base = name
+        partial_suffix = ""
+        if base.endswith("__partial"):
+            base = base[:-9]
+            partial_suffix = "__partial"
+            _add(base)
+
+        # Split on TotalSegmentator style separators
+        dash_parts = [part for part in base.split("--") if part]
+        if dash_parts:
+            for part in dash_parts:
+                _add(part + partial_suffix)
+            # Prefer the last token (typically the anatomical label)
+            _add(dash_parts[-1] + partial_suffix)
+        underscore_parts = [part for part in base.split("__") if part]
+        for part in underscore_parts:
+            _add(part + partial_suffix)
+
+        # Handle leading "total" prefixes
+        def _strip_total_prefix(token: str) -> Optional[str]:
+            lowered = token.lower()
+            if lowered.startswith("total"):
+                stripped = token[5:].lstrip("_-")
+                if stripped:
+                    return stripped
+            return None
+
+        for token in list(candidates):
+            stripped = _strip_total_prefix(token)
+            if stripped:
+                _add(stripped)
+
+        # Remove any lingering empty entries
+        return [cand for cand in candidates if cand]
+
     def process_custom_structure(
         self,
         config: CustomStructureConfig,
@@ -199,9 +244,12 @@ class CustomStructureProcessor:
             Processed mask or None if source structures not available
         """
         # Build lookup table with normalized keys for resilient matching
-        normalization_map: Dict[str, str] = {
-            self._normalize_name(key): key for key in available_masks.keys()
-        }
+        normalization_map: Dict[str, str] = {}
+        for key in available_masks.keys():
+            for alias in self._alias_candidates(key):
+                normalized = self._normalize_name(alias)
+                if normalized and normalized not in normalization_map:
+                    normalization_map[normalized] = key
 
         missing_sources: list[str] = []
         source_masks: list[np.ndarray] = []

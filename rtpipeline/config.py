@@ -27,6 +27,12 @@ class PipelineConfig:
     totalseg_cmd: str = "TotalSegmentator"
     totalseg_license_key: str | None = None
     totalseg_weights_dir: Path | None = None
+    totalseg_device: str = "gpu"
+    totalseg_force_split: bool = True
+    totalseg_nr_thr_resamp: int | None = 1
+    totalseg_nr_thr_saving: int | None = 1
+    totalseg_num_proc_pre: int | None = 1
+    totalseg_num_proc_export: int | None = 1
 
     # Additional segmentation models (in addition to default 'total')
     extra_seg_models: list[str] = field(default_factory=list)

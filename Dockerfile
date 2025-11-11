@@ -140,7 +140,7 @@ environments:
 custom_structures: "custom_structures_pelvic.yaml"
 
 ct_cropping:
-  enabled: false
+  enabled: true
   region: "pelvis"
   superior_margin_cm: 2.0
   inferior_margin_cm: 10.0
@@ -157,7 +157,11 @@ ENV SNAKEMAKE_OUTPUT_CACHE="" \
     TMPDIR=/tmp \
     HOME=/root \
     NUMBA_CACHE_DIR=/tmp/cache \
-    MPLCONFIGDIR=/tmp/cache
+    MPLCONFIGDIR=/tmp/cache \
+    TOTALSEG_WEIGHTS_PATH=/root/.totalsegmentator/nnunet/results
+
+# Pre-create TotalSegmentator weights directory to allow host mounts/caching
+RUN mkdir -p /root/.totalsegmentator/nnunet/results
 
 # Expose ports
 EXPOSE 8888 8080
@@ -166,7 +170,7 @@ EXPOSE 8888 8080
 CMD ["/bin/bash"]
 
 # Health check
-HEALTHCHECK --interval=60s --timeout=30s --start-period=120s --retries=3 \
+HEALTHCHECK --interval=300s --timeout=30s --start-period=120s --retries=3 \
     CMD conda info && python -c "import rtpipeline" || exit 1
 
 # Singularity-specific labels

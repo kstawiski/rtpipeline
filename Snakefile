@@ -85,6 +85,12 @@ SEG_THREADS_PER_WORKER = _coerce_int(SEG_CONFIG.get("threads_per_worker"), None)
 if SEG_THREADS_PER_WORKER is not None and SEG_THREADS_PER_WORKER < 1:
     SEG_THREADS_PER_WORKER = 1
 SEG_FORCE_SEGMENTATION = bool(SEG_CONFIG.get("force", False))
+SEG_DEVICE = str(SEG_CONFIG.get("device") or "gpu")
+SEG_FORCE_SPLIT = bool(SEG_CONFIG.get("force_split", True))
+SEG_NR_THR_RESAMP = _coerce_int(SEG_CONFIG.get("nr_threads_resample"), None)
+SEG_NR_THR_SAVING = _coerce_int(SEG_CONFIG.get("nr_threads_save"), None)
+SEG_NUM_PROC_PRE = _coerce_int(SEG_CONFIG.get("num_proc_preprocessing"), None)
+SEG_NUM_PROC_EXPORT = _coerce_int(SEG_CONFIG.get("num_proc_export"), None)
 
 _seg_tmp_dir = SEG_CONFIG.get("temp_dir")
 if _seg_tmp_dir:
@@ -347,6 +353,20 @@ rule segmentation_course:
             cmd.extend(["--extra-seg-models", model])
         if SEG_ROI_SUBSET:
             cmd.extend(["--totalseg-roi-subset", SEG_ROI_SUBSET])
+        if SEG_DEVICE:
+            cmd.extend(["--totalseg-device", SEG_DEVICE])
+        if SEG_FORCE_SPLIT:
+            cmd.append("--totalseg-force-split")
+        else:
+            cmd.append("--no-totalseg-force-split")
+        if SEG_NR_THR_RESAMP is not None and SEG_NR_THR_RESAMP > 0:
+            cmd.extend(["--totalseg-nr-thr-resamp", str(SEG_NR_THR_RESAMP)])
+        if SEG_NR_THR_SAVING is not None and SEG_NR_THR_SAVING > 0:
+            cmd.extend(["--totalseg-nr-thr-saving", str(SEG_NR_THR_SAVING)])
+        if SEG_NUM_PROC_PRE is not None and SEG_NUM_PROC_PRE > 0:
+            cmd.extend(["--totalseg-num-proc-pre", str(SEG_NUM_PROC_PRE)])
+        if SEG_NUM_PROC_EXPORT is not None and SEG_NUM_PROC_EXPORT > 0:
+            cmd.extend(["--totalseg-num-proc-export", str(SEG_NUM_PROC_EXPORT)])
         if SEG_MAX_WORKERS:
             cmd.extend(["--seg-workers", str(max(1, SEG_MAX_WORKERS))])
         if SEG_THREADS_PER_WORKER is not None:

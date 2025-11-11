@@ -20,6 +20,8 @@ services:
       - ./Logs:/data/logs:rw
       # Mount custom models directory (for nnUNet weights)
       - ./custom_models:/data/models:rw
+      # Cache TotalSegmentator weights to avoid re-downloading
+      - ./totalseg_weights:/root/.totalsegmentator:rw
       # Mount uploads directory for web UI
       - ./Uploads:/data/uploads:rw
       # Optional: mount notebooks for development
@@ -49,18 +51,6 @@ services:
         python app.py
       "
     # GPU support - DEFAULT configuration
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-          cpus: '4.0'
-          memory: 8G
-        limits:
-          cpus: '24.0'
-          memory: 64G
     shm_size: '4gb'  # Increased shared memory for PyTorch
     restart: unless-stopped
 
@@ -79,6 +69,7 @@ services:
       - ./Output:/data/output:rw
       - ./Logs:/data/logs:rw
       - ./custom_models:/data/models:rw
+      - ./totalseg_weights:/root/.totalsegmentator:rw
       - ./Uploads:/data/uploads:rw
       - ./Code:/app/Code:rw
     ports:
