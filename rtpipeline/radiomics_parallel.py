@@ -7,6 +7,7 @@ using process-based parallelism instead of thread-based to avoid segmentation fa
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import pickle
@@ -311,7 +312,8 @@ def parallel_radiomics_for_course(
     config: Any,
     course_dir: Path,
     custom_structures_config: Optional[Path] = None,
-    max_workers: Optional[int] = None
+    max_workers: Optional[int] = None,
+    use_cropped: bool = True
 ) -> Optional[Path]:
     """
     Parallel radiomics processing for a single course.
@@ -360,11 +362,35 @@ def parallel_radiomics_for_course(
         logger.info("No CT image for radiomics in %s", course_dir)
         return None
 
+    # Determine which auto RTSTRUCT to use (cropped or original)
+    rs_auto_name = "RS_auto.dcm"
+    if use_cropped:
+        rs_auto_cropped = course_dir / "RS_auto_cropped.dcm"
+        cropping_metadata_path = course_dir / "cropping_metadata.json"
+        if rs_auto_cropped.exists() and cropping_metadata_path.exists():
+            try:
+                crop_meta = json.loads(cropping_metadata_path.read_text())
+                logger.info(
+                    "Using systematically cropped RTSTRUCT for radiomics "
+                    "(region: %s, superior: %.1fmm, inferior: %.1fmm)",
+                    crop_meta.get("region", "unknown"),
+                    float(crop_meta.get("superior_z_mm", 0.0)),
+                    float(crop_meta.get("inferior_z_mm", 0.0)),
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Failed to load cropping metadata from %s: %s",
+                    cropping_metadata_path,
+                    exc,
+                )
+            else:
+                rs_auto_name = "RS_auto_cropped.dcm"
+
     # Collect all tasks
     tasks: List[tuple[str, str, np.ndarray, bool]] = []
 
     # Process standard RTSTRUCTs
-    for source, rs_name in (("Manual", "RS.dcm"), ("AutoRTS_total", "RS_auto.dcm")):
+    for source, rs_name in (("Manual", "RS.dcm"), ("AutoRTS_total", rs_auto_name)):
         rs_path = course_dir / rs_name
         if not rs_path.exists():
             continue

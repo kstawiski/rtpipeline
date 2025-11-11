@@ -126,6 +126,21 @@ rtpipeline is fully containerized for easy deployment. Both Docker and Singulari
 
 #### Docker Setup
 
+**0. Prepare host directories (do once):**
+```bash
+mkdir -p Input Output Logs Uploads totalseg_weights
+```
+
+- (Optional) **Seed TotalSegmentator weights** once to avoid the first-run download:
+  ```bash
+  docker run --rm --gpus all \
+    -v $(pwd)/Example_data:/data/input:ro \
+    -v $(pwd)/totalseg_weights:/root/.totalsegmentator \
+    kstawiski/rtpipeline:latest \
+    TotalSegmentator -i /data/input/480008 -o /tmp/out --preview
+  ```
+  The preview run downloads all required nnU-Net weights into `totalseg_weights/` which the pipeline will reuse.
+
 **1. Build the image:**
 ```bash
 ./build.sh
@@ -178,21 +193,25 @@ See [WEBUI.md](WEBUI.md) for complete documentation.
 **5. Run standalone container:**
 ```bash
 # With GPU support (requires nvidia-docker or Docker >=19.03 with nvidia-container-toolkit)
-docker run -it --rm --gpus all \
+docker run -it --rm --gpus all --shm-size=4g \
   -v $(pwd)/Input:/data/input:ro \
   -v $(pwd)/Output:/data/output:rw \
   -v $(pwd)/Logs:/data/logs:rw \
+  -v $(pwd)/totalseg_weights:/root/.totalsegmentator:rw \
   kstawiski/rtpipeline:latest bash
 
 # Inside container, run pipeline with container config:
 snakemake --cores all --use-conda --configfile /app/config.container.yaml
 
 # CPU-only (no GPU)
-docker run -it --rm \
+docker run -it --rm --shm-size=4g \
   -v $(pwd)/Input:/data/input:ro \
   -v $(pwd)/Output:/data/output:rw \
+  -v $(pwd)/totalseg_weights:/root/.totalsegmentator:rw \
   kstawiski/rtpipeline:latest bash
 ```
+
+> **GPU note**: the container automatically limits TotalSegmentator to single-process preprocessing/export to avoid Docker multiprocessing issues. You can adjust these defaults via `config.yaml` if you have ample GPU RAM.
 
 **6. Build and push to Docker Hub:**
 ```bash
@@ -531,4 +550,3 @@ The script rewrites patient/course identifiers, anonymises DICOM headers, update
 ## License & Citation
 
 Please cite the relevant publications when using the pipeline in research (see references in `docs/pipeline_report.md`). TotalSegmentator, nnUNet, and other third-party tools retain their respective licenses.
-

@@ -119,6 +119,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--totalseg-fast", action="store_true", help="Add --fast for CPU runs to improve runtime")
     p.add_argument("--totalseg-roi-subset", default=None, help="Restrict to subset of ROIs (comma-separated)")
+    p.add_argument("--totalseg-device", default="gpu", choices=["gpu", "cpu", "mps"], help="Device to run TotalSegmentator on (default: gpu)")
+    p.add_argument("--totalseg-nr-thr-resamp", type=int, default=None, help="Threads for TotalSegmentator resampling step")
+    p.add_argument("--totalseg-nr-thr-saving", type=int, default=None, help="Threads for TotalSegmentator saving step")
+    p.add_argument("--totalseg-num-proc-pre", type=int, default=None, help="Worker processes for TotalSegmentator preprocessing")
+    p.add_argument("--totalseg-num-proc-export", type=int, default=None, help="Worker processes for TotalSegmentator export")
+    p.add_argument("--totalseg-force-split", dest="totalseg_force_split", action="store_true", help="Force TotalSegmentator to split volumes into chunks")
+    p.add_argument("--no-totalseg-force-split", dest="totalseg_force_split", action="store_false", help="Disable forced chunking in TotalSegmentator")
+    p.set_defaults(totalseg_force_split=None)
     p.add_argument("--custom-models-root", default=None, help="Directory containing custom segmentation model definitions (default: ./custom_models)")
     p.add_argument(
         "--custom-model",
@@ -482,6 +490,18 @@ def main(argv: list[str] | None = None) -> int:
         except FileNotFoundError:
             seg_temp_root = seg_temp_candidate
 
+    # TotalSegmentator worker/thread defaults
+    def _positive_or_none(value: int | None) -> int | None:
+        if value is None:
+            return None
+        return value if value > 0 else None
+
+    totalseg_force_split = args.totalseg_force_split if args.totalseg_force_split is not None else True
+    totalseg_nr_thr_resamp = _positive_or_none(args.totalseg_nr_thr_resamp) or 1
+    totalseg_nr_thr_saving = _positive_or_none(args.totalseg_nr_thr_saving) or 1
+    totalseg_num_proc_pre = _positive_or_none(args.totalseg_num_proc_pre) or 1
+    totalseg_num_proc_export = _positive_or_none(args.totalseg_num_proc_export) or 1
+
     cfg = PipelineConfig(
         dicom_root=Path(args.dicom_root).resolve(),
         output_root=Path(args.outdir).resolve(),
@@ -497,6 +517,12 @@ def main(argv: list[str] | None = None) -> int:
         totalseg_cmd=args.totalseg,
         totalseg_license_key=args.totalseg_license,
         totalseg_weights_dir=Path(args.totalseg_weights).resolve() if args.totalseg_weights else None,
+        totalseg_device=args.totalseg_device,
+        totalseg_force_split=totalseg_force_split,
+        totalseg_nr_thr_resamp=totalseg_nr_thr_resamp,
+        totalseg_nr_thr_saving=totalseg_nr_thr_saving,
+        totalseg_num_proc_pre=totalseg_num_proc_pre,
+        totalseg_num_proc_export=totalseg_num_proc_export,
         extra_seg_models=[m.strip() for part in (args.extra_seg_models or []) for m in part.split(",") if m.strip()],
         segmentation_workers=args.seg_workers,
         segmentation_thread_limit=seg_proc_threads,
