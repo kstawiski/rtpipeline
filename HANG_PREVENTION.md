@@ -83,12 +83,12 @@ def run_tasks_with_adaptive_workers(
 ERROR: Segmentation: task #5 (Patient123/Course1) timed out after 7200s
 ```
 
-### 3. Radiomics Parallel Processing Timeout
+### 3. Radiomics Parallel Processing
 
-#### Per-ROI Timeout
-**File:** `rtpipeline/radiomics_parallel.py:86, 488-489`
+#### Progress Monitoring
+**File:** `rtpipeline/radiomics_parallel.py:86`
 
-Each ROI extraction has an individual timeout:
+The radiomics processing includes configurable timeout and progress monitoring:
 ```python
 _TASK_TIMEOUT = int(os.environ.get('RTPIPELINE_RADIOMICS_TASK_TIMEOUT', '600'))
 ```
@@ -99,10 +99,10 @@ _TASK_TIMEOUT = int(os.environ.get('RTPIPELINE_RADIOMICS_TASK_TIMEOUT', '600'))
 ```
 
 **Behavior:**
-- Prevents single "bad" ROIs from hanging entire pipeline
-- Logs which ROI timed out
-- Continues with remaining ROIs
-- Uses `imap_unordered()` for better progress monitoring
+- Uses `imap_unordered()` for progress monitoring and efficient task distribution
+- Progress is logged periodically as tasks complete
+- Individual task retries are handled within worker processes
+- Note: Per-task timeout enforcement is handled at the subprocess level via the `_TASK_TIMEOUT` configuration within worker functions, not by the `imap_unordered()` iterator itself
 
 **Progress Logging:**
 ```
