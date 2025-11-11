@@ -160,6 +160,30 @@ def build_parser() -> argparse.ArgumentParser:
         default=[],
         help="Restrict stages to specific courses. Accepts PATIENT or PATIENT/COURSE; may be passed multiple times.",
     )
+    p.add_argument(
+        "--totalseg-timeout",
+        type=int,
+        default=3600,
+        help="Timeout for TotalSegmentator operations in seconds (default: 3600 = 1 hour)",
+    )
+    p.add_argument(
+        "--dcm2niix-timeout",
+        type=int,
+        default=300,
+        help="Timeout for dcm2niix operations in seconds (default: 300 = 5 minutes)",
+    )
+    p.add_argument(
+        "--task-timeout",
+        type=int,
+        default=None,
+        help="Timeout for general pipeline tasks in seconds (default: None = no timeout)",
+    )
+    p.add_argument(
+        "--radiomics-task-timeout",
+        type=int,
+        default=600,
+        help="Timeout for individual radiomics ROI extractions in seconds (default: 600 = 10 minutes)",
+    )
     p.add_argument("--force-redo", action="store_true", help="Force redo all steps, even if outputs exist (resume is default)")
     p.add_argument("-v", "--verbose", action="count", default=0, help="Increase verbosity")
     p.add_argument(
@@ -507,12 +531,21 @@ def main(argv: list[str] | None = None) -> int:
     totalseg_num_proc_pre = _positive_or_none(args.totalseg_num_proc_pre) or 1
     totalseg_num_proc_export = _positive_or_none(args.totalseg_num_proc_export) or 1
 
+    # Set timeout environment variables
+    os.environ['TOTALSEG_TIMEOUT'] = str(args.totalseg_timeout)
+    os.environ['DCM2NIIX_TIMEOUT'] = str(args.dcm2niix_timeout)
+    if args.radiomics_task_timeout:
+        os.environ['RTPIPELINE_RADIOMICS_TASK_TIMEOUT'] = str(args.radiomics_task_timeout)
+
     # Log parallelization settings
     logger.info("=== Parallelization Configuration ===")
     logger.info("CPU cores: %d, using %d workers by default (cores - 1)", cpu_count, max(1, cpu_count - 1))
     logger.info("TotalSegmentator: resampling threads=%d, saving threads=%d",
                 totalseg_nr_thr_resamp, totalseg_nr_thr_saving)
     logger.info("GPU device: %s (force_split=%s)", args.totalseg_device, totalseg_force_split)
+    logger.info("Timeouts: TotalSegmentator=%ds, dcm2niix=%ds, task=%s, radiomics=%ds",
+                args.totalseg_timeout, args.dcm2niix_timeout,
+                args.task_timeout or "None", args.radiomics_task_timeout)
 
     cfg = PipelineConfig(
         dicom_root=Path(args.dicom_root).resolve(),
@@ -734,6 +767,7 @@ def main(argv: list[str] | None = None) -> int:
                 max_workers=seg_worker_limit,
                 logger=logging.getLogger(__name__),
                 show_progress=True,
+                task_timeout=args.task_timeout,
             )
 
     if "segmentation_custom" in stages:
@@ -794,6 +828,7 @@ def main(argv: list[str] | None = None) -> int:
                     max_workers=custom_worker_limit,
                     logger=logging.getLogger(__name__),
                     show_progress=True,
+                    task_timeout=args.task_timeout,
                 )
 
     if "crop_ct" in stages:
@@ -829,6 +864,7 @@ def main(argv: list[str] | None = None) -> int:
                     max_workers=cfg.effective_workers(),
                     logger=logging.getLogger(__name__),
                     show_progress=True,
+                    task_timeout=args.task_timeout,
                 )
 
     if "dvh" in stages:
@@ -863,6 +899,7 @@ def main(argv: list[str] | None = None) -> int:
                 max_workers=effective_workers,
                 logger=logging.getLogger(__name__),
                 show_progress=True,
+                task_timeout=args.task_timeout,
             )
 
     if "visualize" in stages:
@@ -895,6 +932,7 @@ def main(argv: list[str] | None = None) -> int:
                 max_workers=effective_workers,
                 logger=logging.getLogger(__name__),
                 show_progress=True,
+                task_timeout=args.task_timeout,
             )
 
     if "radiomics" in stages:
