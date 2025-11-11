@@ -29,19 +29,40 @@ from .layout import build_course_dirs
 logger = logging.getLogger(__name__)
 
 
-def _run(cmd: str, env: Optional[dict] = None) -> bool:
-    """Execute a command using shell. Returns True on success."""
-    
+def _run(cmd: str, env: Optional[dict] = None, timeout: Optional[int] = None) -> bool:
+    """Execute a command using shell with timeout protection. Returns True on success.
+
+    Args:
+        cmd: Shell command to execute
+        env: Optional environment variables
+        timeout: Optional timeout in seconds (default: 3600 for TotalSegmentator, 300 for others)
+    """
+
     # Detect shell to use
     shell = os.environ.get('SHELL', '/bin/bash')
     if not os.path.isfile(shell):
         shell = shutil.which('bash') or shutil.which('sh') or '/bin/sh'
-    
+
+    # Default timeout based on command type
+    if timeout is None:
+        if 'TotalSegmentator' in cmd:
+            timeout = int(os.environ.get('TOTALSEG_TIMEOUT', '3600'))  # 1 hour default
+        elif 'dcm2niix' in cmd:
+            timeout = int(os.environ.get('DCM2NIIX_TIMEOUT', '300'))  # 5 minutes default
+        else:
+            timeout = 1800  # 30 minutes default for other commands
+
     try:
-        subprocess.run(cmd, check=True, shell=True, capture_output=True, executable=shell, env=env)
+        logger.debug(f"Running command with timeout={timeout}s: {cmd[:100]}...")
+        subprocess.run(cmd, check=True, shell=True, capture_output=True,
+                      executable=shell, env=env, timeout=timeout)
         return True
+    except subprocess.TimeoutExpired:
+        logger.error(f"Command timed out after {timeout}s: {cmd[:100]}...")
+        logger.error(f"This usually indicates a hung process or insufficient resources.")
+        return False
     except subprocess.CalledProcessError as e:
-        logger.error(f"Command failed: {cmd}")
+        logger.error(f"Command failed: {cmd[:100]}...")
         stderr = e.stderr.decode() if e.stderr else "No error output"
         logger.error(f"Error: {stderr}")
         return False
