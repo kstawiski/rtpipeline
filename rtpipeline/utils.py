@@ -329,6 +329,7 @@ def run_tasks_with_adaptive_workers(
     min_workers: int = 1,
     logger: Optional[logging.Logger] = None,
     show_progress: bool = False,
+    task_timeout: Optional[int] = None,
 ) -> List[Optional[R]]:
     """Run tasks with adaptive worker fallback when memory pressure is detected.
 
@@ -340,6 +341,8 @@ def run_tasks_with_adaptive_workers(
         min_workers: Lower bound for workers when backing off.
         logger: Optional logger (defaults to module logger).
         show_progress: Emit progress log entries similar to previous pipeline behaviour.
+        task_timeout: Optional timeout per task in seconds (None = no timeout).
+                     Use this to prevent individual tasks from hanging indefinitely.
 
     Returns:
         List of results aligned with ``items`` order. Entries are ``None`` when
@@ -376,6 +379,11 @@ def run_tasks_with_adaptive_workers(
 
         with ThreadPoolExecutor(max_workers=workers) as ex:
             future_to_idx = {ex.submit(func, seq[idx]): idx for idx in current_indices}
+
+            # Track task start times for timeout detection
+            task_start_times = {fut: perf_counter() for fut in future_to_idx}
+            last_heartbeat = perf_counter()
+
             for fut in as_completed(future_to_idx):
                 idx = future_to_idx[fut]
                 item = seq[idx]
@@ -391,9 +399,46 @@ def run_tasks_with_adaptive_workers(
                         item_desc = ", ".join(parts)
                     else:
                         item_desc = str(item)
+
                 try:
-                    results[idx] = fut.result()
+                    # Use timeout if specified
+                    if task_timeout is not None:
+                        results[idx] = fut.result(timeout=task_timeout)
+                    else:
+                        results[idx] = fut.result()
                     completed += 1
+
+                    # Log slow tasks after task completes
+                    now = perf_counter()
+                    task_duration = now - task_start_times[fut]
+                    if task_duration > 300:  # Warn if task took more than 5 minutes
+                        log.warning("%s: task #%d (%s) took %.1fs (slow)",
+                                   label, idx + 1, item_desc, task_duration)
+
+                    # Periodic heartbeat logging to detect hangs
+                    if now - last_heartbeat > 60:  # Log every 60 seconds
+                        log.info("%s: Still processing... %d/%d completed (%.1f%%)",
+                                label, completed, total, 100 * completed / total if total > 0 else 0)
+                        last_heartbeat = now
+
+                except TimeoutError:
+                    if task_timeout is not None:
+                        log.error(
+                            "%s: task #%d (%s) timed out after %ds",
+                            label,
+                            idx + 1,
+                            item_desc,
+                            task_timeout,
+                        )
+                    else:
+                        log.error(
+                            "%s: task #%d (%s) timed out",
+                            label,
+                            idx + 1,
+                            item_desc,
+                        )
+                    completed += 1
+                    results[idx] = None
                 except Exception as exc:  # noqa: BLE001 - propagate with logging
                     if _is_memory_error(exc):
                         mem_failures.append(idx)

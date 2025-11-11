@@ -40,6 +40,10 @@ services:
       # GPU support (DEFAULT)
       - NVIDIA_VISIBLE_DEVICES=all
       - CUDA_VISIBLE_DEVICES=all
+      # Timeout configuration for hang prevention
+      - TOTALSEG_TIMEOUT=3600
+      - DCM2NIIX_TIMEOUT=300
+      - RTPIPELINE_RADIOMICS_TASK_TIMEOUT=600
       # Web UI configuration
       - PORT=8080
       - DEBUG=false
@@ -80,6 +84,10 @@ services:
       - MPLCONFIGDIR=/tmp/cache
       - CONDA_DIR=/opt/conda
       - PATH=/opt/conda/bin:$PATH
+      # Timeout configuration for hang prevention
+      - TOTALSEG_TIMEOUT=7200
+      - DCM2NIIX_TIMEOUT=300
+      - RTPIPELINE_RADIOMICS_TASK_TIMEOUT=1200
       - PORT=8080
       - DEBUG=false
     working_dir: /app
