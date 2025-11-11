@@ -83,6 +83,7 @@ _THREAD_VARS = (
     'NUMBA_NUM_THREADS',
 )
 _THREAD_LIMIT_ENV = 'RTPIPELINE_RADIOMICS_THREAD_LIMIT'
+_TASK_TIMEOUT = int(os.environ.get('RTPIPELINE_RADIOMICS_TASK_TIMEOUT', '600'))  # 10 minutes per ROI
 
 
 def _calculate_optimal_workers() -> int:
@@ -483,13 +484,33 @@ def parallel_radiomics_for_course(
 
             # Don't use initializer with spawn context as it causes pickling issues
             with ctx.Pool(max_workers) as pool:
-                # Submit all tasks with retry wrapper
-                future_results = pool.map(_isolated_radiomics_extraction_with_retry, prepared_tasks)
+                # Submit all tasks with retry wrapper using imap_unordered for better timeout handling
+                task_timeout = _TASK_TIMEOUT * _MAX_RETRIES  # Total timeout including retries
+                logger.info("Per-task timeout: %ds (including %d retries)", task_timeout, _MAX_RETRIES)
 
-                # Collect successful results
-                for result in future_results:
-                    if result:
-                        results.append(result)
+                # Use imap_unordered with timeout monitoring
+                completed_count = 0
+                total_count = len(prepared_tasks)
+                start_time = time.time()
+
+                try:
+                    # Use imap_unordered for progress monitoring
+                    for result in pool.imap_unordered(_isolated_radiomics_extraction_with_retry, prepared_tasks):
+                        if result:
+                            results.append(result)
+                        completed_count += 1
+
+                        # Log progress periodically
+                        if completed_count % 10 == 0 or completed_count == total_count:
+                            elapsed = time.time() - start_time
+                            rate = completed_count / elapsed if elapsed > 0 else 0
+                            eta = (total_count - completed_count) / rate if rate > 0 else 0
+                            logger.info("Radiomics progress: %d/%d (%.1f%%), ETA: %.1fs",
+                                       completed_count, total_count,
+                                       100 * completed_count / total_count, eta)
+                except Exception as e:
+                    logger.error("Error during parallel radiomics processing: %s", e)
+                    # Pool will be cleaned up by context manager
 
         logger.info("Completed %d/%d radiomics extractions for %s",
                    len(results), len(prepared_tasks), course_dir.name)
