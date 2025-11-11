@@ -484,11 +484,7 @@ def parallel_radiomics_for_course(
 
             # Don't use initializer with spawn context as it causes pickling issues
             with ctx.Pool(max_workers) as pool:
-                # Submit all tasks with retry wrapper using imap_unordered for better timeout handling
-                task_timeout = _TASK_TIMEOUT * _MAX_RETRIES  # Total timeout including retries
-                logger.info("Per-task timeout: %ds (including %d retries)", task_timeout, _MAX_RETRIES)
-
-                # Use imap_unordered with timeout monitoring
+                # Use imap_unordered for progress monitoring
                 completed_count = 0
                 total_count = len(prepared_tasks)
                 start_time = time.time()
