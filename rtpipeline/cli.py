@@ -160,6 +160,30 @@ def build_parser() -> argparse.ArgumentParser:
         default=[],
         help="Restrict stages to specific courses. Accepts PATIENT or PATIENT/COURSE; may be passed multiple times.",
     )
+    p.add_argument(
+        "--totalseg-timeout",
+        type=int,
+        default=3600,
+        help="Timeout for TotalSegmentator operations in seconds (default: 3600 = 1 hour)",
+    )
+    p.add_argument(
+        "--dcm2niix-timeout",
+        type=int,
+        default=300,
+        help="Timeout for dcm2niix operations in seconds (default: 300 = 5 minutes)",
+    )
+    p.add_argument(
+        "--task-timeout",
+        type=int,
+        default=None,
+        help="Timeout for general pipeline tasks in seconds (default: None = no timeout)",
+    )
+    p.add_argument(
+        "--radiomics-task-timeout",
+        type=int,
+        default=600,
+        help="Timeout for individual radiomics ROI extractions in seconds (default: 600 = 10 minutes)",
+    )
     p.add_argument("--force-redo", action="store_true", help="Force redo all steps, even if outputs exist (resume is default)")
     p.add_argument("-v", "--verbose", action="count", default=0, help="Increase verbosity")
     p.add_argument(
@@ -496,11 +520,35 @@ def main(argv: list[str] | None = None) -> int:
             return None
         return value if value > 0 else None
 
+    # Calculate optimal threading defaults for TotalSegmentator
+    import os
+    cpu_count = os.cpu_count() or 2
+    optimal_threads = max(2, min(8, cpu_count // 2))  # 25-50% of cores, min 2, max 8
+
     totalseg_force_split = args.totalseg_force_split if args.totalseg_force_split is not None else True
-    totalseg_nr_thr_resamp = _positive_or_none(args.totalseg_nr_thr_resamp) or 1
-    totalseg_nr_thr_saving = _positive_or_none(args.totalseg_nr_thr_saving) or 1
+    totalseg_nr_thr_resamp = _positive_or_none(args.totalseg_nr_thr_resamp) or optimal_threads
+    totalseg_nr_thr_saving = _positive_or_none(args.totalseg_nr_thr_saving) or optimal_threads
     totalseg_num_proc_pre = _positive_or_none(args.totalseg_num_proc_pre) or 1
     totalseg_num_proc_export = _positive_or_none(args.totalseg_num_proc_export) or 1
+
+    # Set timeout environment variables for subprocess communication
+    # Note: These environment variables are used by subprocess calls and persist for the
+    # entire process lifetime. This is intentional for subprocess timeout configuration.
+    # If the pipeline is imported as a module, these values will affect subsequent operations.
+    os.environ['TOTALSEG_TIMEOUT'] = str(args.totalseg_timeout)
+    os.environ['DCM2NIIX_TIMEOUT'] = str(args.dcm2niix_timeout)
+    if args.radiomics_task_timeout:
+        os.environ['RTPIPELINE_RADIOMICS_TASK_TIMEOUT'] = str(args.radiomics_task_timeout)
+
+    # Log parallelization settings
+    logger.info("=== Parallelization Configuration ===")
+    logger.info("CPU cores: %d, using %d workers by default (cores - 1)", cpu_count, max(1, cpu_count - 1))
+    logger.info("TotalSegmentator: resampling threads=%d, saving threads=%d",
+                totalseg_nr_thr_resamp, totalseg_nr_thr_saving)
+    logger.info("GPU device: %s (force_split=%s)", args.totalseg_device, totalseg_force_split)
+    logger.info("Timeouts: TotalSegmentator=%ds, dcm2niix=%ds, task=%s, radiomics=%ds",
+                args.totalseg_timeout, args.dcm2niix_timeout,
+                args.task_timeout or "None", args.radiomics_task_timeout)
 
     cfg = PipelineConfig(
         dicom_root=Path(args.dicom_root).resolve(),
@@ -694,7 +742,16 @@ def main(argv: list[str] | None = None) -> int:
                     logger.warning("Segmentation failed for %s: %s", course.dirs.root, exc)
                 return None
 
-            seg_worker_limit = cfg.segmentation_workers if cfg.segmentation_workers is not None else 1
+            # Segmentation workers: Default to 1 for GPU (memory-safe), or 2 for CPU mode
+            if cfg.segmentation_workers is not None:
+                seg_worker_limit = cfg.segmentation_workers
+            elif cfg.totalseg_device == "cpu":
+                # CPU mode: can parallelize more since no GPU memory constraint
+                seg_worker_limit = max(1, min(2, cfg.effective_workers() // 2))
+            else:
+                # GPU mode: conservative default to avoid OOM, but full GPU utilization per task
+                seg_worker_limit = 1
+
             try:
                 seg_worker_limit = int(seg_worker_limit)
             except Exception:
@@ -703,6 +760,9 @@ def main(argv: list[str] | None = None) -> int:
                 seg_worker_limit = 1
             seg_worker_limit = min(seg_worker_limit, max(1, cfg.effective_workers()))
 
+            logger.info("Segmentation stage: using %d parallel workers (device: %s, per-worker threads: resample=%d, save=%d)",
+                       seg_worker_limit, cfg.totalseg_device, totalseg_nr_thr_resamp, totalseg_nr_thr_saving)
+
             run_tasks_with_adaptive_workers(
                 "Segmentation",
                 selected_courses,
@@ -710,6 +770,7 @@ def main(argv: list[str] | None = None) -> int:
                 max_workers=seg_worker_limit,
                 logger=logging.getLogger(__name__),
                 show_progress=True,
+                task_timeout=args.task_timeout,
             )
 
     if "segmentation_custom" in stages:
@@ -743,7 +804,16 @@ def main(argv: list[str] | None = None) -> int:
                         logger.warning("Custom segmentation failed for %s: %s", course.dirs.root, exc)
                     return None
 
-                custom_worker_limit = cfg.custom_models_workers or 1
+                # Custom models: Default based on device type
+                if cfg.custom_models_workers is not None:
+                    custom_worker_limit = cfg.custom_models_workers
+                elif cfg.totalseg_device == "cpu":
+                    # CPU mode: can parallelize more
+                    custom_worker_limit = max(1, min(2, cfg.effective_workers() // 2))
+                else:
+                    # GPU mode: conservative to avoid OOM (custom models often memory-intensive)
+                    custom_worker_limit = 1
+
                 try:
                     custom_worker_limit = int(custom_worker_limit)
                 except Exception:
@@ -752,6 +822,8 @@ def main(argv: list[str] | None = None) -> int:
                     custom_worker_limit = 1
                 custom_worker_limit = min(custom_worker_limit, max(1, cfg.effective_workers()))
 
+                logger.info("Custom segmentation stage: using %d parallel workers", custom_worker_limit)
+
                 run_tasks_with_adaptive_workers(
                     "CustomSegmentation",
                     selected_courses,
@@ -759,6 +831,7 @@ def main(argv: list[str] | None = None) -> int:
                     max_workers=custom_worker_limit,
                     logger=logging.getLogger(__name__),
                     show_progress=True,
+                    task_timeout=args.task_timeout,
                 )
 
     if "crop_ct" in stages:
@@ -794,6 +867,7 @@ def main(argv: list[str] | None = None) -> int:
                     max_workers=cfg.effective_workers(),
                     logger=logging.getLogger(__name__),
                     show_progress=True,
+                    task_timeout=args.task_timeout,
                 )
 
     if "dvh" in stages:
@@ -818,13 +892,17 @@ def main(argv: list[str] | None = None) -> int:
                     logger.warning("DVH failed for %s: %s", course.dirs.root, exc)
                     return None
 
+            effective_workers = cfg.effective_workers()
+            logger.info("DVH stage: using %d parallel workers", effective_workers)
+
             run_tasks_with_adaptive_workers(
                 "DVH",
                 selected_courses,
                 _dvh,
-                max_workers=cfg.effective_workers(),
+                max_workers=effective_workers,
                 logger=logging.getLogger(__name__),
                 show_progress=True,
+                task_timeout=args.task_timeout,
             )
 
     if "visualize" in stages:
@@ -847,13 +925,17 @@ def main(argv: list[str] | None = None) -> int:
                         logger.debug("Axial review failed for %s: %s", course.dirs.root, exc)
                 return None
 
+            effective_workers = cfg.effective_workers()
+            logger.info("Visualization stage: using %d parallel workers", effective_workers)
+
             run_tasks_with_adaptive_workers(
                 "Visualization",
                 selected_courses,
                 _visualize,
-                max_workers=cfg.effective_workers(),
+                max_workers=effective_workers,
                 logger=logging.getLogger(__name__),
                 show_progress=True,
+                task_timeout=args.task_timeout,
             )
 
     if "radiomics" in stages:
@@ -869,7 +951,11 @@ def main(argv: list[str] | None = None) -> int:
             try:
                 from .radiomics_parallel import enable_parallel_radiomics_processing
                 enable_parallel_radiomics_processing(cfg.radiomics_thread_limit)
-                logger.info("Enabled parallel radiomics processing")
+                # Log the actual worker count that will be used
+                workers_used = max(1, cpu_count - 1)
+                thread_limit = cfg.radiomics_thread_limit or "auto"
+                logger.info("Enabled parallel radiomics processing: %d workers (cores-1), thread_limit=%s",
+                           workers_used, thread_limit)
             except ImportError:
                 logger.debug("Parallel radiomics helpers unavailable; proceeding with default extractor")
 

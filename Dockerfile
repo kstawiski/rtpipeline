@@ -16,7 +16,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     CONDA_DIR=/opt/conda \
     PATH=/opt/conda/bin:$PATH
 
-# Install system dependencies
+# Install system dependencies including tini for proper process management
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     git \
@@ -32,7 +32,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libglu1-mesa \
     pigz \
     unzip \
+    tini \
     && rm -rf /var/lib/apt/lists/*
+
+# Use tini as init system for proper signal handling and zombie process reaping
+# Critical for parallel processing and timeout mechanisms
+ENTRYPOINT ["/usr/bin/tini", "--"]
 
 # Install dcm2niix (required for DICOM to NIfTI conversion)
 RUN wget -q https://github.com/rordenlab/dcm2niix/releases/download/v1.0.20230411/dcm2niix_lnx.zip \
@@ -73,6 +78,10 @@ RUN pip install -e . && \
 
 # Install Web UI dependencies
 RUN pip install -r /app/webui/requirements.txt
+
+# Install psutil for better CPU detection in containers
+RUN pip install psutil && \
+    /opt/conda/envs/rtpipeline/bin/pip install psutil
 
 # Create professional directory structure
 RUN mkdir -p \
@@ -158,7 +167,10 @@ ENV SNAKEMAKE_OUTPUT_CACHE="" \
     HOME=/root \
     NUMBA_CACHE_DIR=/tmp/cache \
     MPLCONFIGDIR=/tmp/cache \
-    TOTALSEG_WEIGHTS_PATH=/root/.totalsegmentator/nnunet/results
+    TOTALSEG_WEIGHTS_PATH=/root/.totalsegmentator/nnunet/results \
+    TOTALSEG_TIMEOUT=3600 \
+    DCM2NIIX_TIMEOUT=300 \
+    RTPIPELINE_RADIOMICS_TASK_TIMEOUT=600
 
 # Pre-create TotalSegmentator weights directory to allow host mounts/caching
 RUN mkdir -p /root/.totalsegmentator/nnunet/results
