@@ -65,13 +65,15 @@ radiomics_robustness:
   # Segmentation perturbation settings
   segmentation_perturbation:
     # Structures to analyze (supports wildcards: GTV*, CTV*, PTV*)
+    # Works across ALL sources: TotalSegmentator, Custom structures, Custom models
     apply_to_structures:
-      - "GTV*"
-      - "CTV*"
-      - "PTV*"
-      - "BLADDER"
-      - "RECTUM"
-      - "PROSTATE"
+      - "GTV*"              # Gross tumor volumes (from Custom or Manual)
+      - "CTV*"              # Clinical target volumes (from Custom or Manual)
+      - "PTV*"              # Planning target volumes (from Custom or Manual)
+      - "*pelvic*bone*"     # Pelvic bones (from Custom structures)
+      - "*iliac*vessel*"    # Iliac vessels (from Custom structures)
+      - "BLADDER"           # From TotalSegmentator or Manual
+      - "RECTUM"            # From TotalSegmentator or Manual
 
     # Volume changes for perturbations (τ parameter)
     # Based on Lo Iacono et al. 2024: ±15% for stability assessment
