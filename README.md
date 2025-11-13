@@ -55,15 +55,27 @@ docker-compose up -d
 | --- | --- |
 | `Snakefile` | Snakemake workflow orchestrating all stages. |
 | `config.yaml` | Default configuration (paths, segmentation settings, radiomics options, custom models). |
+| `setup_new_project.sh` | Interactive setup wizard for new projects with presets and validation. |
+| **User Documentation** | |
+| `GETTING_STARTED.md` | Complete beginner's guide with step-by-step instructions. |
+| `WEBUI.md` | Web UI documentation with screenshots and usage guide. |
+| `output_format.md` | Comprehensive output format reference for AI agents and analysts. |
+| `output_format_quick_ref.md` | One-page quick reference cheat sheet. |
+| `rtpipeline_colab.ipynb` | Google Colab notebook for GPU-accelerated processing. |
+| **Core Components** | |
 | `webui/` | Web UI application (Flask-based) for browser-based DICOM upload and processing. |
-| `envs/` | Conda environment definitions (`rtpipeline.yaml`, `rtpipeline-radiomics.yaml`). |
 | `rtpipeline/` | Python package powering organisation, segmentation, DVH, radiomics, and QC. |
+| `envs/` | Conda environment definitions (`rtpipeline.yaml`, `rtpipeline-radiomics.yaml`). |
 | `custom_models/` | nnUNet bundles. Each model folder contains `custom_model.yaml` plus weights (zipped or unpacked). |
-| `docs/` | User documentation (`Guide to Results Interpretation.md`, `custom_models.md`, `pipeline_report.md`). |
-| `scripts/` | Utility scripts (e.g. anonymiser). |
+| **Technical Documentation** | |
+| `docs/` | Technical guides ([**see index**](docs/README.md)): architecture, parallelization, Docker, troubleshooting, custom models. |
+| **Utilities** | |
+| `scripts/` | Utility scripts (anonymization, validation, etc.). |
+| `build.sh`, `test.sh` | Build and test scripts for development. |
+| **Data Directories** | |
 | `Example_data/` | Sample DICOM dump used for testing. |
 | `Data_Snakemake/` | Default output root populated by the workflow (ignored by Git). |
-| `Logs_Snakemake/` | Stage-specific execution logs. |
+| `Logs_Snakemake/` | Stage-specific execution logs (ignored by Git). |
 
 ---
 
@@ -571,15 +583,36 @@ The script rewrites patient/course identifiers, anonymises DICOM headers, update
 
 ---
 
-## Further Reading
+## 📚 Documentation
 
-* **docs/Guide to Results Interpretation.md** – deep dive into the per-course outputs and how to use them.
-* **docs/custom_models.md** – nnUNet configuration schema and examples.
-* **docs/pipeline_report.md** – narrative summary of the latest validation run and known issues.
-* **SYSTEMATIC_CT_CROPPING.md** – complete technical documentation for anatomical cropping feature.
-* **IMPROVEMENTS_SUMMARY.md** – summary of recent security fixes and feature additions.
-* **DEEP_DEBUG_REPORT.md** – comprehensive security audit and code quality analysis.
-* **scripts/anonymize_pipeline_results.py --help** – anonymisation usage.
+### User Documentation (Root Directory)
+* **[GETTING_STARTED.md](GETTING_STARTED.md)** – Complete beginner's guide with step-by-step instructions
+* **[WEBUI.md](WEBUI.md)** – Web UI documentation with detailed usage guide
+* **[output_format.md](output_format.md)** – Comprehensive output format reference for data analysts and AI agents
+* **[output_format_quick_ref.md](output_format_quick_ref.md)** – One-page cheat sheet with common code snippets
+* **[rtpipeline_colab.ipynb](rtpipeline_colab.ipynb)** – Google Colab notebook for GPU-accelerated processing
+* **[setup_new_project.sh](setup_new_project.sh)** – Interactive setup wizard with presets and validation
+
+### Technical Documentation (docs/)
+* **[docs/README.md](docs/README.md)** – 📖 **Documentation index** (start here for technical guides)
+* **[docs/PIPELINE_ARCHITECTURE.md](docs/PIPELINE_ARCHITECTURE.md)** – Architecture overview and design decisions
+* **[docs/PARALLELIZATION.md](docs/PARALLELIZATION.md)** – Performance tuning and parallelization strategies
+* **[docs/DOCKER.md](docs/DOCKER.md)** – Docker deployment and compatibility guide
+* **[docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)** – Debugging hangs, timeouts, and common issues
+* **[docs/custom_models.md](docs/custom_models.md)** – nnUNet configuration schema and examples
+* **[docs/pipeline_report.md](docs/pipeline_report.md)** – Pipeline capabilities and feature summary
+* **[docs/Guide to Results Interpretation.md](docs/Guide%20to%20Results%20Interpretation.md)** – Interpreting outputs
+* **[docs/qc_cropping_audit.md](docs/qc_cropping_audit.md)** – CT cropping quality control
+
+### Quick Links by Task
+* 🚀 **New user?** → [GETTING_STARTED.md](GETTING_STARTED.md)
+* 🌐 **Using Web UI?** → [WEBUI.md](WEBUI.md)
+* ⚙️ **Setting up new project?** → `./setup_new_project.sh`
+* ☁️ **Want GPU in cloud?** → [rtpipeline_colab.ipynb](rtpipeline_colab.ipynb)
+* 📊 **Analyzing results?** → [output_format_quick_ref.md](output_format_quick_ref.md)
+* 🔧 **Performance issues?** → [docs/PARALLELIZATION.md](docs/PARALLELIZATION.md)
+* 🐛 **Pipeline hanging?** → [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)
+* 🐳 **Docker problems?** → [docs/DOCKER.md](docs/DOCKER.md)
 
 ---
 
