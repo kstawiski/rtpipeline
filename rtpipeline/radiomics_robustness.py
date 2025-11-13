@@ -22,7 +22,6 @@ Based on 2023-2025 radiomics stability research:
 from __future__ import annotations
 
 import logging
-import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Tuple
@@ -57,7 +56,7 @@ class PerturbationConfig:
 class ICCConfig:
     """Configuration for ICC computation."""
     implementation: Literal["pingouin", "manual"] = "pingouin"
-    icc_type: Literal["ICC1", "ICC2", "ICC3"] = "ICC2"
+    icc_type: Literal["ICC1", "ICC2", "ICC3"] = "ICC3"
     ci: bool = True
 
 
@@ -115,7 +114,7 @@ class RobustnessConfig:
         icc_data = metrics_data.get("icc", {})
         icc_config = ICCConfig(
             implementation=icc_data.get("implementation", "pingouin"),
-            icc_type=icc_data.get("icc_type", "ICC2"),
+            icc_type=icc_data.get("icc_type", "ICC3"),
             ci=icc_data.get("ci", True),
         )
         metrics = MetricsConfig(
@@ -142,16 +141,6 @@ class RobustnessConfig:
         )
 
 
-# ============================================================================
-# Mask Perturbation Functions
-# ============================================================================
-
-def _get_ball_radius_vox(spacing_mm: Tuple[float, float, float], target_thickness_mm: float) -> int:
-    """Compute ball kernel radius in voxels from physical thickness."""
-    avg_spacing = float(np.mean(spacing_mm))
-    return max(1, int(round(target_thickness_mm / avg_spacing)))
-
-
 def volume_adapt_mask(mask: sitk.Image, tau: float, max_iterations: int = 20) -> Optional[sitk.Image]:
     """
     Apply IBSI-style volume adaptation to mask via iterative erosion/dilation.
@@ -175,27 +164,40 @@ def volume_adapt_mask(mask: sitk.Image, tau: float, max_iterations: int = 20) ->
         return None
 
     target_volume = int(original_volume * (1.0 + tau))
-    spacing = mask.GetSpacing()
-
     # Determine operation (erosion or dilation)
     is_erosion = tau < 0
     operation = sitk.BinaryErode if is_erosion else sitk.BinaryDilate
 
     # Iterative approach
     current_mask = mask
+    current_volume = original_volume
     best_mask = mask
     best_diff = abs(original_volume - target_volume)
 
-    for radius in range(1, max_iterations + 1):
+    for iteration in range(1, max_iterations + 1):
         try:
-            perturbed = operation(current_mask, [radius] * 3, sitk.sitkBall)
+            perturbed = operation(current_mask, [1] * 3, sitk.sitkBall)
             perturbed_arr = sitk.GetArrayFromImage(perturbed).astype(bool)
             perturbed_volume = perturbed_arr.sum()
+
+            if perturbed_volume == current_volume:
+                logger.debug(
+                    "Iteration %d produced no volume change during volume adaptation",
+                    iteration,
+                )
+                break
 
             diff = abs(perturbed_volume - target_volume)
             if diff < best_diff:
                 best_diff = diff
                 best_mask = perturbed
+
+            current_mask = perturbed
+            current_volume = perturbed_volume
+
+            if perturbed_volume == 0 and is_erosion:
+                logger.debug("Mask fully eroded during volume adaptation")
+                break
 
             # Stop if we reached target or overshot
             if is_erosion and perturbed_volume <= target_volume:
@@ -203,7 +205,7 @@ def volume_adapt_mask(mask: sitk.Image, tau: float, max_iterations: int = 20) ->
             elif not is_erosion and perturbed_volume >= target_volume:
                 break
         except Exception as e:
-            logger.debug("Volume adaptation failed at radius %d: %s", radius, e)
+            logger.debug("Volume adaptation failed at iteration %d: %s", iteration, e)
             break
 
     # Check if result is reasonable
@@ -550,7 +552,11 @@ def compute_icc_pingouin(
         )
 
         # Select appropriate ICC type
-        row = icc_res.loc[icc_res["Type"] == icc_config.icc_type].iloc[0]
+        filtered = icc_res.loc[icc_res["Type"] == icc_config.icc_type]
+        if filtered.empty:
+            logger.debug("ICC type %s not found in results", icc_config.icc_type)
+            return {"icc": np.nan, "icc_ci95_low": np.nan, "icc_ci95_high": np.nan}
+        row = filtered.iloc[0]
 
         result = {"icc": float(row["ICC"])}
 
@@ -597,6 +603,7 @@ def compute_qcd(values: np.ndarray) -> float:
 def summarize_feature_stability(
     df_long: pd.DataFrame,
     config: RobustnessConfig,
+    group_columns: Optional[List[str]] = None,
 ) -> pd.DataFrame:
     """
     Compute per-feature robustness metrics (ICC, CoV, QCD) and classify robustness.
@@ -611,44 +618,46 @@ def summarize_feature_stability(
     """
     rows = []
 
-    # Group by structure, segmentation_source, and feature_name
-    # This allows separate robustness analysis for the same structure from different sources
-    group_columns = ["structure", "segmentation_source", "feature_name"] if "segmentation_source" in df_long.columns else ["structure", "feature_name"]
+    if group_columns is None:
+        if "segmentation_source" in df_long.columns:
+            group_columns = ["structure", "segmentation_source", "feature_name"]
+        else:
+            group_columns = ["structure", "feature_name"]
 
     for group_key, group in df_long.groupby(group_columns):
-        # Unpack group key
-        if len(group_columns) == 3:
-            structure, seg_source, feature_name = group_key
-        else:
-            structure, feature_name = group_key
-            seg_source = "Unknown"
+        key_values = group_key if isinstance(group_key, tuple) else (group_key,)
+        row_data = {col: val for col, val in zip(group_columns, key_values)}
 
         values = group["value"].to_numpy(dtype=float)
 
-        # Skip if insufficient data
         if len(values) < 2:
-            continue
+            cov = np.nan
+            qcd = np.nan
+        else:
+            cov = compute_cov(values) if config.metrics.cov_enabled else np.nan
+            qcd = compute_qcd(values) if config.metrics.qcd_enabled else np.nan
 
-        # Compute CoV
-        cov = compute_cov(values) if config.metrics.cov_enabled else np.nan
-
-        # Compute QCD
-        qcd = compute_qcd(values) if config.metrics.qcd_enabled else np.nan
-
-        # Compute ICC
         icc_df = group[["patient_id", "perturbation_id", "value"]].copy()
-        icc_df.columns = ["subject", "rater", "value"]
+        icc_df.rename(columns={"patient_id": "subject", "perturbation_id": "rater"}, inplace=True)
+        icc_df["subject"] = icc_df["subject"].astype(str)
 
-        # Create unique subject ID (for multi-patient analysis, use patient_id directly)
-        icc_df["subject"] = icc_df["subject"].astype(str) + "_" + structure
+        if "structure" in df_long.columns:
+            icc_df["subject"] = icc_df["subject"] + "_" + group["structure"].astype(str)
+        if "segmentation_source" in df_long.columns:
+            icc_df["subject"] = icc_df["subject"] + "_" + group.get("segmentation_source", "unknown").astype(str)
 
-        icc_info = compute_icc_pingouin(icc_df, config.metrics.icc)
+        n_subjects = icc_df["subject"].nunique()
+        n_raters = icc_df["rater"].nunique()
+
+        if n_subjects < 2 or n_raters < 2:
+            icc_info = {"icc": np.nan, "icc_ci95_low": np.nan, "icc_ci95_high": np.nan}
+        else:
+            icc_info = compute_icc_pingouin(icc_df, config.metrics.icc)
+
         icc = icc_info["icc"]
         icc_ci_low = icc_info.get("icc_ci95_low", np.nan)
         icc_ci_high = icc_info.get("icc_ci95_high", np.nan)
 
-        # Classification logic
-        # Use lower CI bound if available (conservative), else use point estimate
         icc_for_threshold = icc_ci_low if not np.isnan(icc_ci_low) else icc
 
         robust_icc = icc_for_threshold >= config.thresholds.icc_robust
@@ -657,7 +666,6 @@ def summarize_feature_stability(
         robust_cov = cov <= config.thresholds.cov_robust_pct if not np.isnan(cov) else False
         acceptable_cov = cov <= config.thresholds.cov_acceptable_pct if not np.isnan(cov) else False
 
-        # Combined robustness label
         if robust_icc and robust_cov:
             robustness_label = "robust"
         elif acceptable_icc and acceptable_cov:
@@ -665,11 +673,11 @@ def summarize_feature_stability(
         else:
             robustness_label = "poor"
 
-        rows.append({
-            "structure": structure,
-            "segmentation_source": seg_source,
-            "feature_name": feature_name,
-            "n_perturbations": len(values),
+        row_data.update({
+            "feature_name": row_data.get("feature_name", group["feature_name"].iloc[0]),
+            "n_subjects": n_subjects,
+            "n_courses": group["course_id"].nunique() if "course_id" in group.columns else np.nan,
+            "n_perturbations": n_raters,
             "icc": icc,
             "icc_ci95_low": icc_ci_low,
             "icc_ci95_high": icc_ci_high,
@@ -678,6 +686,8 @@ def summarize_feature_stability(
             "robustness_label": robustness_label,
             "pass_seg_perturb": robustness_label in ["robust", "acceptable"],
         })
+
+        rows.append(row_data)
 
     return pd.DataFrame(rows)
 
@@ -690,6 +700,7 @@ def robustness_for_course(
     config: PipelineConfig,
     rob_config: RobustnessConfig,
     course_dir: Path,
+    output_path: Optional[Path] = None,
 ) -> Optional[Path]:
     """
     Run radiomics robustness analysis for a single course.
@@ -718,7 +729,8 @@ def robustness_for_course(
     logger.info("Running radiomics robustness analysis for %s", course_dir.name)
 
     course_dirs = build_course_dirs(course_dir)
-    output_path = course_dir / "radiomics_robustness_ct.parquet"
+    if output_path is None:
+        output_path = course_dir / "radiomics_robustness_ct.parquet"
 
     # Load CT image
     from .radiomics import _load_series_image
@@ -858,14 +870,16 @@ def robustness_for_course(
     # Combine all features
     combined_df = pd.concat(all_features, ignore_index=True)
 
-    # Compute robustness metrics (grouped by structure and segmentation_source)
-    summary_df = summarize_feature_stability(combined_df, rob_config)
-
-    # Save results
+    # Save raw feature values for aggregation stage
     try:
-        summary_df.to_parquet(output_path, index=False)
-        logger.info("Saved robustness results to %s (%d structure-feature combinations)",
-                    output_path, len(summary_df))
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        combined_df.to_parquet(output_path, index=False)
+        logger.info(
+            "Saved robustness feature values to %s (%d rows, %d unique perturbations)",
+            output_path,
+            len(combined_df),
+            combined_df["perturbation_id"].nunique(),
+        )
         return output_path
     except Exception as e:
         logger.warning("Failed to save robustness results: %s", e)
@@ -900,92 +914,71 @@ def aggregate_robustness_results(
     if not all_dfs:
         logger.warning("No robustness results to aggregate")
         # Create empty Excel
+        output_excel.parent.mkdir(parents=True, exist_ok=True)
         pd.DataFrame().to_excel(output_excel, index=False)
         return
 
-    combined = pd.concat(all_dfs, ignore_index=True)
+    combined_raw = pd.concat(all_dfs, ignore_index=True)
 
-    # Compute global statistics (average across all courses/structures/sources)
-    global_summary = combined.groupby("feature_name").agg({
-        "icc": "mean",
-        "icc_ci95_low": "mean",
-        "icc_ci95_high": "mean",
-        "cov_pct": "mean",
-        "qcd": "mean",
-        "n_perturbations": "mean",
-    }).reset_index()
+    per_structure_summary = summarize_feature_stability(combined_raw, rob_config)
+    global_summary = summarize_feature_stability(combined_raw, rob_config, group_columns=["feature_name"])
 
-    # Compute per-source statistics (if segmentation_source column exists)
-    per_source_summary = None
-    if "segmentation_source" in combined.columns:
-        per_source_summary = combined.groupby(["segmentation_source", "feature_name"]).agg({
-            "icc": "mean",
-            "icc_ci95_low": "mean",
-            "icc_ci95_high": "mean",
-            "cov_pct": "mean",
-            "qcd": "mean",
-            "n_perturbations": "mean",
-        }).reset_index()
+    per_source_summary: Optional[pd.DataFrame] = None
+    if "segmentation_source" in combined_raw.columns:
+        per_source_summary = summarize_feature_stability(
+            combined_raw,
+            rob_config,
+            group_columns=["segmentation_source", "feature_name"],
+        )
 
-    # Determine global robustness label
-    def _classify_global(row):
-        icc = row["icc"]
-        cov = row["cov_pct"]
+    if global_summary.empty:
+        robust_features = pd.DataFrame(columns=global_summary.columns)
+        acceptable_features = pd.DataFrame(columns=global_summary.columns)
+    else:
+        robust_features = global_summary[global_summary["robustness_label"] == "robust"]
+        acceptable_features = global_summary[global_summary["pass_seg_perturb"]]
 
-        robust_icc = icc >= rob_config.thresholds.icc_robust
-        acceptable_icc = icc >= rob_config.thresholds.icc_acceptable
-        robust_cov = cov <= rob_config.thresholds.cov_robust_pct if not np.isnan(cov) else False
-        acceptable_cov = cov <= rob_config.thresholds.cov_acceptable_pct if not np.isnan(cov) else False
+    if per_source_summary is not None and not per_source_summary.empty:
+        robust_per_source = per_source_summary[per_source_summary["robustness_label"] == "robust"]
+    else:
+        robust_per_source = None
 
-        if robust_icc and robust_cov:
-            return "robust"
-        elif acceptable_icc and acceptable_cov:
-            return "acceptable"
-        else:
-            return "poor"
+    output_excel.parent.mkdir(parents=True, exist_ok=True)
 
-    global_summary["robustness_label"] = global_summary.apply(_classify_global, axis=1)
-    global_summary["pass_seg_perturb"] = global_summary["robustness_label"].isin(["robust", "acceptable"])
-
-    # Apply classification to per-source summary as well
-    if per_source_summary is not None:
-        per_source_summary["robustness_label"] = per_source_summary.apply(_classify_global, axis=1)
-        per_source_summary["pass_seg_perturb"] = per_source_summary["robustness_label"].isin(["robust", "acceptable"])
-
-    # Write to Excel with multiple sheets
     try:
         with pd.ExcelWriter(output_excel, engine="openpyxl") as writer:
-            # Sheet 1: Global feature summary (averaged across all structures/courses/sources)
             global_summary.to_excel(writer, sheet_name="global_summary", index=False)
 
-            # Sheet 2: Per-source summary (if available)
             if per_source_summary is not None:
                 per_source_summary.to_excel(writer, sheet_name="per_source_summary", index=False)
 
-            # Sheet 3: Detailed per-structure-source breakdown
-            combined.to_excel(writer, sheet_name="per_structure_source", index=False)
+            per_structure_summary.to_excel(writer, sheet_name="per_structure_source", index=False)
 
-            # Sheet 4: Robust features only (global)
-            robust_features = global_summary[global_summary["robustness_label"] == "robust"]
             robust_features.to_excel(writer, sheet_name="robust_features", index=False)
-
-            # Sheet 5: Acceptable or better features (global)
-            acceptable_features = global_summary[global_summary["pass_seg_perturb"]]
             acceptable_features.to_excel(writer, sheet_name="acceptable_features", index=False)
 
-            # Sheet 6: Robust features per source (if available)
-            if per_source_summary is not None:
-                robust_per_source = per_source_summary[per_source_summary["robustness_label"] == "robust"]
+            if robust_per_source is not None:
                 robust_per_source.to_excel(writer, sheet_name="robust_features_per_source", index=False)
 
-        logger.info("Saved aggregated robustness results to %s", output_excel)
-        logger.info("Global summary: %d total features, %d robust, %d acceptable",
-                    len(global_summary),
-                    len(robust_features),
-                    len(acceptable_features))
+            combined_raw.to_excel(writer, sheet_name="raw_values", index=False)
+
+        logger.info(
+            "Saved aggregated robustness results to %s (features=%d, structures=%d)",
+            output_excel,
+            len(global_summary),
+            len(per_structure_summary),
+        )
+        if not global_summary.empty:
+            logger.info(
+                "Global summary: %d robust, %d acceptable",
+                len(robust_features),
+                len(acceptable_features),
+            )
         if per_source_summary is not None:
-            logger.info("Per-source summary: %d unique (source, feature) combinations",
-                        len(per_source_summary))
+            logger.info(
+                "Per-source summary: %d combinations",
+                len(per_source_summary),
+            )
     except Exception as e:
         logger.error("Failed to write aggregated results: %s", e)
         raise

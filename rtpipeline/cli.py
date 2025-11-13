@@ -5,6 +5,7 @@ import json
 import logging
 import sys
 from pathlib import Path
+from typing import Any
 
 
 from .config import PipelineConfig
@@ -457,9 +458,11 @@ def _radiomics_robustness_course(argv: list[str]) -> int:
     output_path = Path(args.output).resolve()
     config_path = Path(args.config)
 
-    # Parse config.yaml for robustness settings
+    # Parse config.yaml for robustness and radiomics settings
     import yaml
     rob_config_data = {}
+    yaml_config: dict[str, Any] = {}
+    root_dir = config_path.parent.resolve()
     if config_path.exists():
         try:
             with open(config_path) as f:
@@ -475,16 +478,70 @@ def _radiomics_robustness_course(argv: list[str]) -> int:
         logger.warning("Radiomics robustness is disabled in config; enable with 'radiomics_robustness.enabled: true'")
         return 1
 
-    # Create minimal PipelineConfig
+    def _resolve_path(raw: Any, default_name: str) -> Path:
+        candidate = Path(str(raw)) if raw else Path(default_name)
+        if not candidate.is_absolute():
+            candidate = (root_dir / candidate).resolve()
+        return candidate
+
+    dicom_root = _resolve_path(yaml_config.get("dicom_root", "Example_data"), "Example_data")
+    output_root = _resolve_path(yaml_config.get("output_dir", "Data_Snakemake"), "Data_Snakemake")
+    logs_root = _resolve_path(yaml_config.get("logs_dir", "Logs_Snakemake"), "Logs_Snakemake")
+
+    radiomics_cfg = yaml_config.get("radiomics", {}) or {}
+
+    def _coerce_int(value: Any) -> int | None:
+        if value is None:
+            return None
+        try:
+            ivalue = int(value)
+            return ivalue
+        except (TypeError, ValueError):
+            return None
+
+    params_file = radiomics_cfg.get("params_file")
+    if params_file:
+        params_path = Path(params_file)
+        if not params_path.is_absolute():
+            params_path = (root_dir / params_path).resolve()
+    else:
+        params_path = None
+
+    params_file_mr = radiomics_cfg.get("mr_params_file")
+    if params_file_mr:
+        params_path_mr = Path(params_file_mr)
+        if not params_path_mr.is_absolute():
+            params_path_mr = (root_dir / params_path_mr).resolve()
+    else:
+        params_path_mr = None
+
+    skip_rois_cfg = radiomics_cfg.get("skip_rois") or []
+    if isinstance(skip_rois_cfg, str):
+        skip_rois = [item.strip() for item in skip_rois_cfg.replace(";", ",").split(",") if item.strip()]
+    else:
+        skip_rois = [str(item).strip() for item in skip_rois_cfg if str(item).strip()]
+
+    thread_limit = _coerce_int(radiomics_cfg.get("thread_limit"))
+    if thread_limit is not None and thread_limit < 1:
+        thread_limit = None
+
     pipeline_config = PipelineConfig(
-        dicom_root=course_dir.parent.parent / "Example_data",
-        output_root=course_dir.parent.parent,
-        logs_root=course_dir.parent.parent / "Logs",
+        dicom_root=dicom_root,
+        output_root=output_root,
+        logs_root=logs_root,
+        radiomics_params_file=params_path,
+        radiomics_params_file_mr=params_path_mr,
+        radiomics_skip_rois=skip_rois,
+        radiomics_max_voxels=_coerce_int(radiomics_cfg.get("max_voxels")),
+        radiomics_min_voxels=_coerce_int(radiomics_cfg.get("min_voxels")),
+        radiomics_thread_limit=thread_limit,
+        radiomics_robustness_enabled=rob_config.enabled,
+        radiomics_robustness_config=rob_config_data,
     )
 
     # Run robustness analysis
     try:
-        result = robustness_for_course(pipeline_config, rob_config, course_dir)
+        result = robustness_for_course(pipeline_config, rob_config, course_dir, output_path=output_path)
         if result is None:
             logger.warning("Robustness analysis produced no output")
             return 1

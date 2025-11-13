@@ -104,7 +104,7 @@ radiomics_robustness:
   metrics:
     icc:
       implementation: "pingouin"  # Use Pingouin library for ICC computation
-      icc_type: "ICC2"            # ICC(2,1): two-way mixed effects, absolute agreement
+      icc_type: "ICC3"            # ICC(3,1): two-way mixed effects, fixed perturbations
       ci: true                    # Compute 95% confidence intervals
     cov:
       enabled: true               # Coefficient of Variation (%)
