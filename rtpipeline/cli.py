@@ -437,6 +437,108 @@ def _validate(argv: list[str]) -> int:
         return 0
 
 
+def _radiomics_robustness_course(argv: list[str]) -> int:
+    """Run radiomics robustness analysis for a single course."""
+    p = argparse.ArgumentParser(
+        prog="rtpipeline radiomics-robustness",
+        description="Radiomics robustness analysis (segmentation perturbation)",
+    )
+    p.add_argument("--course-dir", required=True, help="Course directory path")
+    p.add_argument("--config", default="config.yaml", help="Path to config YAML")
+    p.add_argument("--output", required=True, help="Output parquet file path")
+    p.add_argument("-v", "--verbose", action="store_true", help="Verbose logging")
+    args = p.parse_args(argv)
+
+    level = logging.DEBUG if args.verbose else logging.INFO
+    logging.basicConfig(level=level, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+
+    # Load config
+    course_dir = Path(args.course_dir).resolve()
+    output_path = Path(args.output).resolve()
+    config_path = Path(args.config)
+
+    # Parse config.yaml for robustness settings
+    import yaml
+    rob_config_data = {}
+    if config_path.exists():
+        try:
+            with open(config_path) as f:
+                yaml_config = yaml.safe_load(f) or {}
+            rob_config_data = yaml_config.get("radiomics_robustness", {})
+        except Exception as e:
+            logger.warning("Failed to parse config.yaml: %s", e)
+
+    from .radiomics_robustness import RobustnessConfig, robustness_for_course
+    rob_config = RobustnessConfig.from_dict(rob_config_data)
+
+    if not rob_config.enabled:
+        logger.warning("Radiomics robustness is disabled in config; enable with 'radiomics_robustness.enabled: true'")
+        return 1
+
+    # Create minimal PipelineConfig
+    pipeline_config = PipelineConfig(
+        dicom_root=course_dir.parent.parent / "Example_data",
+        output_root=course_dir.parent.parent,
+        logs_root=course_dir.parent.parent / "Logs",
+    )
+
+    # Run robustness analysis
+    try:
+        result = robustness_for_course(pipeline_config, rob_config, course_dir)
+        if result is None:
+            logger.warning("Robustness analysis produced no output")
+            return 1
+        logger.info("Robustness analysis complete: %s", result)
+        return 0
+    except Exception as e:
+        logger.error("Robustness analysis failed: %s", e, exc_info=True)
+        return 1
+
+
+def _radiomics_robustness_aggregate(argv: list[str]) -> int:
+    """Aggregate radiomics robustness results from multiple courses."""
+    p = argparse.ArgumentParser(
+        prog="rtpipeline radiomics-robustness-aggregate",
+        description="Aggregate radiomics robustness results",
+    )
+    p.add_argument("--inputs", nargs="+", required=True, help="Input parquet files")
+    p.add_argument("--output", required=True, help="Output Excel file")
+    p.add_argument("--config", default="config.yaml", help="Path to config YAML")
+    p.add_argument("-v", "--verbose", action="store_true", help="Verbose logging")
+    args = p.parse_args(argv)
+
+    level = logging.DEBUG if args.verbose else logging.INFO
+    logging.basicConfig(level=level, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+
+    # Load config
+    input_paths = [Path(p) for p in args.inputs]
+    output_path = Path(args.output).resolve()
+    config_path = Path(args.config)
+
+    # Parse config.yaml for robustness settings
+    import yaml
+    rob_config_data = {}
+    if config_path.exists():
+        try:
+            with open(config_path) as f:
+                yaml_config = yaml.safe_load(f) or {}
+            rob_config_data = yaml_config.get("radiomics_robustness", {})
+        except Exception as e:
+            logger.warning("Failed to parse config.yaml: %s", e)
+
+    from .radiomics_robustness import RobustnessConfig, aggregate_robustness_results
+    rob_config = RobustnessConfig.from_dict(rob_config_data)
+
+    # Run aggregation
+    try:
+        aggregate_robustness_results(input_paths, output_path, rob_config)
+        logger.info("Aggregation complete: %s", output_path)
+        return 0
+    except Exception as e:
+        logger.error("Aggregation failed: %s", e, exc_info=True)
+        return 1
+
+
 def main(argv: list[str] | None = None) -> int:
     if argv is None:
         argv = sys.argv[1:]
@@ -445,6 +547,10 @@ def main(argv: list[str] | None = None) -> int:
         return _doctor(argv[1:])
     if argv and argv[0] == "validate":
         return _validate(argv[1:])
+    if argv and argv[0] == "radiomics-robustness":
+        return _radiomics_robustness_course(argv[1:])
+    if argv and argv[0] == "radiomics-robustness-aggregate":
+        return _radiomics_robustness_aggregate(argv[1:])
     args = build_parser().parse_args(argv)
     level = logging.INFO if args.verbose == 0 else logging.DEBUG
     logging.basicConfig(level=level, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
