@@ -23,7 +23,9 @@ docker-compose up -d
 📖 **[Getting Started Guide](GETTING_STARTED.md)** - Complete beginner's guide
 🌐 **[Web UI Documentation](WEBUI.md)** - Detailed Web UI features and usage
 🤖 **[Output Format Guide](output_format.md)** - AI agent guide to understanding pipeline output
+📄 **[Quick Reference](output_format_quick_ref.md)** - One-page cheat sheet for common tasks
 ⚙️ **[Interactive Setup Script](setup_new_project.sh)** - Quick setup for new DICOM directories
+☁️ **[Google Colab Notebook](rtpipeline_colab.ipynb)** - Run pipeline in Google Colab with GPU
 
 ---
 
@@ -127,16 +129,30 @@ All stages write sentinel files (`.organized`, `.segmentation_done`, `.custom_mo
 For setting up the pipeline in a new directory with your own DICOM files:
 
 ```bash
-# Run the interactive setup wizard
+# Interactive mode (recommended for first-time users)
 ./setup_new_project.sh
+
+# Quick mode with sensible defaults
+./setup_new_project.sh --quick /path/to/dicom
+
+# Use preset for specific anatomy (prostate, lung, brain, head_neck, thorax)
+./setup_new_project.sh --preset prostate
+
+# Preview configuration without creating files
+./setup_new_project.sh --preset lung --dry-run
+
+# Validate existing configuration
+./setup_new_project.sh --validate /path/to/config.yaml
 ```
 
-The wizard will:
-1. Check all prerequisites (Python, conda, Docker, etc.)
-2. Guide you through configuration options with explanations
-3. Create a `config.yaml` tailored to your project
-4. Generate a `run_pipeline.sh` script in your DICOM directory
-5. Provide the complete command to start processing
+**Features:**
+- ✅ Automatic prerequisites checking (Python, conda, Docker, GPU)
+- ✅ Interactive configuration with explanations
+- ✅ Preset configurations for common anatomies
+- ✅ Dry-run mode for previewing settings
+- ✅ Configuration validation
+- ✅ Progress saving and resume capability
+- ✅ Bug fixes for path handling and error recovery
 
 This is the recommended approach for first-time users or when setting up processing for a new dataset.
 
