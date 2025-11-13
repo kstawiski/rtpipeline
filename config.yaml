@@ -70,10 +70,11 @@ radiomics_robustness:
       - "GTV*"              # Gross tumor volumes (from Custom or Manual)
       - "CTV*"              # Clinical target volumes (from Custom or Manual)
       - "PTV*"              # Planning target volumes (from Custom or Manual)
-      - "*pelvic*bone*"     # Pelvic bones (from Custom structures)
-      - "*iliac*vessel*"    # Iliac vessels (from Custom structures)
-      - "BLADDER"           # From TotalSegmentator or Manual
-      - "RECTUM"            # From TotalSegmentator or Manual
+      - "pelvic_bones*"     # pelvic_bones, pelvic_bones_3mm (from Custom)
+      - "iliac_*"           # iliac_vess, iliac_area (from Custom)
+      - "bowel_bag"         # Combined bowel structures (from Custom)
+      - "bladder"           # From TotalSegmentator (lowercase)
+      - "rectum"            # From TotalSegmentator (lowercase)
 
     # Volume changes for perturbations (τ parameter)
     # Based on Lo Iacono et al. 2024: ±15% for stability assessment
