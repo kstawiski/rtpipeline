@@ -76,6 +76,10 @@ class PipelineConfig:
     custom_models_conda_activate: str | None = None
     custom_models_retain_weights: bool = True
 
+    # Radiomics robustness analysis
+    radiomics_robustness_enabled: bool = False
+    radiomics_robustness_config: dict = field(default_factory=dict)
+
     def ensure_dirs(self) -> None:
         self.output_root.mkdir(parents=True, exist_ok=True)
         self.logs_root.mkdir(parents=True, exist_ok=True)
