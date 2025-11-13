@@ -50,6 +50,79 @@ radiomics:
   max_voxels: 1500000000  # 1.5 billion voxels max (approx 1500x1000x1000)
   min_voxels: 10
 
+# Radiomics robustness analysis
+# Evaluates feature stability under segmentation perturbations
+# Based on IBSI guidelines and state-of-the-art methods (Zwanenburg 2019, Lo Iacono 2024)
+radiomics_robustness:
+  enabled: false  # Set to true to enable robustness analysis
+
+  # Analysis modes to run
+  modes:
+    - segmentation_perturbation  # Mask erosion/dilation perturbations
+    # - segmentation_method       # Compare different segmentation methods (future)
+    # - scan_rescan               # Test-retest reliability (future)
+
+  # Segmentation perturbation settings
+  segmentation_perturbation:
+    # Structures to analyze (supports wildcards: GTV*, CTV*, PTV*)
+    # Works across ALL sources: TotalSegmentator, Custom structures, Custom models
+    apply_to_structures:
+      - "GTV*"              # Gross tumor volumes (from Custom or Manual)
+      - "CTV*"              # Clinical target volumes (from Custom or Manual)
+      - "PTV*"              # Planning target volumes (from Custom or Manual)
+      - "pelvic_bones*"     # pelvic_bones, pelvic_bones_3mm (from Custom)
+      - "iliac_*"           # iliac_vess, iliac_area (from Custom)
+      - "bowel_bag"         # Combined bowel structures (from Custom)
+      - "urinary_bladder"   # From TotalSegmentator
+      - "colon"             # From TotalSegmentator
+      - "prostate"          # From TotalSegmentator
+      - "rectum"            # From TotalSegmentator (if available)
+
+    # V: Volume changes for perturbations (τ parameter from Lo Iacono et al. 2024)
+    small_volume_changes: [-0.15, 0.0, 0.15]  # ±15% volume change (standard)
+    large_volume_changes: [-0.30, 0.0, 0.30]  # ±30% volume change (stress testing)
+
+    # T: Translation perturbations (Zwanenburg et al. 2019 NTCV chain)
+    # Rigid geometric shifts to simulate positioning uncertainty
+    max_translation_mm: 0.0  # Set to 3.0 or 5.0 to enable translation perturbations
+
+    # C: Contour randomization (boundary noise simulation)
+    # Simulates inter-observer variability in delineation
+    n_random_contour_realizations: 0  # Set to 2-3 to enable contour randomization
+
+    # N: Noise injection (image-based perturbation)
+    # Gaussian noise to simulate scanner variability
+    noise_levels: [0.0]  # Set to [0.0, 10.0, 20.0] to enable noise perturbations (HU std dev)
+
+    # Perturbation intensity (controls total perturbation count)
+    # - "mild": ~10-15 perturbations per ROI (quick testing)
+    # - "standard": 15-30 perturbations per ROI (recommended, balanced)
+    # - "aggressive": 30-60 perturbations per ROI (research-grade, comprehensive)
+    intensity: "standard"
+
+  # Robustness metrics configuration
+  metrics:
+    icc:
+      implementation: "pingouin"  # Use Pingouin library for ICC computation
+      icc_type: "ICC3"            # ICC(3,1): two-way mixed effects, fixed perturbations
+      ci: true                    # Compute 95% confidence intervals
+    cov:
+      enabled: true               # Coefficient of Variation (%)
+    qcd:
+      enabled: true               # Quartile Coefficient of Dispersion
+
+  # Thresholds for classifying feature robustness
+  # Based on Zwanenburg 2019 and Hosseini 2025 recommendations
+  thresholds:
+    icc:
+      robust: 0.90       # ICC ≥ 0.90: "excellent/robust"
+      acceptable: 0.75   # ICC ≥ 0.75: "good/acceptable"
+                         # ICC < 0.75: "poor"
+    cov:
+      robust_pct: 10.0      # CoV ≤ 10%: "robust"
+      acceptable_pct: 20.0  # CoV ≤ 20%: "acceptable"
+                            # CoV > 20%: "poor"
+
 aggregation:
   threads: auto  # auto = use CPU count, or set specific number
 

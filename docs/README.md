@@ -44,6 +44,7 @@ This directory contains technical documentation, advanced guides, and developmen
 |----------|-------------|
 | [**custom_models.md**](custom_models.md) | Using custom nnUNet segmentation models |
 | [**pipeline_report.md**](pipeline_report.md) | Pipeline capabilities and features |
+| [**../RADIOMICS_ROBUSTNESS.md**](../RADIOMICS_ROBUSTNESS.md) | Radiomics robustness workflow, configuration, and research references |
 
 ### Data & Quality Control
 
@@ -73,6 +74,9 @@ This directory contains technical documentation, advanced guides, and developmen
 
 ### "I need to interpret my results"
 → [Guide to Results Interpretation.md](Guide%20to%20Results%20Interpretation.md) and [output_format.md](../output_format.md)
+
+### "I must validate radiomics stability before modelling"
+→ [RADIOMICS_ROBUSTNESS.md](../RADIOMICS_ROBUSTNESS.md)
 
 ### "I'm working with CT cropping"
 → [qc_cropping_audit.md](qc_cropping_audit.md)
