@@ -177,10 +177,10 @@ ask_question() {
     local response
 
     if [ -n "$default" ]; then
-        read -p "$(echo -e ${GREEN}?)${NC} $question [default: $default]: " response
+        read -p "$(echo -e "${GREEN}?${NC}") $question [default: $default]: " response
         echo "${response:-$default}"
     else
-        read -p "$(echo -e ${GREEN}?)${NC} $question: " response
+        read -p "$(echo -e "${GREEN}?${NC}") $question: " response
         echo "$response"
     fi
 }
@@ -1183,7 +1183,7 @@ if [ ! -f "$CONFIG_FILE" ]; then
 fi
 
 # Check if rtpipeline repository is accessible
-RTPIPELINE_DIR="RTPIPELINE_PLACEHOLDER"
+RTPIPELINE_DIR="__RTPIPELINE_DIR_PLACEHOLDER__"
 if [ ! -d "$RTPIPELINE_DIR" ]; then
     echo -e "${RED}Error: RTpipeline repository not found at $RTPIPELINE_DIR${NC}"
     echo "Please update RTPIPELINE_DIR in this script to point to the rtpipeline repository."
@@ -1243,7 +1243,7 @@ exit $EXITCODE
 RUNSCRIPT
 
     # Replace placeholder with actual rtpipeline directory
-    sed -i "s|RTPIPELINE_PLACEHOLDER|$SCRIPT_DIR|g" "$dicom_dir/run_pipeline.sh"
+    sed -i "s|__RTPIPELINE_DIR_PLACEHOLDER__|$SCRIPT_DIR|g" "$dicom_dir/run_pipeline.sh"
 
     chmod +x "$dicom_dir/run_pipeline.sh"
 
@@ -1268,6 +1268,13 @@ main() {
     if [ "$EDIT_MODE" = "true" ]; then
         print_error "Edit mode not yet implemented"
         print_info "For now, manually edit: $CONFIG_FILE"
+        exit 1
+    fi
+
+    # Validate quick mode requires DICOM directory argument
+    if [ "$QUICK_MODE" = "true" ] && [ $# -eq 0 ]; then
+        print_error "Quick mode requires a DICOM directory path"
+        echo "Usage: $0 --quick /path/to/dicom"
         exit 1
     fi
 
