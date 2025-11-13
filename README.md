@@ -22,6 +22,8 @@ docker-compose up -d
 
 📖 **[Getting Started Guide](GETTING_STARTED.md)** - Complete beginner's guide
 🌐 **[Web UI Documentation](WEBUI.md)** - Detailed Web UI features and usage
+🤖 **[Output Format Guide](output_format.md)** - AI agent guide to understanding pipeline output
+⚙️ **[Interactive Setup Script](setup_new_project.sh)** - Quick setup for new DICOM directories
 
 ---
 
@@ -119,6 +121,24 @@ All stages write sentinel files (`.organized`, `.segmentation_done`, `.custom_mo
 ---
 
 ## Running the Workflow
+
+### Interactive Setup (Quick Start for New Projects)
+
+For setting up the pipeline in a new directory with your own DICOM files:
+
+```bash
+# Run the interactive setup wizard
+./setup_new_project.sh
+```
+
+The wizard will:
+1. Check all prerequisites (Python, conda, Docker, etc.)
+2. Guide you through configuration options with explanations
+3. Create a `config.yaml` tailored to your project
+4. Generate a `run_pipeline.sh` script in your DICOM directory
+5. Provide the complete command to start processing
+
+This is the recommended approach for first-time users or when setting up processing for a new dataset.
 
 ### Docker / Singularity (Recommended)
 
