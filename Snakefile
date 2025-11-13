@@ -589,7 +589,6 @@ rule radiomics_robustness_course:
             sentinel_path.write_text("disabled\n", encoding="utf-8")
             return
 
-        worker_count = max(1, int(threads))
         sentinel_path = Path(output.sentinel)
         sentinel_path.parent.mkdir(parents=True, exist_ok=True)
         log_path = Path(log[0])
