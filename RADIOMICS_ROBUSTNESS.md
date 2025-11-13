@@ -6,10 +6,14 @@ A built-in feature stability assessment module for rtpipeline that evaluates rad
 
 The radiomics robustness module helps you identify stable, reproducible radiomics features for modeling by:
 
-1. **Generating perturbed segmentations** via mask erosion/dilation (volume adaptation)
-2. **Re-extracting radiomics features** for each perturbation using PyRadiomics
-3. **Computing robustness metrics**: ICC (Intraclass Correlation Coefficient), CoV (Coefficient of Variation), QCD (Quartile Coefficient of Dispersion)
-4. **Classifying features** as "robust", "acceptable", or "poor" based on configurable thresholds
+1. **Collecting segmentations** from multiple sources:
+   - TotalSegmentator (RS_auto.dcm)
+   - Custom structures (RS_custom.dcm)
+   - Custom models (Segmentation_{model_name}/rtstruct.dcm)
+2. **Generating perturbed segmentations** via mask erosion/dilation (volume adaptation)
+3. **Re-extracting radiomics features** for each perturbation using PyRadiomics
+4. **Computing robustness metrics**: ICC (Intraclass Correlation Coefficient), CoV (Coefficient of Variation), QCD (Quartile Coefficient of Dispersion)
+5. **Classifying features** as "robust", "acceptable", or "poor" based on configurable thresholds
 
 ## Scientific Background
 
@@ -174,6 +178,7 @@ radiomics_robustness:
 
 Columns:
 - `structure`: ROI name (e.g., "BLADDER", "GTV_primary")
+- `segmentation_source`: Source of segmentation (e.g., "AutoRTS_total", "Custom", "CustomModel:cardiac_STOPSTORM")
 - `feature_name`: PyRadiomics feature (e.g., "original_glcm_Correlation")
 - `n_perturbations`: Number of perturbations tested
 - `icc`: ICC point estimate
@@ -186,10 +191,12 @@ Columns:
 ### Aggregated Excel file
 
 Multiple sheets for easy filtering:
-1. **global_summary**: Features averaged across all structures/courses
-2. **per_structure**: Detailed per-structure results
-3. **robust_features**: Only ICC ≥ 0.90 and CoV ≤ 10%
-4. **acceptable_features**: ICC ≥ 0.75 and CoV ≤ 20%
+1. **global_summary**: Features averaged across all structures/courses/sources
+2. **per_source_summary**: Features averaged by segmentation source (TotalSegmentator vs Custom vs Custom Models)
+3. **per_structure_source**: Detailed per-structure-source breakdown
+4. **robust_features**: Only ICC ≥ 0.90 and CoV ≤ 10% (global)
+5. **acceptable_features**: ICC ≥ 0.75 and CoV ≤ 20% (global)
+6. **robust_features_per_source**: Robust features broken down by segmentation source
 
 ## Best Practices
 
@@ -198,6 +205,8 @@ Multiple sheets for easy filtering:
 3. **Structure selection**: Focus on clinically relevant structures (GTV, CTV, organs at risk)
 4. **Volume changes**: Start with ±15% (default); use ±30% for stress testing
 5. **Validation**: If possible, validate feature stability on independent test-retest data
+6. **Multi-source analysis**: Compare robustness across segmentation sources (TotalSegmentator vs Custom structures) using the `per_source_summary` sheet
+7. **Prioritize consistent sources**: If a feature is robust from one source but not another, prefer the source with higher robustness metrics
 
 ## Typical Feature Families by Robustness
 
@@ -226,7 +235,10 @@ Enable it in `config.yaml`: `radiomics_robustness.enabled: true`
 Install: `pip install pingouin>=0.5.3`
 
 ### "No structures matched robustness patterns"
-Check `apply_to_structures` patterns in config. Verify structure names in `RS_auto.dcm` match your patterns.
+Check `apply_to_structures` patterns in config. Verify structure names match your patterns in:
+- `RS_auto.dcm` (TotalSegmentator)
+- `RS_custom.dcm` (Custom structures)
+- `Segmentation_{model_name}/rtstruct.dcm` (Custom models)
 
 ### "Insufficient perturbations for X; skipping"
 Some small structures may fail erosion/dilation. This is expected; they'll be skipped automatically.
