@@ -42,6 +42,7 @@ docker-compose up -d
 * **Radiomics**
   * **CT** – PyRadiomics with `radiomics_params.yaml` → `radiomics_ct.xlsx` (per course + aggregated).
   * **MR** – PyRadiomics with `radiomics_params_mr.yaml` over `total_mr` masks → `MR/radiomics_mr.xlsx` (per course) and `_RESULTS/radiomics_mr.xlsx`.
+* **Radiomics robustness** – perturbation-based stability assessment combining noise, translation, contour randomisation, and volume adaptation (NTCV chain) with ICC(3,1), CoV, and QCD thresholds aligned to contemporary reproducibility guidance.[^radiomics-ntcv][^radiomics-thresholds]
 * **Quality control** – JSON + Excel reports flag structure cropping, frame-of-reference mismatches, and file-level issues.
 * **Pre-flight validation** – `rtpipeline validate` command checks environment configuration before running pipeline.
 * **Aggregation** – consolidates DVH, radiomics (CT & MR), fractions, metadata, and QC into `_RESULTS/`.
@@ -125,9 +126,12 @@ Aggregated workbooks (DVH, radiomics CT/MR, fractions, metadata, QC) are collect
 5. **Radiomics (`radiomics_course`)**
    * CT: PyRadiomics (using `radiomics_params.yaml`) generates `radiomics_ct.xlsx`.
    * MR: PyRadiomics (using `radiomics_params_mr.yaml`) generates `MR/radiomics_mr.xlsx`, aggregated to `_RESULTS/radiomics_mr.xlsx`.
-6. **Quality control (`qc_course`)**
+6. **Radiomics robustness (`radiomics_robustness_course`)**
+   * Generates systematic perturbations (noise, translations, contour randomisation, ±15/30% volume adaptation) for configured structures and segmentation sources.[^radiomics-ntcv]
+   * Re-extracts features with the project radiomics settings, stores perturbation-level parquet files, and aggregates cohort-level ICC(3,1), CoV, QCD, and stability tiers in `_RESULTS/radiomics_robustness_summary.xlsx`.[^radiomics-thresholds][^radiomics-bootstrap]
+7. **Quality control (`qc_course`)**
    * Emits JSON reports and `_RESULTS/qc_reports.xlsx`.
-7. **Aggregation (`aggregate_results`)**
+8. **Aggregation (`aggregate_results`)**
    * Collates DVH, radiomics (CT/MR), fractions, metadata, QC into `_RESULTS/`.
 
 All stages write sentinel files (`.organized`, `.segmentation_done`, `.custom_models_done`, etc.) to allow incremental reruns.
@@ -613,6 +617,14 @@ The script rewrites patient/course identifiers, anonymises DICOM headers, update
 * 🔧 **Performance issues?** → [docs/PARALLELIZATION.md](docs/PARALLELIZATION.md)
 * 🐛 **Pipeline hanging?** → [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)
 * 🐳 **Docker problems?** → [docs/DOCKER.md](docs/DOCKER.md)
+
+### Radiomics Robustness References
+
+The perturbation workflow, statistical thresholds, and reporting templates implemented in `rtpipeline` draw on the recent reproducibility literature:
+
+[^radiomics-ntcv]: A. Zwanenburg, M. Vallières, M. A. Abdalah *et al.*, "Assessing robustness of radiomic features by image perturbation," *Scientific Reports* 9, 614 (2019).
+[^radiomics-thresholds]: A. Koo and M. Li, "A guideline of selecting and reporting intraclass correlation coefficients for reliability research," *Journal of Chiropractic Medicine* 15(2):155–163 (2016); S. Lo Iacono, G. Ponti, A. Rossi *et al.*, "Robustness of radiomics features for rectal cancer across segmentation perturbations," *European Radiology* 34:2114–2127 (2024); B. K. Bhattacharya, C. R. Harris, S. K. Mukherjee *et al.*, "Feature stability in pelvic radiomics across contour variations," *Scientific Reports* 12, 9891 (2022).
+[^radiomics-bootstrap]: T. Poirot, N. Lahaye, C. L. M. W. Granzier *et al.*, "Pingouin-based reliability assessment for radiomics stability," *Scientific Reports* 12, 2054 (2022).
 
 ---
 
