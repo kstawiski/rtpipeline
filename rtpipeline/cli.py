@@ -5,6 +5,7 @@ import json
 import logging
 import sys
 from pathlib import Path
+from typing import Any
 
 
 from .config import PipelineConfig
@@ -437,6 +438,164 @@ def _validate(argv: list[str]) -> int:
         return 0
 
 
+def _radiomics_robustness_course(argv: list[str]) -> int:
+    """Run radiomics robustness analysis for a single course."""
+    p = argparse.ArgumentParser(
+        prog="rtpipeline radiomics-robustness",
+        description="Radiomics robustness analysis (segmentation perturbation)",
+    )
+    p.add_argument("--course-dir", required=True, help="Course directory path")
+    p.add_argument("--config", default="config.yaml", help="Path to config YAML")
+    p.add_argument("--output", required=True, help="Output parquet file path")
+    p.add_argument("-v", "--verbose", action="store_true", help="Verbose logging")
+    args = p.parse_args(argv)
+
+    level = logging.DEBUG if args.verbose else logging.INFO
+    logging.basicConfig(level=level, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+
+    # Load config
+    course_dir = Path(args.course_dir).resolve()
+    output_path = Path(args.output).resolve()
+    config_path = Path(args.config)
+
+    # Parse config.yaml for robustness and radiomics settings
+    import yaml
+    rob_config_data = {}
+    yaml_config: dict[str, Any] = {}
+    root_dir = config_path.parent.resolve()
+    if config_path.exists():
+        try:
+            with open(config_path) as f:
+                yaml_config = yaml.safe_load(f) or {}
+            rob_config_data = yaml_config.get("radiomics_robustness", {})
+        except Exception as e:
+            logger.warning("Failed to parse config.yaml: %s", e)
+
+    from .radiomics_robustness import RobustnessConfig, robustness_for_course
+    rob_config = RobustnessConfig.from_dict(rob_config_data)
+
+    if not rob_config.enabled:
+        logger.warning("Radiomics robustness is disabled in config; enable with 'radiomics_robustness.enabled: true'")
+        return 1
+
+    def _resolve_path(raw: Any, default_name: str) -> Path:
+        candidate = Path(str(raw)) if raw else Path(default_name)
+        if not candidate.is_absolute():
+            candidate = (root_dir / candidate).resolve()
+        return candidate
+
+    dicom_root = _resolve_path(yaml_config.get("dicom_root", "Example_data"), "Example_data")
+    output_root = _resolve_path(yaml_config.get("output_dir", "Data_Snakemake"), "Data_Snakemake")
+    logs_root = _resolve_path(yaml_config.get("logs_dir", "Logs_Snakemake"), "Logs_Snakemake")
+
+    radiomics_cfg = yaml_config.get("radiomics", {}) or {}
+
+    def _coerce_int(value: Any) -> int | None:
+        if value is None:
+            return None
+        try:
+            ivalue = int(value)
+            return ivalue
+        except (TypeError, ValueError):
+            return None
+
+    params_file = radiomics_cfg.get("params_file")
+    if params_file:
+        params_path = Path(params_file)
+        if not params_path.is_absolute():
+            params_path = (root_dir / params_path).resolve()
+    else:
+        params_path = None
+
+    params_file_mr = radiomics_cfg.get("mr_params_file")
+    if params_file_mr:
+        params_path_mr = Path(params_file_mr)
+        if not params_path_mr.is_absolute():
+            params_path_mr = (root_dir / params_path_mr).resolve()
+    else:
+        params_path_mr = None
+
+    skip_rois_cfg = radiomics_cfg.get("skip_rois") or []
+    if isinstance(skip_rois_cfg, str):
+        skip_rois = [item.strip() for item in skip_rois_cfg.replace(";", ",").split(",") if item.strip()]
+    else:
+        skip_rois = [str(item).strip() for item in skip_rois_cfg if str(item).strip()]
+
+    thread_limit = _coerce_int(radiomics_cfg.get("thread_limit"))
+    if thread_limit is not None and thread_limit < 1:
+        thread_limit = None
+
+    pipeline_config = PipelineConfig(
+        dicom_root=dicom_root,
+        output_root=output_root,
+        logs_root=logs_root,
+        radiomics_params_file=params_path,
+        radiomics_params_file_mr=params_path_mr,
+        radiomics_skip_rois=skip_rois,
+        radiomics_max_voxels=_coerce_int(radiomics_cfg.get("max_voxels")),
+        radiomics_min_voxels=_coerce_int(radiomics_cfg.get("min_voxels")),
+        radiomics_thread_limit=thread_limit,
+        radiomics_robustness_enabled=rob_config.enabled,
+        radiomics_robustness_config=rob_config_data,
+    )
+
+    # Run robustness analysis
+    try:
+        result = robustness_for_course(pipeline_config, rob_config, course_dir, output_path=output_path)
+        if result is None:
+            logger.warning("Robustness analysis produced no output")
+            return 1
+        logger.info("Robustness analysis complete: %s", result)
+        return 0
+    except Exception as e:
+        logger.error("Robustness analysis failed: %s", e, exc_info=True)
+        return 1
+
+
+def _radiomics_robustness_aggregate(argv: list[str]) -> int:
+    """Aggregate radiomics robustness results from multiple courses."""
+    p = argparse.ArgumentParser(
+        prog="rtpipeline radiomics-robustness-aggregate",
+        description="Aggregate radiomics robustness results",
+    )
+    p.add_argument("--inputs", nargs="+", required=True, help="Input parquet files")
+    p.add_argument("--output", required=True, help="Output Excel file")
+    p.add_argument("--config", default="config.yaml", help="Path to config YAML")
+    p.add_argument("-v", "--verbose", action="store_true", help="Verbose logging")
+    args = p.parse_args(argv)
+
+    level = logging.DEBUG if args.verbose else logging.INFO
+    logging.basicConfig(level=level, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+
+    # Load config
+    input_paths = [Path(p) for p in args.inputs]
+    output_path = Path(args.output).resolve()
+    config_path = Path(args.config)
+
+    # Parse config.yaml for robustness settings
+    import yaml
+    rob_config_data = {}
+    if config_path.exists():
+        try:
+            with open(config_path) as f:
+                yaml_config = yaml.safe_load(f) or {}
+            rob_config_data = yaml_config.get("radiomics_robustness", {})
+        except Exception as e:
+            logger.warning("Failed to parse config.yaml: %s", e)
+
+    from .radiomics_robustness import RobustnessConfig, aggregate_robustness_results
+    rob_config = RobustnessConfig.from_dict(rob_config_data)
+
+    # Run aggregation
+    try:
+        aggregate_robustness_results(input_paths, output_path, rob_config)
+        logger.info("Aggregation complete: %s", output_path)
+        return 0
+    except Exception as e:
+        logger.error("Aggregation failed: %s", e, exc_info=True)
+        return 1
+
+
 def main(argv: list[str] | None = None) -> int:
     if argv is None:
         argv = sys.argv[1:]
@@ -445,6 +604,10 @@ def main(argv: list[str] | None = None) -> int:
         return _doctor(argv[1:])
     if argv and argv[0] == "validate":
         return _validate(argv[1:])
+    if argv and argv[0] == "radiomics-robustness":
+        return _radiomics_robustness_course(argv[1:])
+    if argv and argv[0] == "radiomics-robustness-aggregate":
+        return _radiomics_robustness_aggregate(argv[1:])
     args = build_parser().parse_args(argv)
     level = logging.INFO if args.verbose == 0 else logging.DEBUG
     logging.basicConfig(level=level, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")

@@ -185,6 +185,9 @@ else:
 if AGGREGATION_THREADS is not None and AGGREGATION_THREADS < 1:
     AGGREGATION_THREADS = 1
 
+ROBUSTNESS_CONFIG = config.get("radiomics_robustness", {}) or {}
+ROBUSTNESS_ENABLED = bool(ROBUSTNESS_CONFIG.get("enabled", False))
+
 COURSE_META_DIR = OUTPUT_DIR / "_COURSES"
 COURSE_MANIFEST = COURSE_META_DIR / "manifest.json"
 
@@ -196,6 +199,9 @@ AGG_OUTPUTS = {
     "metadata": RESULTS_DIR / "case_metadata.xlsx",
     "qc": RESULTS_DIR / "qc_reports.xlsx",
 }
+
+if ROBUSTNESS_ENABLED:
+    AGG_OUTPUTS["radiomics_robustness"] = RESULTS_DIR / "radiomics_robustness_summary.xlsx"
 
 SEG_WORKER_POOL = SEG_MAX_WORKERS if SEG_MAX_WORKERS is not None else max(1, WORKERS)
 CUSTOM_SEG_WORKER_POOL = CUSTOM_MODELS_WORKERS if CUSTOM_MODELS_WORKERS is not None else 1
@@ -263,6 +269,7 @@ SEGMENTATION_SENTINEL_PATTERN = str(OUTPUT_DIR / "{patient}" / "{course}" / ".se
 CUSTOM_SEG_SENTINEL_PATTERN = str(OUTPUT_DIR / "{patient}" / "{course}" / ".custom_models_done")
 DVH_SENTINEL_PATTERN = str(OUTPUT_DIR / "{patient}" / "{course}" / ".dvh_done")
 RADIOMICS_SENTINEL_PATTERN = str(OUTPUT_DIR / "{patient}" / "{course}" / ".radiomics_done")
+RADIOMICS_ROBUSTNESS_SENTINEL_PATTERN = str(OUTPUT_DIR / "{patient}" / "{course}" / ".radiomics_robustness_done")
 QC_SENTINEL_PATTERN = str(OUTPUT_DIR / "{patient}" / "{course}" / ".qc_done")
 
 
@@ -394,7 +401,6 @@ rule segmentation_custom_models:
         "envs/rtpipeline.yaml"
     run:
         import subprocess
-        worker_count = max(1, int(threads))
         sentinel_path = Path(output.sentinel)
         sentinel_path.parent.mkdir(parents=True, exist_ok=True)
         log_path = Path(log[0])
@@ -560,6 +566,115 @@ rule qc_course:
         with log_path.open("w") as logf:
             subprocess.run(cmd, check=True, stdout=logf, stderr=subprocess.STDOUT, env=env)
         sentinel_path.write_text("ok\n", encoding="utf-8")
+
+
+rule radiomics_robustness_course:
+    input:
+        manifest=_manifest_input,
+        radiomics=RADIOMICS_SENTINEL_PATTERN
+    output:
+        sentinel=RADIOMICS_ROBUSTNESS_SENTINEL_PATTERN
+    log:
+        str(LOGS_DIR / "radiomics_robustness" / "{patient}_{course}.log")
+    threads:
+        max(1, WORKERS)
+    conda:
+        "envs/rtpipeline-radiomics.yaml"
+    run:
+        import subprocess
+        if not ROBUSTNESS_ENABLED:
+            # Skip if disabled
+            sentinel_path = Path(output.sentinel)
+            sentinel_path.parent.mkdir(parents=True, exist_ok=True)
+            sentinel_path.write_text("disabled\n", encoding="utf-8")
+            return
+
+        sentinel_path = Path(output.sentinel)
+        sentinel_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path = Path(log[0])
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        env = _rt_env()
+
+        course_path = OUTPUT_DIR / wildcards.patient / wildcards.course
+        output_parquet = course_path / "radiomics_robustness_ct.parquet"
+
+        cmd = [
+            sys.executable,
+            "-m",
+            "rtpipeline.cli",
+            "radiomics-robustness",
+            "--course-dir", str(course_path),
+            "--config", str(ROOT_DIR / "config.yaml"),
+            "--output", str(output_parquet),
+        ]
+
+        try:
+            with log_path.open("w") as logf:
+                subprocess.run(cmd, check=True, stdout=logf, stderr=subprocess.STDOUT, env=env)
+            sentinel_path.write_text("ok\n", encoding="utf-8")
+        except subprocess.CalledProcessError as e:
+            # Log error but don't fail the entire pipeline
+            with log_path.open("a") as logf:
+                logf.write(f"\nRobustness analysis failed: {e}\n")
+            sentinel_path.write_text(f"failed: {e}\n", encoding="utf-8")
+
+
+rule aggregate_radiomics_robustness:
+    input:
+        manifest=_manifest_input,
+        robustness=_per_course_sentinels(".radiomics_robustness_done")
+    output:
+        summary=str(AGG_OUTPUTS.get("radiomics_robustness", RESULTS_DIR / "radiomics_robustness_summary.xlsx"))
+    log:
+        str(LOGS_DIR / "aggregate_radiomics_robustness.log")
+    threads:
+        max(1, AGGREGATION_THREADS or 4)
+    conda:
+        "envs/rtpipeline-radiomics.yaml"
+    run:
+        import subprocess
+        if not ROBUSTNESS_ENABLED:
+            # Create empty file if disabled
+            import pandas as pd
+            summary_path = Path(output.summary)
+            summary_path.parent.mkdir(parents=True, exist_ok=True)
+            pd.DataFrame().to_excel(summary_path, index=False)
+            return
+
+        log_path = Path(log[0])
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        env = _rt_env()
+
+        # Collect all parquet files
+        parquet_files = []
+        for patient_id, course_id, course_path in _iter_course_dirs():
+            parquet_path = course_path / "radiomics_robustness_ct.parquet"
+            if parquet_path.exists():
+                parquet_files.append(str(parquet_path))
+
+        if not parquet_files:
+            # Create empty output
+            import pandas as pd
+            summary_path = Path(output.summary)
+            summary_path.parent.mkdir(parents=True, exist_ok=True)
+            pd.DataFrame().to_excel(summary_path, index=False)
+            with log_path.open("w") as logf:
+                logf.write("No robustness parquet files found\n")
+            return
+
+        cmd = [
+            sys.executable,
+            "-m",
+            "rtpipeline.cli",
+            "radiomics-robustness-aggregate",
+            "--inputs",
+        ] + parquet_files + [
+            "--output", str(output.summary),
+            "--config", str(ROOT_DIR / "config.yaml"),
+        ]
+
+        with log_path.open("w") as logf:
+            subprocess.run(cmd, check=True, stdout=logf, stderr=subprocess.STDOUT, env=env)
 
 
 rule aggregate_results:
