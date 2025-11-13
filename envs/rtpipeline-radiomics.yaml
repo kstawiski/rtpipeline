@@ -12,3 +12,5 @@ dependencies:
   - pip:
     - pyradiomics
     - xlsxwriter
+    - pingouin
+    - pyarrow
