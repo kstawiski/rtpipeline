@@ -120,7 +120,7 @@ snakemake -c 8
 ```
 
 The robustness analysis runs after standard radiomics extraction and produces:
-- Per-course results: `Data_Snakemake/{patient}/{course}/radiomics_robustness_ct.parquet`
+- Per-course results: `Data_Snakemake/{patient}/{course}/radiomics_robustness_ct.parquet` containing all perturbation-level feature values
 - Aggregated summary: `Data_Snakemake/_RESULTS/radiomics_robustness_summary.xlsx`
 
 ### 4. Use robust features for modeling
@@ -130,7 +130,10 @@ The output Excel file contains multiple sheets:
 - **`global_summary`**: Features averaged across all structures/courses
 - **`robust_features`**: Only features classified as "robust" (ICC ≥ 0.90, CoV ≤ 10%)
 - **`acceptable_features`**: Features meeting "acceptable" thresholds (ICC ≥ 0.75, CoV ≤ 20%)
-- **`per_structure`**: Detailed per-structure breakdown
+- **`per_source_summary`** *(if available)*: Cohort metrics grouped by segmentation source
+- **`per_structure_source`**: Detailed per-structure breakdown (preserving segmentation source)
+- **`raw_values`**: All perturbation-level feature values used for the cohort statistics
+- **`robust_features_per_source`** *(if available)*: Robust features for each segmentation source
 
 **Example workflow:**
 ```python
@@ -216,7 +219,7 @@ radiomics_robustness:
   metrics:
     icc:
       implementation: "pingouin"  # ICC computation library
-      icc_type: "ICC2"            # ICC(2,1): two-way mixed, absolute agreement
+      icc_type: "ICC3"            # ICC(3,1): two-way mixed, consistency for fixed perturbations
       ci: true                    # Compute 95% confidence intervals
     cov:
       enabled: true

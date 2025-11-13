@@ -401,7 +401,6 @@ rule segmentation_custom_models:
         "envs/rtpipeline.yaml"
     run:
         import subprocess
-        worker_count = max(1, int(threads))
         sentinel_path = Path(output.sentinel)
         sentinel_path.parent.mkdir(parents=True, exist_ok=True)
         log_path = Path(log[0])
@@ -638,7 +637,9 @@ rule aggregate_radiomics_robustness:
         if not ROBUSTNESS_ENABLED:
             # Create empty file if disabled
             import pandas as pd
-            pd.DataFrame().to_excel(output.summary, index=False)
+            summary_path = Path(output.summary)
+            summary_path.parent.mkdir(parents=True, exist_ok=True)
+            pd.DataFrame().to_excel(summary_path, index=False)
             return
 
         log_path = Path(log[0])
@@ -655,7 +656,9 @@ rule aggregate_radiomics_robustness:
         if not parquet_files:
             # Create empty output
             import pandas as pd
-            pd.DataFrame().to_excel(output.summary, index=False)
+            summary_path = Path(output.summary)
+            summary_path.parent.mkdir(parents=True, exist_ok=True)
+            pd.DataFrame().to_excel(summary_path, index=False)
             with log_path.open("w") as logf:
                 logf.write("No robustness parquet files found\n")
             return
