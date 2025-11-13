@@ -583,7 +583,7 @@
                                     <input type="number" id="cores" value="4" min="1" max="64">
                                     Number of CPU Cores
                                 </label>
-                                <small>Number of CPU cores for parallel processing (use "auto" for all available)</small>
+                                <small>Number of CPU cores for parallel processing</small>
                             </div>
                         </div>
                     </div>
@@ -780,7 +780,6 @@
     <script>
         let currentJobId = null;
         let uploadedFiles = [];
-        let logRefreshInterval = null;
         let currentLogJobId = null;
 
         // Initialize
@@ -1175,7 +1174,7 @@
 
                 if (response.ok) {
                     const logContent = document.getElementById('log-content');
-                    const wasScrolledToBottom = logContent.scrollHeight - logContent.scrollTop === logContent.clientHeight;
+                    const wasScrolledToBottom = Math.abs(logContent.scrollHeight - logContent.scrollTop - logContent.clientHeight) < 5;
 
                     logContent.textContent = result.logs || 'No logs available yet';
 
