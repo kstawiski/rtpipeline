@@ -7,7 +7,7 @@
 #
 # Usage:
 #   ./setup_new_project.sh                    # Interactive mode
-#   ./setup_new_project.sh --quick            # Quick mode with defaults
+#   ./setup_new_project.sh --quick /path      # Quick mode with defaults
 #   ./setup_new_project.sh --preset prostate  # Use preset configuration
 #   ./setup_new_project.sh --dry-run          # Preview without creating files
 #   ./setup_new_project.sh --validate FILE    # Validate existing config
@@ -33,6 +33,7 @@ SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 # Mode flags
 DRY_RUN=false
 QUICK_MODE=false
+QUICK_DICOM_DIR=""
 VALIDATE_MODE=false
 EDIT_MODE=false
 PRESET=""
@@ -53,6 +54,11 @@ parse_arguments() {
                 ;;
             --quick)
                 QUICK_MODE=true
+                shift
+                ;;
+            --quick=*)
+                QUICK_MODE=true
+                QUICK_DICOM_DIR="${1#--quick=}"
                 shift
                 ;;
             --preset)
@@ -82,9 +88,14 @@ parse_arguments() {
                 exit 0
                 ;;
             *)
-                print_error "Unknown option: $1"
-                show_help
-                exit 1
+                if [ "$QUICK_MODE" = "true" ] && [ -z "$QUICK_DICOM_DIR" ] && [[ "$1" != -* ]]; then
+                    QUICK_DICOM_DIR="$1"
+                    shift
+                else
+                    print_error "Unknown option: $1"
+                    show_help
+                    exit 1
+                fi
                 ;;
         esac
     done
@@ -98,7 +109,7 @@ USAGE:
     ./setup_new_project.sh [OPTIONS]
 
 OPTIONS:
-    --quick                 Quick setup with sensible defaults
+    --quick PATH            Quick setup with sensible defaults (requires DICOM directory PATH)
     --preset NAME           Use preset configuration (prostate, lung, brain, head_neck, thorax)
     --dry-run              Preview configuration without creating files
     --validate FILE        Validate existing config.yaml
@@ -191,10 +202,10 @@ ask_yes_no() {
     local response
 
     if [ "$default" = "yes" ]; then
-        read -p "$(echo -e ${GREEN}?)${NC} $question [Y/n]: " response
+        read -p "$(echo -e "${GREEN}?${NC}") $question [Y/n]: " response
         response="${response:-y}"
     else
-        read -p "$(echo -e ${GREEN}?)${NC} $question [y/N]: " response
+        read -p "$(echo -e "${GREEN}?${NC}") $question [y/N]: " response
         response="${response:-n}"
     fi
 
@@ -343,8 +354,12 @@ check_directory_overlap() {
     dir1=$(cd "$dir1" 2>/dev/null && pwd || echo "$dir1")
     dir2=$(cd "$dir2" 2>/dev/null && pwd || echo "$dir2")
 
-    # Check if one is subdirectory of the other
-    if [[ "$dir1" == "$dir2"* ]] || [[ "$dir2" == "$dir1"* ]]; then
+    # Normalize paths by removing trailing slashes
+    local dir1_norm="${dir1%/}"
+    local dir2_norm="${dir2%/}"
+
+    # Check if directories are identical or nested within each other
+    if [ "$dir1_norm" = "$dir2_norm" ] || [[ "$dir2_norm/" == "$dir1_norm/"* ]] || [[ "$dir1_norm/" == "$dir2_norm/"* ]]; then
         print_error "$name1 and $name2 overlap!"
         print_error "  $name1: $dir1"
         print_error "  $name2: $dir2"
@@ -670,6 +685,7 @@ configure_project() {
     while true; do
         if [ "$QUICK_MODE" = "true" ] && [ $# -gt 0 ]; then
             dicom_dir="$1"
+            shift
         else
             dicom_dir=$(ask_question "Path to DICOM directory" "")
         fi
@@ -1154,7 +1170,7 @@ generate_run_script() {
     local output_dir="$2"
 
     # BUG FIX #5: Properly quote paths with spaces
-    cat > "$dicom_dir/run_pipeline.sh" << 'RUNSCRIPT'
+    cat <<RUNSCRIPT > "$dicom_dir/run_pipeline.sh"
 #!/bin/bash
 #
 # RTpipeline Execution Script
@@ -1164,8 +1180,8 @@ generate_run_script() {
 set -euo pipefail
 
 # Get script directory
-SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-CONFIG_FILE="$SCRIPT_DIR/config.yaml"
+SCRIPT_DIR="\$( cd "\$( dirname "\${BASH_SOURCE[0]}" )" && pwd )"
+CONFIG_FILE="\$SCRIPT_DIR/config.yaml"
 
 # Colors
 GREEN='\033[0;32m'
@@ -1173,30 +1189,30 @@ RED='\033[0;31m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
-echo -e "${GREEN}Starting RTpipeline...${NC}"
+echo -e "\${GREEN}Starting RTpipeline...\${NC}"
 echo ""
 
 # Check if config exists
-if [ ! -f "$CONFIG_FILE" ]; then
-    echo -e "${RED}Error: config.yaml not found in $SCRIPT_DIR${NC}"
+if [ ! -f "\$CONFIG_FILE" ]; then
+    echo -e "\${RED}Error: config.yaml not found in \$SCRIPT_DIR\${NC}"
     exit 1
 fi
 
 # Check if rtpipeline repository is accessible
-RTPIPELINE_DIR="__RTPIPELINE_DIR_PLACEHOLDER__"
-if [ ! -d "$RTPIPELINE_DIR" ]; then
-    echo -e "${RED}Error: RTpipeline repository not found at $RTPIPELINE_DIR${NC}"
+RTPIPELINE_DIR="$SCRIPT_DIR"
+if [ ! -d "\$RTPIPELINE_DIR" ]; then
+    echo -e "\${RED}Error: RTpipeline repository not found at \$RTPIPELINE_DIR\${NC}"
     echo "Please update RTPIPELINE_DIR in this script to point to the rtpipeline repository."
     exit 1
 fi
 
-cd "$RTPIPELINE_DIR"
+cd "\$RTPIPELINE_DIR"
 
 # Check for running processes
 if pgrep -f "snakemake" >/dev/null; then
-    echo -e "${YELLOW}Warning: Another snakemake process is currently running.${NC}"
+    echo -e "\${YELLOW}Warning: Another snakemake process is currently running.\${NC}"
     read -p "Stop it and continue? [y/N]: " response
-    if [[ "$response" =~ ^[Yy]$ ]]; then
+    if [[ "\$response" =~ ^[Yy]$ ]]; then
         pkill -f "snakemake" || true
         sleep 2
     else
@@ -1207,43 +1223,40 @@ fi
 
 # Unlock workflow (in case of previous crash)
 echo "Unlocking workflow (if needed)..."
-snakemake --unlock --configfile "$CONFIG_FILE" >/dev/null 2>&1 || true
+snakemake --unlock --configfile "\$CONFIG_FILE" >/dev/null 2>&1 || true
 
 # Run pipeline
 echo "Running Snakemake workflow..."
-echo "Config: $CONFIG_FILE"
+echo "Config: \$CONFIG_FILE"
 echo ""
 
-snakemake \
-    --cores all \
-    --use-conda \
-    --configfile "$CONFIG_FILE" \
-    --rerun-incomplete \
-    --keep-going \
+snakemake \\
+    --cores all \\
+    --use-conda \\
+    --configfile "\$CONFIG_FILE" \\
+    --rerun-incomplete \\
+    --keep-going \\
     --printshellcmds
 
-EXITCODE=$?
+EXITCODE=\$?
 
 echo ""
-if [ $EXITCODE -eq 0 ]; then
-    echo -e "${GREEN}Pipeline completed successfully!${NC}"
+if [ \$EXITCODE -eq 0 ]; then
+    echo -e "\${GREEN}Pipeline completed successfully!\${NC}"
     echo ""
     echo "Results available at:"
-    grep "output_dir:" "$CONFIG_FILE" | awk '{print $2}' | tr -d '"' | xargs echo "  "
+    grep "output_dir:" "\$CONFIG_FILE" | awk '{print $2}' | tr -d '"' | xargs echo "  "
     echo ""
     echo "Check aggregated results in: {output_dir}/_RESULTS/"
 else
-    echo -e "${RED}Pipeline failed with exit code $EXITCODE${NC}"
+    echo -e "\${RED}Pipeline failed with exit code \$EXITCODE\${NC}"
     echo ""
     echo "Check logs at:"
-    grep "logs_dir:" "$CONFIG_FILE" | awk '{print $2}' | tr -d '"' | xargs echo "  "
+    grep "logs_dir:" "\$CONFIG_FILE" | awk '{print $2}' | tr -d '"' | xargs echo "  "
 fi
 
-exit $EXITCODE
+exit \$EXITCODE
 RUNSCRIPT
-
-    # Replace placeholder with actual rtpipeline directory
-    sed -i "s|__RTPIPELINE_DIR_PLACEHOLDER__|$SCRIPT_DIR|g" "$dicom_dir/run_pipeline.sh"
 
     chmod +x "$dicom_dir/run_pipeline.sh"
 
@@ -1272,7 +1285,7 @@ main() {
     fi
 
     # Validate quick mode requires DICOM directory argument
-    if [ "$QUICK_MODE" = "true" ] && [ $# -eq 0 ]; then
+    if [ "$QUICK_MODE" = "true" ] && [ -z "$QUICK_DICOM_DIR" ]; then
         print_error "Quick mode requires a DICOM directory path"
         echo "Usage: $0 --quick /path/to/dicom"
         exit 1
@@ -1321,7 +1334,11 @@ EOF
     check_prerequisites
 
     # Step 2: Configure project
-    configure_project
+    if [ "$QUICK_MODE" = "true" ]; then
+        configure_project "$QUICK_DICOM_DIR"
+    else
+        configure_project
+    fi
 
     echo ""
     print_success "Setup wizard completed successfully!"
