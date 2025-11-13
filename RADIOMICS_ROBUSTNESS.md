@@ -1,6 +1,6 @@
 # Radiomics Robustness Module
 
-A built-in feature stability assessment module for rtpipeline that evaluates radiomics features under segmentation perturbations following IBSI guidelines and state-of-the-art methods.
+A built-in feature stability assessment module for rtpipeline that evaluates radiomics features under systematic perturbations following IBSI guidelines and state-of-the-art methods (2023-2025 research).
 
 ## Overview
 
@@ -10,40 +10,54 @@ The radiomics robustness module helps you identify stable, reproducible radiomic
    - TotalSegmentator (RS_auto.dcm)
    - Custom structures (RS_custom.dcm)
    - Custom models (Segmentation_{model_name}/rtstruct.dcm)
-2. **Generating perturbed segmentations** via mask erosion/dilation (volume adaptation)
+2. **Generating systematic perturbations** via the NTCV chain (Noise + Translation + Contour + Volume):
+   - **N**: Image noise injection (Gaussian noise in HU)
+   - **T**: Rigid translations (±3-5 mm geometric shifts)
+   - **C**: Contour randomization (boundary noise simulation)
+   - **V**: Volume adaptation (erosion/dilation ±15-30%)
 3. **Re-extracting radiomics features** for each perturbation using PyRadiomics
 4. **Computing robustness metrics**: ICC (Intraclass Correlation Coefficient), CoV (Coefficient of Variation), QCD (Quartile Coefficient of Dispersion)
 5. **Classifying features** as "robust", "acceptable", or "poor" based on configurable thresholds
 
 ## Scientific Background
 
-This implementation follows recent literature on radiomics reproducibility:
+This implementation follows recent literature on radiomics reproducibility (2023-2025):
 
-- **Zwanenburg et al. (2019)** - Sci Rep: Image perturbation chains with ICC thresholds
+- **Zwanenburg et al. (2019)** - Sci Rep: NTCV perturbation chains with ICC thresholds (sensitivity 98-99%, false positives 0.2-1.9%)
 - **Lo Iacono et al. (2024)** - SpringerLink: Volume adaptation method (±15% for stability)
 - **Poirot et al. (2022)** - Sci Rep: Multi-method ICC using Pingouin
-- **IBSI (Image Biomarker Standardization Initiative)**: Standardized feature definitions
+- **IBSI (Image Biomarker Standardization Initiative)**: Standardized feature definitions (computational standardization)
+- **Modern best practice (2023-2025)**: 30-60 perturbations per ROI for comprehensive stability testing
 
-### Robustness Thresholds
+### Robustness Thresholds (Research-Based)
 
 Based on published recommendations:
 
 **ICC (Intraclass Correlation Coefficient):**
-- ICC ≥ 0.90: **Robust** / Excellent
-- 0.75 ≤ ICC < 0.90: **Acceptable** / Good
+- ICC ≥ 0.90: **Robust** / Excellent (conservative clinical applications)
+- 0.75 ≤ ICC < 0.90: **Acceptable** / Good (standard threshold)
 - ICC < 0.75: **Poor**
 
 **CoV (Coefficient of Variation):**
-- CoV ≤ 10%: **Robust**
+- CoV ≤ 10%: **Robust** (standard threshold)
 - 10% < CoV ≤ 20%: **Acceptable**
 - CoV > 20%: **Poor**
 
 A feature is classified as "robust" if it meets **both** ICC and CoV robust thresholds.
 
+### Perturbation Intensity Levels
+
+The module supports three intensity levels to balance computational cost and thoroughness:
+
+- **mild**: ~10-15 perturbations (quick stability check)
+- **standard**: 15-30 perturbations (recommended for most applications)
+- **aggressive**: 30-60 perturbations (research-grade, comprehensive testing)
+
 ## Quick Start
 
 ### 1. Enable in config.yaml
 
+**Basic configuration (volume-only perturbations):**
 ```yaml
 radiomics_robustness:
   enabled: true
@@ -57,6 +71,38 @@ radiomics_robustness:
       - "BLADDER"
       - "RECTUM"
     small_volume_changes: [-0.15, 0.0, 0.15]  # ±15% volume change
+    intensity: "standard"  # Options: mild, standard, aggressive
+```
+
+**Advanced NTCV configuration (comprehensive testing):**
+```yaml
+radiomics_robustness:
+  enabled: true
+  modes:
+    - segmentation_perturbation
+
+  segmentation_perturbation:
+    apply_to_structures:
+      - "GTV*"
+      - "CTV*"
+      - "BLADDER"
+      - "RECTUM"
+    
+    # Volume perturbations (V in NTCV)
+    small_volume_changes: [-0.15, -0.10, -0.05, 0.0, 0.05, 0.10, 0.15]
+    large_volume_changes: [-0.30, -0.20, -0.10, 0.0, 0.10, 0.20, 0.30]
+    
+    # Translation perturbations (T in NTCV)
+    max_translation_mm: 3.0  # ±3mm rigid shifts
+    
+    # Contour randomization (C in NTCV)
+    n_random_contour_realizations: 3  # 3 boundary randomization variants
+    
+    # Image noise injection (N in NTCV)
+    noise_levels: [0.0, 10.0, 20.0]  # Gaussian noise std dev in HU
+    
+    # Perturbation intensity
+    intensity: "aggressive"  # Options: mild (10-15), standard (15-30), aggressive (30-60)
 ```
 
 ### 2. Install dependencies
@@ -145,13 +191,27 @@ radiomics_robustness:
       - "RECTUM"
       - "PROSTATE"
 
-    # Volume changes (τ parameter from Lo Iacono 2024)
-    small_volume_changes: [-0.15, 0.0, 0.15]   # ±15% volume change
+    # V: Volume changes (τ parameter from Lo Iacono 2024)
+    small_volume_changes: [-0.15, 0.0, 0.15]   # ±15% volume change (standard)
     large_volume_changes: [-0.30, 0.0, 0.30]   # ±30% for stress testing
 
-    # Advanced perturbations (future features)
-    n_random_contour_realizations: 0
-    max_translation_mm: 0.0
+    # T: Translation perturbations (mm)
+    # Rigid shifts in x, y, z directions to simulate positioning uncertainty
+    max_translation_mm: 3.0  # Set to 0.0 to disable
+
+    # C: Contour randomization
+    # Simulates inter-observer variability in delineation
+    n_random_contour_realizations: 3  # Set to 0 to disable
+
+    # N: Noise injection (HU)
+    # Gaussian noise to simulate scanner variability
+    noise_levels: [0.0, 10.0, 20.0]  # Standard deviations in HU
+
+    # Perturbation intensity (controls total perturbation count)
+    # - "mild": ~10-15 perturbations per ROI (quick testing)
+    # - "standard": 15-30 perturbations per ROI (recommended)
+    # - "aggressive": 30-60 perturbations per ROI (research-grade)
+    intensity: "standard"
 
   metrics:
     icc:
@@ -165,12 +225,38 @@ radiomics_robustness:
 
   thresholds:
     icc:
-      robust: 0.90
-      acceptable: 0.75
+      robust: 0.90       # Conservative clinical threshold (2023-2025 research)
+      acceptable: 0.75   # Standard threshold (Zwanenburg 2019)
     cov:
-      robust_pct: 10.0
-      acceptable_pct: 20.0
+      robust_pct: 10.0      # CoV ≤ 10%: "robust" (standard)
+      acceptable_pct: 20.0  # CoV ≤ 20%: "acceptable"
 ```
+
+### NTCV Perturbation Chain Explanation
+
+The NTCV chain generates systematic combinations of perturbations:
+
+1. **N (Noise)**: Adds Gaussian noise to the CT image
+   - Simulates scanner variability and acquisition differences
+   - Typical values: 0, 10, 20 HU std dev
+   
+2. **T (Translation)**: Applies rigid geometric shifts
+   - Simulates positioning uncertainty and registration errors
+   - Typical values: ±3-5 mm in x, y, z directions
+   
+3. **C (Contour)**: Randomizes ROI boundaries
+   - Simulates inter-observer delineation variability
+   - Applies random erosion/dilation operations
+   
+4. **V (Volume)**: Systematic erosion/dilation
+   - Tests feature stability across ROI size variations
+   - Typical values: ±15% (standard) or ±30% (stress testing)
+
+**Total perturbations** = N_noise × N_translation × N_contour × N_volume
+
+Example:
+- 3 noise levels × 3 translations × 2 contours × 5 volumes = 90 perturbations (too many)
+- With `intensity: "aggressive"`, the module intelligently selects subsets to reach 30-60 perturbations
 
 ## Output Format
 
@@ -200,13 +286,56 @@ Multiple sheets for easy filtering:
 
 ## Best Practices
 
-1. **Feature selection for modeling**: Use only "robust" features (ICC ≥ 0.90, CoV ≤ 10%) for predictive models
+### Feature Selection Strategy (Based on 2023-2025 Research)
+
+1. **Primary recommendation**: Use only "robust" features (ICC ≥ 0.90, CoV ≤ 10%) for predictive models
+   - Modern clinical applications increasingly demand ICC >0.90 (conservative threshold)
+   - 60-80% of features typically meet this threshold with proper perturbation testing
+
 2. **Multi-center studies**: Consider "acceptable" features (ICC ≥ 0.75, CoV ≤ 20%) if data scarcity requires it
-3. **Structure selection**: Focus on clinically relevant structures (GTV, CTV, organs at risk)
-4. **Volume changes**: Start with ±15% (default); use ±30% for stress testing
+   - Standard threshold from Zwanenburg 2019
+   - Suitable for exploratory analysis or hypothesis generation
+
+3. **Cost-effective alternative**: Perturbation-based stability analysis provides validated alternative to expensive test-retest imaging
+   - NTCV chain achieves 98-99% sensitivity for identifying non-robust features
+   - Only 0.2-1.9% false positives
+
+4. **Perturbation intensity selection**:
+   - **mild**: Quick screening, pilot studies
+   - **standard**: Production use, clinical applications (recommended)
+   - **aggressive**: Research-grade, publication-quality analysis, multi-center studies
+
+5. **Recommended NTCV configuration for clinical RT**:
+   ```yaml
+   small_volume_changes: [-0.15, -0.10, -0.05, 0.0, 0.05, 0.10, 0.15]
+   max_translation_mm: 3.0
+   n_random_contour_realizations: 2
+   noise_levels: [0.0, 10.0]
+   intensity: "standard"
+   ```
+   This generates ~25-30 perturbations per ROI - sufficient for robust stability assessment.
+
+### Structure and Modality Considerations
+
+1. **Structure selection**: Focus on clinically relevant structures (GTV, CTV, organs at risk)
+2. **Volume thresholds**: Features from very small ROIs are often unstable regardless of type
+3. **Multi-source analysis**: Compare robustness across segmentation sources (TotalSegmentator vs Custom structures)
+4. **CT-specific**: Current implementation optimized for CT-based radiomics in bladder, prostate, and rectal cancer
 5. **Validation**: If possible, validate feature stability on independent test-retest data
-6. **Multi-source analysis**: Compare robustness across segmentation sources (TotalSegmentator vs Custom structures) using the `per_source_summary` sheet
-7. **Prioritize consistent sources**: If a feature is robust from one source but not another, prefer the source with higher robustness metrics
+
+### Advanced Considerations
+
+1. **Harmonization**: For multi-scanner studies, consider CovBat harmonization (outperforms traditional ComBat)
+   - Note: CovBat implementation not included in this module - apply as preprocessing
+   
+2. **Feature selection methods**: Consider stability-aware approaches like Graph-FS that maintain performance across institutions
+   - Combines stability metrics with predictive performance
+   
+3. **Discretization**: Ensure consistent bin width (HU) or bin count across all perturbations
+   - PyRadiomics settings controlled via radiomics_params.yaml
+
+4. **Preprocessing chains**: Robustness to resampling and discretization variations important for multi-center studies
+   - Test with different voxel sizes if data will come from multiple scanners
 
 ## Typical Feature Families by Robustness
 
@@ -251,11 +380,43 @@ Some small structures may fail erosion/dilation. This is expected; they'll be sk
 4. Hosseini SA, et al. (2025). "Robust vs. Non-robust radiomic features." *Cancer Imaging* 25:6.
 5. Zwanenburg A, et al. (2020). "The Image Biomarker Standardization Initiative (IBSI)." *Radiology* 295(2):328-338.
 
+## What's New (2025)
+
+### NTCV Perturbation Chain Implementation
+
+Based on 2023-2025 radiomics stability research:
+
+✅ **Implemented:**
+- NTCV (Noise + Translation + Contour + Volume) perturbation chains
+- Image noise injection (Gaussian noise in HU)
+- Rigid translation perturbations (±3-5 mm shifts)
+- Contour randomization (boundary noise simulation)
+- Configurable perturbation intensity (mild/standard/aggressive)
+- Research-grade testing: 30-60 perturbations per ROI
+- Conservative clinical thresholds: ICC >0.90 and CoV <10%
+
+**Key improvements over basic volume-only perturbations:**
+- **Comprehensive stability testing** following Zwanenburg 2019 NTCV methodology
+- **98-99% sensitivity** for identifying non-robust features
+- **0.2-1.9% false positives** - very high specificity
+- **Cost-effective alternative** to expensive test-retest imaging
+- **Multi-axis perturbations** capture different sources of variability
+
+### Research Basis
+
+The implementation is grounded in findings that:
+1. ICC >0.75 and CoV <10% are standard thresholds (ICC >0.90 for conservative clinical use)
+2. Systematic perturbation chains combining geometric and image-based variations are essential
+3. 30-60 perturbed versions per ROI typically needed for comprehensive assessment
+4. 60-80% of features typically stable enough for clinical modeling
+5. NTCV chains achieve validated, cost-effective stability assessment
+
 ## Future Enhancements
 
 Planned for future releases:
+- **CovBat harmonization**: Advanced harmonization method (outperforms traditional ComBat)
+- **Graph-FS feature selection**: Stability-aware feature selection maintaining multi-institution performance
 - **Segmentation-method robustness**: Compare Manual vs TotalSegmentator vs custom models
 - **Scan-rescan ICC**: Test-retest reliability for longitudinal studies
-- **Contour randomization**: Boundary noise simulation
-- **Translation perturbations**: Small rigid shifts (±3-5 mm)
 - **Panel-averaged features**: Zwanenburg-style feature averaging across perturbations
+- **Preprocessing variations**: Resampling and discretization robustness testing
