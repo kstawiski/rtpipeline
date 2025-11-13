@@ -390,15 +390,27 @@ def summarize_feature_stability(
     Compute per-feature robustness metrics (ICC, CoV, QCD) and classify robustness.
 
     Args:
-        df_long: Tidy DataFrame with columns [patient_id, course_id, structure, perturbation_id, feature_name, value]
+        df_long: Tidy DataFrame with columns [patient_id, course_id, structure, segmentation_source,
+                 perturbation_id, feature_name, value]
         config: Robustness configuration
 
     Returns:
-        DataFrame with one row per (structure, feature_name) containing metrics and robustness label
+        DataFrame with one row per (structure, segmentation_source, feature_name) containing metrics and robustness label
     """
     rows = []
 
-    for (structure, feature_name), group in df_long.groupby(["structure", "feature_name"]):
+    # Group by structure, segmentation_source, and feature_name
+    # This allows separate robustness analysis for the same structure from different sources
+    group_columns = ["structure", "segmentation_source", "feature_name"] if "segmentation_source" in df_long.columns else ["structure", "feature_name"]
+
+    for group_key, group in df_long.groupby(group_columns):
+        # Unpack group key
+        if len(group_columns) == 3:
+            structure, seg_source, feature_name = group_key
+        else:
+            structure, feature_name = group_key
+            seg_source = "Unknown"
+
         values = group["value"].to_numpy(dtype=float)
 
         # Skip if insufficient data
@@ -443,6 +455,7 @@ def summarize_feature_stability(
 
         rows.append({
             "structure": structure,
+            "segmentation_source": seg_source,
             "feature_name": feature_name,
             "n_perturbations": len(values),
             "icc": icc,
@@ -468,6 +481,11 @@ def robustness_for_course(
 ) -> Optional[Path]:
     """
     Run radiomics robustness analysis for a single course.
+
+    Collects masks from multiple sources:
+    - TotalSegmentator (RS_auto.dcm)
+    - Custom structures (RS_custom.dcm)
+    - Custom models (Segmentation_{model_name}/rtstruct.dcm)
 
     Args:
         config: Pipeline configuration
@@ -497,40 +515,83 @@ def robustness_for_course(
         logger.warning("No CT image found for robustness analysis in %s", course_dir)
         return None
 
-    # Load masks from RS_auto.dcm (TotalSegmentator)
+    # ========================================================================
+    # Collect masks from all segmentation sources
+    # ========================================================================
     from .radiomics import _rtstruct_masks
-    rs_auto = course_dir / "RS_auto.dcm"
-    if not rs_auto.exists():
-        logger.warning("RS_auto.dcm not found; skipping robustness analysis for %s", course_dir)
-        return None
-
-    masks = _rtstruct_masks(course_dirs.dicom_ct, rs_auto)
-    if not masks:
-        logger.warning("No masks found in RS_auto.dcm for %s", course_dir)
-        return None
-
-    # Filter structures based on configuration
+    from .custom_models import list_custom_model_outputs
     from fnmatch import fnmatch
-    selected_structures = []
-    for roi_name in masks.keys():
+
+    # Dictionary: {(roi_name, source): mask_array}
+    all_masks: Dict[Tuple[str, str], np.ndarray] = {}
+
+    # 1. TotalSegmentator (RS_auto.dcm)
+    rs_auto = course_dir / "RS_auto.dcm"
+    if rs_auto.exists():
+        ts_masks = _rtstruct_masks(course_dirs.dicom_ct, rs_auto)
+        for roi_name, mask_array in ts_masks.items():
+            all_masks[(roi_name, "AutoRTS_total")] = mask_array
+        logger.info("Loaded %d structures from TotalSegmentator", len(ts_masks))
+    else:
+        logger.info("RS_auto.dcm not found")
+
+    # 2. Custom structures (RS_custom.dcm)
+    rs_custom = course_dir / "RS_custom.dcm"
+    if rs_custom.exists():
+        custom_masks = _rtstruct_masks(course_dirs.dicom_ct, rs_custom)
+        for roi_name, mask_array in custom_masks.items():
+            all_masks[(roi_name, "Custom")] = mask_array
+        logger.info("Loaded %d structures from custom structures", len(custom_masks))
+    else:
+        logger.debug("RS_custom.dcm not found")
+
+    # 3. Custom models
+    try:
+        for model_name, model_dir in list_custom_model_outputs(course_dir):
+            rs_model = model_dir / "rtstruct.dcm"
+            if rs_model.exists():
+                model_masks = _rtstruct_masks(course_dirs.dicom_ct, rs_model)
+                source_label = f"CustomModel:{model_name}"
+                for roi_name, mask_array in model_masks.items():
+                    all_masks[(roi_name, source_label)] = mask_array
+                logger.info("Loaded %d structures from custom model '%s'", len(model_masks), model_name)
+    except Exception as e:
+        logger.debug("Failed to load custom model outputs: %s", e)
+
+    if not all_masks:
+        logger.warning("No masks found from any source for %s", course_dir)
+        return None
+
+    logger.info("Total masks collected: %d from %d unique sources",
+                len(all_masks), len(set(source for _, source in all_masks.keys())))
+
+    # ========================================================================
+    # Filter structures based on configuration patterns
+    # ========================================================================
+    selected_structures: List[Tuple[str, str]] = []  # [(roi_name, source), ...]
+
+    for (roi_name, source), mask_array in all_masks.items():
         for pattern in rob_config.perturbation.apply_to_structures:
             if fnmatch(roi_name.upper(), pattern.upper()):
-                selected_structures.append(roi_name)
+                selected_structures.append((roi_name, source))
                 break
 
     if not selected_structures:
         logger.info("No structures matched robustness patterns; skipping %s", course_dir)
         return None
 
-    logger.info("Selected %d structures for robustness analysis: %s",
-                len(selected_structures), ", ".join(selected_structures))
+    logger.info("Selected %d structure(s) for robustness analysis:", len(selected_structures))
+    for roi_name, source in selected_structures:
+        logger.info("  - %s (from %s)", roi_name, source)
 
-    # Convert masks to SimpleITK images
+    # ========================================================================
+    # Extract features for each structure with perturbations
+    # ========================================================================
     from .radiomics import _mask_from_array_like
     all_features = []
 
-    for roi_name in selected_structures:
-        mask_array = masks[roi_name]
+    for roi_name, source in selected_structures:
+        mask_array = all_masks[(roi_name, source)]
         mask_img = _mask_from_array_like(ct_image, mask_array)
 
         # Generate perturbed masks
@@ -541,7 +602,7 @@ def robustness_for_course(
         )
 
         if len(perturbed_masks) < 2:
-            logger.warning("Insufficient perturbations for %s; skipping", roi_name)
+            logger.warning("Insufficient perturbations for %s (%s); skipping", roi_name, source)
             continue
 
         # Extract features for all perturbations
@@ -556,6 +617,8 @@ def robustness_for_course(
         )
 
         if not features_df.empty:
+            # Add segmentation source to track provenance
+            features_df["segmentation_source"] = source
             all_features.append(features_df)
 
     if not all_features:
@@ -565,13 +628,14 @@ def robustness_for_course(
     # Combine all features
     combined_df = pd.concat(all_features, ignore_index=True)
 
-    # Compute robustness metrics
+    # Compute robustness metrics (grouped by structure and segmentation_source)
     summary_df = summarize_feature_stability(combined_df, rob_config)
 
     # Save results
     try:
         summary_df.to_parquet(output_path, index=False)
-        logger.info("Saved robustness results to %s (%d features)", output_path, len(summary_df))
+        logger.info("Saved robustness results to %s (%d structure-feature combinations)",
+                    output_path, len(summary_df))
         return output_path
     except Exception as e:
         logger.warning("Failed to save robustness results: %s", e)
@@ -611,7 +675,7 @@ def aggregate_robustness_results(
 
     combined = pd.concat(all_dfs, ignore_index=True)
 
-    # Compute global statistics (average across all courses/structures)
+    # Compute global statistics (average across all courses/structures/sources)
     global_summary = combined.groupby("feature_name").agg({
         "icc": "mean",
         "icc_ci95_low": "mean",
@@ -620,6 +684,18 @@ def aggregate_robustness_results(
         "qcd": "mean",
         "n_perturbations": "mean",
     }).reset_index()
+
+    # Compute per-source statistics (if segmentation_source column exists)
+    per_source_summary = None
+    if "segmentation_source" in combined.columns:
+        per_source_summary = combined.groupby(["segmentation_source", "feature_name"]).agg({
+            "icc": "mean",
+            "icc_ci95_low": "mean",
+            "icc_ci95_high": "mean",
+            "cov_pct": "mean",
+            "qcd": "mean",
+            "n_perturbations": "mean",
+        }).reset_index()
 
     # Determine global robustness label
     def _classify_global(row):
@@ -641,28 +717,45 @@ def aggregate_robustness_results(
     global_summary["robustness_label"] = global_summary.apply(_classify_global, axis=1)
     global_summary["pass_seg_perturb"] = global_summary["robustness_label"].isin(["robust", "acceptable"])
 
+    # Apply classification to per-source summary as well
+    if per_source_summary is not None:
+        per_source_summary["robustness_label"] = per_source_summary.apply(_classify_global, axis=1)
+        per_source_summary["pass_seg_perturb"] = per_source_summary["robustness_label"].isin(["robust", "acceptable"])
+
     # Write to Excel with multiple sheets
     try:
         with pd.ExcelWriter(output_excel, engine="openpyxl") as writer:
-            # Sheet 1: Global feature summary (averaged across all structures/courses)
+            # Sheet 1: Global feature summary (averaged across all structures/courses/sources)
             global_summary.to_excel(writer, sheet_name="global_summary", index=False)
 
-            # Sheet 2: Per-structure summary
-            combined.to_excel(writer, sheet_name="per_structure", index=False)
+            # Sheet 2: Per-source summary (if available)
+            if per_source_summary is not None:
+                per_source_summary.to_excel(writer, sheet_name="per_source_summary", index=False)
 
-            # Sheet 3: Robust features only (global)
+            # Sheet 3: Detailed per-structure-source breakdown
+            combined.to_excel(writer, sheet_name="per_structure_source", index=False)
+
+            # Sheet 4: Robust features only (global)
             robust_features = global_summary[global_summary["robustness_label"] == "robust"]
             robust_features.to_excel(writer, sheet_name="robust_features", index=False)
 
-            # Sheet 4: Acceptable or better features
+            # Sheet 5: Acceptable or better features (global)
             acceptable_features = global_summary[global_summary["pass_seg_perturb"]]
             acceptable_features.to_excel(writer, sheet_name="acceptable_features", index=False)
+
+            # Sheet 6: Robust features per source (if available)
+            if per_source_summary is not None:
+                robust_per_source = per_source_summary[per_source_summary["robustness_label"] == "robust"]
+                robust_per_source.to_excel(writer, sheet_name="robust_features_per_source", index=False)
 
         logger.info("Saved aggregated robustness results to %s", output_excel)
         logger.info("Global summary: %d total features, %d robust, %d acceptable",
                     len(global_summary),
                     len(robust_features),
                     len(acceptable_features))
+        if per_source_summary is not None:
+            logger.info("Per-source summary: %d unique (source, feature) combinations",
+                        len(per_source_summary))
     except Exception as e:
         logger.error("Failed to write aggregated results: %s", e)
         raise
