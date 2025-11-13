@@ -73,8 +73,10 @@ radiomics_robustness:
       - "pelvic_bones*"     # pelvic_bones, pelvic_bones_3mm (from Custom)
       - "iliac_*"           # iliac_vess, iliac_area (from Custom)
       - "bowel_bag"         # Combined bowel structures (from Custom)
-      - "bladder"           # From TotalSegmentator (lowercase)
-      - "rectum"            # From TotalSegmentator (lowercase)
+      - "urinary_bladder"   # From TotalSegmentator
+      - "colon"             # From TotalSegmentator
+      - "prostate"          # From TotalSegmentator
+      - "rectum"            # From TotalSegmentator (if available)
 
     # Volume changes for perturbations (τ parameter)
     # Based on Lo Iacono et al. 2024: ±15% for stability assessment
