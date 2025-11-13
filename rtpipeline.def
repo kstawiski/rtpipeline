@@ -1,0 +1,175 @@
+Bootstrap: docker
+From: condaforge/mambaforge:latest
+
+%labels
+    Author kstawiski
+    Version 1.0
+    Description DICOM-RT pipeline with TotalSegmentator, nnUNet, and Snakemake
+    org.label-schema.name rtpipeline
+    org.label-schema.description Radiotherapy DICOM processing pipeline
+    org.label-schema.url https://github.com/kstawiski/rtpipeline
+    org.label-schema.vcs-url https://github.com/kstawiski/rtpipeline
+    org.label-schema.schema-version 1.0
+
+%help
+    rtpipeline - Radiotherapy DICOM Processing Pipeline
+
+    This container provides a complete environment for processing DICOM-RT data including:
+    - TotalSegmentator for CT and MR segmentation
+    - Custom nnUNet model support
+    - DVH analytics
+    - Radiomics feature extraction (CT and MR)
+    - Radiomics robustness analysis
+    - Quality control reports
+    - Web UI for easy file upload and processing
+
+    Usage Examples:
+
+    1. Interactive shell:
+       singularity shell --nv --bind /path/to/data:/data rtpipeline.sif
+
+    2. Run pipeline:
+       singularity exec --nv \
+         --bind /path/to/input:/data/input:ro \
+         --bind /path/to/output:/data/output:rw \
+         rtpipeline.sif \
+         snakemake --cores all --use-conda --configfile /app/config.container.yaml
+
+    3. Web UI:
+       singularity run --nv \
+         --bind /path/to/uploads:/data/uploads:rw \
+         --bind /path/to/input:/data/input:rw \
+         --bind /path/to/output:/data/output:rw \
+         --bind /path/to/logs:/data/logs:rw \
+         rtpipeline.sif
+
+    For more information, visit: https://github.com/kstawiski/rtpipeline
+
+%environment
+    export DEBIAN_FRONTEND=noninteractive
+    export LANG=C.UTF-8
+    export LC_ALL=C.UTF-8
+    export PYTHONUNBUFFERED=1
+    export CONDA_DIR=/opt/conda
+    export PATH=/opt/conda/bin:$PATH
+    export SNAKEMAKE_OUTPUT_CACHE=""
+    export TMPDIR=/tmp
+    export HOME=/root
+    export NUMBA_CACHE_DIR=/tmp/cache
+    export MPLCONFIGDIR=/tmp/cache
+    export TOTALSEG_WEIGHTS_PATH=/root/.totalsegmentator/nnunet/results
+    export TOTALSEG_TIMEOUT=3600
+    export DCM2NIIX_TIMEOUT=300
+    export RTPIPELINE_RADIOMICS_TASK_TIMEOUT=600
+
+%post
+    # Update and install system dependencies
+    apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        git \
+        wget \
+        curl \
+        ca-certificates \
+        libgl1-mesa-glx \
+        libglib2.0-0 \
+        libsm6 \
+        libxext6 \
+        libxrender1 \
+        libgomp1 \
+        libglu1-mesa \
+        pigz \
+        unzip \
+        tini \
+        && rm -rf /var/lib/apt/lists/*
+
+    # Install dcm2niix
+    wget -q https://github.com/rordenlab/dcm2niix/releases/download/v1.0.20230411/dcm2niix_lnx.zip
+    unzip dcm2niix_lnx.zip -d /usr/local/bin/
+    chmod +x /usr/local/bin/dcm2niix
+    rm dcm2niix_lnx.zip
+
+    # Configure conda
+    . /opt/conda/etc/profile.d/conda.sh
+    conda config --set channel_priority strict
+    conda config --add channels conda-forge
+    conda config --add channels bioconda
+    conda config --add channels defaults
+
+    # Install Snakemake in base environment
+    mamba install -y -c conda-forge -c bioconda snakemake>=7.0
+    mamba clean -afy
+
+    # Create app directory
+    mkdir -p /app
+    cd /app
+
+    # Clone repository (or copy files - adjust as needed for your build process)
+    # For Singularity builds from definition file, we assume files are in build context
+    # Users should build with: singularity build --sandbox rtpipeline.sif rtpipeline.def
+    # from the repository root directory
+
+    # Note: When building from definition file, you need to have the repository files
+    # available. The recommended approach is to build from Docker or use:
+    # singularity build rtpipeline.sif docker://kstawiski/rtpipeline:latest
+
+%files
+    # These files will be copied from the build context (repository root)
+    # Uncomment and adjust paths if building directly from definition file
+    # envs/ /app/envs/
+    # .condarc /root/.condarc
+    # rtpipeline/ /app/rtpipeline/
+    # webui/ /app/webui/
+    # Snakefile /app/Snakefile
+    # config.yaml /app/config.yaml
+    # setup.py /app/setup.py
+    # pyproject.toml /app/pyproject.toml
+    # README.md /app/README.md
+
+%post
+    # Continue post-installation after files are copied
+    # This section runs after %files
+    cd /app
+
+    # Create conda environments (only if environment files exist)
+    if [ -d "/app/envs" ]; then
+        . /opt/conda/etc/profile.d/conda.sh
+        mamba env create -f /app/envs/rtpipeline.yaml || true
+        mamba env create -f /app/envs/rtpipeline-radiomics.yaml || true
+        mamba env create -f /app/envs/rtpipeline-custom-models.yaml || true
+        mamba clean -afy
+    fi
+
+    # Install rtpipeline package (only if setup.py exists)
+    if [ -f "/app/setup.py" ]; then
+        pip install -e .
+        /opt/conda/envs/rtpipeline/bin/pip install -e . || true
+    fi
+
+    # Install Web UI dependencies (only if webui/requirements.txt exists)
+    if [ -f "/app/webui/requirements.txt" ]; then
+        pip install -r /app/webui/requirements.txt
+    fi
+
+    # Install psutil for better CPU detection in containers
+    pip install psutil
+    /opt/conda/envs/rtpipeline/bin/pip install psutil || true
+
+    # Create directory structure
+    mkdir -p \
+        /data/input \
+        /data/output \
+        /data/logs \
+        /data/models \
+        /data/uploads \
+        /tmp/cache \
+        /root/.totalsegmentator/nnunet/results
+
+%runscript
+    # Default: start web UI
+    cd /app/webui
+    exec python app.py
+
+%startscript
+    # For instances
+    cd /app/webui
+    exec python app.py
