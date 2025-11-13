@@ -78,16 +78,27 @@ radiomics_robustness:
       - "prostate"          # From TotalSegmentator
       - "rectum"            # From TotalSegmentator (if available)
 
-    # Volume changes for perturbations (τ parameter)
-    # Based on Lo Iacono et al. 2024: ±15% for stability assessment
-    small_volume_changes: [-0.15, 0.0, 0.15]  # ±15% volume change
+    # V: Volume changes for perturbations (τ parameter from Lo Iacono et al. 2024)
+    small_volume_changes: [-0.15, 0.0, 0.15]  # ±15% volume change (standard)
+    large_volume_changes: [-0.30, 0.0, 0.30]  # ±30% volume change (stress testing)
 
-    # Optional: larger perturbations for robustness stress testing
-    large_volume_changes: [-0.30, 0.0, 0.30]  # ±30% volume change
+    # T: Translation perturbations (Zwanenburg et al. 2019 NTCV chain)
+    # Rigid geometric shifts to simulate positioning uncertainty
+    max_translation_mm: 0.0  # Set to 3.0 or 5.0 to enable translation perturbations
 
-    # Advanced perturbations (currently disabled)
-    n_random_contour_realizations: 0  # Number of boundary randomization variants
-    max_translation_mm: 0.0           # Maximum rigid translation in mm
+    # C: Contour randomization (boundary noise simulation)
+    # Simulates inter-observer variability in delineation
+    n_random_contour_realizations: 0  # Set to 2-3 to enable contour randomization
+
+    # N: Noise injection (image-based perturbation)
+    # Gaussian noise to simulate scanner variability
+    noise_levels: [0.0]  # Set to [0.0, 10.0, 20.0] to enable noise perturbations (HU std dev)
+
+    # Perturbation intensity (controls total perturbation count)
+    # - "mild": ~10-15 perturbations per ROI (quick testing)
+    # - "standard": 15-30 perturbations per ROI (recommended, balanced)
+    # - "aggressive": 30-60 perturbations per ROI (research-grade, comprehensive)
+    intensity: "standard"
 
   # Robustness metrics configuration
   metrics:
