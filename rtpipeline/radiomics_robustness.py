@@ -2,15 +2,21 @@
 Radiomics robustness analysis module.
 
 Implements IBSI-compliant feature stability assessment via:
+- NTCV perturbation chain (Noise + Translation + Contour + Volume)
 - Mask perturbations (erosion/dilation with volume adaptation)
+- Image noise injection (Gaussian noise in HU)
+- Rigid translations (±3-5 mm shifts)
+- Contour randomization (boundary noise simulation)
 - ICC (Intraclass Correlation Coefficient) computation
 - CoV (Coefficient of Variation) and QCD metrics
 - Multi-axis robustness evaluation (segmentation perturbation, segmentation method, scan-rescan)
 
-References:
-- Zwanenburg et al. 2019 (Sci Rep): image perturbation chains with ICC
+Based on 2023-2025 radiomics stability research:
+- Zwanenburg et al. 2019 (Sci Rep): NTCV perturbation chains with ICC >0.75
 - Lo Iacono et al. 2024 (SpringerLink): volume adaptation for stability
 - Poirot et al. 2022 (Sci Rep): multi-method ICC with Pingouin
+- Modern best practice: 30-60 perturbations per ROI for comprehensive stability testing
+- Conservative clinical thresholds: ICC >0.90 and CoV <10%
 """
 
 from __future__ import annotations
@@ -37,12 +43,14 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class PerturbationConfig:
-    """Configuration for mask perturbation (volume adaptation)."""
+    """Configuration for mask perturbation (NTCV chain: Noise + Translation + Contour + Volume)."""
     apply_to_structures: List[str] = field(default_factory=lambda: ["GTV", "CTV", "PTV", "BLADDER", "RECTUM"])
     small_volume_changes: List[float] = field(default_factory=lambda: [-0.15, 0.0, 0.15])
     large_volume_changes: List[float] = field(default_factory=lambda: [-0.30, 0.0, 0.30])
     n_random_contour_realizations: int = 0
     max_translation_mm: float = 0.0
+    noise_levels: List[float] = field(default_factory=lambda: [0.0])  # Gaussian noise std dev in HU
+    intensity: str = "standard"  # "mild", "standard", "aggressive" - controls perturbation count
 
 
 @dataclass
@@ -98,6 +106,8 @@ class RobustnessConfig:
             large_volume_changes=pert_data.get("large_volume_changes", [-0.30, 0.0, 0.30]),
             n_random_contour_realizations=pert_data.get("n_random_contour_realizations", 0),
             max_translation_mm=pert_data.get("max_translation_mm", 0.0),
+            noise_levels=pert_data.get("noise_levels", [0.0]),
+            intensity=pert_data.get("intensity", "standard"),
         )
 
         # Metrics config
@@ -211,6 +221,81 @@ def volume_adapt_mask(mask: sitk.Image, tau: float, max_iterations: int = 20) ->
     return best_mask
 
 
+def translate_mask(mask: sitk.Image, translation_mm: Tuple[float, float, float]) -> sitk.Image:
+    """
+    Apply rigid translation to mask.
+    
+    Args:
+        mask: Binary SimpleITK image
+        translation_mm: Translation vector in mm (x, y, z)
+        
+    Returns:
+        Translated mask
+    """
+    transform = sitk.TranslationTransform(3, translation_mm)
+    resampler = sitk.ResampleImageFilter()
+    resampler.SetTransform(transform)
+    resampler.SetReferenceImage(mask)
+    resampler.SetInterpolator(sitk.sitkNearestNeighbor)
+    resampler.SetDefaultPixelValue(0)
+    
+    return resampler.Execute(mask)
+
+
+def randomize_contour(mask: sitk.Image, randomization_mm: float) -> sitk.Image:
+    """
+    Apply boundary randomization to simulate inter-observer variability.
+    
+    Applies a combination of small erosion and dilation with random morphological operations.
+    
+    Args:
+        mask: Binary SimpleITK image
+        randomization_mm: Maximum boundary displacement in mm
+        
+    Returns:
+        Mask with randomized contour
+    """
+    spacing = mask.GetSpacing()
+    avg_spacing = float(np.mean(spacing))
+    radius_vox = max(1, int(round(randomization_mm / avg_spacing)))
+    
+    # Randomly choose erosion or dilation
+    if np.random.rand() > 0.5:
+        # Slight erosion followed by dilation (smoothing)
+        temp = sitk.BinaryErode(mask, [radius_vox] * 3, sitk.sitkBall)
+        result = sitk.BinaryDilate(temp, [radius_vox] * 3, sitk.sitkBall)
+    else:
+        # Slight dilation followed by erosion (smoothing)
+        temp = sitk.BinaryDilate(mask, [radius_vox] * 3, sitk.sitkBall)
+        result = sitk.BinaryErode(temp, [radius_vox] * 3, sitk.sitkBall)
+    
+    return result
+
+
+def add_noise_to_image(image: sitk.Image, noise_std_hu: float) -> sitk.Image:
+    """
+    Add Gaussian noise to image for image-based perturbation testing.
+    
+    Args:
+        image: CT/MR image
+        noise_std_hu: Standard deviation of Gaussian noise in HU
+        
+    Returns:
+        Noisy image
+    """
+    if noise_std_hu <= 0:
+        return image
+    
+    arr = sitk.GetArrayFromImage(image).astype(np.float32)
+    noise = np.random.normal(0, noise_std_hu, arr.shape).astype(np.float32)
+    noisy_arr = arr + noise
+    
+    noisy_img = sitk.GetImageFromArray(noisy_arr)
+    noisy_img.CopyInformation(image)
+    
+    return noisy_img
+
+
 def generate_perturbed_masks(
     original_mask: sitk.Image,
     volume_changes: List[float],
@@ -245,6 +330,128 @@ def generate_perturbed_masks(
     return perturbed
 
 
+def generate_ntcv_perturbations(
+    original_mask: sitk.Image,
+    original_image: sitk.Image,
+    config: PerturbationConfig,
+    structure_name: str,
+) -> Tuple[Dict[str, sitk.Image], Dict[str, sitk.Image]]:
+    """
+    Generate NTCV (Noise + Translation + Contour + Volume) perturbation chain.
+    
+    This implements systematic perturbation chains following Zwanenburg et al. 2019
+    and modern best practices for comprehensive feature stability assessment.
+    
+    Args:
+        original_mask: Original binary mask
+        original_image: CT/MR image (for noise perturbations)
+        config: Perturbation configuration
+        structure_name: Structure name for logging
+        
+    Returns:
+        Tuple of (perturbed_masks_dict, perturbed_images_dict)
+        Both dictionaries map perturbation_id to SimpleITK images
+    """
+    perturbed_masks = {}
+    perturbed_images = {}
+    
+    # Determine perturbation count based on intensity level
+    if config.intensity == "mild":
+        # Minimal testing: ~10-15 perturbations
+        volume_changes = config.small_volume_changes[:2] if len(config.small_volume_changes) > 2 else config.small_volume_changes
+        translation_steps = 1 if config.max_translation_mm > 0 else 0
+        contour_realizations = min(1, config.n_random_contour_realizations)
+        noise_levels = config.noise_levels[:1] if len(config.noise_levels) > 1 else config.noise_levels
+    elif config.intensity == "aggressive":
+        # Comprehensive testing: 30-60 perturbations (research-grade)
+        volume_changes = config.large_volume_changes + config.small_volume_changes
+        translation_steps = 2 if config.max_translation_mm > 0 else 0
+        contour_realizations = config.n_random_contour_realizations
+        noise_levels = config.noise_levels
+    else:  # standard
+        # Balanced testing: 15-30 perturbations
+        volume_changes = config.small_volume_changes
+        translation_steps = 1 if config.max_translation_mm > 0 else 0
+        contour_realizations = config.n_random_contour_realizations
+        noise_levels = config.noise_levels
+    
+    pert_count = 0
+    
+    # Generate perturbations using combinatorial approach
+    for noise_std in noise_levels:
+        # N: Noise perturbation (image-based)
+        if noise_std > 0:
+            noisy_image = add_noise_to_image(original_image, noise_std)
+            noise_suffix = f"_n{int(noise_std)}"
+        else:
+            noisy_image = original_image
+            noise_suffix = ""
+        
+        # T: Translation perturbations (geometric)
+        translation_vectors = [(0, 0, 0)]  # Always include no-translation
+        if config.max_translation_mm > 0 and translation_steps > 0:
+            # Generate translations in different directions
+            max_t = config.max_translation_mm
+            if translation_steps == 1:
+                # Single direction (superior-inferior)
+                translation_vectors.extend([(0, 0, max_t), (0, 0, -max_t)])
+            else:
+                # Multiple directions (x, y, z)
+                translation_vectors.extend([
+                    (max_t, 0, 0), (-max_t, 0, 0),
+                    (0, max_t, 0), (0, -max_t, 0),
+                    (0, 0, max_t), (0, 0, -max_t),
+                ])
+        
+        for trans_vec in translation_vectors:
+            # Apply translation
+            if any(abs(t) > 1e-3 for t in trans_vec):
+                translated_mask = translate_mask(original_mask, trans_vec)
+                trans_suffix = f"_t{int(trans_vec[0])}_{int(trans_vec[1])}_{int(trans_vec[2])}"
+            else:
+                translated_mask = original_mask
+                trans_suffix = ""
+            
+            # C: Contour randomization (boundary noise)
+            contour_variants = [translated_mask]  # Always include original contour
+            if config.n_random_contour_realizations > 0 and contour_realizations > 0:
+                np.random.seed(42 + pert_count)  # Reproducible randomization
+                for c_idx in range(contour_realizations):
+                    try:
+                        randomized = randomize_contour(translated_mask, config.max_translation_mm / 2)
+                        contour_variants.append(randomized)
+                    except Exception as e:
+                        logger.debug("Contour randomization failed for %s: %s", structure_name, e)
+            
+            for c_idx, contour_mask in enumerate(contour_variants):
+                contour_suffix = f"_c{c_idx}" if c_idx > 0 else ""
+                
+                # V: Volume adaptation (erosion/dilation)
+                for tau in volume_changes:
+                    if abs(tau) < 1e-6:
+                        final_mask = contour_mask
+                        vol_suffix = "_v0"
+                    else:
+                        final_mask = volume_adapt_mask(contour_mask, tau)
+                        if final_mask is None:
+                            logger.debug("Volume adaptation failed for %s (tau=%.2f)", structure_name, tau)
+                            continue
+                        vol_suffix = f"_v{int(tau*100):+03d}"
+                    
+                    # Create unique perturbation ID
+                    pert_id = f"ntcv{noise_suffix}{trans_suffix}{contour_suffix}{vol_suffix}"
+                    
+                    # Store results
+                    perturbed_masks[pert_id] = final_mask
+                    perturbed_images[pert_id] = noisy_image
+                    pert_count += 1
+    
+    logger.info("Generated %d NTCV perturbations for %s (intensity=%s)",
+                pert_count, structure_name, config.intensity)
+    
+    return perturbed_masks, perturbed_images
+
+
 # ============================================================================
 # Radiomics Feature Extraction
 # ============================================================================
@@ -257,18 +464,20 @@ def extract_features_for_masks(
     structure_name: str = "",
     patient_id: str = "",
     course_id: str = "",
+    perturbed_images: Optional[Dict[str, sitk.Image]] = None,
 ) -> pd.DataFrame:
     """
     Extract radiomics features for multiple mask variants.
 
     Args:
-        image: CT/MR image
+        image: CT/MR image (base image)
         masks: Dictionary of {perturbation_id: mask}
         config: Pipeline configuration
         modality: "CT" or "MR"
         structure_name: ROI name
         patient_id: Patient identifier
         course_id: Course identifier
+        perturbed_images: Optional dictionary of {perturbation_id: perturbed_image} for noise perturbations
 
     Returns:
         Tidy DataFrame with columns [patient_id, course_id, structure, perturbation_id, feature_name, value]
@@ -284,8 +493,11 @@ def extract_features_for_masks(
                 logger.debug("No radiomics extractor available for %s/%s", structure_name, pert_id)
                 continue
 
+            # Use perturbed image if available (for noise perturbations)
+            current_image = perturbed_images.get(pert_id, image) if perturbed_images else image
+
             # Execute PyRadiomics
-            result = ext.execute(image, mask)
+            result = ext.execute(current_image, mask)
 
             # Convert to flat dictionary
             for key, value in result.items():
@@ -594,12 +806,29 @@ def robustness_for_course(
         mask_array = all_masks[(roi_name, source)]
         mask_img = _mask_from_array_like(ct_image, mask_array)
 
-        # Generate perturbed masks
-        perturbed_masks = generate_perturbed_masks(
-            mask_img,
-            rob_config.perturbation.small_volume_changes,
-            roi_name,
+        # Check if NTCV mode is enabled (any perturbation beyond volume is configured)
+        use_ntcv = (
+            rob_config.perturbation.max_translation_mm > 0 or
+            rob_config.perturbation.n_random_contour_realizations > 0 or
+            any(n > 0 for n in rob_config.perturbation.noise_levels)
         )
+
+        if use_ntcv:
+            # Generate NTCV perturbation chain
+            perturbed_masks, perturbed_images = generate_ntcv_perturbations(
+                mask_img,
+                ct_image,
+                rob_config.perturbation,
+                roi_name,
+            )
+        else:
+            # Legacy mode: volume-only perturbations
+            perturbed_masks = generate_perturbed_masks(
+                mask_img,
+                rob_config.perturbation.small_volume_changes,
+                roi_name,
+            )
+            perturbed_images = None
 
         if len(perturbed_masks) < 2:
             logger.warning("Insufficient perturbations for %s (%s); skipping", roi_name, source)
@@ -614,6 +843,7 @@ def robustness_for_course(
             structure_name=roi_name,
             patient_id=course_dir.parent.name,
             course_id=course_dir.name,
+            perturbed_images=perturbed_images,
         )
 
         if not features_df.empty:
