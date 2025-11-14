@@ -707,12 +707,25 @@ def radiomics_for_course(
     output_path = course_dir / "radiomics_ct.xlsx"
     sequential = os.environ.get('RTPIPELINE_RADIOMICS_SEQUENTIAL', '').lower() in ('1', 'true', 'yes')
 
+    # Determine optimal worker count (matching radiomics_parallel.py logic)
     max_workers = None
-    if getattr(config, "workers", None):
+
+    # Check for environment variable override first
+    env_workers = int(os.environ.get('RTPIPELINE_RADIOMICS_WORKERS', '0'))
+    if env_workers > 0:
+        max_workers = env_workers
+    # Try config.effective_workers() if available
+    elif hasattr(config, 'effective_workers') and callable(config.effective_workers):
         try:
-            max_workers = int(config.workers)
+            max_workers = config.effective_workers()
         except Exception:
-            max_workers = None
+            pass
+    # Fall back to cpu_count - 1 (same as radiomics_parallel.py)
+    if max_workers is None:
+        cpu_count = os.cpu_count() or 4
+        max_workers = max(1, cpu_count - 1)
+
+    logger.info("Conda radiomics using %d workers (CPU cores: %d)", max_workers, os.cpu_count() or 0)
 
     result = process_radiomics_batch(
         tasks,
