@@ -1,11 +1,18 @@
-# Docker Compatibility Guide for rtpipeline
+# Docker and Singularity Guide for rtpipeline
 
 ## Overview
-This document confirms Docker compatibility of the optimization and hang prevention features, and provides best practices for running rtpipeline in containers.
+This document provides comprehensive guidance for running rtpipeline in Docker and Singularity containers, including compatibility information for optimization features, hang prevention, web UI support, and the latest radiomics robustness module.
 
-## ✅ Docker Compatibility Confirmed
+## ✅ Container Features
 
-All optimizations and timeout mechanisms work correctly in Docker:
+All pipeline features work correctly in Docker and Singularity containers:
+
+### Latest Updates (2024)
+- **Radiomics Robustness Module**: Comprehensive feature stability assessment with ICC, CoV, and QCD metrics
+- **Web UI**: Browser-based interface for drag-and-drop DICOM upload and processing
+- **Enhanced Configuration**: Container-specific config includes all recent pipeline features
+
+### Core Features
 
 ### 1. **Subprocess Timeouts** ✅
 - `subprocess.run()` with timeout parameter works in Docker
@@ -398,25 +405,202 @@ docker logs rtpipeline 2>&1 | grep -i timeout
    restart: unless-stopped
    ```
 
+## Singularity Support
+
+rtpipeline fully supports Singularity for HPC and secure computing environments.
+
+### Building Singularity Containers
+
+#### Option 1: From Docker Hub (Recommended)
+```bash
+singularity pull rtpipeline.sif docker://kstawiski/rtpipeline:latest
+```
+
+#### Option 2: From Local Docker Image
+```bash
+# First build Docker image
+./build.sh
+
+# Convert to Singularity
+singularity build rtpipeline.sif docker-daemon://kstawiski/rtpipeline:latest
+```
+
+#### Option 3: From Definition File (Advanced)
+```bash
+# Build from rtpipeline.def
+# Note: Requires repository files in build context
+singularity build --fakeroot rtpipeline.sif rtpipeline.def
+```
+
+### Running with Singularity
+
+#### Interactive Shell
+```bash
+singularity shell --nv \
+  --bind /path/to/input:/data/input:ro \
+  --bind /path/to/output:/data/output:rw \
+  --bind /path/to/logs:/data/logs:rw \
+  rtpipeline.sif
+```
+
+#### Execute Pipeline
+```bash
+singularity exec --nv \
+  --bind /path/to/input:/data/input:ro \
+  --bind /path/to/output:/data/output:rw \
+  --bind /path/to/logs:/data/logs:rw \
+  rtpipeline.sif \
+  snakemake --cores all --use-conda --configfile /app/config.container.yaml
+```
+
+#### Web UI Mode
+```bash
+singularity run --nv \
+  --bind /path/to/uploads:/data/uploads:rw \
+  --bind /path/to/input:/data/input:rw \
+  --bind /path/to/output:/data/output:rw \
+  --bind /path/to/logs:/data/logs:rw \
+  rtpipeline.sif
+# Access at http://localhost:8080
+```
+
+### HPC/SLURM Integration
+
+**Example Job Script:**
+```bash
+#!/bin/bash
+#SBATCH --job-name=rtpipeline
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=16
+#SBATCH --mem=64G
+#SBATCH --time=48:00:00
+#SBATCH --gres=gpu:1
+
+module load singularity
+
+# Set paths
+INPUT_DIR=/scratch/$USER/dicom_input
+OUTPUT_DIR=/scratch/$USER/rtpipeline_output
+LOGS_DIR=/scratch/$USER/rtpipeline_logs
+
+# Create output directories
+mkdir -p $OUTPUT_DIR $LOGS_DIR
+
+# Run pipeline
+singularity exec --nv \
+  --bind ${INPUT_DIR}:/data/input:ro \
+  --bind ${OUTPUT_DIR}:/data/output:rw \
+  --bind ${LOGS_DIR}:/data/logs:rw \
+  rtpipeline.sif \
+  snakemake --cores $SLURM_CPUS_PER_TASK --use-conda --configfile /app/config.container.yaml
+
+echo "Pipeline completed at $(date)"
+```
+
+**With Custom Configuration:**
+```bash
+#!/bin/bash
+#SBATCH --job-name=rtpipeline-robustness
+#SBATCH --cpus-per-task=32
+#SBATCH --mem=128G
+#SBATCH --time=72:00:00
+
+module load singularity
+
+# Custom config with radiomics robustness enabled
+cat > /tmp/config.custom.yaml << 'EOF'
+dicom_root: "/data/input"
+output_dir: "/data/output"
+logs_dir: "/data/logs"
+workers: 30
+
+radiomics_robustness:
+  enabled: true
+  modes:
+    - segmentation_perturbation
+  segmentation_perturbation:
+    apply_to_structures:
+      - "GTV*"
+      - "CTV*"
+      - "PTV*"
+    intensity: "aggressive"
+EOF
+
+singularity exec \
+  --bind /tmp/config.custom.yaml:/tmp/config.custom.yaml:ro \
+  --bind ${INPUT_DIR}:/data/input:ro \
+  --bind ${OUTPUT_DIR}:/data/output:rw \
+  rtpipeline.sif \
+  snakemake --cores 30 --use-conda --configfile /tmp/config.custom.yaml
+```
+
+### Singularity-Specific Notes
+
+1. **GPU Access**: Use `--nv` flag for NVIDIA GPU support
+2. **Writable Overlays**: For caching TotalSegmentator weights:
+   ```bash
+   # Create overlay for persistent weights
+   singularity overlay create --size 10240 totalseg_cache.img
+
+   # Use overlay
+   singularity exec --nv \
+     --overlay totalseg_cache.img \
+     --bind /data:/data \
+     rtpipeline.sif \
+     snakemake --cores all --use-conda --configfile /app/config.container.yaml
+   ```
+
+3. **Environment Variables**: Pass via `--env` or `SINGULARITYENV_`:
+   ```bash
+   export SINGULARITYENV_TOTALSEG_TIMEOUT=7200
+   export SINGULARITYENV_RTPIPELINE_RADIOMICS_TASK_TIMEOUT=1200
+   singularity exec --nv rtpipeline.sif ...
+   ```
+
+4. **Conda Environments**: All environments are pre-built in the container
+5. **Web UI**: Requires binding appropriate ports and directories
+
 ## Summary
 
-✅ **All optimization and hang prevention features work correctly in Docker**
+✅ **All optimization and hang prevention features work correctly in Docker and Singularity**
 
 The pipeline has been enhanced with:
+- **Radiomics Robustness Module**: ICC-based feature stability assessment (latest update)
+- **Web UI**: Browser-based upload and processing interface
 - **Tini init system** for proper signal handling
 - **Timeout environment variables** with sensible defaults
 - **Psutil** for accurate CPU detection
-- **Comprehensive testing** via docker_test.py
+- **Singularity support** for HPC environments
 
-**Docker-specific features:**
+**Container-specific features:**
 - Respects container CPU/memory limits
 - Proper signal forwarding for graceful shutdown
 - Zombie process reaping for parallel operations
-- GPU support with NVIDIA Docker runtime
+- GPU support (NVIDIA Docker runtime / Singularity --nv)
+- Pre-built conda environments
+- Container-optimized configuration
 
 **Recommended deployment:**
+
+**Docker (Development/Production):**
 ```bash
-docker-compose up rtpipeline
+# Web UI mode (recommended)
+docker-compose up -d
+
+# Access at http://localhost:8080
+```
+
+**Singularity (HPC/Secure Environments):**
+```bash
+# Pull from Docker Hub
+singularity pull rtpipeline.sif docker://kstawiski/rtpipeline:latest
+
+# Run pipeline
+singularity exec --nv \
+  --bind /data:/data \
+  rtpipeline.sif \
+  snakemake --cores all --use-conda --configfile /app/config.container.yaml
 ```
 
 For production, see docker-compose.yml configuration with restart policies, resource limits, and health checks.

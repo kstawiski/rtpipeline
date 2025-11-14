@@ -25,10 +25,21 @@ The rtpipeline Web UI provides a browser-based interface for uploading DICOM fil
 - **🎯 Drag-and-Drop Upload**: Easily upload DICOM files by dragging them into the browser
 - **📁 Multiple Format Support**: Accepts .dcm files, .zip archives, tar archives, DICOMDIR, and entire directories
 - **✅ Automatic Validation**: Validates uploaded DICOM files and provides feedback on data quality
-- **⚙️ Configurable Processing**: Customize pipeline settings (segmentation, radiomics, CT cropping)
-- **📊 Progress Monitoring**: Real-time progress tracking for all processing jobs
+- **⚙️ Interactive Configuration**: Comprehensive collapsible sections for all pipeline features
+  - Basic settings (CPU cores)
+  - Segmentation settings (fast mode, workers)
+  - Radiomics settings (extraction, sequential processing)
+  - Radiomics robustness analysis (ICC/CoV/QCD metrics)
+  - CT anatomical cropping (pelvis, thorax, abdomen, head/neck, brain)
+  - Advanced options (custom models, verbose logging)
+- **📊 Real-Time Progress Monitoring**:
+  - Live progress bars with percentage
+  - Stage-by-stage visualization (Upload → Organize → Segment → DVH → Radiomics → Aggregate → Complete)
+  - Detailed progress messages
+  - Animated indicators for running jobs
+- **📄 Live Log Streaming**: Real-time log viewer with auto-refresh
 - **📥 Easy Results Download**: Download all results as a single ZIP archive
-- **🔍 Log Viewer**: View detailed processing logs for debugging
+- **🔍 Job Management**: Cancel, monitor, and delete jobs from the UI
 
 ## Quick Start
 
@@ -94,23 +105,83 @@ After upload, the system will automatically:
 
 ### 5. Configure Processing Options
 
-Before starting processing, you can customize:
+The Web UI now provides comprehensive interactive configuration through collapsible sections. Click on any section header to expand/collapse.
 
-#### Fast Mode (CPU-friendly segmentation)
-- ✅ **Enabled (default)**: Uses faster, CPU-optimized segmentation
-- ❌ **Disabled**: Uses standard GPU-accelerated mode (requires GPU)
+#### ⚙️ Basic Configuration
+- **CPU Cores**: Number of cores for parallel processing (numeric input only; default: 4, or all available if left empty)
 
-#### Radiomics Extraction
-- ✅ **Enabled (default)**: Extracts radiomic features from CT and MR
-- ❌ **Disabled**: Skips radiomics (faster processing)
+#### 🔬 Segmentation Settings
+- **Fast Mode**: ✅ Enabled by default - Uses CPU-friendly segmentation
+  - Enable for CPU-only systems
+  - Disable for GPU acceleration (if available)
+- **Segmentation Workers**: Number of parallel segmentation jobs
+  - GPU mode: 1-2 workers recommended
+  - CPU mode: 2-4 workers recommended
 
-#### Custom Models
-- ❌ **Disabled (default)**: Only uses TotalSegmentator
-- ✅ **Enabled**: Runs custom nnUNet models (if available in `/data/models`)
+#### 📊 Radiomics Settings
+- **Enable Radiomics Extraction**: ✅ Enabled by default
+  - Extract radiomic features from segmented structures
+- **Sequential Processing**: ❌ Disabled by default
+  - Enable if system has limited memory
+  - Trades speed for memory efficiency
 
-#### CT Anatomical Cropping
-- ❌ **Disabled (default)**: Processes full CT volumes
-- ✅ **Enabled**: Crops CT to anatomical regions (pelvis, thorax, etc.)
+#### 🔍 Radiomics Robustness Analysis
+- **Enable Robustness Analysis**: ❌ Disabled by default
+  - Assess feature stability under perturbations
+  - Generates ICC, CoV, and QCD metrics
+  - **Warning**: Significantly increases processing time
+- **Perturbation Intensity**:
+  - **Mild**: ~10-15 perturbations per ROI (faster)
+  - **Standard** ✅: ~20-30 perturbations per ROI (balanced)
+  - **Aggressive**: ~40-60 perturbations per ROI (most robust, slowest)
+
+#### ✂️ CT Anatomical Cropping
+- **Enable CT Cropping**: ❌ Disabled by default
+  - Standardizes CT volumes to consistent anatomical boundaries
+  - Essential for meaningful percentage-based DVH metrics (V%, D%)
+- **Anatomical Region**:
+  - **Pelvis** ✅: L1 → Femoral heads
+  - **Thorax**: C7/Lung apex → L1/Diaphragm
+  - **Abdomen**: T12/L1 → L5
+  - **Head & Neck**: Brain/Skull → C7/Clavicles
+  - **Brain**: Full brain coverage
+
+#### 🔧 Advanced Settings
+- **Enable Custom Models**: Run custom nnUNet models (requires models in /data/models)
+- **Keep Going on Errors**: Continue processing even if some jobs fail
+- **Verbose Logging**: Enable detailed logging for debugging
+
+### 6. Start Processing
+
+Once configuration is complete, click the **"🚀 Start Processing"** button to begin.
+
+### 7. Monitor Progress in Real-Time
+
+The Web UI provides comprehensive real-time progress monitoring:
+
+#### Progress Bar
+- Visual progress indicator showing completion percentage (0-100%)
+- Animated shimmer effect during processing
+
+#### Stage Visualization
+Jobs progress through distinct stages, each with its own icon:
+- 📁 **Upload**: Files uploaded and validated
+- 📋 **Organize**: DICOM files organized into course structure
+- 🔬 **Segment**: TotalSegmentator running (longest stage)
+- 📊 **DVH**: DVH metrics computation
+- 🧬 **Radiomics**: Feature extraction
+- 📦 **Aggregate**: Consolidating results
+- ✅ **Complete**: Processing finished
+
+#### Live Status Messages
+- Current operation description (e.g., "Running segmentation...", "Extracting radiomics features...")
+- Updates every 2 seconds automatically
+
+#### Log Viewer
+- Click **"📄 View Logs"** on any job to see detailed processing logs
+- **Auto-refresh** checkbox: Automatically update logs during processing
+- Logs display in terminal-style viewer with monospace font
+- Auto-scroll to bottom (when enabled)
 
 ### 6. Start Processing
 

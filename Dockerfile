@@ -139,6 +139,46 @@ radiomics:
   max_voxels: 1500000000
   min_voxels: 10
 
+# Radiomics robustness analysis
+radiomics_robustness:
+  enabled: false
+  modes:
+    - segmentation_perturbation
+  segmentation_perturbation:
+    apply_to_structures:
+      - "GTV*"
+      - "CTV*"
+      - "PTV*"
+      - "pelvic_bones*"
+      - "iliac_*"
+      - "bowel_bag"
+      - "urinary_bladder"
+      - "colon"
+      - "prostate"
+      - "rectum"
+    small_volume_changes: [-0.15, 0.0, 0.15]
+    large_volume_changes: [-0.30, 0.0, 0.30]
+    max_translation_mm: 0.0
+    n_random_contour_realizations: 0
+    noise_levels: [0.0]
+    intensity: "standard"
+  metrics:
+    icc:
+      implementation: "pingouin"
+      icc_type: "ICC3"
+      ci: true
+    cov:
+      enabled: true
+    qcd:
+      enabled: true
+  thresholds:
+    icc:
+      robust: 0.90
+      acceptable: 0.75
+    cov:
+      robust_pct: 10.0
+      acceptable_pct: 20.0
+
 aggregation:
   threads: auto
 
