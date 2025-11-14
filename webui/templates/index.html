@@ -19,7 +19,7 @@
         }
 
         .container {
-            max-width: 1200px;
+            max-width: 1400px;
             margin: 0 auto;
         }
 
@@ -131,6 +131,39 @@
         .config-section h3 {
             margin-bottom: 15px;
             color: #2d3748;
+            cursor: pointer;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .config-section h3:hover {
+            color: #667eea;
+        }
+
+        .collapsible-content {
+            max-height: 0;
+            overflow: hidden;
+            transition: max-height 0.3s ease-out;
+        }
+
+        .collapsible-content.open {
+            max-height: 2000px;
+            transition: max-height 0.5s ease-in;
+        }
+
+        .config-group {
+            background: white;
+            padding: 15px;
+            margin-bottom: 15px;
+            border-radius: 6px;
+            border-left: 4px solid #667eea;
+        }
+
+        .config-group h4 {
+            color: #2d3748;
+            margin-bottom: 10px;
+            font-size: 16px;
         }
 
         .config-option {
@@ -146,6 +179,25 @@
 
         .config-option input[type="checkbox"] {
             margin-right: 10px;
+            width: 18px;
+            height: 18px;
+        }
+
+        .config-option input[type="number"],
+        .config-option input[type="text"],
+        .config-option select {
+            width: 100%;
+            padding: 8px 12px;
+            border: 1px solid #cbd5e0;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+
+        .config-option small {
+            display: block;
+            color: #718096;
+            font-size: 12px;
+            margin-top: 3px;
         }
 
         .validation-results {
@@ -237,6 +289,7 @@
         .job-status.running {
             background: #feebc8;
             color: #7c2d12;
+            animation: pulse 2s ease-in-out infinite;
         }
 
         .job-status.completed {
@@ -254,11 +307,20 @@
             color: #4a5568;
         }
 
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.7; }
+        }
+
+        .progress-container {
+            margin: 15px 0;
+        }
+
         .progress-bar {
             width: 100%;
-            height: 8px;
+            height: 12px;
             background: #e2e8f0;
-            border-radius: 4px;
+            border-radius: 6px;
             overflow: hidden;
             margin: 10px 0;
         }
@@ -267,6 +329,80 @@
             height: 100%;
             background: linear-gradient(90deg, #667eea, #764ba2);
             transition: width 0.3s;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .progress-fill::after {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            bottom: 0;
+            right: 0;
+            background: linear-gradient(
+                90deg,
+                transparent,
+                rgba(255,255,255,0.3),
+                transparent
+            );
+            animation: shimmer 2s infinite;
+        }
+
+        @keyframes shimmer {
+            0% { transform: translateX(-100%); }
+            100% { transform: translateX(100%); }
+        }
+
+        .progress-stages {
+            display: flex;
+            justify-content: space-between;
+            margin-top: 15px;
+            font-size: 12px;
+        }
+
+        .stage-item {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            flex: 1;
+            padding: 5px;
+        }
+
+        .stage-icon {
+            width: 24px;
+            height: 24px;
+            border-radius: 50%;
+            background: #e2e8f0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-bottom: 5px;
+            font-size: 12px;
+        }
+
+        .stage-item.active .stage-icon {
+            background: #667eea;
+            color: white;
+        }
+
+        .stage-item.completed .stage-icon {
+            background: #48bb78;
+            color: white;
+        }
+
+        .stage-name {
+            color: #718096;
+            text-align: center;
+        }
+
+        .stage-item.active .stage-name {
+            color: #667eea;
+            font-weight: 600;
+        }
+
+        .stage-item.completed .stage-name {
+            color: #48bb78;
         }
 
         .job-actions {
@@ -303,7 +439,7 @@
 
         .modal-content {
             background: white;
-            max-width: 800px;
+            max-width: 900px;
             max-height: 80vh;
             margin: 50px auto;
             padding: 30px;
@@ -341,6 +477,22 @@
             word-break: break-all;
         }
 
+        .log-viewer-header {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 10px;
+        }
+
+        .auto-refresh-toggle {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 12px;
+            background: #edf2f7;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+
         .hidden {
             display: none;
         }
@@ -368,13 +520,38 @@
         #file-input {
             display: none;
         }
+
+        .info-box {
+            background: #bee3f8;
+            border-left: 4px solid #4299e1;
+            padding: 12px;
+            border-radius: 4px;
+            margin: 10px 0;
+            font-size: 14px;
+            color: #2c5282;
+        }
+
+        .help-text {
+            font-size: 12px;
+            color: #718096;
+            margin-top: 5px;
+            line-height: 1.4;
+        }
+
+        .toggle-icon {
+            transition: transform 0.3s;
+        }
+
+        .toggle-icon.open {
+            transform: rotate(180deg);
+        }
     </style>
 </head>
 <body>
     <div class="container">
         <div class="header">
             <h1>🏥 rtpipeline Web UI</h1>
-            <p>Upload DICOM files for automated radiotherapy data processing</p>
+            <p>Automated radiotherapy DICOM processing with TotalSegmentator, DVH analytics, and radiomics extraction</p>
         </div>
 
         <div class="main-content">
@@ -386,9 +563,6 @@
                     Supported: .dcm files, .zip archives, directories, DICOMDIR
                 </p>
                 <input type="file" id="file-input" multiple webkitdirectory directory>
-                <p style="font-size: 12px; color: #e53e3e; margin-top: 8px;">
-                    <strong>Note:</strong> Folder upload is only supported in Chrome, Edge, and Safari. Firefox and some older browsers do not support folder selection.
-                </p>
                 <button class="btn" onclick="document.getElementById('file-input').click()">
                     Browse Files
                 </button>
@@ -398,44 +572,179 @@
 
             <div id="config-container" class="hidden">
                 <div class="config-section">
-                    <h3>⚙️ Processing Configuration</h3>
-
-                    <div class="config-option">
-                        <label>
-                            <input type="checkbox" id="fast-mode" checked>
-                            Fast Mode (CPU-friendly segmentation)
-                        </label>
+                    <h3 onclick="toggleSection('basic-config')">
+                        ⚙️ Basic Configuration
+                        <span class="toggle-icon" id="toggle-basic-config">▼</span>
+                    </h3>
+                    <div class="collapsible-content open" id="basic-config">
+                        <div class="config-group">
+                            <div class="config-option">
+                                <label>
+                                    <input type="number" id="cores" value="4" min="1" max="64">
+                                    Number of CPU Cores
+                                </label>
+                                <small>Number of CPU cores for parallel processing</small>
+                            </div>
+                        </div>
                     </div>
+                </div>
 
-                    <div class="config-option">
-                        <label>
-                            <input type="checkbox" id="radiomics-enabled" checked>
-                            Enable Radiomics Extraction
-                        </label>
+                <div class="config-section">
+                    <h3 onclick="toggleSection('segmentation-config')">
+                        🔬 Segmentation Settings
+                        <span class="toggle-icon" id="toggle-segmentation-config">▼</span>
+                    </h3>
+                    <div class="collapsible-content open" id="segmentation-config">
+                        <div class="config-group">
+                            <div class="config-option">
+                                <label>
+                                    <input type="checkbox" id="fast-mode" checked>
+                                    Fast Mode (CPU-friendly)
+                                </label>
+                                <small>Use fast segmentation mode (recommended for CPU-only systems)</small>
+                            </div>
+                            <div class="config-option">
+                                <label>
+                                    <input type="number" id="seg-workers" value="2" min="1" max="8">
+                                    Segmentation Workers
+                                </label>
+                                <small>Number of parallel segmentation jobs (GPU mode: 1-2, CPU mode: 2-4)</small>
+                            </div>
+                        </div>
                     </div>
+                </div>
 
-                    <div class="config-option">
-                        <label>
-                            <input type="checkbox" id="custom-models-enabled">
-                            Enable Custom Models (if available)
-                        </label>
+                <div class="config-section">
+                    <h3 onclick="toggleSection('radiomics-config')">
+                        📊 Radiomics Settings
+                        <span class="toggle-icon" id="toggle-radiomics-config">▼</span>
+                    </h3>
+                    <div class="collapsible-content open" id="radiomics-config">
+                        <div class="config-group">
+                            <div class="config-option">
+                                <label>
+                                    <input type="checkbox" id="radiomics-enabled" checked>
+                                    Enable Radiomics Extraction
+                                </label>
+                                <small>Extract radiomics features from segmented structures</small>
+                            </div>
+                            <div class="config-option">
+                                <label>
+                                    <input type="checkbox" id="radiomics-sequential">
+                                    Sequential Processing
+                                </label>
+                                <small>Process radiomics sequentially (use if memory limited)</small>
+                            </div>
+                        </div>
                     </div>
+                </div>
 
-                    <div class="config-option">
-                        <label>
-                            <input type="checkbox" id="ct-cropping-enabled">
-                            Enable CT Anatomical Cropping
-                        </label>
+                <div class="config-section">
+                    <h3 onclick="toggleSection('robustness-config')">
+                        🔍 Radiomics Robustness Analysis
+                        <span class="toggle-icon" id="toggle-robustness-config">▼</span>
+                    </h3>
+                    <div class="collapsible-content" id="robustness-config">
+                        <div class="info-box">
+                            <strong>Radiomics Robustness Testing</strong>: Assess feature stability under perturbations.
+                            This generates multiple variations of each segmentation and measures feature reproducibility using ICC, CoV, and QCD metrics.
+                            <strong>Warning:</strong> This significantly increases processing time.
+                        </div>
+                        <div class="config-group">
+                            <div class="config-option">
+                                <label>
+                                    <input type="checkbox" id="robustness-enabled">
+                                    Enable Robustness Analysis
+                                </label>
+                                <small>Perform feature stability assessment with segmentation perturbations</small>
+                            </div>
+                            <div class="config-option">
+                                <label>
+                                    Perturbation Intensity
+                                    <select id="robustness-intensity">
+                                        <option value="mild">Mild (~10-15 perturbations per ROI)</option>
+                                        <option value="standard" selected>Standard (~20-30 perturbations per ROI)</option>
+                                        <option value="aggressive">Aggressive (~40-60 perturbations per ROI)</option>
+                                    </select>
+                                </label>
+                                <small>Higher intensity = more perturbations = longer processing time but more robust metrics</small>
+                            </div>
+                        </div>
                     </div>
+                </div>
 
-                    <div style="margin-top: 20px;">
-                        <button class="btn btn-secondary" id="start-processing-btn" onclick="startProcessing()">
-                            🚀 Start Processing
-                        </button>
-                        <button class="btn btn-danger" onclick="cancelUpload()">
-                            ❌ Cancel
-                        </button>
+                <div class="config-section">
+                    <h3 onclick="toggleSection('cropping-config')">
+                        ✂️ CT Anatomical Cropping
+                        <span class="toggle-icon" id="toggle-cropping-config">▼</span>
+                    </h3>
+                    <div class="collapsible-content" id="cropping-config">
+                        <div class="info-box">
+                            <strong>Systematic CT Cropping</strong>: Standardizes CT volumes to consistent anatomical boundaries for meaningful percentage-based DVH metrics (V%, D%).
+                        </div>
+                        <div class="config-group">
+                            <div class="config-option">
+                                <label>
+                                    <input type="checkbox" id="ct-cropping-enabled">
+                                    Enable CT Cropping
+                                </label>
+                                <small>Crop CTs to standardized anatomical boundaries</small>
+                            </div>
+                            <div class="config-option">
+                                <label>
+                                    Anatomical Region
+                                    <select id="cropping-region">
+                                        <option value="pelvis" selected>Pelvis (L1 → Femoral heads)</option>
+                                        <option value="thorax">Thorax (C7/Lung apex → L1/Diaphragm)</option>
+                                        <option value="abdomen">Abdomen (T12/L1 → L5)</option>
+                                        <option value="head_neck">Head & Neck (Brain/Skull → C7/Clavicles)</option>
+                                        <option value="brain">Brain</option>
+                                    </select>
+                                </label>
+                            </div>
+                        </div>
                     </div>
+                </div>
+
+                <div class="config-section">
+                    <h3 onclick="toggleSection('advanced-config')">
+                        🔧 Advanced Settings
+                        <span class="toggle-icon" id="toggle-advanced-config">▼</span>
+                    </h3>
+                    <div class="collapsible-content" id="advanced-config">
+                        <div class="config-group">
+                            <div class="config-option">
+                                <label>
+                                    <input type="checkbox" id="custom-models-enabled">
+                                    Enable Custom Models (if available)
+                                </label>
+                                <small>Run custom nnUNet models (requires models in /data/models)</small>
+                            </div>
+                            <div class="config-option">
+                                <label>
+                                    <input type="checkbox" id="keep-going">
+                                    Keep Going on Errors
+                                </label>
+                                <small>Continue processing even if some jobs fail</small>
+                            </div>
+                            <div class="config-option">
+                                <label>
+                                    <input type="checkbox" id="verbose-mode">
+                                    Verbose Logging
+                                </label>
+                                <small>Enable detailed logging (helpful for debugging)</small>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div style="margin-top: 20px; text-align: center;">
+                    <button class="btn btn-secondary" id="start-processing-btn" onclick="startProcessing()" style="font-size: 18px; padding: 15px 40px;">
+                        🚀 Start Processing
+                    </button>
+                    <button class="btn btn-danger" onclick="cancelUpload()">
+                        ❌ Cancel
+                    </button>
                 </div>
             </div>
 
@@ -456,7 +765,13 @@
         <div class="modal-content">
             <div class="modal-header">
                 <h2>Job Logs</h2>
-                <span class="close-modal" onclick="closeLogModal()">&times;</span>
+                <div class="log-viewer-header">
+                    <div class="auto-refresh-toggle">
+                        <input type="checkbox" id="auto-refresh-logs" checked>
+                        <label for="auto-refresh-logs">Auto-refresh</label>
+                    </div>
+                    <span class="close-modal" onclick="closeLogModal()">&times;</span>
+                </div>
             </div>
             <div class="log-viewer" id="log-content">Loading logs...</div>
         </div>
@@ -465,29 +780,27 @@
     <script>
         let currentJobId = null;
         let uploadedFiles = [];
+        let currentLogJobId = null;
 
         // Initialize
         document.addEventListener('DOMContentLoaded', () => {
             setupUploadHandlers();
             loadJobs();
-            setInterval(updateJobStatuses, 3000); // Update every 3 seconds
+            setInterval(updateJobStatuses, 2000); // Update every 2 seconds
         });
 
         function setupUploadHandlers() {
             const uploadSection = document.getElementById('upload-section');
             const fileInput = document.getElementById('file-input');
 
-            // Click to upload
             uploadSection.addEventListener('click', (e) => {
                 if (e.target.tagName !== 'BUTTON') {
                     fileInput.click();
                 }
             });
 
-            // File input change
             fileInput.addEventListener('change', handleFileSelect);
 
-            // Drag and drop
             uploadSection.addEventListener('dragover', (e) => {
                 e.preventDefault();
                 uploadSection.classList.add('dragover');
@@ -502,6 +815,14 @@
                 uploadSection.classList.remove('dragover');
                 handleFileDrop(e);
             });
+        }
+
+        function toggleSection(sectionId) {
+            const content = document.getElementById(sectionId);
+            const icon = document.getElementById('toggle-' + sectionId);
+
+            content.classList.toggle('open');
+            icon.classList.toggle('open');
         }
 
         async function handleFileSelect(e) {
@@ -536,6 +857,7 @@
                     <div class="loading">
                         <div class="spinner"></div>
                         <p>Uploading and validating files...</p>
+                        <small>This may take a few moments for large datasets</small>
                     </div>
                 `;
 
@@ -587,14 +909,12 @@
                     </div>
                 `;
 
-                // Display warnings
                 if (validation.warnings && validation.warnings.length > 0) {
                     validation.warnings.forEach(warning => {
                         html += `<div class="warning">⚠️ ${warning}</div>`;
                     });
                 }
 
-                // Display suggestions
                 if (validation.suggestions && validation.suggestions.length > 0) {
                     validation.suggestions.forEach(suggestion => {
                         html += `<div class="suggestion">💡 ${suggestion}</div>`;
@@ -621,16 +941,26 @@
             }
 
             const config = {
+                cores: document.getElementById('cores').value || 'all',
                 segmentation: {
-                    fast: document.getElementById('fast-mode').checked
+                    fast: document.getElementById('fast-mode').checked,
+                    workers: parseInt(document.getElementById('seg-workers').value)
                 },
                 radiomics: {
-                    enabled: document.getElementById('radiomics-enabled').checked
+                    enabled: document.getElementById('radiomics-enabled').checked,
+                    sequential: document.getElementById('radiomics-sequential').checked
+                },
+                radiomics_robustness: {
+                    enabled: document.getElementById('robustness-enabled').checked,
+                    intensity: document.getElementById('robustness-intensity').value
                 },
                 custom_models_enabled: document.getElementById('custom-models-enabled').checked,
                 ct_cropping: {
-                    enabled: document.getElementById('ct-cropping-enabled').checked
-                }
+                    enabled: document.getElementById('ct-cropping-enabled').checked,
+                    region: document.getElementById('cropping-region').value
+                },
+                keep_going: document.getElementById('keep-going').checked,
+                verbose: document.getElementById('verbose-mode').checked
             };
 
             try {
@@ -643,7 +973,7 @@
                 const result = await response.json();
 
                 if (response.ok) {
-                    alert('Processing started!');
+                    alert('Processing started! Monitor progress in the jobs list below.');
                     resetUploadSection();
                     loadJobs();
                 } else {
@@ -694,7 +1024,7 @@
             const container = document.getElementById('jobs-container');
 
             if (jobs.length === 0) {
-                container.innerHTML = '<p>No jobs yet</p>';
+                container.innerHTML = '<p style="text-align: center; color: #718096;">No jobs yet. Upload DICOM files to get started.</p>';
                 return;
             }
 
@@ -702,47 +1032,72 @@
 
             let html = '';
             jobs.forEach(job => {
-                const progress = job.progress || { percent: 0, message: '' };
+                const progress = job.progress || { percent: 0, message: '', current_stage: 'uploaded' };
+                const stages = [
+                    { name: 'Upload', key: 'uploaded', icon: '📁' },
+                    { name: 'Organize', key: 'organizing', icon: '📋' },
+                    { name: 'Segment', key: 'segmentation', icon: '🔬' },
+                    { name: 'DVH', key: 'dvh', icon: '📊' },
+                    { name: 'Radiomics', key: 'radiomics', icon: '🧬' },
+                    { name: 'Aggregate', key: 'aggregating', icon: '📦' },
+                    { name: 'Complete', key: 'completed', icon: '✅' }
+                ];
+
                 html += `
                     <div class="job-card">
                         <div class="job-header">
-                            <div class="job-id">Job: ${job.job_id.substring(0, 8)}...</div>
+                            <div>
+                                <div class="job-id">Job ID: ${job.job_id.substring(0, 8)}...</div>
+                                <small style="color: #718096;">Created: ${new Date(job.created_at).toLocaleString()}</small>
+                            </div>
                             <div class="job-status ${job.status}">${job.status}</div>
                         </div>
 
                         ${job.status === 'running' ? `
-                            <div class="progress-bar">
-                                <div class="progress-fill" style="width: ${progress.percent}%"></div>
+                            <div class="progress-container">
+                                <div class="progress-bar">
+                                    <div class="progress-fill" style="width: ${progress.percent}%"></div>
+                                </div>
+                                <p style="font-size: 14px; color: #4a5568; margin-top: 8px; font-weight: 500;">
+                                    ${progress.message || 'Processing...'}
+                                </p>
+                                <div class="progress-stages">
+                                    ${stages.map(stage => `
+                                        <div class="stage-item ${stage.key === progress.current_stage ? 'active' : ''} ${getStageStatus(stage.key, progress.current_stage, stages)}">
+                                            <div class="stage-icon">${stage.icon}</div>
+                                            <div class="stage-name">${stage.name}</div>
+                                        </div>
+                                    `).join('')}
+                                </div>
                             </div>
-                            <p style="font-size: 13px; color: #718096; margin-top: 5px;">
-                                ${progress.message || 'Processing...'}
-                            </p>
                         ` : ''}
 
-                        <p style="font-size: 12px; color: #a0aec0; margin-top: 10px;">
-                            Created: ${new Date(job.created_at).toLocaleString()}
-                        </p>
+                        ${job.status === 'failed' && job.error ? `
+                            <div class="warning">
+                                <strong>Error:</strong> ${job.error}
+                            </div>
+                        ` : ''}
 
                         <div class="job-actions">
                             ${job.status === 'running' ? `
                                 <button class="btn btn-danger" onclick="cancelJob('${job.job_id}')">
-                                    Cancel
+                                    ⏹ Cancel Job
                                 </button>
                             ` : ''}
 
                             ${job.status === 'completed' ? `
                                 <button class="btn btn-secondary" onclick="downloadResults('${job.job_id}')">
-                                    Download Results
+                                    📥 Download Results
                                 </button>
                             ` : ''}
 
                             <button class="btn" onclick="viewLogs('${job.job_id}')">
-                                View Logs
+                                📄 View Logs
                             </button>
 
                             ${job.status !== 'running' ? `
                                 <button class="btn btn-danger" onclick="deleteJob('${job.job_id}')">
-                                    Delete
+                                    🗑 Delete
                                 </button>
                             ` : ''}
                         </div>
@@ -753,12 +1108,23 @@
             container.innerHTML = html;
         }
 
-        async function updateJobStatuses() {
-            const jobCards = document.querySelectorAll('.job-card');
-            if (jobCards.length === 0) return;
+        function getStageStatus(currentKey, activeKey, stages) {
+            const currentIndex = stages.findIndex(s => s.key === currentKey);
+            const activeIndex = stages.findIndex(s => s.key === activeKey);
 
-            // Reload jobs to get latest status
+            if (currentIndex < activeIndex) {
+                return 'completed';
+            }
+            return '';
+        }
+
+        async function updateJobStatuses() {
             await loadJobs();
+
+            // Auto-refresh logs if modal is open and auto-refresh is enabled
+            if (currentLogJobId && document.getElementById('auto-refresh-logs').checked) {
+                await refreshLogs(currentLogJobId);
+            }
         }
 
         async function cancelJob(jobId) {
@@ -786,12 +1152,13 @@
         }
 
         async function viewLogs(jobId) {
+            currentLogJobId = jobId;
             try {
                 const response = await fetch(`/api/jobs/${jobId}/logs`);
                 const result = await response.json();
 
                 if (response.ok) {
-                    document.getElementById('log-content').textContent = result.logs || 'No logs available';
+                    document.getElementById('log-content').textContent = result.logs || 'No logs available yet';
                     document.getElementById('log-modal').style.display = 'block';
                 }
             } catch (error) {
@@ -800,12 +1167,34 @@
             }
         }
 
+        async function refreshLogs(jobId) {
+            try {
+                const response = await fetch(`/api/jobs/${jobId}/logs`);
+                const result = await response.json();
+
+                if (response.ok) {
+                    const logContent = document.getElementById('log-content');
+                    const wasScrolledToBottom = Math.abs(logContent.scrollHeight - logContent.scrollTop - logContent.clientHeight) < 5;
+
+                    logContent.textContent = result.logs || 'No logs available yet';
+
+                    // Auto-scroll to bottom if was already at bottom
+                    if (wasScrolledToBottom) {
+                        logContent.scrollTop = logContent.scrollHeight;
+                    }
+                }
+            } catch (error) {
+                console.error('Refresh logs error:', error);
+            }
+        }
+
         function closeLogModal() {
             document.getElementById('log-modal').style.display = 'none';
+            currentLogJobId = null;
         }
 
         async function deleteJob(jobId) {
-            if (!confirm('Are you sure you want to delete this job? All data will be removed.')) return;
+            if (!confirm('Are you sure you want to delete this job? All data will be permanently removed.')) return;
 
             try {
                 const response = await fetch(`/api/jobs/${jobId}`, {
