@@ -6,12 +6,31 @@ output_dir: "Data_Snakemake"
 logs_dir: "Logs_Snakemake"
 
 # Processing parameters
-# Default: auto (uses CPU count - 2, minimum 4)
-# Set to a specific number to override (e.g., workers: 8)
-workers: auto
+# ======================
+# IMPORTANT: Most pipeline stages (DVH, radiomics, QC) are I/O-bound, not CPU-bound!
+# They use ThreadPoolExecutor for concurrent file operations, not CPU parallelism.
+#
+# workers: Controls TWO things:
+#   1. Intra-course I/O parallelism (how many ROIs processed concurrently via ThreadPoolExecutor)
+#   2. CPU threads requested from Snakemake scheduler (limits concurrent courses)
+#
+# TRADEOFF for I/O-bound stages (DVH/radiomics/QC):
+#   - Higher value (e.g., 4-8): Better I/O throughput per course, fewer courses in parallel
+#   - Lower value (e.g., 2-3): More courses in parallel, may be better for NFS/network storage
+#
+# RECOMMENDATION by storage type:
+#   - Local SSD/NVMe: workers: 4-8 (maximize I/O per course)
+#   - NFS/network storage: workers: 2-3 (more courses in parallel, avoid network congestion)
+#   - Cloud/slow storage: workers: 2 (distribute I/O load across more courses)
+#
+# With workers: auto, the Snakefile sets workers = CPU_count - 2 (min 4, max 32)
+# This often over-allocates for I/O-bound workloads on network storage.
+workers: auto  # or set to 2-4 for NFS/network storage
 
 segmentation:
-  workers: 4  # TotalSegmentator concurrency (4 allows good CPU/GPU mix)
+  # CRITICAL: GPU-limited stage - only 1-2 courses should run concurrently
+  # Higher values risk GPU OOM errors
+  workers: 1  # TotalSegmentator concurrency (1 for single GPU, 2-4 for multi-GPU systems)
   threads_per_worker: null  # CPU threads allowed per TotalSegmentator invocation (null => no limit)
   force: false  # Set true to re-run segmentation even when outputs exist
   fast: false
@@ -38,7 +57,10 @@ radiomics:
   sequential: false
   params_file: "rtpipeline/radiomics_params.yaml"
   mr_params_file: "rtpipeline/radiomics_params_mr.yaml"
-  thread_limit: 4  # CPU threads per radiomics worker (null => no limit)
+  # thread_limit: Limits OpenMP/BLAS threads per radiomics worker
+  # Set to null for automatic detection, or 2-4 for systems with many cores
+  # Only set if you experience thread oversubscription (load average >> CPU count)
+  thread_limit: null  # CPU threads per radiomics worker (null => no artificial limit)
   skip_rois:
     - body
     - couchsurface
