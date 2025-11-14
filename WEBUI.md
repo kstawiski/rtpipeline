@@ -108,7 +108,7 @@ After upload, the system will automatically:
 The Web UI now provides comprehensive interactive configuration through collapsible sections. Click on any section header to expand/collapse.
 
 #### ⚙️ Basic Configuration
-- **CPU Cores**: Number of cores for parallel processing (default: 4, or "auto" for all available)
+- **CPU Cores**: Number of cores for parallel processing (numeric input only; default: 4, or all available if left empty)
 
 #### 🔬 Segmentation Settings
 - **Fast Mode**: ✅ Enabled by default - Uses CPU-friendly segmentation
@@ -182,12 +182,6 @@ Jobs progress through distinct stages, each with its own icon:
 - **Auto-refresh** checkbox: Automatically update logs during processing
 - Logs display in terminal-style viewer with monospace font
 - Auto-scroll to bottom (when enabled)
-
-- ✅ **Enabled**: Runs custom nnUNet models (if available in `/data/models`)
-
-#### CT Anatomical Cropping
-- ❌ **Disabled (default)**: Processes full CT volumes
-- ✅ **Enabled**: Crops CT to anatomical regions (pelvis, thorax, etc.)
 
 ### 6. Start Processing
 

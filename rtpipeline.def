@@ -63,6 +63,10 @@ From: condaforge/mambaforge:latest
     export RTPIPELINE_RADIOMICS_TASK_TIMEOUT=600
 
 %post
+    # =====================================================================
+    # PHASE 1: System setup and dependencies (before file copy)
+    # =====================================================================
+    
     # Update and install system dependencies
     apt-get update && apt-get install -y --no-install-recommends \
         build-essential \
@@ -126,8 +130,10 @@ From: condaforge/mambaforge:latest
     # README.md /app/README.md
 
 %post
-    # Continue post-installation after files are copied
-    # This section runs after %files
+    # =====================================================================
+    # PHASE 2: Application setup (after file copy)
+    # =====================================================================
+    
     cd /app
 
     # Create conda environments (only if environment files exist)
