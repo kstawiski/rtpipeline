@@ -259,15 +259,21 @@ class JobManager:
         # Merge with user config
         user_config = job.get('config', {})
 
+        # Workers configuration
+        config['workers'] = user_config.get('cores', 'all')
+        if config['workers'] != 'all':
+            try:
+                config['workers'] = int(config['workers'])
+            except (ValueError, TypeError):
+                config['workers'] = 'all'
+
         # Segmentation settings
         if 'segmentation' in user_config:
             config['segmentation'] = user_config['segmentation']
         else:
-            # Default to 2 workers. This value is hardcoded but could be made configurable
-            # through the Web UI to allow users to optimize for their hardware.
             config['segmentation'] = {
                 'workers': 2,
-                'fast': True  # Default to CPU-friendly mode
+                'fast': True
             }
 
         # Custom models (disabled by default for security)
@@ -278,11 +284,39 @@ class JobManager:
 
         # Radiomics settings
         if 'radiomics' in user_config:
-            config['radiomics'] = user_config['radiomics']
+            radiomics_config = user_config['radiomics']
+            config['radiomics'] = {
+                'sequential': radiomics_config.get('sequential', False)
+            }
+            # If radiomics is explicitly disabled, set it in config
+            if not radiomics_config.get('enabled', True):
+                config['radiomics']['enabled'] = False
+
+        # Radiomics robustness settings
+        if 'radiomics_robustness' in user_config:
+            robustness_config = user_config['radiomics_robustness']
+            if robustness_config.get('enabled', False):
+                config['radiomics_robustness'] = {
+                    'enabled': True,
+                    'modes': ['segmentation_perturbation'],
+                    'segmentation_perturbation': {
+                        'intensity': robustness_config.get('intensity', 'standard')
+                    }
+                }
 
         # CT cropping
         if 'ct_cropping' in user_config:
-            config['ct_cropping'] = user_config['ct_cropping']
+            ct_cropping_config = user_config['ct_cropping']
+            if ct_cropping_config.get('enabled', False):
+                config['ct_cropping'] = {
+                    'enabled': True,
+                    'region': ct_cropping_config.get('region', 'pelvis'),
+                    'superior_margin_cm': 2.0,
+                    'inferior_margin_cm': 10.0,
+                    'use_cropped_for_dvh': True,
+                    'use_cropped_for_radiomics': True,
+                    'keep_original': True
+                }
 
         # Write config file
         import yaml

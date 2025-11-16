@@ -277,42 +277,63 @@ docker pull kstawiski/rtpipeline:latest
 
 #### Singularity Setup
 
-**1. Convert from Docker image:**
+rtpipeline fully supports Singularity for HPC and secure computing environments.
+
+**1. Pull from Docker Hub (Recommended):**
+```bash
+# Quick start - pull pre-built image
+singularity pull rtpipeline.sif docker://kstawiski/rtpipeline:latest
+```
+
+**2. Alternative Build Methods:**
 ```bash
 # From local Docker image
 singularity build rtpipeline.sif docker-daemon://kstawiski/rtpipeline:latest
 
-# Or from Docker Hub
-singularity build rtpipeline.sif docker://kstawiski/rtpipeline:latest
+# From definition file (advanced - requires repo files)
+singularity build --fakeroot rtpipeline.sif rtpipeline.def
 ```
 
-**2. Run the pipeline:**
+**3. Interactive Shell:**
 ```bash
-# Interactive shell
-singularity shell \
+singularity shell --nv \
   --bind $(pwd)/Input:/data/input:ro \
   --bind $(pwd)/Output:/data/output:rw \
   --bind $(pwd)/Logs:/data/logs:rw \
   rtpipeline.sif
-
-# Execute command directly
-singularity exec \
-  --bind $(pwd)/Input:/data/input:ro \
-  --bind $(pwd)/Output:/data/output:rw \
-  rtpipeline.sif \
-  snakemake --cores all --use-conda --configfile /app/config.container.yaml
 ```
 
-**3. Run with GPU (if available):**
+**4. Execute Pipeline:**
 ```bash
+# With GPU support
 singularity exec --nv \
   --bind $(pwd)/Input:/data/input:ro \
   --bind $(pwd)/Output:/data/output:rw \
   rtpipeline.sif \
-  snakemake --cores 8 --use-conda --configfile /app/config.container.yaml
+  snakemake --cores all --use-conda --configfile /app/config.container.yaml
+
+# CPU-only
+singularity exec \
+  --bind $(pwd)/Input:/data/input:ro \
+  --bind $(pwd)/Output:/data/output:rw \
+  rtpipeline.sif \
+  snakemake --cores 16 --use-conda --configfile /app/config.container.yaml
 ```
 
-**4. HPC/SLURM example:**
+**5. Web UI Mode:**
+```bash
+# Start web UI in Singularity
+singularity run --nv \
+  --bind $(pwd)/Uploads:/data/uploads:rw \
+  --bind $(pwd)/Input:/data/input:rw \
+  --bind $(pwd)/Output:/data/output:rw \
+  --bind $(pwd)/Logs:/data/logs:rw \
+  rtpipeline.sif
+
+# Access at http://localhost:8080
+```
+
+**6. HPC/SLURM Example:**
 ```bash
 #!/bin/bash
 #SBATCH --job-name=rtpipeline
@@ -328,13 +349,37 @@ module load singularity
 # Set your data paths
 INPUT_DIR=/path/to/your/dicom/data
 OUTPUT_DIR=/scratch/$USER/rtpipeline_output
+LOGS_DIR=/scratch/$USER/rtpipeline_logs
 
+# Create directories
+mkdir -p $OUTPUT_DIR $LOGS_DIR
+
+# Run pipeline
 singularity exec --nv \
   --bind ${INPUT_DIR}:/data/input:ro \
   --bind ${OUTPUT_DIR}:/data/output:rw \
+  --bind ${LOGS_DIR}:/data/logs:rw \
   rtpipeline.sif \
   snakemake --cores $SLURM_CPUS_PER_TASK --use-conda --configfile /app/config.container.yaml
+
+echo "Pipeline completed at $(date)"
 ```
+
+**7. Advanced: Persistent TotalSegmentator Weights Cache**
+```bash
+# Create overlay for caching weights
+singularity overlay create --size 10240 totalseg_cache.img
+
+# Use overlay to persist weights across runs
+singularity exec --nv \
+  --overlay totalseg_cache.img \
+  --bind $(pwd)/Input:/data/input:ro \
+  --bind $(pwd)/Output:/data/output:rw \
+  rtpipeline.sif \
+  snakemake --cores all --use-conda --configfile /app/config.container.yaml
+```
+
+For comprehensive Singularity documentation, see [docs/DOCKER.md](docs/DOCKER.md).
 
 #### Jupyter Notebook (Optional)
 
