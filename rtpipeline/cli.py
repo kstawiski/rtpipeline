@@ -1159,13 +1159,30 @@ def main(argv: list[str] | None = None) -> int:
         if not selected_courses:
             _log_skip("QC")
         else:
-            for course in selected_courses:
+            # Parallel QC processing for better performance
+            def _run_qc(course):
+                """Run QC for a single course."""
                 try:
                     qc_dir = course.dirs.qc_reports
                     qc_dir.mkdir(parents=True, exist_ok=True)
                     generate_qc_report(course.dirs.root, qc_dir)
+                    return True
                 except Exception as exc:
                     logger.warning("QC stage failed for %s: %s", course.dirs.root, exc)
+                    return None
+
+            effective_workers = cfg.effective_workers()
+            logger.info("QC stage: using %d parallel workers", effective_workers)
+
+            run_tasks_with_adaptive_workers(
+                "QC",
+                selected_courses,
+                _run_qc,
+                max_workers=effective_workers,
+                logger=logging.getLogger(__name__),
+                show_progress=True,
+                task_timeout=args.task_timeout,
+            )
 
     return 0
 
