@@ -25,7 +25,14 @@ class QualityControlError(Exception):
 class DICOMValidator:
     """Validates DICOM files for consistency and integrity."""
 
-    def __init__(self, course_dir: Path):
+    def __init__(self, course_dir: Path, skip_structure_cropping: bool = False):
+        """Initialize validator.
+
+        Args:
+            course_dir: Path to course directory
+            skip_structure_cropping: If True, skip the expensive structure cropping check
+                                     (significantly faster but won't detect boundary issues)
+        """
         self.course_dir = course_dir
         self.dirs = build_course_dirs(course_dir)
         self.ct_dir = self.dirs.dicom_ct
@@ -33,6 +40,7 @@ class DICOMValidator:
         self.rd_path = course_dir / "RD.dcm"
         self.rs_path = course_dir / "RS.dcm"
         self.rs_auto_path = course_dir / "RS_auto.dcm"
+        self.skip_structure_cropping = skip_structure_cropping
 
     def validate_all(self) -> Dict[str, Any]:
         """Run all validation checks and return summary."""
@@ -60,8 +68,11 @@ class DICOMValidator:
             # Cross-modality consistency
             results["checks"]["consistency"] = self._check_consistency()
 
-            # Segmentation cropping detection
-            results["checks"]["structure_cropping"] = self._segmentation_cropping()
+            # Segmentation cropping detection (can be skipped for performance)
+            if not self.skip_structure_cropping:
+                results["checks"]["structure_cropping"] = self._segmentation_cropping()
+            else:
+                results["checks"]["structure_cropping"] = {"status": "SKIP", "reason": "skipped by configuration"}
 
             # Calculate overall status
             results["overall_status"] = self._calculate_overall_status(results["checks"])
@@ -233,6 +244,11 @@ class DICOMValidator:
         return consistency
 
     def _segmentation_cropping(self) -> Dict[str, Any]:
+        """Check for cropped structures with optimized processing.
+
+        This method checks if any ROI masks touch the image boundaries,
+        which indicates the structure may have been cropped by the CT scan field of view.
+        """
         info = {
             "status": "PASS",
             "structures": [],
@@ -247,7 +263,14 @@ class DICOMValidator:
             info["status"] = "SKIP"
             return info
 
+        # Quick check: verify CT files exist before processing
+        ct_files = list(self.ct_dir.glob("*.dcm"))
+        if not ct_files:
+            info["status"] = "SKIP"
+            return info
+
         def _evaluate(rs_path: Path, source: str) -> None:
+            """Evaluate cropping for a single structure set."""
             if not rs_path.exists():
                 return
             try:
@@ -258,16 +281,24 @@ class DICOMValidator:
             except Exception as exc:
                 info.setdefault("errors", []).append({"source": source, "error": str(exc)})
                 return
-            for roi_name in builder.get_roi_names():
+
+            # Process ROIs with early exit optimizations
+            roi_names = builder.get_roi_names()
+            for roi_name in roi_names:
                 try:
                     mask = builder.get_roi_mask_by_name(roi_name)
                 except Exception:
+                    # Skip ROIs that fail to load
                     continue
                 if mask is None:
+                    continue
+                # Optimization: skip empty masks early (avoids boundary checking)
+                if not np.any(mask):
                     continue
                 if mask_is_cropped(mask):
                     info["structures"].append({"source": source, "roi_name": roi_name})
 
+        # Evaluate both structure sets (manual and auto)
         _evaluate(self.rs_path, "manual")
         _evaluate(self.rs_auto_path, "auto")
 
@@ -320,9 +351,18 @@ def validate_segmentation_volumes(course_dir: Path) -> Dict[str, Any]:
     return validation
 
 
-def generate_qc_report(course_dir: Path, output_dir: Path) -> Path:
-    """Generate a comprehensive QC report for a course."""
-    validator = DICOMValidator(course_dir)
+def generate_qc_report(course_dir: Path, output_dir: Path, skip_structure_cropping: bool = False) -> Path:
+    """Generate a comprehensive QC report for a course.
+
+    Args:
+        course_dir: Path to the course directory
+        output_dir: Path where QC report will be saved
+        skip_structure_cropping: If True, skip expensive structure cropping check for better performance
+
+    Returns:
+        Path to the generated QC report
+    """
+    validator = DICOMValidator(course_dir, skip_structure_cropping=skip_structure_cropping)
     qc_results = validator.validate_all()
 
     # Add segmentation volume validation
