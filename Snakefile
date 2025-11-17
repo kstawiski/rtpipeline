@@ -48,13 +48,27 @@ def _rt_env():
     return env
 
 
+# Thread allocation strategy:
+# - SNAKEMAKE_THREADS: threads allocated from Snakemake (controls inter-course parallelism)
+# - WORKERS: parallel workers within each Python process (controls intra-course parallelism)
+# For I/O-bound tasks (DVH, radiomics, QC), we want:
+# - Low SNAKEMAKE_THREADS (e.g., 2) to allow many courses to run concurrently
+# - High WORKERS (e.g., cpu_count-1) so each course processes many ROIs in parallel
+
+DETECTED_CPUS = os.cpu_count() or 4
+
+# Snakemake thread allocation for I/O-bound tasks (DVH, radiomics, QC, organize)
+# Default: 2 threads per job to allow high course-level parallelism
+SNAKEMAKE_THREADS_IO_BOUND_CFG = config.get("snakemake_threads_io_bound", 2)
+SNAKEMAKE_THREADS_IO_BOUND = max(1, int(SNAKEMAKE_THREADS_IO_BOUND_CFG))
+
+# Worker count for parallel processing within each course
 WORKERS_CFG = config.get("workers", "auto")
 if isinstance(WORKERS_CFG, str) and WORKERS_CFG.lower() == "auto":
-    # Auto-detect: use CPU count - 2, minimum 4, maximum 32 for safety
-    detected_cpus = os.cpu_count() or 4
-    WORKERS = max(4, min(32, detected_cpus - 2))
+    # Auto-detect: use CPU count - 1 for maximum parallelism
+    WORKERS = max(1, DETECTED_CPUS - 1)
 else:
-    WORKERS = int(WORKERS_CFG)
+    WORKERS = max(1, int(WORKERS_CFG))
 
 def _coerce_int(value, default=None):
     if value is None:
@@ -284,12 +298,13 @@ checkpoint organize_courses:
     log:
         str(LOGS_DIR / "stage_organize.log")
     threads:
-        max(1, WORKERS)
+        SNAKEMAKE_THREADS_IO_BOUND
     conda:
         "envs/rtpipeline.yaml"
     run:
         import subprocess
-        worker_count = max(1, int(threads))
+        # Use WORKERS (not threads) for intra-course parallelism
+        worker_count = WORKERS
         manifest_path = Path(output.manifest)
         manifest_path.parent.mkdir(parents=True, exist_ok=True)
         LOGS_DIR.mkdir(parents=True, exist_ok=True)
@@ -394,13 +409,15 @@ rule segmentation_custom_models:
     log:
         str(LOGS_DIR / "segmentation_custom" / "{patient}_{course}.log")
     threads:
-        max(1, WORKERS)
+        SNAKEMAKE_THREADS_IO_BOUND
     resources:
         custom_seg_workers=1
     conda:
         "envs/rtpipeline.yaml"
     run:
         import subprocess
+        # Use WORKERS for parallel processing
+        worker_count = WORKERS
         sentinel_path = Path(output.sentinel)
         sentinel_path.parent.mkdir(parents=True, exist_ok=True)
         log_path = Path(log[0])
@@ -450,12 +467,13 @@ rule dvh_course:
     log:
         str(LOGS_DIR / "dvh" / "{patient}_{course}.log")
     threads:
-        max(1, WORKERS)
+        SNAKEMAKE_THREADS_IO_BOUND
     conda:
         "envs/rtpipeline.yaml"
     run:
         import subprocess
-        worker_count = max(1, int(threads))
+        # Use WORKERS (not threads) for parallel ROI processing
+        worker_count = WORKERS
         sentinel_path = Path(output.sentinel)
         sentinel_path.parent.mkdir(parents=True, exist_ok=True)
         log_path = Path(log[0])
@@ -489,12 +507,13 @@ rule radiomics_course:
     log:
         str(LOGS_DIR / "radiomics" / "{patient}_{course}.log")
     threads:
-        max(1, WORKERS)
+        SNAKEMAKE_THREADS_IO_BOUND
     conda:
         "envs/rtpipeline-radiomics.yaml"
     run:
         import subprocess
-        worker_count = max(1, int(threads))
+        # Use WORKERS (not threads) for parallel ROI processing
+        worker_count = WORKERS
         sentinel_path = Path(output.sentinel)
         sentinel_path.parent.mkdir(parents=True, exist_ok=True)
         log_path = Path(log[0])
@@ -541,12 +560,13 @@ rule qc_course:
     log:
         str(LOGS_DIR / "qc" / "{patient}_{course}.log")
     threads:
-        max(1, WORKERS)
+        SNAKEMAKE_THREADS_IO_BOUND
     conda:
         "envs/rtpipeline.yaml"
     run:
         import subprocess
-        worker_count = max(1, int(threads))
+        # Use WORKERS (not threads) for parallel processing
+        worker_count = WORKERS
         sentinel_path = Path(output.sentinel)
         sentinel_path.parent.mkdir(parents=True, exist_ok=True)
         log_path = Path(log[0])
@@ -577,7 +597,7 @@ rule radiomics_robustness_course:
     log:
         str(LOGS_DIR / "radiomics_robustness" / "{patient}_{course}.log")
     threads:
-        max(1, WORKERS)
+        SNAKEMAKE_THREADS_IO_BOUND
     conda:
         "envs/rtpipeline-radiomics.yaml"
     run:
