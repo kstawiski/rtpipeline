@@ -1,0 +1,161 @@
+# Example Pipeline Configuration with Optimized Parallelism Settings
+# ==================================================================
+#
+# PARALLELISM STRATEGY:
+# ---------------------
+# This pipeline uses a two-level parallelism architecture:
+#
+# 1. INTER-COURSE PARALLELISM (Snakemake level):
+#    - Controlled by `snakemake_threads_io_bound` parameter
+#    - How many courses can run concurrently
+#    - For I/O-bound tasks (DVH, radiomics, QC), use LOW values (e.g., 2)
+#    - This allows many courses to run at the same time
+#
+# 2. INTRA-COURSE PARALLELISM (Python worker level):
+#    - Controlled by `workers` parameter
+#    - How many ROIs are processed in parallel within each course
+#    - For I/O-bound tasks, use HIGH values (e.g., cpu_count - 1)
+#    - This makes each individual course process faster
+#
+# RECOMMENDED SETTINGS:
+# ---------------------
+# For a system with N cores:
+# - snakemake_threads_io_bound: 2 (allows N/2 courses to run concurrently)
+# - workers: "auto" or N-1 (each course uses N-1 workers for ROI processing)
+# - Snakemake --cores: N-1 (reserve 1 core for system)
+#
+# Example with 24 cores:
+# - snakemake_threads_io_bound: 2
+# - workers: "auto" (resolves to 23)
+# - Snakemake --cores 23
+# - Result: ~11 courses running concurrently, each using 23 workers for ROI processing
+#
+# SEGMENTATION (GPU-bound):
+# -------------------------
+# - Always runs 1 course at a time (GPU limitation)
+# - Uses segmentation.workers: 1 and resources constraint
+# - threads_per_worker: 8 allows CPU parallelism within TotalSegmentator
+
+# Input/Output directories
+dicom_root: "/projekty/Odbytnice/DICOM"
+output_dir: "/projekty/Odbytnice/DICOM_Procesed_v202511"
+logs_dir: "/projekty/Odbytnice/Logs_Snakemake"
+
+# =============================================================================
+# PARALLELISM CONFIGURATION
+# =============================================================================
+
+# Snakemake thread allocation for I/O-bound tasks (organize, DVH, radiomics, QC)
+# ------------------------------------------------------------------------------
+# This controls INTER-COURSE parallelism (how many courses run concurrently)
+# - Default: 2 threads per job
+# - Lower values allow MORE courses to run in parallel
+# - For 24-core system with --cores 23: 2 threads → ~11 concurrent courses
+snakemake_threads_io_bound: 2
+
+# Worker count for parallel processing within each course
+# --------------------------------------------------------
+# This controls INTRA-COURSE parallelism (how many ROIs processed in parallel)
+# - "auto": uses cpu_count - 1 (RECOMMENDED for maximum throughput)
+# - Number: explicit worker count
+# - For DVH with 100 ROIs and 23 workers: processes ~23 ROIs at a time
+workers: "auto"  # Recommended: leave as "auto" to use all cores except 1
+
+# =============================================================================
+# SEGMENTATION CONFIGURATION (GPU-bound)
+# =============================================================================
+
+segmentation:
+  # CRITICAL: Only 1 segmentation course at a time (GPU memory limited)
+  # This is enforced by Snakemake resources, not workers setting
+  workers: 1
+
+  # CPU threads allowed per TotalSegmentator invocation
+  # This enables CPU parallelism within the segmentation process
+  threads_per_worker: 8  # Adjust based on your GPU/CPU balance
+
+  force: false  # Set true to re-run segmentation even when outputs exist
+  fast: false
+  roi_subset: null
+  extra_models: []   # Optional list: ["lung_vessels", "body"]
+  temp_dir: null     # Optional scratch directory for intermediates
+
+# =============================================================================
+# CUSTOM MODELS CONFIGURATION (GPU-bound)
+# =============================================================================
+
+custom_models:
+  enabled: true
+  root: "custom_models"
+  models: []  # Leave empty to run all models, or specify: ["model1", "model2"]
+
+  # CRITICAL: GPU-intensive, run 1 course at a time
+  workers: 1
+
+  force: false  # Force re-run even if outputs exist
+  nnunet_predict: "nnUNet_predict"
+  retain_weights: true  # Keep extracted nnUNet caches between runs
+  conda_activate: null  # Override conda activation if needed
+
+# =============================================================================
+# RADIOMICS CONFIGURATION
+# =============================================================================
+
+radiomics:
+  sequential: false  # Use parallel processing (recommended)
+  params_file: "rtpipeline/radiomics_params.yaml"
+  mr_params_file: "rtpipeline/radiomics_params_mr.yaml"
+
+  # Limit CPU usage per radiomics job to prevent oversubscription
+  # With many concurrent courses, this prevents CPU thrashing
+  thread_limit: 4
+
+  skip_rois:
+    - body
+    - couchsurface
+    - couchinterior
+    - couchexterior
+    - bones
+    - m1
+    - m2
+
+  max_voxels: 1500000000  # 1.5 billion voxels max
+  min_voxels: 10
+
+# =============================================================================
+# AGGREGATION CONFIGURATION
+# =============================================================================
+
+aggregation:
+  threads: "auto"  # Use all available cores for I/O-bound aggregation
+
+# =============================================================================
+# ENVIRONMENT CONFIGURATION
+# =============================================================================
+
+environments:
+  main: "rtpipeline"                # NumPy 2.x for TotalSegmentator
+  radiomics: "rtpipeline-radiomics" # NumPy 1.x for PyRadiomics
+
+# Custom structures configuration
+custom_structures: "custom_structures_pelvic.yaml"
+
+# =============================================================================
+# USAGE EXAMPLE
+# =============================================================================
+#
+# Run the pipeline with parallelism settings:
+#
+#   snakemake --cores 23 --configfile config.yaml
+#
+# This will:
+# 1. Use 23 cores total (24-core system minus 1 for OS)
+# 2. Run ~11 DVH/radiomics courses concurrently (23 cores / 2 threads per job)
+# 3. Each course will process up to 23 ROIs in parallel
+# 4. Segmentation runs 1 course at a time (GPU limitation)
+#
+# Expected behavior:
+# - DVH for 100 ROIs: ~5-10 minutes per course (vs 3 hours sequential)
+# - Multiple courses run simultaneously
+# - GPU segmentation properly serialized
+#
