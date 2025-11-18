@@ -504,10 +504,10 @@ def radiomics_for_course(config: PipelineConfig, course_dir: Path, custom_struct
             logger.info("Radiomics sequential mode requested via RTPIPELINE_RADIOMICS_SEQUENTIAL")
         else:
             max_workers = config.effective_workers()
-            env_limit = int(os.environ.get('RTPIPELINE_RADIOMICS_MAX_WORKERS', '0') or 0)
+            env_limit = int(os.environ.get('RTPIPELINE_RADIOMICS_WORKERS', '0') or 0)
             if env_limit > 0:
-                max_workers = min(max_workers, env_limit)
-            max_workers = max(1, min(max_workers, 4))
+                max_workers = env_limit
+            max_workers = max(1, max_workers)
         logger.info("Running radiomics for %s with up to %d worker(s)", course_dir.name, max_workers)
         results = run_tasks_with_adaptive_workers(
             f"Radiomics CT ({course_dir.name})",
@@ -921,10 +921,10 @@ def run_radiomics(config: PipelineConfig, courses: List["object"], custom_struct
             logger.info("Using sequential course processing for radiomics (RTPIPELINE_RADIOMICS_SEQUENTIAL set)")
         else:
             max_course_workers = config.effective_workers()
-            env_limit = int(os.environ.get('RTPIPELINE_RADIOMICS_MAX_WORKERS', '0') or 0)
+            env_limit = int(os.environ.get('RTPIPELINE_RADIOMICS_WORKERS', '0') or 0)
             if env_limit > 0:
-                max_course_workers = min(max_course_workers, env_limit)
-            max_course_workers = max(1, min(max_course_workers, 4))
+                max_course_workers = env_limit
+            max_course_workers = max(1, max_course_workers)
             logger.info("Processing radiomics with up to %d course workers", max_course_workers)
 
     run_tasks_with_adaptive_workers(
