@@ -428,6 +428,7 @@ CUSTOM_SEG_SENTINEL_PATTERN = str(OUTPUT_DIR / "{patient}" / "{course}" / ".cust
 DVH_SENTINEL_PATTERN = str(OUTPUT_DIR / "{patient}" / "{course}" / ".dvh_done")
 RADIOMICS_SENTINEL_PATTERN = str(OUTPUT_DIR / "{patient}" / "{course}" / ".radiomics_done")
 RADIOMICS_ROBUSTNESS_SENTINEL_PATTERN = str(OUTPUT_DIR / "{patient}" / "{course}" / ".radiomics_robustness_done")
+CROP_CT_SENTINEL_PATTERN = str(OUTPUT_DIR / "{patient}" / "{course}" / ".crop_ct_done")
 QC_SENTINEL_PATTERN = str(OUTPUT_DIR / "{patient}" / "{course}" / ".qc_done")
 
 
@@ -634,11 +635,51 @@ rule segmentation_custom_models:
         sentinel_path.write_text("ok\n", encoding="utf-8")
 
 
-rule dvh_course:
+rule crop_ct_course:
     input:
         manifest=_manifest_input,
         segmentation=SEGMENTATION_SENTINEL_PATTERN,
         custom=CUSTOM_SEG_SENTINEL_PATTERN
+    output:
+        sentinel=CROP_CT_SENTINEL_PATTERN
+    log:
+        str(LOGS_DIR / "crop_ct" / "{patient}_{course}.log")
+    threads:
+        SNAKEMAKE_THREADS
+    conda:
+        "envs/rtpipeline.yaml"
+    run:
+        import subprocess
+        job_threads = max(1, threads)
+        sentinel_path = Path(output.sentinel)
+        sentinel_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path = Path(log[0])
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+
+        env = _rt_env()
+        cmd = [
+            sys.executable,
+            "-m",
+            "rtpipeline.cli",
+            "--dicom-root", str(DICOM_ROOT),
+            "--outdir", str(OUTPUT_DIR),
+            "--logs", str(LOGS_DIR),
+            "--stage", "crop_ct",
+            "--course-filter", f"{wildcards.patient}/{wildcards.course}",
+        ]
+        cmd.extend(_max_worker_args(job_threads))
+
+        with log_path.open("w") as logf:
+            subprocess.run(cmd, check=True, stdout=logf, stderr=subprocess.STDOUT, env=env)
+        sentinel_path.write_text("ok\n", encoding="utf-8")
+
+
+rule dvh_course:
+    input:
+        manifest=_manifest_input,
+        segmentation=SEGMENTATION_SENTINEL_PATTERN,
+        custom=CUSTOM_SEG_SENTINEL_PATTERN,
+        crop=CROP_CT_SENTINEL_PATTERN
     output:
         sentinel=DVH_SENTINEL_PATTERN
     log:
@@ -677,7 +718,8 @@ rule radiomics_course:
     input:
         manifest=_manifest_input,
         segmentation=SEGMENTATION_SENTINEL_PATTERN,
-        custom=CUSTOM_SEG_SENTINEL_PATTERN
+        custom=CUSTOM_SEG_SENTINEL_PATTERN,
+        crop=CROP_CT_SENTINEL_PATTERN
     output:
         sentinel=RADIOMICS_SENTINEL_PATTERN
     log:
@@ -727,7 +769,8 @@ rule radiomics_course:
 rule qc_course:
     input:
         manifest=_manifest_input,
-        segmentation=SEGMENTATION_SENTINEL_PATTERN
+        segmentation=SEGMENTATION_SENTINEL_PATTERN,
+        crop=CROP_CT_SENTINEL_PATTERN
     output:
         sentinel=QC_SENTINEL_PATTERN
     log:
