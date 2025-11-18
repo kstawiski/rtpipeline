@@ -10,7 +10,7 @@ dependencies:
   - SimpleITK
   - pip
   - pip:
-    - /projekty/rtpipeline/third_party/wheels/pyradiomics-3.0.1-cp310-cp310-linux_x86_64.whl
+    - ../third_party/wheels/pyradiomics-3.0.1-cp310-cp310-linux_x86_64.whl
     - xlsxwriter
     - pingouin
     - pyarrow
