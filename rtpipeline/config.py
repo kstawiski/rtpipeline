@@ -1,3 +1,4 @@
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -8,6 +9,7 @@ class PipelineConfig:
     dicom_root: Path
     output_root: Path
     logs_root: Path
+    max_workers_override: int | None = None
 
     # Course merge policy
     merge_criteria: str = "same_ct_study"  # one of: same_ct_study, frame_of_reference
@@ -44,9 +46,6 @@ class PipelineConfig:
     totalseg_fast: bool = False
     totalseg_roi_subset: str | None = None
     nnunet_predict_cmd: str = "nnUNetv2_predict"
-
-    # Concurrency
-    workers: int | None = None  # None => auto (cpu_count - 1)
 
     # Radiomics
     radiomics_params_file: Path | None = None
@@ -85,8 +84,19 @@ class PipelineConfig:
         self.logs_root.mkdir(parents=True, exist_ok=True)
 
     def effective_workers(self) -> int:
-        import os as _os
-        if self.workers and self.workers > 0:
-            return int(self.workers)
-        cpu = _os.cpu_count() or 2
-        return max(1, cpu - 1)
+        def _coerce(value: int | str | None) -> int | None:
+            if value is None:
+                return None
+            try:
+                ivalue = int(value)
+            except (TypeError, ValueError):
+                return None
+            return ivalue if ivalue > 0 else None
+
+        base = max(1, (os.cpu_count() or 2) - 1)
+        override = _coerce(self.max_workers_override)
+        if override is None:
+            override = _coerce(os.environ.get("RTPIPELINE_MAX_WORKERS"))
+        if override is not None:
+            base = max(1, min(base, override))
+        return base

@@ -259,20 +259,11 @@ class JobManager:
         # Merge with user config
         user_config = job.get('config', {})
 
-        # Workers configuration
-        config['workers'] = user_config.get('cores', 'all')
-        if config['workers'] != 'all':
-            try:
-                config['workers'] = int(config['workers'])
-            except (ValueError, TypeError):
-                config['workers'] = 'all'
-
         # Segmentation settings
         if 'segmentation' in user_config:
             config['segmentation'] = user_config['segmentation']
         else:
             config['segmentation'] = {
-                'workers': 2,
                 'fast': True
             }
 

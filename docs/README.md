@@ -110,8 +110,7 @@ rtpipeline/
 ├── internal/                          ← Development notes (internal use)
 │   ├── Agents.md                      ← AI agent prompts
 │   ├── IMPROVEMENTS.md                ← Improvement backlog
-│   ├── PROBLEMS.md                    ← Issue tracker
-│   └── OPTIMIZATION_SUMMARY.md        ← Optimization history
+│   └── PROBLEMS.md                    ← Issue tracker
 │
 ├── rtpipeline/                        ← Python package
 ├── envs/                              ← Conda environments

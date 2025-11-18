@@ -6,6 +6,9 @@ if pgrep -f "snakemake" >/dev/null; then
   exit 1
 fi
 
+# Ensure pip can reuse conda-provided numpy when building pyradiomics wheels.
+export PIP_NO_BUILD_ISOLATION=1
+
 # rm -rf Data_Snakemake Data_Snakemake_fallback _RESULTS Logs_Snakemake Logs_Snakemake_fallback .snakemake || true
 
 snakemake --unlock >/dev/null 2>&1 || true

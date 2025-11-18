@@ -1234,6 +1234,7 @@ snakemake \\
     --cores all \\
     --use-conda \\
     --configfile "\$CONFIG_FILE" \\
+    --rerun-triggers mtime input \\
     --rerun-incomplete \\
     --keep-going \\
     --printshellcmds
