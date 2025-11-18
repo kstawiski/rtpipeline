@@ -140,20 +140,20 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--custom-model-conda-activate", default=None, help="Override conda activation prefix for custom segmentation models")
     p.add_argument("--nnunet-predict", default="nnUNetv2_predict", help="nnUNetv2 prediction command (default: nnUNetv2_predict)")
     p.add_argument("--purge-custom-model-weights", action="store_true", help="Delete extracted nnUNet caches after each custom model run")
-    p.add_argument("--workers", type=int, default=None, help="Parallel workers for non-segmentation phases (default: auto)")
-    p.add_argument("--seg-workers", type=int, default=None, help="Maximum concurrent courses for TotalSegmentator (default: 1)")
+    p.add_argument("--workers", type=int, default=None, help="Parallel workers for all modules (default: cpu_count-1)")
+    p.add_argument("--seg-workers", type=int, default=None, help="Segmentation workers - keep at 1 for GPU safety (default: 1)")
     p.add_argument(
         "--seg-proc-threads",
         type=int,
         default=None,
-        help="CPU threads per TotalSegmentator invocation (<=0 to disable limit)",
+        help="OpenMP thread limit for TotalSegmentator (sets OMP_NUM_THREADS; default: no limit)",
     )
     p.add_argument("--seg-temp-dir", default=None, help="Optional scratch directory for TotalSegmentator intermediates (defaults to course directory)")
     p.add_argument(
         "--radiomics-proc-threads",
         type=int,
         default=None,
-        help="CPU threads per radiomics worker (<=0 to disable limit)",
+        help="OpenMP thread limit per radiomics worker (sets OMP_NUM_THREADS; default: no limit)",
     )
     p.add_argument(
         "--course-filter",
