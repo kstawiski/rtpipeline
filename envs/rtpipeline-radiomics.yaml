@@ -14,3 +14,8 @@ dependencies:
     - xlsxwriter
     - pingouin
     - pyarrow
+    - pydicom>=2.4.0
+    - rt-utils
+    - pyyaml
+    - openpyxl
+    - filelock
