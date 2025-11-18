@@ -154,7 +154,7 @@ Checks:
 
 1. **Explicit Command-Line Arguments**
    ```
-   --workers N                    # Overall parallelism
+   --max-workers N                    # Overall parallelism
    --seg-workers N                # TotalSegmentator parallelism
    --seg-proc-threads N           # CPU threads per TotalSegmentator
    --radiomics-proc-threads N     # CPU threads per radiomics worker
@@ -300,7 +300,7 @@ Single-threaded quality control report generation
 **Environment Variables:**
 ```python
 RTPIPELINE_USE_PARALLEL_RADIOMICS = '1'  # Enable parallel mode
-RTPIPELINE_RADIOMICS_WORKERS = 'N'       # Override worker count
+RTPIPELINE_MAX_WORKERS = 'N'             # Override worker count globally
 RTPIPELINE_RADIOMICS_THREAD_LIMIT = 'N'  # Thread limit per worker
 RTPIPELINE_RADIOMICS_SEQUENTIAL = '1'    # Force sequential (legacy)
 ```
@@ -398,8 +398,8 @@ _MEMORY_PATTERNS = (
 
 ### Absolute Defaults (Hardcoded)
 ```python
-workers:                           CPU count - 1
-segmentation_workers:              1 (GPU constraint)
+workers:                           min(--cores, CPU count) - 1  (auto)
+segmentation_workers:              auto (GPU sequential, CPU inherits workers)  # override via config
 segmentation_thread_limit:         None (no limit per worker)
 radiomics_thread_limit:           4 (if config specifies)
 radiomics max_workers:            _calculate_optimal_workers()
@@ -440,7 +440,7 @@ rtpipeline \
   --dicom-root data/ \
   --outdir output/ \
   --seg-workers 4 \
-  --workers 8 \
+  --max-workers 8 \
   --totalseg-device gpu
 ```
 
@@ -449,7 +449,7 @@ rtpipeline \
 rtpipeline \
   --dicom-root data/ \
   --outdir output/ \
-  --workers 2 \
+  --max-workers 2 \
   --seg-workers 1 \
   --seg-proc-threads 4 \
   --radiomics-proc-threads 2 \
@@ -462,7 +462,7 @@ rtpipeline \
   --dicom-root data/ \
   --outdir output/ \
   --totalseg-device cpu \
-  --workers 8 \
+  --max-workers 8 \
   --seg-workers 2
 ```
 
@@ -472,7 +472,7 @@ rtpipeline \
 
 | Component | Type | Location | Key Parameters |
 |-----------|------|----------|-----------------|
-| **Main Orchestrator** | CLI | cli.py | --workers, --seg-workers |
+| **Main Orchestrator** | CLI | cli.py | --max-workers, --seg-workers |
 | **Inter-course Parallelism** | ThreadPoolExecutor | utils.py:323 | max_workers, min_workers |
 | **Radiomics Parallelism** | ProcessPoolExecutor | radiomics_parallel.py:311 | max_workers, thread_limit |
 | **GPU Segmentation** | External (TotalSegmentator) | segmentation.py:243 | --totalseg-device |
@@ -502,4 +502,3 @@ rtpipeline \
 - **custom_structures_*.yaml** - Structure definitions
 
 ---
-

@@ -504,10 +504,10 @@ def radiomics_for_course(config: PipelineConfig, course_dir: Path, custom_struct
             logger.info("Radiomics sequential mode requested via RTPIPELINE_RADIOMICS_SEQUENTIAL")
         else:
             max_workers = config.effective_workers()
-            env_limit = int(os.environ.get('RTPIPELINE_RADIOMICS_MAX_WORKERS', '0') or 0)
+            env_limit = int(os.environ.get('RTPIPELINE_MAX_WORKERS', '0') or 0)
             if env_limit > 0:
                 max_workers = min(max_workers, env_limit)
-            max_workers = max(1, min(max_workers, 4))
+            max_workers = max(1, max_workers)
         logger.info("Running radiomics for %s with up to %d worker(s)", course_dir.name, max_workers)
         results = run_tasks_with_adaptive_workers(
             f"Radiomics CT ({course_dir.name})",
@@ -901,16 +901,27 @@ def run_radiomics(config: PipelineConfig, courses: List["object"], custom_struct
 
     # Determine if we should use cropped volumes
     use_cropped = getattr(config, 'ct_cropping_use_for_radiomics', True)
+    env_course_limit = int(os.environ.get('RTPIPELINE_MAX_WORKERS', '0') or 0)
 
     if use_parallel_impl:
         logger.info("Using enhanced parallel radiomics implementation")
+
+        per_course_worker_cap = config.effective_workers()
+        if env_course_limit > 0:
+            per_course_worker_cap = min(per_course_worker_cap, env_course_limit)
+
         # Use the new parallel implementation for each course
         def _parallel_radiomics_wrapper(course):
-            return parallel_radiomics_for_course(config, course.dirs.root, custom_structures_config, use_cropped=use_cropped)
+            return parallel_radiomics_for_course(
+                config,
+                course.dirs.root,
+                custom_structures_config,
+                max_workers=per_course_worker_cap,
+                use_cropped=use_cropped,
+            )
 
         radiomics_func = _parallel_radiomics_wrapper
-        # Reduce course workers when using internal parallelization
-        max_course_workers = max(1, min(2, len(courses)))
+        max_course_workers = per_course_worker_cap
     else:
         # Use traditional implementation
         radiomics_func = lambda course: radiomics_for_course(config, course.dirs.root, custom_structures_config, use_cropped=use_cropped)
@@ -921,11 +932,12 @@ def run_radiomics(config: PipelineConfig, courses: List["object"], custom_struct
             logger.info("Using sequential course processing for radiomics (RTPIPELINE_RADIOMICS_SEQUENTIAL set)")
         else:
             max_course_workers = config.effective_workers()
-            env_limit = int(os.environ.get('RTPIPELINE_RADIOMICS_MAX_WORKERS', '0') or 0)
-            if env_limit > 0:
-                max_course_workers = min(max_course_workers, env_limit)
-            max_course_workers = max(1, min(max_course_workers, 4))
-            logger.info("Processing radiomics with up to %d course workers", max_course_workers)
+            max_course_workers = max(1, max_course_workers)
+
+    if env_course_limit > 0:
+        max_course_workers = min(max_course_workers, env_course_limit)
+    max_course_workers = max(1, max_course_workers)
+    logger.info("Processing radiomics with up to %d course workers", max_course_workers)
 
     run_tasks_with_adaptive_workers(
         "Radiomics (CT courses)",
