@@ -1085,6 +1085,7 @@
                     { name: 'Upload', key: 'uploaded', icon: '📁' },
                     { name: 'Organize', key: 'organizing', icon: '📋' },
                     { name: 'Segment', key: 'segmentation', icon: '🔬' },
+                    { name: 'Crop', key: 'cropping', icon: '✂️' },
                     { name: 'DVH', key: 'dvh', icon: '📊' },
                     { name: 'Radiomics', key: 'radiomics', icon: '🧬' },
                     { name: 'Aggregate', key: 'aggregating', icon: '📦' },
@@ -1134,6 +1135,9 @@
                             ` : ''}
 
                             ${job.status === 'completed' ? `
+                                <button class="btn btn-secondary" onclick="window.open('/api/jobs/${job.job_id}/report/pipeline_report.html', '_blank')">
+                                    📊 View Report
+                                </button>
                                 <button class="btn btn-secondary" onclick="downloadResults('${job.job_id}')">
                                     📥 Download Results
                                 </button>
