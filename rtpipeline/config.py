@@ -76,7 +76,7 @@ class PipelineConfig:
     custom_models_retain_weights: bool = True
 
     # Radiomics robustness analysis
-    radiomics_robustness_enabled: bool = False
+    radiomics_robustness_enabled: bool = True
     radiomics_robustness_config: dict = field(default_factory=dict)
 
     def ensure_dirs(self) -> None:

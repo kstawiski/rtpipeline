@@ -600,7 +600,7 @@ ct_cropping:
 - **Coordinate system**: Handles all DICOM orientation conventions
 - **Error handling**: Graceful degradation if landmarks not found
 
-See `SYSTEMATIC_CT_CROPPING.md` for complete technical documentation.
+See [docs/SYSTEMATIC_CT_CROPPING.md](docs/SYSTEMATIC_CT_CROPPING.md) for complete technical documentation.
 
 ---
 
@@ -658,6 +658,7 @@ The script rewrites patient/course identifiers, anonymises DICOM headers, update
 * **[docs/custom_models.md](docs/custom_models.md)** – nnUNet configuration schema and examples
 * **[docs/pipeline_report.md](docs/pipeline_report.md)** – Pipeline capabilities and feature summary
 * **[docs/Guide to Results Interpretation.md](docs/Guide%20to%20Results%20Interpretation.md)** – Interpreting outputs
+* **[docs/SYSTEMATIC_CT_CROPPING.md](docs/SYSTEMATIC_CT_CROPPING.md)** – Systematic anatomical cropping guide
 * **[docs/qc_cropping_audit.md](docs/qc_cropping_audit.md)** – CT cropping quality control
 
 ### Quick Links by Task

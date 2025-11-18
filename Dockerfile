@@ -2,13 +2,43 @@
 # Compatible with Docker and Singularity
 # Supports both CPU and GPU execution
 
-FROM condaforge/mambaforge:latest
+# Stage 1: Builder
+FROM condaforge/mambaforge:24.3.0-0 AS builder
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    git \
+    wget \
+    unzip \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install dcm2niix
+RUN wget -q https://github.com/rordenlab/dcm2niix/releases/download/v1.0.20230411/dcm2niix_lnx.zip \
+    && unzip dcm2niix_lnx.zip -d /usr/local/bin/ \
+    && chmod +x /usr/local/bin/dcm2niix \
+    && rm dcm2niix_lnx.zip
+
+# Create app directory
+WORKDIR /app
+
+# Copy environment files first for better layer caching
+COPY envs/ /app/envs/
+
+# Create conda environments
+RUN mamba env create -f /app/envs/rtpipeline.yaml && \
+    mamba env create -f /app/envs/rtpipeline-radiomics.yaml && \
+    mamba env create -f /app/envs/rtpipeline-custom-models.yaml && \
+    mamba clean -afy
+
+# Stage 2: Runtime
+FROM condaforge/mambaforge:24.3.0-0
 
 LABEL maintainer="kstawiski"
 LABEL description="DICOM-RT pipeline with TotalSegmentator, nnUNet, and Snakemake"
-LABEL version="1.0"
+LABEL version="1.1"
 
-# Set environment variables
 ENV DEBIAN_FRONTEND=noninteractive \
     LANG=C.UTF-8 \
     LC_ALL=C.UTF-8 \
@@ -16,13 +46,9 @@ ENV DEBIAN_FRONTEND=noninteractive \
     CONDA_DIR=/opt/conda \
     PATH=/opt/conda/bin:$PATH
 
-# Install system dependencies including tini for proper process management
+# Install runtime dependencies including tini and GL libraries
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    git \
-    wget \
-    curl \
-    ca-certificates \
+    tini \
     libgl1-mesa-glx \
     libglib2.0-0 \
     libsm6 \
@@ -31,68 +57,60 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libgomp1 \
     libglu1-mesa \
     pigz \
-    unzip \
-    tini \
+    curl \
+    procps \
     && rm -rf /var/lib/apt/lists/*
 
-# Use tini as init system for proper signal handling and zombie process reaping
-# Critical for parallel processing and timeout mechanisms
+# Use tini as init system
 ENTRYPOINT ["/usr/bin/tini", "--"]
 
-# Install dcm2niix (required for DICOM to NIfTI conversion)
-RUN wget -q https://github.com/rordenlab/dcm2niix/releases/download/v1.0.20230411/dcm2niix_lnx.zip \
-    && unzip dcm2niix_lnx.zip -d /usr/local/bin/ \
-    && chmod +x /usr/local/bin/dcm2niix \
-    && rm dcm2niix_lnx.zip
+# Copy dcm2niix from builder
+COPY --from=builder /usr/local/bin/dcm2niix /usr/local/bin/dcm2niix
 
-# Configure conda with strict channel priority
+# Configure conda
 RUN conda config --set channel_priority strict && \
     conda config --add channels conda-forge && \
     conda config --add channels bioconda && \
     conda config --add channels defaults
 
 # Install Snakemake in base environment
-RUN mamba install -y -c conda-forge -c bioconda \
-    snakemake>=7.0 \
-    && mamba clean -afy
+RUN mamba install -y -c conda-forge -c bioconda snakemake>=7.0 && mamba clean -afy
 
-# Create app directory
-WORKDIR /app
+# Copy conda environments from builder
+COPY --from=builder /opt/conda/envs /opt/conda/envs
 
-# Copy environment files first for better layer caching
-COPY envs/ /app/envs/
-COPY .condarc /root/.condarc
+# Create non-root user
+RUN groupadd -r rtpipeline && \
+    useradd -r -g rtpipeline -u 1000 -m rtpipeline
 
-# Create conda environments (Snakemake will activate them as needed)
-RUN mamba env create -f /app/envs/rtpipeline.yaml && \
-    mamba env create -f /app/envs/rtpipeline-radiomics.yaml && \
-    mamba env create -f /app/envs/rtpipeline-custom-models.yaml && \
-    mamba clean -afy
-
-# Copy project files
-COPY . /app/
-
-# Install rtpipeline package in base and rtpipeline environments
-RUN pip install -e . && \
-    /opt/conda/envs/rtpipeline/bin/pip install -e .
-
-# Install Web UI dependencies
-RUN pip install -r /app/webui/requirements.txt
-
-# Install psutil for better CPU detection in containers
-RUN pip install psutil && \
-    /opt/conda/envs/rtpipeline/bin/pip install psutil
-
-# Create professional directory structure
+# Create professional directory structure with correct permissions
 RUN mkdir -p \
     /data/input \
     /data/output \
     /data/logs \
     /data/models \
     /data/uploads \
-    /tmp/cache
+    /tmp/cache \
+    /app && \
+    chown -R rtpipeline:rtpipeline /data /tmp/cache /app
 
-# Create container-specific config that uses proper paths
+WORKDIR /app
+
+# Copy project files
+COPY --chown=rtpipeline:rtpipeline . /app/
+COPY --chown=rtpipeline:rtpipeline .condarc /home/rtpipeline/.condarc
+
+# Install rtpipeline package in base and rtpipeline environments
+# We use 'pip install -e .' to allow read-only mounting of code if needed,
+# but in this container image we copy the code, so we install it.
+RUN pip install -e . && \
+    /opt/conda/envs/rtpipeline/bin/pip install -e . && \
+    /opt/conda/envs/rtpipeline/bin/pip install psutil
+
+# Install Web UI dependencies
+RUN pip install -r /app/webui/requirements.txt
+
+# Create container-specific config
 RUN cat > /app/config.container.yaml << 'EOF'
 # Container-optimized configuration for rtpipeline
 # This config uses professional container paths
@@ -141,7 +159,7 @@ radiomics:
 
 # Radiomics robustness analysis
 radiomics_robustness:
-  enabled: false
+  enabled: true
   modes:
     - segmentation_perturbation
   segmentation_perturbation:
@@ -198,22 +216,25 @@ ct_cropping:
   keep_original: true
 EOF
 
-# Set working directory
-WORKDIR /app
+RUN chown rtpipeline:rtpipeline /app/config.container.yaml
 
 # Environment variables for runtime
 ENV SNAKEMAKE_OUTPUT_CACHE="" \
-    TMPDIR=/tmp \
-    HOME=/root \
+    TMPDIR=/tmp/cache \
+    HOME=/home/rtpipeline \
     NUMBA_CACHE_DIR=/tmp/cache \
     MPLCONFIGDIR=/tmp/cache \
-    TOTALSEG_WEIGHTS_PATH=/root/.totalsegmentator/nnunet/results \
+    TOTALSEG_WEIGHTS_PATH=/home/rtpipeline/.totalsegmentator/nnunet/results \
     TOTALSEG_TIMEOUT=3600 \
     DCM2NIIX_TIMEOUT=300 \
     RTPIPELINE_RADIOMICS_TASK_TIMEOUT=600
 
 # Pre-create TotalSegmentator weights directory to allow host mounts/caching
-RUN mkdir -p /root/.totalsegmentator/nnunet/results
+RUN mkdir -p /home/rtpipeline/.totalsegmentator/nnunet/results && \
+    chown -R rtpipeline:rtpipeline /home/rtpipeline/.totalsegmentator
+
+# Switch to non-root user
+USER rtpipeline
 
 # Expose ports
 EXPOSE 8888 8080
@@ -222,8 +243,8 @@ EXPOSE 8888 8080
 CMD ["/bin/bash"]
 
 # Health check
-HEALTHCHECK --interval=300s --timeout=30s --start-period=120s --retries=3 \
-    CMD conda info && python -c "import rtpipeline" || exit 1
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost:8080/health || exit 1
 
 # Singularity-specific labels
 LABEL org.label-schema.build-date=$BUILD_DATE \
