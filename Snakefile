@@ -9,6 +9,27 @@ configfile: "config.yaml"
 
 ROOT_DIR = Path.cwd()
 
+CPU_COUNT = os.cpu_count() or 2
+try:
+    _workflow_cores = getattr(workflow, "cores", None)
+except NameError:
+    _workflow_cores = None
+if _workflow_cores in (None, "all"):
+    WORKFLOW_CORES = CPU_COUNT
+else:
+    try:
+        WORKFLOW_CORES = int(_workflow_cores)
+    except Exception:
+        WORKFLOW_CORES = CPU_COUNT
+WORKFLOW_CORES = max(1, min(WORKFLOW_CORES, CPU_COUNT))
+def _coerce_positive_int(value):
+    if value in (None, "", "auto"):
+        return None
+    try:
+        ivalue = int(value)
+    except (TypeError, ValueError):
+        return None
+    return ivalue if ivalue > 0 else None
 
 def _ensure_writable_dir(candidate: Path, fallback_name: str) -> Path:
     fallback = ROOT_DIR / fallback_name
@@ -47,14 +68,9 @@ def _rt_env():
         env["PYTHONPATH"] = repo_path
     return env
 
+# Ensure pip build isolation is disabled so packages like pyradiomics can reuse the conda-provided numpy.
+os.environ.setdefault("PIP_NO_BUILD_ISOLATION", "1")
 
-WORKERS_CFG = config.get("workers", "auto")
-if isinstance(WORKERS_CFG, str) and WORKERS_CFG.lower() == "auto":
-    # Auto-detect: use CPU count - 2, minimum 4, maximum 32 for safety
-    detected_cpus = os.cpu_count() or 4
-    WORKERS = max(4, min(32, detected_cpus - 2))
-else:
-    WORKERS = int(WORKERS_CFG)
 
 def _coerce_int(value, default=None):
     if value is None:
@@ -64,7 +80,53 @@ def _coerce_int(value, default=None):
     except Exception:
         return default
 
-SEG_CONFIG = config.get("segmentation", {}) or {}
+SCHEDULER_CONFIG = config.get("scheduler", {})
+
+_reserved_cfg = _coerce_positive_int(SCHEDULER_CONFIG.get("reserved_cores"))
+if _reserved_cfg is None:
+    RESERVED_CORES = 1
+else:
+    RESERVED_CORES = max(0, _reserved_cfg)
+RESERVED_CORES = min(RESERVED_CORES, max(0, WORKFLOW_CORES - 1))
+AUTO_WORKER_BUDGET = max(1, WORKFLOW_CORES - RESERVED_CORES)
+
+config_max_workers = _coerce_positive_int(config.get("max_workers"))
+env_max_workers = _coerce_positive_int(os.environ.get("RTPIPELINE_MAX_WORKERS"))
+requested_max_workers = config_max_workers or env_max_workers
+
+WORKER_BUDGET = AUTO_WORKER_BUDGET
+if requested_max_workers is not None:
+    WORKER_BUDGET = max(1, min(WORKFLOW_CORES, requested_max_workers))
+
+if "workers" in config or "snakemake_job_threads" in config:
+    sys.stderr.write(
+        "[rtpipeline] Warning: 'workers' and 'snakemake_job_threads' config keys are deprecated. "
+        "Parallelism now follows 'snakemake --cores N' (uses N-1). "
+        "Use 'max_workers' if you need to cap concurrency.\n"
+    )
+
+SNAKEMAKE_THREADS = WORKER_BUDGET
+
+
+def _stage_thread_target(key: str, default: int) -> int:
+    value = _coerce_positive_int(SCHEDULER_CONFIG.get(key))
+    if value is not None:
+        target = value
+    else:
+        target = default
+    return max(1, min(SNAKEMAKE_THREADS, target))
+
+
+def _max_worker_args(count: int) -> list[str]:
+    return ["--max-workers", str(max(1, count))]
+
+
+DVH_RULE_THREADS = _stage_thread_target("dvh_threads_per_job", 4)
+RAD_RULE_THREADS = _stage_thread_target("radiomics_threads_per_job", 6)
+QC_RULE_THREADS = _stage_thread_target("qc_threads_per_job", 2)
+PRIORITIZE_SHORT_COURSES = bool(SCHEDULER_CONFIG.get("prioritize_short_courses", True))
+
+SEG_CONFIG = config.get("segmentation", {})
 SEG_EXTRA_MODELS = SEG_CONFIG.get("extra_models") or []
 if isinstance(SEG_EXTRA_MODELS, str):
     SEG_EXTRA_MODELS = [m.strip() for m in SEG_EXTRA_MODELS.replace(",", " ").split() if m.strip()]
@@ -78,12 +140,21 @@ elif _seg_subset:
     SEG_ROI_SUBSET = ",".join(str(x) for x in _seg_subset)
 else:
     SEG_ROI_SUBSET = None
-SEG_MAX_WORKERS = _coerce_int(SEG_CONFIG.get("workers") or SEG_CONFIG.get("max_workers"), 1)
+_seg_workers_raw = SEG_CONFIG.get("workers")
+if _seg_workers_raw is None:
+    _seg_workers_raw = SEG_CONFIG.get("max_workers")
+if isinstance(_seg_workers_raw, str):
+    seg_token = _seg_workers_raw.strip().lower()
+    if seg_token in {"", "auto"}:
+        SEG_MAX_WORKERS = None
+    elif seg_token == "all":
+        SEG_MAX_WORKERS = WORKER_BUDGET
+    else:
+        SEG_MAX_WORKERS = _coerce_int(_seg_workers_raw, None)
+else:
+    SEG_MAX_WORKERS = _coerce_int(_seg_workers_raw, None)
 if SEG_MAX_WORKERS is not None and SEG_MAX_WORKERS < 1:
     SEG_MAX_WORKERS = 1
-SEG_THREADS_PER_WORKER = _coerce_int(SEG_CONFIG.get("threads_per_worker"), None)
-if SEG_THREADS_PER_WORKER is not None and SEG_THREADS_PER_WORKER < 1:
-    SEG_THREADS_PER_WORKER = 1
 SEG_FORCE_SEGMENTATION = bool(SEG_CONFIG.get("force", False))
 SEG_DEVICE = str(SEG_CONFIG.get("device") or "gpu")
 SEG_FORCE_SPLIT = bool(SEG_CONFIG.get("force_split", True))
@@ -104,7 +175,7 @@ if _seg_tmp_dir:
 else:
     SEG_TEMP_DIR = ""
 
-CUSTOM_MODELS_CONFIG = config.get("custom_models", {}) or {}
+CUSTOM_MODELS_CONFIG = config.get("custom_models", {})
 CUSTOM_MODELS_ENABLED = bool(CUSTOM_MODELS_CONFIG.get("enabled", True))
 _custom_root = CUSTOM_MODELS_CONFIG.get("root")
 if _custom_root:
@@ -121,18 +192,27 @@ if isinstance(_custom_models_raw, str):
 else:
     CUSTOM_MODELS_SELECTED = [str(item).strip() for item in _custom_models_raw if str(item).strip()]
 CUSTOM_MODELS_FORCE = bool(CUSTOM_MODELS_CONFIG.get("force", False))
-CUSTOM_MODELS_WORKERS = _coerce_int(CUSTOM_MODELS_CONFIG.get("workers") or CUSTOM_MODELS_CONFIG.get("max_workers"), 1)
+_custom_workers_raw = CUSTOM_MODELS_CONFIG.get("workers")
+if _custom_workers_raw is None:
+    _custom_workers_raw = CUSTOM_MODELS_CONFIG.get("max_workers")
+if isinstance(_custom_workers_raw, str):
+    custom_token = _custom_workers_raw.strip().lower()
+    if custom_token in {"", "auto"}:
+        CUSTOM_MODELS_WORKERS = None
+    elif custom_token == "all":
+        CUSTOM_MODELS_WORKERS = WORKER_BUDGET
+    else:
+        CUSTOM_MODELS_WORKERS = _coerce_int(_custom_workers_raw, None)
+else:
+    CUSTOM_MODELS_WORKERS = _coerce_int(_custom_workers_raw, None)
 if CUSTOM_MODELS_WORKERS is not None and CUSTOM_MODELS_WORKERS < 1:
     CUSTOM_MODELS_WORKERS = 1
 CUSTOM_MODELS_PREDICT = str(CUSTOM_MODELS_CONFIG.get("nnunet_predict") or "nnUNetv2_predict")
 CUSTOM_MODELS_CONDA = CUSTOM_MODELS_CONFIG.get("conda_activate")
 CUSTOM_MODELS_RETAIN = bool(CUSTOM_MODELS_CONFIG.get("retain_weights", True))
 
-RADIOMICS_CONFIG = config.get("radiomics", {}) or {}
+RADIOMICS_CONFIG = config.get("radiomics", {})
 RADIOMICS_SEQUENTIAL = bool(RADIOMICS_CONFIG.get("sequential", False))
-RADIOMICS_THREAD_LIMIT = _coerce_int(RADIOMICS_CONFIG.get("thread_limit"), None)
-if RADIOMICS_THREAD_LIMIT is not None and RADIOMICS_THREAD_LIMIT < 1:
-    RADIOMICS_THREAD_LIMIT = 1
 _radiomics_params = RADIOMICS_CONFIG.get("params_file")
 if _radiomics_params:
     params_path = Path(_radiomics_params)
@@ -175,7 +255,7 @@ else:
     default_pelvic = ROOT_DIR / "custom_structures_pelvic.yaml"
     CUSTOM_STRUCTURES_CONFIG = str(default_pelvic.resolve()) if default_pelvic.exists() else ""
 
-AGGREGATION_CONFIG = config.get("aggregation", {}) or {}
+AGGREGATION_CONFIG = config.get("aggregation", {})
 _agg_threads_raw = AGGREGATION_CONFIG.get("threads")
 if isinstance(_agg_threads_raw, str) and _agg_threads_raw.lower() == "auto":
     # Auto: use all CPUs for aggregation (I/O bound)
@@ -185,7 +265,12 @@ else:
 if AGGREGATION_THREADS is not None and AGGREGATION_THREADS < 1:
     AGGREGATION_THREADS = 1
 
-ROBUSTNESS_CONFIG = config.get("radiomics_robustness", {}) or {}
+if AGGREGATION_THREADS is not None:
+    AGG_THREADS_RESERVED = max(1, min(SNAKEMAKE_THREADS, AGGREGATION_THREADS))
+else:
+    AGG_THREADS_RESERVED = SNAKEMAKE_THREADS
+
+ROBUSTNESS_CONFIG = config.get("radiomics_robustness", {})
 ROBUSTNESS_ENABLED = bool(ROBUSTNESS_CONFIG.get("enabled", False))
 
 COURSE_META_DIR = OUTPUT_DIR / "_COURSES"
@@ -203,8 +288,59 @@ AGG_OUTPUTS = {
 if ROBUSTNESS_ENABLED:
     AGG_OUTPUTS["radiomics_robustness"] = RESULTS_DIR / "radiomics_robustness_summary.xlsx"
 
-SEG_WORKER_POOL = SEG_MAX_WORKERS if SEG_MAX_WORKERS is not None else max(1, WORKERS)
-CUSTOM_SEG_WORKER_POOL = CUSTOM_MODELS_WORKERS if CUSTOM_MODELS_WORKERS is not None else 1
+# Snakemake resource pool for segmentation jobs: serialize GPU by default, allow fan-out when safe
+def _detect_gpu_count() -> int:
+    """Detect number of available GPUs."""
+    try:
+        import torch
+        if torch.cuda.is_available():
+            return torch.cuda.device_count()
+    except ImportError:
+        pass
+
+    # Fallback: check CUDA_VISIBLE_DEVICES
+    cuda_devices = os.environ.get('CUDA_VISIBLE_DEVICES', '')
+    if cuda_devices:
+        if cuda_devices.lower() == 'all':
+             pass
+        else:
+            return len(cuda_devices.split(','))
+
+    # Fallback: nvidia-smi
+    try:
+        import subprocess
+        result = subprocess.run(
+            ['nvidia-smi', '--list-gpus'],
+            capture_output=True, text=True, timeout=5
+        )
+        if result.returncode == 0:
+            return len(result.stdout.strip().split('\n'))
+    except Exception:
+        pass
+    return 0
+
+_seg_device_token = SEG_DEVICE.strip().lower()
+if SEG_MAX_WORKERS is not None:
+    SEG_WORKER_POOL = max(1, SEG_MAX_WORKERS)
+elif _seg_device_token in {"gpu", "cuda", "mps"}:
+    gpu_count = _detect_gpu_count()
+    if gpu_count > 0:
+        SEG_WORKER_POOL = gpu_count
+    else:
+        SEG_WORKER_POOL = 1
+else:
+    # CPU mode: conservative default to avoid OOM (TotalSegmentator is RAM heavy)
+    # Allow using up to 25% of cores/workers concurrently
+    SEG_WORKER_POOL = max(1, WORKER_BUDGET // 4)
+
+# Custom models inherit same auto logic: user setting > 1 on GPU/MPS > WORKER_BUDGET on CPU
+if CUSTOM_MODELS_WORKERS is not None:
+    CUSTOM_SEG_WORKER_POOL = max(1, CUSTOM_MODELS_WORKERS)
+elif _seg_device_token in {"gpu", "cuda", "mps"}:
+    CUSTOM_SEG_WORKER_POOL = 1
+else:
+    CUSTOM_SEG_WORKER_POOL = max(1, WORKER_BUDGET)
+
 workflow.global_resources.update(
     {
         "seg_workers": max(1, SEG_WORKER_POOL),
@@ -250,7 +386,14 @@ def _load_course_records() -> list[dict[str, str]]:
         course = str(entry.get("course") or "").strip()
         if not patient or not course:
             continue
-        records.append({"patient": patient, "course": course})
+        records.append(
+            {
+                "patient": patient,
+                "course": course,
+                "path": str(entry.get("path") or "").strip(),
+                "complexity": int(entry.get("complexity") or 0),
+            }
+        )
     return records
 
 def _per_course_sentinels(suffix: str):
@@ -264,12 +407,28 @@ def _per_course_sentinels(suffix: str):
 def _manifest_input(wildcards):
     return str(_manifest_path())
 
+
+def _estimate_course_complexity(course_path: Path) -> int:
+    dicom_root = course_path / "DICOM"
+    search_root = dicom_root if dicom_root.exists() else course_path
+    count = 0
+    for root, _, files in os.walk(search_root):
+        for name in files:
+            suffix = name.lower()
+            if suffix.endswith(".dcm") or suffix.endswith(".ima"):
+                count += 1
+    if count == 0:
+        for root, _, files in os.walk(course_path):
+            count += len(files)
+    return max(1, count)
+
 ORGANIZED_SENTINEL_PATTERN = str(OUTPUT_DIR / "{patient}" / "{course}" / ".organized")
 SEGMENTATION_SENTINEL_PATTERN = str(OUTPUT_DIR / "{patient}" / "{course}" / ".segmentation_done")
 CUSTOM_SEG_SENTINEL_PATTERN = str(OUTPUT_DIR / "{patient}" / "{course}" / ".custom_models_done")
 DVH_SENTINEL_PATTERN = str(OUTPUT_DIR / "{patient}" / "{course}" / ".dvh_done")
 RADIOMICS_SENTINEL_PATTERN = str(OUTPUT_DIR / "{patient}" / "{course}" / ".radiomics_done")
 RADIOMICS_ROBUSTNESS_SENTINEL_PATTERN = str(OUTPUT_DIR / "{patient}" / "{course}" / ".radiomics_robustness_done")
+CROP_CT_SENTINEL_PATTERN = str(OUTPUT_DIR / "{patient}" / "{course}" / ".crop_ct_done")
 QC_SENTINEL_PATTERN = str(OUTPUT_DIR / "{patient}" / "{course}" / ".qc_done")
 
 
@@ -284,15 +443,42 @@ checkpoint organize_courses:
     log:
         str(LOGS_DIR / "stage_organize.log")
     threads:
-        max(1, WORKERS)
+        SNAKEMAKE_THREADS
     conda:
         "envs/rtpipeline.yaml"
     run:
         import subprocess
-        worker_count = max(1, int(threads))
+
+        job_threads = max(1, threads)
         manifest_path = Path(output.manifest)
         manifest_path.parent.mkdir(parents=True, exist_ok=True)
         LOGS_DIR.mkdir(parents=True, exist_ok=True)
+
+        skip_existing = False
+        if manifest_path.exists():
+            try:
+                manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
+                course_entries = manifest_data.get("courses", [])
+            except Exception:
+                course_entries = []
+            if course_entries:
+                missing_flags = []
+                for entry in course_entries:
+                    try:
+                        course_dir = Path(entry.get("path", ""))
+                    except Exception:
+                        missing_flags.append(entry)
+                        continue
+                    flag = course_dir / ".organized"
+                    if not flag.exists():
+                        missing_flags.append(entry)
+                skip_existing = not missing_flags
+        if skip_existing:
+            log_path = Path(log[0])
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            log_path.write_text("Organize stage skipped (manifest already present).\n", encoding="utf-8")
+            return
+
         env = _rt_env()
         cmd = [
             sys.executable,
@@ -301,9 +487,9 @@ checkpoint organize_courses:
             "--dicom-root", str(DICOM_ROOT),
             "--outdir", str(OUTPUT_DIR),
             "--logs", str(LOGS_DIR),
-            "--workers", str(worker_count),
             "--stage", "organize",
         ]
+        cmd.extend(_max_worker_args(job_threads))
         if CUSTOM_STRUCTURES_CONFIG:
             cmd.extend(["--custom-structures", CUSTOM_STRUCTURES_CONFIG])
         with open(log[0], "w") as logf:
@@ -313,7 +499,17 @@ checkpoint organize_courses:
             flag = course_sentinel_path(patient_id, course_id, ".organized")
             flag.parent.mkdir(parents=True, exist_ok=True)
             flag.write_text("ok\n", encoding="utf-8")
-            courses.append({"patient": patient_id, "course": course_id, "path": str(course_path)})
+            complexity = _estimate_course_complexity(course_path)
+            courses.append(
+                {
+                    "patient": patient_id,
+                    "course": course_id,
+                    "path": str(course_path),
+                    "complexity": complexity,
+                }
+            )
+        if PRIORITIZE_SHORT_COURSES:
+            courses.sort(key=lambda entry: (entry.get("complexity", 0), entry["patient"], entry["course"]))
         COURSE_META_DIR.mkdir(parents=True, exist_ok=True)
         manifest_path.write_text(json.dumps({"courses": courses}, indent=2), encoding="utf-8")
 
@@ -327,14 +523,14 @@ rule segmentation_course:
     log:
         str(LOGS_DIR / "segmentation" / "{patient}_{course}.log")
     threads:
-        max(1, SEG_THREADS_PER_WORKER if SEG_THREADS_PER_WORKER is not None else WORKERS)
+        4
     resources:
         seg_workers=1
     conda:
         "envs/rtpipeline.yaml"
     run:
         import subprocess
-        worker_count = max(1, int(threads))
+        job_threads = max(1, threads)
         sentinel_path = Path(output.sentinel)
         sentinel_path.parent.mkdir(parents=True, exist_ok=True)
         log_path = Path(log[0])
@@ -347,10 +543,10 @@ rule segmentation_course:
             "--dicom-root", str(DICOM_ROOT),
             "--outdir", str(OUTPUT_DIR),
             "--logs", str(LOGS_DIR),
-            "--workers", str(worker_count),
             "--stage", "segmentation",
             "--course-filter", f"{wildcards.patient}/{wildcards.course}",
         ]
+        cmd.extend(_max_worker_args(job_threads))
         cmd.extend(["--manifest", str(input.manifest)])
         if SEG_TEMP_DIR:
             cmd.extend(["--seg-temp-dir", SEG_TEMP_DIR])
@@ -376,8 +572,6 @@ rule segmentation_course:
             cmd.extend(["--totalseg-num-proc-export", str(SEG_NUM_PROC_EXPORT)])
         if SEG_MAX_WORKERS:
             cmd.extend(["--seg-workers", str(max(1, SEG_MAX_WORKERS))])
-        if SEG_THREADS_PER_WORKER is not None:
-            cmd.extend(["--seg-proc-threads", str(SEG_THREADS_PER_WORKER)])
         if SEG_FORCE_SEGMENTATION:
             cmd.append("--force-segmentation")
         with log_path.open("w") as logf:
@@ -394,13 +588,14 @@ rule segmentation_custom_models:
     log:
         str(LOGS_DIR / "segmentation_custom" / "{patient}_{course}.log")
     threads:
-        max(1, WORKERS)
+        4
     resources:
         custom_seg_workers=1
     conda:
         "envs/rtpipeline.yaml"
     run:
         import subprocess
+        job_threads = max(1, threads)
         sentinel_path = Path(output.sentinel)
         sentinel_path.parent.mkdir(parents=True, exist_ok=True)
         log_path = Path(log[0])
@@ -416,10 +611,10 @@ rule segmentation_custom_models:
             "--dicom-root", str(DICOM_ROOT),
             "--outdir", str(OUTPUT_DIR),
             "--logs", str(LOGS_DIR),
-            "--workers", str(worker_count),
             "--stage", "segmentation_custom",
             "--course-filter", f"{wildcards.patient}/{wildcards.course}",
         ]
+        cmd.extend(_max_worker_args(job_threads))
         if CUSTOM_MODELS_ROOT:
             cmd.extend(["--custom-models-root", CUSTOM_MODELS_ROOT])
         if CUSTOM_MODELS_SELECTED:
@@ -440,22 +635,62 @@ rule segmentation_custom_models:
         sentinel_path.write_text("ok\n", encoding="utf-8")
 
 
-rule dvh_course:
+rule crop_ct_course:
     input:
         manifest=_manifest_input,
         segmentation=SEGMENTATION_SENTINEL_PATTERN,
         custom=CUSTOM_SEG_SENTINEL_PATTERN
     output:
-        sentinel=DVH_SENTINEL_PATTERN
+        sentinel=CROP_CT_SENTINEL_PATTERN
     log:
-        str(LOGS_DIR / "dvh" / "{patient}_{course}.log")
+        str(LOGS_DIR / "crop_ct" / "{patient}_{course}.log")
     threads:
-        max(1, WORKERS)
+        SNAKEMAKE_THREADS
     conda:
         "envs/rtpipeline.yaml"
     run:
         import subprocess
-        worker_count = max(1, int(threads))
+        job_threads = max(1, threads)
+        sentinel_path = Path(output.sentinel)
+        sentinel_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path = Path(log[0])
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+
+        env = _rt_env()
+        cmd = [
+            sys.executable,
+            "-m",
+            "rtpipeline.cli",
+            "--dicom-root", str(DICOM_ROOT),
+            "--outdir", str(OUTPUT_DIR),
+            "--logs", str(LOGS_DIR),
+            "--stage", "crop_ct",
+            "--course-filter", f"{wildcards.patient}/{wildcards.course}",
+        ]
+        cmd.extend(_max_worker_args(job_threads))
+
+        with log_path.open("w") as logf:
+            subprocess.run(cmd, check=True, stdout=logf, stderr=subprocess.STDOUT, env=env)
+        sentinel_path.write_text("ok\n", encoding="utf-8")
+
+
+rule dvh_course:
+    input:
+        manifest=_manifest_input,
+        segmentation=SEGMENTATION_SENTINEL_PATTERN,
+        custom=CUSTOM_SEG_SENTINEL_PATTERN,
+        crop=CROP_CT_SENTINEL_PATTERN
+    output:
+        sentinel=DVH_SENTINEL_PATTERN
+    log:
+        str(LOGS_DIR / "dvh" / "{patient}_{course}.log")
+    threads:
+        DVH_RULE_THREADS
+    conda:
+        "envs/rtpipeline.yaml"
+    run:
+        import subprocess
+        job_threads = max(1, threads)
         sentinel_path = Path(output.sentinel)
         sentinel_path.parent.mkdir(parents=True, exist_ok=True)
         log_path = Path(log[0])
@@ -468,10 +703,10 @@ rule dvh_course:
             "--dicom-root", str(DICOM_ROOT),
             "--outdir", str(OUTPUT_DIR),
             "--logs", str(LOGS_DIR),
-            "--workers", str(worker_count),
             "--stage", "dvh",
             "--course-filter", f"{wildcards.patient}/{wildcards.course}",
         ]
+        cmd.extend(_max_worker_args(job_threads))
         if CUSTOM_STRUCTURES_CONFIG:
             cmd.extend(["--custom-structures", CUSTOM_STRUCTURES_CONFIG])
         with log_path.open("w") as logf:
@@ -483,18 +718,19 @@ rule radiomics_course:
     input:
         manifest=_manifest_input,
         segmentation=SEGMENTATION_SENTINEL_PATTERN,
-        custom=CUSTOM_SEG_SENTINEL_PATTERN
+        custom=CUSTOM_SEG_SENTINEL_PATTERN,
+        crop=CROP_CT_SENTINEL_PATTERN
     output:
         sentinel=RADIOMICS_SENTINEL_PATTERN
     log:
         str(LOGS_DIR / "radiomics" / "{patient}_{course}.log")
     threads:
-        max(1, WORKERS)
+        RAD_RULE_THREADS
     conda:
         "envs/rtpipeline-radiomics.yaml"
     run:
         import subprocess
-        worker_count = max(1, int(threads))
+        job_threads = max(1, threads)
         sentinel_path = Path(output.sentinel)
         sentinel_path.parent.mkdir(parents=True, exist_ok=True)
         log_path = Path(log[0])
@@ -507,10 +743,10 @@ rule radiomics_course:
             "--dicom-root", str(DICOM_ROOT),
             "--outdir", str(OUTPUT_DIR),
             "--logs", str(LOGS_DIR),
-            "--workers", str(worker_count),
             "--stage", "radiomics",
             "--course-filter", f"{wildcards.patient}/{wildcards.course}",
         ]
+        cmd.extend(_max_worker_args(job_threads))
         if RADIOMICS_SEQUENTIAL:
             cmd.append("--sequential-radiomics")
         if RADIOMICS_PARAMS:
@@ -525,8 +761,6 @@ rule radiomics_course:
             cmd.extend(["--radiomics-skip-roi", roi])
         if CUSTOM_STRUCTURES_CONFIG:
             cmd.extend(["--custom-structures", CUSTOM_STRUCTURES_CONFIG])
-        if RADIOMICS_THREAD_LIMIT is not None:
-            cmd.extend(["--radiomics-proc-threads", str(RADIOMICS_THREAD_LIMIT)])
         with log_path.open("w") as logf:
             subprocess.run(cmd, check=True, stdout=logf, stderr=subprocess.STDOUT, env=env)
         sentinel_path.write_text("ok\n", encoding="utf-8")
@@ -535,18 +769,19 @@ rule radiomics_course:
 rule qc_course:
     input:
         manifest=_manifest_input,
-        segmentation=SEGMENTATION_SENTINEL_PATTERN
+        segmentation=SEGMENTATION_SENTINEL_PATTERN,
+        crop=CROP_CT_SENTINEL_PATTERN
     output:
         sentinel=QC_SENTINEL_PATTERN
     log:
         str(LOGS_DIR / "qc" / "{patient}_{course}.log")
     threads:
-        max(1, WORKERS)
+        1
     conda:
         "envs/rtpipeline.yaml"
     run:
         import subprocess
-        worker_count = max(1, int(threads))
+        job_threads = max(1, threads)
         sentinel_path = Path(output.sentinel)
         sentinel_path.parent.mkdir(parents=True, exist_ok=True)
         log_path = Path(log[0])
@@ -559,10 +794,10 @@ rule qc_course:
             "--dicom-root", str(DICOM_ROOT),
             "--outdir", str(OUTPUT_DIR),
             "--logs", str(LOGS_DIR),
-            "--workers", str(worker_count),
             "--stage", "qc",
             "--course-filter", f"{wildcards.patient}/{wildcards.course}",
         ]
+        cmd.extend(_max_worker_args(job_threads))
         with log_path.open("w") as logf:
             subprocess.run(cmd, check=True, stdout=logf, stderr=subprocess.STDOUT, env=env)
         sentinel_path.write_text("ok\n", encoding="utf-8")
@@ -577,11 +812,12 @@ rule radiomics_robustness_course:
     log:
         str(LOGS_DIR / "radiomics_robustness" / "{patient}_{course}.log")
     threads:
-        max(1, WORKERS)
+        RAD_RULE_THREADS
     conda:
         "envs/rtpipeline-radiomics.yaml"
     run:
         import subprocess
+        job_threads = max(1, threads)
         if not ROBUSTNESS_ENABLED:
             # Skip if disabled
             sentinel_path = Path(output.sentinel)
@@ -607,6 +843,7 @@ rule radiomics_robustness_course:
             "--config", str(ROOT_DIR / "config.yaml"),
             "--output", str(output_parquet),
         ]
+        cmd.extend(_max_worker_args(job_threads))
 
         try:
             with log_path.open("w") as logf:
@@ -628,7 +865,7 @@ rule aggregate_radiomics_robustness:
     log:
         str(LOGS_DIR / "aggregate_radiomics_robustness.log")
     threads:
-        max(1, AGGREGATION_THREADS or 4)
+        AGG_THREADS_RESERVED
     conda:
         "envs/rtpipeline-radiomics.yaml"
     run:
@@ -691,6 +928,8 @@ rule aggregate_results:
         fractions=str(AGG_OUTPUTS["fractions"]),
         metadata=str(AGG_OUTPUTS["metadata"]),
         qc=str(AGG_OUTPUTS["qc"])
+    threads:
+        AGG_THREADS_RESERVED
     conda:
         "envs/rtpipeline.yaml"
     run:
@@ -707,11 +946,12 @@ rule aggregate_results:
         def _max_workers(default: int) -> int:
             if not courses:
                 return 1
+            effective_cap = min(len(courses), max(1, WORKER_BUDGET))
             if AGGREGATION_THREADS is not None:
-                return min(len(courses), max(1, AGGREGATION_THREADS))
-            return min(len(courses), max(1, default))
+                return min(effective_cap, max(1, AGGREGATION_THREADS))
+            return min(effective_cap, max(1, default))
 
-        worker_count = _max_workers(os.cpu_count() or 4)
+        worker_count = _max_workers(AUTO_WORKER_BUDGET)
 
         # Optimized: use single thread pool for all I/O operations
         def _collect_all_frames():
@@ -720,6 +960,7 @@ rule aggregate_results:
             from collections import defaultdict
 
             results = defaultdict(list)
+            errors = []
 
             def _load_all(course):
                 """Load all file types for a single course."""
@@ -742,8 +983,8 @@ rule aggregate_results:
                         if "structure_cropped" not in df.columns:
                             df["structure_cropped"] = False
                         course_results['dvh'] = df
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        errors.append(f"DVH error {pid}/{cid}: {e}")
 
                 # Radiomics CT
                 rad_path = cdir / "radiomics_ct.xlsx"
@@ -761,8 +1002,8 @@ rule aggregate_results:
                         if "structure_cropped" not in df.columns:
                             df["structure_cropped"] = False
                         course_results['radiomics'] = df
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        errors.append(f"Radiomics error {pid}/{cid}: {e}")
 
                 # Radiomics MR
                 rad_mr_path = cdir / "MR" / "radiomics_mr.xlsx"
@@ -778,8 +1019,8 @@ rule aggregate_results:
                         else:
                             df["course_id"] = df["course_id"].fillna(cid)
                         course_results['radiomics_mr'] = df
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        errors.append(f"Radiomics MR error {pid}/{cid}: {e}")
 
                 # Fractions
                 frac_path = cdir / "fractions.xlsx"
@@ -795,8 +1036,8 @@ rule aggregate_results:
                         else:
                             df.insert(1, "course_id", cid)
                         course_results['fractions'] = df
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        errors.append(f"Fractions error {pid}/{cid}: {e}")
 
                 # Metadata
                 meta_path = cdir / "metadata" / "case_metadata.xlsx"
@@ -812,13 +1053,13 @@ rule aggregate_results:
                         else:
                             df.insert(1, "course_id", cid)
                         course_results['metadata'] = df
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        errors.append(f"Metadata error {pid}/{cid}: {e}")
 
                 return course_results
 
             if not courses:
-                return results
+                return results, []
 
             # Load all files in parallel
             with ThreadPoolExecutor(max_workers=max(1, worker_count)) as pool:
@@ -827,10 +1068,27 @@ rule aggregate_results:
                         if df is not None and not df.empty:
                             results[key].append(df)
 
-            return results
+            return results, errors
 
         # Collect all frames at once
-        all_frames = _collect_all_frames()
+        all_frames, agg_errors = _collect_all_frames()
+        
+        if agg_errors:
+            print(f"Aggregation warnings ({len(agg_errors)}):")
+            for err in agg_errors[:20]:
+                 print(f" - {err}")
+            if len(agg_errors) > 20:
+                print(f" ... and {len(agg_errors)-20} more.")
+            
+            try:
+                error_log_path = RESULTS_DIR / "aggregation_errors.log"
+                with open(error_log_path, "w") as f:
+                    for err in agg_errors:
+                        f.write(f"{err}\n")
+                print(f"Full error log written to {error_log_path}")
+            except Exception:
+                pass
+
         dvh_frames = all_frames.get('dvh', [])
         rad_frames = all_frames.get('radiomics', [])
         rad_mr_frames = all_frames.get('radiomics_mr', [])
@@ -929,3 +1187,16 @@ rule aggregate_results:
             pd.DataFrame(qc_rows).to_excel(output.qc, index=False)
         else:
             pd.DataFrame(columns=["patient_id", "course_id", "report_name", "overall_status"]).to_excel(output.qc, index=False)
+
+
+rule generate_report:
+    input:
+        *(str(path) for path in AGG_OUTPUTS.values())
+    output:
+        "pipeline_report.html"
+    log:
+        str(LOGS_DIR / "report.log")
+    conda:
+        "envs/rtpipeline.yaml"
+    run:
+        shell("snakemake --report {output} --configfile config.yaml")

@@ -1,72 +1,42 @@
-# Git
+# Version control
 .git
 .gitignore
+.github
 
 # Python
 __pycache__
-*.py[cod]
-*$py.class
-*.so
+*.pyc
+*.pyo
+*.pyd
 .Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-MANIFEST
+*.so
+.pytest_cache
+.coverage
 
-# Jupyter
-.ipynb_checkpoints
-*.ipynb
-
-# IDEs
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-
-# Pipeline outputs (don't include in image)
+# Pipeline outputs
+Output/
 Data_Snakemake/
 Logs_Snakemake/
 .snakemake/
 *.log
+_RESULTS/
 
-# Data directories
-Example_data/
-Data_Organized/
+# Large files
+*.sif
+*.tar.gz
+totalseg_weights/
+# custom_models/*/weights/
 
-# Documentation that changes frequently
-*.md
-!README.md
+# Development
+.vscode
+.idea
+*.swp
+*~
+
+# Documentation (already in image)
 docs/
 
-# Temporary files
-*.tmp
-*.bak
-*.orig
-*.temp
-.DS_Store
-Thumbs.db
-
-# Docker files
-docker-compose.yml
-.dockerignore
-
-# Custom model weights (too large)
-custom_models/**/*.zip
-custom_models/**/*.pth
-custom_models/**/*.pkl
-custom_models/**/*.h5
-!custom_models/**/custom_model.yaml
-!custom_models/**/README.md
+# Test data (mount at runtime)
+Example_data/
+Input/
+Uploads/

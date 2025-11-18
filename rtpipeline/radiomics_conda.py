@@ -390,7 +390,11 @@ def process_radiomics_batch(
                 results.append(rec)
 
     tasks_list = list(tasks)
-    worker_limit = max_workers if max_workers and max_workers > 0 else (os.cpu_count() or 4)
+    if max_workers and max_workers > 0:
+        worker_limit = max_workers
+    else:
+        cpu_total = os.cpu_count() or 2
+        worker_limit = max(1, cpu_total - 1)
     worker_limit = max(1, min(worker_limit, len(tasks_list)))
 
     if sequential or len(tasks_list) == 1 or worker_limit == 1:
@@ -711,7 +715,7 @@ def radiomics_for_course(
     max_workers = None
 
     # Check for environment variable override first
-    env_workers = int(os.environ.get('RTPIPELINE_RADIOMICS_WORKERS', '0'))
+    env_workers = int(os.environ.get('RTPIPELINE_MAX_WORKERS', '0') or 0)
     if env_workers > 0:
         max_workers = env_workers
     # Try config.effective_workers() if available

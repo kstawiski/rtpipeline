@@ -60,12 +60,12 @@ def _run(cmd: str, env: Optional[dict] = None, timeout: Optional[int] = None) ->
     except subprocess.TimeoutExpired:
         logger.error(f"Command timed out after {timeout}s: {cmd[:100]}...")
         logger.error(f"This usually indicates a hung process or insufficient resources.")
-        return False
+        raise RuntimeError(f"Command timed out: {cmd[:100]}...")
     except subprocess.CalledProcessError as e:
         logger.error(f"Command failed: {cmd[:100]}...")
         stderr = e.stderr.decode() if e.stderr else "No error output"
         logger.error(f"Error: {stderr}")
-        return False
+        raise RuntimeError(f"Command failed: {stderr}")
 
 
 def _prefix(config: PipelineConfig) -> str:

@@ -80,7 +80,7 @@ class RobustnessThresholds:
 @dataclass
 class RobustnessConfig:
     """Main configuration for radiomics robustness analysis."""
-    enabled: bool = False
+    enabled: bool = True
     modes: List[str] = field(default_factory=lambda: ["segmentation_perturbation"])
     perturbation: PerturbationConfig = field(default_factory=PerturbationConfig)
     metrics: MetricsConfig = field(default_factory=MetricsConfig)
@@ -812,56 +812,164 @@ def robustness_for_course(
     # Extract features for each structure with perturbations
     # ========================================================================
     from .radiomics import _mask_from_array_like
+    
+    # Import parallel processing helpers
+    try:
+        from .radiomics_parallel import (
+            _prepare_radiomics_task,
+            _isolated_radiomics_extraction_with_retry,
+            _calculate_optimal_workers,
+            _apply_thread_limit,
+            _resolve_thread_limit
+        )
+        has_parallel = True
+    except ImportError:
+        logger.warning("Parallel radiomics helpers not available; falling back to sequential processing")
+        has_parallel = False
+
     all_features = []
+    
+    # Prepare tasks for parallel execution
+    tasks = []
+    temp_dir = None
+    
+    if has_parallel:
+        temp_dir = Path(tempfile.mkdtemp(prefix='rob_radiomics_'))
+        # Apply thread limit to main process
+        _apply_thread_limit(_resolve_thread_limit(getattr(config, 'radiomics_thread_limit', None)))
+    
+    try:
+        for roi_name, source in selected_structures:
+            mask_array = all_masks[(roi_name, source)]
+            mask_img = _mask_from_array_like(ct_image, mask_array)
 
-    for roi_name, source in selected_structures:
-        mask_array = all_masks[(roi_name, source)]
-        mask_img = _mask_from_array_like(ct_image, mask_array)
-
-        # Check if NTCV mode is enabled (any perturbation beyond volume is configured)
-        use_ntcv = (
-            rob_config.perturbation.max_translation_mm > 0 or
-            rob_config.perturbation.n_random_contour_realizations > 0 or
-            any(n > 0 for n in rob_config.perturbation.noise_levels)
-        )
-
-        if use_ntcv:
-            # Generate NTCV perturbation chain
-            perturbed_masks, perturbed_images = generate_ntcv_perturbations(
-                mask_img,
-                ct_image,
-                rob_config.perturbation,
-                roi_name,
+            # Check if NTCV mode is enabled (any perturbation beyond volume is configured)
+            use_ntcv = (
+                rob_config.perturbation.max_translation_mm > 0 or
+                rob_config.perturbation.n_random_contour_realizations > 0 or
+                any(n > 0 for n in rob_config.perturbation.noise_levels)
             )
-        else:
-            # Legacy mode: volume-only perturbations
-            perturbed_masks = generate_perturbed_masks(
-                mask_img,
-                rob_config.perturbation.small_volume_changes,
-                roi_name,
-            )
-            perturbed_images = None
 
-        if len(perturbed_masks) < 2:
-            logger.warning("Insufficient perturbations for %s (%s); skipping", roi_name, source)
-            continue
+            if use_ntcv:
+                # Generate NTCV perturbation chain
+                perturbed_masks, perturbed_images = generate_ntcv_perturbations(
+                    mask_img,
+                    ct_image,
+                    rob_config.perturbation,
+                    roi_name,
+                )
+            else:
+                # Legacy mode: volume-only perturbations
+                perturbed_masks = generate_perturbed_masks(
+                    mask_img,
+                    rob_config.perturbation.small_volume_changes,
+                    roi_name,
+                )
+                perturbed_images = None
 
-        # Extract features for all perturbations
-        features_df = extract_features_for_masks(
-            ct_image,
-            perturbed_masks,
-            config,
-            modality="CT",
-            structure_name=roi_name,
-            patient_id=course_dir.parent.name,
-            course_id=course_dir.name,
-            perturbed_images=perturbed_images,
-        )
+            if len(perturbed_masks) < 2:
+                logger.warning("Insufficient perturbations for %s (%s); skipping", roi_name, source)
+                continue
 
-        if not features_df.empty:
-            # Add segmentation source to track provenance
-            features_df["segmentation_source"] = source
-            all_features.append(features_df)
+            if has_parallel:
+                # Prepare parallel tasks
+                for pert_id, mask in perturbed_masks.items():
+                    # Use perturbed image if available
+                    current_image = perturbed_images.get(pert_id, ct_image) if perturbed_images else ct_image
+                    
+                    try:
+                        # We treat each perturbation as a "structure" for the parallel worker
+                        task_file, task_params = _prepare_radiomics_task(
+                            current_image, mask, config, source, roi_name, course_dir, temp_dir, False
+                        )
+                        # Add perturbation-specific metadata to extra_metadata
+                        task_params['extra_metadata'] = {'perturbation_id': pert_id}
+                        tasks.append((task_file, task_params))
+                    except Exception as e:
+                        logger.warning("Failed to prepare task for %s/%s/%s: %s", source, roi_name, pert_id, e)
+            else:
+                # Sequential fallback
+                features_df = extract_features_for_masks(
+                    ct_image,
+                    perturbed_masks,
+                    config,
+                    modality="CT",
+                    structure_name=roi_name,
+                    patient_id=course_dir.parent.name,
+                    course_id=course_dir.name,
+                    perturbed_images=perturbed_images,
+                )
+                if not features_df.empty:
+                    features_df["segmentation_source"] = source
+                    all_features.append(features_df)
+
+        # Execute parallel tasks
+        if has_parallel and tasks:
+            max_workers = _calculate_optimal_workers()
+            # Respect global worker limit if set
+            try:
+                config_workers = int(getattr(config, 'effective_workers')())
+                max_workers = min(max_workers, config_workers)
+            except Exception:
+                pass
+            
+            max_workers = max(1, min(max_workers, len(tasks)))
+            logger.info("Processing %d robustness perturbations with %d workers", len(tasks), max_workers)
+
+            ctx = get_context('spawn')
+            with ctx.Pool(max_workers) as pool:
+                completed_count = 0
+                total_count = len(tasks)
+                start_time = time.time()
+                
+                # Use imap_unordered for efficiency
+                for result in pool.imap_unordered(_isolated_radiomics_extraction_with_retry, tasks):
+                    completed_count += 1
+                    if completed_count % 10 == 0 or completed_count == total_count:
+                         elapsed = time.time() - start_time
+                         rate = completed_count / elapsed if elapsed > 0 else 0
+                         eta = (total_count - completed_count) / rate if rate > 0 else 0
+                         logger.info("Robustness progress: %d/%d (%.1f%%), ETA: %.1fs",
+                                    completed_count, total_count,
+                                    100 * completed_count / total_count, eta)
+
+                    if result:
+                        # Convert wide result dict (from worker) to long format DataFrame rows
+                        meta_keys = {
+                            'modality', 'segmentation_source', 'roi_name', 'roi_original_name',
+                            'course_dir', 'patient_id', 'course_id', 'structure_cropped',
+                            'perturbation_id'
+                        }
+                        
+                        # Extract metadata
+                        metadata = {k: result[k] for k in meta_keys if k in result}
+                        
+                        # Convert features
+                        rows = []
+                        for k, v in result.items():
+                            if k in meta_keys: continue
+                            # Skip diagnostic info if present
+                            if k.startswith('diagnostics_'): continue 
+                            
+                            if isinstance(v, (int, float, np.floating, np.integer)):
+                                row = metadata.copy()
+                                row['feature_name'] = str(k)
+                                row['value'] = float(v)
+                                rows.append(row)
+                        
+                        if rows:
+                            all_features.append(pd.DataFrame(rows))
+
+    except Exception as e:
+        logger.error("Robustness analysis failed: %s", e)
+        import traceback
+        logger.error(traceback.format_exc())
+    finally:
+        if temp_dir and temp_dir.exists():
+            try:
+                shutil.rmtree(temp_dir)
+            except Exception as e:
+                logger.debug("Failed to clean up temp dir %s: %s", temp_dir, e)
 
     if not all_features:
         logger.warning("No features extracted for robustness analysis in %s", course_dir)
