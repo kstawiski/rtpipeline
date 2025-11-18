@@ -25,7 +25,7 @@ _RESULTS/
 *.sif
 *.tar.gz
 totalseg_weights/
-custom_models/*/weights/
+# custom_models/*/weights/
 
 # Development
 .vscode
