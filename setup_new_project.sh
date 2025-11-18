@@ -806,15 +806,11 @@ configure_project() {
 
     local seg_workers
     if [ "$QUICK_MODE" = "true" ]; then
-        seg_workers=$([ "$seg_device" = "gpu" ] && echo "4" || echo "1")
+        seg_workers="1"
     else
-        print_explanation "\nSegmentation workers: Number of parallel segmentation jobs."
-        print_explanation "For GPU: 1-4 workers (depending on VRAM). For CPU: 1-2 workers."
-        if [ "$seg_device" = "gpu" ]; then
-            seg_workers=$(ask_question "Segmentation workers" "4")
-        else
-            seg_workers=$(ask_question "Segmentation workers" "1")
-        fi
+        print_explanation "\nSegmentation workers: ALWAYS use 1 for GPU safety (prevents GPU OOM)."
+        print_explanation "Parallelization happens at the course level via Snakemake, not per-worker."
+        seg_workers=$(ask_question "Segmentation workers" "1")
     fi
 
     local seg_fast seg_force_split
@@ -1106,7 +1102,6 @@ workers: $workers
 
 segmentation:
   workers: $seg_workers
-  threads_per_worker: null
   force: false
   fast: $seg_fast
   roi_subset: null
