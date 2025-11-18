@@ -301,7 +301,12 @@ class JobManager:
                     'enabled': True,
                     'modes': ['segmentation_perturbation'],
                     'segmentation_perturbation': {
-                        'intensity': robustness_config.get('intensity', 'standard')
+                        'intensity': robustness_config.get('intensity', 'standard'),
+                        # Defaults that match setup_new_project.sh logic
+                        'apply_to_structures': ["GTV*", "CTV*", "PTV*", "BLADDER", "RECTUM", "PROSTATE"],
+                        'small_volume_changes': [-0.15, 0.0, 0.15],
+                        'max_translation_mm': 3.0,
+                        'n_random_contour_realizations': 2
                     }
                 }
 
@@ -309,11 +314,18 @@ class JobManager:
         if 'ct_cropping' in user_config:
             ct_cropping_config = user_config['ct_cropping']
             if ct_cropping_config.get('enabled', False):
+                region = ct_cropping_config.get('region', 'pelvis')
+                # Set sensible defaults based on region (matching setup script logic)
+                if region == 'brain':
+                    sup, inf = 1.0, 1.0
+                else:
+                    sup, inf = 2.0, 10.0 if region == 'pelvis' else 2.0
+
                 config['ct_cropping'] = {
                     'enabled': True,
-                    'region': ct_cropping_config.get('region', 'pelvis'),
-                    'superior_margin_cm': 2.0,
-                    'inferior_margin_cm': 10.0,
+                    'region': region,
+                    'superior_margin_cm': sup,
+                    'inferior_margin_cm': inf,
                     'use_cropped_for_dvh': True,
                     'use_cropped_for_radiomics': True,
                     'keep_original': True
@@ -338,6 +350,7 @@ class JobManager:
         stage_mapping = {
             'organize_courses': ('organizing', 20, 'Organizing DICOM files...'),
             'segmentation_course': ('segmentation', 40, 'Running segmentation...'),
+            'crop_ct_course': ('cropping', 50, 'Cropping CT volumes...'),
             'dvh_course': ('dvh', 60, 'Computing DVH metrics...'),
             'radiomics_course': ('radiomics', 80, 'Extracting radiomics features...'),
             'aggregate_results': ('aggregating', 90, 'Aggregating results...')

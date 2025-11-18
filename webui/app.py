@@ -336,6 +336,31 @@ def delete_job(job_id):
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/api/jobs/<job_id>/report/<path:filename>', methods=['GET'])
+def view_report(job_id, filename):
+    """Serve HTML reports and assets"""
+    try:
+        status = job_manager.get_job_status(job_id)
+        if not status:
+            return jsonify({'error': 'Job not found'}), 404
+
+        output_dir = Path(status['output_dir']).resolve()
+        file_path = (output_dir / filename).resolve()
+
+        # Security check: ensure file is within output directory
+        if not str(file_path).startswith(str(output_dir)):
+            return jsonify({'error': 'Access denied'}), 403
+
+        if not file_path.exists():
+            return jsonify({'error': 'File not found'}), 404
+
+        return send_file(file_path)
+
+    except Exception as e:
+        logger.error(f"Report view error: {str(e)}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/health')
 def health():
     """Health check endpoint"""
