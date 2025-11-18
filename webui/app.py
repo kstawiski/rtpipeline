@@ -611,6 +611,44 @@ def list_dicom_series(job_id):
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/api/jobs/<job_id>/segmentations')
+def list_segmentations(job_id):
+    """List available RTSTRUCT files"""
+    try:
+        status = job_manager.get_job_status(job_id)
+        if not status:
+             return jsonify({'error': 'Job not found'}), 404
+             
+        output_dir = Path(status['output_dir'])
+        
+        segmentations = []
+        
+        # Common RTSTRUCT names in root output
+        for f in output_dir.glob('RS*.dcm'):
+            segmentations.append({
+                'name': f.name,
+                'path': f"api/jobs/{job_id}/files/output/{f.name}",
+                'size': f.stat().st_size
+            })
+            
+        # Custom models subdirectories
+        for f in output_dir.glob('**/rtstruct.dcm'):
+             # Get parent folder name as label (e.g. Segmentation_Prostate)
+             label = f.parent.name
+             rel_path = f.relative_to(output_dir)
+             segmentations.append({
+                'name': label,
+                'path': f"api/jobs/{job_id}/files/output/{str(rel_path)}",
+                'size': f.stat().st_size
+            })
+
+        return jsonify({'segmentations': segmentations})
+
+    except Exception as e:
+        logger.error(f"Seg list error: {str(e)}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
 if __name__ == '__main__':
     # Run Flask app
     port = int(os.environ.get('PORT', 8080))
