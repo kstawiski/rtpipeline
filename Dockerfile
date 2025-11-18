@@ -94,6 +94,10 @@ RUN mkdir -p \
     /app && \
     chown -R rtpipeline:rtpipeline /data /tmp/cache /app
 
+# Copy custom models into the image
+# This ensures the image is self-contained
+COPY --chown=rtpipeline:rtpipeline custom_models /data/models/
+
 WORKDIR /app
 
 # Copy project files
@@ -132,7 +136,7 @@ segmentation:
   extra_models: []
 
 custom_models:
-  enabled: false
+  enabled: true
   root: "/data/models"
   models: []
   workers: 1
