@@ -523,7 +523,7 @@ rule segmentation_course:
     log:
         str(LOGS_DIR / "segmentation" / "{patient}_{course}.log")
     threads:
-        SNAKEMAKE_THREADS
+        4
     resources:
         seg_workers=1
     conda:
@@ -588,7 +588,7 @@ rule segmentation_custom_models:
     log:
         str(LOGS_DIR / "segmentation_custom" / "{patient}_{course}.log")
     threads:
-        SNAKEMAKE_THREADS
+        4
     resources:
         custom_seg_workers=1
     conda:
@@ -776,7 +776,7 @@ rule qc_course:
     log:
         str(LOGS_DIR / "qc" / "{patient}_{course}.log")
     threads:
-        QC_RULE_THREADS
+        1
     conda:
         "envs/rtpipeline.yaml"
     run:
@@ -960,6 +960,7 @@ rule aggregate_results:
             from collections import defaultdict
 
             results = defaultdict(list)
+            errors = []
 
             def _load_all(course):
                 """Load all file types for a single course."""
@@ -982,8 +983,8 @@ rule aggregate_results:
                         if "structure_cropped" not in df.columns:
                             df["structure_cropped"] = False
                         course_results['dvh'] = df
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        errors.append(f"DVH error {pid}/{cid}: {e}")
 
                 # Radiomics CT
                 rad_path = cdir / "radiomics_ct.xlsx"
@@ -1001,8 +1002,8 @@ rule aggregate_results:
                         if "structure_cropped" not in df.columns:
                             df["structure_cropped"] = False
                         course_results['radiomics'] = df
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        errors.append(f"Radiomics error {pid}/{cid}: {e}")
 
                 # Radiomics MR
                 rad_mr_path = cdir / "MR" / "radiomics_mr.xlsx"
@@ -1018,8 +1019,8 @@ rule aggregate_results:
                         else:
                             df["course_id"] = df["course_id"].fillna(cid)
                         course_results['radiomics_mr'] = df
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        errors.append(f"Radiomics MR error {pid}/{cid}: {e}")
 
                 # Fractions
                 frac_path = cdir / "fractions.xlsx"
@@ -1035,8 +1036,8 @@ rule aggregate_results:
                         else:
                             df.insert(1, "course_id", cid)
                         course_results['fractions'] = df
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        errors.append(f"Fractions error {pid}/{cid}: {e}")
 
                 # Metadata
                 meta_path = cdir / "metadata" / "case_metadata.xlsx"
@@ -1052,13 +1053,13 @@ rule aggregate_results:
                         else:
                             df.insert(1, "course_id", cid)
                         course_results['metadata'] = df
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        errors.append(f"Metadata error {pid}/{cid}: {e}")
 
                 return course_results
 
             if not courses:
-                return results
+                return results, []
 
             # Load all files in parallel
             with ThreadPoolExecutor(max_workers=max(1, worker_count)) as pool:
@@ -1067,10 +1068,27 @@ rule aggregate_results:
                         if df is not None and not df.empty:
                             results[key].append(df)
 
-            return results
+            return results, errors
 
         # Collect all frames at once
-        all_frames = _collect_all_frames()
+        all_frames, agg_errors = _collect_all_frames()
+        
+        if agg_errors:
+            print(f"Aggregation warnings ({len(agg_errors)}):")
+            for err in agg_errors[:20]:
+                 print(f" - {err}")
+            if len(agg_errors) > 20:
+                print(f" ... and {len(agg_errors)-20} more.")
+            
+            try:
+                error_log_path = RESULTS_DIR / "aggregation_errors.log"
+                with open(error_log_path, "w") as f:
+                    for err in agg_errors:
+                        f.write(f"{err}\n")
+                print(f"Full error log written to {error_log_path}")
+            except Exception:
+                pass
+
         dvh_frames = all_frames.get('dvh', [])
         rad_frames = all_frames.get('radiomics', [])
         rad_mr_frames = all_frames.get('radiomics_mr', [])

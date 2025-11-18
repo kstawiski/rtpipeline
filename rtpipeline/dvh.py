@@ -115,7 +115,7 @@ def _get_volume_at_threshold(bins, cumulative, threshold: float) -> float:
     return y0 + (y1 - y0) * (threshold - x0) / (x1 - x0)
 
 
-def _compute_metrics(abs_dvh, rx_dose: float) -> Optional[Dict[str, float]]:
+def _compute_metrics(abs_dvh, rx_dose: Optional[float]) -> Optional[Dict[str, float]]:
     bins_abs = abs_dvh.bincenters
     cum_abs = abs_dvh.counts
     if cum_abs.size == 0 or cum_abs[0] == 0:
@@ -158,27 +158,38 @@ def _compute_metrics(abs_dvh, rx_dose: float) -> Optional[Dict[str, float]]:
     V95Rx_pct = None
     V100Rx_cc = None
     V100Rx_pct = None
-    try:
-        if rx_dose and rx_dose > 0:
+    
+    Dmean_pct = None
+    Dmax_pct = None
+    Dmin_pct = None
+    D95_pct = None
+    D98_pct = None
+    D2_pct = None
+    D50_pct = None
+    HI_pct = None
+    Spread_pct = None
+
+    if rx_dose and rx_dose > 0:
+        try:
             V95Rx_cc = _get_volume_at_threshold(bins_abs, cum_abs, 0.95 * rx_dose)
             V100Rx_cc = _get_volume_at_threshold(bins_abs, cum_abs, 1.00 * rx_dose)
             V95Rx_pct = (V95Rx_cc / V_total) * 100.0 if V_total > 0 else None
             V100Rx_pct = (V100Rx_cc / V_total) * 100.0 if V_total > 0 else None
-    except Exception:
-        pass
-
-    rel_dvh = abs_dvh.relative_dose(float(rx_dose))
-    bins_rel = rel_dvh.bincenters
-    cum_rel = rel_dvh.counts
-    Dmean_pct = float(rel_dvh.mean)
-    Dmax_pct = float(rel_dvh.max)
-    Dmin_pct = float(rel_dvh.min)
-    D95_pct = _dose_at_fraction(bins_rel, cum_rel, 0.95)
-    D98_pct = _dose_at_fraction(bins_rel, cum_rel, 0.98)
-    D2_pct = _dose_at_fraction(bins_rel, cum_rel, 0.02)
-    D50_pct = _dose_at_fraction(bins_rel, cum_rel, 0.50)
-    HI_pct = (D2_pct - D98_pct) / D50_pct if D50_pct != 0 else float("nan")
-    Spread_pct = Dmax_pct - Dmin_pct
+            
+            rel_dvh = abs_dvh.relative_dose(float(rx_dose))
+            bins_rel = rel_dvh.bincenters
+            cum_rel = rel_dvh.counts
+            Dmean_pct = float(rel_dvh.mean)
+            Dmax_pct = float(rel_dvh.max)
+            Dmin_pct = float(rel_dvh.min)
+            D95_pct = _dose_at_fraction(bins_rel, cum_rel, 0.95)
+            D98_pct = _dose_at_fraction(bins_rel, cum_rel, 0.98)
+            D2_pct = _dose_at_fraction(bins_rel, cum_rel, 0.02)
+            D50_pct = _dose_at_fraction(bins_rel, cum_rel, 0.50)
+            HI_pct = (D2_pct - D98_pct) / D50_pct if D50_pct != 0 else float("nan")
+            Spread_pct = Dmax_pct - Dmin_pct
+        except Exception:
+            pass
 
     metrics: Dict[str, float] = {
         "DmeanGy": DmeanGy,
@@ -517,8 +528,7 @@ def _create_custom_structures_rtstruct(
         return None
 
 
-def _estimate_rx_from_ctv1(rtstruct: pydicom.dataset.FileDataset, rtdose: pydicom.dataset.FileDataset) -> float:
-    default_rx = 50.0
+def _estimate_rx_from_ctv1(rtstruct: pydicom.dataset.FileDataset, rtdose: pydicom.dataset.FileDataset) -> Optional[float]:
     try:
         snap_rtstruct_to_dose_grid(rtstruct, rtdose)
         for roi in rtstruct.StructureSetROISequence:
@@ -531,7 +541,7 @@ def _estimate_rx_from_ctv1(rtstruct: pydicom.dataset.FileDataset, rtdose: pydico
                     return float(_dose_at_fraction(bins_ctv, cum_ctv, 0.95))
     except Exception as e:
         logger.debug("RX estimate failed: %s", e)
-    return default_rx
+    return None
 
 
 def dvh_for_course(
@@ -684,13 +694,16 @@ def dvh_for_course(
             if item:
                 results.append(item)
 
-    # Estimate rx from manual if present; else default
-    rx_est = 50.0
+    # Estimate rx from manual if present; else None
+    rx_est = None
     if rs_manual.exists():
         try:
             rx_est = _estimate_rx_from_ctv1(pydicom.dcmread(str(rs_manual)), rtdose)
         except Exception:
             pass
+    
+    if rx_est is None:
+        logger.warning("Could not estimate prescription dose for %s; relative metrics will be missing", course_dir.name)
 
     # Use RS_custom.dcm if it exists and is up-to-date
     rs_custom = course_dir / "RS_custom.dcm"

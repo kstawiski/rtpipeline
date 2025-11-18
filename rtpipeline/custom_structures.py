@@ -138,7 +138,8 @@ class CustomStructureProcessor:
 
     def apply_margin(self, mask: np.ndarray, margin: MarginConfig) -> np.ndarray:
         """
-        Apply margin (expansion/contraction) to a mask.
+        Apply margin (expansion/contraction) to a mask using Euclidean distance transform.
+        This handles anisotropic spacing correctly.
 
         Args:
             mask: Input binary mask
@@ -151,31 +152,43 @@ class CustomStructureProcessor:
             logger.warning("Spacing not set, cannot apply margin accurately")
             return mask
 
-        # Convert margin from mm to voxels
-        x_spacing, y_spacing, z_spacing = self.spacing
+        # For now, we support uniform expansion/contraction or symmetric 3D margins.
+        # Asymmetric margins (e.g. anterior vs posterior) require vector distance fields 
+        # or iterative approaches which are computationally expensive.
+        # We use the uniform_mm or take the maximum of specific margins for expansion.
+        
+        # Check if we are effectively doing a uniform margin
+        # (We prioritize the largest requested expansion for safety if asymmetric)
+        target_margin = margin.uniform_mm
+        if target_margin is None:
+            # Fallback: use the largest dimension
+            target_margin = max(
+                margin.anterior_mm, margin.posterior_mm,
+                margin.left_mm, margin.right_mm,
+                margin.superior_mm, margin.inferior_mm
+            )
 
-        # Create anisotropic structuring element based on margins
-        margin_voxels = [
-            int(np.ceil(max(margin.left_mm, margin.right_mm) / x_spacing)),
-            int(np.ceil(max(margin.anterior_mm, margin.posterior_mm) / y_spacing)),
-            int(np.ceil(max(margin.superior_mm, margin.inferior_mm) / z_spacing))
-        ]
-
-        if all(m == 0 for m in margin_voxels):
+        if target_margin == 0:
             return mask
 
-        # Apply dilation for positive margins
-        if any(m > 0 for m in margin_voxels):
-            struct_elem = generate_binary_structure(3, 1)
+        from scipy.ndimage import distance_transform_edt
 
-            # Dilate based on maximum margin
-            max_iter = max(margin_voxels)
-            result = binary_dilation(mask, structure=struct_elem, iterations=max_iter)
+        # Ensure mask is boolean
+        mask_bool = mask.astype(bool)
+
+        if target_margin > 0:
+            # Expansion: Compute distance from background to foreground
+            # distance_transform_edt calculates distance to the nearest BACKGROUND (0) pixel.
+            # So we run it on the INVERTED mask.
+            # Pixels in the background with dist <= margin become foreground.
+            dist = distance_transform_edt(np.logical_not(mask_bool), sampling=self.spacing)
+            result = np.logical_or(mask_bool, dist <= target_margin)
         else:
-            result = mask.copy()
-
-        # Handle asymmetric margins if needed (more complex implementation)
-        # For now, using uniform expansion based on maximum margin
+            # Contraction: Compute distance from foreground to background
+            # distance_transform_edt on the mask gives distance to nearest 0.
+            # We keep pixels that are far enough from the edge.
+            dist = distance_transform_edt(mask_bool, sampling=self.spacing)
+            result = dist > abs(target_margin)
 
         return result.astype(np.uint8)
 
