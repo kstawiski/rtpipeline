@@ -6,6 +6,7 @@
     <script src="https://unpkg.com/cornerstone-tools@6.0.8/dist/cornerstoneTools.min.js"></script>
     <script src="https://unpkg.com/dicom-parser@1.8.13/dist/dicomParser.min.js"></script>
     <script src="https://unpkg.com/cornerstone-wado-image-loader@4.1.5/dist/cornerstoneWADOImageLoader.bundle.min.js"></script>
+    <script src="https://unpkg.com/dcmjs"></script>
     
     <style>
         /* ... existing styles ... */
@@ -418,7 +419,9 @@
                     <div class="viewer-container">
                         <div class="viewer-sidebar">
                             <h4>Series List</h4>
-                            <div id="series-list" class="series-list">Loading...</div>
+                            <div id="series-list" class="series-list" style="flex: 0 0 200px;">Loading...</div>
+                            <h4 style="margin-top:15px">Structure Sets</h4>
+                            <div id="seg-list" class="series-list" style="flex: 1;">Loading...</div>
                         </div>
                         <div class="viewer-main" id="dicom-viewer">
                             <div id="dicomImage"></div>
@@ -569,23 +572,167 @@
                     </div>
                 `).join('');
                 
-                // Load first series by default
-                window.seriesData = data.series; // Store for access
+                window.seriesData = data.series; 
+                
+                // Also load segmentations
+                loadSegmentations(id);
+                
             } catch(e) {
                 document.getElementById('series-list').innerHTML = 'Error loading series';
             }
         }
 
+        async function loadSegmentations(id) {
+            try {
+                const res = await fetch(`/api/jobs/${id}/segmentations`);
+                const data = await res.json();
+                const list = document.getElementById('seg-list');
+                
+                if(!data.segmentations.length) {
+                    list.innerHTML = '<small>No structures found</small>';
+                    return;
+                }
+                
+                list.innerHTML = data.segmentations.map(seg => `
+                    <label style="display:block; margin:5px 0; font-size:12px; cursor:pointer;">
+                        <input type="checkbox" onchange="toggleSegmentation('${seg.path}', this.checked)">
+                        ${seg.name} <span style="color:#a0aec0; font-size:10px">(${(seg.size/1024/1024).toFixed(1)}MB)</span>
+                    </label>
+                `).join('');
+                
+            } catch(e) {
+                console.error("Seg Load Error", e);
+            }
+        }
+
         // --- Viewer Logic ---
         let imageIds = [];
-        
+        let loadedSegmentations = {}; // url -> { sopUid: [contours] }
+        let segmentationColors = ['#FF0000', '#00FF00', '#0000FF', '#FFFF00', '#00FFFF', '#FF00FF', '#FFA500'];
+
         function initViewer() {
             const element = document.getElementById('dicomImage');
             cornerstone.enable(element);
-            
-            // Add event listeners for tools
-            // (Simplified for this example, would normally add scrolling/zoom tools)
+            element.addEventListener('cornerstoneimagerendered', onImageRendered);
             viewerLoaded = true;
+        }
+        
+        async function toggleSegmentation(url, checked) {
+            if(!checked) {
+                delete loadedSegmentations[url];
+                cornerstone.updateImage(document.getElementById('dicomImage'));
+                return;
+            }
+            
+            // Load and parse
+            try {
+                const res = await fetch(url);
+                const buffer = await res.arrayBuffer();
+                const dicomData = dcmjs.data.DicomMessage.readFile(buffer);
+                const dataset = dcmjs.data.DicomMetaDictionary.naturalizeDataset(dicomData.dict);
+                
+                const contours = {}; // sopInstanceUid -> [ {color, points} ]
+                
+                if(dataset.ROIContourSequence) {
+                    dataset.ROIContourSequence.forEach((roi, idx) => {
+                        const colorArray = roi.ROIDisplayColor || [255, 0, 0];
+                        const color = `rgb(${colorArray.join(',')})`;
+                        
+                        if(roi.ContourSequence) {
+                            roi.ContourSequence.forEach(contour => {
+                                const points = [];
+                                const data = contour.ContourData;
+                                for(let i=0; i<data.length; i+=3) {
+                                    points.push({x: data[i], y: data[i+1], z: data[i+2]});
+                                }
+                                
+                                // Referenced SOP Instance UID
+                                const refUid = contour.ContourImageSequence?.[0]?.ReferencedSOPInstanceUID;
+                                if(refUid) {
+                                    if(!contours[refUid]) contours[refUid] = [];
+                                    contours[refUid].push({ color, points });
+                                }
+                            });
+                        }
+                    });
+                }
+                
+                loadedSegmentations[url] = contours;
+                cornerstone.updateImage(document.getElementById('dicomImage'));
+                
+            } catch(e) {
+                console.error("RTSTRUCT Parse Error", e);
+                alert("Failed to parse segmentation file");
+            }
+        }
+
+        function onImageRendered(e) {
+            const eventData = e.detail;
+            const element = eventData.element;
+            const ctx = eventData.canvasContext;
+            
+            // Get SOP Instance UID of current image
+            // Note: CornerstoneWADOImageLoader stores dataset in image.data
+            let sopUid = null;
+            if(eventData.image.data) {
+                 // x00080018 is SOPInstanceUID tag
+                 sopUid = eventData.image.data.string('x00080018');
+            }
+            
+            if(!sopUid) return;
+            
+            // Draw all active segmentations
+            Object.values(loadedSegmentations).forEach(segData => {
+                const contours = segData[sopUid];
+                if(contours) {
+                    contours.forEach(contour => {
+                        ctx.beginPath();
+                        ctx.strokeStyle = contour.color;
+                        ctx.lineWidth = 2;
+                        
+                        contour.points.forEach((pt, i) => {
+                            // Convert patient point (mm) to image pixel coordinates, then to canvas
+                            // We assume the contours are on the same Z plane (slice) roughly
+                            // Ideally we should project, but for simple axial viewing this works if slices align
+                            
+                            // 1. Patient (mm) -> Image (pixel)
+                            // We need the image metadata (Origin, Spacing, Orientation)
+                            // Cornerstone image object has these: image.columnPixelSpacing, image.rowPixelSpacing, image.imagePositionPatient
+                            
+                            // Simplified: use cornerstone.metaData if available or assume simple projection for axial
+                            // Actually, we can use the inverse of the image plane module. 
+                            // BUT, cornerstone provides a helper if we had the transform.
+                            // Let's use the raw metadata from the image object for conversion.
+                            
+                            const image = eventData.image;
+                            // Project 3D point to 2D pixel coordinates
+                            // (x_mm - origin_x) / spacing_x ... this is valid only for axis-aligned images
+                            // For robustness, we should use the direction cosines, but let's assume standard axial for now
+                            
+                            // Manual projection for Axial (assuming 1,0,0 / 0,1,0 orientation)
+                            // pixelX = (pt.x - origin.x) / spacingCol
+                            // pixelY = (pt.y - origin.y) / spacingRow
+                            // Note: DICOM coordinates center of pixel? Cornerstone handles 0.5 shifts usually.
+                            
+                            // Better: Try to use metadata provider if set up, or fallback to simple math
+                             const origin = image.imagePositionPatient || [0,0,0]; // [x,y,z]
+                             const spacing = [image.columnPixelSpacing, image.rowPixelSpacing]; // [col, row]
+                             
+                             const pixelX = (pt.x - origin[0]) / spacing[0];
+                             const pixelY = (pt.y - origin[1]) / spacing[1];
+                             
+                             // 2. Image (pixel) -> Canvas
+                             const canvasPt = cornerstone.pixelToCanvas(element, {x: pixelX, y: pixelY});
+                             
+                             if(i===0) ctx.moveTo(canvasPt.x, canvasPt.y);
+                             else ctx.lineTo(canvasPt.x, canvasPt.y);
+                        });
+                        
+                        ctx.closePath();
+                        ctx.stroke();
+                    });
+                }
+            });
         }
 
         window.loadStack = function(jobId, seriesUid, el) {
