@@ -593,12 +593,17 @@
                     return;
                 }
                 
-                list.innerHTML = data.segmentations.map(seg => `
-                    <label style="display:block; margin:5px 0; font-size:12px; cursor:pointer;">
-                        <input type="checkbox" onchange="toggleSegmentation('${seg.path}', this.checked)">
-                        ${seg.name} <span style="color:#a0aec0; font-size:10px">(${(seg.size/1024/1024).toFixed(1)}MB)</span>
-                    </label>
-                `).join('');
+                list.innerHTML = data.segmentations.map(seg => {
+                    const safeId = btoa(seg.path).replace(/=/g, '');
+                    return `
+                    <div style="margin-bottom:8px;">
+                        <label style="display:block; font-size:12px; cursor:pointer; font-weight:600;">
+                            <input type="checkbox" onchange="toggleSegmentation('${seg.path}', '${safeId}', this.checked)">
+                            ${seg.name} <span style="color:#a0aec0; font-size:10px">(${(seg.size/1024/1024).toFixed(1)}MB)</span>
+                        </label>
+                        <div id="rois-${safeId}" style="margin-left:15px; display:none; border-left:2px solid #edf2f7; padding-left:5px;"></div>
+                    </div>`;
+                }).join('');
                 
             } catch(e) {
                 console.error("Seg Load Error", e);
@@ -606,9 +611,9 @@
         }
 
         // --- Viewer Logic ---
-        let imageIds = [];
-        let loadedSegmentations = {}; // url -> { sopUid: [contours] }
-        let segmentationColors = ['#FF0000', '#00FF00', '#0000FF', '#FFFF00', '#00FFFF', '#FF00FF', '#FFA500'];
+        let parsedRTStructs = {}; // url -> { roiNumber: { name, color, contours: { sopUid: [points] } } }
+        let activeROIs = new Set(); // Strings: "url::roiNumber"
+        let viewerLoaded = false;
 
         function initViewer() {
             const element = document.getElementById('dicomImage');
@@ -617,10 +622,28 @@
             viewerLoaded = true;
         }
         
-        async function toggleSegmentation(url, checked) {
+        async function toggleSegmentation(url, containerId, checked) {
+            const container = document.getElementById(`rois-${containerId}`);
+            
             if(!checked) {
-                delete loadedSegmentations[url];
+                // Hide UI
+                container.style.display = 'none';
+                // Deactivate all ROIs from this file
+                const toRemove = [];
+                activeROIs.forEach(key => {
+                    if(key.startsWith(url + '::')) toRemove.push(key);
+                });
+                toRemove.forEach(k => activeROIs.delete(k));
                 cornerstone.updateImage(document.getElementById('dicomImage'));
+                return;
+            }
+            
+            container.style.display = 'block';
+            container.innerHTML = '<small>Loading structures...</small>';
+            
+            // Check cache
+            if(parsedRTStructs[url]) {
+                renderROIList(url, container);
                 return;
             }
             
@@ -631,12 +654,25 @@
                 const dicomData = dcmjs.data.DicomMessage.readFile(buffer);
                 const dataset = dcmjs.data.DicomMetaDictionary.naturalizeDataset(dicomData.dict);
                 
-                const contours = {}; // sopInstanceUid -> [ {color, points} ]
+                // 1. Map ROI Number to Name
+                const roiMap = {};
+                if(dataset.StructureSetROISequence) {
+                    dataset.StructureSetROISequence.forEach(roi => {
+                        roiMap[roi.ROINumber] = roi.ROIName || `ROI ${roi.ROINumber}`;
+                    });
+                }
+                
+                // 2. Extract Contours
+                const parsedROIs = {}; // roiNumber -> data
                 
                 if(dataset.ROIContourSequence) {
                     dataset.ROIContourSequence.forEach((roi, idx) => {
+                        const roiNumber = roi.ReferencedROINumber;
+                        const name = roiMap[roiNumber] || `ROI ${roiNumber}`;
                         const colorArray = roi.ROIDisplayColor || [255, 0, 0];
                         const color = `rgb(${colorArray.join(',')})`;
+                        
+                        const contoursByImage = {}; // sopUid -> [points]
                         
                         if(roi.ContourSequence) {
                             roi.ContourSequence.forEach(contour => {
@@ -646,91 +682,110 @@
                                     points.push({x: data[i], y: data[i+1], z: data[i+2]});
                                 }
                                 
-                                // Referenced SOP Instance UID
                                 const refUid = contour.ContourImageSequence?.[0]?.ReferencedSOPInstanceUID;
                                 if(refUid) {
-                                    if(!contours[refUid]) contours[refUid] = [];
-                                    contours[refUid].push({ color, points });
+                                    if(!contoursByImage[refUid]) contoursByImage[refUid] = [];
+                                    contoursByImage[refUid].push(points);
                                 }
                             });
+                            
+                            parsedROIs[roiNumber] = {
+                                name: name,
+                                color: color,
+                                contours: contoursByImage
+                            };
                         }
                     });
                 }
                 
-                loadedSegmentations[url] = contours;
-                cornerstone.updateImage(document.getElementById('dicomImage'));
+                parsedRTStructs[url] = parsedROIs;
+                renderROIList(url, container);
                 
             } catch(e) {
                 console.error("RTSTRUCT Parse Error", e);
-                alert("Failed to parse segmentation file");
+                container.innerHTML = '<small style="color:red">Failed to parse file</small>';
             }
+        }
+        
+        function renderROIList(url, container) {
+            const rois = parsedRTStructs[url];
+            if(!rois || Object.keys(rois).length === 0) {
+                container.innerHTML = '<small>No contours found</small>';
+                return;
+            }
+            
+            // Sort by name
+            const sortedKeys = Object.keys(rois).sort((a,b) => rois[a].name.localeCompare(rois[b].name));
+            
+            container.innerHTML = sortedKeys.map(num => {
+                const roi = rois[num];
+                return `
+                <label style="display:block; font-size:11px; cursor:pointer; margin:2px 0;">
+                    <input type="checkbox" onchange="toggleROI('${url}', '${num}', this.checked)">
+                    <span style="display:inline-block; width:8px; height:8px; background:${roi.color}; border-radius:50%; margin-right:4px;"></span>
+                    ${roi.name}
+                </label>`;
+            }).join('');
+        }
+        
+        function toggleROI(url, roiNumber, checked) {
+            const key = `${url}::${roiNumber}`;
+            if(checked) activeROIs.add(key);
+            else activeROIs.delete(key);
+            cornerstone.updateImage(document.getElementById('dicomImage'));
         }
 
         function onImageRendered(e) {
             const eventData = e.detail;
-            const element = eventData.element;
             const ctx = eventData.canvasContext;
             
             // Get SOP Instance UID of current image
-            // Note: CornerstoneWADOImageLoader stores dataset in image.data
             let sopUid = null;
             if(eventData.image.data) {
-                 // x00080018 is SOPInstanceUID tag
                  sopUid = eventData.image.data.string('x00080018');
             }
             
-            if(!sopUid) return;
+            if(!sopUid || activeROIs.size === 0) return;
             
-            // Draw all active segmentations
-            Object.values(loadedSegmentations).forEach(segData => {
-                const contours = segData[sopUid];
-                if(contours) {
-                    contours.forEach(contour => {
-                        ctx.beginPath();
-                        ctx.strokeStyle = contour.color;
-                        ctx.lineWidth = 2;
-                        
-                        contour.points.forEach((pt, i) => {
-                            // Convert patient point (mm) to image pixel coordinates, then to canvas
-                            // We assume the contours are on the same Z plane (slice) roughly
-                            // Ideally we should project, but for simple axial viewing this works if slices align
-                            
-                            // 1. Patient (mm) -> Image (pixel)
-                            // We need the image metadata (Origin, Spacing, Orientation)
-                            // Cornerstone image object has these: image.columnPixelSpacing, image.rowPixelSpacing, image.imagePositionPatient
-                            
-                            // Simplified: use cornerstone.metaData if available or assume simple projection for axial
-                            // Actually, we can use the inverse of the image plane module. 
-                            // BUT, cornerstone provides a helper if we had the transform.
-                            // Let's use the raw metadata from the image object for conversion.
-                            
+            // Draw active ROIs
+            activeROIs.forEach(key => {
+                const [url, roiNum] = key.split('::');
+                const roiData = parsedRTStructs[url]?.[roiNum];
+                
+                if(roiData && roiData.contours[sopUid]) {
+                    const contours = roiData.contours[sopUid];
+                    
+                    ctx.beginPath();
+                    ctx.strokeStyle = roiData.color;
+                    ctx.lineWidth = 2;
+                    
+                    contours.forEach(points => {
+                        points.forEach((pt, i) => {
+                            // Manual projection for Axial
+                            // (Ideally use cornerstone.metaData for full transform)
                             const image = eventData.image;
-                            // Project 3D point to 2D pixel coordinates
-                            // (x_mm - origin_x) / spacing_x ... this is valid only for axis-aligned images
-                            // For robustness, we should use the direction cosines, but let's assume standard axial for now
-                            
-                            // Manual projection for Axial (assuming 1,0,0 / 0,1,0 orientation)
-                            // pixelX = (pt.x - origin.x) / spacingCol
-                            // pixelY = (pt.y - origin.y) / spacingRow
-                            // Note: DICOM coordinates center of pixel? Cornerstone handles 0.5 shifts usually.
-                            
-                            // Better: Try to use metadata provider if set up, or fallback to simple math
-                             const origin = image.imagePositionPatient || [0,0,0]; // [x,y,z]
-                             const spacing = [image.columnPixelSpacing, image.rowPixelSpacing]; // [col, row]
+                            const origin = image.imagePositionPatient || [0,0,0]; 
+                            const spacing = [image.columnPixelSpacing, image.rowPixelSpacing]; 
                              
-                             const pixelX = (pt.x - origin[0]) / spacing[0];
-                             const pixelY = (pt.y - origin[1]) / spacing[1];
+                            const pixelX = (pt.x - origin[0]) / spacing[0];
+                            const pixelY = (pt.y - origin[1]) / spacing[1];
                              
-                             // 2. Image (pixel) -> Canvas
-                             const canvasPt = cornerstone.pixelToCanvas(element, {x: pixelX, y: pixelY});
+                            const canvasPt = cornerstone.pixelToCanvas(eventData.element, {x: pixelX, y: pixelY});
                              
-                             if(i===0) ctx.moveTo(canvasPt.x, canvasPt.y);
-                             else ctx.lineTo(canvasPt.x, canvasPt.y);
+                            if(i===0) ctx.moveTo(canvasPt.x, canvasPt.y);
+                            else ctx.lineTo(canvasPt.x, canvasPt.y);
                         });
-                        
-                        ctx.closePath();
-                        ctx.stroke();
+                        // Close loop
+                        if(points.length > 0) {
+                            const startPt = points[0];
+                             const pixelX = (startPt.x - origin[0]) / spacing[0];
+                             const pixelY = (startPt.y - origin[1]) / spacing[1];
+                             const canvasPt = cornerstone.pixelToCanvas(eventData.element, {x: pixelX, y: pixelY});
+                             ctx.lineTo(canvasPt.x, canvasPt.y);
+                        }
                     });
+                    
+                    ctx.stroke();
                 }
             });
         }
