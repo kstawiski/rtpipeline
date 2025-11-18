@@ -439,15 +439,22 @@ docker-compose --profile jupyter up -d
 | Section | Purpose / Key Keys |
 | --- | --- |
 | `dicom_root`, `output_dir`, `logs_dir` | Path configuration (relative to repo by default). |
-| `workers` | Default CPU worker count for non-segmentation stages. |
-| `segmentation` | Controls TotalSegmentator (`workers`, `threads_per_worker`, `fast`, `roi_subset`, `force`).<br>⚡ **NEW**: TotalSegmentator now outputs DICOM RTSTRUCT directly (requires `rt_utils`). |
+| `max_workers` | Optional cap for intra-course worker fan-out. Leave `null` to auto-use `(--cores - 1)`; set to a small integer (2-4) for slow/NFS storage. |
+| `segmentation` | Controls TotalSegmentator (`workers`, `fast`, `roi_subset`, `force`).<br>⚡ **NEW**: TotalSegmentator now outputs DICOM RTSTRUCT directly (requires `rt_utils`). |
 | `custom_models` | Configure nnUNet models (`enabled`, `root`, `models` allowlist, `workers`, `retain_weights`, `nnunet_predict`, optional `conda_activate`). |
 | `ct_cropping` | **NEW**: Systematic anatomical cropping options:<br>• `enabled` – enable/disable cropping (default: false)<br>• `region` – anatomical region (currently `"pelvis"` only)<br>• `inferior_margin_cm` – margin below femoral heads (default: 10 cm)<br>• `use_cropped_for_dvh` / `use_cropped_for_radiomics` – use cropped volumes<br>• `keep_original` – preserve uncropped files |
 | `radiomics` | Radiomics options:<br>• `params_file` (CT) and `mr_params_file` (MR)<br>• `thread_limit` / `skip_rois`<br>• `max_voxels` / `min_voxels` filters. |
 | `aggregation` | Optional thread override for aggregation tasks. |
 | `custom_structures` | Path to Boolean structure definition YAML (default pelvic template). |
 
+Segmentation concurrency inherits these settings automatically: on GPU we run courses sequentially unless you explicitly set `segmentation.workers`, while CPU mode fans out to the configured `workers` pool.
+
 Custom configuration files can be supplied via `--configfile myconfig.yaml`.
+
+> ℹ️ **Rerun policy:** The provided `run_pipeline.sh` wrapper now invokes Snakemake with
+> `--rerun-triggers mtime input`. Code or config changes will *not* force stages to rerun;
+> delete the corresponding outputs (e.g., `.segmentation_done`, `.dvh_done`) if you need to
+> recompute a stage after making modifications.
 
 ---
 

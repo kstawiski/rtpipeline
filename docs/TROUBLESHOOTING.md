@@ -345,7 +345,7 @@ pkill -f TotalSegmentator
    - Use `--radiomics-skip-roi` to skip large structures
 
 3. **Increase resources:**
-   - Reduce parallelism: `--workers 4`
+   - Reduce parallelism: `--max-workers 4`
    - Give tasks more memory
    - Use faster storage
 
@@ -411,7 +411,7 @@ rtpipeline \
   --dicom-root ./test_data \
   --totalseg-timeout 60 \
   --task-timeout 300 \
-  --workers 2
+  --max-workers 2
 
 # Monitor for timeouts in logs
 grep -i "timeout" ./Logs/rtpipeline.log
