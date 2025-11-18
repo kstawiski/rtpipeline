@@ -208,6 +208,10 @@ def _isolated_radiomics_extraction(task_data: Tuple[str, Dict[str, Any]]) -> Opt
             'structure_cropped': bool(task_params.get('structure_cropped', False)),
         })
 
+        # Merge any extra metadata provided in task params
+        if 'extra_metadata' in task_params:
+            rec.update(task_params['extra_metadata'])
+
         return rec
 
     except Exception as e:

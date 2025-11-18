@@ -80,7 +80,7 @@ def _coerce_int(value, default=None):
     except Exception:
         return default
 
-SCHEDULER_CONFIG = config.get("scheduler", {}) or {}
+SCHEDULER_CONFIG = config.get("scheduler", {})
 
 _reserved_cfg = _coerce_positive_int(SCHEDULER_CONFIG.get("reserved_cores"))
 if _reserved_cfg is None:
@@ -126,7 +126,7 @@ RAD_RULE_THREADS = _stage_thread_target("radiomics_threads_per_job", 6)
 QC_RULE_THREADS = _stage_thread_target("qc_threads_per_job", 2)
 PRIORITIZE_SHORT_COURSES = bool(SCHEDULER_CONFIG.get("prioritize_short_courses", True))
 
-SEG_CONFIG = config.get("segmentation", {}) or {}
+SEG_CONFIG = config.get("segmentation", {})
 SEG_EXTRA_MODELS = SEG_CONFIG.get("extra_models") or []
 if isinstance(SEG_EXTRA_MODELS, str):
     SEG_EXTRA_MODELS = [m.strip() for m in SEG_EXTRA_MODELS.replace(",", " ").split() if m.strip()]
@@ -175,7 +175,7 @@ if _seg_tmp_dir:
 else:
     SEG_TEMP_DIR = ""
 
-CUSTOM_MODELS_CONFIG = config.get("custom_models", {}) or {}
+CUSTOM_MODELS_CONFIG = config.get("custom_models", {})
 CUSTOM_MODELS_ENABLED = bool(CUSTOM_MODELS_CONFIG.get("enabled", True))
 _custom_root = CUSTOM_MODELS_CONFIG.get("root")
 if _custom_root:
@@ -211,7 +211,7 @@ CUSTOM_MODELS_PREDICT = str(CUSTOM_MODELS_CONFIG.get("nnunet_predict") or "nnUNe
 CUSTOM_MODELS_CONDA = CUSTOM_MODELS_CONFIG.get("conda_activate")
 CUSTOM_MODELS_RETAIN = bool(CUSTOM_MODELS_CONFIG.get("retain_weights", True))
 
-RADIOMICS_CONFIG = config.get("radiomics", {}) or {}
+RADIOMICS_CONFIG = config.get("radiomics", {})
 RADIOMICS_SEQUENTIAL = bool(RADIOMICS_CONFIG.get("sequential", False))
 _radiomics_params = RADIOMICS_CONFIG.get("params_file")
 if _radiomics_params:
@@ -255,7 +255,7 @@ else:
     default_pelvic = ROOT_DIR / "custom_structures_pelvic.yaml"
     CUSTOM_STRUCTURES_CONFIG = str(default_pelvic.resolve()) if default_pelvic.exists() else ""
 
-AGGREGATION_CONFIG = config.get("aggregation", {}) or {}
+AGGREGATION_CONFIG = config.get("aggregation", {})
 _agg_threads_raw = AGGREGATION_CONFIG.get("threads")
 if isinstance(_agg_threads_raw, str) and _agg_threads_raw.lower() == "auto":
     # Auto: use all CPUs for aggregation (I/O bound)
@@ -270,7 +270,7 @@ if AGGREGATION_THREADS is not None:
 else:
     AGG_THREADS_RESERVED = SNAKEMAKE_THREADS
 
-ROBUSTNESS_CONFIG = config.get("radiomics_robustness", {}) or {}
+ROBUSTNESS_CONFIG = config.get("radiomics_robustness", {})
 ROBUSTNESS_ENABLED = bool(ROBUSTNESS_CONFIG.get("enabled", False))
 
 COURSE_META_DIR = OUTPUT_DIR / "_COURSES"
@@ -289,13 +289,49 @@ if ROBUSTNESS_ENABLED:
     AGG_OUTPUTS["radiomics_robustness"] = RESULTS_DIR / "radiomics_robustness_summary.xlsx"
 
 # Snakemake resource pool for segmentation jobs: serialize GPU by default, allow fan-out when safe
+def _detect_gpu_count() -> int:
+    """Detect number of available GPUs."""
+    try:
+        import torch
+        if torch.cuda.is_available():
+            return torch.cuda.device_count()
+    except ImportError:
+        pass
+
+    # Fallback: check CUDA_VISIBLE_DEVICES
+    cuda_devices = os.environ.get('CUDA_VISIBLE_DEVICES', '')
+    if cuda_devices:
+        if cuda_devices.lower() == 'all':
+             pass
+        else:
+            return len(cuda_devices.split(','))
+
+    # Fallback: nvidia-smi
+    try:
+        import subprocess
+        result = subprocess.run(
+            ['nvidia-smi', '--list-gpus'],
+            capture_output=True, text=True, timeout=5
+        )
+        if result.returncode == 0:
+            return len(result.stdout.strip().split('\n'))
+    except Exception:
+        pass
+    return 0
+
 _seg_device_token = SEG_DEVICE.strip().lower()
 if SEG_MAX_WORKERS is not None:
     SEG_WORKER_POOL = max(1, SEG_MAX_WORKERS)
 elif _seg_device_token in {"gpu", "cuda", "mps"}:
-    SEG_WORKER_POOL = 1
+    gpu_count = _detect_gpu_count()
+    if gpu_count > 0:
+        SEG_WORKER_POOL = gpu_count
+    else:
+        SEG_WORKER_POOL = 1
 else:
-    SEG_WORKER_POOL = max(1, WORKER_BUDGET)
+    # CPU mode: conservative default to avoid OOM (TotalSegmentator is RAM heavy)
+    # Allow using up to 25% of cores/workers concurrently
+    SEG_WORKER_POOL = max(1, WORKER_BUDGET // 4)
 
 # Custom models inherit same auto logic: user setting > 1 on GPU/MPS > WORKER_BUDGET on CPU
 if CUSTOM_MODELS_WORKERS is not None:
@@ -1090,3 +1126,16 @@ rule aggregate_results:
             pd.DataFrame(qc_rows).to_excel(output.qc, index=False)
         else:
             pd.DataFrame(columns=["patient_id", "course_id", "report_name", "overall_status"]).to_excel(output.qc, index=False)
+
+
+rule generate_report:
+    input:
+        *(str(path) for path in AGG_OUTPUTS.values())
+    output:
+        "pipeline_report.html"
+    log:
+        str(LOGS_DIR / "report.log")
+    conda:
+        "envs/rtpipeline.yaml"
+    run:
+        shell("snakemake --report {output} --configfile config.yaml")

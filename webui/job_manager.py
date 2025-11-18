@@ -268,8 +268,18 @@ class JobManager:
             }
 
         # Custom models (disabled by default for security)
+        custom_models_config = user_config.get('custom_models', {})
+        # Handle both old (boolean) and new (dict) formats
+        if isinstance(custom_models_config, bool):
+             is_enabled = custom_models_config
+             models_list = []
+        else:
+             is_enabled = custom_models_config.get('enabled', False)
+             models_list = custom_models_config.get('models', [])
+
         config['custom_models'] = {
-            'enabled': user_config.get('custom_models_enabled', False),
+            'enabled': is_enabled,
+            'models': models_list,
             'workers': 1
         }
 

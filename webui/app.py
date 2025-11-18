@@ -15,6 +15,7 @@ import logging
 
 from dicom_validator import DICOMValidator
 from job_manager import JobManager
+import rtpipeline
 
 # Configure logging
 logging.basicConfig(
@@ -296,6 +297,26 @@ def list_jobs():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/api/config/custom_models', methods=['GET'])
+def list_custom_models():
+    """List available custom models"""
+    try:
+        models_dir = BASE_DIR / 'models' # Mapped to /data/models in container
+        models = []
+        
+        if models_dir.exists():
+            for item in models_dir.iterdir():
+                if item.is_dir() and not item.name.startswith('.'):
+                    # Check if it looks like a valid model (e.g. has weights or config)
+                    # For now, just listing directories is sufficient
+                    models.append(item.name)
+        
+        return jsonify({'models': sorted(models)}), 200
+    except Exception as e:
+        logger.error(f"List models error: {str(e)}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/api/jobs/<job_id>', methods=['DELETE'])
 def delete_job(job_id):
     """Delete a job and its data"""
@@ -320,8 +341,8 @@ def health():
     """Health check endpoint"""
     return jsonify({
         'status': 'healthy',
-        'timestamp': datetime.utcnow().isoformat(),
-        'version': '1.0.0'
+        'timestamp': datetime.now().isoformat(),
+        'version': rtpipeline.__version__
     }), 200
 
 
