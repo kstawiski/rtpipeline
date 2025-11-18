@@ -7,31 +7,29 @@ logs_dir: "Logs_Snakemake"
 
 # Processing parameters
 # ======================
-# IMPORTANT: Most pipeline stages (DVH, radiomics, QC) are I/O-bound, not CPU-bound!
-# They use ThreadPoolExecutor for concurrent file operations, not CPU parallelism.
+# PARALLELIZATION (SIMPLIFIED)
+# All modules use (cpu_count - 1) workers by default for consistent, efficient parallelization.
+# Exception: segmentation uses 1 worker (GPU-safe, sequential execution)
 #
-# workers: Controls TWO things:
-#   1. Intra-course I/O parallelism (how many ROIs processed concurrently via ThreadPoolExecutor)
-#   2. CPU threads requested from Snakemake scheduler (limits concurrent courses)
+# workers: Controls parallelization for all non-GPU stages:
+#   - Organization: File I/O operations (DICOM reading/linking)
+#   - DVH calculation: Per-ROI DVH extraction
+#   - Radiomics: Feature extraction (process-based for CPU isolation)
+#   - QC: Quality control validation
+#   - Aggregation: Results compilation
 #
-# TRADEOFF for I/O-bound stages (DVH/radiomics/QC):
-#   - Higher value (e.g., 4-8): Better I/O throughput per course, fewer courses in parallel
-#   - Lower value (e.g., 2-3): More courses in parallel, may be better for NFS/network storage
+# Setting workers: auto uses (cpu_count - 1) which:
+#   - Leaves 1 core free for system operations
+#   - Provides good performance for both local and network storage
+#   - Simplifies configuration (one value for everything)
 #
-# RECOMMENDATION by storage type:
-#   - Local SSD/NVMe: workers: 4-8 (maximize I/O per course)
-#   - NFS/network storage: workers: 2-3 (more courses in parallel, avoid network congestion)
-#   - Cloud/slow storage: workers: 2 (distribute I/O load across more courses)
-#
-# With workers: auto, the Snakefile sets workers = CPU_count - 2 (min 4, max 32)
-# This often over-allocates for I/O-bound workloads on network storage.
-workers: auto  # or set to 2-4 for NFS/network storage
+# Override with specific number if needed (e.g., workers: 4 for a specific system)
+workers: auto  # Recommended: uses (cpu_count - 1) for all modules
 
 segmentation:
-  # CRITICAL: GPU-limited stage - only 1-2 courses should run concurrently
-  # Higher values risk GPU OOM errors
-  workers: 1  # TotalSegmentator concurrency (1 for single GPU, 2-4 for multi-GPU systems)
-  threads_per_worker: null  # CPU threads allowed per TotalSegmentator invocation (null => no limit)
+  # EXCEPTION TO PARALLELIZATION: GPU-safe sequential execution
+  # Segmentation ALWAYS runs sequentially (1 course at a time) to avoid GPU memory issues
+  workers: 1  # Always 1 for GPU safety (do not increase)
   force: false  # Set true to re-run segmentation even when outputs exist
   fast: false
   roi_subset: null
@@ -146,7 +144,7 @@ radiomics_robustness:
                             # CoV > 20%: "poor"
 
 aggregation:
-  threads: auto  # auto = use CPU count, or set specific number
+  threads: auto  # auto = use (cpu_count - 1), or set specific number
 
 # Environment names
 environments:
