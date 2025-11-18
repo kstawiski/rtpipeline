@@ -44,7 +44,8 @@ This directory contains technical documentation, advanced guides, and developmen
 |----------|-------------|
 | [**custom_models.md**](custom_models.md) | Using custom nnUNet segmentation models |
 | [**pipeline_report.md**](pipeline_report.md) | Pipeline capabilities and features |
-| [**../RADIOMICS_ROBUSTNESS.md**](../RADIOMICS_ROBUSTNESS.md) | Radiomics robustness workflow, configuration, and research references |
+| [**RADIOMICS_ROBUSTNESS.md**](RADIOMICS_ROBUSTNESS.md) | Radiomics robustness workflow, configuration, and research references |
+| [**SYSTEMATIC_CT_CROPPING.md**](SYSTEMATIC_CT_CROPPING.md) | Systematic anatomical cropping guide |
 
 ### Data & Quality Control
 
@@ -76,10 +77,10 @@ This directory contains technical documentation, advanced guides, and developmen
 → [Guide to Results Interpretation.md](Guide%20to%20Results%20Interpretation.md) and [output_format.md](../output_format.md)
 
 ### "I must validate radiomics stability before modelling"
-→ [RADIOMICS_ROBUSTNESS.md](../RADIOMICS_ROBUSTNESS.md)
+→ [RADIOMICS_ROBUSTNESS.md](RADIOMICS_ROBUSTNESS.md)
 
 ### "I'm working with CT cropping"
-→ [qc_cropping_audit.md](qc_cropping_audit.md)
+→ [SYSTEMATIC_CT_CROPPING.md](SYSTEMATIC_CT_CROPPING.md)
 
 ---
 
@@ -110,8 +111,7 @@ rtpipeline/
 ├── internal/                          ← Development notes (internal use)
 │   ├── Agents.md                      ← AI agent prompts
 │   ├── IMPROVEMENTS.md                ← Improvement backlog
-│   ├── PROBLEMS.md                    ← Issue tracker
-│   └── OPTIMIZATION_SUMMARY.md        ← Optimization history
+│   └── PROBLEMS.md                    ← Issue tracker
 │
 ├── rtpipeline/                        ← Python package
 ├── envs/                              ← Conda environments

@@ -15,6 +15,7 @@ import logging
 
 from dicom_validator import DICOMValidator
 from job_manager import JobManager
+import rtpipeline
 
 # Configure logging
 logging.basicConfig(
@@ -296,6 +297,26 @@ def list_jobs():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/api/config/custom_models', methods=['GET'])
+def list_custom_models():
+    """List available custom models"""
+    try:
+        models_dir = BASE_DIR / 'models' # Mapped to /data/models in container
+        models = []
+        
+        if models_dir.exists():
+            for item in models_dir.iterdir():
+                if item.is_dir() and not item.name.startswith('.'):
+                    # Check if it looks like a valid model (e.g. has weights or config)
+                    # For now, just listing directories is sufficient
+                    models.append(item.name)
+        
+        return jsonify({'models': sorted(models)}), 200
+    except Exception as e:
+        logger.error(f"List models error: {str(e)}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/api/jobs/<job_id>', methods=['DELETE'])
 def delete_job(job_id):
     """Delete a job and its data"""
@@ -315,13 +336,38 @@ def delete_job(job_id):
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/api/jobs/<job_id>/report/<path:filename>', methods=['GET'])
+def view_report(job_id, filename):
+    """Serve HTML reports and assets"""
+    try:
+        status = job_manager.get_job_status(job_id)
+        if not status:
+            return jsonify({'error': 'Job not found'}), 404
+
+        output_dir = Path(status['output_dir']).resolve()
+        file_path = (output_dir / filename).resolve()
+
+        # Security check: ensure file is within output directory
+        if not str(file_path).startswith(str(output_dir)):
+            return jsonify({'error': 'Access denied'}), 403
+
+        if not file_path.exists():
+            return jsonify({'error': 'File not found'}), 404
+
+        return send_file(file_path)
+
+    except Exception as e:
+        logger.error(f"Report view error: {str(e)}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/health')
 def health():
     """Health check endpoint"""
     return jsonify({
         'status': 'healthy',
-        'timestamp': datetime.utcnow().isoformat(),
-        'version': '1.0.0'
+        'timestamp': datetime.now().isoformat(),
+        'version': rtpipeline.__version__
     }), 200
 
 

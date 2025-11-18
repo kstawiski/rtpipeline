@@ -96,10 +96,10 @@ def _calculate_optimal_workers() -> int:
     optimal = max(1, cpu_count - 1)
 
     # Check if user has set a specific override
-    env_workers = int(os.environ.get('RTPIPELINE_RADIOMICS_WORKERS', '0'))
+    env_workers = int(os.environ.get('RTPIPELINE_MAX_WORKERS', '0') or 0)
     if env_workers > 0:
         optimal = env_workers
-        logger.info("Using %d radiomics workers from RTPIPELINE_RADIOMICS_WORKERS", optimal)
+        logger.info("Using %d radiomics workers from RTPIPELINE_MAX_WORKERS", optimal)
     else:
         logger.info("Calculated optimal radiomics workers: %d (CPU cores: %d, using: %d)",
                    optimal, cpu_count, optimal)
@@ -207,6 +207,10 @@ def _isolated_radiomics_extraction(task_data: Tuple[str, Dict[str, Any]]) -> Opt
             'course_id': course_dir.name,
             'structure_cropped': bool(task_params.get('structure_cropped', False)),
         })
+
+        # Merge any extra metadata provided in task params
+        if 'extra_metadata' in task_params:
+            rec.update(task_params['extra_metadata'])
 
         return rec
 

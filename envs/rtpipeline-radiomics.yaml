@@ -3,14 +3,19 @@ channels:
   - conda-forge
   - defaults
 dependencies:
-  - python=3.11
+  - python=3.10
   - numpy=1.26.*
   - scipy
   - pandas
   - SimpleITK
   - pip
   - pip:
-    - pyradiomics
+    - ../third_party/wheels/pyradiomics-3.0.1-cp310-cp310-linux_x86_64.whl
     - xlsxwriter
     - pingouin
     - pyarrow
+    - pydicom>=2.4.0
+    - rt-utils
+    - pyyaml
+    - openpyxl
+    - filelock
