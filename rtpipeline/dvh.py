@@ -642,6 +642,22 @@ def dvh_for_course(
         display_name = roi_name
         if cropped and not display_name.endswith("__partial"):
             display_name = f"{display_name}__partial"
+            
+        # Extract curve points for plotting
+        curve_points = []
+        try:
+            # Resample if too many points to keep JSON size manageable
+            # dicompyler-core uses 1 cGy bin width by default, which is fine
+            # but we can skip zero-volume tails
+            if abs_dvh.counts[0] > 0:
+                # Normalize to percent volume
+                vol_pct = (abs_dvh.counts / abs_dvh.counts[0]) * 100.0
+                # Create points list
+                for d, v in zip(abs_dvh.bincenters, vol_pct):
+                    curve_points.append({"x": float(d), "y": float(v)})
+        except Exception:
+            pass
+
         metrics.update(
             {
                 "ROI_Number": int(roi_number),
@@ -649,6 +665,7 @@ def dvh_for_course(
                 "ROI_OriginalName": roi_name,
                 "Segmentation_Source": source_label,
                 "structure_cropped": cropped,
+                "_curve_data": curve_points, # Internal key for JSON export
             }
         )
         return metrics
@@ -743,7 +760,33 @@ def dvh_for_course(
         logger.info("No DVH results for %s", course_dir)
         return None
 
-    df = pd.DataFrame(results)
+    # Extract curve data before creating DataFrame
+    curve_data_export = []
+    clean_results = []
+    for res in results:
+        # Deep copy to avoid modifying original if needed (though we consume it here)
+        r_copy = res.copy()
+        points = r_copy.pop("_curve_data", [])
+        clean_results.append(r_copy)
+        
+        if points:
+            curve_data_export.append({
+                "roi_name": res.get("ROI_Name", "Unknown"),
+                "source": res.get("Segmentation_Source", "Unknown"),
+                "volume_cm3": res.get("Volume (cm³)", 0),
+                "data": points
+            })
+    
+    # Save curve data to JSON
+    if curve_data_export:
+        try:
+            json_path = course_dir / "dvh_curves.json"
+            with open(json_path, "w") as f:
+                json.dump({"points": curve_data_export}, f)
+        except Exception as e:
+            logger.warning("Failed to save DVH curves JSON: %s", e)
+
+    df = pd.DataFrame(clean_results)
     out_xlsx = course_dir / "dvh_metrics.xlsx"
     df.to_excel(out_xlsx, index=False)
     return out_xlsx
