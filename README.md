@@ -440,7 +440,7 @@ docker-compose --profile jupyter up -d
 | --- | --- |
 | `dicom_root`, `output_dir`, `logs_dir` | Path configuration (relative to repo by default). |
 | `workers` | Default CPU worker count for non-segmentation stages. |
-| `segmentation` | Controls TotalSegmentator (`workers`, `threads_per_worker`, `fast`, `roi_subset`, `force`).<br>⚡ **NEW**: TotalSegmentator now outputs DICOM RTSTRUCT directly (requires `rt_utils`). |
+| `segmentation` | Controls TotalSegmentator (`workers`, `fast`, `roi_subset`, `force`).<br>⚡ **GPU-safe**: Always use `workers: 1` for segmentation.<br>⚡ **NEW**: TotalSegmentator now outputs DICOM RTSTRUCT directly (requires `rt_utils`). |
 | `custom_models` | Configure nnUNet models (`enabled`, `root`, `models` allowlist, `workers`, `retain_weights`, `nnunet_predict`, optional `conda_activate`). |
 | `ct_cropping` | **NEW**: Systematic anatomical cropping options:<br>• `enabled` – enable/disable cropping (default: false)<br>• `region` – anatomical region (currently `"pelvis"` only)<br>• `inferior_margin_cm` – margin below femoral heads (default: 10 cm)<br>• `use_cropped_for_dvh` / `use_cropped_for_radiomics` – use cropped volumes<br>• `keep_original` – preserve uncropped files |
 | `radiomics` | Radiomics options:<br>• `params_file` (CT) and `mr_params_file` (MR)<br>• `thread_limit` / `skip_rois`<br>• `max_voxels` / `min_voxels` filters. |

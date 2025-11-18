@@ -164,10 +164,9 @@ Checks:
 2. **Config File (config.yaml)**
    ```yaml
    workers: auto                  # Default: CPU count - 1
-   
+
    segmentation:
-     workers: 4                   # TotalSegmentator concurrency
-     threads_per_worker: null     # No per-worker limit
+     workers: 1                   # Always 1 for GPU safety (do not increase)
      nr_threads_resample: 1       # nnUNet preprocessing threads
      nr_threads_save: 1           # nnUNet export threads
      num_proc_preprocessing: 1    # nnUNet preprocessing workers

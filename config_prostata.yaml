@@ -6,13 +6,11 @@ output_dir: "/projekty/Prostata/LK/Data_Snakemake"
 logs_dir: "/projekty/Prostata/LK/Logs_Snakemake"
 
 # Processing parameters
-# See config.yaml for detailed explanation of parallelization settings
-# For NFS storage (common in /projekty), workers: 2-3 often optimal
+# All modules use (cpu_count - 1) by default. See main config.yaml for detailed explanation.
 workers: 3
 
 segmentation:
-  workers: 1  # GPU-limited: only 1 course at a time to avoid OOM
-  threads_per_worker: null  # Let TotalSegmentator use available CPU threads
+  workers: 1  # Always 1 for GPU safety (do not increase)
   force: false  # Set true to re-run segmentation even when outputs exist
   fast: false
   roi_subset: null
