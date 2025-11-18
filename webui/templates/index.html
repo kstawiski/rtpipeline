@@ -715,10 +715,16 @@
                         <div class="config-group">
                             <div class="config-option">
                                 <label>
-                                    <input type="checkbox" id="custom-models-enabled">
-                                    Enable Custom Models (if available)
+                                    <input type="checkbox" id="custom-models-enabled" onchange="toggleCustomModelsList()">
+                                    Enable Custom Models
                                 </label>
                                 <small>Run custom nnUNet models (requires models in /data/models)</small>
+                                <div id="custom-models-list" class="hidden" style="margin-top: 10px; padding-left: 20px;">
+                                    <p style="font-size: 12px; color: #718096;">Select models to run:</p>
+                                    <div id="models-checkboxes" style="max-height: 150px; overflow-y: auto;">
+                                        <small>Loading models...</small>
+                                    </div>
+                                </div>
                             </div>
                             <div class="config-option">
                                 <label>
@@ -940,6 +946,13 @@
                 return;
             }
 
+            const selectedModels = [];
+            if (document.getElementById('custom-models-enabled').checked) {
+                document.querySelectorAll('input[name="custom_model"]:checked').forEach(cb => {
+                    selectedModels.push(cb.value);
+                });
+            }
+
             const config = {
                 cores: document.getElementById('cores').value || 'all',
                 segmentation: {
@@ -954,7 +967,10 @@
                     enabled: document.getElementById('robustness-enabled').checked,
                     intensity: document.getElementById('robustness-intensity').value
                 },
-                custom_models_enabled: document.getElementById('custom-models-enabled').checked,
+                custom_models: {
+                    enabled: document.getElementById('custom-models-enabled').checked,
+                    models: selectedModels
+                },
                 ct_cropping: {
                     enabled: document.getElementById('ct-cropping-enabled').checked,
                     region: document.getElementById('cropping-region').value
@@ -982,6 +998,38 @@
             } catch (error) {
                 console.error('Start processing error:', error);
                 alert('Failed to start processing: ' + error.message);
+            }
+        }
+
+        function toggleCustomModelsList() {
+            const enabled = document.getElementById('custom-models-enabled').checked;
+            const list = document.getElementById('custom-models-list');
+            if (enabled) {
+                list.classList.remove('hidden');
+                loadCustomModels();
+            } else {
+                list.classList.add('hidden');
+            }
+        }
+
+        async function loadCustomModels() {
+            const container = document.getElementById('models-checkboxes');
+            try {
+                const response = await fetch('/api/config/custom_models');
+                const data = await response.json();
+                
+                if (data.models && data.models.length > 0) {
+                    container.innerHTML = data.models.map(model => `
+                        <label style="display: block; margin: 5px 0;">
+                            <input type="checkbox" name="custom_model" value="${model}" checked>
+                            ${model}
+                        </label>
+                    `).join('');
+                } else {
+                    container.innerHTML = '<small style="color: orange;">No models found in /data/models</small>';
+                }
+            } catch (error) {
+                container.innerHTML = '<small style="color: red;">Failed to load models</small>';
             }
         }
 
@@ -1037,6 +1085,7 @@
                     { name: 'Upload', key: 'uploaded', icon: '📁' },
                     { name: 'Organize', key: 'organizing', icon: '📋' },
                     { name: 'Segment', key: 'segmentation', icon: '🔬' },
+                    { name: 'Crop', key: 'cropping', icon: '✂️' },
                     { name: 'DVH', key: 'dvh', icon: '📊' },
                     { name: 'Radiomics', key: 'radiomics', icon: '🧬' },
                     { name: 'Aggregate', key: 'aggregating', icon: '📦' },
@@ -1086,6 +1135,9 @@
                             ` : ''}
 
                             ${job.status === 'completed' ? `
+                                <button class="btn btn-secondary" onclick="window.open('/api/jobs/${job.job_id}/report/pipeline_report.html', '_blank')">
+                                    📊 View Report
+                                </button>
                                 <button class="btn btn-secondary" onclick="downloadResults('${job.job_id}')">
                                     📥 Download Results
                                 </button>

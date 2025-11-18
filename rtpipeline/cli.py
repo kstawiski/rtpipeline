@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -13,6 +14,20 @@ from .organize import CourseOutput, organize_and_merge, _hydrate_existing_course
 from .utils import run_tasks_with_adaptive_workers
 
 logger = logging.getLogger(__name__)
+
+
+def _derive_segmentation_thread_limit(device: str, worker_budget: int) -> int:
+    device = (device or "").lower()
+    if device == "cpu":
+        return max(1, worker_budget)
+    # GPU: limit CPU-bound helpers to a small number to avoid contention
+    return max(1, min(4, worker_budget))
+
+
+def _derive_radiomics_thread_limit(worker_budget: int) -> int:
+    # Keep OpenMP/BLAS usage modest to avoid oversubscription.
+    limit = max(1, worker_budget // 4)
+    return max(1, min(worker_budget, limit))
 
 
 def _load_courses_from_manifest(
@@ -140,21 +155,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--custom-model-conda-activate", default=None, help="Override conda activation prefix for custom segmentation models")
     p.add_argument("--nnunet-predict", default="nnUNetv2_predict", help="nnUNetv2 prediction command (default: nnUNetv2_predict)")
     p.add_argument("--purge-custom-model-weights", action="store_true", help="Delete extracted nnUNet caches after each custom model run")
-    p.add_argument("--workers", type=int, default=None, help="Parallel workers for non-segmentation phases (default: auto)")
+    p.add_argument(
+        "--max-workers",
+        type=int,
+        default=None,
+        help="Override automatic worker count (cores-1). Leave unset to auto-detect.",
+    )
     p.add_argument("--seg-workers", type=int, default=None, help="Maximum concurrent courses for TotalSegmentator (default: 1)")
-    p.add_argument(
-        "--seg-proc-threads",
-        type=int,
-        default=None,
-        help="CPU threads per TotalSegmentator invocation (<=0 to disable limit)",
-    )
     p.add_argument("--seg-temp-dir", default=None, help="Optional scratch directory for TotalSegmentator intermediates (defaults to course directory)")
-    p.add_argument(
-        "--radiomics-proc-threads",
-        type=int,
-        default=None,
-        help="CPU threads per radiomics worker (<=0 to disable limit)",
-    )
     p.add_argument(
         "--course-filter",
         action="append",
@@ -267,6 +275,9 @@ def _doctor(argv: list[str]) -> int:
 
     # Fallback decision
     from .segmentation import _ensure_local_dcm2niix
+    if args.max_workers and args.max_workers > 0:
+        os.environ['RTPIPELINE_MAX_WORKERS'] = str(args.max_workers)
+
     cfg = PipelineConfig(
         dicom_root=Path('.'),
         output_root=Path('.'),
@@ -447,6 +458,7 @@ def _radiomics_robustness_course(argv: list[str]) -> int:
     p.add_argument("--course-dir", required=True, help="Course directory path")
     p.add_argument("--config", default="config.yaml", help="Path to config YAML")
     p.add_argument("--output", required=True, help="Output parquet file path")
+    p.add_argument("--max-workers", type=int, default=None, help="Override automatic worker budget (cores-1)")
     p.add_argument("-v", "--verbose", action="store_true", help="Verbose logging")
     args = p.parse_args(argv)
 
@@ -521,23 +533,25 @@ def _radiomics_robustness_course(argv: list[str]) -> int:
     else:
         skip_rois = [str(item).strip() for item in skip_rois_cfg if str(item).strip()]
 
-    thread_limit = _coerce_int(radiomics_cfg.get("thread_limit"))
-    if thread_limit is not None and thread_limit < 1:
-        thread_limit = None
+    if args.max_workers and args.max_workers > 0:
+        os.environ['RTPIPELINE_MAX_WORKERS'] = str(args.max_workers)
 
     pipeline_config = PipelineConfig(
         dicom_root=dicom_root,
         output_root=output_root,
         logs_root=logs_root,
+        max_workers_override=args.max_workers,
         radiomics_params_file=params_path,
         radiomics_params_file_mr=params_path_mr,
         radiomics_skip_rois=skip_rois,
         radiomics_max_voxels=_coerce_int(radiomics_cfg.get("max_voxels")),
         radiomics_min_voxels=_coerce_int(radiomics_cfg.get("min_voxels")),
-        radiomics_thread_limit=thread_limit,
         radiomics_robustness_enabled=rob_config.enabled,
         radiomics_robustness_config=rob_config_data,
     )
+
+    worker_budget = pipeline_config.effective_workers()
+    pipeline_config.radiomics_thread_limit = _derive_radiomics_thread_limit(worker_budget)
 
     # Run robustness analysis
     try:
@@ -619,14 +633,6 @@ def main(argv: list[str] | None = None) -> int:
         parts = [seg.strip() for seg in str(item).replace(";", ",").split(",") if seg.strip()]
         skip_rois.extend(parts)
 
-    seg_proc_threads = args.seg_proc_threads
-    if seg_proc_threads is not None and seg_proc_threads < 1:
-        seg_proc_threads = None
-
-    rad_proc_threads = args.radiomics_proc_threads
-    if rad_proc_threads is not None and rad_proc_threads < 1:
-        rad_proc_threads = None
-
     raw_course_filters = args.course_filter or []
     patient_filter_ids: set[str] = set()
     course_filter_pairs: set[tuple[str, str]] = set()
@@ -705,7 +711,9 @@ def main(argv: list[str] | None = None) -> int:
 
     # Log parallelization settings
     logger.info("=== Parallelization Configuration ===")
-    logger.info("CPU cores: %d, using %d workers by default (cores - 1)", cpu_count, max(1, cpu_count - 1))
+    logger.info("CPU cores detected: %d", cpu_count)
+    if args.max_workers:
+        logger.info("Requested worker cap via --max-workers: %d", args.max_workers)
     logger.info("TotalSegmentator: resampling threads=%d, saving threads=%d",
                 totalseg_nr_thr_resamp, totalseg_nr_thr_saving)
     logger.info("GPU device: %s (force_split=%s)", args.totalseg_device, totalseg_force_split)
@@ -717,12 +725,14 @@ def main(argv: list[str] | None = None) -> int:
         dicom_root=Path(args.dicom_root).resolve(),
         output_root=Path(args.outdir).resolve(),
         logs_root=Path(args.logs).resolve(),
+        max_workers_override=args.max_workers,
         merge_criteria=args.merge_criteria,
         max_days_between_plans=args.max_days,
         do_segmentation=not args.no_segmentation,
         do_dvh=not args.no_dvh,
         do_visualize=not args.no_visualize,
         do_radiomics=not args.no_radiomics,
+        resume=not args.force_redo,  # Resume is default, disable only with --force-redo
         conda_activate=args.conda_activate,
         dcm2niix_cmd=args.dcm2niix,
         totalseg_cmd=args.totalseg,
@@ -736,20 +746,23 @@ def main(argv: list[str] | None = None) -> int:
         totalseg_num_proc_export=totalseg_num_proc_export,
         extra_seg_models=[m.strip() for part in (args.extra_seg_models or []) for m in part.split(",") if m.strip()],
         segmentation_workers=args.seg_workers,
-        segmentation_thread_limit=seg_proc_threads,
         segmentation_temp_root=seg_temp_root,
         totalseg_fast=args.totalseg_fast,
         totalseg_roi_subset=args.totalseg_roi_subset,
-        workers=args.workers,
         radiomics_params_file=Path(args.radiomics_params).resolve() if args.radiomics_params else None,
         radiomics_params_file_mr=Path(args.radiomics_params_mr).resolve() if args.radiomics_params_mr else None,
         radiomics_skip_rois=skip_rois,
         radiomics_max_voxels=args.radiomics_max_voxels,
         radiomics_min_voxels=args.radiomics_min_voxels,
-        radiomics_thread_limit=rad_proc_threads,
         custom_structures_config=None,  # Will be set below
-        resume=not args.force_redo,  # Resume is default, disable only with --force-redo
     )
+
+    worker_budget = cfg.effective_workers()
+    if cfg.segmentation_thread_limit is None:
+        cfg.segmentation_thread_limit = _derive_segmentation_thread_limit(cfg.totalseg_device, worker_budget)
+    if cfg.radiomics_thread_limit is None:
+        cfg.radiomics_thread_limit = _derive_radiomics_thread_limit(worker_budget)
+    logger.info("Effective worker budget (non-segmentation stages): %d", worker_budget)
 
     # Parse custom structures configuration
     custom_structures_config = None
@@ -905,12 +918,13 @@ def main(argv: list[str] | None = None) -> int:
                     logger.warning("Segmentation failed for %s: %s", course.dirs.root, exc)
                 return None
 
-            # Segmentation workers: Default to 1 for GPU (memory-safe), or 2 for CPU mode
+            # Segmentation workers: sequential on GPU, fan out on CPU
+            device = (cfg.totalseg_device or "").lower()
             if cfg.segmentation_workers is not None:
                 seg_worker_limit = cfg.segmentation_workers
-            elif cfg.totalseg_device == "cpu":
-                # CPU mode: can parallelize more since no GPU memory constraint
-                seg_worker_limit = max(1, min(2, cfg.effective_workers() // 2))
+            elif device == "cpu":
+                # CPU mode: allow full worker fan-out
+                seg_worker_limit = cfg.effective_workers()
             else:
                 # GPU mode: conservative default to avoid OOM, but full GPU utilization per task
                 seg_worker_limit = 1
@@ -967,12 +981,12 @@ def main(argv: list[str] | None = None) -> int:
                         logger.warning("Custom segmentation failed for %s: %s", course.dirs.root, exc)
                     return None
 
-                # Custom models: Default based on device type
+                # Custom models: sequential on GPU, CPU can fan out
+                device = (cfg.totalseg_device or "").lower()
                 if cfg.custom_models_workers is not None:
                     custom_worker_limit = cfg.custom_models_workers
-                elif cfg.totalseg_device == "cpu":
-                    # CPU mode: can parallelize more
-                    custom_worker_limit = max(1, min(2, cfg.effective_workers() // 2))
+                elif device == "cpu":
+                    custom_worker_limit = cfg.effective_workers()
                 else:
                     # GPU mode: conservative to avoid OOM (custom models often memory-intensive)
                     custom_worker_limit = 1

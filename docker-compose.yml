@@ -11,54 +11,63 @@ services:
     image: kstawiski/rtpipeline:latest
     container_name: rtpipeline
     hostname: rtpipeline
+    # Run as non-root user (UID 1000) to match host permissions
+    user: "1000:1000"
     volumes:
-      # Mount your DICOM input data
       - ./Input:/data/input:rw
-      # Mount output directory for pipeline results
       - ./Output:/data/output:rw
-      # Mount logs directory
       - ./Logs:/data/logs:rw
-      # Mount custom models directory (for nnUNet weights)
-      - ./custom_models:/data/models:rw
-      # Cache TotalSegmentator weights to avoid re-downloading
-      - ./totalseg_weights:/root/.totalsegmentator:rw
-      # Mount uploads directory for web UI
+      # - ./custom_models:/data/models:rw  <-- REMOVED: Models are now baked into image
+      - ./totalseg_weights:/home/rtpipeline/.totalsegmentator:rw
       - ./Uploads:/data/uploads:rw
-      # Optional: mount notebooks for development
-      - ./Code:/app/Code:rw
+      # Code mounted read-only for security
+      - ./Code:/app/Code:ro
     ports:
-      # Web UI port
       - "8080:8080"
     environment:
-      # Pipeline configuration
       - PYTHONPATH=/app
       - NUMBA_CACHE_DIR=/tmp/cache
       - MPLCONFIGDIR=/tmp/cache
-      # Conda environment
       - CONDA_DIR=/opt/conda
       - PATH=/opt/conda/bin:$PATH
-      # GPU support (DEFAULT)
       - NVIDIA_VISIBLE_DEVICES=all
       - CUDA_VISIBLE_DEVICES=all
-      # Timeout configuration for hang prevention
       - TOTALSEG_TIMEOUT=3600
       - DCM2NIIX_TIMEOUT=300
       - RTPIPELINE_RADIOMICS_TASK_TIMEOUT=600
-      # Web UI configuration
       - PORT=8080
       - DEBUG=false
     working_dir: /app
-    # Start web UI by default
     command: >
       bash -c "
         cd /app/webui &&
         python app.py
       "
-    # GPU support - DEFAULT configuration
-    shm_size: '4gb'  # Increased shared memory for PyTorch
+    # Security hardening
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - SETGID
+      - SETUID
+    # Resource limits
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+        limits:
+          cpus: '16.0'
+          memory: 32G
+    shm_size: '4gb'
     restart: unless-stopped
 
-  # CPU-only service (use --profile cpu-only to activate)
+  # CPU-only service
   rtpipeline-cpu:
     build:
       context: .
@@ -68,14 +77,15 @@ services:
     image: kstawiski/rtpipeline:latest
     container_name: rtpipeline-cpu
     hostname: rtpipeline-cpu
+    user: "1000:1000"
     volumes:
       - ./Input:/data/input:rw
       - ./Output:/data/output:rw
       - ./Logs:/data/logs:rw
-      - ./custom_models:/data/models:rw
-      - ./totalseg_weights:/root/.totalsegmentator:rw
+      # - ./custom_models:/data/models:rw <-- REMOVED: Models are now baked into image
+      - ./totalseg_weights:/home/rtpipeline/.totalsegmentator:rw
       - ./Uploads:/data/uploads:rw
-      - ./Code:/app/Code:rw
+      - ./Code:/app/Code:ro
     ports:
       - "8080:8080"
     environment:
@@ -84,7 +94,6 @@ services:
       - MPLCONFIGDIR=/tmp/cache
       - CONDA_DIR=/opt/conda
       - PATH=/opt/conda/bin:$PATH
-      # Timeout configuration for hang prevention
       - TOTALSEG_TIMEOUT=7200
       - DCM2NIIX_TIMEOUT=300
       - RTPIPELINE_RADIOMICS_TASK_TIMEOUT=1200
@@ -96,7 +105,10 @@ services:
         cd /app/webui &&
         python app.py
       "
-    # CPU-only: no GPU resources requested
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     deploy:
       resources:
         limits:
@@ -109,49 +121,6 @@ services:
     restart: unless-stopped
     profiles:
       - cpu-only
-
-  # Jupyter notebook service for interactive analysis
-  jupyter:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: kstawiski/rtpipeline:latest
-    container_name: rtpipeline-jupyter
-    volumes:
-      - ./Code:/app/Code:rw
-      - ./Output:/data/output:ro
-      - ./Input:/data/input:ro
-      - ./custom_models:/data/models:ro
-    environment:
-      - PYTHONPATH=/app
-      - CONDA_DIR=/opt/conda
-      - PATH=/opt/conda/bin:$PATH
-      # GPU support for Jupyter
-      - NVIDIA_VISIBLE_DEVICES=all
-      - CUDA_VISIBLE_DEVICES=0
-    working_dir: /app/Code
-    ports:
-      - "8888:8888"
-    command: >
-      bash -c "
-        conda run -n rtpipeline jupyter lab \
-          --ip=0.0.0.0 \
-          --port=8888 \
-          --no-browser \
-          --allow-root
-      "
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
-        limits:
-          cpus: '8.0'
-          memory: 16G
-    profiles:
-      - jupyter
 
 networks:
   default:

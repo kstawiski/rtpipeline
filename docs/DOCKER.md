@@ -119,7 +119,7 @@ docker run \
     --dicom-root /data/input \
     --outdir /data/output \
     --totalseg-device cpu \
-    --workers 7
+    --max-workers 7
 ```
 
 ### Running with Docker Compose
@@ -195,7 +195,7 @@ psutil.Process().cpu_affinity()  # [0,1,2,3,4,5,6,7] (8 CPUs)
 **Recommendation:**
 When using Docker CPU limits, manually set workers:
 ```bash
-docker run --cpus 8 ... rtpipeline --workers 7 ...
+docker run --cpus 8 ... rtpipeline --max-workers 7 ...
 ```
 
 Or use environment variable:
@@ -256,7 +256,7 @@ spec:
       - "/data/input"
       - "--outdir"
       - "/data/output"
-      - "--workers"
+      - "--max-workers"
       - "7"  # Set based on CPU limits
     resources:
       requests:
@@ -278,9 +278,9 @@ spec:
 ### Issue: Container uses all host CPUs despite `--cpus` limit
 
 **Solution:**
-Manually set `--workers` to respect the limit:
+Manually set `--max-workers` to respect the limit:
 ```bash
-docker run --cpus 8 ... rtpipeline --workers 7 ...
+docker run --cpus 8 ... rtpipeline --max-workers 7 ...
 ```
 
 ### Issue: Pipeline doesn't shut down gracefully
@@ -339,7 +339,7 @@ docker run \
   --memory-swap 16g \
   kstawiski/rtpipeline:latest \
   rtpipeline \
-    --workers 4 \
+    --max-workers 4 \
     --seg-workers 1 \
     --sequential-radiomics
 ```
@@ -350,7 +350,7 @@ docker run \
   --cpus 32 \
   kstawiski/rtpipeline:latest \
   rtpipeline \
-    --workers 31 \
+    --max-workers 31 \
     --totalseg-device cpu \
     --seg-workers 2
 ```
@@ -362,7 +362,7 @@ docker run \
   --shm-size=8g \
   kstawiski/rtpipeline:latest \
   rtpipeline \
-    --workers 15 \
+    --max-workers 15 \
     --seg-workers 1 \
     --totalseg-device gpu \
     --totalseg-force-split
