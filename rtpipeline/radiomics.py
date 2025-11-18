@@ -383,8 +383,6 @@ def _rtstruct_masks(dicom_series_path: Path, rs_path: Path) -> Dict[str, np.ndar
 def radiomics_for_course(config: PipelineConfig, course_dir: Path, custom_structures_config: Optional[Path] = None, use_cropped: bool = True) -> Optional[Path]:
     """Run pyradiomics on CT course with manual RS, RS_auto, and custom structures if present."""
 
-    _apply_radiomics_thread_limit(_resolve_thread_limit(getattr(config, 'radiomics_thread_limit', None)))
-
     course_dirs = build_course_dirs(course_dir)
     # Resume-friendly: skip if output exists
     out_path = course_dir / 'radiomics_ct.xlsx'
@@ -582,7 +580,6 @@ def _collect_total_mr_masks(series_dir: Path, seg_dir: Path) -> Dict[str, np.nda
 
 
 def radiomics_for_course_mr(config: PipelineConfig, course) -> Optional[Path]:
-    _apply_radiomics_thread_limit(_resolve_thread_limit(getattr(config, 'radiomics_thread_limit', None)))
     course_dirs = course.dirs if hasattr(course, 'dirs') else build_course_dirs(Path(course))
     mr_root = course_dirs.dicom_mr
     out_path = mr_root / 'radiomics_mr.xlsx'
@@ -745,7 +742,6 @@ def _infer_mr_weighting(series_dir: Path, series_uid: str) -> Optional[str]:
 
 
 def radiomics_for_mr_series(config: PipelineConfig, series: MRSeries) -> Optional[Path]:
-    _apply_radiomics_thread_limit(_resolve_thread_limit(getattr(config, 'radiomics_thread_limit', None)))
     # Determine weighting to toggle normalization: T2 -> False, T1 -> True, else default False
     wt = _infer_mr_weighting(series.dir, series.series_uid)
     normalize_override = True if wt == 'T1' else False if wt == 'T2' else False
@@ -885,6 +881,8 @@ def run_radiomics(config: PipelineConfig, courses: List["object"], custom_struct
     """Top-level orchestrator: per-course CT radiomics and per-series MR radiomics.
     'courses' elements are CourseOutput-like with patient_id, course_key, dirs.root.
     """
+    _apply_radiomics_thread_limit(_resolve_thread_limit(getattr(config, 'radiomics_thread_limit', None)))
+
     # Check if we can use PyRadiomics
     can_use_radiomics = _have_pyradiomics()
 

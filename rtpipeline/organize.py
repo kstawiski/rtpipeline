@@ -548,87 +548,132 @@ def _sum_doses_with_resample(
     if not dose_files:
         raise ValueError("No dose files to sum")
 
-    dose_datasets: list[pydicom.dataset.FileDataset] = [
-        pydicom.dcmread(str(path), stop_before_pixels=False)
-        for path in dose_files
-    ]
-
+    # First pass: Scan headers to find best resolution grid without loading pixels
     ref_idx = 0
     best_resolution = float("inf")
-    for i, ds in enumerate(dose_datasets):
-        if not hasattr(ds, "PixelSpacing") or len(ds.PixelSpacing) < 2:
-            continue
+    dose_headers = []
+    
+    for i, path in enumerate(dose_files):
         try:
+            ds = pydicom.dcmread(str(path), stop_before_pixels=True)
+            dose_headers.append(ds)
+            
+            if not hasattr(ds, "PixelSpacing") or len(ds.PixelSpacing) < 2:
+                continue
+                
             pixel_spacing = list(map(float, ds.PixelSpacing))
-        except Exception:
-            continue
-        slice_thickness = 1.0
-        if hasattr(ds, "GridFrameOffsetVector") and len(ds.GridFrameOffsetVector) > 1:
-            try:
-                slice_thickness = abs(float(ds.GridFrameOffsetVector[1] - ds.GridFrameOffsetVector[0]))
-            except Exception:
-                slice_thickness = 1.0
-        voxel_volume = pixel_spacing[0] * pixel_spacing[1] * slice_thickness
-        if voxel_volume < best_resolution:
-            best_resolution = voxel_volume
-            ref_idx = i
+            slice_thickness = 1.0
+            if hasattr(ds, "GridFrameOffsetVector") and len(ds.GridFrameOffsetVector) > 1:
+                try:
+                    slice_thickness = abs(float(ds.GridFrameOffsetVector[1] - ds.GridFrameOffsetVector[0]))
+                except Exception:
+                    slice_thickness = 1.0
+            
+            voxel_volume = pixel_spacing[0] * pixel_spacing[1] * slice_thickness
+            if voxel_volume < best_resolution:
+                best_resolution = voxel_volume
+                ref_idx = i
+        except Exception as e:
+            logger.warning(f"Failed to read dose header {path}: {e}")
+            dose_headers.append(None)
 
-    ds_ref = dose_datasets[ref_idx]
+    if not dose_headers or dose_headers[ref_idx] is None:
+         raise ValueError("Could not read any valid dose headers")
+
+    # Load reference dose fully
+    logger.info(f"Using {dose_files[ref_idx].name} as reference dose grid (finest resolution)")
+    ds_ref = pydicom.dcmread(str(dose_files[ref_idx]), stop_before_pixels=False)
+    
+    # Initialize accumulator with reference dose
     arr_ref = ds_ref.pixel_array.astype("float32")
     dose_scaling_ref = float(getattr(ds_ref, "DoseGridScaling", 1.0))
-    arr_ref *= dose_scaling_ref
+    accumulated = arr_ref * dose_scaling_ref
 
+    # Grid geometry of reference
     rows_ref, cols_ref = ds_ref.Rows, ds_ref.Columns
     frames_ref = int(getattr(ds_ref, "NumberOfFrames", 1) or 1)
     origin_ref = list(map(float, getattr(ds_ref, "ImagePositionPatient", [0, 0, 0])))
     pixel_spacing_ref = list(map(float, getattr(ds_ref, "PixelSpacing", [1.0, 1.0])))
     offsets_ref = getattr(ds_ref, "GridFrameOffsetVector", None)
+    
     if offsets_ref is not None and len(offsets_ref) == frames_ref:
         z_positions_ref = np.array([origin_ref[2] + float(offset) for offset in offsets_ref])
     else:
         z_positions_ref = np.array([origin_ref[2] + i for i in range(frames_ref)])
+    
     y_positions_ref = np.array([origin_ref[1] + r * pixel_spacing_ref[0] for r in range(rows_ref)])
     x_positions_ref = np.array([origin_ref[0] + c * pixel_spacing_ref[1] for c in range(cols_ref)])
 
-    accumulated = arr_ref.copy()
+    # Pre-calculate meshgrid for reference (optimization)
+    Z, Y, X = np.meshgrid(z_positions_ref, y_positions_ref, x_positions_ref, indexing="ij")
 
-    for i, ds in enumerate(dose_datasets):
+    source_dose_uids = []
+    uid = str(getattr(ds_ref, "SOPInstanceUID", ""))
+    if uid:
+        source_dose_uids.append(uid)
+        
+    # Second pass: Iteratively load and resample other doses
+    for i, path in enumerate(dose_files):
         if i == ref_idx:
             continue
-        arr = ds.pixel_array.astype("float32")
-        arr *= float(getattr(ds, "DoseGridScaling", 1.0))
+            
+        logger.debug(f"Resampling and adding dose {path.name}...")
+        try:
+            ds = pydicom.dcmread(str(path), stop_before_pixels=False)
+            
+            uid = str(getattr(ds, "SOPInstanceUID", ""))
+            if uid and uid not in source_dose_uids:
+                source_dose_uids.append(uid)
 
-        rows, cols = ds.Rows, ds.Columns
-        frames = int(getattr(ds, "NumberOfFrames", 1) or 1)
-        origin = list(map(float, getattr(ds, "ImagePositionPatient", [0, 0, 0])))
-        pixel_spacing = list(map(float, getattr(ds, "PixelSpacing", [1.0, 1.0])))
-        offsets = getattr(ds, "GridFrameOffsetVector", None)
-        if offsets is not None and len(offsets) == frames:
-            z_coords = np.array([origin[2] + float(offset) for offset in offsets])
-        else:
-            z_coords = np.array([origin[2] + j for j in range(frames)])
+            arr = ds.pixel_array.astype("float32")
+            arr *= float(getattr(ds, "DoseGridScaling", 1.0))
 
-        if frames == 1:
-            arr = arr.reshape((1, rows, cols))
+            rows, cols = ds.Rows, ds.Columns
+            frames = int(getattr(ds, "NumberOfFrames", 1) or 1)
+            origin = list(map(float, getattr(ds, "ImagePositionPatient", [0, 0, 0])))
+            pixel_spacing = list(map(float, getattr(ds, "PixelSpacing", [1.0, 1.0])))
+            offsets = getattr(ds, "GridFrameOffsetVector", None)
+            
+            if offsets is not None and len(offsets) == frames:
+                z_coords = np.array([origin[2] + float(offset) for offset in offsets])
+            else:
+                z_coords = np.array([origin[2] + j for j in range(frames)])
 
-        Z, Y, X = np.meshgrid(z_positions_ref, y_positions_ref, x_positions_ref, indexing="ij")
-        z_min, z_max = z_coords.min(), z_coords.max()
-        y_min, y_max = origin[1], origin[1] + (rows - 1) * pixel_spacing[0]
-        x_min, x_max = origin[0], origin[0] + (cols - 1) * pixel_spacing[1]
+            if frames == 1:
+                arr = arr.reshape((1, rows, cols))
 
-        Zc = np.clip(Z, z_min, z_max)
-        Yc = np.clip(Y, y_min, y_max)
-        Xc = np.clip(X, x_min, x_max)
+            # Resampling logic
+            z_min, z_max = z_coords.min(), z_coords.max()
+            y_min, y_max = origin[1], origin[1] + (rows - 1) * pixel_spacing[0]
+            x_min, x_max = origin[0], origin[0] + (cols - 1) * pixel_spacing[1]
 
-        z_idx = np.searchsorted(z_coords, Zc) - 0.5
-        y_idx = (Yc - origin[1]) / pixel_spacing[0]
-        x_idx = (Xc - origin[0]) / pixel_spacing[1]
+            Zc = np.clip(Z, z_min, z_max)
+            Yc = np.clip(Y, y_min, y_max)
+            Xc = np.clip(X, x_min, x_max)
 
-        coords = np.stack([z_idx, y_idx, x_idx], axis=0)
-        resampled = map_coordinates(arr, coords, order=1, mode="constant", cval=0.0)
-        resampled = resampled.reshape((frames_ref, rows_ref, cols_ref))
-        accumulated += resampled
+            z_idx = np.searchsorted(z_coords, Zc) - 0.5
+            y_idx = (Yc - origin[1]) / pixel_spacing[0]
+            x_idx = (Xc - origin[0]) / pixel_spacing[1]
 
+            coords = np.stack([z_idx, y_idx, x_idx], axis=0)
+            resampled = map_coordinates(arr, coords, order=1, mode="constant", cval=0.0)
+            resampled = resampled.reshape((frames_ref, rows_ref, cols_ref))
+            
+            accumulated += resampled
+            
+            # Explicitly clear large arrays to free memory
+            del ds
+            del arr
+            del resampled
+            del coords
+            
+        except Exception as e:
+            logger.error(f"Failed to resample dose {path}: {e}")
+            # Continue with partial sum or raise? Continuing preserves robustness but might be inaccurate.
+            # Given this is a summation, missing a component is critical failure.
+            raise RuntimeError(f"Dose summation failed for {path}: {e}")
+
+    # Final scaling and packing
     max_dose = float(np.nanmax(accumulated)) if accumulated.size else 0.0
     if max_dose > 1000:
         scaling_factor = 10.0
@@ -663,7 +708,7 @@ def _sum_doses_with_resample(
     if hasattr(new_ds, "PerFrameFunctionalGroupsSequence"):
         del new_ds.PerFrameFunctionalGroupsSequence
 
-    fores = {str(getattr(ds, "FrameOfReferenceUID", "")) for ds in dose_datasets if getattr(ds, "FrameOfReferenceUID", None)}
+    fores = {str(getattr(d, "FrameOfReferenceUID", "")) for d in dose_headers if d and getattr(d, "FrameOfReferenceUID", None)}
     fores.discard("")
     if fores:
         if len(fores) > 1:
@@ -686,11 +731,17 @@ def _sum_doses_with_resample(
     new_ds.ReferencedRTPlanSequence = Sequence(ref_plan_items)
 
     ref_instances: list[Dataset] = []
-    for ds in dose_datasets:
+    # Re-scan files to get SOP UIDs for reference sequence? 
+    # We have source_dose_uids collected during the loop.
+    # We can't use 'dose_datasets' list anymore as it doesn't exist.
+    # We'll construct references from the collected UIDs, assuming standard class.
+    
+    for uid in source_dose_uids:
         ref_item = Dataset()
-        ref_item.ReferencedSOPClassUID = str(getattr(ds, "SOPClassUID", "1.2.840.10008.5.1.4.1.1.481.2"))
-        ref_item.ReferencedSOPInstanceUID = str(ds.SOPInstanceUID)
+        ref_item.ReferencedSOPClassUID = "1.2.840.10008.5.1.4.1.1.481.2" # RT Dose Storage
+        ref_item.ReferencedSOPInstanceUID = uid
         ref_instances.append(ref_item)
+        
     if ref_instances:
         new_ds.ReferencedInstanceSequence = Sequence(ref_instances)
 
@@ -701,14 +752,19 @@ def _sum_doses_with_resample(
         new_ds.DoseComment = comment
     else:
         setattr(new_ds, "DoseComment", comment)
+    
+    # We no longer return the full list of dose datasets, as we don't keep them in memory.
+    # The caller logic needs to be adjusted if it expects this list.
+    # Checking usage: caller uses it to extract source_dose_uids? 
+    # Caller: "dose_sum_ds, dose_ds_list, source_dose_uids = _sum_doses_with_resample(...)"
+    # The caller ignores 'dose_ds_list' in the line: "ref_dose_item.ReferencedSOPInstanceUID = ..."
+    # Wait, looking at caller:
+    # plan_sum_ds, plan_ds_list, source_plan_uids = _create_summed_plan(...)
+    # dose_sum_ds, dose_ds_list, source_dose_uids = _sum_doses_with_resample(...)
+    # Then it just saves dose_sum_ds.
+    # So returning an empty list for the second element is fine/safer.
 
-    source_dose_uids: list[str] = []
-    for ds in dose_datasets:
-        uid = str(getattr(ds, "SOPInstanceUID", ""))
-        if uid and uid not in source_dose_uids:
-            source_dose_uids.append(uid)
-
-    return new_ds, dose_datasets, source_dose_uids
+    return new_ds, [], source_dose_uids
 
 
 def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
