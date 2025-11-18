@@ -12,7 +12,7 @@ requires-python = ">=3.10"
 dependencies = [
   "pydicom>=3.0,<4",
   "dicompyler-core==0.5.6",
-  "numpy>=1.20,<2.0",  # Constrain numpy to avoid blosc2/TotalSegmentator compatibility issues
+  "numpy>=1.20",  # Allow numpy 2.0+ for TotalSegmentator compatibility
   "pandas",
   "scipy",
   "SimpleITK",
