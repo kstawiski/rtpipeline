@@ -50,9 +50,9 @@ def _rt_env():
 
 WORKERS_CFG = config.get("workers", "auto")
 if isinstance(WORKERS_CFG, str) and WORKERS_CFG.lower() == "auto":
-    # Auto-detect: use CPU count - 2, minimum 4, maximum 32 for safety
-    detected_cpus = os.cpu_count() or 4
-    WORKERS = max(4, min(32, detected_cpus - 2))
+    # Auto-detect: use CPU count - 1 (standardized across all modules)
+    detected_cpus = os.cpu_count() or 2
+    WORKERS = max(1, detected_cpus - 1)
 else:
     WORKERS = int(WORKERS_CFG)
 
@@ -178,8 +178,8 @@ else:
 AGGREGATION_CONFIG = config.get("aggregation", {}) or {}
 _agg_threads_raw = AGGREGATION_CONFIG.get("threads")
 if isinstance(_agg_threads_raw, str) and _agg_threads_raw.lower() == "auto":
-    # Auto: use all CPUs for aggregation (I/O bound)
-    AGGREGATION_THREADS = os.cpu_count() or 4
+    # Auto: use CPU count - 1 (standardized across all modules)
+    AGGREGATION_THREADS = max(1, (os.cpu_count() or 2) - 1)
 else:
     AGGREGATION_THREADS = _coerce_int(_agg_threads_raw, None)
 if AGGREGATION_THREADS is not None and AGGREGATION_THREADS < 1:
@@ -327,9 +327,9 @@ rule segmentation_course:
     log:
         str(LOGS_DIR / "segmentation" / "{patient}_{course}.log")
     threads:
-        max(1, SEG_THREADS_PER_WORKER if SEG_THREADS_PER_WORKER is not None else WORKERS)
+        1  # GPU-safe: segmentation must be sequential
     resources:
-        seg_workers=1
+        seg_workers=1  # Ensure only 1 course runs segmentation at a time
     conda:
         "envs/rtpipeline.yaml"
     run:
@@ -394,9 +394,9 @@ rule segmentation_custom_models:
     log:
         str(LOGS_DIR / "segmentation_custom" / "{patient}_{course}.log")
     threads:
-        max(1, WORKERS)
+        1  # GPU-safe: custom model segmentation must be sequential
     resources:
-        custom_seg_workers=1
+        custom_seg_workers=1  # Ensure only 1 course runs custom segmentation at a time
     conda:
         "envs/rtpipeline.yaml"
     run:

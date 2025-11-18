@@ -668,7 +668,7 @@ def dvh_for_course(
         if not tasks:
             return
 
-        worker_cap = max(1, parallel_workers or max(1, (os.cpu_count() or 2) // 2))
+        worker_cap = max(1, parallel_workers or max(1, (os.cpu_count() or 2) - 1))
         task_results = run_tasks_with_adaptive_workers(
             f"DVH ({source})",
             tasks,
