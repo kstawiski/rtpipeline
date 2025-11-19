@@ -7,6 +7,26 @@ Modern radiotherapy departments produce a rich set of DICOM-RT objects (CT, MR, 
 
 The easiest way to run **rtpipeline** is via Docker. No complex environment setup required.
 
+### Option 1: Interactive Docker Setup (NEW - Recommended)
+
+**Use the interactive setup wizard to configure a custom Docker project:**
+
+```bash
+./setup_docker_project.sh
+```
+
+The wizard will guide you through:
+- Selecting your DICOM directory
+- Configuring analysis features (radiomics robustness, CT cropping, etc.)
+- Generating project-specific Docker configuration
+- Creating ready-to-run scripts
+
+**See the comprehensive [Docker Setup Guide](docs/DOCKER_SETUP_GUIDE.md) for detailed instructions on configuration, real-world examples, and troubleshooting.**
+
+---
+
+### Option 2: Web UI (Simplest for Beginners)
+
 **1. Create project directories:**
 ```bash
 mkdir -p Input Output Logs Uploads totalseg_weights
@@ -53,7 +73,8 @@ Drag and drop DICOM files (zipped or folders) and click **Start Processing**.
 | --- | --- |
 | `Snakefile` | Snakemake workflow orchestrating all stages. |
 | `config.yaml` | Default configuration (paths, segmentation settings, radiomics options, custom models). |
-| `setup_new_project.sh` | Interactive setup wizard for new projects with presets and validation. |
+| `setup_new_project.sh` | Interactive setup wizard for native installations. |
+| `setup_docker_project.sh` | **NEW:** Interactive Docker project setup with comprehensive configuration wizard. |
 | **User Documentation** | |
 | `GETTING_STARTED.md` | Complete beginner's guide with step-by-step instructions. |
 | `WEBUI.md` | Web UI documentation with screenshots and usage guide. |
@@ -398,13 +419,15 @@ The script rewrites patient/course identifiers, anonymises DICOM headers, update
 * **[output_format.md](output_format.md)** – Comprehensive output format reference for data analysts and AI agents
 * **[output_format_quick_ref.md](output_format_quick_ref.md)** – One-page cheat sheet with common code snippets
 * **[rtpipeline_colab.ipynb](rtpipeline_colab.ipynb)** – Google Colab notebook for GPU-accelerated processing
-* **[setup_new_project.sh](setup_new_project.sh)** – Interactive setup wizard with presets and validation
+* **[setup_new_project.sh](setup_new_project.sh)** – Interactive setup wizard for native installations
+* **[setup_docker_project.sh](setup_docker_project.sh)** – **NEW:** Interactive Docker project setup wizard
 
 ### Technical Documentation (docs/)
 * **[docs/README.md](docs/README.md)** – 📖 **Documentation index** (start here for technical guides)
 * **[docs/PIPELINE_ARCHITECTURE.md](docs/PIPELINE_ARCHITECTURE.md)** – Architecture overview and design decisions
 * **[docs/PARALLELIZATION.md](docs/PARALLELIZATION.md)** – Performance tuning and parallelization strategies
 * **[docs/DOCKER.md](docs/DOCKER.md)** – Docker deployment and compatibility guide
+* **[docs/DOCKER_SETUP_GUIDE.md](docs/DOCKER_SETUP_GUIDE.md)** – **NEW:** Comprehensive Docker setup guide with configuration examples and real-world workflows
 * **[docs/SECURITY.md](docs/SECURITY.md)** – **Security guide for production deployments**
 * **[docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)** – Debugging hangs, timeouts, and common issues
 * **[docs/custom_models.md](docs/custom_models.md)** – nnUNet configuration schema and examples
@@ -417,12 +440,13 @@ The script rewrites patient/course identifiers, anonymises DICOM headers, update
 ### Quick Links by Task
 * 🚀 **New user?** → [GETTING_STARTED.md](GETTING_STARTED.md)
 * 🌐 **Using Web UI?** → [WEBUI.md](WEBUI.md)
-* ⚙️ **Setting up new project?** → `./setup_new_project.sh`
+* 🐳 **Setting up Docker project?** → `./setup_docker_project.sh` or [Docker Setup Guide](docs/DOCKER_SETUP_GUIDE.md)
+* ⚙️ **Setting up native project?** → `./setup_new_project.sh`
 * ☁️ **Want GPU in cloud?** → [rtpipeline_colab.ipynb](rtpipeline_colab.ipynb)
 * 📊 **Analyzing results?** → [output_format_quick_ref.md](output_format_quick_ref.md)
 * 🔧 **Performance issues?** → [docs/PARALLELIZATION.md](docs/PARALLELIZATION.md)
 * 🐛 **Pipeline hanging?** → [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)
-* 🐳 **Docker problems?** → [docs/DOCKER.md](docs/DOCKER.md)
+* 🐳 **Docker problems?** → [docs/DOCKER.md](docs/DOCKER.md) or [Docker Setup Guide](docs/DOCKER_SETUP_GUIDE.md)
 * 🔐 **Production deployment?** → [docs/SECURITY.md](docs/SECURITY.md)
 
 ### Radiomics Robustness References
