@@ -27,11 +27,15 @@ WORKDIR /app
 COPY envs/ /app/envs/
 COPY third_party/ /app/third_party/
 
-# Create conda environments
+# Create conda environments with aggressive cleanup
 RUN mamba env create -f /app/envs/rtpipeline.yaml && \
     mamba env create -f /app/envs/rtpipeline-radiomics.yaml && \
     mamba env create -f /app/envs/rtpipeline-custom-models.yaml && \
-    mamba clean -afy
+    mamba clean -afy && \
+    find /opt/conda -follow -type f -name '*.a' -delete && \
+    find /opt/conda -follow -type f -name '*.pyc' -delete && \
+    find /opt/conda -follow -type f -name '*.js.map' -delete && \
+    rm -rf /opt/conda/pkgs/*
 
 # Stage 2: Runtime
 FROM condaforge/mambaforge:24.3.0-0
@@ -48,7 +52,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PATH=/opt/conda/bin:$PATH \
     LD_LIBRARY_PATH=/opt/conda/lib
 
-# Install runtime dependencies including tini and GL libraries
+# Install runtime dependencies, create user, and setup directories in one layer
 RUN apt-get update && apt-get install -y --no-install-recommends \
     tini \
     libgl1-mesa-glx \
@@ -61,7 +65,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     pigz \
     curl \
     procps \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* && \
+    groupadd -r rtpipeline && \
+    useradd -r -g rtpipeline -u 1000 -m rtpipeline && \
+    mkdir -p \
+    /data/input \
+    /data/output \
+    /data/logs \
+    /data/models \
+    /data/uploads \
+    /tmp/cache \
+    /app && \
+    chown -R rtpipeline:rtpipeline /data /tmp/cache /app
 
 # Use tini as init system
 ENTRYPOINT ["/usr/bin/tini", "--"]
@@ -88,25 +103,16 @@ RUN mamba install -y -c conda-forge -c bioconda \
     openpyxl \
     pynetdicom \
     libstdcxx-ng \
-    && mamba clean -afy
+    && mamba clean -afy && \
+    find /opt/conda -follow -type f -name '*.a' -delete && \
+    find /opt/conda -follow -type f -name '*.pyc' -delete && \
+    find /opt/conda -follow -type f -name '*.js.map' -delete && \
+    rm -rf /opt/conda/pkgs/*
 
 # Copy conda environments from builder
 COPY --from=builder /opt/conda/envs /opt/conda/envs
 
-# Create non-root user
-RUN groupadd -r rtpipeline && \
-    useradd -r -g rtpipeline -u 1000 -m rtpipeline
 
-# Create professional directory structure with correct permissions
-RUN mkdir -p \
-    /data/input \
-    /data/output \
-    /data/logs \
-    /data/models \
-    /data/uploads \
-    /tmp/cache \
-    /app && \
-    chown -R rtpipeline:rtpipeline /data /tmp/cache /app
 
 # Copy custom models into the image
 # This ensures the image is self-contained

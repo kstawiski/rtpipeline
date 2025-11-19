@@ -3,29 +3,26 @@
 Modern radiotherapy departments produce a rich set of DICOM-RT objects (CT, MR, RTPLAN, RTDOSE, RTSTRUCT, REG).
 **rtpipeline** turns those raw exports into analysis-ready data tables, volumetric masks, DVH metrics, and quality-control reports, while keeping a reproducible record of every step. The workflow is implemented with **Snakemake** and the companion **rtpipeline** Python package.
 
-## 🚀 Quick Start
+## 🚀 Quick Start (Recommended)
 
-**New to rtpipeline?** Start here:
+The easiest way to run **rtpipeline** is via Docker. No complex environment setup required.
 
+**1. Create project directories:**
 ```bash
-# 1. Start the container with Web UI
-docker-compose up -d
-
-# 2. Open your browser to http://localhost:8080
-
-# 3. Drag and drop your DICOM files
-
-# 4. Click "Start Processing"
-
-# 5. Download your results when complete
+mkdir -p Input Output Logs Uploads totalseg_weights
 ```
 
-📖 **[Getting Started Guide](GETTING_STARTED.md)** - Complete beginner's guide
-🌐 **[Web UI Documentation](WEBUI.md)** - Detailed Web UI features and usage
-🤖 **[Output Format Guide](output_format.md)** - AI agent guide to understanding pipeline output
-📄 **[Quick Reference](output_format_quick_ref.md)** - One-page cheat sheet for common tasks
-⚙️ **[Interactive Setup Script](setup_new_project.sh)** - Quick setup for new DICOM directories
-☁️ **[Google Colab Notebook](rtpipeline_colab.ipynb)** - Run pipeline in Google Colab with GPU
+**2. Start the pipeline (GPU enabled):**
+```bash
+# Make sure you have docker-compose installed
+docker-compose up -d
+```
+
+**3. Open the Web UI:**
+Navigate to [http://localhost:8080](http://localhost:8080) in your browser.
+
+**4. Process your data:**
+Drag and drop DICOM files (zipped or folders) and click **Start Processing**.
 
 ---
 
@@ -108,329 +105,83 @@ Aggregated workbooks (DVH, radiomics CT/MR, fractions, metadata, QC) are collect
 
 ---
 
-## Pipeline Stages
+## Docker Deployment (Primary)
 
-1. **Organise (`organize_courses`)**
-   * Identifies patient courses, copies relevant CT/RT/MR DICOM objects.
-   * Converts CT and MR series to compressed NIfTI (`.nii.gz`) with metadata.
-   * Logs course-level metadata (`case_metadata.json` / `.xlsx`).
-2. **Segment (`segmentation_course`)**
-   * Runs TotalSegmentator `total` on CT volumes.
-   * For each MR NIfTI in `<course>/MR/<series>/NIFTI/`, runs TotalSegmentator `total_mr` and stores results under the same `MR/<series>/Segmentation_TotalSegmentator/`.
-3. **Custom segmentation (`segmentation_custom_models`)**
-   * Executes every model declared in `custom_models/` (NNUnet v1/v2, ensembles).
-   * Writes masks & RTSTRUCT per course under `Segmentation_CustomModels/<model>/`.
-4. **DVH (`dvh_course`)**
-   * Computes DVH metrics for manual, TotalSegmentator (CT & MR), custom structures, and nnUNet outputs.
-   * Saves per-course `dvh_metrics.xlsx`; aggregator merges into `_RESULTS/dvh_metrics.xlsx`.
-5. **Radiomics (`radiomics_course`)**
-   * CT: PyRadiomics (using `radiomics_params.yaml`) generates `radiomics_ct.xlsx`.
-   * MR: PyRadiomics (using `radiomics_params_mr.yaml`) generates `MR/radiomics_mr.xlsx`, aggregated to `_RESULTS/radiomics_mr.xlsx`.
-6. **Radiomics robustness (`radiomics_robustness_course`)**
-   * Generates systematic perturbations (noise, translations, contour randomisation, ±15/30% volume adaptation) for configured structures and segmentation sources.[^radiomics-ntcv]
-   * Re-extracts features with the project radiomics settings, stores perturbation-level parquet files, and aggregates cohort-level ICC(3,1), CoV, QCD, and stability tiers in `_RESULTS/radiomics_robustness_summary.xlsx`.[^radiomics-thresholds][^radiomics-bootstrap]
-7. **Quality control (`qc_course`)**
-   * Emits JSON reports and `_RESULTS/qc_reports.xlsx`.
-8. **Aggregation (`aggregate_results`)**
-   * Collates DVH, radiomics (CT/MR), fractions, metadata, QC into `_RESULTS/`.
+**Prerequisites:**
+- Docker Engine and Docker Compose.
+- NVIDIA Drivers and NVIDIA Container Toolkit (for GPU acceleration).
+- ~20 GB free disk space for the image and models.
 
-All stages write sentinel files (`.organized`, `.segmentation_done`, `.custom_models_done`, etc.) to allow incremental reruns.
+### 1. Standard Setup (Docker Compose)
 
----
+This method starts the Web UI service and handles all volume mounts automatically.
 
-## Running the Workflow
-
-### Interactive Setup (Quick Start for New Projects)
-
-For setting up the pipeline in a new directory with your own DICOM files:
-
+**Preparation:**
 ```bash
-# Interactive mode (recommended for first-time users)
-./setup_new_project.sh
-
-# Quick mode with sensible defaults
-./setup_new_project.sh --quick /path/to/dicom
-
-# Use preset for specific anatomy (prostate, lung, brain, head_neck, thorax)
-./setup_new_project.sh --preset prostate
-
-# Preview configuration without creating files
-./setup_new_project.sh --preset lung --dry-run
-
-# Validate existing configuration
-./setup_new_project.sh --validate /path/to/config.yaml
-```
-
-**Features:**
-- ✅ Automatic prerequisites checking (Python, conda, Docker, GPU)
-- ✅ Interactive configuration with explanations
-- ✅ Preset configurations for common anatomies
-- ✅ Dry-run mode for previewing settings
-- ✅ Configuration validation
-- ✅ Progress saving and resume capability
-- ✅ Bug fixes for path handling and error recovery
-
-This is the recommended approach for first-time users or when setting up processing for a new dataset.
-
-### Docker / Singularity (Recommended)
-
-rtpipeline is fully containerized for easy deployment. Both Docker and Singularity are supported.
-
-#### Docker Setup
-
-**0. Prepare host directories (do once):**
-```bash
+# Create required data directories
 mkdir -p Input Output Logs Uploads totalseg_weights
 ```
 
-- (Optional) **Seed TotalSegmentator weights** once to avoid the first-run download:
-  ```bash
-  docker run --rm --gpus all \
-    -v $(pwd)/Example_data:/data/input:ro \
-    -v $(pwd)/totalseg_weights:/root/.totalsegmentator \
-    kstawiski/rtpipeline:latest \
-    TotalSegmentator -i /data/input/480008 -o /tmp/out --preview
-  ```
-  The preview run downloads all required nnU-Net weights into `totalseg_weights/` which the pipeline will reuse.
-
-**1. Build the image:**
+**Run (GPU Mode):**
 ```bash
-./build.sh
-```
-
-**2. Run with docker-compose (GPU - DEFAULT):**
-```bash
-# Start the container with GPU support (default)
 docker-compose up -d
-
-# Access the container
-docker exec -it rtpipeline bash
-
-# Inside container: run pipeline with container config
-snakemake --cores all --use-conda --configfile /app/config.container.yaml
 ```
+Access the UI at [http://localhost:8080](http://localhost:8080).
 
-**3. Run with docker-compose (CPU-only):**
+**Run (CPU-Only Mode):**
+For systems without NVIDIA GPUs:
 ```bash
-# For systems without GPU, use the cpu-only profile
 docker-compose --profile cpu-only up -d
-docker exec -it rtpipeline-cpu bash
 ```
 
-**4. Web UI (NEW - Recommended for most users):**
+### 2. Advanced: CLI Usage
 
-rtpipeline now includes a browser-based web interface for easy file upload and job management:
+You can run the pipeline purely from the command line without the Web UI.
 
 ```bash
-# Start the container with Web UI (GPU mode)
-docker-compose up -d
-
-# Or CPU-only mode
-docker-compose --profile cpu-only up -d
-
-# Access the Web UI in your browser:
-# http://localhost:8080
-```
-
-**Features:**
-- 🎯 Drag-and-drop DICOM upload (.dcm, .zip, directories, DICOMDIR)
-- ✅ Automatic DICOM validation with suggestions
-- ⚙️ Configurable processing options (segmentation, radiomics, CT cropping)
-- 📊 Real-time progress monitoring
-- 📥 One-click results download
-- 🔍 Integrated log viewer
-
-See [WEBUI.md](WEBUI.md) for complete documentation.
-
-**5. Run standalone container:**
-```bash
-# With GPU support (requires nvidia-docker or Docker >=19.03 with nvidia-container-toolkit)
-docker run -it --rm --gpus all --shm-size=4g \
+# Run with GPU support
+docker run -it --rm --gpus all --shm-size=8g \
   -v $(pwd)/Input:/data/input:ro \
   -v $(pwd)/Output:/data/output:rw \
   -v $(pwd)/Logs:/data/logs:rw \
   -v $(pwd)/totalseg_weights:/home/rtpipeline/.totalsegmentator:rw \
-  kstawiski/rtpipeline:latest bash
-
-# Inside container, run pipeline with container config:
-snakemake --cores all --use-conda --configfile /app/config.container.yaml
-
-# CPU-only (no GPU)
-docker run -it --rm --shm-size=4g \
-  -v $(pwd)/Input:/data/input:ro \
-  -v $(pwd)/Output:/data/output:rw \
-  -v $(pwd)/totalseg_weights:/home/rtpipeline/.totalsegmentator:rw \
-  kstawiski/rtpipeline:latest bash
-```
-
-> **GPU note**: the container automatically limits TotalSegmentator to single-process preprocessing/export to avoid Docker multiprocessing issues. You can adjust these defaults via `config.yaml` if you have ample GPU RAM.
-
-**6. Build and push to Docker Hub:**
-```bash
-./build.sh --push --tag latest
-```
-
-**7. Pull from Docker Hub:**
-```bash
-docker pull kstawiski/rtpipeline:latest
-```
-
-#### Singularity Setup
-
-rtpipeline fully supports Singularity for HPC and secure computing environments.
-
-**1. Pull from Docker Hub (Recommended):**
-```bash
-# Quick start - pull pre-built image
-singularity pull rtpipeline.sif docker://kstawiski/rtpipeline:latest
-```
-
-**2. Alternative Build Methods:**
-```bash
-# From local Docker image
-singularity build rtpipeline.sif docker-daemon://kstawiski/rtpipeline:latest
-
-# From definition file (advanced - requires repo files)
-singularity build --fakeroot rtpipeline.sif rtpipeline.def
-```
-
-**3. Interactive Shell:**
-```bash
-singularity shell --nv \
-  --bind $(pwd)/Input:/data/input:ro \
-  --bind $(pwd)/Output:/data/output:rw \
-  --bind $(pwd)/Logs:/data/logs:rw \
-  rtpipeline.sif
-```
-
-**4. Execute Pipeline:**
-```bash
-# With GPU support
-singularity exec --nv \
-  --bind $(pwd)/Input:/data/input:ro \
-  --bind $(pwd)/Output:/data/output:rw \
-  rtpipeline.sif \
+  kstawiski/rtpipeline:latest \
   snakemake --cores all --use-conda --configfile /app/config.container.yaml
-
-# CPU-only
-singularity exec \
-  --bind $(pwd)/Input:/data/input:ro \
-  --bind $(pwd)/Output:/data/output:rw \
-  rtpipeline.sif \
-  snakemake --cores 16 --use-conda --configfile /app/config.container.yaml
 ```
 
-**5. Web UI Mode:**
+### 3. Singularity (HPC / SLURM)
+
+Ideal for academic clusters where Docker is not available.
+
 ```bash
-# Start web UI in Singularity
-singularity run --nv \
-  --bind $(pwd)/Uploads:/data/uploads:rw \
-  --bind $(pwd)/Input:/data/input:rw \
-  --bind $(pwd)/Output:/data/output:rw \
-  --bind $(pwd)/Logs:/data/logs:rw \
-  rtpipeline.sif
-
-# Access at http://localhost:8080
-```
-
-**6. HPC/SLURM Example:**
-```bash
-#!/bin/bash
-#SBATCH --job-name=rtpipeline
-#SBATCH --nodes=1
-#SBATCH --ntasks=1
-#SBATCH --cpus-per-task=16
-#SBATCH --mem=64G
-#SBATCH --time=48:00:00
-#SBATCH --gres=gpu:1  # Optional: request GPU
-
-module load singularity
-
-# Set your data paths
-INPUT_DIR=/path/to/your/dicom/data
-OUTPUT_DIR=/scratch/$USER/rtpipeline_output
-LOGS_DIR=/scratch/$USER/rtpipeline_logs
-
-# Create directories
-mkdir -p $OUTPUT_DIR $LOGS_DIR
+# Pull image
+singularity pull rtpipeline.sif docker://kstawiski/rtpipeline:latest
 
 # Run pipeline
 singularity exec --nv \
-  --bind ${INPUT_DIR}:/data/input:ro \
-  --bind ${OUTPUT_DIR}:/data/output:rw \
-  --bind ${LOGS_DIR}:/data/logs:rw \
-  rtpipeline.sif \
-  snakemake --cores $SLURM_CPUS_PER_TASK --use-conda --configfile /app/config.container.yaml
-
-echo "Pipeline completed at $(date)"
-```
-
-**7. Advanced: Persistent TotalSegmentator Weights Cache**
-```bash
-# Create overlay for caching weights
-singularity overlay create --size 10240 totalseg_cache.img
-
-# Use overlay to persist weights across runs
-singularity exec --nv \
-  --overlay totalseg_cache.img \
   --bind $(pwd)/Input:/data/input:ro \
   --bind $(pwd)/Output:/data/output:rw \
+  --bind $(pwd)/Logs:/data/logs:rw \
   rtpipeline.sif \
   snakemake --cores all --use-conda --configfile /app/config.container.yaml
 ```
+See [docs/DOCKER.md](docs/DOCKER.md) for detailed Singularity and SLURM instructions.
 
-For comprehensive Singularity documentation, see [docs/DOCKER.md](docs/DOCKER.md).
+---
 
-#### Jupyter Notebook (Optional)
+## Alternative Installation Methods
 
+### Interactive Setup Script
+For local native installations (developers only):
 ```bash
-# Start Jupyter service
-docker-compose --profile jupyter up -d
-
-# Access at http://localhost:8888
+./setup_new_project.sh
 ```
+This script verifies local dependencies (Python 3.11+, Conda, GPU) and generates a `config.yaml`.
 
-### Native Installation
-
-1. **Prerequisites**
-   * Python ≥ 3.11, Snakemake `>=7`.
-   * Conda (or mamba) with `channel_priority strict`.
-   * GPU strongly recommended for TotalSegmentator/nnUNet jobs.
-
-2. **Initial run**
-   ```bash
-   ./test.sh            # convenience script: unlock + snakemake --cores all --use-conda
-   ```
-
-3. **Manual invocations**
-   ```bash
-   # organise DICOM into course layout (CT + MR)
-   snakemake --cores 8 organize_courses
-
-   # run segmentation (CT TotalSegmentator + MR total_mr)
-   snakemake --cores 8 segmentation_course
-
-   # run custom nnUNet models
-   snakemake --cores 4 segmentation_custom_models
-
-   # compute DVH + radiomics (CT & MR)
-   snakemake --cores 8 dvh_course radiomics_course
-
-   # combine results
-   snakemake --cores 4 aggregate_results
-   ```
-
-4. **Selective reruns**
-   ```bash
-   snakemake --cores 4 --force segmentation_custom_models  # rerun custom models
-   snakemake --cores 4 --force radiomics_course            # recompute radiomics only
-   ```
-
-5. **Cleaning**
-   ```bash
-   rm -rf Data_Snakemake/*/*/{NIFTI,Segmentation_TotalSegmentator,Segmentation_CustomModels,MR}
-   snakemake --cores 8 organize_courses segmentation_course  # rebuild
-   ```
+### Manual Native Installation
+1.  Install Python >= 3.11 and Snakemake >= 7.
+2.  Ensure Conda/Mamba is available.
+3.  Run: `snakemake --cores all --use-conda`
 
 ---
 
