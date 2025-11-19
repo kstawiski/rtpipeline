@@ -198,7 +198,13 @@ def _isolated_radiomics_extraction(task_data: Tuple[str, Dict[str, Any]]) -> Opt
         res = ext.execute(img, m_img)
 
         # Convert results to serializable format
-        rec = {k: (float(v) if isinstance(v, (int, float, np.floating)) else str(v)) for k, v in res.items()}
+        rec = {}
+        for k, v in res.items():
+            try:
+                rec[k] = float(v)
+            except (ValueError, TypeError):
+                rec[k] = str(v)
+                
         patient_id = course_dir.parent.name if course_dir.parent != course_dir else course_dir.name
         rec.update({
             'modality': 'CT',
