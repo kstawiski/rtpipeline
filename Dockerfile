@@ -114,6 +114,9 @@ COPY --from=builder /opt/conda/envs /opt/conda/envs
 
 
 
+# Copy TotalSegmentator weights for offline support
+COPY --chown=rtpipeline:rtpipeline totalseg_weights/ /home/rtpipeline/.totalsegmentator/
+
 # Copy custom models into the image
 # This ensures the image is self-contained
 COPY --chown=rtpipeline:rtpipeline custom_models /data/models/
