@@ -444,8 +444,6 @@ checkpoint organize_courses:
         str(LOGS_DIR / "stage_organize.log")
     threads:
         SNAKEMAKE_THREADS
-    conda:
-        "envs/rtpipeline.yaml"
     run:
         import subprocess
 
@@ -514,125 +512,171 @@ checkpoint organize_courses:
         manifest_path.write_text(json.dumps({"courses": courses}, indent=2), encoding="utf-8")
 
 
-rule segmentation_course:
-    input:
-        manifest=_manifest_input,
-        organized=ORGANIZED_SENTINEL_PATTERN
-    output:
-        sentinel=SEGMENTATION_SENTINEL_PATTERN
-    log:
-        str(LOGS_DIR / "segmentation" / "{patient}_{course}.log")
-    threads:
-        4
-    resources:
-        seg_workers=1
-    conda:
-        "envs/rtpipeline.yaml"
-    run:
-        import subprocess
-        job_threads = max(1, threads)
-        sentinel_path = Path(output.sentinel)
-        sentinel_path.parent.mkdir(parents=True, exist_ok=True)
-        log_path = Path(log[0])
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        env = _rt_env()
-        cmd = [
-            sys.executable,
-            "-m",
-            "rtpipeline.cli",
-            "--dicom-root", str(DICOM_ROOT),
-            "--outdir", str(OUTPUT_DIR),
-            "--logs", str(LOGS_DIR),
-            "--stage", "segmentation",
-            "--course-filter", f"{wildcards.patient}/{wildcards.course}",
-        ]
-        cmd.extend(_max_worker_args(job_threads))
-        cmd.extend(["--manifest", str(input.manifest)])
-        if SEG_TEMP_DIR:
-            cmd.extend(["--seg-temp-dir", SEG_TEMP_DIR])
-        if SEG_FAST:
-            cmd.append("--totalseg-fast")
-        for model in SEG_EXTRA_MODELS:
-            cmd.extend(["--extra-seg-models", model])
-        if SEG_ROI_SUBSET:
-            cmd.extend(["--totalseg-roi-subset", SEG_ROI_SUBSET])
-        if SEG_DEVICE:
-            cmd.extend(["--totalseg-device", SEG_DEVICE])
-        if SEG_FORCE_SPLIT:
-            cmd.append("--totalseg-force-split")
-        else:
-            cmd.append("--no-totalseg-force-split")
-        if SEG_NR_THR_RESAMP is not None and SEG_NR_THR_RESAMP > 0:
-            cmd.extend(["--totalseg-nr-thr-resamp", str(SEG_NR_THR_RESAMP)])
-        if SEG_NR_THR_SAVING is not None and SEG_NR_THR_SAVING > 0:
-            cmd.extend(["--totalseg-nr-thr-saving", str(SEG_NR_THR_SAVING)])
-        if SEG_NUM_PROC_PRE is not None and SEG_NUM_PROC_PRE > 0:
-            cmd.extend(["--totalseg-num-proc-pre", str(SEG_NUM_PROC_PRE)])
-        if SEG_NUM_PROC_EXPORT is not None and SEG_NUM_PROC_EXPORT > 0:
-            cmd.extend(["--totalseg-num-proc-export", str(SEG_NUM_PROC_EXPORT)])
-        if SEG_MAX_WORKERS:
-            cmd.extend(["--seg-workers", str(max(1, SEG_MAX_WORKERS))])
-        if SEG_FORCE_SEGMENTATION:
-            cmd.append("--force-segmentation")
-        with log_path.open("w") as logf:
-            subprocess.run(cmd, check=True, stdout=logf, stderr=subprocess.STDOUT, env=env)
-        sentinel_path.write_text("ok\n", encoding="utf-8")
+_seg_params_lambda = lambda w: (
+    (f"--seg-temp-dir '{SEG_TEMP_DIR}' " if SEG_TEMP_DIR else "") +
+    ("--totalseg-fast " if SEG_FAST else "") +
+    " ".join(f"--extra-seg-models '{m}'" for m in SEG_EXTRA_MODELS) + " " +
+    (f"--totalseg-roi-subset '{SEG_ROI_SUBSET}' " if SEG_ROI_SUBSET else "") +
+    (f"--totalseg-device '{SEG_DEVICE}' " if SEG_DEVICE else "") +
+    ("--totalseg-force-split " if SEG_FORCE_SPLIT else "--no-totalseg-force-split ") +
+    (f"--totalseg-nr-thr-resamp {SEG_NR_THR_RESAMP} " if SEG_NR_THR_RESAMP else "") +
+    (f"--totalseg-nr-thr-saving {SEG_NR_THR_SAVING} " if SEG_NR_THR_SAVING else "") +
+    (f"--totalseg-num-proc-pre {SEG_NUM_PROC_PRE} " if SEG_NUM_PROC_PRE else "") +
+    (f"--totalseg-num-proc-export {SEG_NUM_PROC_EXPORT} " if SEG_NUM_PROC_EXPORT else "") +
+    (f"--seg-workers {max(1, SEG_MAX_WORKERS)} " if SEG_MAX_WORKERS else "") +
+    ("--force-segmentation" if SEG_FORCE_SEGMENTATION else "")
+)
+
+if config.get("container_mode", False):
+    rule segmentation_course:
+        input:
+            manifest=_manifest_input,
+            organized=ORGANIZED_SENTINEL_PATTERN
+        output:
+            sentinel=SEGMENTATION_SENTINEL_PATTERN
+        log:
+            str(LOGS_DIR / "segmentation" / "{patient}_{course}.log")
+        threads:
+            4
+        resources:
+            seg_workers=1
+        params:
+            extra_args=_seg_params_lambda
+        shell:
+            """
+            export PATH="/opt/conda/envs/rtpipeline/bin:$PATH"
+            
+            /opt/conda/envs/rtpipeline/bin/python -m rtpipeline.cli \
+                --dicom-root "{DICOM_ROOT}" \
+                --outdir "{OUTPUT_DIR}" \
+                --logs "{LOGS_DIR}" \
+                --stage segmentation \
+                --course-filter "{wildcards.patient}/{wildcards.course}" \
+                --max-workers {threads} \
+                --manifest "{input.manifest}" \
+                {params.extra_args} > {log} 2>&1
+            
+            echo "ok" > {output.sentinel}
+            """
+else:
+    rule segmentation_course:
+        input:
+            manifest=_manifest_input,
+            organized=ORGANIZED_SENTINEL_PATTERN
+        output:
+            sentinel=SEGMENTATION_SENTINEL_PATTERN
+        log:
+            str(LOGS_DIR / "segmentation" / "{patient}_{course}.log")
+        threads:
+            4
+        resources:
+            seg_workers=1
+        conda:
+            "envs/rtpipeline.yaml"
+        params:
+            extra_args=_seg_params_lambda
+        shell:
+            """
+            python -m rtpipeline.cli \
+                --dicom-root "{DICOM_ROOT}" \
+                --outdir "{OUTPUT_DIR}" \
+                --logs "{LOGS_DIR}" \
+                --stage segmentation \
+                --course-filter "{wildcards.patient}/{wildcards.course}" \
+                --max-workers {threads} \
+                --manifest "{input.manifest}" \
+                {params.extra_args} > {log} 2>&1
+            
+            echo "ok" > {output.sentinel}
+            """
 
 
-rule segmentation_custom_models:
-    input:
-        manifest=_manifest_input,
-        segmentation=SEGMENTATION_SENTINEL_PATTERN
-    output:
-        sentinel=CUSTOM_SEG_SENTINEL_PATTERN
-    log:
-        str(LOGS_DIR / "segmentation_custom" / "{patient}_{course}.log")
-    threads:
-        4
-    resources:
-        custom_seg_workers=1
-    conda:
-        "envs/rtpipeline.yaml"
-    run:
-        import subprocess
-        job_threads = max(1, threads)
-        sentinel_path = Path(output.sentinel)
-        sentinel_path.parent.mkdir(parents=True, exist_ok=True)
-        log_path = Path(log[0])
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        if not CUSTOM_MODELS_ENABLED:
-            sentinel_path.write_text("disabled\n", encoding="utf-8")
-            return
-        env = _rt_env()
-        cmd = [
-            sys.executable,
-            "-m",
-            "rtpipeline.cli",
-            "--dicom-root", str(DICOM_ROOT),
-            "--outdir", str(OUTPUT_DIR),
-            "--logs", str(LOGS_DIR),
-            "--stage", "segmentation_custom",
-            "--course-filter", f"{wildcards.patient}/{wildcards.course}",
-        ]
-        cmd.extend(_max_worker_args(job_threads))
-        if CUSTOM_MODELS_ROOT:
-            cmd.extend(["--custom-models-root", CUSTOM_MODELS_ROOT])
-        if CUSTOM_MODELS_SELECTED:
-            for name in CUSTOM_MODELS_SELECTED:
-                cmd.extend(["--custom-model", name])
-        if CUSTOM_MODELS_FORCE:
-            cmd.append("--force-custom-models")
-        if CUSTOM_MODELS_WORKERS:
-            cmd.extend(["--custom-model-workers", str(max(1, CUSTOM_MODELS_WORKERS))])
-        if CUSTOM_MODELS_PREDICT:
-            cmd.extend(["--nnunet-predict", CUSTOM_MODELS_PREDICT])
-        if CUSTOM_MODELS_CONDA:
-            cmd.extend(["--custom-model-conda-activate", CUSTOM_MODELS_CONDA])
-        if not CUSTOM_MODELS_RETAIN:
-            cmd.append("--purge-custom-model-weights")
-        with log_path.open("w") as logf:
-            subprocess.run(cmd, check=True, stdout=logf, stderr=subprocess.STDOUT, env=env)
-        sentinel_path.write_text("ok\n", encoding="utf-8")
+_custom_params_lambda = lambda w: (
+    (f"--custom-models-root '{CUSTOM_MODELS_ROOT}' " if CUSTOM_MODELS_ROOT else "") +
+    " ".join(f"--custom-model '{m}'" for m in CUSTOM_MODELS_SELECTED) + " " +
+    ("--force-custom-models " if CUSTOM_MODELS_FORCE else "") +
+    (f"--custom-model-workers {max(1, CUSTOM_MODELS_WORKERS)} " if CUSTOM_MODELS_WORKERS else "") +
+    (f"--nnunet-predict '{CUSTOM_MODELS_PREDICT}' " if CUSTOM_MODELS_PREDICT else "") +
+    (f"--custom-model-conda-activate '{CUSTOM_MODELS_CONDA}' " if CUSTOM_MODELS_CONDA else "") +
+    ("--purge-custom-model-weights " if not CUSTOM_MODELS_RETAIN else "")
+)
+
+if config.get("container_mode", False):
+    rule segmentation_custom_models:
+        input:
+            manifest=_manifest_input,
+            segmentation=SEGMENTATION_SENTINEL_PATTERN
+        output:
+            sentinel=CUSTOM_SEG_SENTINEL_PATTERN
+        log:
+            str(LOGS_DIR / "segmentation_custom" / "{patient}_{course}.log")
+        threads:
+            4
+        resources:
+            custom_seg_workers=1
+        params:
+            enabled=str(CUSTOM_MODELS_ENABLED),
+            extra_args=_custom_params_lambda
+        shell:
+            """
+            mkdir -p $(dirname {output.sentinel})
+            
+            if [ "{params.enabled}" = "False" ]; then
+                echo "disabled" > {output.sentinel}
+                exit 0
+            fi
+            
+            export PATH="/opt/conda/envs/rtpipeline/bin:$PATH"
+            
+            /opt/conda/envs/rtpipeline/bin/python -m rtpipeline.cli \
+                --dicom-root "{DICOM_ROOT}" \
+                --outdir "{OUTPUT_DIR}" \
+                --logs "{LOGS_DIR}" \
+                --stage segmentation_custom \
+                --course-filter "{wildcards.patient}/{wildcards.course}" \
+                --max-workers {threads} \
+                {params.extra_args} > {log} 2>&1
+            
+            echo "ok" > {output.sentinel}
+            """
+else:
+    rule segmentation_custom_models:
+        input:
+            manifest=_manifest_input,
+            segmentation=SEGMENTATION_SENTINEL_PATTERN
+        output:
+            sentinel=CUSTOM_SEG_SENTINEL_PATTERN
+        log:
+            str(LOGS_DIR / "segmentation_custom" / "{patient}_{course}.log")
+        threads:
+            4
+        resources:
+            custom_seg_workers=1
+        conda:
+            "envs/rtpipeline.yaml"
+        params:
+            enabled=str(CUSTOM_MODELS_ENABLED),
+            extra_args=_custom_params_lambda
+        shell:
+            """
+            mkdir -p $(dirname {output.sentinel})
+            
+            if [ "{params.enabled}" = "False" ]; then
+                echo "disabled" > {output.sentinel}
+                exit 0
+            fi
+            
+            python -m rtpipeline.cli \
+                --dicom-root "{DICOM_ROOT}" \
+                --outdir "{OUTPUT_DIR}" \
+                --logs "{LOGS_DIR}" \
+                --stage segmentation_custom \
+                --course-filter "{wildcards.patient}/{wildcards.course}" \
+                --max-workers {threads} \
+                {params.extra_args} > {log} 2>&1
+            
+            echo "ok" > {output.sentinel}
+            """
 
 
 rule crop_ct_course:
@@ -646,8 +690,6 @@ rule crop_ct_course:
         str(LOGS_DIR / "crop_ct" / "{patient}_{course}.log")
     threads:
         SNAKEMAKE_THREADS
-    conda:
-        "envs/rtpipeline.yaml"
     run:
         import subprocess
         job_threads = max(1, threads)
@@ -686,8 +728,6 @@ rule dvh_course:
         str(LOGS_DIR / "dvh" / "{patient}_{course}.log")
     threads:
         DVH_RULE_THREADS
-    conda:
-        "envs/rtpipeline.yaml"
     run:
         import subprocess
         job_threads = max(1, threads)
@@ -714,56 +754,75 @@ rule dvh_course:
         sentinel_path.write_text("ok\n", encoding="utf-8")
 
 
-rule radiomics_course:
-    input:
-        manifest=_manifest_input,
-        segmentation=SEGMENTATION_SENTINEL_PATTERN,
-        custom=CUSTOM_SEG_SENTINEL_PATTERN,
-        crop=CROP_CT_SENTINEL_PATTERN
-    output:
-        sentinel=RADIOMICS_SENTINEL_PATTERN
-    log:
-        str(LOGS_DIR / "radiomics" / "{patient}_{course}.log")
-    threads:
-        RAD_RULE_THREADS
-    conda:
-        "envs/rtpipeline-radiomics.yaml"
-    run:
-        import subprocess
-        job_threads = max(1, threads)
-        sentinel_path = Path(output.sentinel)
-        sentinel_path.parent.mkdir(parents=True, exist_ok=True)
-        log_path = Path(log[0])
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        env = _rt_env()
-        cmd = [
-            sys.executable,
-            "-m",
-            "rtpipeline.cli",
-            "--dicom-root", str(DICOM_ROOT),
-            "--outdir", str(OUTPUT_DIR),
-            "--logs", str(LOGS_DIR),
-            "--stage", "radiomics",
-            "--course-filter", f"{wildcards.patient}/{wildcards.course}",
-        ]
-        cmd.extend(_max_worker_args(job_threads))
-        if RADIOMICS_SEQUENTIAL:
-            cmd.append("--sequential-radiomics")
-        if RADIOMICS_PARAMS:
-            cmd.extend(["--radiomics-params", RADIOMICS_PARAMS])
-        if RADIOMICS_PARAMS_MR:
-            cmd.extend(["--radiomics-params-mr", RADIOMICS_PARAMS_MR])
-        if RADIOMICS_MAX_VOXELS:
-            cmd.extend(["--radiomics-max-voxels", str(RADIOMICS_MAX_VOXELS)])
-        if RADIOMICS_MIN_VOXELS:
-            cmd.extend(["--radiomics-min-voxels", str(RADIOMICS_MIN_VOXELS)])
-        for roi in RADIOMICS_SKIP_ROIS:
-            cmd.extend(["--radiomics-skip-roi", roi])
-        if CUSTOM_STRUCTURES_CONFIG:
-            cmd.extend(["--custom-structures", CUSTOM_STRUCTURES_CONFIG])
-        with log_path.open("w") as logf:
-            subprocess.run(cmd, check=True, stdout=logf, stderr=subprocess.STDOUT, env=env)
-        sentinel_path.write_text("ok\n", encoding="utf-8")
+_radiomics_input_dict = {
+    "manifest": _manifest_input,
+    "segmentation": SEGMENTATION_SENTINEL_PATTERN,
+    "custom": CUSTOM_SEG_SENTINEL_PATTERN,
+    "crop": CROP_CT_SENTINEL_PATTERN
+}
+
+_radiomics_params_lambda = lambda w: (
+    ("--sequential-radiomics " if RADIOMICS_SEQUENTIAL else "") +
+    (f"--radiomics-params '{RADIOMICS_PARAMS}' " if RADIOMICS_PARAMS else "") +
+    (f"--radiomics-params-mr '{RADIOMICS_PARAMS_MR}' " if RADIOMICS_PARAMS_MR else "") +
+    (f"--radiomics-max-voxels {RADIOMICS_MAX_VOXELS} " if RADIOMICS_MAX_VOXELS else "") +
+    (f"--radiomics-min-voxels {RADIOMICS_MIN_VOXELS} " if RADIOMICS_MIN_VOXELS else "") +
+    " ".join(f"--radiomics-skip-roi '{roi}'" for roi in RADIOMICS_SKIP_ROIS) + " " +
+    (f"--custom-structures '{CUSTOM_STRUCTURES_CONFIG}'" if CUSTOM_STRUCTURES_CONFIG else "")
+)
+
+if config.get("container_mode", False):
+    rule radiomics_course:
+        input:
+            **_radiomics_input_dict
+        output:
+            sentinel=RADIOMICS_SENTINEL_PATTERN
+        log:
+            str(LOGS_DIR / "radiomics" / "{patient}_{course}.log")
+        threads:
+            RAD_RULE_THREADS
+        params:
+            extra_args=_radiomics_params_lambda
+        shell:
+            """
+            /opt/conda/envs/rtpipeline-radiomics/bin/python -m rtpipeline.cli \
+                --dicom-root "{DICOM_ROOT}" \
+                --outdir "{OUTPUT_DIR}" \
+                --logs "{LOGS_DIR}" \
+                --stage radiomics \
+                --course-filter "{wildcards.patient}/{wildcards.course}" \
+                --max-workers {threads} \
+                {params.extra_args} > {log} 2>&1
+            
+            echo "ok" > {output.sentinel}
+            """
+else:
+    rule radiomics_course:
+        input:
+            **_radiomics_input_dict
+        output:
+            sentinel=RADIOMICS_SENTINEL_PATTERN
+        log:
+            str(LOGS_DIR / "radiomics" / "{patient}_{course}.log")
+        threads:
+            RAD_RULE_THREADS
+        conda:
+            "envs/rtpipeline-radiomics.yaml"
+        params:
+            extra_args=_radiomics_params_lambda
+        shell:
+            """
+            python -m rtpipeline.cli \
+                --dicom-root "{DICOM_ROOT}" \
+                --outdir "{OUTPUT_DIR}" \
+                --logs "{LOGS_DIR}" \
+                --stage radiomics \
+                --course-filter "{wildcards.patient}/{wildcards.course}" \
+                --max-workers {threads} \
+                {params.extra_args} > {log} 2>&1
+            
+            echo "ok" > {output.sentinel}
+            """
 
 
 rule qc_course:
@@ -777,8 +836,6 @@ rule qc_course:
         str(LOGS_DIR / "qc" / "{patient}_{course}.log")
     threads:
         1
-    conda:
-        "envs/rtpipeline.yaml"
     run:
         import subprocess
         job_threads = max(1, threads)
@@ -803,57 +860,81 @@ rule qc_course:
         sentinel_path.write_text("ok\n", encoding="utf-8")
 
 
-rule radiomics_robustness_course:
-    input:
-        manifest=_manifest_input,
-        radiomics=RADIOMICS_SENTINEL_PATTERN
-    output:
-        sentinel=RADIOMICS_ROBUSTNESS_SENTINEL_PATTERN
-    log:
-        str(LOGS_DIR / "radiomics_robustness" / "{patient}_{course}.log")
-    threads:
-        RAD_RULE_THREADS
-    conda:
-        "envs/rtpipeline-radiomics.yaml"
-    run:
-        import subprocess
-        job_threads = max(1, threads)
-        if not ROBUSTNESS_ENABLED:
-            # Skip if disabled
-            sentinel_path = Path(output.sentinel)
-            sentinel_path.parent.mkdir(parents=True, exist_ok=True)
-            sentinel_path.write_text("disabled\n", encoding="utf-8")
-            return
+_robustness_input_dict = {
+    "manifest": _manifest_input,
+    "radiomics": RADIOMICS_SENTINEL_PATTERN
+}
 
-        sentinel_path = Path(output.sentinel)
-        sentinel_path.parent.mkdir(parents=True, exist_ok=True)
-        log_path = Path(log[0])
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        env = _rt_env()
-
-        course_path = OUTPUT_DIR / wildcards.patient / wildcards.course
-        output_parquet = course_path / "radiomics_robustness_ct.parquet"
-
-        cmd = [
-            sys.executable,
-            "-m",
-            "rtpipeline.cli",
-            "radiomics-robustness",
-            "--course-dir", str(course_path),
-            "--config", str(ROOT_DIR / "config.yaml"),
-            "--output", str(output_parquet),
-        ]
-        cmd.extend(_max_worker_args(job_threads))
-
-        try:
-            with log_path.open("w") as logf:
-                subprocess.run(cmd, check=True, stdout=logf, stderr=subprocess.STDOUT, env=env)
-            sentinel_path.write_text("ok\n", encoding="utf-8")
-        except subprocess.CalledProcessError as e:
-            # Log error but don't fail the entire pipeline
-            with log_path.open("a") as logf:
-                logf.write(f"\nRobustness analysis failed: {e}\n")
-            sentinel_path.write_text(f"failed: {e}\n", encoding="utf-8")
+if config.get("container_mode", False):
+    rule radiomics_robustness_course:
+        input:
+            **_robustness_input_dict
+        output:
+            sentinel=RADIOMICS_ROBUSTNESS_SENTINEL_PATTERN
+        log:
+            str(LOGS_DIR / "radiomics_robustness" / "{patient}_{course}.log")
+        threads:
+            RAD_RULE_THREADS
+        params:
+            enabled=str(ROBUSTNESS_ENABLED),
+            config=str(ROOT_DIR / "config.yaml")
+        shell:
+            """
+            mkdir -p $(dirname {output.sentinel})
+            
+            if [ "{params.enabled}" = "False" ]; then
+                echo "disabled" > {output.sentinel}
+                exit 0
+            fi
+            
+            if /opt/conda/envs/rtpipeline-radiomics/bin/python -m rtpipeline.cli radiomics-robustness \
+                --course-dir "{OUTPUT_DIR}/{wildcards.patient}/{wildcards.course}" \
+                --config "{params.config}" \
+                --output "{OUTPUT_DIR}/{wildcards.patient}/{wildcards.course}/radiomics_robustness_ct.parquet" \
+                --max-workers {threads} > {log} 2>&1; then
+                echo "ok" > {output.sentinel}
+            else
+                echo "failed: see log" > {output.sentinel}
+                # Don't fail the pipeline for robustness
+                exit 0 
+            fi
+            """
+else:
+    rule radiomics_robustness_course:
+        input:
+            **_robustness_input_dict
+        output:
+            sentinel=RADIOMICS_ROBUSTNESS_SENTINEL_PATTERN
+        log:
+            str(LOGS_DIR / "radiomics_robustness" / "{patient}_{course}.log")
+        threads:
+            RAD_RULE_THREADS
+        conda:
+            "envs/rtpipeline-radiomics.yaml"
+        params:
+            enabled=str(ROBUSTNESS_ENABLED),
+            config=str(ROOT_DIR / "config.yaml")
+        shell:
+            """
+            mkdir -p $(dirname {output.sentinel})
+            
+            if [ "{params.enabled}" = "False" ]; then
+                echo "disabled" > {output.sentinel}
+                exit 0
+            fi
+            
+            if python -m rtpipeline.cli radiomics-robustness \
+                --course-dir "{OUTPUT_DIR}/{wildcards.patient}/{wildcards.course}" \
+                --config "{params.config}" \
+                --output "{OUTPUT_DIR}/{wildcards.patient}/{wildcards.course}/radiomics_robustness_ct.parquet" \
+                --max-workers {threads} > {log} 2>&1; then
+                echo "ok" > {output.sentinel}
+            else
+                echo "failed: see log" > {output.sentinel}
+                # Don't fail the pipeline for robustness
+                exit 0 
+            fi
+            """
 
 
 rule aggregate_radiomics_robustness:
@@ -866,8 +947,6 @@ rule aggregate_radiomics_robustness:
         str(LOGS_DIR / "aggregate_radiomics_robustness.log")
     threads:
         AGG_THREADS_RESERVED
-    conda:
-        "envs/rtpipeline-radiomics.yaml"
     run:
         import subprocess
         if not ROBUSTNESS_ENABLED:
@@ -930,8 +1009,6 @@ rule aggregate_results:
         qc=str(AGG_OUTPUTS["qc"])
     threads:
         AGG_THREADS_RESERVED
-    conda:
-        "envs/rtpipeline.yaml"
     run:
         import json
         import os
@@ -1196,7 +1273,5 @@ rule generate_report:
         "pipeline_report.html"
     log:
         str(LOGS_DIR / "report.log")
-    conda:
-        "envs/rtpipeline.yaml"
     run:
         shell("snakemake --report {output} --configfile config.yaml")
