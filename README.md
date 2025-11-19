@@ -405,12 +405,14 @@ The script rewrites patient/course identifiers, anonymises DICOM headers, update
 * **[docs/PIPELINE_ARCHITECTURE.md](docs/PIPELINE_ARCHITECTURE.md)** – Architecture overview and design decisions
 * **[docs/PARALLELIZATION.md](docs/PARALLELIZATION.md)** – Performance tuning and parallelization strategies
 * **[docs/DOCKER.md](docs/DOCKER.md)** – Docker deployment and compatibility guide
+* **[docs/SECURITY.md](docs/SECURITY.md)** – **Security guide for production deployments**
 * **[docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)** – Debugging hangs, timeouts, and common issues
 * **[docs/custom_models.md](docs/custom_models.md)** – nnUNet configuration schema and examples
 * **[docs/pipeline_report.md](docs/pipeline_report.md)** – Pipeline capabilities and feature summary
 * **[docs/Guide to Results Interpretation.md](docs/Guide%20to%20Results%20Interpretation.md)** – Interpreting outputs
 * **[docs/SYSTEMATIC_CT_CROPPING.md](docs/SYSTEMATIC_CT_CROPPING.md)** – Systematic anatomical cropping guide
 * **[docs/qc_cropping_audit.md](docs/qc_cropping_audit.md)** – CT cropping quality control
+* **[docs/CODE_REVIEW.md](docs/CODE_REVIEW.md)** – Deep code review report and recommendations
 
 ### Quick Links by Task
 * 🚀 **New user?** → [GETTING_STARTED.md](GETTING_STARTED.md)
@@ -421,6 +423,7 @@ The script rewrites patient/course identifiers, anonymises DICOM headers, update
 * 🔧 **Performance issues?** → [docs/PARALLELIZATION.md](docs/PARALLELIZATION.md)
 * 🐛 **Pipeline hanging?** → [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)
 * 🐳 **Docker problems?** → [docs/DOCKER.md](docs/DOCKER.md)
+* 🔐 **Production deployment?** → [docs/SECURITY.md](docs/SECURITY.md)
 
 ### Radiomics Robustness References
 
