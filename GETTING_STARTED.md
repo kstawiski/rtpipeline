@@ -37,7 +37,15 @@ This will create the Docker image with all dependencies. Build time: 10-30 minut
 
 The easiest way to use rtpipeline is through the Web UI.
 
-### 1. Start the Container
+### 1. Create Project Directories
+
+Create the necessary folders on your host machine to store data and logs:
+
+```bash
+mkdir -p Input Output Logs Uploads totalseg_weights
+```
+
+### 2. Start the Container
 
 **With GPU (recommended for faster processing):**
 ```bash
@@ -49,7 +57,7 @@ docker-compose up -d
 docker-compose --profile cpu-only up -d
 ```
 
-### 2. Access the Web UI
+### 3. Access the Web UI
 
 Open your browser and navigate to:
 ```
@@ -58,7 +66,7 @@ http://localhost:8080
 
 You should see the rtpipeline upload interface.
 
-### 3. Upload Your DICOM Files
+### 4. Upload Your DICOM Files
 
 You can upload DICOM files in several ways:
 

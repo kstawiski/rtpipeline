@@ -15,7 +15,7 @@ import tempfile
 import traceback
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from multiprocessing import Pool, get_context
+from multiprocessing import get_context
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
 
@@ -37,9 +37,12 @@ class RestrictedUnpickler(pickle.Unpickler):
     """
     ALLOWED_MODULES = {
         'numpy': {'ndarray', 'dtype', 'int64', 'int32', 'float64', 'float32', 'bool_', 'generic'},
+        'numpy.core.multiarray': {'_reconstruct'},
         'builtins': {'dict', 'list', 'tuple', 'str', 'int', 'float', 'bool', 'NoneType'},
         'pathlib': {'Path', 'PosixPath', 'WindowsPath'},
         'collections': {'OrderedDict'},  # Used internally by numpy
+        'SimpleITK.SimpleITK': {'Image'},
+        'rtpipeline.config': {'PipelineConfig'},
     }
 
     def find_class(self, module, name):
@@ -195,7 +198,13 @@ def _isolated_radiomics_extraction(task_data: Tuple[str, Dict[str, Any]]) -> Opt
         res = ext.execute(img, m_img)
 
         # Convert results to serializable format
-        rec = {k: (float(v) if isinstance(v, (int, float, np.floating)) else str(v)) for k, v in res.items()}
+        rec = {}
+        for k, v in res.items():
+            try:
+                rec[k] = float(v)
+            except (ValueError, TypeError):
+                rec[k] = str(v)
+                
         patient_id = course_dir.parent.name if course_dir.parent != course_dir else course_dir.name
         rec.update({
             'modality': 'CT',
@@ -215,7 +224,7 @@ def _isolated_radiomics_extraction(task_data: Tuple[str, Dict[str, Any]]) -> Opt
         return rec
 
     except Exception as e:
-        logger.debug("Radiomics failed for %s/%s: %s",
+        logger.warning("Radiomics failed for %s/%s: %s",
                     task_params.get('source', 'unknown'),
                     task_params.get('roi', 'unknown'),
                     str(e))
@@ -263,6 +272,11 @@ def _prepare_radiomics_task(
         'origin': img.GetOrigin(),
         'direction': img.GetDirection()
     }
+    
+    # Ensure mask is numpy array (fix for robustness module passing sitk.Image)
+    mask_array = mask
+    if isinstance(mask, sitk.Image):
+        mask_array = sitk.GetArrayFromImage(mask)
 
     # Create temporary file for task data
     temp_fd, temp_file_path = tempfile.mkstemp(suffix='.pkl', dir=temp_dir)
@@ -274,7 +288,7 @@ def _prepare_radiomics_task(
         task_data = {
             'img_array': img_array,
             'img_info': img_info,
-            'mask': mask,
+            'mask': mask_array,
             'config': config,
             'source': source,
             'roi': roi,
