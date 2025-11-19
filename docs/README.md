@@ -36,6 +36,7 @@ This directory contains technical documentation, advanced guides, and developmen
 | Document | Description |
 |----------|-------------|
 | [**DOCKER.md**](DOCKER.md) | Docker deployment and compatibility |
+| [**SECURITY.md**](SECURITY.md) | Security guide for production deployments |
 | [**TROUBLESHOOTING.md**](TROUBLESHOOTING.md) | Troubleshooting hang issues and timeouts |
 
 ### Advanced Features
@@ -52,6 +53,12 @@ This directory contains technical documentation, advanced guides, and developmen
 | Document | Description |
 |----------|-------------|
 | [**Guide to Results Interpretation.md**](Guide%20to%20Results%20Interpretation.md) | Interpreting pipeline results |
+
+### Development & Code Quality
+
+| Document | Description |
+|----------|-------------|
+| [**CODE_REVIEW.md**](CODE_REVIEW.md) | Deep code review report and recommendations |
 
 ---
 
@@ -80,6 +87,12 @@ This directory contains technical documentation, advanced guides, and developmen
 
 ### "I'm working with CT cropping"
 → [SYSTEMATIC_CT_CROPPING.md](SYSTEMATIC_CT_CROPPING.md)
+
+### "I'm deploying in production"
+→ [SECURITY.md](SECURITY.md)
+
+### "I want to review code quality"
+→ [CODE_REVIEW.md](CODE_REVIEW.md)
 
 ---
 
@@ -136,5 +149,5 @@ For development and contribution guidelines, see the main [README](../README.md#
 
 ---
 
-**Last Updated:** 2025-11-13
+**Last Updated:** 2025-11-19
 **Pipeline Version:** v2.0+
