@@ -7,11 +7,15 @@ import os
 import uuid
 import shutil
 import zipfile
+import psutil
+import pandas as pd
+import json
 from datetime import datetime
 from pathlib import Path
 from flask import Flask, render_template, request, jsonify, send_file
 from werkzeug.utils import secure_filename
 import logging
+import pydicom
 
 from dicom_validator import DICOMValidator
 from job_manager import JobManager
@@ -369,6 +373,296 @@ def health():
         'timestamp': datetime.now().isoformat(),
         'version': rtpipeline.__version__
     }), 200
+
+
+@app.route('/api/system/status')
+def system_status():
+    """Get system resource usage"""
+    try:
+        cpu_percent = psutil.cpu_percent(interval=0.1)
+        memory = psutil.virtual_memory()
+        disk = psutil.disk_usage('/')
+        
+        gpu_stats = []
+        try:
+            # Basic NVIDIA GPU check if nvidia-smi is available
+            import subprocess
+            result = subprocess.run(
+                ['nvidia-smi', '--query-gpu=index,name,utilization.gpu,memory.used,memory.total', '--format=csv,noheader,nounits'],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if result.returncode == 0:
+                for line in result.stdout.strip().split('\n'):
+                    idx, name, util, mem_used, mem_total = line.split(', ')
+                    gpu_stats.append({
+                        'index': idx,
+                        'name': name,
+                        'utilization': float(util),
+                        'memory_used': float(mem_used),
+                        'memory_total': float(mem_total),
+                        'memory_percent': round((float(mem_used) / float(mem_total)) * 100, 1)
+                    })
+        except Exception as exc:
+            logger.warning("Failed to collect GPU stats: %s", exc)
+
+        return jsonify({
+            'cpu': {
+                'percent': cpu_percent,
+                'count': psutil.cpu_count()
+            },
+            'memory': {
+                'total': memory.total,
+                'available': memory.available,
+                'percent': memory.percent
+            },
+            'disk': {
+                'total': disk.total,
+                'free': disk.free,
+                'percent': disk.percent
+            },
+            'gpu': gpu_stats
+        })
+    except Exception as e:
+        logger.error(f"System status error: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/jobs/<job_id>/preview')
+def preview_results(job_id):
+    """Get preview data from result files"""
+    try:
+        status = job_manager.get_job_status(job_id)
+        if not status:
+            return jsonify({'error': 'Job not found'}), 404
+
+        output_dir = Path(status['output_dir'])
+        results_dir = output_dir / '_RESULTS'
+        
+        preview_data = {
+            'dvh': [],
+            'radiomics': [],
+            'qc': []
+        }
+
+        # Load DVH metrics
+        dvh_path = results_dir / 'dvh_metrics.xlsx'
+        if dvh_path.exists():
+            try:
+                df = pd.read_excel(dvh_path)
+                # Replace NaN with None for JSON serialization
+                preview_data['dvh'] = df.where(pd.notnull(df), None).to_dict(orient='records')
+            except Exception as e:
+                logger.error(f"Failed to load DVH metrics: {e}")
+
+        # Load Radiomics
+        rad_path = results_dir / 'radiomics_ct.xlsx'
+        if rad_path.exists():
+            try:
+                df = pd.read_excel(rad_path)
+                # Limit rows to avoid huge payload
+                df_preview = df.head(100)
+                preview_data['radiomics'] = df_preview.where(pd.notnull(df_preview), None).to_dict(orient='records')
+            except Exception as e:
+                logger.error(f"Failed to load Radiomics: {e}")
+        
+        # Load QC
+        qc_path = results_dir / 'qc_reports.xlsx'
+        if qc_path.exists():
+             try:
+                df = pd.read_excel(qc_path)
+                preview_data['qc'] = df.where(pd.notnull(df), None).to_dict(orient='records')
+             except Exception as e:
+                logger.error(f"Failed to load QC: {e}")
+
+        return jsonify(preview_data)
+
+    except Exception as e:
+        logger.error(f"Preview error: {str(e)}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/jobs/<job_id>/dvh-curves')
+def get_dvh_curves(job_id):
+    """Get raw DVH curve data for plotting"""
+    try:
+        status = job_manager.get_job_status(job_id)
+        if not status:
+            return jsonify({'error': 'Job not found'}), 404
+
+        output_dir = Path(status['output_dir'])
+        results_dir = output_dir / '_RESULTS'
+        
+        # The JSON file might be in a course subdirectory if multiple courses were processed
+        # For simplicity in the WebUI context (often 1 patient upload), we search for it.
+        # Note: The pipeline outputs to OUTPUT_DIR/{PatientID}/{CourseID}/dvh_curves.json
+        # The WebUI job structure is: /data/output/{job_id}/{PatientID}/{CourseID}/...
+        
+        curve_files = list(output_dir.rglob('dvh_curves.json'))
+        
+        if not curve_files:
+            return jsonify({'error': 'No DVH curves found'}), 404
+            
+        # If multiple, merge or just take the first one for now.
+        # ideally we'd structure the UI to select patient/course
+        combined_data = []
+        for f in curve_files:
+            try:
+                with open(f) as json_f:
+                    data = json.load(json_f)
+                    # Add course info if possible
+                    course_name = f.parent.name
+                    for point_set in data.get('points', []):
+                        point_set['course'] = course_name
+                        combined_data.append(point_set)
+            except Exception as exc:
+                logger.warning("Failed to parse DVH curve file %s: %s", f, exc, exc_info=True)
+
+        return jsonify({'points': combined_data})
+
+    except Exception as e:
+        logger.error(f"DVH curve error: {str(e)}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/jobs/<job_id>/files/<path:filepath>')
+def serve_job_file(job_id, filepath):
+    """Serve any file from the job directory (input or output) for visualization"""
+    try:
+        status = job_manager.get_job_status(job_id)
+        if not status:
+            return jsonify({'error': 'Job not found'}), 404
+
+        # Allow access to Input (DICOMs) and Output (Results)
+        job_input_dir = Path(status['dicom_dir']).resolve()
+        job_output_dir = Path(status['output_dir']).resolve()
+        
+        # We need to determine where the file is.
+        # The frontend might request "input/image.dcm" or "output/results.json"
+        # Or we map paths.
+        
+        # Strategy: The viewer needs DICOM series. 
+        # Let's assume the request is relative to the job root, but we don't have a single root.
+        # We'll use a prefix.
+        
+        requested_path = Path(filepath)
+        parts = requested_path.parts
+        if not parts:
+            return jsonify({'error': 'Invalid path'}), 400
+
+        if parts[0] == 'input':
+            target_file = job_input_dir.joinpath(*parts[1:]).resolve()
+            try:
+                target_file.relative_to(job_input_dir)
+            except ValueError:
+                return jsonify({'error': 'Access denied'}), 403
+        elif parts[0] == 'output':
+            target_file = job_output_dir.joinpath(*parts[1:]).resolve()
+            try:
+                target_file.relative_to(job_output_dir)
+            except ValueError:
+                return jsonify({'error': 'Access denied'}), 403
+        else:
+             return jsonify({'error': 'Invalid path prefix. Use input/ or output/'}), 400
+
+        if not target_file.exists():
+            return jsonify({'error': 'File not found'}), 404
+
+        return send_file(target_file)
+
+    except Exception as e:
+        logger.error(f"File serve error: {str(e)}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/jobs/<job_id>/dicom-series')
+def list_dicom_series(job_id):
+    """List DICOM series for the viewer"""
+    try:
+        status = job_manager.get_job_status(job_id)
+        if not status:
+             return jsonify({'error': 'Job not found'}), 404
+             
+        input_dir = Path(status['dicom_dir'])
+        
+        # Find series
+        series_map = {}
+        
+        for root, dirs, files in os.walk(input_dir):
+            dicom_files = [f for f in files if f.endswith('.dcm')]
+            if dicom_files:
+                # Try to read one to get SeriesUID
+                try:
+                    ds = pydicom.dcmread(Path(root) / dicom_files[0], stop_before_pixels=True)
+                    uid = getattr(ds, 'SeriesInstanceUID', 'unknown')
+                    desc = getattr(ds, 'SeriesDescription', 'No Description')
+                    modality = getattr(ds, 'Modality', 'Unknown')
+                    
+                    if uid not in series_map:
+                        # Construct relative paths for serving
+                        rel_root = Path(root).relative_to(input_dir)
+                        # Fix paths to match the serve_job_file endpoint
+                        file_urls = [f"api/jobs/{job_id}/files/input/{str(rel_root / f)}" for f in dicom_files]
+                        
+                        series_map[uid] = {
+                            'uid': uid,
+                            'description': desc,
+                            'modality': modality,
+                            'num_instances': len(dicom_files),
+                            'files': sorted(file_urls)
+                        }
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to parse DICOM header in %s: %s",
+                        root,
+                        exc,
+                        exc_info=True,
+                    )
+        
+        return jsonify({'series': list(series_map.values())})
+        
+    except Exception as e:
+        logger.error(f"Series list error: {str(e)}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/jobs/<job_id>/segmentations')
+def list_segmentations(job_id):
+    """List available RTSTRUCT files"""
+    try:
+        status = job_manager.get_job_status(job_id)
+        if not status:
+             return jsonify({'error': 'Job not found'}), 404
+             
+        output_dir = Path(status['output_dir'])
+        
+        segmentations = []
+        
+        # Common RTSTRUCT names in root output
+        for f in output_dir.glob('RS*.dcm'):
+            segmentations.append({
+                'name': f.name,
+                'path': f"api/jobs/{job_id}/files/output/{f.name}",
+                'size': f.stat().st_size
+            })
+            
+        # Custom models subdirectories
+        for f in output_dir.glob('**/rtstruct.dcm'):
+             # Get parent folder name as label (e.g. Segmentation_Prostate)
+             label = f.parent.name
+             rel_path = f.relative_to(output_dir)
+             segmentations.append({
+                'name': label,
+                'path': f"api/jobs/{job_id}/files/output/{str(rel_path)}",
+                'size': f.stat().st_size
+            })
+
+        return jsonify({'segmentations': segmentations})
+
+    except Exception as e:
+        logger.error(f"Seg list error: {str(e)}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
 
 
 if __name__ == '__main__':
