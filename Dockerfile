@@ -25,6 +25,7 @@ WORKDIR /app
 
 # Copy environment files first for better layer caching
 COPY envs/ /app/envs/
+COPY third_party/ /app/third_party/
 
 # Create conda environments
 RUN mamba env create -f /app/envs/rtpipeline.yaml && \
@@ -44,7 +45,8 @@ ENV DEBIAN_FRONTEND=noninteractive \
     LC_ALL=C.UTF-8 \
     PYTHONUNBUFFERED=1 \
     CONDA_DIR=/opt/conda \
-    PATH=/opt/conda/bin:$PATH
+    PATH=/opt/conda/bin:$PATH \
+    LD_LIBRARY_PATH=/opt/conda/lib
 
 # Install runtime dependencies including tini and GL libraries
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -73,8 +75,20 @@ RUN conda config --set channel_priority strict && \
     conda config --add channels bioconda && \
     conda config --add channels defaults
 
-# Install Snakemake in base environment
-RUN mamba install -y -c conda-forge -c bioconda snakemake>=7.0 && mamba clean -afy
+# Install Snakemake and Web UI dependencies in base environment
+# We install these via mamba to ensure GLIBCXX compatibility (pandas/cpp issues with pip wheels)
+RUN mamba install -y -c conda-forge -c bioconda \
+    snakemake>=7.0 \
+    pandas \
+    flask \
+    psutil \
+    pydicom \
+    pyyaml \
+    werkzeug \
+    openpyxl \
+    pynetdicom \
+    libstdcxx-ng \
+    && mamba clean -afy
 
 # Copy conda environments from builder
 COPY --from=builder /opt/conda/envs /opt/conda/envs
@@ -111,8 +125,7 @@ RUN pip install -e . && \
     /opt/conda/envs/rtpipeline/bin/pip install -e . && \
     /opt/conda/envs/rtpipeline/bin/pip install psutil
 
-# Install Web UI dependencies
-RUN pip install -r /app/webui/requirements.txt
+
 
 # Create container-specific config
 RUN cat > /app/config.container.yaml << 'EOF'
