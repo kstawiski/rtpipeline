@@ -25,6 +25,11 @@ _RESULTS/
 *.sif
 *.tar.gz
 totalseg_weights/
+custom_models/**/*.zip
+custom_models/**/*.pth
+custom_models/**/*.pkl
+custom_models/**/model_final_checkpoint*
+custom_models/**/fold_*/
 # custom_models/*/weights/
 
 # Development
