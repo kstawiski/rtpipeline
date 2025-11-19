@@ -22,6 +22,10 @@ Based on 2023-2025 radiomics stability research:
 from __future__ import annotations
 
 import logging
+import tempfile
+import shutil
+import multiprocessing
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Tuple
@@ -916,7 +920,7 @@ def robustness_for_course(
             max_workers = max(1, min(max_workers, len(tasks)))
             logger.info("Processing %d robustness perturbations with %d workers", len(tasks), max_workers)
 
-            ctx = get_context('spawn')
+            ctx = multiprocessing.get_context('spawn')
             with ctx.Pool(max_workers) as pool:
                 completed_count = 0
                 total_count = len(tasks)
@@ -1027,6 +1031,10 @@ def aggregate_robustness_results(
         return
 
     combined_raw = pd.concat(all_dfs, ignore_index=True)
+
+    # Normalize column names
+    if "roi_name" in combined_raw.columns and "structure" not in combined_raw.columns:
+        combined_raw.rename(columns={"roi_name": "structure"}, inplace=True)
 
     per_structure_summary = summarize_feature_stability(combined_raw, rob_config)
     global_summary = summarize_feature_stability(combined_raw, rob_config, group_columns=["feature_name"])

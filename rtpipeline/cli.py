@@ -198,7 +198,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--stage",
         action="append",
-        choices=["organize", "segmentation", "segmentation_custom", "dvh", "visualize", "radiomics", "qc"],
+        choices=["organize", "segmentation", "segmentation_custom", "crop_ct", "dvh", "visualize", "radiomics", "qc"],
         help="Execute only the selected pipeline stage(s); may be provided multiple times. Default: full pipeline.",
     )
     return p
