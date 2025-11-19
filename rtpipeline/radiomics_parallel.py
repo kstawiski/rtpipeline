@@ -15,7 +15,7 @@ import tempfile
 import traceback
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from multiprocessing import Pool, get_context
+from multiprocessing import get_context
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
 
@@ -498,8 +498,7 @@ def parallel_radiomics_for_course(
                        max_workers, os.cpu_count() or 'unknown')
 
             # Use spawn context to avoid issues with forked processes
-            import multiprocessing
-            ctx = multiprocessing.get_context('spawn')
+            ctx = get_context('spawn')
 
             # Don't use initializer with spawn context as it causes pickling issues
             with ctx.Pool(max_workers) as pool:

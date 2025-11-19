@@ -444,6 +444,8 @@ checkpoint organize_courses:
         str(LOGS_DIR / "stage_organize.log")
     threads:
         SNAKEMAKE_THREADS
+    conda:
+        "envs/rtpipeline.yaml"
     run:
         import subprocess
 
@@ -544,6 +546,7 @@ if config.get("container_mode", False):
             extra_args=_seg_params_lambda
         shell:
             """
+            set -e
             export PATH="/opt/conda/envs/rtpipeline/bin:$PATH"
             
             /opt/conda/envs/rtpipeline/bin/python -m rtpipeline.cli \
@@ -577,6 +580,7 @@ else:
             extra_args=_seg_params_lambda
         shell:
             """
+            set -e
             python -m rtpipeline.cli \
                 --dicom-root "{DICOM_ROOT}" \
                 --outdir "{OUTPUT_DIR}" \
@@ -619,6 +623,7 @@ if config.get("container_mode", False):
             extra_args=_custom_params_lambda
         shell:
             """
+            set -e
             mkdir -p $(dirname {output.sentinel})
             
             if [ "{params.enabled}" = "False" ]; then
@@ -659,6 +664,7 @@ else:
             extra_args=_custom_params_lambda
         shell:
             """
+            set -e
             mkdir -p $(dirname {output.sentinel})
             
             if [ "{params.enabled}" = "False" ]; then
@@ -690,6 +696,8 @@ rule crop_ct_course:
         str(LOGS_DIR / "crop_ct" / "{patient}_{course}.log")
     threads:
         SNAKEMAKE_THREADS
+    conda:
+        "envs/rtpipeline.yaml"
     run:
         import subprocess
         job_threads = max(1, threads)
@@ -728,6 +736,8 @@ rule dvh_course:
         str(LOGS_DIR / "dvh" / "{patient}_{course}.log")
     threads:
         DVH_RULE_THREADS
+    conda:
+        "envs/rtpipeline.yaml"
     run:
         import subprocess
         job_threads = max(1, threads)
@@ -785,6 +795,7 @@ if config.get("container_mode", False):
             extra_args=_radiomics_params_lambda
         shell:
             """
+            set -e
             /opt/conda/envs/rtpipeline-radiomics/bin/python -m rtpipeline.cli \
                 --dicom-root "{DICOM_ROOT}" \
                 --outdir "{OUTPUT_DIR}" \
@@ -812,6 +823,7 @@ else:
             extra_args=_radiomics_params_lambda
         shell:
             """
+            set -e
             python -m rtpipeline.cli \
                 --dicom-root "{DICOM_ROOT}" \
                 --outdir "{OUTPUT_DIR}" \
@@ -836,6 +848,8 @@ rule qc_course:
         str(LOGS_DIR / "qc" / "{patient}_{course}.log")
     threads:
         1
+    conda:
+        "envs/rtpipeline.yaml"
     run:
         import subprocess
         job_threads = max(1, threads)

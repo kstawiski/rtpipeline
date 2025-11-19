@@ -24,9 +24,9 @@ _RESULTS/
 # Large files
 *.sif
 *.tar.gz
-# totalseg_weights/  <-- Included for offline support
+totalseg_weights/  <-- Included for offline support
 # custom_models exclusions removed for offline support
-# custom_models/*/weights/
+custom_models/*/weights/
 
 # Development
 .vscode
