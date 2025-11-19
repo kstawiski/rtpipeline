@@ -24,12 +24,8 @@ _RESULTS/
 # Large files
 *.sif
 *.tar.gz
-totalseg_weights/
-custom_models/**/*.zip
-custom_models/**/*.pth
-custom_models/**/*.pkl
-custom_models/**/model_final_checkpoint*
-custom_models/**/fold_*/
+# totalseg_weights/  <-- Included for offline support
+# custom_models exclusions removed for offline support
 # custom_models/*/weights/
 
 # Development
