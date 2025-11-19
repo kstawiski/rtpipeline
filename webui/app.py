@@ -15,6 +15,7 @@ from pathlib import Path
 from flask import Flask, render_template, request, jsonify, send_file
 from werkzeug.utils import secure_filename
 import logging
+import pydicom
 
 from dicom_validator import DICOMValidator
 from job_manager import JobManager
@@ -386,8 +387,12 @@ def system_status():
         try:
             # Basic NVIDIA GPU check if nvidia-smi is available
             import subprocess
-            result = subprocess.run(['nvidia-smi', '--query-gpu=index,name,utilization.gpu,memory.used,memory.total', '--format=csv,noheader,nounits'], 
-                                  capture_output=True, text=True)
+            result = subprocess.run(
+                ['nvidia-smi', '--query-gpu=index,name,utilization.gpu,memory.used,memory.total', '--format=csv,noheader,nounits'],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
             if result.returncode == 0:
                 for line in result.stdout.strip().split('\n'):
                     idx, name, util, mem_used, mem_total = line.split(', ')
@@ -399,8 +404,8 @@ def system_status():
                         'memory_total': float(mem_total),
                         'memory_percent': round((float(mem_used) / float(mem_total)) * 100, 1)
                     })
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("Failed to collect GPU stats: %s", exc)
 
         return jsonify({
             'cpu': {
@@ -511,8 +516,8 @@ def get_dvh_curves(job_id):
                     for point_set in data.get('points', []):
                         point_set['course'] = course_name
                         combined_data.append(point_set)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("Failed to parse DVH curve file %s: %s", f, exc, exc_info=True)
 
         return jsonify({'points': combined_data})
 
@@ -543,14 +548,20 @@ def serve_job_file(job_id, filepath):
         
         requested_path = Path(filepath)
         parts = requested_path.parts
-        
+        if not parts:
+            return jsonify({'error': 'Invalid path'}), 400
+
         if parts[0] == 'input':
             target_file = job_input_dir.joinpath(*parts[1:]).resolve()
-            if not str(target_file).startswith(str(job_input_dir)):
+            try:
+                target_file.relative_to(job_input_dir)
+            except ValueError:
                 return jsonify({'error': 'Access denied'}), 403
         elif parts[0] == 'output':
             target_file = job_output_dir.joinpath(*parts[1:]).resolve()
-            if not str(target_file).startswith(str(job_output_dir)):
+            try:
+                target_file.relative_to(job_output_dir)
+            except ValueError:
                 return jsonify({'error': 'Access denied'}), 403
         else:
              return jsonify({'error': 'Invalid path prefix. Use input/ or output/'}), 400
@@ -601,8 +612,13 @@ def list_dicom_series(job_id):
                             'num_instances': len(dicom_files),
                             'files': sorted(file_urls)
                         }
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to parse DICOM header in %s: %s",
+                        root,
+                        exc,
+                        exc_info=True,
+                    )
         
         return jsonify({'series': list(series_map.values())})
         

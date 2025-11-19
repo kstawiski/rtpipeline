@@ -1,3 +1,9 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>rtpipeline Web UI</title>
     <!-- Libraries -->
     <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
     <!-- Cornerstone (Basic Viewer) -->
@@ -7,7 +13,7 @@
     <script src="https://unpkg.com/dicom-parser@1.8.13/dist/dicomParser.min.js"></script>
     <script src="https://unpkg.com/cornerstone-wado-image-loader@4.1.5/dist/cornerstoneWADOImageLoader.bundle.min.js"></script>
     <script src="https://unpkg.com/dcmjs"></script>
-    
+
     <style>
         /* ... existing styles ... */
         :root {
@@ -190,7 +196,7 @@
 
         .job-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 20px; }
         .job-id { font-weight: 700; color: var(--text-dark); font-family: monospace; font-size: 16px; }
-        
+
         .job-status { padding: 6px 12px; border-radius: 20px; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; }
         .job-status.uploaded { background: #ebf8ff; color: #2b6cb0; }
         .job-status.running { background: #feebc8; color: #c05621; animation: pulse 2s infinite; }
@@ -203,8 +209,7 @@
         /* Progress Bar */
         .progress-bar { height: 8px; background: #edf2f7; border-radius: 4px; overflow: hidden; margin: 15px 0; }
         .progress-fill { height: 100%; background: var(--bg-gradient); width: 0%; transition: width 0.5s ease; }
-        .progress-stages { display: flex; justify-content: space-between; font-size: 11px; margin-top: 10px; position: relative; }
-        
+
         /* Stage Indicators */
         .stage-item { text-align: center; flex: 1; position: relative; z-index: 2; opacity: 0.5; transition: all 0.3s; }
         .stage-item.active { opacity: 1; transform: scale(1.1); font-weight: 700; color: var(--primary); }
@@ -215,7 +220,7 @@
         .modal { display: none; position: fixed; z-index: 1000; left: 0; top: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.6); backdrop-filter: blur(5px); }
         .modal-content { background-color: white; margin: 2% auto; padding: 0; border-radius: 12px; width: 95%; max-width: 1600px; height: 90vh; display: flex; flex-direction: column; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25); animation: slideUp 0.3s ease; }
         @keyframes slideUp { from { transform: translateY(50px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
-        
+
         .modal-header { padding: 15px 25px; border-bottom: 1px solid #e2e8f0; display: flex; justify-content: space-between; align-items: center; background: #f8f9fa; border-radius: 12px 12px 0 0; }
         .modal-body { padding: 0; overflow: hidden; flex: 1; display: flex; flex-direction: column; }
         .close-modal { font-size: 28px; cursor: pointer; color: #a0aec0; transition: color 0.2s; }
@@ -226,7 +231,7 @@
         .tab-btn { padding: 15px 25px; cursor: pointer; font-weight: 600; color: var(--text-light); border-bottom: 3px solid transparent; transition: all 0.2s; }
         .tab-btn:hover { color: var(--primary); }
         .tab-btn.active { color: var(--primary); border-bottom-color: var(--primary); background: white; border-radius: 8px 8px 0 0; margin-top: 5px; padding-top: 10px; border: 1px solid #e2e8f0; border-bottom: none; box-shadow: 0 -2px 5px rgba(0,0,0,0.02); }
-        
+
         .tab-content { display: none; flex: 1; overflow: auto; padding: 20px; }
         .tab-content.active { display: flex; flex-direction: column; }
 
@@ -234,12 +239,12 @@
         .viewer-container { display: flex; flex: 1; gap: 20px; height: 100%; }
         .viewer-sidebar { width: 250px; background: #f7fafc; padding: 15px; border-radius: 8px; border: 1px solid #e2e8f0; display: flex; flex-direction: column; }
         .viewer-main { flex: 1; background: #000; border-radius: 8px; position: relative; overflow: hidden; display: flex; align-items: center; justify-content: center; }
-        
+
         #dicomImage { width: 100%; height: 100%; }
         .series-list { overflow-y: auto; flex: 1; }
         .series-item { padding: 10px; background: white; border: 1px solid #e2e8f0; margin-bottom: 8px; border-radius: 6px; cursor: pointer; transition: all 0.2s; font-size: 12px; }
         .series-item:hover, .series-item.active { border-color: var(--primary); box-shadow: 0 2px 4px rgba(102,126,234,0.2); }
-        
+
         /* DVH Plot */
         #dvh-plot { width: 100%; height: 100%; min-height: 500px; }
 
@@ -250,7 +255,7 @@
         .preview-table tr:hover { background: #f8f9fa; }
 
         .log-viewer { background: #1a202c; color: #e2e8f0; font-family: 'Fira Code', monospace; padding: 20px; border-radius: 0 0 12px 12px; height: 100%; overflow-y: auto; font-size: 12px; line-height: 1.6; }
-        
+
         /* Loading */
         .spinner { width: 40px; height: 40px; border: 4px solid rgba(102, 126, 234, 0.2); border-left-color: var(--primary); border-radius: 50%; animation: spin 1s linear infinite; margin: 20px auto; }
         @keyframes spin { to { transform: rotate(360deg); } }
@@ -290,9 +295,7 @@
 
             <!-- Configuration Panel -->
             <div id="config-container" class="hidden">
-                <!-- Config sections here (same as before) -->
-                <!-- Reduced for brevity in replacement, keeping structure -->
-                 <div class="config-section">
+                <div class="config-section">
                     <div class="config-header" onclick="toggleSection('basic-config')">
                         <span>⚙️ Processing Options</span> <span class="toggle-icon" id="toggle-basic-config">▼</span>
                     </div>
@@ -327,20 +330,20 @@
                         </div>
                     </div>
                 </div>
-                
-                 <div class="config-section">
+
+                <div class="config-section">
                     <div class="config-header" onclick="toggleSection('advanced-config')">
                         <span>🔧 Advanced / Research</span> <span class="toggle-icon" id="toggle-advanced-config">▼</span>
                     </div>
                     <div class="collapsible-content" id="advanced-config">
                         <div class="config-body">
-                             <div class="config-option">
+                            <div class="config-option">
                                 <label>
                                     <input type="checkbox" id="robustness-enabled">
                                     <span>Radiomics Robustness</span>
                                 </label>
                             </div>
-                             <div class="config-option">
+                            <div class="config-option">
                                 <label>
                                     <input type="checkbox" id="custom-models-enabled" onchange="toggleCustomModelsList()">
                                     <span>Custom nnUNet Models</span>
@@ -349,9 +352,9 @@
                                     <div id="models-checkboxes">Loading...</div>
                                 </div>
                             </div>
-                             <div class="config-option" style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
-                                <div><label>CPU Cores</label><input type="number" id="cores" value="4"></div>
-                                <div><label>Workers</label><input type="number" id="seg-workers" value="2"></div>
+                            <div class="config-option" style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+                                <div><label>CPU Cores</label><input type="number" id="cores" value="4" min="1"></div>
+                                <div><label>Workers</label><input type="number" id="seg-workers" value="2" min="1"></div>
                             </div>
                         </div>
                     </div>
@@ -359,7 +362,7 @@
 
                 <div style="margin-top: 30px; text-align: center; display: flex; justify-content: center; gap: 15px;">
                     <button class="btn btn-danger" onclick="cancelUpload()">Cancel</button>
-                    <button class="btn btn-secondary" onclick="startProcessing()" style="padding: 12px 40px; font-size: 16px;">
+                    <button class="btn btn-secondary" id="start-btn" onclick="startProcessing()" style="padding: 12px 40px; font-size: 16px;">
                         🚀 Start Pipeline
                     </button>
                 </div>
@@ -396,11 +399,11 @@
                 <h3>📊 Visualizer & Results</h3>
                 <span class="close-modal" onclick="closeModal('visualizer-modal')">&times;</span>
             </div>
-            
+
             <div class="tabs">
-                <div class="tab-btn active" onclick="switchTab('tab-summary')">📋 Summary</div>
-                <div class="tab-btn" onclick="switchTab('tab-dvh')">📈 DVH Plot</div>
-                <div class="tab-btn" onclick="switchTab('tab-viewer')">🖼️ Slice Viewer</div>
+                <div class="tab-btn active" onclick="switchTab(event, 'tab-summary')">📋 Summary</div>
+                <div class="tab-btn" onclick="switchTab(event, 'tab-dvh')">📈 DVH Plot</div>
+                <div class="tab-btn" onclick="switchTab(event, 'tab-viewer')">🖼️ Slice Viewer</div>
             </div>
 
             <div class="modal-body">
@@ -439,7 +442,7 @@
         // Initialize Cornerstone
         cornerstoneWADOImageLoader.external.cornerstone = cornerstone;
         cornerstoneWADOImageLoader.external.dicomParser = dicomParser;
-        
+
         // Minimal WADO config
         cornerstoneWADOImageLoader.configure({
             beforeSend: function(xhr) {}
@@ -448,73 +451,71 @@
         let currentJobId = null;
         let currentLogJobId = null;
         let viewerLoaded = false;
+        let modelsLoaded = false;
+        window.seriesData = [];
 
-        // ... existing init code ...
         document.addEventListener('DOMContentLoaded', () => {
             setupUploadHandlers();
             loadJobs();
             updateSystemStats();
             setInterval(updateJobStatuses, 3000);
             setInterval(updateSystemStats, 5000);
-            
-             // Setup collapsibles (existing)
             document.getElementById('ct-cropping-enabled').addEventListener('change', (e) => {
                 document.getElementById('cropping-options').style.display = e.target.checked ? 'block' : 'none';
             });
         });
 
-        // ... existing upload/config/system stats functions ...
-        
-        // [Keeping existing helper functions for UI/Upload logic as they were]
-        // Re-implementing core UI functions for completeness in this overwrite
-        
         function toggleSection(id) {
-            document.getElementById(id).classList.toggle('open');
-            document.getElementById('toggle-'+id).textContent = document.getElementById(id).classList.contains('open') ? '▲' : '▼';
+            const section = document.getElementById(id);
+            const toggleIcon = document.getElementById('toggle-' + id);
+            section.classList.toggle('open');
+            toggleIcon.textContent = section.classList.contains('open') ? '▲' : '▼';
         }
         function closeModal(id) { document.getElementById(id).style.display = 'none'; }
-        
+
         // --- Visualizer Logic ---
-        
+
         async function openVisualizer(jobId) {
             document.getElementById('visualizer-modal').style.display = 'block';
-            // Reset views
             document.getElementById('summary-content').innerHTML = '<div class="spinner"></div>';
             document.getElementById('dvh-plot').innerHTML = '';
             document.getElementById('series-list').innerHTML = 'Loading...';
-            
-            // Load Data
+            document.getElementById('seg-list').innerHTML = 'Loading...';
+
             await Promise.all([
                 loadSummary(jobId),
                 loadDVH(jobId),
                 loadSeries(jobId)
             ]);
         }
-        
-        function switchTab(tabId) {
+
+        function switchTab(evt, tabId) {
             document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
             document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
-            
-            event.target.classList.add('active');
+
+            if (evt && evt.currentTarget) {
+                evt.currentTarget.classList.add('active');
+            }
             document.getElementById(tabId).classList.add('active');
-            
+
             if(tabId === 'tab-dvh') Plotly.relayout('dvh-plot', {autosize: true});
-            if(tabId === 'tab-viewer' && !viewerLoaded) initViewer(); 
+            if(tabId === 'tab-viewer' && !viewerLoaded) initViewer();
         }
 
         async function loadSummary(id) {
             try {
                 const res = await fetch(`/api/jobs/${id}/preview`);
                 const data = await res.json();
+                if(!res.ok) throw new Error(data.error || 'Failed to load preview');
                 let html = '';
-                
+
                 if(data.dvh?.length) {
                     html += '<h4>DVH Metrics</h4>' + createTable(data.dvh, ['ROI_Name', 'Volume_cc', 'Mean_Dose_Gy', 'D95_Gy']);
                 }
                 if(data.qc?.length) {
                     html += '<h4 style="margin-top:20px">Quality Control</h4>' + createTable(data.qc, ['report_name', 'overall_status']);
                 }
-                
+
                 document.getElementById('summary-content').innerHTML = html || 'No summary data.';
             } catch(e) {
                 document.getElementById('summary-content').innerHTML = `<p style="color:red">Error: ${e.message}</p>`;
@@ -525,20 +526,21 @@
             try {
                 const res = await fetch(`/api/jobs/${id}/dvh-curves`);
                 const data = await res.json();
-                
+                if(!res.ok) throw new Error(data.error || 'DVH curve request failed');
+
                 if(!data.points || !data.points.length) {
                     document.getElementById('dvh-plot').innerHTML = '<p style="text-align:center; padding:50px">No DVH curves available.</p>';
                     return;
                 }
-                
+
                 const traces = data.points.map(roi => ({
-                    x: roi.data.map(p => p.x),
-                    y: roi.data.map(p => p.y),
+                    x: roi.data?.map(p => p.x) || [],
+                    y: roi.data?.map(p => p.y) || [],
                     mode: 'lines',
-                    name: roi.roi_name,
+                    name: roi.roi_name || roi.course || 'ROI',
                     hovertemplate: '%{y:.1f}% at %{x:.1f} Gy'
                 }));
-                
+
                 const layout = {
                     title: 'Dose Volume Histogram',
                     xaxis: {title: 'Dose (Gy)'},
@@ -546,11 +548,11 @@
                     hovermode: 'closest',
                     height: 600
                 };
-                
+
                 Plotly.newPlot('dvh-plot', traces, layout, {responsive: true});
-                
+
             } catch(e) {
-                console.error("DVH Load Error", e);
+                document.getElementById('dvh-plot').innerHTML = `<p style="color:red; text-align:center; padding:20px">${e.message}</p>`;
             }
         }
 
@@ -558,27 +560,27 @@
             try {
                 const res = await fetch(`/api/jobs/${id}/dicom-series`);
                 const data = await res.json();
-                
+                if(!res.ok) throw new Error(data.error || 'Failed to list DICOM series');
+
                 const list = document.getElementById('series-list');
                 if(!data.series.length) {
                     list.innerHTML = 'No series found.';
                     return;
                 }
-                
-                list.innerHTML = data.series.map((s, idx) => `
+
+                list.innerHTML = data.series.map((s) => `
                     <div class="series-item" onclick="loadStack('${id}', '${s.uid}', this)">
                         <div style="font-weight:600">${s.description || 'No Desc'}</div>
                         <div>${s.modality} | ${s.num_instances} images</div>
                     </div>
                 `).join('');
-                
-                window.seriesData = data.series; 
-                
-                // Also load segmentations
+
+                window.seriesData = data.series;
                 loadSegmentations(id);
-                
+
             } catch(e) {
                 document.getElementById('series-list').innerHTML = 'Error loading series';
+                console.error(e);
             }
         }
 
@@ -586,13 +588,14 @@
             try {
                 const res = await fetch(`/api/jobs/${id}/segmentations`);
                 const data = await res.json();
+                if(!res.ok) throw new Error(data.error || 'Failed to load segmentations');
                 const list = document.getElementById('seg-list');
-                
+
                 if(!data.segmentations.length) {
                     list.innerHTML = '<small>No structures found</small>';
                     return;
                 }
-                
+
                 list.innerHTML = data.segmentations.map(seg => {
                     const safeId = btoa(seg.path).replace(/=/g, '');
                     return `
@@ -604,16 +607,15 @@
                         <div id="rois-${safeId}" style="margin-left:15px; display:none; border-left:2px solid #edf2f7; padding-left:5px;"></div>
                     </div>`;
                 }).join('');
-                
+
             } catch(e) {
                 console.error("Seg Load Error", e);
+                document.getElementById('seg-list').innerHTML = '<small style="color:red">Failed to load structures</small>';
             }
         }
 
-        // --- Viewer Logic ---
-        let parsedRTStructs = {}; // url -> { roiNumber: { name, color, contours: { sopUid: [points] } } }
-        let activeROIs = new Set(); // Strings: "url::roiNumber"
-        let viewerLoaded = false;
+        let parsedRTStructs = {};
+        let activeROIs = new Set();
 
         function initViewer() {
             const element = document.getElementById('dicomImage');
@@ -621,14 +623,12 @@
             element.addEventListener('cornerstoneimagerendered', onImageRendered);
             viewerLoaded = true;
         }
-        
+
         async function toggleSegmentation(url, containerId, checked) {
             const container = document.getElementById(`rois-${containerId}`);
-            
+
             if(!checked) {
-                // Hide UI
                 container.style.display = 'none';
-                // Deactivate all ROIs from this file
                 const toRemove = [];
                 activeROIs.forEach(key => {
                     if(key.startsWith(url + '::')) toRemove.push(key);
@@ -637,58 +637,54 @@
                 cornerstone.updateImage(document.getElementById('dicomImage'));
                 return;
             }
-            
+
             container.style.display = 'block';
             container.innerHTML = '<small>Loading structures...</small>';
-            
-            // Check cache
+
             if(parsedRTStructs[url]) {
                 renderROIList(url, container);
                 return;
             }
-            
-            // Load and parse
+
             try {
                 const res = await fetch(url);
+                if(!res.ok) throw new Error('Failed to download RTSTRUCT');
                 const buffer = await res.arrayBuffer();
                 const dicomData = dcmjs.data.DicomMessage.readFile(buffer);
                 const dataset = dcmjs.data.DicomMetaDictionary.naturalizeDataset(dicomData.dict);
-                
-                // 1. Map ROI Number to Name
+
                 const roiMap = {};
                 if(dataset.StructureSetROISequence) {
                     dataset.StructureSetROISequence.forEach(roi => {
                         roiMap[roi.ROINumber] = roi.ROIName || `ROI ${roi.ROINumber}`;
                     });
                 }
-                
-                // 2. Extract Contours
-                const parsedROIs = {}; // roiNumber -> data
-                
+
+                const parsedROIs = {};
+
                 if(dataset.ROIContourSequence) {
-                    dataset.ROIContourSequence.forEach((roi, idx) => {
+                    dataset.ROIContourSequence.forEach((roi) => {
                         const roiNumber = roi.ReferencedROINumber;
                         const name = roiMap[roiNumber] || `ROI ${roiNumber}`;
                         const colorArray = roi.ROIDisplayColor || [255, 0, 0];
                         const color = `rgb(${colorArray.join(',')})`;
-                        
-                        const contoursByImage = {}; // sopUid -> [points]
-                        
+                        const contoursByImage = {};
+
                         if(roi.ContourSequence) {
                             roi.ContourSequence.forEach(contour => {
                                 const points = [];
-                                const data = contour.ContourData;
+                                const data = contour.ContourData || [];
                                 for(let i=0; i<data.length; i+=3) {
                                     points.push({x: data[i], y: data[i+1], z: data[i+2]});
                                 }
-                                
+
                                 const refUid = contour.ContourImageSequence?.[0]?.ReferencedSOPInstanceUID;
                                 if(refUid) {
                                     if(!contoursByImage[refUid]) contoursByImage[refUid] = [];
                                     contoursByImage[refUid].push(points);
                                 }
                             });
-                            
+
                             parsedROIs[roiNumber] = {
                                 name: name,
                                 color: color,
@@ -697,94 +693,93 @@
                         }
                     });
                 }
-                
+
                 parsedRTStructs[url] = parsedROIs;
                 renderROIList(url, container);
-                
+
             } catch(e) {
                 console.error("RTSTRUCT Parse Error", e);
                 container.innerHTML = '<small style="color:red">Failed to parse file</small>';
             }
         }
-        
+
         function renderROIList(url, container) {
             const rois = parsedRTStructs[url];
             if(!rois || Object.keys(rois).length === 0) {
                 container.innerHTML = '<small>No contours found</small>';
                 return;
             }
-            
-            // Sort by name
+
             const sortedKeys = Object.keys(rois).sort((a,b) => rois[a].name.localeCompare(rois[b].name));
-            
+
             container.innerHTML = sortedKeys.map(num => {
                 const roi = rois[num];
+                const checked = activeROIs.has(`${url}::${num}`);
                 return `
-                <label style="display:block; font-size:11px; cursor:pointer; margin:2px 0;">
-                    <input type="checkbox" onchange="toggleROI('${url}', '${num}', this.checked)">
-                    <span style="display:inline-block; width:8px; height:8px; background:${roi.color}; border-radius:50%; margin-right:4px;"></span>
-                    ${roi.name}
-                </label>`;
+                    <label style="display:flex; align-items:center; gap:6px; font-size:12px; padding:2px 0;">
+                        <input type="checkbox" ${checked ? 'checked' : ''} onchange="toggleROI('${url}', '${num}', this.checked)">
+                        <span style="color:${roi.color}">${roi.name}</span>
+                    </label>
+                `;
             }).join('');
         }
-        
-        function toggleROI(url, roiNumber, checked) {
-            const key = `${url}::${roiNumber}`;
-            if(checked) activeROIs.add(key);
-            else activeROIs.delete(key);
-            cornerstone.updateImage(document.getElementById('dicomImage'));
-        }
 
-        function onImageRendered(e) {
-            const eventData = e.detail;
+        window.toggleROI = function(url, roiNum, checked) {
+            const key = `${url}::${roiNum}`;
+            if(checked) {
+                activeROIs.add(key);
+            } else {
+                activeROIs.delete(key);
+            }
+            cornerstone.updateImage(document.getElementById('dicomImage'));
+        };
+
+        function onImageRendered(eventData) {
+            const viewport = cornerstone.getViewport(eventData.element);
+            document.getElementById('zoom-level').innerText = viewport.scale.toFixed(2);
+            document.getElementById('ww-wl').innerText = `${viewport.voi?.windowWidth?.toFixed(0) || '--'} / ${viewport.voi?.windowCenter?.toFixed(0) || '--'}`;
+
             const ctx = eventData.canvasContext;
-            
-            // Get SOP Instance UID of current image
+            const image = eventData.image;
+            const imageOrigin = image.imagePositionPatient || [0,0,0];
+            const spacing = [image.columnPixelSpacing || 1, image.rowPixelSpacing || 1];
+
             let sopUid = null;
             if(eventData.image.data) {
                  sopUid = eventData.image.data.string('x00080018');
             }
-            
+
             if(!sopUid || activeROIs.size === 0) return;
-            
-            // Draw active ROIs
+
             activeROIs.forEach(key => {
                 const [url, roiNum] = key.split('::');
                 const roiData = parsedRTStructs[url]?.[roiNum];
-                
+
                 if(roiData && roiData.contours[sopUid]) {
                     const contours = roiData.contours[sopUid];
-                    
+
                     ctx.beginPath();
                     ctx.strokeStyle = roiData.color;
                     ctx.lineWidth = 2;
-                    
+
                     contours.forEach(points => {
                         points.forEach((pt, i) => {
-                            // Manual projection for Axial
-                            // (Ideally use cornerstone.metaData for full transform)
-                            const image = eventData.image;
-                            const origin = image.imagePositionPatient || [0,0,0]; 
-                            const spacing = [image.columnPixelSpacing, image.rowPixelSpacing]; 
-                             
-                            const pixelX = (pt.x - origin[0]) / spacing[0];
-                            const pixelY = (pt.y - origin[1]) / spacing[1];
-                             
+                            const pixelX = (pt.x - imageOrigin[0]) / spacing[0];
+                            const pixelY = (pt.y - imageOrigin[1]) / spacing[1];
                             const canvasPt = cornerstone.pixelToCanvas(eventData.element, {x: pixelX, y: pixelY});
-                             
+
                             if(i===0) ctx.moveTo(canvasPt.x, canvasPt.y);
                             else ctx.lineTo(canvasPt.x, canvasPt.y);
                         });
-                        // Close loop
                         if(points.length > 0) {
                             const startPt = points[0];
-                             const pixelX = (startPt.x - origin[0]) / spacing[0];
-                             const pixelY = (startPt.y - origin[1]) / spacing[1];
+                             const pixelX = (startPt.x - imageOrigin[0]) / spacing[0];
+                             const pixelY = (startPt.y - imageOrigin[1]) / spacing[1];
                              const canvasPt = cornerstone.pixelToCanvas(eventData.element, {x: pixelX, y: pixelY});
                              ctx.lineTo(canvasPt.x, canvasPt.y);
                         }
                     });
-                    
+
                     ctx.stroke();
                 }
             });
@@ -793,45 +788,38 @@
         window.loadStack = function(jobId, seriesUid, el) {
             document.querySelectorAll('.series-item').forEach(e => e.classList.remove('active'));
             el.classList.add('active');
-            
+
             const series = window.seriesData.find(s => s.uid === seriesUid);
             if(!series) return;
-            
-            // Create WADO image IDs
-            // Note: current protocol is http. Cornerstone WADO loader usually expects wadouri:
-            // We map our /api/jobs/... URL to something cornerstone can fetch
-            
-            imageIds = series.files.map(url => `wadouri:${window.location.origin}/${url}`);
-            
+
+            const imageIds = series.files.map(url => `wadouri:${window.location.origin}/${url}`);
+
             if(imageIds.length > 0) {
                 cornerstone.loadImage(imageIds[0]).then(image => {
                     const element = document.getElementById('dicomImage');
                     cornerstone.displayImage(element, image);
-                    
-                    // Setup tools (Zoom/Pan)
-                    // In a real app, we'd init stack scroll here
+                }).catch(error => {
+                    console.error("Failed to load DICOM image:", error);
+                    alert("Failed to load DICOM image. Please check the file and try again.");
                 });
             }
         };
 
-        // --- Utils ---
         function createTable(data, columns) {
              const headers = columns || Object.keys(data[0]);
              return `
             <div style="overflow-x:auto; border-radius:8px; border:1px solid #e2e8f0;">
                 <table class="preview-table">
                     <thead><tr>${headers.map(h => `<th>${h.replace(/_/g, ' ')}</th>`).join('')}</tr></thead>
-                    <tbody>${data.map(row => `<tr>${headers.map(h => `<td>${row[h] !== null ? (typeof row[h]==='number'?row[h].toFixed(2):row[h]) : '-'}</td>`).join('')}</tr>`).join('')}</tbody>
+                    <tbody>${data.map(row => `<tr>${headers.map(h => `<td>${row[h] !== null && row[h] !== undefined ? (typeof row[h]==='number'?Number(row[h]).toFixed(2):row[h]) : '-'}</td>`).join('')}</tr>`).join('')}</tbody>
                 </table>
             </div>`;
         }
-        
-        // [Keeping previous Job Rendering logic, just updating the button actions]
-        
+
         function renderJobs(jobs) {
             const container = document.getElementById('jobs-container');
             if(!jobs.length) { container.innerHTML = '<div style="text-align:center; color:#a0aec0;">No jobs</div>'; return; }
-            
+
             jobs.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
 
             container.innerHTML = jobs.map(job => `
@@ -846,9 +834,9 @@
                         </div>
                         <span class="job-status ${job.status}">${job.status}</span>
                     </div>
-                    
+
                     ${job.status === 'running' ? `<div class="progress-bar"><div class="progress-fill" style="width:${job.progress?.percent || 0}%"></div></div>` : ''}
-                    
+
                     <div style="margin-top:20px; display:flex; gap:10px;">
                         ${job.status === 'completed' ? `
                             <button class="btn btn-secondary" onclick="openVisualizer('${job.job_id}')">📊 Visualizer</button>
@@ -860,39 +848,241 @@
             `).join('');
         }
 
-        // ... [Rest of existing logic: updateCompareBtn, viewLogs, etc.] ...
         function updateCompareBtn() {
             const count = document.querySelectorAll('.job-checkbox:checked').length;
             const btn = document.getElementById('compare-btn');
             btn.disabled = count < 2;
             btn.innerText = count > 1 ? `🆚 Compare (${count})` : '🆚 Compare Selected';
         }
-        
+
         function compareJobs() {
             alert("Comparison feature coming soon!");
         }
-        
-        // Re-implementing key missing functions from previous overwrite
+
         async function loadJobs() {
-            try { const res = await fetch('/api/jobs'); const data = await res.json(); renderJobs(data.jobs); } catch(e){}
+            try {
+                const res = await fetch('/api/jobs');
+                const data = await res.json();
+                if(!res.ok) throw new Error(data.error || 'Failed to load jobs');
+                renderJobs(data.jobs || []);
+            } catch(e) {
+                console.error('Failed to load jobs', e);
+                document.getElementById('jobs-container').innerHTML = `<p style="color:red">${e.message}</p>`;
+            }
         }
+
+        function updateJobStatuses() {
+            loadJobs();
+        }
+
+        async function viewLogs(id) {
+            currentLogJobId = id;
+            document.getElementById('log-modal').style.display='block';
+            try {
+                const res = await fetch(`/api/jobs/${id}/logs`);
+                const data = await res.json();
+                if(!res.ok) throw new Error(data.error || 'Failed to load logs');
+                document.getElementById('log-content').innerText = data.logs;
+            } catch(e) {
+                document.getElementById('log-content').innerText = `Error loading logs: ${e.message}`;
+            }
+        }
+
         async function updateSystemStats() {
-             try { const res = await fetch('/api/system/status'); const data = await res.json(); 
-             document.getElementById('cpu-val').innerText = data.cpu.percent + '%';
-             document.getElementById('ram-val').innerText = data.memory.percent + '%';
-             } catch(e){}
+            try {
+                const res = await fetch('/api/system/status');
+                const data = await res.json();
+                if(!res.ok) throw new Error(data.error || 'System status unavailable');
+                document.getElementById('cpu-val').innerText = (data.cpu?.percent ?? '--') + '%';
+                document.getElementById('ram-val').innerText = (data.memory?.percent ?? '--') + '%';
+                document.getElementById('gpu-val').innerText = (data.gpu && data.gpu.length)
+                    ? data.gpu.map(g => `${g.name} ${g.utilization}%`).join(', ')
+                    : 'N/A';
+            } catch(e) {
+                console.warn('System stats unavailable', e);
+            }
         }
-        function setupUploadHandlers() { /* ... */ } // Assumed intact from context logic or simplified
-        async function uploadFiles(files) { /* ... */ }
-        async function startProcessing() { /* ... */ }
-        async function viewLogs(id) { 
-             currentLogJobId = id; 
-             document.getElementById('log-modal').style.display='block';
-             const res = await fetch(`/api/jobs/${id}/logs`);
-             const data = await res.json();
-             document.getElementById('log-content').innerText = data.logs;
+
+        function setupUploadHandlers() {
+            const uploadSection = document.getElementById('upload-section');
+            const fileInput = document.getElementById('file-input');
+            const handleFiles = (files) => {
+                if(!files || !files.length) return;
+                uploadFiles(Array.from(files));
+                fileInput.value = '';
+            };
+
+            ['dragenter','dragover'].forEach(eventName => {
+                uploadSection.addEventListener(eventName, (e) => {
+                    e.preventDefault();
+                    uploadSection.classList.add('dragover');
+                });
+            });
+
+            ['dragleave','drop'].forEach(eventName => {
+                uploadSection.addEventListener(eventName, (e) => {
+                    e.preventDefault();
+                    if(eventName === 'drop') {
+                        uploadSection.classList.remove('dragover');
+                        if(e.dataTransfer?.files?.length) {
+                            handleFiles(e.dataTransfer.files);
+                        }
+                    } else if(!uploadSection.contains(e.relatedTarget)) {
+                        uploadSection.classList.remove('dragover');
+                    }
+                });
+            });
+
+            uploadSection.addEventListener('click', () => fileInput.click());
+            fileInput.addEventListener('change', (e) => handleFiles(e.target.files));
         }
-        
+
+        function renderValidation(result, meta = {}) {
+            const container = document.getElementById('validation-container');
+            const warningsArr = Array.isArray(result.warnings) ? result.warnings : (result.warnings ? [result.warnings] : []);
+            const errorsArr = Array.isArray(result.errors) ? result.errors : (result.errors ? [result.errors] : []);
+            const warnings = warningsArr.map(w => `<li>${w}</li>`).join('');
+            const errors = errorsArr.map(err => `<li>${err}</li>`).join('');
+            container.innerHTML = `
+                <div style="background:#f7fafc; border:1px solid #e2e8f0; border-radius:10px; padding:20px; margin-bottom:20px;">
+                    <h3 style="margin-bottom:10px;">Upload Summary</h3>
+                    <p><strong>DICOM Files Detected:</strong> ${result.dicom_count ?? 'unknown'}</p>
+                    <p><strong>Uploaded Files:</strong> ${meta.uploaded_files ?? 'n/a'}</p>
+                    ${warnings ? `<div style="margin-top:10px; color:#b7791f;"><strong>Warnings:</strong><ul>${warnings}</ul></div>` : ''}
+                    ${errors ? `<div style="margin-top:10px; color:#c53030;"><strong>Errors:</strong><ul>${errors}</ul></div>` : ''}
+                </div>`;
+        }
+
+        async function uploadFiles(files) {
+            const validationContainer = document.getElementById('validation-container');
+            if(!files.length) return;
+            const formData = new FormData();
+            files.forEach(file => formData.append('files[]', file, file.name));
+            validationContainer.innerHTML = '<p>Uploading...</p>';
+            try {
+                const res = await fetch('/api/upload', {
+                    method: 'POST',
+                    body: formData
+                });
+                const data = await res.json();
+                if(!res.ok) throw new Error(data.error || 'Upload failed');
+                currentJobId = data.job_id;
+                renderValidation(data.validation || {}, data);
+                document.getElementById('config-container').classList.remove('hidden');
+                loadJobs();
+            } catch(err) {
+                console.error('Upload failed', err);
+                validationContainer.innerHTML = `<p style="color:red">${err.message}</p>`;
+            }
+        }
+
+        async function startProcessing() {
+            if(!currentJobId) {
+                alert('Please upload data first.');
+                return;
+            }
+
+            const startBtn = document.getElementById('start-btn');
+            startBtn.disabled = true;
+            startBtn.textContent = 'Starting...';
+
+            const croppingEnabled = document.getElementById('ct-cropping-enabled').checked;
+            const customEnabled = document.getElementById('custom-models-enabled').checked;
+            const selectedModels = Array.from(document.querySelectorAll('#models-checkboxes input[type="checkbox"]:checked')).map(cb => cb.value);
+            const config = {
+                cores: parseInt(document.getElementById('cores').value, 10) || 'all',
+                segmentation: {
+                    fast: document.getElementById('fast-mode').checked,
+                    workers: parseInt(document.getElementById('seg-workers').value, 10) || 1
+                },
+                radiomics: {
+                    enabled: document.getElementById('radiomics-enabled').checked
+                },
+                radiomics_robustness: {
+                    enabled: document.getElementById('robustness-enabled').checked
+                },
+                custom_models: {
+                    enabled: customEnabled,
+                    models: selectedModels
+                }
+            };
+
+            if(croppingEnabled) {
+                config.ct_cropping = {
+                    enabled: true,
+                    region: document.getElementById('cropping-region').value
+                };
+            }
+
+            try {
+                const res = await fetch(`/api/jobs/${currentJobId}/start`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(config)
+                });
+                const data = await res.json();
+                if(!res.ok) throw new Error(data.error || 'Failed to start job');
+                document.getElementById('config-container').classList.add('hidden');
+                loadJobs();
+            } catch(err) {
+                alert(`Failed to start job: ${err.message}`);
+            } finally {
+                startBtn.disabled = false;
+                startBtn.textContent = '🚀 Start Pipeline';
+            }
+        }
+
+        async function cancelUpload() {
+            const resetUI = () => {
+                document.getElementById('validation-container').innerHTML = '';
+                document.getElementById('config-container').classList.add('hidden');
+                currentJobId = null;
+            };
+            if(!currentJobId) {
+                resetUI();
+                return;
+            }
+            try {
+                await fetch(`/api/jobs/${currentJobId}`, { method: 'DELETE' });
+            } catch(err) {
+                console.warn('Failed to cancel job', err);
+            }
+            resetUI();
+            loadJobs();
+        }
+
+        async function toggleCustomModelsList(forceState) {
+            const checkbox = document.getElementById('custom-models-enabled');
+            if(typeof forceState === 'boolean') {
+                checkbox.checked = forceState;
+            }
+            const enabled = checkbox.checked;
+            const container = document.getElementById('custom-models-list');
+            if(!enabled) {
+                container.classList.add('hidden');
+                return;
+            }
+            container.classList.remove('hidden');
+            if(modelsLoaded) return;
+            try {
+                const res = await fetch('/api/config/custom_models');
+                const data = await res.json();
+                if(!res.ok) throw new Error(data.error || 'Failed to load models');
+                const models = data.models || [];
+                if(!models.length) {
+                    document.getElementById('models-checkboxes').innerHTML = '<small>No models detected in /data/models</small>';
+                } else {
+                    document.getElementById('models-checkboxes').innerHTML = models.map(m => `
+                        <label style="display:block; margin-bottom:6px;">
+                            <input type="checkbox" value="${m}"> ${m}
+                        </label>
+                    `).join('');
+                }
+                modelsLoaded = true;
+            } catch(err) {
+                document.getElementById('models-checkboxes').innerHTML = `<small style="color:red">${err.message}</small>`;
+            }
+        }
     </script>
 </body>
 </html>

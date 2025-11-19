@@ -115,6 +115,8 @@ COPY --from=builder /opt/conda/envs /opt/conda/envs
 
 
 # Copy TotalSegmentator weights for offline support
+# NOTE: Ensure the 'totalseg_weights/' directory exists in the build context before building.
+# Omit this COPY if you do not need offline TotalSegmentator execution.
 COPY --chown=rtpipeline:rtpipeline totalseg_weights/ /home/rtpipeline/.totalsegmentator/
 
 # Copy custom models into the image

@@ -24,7 +24,7 @@ from __future__ import annotations
 import logging
 import tempfile
 import shutil
-import multiprocessing
+from multiprocessing import get_context
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -920,7 +920,7 @@ def robustness_for_course(
             max_workers = max(1, min(max_workers, len(tasks)))
             logger.info("Processing %d robustness perturbations with %d workers", len(tasks), max_workers)
 
-            ctx = multiprocessing.get_context('spawn')
+            ctx = get_context('spawn')
             with ctx.Pool(max_workers) as pool:
                 completed_count = 0
                 total_count = len(tasks)

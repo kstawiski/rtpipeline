@@ -655,8 +655,8 @@ def dvh_for_course(
                 # Create points list
                 for d, v in zip(abs_dvh.bincenters, vol_pct):
                     curve_points.append({"x": float(d), "y": float(v)})
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Failed to extract curve points for ROI %s: %s", roi_name, exc)
 
         metrics.update(
             {
