@@ -37,6 +37,10 @@ Logs*/
 Data*/
 DICOM_OrganizedCT/
 Example_data/
+Output/
+Input/
+Uploads/
+totalseg_weights/
 
 # Snakemake
 .snakemake/

@@ -22,6 +22,10 @@ Based on 2023-2025 radiomics stability research:
 from __future__ import annotations
 
 import logging
+import tempfile
+import shutil
+from multiprocessing import get_context
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Tuple
@@ -1027,6 +1031,10 @@ def aggregate_robustness_results(
         return
 
     combined_raw = pd.concat(all_dfs, ignore_index=True)
+
+    # Normalize column names
+    if "roi_name" in combined_raw.columns and "structure" not in combined_raw.columns:
+        combined_raw.rename(columns={"roi_name": "structure"}, inplace=True)
 
     per_structure_summary = summarize_feature_stability(combined_raw, rob_config)
     global_summary = summarize_feature_stability(combined_raw, rob_config, group_columns=["feature_name"])

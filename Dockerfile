@@ -25,12 +25,17 @@ WORKDIR /app
 
 # Copy environment files first for better layer caching
 COPY envs/ /app/envs/
+COPY third_party/ /app/third_party/
 
-# Create conda environments
+# Create conda environments with aggressive cleanup
 RUN mamba env create -f /app/envs/rtpipeline.yaml && \
     mamba env create -f /app/envs/rtpipeline-radiomics.yaml && \
     mamba env create -f /app/envs/rtpipeline-custom-models.yaml && \
-    mamba clean -afy
+    mamba clean -afy && \
+    find /opt/conda -follow -type f -name '*.a' -delete && \
+    find /opt/conda -follow -type f -name '*.pyc' -delete && \
+    find /opt/conda -follow -type f -name '*.js.map' -delete && \
+    rm -rf /opt/conda/pkgs/*
 
 # Stage 2: Runtime
 FROM condaforge/mambaforge:24.3.0-0
@@ -44,9 +49,10 @@ ENV DEBIAN_FRONTEND=noninteractive \
     LC_ALL=C.UTF-8 \
     PYTHONUNBUFFERED=1 \
     CONDA_DIR=/opt/conda \
-    PATH=/opt/conda/bin:$PATH
+    PATH=/opt/conda/bin:$PATH \
+    LD_LIBRARY_PATH=/opt/conda/lib
 
-# Install runtime dependencies including tini and GL libraries
+# Install runtime dependencies, create user, and setup directories in one layer
 RUN apt-get update && apt-get install -y --no-install-recommends \
     tini \
     libgl1-mesa-glx \
@@ -59,7 +65,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     pigz \
     curl \
     procps \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* && \
+    groupadd -r rtpipeline && \
+    useradd -r -g rtpipeline -u 1000 -m rtpipeline && \
+    mkdir -p \
+    /data/input \
+    /data/output \
+    /data/logs \
+    /data/models \
+    /data/uploads \
+    /tmp/cache \
+    /app && \
+    chown -R rtpipeline:rtpipeline /data /tmp/cache /app
 
 # Use tini as init system
 ENTRYPOINT ["/usr/bin/tini", "--"]
@@ -73,26 +90,34 @@ RUN conda config --set channel_priority strict && \
     conda config --add channels bioconda && \
     conda config --add channels defaults
 
-# Install Snakemake in base environment
-RUN mamba install -y -c conda-forge -c bioconda snakemake>=7.0 && mamba clean -afy
+# Install Snakemake and Web UI dependencies in base environment
+# We install these via mamba to ensure GLIBCXX compatibility (pandas/cpp issues with pip wheels)
+RUN mamba install -y -c conda-forge -c bioconda \
+    snakemake>=7.0 \
+    pandas \
+    flask \
+    psutil \
+    pydicom \
+    pyyaml \
+    werkzeug \
+    openpyxl \
+    pynetdicom \
+    libstdcxx-ng \
+    && mamba clean -afy && \
+    find /opt/conda -follow -type f -name '*.a' -delete && \
+    find /opt/conda -follow -type f -name '*.pyc' -delete && \
+    find /opt/conda -follow -type f -name '*.js.map' -delete && \
+    rm -rf /opt/conda/pkgs/*
 
 # Copy conda environments from builder
 COPY --from=builder /opt/conda/envs /opt/conda/envs
 
-# Create non-root user
-RUN groupadd -r rtpipeline && \
-    useradd -r -g rtpipeline -u 1000 -m rtpipeline
 
-# Create professional directory structure with correct permissions
-RUN mkdir -p \
-    /data/input \
-    /data/output \
-    /data/logs \
-    /data/models \
-    /data/uploads \
-    /tmp/cache \
-    /app && \
-    chown -R rtpipeline:rtpipeline /data /tmp/cache /app
+
+# Copy TotalSegmentator weights for offline support
+# NOTE: Ensure the 'totalseg_weights/' directory exists in the build context before building.
+# Omit this COPY if you do not need offline TotalSegmentator execution.
+COPY --chown=rtpipeline:rtpipeline totalseg_weights/ /home/rtpipeline/.totalsegmentator/
 
 # Copy custom models into the image
 # This ensures the image is self-contained
@@ -111,8 +136,7 @@ RUN pip install -e . && \
     /opt/conda/envs/rtpipeline/bin/pip install -e . && \
     /opt/conda/envs/rtpipeline/bin/pip install psutil
 
-# Install Web UI dependencies
-RUN pip install -r /app/webui/requirements.txt
+
 
 # Create container-specific config
 RUN cat > /app/config.container.yaml << 'EOF'
