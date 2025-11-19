@@ -249,7 +249,7 @@ docker run -it --rm --gpus all --shm-size=4g \
   -v $(pwd)/Input:/data/input:ro \
   -v $(pwd)/Output:/data/output:rw \
   -v $(pwd)/Logs:/data/logs:rw \
-  -v $(pwd)/totalseg_weights:/root/.totalsegmentator:rw \
+  -v $(pwd)/totalseg_weights:/home/rtpipeline/.totalsegmentator:rw \
   kstawiski/rtpipeline:latest bash
 
 # Inside container, run pipeline with container config:
@@ -259,7 +259,7 @@ snakemake --cores all --use-conda --configfile /app/config.container.yaml
 docker run -it --rm --shm-size=4g \
   -v $(pwd)/Input:/data/input:ro \
   -v $(pwd)/Output:/data/output:rw \
-  -v $(pwd)/totalseg_weights:/root/.totalsegmentator:rw \
+  -v $(pwd)/totalseg_weights:/home/rtpipeline/.totalsegmentator:rw \
   kstawiski/rtpipeline:latest bash
 ```
 
@@ -267,7 +267,7 @@ docker run -it --rm --shm-size=4g \
 
 **6. Build and push to Docker Hub:**
 ```bash
-./build.sh --push --tag v1.0.0
+./build.sh --push --tag latest
 ```
 
 **7. Pull from Docker Hub:**
