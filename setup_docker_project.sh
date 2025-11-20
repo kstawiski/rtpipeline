@@ -1047,10 +1047,10 @@ environment:
 
 ## Documentation
 
-- **Docker Setup Guide:** [docs/DOCKER_SETUP_GUIDE.md](${SCRIPT_DIR}/docs/DOCKER_SETUP_GUIDE.md)
-- **General Documentation:** [README.md](${SCRIPT_DIR}/README.md)
-- **Output Format:** [output_format_quick_ref.md](${SCRIPT_DIR}/output_format_quick_ref.md)
-- **Troubleshooting:** [docs/TROUBLESHOOTING.md](${SCRIPT_DIR}/docs/TROUBLESHOOTING.md)
+- **Docker Setup Guide:** [docs/DOCKER_SETUP_GUIDE.md](https://github.com/kstawiski/rtpipeline/blob/main/docs/DOCKER_SETUP_GUIDE.md)
+- **General Documentation:** [README.md](https://github.com/kstawiski/rtpipeline/blob/main/README.md)
+- **Output Format:** [output_format_quick_ref.md](https://github.com/kstawiski/rtpipeline/blob/main/output_format_quick_ref.md)
+- **Troubleshooting:** [docs/TROUBLESHOOTING.md](https://github.com/kstawiski/rtpipeline/blob/main/docs/TROUBLESHOOTING.md)
 
 ---
 
