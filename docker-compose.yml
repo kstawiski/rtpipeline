@@ -17,8 +17,11 @@ services:
       - ./Input:/data/input:rw
       - ./Output:/data/output:rw
       - ./Logs:/data/logs:rw
-      # - ./custom_models:/data/models:rw  <-- REMOVED: Models are now baked into image
+
+      # TotalSegmentator weights (OPTIONAL - weights are baked into image)
+      # Only needed if you want to update weights without rebuilding image
       - ./totalseg_weights:/home/rtpipeline/.totalsegmentator:rw
+
       - ./Uploads:/data/uploads:rw
       # Code mounted read-only for security
       - ./Code:/app/Code:ro
@@ -80,8 +83,10 @@ services:
       - ./Input:/data/input:rw
       - ./Output:/data/output:rw
       - ./Logs:/data/logs:rw
-      # - ./custom_models:/data/models:rw <-- REMOVED: Models are now baked into image
+
+      # TotalSegmentator weights (OPTIONAL - weights are baked into image)
       - ./totalseg_weights:/home/rtpipeline/.totalsegmentator:rw
+
       - ./Uploads:/data/uploads:rw
       - ./Code:/app/Code:ro
     ports:
