@@ -18,8 +18,7 @@ services:
       - ./Output:/data/output:rw
       - ./Logs:/data/logs:rw
 
-      # TotalSegmentator weights (OPTIONAL - weights are baked into image)
-      # Only needed if you want to update weights without rebuilding image
+      # TotalSegmentator weights (optional - for caching/updating without image rebuild)
       - ./totalseg_weights:/home/rtpipeline/.totalsegmentator:rw
 
       - ./Uploads:/data/uploads:rw
@@ -84,7 +83,7 @@ services:
       - ./Output:/data/output:rw
       - ./Logs:/data/logs:rw
 
-      # TotalSegmentator weights (OPTIONAL - weights are baked into image)
+      # TotalSegmentator weights (optional - for caching/updating without image rebuild)
       - ./totalseg_weights:/home/rtpipeline/.totalsegmentator:rw
 
       - ./Uploads:/data/uploads:rw
