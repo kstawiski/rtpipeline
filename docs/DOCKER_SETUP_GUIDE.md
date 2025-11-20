@@ -30,7 +30,10 @@ This guide provides a comprehensive walkthrough for setting up and running **rtp
 **The fastest way to get started is using the interactive setup tool:**
 
 ```bash
-# Run the interactive Docker setup wizard
+# One-line installer (no git clone needed)
+curl -sSL https://raw.githubusercontent.com/kstawiski/rtpipeline/main/setup_docker_project.sh | bash
+
+# Or use local script if you've cloned the repository
 ./setup_docker_project.sh
 ```
 
@@ -417,6 +420,10 @@ docker-compose -f docker-compose.custom.yml run --rm rtpipeline-custom
 **Use the interactive setup tool to generate all necessary files:**
 
 ```bash
+# One-line installer (easiest)
+curl -sSL https://raw.githubusercontent.com/kstawiski/rtpipeline/main/setup_docker_project.sh | bash
+
+# Or if you've cloned the repository
 ./setup_docker_project.sh
 ```
 
