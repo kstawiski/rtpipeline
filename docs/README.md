@@ -18,7 +18,8 @@ This directory contains technical documentation, advanced guides, and developmen
 | [**output_format.md**](../output_format.md) | Comprehensive output reference | Data analysts, AI agents |
 | [**output_format_quick_ref.md**](../output_format_quick_ref.md) | Quick reference cheat sheet | Experienced users |
 | [**rtpipeline_colab.ipynb**](../rtpipeline_colab.ipynb) | Google Colab notebook | Cloud users |
-| [**setup_new_project.sh**](../setup_new_project.sh) | Interactive setup script | All users |
+| [**setup_new_project.sh**](../setup_new_project.sh) | Interactive setup for native installs | Local installation users |
+| [**setup_docker_project.sh**](../setup_docker_project.sh) | **NEW:** Interactive Docker project setup | Docker users |
 
 ---
 
@@ -35,7 +36,8 @@ This directory contains technical documentation, advanced guides, and developmen
 
 | Document | Description |
 |----------|-------------|
-| [**DOCKER.md**](DOCKER.md) | Docker deployment and compatibility |
+| [**DOCKER.md**](DOCKER.md) | Docker/Singularity deployment and technical compatibility |
+| [**DOCKER_SETUP_GUIDE.md**](DOCKER_SETUP_GUIDE.md) | **NEW:** Comprehensive Docker setup with config guide and examples |
 | [**SECURITY.md**](SECURITY.md) | Security guide for production deployments |
 | [**TROUBLESHOOTING.md**](TROUBLESHOOTING.md) | Troubleshooting hang issues and timeouts |
 
@@ -72,7 +74,8 @@ This directory contains technical documentation, advanced guides, and developmen
 → [PARALLELIZATION.md](PARALLELIZATION.md)
 
 ### "I'm deploying with Docker"
-→ [DOCKER.md](DOCKER.md)
+→ [DOCKER_SETUP_GUIDE.md](DOCKER_SETUP_GUIDE.md) (comprehensive guide with examples)
+→ [DOCKER.md](DOCKER.md) (technical compatibility guide)
 
 ### "The pipeline is hanging or timing out"
 → [TROUBLESHOOTING.md](TROUBLESHOOTING.md)
@@ -108,18 +111,24 @@ rtpipeline/
 ├── output_format.md                   ← Complete output reference
 ├── output_format_quick_ref.md         ← Quick reference
 ├── rtpipeline_colab.ipynb             ← Google Colab notebook
-├── setup_new_project.sh               ← Interactive setup
+├── setup_new_project.sh               ← Interactive native setup
+├── setup_docker_project.sh            ← Interactive Docker setup (NEW)
 │
 ├── docs/                              ← Technical documentation (you are here)
 │   ├── README.md                      ← This file
 │   ├── PIPELINE_ARCHITECTURE.md       ← Architecture overview
 │   ├── PARALLELIZATION.md             ← Performance tuning
-│   ├── DOCKER.md                      ← Docker deployment
+│   ├── DOCKER.md                      ← Docker technical guide
+│   ├── DOCKER_SETUP_GUIDE.md          ← Docker setup & config guide (NEW)
 │   ├── TROUBLESHOOTING.md             ← Debugging guide
+│   ├── SECURITY.md                    ← Production security
 │   ├── custom_models.md               ← Custom models
 │   ├── pipeline_report.md             ← Feature report
+│   ├── RADIOMICS_ROBUSTNESS.md        ← Robustness analysis
+│   ├── SYSTEMATIC_CT_CROPPING.md      ← CT cropping guide
 │   ├── Guide to Results Interpretation.md
-│   └── qc_cropping_audit.md
+│   ├── qc_cropping_audit.md
+│   └── CODE_REVIEW.md
 │
 ├── internal/                          ← Development notes (internal use)
 │   ├── Agents.md                      ← AI agent prompts
