@@ -307,9 +307,46 @@ main() {
     print_info "All analysis will run inside Docker containers - no local installation needed!"
     echo ""
 
-    # Select preset or custom
+    # Ask if user has existing config or wants to create one
+    print_header "Configuration Method"
+    print_info "You can either:"
+    print_info "  1. Use an existing config.yaml file"
+    print_info "  2. Generate a new config interactively (recommended)"
+    echo ""
+
+    local use_existing_config=$(ask_yes_no "Do you have an existing config.yaml to use?" "no")
+    local existing_config_path=""
+    local skip_config_generation=false
+
+    if [ "$use_existing_config" = "yes" ]; then
+        existing_config_path=$(ask_question "Path to your config.yaml:" "")
+        while [ ! -f "$existing_config_path" ]; do
+            print_error "File not found: $existing_config_path"
+            local retry=$(ask_yes_no "Try another path?" "yes")
+            if [ "$retry" = "yes" ]; then
+                existing_config_path=$(ask_question "Path to your config.yaml:" "")
+            else
+                print_info "Switching to interactive config generation"
+                use_existing_config="no"
+                break
+            fi
+        done
+
+        if [ "$use_existing_config" = "yes" ]; then
+            # Expand to absolute path
+            existing_config_path="${existing_config_path/#\~/$HOME}"
+            if [[ "$existing_config_path" != /* ]]; then
+                existing_config_path="$(pwd)/$existing_config_path"
+            fi
+            print_success "Will use config: $existing_config_path"
+            skip_config_generation=true
+        fi
+    fi
+
+    # Select preset or custom (only if generating new config)
     local use_preset="no"
-    if [ -z "$PRESET" ] && [ "$QUICK_MODE" = "false" ]; then
+    if [ "$skip_config_generation" = "false" ] && [ -z "$PRESET" ] && [ "$QUICK_MODE" = "false" ]; then
+        echo ""
         use_preset=$(ask_yes_no "Use a configuration preset?" "yes")
 
         if [ "$use_preset" = "yes" ]; then
@@ -434,16 +471,33 @@ main() {
     fi
 
     # --- Processing Configuration ---
-    print_header "Processing Features"
+    # Skip if using existing config
+    if [ "$skip_config_generation" = "true" ]; then
+        print_header "Configuration"
+        print_success "Using existing configuration file"
+        print_info "Skipping interactive configuration..."
 
-    # Radiomics
-    local enable_radiomics="${PRESET_RADIOMICS:-}"
-    if [ -z "$enable_radiomics" ]; then
-        print_info "Radiomics extracts 100+ features per ROI (shape, texture, intensity)"
-        enable_radiomics=$(ask_yes_no "Enable radiomics extraction?" "yes")
+        # Set dummy values since we're using existing config
+        enable_radiomics="yes"
+        enable_robustness="yes"
+        robustness_intensity="standard"
+        enable_ct_cropping="yes"
+        cropping_region="pelvis"
+        enable_custom_models="no"
+        max_workers="null"
+        max_cores="16"
+        max_memory="32G"
     else
-        print_info "Radiomics: ${enable_radiomics} (from preset)"
-    fi
+        print_header "Processing Features"
+
+        # Radiomics
+        local enable_radiomics="${PRESET_RADIOMICS:-}"
+        if [ -z "$enable_radiomics" ]; then
+            print_info "Radiomics extracts 100+ features per ROI (shape, texture, intensity)"
+            enable_radiomics=$(ask_yes_no "Enable radiomics extraction?" "yes")
+        else
+            print_info "Radiomics: ${enable_radiomics} (from preset)"
+        fi
 
     # Radiomics Robustness
     local enable_robustness="${PRESET_ROBUSTNESS:-}"
@@ -502,28 +556,29 @@ main() {
         enable_custom_models=$(ask_yes_no "Enable custom nnU-Net models?" "no")
     fi
 
-    # Parallelization
-    print_header "Parallelization Settings"
-    local max_workers="null"
-    local max_cores="16"
+        # Parallelization
+        print_header "Parallelization Settings"
+        local max_workers="null"
+        local max_cores="16"
 
-    if [ "$QUICK_MODE" = "false" ]; then
-        local avail_cores=$(nproc 2>/dev/null || echo "16")
-        print_info "Available CPU cores: $avail_cores"
-        max_cores=$(ask_question "Max CPU cores for Docker container" "$avail_cores")
+        if [ "$QUICK_MODE" = "false" ]; then
+            local avail_cores=$(nproc 2>/dev/null || echo "16")
+            print_info "Available CPU cores: $avail_cores"
+            max_cores=$(ask_question "Max CPU cores for Docker container" "$avail_cores")
 
-        print_info "Max workers controls internal parallelism (null = auto-detect)"
-        local worker_input=$(ask_question "Max workers (null/auto or number)" "null")
-        if [ "$worker_input" != "null" ] && [ "$worker_input" != "auto" ]; then
-            max_workers="$worker_input"
+            print_info "Max workers controls internal parallelism (null = auto-detect)"
+            local worker_input=$(ask_question "Max workers (null/auto or number)" "null")
+            if [ "$worker_input" != "null" ] && [ "$worker_input" != "auto" ]; then
+                max_workers="$worker_input"
+            fi
         fi
-    fi
 
-    # Memory
-    local max_memory="32G"
-    if [ "$QUICK_MODE" = "false" ]; then
-        max_memory=$(ask_question "Max memory for Docker container (e.g., 32G)" "32G")
-    fi
+        # Memory
+        local max_memory="32G"
+        if [ "$QUICK_MODE" = "false" ]; then
+            max_memory=$(ask_question "Max memory for Docker container (e.g., 32G)" "32G")
+        fi
+    fi  # End of skip_config_generation check
 
     # Generate files
     if [ "$DRY_RUN" = "true" ]; then
@@ -552,9 +607,24 @@ main() {
     local custom_models_bool="false"
     if [ "$enable_custom_models" = "yes" ]; then custom_models_bool="true"; fi
 
-    # 1. Generate config.yaml
+    # 1. Generate or copy config.yaml
     local config_path="$project_dir/config.yaml"
-    cat > "$config_path" <<EOF
+
+    if [ "$skip_config_generation" = "true" ]; then
+        # Copy existing config
+        cp "$existing_config_path" "$config_path"
+        print_success "Copied config from: $existing_config_path"
+
+        # Update paths in the copied config to use container paths
+        if command -v sed &> /dev/null; then
+            sed -i 's|^dicom_root:.*|dicom_root: "/data/input"|' "$config_path" 2>/dev/null || true
+            sed -i 's|^output_dir:.*|output_dir: "/data/output"|' "$config_path" 2>/dev/null || true
+            sed -i 's|^logs_dir:.*|logs_dir: "/data/logs"|' "$config_path" 2>/dev/null || true
+            print_info "Updated paths to use Docker container paths"
+        fi
+    else
+        # Generate new config
+        cat > "$config_path" <<EOF
 # RTpipeline Docker Project Configuration
 # Generated by setup_docker_project.sh v$VERSION on $(date)
 # Project: $project_name
@@ -720,8 +790,8 @@ environments:
 # =============================================================================
 custom_structures: "custom_structures_pelvic.yaml"
 EOF
-
-    print_success "Created config.yaml"
+        print_success "Created config.yaml"
+    fi
 
     # 2. Generate docker-compose.project.yml
     local compose_path="$project_dir/docker-compose.project.yml"
