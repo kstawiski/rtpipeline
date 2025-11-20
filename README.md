@@ -29,7 +29,11 @@ The wizard will guide you through:
 
 **1. Create project directories:**
 ```bash
-mkdir -p Input Output Logs Uploads totalseg_weights
+mkdir -p Input Output Logs Uploads
+
+# Optional: Create totalseg_weights if you want to cache/update weights
+# (Not needed - weights are baked into the image)
+# mkdir -p totalseg_weights
 ```
 
 **2. Start the pipeline (GPU enabled):**
