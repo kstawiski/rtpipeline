@@ -373,11 +373,34 @@ main() {
     print_success "Project directory: $project_dir"
     print_success "DICOM input: $dicom_dir"
 
-    # Check if totalseg_weights directory exists
-    local totalseg_weights_dir="$SCRIPT_DIR/totalseg_weights"
-    if [ ! -d "$totalseg_weights_dir" ]; then
-        mkdir -p "$totalseg_weights_dir"
-        print_info "Created TotalSegmentator weights cache: $totalseg_weights_dir"
+    # TotalSegmentator weights handling
+    print_header "TotalSegmentator Weights"
+    print_info "The Docker image includes TotalSegmentator weights baked-in."
+    print_info "You can optionally mount a weights directory to:"
+    print_info "  - Update weights without rebuilding the image"
+    print_info "  - Share weights across multiple projects"
+    echo ""
+
+    local mount_weights=$(ask_yes_no "Mount TotalSegmentator weights directory?" "no")
+    local totalseg_weights_dir=""
+    local weights_mount_line=""
+
+    if [ "$mount_weights" = "yes" ]; then
+        totalseg_weights_dir="$SCRIPT_DIR/totalseg_weights"
+        if [ ! -d "$totalseg_weights_dir" ]; then
+            mkdir -p "$totalseg_weights_dir"
+            print_success "Created weights cache: $totalseg_weights_dir"
+        fi
+        weights_mount_line="      # TotalSegmentator weights (optional - for caching/updates)
+      - ${totalseg_weights_dir}:/home/rtpipeline/.totalsegmentator:rw
+"
+        print_success "Will mount: $totalseg_weights_dir"
+    else
+        weights_mount_line="      # TotalSegmentator weights (OPTIONAL - weights are baked into image)
+      # Uncomment to cache/update weights:
+      # - /path/to/totalseg_weights:/home/rtpipeline/.totalsegmentator:rw
+"
+        print_info "Using baked-in weights (simpler setup)"
     fi
 
     # --- GPU Configuration ---
@@ -734,9 +757,7 @@ services:
       # Custom configuration
       - ${project_dir}/config.yaml:/app/config.custom.yaml:ro
 
-      # TotalSegmentator weights cache (shared across projects)
-      - ${totalseg_weights_dir}:/home/rtpipeline/.totalsegmentator:rw
-
+${weights_mount_line}
     environment:
       - PYTHONPATH=/app
       - NUMBA_CACHE_DIR=/tmp/cache

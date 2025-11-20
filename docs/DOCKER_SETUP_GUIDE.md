@@ -94,10 +94,13 @@ docker run -it --rm --gpus all --shm-size=8g \
   -v /path/to/dicom:/data/input:ro \
   -v /path/to/output:/data/output:rw \
   -v /path/to/logs:/data/logs:rw \
-  -v /path/to/totalseg_weights:/home/rtpipeline/.totalsegmentator:rw \
   -v /path/to/config.yaml:/app/config.custom.yaml:ro \
   kstawiski/rtpipeline:latest \
   snakemake --cores all --use-conda --configfile /app/config.custom.yaml
+
+# Optional: Add weights mount if you want to cache/update TotalSegmentator weights
+# (Not needed if weights are already baked into the image)
+# -v /path/to/totalseg_weights:/home/rtpipeline/.totalsegmentator:rw \
 ```
 
 **Features:**
@@ -883,6 +886,54 @@ cat Logs/*.log
 ---
 
 ## Advanced Topics
+
+### TotalSegmentator Weights: Baked-In vs. Volume Mount
+
+**Important:** The rtpipeline Docker image includes TotalSegmentator weights **baked into the image** during build (Dockerfile line 120). This means:
+
+✅ **You do NOT need to mount weights** if:
+- You're using the pre-built image from Docker Hub
+- Your locally built image includes weights in `totalseg_weights/` directory
+
+❌ **You DO need to mount weights** if:
+- You want to update model weights without rebuilding the image
+- You want to test different model versions
+- You're sharing weights across multiple containers
+- You built the image without weights in the build context
+
+**Check if weights are in your image:**
+
+```bash
+# Check if weights exist in container
+docker run --rm kstawiski/rtpipeline:latest ls -la /home/rtpipeline/.totalsegmentator/nnunet/results/
+
+# If you see Dataset291, Dataset292, Dataset293 directories, weights are baked in!
+```
+
+**To use baked-in weights** (simpler):
+
+```bash
+# No weights mount needed
+docker run --gpus all \
+  -v ./Input:/data/input:ro \
+  -v ./Output:/data/output:rw \
+  kstawiski/rtpipeline:latest \
+  snakemake --cores all --use-conda
+```
+
+**To override/cache weights** (optional):
+
+```bash
+# Mount weights directory
+docker run --gpus all \
+  -v ./Input:/data/input:ro \
+  -v ./Output:/data/output:rw \
+  -v ./totalseg_weights:/home/rtpipeline/.totalsegmentator:rw \
+  kstawiski/rtpipeline:latest \
+  snakemake --cores all --use-conda
+```
+
+---
 
 ### Using Custom nnU-Net Models
 
