@@ -347,18 +347,33 @@ main() {
         done
     fi
 
-    # Resolve absolute path
-    if [ -d "$dicom_dir" ]; then
-        dicom_dir=$(cd "$dicom_dir"; pwd)
-    else
-        print_warning "Directory does not exist yet: $dicom_dir"
-        local create_dir=$(ask_yes_no "Create directory?" "yes")
+    # Convert to absolute path and handle non-existent directories
+    # First, expand ~ if present
+    dicom_dir="${dicom_dir/#\~/$HOME}"
+
+    # Make path absolute if relative
+    if [[ "$dicom_dir" != /* ]]; then
+        dicom_dir="$(pwd)/$dicom_dir"
+    fi
+
+    # Check if directory exists
+    if [ ! -d "$dicom_dir" ]; then
+        print_warning "Directory does not exist: $dicom_dir"
+        local create_dir=$(ask_yes_no "Create DICOM input directory?" "yes")
         if [ "$create_dir" = "yes" ]; then
-            mkdir -p "$dicom_dir"
-            dicom_dir=$(cd "$dicom_dir"; pwd)
+            mkdir -p "$dicom_dir" || {
+                print_error "Failed to create directory: $dicom_dir"
+                exit 1
+            }
             print_success "Created: $dicom_dir"
+        else
+            print_error "DICOM directory is required. Exiting."
+            exit 1
         fi
     fi
+
+    # Now resolve to absolute canonical path
+    dicom_dir=$(cd "$dicom_dir" && pwd)
 
     local parent_dir=$(dirname "$dicom_dir")
     local project_name=$(basename "$dicom_dir")
