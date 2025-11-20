@@ -48,7 +48,7 @@ This will guide you through:
 
 ```bash
 # Create required directories
-mkdir -p Input Output Logs Uploads totalseg_weights
+mkdir -p Input Output Logs Uploads
 
 # Start Web UI
 docker-compose up -d
