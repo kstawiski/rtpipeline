@@ -391,12 +391,12 @@ main() {
             mkdir -p "$totalseg_weights_dir"
             print_success "Created weights cache: $totalseg_weights_dir"
         fi
-        weights_mount_line="      # TotalSegmentator weights (optional - for caching/updates)
+        weights_mount_line="      # TotalSegmentator weights (optional - for caching/updating without image rebuild)
       - ${totalseg_weights_dir}:/home/rtpipeline/.totalsegmentator:rw
 "
         print_success "Will mount: $totalseg_weights_dir"
     else
-        weights_mount_line="      # TotalSegmentator weights (OPTIONAL - weights are baked into image)
+        weights_mount_line="      # TotalSegmentator weights (optional - weights are baked into image)
       # Uncomment to cache/update weights:
       # - /path/to/totalseg_weights:/home/rtpipeline/.totalsegmentator:rw
 "
