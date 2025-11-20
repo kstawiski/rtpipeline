@@ -357,6 +357,9 @@ main() {
             mkdir -p "$dicom_dir"
             dicom_dir=$(cd "$dicom_dir"; pwd)
             print_success "Created: $dicom_dir"
+        else
+            print_error "Input directory must exist. Aborting."
+            exit 1
         fi
     fi
 
