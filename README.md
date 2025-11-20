@@ -9,7 +9,13 @@ The easiest way to run **rtpipeline** is via Docker. No complex environment setu
 
 ### Option 1: Interactive Docker Setup (NEW - Recommended)
 
-**Use the interactive setup wizard to configure a custom Docker project:**
+**One-line installer (no git clone needed):**
+
+```bash
+curl -sSL https://raw.githubusercontent.com/kstawiski/rtpipeline/main/setup_docker_project.sh | bash
+```
+
+**Or use the local script if you've cloned the repository:**
 
 ```bash
 ./setup_docker_project.sh
