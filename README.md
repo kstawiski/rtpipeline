@@ -37,9 +37,7 @@ The wizard will guide you through:
 ```bash
 mkdir -p Input Output Logs Uploads
 
-# Optional: Create totalseg_weights if you want to cache/update weights
-# (Not needed - weights are baked into the image)
-# mkdir -p totalseg_weights
+# Optional: mkdir -p totalseg_weights (for caching/updating weights - not needed, weights are baked into image)
 ```
 
 **2. Start the pipeline (GPU enabled):**
