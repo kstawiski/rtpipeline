@@ -48,7 +48,7 @@ This will guide you through:
 
 ```bash
 # Create required directories
-mkdir -p Input Output Logs Uploads totalseg_weights
+mkdir -p Input Output Logs Uploads
 
 # Start Web UI
 docker-compose up -d
@@ -101,9 +101,7 @@ docker run -it --rm --gpus all --shm-size=8g \
   kstawiski/rtpipeline:latest \
   snakemake --cores all --use-conda --configfile /app/config.custom.yaml
 
-# Optional: Add weights mount if you want to cache/update TotalSegmentator weights
-# (Not needed if weights are already baked into the image)
-# -v /path/to/totalseg_weights:/home/rtpipeline/.totalsegmentator:rw \
+# Optional: -v /path/to/totalseg_weights:/home/rtpipeline/.totalsegmentator:rw (for caching/updating weights)
 ```
 
 **Features:**

@@ -443,12 +443,12 @@ main() {
             mkdir -p "$totalseg_weights_dir"
             print_success "Created weights cache: $totalseg_weights_dir"
         fi
-        weights_mount_line="      # TotalSegmentator weights (optional - for caching/updates)
+        weights_mount_line="      # TotalSegmentator weights (optional - for caching/updating without image rebuild)
       - ${totalseg_weights_dir}:/home/rtpipeline/.totalsegmentator:rw
 "
         print_success "Will mount: $totalseg_weights_dir"
     else
-        weights_mount_line="      # TotalSegmentator weights (OPTIONAL - weights are baked into image)
+        weights_mount_line="      # TotalSegmentator weights (optional - weights are baked into image)
       # Uncomment to cache/update weights:
       # - /path/to/totalseg_weights:/home/rtpipeline/.totalsegmentator:rw
 "
@@ -1129,10 +1129,10 @@ environment:
 
 ## Documentation
 
-- **Docker Setup Guide:** [docs/DOCKER_SETUP_GUIDE.md](${SCRIPT_DIR}/docs/DOCKER_SETUP_GUIDE.md)
-- **General Documentation:** [README.md](${SCRIPT_DIR}/README.md)
-- **Output Format:** [output_format_quick_ref.md](${SCRIPT_DIR}/output_format_quick_ref.md)
-- **Troubleshooting:** [docs/TROUBLESHOOTING.md](${SCRIPT_DIR}/docs/TROUBLESHOOTING.md)
+- **Docker Setup Guide:** [docs/DOCKER_SETUP_GUIDE.md](https://github.com/kstawiski/rtpipeline/blob/main/docs/DOCKER_SETUP_GUIDE.md)
+- **General Documentation:** [README.md](https://github.com/kstawiski/rtpipeline/blob/main/README.md)
+- **Output Format:** [output_format_quick_ref.md](https://github.com/kstawiski/rtpipeline/blob/main/output_format_quick_ref.md)
+- **Troubleshooting:** [docs/TROUBLESHOOTING.md](https://github.com/kstawiski/rtpipeline/blob/main/docs/TROUBLESHOOTING.md)
 
 ---
 
