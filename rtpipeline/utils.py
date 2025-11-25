@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from pathlib import Path
 from time import perf_counter
 from typing import Any, Callable, Iterable, List, Optional, Sequence, TypeVar
@@ -330,6 +330,7 @@ def run_tasks_with_adaptive_workers(
     logger: Optional[logging.Logger] = None,
     show_progress: bool = False,
     task_timeout: Optional[int] = None,
+    use_processes: bool = True,
 ) -> List[Optional[R]]:
     """Run tasks with adaptive worker fallback when memory pressure is detected.
 
@@ -343,11 +344,15 @@ def run_tasks_with_adaptive_workers(
         show_progress: Emit progress log entries similar to previous pipeline behaviour.
         task_timeout: Optional timeout per task in seconds (None = no timeout).
                      Use this to prevent individual tasks from hanging indefinitely.
+        use_processes: If True (default), use ProcessPoolExecutor for true multi-core
+                      parallelism. If False, use ThreadPoolExecutor (GIL-limited).
 
     Returns:
         List of results aligned with ``items`` order. Entries are ``None`` when
         a task failed.
     """
+
+    import pickle
 
     seq = list(items)
     total = len(seq)
@@ -361,6 +366,18 @@ def run_tasks_with_adaptive_workers(
     completed = 0
     start = perf_counter()
 
+    # Test if function and data are picklable for ProcessPoolExecutor
+    effective_use_processes = use_processes
+    if use_processes:
+        try:
+            # Test pickle compatibility
+            pickle.dumps(func)
+            if seq:
+                pickle.dumps(seq[0])
+        except (pickle.PicklingError, TypeError, AttributeError) as e:
+            log.info("%s: function or data not picklable, using threads instead of processes: %s", label, e)
+            effective_use_processes = False
+
     pending = list(range(total))
 
     while pending:
@@ -370,14 +387,17 @@ def run_tasks_with_adaptive_workers(
         workers = max(min_workers, min(workers, len(current_indices)))
 
         if show_progress:
+            executor_name = "process" if effective_use_processes else "thread"
             log.info(
-                "%s: starting batch with %d worker(s) for %d task(s)",
+                "%s: starting batch with %d %s worker(s) for %d task(s)",
                 label,
                 workers,
+                executor_name,
                 len(current_indices),
             )
 
-        with ThreadPoolExecutor(max_workers=workers) as ex:
+        ExecutorClass = ProcessPoolExecutor if effective_use_processes else ThreadPoolExecutor
+        with ExecutorClass(max_workers=workers) as ex:
             future_to_idx = {ex.submit(func, seq[idx]): idx for idx in current_indices}
 
             # Track task start times for timeout detection

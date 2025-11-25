@@ -180,6 +180,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--totalseg-force-split", dest="totalseg_force_split", action="store_true", help="Force TotalSegmentator to split volumes into chunks")
     p.add_argument("--no-totalseg-force-split", dest="totalseg_force_split", action="store_false", help="Disable forced chunking in TotalSegmentator")
     p.set_defaults(totalseg_force_split=None)
+    p.add_argument("--totalseg-allow-fallback", action="store_true", help="Allow fallback to CPU if GPU segmentation fails (slow!)")
     p.add_argument("--custom-models-root", default=None, help="Directory containing custom segmentation model definitions (default: ./custom_models)")
     p.add_argument(
         "--custom-model",
@@ -790,6 +791,7 @@ def main(argv: list[str] | None = None) -> int:
         totalseg_nr_thr_saving=totalseg_nr_thr_saving,
         totalseg_num_proc_pre=totalseg_num_proc_pre,
         totalseg_num_proc_export=totalseg_num_proc_export,
+        totalseg_allow_fallback=args.totalseg_allow_fallback,
         extra_seg_models=[m.strip() for part in (args.extra_seg_models or []) for m in part.split(",") if m.strip()],
         segmentation_workers=args.seg_workers,
         segmentation_temp_root=seg_temp_root,
