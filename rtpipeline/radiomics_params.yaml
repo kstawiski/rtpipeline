@@ -1,0 +1,126 @@
+# =================================================================================================
+# IBSI-Aligned PyRadiomics Configuration for CT Feature Extraction
+#
+# Grounded in the validated baseline defined in Knowledge/PyRadiomics CT Configuration Research.md,
+# reinforced by prior Claude and Gemini reviews:
+# - Focus on Original image signal for maximum reproducibility.
+# - Standardized preprocessing (1 mm isotropic resampling, B-spline interpolation, 25 HU bin width).
+# - No global normalization or outlier clipping for CT to preserve HU fidelity.
+# - Complete IBSI feature classes enabled; downstream robustness filtering happens post-extraction.
+# =================================================================================================
+
+setting:
+  # ----------------------------------------------------------
+  # Image Pre-processing and Harmonization (Clinical Grade)
+  # ----------------------------------------------------------
+  
+  # Isotropic resampling crucial for rotation-invariant features
+  # 1x1x1mm provides optimal balance for CT/MRI applications
+  resampledPixelSpacing: [1.0, 1.0, 1.0]
+  
+  # B-spline interpolation preserves image information during resampling
+  interpolator: 'sitkBSpline'
+  
+  # HU scale already normalized for CT; retain raw contrast
+  normalize: False
+
+  # Maintain native HU range without global offset; ensure downstream pipeline tolerates negatives
+  voxelArrayShift: 0
+  
+  # ----------------------------------------------------------
+  # Intensity Discretization (Evidence-Based)
+  # ----------------------------------------------------------
+  
+  # Fixed bin width more robust than fixed bin count for multi-center studies
+  # 25 HU validated for CT applications; provides 30-130 bins typically
+  binWidth: 25
+  
+  # Alternative for MRI applications (uncomment if needed):
+  # binCount: 64  # Recommended for MRI per clinical studies
+  
+  # ----------------------------------------------------------
+  # ROI Quality Control and Validation
+  # ----------------------------------------------------------
+  
+  # Enforce at least 2D ROI support; single-voxel masks excluded per IBSI guidance
+  minimumROIDimensions: 2
+  
+  # Guardrail against extremely small volumes that destabilize texture statistics
+  minimumROISize: 64
+  
+  # Include short and medium-range offsets to stabilize texture matrices
+  distances: [1, 2]
+  
+  # 3D texture analysis preferred over 2D
+  force2D: False
+  force2Ddimension: 0
+  
+  # ----------------------------------------------------------
+  # IBSI Compliance and Geometry Handling
+  # ----------------------------------------------------------
+  
+  # IBSI-recommended padding distance for kernel operations
+  padDistance: 5
+  
+  # Geometry tolerance for image-mask alignment
+  geometryTolerance: 1e-6
+  
+  # Resample mask to image geometry when needed
+  correctMask: True
+  
+  # IBSI energy calculation compliance
+  weightingNorm: null
+  
+  # ----------------------------------------------------------
+  # Provenance and Quality Assurance
+  # ----------------------------------------------------------
+  
+  # Essential for reproducibility - includes all processing details
+  additionalInfo: True
+  
+  # Target label for feature extraction
+  label: 1
+  
+  # Disable pre-cropping to maintain intensity normalization accuracy
+  preCrop: False
+
+# ============================================================
+# Image Types: Evidence-Based Filter Selection
+# Prioritizes clinically-validated filters with proven biomarker performance
+# ============================================================
+imageType:
+  # Baseline extraction restricted to the Original signal for highest stability
+  Original: {}
+  
+  # Optional multi-scale edge emphasis; retain modest sigma set to manage feature growth
+  LoG:
+    sigma: [1.0, 2.0, 3.0, 5.0]
+  
+  # Wavelet decomposition reintroduced for downstream multi-frequency analysis; monitor robustness
+  Wavelet:
+    wavelet: 'coif1'
+    start_level: 0
+    level: 1
+
+# ============================================================
+# Feature Classes: Tier-Based Selection for Clinical Robustness
+# All classes enabled for comprehensive extraction, but post-extraction
+# filtering should prioritize Tier 1 features (ICC >0.9) for clinical models
+# ============================================================
+featureClass:
+  # Enable full IBSI-compliant feature families; prune during robustness analysis
+  shape: []
+  firstorder: []
+  glcm: []
+  glrlm: []
+  glszm: []
+  gldm: []
+  ngtdm: []
+  
+# =================================================================================================
+# POST-EXTRACTION RECOMMENDATIONS:
+# 1. Apply robustness filtering (e.g., ICC or repeatability analysis) before modeling.
+# 2. Control for ROI volume confounding when interpreting first-order energy-like metrics.
+# 3. Remove highly collinear features (|r| > 0.95) to stabilize models.
+# 4. Use ComBat or equivalent harmonization when scanner/protocol heterogeneity remains.
+# =================================================================================================

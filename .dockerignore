@@ -1,0 +1,48 @@
+# Version control
+.git
+.gitignore
+.github
+.cache/
+.claude/
+.genkit/
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+.pytest_cache
+.coverage
+
+# Pipeline outputs
+Output/
+Data_Snakemake/
+Logs_Snakemake/
+.snakemake/
+*.log
+_RESULTS/
+docker_run/
+
+# Large files
+*.sif
+*.tar.gz
+totalseg_weights/  <-- Included for offline support
+# custom_models exclusions removed for offline support
+custom_models/*/weights/
+custom_models/*/nnUNet_results/
+
+# Development
+.vscode
+.idea
+*.swp
+*~
+
+# Documentation (already in image)
+docs/
+
+# Test data (mount at runtime)
+Example_data/
+Input/
+Uploads/

@@ -1,0 +1,40 @@
+name: cardiac_STOPSTORM
+description: >
+  STOPSTORM nnUNetv2 ensemble for automated segmentation of cardiac substructures.
+  Includes small-structure task 603 and large-structure task 605 combined into a
+  single RTSTRUCT output.
+nnunet:
+  command: nnUNetv2_predict
+  model: 3d_fullres
+  folds: all
+  env:
+    nnUNet_results: ./nnUNet_results
+    nnUNet_raw: ./nnUNet_raw
+    nnUNet_preprocessed: ./nnUNet_preprocessed
+  networks:
+    - id: "603"
+      archive: model603.zip
+      dataset_directory: Dataset603_STST_small_full
+      label_order:
+        - Valve_Aortic
+        - Valve_Mitral
+        - Valve_Pulmonic
+        - Valve_Tricuspid
+        - A_LAD
+        - A_LCX
+        - A_LM
+        - A_RCA
+    - id: "605"
+      archive: model605.zip
+      dataset_directory: Dataset605_STSTplusLung_large_full
+      label_order:
+        - Atrium_L
+        - Atrium_R
+        - Ventricle_L
+        - Ventricle_R
+        - V_Venacava_I
+        - V_Venacava_S
+        - A_Aorta
+        - A_Pulmonary
+  combine:
+    ordered_networks: ["603", "605"]
