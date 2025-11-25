@@ -31,10 +31,11 @@ class PipelineConfig:
     totalseg_weights_dir: Path | None = None
     totalseg_device: str = "gpu"
     totalseg_force_split: bool = True
-    totalseg_nr_thr_resamp: int | None = 1
-    totalseg_nr_thr_saving: int | None = 1
-    totalseg_num_proc_pre: int | None = 1
-    totalseg_num_proc_export: int | None = 1
+    totalseg_nr_thr_resamp: int | None = None  # Auto-detect (25-50% of cores)
+    totalseg_nr_thr_saving: int | None = None  # Auto-detect (25-50% of cores)
+    totalseg_num_proc_pre: int | None = 1      # Keep at 1 for Docker stability
+    totalseg_num_proc_export: int | None = 1   # Keep at 1 for Docker stability
+    totalseg_allow_fallback: bool = False
 
     # Additional segmentation models (in addition to default 'total')
     extra_seg_models: list[str] = field(default_factory=list)

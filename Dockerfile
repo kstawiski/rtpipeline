@@ -120,8 +120,9 @@ COPY --from=builder /opt/conda/envs /opt/conda/envs
 
 # Copy TotalSegmentator weights for offline support
 # NOTE: Ensure the 'totalseg_weights/' directory exists in the build context before building.
+# The source directory should contain: nnunet/results/Dataset*/...
 # Omit this COPY if you do not need offline TotalSegmentator execution.
-COPY --chown=rtpipeline:rtpipeline totalseg_weights/ /home/rtpipeline/.totalsegmentator/nnunet/results
+COPY --chown=rtpipeline:rtpipeline totalseg_weights/ /home/rtpipeline/.totalsegmentator/
 
 # Copy custom models into the image
 # This ensures the image is self-contained
@@ -268,13 +269,19 @@ ENV SNAKEMAKE_OUTPUT_CACHE="" \
     HOME=/home/rtpipeline \
     NUMBA_CACHE_DIR=/tmp/cache \
     MPLCONFIGDIR=/tmp/cache \
-    TOTALSEG_WEIGHTS_PATH=/home/rtpipeline/.totalsegmentator/nnunet/results \
+    TOTALSEG_WEIGHTS_PATH=/home/rtpipeline/.totalsegmentator \
+    nnUNet_results=/home/rtpipeline/.totalsegmentator/nnunet/results \
+    nnUNet_raw=/home/rtpipeline/.totalsegmentator/nnunet/raw \
+    nnUNet_preprocessed=/home/rtpipeline/.totalsegmentator/nnunet/preprocessed \
+    PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
     TOTALSEG_TIMEOUT=3600 \
     DCM2NIIX_TIMEOUT=300 \
     RTPIPELINE_RADIOMICS_TASK_TIMEOUT=600
 
-# Pre-create TotalSegmentator weights directory to allow host mounts/caching
-RUN mkdir -p /home/rtpipeline/.totalsegmentator/nnunet/results && \
+# Pre-create TotalSegmentator weights and nnUNet directories
+RUN mkdir -p /home/rtpipeline/.totalsegmentator/nnunet/results \
+             /home/rtpipeline/.totalsegmentator/nnunet/raw \
+             /home/rtpipeline/.totalsegmentator/nnunet/preprocessed && \
     chown -R rtpipeline:rtpipeline /home/rtpipeline/.totalsegmentator
 
 # Switch to non-root user

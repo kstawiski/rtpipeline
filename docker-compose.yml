@@ -18,8 +18,9 @@ services:
       - ./Output:/data/output:rw
       - ./Logs:/data/logs:rw
 
-      # TotalSegmentator weights (optional - for caching/updating without image rebuild)
-      - ./totalseg_weights:/home/rtpipeline/.totalsegmentator:rw
+      # TotalSegmentator weights are bundled in the image - no need to mount
+      # Uncomment below ONLY if you need to use newer weights than in the image:
+      # - ./totalseg_weights:/home/rtpipeline/.totalsegmentator:rw
 
       - ./Uploads:/data/uploads:rw
       # Code mounted read-only for security
@@ -32,10 +33,23 @@ services:
       - MPLCONFIGDIR=/tmp/cache
       - CONDA_DIR=/opt/conda
       - PATH=/opt/conda/bin:$PATH
-
+      # nnUNet environment paths (required for TotalSegmentator)
+      - nnUNet_results=/home/rtpipeline/.totalsegmentator/nnunet/results
+      - nnUNet_raw=/home/rtpipeline/.totalsegmentator/nnunet/raw
+      - nnUNet_preprocessed=/home/rtpipeline/.totalsegmentator/nnunet/preprocessed
+      # Timeouts for preventing hangs
       - TOTALSEG_TIMEOUT=3600
       - DCM2NIIX_TIMEOUT=300
       - RTPIPELINE_RADIOMICS_TASK_TIMEOUT=600
+      # TotalSegmentator parallelism (avoid spawning issues in container)
+      - TOTALSEG_NUM_PROCESSES_PREPROCESSING=1
+      - TOTALSEG_NUM_PROCESSES_SEGMENTATION_EXPORT=1
+      - TOTALSEG_FORCE_TORCH_NUM_THREADS=1
+      - TOTALSEG_PRELOAD_WEIGHTS=1
+      # PyTorch threading and memory control
+      - OMP_NUM_THREADS=4
+      - MKL_NUM_THREADS=4
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
       - PORT=8080
       - DEBUG=false
     working_dir: /app
@@ -54,6 +68,7 @@ services:
       - DAC_OVERRIDE
       - SETGID
       - SETUID
+      - SYS_PTRACE
     # Resource limits
     deploy:
       resources:
@@ -65,7 +80,8 @@ services:
         limits:
           cpus: '16.0'
           memory: 32G
-    shm_size: '4gb'
+    # Increased shm_size for TotalSegmentator/PyTorch (prevents container hangs)
+    shm_size: '8gb'
     restart: unless-stopped
 
   # CPU-only service
@@ -84,8 +100,9 @@ services:
       - ./Output:/data/output:rw
       - ./Logs:/data/logs:rw
 
-      # TotalSegmentator weights (optional - for caching/updating without image rebuild)
-      - ./totalseg_weights:/home/rtpipeline/.totalsegmentator:rw
+      # TotalSegmentator weights are bundled in the image - no need to mount
+      # Uncomment below ONLY if you need to use newer weights than in the image:
+      # - ./totalseg_weights:/home/rtpipeline/.totalsegmentator:rw
 
       - ./Uploads:/data/uploads:rw
       - ./Code:/app/Code:ro
@@ -97,9 +114,22 @@ services:
       - MPLCONFIGDIR=/tmp/cache
       - CONDA_DIR=/opt/conda
       - PATH=/opt/conda/bin:$PATH
+      # nnUNet environment paths (required for TotalSegmentator)
+      - nnUNet_results=/home/rtpipeline/.totalsegmentator/nnunet/results
+      - nnUNet_raw=/home/rtpipeline/.totalsegmentator/nnunet/raw
+      - nnUNet_preprocessed=/home/rtpipeline/.totalsegmentator/nnunet/preprocessed
+      # Timeouts for preventing hangs (longer for CPU mode)
       - TOTALSEG_TIMEOUT=7200
       - DCM2NIIX_TIMEOUT=300
       - RTPIPELINE_RADIOMICS_TASK_TIMEOUT=1200
+      # TotalSegmentator parallelism (avoid spawning issues in container)
+      - TOTALSEG_NUM_PROCESSES_PREPROCESSING=1
+      - TOTALSEG_NUM_PROCESSES_SEGMENTATION_EXPORT=1
+      - TOTALSEG_FORCE_TORCH_NUM_THREADS=1
+      - TOTALSEG_PRELOAD_WEIGHTS=1
+      # PyTorch threading control (more threads for CPU mode)
+      - OMP_NUM_THREADS=8
+      - MKL_NUM_THREADS=8
       - PORT=8080
       - DEBUG=false
     working_dir: /app
@@ -112,6 +142,8 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    cap_add:
+      - SYS_PTRACE
     deploy:
       resources:
         limits:
@@ -120,7 +152,8 @@ services:
         reservations:
           cpus: '4.0'
           memory: 8G
-    shm_size: '4gb'
+    # Increased shm_size for TotalSegmentator/PyTorch (prevents container hangs)
+    shm_size: '8gb'
     restart: unless-stopped
     profiles:
       - cpu-only

@@ -80,4 +80,17 @@ Segmentation_*/
 
 .claude/
 .cache/
+.genkit/
 Data_Snakemake/
+Data_Snakemake_fallback/
+Logs_Snakemake/
+Logs_Snakemake_fallback/
+_RESULTS/
+_COURSES/
+
+# Generated reports
+pipeline_report.html
+
+# Containers (build artifacts)
+containers/
+*.sif

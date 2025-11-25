@@ -57,10 +57,23 @@ From: condaforge/mambaforge:latest
     export HOME=/root
     export NUMBA_CACHE_DIR=/tmp/cache
     export MPLCONFIGDIR=/tmp/cache
-    export TOTALSEG_WEIGHTS_PATH=/root/.totalsegmentator/nnunet/results
+    export TOTALSEG_WEIGHTS_PATH=/root/.totalsegmentator
+    # nnUNet environment paths (required for TotalSegmentator to find pre-downloaded weights)
+    export nnUNet_results=/root/.totalsegmentator/nnunet/results
+    export nnUNet_raw=/root/.totalsegmentator/nnunet/raw
+    export nnUNet_preprocessed=/root/.totalsegmentator/nnunet/preprocessed
+    # Timeout configuration
     export TOTALSEG_TIMEOUT=3600
     export DCM2NIIX_TIMEOUT=300
     export RTPIPELINE_RADIOMICS_TASK_TIMEOUT=600
+    # TotalSegmentator parallelism (avoid spawning issues in container)
+    export TOTALSEG_NUM_PROCESSES_PREPROCESSING=1
+    export TOTALSEG_NUM_PROCESSES_SEGMENTATION_EXPORT=1
+    export TOTALSEG_FORCE_TORCH_NUM_THREADS=1
+    export TOTALSEG_PRELOAD_WEIGHTS=1
+    # PyTorch threading control
+    export OMP_NUM_THREADS=4
+    export MKL_NUM_THREADS=4
 
 %post
     # =====================================================================

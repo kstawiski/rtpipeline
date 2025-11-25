@@ -54,18 +54,21 @@ def _run(cmd: str, env: Optional[dict] = None, timeout: Optional[int] = None) ->
 
     try:
         logger.debug(f"Running command with timeout={timeout}s: {cmd[:100]}...")
-        subprocess.run(cmd, check=True, shell=True, capture_output=True,
-                      executable=shell, env=env, timeout=timeout)
+        # Note: Don't capture output with PIPE as it causes buffer deadlock
+        # when child processes (like nnUNet workers in TotalSegmentator) produce output.
+        # Let output stream directly to avoid hanging.
+        result = subprocess.run(
+            cmd, check=True, shell=True,
+            executable=shell, env=env, timeout=timeout
+        )
         return True
     except subprocess.TimeoutExpired:
         logger.error(f"Command timed out after {timeout}s: {cmd[:100]}...")
         logger.error(f"This usually indicates a hung process or insufficient resources.")
         raise RuntimeError(f"Command timed out: {cmd[:100]}...")
     except subprocess.CalledProcessError as e:
-        logger.error(f"Command failed: {cmd[:100]}...")
-        stderr = e.stderr.decode() if e.stderr else "No error output"
-        logger.error(f"Error: {stderr}")
-        raise RuntimeError(f"Command failed: {stderr}")
+        logger.error(f"Command failed with exit code {e.returncode}: {cmd[:100]}...")
+        raise RuntimeError(f"Command failed with exit code {e.returncode}")
 
 
 def _prefix(config: PipelineConfig) -> str:
@@ -378,12 +381,15 @@ def run_totalsegmentator(config: PipelineConfig, input_path: Path, output_path: 
     ok = _run(cmd, env=env)
 
     if not ok:
-        logger.info("Retrying TotalSegmentator with CPU-only and single-process env")
-        # Add CPU-only flag and disable multiprocessing
-        cmd_retry = cmd + " -d cpu"
-        env_retry = env.copy()
-        env_retry['CUDA_VISIBLE_DEVICES'] = '-1'
-        ok = _run(cmd_retry, env=env_retry)
+        if getattr(config, "totalseg_allow_fallback", False):
+            logger.info("Retrying TotalSegmentator with CPU-only and single-process env")
+            # Add CPU-only flag and disable multiprocessing
+            cmd_retry = cmd + " -d cpu"
+            env_retry = env.copy()
+            env_retry['CUDA_VISIBLE_DEVICES'] = '-1'
+            ok = _run(cmd_retry, env=env_retry)
+        else:
+            logger.error("TotalSegmentator failed and fallback is disabled.")
 
     return ok
 
