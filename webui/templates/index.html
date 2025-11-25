@@ -1,0 +1,1509 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>rtpipeline Web UI</title>
+    <!-- Libraries -->
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+    <!-- Cornerstone (Basic Viewer) -->
+    <script src="https://unpkg.com/cornerstone-core@2.6.1/dist/cornerstone.min.js"></script>
+    <script src="https://unpkg.com/cornerstone-math@0.1.9/dist/cornerstoneMath.min.js"></script>
+    <script src="https://unpkg.com/cornerstone-tools@6.0.8/dist/cornerstoneTools.min.js"></script>
+    <script src="https://unpkg.com/dicom-parser@1.8.13/dist/dicomParser.min.js"></script>
+    <script
+        src="https://unpkg.com/cornerstone-wado-image-loader@4.1.5/dist/cornerstoneWADOImageLoader.bundle.min.js"></script>
+    <script src="https://unpkg.com/dcmjs"></script>
+
+    <style>
+        /* ... existing styles ... */
+        :root {
+            --primary: #667eea;
+            --primary-dark: #5a67d8;
+            --secondary: #764ba2;
+            --bg-gradient: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            --text-dark: #2d3748;
+            --text-light: #718096;
+            --success: #48bb78;
+            --danger: #f56565;
+            --warning: #ed8936;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: var(--bg-gradient);
+            min-height: 100vh;
+            padding: 20px;
+            color: var(--text-dark);
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        /* Top Bar & System Status */
+        .top-bar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: rgba(255, 255, 255, 0.9);
+            backdrop-filter: blur(10px);
+            border-radius: 12px;
+            padding: 15px 30px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.1);
+        }
+
+        .brand h1 {
+            font-size: 24px;
+            background: -webkit-linear-gradient(var(--primary), var(--secondary));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 4px;
+        }
+
+        .brand p {
+            color: var(--text-light);
+            font-size: 12px;
+            font-weight: 500;
+        }
+
+        .system-stats {
+            display: flex;
+            gap: 20px;
+            font-size: 13px;
+            color: var(--text-dark);
+        }
+
+        .stat-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            background: white;
+            padding: 8px 15px;
+            border-radius: 20px;
+            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.05);
+        }
+
+        .stat-label {
+            color: var(--text-light);
+            font-weight: 500;
+        }
+
+        .stat-value {
+            font-weight: 700;
+            color: var(--primary-dark);
+        }
+
+        .main-content {
+            background: white;
+            border-radius: 12px;
+            padding: 30px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+        }
+
+        /* Upload Section */
+        .upload-section {
+            border: 3px dashed #cbd5e0;
+            border-radius: 12px;
+            padding: 50px;
+            text-align: center;
+            background: #f7fafc;
+            margin-bottom: 30px;
+            transition: all 0.3s;
+            cursor: pointer;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .upload-section:hover,
+        .upload-section.dragover {
+            border-color: var(--primary);
+            background: #edf2f7;
+            transform: scale(1.01);
+        }
+
+        .upload-icon {
+            font-size: 64px;
+            margin-bottom: 20px;
+        }
+
+        .upload-section h2 {
+            color: var(--text-dark);
+            margin-bottom: 10px;
+        }
+
+        .upload-section p {
+            color: var(--text-light);
+            margin-bottom: 25px;
+        }
+
+        /* Buttons */
+        .btn {
+            background: var(--primary);
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            margin: 5px;
+        }
+
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+        }
+
+        .btn:disabled {
+            background: #cbd5e0;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .btn-secondary {
+            background: var(--success);
+        }
+
+        .btn-secondary:hover {
+            background: #38a169;
+        }
+
+        .btn-danger {
+            background: var(--danger);
+        }
+
+        .btn-danger:hover {
+            background: #c53030;
+        }
+
+        .btn-outline {
+            background: transparent;
+            border: 2px solid #e2e8f0;
+            color: var(--text-dark);
+        }
+
+        .btn-outline:hover {
+            border-color: var(--primary);
+            color: var(--primary);
+            background: white;
+        }
+
+        /* Config Sections */
+        .config-section {
+            margin-top: 25px;
+            background: white;
+            border: 1px solid #e2e8f0;
+            border-radius: 10px;
+            overflow: hidden;
+        }
+
+        .config-header {
+            padding: 20px;
+            background: #f7fafc;
+            cursor: pointer;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-weight: 600;
+            color: var(--text-dark);
+            transition: background 0.2s;
+        }
+
+        .config-header:hover {
+            background: #edf2f7;
+            color: var(--primary);
+        }
+
+        .collapsible-content {
+            max-height: 0;
+            overflow: hidden;
+            transition: max-height 0.3s ease-out;
+        }
+
+        .collapsible-content.open {
+            max-height: 2000px;
+            transition: max-height 0.5s ease-in;
+        }
+
+        .config-body {
+            padding: 20px;
+        }
+
+        .config-option {
+            margin-bottom: 20px;
+        }
+
+        .config-option label {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-weight: 500;
+            color: var(--text-dark);
+            margin-bottom: 5px;
+        }
+
+        .config-option small {
+            display: block;
+            color: var(--text-light);
+            font-size: 12px;
+            margin-left: 28px;
+        }
+
+        .config-option input[type="checkbox"] {
+            width: 18px;
+            height: 18px;
+            accent-color: var(--primary);
+        }
+
+        .config-option select,
+        .config-option input[type="number"] {
+            padding: 8px 12px;
+            border: 1px solid #cbd5e0;
+            border-radius: 6px;
+            font-size: 14px;
+            outline: none;
+        }
+
+        .config-option select:focus,
+        .config-option input:focus {
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+
+        /* Jobs List */
+        .jobs-list {
+            margin-top: 40px;
+        }
+
+        .job-card {
+            background: white;
+            border: 1px solid #e2e8f0;
+            border-radius: 12px;
+            padding: 25px;
+            margin-bottom: 20px;
+            transition: all 0.3s;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .job-card:hover {
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.05);
+            border-color: #cbd5e0;
+        }
+
+        .job-card::before {
+            content: '';
+            position: absolute;
+            left: 0;
+            top: 0;
+            bottom: 0;
+            width: 4px;
+            background: var(--primary);
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+
+        .job-card:hover::before {
+            opacity: 1;
+        }
+
+        .job-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 20px;
+        }
+
+        .job-id {
+            font-weight: 700;
+            color: var(--text-dark);
+            font-family: monospace;
+            font-size: 16px;
+        }
+
+        .job-status {
+            padding: 6px 12px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .job-status.uploaded {
+            background: #ebf8ff;
+            color: #2b6cb0;
+        }
+
+        .job-status.running {
+            background: #feebc8;
+            color: #c05621;
+            animation: pulse 2s infinite;
+        }
+
+        .job-status.completed {
+            background: #f0fff4;
+            color: #2f855a;
+        }
+
+        .job-status.failed {
+            background: #fff5f5;
+            color: #c53030;
+        }
+
+        .job-status.cancelled {
+            background: #edf2f7;
+            color: #718096;
+        }
+
+        @keyframes pulse {
+            0% {
+                opacity: 1;
+            }
+
+            50% {
+                opacity: 0.6;
+            }
+
+            100% {
+                opacity: 1;
+            }
+        }
+
+        /* Progress Bar */
+        .progress-bar {
+            height: 8px;
+            background: #edf2f7;
+            border-radius: 4px;
+            overflow: hidden;
+            margin: 15px 0;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background: var(--bg-gradient);
+            width: 0%;
+            transition: width 0.5s ease;
+        }
+
+        /* Stage Indicators */
+        .stage-item {
+            text-align: center;
+            flex: 1;
+            position: relative;
+            z-index: 2;
+            opacity: 0.5;
+            transition: all 0.3s;
+        }
+
+        .stage-item.active {
+            opacity: 1;
+            transform: scale(1.1);
+            font-weight: 700;
+            color: var(--primary);
+        }
+
+        .stage-item.completed {
+            opacity: 1;
+            color: var(--success);
+        }
+
+        .stage-icon {
+            font-size: 16px;
+            margin-bottom: 4px;
+            display: block;
+        }
+
+        /* Modals */
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.6);
+            backdrop-filter: blur(5px);
+        }
+
+        .modal-content {
+            background-color: white;
+            margin: 2% auto;
+            padding: 0;
+            border-radius: 12px;
+            width: 95%;
+            max-width: 1600px;
+            height: 90vh;
+            display: flex;
+            flex-direction: column;
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
+            animation: slideUp 0.3s ease;
+        }
+
+        @keyframes slideUp {
+            from {
+                transform: translateY(50px);
+                opacity: 0;
+            }
+
+            to {
+                transform: translateY(0);
+                opacity: 1;
+            }
+        }
+
+        .modal-header {
+            padding: 15px 25px;
+            border-bottom: 1px solid #e2e8f0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: #f8f9fa;
+            border-radius: 12px 12px 0 0;
+        }
+
+        .modal-body {
+            padding: 0;
+            overflow: hidden;
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .close-modal {
+            font-size: 28px;
+            cursor: pointer;
+            color: #a0aec0;
+            transition: color 0.2s;
+        }
+
+        .close-modal:hover {
+            color: var(--text-dark);
+        }
+
+        /* Visualizer Tabs */
+        .tabs {
+            display: flex;
+            background: #edf2f7;
+            padding: 0 20px;
+            border-bottom: 1px solid #e2e8f0;
+        }
+
+        .tab-btn {
+            padding: 15px 25px;
+            cursor: pointer;
+            font-weight: 600;
+            color: var(--text-light);
+            border-bottom: 3px solid transparent;
+            transition: all 0.2s;
+        }
+
+        .tab-btn:hover {
+            color: var(--primary);
+        }
+
+        .tab-btn.active {
+            color: var(--primary);
+            border-bottom-color: var(--primary);
+            background: white;
+            border-radius: 8px 8px 0 0;
+            margin-top: 5px;
+            padding-top: 10px;
+            border: 1px solid #e2e8f0;
+            border-bottom: none;
+            box-shadow: 0 -2px 5px rgba(0, 0, 0, 0.02);
+        }
+
+        .tab-content {
+            display: none;
+            flex: 1;
+            overflow: auto;
+            padding: 20px;
+        }
+
+        .tab-content.active {
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* Viewer Styles */
+        .viewer-container {
+            display: flex;
+            flex: 1;
+            gap: 20px;
+            height: 100%;
+        }
+
+        .viewer-sidebar {
+            width: 250px;
+            background: #f7fafc;
+            padding: 15px;
+            border-radius: 8px;
+            border: 1px solid #e2e8f0;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .viewer-main {
+            flex: 1;
+            background: #000;
+            border-radius: 8px;
+            position: relative;
+            overflow: hidden;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        #dicomImage {
+            width: 100%;
+            height: 100%;
+        }
+
+        .series-list {
+            overflow-y: auto;
+            flex: 1;
+        }
+
+        .series-item {
+            padding: 10px;
+            background: white;
+            border: 1px solid #e2e8f0;
+            margin-bottom: 8px;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-size: 12px;
+        }
+
+        .series-item:hover,
+        .series-item.active {
+            border-color: var(--primary);
+            box-shadow: 0 2px 4px rgba(102, 126, 234, 0.2);
+        }
+
+        /* DVH Plot */
+        #dvh-plot {
+            width: 100%;
+            height: 100%;
+            min-height: 500px;
+        }
+
+        /* Preview Tables */
+        .preview-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+        }
+
+        .preview-table th {
+            text-align: left;
+            padding: 12px 15px;
+            background: #f7fafc;
+            color: var(--text-light);
+            font-weight: 600;
+            border-bottom: 2px solid #e2e8f0;
+            position: sticky;
+            top: 0;
+        }
+
+        .preview-table td {
+            padding: 10px 15px;
+            border-bottom: 1px solid #edf2f7;
+            color: var(--text-dark);
+        }
+
+        .preview-table tr:hover {
+            background: #f8f9fa;
+        }
+
+        .log-viewer {
+            background: #1a202c;
+            color: #e2e8f0;
+            font-family: 'Fira Code', monospace;
+            padding: 20px;
+            border-radius: 0 0 12px 12px;
+            height: 100%;
+            overflow-y: auto;
+            font-size: 12px;
+            line-height: 1.6;
+        }
+
+        /* Loading */
+        .spinner {
+            width: 40px;
+            height: 40px;
+            border: 4px solid rgba(102, 126, 234, 0.2);
+            border-left-color: var(--primary);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin: 20px auto;
+        }
+
+        @keyframes spin {
+            to {
+                transform: rotate(360deg);
+            }
+        }
+
+        .hidden {
+            display: none !important;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <!-- Top Bar with System Stats -->
+        <div class="top-bar">
+            <div class="brand">
+                <h1>🏥 rtpipeline</h1>
+                <p>Automated Radiotherapy Processing</p>
+            </div>
+            <div class="system-stats" id="system-stats">
+                <div class="stat-item"><span class="stat-label">CPU</span> <span class="stat-value"
+                        id="cpu-val">--%</span></div>
+                <div class="stat-item"><span class="stat-label">RAM</span> <span class="stat-value"
+                        id="ram-val">--%</span></div>
+                <div class="stat-item"><span class="stat-label">GPU</span> <span class="stat-value"
+                        id="gpu-val">--</span></div>
+            </div>
+        </div>
+
+        <div class="main-content">
+            <!-- Upload Area -->
+            <div class="upload-section" id="upload-section">
+                <div class="upload-icon">📁</div>
+                <h2>New Analysis Job</h2>
+                <p>Drag & drop DICOM files, ZIP archives, or folders to begin</p>
+                <input type="file" id="file-input" multiple webkitdirectory directory style="display: none">
+                <button class="btn" onclick="document.getElementById('file-input').click()">
+                    Browse Files
+                </button>
+            </div>
+
+            <!-- Validation Results -->
+            <div id="validation-container"></div>
+
+            <!-- Configuration Panel -->
+            <div id="config-container" class="hidden">
+                <div class="config-section">
+                    <div class="config-header" onclick="toggleSection('basic-config')">
+                        <span>⚙️ Processing Options</span> <span class="toggle-icon" id="toggle-basic-config">▼</span>
+                    </div>
+                    <div class="collapsible-content open" id="basic-config">
+                        <div class="config-body">
+                            <div class="config-option">
+                                <label>
+                                    <input type="checkbox" id="fast-mode" checked>
+                                    <span>Fast Segmentation Mode</span>
+                                </label>
+                                <small>Uses lower resolution TotalSegmentator model</small>
+                            </div>
+                            <div class="config-option">
+                                <label>
+                                    <input type="checkbox" id="radiomics-enabled" checked>
+                                    <span>Extract Radiomics</span>
+                                </label>
+                            </div>
+                            <div class="config-option">
+                                <label>
+                                    <input type="checkbox" id="ct-cropping-enabled">
+                                    <span>Anatomical Cropping</span>
+                                </label>
+                                <div id="cropping-options" style="margin-top: 10px; margin-left: 28px; display: none;">
+                                    <select id="cropping-region">
+                                        <option value="pelvis">Pelvis</option>
+                                        <option value="thorax">Thorax</option>
+                                        <option value="head_neck">Head & Neck</option>
+                                    </select>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="config-section">
+                    <div class="config-header" onclick="toggleSection('advanced-config')">
+                        <span>🔧 Advanced / Research</span> <span class="toggle-icon"
+                            id="toggle-advanced-config">▼</span>
+                    </div>
+                    <div class="collapsible-content" id="advanced-config">
+                        <div class="config-body">
+                            <div class="config-option">
+                                <label>
+                                    <input type="checkbox" id="robustness-enabled">
+                                    <span>Radiomics Robustness</span>
+                                </label>
+                            </div>
+                            <div class="config-option">
+                                <label>
+                                    <input type="checkbox" id="custom-models-enabled"
+                                        onchange="toggleCustomModelsList()">
+                                    <span>Enable Custom Models</span>
+                                </label>
+                                <small>Run custom nnUNet models (requires models in /data/models)</small>
+                                <div id="custom-models-list" class="hidden"
+                                    style="margin-top: 10px; padding-left: 20px;">
+                                    <p style="font-size: 12px; color: #718096;">Select models to run:</p>
+                                    <div id="models-checkboxes" style="max-height: 150px; overflow-y: auto;">
+                                        <small>Loading models...</small>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="config-option"
+                                style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+                                <div><label>CPU Cores</label><input type="number" id="cores" value="4" min="1"></div>
+                                <div><label>Workers</label><input type="number" id="seg-workers" value="2" min="1">
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div style="margin-top: 30px; text-align: center; display: flex; justify-content: center; gap: 15px;">
+                    <button class="btn btn-danger" onclick="cancelUpload()">Cancel</button>
+                    <button class="btn btn-secondary" id="start-btn" onclick="startProcessing()"
+                        style="padding: 12px 40px; font-size: 16px;">
+                        🚀 Start Pipeline
+                    </button>
+                </div>
+            </div>
+
+            <!-- Jobs List -->
+            <div class="jobs-list">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                    <h2 style="color: var(--text-dark);">Recent Jobs</h2>
+                    <button class="btn btn-outline" onclick="compareJobs()" disabled id="compare-btn">🆚 Compare
+                        Selected</button>
+                </div>
+                <div id="jobs-container"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modals -->
+    <div id="log-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>📜 Live Logs</h3>
+                <span class="close-modal" onclick="closeModal('log-modal')">&times;</span>
+            </div>
+            <div class="modal-body">
+                <div id="log-content" class="log-viewer"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Visualizer Modal -->
+    <div id="visualizer-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>📊 Visualizer & Results</h3>
+                <span class="close-modal" onclick="closeModal('visualizer-modal')">&times;</span>
+            </div>
+
+            <div class="tabs">
+                <div class="tab-btn active" onclick="switchTab(event, 'tab-summary')">📋 Summary</div>
+                <div class="tab-btn" onclick="switchTab(event, 'tab-dvh')">📈 DVH Plot</div>
+                <div class="tab-btn" onclick="switchTab(event, 'tab-viewer')">🖼️ Slice Viewer</div>
+            </div>
+
+            <div class="modal-body">
+                <!-- Summary Tab -->
+                <div id="tab-summary" class="tab-content active">
+                    <div id="summary-content">Loading...</div>
+                </div>
+
+                <!-- DVH Tab -->
+                <div id="tab-dvh" class="tab-content">
+                    <div id="dvh-plot"></div>
+                </div>
+
+                <!-- Viewer Tab -->
+                <div id="tab-viewer" class="tab-content">
+                    <div class="viewer-container">
+                        <div class="viewer-sidebar">
+                            <h4>Series List</h4>
+                            <div id="series-list" class="series-list" style="flex: 0 0 200px;">Loading...</div>
+                            <h4 style="margin-top:15px">Structure Sets</h4>
+                            <div id="seg-list" class="series-list" style="flex: 1;">Loading...</div>
+                        </div>
+                        <div class="viewer-main" id="dicom-viewer">
+                            <div id="dicomImage"></div>
+                            <div style="position:absolute; top:10px; left:10px; color:white; font-family:monospace;">
+                                Zoom: <span id="zoom-level">1.0</span> | WW/WL: <span id="ww-wl">--/--</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Initialize Cornerstone
+        cornerstoneWADOImageLoader.external.cornerstone = cornerstone;
+        cornerstoneWADOImageLoader.external.dicomParser = dicomParser;
+
+        // Minimal WADO config
+        cornerstoneWADOImageLoader.configure({
+            beforeSend: function (xhr) { }
+        });
+
+        let currentJobId = null;
+        let currentLogJobId = null;
+        let viewerLoaded = false;
+        let modelsLoaded = false;
+        window.seriesData = [];
+
+        document.addEventListener('DOMContentLoaded', () => {
+            setupUploadHandlers();
+            loadJobs();
+            updateSystemStats();
+            setInterval(updateJobStatuses, 3000);
+            setInterval(updateSystemStats, 5000);
+            document.getElementById('ct-cropping-enabled').addEventListener('change', (e) => {
+                document.getElementById('cropping-options').style.display = e.target.checked ? 'block' : 'none';
+            });
+        });
+
+        function toggleSection(id) {
+            const section = document.getElementById(id);
+            const toggleIcon = document.getElementById('toggle-' + id);
+            section.classList.toggle('open');
+            toggleIcon.textContent = section.classList.contains('open') ? '▲' : '▼';
+        }
+        function closeModal(id) { document.getElementById(id).style.display = 'none'; }
+
+        // --- Visualizer Logic ---
+
+        async function openVisualizer(jobId) {
+            document.getElementById('visualizer-modal').style.display = 'block';
+            document.getElementById('summary-content').innerHTML = '<div class="spinner"></div>';
+            document.getElementById('dvh-plot').innerHTML = '';
+            document.getElementById('series-list').innerHTML = 'Loading...';
+            document.getElementById('seg-list').innerHTML = 'Loading...';
+
+            await Promise.all([
+                loadSummary(jobId),
+                loadDVH(jobId),
+                loadSeries(jobId)
+            ]);
+        }
+
+        function switchTab(evt, tabId) {
+            document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+
+            if (evt && evt.currentTarget) {
+                evt.currentTarget.classList.add('active');
+            }
+            document.getElementById(tabId).classList.add('active');
+
+            if (tabId === 'tab-dvh') Plotly.relayout('dvh-plot', { autosize: true });
+            if (tabId === 'tab-viewer' && !viewerLoaded) initViewer();
+        }
+
+        async function loadSummary(id) {
+            try {
+                const res = await fetch(`/api/jobs/${id}/preview`);
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || 'Failed to load preview');
+                let html = '';
+
+                if (data.dvh?.length) {
+                    html += '<h4>DVH Metrics</h4>' + createTable(data.dvh, ['ROI_Name', 'Volume_cc', 'Mean_Dose_Gy', 'D95_Gy']);
+                }
+                if (data.qc?.length) {
+                    html += '<h4 style="margin-top:20px">Quality Control</h4>' + createTable(data.qc, ['report_name', 'overall_status']);
+                }
+
+                document.getElementById('summary-content').innerHTML = html || 'No summary data.';
+            } catch (e) {
+                document.getElementById('summary-content').innerHTML = `<p style="color:red">Error: ${e.message}</p>`;
+            }
+        }
+
+        async function loadDVH(id) {
+            try {
+                const res = await fetch(`/api/jobs/${id}/dvh-curves`);
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || 'DVH curve request failed');
+
+                if (!data.points || !data.points.length) {
+                    document.getElementById('dvh-plot').innerHTML = '<p style="text-align:center; padding:50px">No DVH curves available.</p>';
+                    return;
+                }
+
+                const traces = data.points.map(roi => ({
+                    x: roi.data?.map(p => p.x) || [],
+                    y: roi.data?.map(p => p.y) || [],
+                    mode: 'lines',
+                    name: roi.roi_name || roi.course || 'ROI',
+                    hovertemplate: '%{y:.1f}% at %{x:.1f} Gy'
+                }));
+
+                const layout = {
+                    title: 'Dose Volume Histogram',
+                    xaxis: { title: 'Dose (Gy)' },
+                    yaxis: { title: 'Volume (%)', range: [0, 105] },
+                    hovermode: 'closest',
+                    height: 600
+                };
+
+                Plotly.newPlot('dvh-plot', traces, layout, { responsive: true });
+
+            } catch (e) {
+                document.getElementById('dvh-plot').innerHTML = `<p style="color:red; text-align:center; padding:20px">${e.message}</p>`;
+            }
+        }
+
+        async function loadSeries(id) {
+            try {
+                const res = await fetch(`/api/jobs/${id}/dicom-series`);
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || 'Failed to list DICOM series');
+
+                const list = document.getElementById('series-list');
+                if (!data.series.length) {
+                    list.innerHTML = 'No series found.';
+                    return;
+                }
+
+                list.innerHTML = data.series.map((s) => `
+                    <div class="series-item" onclick="loadStack('${id}', '${s.uid}', this)">
+                        <div style="font-weight:600">${s.description || 'No Desc'}</div>
+                        <div>${s.modality} | ${s.num_instances} images</div>
+                    </div>
+                `).join('');
+
+                window.seriesData = data.series;
+                loadSegmentations(id);
+
+            } catch (e) {
+                document.getElementById('series-list').innerHTML = 'Error loading series';
+                console.error(e);
+            }
+        }
+
+        async function loadSegmentations(id) {
+            try {
+                const res = await fetch(`/api/jobs/${id}/segmentations`);
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || 'Failed to load segmentations');
+                const list = document.getElementById('seg-list');
+
+                if (!data.segmentations.length) {
+                    list.innerHTML = '<small>No structures found</small>';
+                    return;
+                }
+
+                list.innerHTML = data.segmentations.map(seg => {
+                    const safeId = btoa(seg.path).replace(/=/g, '');
+                    return `
+                    <div style="margin-bottom:8px;">
+                        <label style="display:block; font-size:12px; cursor:pointer; font-weight:600;">
+                            <input type="checkbox" onchange="toggleSegmentation('${seg.path}', '${safeId}', this.checked)">
+                            ${seg.name} <span style="color:#a0aec0; font-size:10px">(${(seg.size / 1024 / 1024).toFixed(1)}MB)</span>
+                        </label>
+                        <div id="rois-${safeId}" style="margin-left:15px; display:none; border-left:2px solid #edf2f7; padding-left:5px;"></div>
+                    </div>`;
+                }).join('');
+
+            } catch (e) {
+                console.error("Seg Load Error", e);
+                document.getElementById('seg-list').innerHTML = '<small style="color:red">Failed to load structures</small>';
+            }
+        }
+
+        let parsedRTStructs = {};
+        let activeROIs = new Set();
+
+        function initViewer() {
+            const element = document.getElementById('dicomImage');
+            cornerstone.enable(element);
+            element.addEventListener('cornerstoneimagerendered', onImageRendered);
+            viewerLoaded = true;
+        }
+
+        async function toggleSegmentation(url, containerId, checked) {
+            const container = document.getElementById(`rois-${containerId}`);
+
+            if (!checked) {
+                container.style.display = 'none';
+                const toRemove = [];
+                activeROIs.forEach(key => {
+                    if (key.startsWith(url + '::')) toRemove.push(key);
+                });
+                toRemove.forEach(k => activeROIs.delete(k));
+                cornerstone.updateImage(document.getElementById('dicomImage'));
+                return;
+            }
+
+            container.style.display = 'block';
+            container.innerHTML = '<small>Loading structures...</small>';
+
+            if (parsedRTStructs[url]) {
+                renderROIList(url, container);
+                return;
+            }
+
+            try {
+                const res = await fetch(url);
+                if (!res.ok) throw new Error('Failed to download RTSTRUCT');
+                const buffer = await res.arrayBuffer();
+                const dicomData = dcmjs.data.DicomMessage.readFile(buffer);
+                const dataset = dcmjs.data.DicomMetaDictionary.naturalizeDataset(dicomData.dict);
+
+                const roiMap = {};
+                if (dataset.StructureSetROISequence) {
+                    dataset.StructureSetROISequence.forEach(roi => {
+                        roiMap[roi.ROINumber] = roi.ROIName || `ROI ${roi.ROINumber}`;
+                    });
+                }
+
+                const parsedROIs = {};
+
+                if (dataset.ROIContourSequence) {
+                    dataset.ROIContourSequence.forEach((roi) => {
+                        const roiNumber = roi.ReferencedROINumber;
+                        const name = roiMap[roiNumber] || `ROI ${roiNumber}`;
+                        const colorArray = roi.ROIDisplayColor || [255, 0, 0];
+                        const color = `rgb(${colorArray.join(',')})`;
+                        const contoursByImage = {};
+
+                        if (roi.ContourSequence) {
+                            roi.ContourSequence.forEach(contour => {
+                                const points = [];
+                                const data = contour.ContourData || [];
+                                for (let i = 0; i < data.length; i += 3) {
+                                    points.push({ x: data[i], y: data[i + 1], z: data[i + 2] });
+                                }
+
+                                const refUid = contour.ContourImageSequence?.[0]?.ReferencedSOPInstanceUID;
+                                if (refUid) {
+                                    if (!contoursByImage[refUid]) contoursByImage[refUid] = [];
+                                    contoursByImage[refUid].push(points);
+                                }
+                            });
+
+                            parsedROIs[roiNumber] = {
+                                name: name,
+                                color: color,
+                                contours: contoursByImage
+                            };
+                        }
+                    });
+                }
+
+                parsedRTStructs[url] = parsedROIs;
+                renderROIList(url, container);
+
+            } catch (e) {
+                console.error("RTSTRUCT Parse Error", e);
+                container.innerHTML = '<small style="color:red">Failed to parse file</small>';
+            }
+        }
+
+
+
+        function renderROIList(url, container) {
+            const rois = parsedRTStructs[url];
+            if (!rois || Object.keys(rois).length === 0) {
+                container.innerHTML = '<small>No contours found</small>';
+                return;
+            }
+
+            const sortedKeys = Object.keys(rois).sort((a, b) => rois[a].name.localeCompare(rois[b].name));
+
+            container.innerHTML = sortedKeys.map(num => {
+                const roi = rois[num];
+                const checked = activeROIs.has(`${url}::${num}`);
+                return `
+                    <label style="display:flex; align-items:center; gap:6px; font-size:12px; padding:2px 0;">
+                        <input type="checkbox" ${checked ? 'checked' : ''} onchange="toggleROI('${url}', '${num}', this.checked)">
+                        <span style="color:${roi.color}">${roi.name}</span>
+                    </label>
+                `;
+            }).join('');
+        }
+
+        window.toggleROI = function (url, roiNum, checked) {
+            const key = `${url}::${roiNum}`;
+            if (checked) {
+                activeROIs.add(key);
+            } else {
+                activeROIs.delete(key);
+            }
+            cornerstone.updateImage(document.getElementById('dicomImage'));
+        };
+
+        function onImageRendered(eventData) {
+            const viewport = cornerstone.getViewport(eventData.element);
+            document.getElementById('zoom-level').innerText = viewport.scale.toFixed(2);
+            document.getElementById('ww-wl').innerText = `${viewport.voi?.windowWidth?.toFixed(0) || '--'} / ${viewport.voi?.windowCenter?.toFixed(0) || '--'}`;
+
+            const ctx = eventData.canvasContext;
+            const image = eventData.image;
+            const imageOrigin = image.imagePositionPatient || [0, 0, 0];
+            const spacing = [image.columnPixelSpacing || 1, image.rowPixelSpacing || 1];
+
+            let sopUid = null;
+            if (eventData.image.data) {
+                sopUid = eventData.image.data.string('x00080018');
+            }
+
+            if (!sopUid || activeROIs.size === 0) return;
+
+            activeROIs.forEach(key => {
+                const [url, roiNum] = key.split('::');
+                const roiData = parsedRTStructs[url]?.[roiNum];
+
+                if (roiData && roiData.contours[sopUid]) {
+                    const contours = roiData.contours[sopUid];
+
+                    ctx.beginPath();
+                    ctx.strokeStyle = roiData.color;
+                    ctx.lineWidth = 2;
+
+                    contours.forEach(points => {
+                        points.forEach((pt, i) => {
+                            const pixelX = (pt.x - imageOrigin[0]) / spacing[0];
+                            const pixelY = (pt.y - imageOrigin[1]) / spacing[1];
+                            const canvasPt = cornerstone.pixelToCanvas(eventData.element, { x: pixelX, y: pixelY });
+
+                            if (i === 0) ctx.moveTo(canvasPt.x, canvasPt.y);
+                            else ctx.lineTo(canvasPt.x, canvasPt.y);
+                        });
+                        if (points.length > 0) {
+                            const startPt = points[0];
+                            const pixelX = (startPt.x - imageOrigin[0]) / spacing[0];
+                            const pixelY = (startPt.y - imageOrigin[1]) / spacing[1];
+                            const canvasPt = cornerstone.pixelToCanvas(eventData.element, { x: pixelX, y: pixelY });
+                            ctx.lineTo(canvasPt.x, canvasPt.y);
+                        }
+                    });
+
+                    ctx.stroke();
+                }
+            });
+        }
+
+        window.loadStack = function (jobId, seriesUid, el) {
+            document.querySelectorAll('.series-item').forEach(e => e.classList.remove('active'));
+            el.classList.add('active');
+
+            const series = window.seriesData.find(s => s.uid === seriesUid);
+            if (!series) return;
+
+            const imageIds = series.files.map(url => `wadouri:${window.location.origin}/${url}`);
+
+            if (imageIds.length > 0) {
+                cornerstone.loadImage(imageIds[0]).then(image => {
+                    const element = document.getElementById('dicomImage');
+                    cornerstone.displayImage(element, image);
+                }).catch(error => {
+                    console.error("Failed to load DICOM image:", error);
+                    alert("Failed to load DICOM image. Please check the file and try again.");
+                });
+            }
+        };
+
+        function createTable(data, columns) {
+            const headers = columns || Object.keys(data[0]);
+            return `
+            <div style="overflow-x:auto; border-radius:8px; border:1px solid #e2e8f0;">
+                <table class="preview-table">
+                    <thead><tr>${headers.map(h => `<th>${h.replace(/_/g, ' ')}</th>`).join('')}</tr></thead>
+                    <tbody>${data.map(row => `<tr>${headers.map(h => `<td>${row[h] !== null && row[h] !== undefined ? (typeof row[h] === 'number' ? Number(row[h]).toFixed(2) : row[h]) : '-'}</td>`).join('')}</tr>`).join('')}</tbody>
+                </table>
+            </div>`;
+        }
+
+        function renderJobs(jobs) {
+            const container = document.getElementById('jobs-container');
+            if (!jobs.length) { container.innerHTML = '<div style="text-align:center; color:#a0aec0;">No jobs</div>'; return; }
+
+            jobs.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+
+            container.innerHTML = jobs.map(job => `
+                <div class="job-card">
+                    <div class="job-header">
+                        <div style="display:flex; align-items:center; gap:10px;">
+                            <input type="checkbox" class="job-checkbox" value="${job.job_id}" onchange="updateCompareBtn()">
+                            <div>
+                                <div class="job-id">#${job.job_id.slice(0, 8)}</div>
+                                <small style="color:#718096;">${new Date(job.created_at).toLocaleString()}</small>
+                            </div>
+                        </div>
+                        <span class="job-status ${job.status}">${job.status}</span>
+                    </div>
+
+                    ${job.status === 'running' ? `<div class="progress-bar"><div class="progress-fill" style="width:${job.progress?.percent || 0}%"></div></div>` : ''}
+
+                    <div style="margin-top:20px; display:flex; gap:10px;">
+                        ${job.status === 'completed' ? `
+                            <button class="btn btn-secondary" onclick="openVisualizer('${job.job_id}')">📊 Visualizer</button>
+                            <button class="btn btn-outline" onclick="location.href='/api/jobs/${job.job_id}/download'">📥 Data</button>
+                        ` : ''}
+                        <button class="btn btn-outline" onclick="viewLogs('${job.job_id}')">📜 Logs</button>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        function updateCompareBtn() {
+            const count = document.querySelectorAll('.job-checkbox:checked').length;
+            const btn = document.getElementById('compare-btn');
+            btn.disabled = count < 2;
+            btn.innerText = count > 1 ? `🆚 Compare (${count})` : '🆚 Compare Selected';
+        }
+
+        function compareJobs() {
+            alert("Comparison feature coming soon!");
+        }
+
+        async function loadJobs() {
+            try {
+                const res = await fetch('/api/jobs');
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || 'Failed to load jobs');
+                renderJobs(data.jobs || []);
+            } catch (e) {
+                console.error('Failed to load jobs', e);
+                document.getElementById('jobs-container').innerHTML = `<p style="color:red">${e.message}</p>`;
+            }
+        }
+
+        function updateJobStatuses() {
+            loadJobs();
+        }
+
+        async function viewLogs(id) {
+            currentLogJobId = id;
+            document.getElementById('log-modal').style.display = 'block';
+            try {
+                const res = await fetch(`/api/jobs/${id}/logs`);
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || 'Failed to load logs');
+                document.getElementById('log-content').innerText = data.logs;
+            } catch (e) {
+                document.getElementById('log-content').innerText = `Error loading logs: ${e.message}`;
+            }
+        }
+
+        async function updateSystemStats() {
+            try {
+                const res = await fetch('/api/system/status');
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || 'System status unavailable');
+                document.getElementById('cpu-val').innerText = (data.cpu?.percent ?? '--') + '%';
+                document.getElementById('ram-val').innerText = (data.memory?.percent ?? '--') + '%';
+                document.getElementById('gpu-val').innerText = (data.gpu && data.gpu.length)
+                    ? data.gpu.map(g => `${g.name} ${g.utilization}%`).join(', ')
+                    : 'N/A';
+            } catch (e) {
+                console.warn('System stats unavailable', e);
+            }
+        }
+
+        function setupUploadHandlers() {
+            const uploadSection = document.getElementById('upload-section');
+            const fileInput = document.getElementById('file-input');
+            const handleFiles = (files) => {
+                if (!files || !files.length) return;
+                uploadFiles(Array.from(files));
+                fileInput.value = '';
+            };
+
+            ['dragenter', 'dragover'].forEach(eventName => {
+                uploadSection.addEventListener(eventName, (e) => {
+                    e.preventDefault();
+                    uploadSection.classList.add('dragover');
+                });
+            });
+
+            ['dragleave', 'drop'].forEach(eventName => {
+                uploadSection.addEventListener(eventName, (e) => {
+                    e.preventDefault();
+                    if (eventName === 'drop') {
+                        uploadSection.classList.remove('dragover');
+                        if (e.dataTransfer?.files?.length) {
+                            handleFiles(e.dataTransfer.files);
+                        }
+                    } else if (!uploadSection.contains(e.relatedTarget)) {
+                        uploadSection.classList.remove('dragover');
+                    }
+                });
+            });
+
+            uploadSection.addEventListener('click', () => fileInput.click());
+            fileInput.addEventListener('change', (e) => handleFiles(e.target.files));
+        }
+
+        function renderValidation(result, meta = {}) {
+            const container = document.getElementById('validation-container');
+            const warningsArr = Array.isArray(result.warnings) ? result.warnings : (result.warnings ? [result.warnings] : []);
+            const errorsArr = Array.isArray(result.errors) ? result.errors : (result.errors ? [result.errors] : []);
+            const warnings = warningsArr.map(w => `<li>${w}</li>`).join('');
+            const errors = errorsArr.map(err => `<li>${err}</li>`).join('');
+            container.innerHTML = `
+                <div style="background:#f7fafc; border:1px solid #e2e8f0; border-radius:10px; padding:20px; margin-bottom:20px;">
+                    <h3 style="margin-bottom:10px;">Upload Summary</h3>
+                    <p><strong>DICOM Files Detected:</strong> ${result.dicom_count ?? 'unknown'}</p>
+                    <p><strong>Uploaded Files:</strong> ${meta.uploaded_files ?? 'n/a'}</p>
+                    ${warnings ? `<div style="margin-top:10px; color:#b7791f;"><strong>Warnings:</strong><ul>${warnings}</ul></div>` : ''}
+                    ${errors ? `<div style="margin-top:10px; color:#c53030;"><strong>Errors:</strong><ul>${errors}</ul></div>` : ''}
+                </div>`;
+        }
+
+        async function uploadFiles(files) {
+            const validationContainer = document.getElementById('validation-container');
+            if (!files.length) return;
+            const formData = new FormData();
+            files.forEach(file => formData.append('files[]', file, file.name));
+            validationContainer.innerHTML = '<p>Uploading...</p>';
+            try {
+                const res = await fetch('/api/upload', {
+                    method: 'POST',
+                    body: formData
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || 'Upload failed');
+                currentJobId = data.job_id;
+                renderValidation(data.validation || {}, data);
+                document.getElementById('config-container').classList.remove('hidden');
+                loadJobs();
+            } catch (err) {
+                console.error('Upload failed', err);
+                validationContainer.innerHTML = `<p style="color:red">${err.message}</p>`;
+            }
+        }
+
+        async function startProcessing() {
+            if (!currentJobId) {
+                alert('Please upload data first.');
+                return;
+            }
+
+            const startBtn = document.getElementById('start-btn');
+            startBtn.disabled = true;
+            startBtn.textContent = 'Starting...';
+
+            const croppingEnabled = document.getElementById('ct-cropping-enabled').checked;
+            const customEnabled = document.getElementById('custom-models-enabled').checked;
+            const selectedModels = Array.from(document.querySelectorAll('#models-checkboxes input[type="checkbox"]:checked')).map(cb => cb.value);
+            const config = {
+                cores: parseInt(document.getElementById('cores').value, 10) || 'all',
+                segmentation: {
+                    fast: document.getElementById('fast-mode').checked,
+                    workers: parseInt(document.getElementById('seg-workers').value, 10) || 1
+                },
+                radiomics: {
+                    enabled: document.getElementById('radiomics-enabled').checked
+                },
+                radiomics_robustness: {
+                    enabled: document.getElementById('robustness-enabled').checked
+                },
+                custom_models: {
+                    enabled: customEnabled,
+                    models: selectedModels
+                }
+            };
+
+            if (croppingEnabled) {
+                config.ct_cropping = {
+                    enabled: true,
+                    region: document.getElementById('cropping-region').value
+                };
+            }
+
+            try {
+                const res = await fetch(`/api/jobs/${currentJobId}/start`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(config)
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || 'Failed to start job');
+                document.getElementById('config-container').classList.add('hidden');
+                loadJobs();
+            } catch (err) {
+                alert(`Failed to start job: ${err.message}`);
+            } finally {
+                startBtn.disabled = false;
+                startBtn.textContent = '🚀 Start Pipeline';
+            }
+        }
+
+        async function cancelUpload() {
+            const resetUI = () => {
+                document.getElementById('validation-container').innerHTML = '';
+                document.getElementById('config-container').classList.add('hidden');
+                currentJobId = null;
+            };
+            if (!currentJobId) {
+                resetUI();
+                return;
+            }
+            try {
+                await fetch(`/api/jobs/${currentJobId}`, { method: 'DELETE' });
+            } catch (err) {
+                console.warn('Failed to cancel job', err);
+            }
+            resetUI();
+            loadJobs();
+        }
+
+        async function toggleCustomModelsList(forceState) {
+            const checkbox = document.getElementById('custom-models-enabled');
+            if (typeof forceState === 'boolean') {
+                checkbox.checked = forceState;
+            }
+            const enabled = checkbox.checked;
+            const container = document.getElementById('custom-models-list');
+            if (!enabled) {
+                container.classList.add('hidden');
+                return;
+            }
+            container.classList.remove('hidden');
+            if (modelsLoaded) return;
+            try {
+                const res = await fetch('/api/config/custom_models');
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || 'Failed to load models');
+                const models = data.models || [];
+                if (!models.length) {
+                    document.getElementById('models-checkboxes').innerHTML = '<small>No models detected in /data/models</small>';
+                } else {
+                    document.getElementById('models-checkboxes').innerHTML = models.map(m => `
+                        <label style="display:block; margin-bottom:6px;">
+                            <input type="checkbox" value="${m}"> ${m}
+                        </label>
+                    `).join('');
+                }
+                modelsLoaded = true;
+            } catch (err) {
+                document.getElementById('models-checkboxes').innerHTML = `<small style="color:red">${err.message}</small>`;
+            }
+        }
+    </script>
+</body>
+
+</html>

@@ -1,0 +1,33 @@
+name: rtpipeline
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - numpy>=2.0
+  - scipy>=1.11
+  - pandas>=2.0
+  - matplotlib>=3.8
+  - scikit-learn
+  - scikit-image
+  - pydicom>=3.0.0
+  - SimpleITK>=2.5.0
+  - pytorch=2.3.*
+  - torchvision=0.18.*
+  - torchaudio=2.3.*
+  - pytorch-cuda=12.1
+  - nibabel
+  - dcm2niix
+  - nnunet=1.7.*
+  - batchgenerators
+  - future
+  - pip
+  - pip:
+    - TotalSegmentator>=2.4.0  # Use latest stable version
+    - dicompyler-core>=0.5.6
+    - rt-utils
+    - xlsxwriter
+    - openpyxl
+    - plotly
