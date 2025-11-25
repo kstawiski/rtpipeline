@@ -1,0 +1,22 @@
+name: rtpipeline-custom-models
+channels:
+  - pytorch
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - cpuonly
+  - pytorch=2.2.*
+  - torchvision=0.17.*
+  - torchaudio=2.2.*
+  - numpy=1.26.*
+  - scipy
+  - SimpleITK
+  - nibabel
+  - scikit-image
+  - pandas
+  - pydicom
+  - tqdm
+  - nnunet=1.7.*
+  - batchgenerators
+  - future

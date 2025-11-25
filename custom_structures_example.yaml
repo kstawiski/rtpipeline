@@ -1,0 +1,61 @@
+# Custom Structure Configuration for RTpipeline
+# This file defines custom structures created from boolean operations and margins
+
+custom_structures:
+  # Example 1: PTV with margin
+  - name: "PTV_5mm"
+    operation: "union"
+    source_structures: ["PTV"]
+    margin: 5  # Uniform 5mm margin
+    description: "PTV with 5mm uniform margin"
+
+  # Example 2: Ring structure for dose gradient evaluation
+  - name: "Ring_5-10mm"
+    operation: "subtract"
+    source_structures: ["PTV_10mm", "PTV_5mm"]
+    description: "Ring structure 5-10mm from PTV"
+
+  # Example 3: Asymmetric margin on GTV
+  - name: "GTV_asymmetric"
+    operation: "union"
+    source_structures: ["GTV"]
+    margin:
+      anterior_mm: 10
+      posterior_mm: 5
+      left_mm: 7
+      right_mm: 7
+      superior_mm: 15
+      inferior_mm: 5
+    description: "GTV with asymmetric margins"
+
+  # Example 4: OAR avoidance structure
+  - name: "OAR_avoid"
+    operation: "union"
+    source_structures: ["SpinalCord", "Esophagus", "Heart"]
+    margin: 3
+    description: "Combined OARs with 3mm margin for avoidance"
+
+  # Example 5: Intersection for overlap analysis
+  - name: "PTV_Lung_overlap"
+    operation: "intersection"
+    source_structures: ["PTV", "Lung_R", "Lung_L"]
+    description: "Overlap between PTV and lungs"
+
+  # Example 6: Using TotalSegmentator structures
+  - name: "Liver_margin"
+    operation: "union"
+    source_structures: ["liver"]  # TotalSegmentator structure name
+    margin: 10
+    description: "Liver with 10mm margin from TotalSegmentator"
+
+  # Example 7: Complex boolean operation
+  - name: "Treatment_region"
+    operation: "subtract"
+    source_structures: ["PTV_5mm", "OAR_avoid"]
+    description: "Treatment region excluding critical OARs"
+
+  # Example 8: XOR for boundary analysis
+  - name: "PTV_boundary"
+    operation: "xor"
+    source_structures: ["PTV", "PTV_2mm"]
+    description: "2mm boundary shell around PTV"
