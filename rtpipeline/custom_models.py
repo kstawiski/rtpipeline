@@ -1,0 +1,892 @@
+from __future__ import annotations
+
+import datetime
+import json
+import logging
+import os
+import shutil
+import tempfile
+import zipfile
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Dict, Iterable, List, Optional, Tuple, TYPE_CHECKING
+
+import numpy as np
+import SimpleITK as sitk
+import yaml
+
+from .config import PipelineConfig
+from .segmentation import _ensure_ct_nifti, _run as _run_shell, _sanitize_token
+from .auto_rtstruct import _load_ct_image, _resample_to_reference
+from .utils import sanitize_rtstruct
+from .roi_fixer import fix_rtstruct_rois
+
+if TYPE_CHECKING:
+    from .organize import CourseOutput
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass(slots=True)
+class NetworkDefinition:
+    network_id: str
+    alias: str
+    archive_path: Optional[Path]
+    dataset_dir: str
+    label_names: List[str]
+    env: Dict[str, str] = field(default_factory=dict)
+    source_dir: Optional[str] = None
+    architecture: Optional[str] = None
+    trainer: Optional[str] = None
+    cascade_trainer: Optional[str] = None
+    plans: Optional[str] = None
+    folds: object = "all"
+    task: Optional[str] = None
+
+
+@dataclass(slots=True)
+class EnsembleDefinition:
+    command: str
+    inputs: List[str]
+    postprocessing_json: Optional[str] = None
+    label_names: Optional[List[str]] = None
+
+
+@dataclass(slots=True)
+class CustomModelDefinition:
+    name: str
+    directory: Path
+    command: str
+    model: str
+    folds: object
+    env: Dict[str, str]
+    networks: List[NetworkDefinition]
+    combine_order: List[str]
+    description: str = ""
+    interface: str = "nnunetv2"
+    ensemble: Optional[EnsembleDefinition] = None
+
+    def get_network(self, network_id: str) -> Optional[NetworkDefinition]:
+        for net in self.networks:
+            if net.network_id == network_id or net.alias == network_id:
+                return net
+        return None
+
+    def expected_structures(self) -> List[str]:
+        seen: List[str] = []
+        for network_id in self.combine_order:
+            if network_id == "ensemble" and self.ensemble and self.ensemble.label_names:
+                for name in self.ensemble.label_names:
+                    if name not in seen:
+                        seen.append(name)
+                continue
+            net = self.get_network(network_id)
+            if net is None:
+                continue
+            for name in net.label_names:
+                if name not in seen:
+                    seen.append(name)
+        return seen
+
+    def resolved_env(self) -> Dict[str, str]:
+        out: Dict[str, str] = {}
+        for key, value in self.env.items():
+            if key in {"nnUNet_results", "nnUNet_raw", "nnUNet_preprocessed"}:
+                path = Path(value)
+                if not path.is_absolute():
+                    path = (self.directory / path).resolve()
+                out[key] = str(path)
+            else:
+                out[key] = value
+        for key in ("nnUNet_results", "nnUNet_raw", "nnUNet_preprocessed"):
+            if key not in out:
+                path = (self.directory / key).resolve()
+                out[key] = str(path)
+        return out
+
+    def results_root(self) -> Path:
+        env = self.resolved_env()
+        return Path(env["nnUNet_results"])
+
+
+def _structure_filename(name: str) -> str:
+    token = _sanitize_token(name)
+    return token or "structure"
+
+
+def discover_custom_models(
+    root: Path,
+    selected_names: Optional[Iterable[str]] = None,
+    default_command: str = "nnUNetv2_predict",
+) -> List[CustomModelDefinition]:
+    models: List[CustomModelDefinition] = []
+    if not root.exists() or not root.is_dir():
+        logger.info("Custom models root %s does not exist or is not a directory", root)
+        return models
+
+    selected = {name.lower() for name in (selected_names or []) if name}
+
+    for model_dir in sorted(p for p in root.iterdir() if p.is_dir()):
+        config_path = model_dir / "custom_model.yaml"
+        if not config_path.exists():
+            continue
+        try:
+            data = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+        except Exception as exc:
+            logger.warning("Failed to read custom model config %s: %s", config_path, exc)
+            continue
+        try:
+            definition = _parse_custom_model(model_dir, data, default_command)
+        except Exception as exc:
+            logger.warning("Skipping custom model %s due to configuration error: %s", config_path, exc)
+            continue
+        if selected and definition.name.lower() not in selected:
+            continue
+
+        # Validate that weights are available
+        weights_valid, missing_weights = _validate_model_weights(definition)
+        if not weights_valid:
+            logger.warning(
+                "Custom model '%s' is configured but weights are missing: %s. "
+                "Model will be skipped. Please provide weights or disable this model.",
+                definition.name,
+                ", ".join(missing_weights)
+            )
+            continue
+
+        models.append(definition)
+
+    if selected:
+        missing = selected - {model.name.lower() for model in models}
+        for name in sorted(missing):
+            logger.warning("Requested custom segmentation model '%s' not found under %s", name, root)
+
+    if models:
+        logger.info("Discovered %d custom model(s): %s", len(models), ", ".join(m.name for m in models))
+    return models
+
+
+def _validate_model_weights(model: CustomModelDefinition) -> tuple[bool, List[str]]:
+    """
+    Validate that all required weight files for a model are present.
+
+    Returns:
+        (weights_valid, missing_files) tuple
+    """
+    missing_files: List[str] = []
+
+    for network in model.networks:
+        # Check if weights exist via archive file
+        if network.archive_path:
+            if not network.archive_path.exists():
+                missing_files.append(f"{network.alias}: {network.archive_path.name}")
+                continue
+            if network.archive_path.is_file():
+                # Archive file exists, should be good
+                continue
+
+        # Check if weights exist via source directory
+        if network.source_dir:
+            source_path = (model.directory / network.source_dir).resolve()
+            if not source_path.exists():
+                missing_files.append(f"{network.alias}: source_dir={network.source_dir}")
+                continue
+
+        # Check if weights already extracted in results directory
+        try:
+            results_root = model.results_root()
+            dataset_dir = results_root / network.dataset_dir
+            if dataset_dir.exists():
+                # Already extracted, OK
+                continue
+        except Exception:
+            pass
+
+        # If we get here and archive_path exists as directory, that's OK too
+        if network.archive_path and network.archive_path.exists() and network.archive_path.is_dir():
+            continue
+
+        # No valid weight source found
+        if not network.archive_path and not network.source_dir:
+            missing_files.append(f"{network.alias}: no archive or source_dir specified")
+
+    return (len(missing_files) == 0, missing_files)
+
+
+def _parse_custom_model(model_dir: Path, data: dict, default_command: str) -> CustomModelDefinition:
+    if not isinstance(data, dict):
+        raise ValueError("Configuration root must be a mapping")
+
+    model_name = str(data.get("name") or model_dir.name)
+    nnunet_cfg = data.get("nnunet")
+    if not isinstance(nnunet_cfg, dict):
+        raise ValueError("Missing 'nnunet' section")
+
+    interface = str(nnunet_cfg.get("interface") or "nnunetv2").strip().lower()
+    command = str(nnunet_cfg.get("command") or default_command or ("nnunet_predict" if interface == "nnunetv1" else "nnUNetv2_predict"))
+    model_type = str(nnunet_cfg.get("model") or "3d_fullres")
+    folds_cfg = nnunet_cfg.get("folds")
+    if isinstance(folds_cfg, (list, tuple, set)):
+        folds = [int(f) for f in folds_cfg]
+    elif folds_cfg in (None, "all"):
+        folds = "all"
+    else:
+        try:
+            folds = [int(x) for x in str(folds_cfg).replace(',', ' ').split()]
+        except Exception:
+            folds = str(folds_cfg)
+
+    env_cfg = nnunet_cfg.get("env") or {}
+    if not isinstance(env_cfg, dict):
+        raise ValueError("'nnunet.env' must be a mapping if provided")
+    env = {str(k): str(v) for k, v in env_cfg.items() if v is not None}
+
+    networks_cfg = nnunet_cfg.get("networks")
+    if not isinstance(networks_cfg, list) or not networks_cfg:
+        raise ValueError("'nnunet.networks' must be a non-empty list")
+
+    networks: List[NetworkDefinition] = []
+    for entry in networks_cfg:
+        if not isinstance(entry, dict):
+            raise ValueError("Network entry must be a mapping")
+        raw_id = entry.get("id") or entry.get("dataset")
+        if raw_id is None:
+            raise ValueError("Network entry missing 'id'")
+        network_id = str(raw_id).strip()
+        alias = str(entry.get("alias") or entry.get("name") or entry.get("architecture") or network_id).strip()
+        archive = entry.get("archive") or entry.get("weights")
+        archive_path = (model_dir / str(archive)).resolve() if archive else None
+
+        dataset_dir_raw = entry.get("dataset_directory") or entry.get("dataset_dir") or entry.get("dataset")
+        if dataset_dir_raw:
+            dataset_dir = str(dataset_dir_raw).strip()
+        elif archive:
+            dataset_dir = Path(str(archive)).stem
+        else:
+            dataset_dir = alias
+
+        source_dir = entry.get("source_directory") or entry.get("source_dir")
+        if source_dir:
+            source_dir = str(source_dir).strip()
+
+        labels = entry.get("label_order") or entry.get("structures") or entry.get("labels")
+        if not isinstance(labels, list) or not labels:
+            raise ValueError(f"Network {network_id}: missing label_order/structures")
+        label_names = [str(label).strip() for label in labels]
+
+        net_env_cfg = entry.get("env") or {}
+        if not isinstance(net_env_cfg, dict):
+            raise ValueError(f"Network {network_id}: env must be a mapping when provided")
+        net_env = {str(k): str(v) for k, v in net_env_cfg.items() if v is not None}
+
+        architecture = entry.get("architecture") or entry.get("model")
+        trainer = entry.get("trainer")
+        cascade_trainer = entry.get("cascade_trainer") or entry.get("cascade_trainer_fullres")
+        plans = entry.get("plans")
+        folds_override_cfg = entry.get("folds") or nnunet_cfg.get("folds") or folds
+        if isinstance(folds_override_cfg, (list, tuple, set)):
+            folds_override = [int(f) for f in folds_override_cfg]
+        elif folds_override_cfg in (None, "all"):
+            folds_override = "all"
+        else:
+            try:
+                folds_override = [int(x) for x in str(folds_override_cfg).replace(',', ' ').split()]
+            except Exception:
+                folds_override = str(folds_override_cfg)
+        task = entry.get("task")
+        if task:
+            task = str(task).strip()
+
+        networks.append(
+            NetworkDefinition(
+                network_id=network_id,
+                alias=alias,
+                archive_path=archive_path,
+                dataset_dir=dataset_dir,
+                label_names=label_names,
+                env=net_env,
+                source_dir=source_dir,
+                architecture=str(architecture).strip() if architecture else None,
+                trainer=str(trainer).strip() if trainer else None,
+                cascade_trainer=str(cascade_trainer).strip() if cascade_trainer else None,
+                plans=str(plans).strip() if plans else None,
+                folds=folds_override,
+                task=task,
+            )
+        )
+
+    combine_cfg = nnunet_cfg.get("combine") or {}
+    order_raw = combine_cfg.get("ordered_networks") or combine_cfg.get("order") or combine_cfg.get("networks")
+    if isinstance(order_raw, list) and order_raw:
+        combine_order = [str(item).strip() for item in order_raw if str(item).strip()]
+    else:
+        combine_order = [net.alias for net in networks]
+
+    # Keep only known networks in the final order (preserving duplicates for precedence)
+    known_ids = {net.alias for net in networks} | {net.network_id for net in networks}
+
+    ensemble_cfg = nnunet_cfg.get("ensemble")
+    ensemble_def: Optional[EnsembleDefinition] = None
+    if isinstance(ensemble_cfg, dict):
+        ensemble_command = str(ensemble_cfg.get("command") or "nnUNet_ensemble")
+        inputs_raw = ensemble_cfg.get("inputs") or [net.alias for net in networks]
+        if not isinstance(inputs_raw, list) or not inputs_raw:
+            raise ValueError("ensemble.inputs must be a non-empty list when ensemble is defined")
+        ensemble_inputs = [str(item).strip() for item in inputs_raw if str(item).strip()]
+        post_json = ensemble_cfg.get("postprocessing_json") or ensemble_cfg.get("postprocessing")
+        label_order = ensemble_cfg.get("label_order") or ensemble_cfg.get("labels")
+        if label_order is not None and (not isinstance(label_order, list) or not label_order):
+            raise ValueError("ensemble.label_order must be a non-empty list when provided")
+        ensemble_def = EnsembleDefinition(
+            command=ensemble_command,
+            inputs=ensemble_inputs,
+            postprocessing_json=str(post_json).strip() if post_json else None,
+            label_names=[str(l).strip() for l in label_order] if label_order else None,
+        )
+        known_ids.add("ensemble")
+        if "ensemble" not in combine_order:
+            combine_order = ["ensemble"] + combine_order
+
+    combine_order = [nid for nid in combine_order if nid in known_ids]
+    if not combine_order:
+        combine_order = [net.alias for net in networks]
+
+    description = str(data.get("description") or data.get("summary") or "")
+
+    return CustomModelDefinition(
+        name=model_name,
+        directory=model_dir,
+        command=command,
+        model=model_type,
+        folds=folds,
+        env=env,
+        networks=networks,
+        combine_order=combine_order,
+        description=description,
+        interface=interface,
+        ensemble=ensemble_def,
+    )
+
+
+def run_custom_models_for_course(
+    cfg: PipelineConfig,
+    course: "CourseOutput",
+    models: List[CustomModelDefinition],
+    force: bool = False,
+) -> None:
+    if not models:
+        logger.info("No custom segmentation models supplied; nothing to run")
+        return
+
+    ct_dir = course.dirs.dicom_ct
+    if not ct_dir.exists():
+        logger.warning("Custom segmentation skipped for %s/%s: no CT DICOM found", course.patient_id, course.course_id)
+        return
+
+    course.dirs.ensure()
+    sentinel_path = course.dirs.root / ".custom_models_done"
+    models_to_run = []
+    for model in models:
+        if force or not _model_outputs_ready(course.dirs.root, model):
+            models_to_run.append(model)
+
+    if not models_to_run and sentinel_path.exists():
+        logger.info(
+            "Custom segmentation outputs already present for %s/%s; skipping",
+            course.patient_id,
+            course.course_id,
+        )
+        return
+
+    nifti_path = _ensure_ct_nifti(cfg, ct_dir, course.dirs.nifti, force=False)
+    if nifti_path is None:
+        raise RuntimeError(f"Unable to obtain NIfTI for course {course.patient_id}/{course.course_id}")
+
+    for model in models_to_run or models:
+        _run_single_model(cfg, course, nifti_path, ct_dir, model)
+
+    sentinel_path.write_text("ok\n", encoding="utf-8")
+
+
+def _model_outputs_ready(course_root: Path, model: CustomModelDefinition) -> bool:
+    output_dir = course_root / "Segmentation_CustomModels" / model.name
+    if not output_dir.exists():
+        return False
+    rtstruct_path = output_dir / "rtstruct.dcm"
+    if not rtstruct_path.exists():
+        return False
+    expected_structures = model.expected_structures()
+    for struct_name in expected_structures:
+        fname = f"{_structure_filename(struct_name)}.nii.gz"
+        if not (output_dir / fname).exists():
+            return False
+    return True
+
+
+def _combined_env(base_env: Dict[str, str], extra: Dict[str, str]) -> Dict[str, str]:
+    env = base_env.copy()
+    env.update(extra)
+    return env
+
+
+def _prepare_network_weights(model: CustomModelDefinition, network: NetworkDefinition) -> Path:
+    results_root = model.results_root()
+    dataset_dir = results_root / network.dataset_dir
+    if dataset_dir.exists():
+        return dataset_dir
+
+    results_root.mkdir(parents=True, exist_ok=True)
+    archive_path = network.archive_path
+    if archive_path and archive_path.exists() and archive_path.is_file():
+        logger.info("Extracting weights for model %s network %s", model.name, network.network_id)
+        with zipfile.ZipFile(archive_path, "r") as zf:
+            zf.extractall(results_root)
+    else:
+        source_dir = network.source_dir
+        candidate_source: Optional[Path] = None
+        if source_dir:
+            candidate = (model.directory / source_dir).resolve()
+            if candidate.exists():
+                candidate_source = candidate
+        if candidate_source is None and archive_path and archive_path.exists() and archive_path.is_dir():
+            candidate_source = archive_path.resolve()
+        if candidate_source is None:
+            raise FileNotFoundError(
+                f"Unable to locate weights for network {network.network_id}: "
+                f"archive={archive_path}, source_dir={network.source_dir}"
+            )
+        dest_parent = dataset_dir.parent
+        dest_parent.mkdir(parents=True, exist_ok=True)
+        if dataset_dir.exists():
+            return dataset_dir
+        logger.info("Copying weights for model %s network %s", model.name, network.network_id)
+        shutil.copytree(candidate_source, dataset_dir)
+
+    if not dataset_dir.exists():
+        available = sorted(str(p.relative_to(results_root)) for p in results_root.rglob("*"))
+        raise FileNotFoundError(
+            f"After preparing weights, expected directory '{network.dataset_dir}' under {results_root} but it is missing."
+        )
+    return dataset_dir
+
+
+def _command_prefix(cfg: PipelineConfig) -> str:
+    activate = cfg.custom_models_conda_activate or cfg.conda_activate
+    return f"{activate} && " if activate else ""
+
+
+def _run_nnunet_prediction(
+    cfg: PipelineConfig,
+    model: CustomModelDefinition,
+    network: NetworkDefinition,
+    input_dir: Path,
+    output_dir: Path,
+    env: Dict[str, str],
+) -> None:
+    import shlex
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    if model.interface == "nnunetv1":
+        base_cmd = model.command or "nnUNet_predict"
+        folds_arg = network.folds or model.folds
+        if isinstance(folds_arg, (list, tuple, set)):
+            fold_parts = [str(int(f)) for f in folds_arg]
+        else:
+            raw = str(folds_arg) if folds_arg is not None else "all"
+            if raw.strip().lower() == "all":
+                fold_parts = ["all"]
+            else:
+                fold_parts = [tok for tok in raw.replace(',', ' ').split() if tok]
+
+        cmd_parts = [
+            base_cmd,
+            "-i",
+            str(input_dir),
+            "-o",
+            str(output_dir),
+            "-m",
+            str(network.architecture or model.model),
+            "-t",
+            str(network.task or network.network_id),
+            "-f",
+        ] + fold_parts
+        if network.trainer:
+            cmd_parts.extend(["-tr", str(network.trainer)])
+        if network.cascade_trainer:
+            cmd_parts.extend(["-ctr", str(network.cascade_trainer)])
+        if network.plans:
+            cmd_parts.extend(["-p", str(network.plans)])
+    else:
+        base_cmd = model.command or cfg.nnunet_predict_cmd
+        folds_arg = network.folds or model.folds
+        if isinstance(folds_arg, (list, tuple, set)):
+            fold_parts = [str(int(f)) for f in folds_arg]
+        else:
+            raw = str(folds_arg) if folds_arg is not None else "all"
+            if raw.strip().lower() == "all":
+                fold_parts = ["all"]
+            else:
+                fold_parts = [tok for tok in raw.replace(',', ' ').split() if tok]
+
+        cmd_parts = [
+            base_cmd,
+            "-i",
+            str(input_dir),
+            "-o",
+            str(output_dir),
+            "-d",
+            str(network.network_id),
+            "-c",
+            str(network.architecture or model.model),
+            "-f",
+        ] + fold_parts
+
+    import shutil as _shutil
+
+    executable = shlex.split(base_cmd)[0]
+    need_path_check = not (cfg.custom_models_conda_activate or cfg.conda_activate)
+    if need_path_check and _shutil.which(executable) is None:
+        raise RuntimeError(
+            f"nnU-Net command '{executable}' is not available on PATH. "
+            "Ensure the custom models environment provides this executable or "
+            "set 'custom_models.nnunet_predict' in the configuration to the correct command."
+        )
+
+    cmd = f"{_command_prefix(cfg)}{' '.join(shlex.quote(part) for part in cmd_parts)}"
+    logger.info("Running nnUNet prediction: %s", cmd)
+    success = _run_shell(cmd, env=env)
+    if not success:
+        raise RuntimeError(f"nnUNet prediction failed for network {network.network_id}")
+
+
+def _load_segmentation_output(output_dir: Path) -> sitk.Image:
+    candidates = sorted(output_dir.glob("*.nii.gz"))
+    if not candidates:
+        candidates = sorted(output_dir.glob("*.nii"))
+    if not candidates:
+        raise FileNotFoundError(f"No nnUNet output found in {output_dir}")
+    return sitk.ReadImage(str(candidates[0]))
+
+
+def _make_binary_masks(seg_img: sitk.Image, label_names: List[str]) -> Dict[str, sitk.Image]:
+    seg_arr = sitk.GetArrayFromImage(seg_img)
+    masks: Dict[str, sitk.Image] = {}
+    for label_idx, structure_name in enumerate(label_names, start=1):
+        mask_arr = (seg_arr == label_idx).astype(np.uint8)
+        mask_img = sitk.GetImageFromArray(mask_arr)
+        mask_img.CopyInformation(seg_img)
+        masks[structure_name] = mask_img
+    return masks
+
+
+def _write_structure_masks(
+    combined_structures: Dict[str, sitk.Image],
+    structure_source: Dict[str, str],
+    output_dir: Path,
+) -> Tuple[List[Dict[str, str]], Dict[str, Path]]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    manifest_entries: List[Dict[str, str]] = []
+    paths: Dict[str, Path] = {}
+
+    # Clean previous structures for this course
+    for existing in output_dir.glob("*.nii*"):
+        try:
+            existing.unlink()
+        except Exception:
+            logger.debug("Unable to remove previous mask %s", existing)
+
+    for name, img in combined_structures.items():
+        filename = f"{_structure_filename(name)}.nii.gz"
+        out_path = output_dir / filename
+        sitk.WriteImage(img, str(out_path))
+
+        manifest_entries.append(
+            {
+                "name": name,
+                "file": filename,
+                "network": structure_source.get(name, ""),
+            }
+        )
+        paths[name] = out_path
+
+    return manifest_entries, paths
+
+
+def _build_rtstruct(
+    ct_dir: Path,
+    structure_masks: Dict[str, sitk.Image],
+    output_dir: Path,
+    structure_paths: Dict[str, Path],
+) -> Path:
+    try:
+        from rt_utils import RTStructBuilder
+    except Exception as exc:
+        raise RuntimeError("rt-utils is required for custom segmentation RTSTRUCT generation") from exc
+
+    ct_img = _load_ct_image(ct_dir)
+    if ct_img is None:
+        raise RuntimeError(f"Failed to load CT series at {ct_dir}")
+
+    rtstruct_path = output_dir / "rtstruct.dcm"
+
+    if rtstruct_path.exists():
+        try:
+            rtstruct_path.unlink()
+        except Exception:
+            logger.debug("Unable to remove previous RTSTRUCT %s", rtstruct_path)
+
+    rtstruct = RTStructBuilder.create_new(dicom_series_path=str(ct_dir))
+    added_any = False
+    for name, mask_img in structure_masks.items():
+        resampled = _resample_to_reference(mask_img, ct_img)
+        mask_arr = sitk.GetArrayFromImage(resampled)
+        mask_arr = np.moveaxis(mask_arr, 0, -1)
+        mask_bin = mask_arr > 0
+        if not np.any(mask_bin):
+            continue
+        rtstruct.add_roi(mask=mask_bin, name=name)
+        added_any = True
+
+    if not added_any:
+        raise RuntimeError("Custom segmentation produced no non-empty structures")
+
+    rtstruct.save(str(rtstruct_path))
+    sanitize_rtstruct(rtstruct_path)
+    try:
+        summary = fix_rtstruct_rois(ct_dir, rtstruct_path)
+        if summary and summary.changed:
+            logger.info(
+                "RTSTRUCT ROI normalization for %s: %d fixed, %d pending",
+                rtstruct_path,
+                len(summary.fixed),
+                len(summary.failed),
+            )
+    except Exception as exc:
+        logger.debug("RTSTRUCT ROI fix failed for %s: %s", rtstruct_path, exc)
+
+    manifest = {
+        "generated_at": datetime.datetime.utcnow().isoformat() + "Z",
+        "rtstruct": "rtstruct.dcm",
+        "structures": [
+            {"name": name, "file": str(structure_paths[name].name)}
+            for name in sorted(structure_paths)
+        ],
+    }
+    (output_dir / "rtstruct_manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+
+    return rtstruct_path
+
+
+def _run_single_model(
+    cfg: PipelineConfig,
+    course: "CourseOutput",
+    nifti_path: Path,
+    ct_dir: Path,
+    model: CustomModelDefinition,
+) -> None:
+    import shlex
+
+    output_root = course.dirs.segmentation_custom_models / model.name
+    output_root.mkdir(parents=True, exist_ok=True)
+
+    logger.info(
+        "Running custom model '%s' for patient %s course %s",
+        model.name,
+        course.patient_id,
+        course.course_id,
+    )
+
+    env = os.environ.copy()
+    resolved_env = model.resolved_env()
+    env.update(resolved_env)
+    if model.interface == "nnunetv1":
+        env.setdefault("RESULTS_FOLDER", resolved_env.get("nnUNet_results", ""))
+    for key in ("nnUNet_results", "nnUNet_raw", "nnUNet_preprocessed"):
+        try:
+            Path(resolved_env[key]).mkdir(parents=True, exist_ok=True)
+        except Exception as exc:
+            logger.debug("Unable to ensure directory for %s (%s): %s", key, resolved_env.get(key), exc)
+    if cfg.segmentation_thread_limit and cfg.segmentation_thread_limit > 0:
+        thread_str = str(cfg.segmentation_thread_limit)
+        for var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMBA_NUM_THREADS"):
+            env[var] = thread_str
+
+    with tempfile.TemporaryDirectory(prefix=f"custom_seg_{model.name}_", dir=str(course.dirs.root)) as tmp_root_str:
+        tmp_root = Path(tmp_root_str)
+        input_dir = tmp_root / "input"
+        input_dir.mkdir(parents=True, exist_ok=True)
+        input_case = input_dir / "case_0000.nii.gz"
+        shutil.copy2(nifti_path, input_case)
+
+        structures_by_network: Dict[str, Dict[str, sitk.Image]] = {}
+        output_dirs: Dict[str, Path] = {}
+
+        for network in model.networks:
+            network_env = _combined_env(env, network.env)
+            _prepare_network_weights(model, network)
+            output_dir = tmp_root / f"output_{_sanitize_token(network.alias)}"
+            output_dir.mkdir(parents=True, exist_ok=True)
+            _run_nnunet_prediction(cfg, model, network, input_dir, output_dir, network_env)
+            seg_img = _load_segmentation_output(output_dir)
+            structures_by_network[network.alias] = _make_binary_masks(seg_img, network.label_names)
+            output_dirs[network.alias] = output_dir
+
+        if model.ensemble:
+            ensemble_inputs: List[Path] = []
+            for alias in model.ensemble.inputs:
+                key = alias
+                if alias not in output_dirs:
+                    net = model.get_network(alias)
+                    if net and net.alias in output_dirs:
+                        key = net.alias
+                if key not in output_dirs:
+                    raise RuntimeError(f"Ensemble input {alias} not available for model {model.name}")
+                ensemble_inputs.append(output_dirs[key])
+            ensemble_out = tmp_root / "ensemble_output"
+            ensemble_out.mkdir(parents=True, exist_ok=True)
+            ensemble_cmd_parts = [model.ensemble.command, "-f"]
+            ensemble_cmd_parts.extend(str(p) for p in ensemble_inputs)
+            ensemble_cmd_parts.extend(["-o", str(ensemble_out)])
+            if model.ensemble.postprocessing_json:
+                pp_path = Path(model.ensemble.postprocessing_json)
+                if not pp_path.is_absolute():
+                    pp_path = (model.directory / pp_path).resolve()
+                ensemble_cmd_parts.extend(["-pp", str(pp_path)])
+            ensemble_cmd = f"{_command_prefix(cfg)}{' '.join(shlex.quote(part) for part in ensemble_cmd_parts)}"
+            logger.info("Running nnUNet ensemble: %s", ensemble_cmd)
+            if not _run_shell(ensemble_cmd, env=env):
+                raise RuntimeError(f"nnUNet ensemble failed for model {model.name}")
+            ensemble_img = _load_segmentation_output(ensemble_out)
+            label_names = model.ensemble.label_names or (model.networks[0].label_names if model.networks else [])
+            structures_by_network["ensemble"] = _make_binary_masks(ensemble_img, label_names)
+            output_dirs["ensemble"] = ensemble_out
+
+    combined_structures: Dict[str, sitk.Image] = {}
+    structure_source: Dict[str, str] = {}
+    for network_id in model.combine_order:
+        masks = structures_by_network.get(network_id)
+        if masks is None:
+            net = model.get_network(network_id)
+            if net:
+                masks = structures_by_network.get(net.alias)
+        if masks is None:
+            continue
+        for name, img in masks.items():
+            combined_structures[name] = img
+            structure_source[name] = network_id
+
+    manifest_entries, structure_paths = _write_structure_masks(
+        combined_structures,
+        structure_source,
+        output_root,
+    )
+
+    if not manifest_entries:
+        raise RuntimeError(f"No structures were produced for model {model.name}")
+
+    # Verify expected structures were produced
+    expected_structures = model.expected_structures()
+    produced_structures = list(combined_structures.keys())
+    missing_structures = set(expected_structures) - set(produced_structures)
+    extra_structures = set(produced_structures) - set(expected_structures)
+
+    if missing_structures:
+        logger.warning(
+            "Custom model '%s' did not produce %d expected structure(s): %s",
+            model.name,
+            len(missing_structures),
+            ", ".join(sorted(missing_structures))
+        )
+
+    if extra_structures:
+        logger.info(
+            "Custom model '%s' produced %d additional structure(s) not in config: %s",
+            model.name,
+            len(extra_structures),
+            ", ".join(sorted(extra_structures))
+        )
+
+    logger.info(
+        "Custom model '%s' completed: %d/%d expected structures produced",
+        model.name,
+        len(produced_structures) - len(extra_structures),
+        len(expected_structures)
+    )
+
+    rtstruct_path = _build_rtstruct(ct_dir, combined_structures, output_root, structure_paths)
+
+    manifest = {
+        "model": model.name,
+        "description": model.description,
+        "course_id": course.course_id,
+        "patient_id": course.patient_id,
+        "generated_at": datetime.datetime.utcnow().isoformat() + "Z",
+        "nnunet": {
+            "command": model.command,
+            "model": model.model,
+            "folds": model.folds,
+            "combine_order": model.combine_order,
+        },
+        "structures": manifest_entries,
+        "rtstruct": str(rtstruct_path.name),
+        "source_nifti": str(nifti_path),
+        "expected_structures": expected_structures,
+        "produced_structures": produced_structures,
+        "missing_structures": sorted(list(missing_structures)),
+        "extra_structures": sorted(list(extra_structures)),
+    }
+    (output_root / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    if not cfg.custom_models_retain_weights:
+        _cleanup_model_cache(model)
+
+
+def _cleanup_model_cache(model: CustomModelDefinition) -> None:
+    model_root = model.directory.resolve()
+    env = model.resolved_env()
+    for key in ("nnUNet_results", "nnUNet_raw", "nnUNet_preprocessed"):
+        location = env.get(key)
+        if not location:
+            continue
+        try:
+            path = Path(location).resolve()
+        except Exception:
+            continue
+        if not path.exists():
+            continue
+        try:
+            if not path.is_dir():
+                continue
+        except OSError:
+            continue
+        try:
+            if not path.is_relative_to(model_root):
+                logger.debug(
+                    "Skipping cleanup of %s for model %s (outside model directory)",
+                    path,
+                    model.name,
+                )
+                continue
+        except Exception:
+            continue
+        try:
+            shutil.rmtree(path)
+            logger.info("Removed cached %s for model %s at %s", key, model.name, path)
+        except Exception as exc:
+            logger.warning("Failed to remove cached %s for model %s: %s", key, model.name, exc)
+
+
+def list_custom_model_outputs(course_dir: Path) -> List[Tuple[str, Path]]:
+    """Return (model_name, model_course_dir) for all custom model outputs available for a course."""
+    outputs: List[Tuple[str, Path]] = []
+    custom_root = course_dir / "Segmentation_CustomModels"
+    if not custom_root.exists():
+        return outputs
+    for seg_dir in sorted(custom_root.iterdir()):
+        if not seg_dir.is_dir():
+            continue
+        if not (seg_dir / "rtstruct.dcm").exists():
+            continue
+        outputs.append((seg_dir.name, seg_dir))
+    return outputs

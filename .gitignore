@@ -1,0 +1,83 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+.Python
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Virtual environments
+.env
+.venv
+env/
+venv/
+
+# IDE/editor
+.idea/
+.vscode/
+.DS_Store
+
+# Testing / coverage
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Project outputs (prevent committing patient data / heavy artifacts)
+Logs*/
+Data*/
+DICOM_OrganizedCT/
+Example_data/
+Output/
+Input/
+Uploads/
+totalseg_weights/
+
+# Snakemake
+.snakemake/
+
+# Generated reports and data
+*.xlsx
+*.csv
+*.json
+*.log
+
+# Medical imaging data
+**/*.dcm
+**/*.nii
+**/*.nii.gz
+
+# Custom model artefacts (nnUNet weights, caches, temp outputs)
+custom_models/**
+!custom_models/*/
+!custom_models/**/
+!custom_models/**/custom_model.yaml
+!custom_models/**/script.py
+!custom_models/**/README.md
+!custom_models/**/download_weights_example.sh
+!custom_models/README.md
+!custom_models/download_weights_example.sh
+custom_models/**/*.zip
+custom_models/**/*.tar
+custom_models/**/*.tar.gz
+custom_models/**/*.pth
+custom_models/**/*.pkl
+custom_models/**/2d/
+custom_models/**/3d_fullres/
+custom_models/**/nnUNet_*/
+custom_models/**/Dataset*/
+custom_models/**/HNLNL_autosegmentation_trained_models/
+Segmentation_*/
+
+.claude/
+.cache/
+Data_Snakemake/

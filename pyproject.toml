@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rtpipeline"
+version = "0.1.0"
+description = "DICOM-RT end-to-end pipeline: organize, merge by course, segment, DVH, visualize"
+authors = [{ name = "Project", email = "noreply@example.com" }]
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "pydicom>=3.0,<4",
+  "dicompyler-core==0.5.6",
+  # NumPy 2.x is required for the TotalSegmentator toolchain while the
+  # radiomics extra keeps its own <2.0 pin inside envs/rtpipeline-radiomics.yaml.
+  "numpy>=1.23",  # Allow both 1.2x (radiomics env) and 2.x (segmentation env)
+  "pandas",
+  "scipy",
+  "SimpleITK",
+  "pydicom-seg==0.4.1",
+  "matplotlib",
+  "openpyxl",
+  "TotalSegmentator>=2.4.0",  # Use latest stable version from PyPI
+  "dicom2nifti>=2.4",
+  "nested-lookup",
+  "rt-utils",
+  "plotly",
+  "nbformat",     # For notebook processing support
+  "ipython",      # For notebook processing support
+  "filelock",     # For thread-safe file operations in parallel processing
+]
+
+[project.optional-dependencies]
+radiomics = [
+  "pyradiomics",  # Optional - may have compatibility issues with Python 3.12+
+  "pingouin>=0.5.3",  # For ICC computation in robustness analysis
+]
+
+[project.scripts]
+rtpipeline = "rtpipeline.cli:main"
+
+[tool.setuptools]
+packages = ["rtpipeline"]
+include-package-data = true
+
+[tool.setuptools.package-data]
+rtpipeline = ["ext/*.zip", "radiomics_params.yaml"]
