@@ -1,0 +1,130 @@
+version: '3.8'
+
+services:
+  # Main rtpipeline service with GPU support (DEFAULT)
+  rtpipeline:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        BUILD_DATE: ${BUILD_DATE:-$(date -u +'%Y-%m-%dT%H:%M:%SZ')}
+    image: kstawiski/rtpipeline:latest
+    container_name: rtpipeline
+    hostname: rtpipeline
+    # Run as non-root user (UID 1000) to match host permissions
+    user: "1000:1000"
+    volumes:
+      - ./Input:/data/input:rw
+      - ./Output:/data/output:rw
+      - ./Logs:/data/logs:rw
+
+      # TotalSegmentator weights (optional - for caching/updating without image rebuild)
+      - ./totalseg_weights:/home/rtpipeline/.totalsegmentator:rw
+
+      - ./Uploads:/data/uploads:rw
+      # Code mounted read-only for security
+      - ./Code:/app/Code:ro
+    ports:
+      - "8080:8080"
+    environment:
+      - PYTHONPATH=/app
+      - NUMBA_CACHE_DIR=/tmp/cache
+      - MPLCONFIGDIR=/tmp/cache
+      - CONDA_DIR=/opt/conda
+      - PATH=/opt/conda/bin:$PATH
+
+      - TOTALSEG_TIMEOUT=3600
+      - DCM2NIIX_TIMEOUT=300
+      - RTPIPELINE_RADIOMICS_TASK_TIMEOUT=600
+      - PORT=8080
+      - DEBUG=false
+    working_dir: /app
+    command: >
+      bash -c "
+        cd /app/webui &&
+        python app.py
+      "
+    # Security hardening
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - SETGID
+      - SETUID
+    # Resource limits
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+        limits:
+          cpus: '16.0'
+          memory: 32G
+    shm_size: '4gb'
+    restart: unless-stopped
+
+  # CPU-only service
+  rtpipeline-cpu:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        BUILD_DATE: ${BUILD_DATE:-$(date -u +'%Y-%m-%dT%H:%M:%SZ')}
+    image: kstawiski/rtpipeline:latest
+    container_name: rtpipeline-cpu
+    hostname: rtpipeline-cpu
+    user: "1000:1000"
+    volumes:
+      - ./Input:/data/input:rw
+      - ./Output:/data/output:rw
+      - ./Logs:/data/logs:rw
+
+      # TotalSegmentator weights (optional - for caching/updating without image rebuild)
+      - ./totalseg_weights:/home/rtpipeline/.totalsegmentator:rw
+
+      - ./Uploads:/data/uploads:rw
+      - ./Code:/app/Code:ro
+    ports:
+      - "8080:8080"
+    environment:
+      - PYTHONPATH=/app
+      - NUMBA_CACHE_DIR=/tmp/cache
+      - MPLCONFIGDIR=/tmp/cache
+      - CONDA_DIR=/opt/conda
+      - PATH=/opt/conda/bin:$PATH
+      - TOTALSEG_TIMEOUT=7200
+      - DCM2NIIX_TIMEOUT=300
+      - RTPIPELINE_RADIOMICS_TASK_TIMEOUT=1200
+      - PORT=8080
+      - DEBUG=false
+    working_dir: /app
+    command: >
+      bash -c "
+        cd /app/webui &&
+        python app.py
+      "
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          cpus: '16.0'
+          memory: 32G
+        reservations:
+          cpus: '4.0'
+          memory: 8G
+    shm_size: '4gb'
+    restart: unless-stopped
+    profiles:
+      - cpu-only
+
+networks:
+  default:
+    name: rtpipeline-network
