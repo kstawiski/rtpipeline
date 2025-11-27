@@ -278,7 +278,7 @@ docker run --gpus '"device=0,1"' ...
                         <h3>No patients found in input directory</h3>
                         <p><strong>Causes:</strong></p>
                         <ul>
-                            <li>DICOM files don't have .dcm extension (RTpipeline scans *.dcm)</li>
+                            <li>DICOM files missing .dcm extension (RTpipeline scans *.dcm files; rename extensionless files or use <code>rename 's/$/\.dcm/' *</code>)</li>
                             <li>Missing required modalities (CT is required)</li>
                             <li>Corrupt DICOM headers</li>
                         </ul>
