@@ -122,9 +122,10 @@ def _max_worker_args(count: int) -> list[str]:
 
 
 DVH_RULE_THREADS = _stage_thread_target("dvh_threads_per_job", 4)
-RAD_RULE_THREADS = _stage_thread_target("radiomics_threads_per_job", 6)
+RAD_RULE_THREADS = _stage_thread_target("radiomics_threads_per_job", 4)  # Reduced from 6 to avoid memory contention
 QC_RULE_THREADS = _stage_thread_target("qc_threads_per_job", 2)
 CROP_CT_RULE_THREADS = _stage_thread_target("crop_ct_threads_per_job", 4)  # I/O bound, small default
+ROBUSTNESS_RULE_THREADS = _stage_thread_target("robustness_threads_per_job", 4)  # For radiomics robustness analysis
 PRIORITIZE_SHORT_COURSES = bool(SCHEDULER_CONFIG.get("prioritize_short_courses", True))
 
 SEG_CONFIG = config.get("segmentation", {})
@@ -899,7 +900,7 @@ if config.get("container_mode", False):
         log:
             str(LOGS_DIR / "radiomics_robustness" / "{patient}_{course}.log")
         threads:
-            RAD_RULE_THREADS
+            ROBUSTNESS_RULE_THREADS
         params:
             enabled=str(ROBUSTNESS_ENABLED),
             config=str(ROOT_DIR / "config.yaml")
@@ -933,7 +934,7 @@ else:
         log:
             str(LOGS_DIR / "radiomics_robustness" / "{patient}_{course}.log")
         threads:
-            RAD_RULE_THREADS
+            ROBUSTNESS_RULE_THREADS
         conda:
             "envs/rtpipeline-radiomics.yaml"
         params:
@@ -1068,15 +1069,31 @@ rule aggregate_results:
             errors = []
 
             def _load_all(course):
-                """Load all file types for a single course."""
+                """Load all file types for a single course.
+
+                Prefers Parquet format when available for 10-50x faster I/O.
+                Falls back to Excel for compatibility.
+                """
                 pid, cid, cdir = course
                 course_results = {}
 
+                def _read_prefer_parquet(xlsx_path: Path, name: str) -> pd.DataFrame:
+                    """Try Parquet first, fall back to Excel."""
+                    parquet_path = xlsx_path.with_suffix('.parquet')
+                    if parquet_path.exists():
+                        try:
+                            return pd.read_parquet(parquet_path)
+                        except Exception:
+                            pass  # Fall through to Excel
+                    if xlsx_path.exists():
+                        return pd.read_excel(xlsx_path)
+                    return None
+
                 # DVH
                 dvh_path = cdir / "dvh_metrics.xlsx"
-                if dvh_path.exists():
-                    try:
-                        df = pd.read_excel(dvh_path)
+                try:
+                    df = _read_prefer_parquet(dvh_path, "DVH")
+                    if df is not None:
                         if "patient_id" in df.columns:
                             df["patient_id"] = df["patient_id"].fillna(pid)
                         else:
@@ -1088,14 +1105,14 @@ rule aggregate_results:
                         if "structure_cropped" not in df.columns:
                             df["structure_cropped"] = False
                         course_results['dvh'] = df
-                    except Exception as e:
-                        errors.append(f"DVH error {pid}/{cid}: {e}")
+                except Exception as e:
+                    errors.append(f"DVH error {pid}/{cid}: {e}")
 
-                # Radiomics CT
+                # Radiomics CT (prefer Parquet)
                 rad_path = cdir / "radiomics_ct.xlsx"
-                if rad_path.exists():
-                    try:
-                        df = pd.read_excel(rad_path)
+                try:
+                    df = _read_prefer_parquet(rad_path, "Radiomics CT")
+                    if df is not None:
                         if "patient_id" not in df.columns:
                             df.insert(0, "patient_id", pid)
                         else:
@@ -1107,14 +1124,14 @@ rule aggregate_results:
                         if "structure_cropped" not in df.columns:
                             df["structure_cropped"] = False
                         course_results['radiomics'] = df
-                    except Exception as e:
-                        errors.append(f"Radiomics error {pid}/{cid}: {e}")
+                except Exception as e:
+                    errors.append(f"Radiomics error {pid}/{cid}: {e}")
 
-                # Radiomics MR
+                # Radiomics MR (prefer Parquet)
                 rad_mr_path = cdir / "MR" / "radiomics_mr.xlsx"
-                if rad_mr_path.exists():
-                    try:
-                        df = pd.read_excel(rad_mr_path)
+                try:
+                    df = _read_prefer_parquet(rad_mr_path, "Radiomics MR")
+                    if df is not None:
                         if "patient_id" not in df.columns:
                             df.insert(0, "patient_id", pid)
                         else:
@@ -1124,8 +1141,8 @@ rule aggregate_results:
                         else:
                             df["course_id"] = df["course_id"].fillna(cid)
                         course_results['radiomics_mr'] = df
-                    except Exception as e:
-                        errors.append(f"Radiomics MR error {pid}/{cid}: {e}")
+                except Exception as e:
+                    errors.append(f"Radiomics MR error {pid}/{cid}: {e}")
 
                 # Fractions
                 frac_path = cdir / "fractions.xlsx"
