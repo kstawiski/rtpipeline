@@ -1,0 +1,546 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Output Format - RTpipeline</title>
+    <meta name="description" content="Understanding RTpipeline output directory structure and generated files.">
+    <link rel="stylesheet" href="assets/css/style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+</head>
+<body>
+    <nav class="navbar">
+        <div class="nav-container">
+            <a href="index.html" class="nav-logo">
+                <span class="logo-icon">RT</span>
+                <span class="logo-text">pipeline</span>
+            </a>
+            <ul class="nav-menu">
+                <li><a href="features.html">Features</a></li>
+                <li><a href="output-format.html" class="active">Output Format</a></li>
+                <li><a href="configuration.html">Configuration</a></li>
+                <li><a href="faq.html">FAQ</a></li>
+                <li><a href="https://github.com/kstawiski/rtpipeline" class="nav-github" target="_blank">
+                    <svg height="20" viewBox="0 0 16 16" width="20" fill="currentColor">
+                        <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"></path>
+                    </svg>
+                    GitHub
+                </a></li>
+            </ul>
+            <button class="nav-toggle" aria-label="Toggle menu">
+                <span></span>
+                <span></span>
+                <span></span>
+            </button>
+        </div>
+    </nav>
+
+    <header class="page-header">
+        <div class="container">
+            <h1>Output Format</h1>
+            <p>Understanding RTpipeline's directory structure and generated files</p>
+        </div>
+    </header>
+
+    <main class="content">
+        <div class="container">
+            <!-- Directory Structure -->
+            <section class="feature-detail" id="structure">
+                <div class="feature-detail-header">
+                    <div class="feature-detail-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+                        </svg>
+                    </div>
+                    <h2>Directory Structure</h2>
+                </div>
+                <div class="feature-detail-content">
+                    <p class="feature-intro">
+                        RTpipeline organizes output in a hierarchical structure: <strong>Patient ID → Treatment Course → Data Types</strong>.
+                        Each patient can have multiple treatment courses, each containing imaging data, structures, and analysis results.
+                    </p>
+
+                    <div class="code-block directory-tree">
+                        <pre><code>Output/
+├── {PatientID}/
+│   └── {CourseDate}/
+│       ├── ct.nii.gz                    <span class="comment"># Original CT (NIfTI)</span>
+│       ├── ct_cropped.nii.gz            <span class="comment"># Cropped CT (if enabled)</span>
+│       ├── dose.nii.gz                  <span class="comment"># RT Dose grid</span>
+│       ├── mr.nii.gz                    <span class="comment"># MR images (if available)</span>
+│       │
+│       ├── structures/                  <span class="comment"># Binary structure masks</span>
+│       │   ├── GTV.nii.gz
+│       │   ├── PTV.nii.gz
+│       │   ├── Bladder.nii.gz
+│       │   └── ...
+│       │
+│       ├── structures_auto/             <span class="comment"># AI-generated segmentations</span>
+│       │   ├── liver.nii.gz
+│       │   ├── kidney_left.nii.gz
+│       │   └── ...
+│       │
+│       ├── structures_merged/           <span class="comment"># Combined + custom structures</span>
+│       │   ├── GTV.nii.gz
+│       │   ├── CTV.nii.gz
+│       │   ├── Pelvic_Bones.nii.gz      <span class="comment"># Custom merged structure</span>
+│       │   └── ...
+│       │
+│       ├── dvh_results.xlsx             <span class="comment"># DVH metrics per structure</span>
+│       ├── radiomics_ct.xlsx            <span class="comment"># CT radiomics features</span>
+│       ├── radiomics_mr.xlsx            <span class="comment"># MR radiomics (if available)</span>
+│       ├── radiomics_robustness.xlsx    <span class="comment"># Robustness analysis</span>
+│       │
+│       ├── course_metadata.json         <span class="comment"># Course information</span>
+│       └── qc_report.html               <span class="comment"># Quality control report</span>
+│
+├── cohort_dvh.xlsx                      <span class="comment"># All patients DVH combined</span>
+├── cohort_radiomics_ct.xlsx             <span class="comment"># All patients CT radiomics</span>
+├── cohort_radiomics_mr.xlsx             <span class="comment"># All patients MR radiomics</span>
+├── cohort_radiomics_robustness.xlsx     <span class="comment"># All patients robustness</span>
+└── cohort_metadata.json                 <span class="comment"># Processing summary</span></code></pre>
+                    </div>
+                </div>
+            </section>
+
+            <!-- DVH Output -->
+            <section class="feature-detail" id="dvh-output">
+                <div class="feature-detail-header">
+                    <div class="feature-detail-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <rect x="3" y="3" width="18" height="18" rx="2"/>
+                            <path d="M3 9h18M9 21V9"/>
+                        </svg>
+                    </div>
+                    <h2>DVH Results Format</h2>
+                </div>
+                <div class="feature-detail-content">
+                    <p class="feature-intro">
+                        DVH results are exported to Excel files with one row per structure. Each file contains comprehensive
+                        dose-volume metrics for dosimetric analysis.
+                    </p>
+
+                    <h3>File Structure</h3>
+                    <table class="output-table">
+                        <thead>
+                            <tr>
+                                <th>Column</th>
+                                <th>Description</th>
+                                <th>Example</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><code>patient_id</code></td>
+                                <td>Patient identifier</td>
+                                <td>PAT001</td>
+                            </tr>
+                            <tr>
+                                <td><code>course</code></td>
+                                <td>Treatment course date</td>
+                                <td>2024-01</td>
+                            </tr>
+                            <tr>
+                                <td><code>structure</code></td>
+                                <td>Structure name</td>
+                                <td>PTV</td>
+                            </tr>
+                            <tr>
+                                <td><code>volume_cc</code></td>
+                                <td>Structure volume in cubic centimeters</td>
+                                <td>125.4</td>
+                            </tr>
+                            <tr>
+                                <td><code>Dmean_Gy</code></td>
+                                <td>Mean dose in Gray</td>
+                                <td>45.2</td>
+                            </tr>
+                            <tr>
+                                <td><code>Dmax_Gy</code></td>
+                                <td>Maximum point dose</td>
+                                <td>52.8</td>
+                            </tr>
+                            <tr>
+                                <td><code>Dmin_Gy</code></td>
+                                <td>Minimum dose</td>
+                                <td>38.1</td>
+                            </tr>
+                            <tr>
+                                <td><code>D2%_Gy</code></td>
+                                <td>Dose covering 2% volume (near-max)</td>
+                                <td>51.2</td>
+                            </tr>
+                            <tr>
+                                <td><code>D50%_Gy</code></td>
+                                <td>Median dose</td>
+                                <td>46.0</td>
+                            </tr>
+                            <tr>
+                                <td><code>D95%_Gy</code></td>
+                                <td>Dose covering 95% volume</td>
+                                <td>42.5</td>
+                            </tr>
+                            <tr>
+                                <td><code>D98%_Gy</code></td>
+                                <td>Dose covering 98% volume (near-min)</td>
+                                <td>40.1</td>
+                            </tr>
+                            <tr>
+                                <td><code>V5Gy_%</code></td>
+                                <td>Volume receiving >= 5 Gy (%)</td>
+                                <td>100.0</td>
+                            </tr>
+                            <tr>
+                                <td><code>V20Gy_%</code></td>
+                                <td>Volume receiving >= 20 Gy (%)</td>
+                                <td>98.5</td>
+                            </tr>
+                            <tr>
+                                <td><code>V45Gy_%</code></td>
+                                <td>Volume receiving >= 45 Gy (%)</td>
+                                <td>72.3</td>
+                            </tr>
+                            <tr>
+                                <td><code>CI</code></td>
+                                <td>Conformity Index (targets only)</td>
+                                <td>1.15</td>
+                            </tr>
+                            <tr>
+                                <td><code>HI</code></td>
+                                <td>Homogeneity Index (targets only)</td>
+                                <td>0.08</td>
+                            </tr>
+                        </tbody>
+                    </table>
+
+                    <div class="info-box">
+                        <h4>Note on Vx Metrics</h4>
+                        <p>Volume-at-dose metrics (Vx) are calculated for standard dose levels: V5Gy through V70Gy in 5Gy increments,
+                        plus relative volumes (V95%, V100%, V105%, V107%, V110%) for target structures when prescription dose is known.</p>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Radiomics Output -->
+            <section class="feature-detail" id="radiomics-output">
+                <div class="feature-detail-header">
+                    <div class="feature-detail-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <circle cx="12" cy="12" r="3"/>
+                            <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2"/>
+                        </svg>
+                    </div>
+                    <h2>Radiomics Output Format</h2>
+                </div>
+                <div class="feature-detail-content">
+                    <p class="feature-intro">
+                        Radiomics features are exported with standardized IBSI-compliant naming. Each row represents one structure,
+                        with features organized by category prefix.
+                    </p>
+
+                    <h3>Feature Naming Convention</h3>
+                    <div class="code-block">
+                        <pre><code>{filter}_{featureClass}_{featureName}
+
+Examples:
+original_shape_VoxelVolume
+original_firstorder_Mean
+original_glcm_Contrast
+wavelet-LLH_glrlm_LongRunEmphasis
+log-sigma-3-0-mm-3D_ngtdm_Complexity</code></pre>
+                    </div>
+
+                    <h3>Column Structure</h3>
+                    <table class="output-table">
+                        <thead>
+                            <tr>
+                                <th>Column Prefix</th>
+                                <th>Description</th>
+                                <th>Count</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><code>patient_id</code></td>
+                                <td>Patient identifier</td>
+                                <td>1</td>
+                            </tr>
+                            <tr>
+                                <td><code>course</code></td>
+                                <td>Treatment course</td>
+                                <td>1</td>
+                            </tr>
+                            <tr>
+                                <td><code>structure</code></td>
+                                <td>Structure name</td>
+                                <td>1</td>
+                            </tr>
+                            <tr>
+                                <td><code>original_shape_*</code></td>
+                                <td>Shape descriptors</td>
+                                <td>14</td>
+                            </tr>
+                            <tr>
+                                <td><code>original_firstorder_*</code></td>
+                                <td>First-order statistics</td>
+                                <td>18</td>
+                            </tr>
+                            <tr>
+                                <td><code>original_glcm_*</code></td>
+                                <td>Gray Level Co-occurrence Matrix</td>
+                                <td>24</td>
+                            </tr>
+                            <tr>
+                                <td><code>original_glrlm_*</code></td>
+                                <td>Gray Level Run Length Matrix</td>
+                                <td>16</td>
+                            </tr>
+                            <tr>
+                                <td><code>original_glszm_*</code></td>
+                                <td>Gray Level Size Zone Matrix</td>
+                                <td>16</td>
+                            </tr>
+                            <tr>
+                                <td><code>original_gldm_*</code></td>
+                                <td>Gray Level Dependence Matrix</td>
+                                <td>14</td>
+                            </tr>
+                            <tr>
+                                <td><code>original_ngtdm_*</code></td>
+                                <td>Neighbourhood Gray Tone Difference</td>
+                                <td>5</td>
+                            </tr>
+                            <tr>
+                                <td><code>wavelet-*</code></td>
+                                <td>Wavelet-filtered features (8 decompositions)</td>
+                                <td>~744</td>
+                            </tr>
+                            <tr>
+                                <td><code>log-sigma-*</code></td>
+                                <td>Laplacian of Gaussian filtered</td>
+                                <td>~465</td>
+                            </tr>
+                        </tbody>
+                    </table>
+
+                    <h3>Robustness Output</h3>
+                    <p>The radiomics robustness file contains additional columns for stability analysis:</p>
+                    <table class="output-table">
+                        <thead>
+                            <tr>
+                                <th>Column</th>
+                                <th>Description</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><code>ICC</code></td>
+                                <td>Intraclass Correlation Coefficient (0-1)</td>
+                            </tr>
+                            <tr>
+                                <td><code>CoV</code></td>
+                                <td>Coefficient of Variation across perturbations</td>
+                            </tr>
+                            <tr>
+                                <td><code>robustness_tier</code></td>
+                                <td>Classification: Tier1 (ICC>0.90), Tier2 (ICC>0.75), Tier3</td>
+                            </tr>
+                            <tr>
+                                <td><code>perturbation_values</code></td>
+                                <td>Feature values at each perturbation level</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+            <!-- Metadata Files -->
+            <section class="feature-detail" id="metadata">
+                <div class="feature-detail-header">
+                    <div class="feature-detail-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                            <polyline points="14 2 14 8 20 8"/>
+                            <line x1="16" y1="13" x2="8" y2="13"/>
+                            <line x1="16" y1="17" x2="8" y2="17"/>
+                        </svg>
+                    </div>
+                    <h2>Metadata Files</h2>
+                </div>
+                <div class="feature-detail-content">
+                    <p class="feature-intro">
+                        JSON metadata files provide detailed information about processing parameters, DICOM sources, and data provenance.
+                    </p>
+
+                    <h3>Course Metadata (course_metadata.json)</h3>
+                    <div class="code-block">
+                        <pre><code>{
+  "patient_id": "PAT001",
+  "course_date": "2024-01",
+  "processed_at": "2024-01-15T10:30:00Z",
+  "dicom_sources": {
+    "ct": {
+      "series_uid": "1.2.3.4...",
+      "study_date": "2024-01-05",
+      "modality": "CT",
+      "manufacturer": "SIEMENS",
+      "slice_thickness": 2.5,
+      "pixel_spacing": [0.98, 0.98]
+    },
+    "rtdose": {
+      "series_uid": "1.2.3.5...",
+      "dose_summation_type": "PLAN",
+      "dose_units": "GY"
+    },
+    "rtstruct": {
+      "series_uid": "1.2.3.6...",
+      "structure_count": 25,
+      "referenced_ct": "1.2.3.4..."
+    }
+  },
+  "structures_extracted": ["GTV", "PTV", "Bladder", ...],
+  "structures_auto": ["liver", "kidney_left", ...],
+  "structures_merged": ["GTV", "PTV", "Pelvic_Bones", ...],
+  "processing_config": {
+    "segmentation_device": "gpu",
+    "ct_cropping_region": "pelvis",
+    "radiomics_params": "radiomics_params.yaml"
+  }
+}</code></pre>
+                    </div>
+
+                    <h3>Cohort Metadata (cohort_metadata.json)</h3>
+                    <div class="code-block">
+                        <pre><code>{
+  "pipeline_version": "1.0.0",
+  "processed_at": "2024-01-15T12:00:00Z",
+  "total_patients": 50,
+  "total_courses": 52,
+  "config_hash": "abc123...",
+  "patients": [
+    {
+      "patient_id": "PAT001",
+      "courses": ["2024-01"],
+      "status": "completed"
+    },
+    ...
+  ],
+  "processing_summary": {
+    "dvh_completed": 52,
+    "radiomics_ct_completed": 52,
+    "radiomics_mr_completed": 15,
+    "failures": 0
+  }
+}</code></pre>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Working with Output -->
+            <section class="feature-detail" id="usage">
+                <div class="feature-detail-header">
+                    <div class="feature-detail-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <polyline points="16 18 22 12 16 6"/>
+                            <polyline points="8 6 2 12 8 18"/>
+                        </svg>
+                    </div>
+                    <h2>Working with Output Files</h2>
+                </div>
+                <div class="feature-detail-content">
+                    <h3>Python Example</h3>
+                    <div class="code-block">
+                        <pre><code>import pandas as pd
+
+# Load cohort DVH data
+dvh = pd.read_excel("Output/cohort_dvh.xlsx")
+
+# Filter for specific structure
+ptv_dvh = dvh[dvh['structure'] == 'PTV']
+
+# Calculate statistics
+print(f"Mean D95%: {ptv_dvh['D95%_Gy'].mean():.2f} Gy")
+print(f"Mean V95%: {ptv_dvh['V95%_%'].mean():.2f}%")
+
+# Load radiomics with structure filtering
+radiomics = pd.read_excel("Output/cohort_radiomics_ct.xlsx")
+gtv_radiomics = radiomics[radiomics['structure'].str.contains('GTV')]
+
+# Select robust features only
+robustness = pd.read_excel("Output/cohort_radiomics_robustness.xlsx")
+robust_features = robustness[robustness['robustness_tier'] == 'Tier1']['feature'].tolist()</code></pre>
+                    </div>
+
+                    <h3>R Example</h3>
+                    <div class="code-block">
+                        <pre><code>library(readxl)
+library(dplyr)
+
+# Load DVH data
+dvh <- read_excel("Output/cohort_dvh.xlsx")
+
+# Summary statistics for organs at risk
+dvh %>%
+  filter(structure %in% c("Bladder", "Rectum", "Femur_L", "Femur_R")) %>%
+  group_by(structure) %>%
+  summarise(
+    mean_dmean = mean(Dmean_Gy),
+    mean_v50 = mean(`V50Gy_%`),
+    n = n()
+  )
+
+# Load and merge with clinical data
+radiomics <- read_excel("Output/cohort_radiomics_ct.xlsx")
+clinical <- read_excel("clinical_data.xlsx")
+
+merged <- radiomics %>%
+  left_join(clinical, by = "patient_id")</code></pre>
+                    </div>
+
+                    <h3>Loading NIfTI Images</h3>
+                    <div class="code-block">
+                        <pre><code># Python with nibabel
+import nibabel as nib
+import numpy as np
+
+# Load CT and structure
+ct = nib.load("Output/PAT001/2024-01/ct.nii.gz")
+gtv = nib.load("Output/PAT001/2024-01/structures_merged/GTV.nii.gz")
+
+ct_data = ct.get_fdata()
+gtv_mask = gtv.get_fdata().astype(bool)
+
+# Calculate mean HU in GTV
+mean_hu = ct_data[gtv_mask].mean()
+print(f"Mean CT in GTV: {mean_hu:.1f} HU")</code></pre>
+                    </div>
+                </div>
+            </section>
+        </div>
+    </main>
+
+    <footer class="footer">
+        <div class="container">
+            <div class="footer-content">
+                <div class="footer-brand">
+                    <span class="logo-icon">RT</span>
+                    <span class="logo-text">pipeline</span>
+                </div>
+                <p>Open source radiotherapy DICOM processing pipeline.</p>
+                <div class="footer-links">
+                    <a href="https://github.com/kstawiski/rtpipeline" target="_blank">GitHub</a>
+                    <a href="https://github.com/kstawiski/rtpipeline/issues" target="_blank">Issues</a>
+                    <a href="https://github.com/kstawiski/rtpipeline/blob/master/LICENSE" target="_blank">License</a>
+                </div>
+            </div>
+            <div class="footer-bottom">
+                <p>&copy; 2025 RTpipeline. Released under MIT License.</p>
+            </div>
+        </div>
+    </footer>
+
+    <script src="assets/js/main.js"></script>
+</body>
+</html>

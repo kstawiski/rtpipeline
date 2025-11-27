@@ -18,10 +18,10 @@
                 <span class="logo-text">pipeline</span>
             </a>
             <ul class="nav-menu">
-                <li><a href="#features">Features</a></li>
-                <li><a href="#quickstart">Quick Start</a></li>
-                <li><a href="#installation">Installation</a></li>
-                <li><a href="#documentation">Documentation</a></li>
+                <li><a href="features.html">Features</a></li>
+                <li><a href="output-format.html">Output Format</a></li>
+                <li><a href="configuration.html">Configuration</a></li>
+                <li><a href="faq.html">FAQ</a></li>
                 <li><a href="https://github.com/kstawiski/rtpipeline" class="nav-github" target="_blank">
                     <svg height="20" viewBox="0 0 16 16" width="20" fill="currentColor">
                         <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"></path>
@@ -383,22 +383,83 @@ snakemake --cores all --use-conda</code></pre>
             <p class="section-subtitle">Learn more about RTpipeline capabilities</p>
 
             <div class="docs-grid">
-                <a href="https://github.com/kstawiski/rtpipeline/blob/master/README.md" class="doc-card" target="_blank">
-                    <h3>README</h3>
-                    <p>Complete project overview and usage instructions</p>
+                <a href="features.html" class="doc-card">
+                    <h3>Features</h3>
+                    <p>Detailed descriptions of AI segmentation, DVH, radiomics, and more</p>
                 </a>
-                <a href="https://github.com/kstawiski/rtpipeline/blob/master/output_format_quick_ref.md" class="doc-card" target="_blank">
+                <a href="output-format.html" class="doc-card">
                     <h3>Output Format</h3>
-                    <p>Guide to pipeline outputs and data analysis</p>
+                    <p>Guide to pipeline outputs, directory structure, and data analysis</p>
                 </a>
-                <a href="https://github.com/kstawiski/rtpipeline/blob/master/config.yaml.example" class="doc-card" target="_blank">
+                <a href="configuration.html" class="doc-card">
                     <h3>Configuration</h3>
-                    <p>All configuration options explained</p>
+                    <p>Complete reference for all YAML configuration options</p>
                 </a>
-                <a href="https://github.com/kstawiski/rtpipeline/issues" class="doc-card" target="_blank">
-                    <h3>Issues & Support</h3>
-                    <p>Report bugs or request features</p>
+                <a href="faq.html" class="doc-card">
+                    <h3>FAQ & Troubleshooting</h3>
+                    <p>Common questions and solutions for pipeline issues</p>
                 </a>
+            </div>
+        </div>
+    </section>
+
+    <section class="author">
+        <div class="container">
+            <h2 class="section-title">Author</h2>
+            <div class="author-card">
+                <div class="author-info">
+                    <h3>Konrad Stawiski, MD, PhD</h3>
+                    <p class="author-title">Radiation Oncologist & AI Researcher</p>
+                    <p class="author-bio">
+                        Radiation oncologist and researcher with a particular interest in data science,
+                        machine learning, bioinformatics, and radiomics. Currently Assistant Professor at
+                        Medical University of Lodz and Research Fellow at Dana-Farber Cancer Institute/Harvard Medical School.
+                        Clinical focus on urological and gastrointestinal cancers with emphasis on implementing
+                        artificial intelligence in oncology.
+                    </p>
+                    <div class="author-affiliations">
+                        <div class="affiliation">
+                            <strong>Medical University of Lodz</strong>
+                            <span>Department of Biostatistics and Translational Medicine</span>
+                        </div>
+                        <div class="affiliation">
+                            <strong>Dana-Farber Cancer Institute</strong>
+                            <span>Harvard Medical School / Broad Institute</span>
+                        </div>
+                        <div class="affiliation">
+                            <strong>Copernicus Memorial Hospital</strong>
+                            <span>Department of Brachytherapy and General Oncology</span>
+                        </div>
+                    </div>
+                    <div class="author-links">
+                        <a href="https://konsta.com.pl" class="author-link" target="_blank">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <circle cx="12" cy="12" r="10"/>
+                                <line x1="2" y1="12" x2="22" y2="12"/>
+                                <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+                            </svg>
+                            Website
+                        </a>
+                        <a href="https://github.com/kstawiski" class="author-link" target="_blank">
+                            <svg viewBox="0 0 16 16" fill="currentColor">
+                                <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/>
+                            </svg>
+                            GitHub
+                        </a>
+                        <a href="https://scholar.google.com/citations?user=kstawiski" class="author-link" target="_blank">
+                            <svg viewBox="0 0 24 24" fill="currentColor">
+                                <path d="M5.242 13.769L0 9.5 12 0l12 9.5-5.242 4.269C17.548 11.249 14.978 9.5 12 9.5c-2.977 0-5.548 1.748-6.758 4.269zM12 10a7 7 0 1 0 0 14 7 7 0 0 0 0-14z"/>
+                            </svg>
+                            Scholar
+                        </a>
+                        <a href="https://orcid.org/0000-0002-6550-3384" class="author-link" target="_blank">
+                            <svg viewBox="0 0 24 24" fill="currentColor">
+                                <path d="M12 0C5.372 0 0 5.372 0 12s5.372 12 12 12 12-5.372 12-12S18.628 0 12 0zM7.369 4.378c.525 0 .947.431.947.947s-.422.947-.947.947a.95.95 0 0 1-.947-.947c0-.525.422-.947.947-.947zm-.722 3.038h1.444v10.041H6.647V7.416zm3.562 0h3.9c3.712 0 5.344 2.653 5.344 5.025 0 2.578-2.016 5.025-5.325 5.025h-3.919V7.416zm1.444 1.303v7.444h2.297c3.272 0 4.022-2.484 4.022-3.722 0-2.016-1.284-3.722-4.097-3.722h-2.222z"/>
+                            </svg>
+                            ORCID
+                        </a>
+                    </div>
+                </div>
             </div>
         </div>
     </section>
