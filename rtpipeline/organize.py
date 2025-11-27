@@ -808,12 +808,38 @@ def _sum_doses_with_resample(
     return new_ds, [], source_dose_uids
 
 
+def _index_rt_files(root: Path) -> Dict[str, List[Path]]:
+    """Index all RT DICOM files by PatientID to avoid repeated scanning."""
+    index = defaultdict(list)
+    logger.info("Indexing RT files in %s...", root)
+    count = 0
+    for base, _, files in os.walk(root):
+        for fn in files:
+            if not (fn.startswith('RT') and fn.lower().endswith('.dcm')):
+                continue
+            path = Path(base) / fn
+            try:
+                # We read specific tags to be fast. 
+                # We need PatientID for grouping.
+                # We might read more details later, but for indexing this is enough.
+                ds = pydicom.dcmread(str(path), stop_before_pixels=True, specific_tags=["PatientID"])
+                pid = str(getattr(ds, "PatientID", "")).strip()
+                if pid:
+                    index[pid].append(path)
+                    count += 1
+            except Exception:
+                continue
+    logger.info("Indexed %d RT files for %d patients", count, len(index))
+    return index
+
+
 def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
     """End-to-end RT organization and course merging according to config."""
     config.ensure_dirs()
 
     # Index CTs, extract RT sets, link and group into courses
     ct_index = index_ct_series(config.dicom_root)
+    rt_file_index = _index_rt_files(config.dicom_root)
     plans, doses, structs = extract_rt(config.dicom_root)
     linked_sets = link_rt_sets(plans, doses, structs)
     courses = group_by_course(linked_sets, config.merge_criteria, config.max_days_between_plans)
@@ -1090,6 +1116,7 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
             max_workers=config.effective_workers(),
             logger=logger,
             show_progress=True,
+            task_timeout=config.task_timeout,
         )
         for co in results:
             if co:
@@ -1330,6 +1357,7 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
             max_workers=config.effective_workers(),
             logger=logger,
             show_progress=True,
+            task_timeout=config.task_timeout,
         )
         for res in results:
             if res:
@@ -1476,17 +1504,14 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
             fractions_count = 0
             fractions_details: list[dict[str, object]] = []
             try:
-                for base, _, files in os.walk(config.dicom_root):
-                    for fn in files:
-                        if not (fn.startswith('RT') and fn.lower().endswith('.dcm')):
-                            continue
-                        p = Path(base) / fn
-                        try:
-                            ds_rt = pydicom.dcmread(str(p), stop_before_pixels=True)
-                        except Exception:
-                            continue
-                        if getattr(ds_rt, 'PatientID', None) and str(ds_rt.PatientID) != str(co.patient_id):
-                            continue
+                candidate_rt_files = rt_file_index.get(str(co.patient_id), [])
+                for p in candidate_rt_files:
+                    try:
+                        ds_rt = pydicom.dcmread(str(p), stop_before_pixels=True)
+                    except Exception:
+                        continue
+                    if getattr(ds_rt, 'PatientID', None) and str(ds_rt.PatientID).strip() != str(co.patient_id):
+                        continue
                         ref_uid = None
                         try:
                             for ref in getattr(ds_rt, 'ReferencedRTPlanSequence', []) or []:

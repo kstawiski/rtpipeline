@@ -124,6 +124,7 @@ def _max_worker_args(count: int) -> list[str]:
 DVH_RULE_THREADS = _stage_thread_target("dvh_threads_per_job", 4)
 RAD_RULE_THREADS = _stage_thread_target("radiomics_threads_per_job", 6)
 QC_RULE_THREADS = _stage_thread_target("qc_threads_per_job", 2)
+CROP_CT_RULE_THREADS = _stage_thread_target("crop_ct_threads_per_job", 4)  # I/O bound, small default
 PRIORITIZE_SHORT_COURSES = bool(SCHEDULER_CONFIG.get("prioritize_short_courses", True))
 
 SEG_CONFIG = config.get("segmentation", {})
@@ -494,7 +495,10 @@ checkpoint organize_courses:
         cmd.extend(_max_worker_args(job_threads))
         if CUSTOM_STRUCTURES_CONFIG:
             cmd.extend(["--custom-structures", CUSTOM_STRUCTURES_CONFIG])
+        LOGS_DIR.mkdir(parents=True, exist_ok=True) # Ensure logs dir exists before writing to logfile
         with open(log[0], "w") as logf:
+            logf.write("DEBUG: Starting rtpipeline.cli organize stage...\n")
+            logf.flush()
             subprocess.run(cmd, check=True, stdout=logf, stderr=subprocess.STDOUT, env=env)
         courses = []
         for patient_id, course_id, course_path in _iter_course_dirs():
@@ -697,7 +701,7 @@ rule crop_ct_course:
     log:
         str(LOGS_DIR / "crop_ct" / "{patient}_{course}.log")
     threads:
-        SNAKEMAKE_THREADS
+        CROP_CT_RULE_THREADS
     resources:
         seg_workers=1
     conda:
