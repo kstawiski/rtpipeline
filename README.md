@@ -54,6 +54,23 @@ Drag and drop DICOM files (zipped or folders) and click **Start Processing**.
 
 ---
 
+### Option 3: Google Colab (No Local Setup Required)
+
+Run the pipeline entirely in the cloud using Google Colab with free GPU access:
+
+| Notebook | Description | Runtime |
+|----------|-------------|---------|
+| [**Part 1: GPU Segmentation**](rtpipeline_colab_part1_gpu.ipynb) | DICOM organization + TotalSegmentator | GPU (T4) |
+| [**Part 2: CPU Analysis**](rtpipeline_colab_part2_cpu.ipynb) | DVH, radiomics, QC, aggregation | CPU |
+
+**How to use:**
+1. Upload notebooks to Google Colab
+2. Upload your DICOM data to Google Drive
+3. Run Part 1 with GPU runtime for segmentation
+4. Run Part 2 (CPU is sufficient) for analysis
+
+---
+
 ## Feature Highlights
 
 * **Web UI** (NEW) – browser-based interface with drag-and-drop upload, automatic DICOM validation, real-time progress monitoring, and one-click results download. No command-line experience required!
@@ -86,9 +103,10 @@ Drag and drop DICOM files (zipped or folders) and click **Start Processing**.
 | **User Documentation** | |
 | `GETTING_STARTED.md` | Complete beginner's guide with step-by-step instructions. |
 | `WEBUI.md` | Web UI documentation with screenshots and usage guide. |
-| `output_format.md` | Comprehensive output format reference for AI agents and analysts. |
-| `output_format_quick_ref.md` | One-page quick reference cheat sheet. |
-| `rtpipeline_colab.ipynb` | Google Colab notebook for GPU-accelerated processing. |
+| `output_format_quick_ref.md` | Output format quick reference for data analysts. |
+| **Google Colab Notebooks** | |
+| `rtpipeline_colab_part1_gpu.ipynb` | Part 1: GPU segmentation (TotalSegmentator). |
+| `rtpipeline_colab_part2_cpu.ipynb` | Part 2: CPU analysis (DVH, radiomics, QC, aggregation). |
 | **Core Components** | |
 | `webui/` | Web UI application (Flask-based) for browser-based DICOM upload and processing. |
 | `rtpipeline/` | Python package powering organisation, segmentation, DVH, radiomics, and QC. |
@@ -98,7 +116,7 @@ Drag and drop DICOM files (zipped or folders) and click **Start Processing**.
 | `docs/` | Technical guides ([**see index**](docs/README.md)): architecture, parallelization, Docker, troubleshooting, custom models. |
 | **Utilities** | |
 | `scripts/` | Utility scripts (anonymization, validation, etc.). |
-| `build.sh`, `test.sh` | Build and test scripts for development. |
+| `build.sh` | Docker image build script. |
 | **Data Directories** | |
 | `Example_data/` | Sample DICOM dump used for testing. |
 | `Data_Snakemake/` | Default output root populated by the workflow (ignored by Git). |
@@ -435,9 +453,7 @@ The script rewrites patient/course identifiers, anonymises DICOM headers, update
 ### User Documentation (Root Directory)
 * **[GETTING_STARTED.md](GETTING_STARTED.md)** – Complete beginner's guide with step-by-step instructions
 * **[WEBUI.md](WEBUI.md)** – Web UI documentation with detailed usage guide
-* **[output_format.md](output_format.md)** – Comprehensive output format reference for data analysts and AI agents
-* **[output_format_quick_ref.md](output_format_quick_ref.md)** – One-page cheat sheet with common code snippets
-* **[rtpipeline_colab.ipynb](rtpipeline_colab.ipynb)** – Google Colab notebook for GPU-accelerated processing
+* **[output_format_quick_ref.md](output_format_quick_ref.md)** – Output format reference with common code snippets
 * **[setup_new_project.sh](setup_new_project.sh)** – Interactive setup wizard for native installations
 * **[setup_docker_project.sh](setup_docker_project.sh)** – **NEW:** Interactive Docker project setup wizard
 
@@ -450,18 +466,15 @@ The script rewrites patient/course identifiers, anonymises DICOM headers, update
 * **[docs/SECURITY.md](docs/SECURITY.md)** – **Security guide for production deployments**
 * **[docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)** – Debugging hangs, timeouts, and common issues
 * **[docs/custom_models.md](docs/custom_models.md)** – nnUNet configuration schema and examples
-* **[docs/pipeline_report.md](docs/pipeline_report.md)** – Pipeline capabilities and feature summary
 * **[docs/Guide to Results Interpretation.md](docs/Guide%20to%20Results%20Interpretation.md)** – Interpreting outputs
 * **[docs/SYSTEMATIC_CT_CROPPING.md](docs/SYSTEMATIC_CT_CROPPING.md)** – Systematic anatomical cropping guide
 * **[docs/qc_cropping_audit.md](docs/qc_cropping_audit.md)** – CT cropping quality control
-* **[docs/CODE_REVIEW.md](docs/CODE_REVIEW.md)** – Deep code review report and recommendations
 
 ### Quick Links by Task
 * 🚀 **New user?** → [GETTING_STARTED.md](GETTING_STARTED.md)
 * 🌐 **Using Web UI?** → [WEBUI.md](WEBUI.md)
 * 🐳 **Setting up Docker project?** → `./setup_docker_project.sh` or [Docker Setup Guide](docs/DOCKER_SETUP_GUIDE.md)
 * ⚙️ **Setting up native project?** → `./setup_new_project.sh`
-* ☁️ **Want GPU in cloud?** → [rtpipeline_colab.ipynb](rtpipeline_colab.ipynb)
 * 📊 **Analyzing results?** → [output_format_quick_ref.md](output_format_quick_ref.md)
 * 🔧 **Performance issues?** → [docs/PARALLELIZATION.md](docs/PARALLELIZATION.md)
 * 🐛 **Pipeline hanging?** → [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)
@@ -480,4 +493,4 @@ The perturbation workflow, statistical thresholds, and reporting templates imple
 
 ## License & Citation
 
-Please cite the relevant publications when using the pipeline in research (see references in `docs/pipeline_report.md`). TotalSegmentator, nnUNet, and other third-party tools retain their respective licenses.
+Please cite the relevant publications when using the pipeline in research. TotalSegmentator, nnUNet, and other third-party tools retain their respective licenses.
