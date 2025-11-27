@@ -1,0 +1,27 @@
+# Jekyll configuration for GitHub Pages
+title: RTpipeline
+description: Automated Radiotherapy DICOM Processing Pipeline
+url: https://kstawiski.github.io
+baseurl: /rtpipeline
+
+# Build settings
+markdown: kramdown
+highlighter: rouge
+
+# Exclude files from processing
+exclude:
+  - Gemfile
+  - Gemfile.lock
+  - node_modules
+  - vendor
+
+# Include files
+include:
+  - _pages
+
+# Default front matter
+defaults:
+  - scope:
+      path: ""
+    values:
+      layout: default
