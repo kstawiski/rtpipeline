@@ -1804,6 +1804,56 @@ section {
     height: 18px;
 }
 
+/* Alt Background for Sections */
+.alt-bg {
+    background: var(--gray-50);
+}
+
+/* Table Responsive Wrapper */
+.table-responsive {
+    overflow-x: auto;
+    margin: 16px 0;
+}
+
+/* TOC Card */
+.toc-card {
+    background: white;
+    border: 1px solid var(--gray-200);
+    border-radius: var(--radius-lg);
+    padding: 24px 32px;
+}
+
+.toc-card h3 {
+    font-size: 1.125rem;
+    font-weight: 600;
+    color: var(--gray-900);
+    margin: 0 0 16px;
+}
+
+/* Tags / Badges */
+.tag {
+    display: inline-block;
+    padding: 4px 10px;
+    border-radius: var(--radius);
+    font-size: 0.8125rem;
+    font-weight: 600;
+}
+
+.tag-success {
+    background: #d1fae5;
+    color: #065f46;
+}
+
+.tag-warning {
+    background: #fef3c7;
+    color: #92400e;
+}
+
+.tag-error {
+    background: #fee2e2;
+    color: #991b1b;
+}
+
 /* Responsive for documentation pages */
 @media (max-width: 768px) {
     .page-header {
