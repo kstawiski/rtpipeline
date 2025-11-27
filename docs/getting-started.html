@@ -1,0 +1,446 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Getting Started - RTpipeline</title>
+    <meta name="description" content="Quick start guide for RTpipeline - Radiotherapy DICOM Processing Pipeline">
+    <link rel="stylesheet" href="assets/css/style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+</head>
+<body>
+    <nav class="navbar">
+        <div class="nav-container">
+            <a href="index.html" class="nav-logo">
+                <span class="logo-icon">RT</span>
+                <span class="logo-text">pipeline</span>
+            </a>
+            <ul class="nav-menu">
+                <li><a href="getting-started.html" class="active">Getting Started</a></li>
+                <li><a href="features.html">Features</a></li>
+                <li><a href="configuration.html">Configuration</a></li>
+                <li><a href="docker.html">Docker</a></li>
+                <li><a href="faq.html">FAQ</a></li>
+                <li><a href="https://github.com/kstawiski/rtpipeline" class="nav-github" target="_blank">
+                    <svg height="20" viewBox="0 0 16 16" width="20" fill="currentColor">
+                        <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"></path>
+                    </svg>
+                    GitHub
+                </a></li>
+            </ul>
+            <button class="nav-toggle" aria-label="Toggle menu">
+                <span></span>
+                <span></span>
+                <span></span>
+            </button>
+        </div>
+    </nav>
+
+    <header class="page-header">
+        <h1>Getting Started</h1>
+        <p>Get up and running with RTpipeline in minutes</p>
+    </header>
+
+    <section class="content">
+        <div class="container">
+            <!-- Table of Contents -->
+            <div class="toc-section">
+                <h2>On This Page</h2>
+                <ul class="toc-list">
+                    <li><a href="#prerequisites">Prerequisites</a></li>
+                    <li><a href="#installation">Installation</a></li>
+                    <li><a href="#quickstart-webui">Quick Start: Web UI</a></li>
+                    <li><a href="#quickstart-cli">Quick Start: CLI</a></li>
+                    <li><a href="#results">Understanding Results</a></li>
+                    <li><a href="#use-cases">Common Use Cases</a></li>
+                    <li><a href="#troubleshooting">Troubleshooting</a></li>
+                </ul>
+            </div>
+
+            <!-- Prerequisites -->
+            <div class="feature-detail" id="prerequisites">
+                <div class="feature-detail-header">
+                    <div class="feature-detail-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2">
+                            <path d="M9 11l3 3L22 4"/>
+                            <path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/>
+                        </svg>
+                    </div>
+                    <h2>Prerequisites</h2>
+                </div>
+                <div class="feature-detail-content">
+                    <ul class="feature-list">
+                        <li><strong>Docker</strong> installed (version 19.03 or later)</li>
+                        <li><strong>Docker Compose</strong> installed</li>
+                        <li>For GPU acceleration: <strong>nvidia-docker</strong> or <strong>nvidia-container-toolkit</strong></li>
+                        <li>At least <strong>8 GB RAM</strong> available (16 GB+ recommended)</li>
+                        <li>At least <strong>20 GB free disk space</strong> (more for large datasets)</li>
+                    </ul>
+
+                    <h3>System Requirements</h3>
+                    <div class="metrics-grid">
+                        <div class="metrics-category">
+                            <h4>Minimum</h4>
+                            <ul>
+                                <li>4 CPU cores</li>
+                                <li>8 GB RAM</li>
+                                <li>20 GB disk space</li>
+                                <li>Docker 19.03+</li>
+                            </ul>
+                        </div>
+                        <div class="metrics-category">
+                            <h4>Recommended</h4>
+                            <ul>
+                                <li>8+ CPU cores</li>
+                                <li>16 GB RAM</li>
+                                <li>50+ GB disk space</li>
+                                <li>NVIDIA GPU with 8+ GB VRAM</li>
+                            </ul>
+                        </div>
+                        <div class="metrics-category">
+                            <h4>Large Datasets</h4>
+                            <ul>
+                                <li>16+ CPU cores</li>
+                                <li>32+ GB RAM</li>
+                                <li>100+ GB disk space</li>
+                                <li>NVIDIA GPU with 16+ GB VRAM</li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Installation -->
+            <div class="feature-detail" id="installation">
+                <div class="feature-detail-header">
+                    <div class="feature-detail-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2">
+                            <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
+                            <polyline points="7,10 12,15 17,10"/>
+                            <line x1="12" y1="15" x2="12" y2="3"/>
+                        </svg>
+                    </div>
+                    <h2>Installation</h2>
+                </div>
+                <div class="feature-detail-content">
+                    <h3>Option 1: Clone Repository</h3>
+                    <div class="code-block">
+                        <pre><code>git clone https://github.com/kstawiski/rtpipeline.git
+cd rtpipeline
+./build.sh</code></pre>
+                    </div>
+
+                    <h3>Option 2: Pull from Docker Hub</h3>
+                    <div class="code-block">
+                        <pre><code>docker pull kstawiski/rtpipeline:latest</code></pre>
+                    </div>
+
+                    <div class="info-box">
+                        <h4>Build Time</h4>
+                        <p>Building from source takes 10-30 minutes depending on your internet connection. Docker Hub pulls are faster.</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Quick Start: Web UI -->
+            <div class="feature-detail" id="quickstart-webui">
+                <div class="feature-detail-header">
+                    <div class="feature-detail-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2">
+                            <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+                            <line x1="3" y1="9" x2="21" y2="9"/>
+                            <line x1="9" y1="21" x2="9" y2="9"/>
+                        </svg>
+                    </div>
+                    <h2>Quick Start: Web UI (Recommended)</h2>
+                </div>
+                <div class="feature-detail-content">
+                    <div class="pipeline-steps">
+                        <div class="pipeline-step">
+                            <span class="step-badge">1</span>
+                            <div>
+                                <h4>Create Directories</h4>
+                                <p>Create folders for data and logs</p>
+                            </div>
+                        </div>
+                        <div class="pipeline-step">
+                            <span class="step-badge">2</span>
+                            <div>
+                                <h4>Start Container</h4>
+                                <p>Launch with docker-compose</p>
+                            </div>
+                        </div>
+                        <div class="pipeline-step">
+                            <span class="step-badge">3</span>
+                            <div>
+                                <h4>Upload DICOM</h4>
+                                <p>Drag and drop files</p>
+                            </div>
+                        </div>
+                        <div class="pipeline-step">
+                            <span class="step-badge">4</span>
+                            <div>
+                                <h4>Download Results</h4>
+                                <p>Get processed data</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <h3>Step 1: Create Project Directories</h3>
+                    <div class="code-block">
+                        <pre><code>mkdir -p Input Output Logs Uploads totalseg_weights</code></pre>
+                    </div>
+
+                    <h3>Step 2: Start the Container</h3>
+                    <p><strong>With GPU (recommended):</strong></p>
+                    <div class="code-block">
+                        <pre><code>docker-compose up -d</code></pre>
+                    </div>
+                    <p><strong>CPU-only:</strong></p>
+                    <div class="code-block">
+                        <pre><code>docker-compose --profile cpu-only up -d</code></pre>
+                    </div>
+
+                    <h3>Step 3: Access the Web UI</h3>
+                    <p>Open your browser and navigate to:</p>
+                    <div class="code-block">
+                        <pre><code>http://localhost:8080</code></pre>
+                    </div>
+
+                    <h3>Step 4: Upload Your DICOM Files</h3>
+                    <p>You can upload files in several ways:</p>
+                    <ul class="feature-list">
+                        <li>Drag and drop files or folders into the upload area</li>
+                        <li>Click "Browse Files" to select files manually</li>
+                        <li>Upload ZIP archives containing DICOM files</li>
+                        <li>Upload DICOMDIR files</li>
+                    </ul>
+
+                    <h4>Supported Formats</h4>
+                    <ul class="feature-list">
+                        <li>Individual .dcm files</li>
+                        <li>.zip archives</li>
+                        <li>.tar, .tar.gz, .tgz archives</li>
+                        <li>Entire directories with subdirectories</li>
+                        <li>DICOMDIR files</li>
+                    </ul>
+
+                    <h3>Step 5: Configure Processing</h3>
+                    <div class="metrics-grid">
+                        <div class="metrics-category">
+                            <h4>Fast Mode</h4>
+                            <p>Recommended for CPU-only systems</p>
+                        </div>
+                        <div class="metrics-category">
+                            <h4>Radiomics</h4>
+                            <p>Extract radiomic features (recommended)</p>
+                        </div>
+                        <div class="metrics-category">
+                            <h4>Custom Models</h4>
+                            <p>Only if you have custom nnUNet models</p>
+                        </div>
+                    </div>
+
+                    <h3>Step 6: Start Processing & Download Results</h3>
+                    <p>Click "Start Processing" and watch the progress bar. When complete, download the ZIP file with all results.</p>
+                </div>
+            </div>
+
+            <!-- Quick Start: CLI -->
+            <div class="feature-detail" id="quickstart-cli">
+                <div class="feature-detail-header">
+                    <div class="feature-detail-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2">
+                            <polyline points="4,17 10,11 4,5"/>
+                            <line x1="12" y1="19" x2="20" y2="19"/>
+                        </svg>
+                    </div>
+                    <h2>Quick Start: Command Line</h2>
+                </div>
+                <div class="feature-detail-content">
+                    <h3>1. Start the Container</h3>
+                    <div class="code-block">
+                        <pre><code>docker-compose up -d</code></pre>
+                    </div>
+
+                    <h3>2. Access the Container Shell</h3>
+                    <div class="code-block">
+                        <pre><code>docker exec -it rtpipeline bash</code></pre>
+                    </div>
+
+                    <h3>3. Place DICOM Files</h3>
+                    <div class="code-block">
+                        <pre><code><span class="comment"># On host: copy your DICOM files</span>
+cp -r /path/to/your/dicom/files ./Input/</code></pre>
+                    </div>
+
+                    <h3>4. Run the Pipeline</h3>
+                    <div class="code-block">
+                        <pre><code>snakemake --cores all --use-conda --configfile /app/config.container.yaml</code></pre>
+                    </div>
+
+                    <h3>5. View Results</h3>
+                    <p>Results will appear in the <code>Output/</code> directory on your host machine.</p>
+                </div>
+            </div>
+
+            <!-- Understanding Results -->
+            <div class="feature-detail" id="results">
+                <div class="feature-detail-header">
+                    <div class="feature-detail-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2">
+                            <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>
+                            <polyline points="14,2 14,8 20,8"/>
+                            <line x1="16" y1="13" x2="8" y2="13"/>
+                            <line x1="16" y1="17" x2="8" y2="17"/>
+                            <polyline points="10,9 9,9 8,9"/>
+                        </svg>
+                    </div>
+                    <h2>Understanding the Results</h2>
+                </div>
+                <div class="feature-detail-content">
+                    <h3>Key Output Files</h3>
+                    <table class="config-table">
+                        <thead>
+                            <tr>
+                                <th>File</th>
+                                <th>Description</th>
+                                <th>Use Cases</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>dvh_metrics.xlsx</td>
+                                <td>DVH metrics: V95%, V100%, D2cc, Dmean, etc.</td>
+                                <td>Treatment plan evaluation, toxicity analysis</td>
+                            </tr>
+                            <tr>
+                                <td>radiomics_ct.xlsx</td>
+                                <td>150+ radiomic features per ROI</td>
+                                <td>Radiomics research, outcome prediction</td>
+                            </tr>
+                            <tr>
+                                <td>case_metadata.xlsx</td>
+                                <td>Patient and treatment metadata</td>
+                                <td>Quality control, cohort description</td>
+                            </tr>
+                            <tr>
+                                <td>qc_reports.xlsx</td>
+                                <td>Quality control reports</td>
+                                <td>Data verification, issue tracking</td>
+                            </tr>
+                        </tbody>
+                    </table>
+
+                    <h3>Directory Structure</h3>
+                    <div class="code-block directory-tree">
+                        <pre><code>Output/
+├── _RESULTS/                     # Aggregated results (start here!)
+│   ├── dvh_metrics.xlsx
+│   ├── radiomics_ct.xlsx
+│   ├── radiomics_mr.xlsx
+│   ├── case_metadata.xlsx
+│   └── qc_reports.xlsx
+└── &lt;patient_id&gt;/
+    └── &lt;course_id&gt;/
+        ├── DICOM/                # Original DICOM files
+        ├── NIFTI/                # NIfTI images
+        ├── Segmentation_TotalSegmentator/
+        ├── dvh_metrics.xlsx      # Per-course DVH
+        ├── radiomics_ct.xlsx     # Per-course radiomics
+        └── qc_reports/           # Per-course QC</code></pre>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Common Use Cases -->
+            <div class="feature-detail" id="use-cases">
+                <div class="feature-detail-header">
+                    <div class="feature-detail-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2">
+                            <circle cx="12" cy="12" r="10"/>
+                            <polyline points="12,6 12,12 16,14"/>
+                        </svg>
+                    </div>
+                    <h2>Common Use Cases</h2>
+                </div>
+                <div class="feature-detail-content">
+                    <div class="use-cases">
+                        <div class="use-case">
+                            <h4>DVH Analysis</h4>
+                            <p>Upload CT + RTDOSE + RTSTRUCT, enable Fast mode, open dvh_metrics.xlsx for treatment plan evaluation.</p>
+                        </div>
+                        <div class="use-case">
+                            <h4>Radiomics Research</h4>
+                            <p>Upload CT files (RT data optional), enable Radiomics, get 150+ features per ROI ready for ML.</p>
+                        </div>
+                        <div class="use-case">
+                            <h4>Batch Processing</h4>
+                            <p>Create one ZIP with subdirectories per patient, upload, settings apply to all patients.</p>
+                        </div>
+                        <div class="use-case">
+                            <h4>Auto-Segmentation</h4>
+                            <p>Upload CT only, TotalSegmentator generates 100+ structures, import RS_auto.dcm into TPS.</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Troubleshooting -->
+            <div class="feature-detail" id="troubleshooting">
+                <div class="feature-detail-header">
+                    <div class="feature-detail-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2">
+                            <circle cx="12" cy="12" r="10"/>
+                            <line x1="12" y1="8" x2="12" y2="12"/>
+                            <line x1="12" y1="16" x2="12.01" y2="16"/>
+                        </svg>
+                    </div>
+                    <h2>Quick Troubleshooting</h2>
+                </div>
+                <div class="feature-detail-content">
+                    <div class="faq-item">
+                        <h3>Web UI Won't Load</h3>
+                        <p>Check container is running: <code>docker ps</code></p>
+                        <p>Check logs: <code>docker logs rtpipeline</code></p>
+                        <p>Restart: <code>docker-compose restart</code></p>
+                    </div>
+                    <div class="faq-item">
+                        <h3>Out of Memory</h3>
+                        <p>Increase Docker memory limit in Docker Settings. Use Fast Mode for segmentation. Process fewer patients at once.</p>
+                    </div>
+                    <div class="faq-item">
+                        <h3>No GPU Detected</h3>
+                        <p>Check nvidia-docker: <code>docker run --gpus all nvidia/cuda:11.0-base nvidia-smi</code></p>
+                    </div>
+
+                    <p style="margin-top: 24px;"><a href="faq.html" class="btn btn-outline">View Full FAQ & Troubleshooting</a></p>
+                </div>
+            </div>
+
+        </div>
+    </section>
+
+    <footer class="footer">
+        <div class="footer-content">
+            <div class="footer-brand">
+                <span class="logo-icon">RT</span>
+                <span class="logo-text">pipeline</span>
+            </div>
+            <p>Open-source radiotherapy DICOM processing pipeline.</p>
+            <div class="footer-links">
+                <a href="https://github.com/kstawiski/rtpipeline">GitHub</a>
+                <a href="https://github.com/kstawiski/rtpipeline/issues">Issues</a>
+                <a href="https://github.com/kstawiski/rtpipeline/blob/master/LICENSE">License</a>
+            </div>
+            <div class="footer-bottom">
+                <p>&copy; 2024-2025 RTpipeline Contributors</p>
+            </div>
+        </div>
+    </footer>
+
+    <script src="assets/js/main.js"></script>
+</body>
+</html>

@@ -1,0 +1,616 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Radiomics Robustness - RTpipeline Documentation</title>
+    <meta name="description" content="IBSI-compliant radiomics robustness testing with NTCV perturbation chain, ICC analysis, and feature stability assessment.">
+    <link rel="stylesheet" href="assets/css/style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+</head>
+<body>
+    <nav class="navbar">
+        <div class="nav-container">
+            <a href="index.html" class="nav-logo">
+                <span class="logo-icon">RT</span>
+                <span class="logo-text">pipeline</span>
+            </a>
+            <ul class="nav-menu">
+                <li><a href="getting-started.html">Getting Started</a></li>
+                <li><a href="features.html">Features</a></li>
+                <li><a href="configuration.html">Configuration</a></li>
+                <li><a href="docker.html">Docker</a></li>
+                <li><a href="faq.html">FAQ</a></li>
+                <li><a href="https://github.com/kstawiski/rtpipeline" class="nav-github" target="_blank">
+                    <svg height="20" viewBox="0 0 16 16" width="20" fill="currentColor">
+                        <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"></path>
+                    </svg>
+                    GitHub
+                </a></li>
+            </ul>
+            <button class="nav-toggle" aria-label="Toggle menu">
+                <span></span>
+                <span></span>
+                <span></span>
+            </button>
+        </div>
+    </nav>
+
+    <section class="page-header">
+        <div class="container">
+            <h1>Radiomics Robustness Module</h1>
+            <p>IBSI-compliant feature stability assessment with NTCV perturbation chain</p>
+        </div>
+    </section>
+
+    <section class="toc-section">
+        <div class="container">
+            <div class="toc-card">
+                <h3>On This Page</h3>
+                <ul class="toc-list">
+                    <li><a href="#overview">Overview</a></li>
+                    <li><a href="#science">Scientific Background</a></li>
+                    <li><a href="#quickstart">Quick Start</a></li>
+                    <li><a href="#ntcv">NTCV Perturbation Chain</a></li>
+                    <li><a href="#configuration">Configuration Reference</a></li>
+                    <li><a href="#output">Output Format</a></li>
+                    <li><a href="#best-practices">Best Practices</a></li>
+                </ul>
+            </div>
+        </div>
+    </section>
+
+    <section id="overview" class="feature-detail">
+        <div class="container">
+            <h2>Overview</h2>
+            <p>The radiomics robustness module helps identify stable, reproducible radiomics features for modeling following IBSI guidance and contemporary reproducibility research (2023-2025).</p>
+
+            <div class="info-box">
+                <h4>What This Module Does</h4>
+                <ol>
+                    <li><strong>Collects segmentations</strong> from multiple sources:
+                        <ul>
+                            <li>TotalSegmentator (RS_auto.dcm)</li>
+                            <li>Custom structures (RS_custom.dcm)</li>
+                            <li>Custom models (Segmentation_{model_name}/rtstruct.dcm)</li>
+                        </ul>
+                    </li>
+                    <li><strong>Generates systematic perturbations</strong> via the validated NTCV chain</li>
+                    <li><strong>Re-extracts radiomics features</strong> for each perturbation using PyRadiomics</li>
+                    <li><strong>Computes robustness metrics</strong>: ICC(3,1) with 95% bootstrap CIs, CoV, QCD</li>
+                    <li><strong>Classifies features</strong> as "robust", "acceptable", or "poor"</li>
+                </ol>
+            </div>
+        </div>
+    </section>
+
+    <section id="science" class="feature-detail alt-bg">
+        <div class="container">
+            <h2>Scientific Background</h2>
+            <p>This implementation follows recent literature on radiomics reproducibility (2023-2025):</p>
+
+            <div class="table-responsive">
+                <table class="config-table">
+                    <thead>
+                        <tr>
+                            <th>Research Finding</th>
+                            <th>Implementation</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td>Validated perturbation chains detect 98-99% of unstable features</td>
+                            <td>NTCV chain with &lt;2% false positives</td>
+                        </tr>
+                        <tr>
+                            <td>Volume adaptation provides clinically realistic contour perturbations</td>
+                            <td>Iterative +/-15% erosion/dilation</td>
+                        </tr>
+                        <tr>
+                            <td>ICC(3,1) with bootstrapped confidence intervals</td>
+                            <td>1,000-patient bootstrap CIs with Pingouin</td>
+                        </tr>
+                        <tr>
+                            <td>IBSI Chapter 2 provenance tracking</td>
+                            <td>Full perturbation disclosure in manifests</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <h3>Robustness Thresholds (Research-Based)</h3>
+
+            <h4>ICC (Intraclass Correlation Coefficient)</h4>
+            <div class="table-responsive">
+                <table class="config-table">
+                    <thead>
+                        <tr>
+                            <th>ICC Value</th>
+                            <th>Classification</th>
+                            <th>Use Case</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td>ICC >= 0.90</td>
+                            <td><span class="tag tag-success">Robust</span></td>
+                            <td>Conservative clinical applications</td>
+                        </tr>
+                        <tr>
+                            <td>0.75 <= ICC < 0.90</td>
+                            <td><span class="tag tag-warning">Acceptable</span></td>
+                            <td>Standard threshold</td>
+                        </tr>
+                        <tr>
+                            <td>ICC < 0.75</td>
+                            <td><span class="tag tag-error">Poor</span></td>
+                            <td>Not recommended</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <h4>CoV (Coefficient of Variation)</h4>
+            <div class="table-responsive">
+                <table class="config-table">
+                    <thead>
+                        <tr>
+                            <th>CoV Value</th>
+                            <th>Classification</th>
+                            <th>Use Case</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td>CoV <= 5%</td>
+                            <td><span class="tag tag-success">Robust</span></td>
+                            <td>Delta-radiomics, adaptive RT</td>
+                        </tr>
+                        <tr>
+                            <td>5% < CoV <= 10%</td>
+                            <td><span class="tag tag-success">Robust</span></td>
+                            <td>Retrospective modelling</td>
+                        </tr>
+                        <tr>
+                            <td>10% < CoV <= 20%</td>
+                            <td><span class="tag tag-warning">Acceptable</span></td>
+                            <td>Exploratory stability</td>
+                        </tr>
+                        <tr>
+                            <td>CoV > 20%</td>
+                            <td><span class="tag tag-error">Poor</span></td>
+                            <td>Not recommended</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <p>A feature is classified as "robust" if it meets <strong>both</strong> ICC and CoV robust thresholds.</p>
+        </div>
+    </section>
+
+    <section id="quickstart" class="feature-detail">
+        <div class="container">
+            <h2>Quick Start</h2>
+
+            <h3>1. Enable in config.yaml</h3>
+            <p>Basic configuration (volume-only perturbations):</p>
+            <div class="code-block">
+                <pre><code>radiomics_robustness:
+  enabled: true
+  modes:
+    - segmentation_perturbation
+
+  segmentation_perturbation:
+    apply_to_structures:
+      - "GTV*"
+      - "CTV*"
+      - "BLADDER"
+      - "RECTUM"
+    small_volume_changes: [-0.15, 0.0, 0.15]  # +/-15% volume change
+    intensity: "standard"  # Options: mild, standard, aggressive</code></pre>
+            </div>
+
+            <h3>2. Install dependencies</h3>
+            <div class="code-block">
+                <pre><code>pip install pingouin  # Required for ICC computation
+# or install with radiomics extras:
+pip install -e ".[radiomics]"</code></pre>
+            </div>
+
+            <h3>3. Run with Snakemake</h3>
+            <div class="code-block">
+                <pre><code>snakemake -c 8</code></pre>
+            </div>
+
+            <h3>4. Use robust features for modeling</h3>
+            <div class="code-block">
+                <pre><code>import pandas as pd
+
+# Load results
+summary = pd.read_excel("Data_Snakemake/_RESULTS/radiomics_robustness_summary.xlsx",
+                        sheet_name="robust_features")
+
+# Filter radiomics data to robust features only
+robust_feature_names = summary["feature_name"].tolist()
+radiomics = pd.read_excel("Data_Snakemake/_RESULTS/radiomics_ct.xlsx")
+radiomics_robust = radiomics[radiomics.columns.intersection(robust_feature_names)]
+
+# Use radiomics_robust for modeling</code></pre>
+            </div>
+        </div>
+    </section>
+
+    <section id="ntcv" class="feature-detail alt-bg">
+        <div class="container">
+            <h2>NTCV Perturbation Chain</h2>
+            <p>The NTCV chain generates systematic combinations of perturbations validated by Zwanenburg 2019:</p>
+
+            <div class="features-grid" style="grid-template-columns: repeat(2, 1fr);">
+                <div class="feature-card">
+                    <div class="feature-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <circle cx="12" cy="12" r="10"/>
+                            <path d="M8 12h8"/>
+                        </svg>
+                    </div>
+                    <h3>N - Noise</h3>
+                    <p>Adds Gaussian noise to the CT image simulating scanner variability and acquisition differences.</p>
+                    <code>noise_levels: [0, 10, 20] HU</code>
+                </div>
+
+                <div class="feature-card">
+                    <div class="feature-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M5 12h14M12 5l7 7-7 7"/>
+                        </svg>
+                    </div>
+                    <h3>T - Translation</h3>
+                    <p>Applies rigid geometric shifts simulating positioning uncertainty and registration errors.</p>
+                    <code>max_translation_mm: 3.0</code>
+                </div>
+
+                <div class="feature-card">
+                    <div class="feature-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M12 2v20M2 12h20"/>
+                            <circle cx="12" cy="12" r="8"/>
+                        </svg>
+                    </div>
+                    <h3>C - Contour</h3>
+                    <p>Randomizes ROI boundaries simulating inter-observer delineation variability.</p>
+                    <code>n_random_contour_realizations: 3</code>
+                </div>
+
+                <div class="feature-card">
+                    <div class="feature-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <rect x="4" y="4" width="16" height="16" rx="2"/>
+                            <rect x="8" y="8" width="8" height="8" rx="1"/>
+                        </svg>
+                    </div>
+                    <h3>V - Volume</h3>
+                    <p>Systematic erosion/dilation testing feature stability across ROI size variations.</p>
+                    <code>small_volume_changes: [+/-15%]</code>
+                </div>
+            </div>
+
+            <h3>Perturbation Intensity Levels</h3>
+            <div class="table-responsive">
+                <table class="config-table">
+                    <thead>
+                        <tr>
+                            <th>Intensity</th>
+                            <th>Perturbations</th>
+                            <th>Use Case</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code>mild</code></td>
+                            <td>~10-15</td>
+                            <td>QA spot checks, contouring pilot studies</td>
+                        </tr>
+                        <tr>
+                            <td><code>standard</code></td>
+                            <td>15-30</td>
+                            <td>Recommended for most pelvic CT applications</td>
+                        </tr>
+                        <tr>
+                            <td><code>aggressive</code></td>
+                            <td>30-60</td>
+                            <td>Research-grade, adaptive RT, multi-centre validation</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <h3>Recommended Clinical RT Configuration</h3>
+            <div class="code-block">
+                <pre><code>segmentation_perturbation:
+  small_volume_changes: [-0.15, -0.10, -0.05, 0.0, 0.05, 0.10, 0.15]
+  max_translation_mm: 3.0
+  n_random_contour_realizations: 2
+  noise_levels: [0.0, 10.0]
+  intensity: "standard"
+
+# This generates ~25-30 perturbations per ROI</code></pre>
+            </div>
+        </div>
+    </section>
+
+    <section id="configuration" class="feature-detail">
+        <div class="container">
+            <h2>Configuration Reference</h2>
+
+            <h3>Full config.yaml Example</h3>
+            <div class="code-block">
+                <pre><code>radiomics_robustness:
+  enabled: true
+
+  modes:
+    - segmentation_perturbation  # Currently supported
+
+  segmentation_perturbation:
+    # Structures to analyze (wildcards supported)
+    apply_to_structures:
+      - "GTV*"      # Matches GTV, GTV_primary, GTV_node, etc.
+      - "CTV*"
+      - "PTV*"
+      - "BLADDER"
+      - "RECTUM"
+      - "PROSTATE"
+
+    # V: Volume changes
+    small_volume_changes: [-0.15, 0.0, 0.15]   # +/-15% (standard)
+    large_volume_changes: [-0.30, 0.0, 0.30]   # +/-30% for stress testing
+
+    # T: Translation perturbations (mm)
+    max_translation_mm: 3.0  # Set to 0.0 to disable
+
+    # C: Contour randomization
+    n_random_contour_realizations: 3  # Set to 0 to disable
+
+    # N: Noise injection (HU)
+    noise_levels: [0.0, 10.0, 20.0]  # Standard deviations
+
+    # Perturbation intensity
+    intensity: "standard"
+
+  metrics:
+    icc:
+      implementation: "pingouin"
+      icc_type: "ICC3"     # ICC(3,1): two-way mixed, consistency
+      ci: true             # 95% confidence intervals
+    cov:
+      enabled: true
+    qcd:
+      enabled: true
+
+  thresholds:
+    icc:
+      robust: 0.90         # Conservative clinical threshold
+      acceptable: 0.75     # Standard threshold
+    cov:
+      robust_pct: 10.0     # CoV <= 10%: "robust"
+      acceptable_pct: 20.0 # CoV <= 20%: "acceptable"</code></pre>
+            </div>
+
+            <h3>CLI Commands</h3>
+
+            <h4>Per-course analysis</h4>
+            <div class="code-block">
+                <pre><code>rtpipeline radiomics-robustness \
+  --course-dir Data_Snakemake/Patient001/Course001 \
+  --config config.yaml \
+  --output radiomics_robustness_ct.parquet</code></pre>
+            </div>
+
+            <h4>Aggregate results</h4>
+            <div class="code-block">
+                <pre><code>rtpipeline radiomics-robustness-aggregate \
+  --inputs Data_Snakemake/*/*/radiomics_robustness_ct.parquet \
+  --output radiomics_robustness_summary.xlsx \
+  --config config.yaml</code></pre>
+            </div>
+        </div>
+    </section>
+
+    <section id="output" class="feature-detail alt-bg">
+        <div class="container">
+            <h2>Output Format</h2>
+
+            <h3>Per-Course Parquet File</h3>
+            <p>Location: <code>{patient}/{course}/radiomics_robustness_ct.parquet</code></p>
+
+            <div class="table-responsive">
+                <table class="config-table">
+                    <thead>
+                        <tr>
+                            <th>Column</th>
+                            <th>Description</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code>structure</code></td>
+                            <td>ROI name (e.g., "BLADDER", "GTV_primary")</td>
+                        </tr>
+                        <tr>
+                            <td><code>segmentation_source</code></td>
+                            <td>Source (e.g., "AutoRTS_total", "CustomModel:cardiac")</td>
+                        </tr>
+                        <tr>
+                            <td><code>feature_name</code></td>
+                            <td>PyRadiomics feature name</td>
+                        </tr>
+                        <tr>
+                            <td><code>n_perturbations</code></td>
+                            <td>Number of perturbations tested</td>
+                        </tr>
+                        <tr>
+                            <td><code>icc</code></td>
+                            <td>ICC point estimate</td>
+                        </tr>
+                        <tr>
+                            <td><code>icc_ci95_low</code>, <code>icc_ci95_high</code></td>
+                            <td>95% confidence interval</td>
+                        </tr>
+                        <tr>
+                            <td><code>cov_pct</code></td>
+                            <td>Coefficient of Variation (%)</td>
+                        </tr>
+                        <tr>
+                            <td><code>qcd</code></td>
+                            <td>Quartile Coefficient of Dispersion</td>
+                        </tr>
+                        <tr>
+                            <td><code>robustness_label</code></td>
+                            <td>"robust", "acceptable", or "poor"</td>
+                        </tr>
+                        <tr>
+                            <td><code>pass_seg_perturb</code></td>
+                            <td>Boolean (True if robust or acceptable)</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <h3>Aggregated Excel File</h3>
+            <p>Location: <code>_RESULTS/radiomics_robustness_summary.xlsx</code></p>
+
+            <div class="info-box">
+                <h4>Excel Sheets</h4>
+                <ul>
+                    <li><strong>global_summary</strong>: Features averaged across all structures/courses</li>
+                    <li><strong>robust_features</strong>: Only ICC >= 0.90 and CoV <= 10%</li>
+                    <li><strong>acceptable_features</strong>: ICC >= 0.75 and CoV <= 20%</li>
+                    <li><strong>per_source_summary</strong>: Metrics grouped by segmentation source</li>
+                    <li><strong>per_structure_source</strong>: Detailed per-structure breakdown</li>
+                    <li><strong>raw_values</strong>: All perturbation-level feature values</li>
+                    <li><strong>robust_features_per_source</strong>: Robust features by segmentation source</li>
+                </ul>
+            </div>
+        </div>
+    </section>
+
+    <section id="best-practices" class="feature-detail">
+        <div class="container">
+            <h2>Best Practices</h2>
+
+            <h3>Feature Selection Strategy (Based on 2023-2025 Research)</h3>
+            <ol>
+                <li><strong>Primary recommendation</strong>: Use only "robust" features (ICC >= 0.90, CoV <= 10%) for predictive models
+                    <ul>
+                        <li>Modern clinical applications increasingly demand ICC >0.90</li>
+                        <li>60-80% of features typically meet this threshold with proper testing</li>
+                    </ul>
+                </li>
+                <li><strong>Multi-center studies</strong>: Consider "acceptable" features (ICC >= 0.75, CoV <= 20%) if data scarcity requires it</li>
+                <li><strong>Cost-effective alternative</strong>: Perturbation-based stability analysis provides validated alternative to expensive test-retest imaging</li>
+            </ol>
+
+            <h3>Typical Feature Families by Robustness</h3>
+            <div class="table-responsive">
+                <table class="config-table">
+                    <thead>
+                        <tr>
+                            <th>Robustness</th>
+                            <th>Feature Types</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><span class="tag tag-success">Generally Robust</span></td>
+                            <td>Shape features (Volume, SurfaceArea, Sphericity), First-order statistics (Mean, Median, Energy), Some GLDM features</td>
+                        </tr>
+                        <tr>
+                            <td><span class="tag tag-warning">Moderately Robust</span></td>
+                            <td>GLCM features (with appropriate normalization), GLRLM features</td>
+                        </tr>
+                        <tr>
+                            <td><span class="tag tag-error">Often Fragile</span></td>
+                            <td>High-order texture features without careful preprocessing, Features from very small ROIs, Features sensitive to discretization</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <h3>Structure and Modality Considerations</h3>
+            <ul>
+                <li><strong>Structure selection</strong>: Focus on clinically relevant structures (GTV, CTV, organs at risk)</li>
+                <li><strong>Volume thresholds</strong>: Features from very small ROIs are often unstable regardless of type</li>
+                <li><strong>Multi-source analysis</strong>: Compare robustness across segmentation sources</li>
+                <li><strong>CT-specific</strong>: Current implementation optimized for CT-based radiomics</li>
+            </ul>
+
+            <h3>Troubleshooting</h3>
+            <div class="info-box">
+                <h4>Common Issues</h4>
+                <ul>
+                    <li><strong>"Radiomics robustness is disabled"</strong>: Enable it in config.yaml: <code>radiomics_robustness.enabled: true</code></li>
+                    <li><strong>"Pingouin not available"</strong>: Install: <code>pip install pingouin>=0.5.3</code></li>
+                    <li><strong>"No structures matched robustness patterns"</strong>: Check <code>apply_to_structures</code> patterns match your structure names</li>
+                    <li><strong>"Insufficient perturbations for X"</strong>: Small structures may fail erosion/dilation - they're skipped automatically</li>
+                </ul>
+            </div>
+        </div>
+    </section>
+
+    <section class="feature-detail alt-bg">
+        <div class="container">
+            <h2>References</h2>
+            <ol>
+                <li>Zwanenburg A, et al. (2019). "Assessing robustness of radiomic features by image perturbation." <em>Scientific Reports</em> 9:3418.</li>
+                <li>Lo Iacono F, et al. (2024). "A Novel Data Augmentation Method for Radiomics Analysis Using Image Perturbations." <em>J Imaging Informatics in Medicine</em>.</li>
+                <li>Poirot MG, et al. (2022). "Robustness of radiomics to variations in segmentation methods." <em>Scientific Reports</em> 12:16712.</li>
+                <li>Hosseini SA, et al. (2025). "Robust vs. Non-robust radiomic features." <em>Cancer Imaging</em> 25:6.</li>
+                <li>Zwanenburg A, et al. (2020). "The Image Biomarker Standardization Initiative (IBSI)." <em>Radiology</em> 295(2):328-338.</li>
+            </ol>
+        </div>
+    </section>
+
+    <footer class="footer">
+        <div class="container">
+            <div class="footer-content">
+                <div class="footer-section">
+                    <h4>RTpipeline</h4>
+                    <p>Open source radiotherapy DICOM processing pipeline for research.</p>
+                </div>
+                <div class="footer-section">
+                    <h4>Documentation</h4>
+                    <ul>
+                        <li><a href="getting-started.html">Getting Started</a></li>
+                        <li><a href="features.html">Features</a></li>
+                        <li><a href="configuration.html">Configuration</a></li>
+                        <li><a href="docker.html">Docker</a></li>
+                        <li><a href="architecture.html">Architecture</a></li>
+                    </ul>
+                </div>
+                <div class="footer-section">
+                    <h4>Resources</h4>
+                    <ul>
+                        <li><a href="faq.html">FAQ</a></li>
+                        <li><a href="output-format.html">Output Format</a></li>
+                        <li><a href="radiomics-robustness.html">Radiomics Robustness</a></li>
+                        <li><a href="custom-models.html">Custom Models</a></li>
+                    </ul>
+                </div>
+                <div class="footer-section">
+                    <h4>Author</h4>
+                    <p><a href="https://konsta.com.pl" target="_blank">Konrad Stawiski, MD</a></p>
+                    <p>Medical University of Lodz</p>
+                    <p><a href="https://github.com/kstawiski/rtpipeline" target="_blank">GitHub Repository</a></p>
+                </div>
+            </div>
+            <div class="footer-bottom">
+                <p>&copy; 2025 RTpipeline. MIT License.</p>
+            </div>
+        </div>
+    </footer>
+
+    <script src="assets/js/main.js"></script>
+</body>
+</html>

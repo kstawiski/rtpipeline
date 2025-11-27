@@ -1,0 +1,526 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Architecture - RTpipeline Documentation</title>
+    <meta name="description" content="RTpipeline architecture overview: parallelization, GPU acceleration, and resource management for radiotherapy data processing.">
+    <link rel="stylesheet" href="assets/css/style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+</head>
+<body>
+    <nav class="navbar">
+        <div class="nav-container">
+            <a href="index.html" class="nav-logo">
+                <span class="logo-icon">RT</span>
+                <span class="logo-text">pipeline</span>
+            </a>
+            <ul class="nav-menu">
+                <li><a href="getting-started.html">Getting Started</a></li>
+                <li><a href="features.html">Features</a></li>
+                <li><a href="configuration.html">Configuration</a></li>
+                <li><a href="docker.html">Docker</a></li>
+                <li><a href="faq.html">FAQ</a></li>
+                <li><a href="https://github.com/kstawiski/rtpipeline" class="nav-github" target="_blank">
+                    <svg height="20" viewBox="0 0 16 16" width="20" fill="currentColor">
+                        <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"></path>
+                    </svg>
+                    GitHub
+                </a></li>
+            </ul>
+            <button class="nav-toggle" aria-label="Toggle menu">
+                <span></span>
+                <span></span>
+                <span></span>
+            </button>
+        </div>
+    </nav>
+
+    <section class="page-header">
+        <div class="container">
+            <h1>Pipeline Architecture</h1>
+            <p>Understanding RTpipeline's parallelization, GPU acceleration, and resource management</p>
+        </div>
+    </section>
+
+    <section class="toc-section">
+        <div class="container">
+            <div class="toc-card">
+                <h3>On This Page</h3>
+                <ul class="toc-list">
+                    <li><a href="#overview">Architecture Overview</a></li>
+                    <li><a href="#parallelization">Parallelization Mechanisms</a></li>
+                    <li><a href="#gpu">GPU Utilization</a></li>
+                    <li><a href="#stages">Pipeline Stages</a></li>
+                    <li><a href="#resource">Resource Allocation</a></li>
+                    <li><a href="#docker-resources">Docker Resources</a></li>
+                    <li><a href="#monitoring">Monitoring & Logging</a></li>
+                </ul>
+            </div>
+        </div>
+    </section>
+
+    <section id="overview" class="feature-detail">
+        <div class="container">
+            <h2>Architecture Overview</h2>
+            <p>RTpipeline is a comprehensive radiotherapy data processing pipeline designed for high-performance computing environments.</p>
+
+            <div class="info-box">
+                <h4>Key Architecture Features</h4>
+                <ul>
+                    <li><strong>Multi-stage parallel execution</strong> using ThreadPoolExecutor for inter-course parallelization</li>
+                    <li><strong>Process-based parallelism</strong> for radiomics with segmentation fault protection</li>
+                    <li><strong>GPU acceleration</strong> for TotalSegmentator segmentation (CUDA/cuBLAS support)</li>
+                    <li><strong>Adaptive worker scaling</strong> with automatic fallback on memory pressure</li>
+                    <li><strong>Thread-limited processing</strong> to prevent OpenMP/threading conflicts</li>
+                </ul>
+            </div>
+
+            <h3>Core Implementation Files</h3>
+            <div class="table-responsive">
+                <table class="config-table">
+                    <thead>
+                        <tr>
+                            <th>File</th>
+                            <th>Purpose</th>
+                            <th>Lines</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code>cli.py</code></td>
+                            <td>Main CLI interface and orchestration</td>
+                            <td>~924</td>
+                        </tr>
+                        <tr>
+                            <td><code>config.py</code></td>
+                            <td>Configuration dataclass and defaults</td>
+                            <td>~89</td>
+                        </tr>
+                        <tr>
+                            <td><code>utils.py</code></td>
+                            <td>Adaptive worker pool implementation</td>
+                            <td>~466</td>
+                        </tr>
+                        <tr>
+                            <td><code>segmentation.py</code></td>
+                            <td>TotalSegmentator integration</td>
+                            <td>~836</td>
+                        </tr>
+                        <tr>
+                            <td><code>radiomics_parallel.py</code></td>
+                            <td>Process-based radiomics extraction</td>
+                            <td>~590</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </section>
+
+    <section id="parallelization" class="feature-detail alt-bg">
+        <div class="container">
+            <h2>Parallelization Mechanisms</h2>
+
+            <h3>ThreadPoolExecutor for Inter-Course Processing</h3>
+            <p>The pipeline uses Python's <code>ThreadPoolExecutor</code> for parallel processing of independent patient courses.</p>
+
+            <div class="code-block">
+                <pre><code># Adaptive worker execution with memory pressure detection
+run_tasks_with_adaptive_workers():
+  - Parallel execution of independent course processing tasks
+  - Uses concurrent.futures.ThreadPoolExecutor
+  - Intelligent memory pressure detection
+  - Automatic worker scaling: reduces workers when MemoryError detected
+  - Fallback strategy:
+    * Half workers on first memory error
+    * Single worker on continued errors
+    * Complete failure only after exhausting all options</code></pre>
+            </div>
+
+            <h4>Worker Scaling Logic</h4>
+            <div class="code-block">
+                <pre><code>Initial Workers = min(max_workers, len(tasks))
+
+If memory_error detected AND workers > min_workers:
+  new_workers = max(min_workers, workers // 2)
+  if new_workers == workers:
+    new_workers = workers - 1
+  Retry with reduced workers</code></pre>
+            </div>
+
+            <h3>Process-Based Radiomics Parallelization</h3>
+            <p>Radiomics extraction uses <code>multiprocessing.Pool</code> with 'spawn' context for safety.</p>
+
+            <div class="info-box">
+                <h4>Why Process-Based?</h4>
+                <ul>
+                    <li>Avoids segmentation faults from PyRadiomics/OpenMP interactions</li>
+                    <li>Process isolation prevents memory leaks</li>
+                    <li>Each process gets dedicated thread limit (<code>OMP_NUM_THREADS=1</code>)</li>
+                    <li>Retry mechanism: up to 3 attempts per task with exponential backoff</li>
+                </ul>
+            </div>
+
+            <h4>Security Feature: RestrictedUnpickler</h4>
+            <p>The radiomics parallelization uses a restricted unpickler for security:</p>
+            <ul>
+                <li>Whitelist approach: only allows safe types</li>
+                <li>Prevents arbitrary code execution from pickle files</li>
+                <li>Allowed types: numpy arrays, Path, dict, list, basic types</li>
+            </ul>
+        </div>
+    </section>
+
+    <section id="gpu" class="feature-detail">
+        <div class="container">
+            <h2>GPU Utilization</h2>
+
+            <h3>TotalSegmentator GPU Configuration</h3>
+            <p>The pipeline supports GPU, CPU, and MPS (Apple Silicon) devices for segmentation.</p>
+
+            <div class="code-block">
+                <pre><code># Device selection options
+totalseg_device: "gpu"  # choices: "gpu", "cpu", "mps"
+totalseg_force_split: true  # Force chunked inference for memory
+
+# Environment variables set automatically:
+TOTALSEG_DEVICE = device
+TOTALSEG_ACCELERATOR = "cuda" if device=="gpu" else device
+CUDA_VISIBLE_DEVICES = "all"  # Default
+TOTALSEG_PRELOAD_WEIGHTS = "1"  # Pre-load model into GPU</code></pre>
+            </div>
+
+            <h4>Memory Optimization</h4>
+            <ul>
+                <li><code>--force_split</code>: Chunks large volumes for GPU memory reduction</li>
+                <li>Automatic CPU fallback on GPU OOM errors</li>
+                <li>Thread constraints to prevent GPU overload</li>
+            </ul>
+
+            <h3>CUDA Diagnostics</h3>
+            <p>Run the doctor command to check your GPU setup:</p>
+            <div class="code-block">
+                <pre><code>rtpipeline doctor
+
+# Checks performed:
+- torch.cuda availability
+- CUDA device count
+- nvidia-smi GPU info
+- TotalSegmentator version</code></pre>
+            </div>
+        </div>
+    </section>
+
+    <section id="stages" class="feature-detail alt-bg">
+        <div class="container">
+            <h2>Pipeline Stages</h2>
+            <p>Each stage has specific parallelization characteristics:</p>
+
+            <div class="table-responsive">
+                <table class="config-table">
+                    <thead>
+                        <tr>
+                            <th>Stage</th>
+                            <th>Method</th>
+                            <th>Default Workers</th>
+                            <th>Notes</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><strong>Organize</strong></td>
+                            <td>Sequential</td>
+                            <td>1</td>
+                            <td>I/O bound, metadata parsing</td>
+                        </tr>
+                        <tr>
+                            <td><strong>Segmentation</strong></td>
+                            <td>ThreadPool</td>
+                            <td>1</td>
+                            <td>GPU memory constraint</td>
+                        </tr>
+                        <tr>
+                            <td><strong>Custom Models</strong></td>
+                            <td>ThreadPool</td>
+                            <td>1</td>
+                            <td>GPU intensive</td>
+                        </tr>
+                        <tr>
+                            <td><strong>DVH</strong></td>
+                            <td>ThreadPool</td>
+                            <td>CPU - 1</td>
+                            <td>One course per thread</td>
+                        </tr>
+                        <tr>
+                            <td><strong>Radiomics</strong></td>
+                            <td>ProcessPool</td>
+                            <td>CPU - 1</td>
+                            <td>Spawn context, per-ROI tasks</td>
+                        </tr>
+                        <tr>
+                            <td><strong>Visualize</strong></td>
+                            <td>ThreadPool</td>
+                            <td>CPU - 1</td>
+                            <td>HTML/image generation</td>
+                        </tr>
+                        <tr>
+                            <td><strong>QC</strong></td>
+                            <td>Sequential</td>
+                            <td>1</td>
+                            <td>Report generation</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </section>
+
+    <section id="resource" class="feature-detail">
+        <div class="container">
+            <h2>Resource Allocation</h2>
+
+            <h3>Configuration Hierarchy (Priority Order)</h3>
+            <ol>
+                <li><strong>Command-Line Arguments</strong> (highest priority)</li>
+                <li><strong>Config File</strong> (config.yaml)</li>
+                <li><strong>Environment Variables</strong></li>
+                <li><strong>Auto-calculated Defaults</strong> (lowest priority)</li>
+            </ol>
+
+            <h3>CLI Resource Options</h3>
+            <div class="code-block">
+                <pre><code>--max-workers N              # Overall parallelism
+--seg-workers N              # TotalSegmentator parallelism
+--seg-proc-threads N         # CPU threads per TotalSegmentator
+--radiomics-proc-threads N   # CPU threads per radiomics worker
+--custom-model-workers N     # Concurrent custom model courses</code></pre>
+            </div>
+
+            <h3>Config File Settings</h3>
+            <div class="code-block">
+                <pre><code>workers: auto                  # Default: CPU count - 1
+
+segmentation:
+  workers: 4                   # TotalSegmentator concurrency
+  threads_per_worker: null     # No per-worker limit
+  nr_threads_resample: 1       # nnUNet preprocessing threads
+  nr_threads_save: 1           # nnUNet export threads
+
+radiomics:
+  thread_limit: 4              # CPU threads per radiomics worker
+
+custom_models:
+  workers: 1                   # Concurrent custom model courses</code></pre>
+            </div>
+
+            <h3>Thread Limit Management</h3>
+            <p>The pipeline controls these environment variables:</p>
+            <div class="code-block">
+                <pre><code>OMP_NUM_THREADS            # OpenMP
+OPENBLAS_NUM_THREADS       # OpenBLAS
+MKL_NUM_THREADS            # Intel MKL
+NUMEXPR_NUM_THREADS        # NumExpr
+NUMBA_NUM_THREADS          # Numba</code></pre>
+            </div>
+
+            <h3>Environment Variables for Radiomics</h3>
+            <div class="code-block">
+                <pre><code>RTPIPELINE_USE_PARALLEL_RADIOMICS=1    # Enable parallel mode
+RTPIPELINE_MAX_WORKERS=N               # Override worker count
+RTPIPELINE_RADIOMICS_THREAD_LIMIT=N    # Thread limit per worker
+RTPIPELINE_RADIOMICS_SEQUENTIAL=1      # Force sequential mode</code></pre>
+            </div>
+        </div>
+    </section>
+
+    <section id="docker-resources" class="feature-detail alt-bg">
+        <div class="container">
+            <h2>Docker Container Resources</h2>
+
+            <h3>GPU-Enabled Configuration (Default)</h3>
+            <div class="code-block">
+                <pre><code>rtpipeline:
+  environment:
+    - NVIDIA_VISIBLE_DEVICES=all
+    - CUDA_VISIBLE_DEVICES=all
+  shm_size: '4gb'              # PyTorch shared memory
+  restart: unless-stopped</code></pre>
+            </div>
+
+            <h3>CPU-Only Configuration</h3>
+            <div class="code-block">
+                <pre><code>rtpipeline-cpu:
+  deploy:
+    resources:
+      limits:
+        cpus: '16.0'
+        memory: 32G
+      reservations:
+        cpus: '4.0'
+        memory: 8G
+  profiles:
+    - cpu-only
+
+# Activate with:
+docker-compose --profile cpu-only up</code></pre>
+            </div>
+
+            <h3>Configuration Examples</h3>
+
+            <h4>Maximum GPU Utilization</h4>
+            <div class="code-block">
+                <pre><code>rtpipeline \
+  --dicom-root data/ \
+  --outdir output/ \
+  --seg-workers 4 \
+  --max-workers 8 \
+  --totalseg-device gpu</code></pre>
+            </div>
+
+            <h4>Memory-Constrained System</h4>
+            <div class="code-block">
+                <pre><code>rtpipeline \
+  --dicom-root data/ \
+  --outdir output/ \
+  --max-workers 2 \
+  --seg-workers 1 \
+  --seg-proc-threads 4 \
+  --radiomics-proc-threads 2 \
+  --sequential-radiomics</code></pre>
+            </div>
+
+            <h4>CPU-Only Mode</h4>
+            <div class="code-block">
+                <pre><code>rtpipeline \
+  --dicom-root data/ \
+  --outdir output/ \
+  --totalseg-device cpu \
+  --max-workers 8 \
+  --seg-workers 2</code></pre>
+            </div>
+        </div>
+    </section>
+
+    <section id="monitoring" class="feature-detail">
+        <div class="container">
+            <h2>Monitoring & Logging</h2>
+
+            <h3>Log Files</h3>
+            <p>Pipeline logs are written to:</p>
+            <div class="code-block">
+                <pre><code>Logs/rtpipeline.log    # Main pipeline log
+Logs/snakemake.log     # Snakemake workflow log</code></pre>
+            </div>
+
+            <h3>Progress Tracking</h3>
+            <p>The adaptive worker system logs progress in this format:</p>
+            <div class="code-block">
+                <pre><code># Format: "Label: X/Y (Z%) elapsed Ats ETA Bs"
+# Example:
+Segmentation: 3/10 (30%) elapsed 12.5s ETA 29.2s</code></pre>
+            </div>
+
+            <h3>Memory Pressure Detection</h3>
+            <p>The pipeline automatically detects memory issues by pattern matching error messages:</p>
+            <ul>
+                <li><code>out of memory</code></li>
+                <li><code>cuda out of memory</code></li>
+                <li><code>cublas status alloc failed</code></li>
+                <li><code>std::bad_alloc</code></li>
+                <li><code>cannot allocate memory</code></li>
+                <li><code>failed to allocate</code></li>
+                <li><code>mmap failed</code></li>
+            </ul>
+
+            <h3>Component Summary</h3>
+            <div class="table-responsive">
+                <table class="config-table">
+                    <thead>
+                        <tr>
+                            <th>Component</th>
+                            <th>Type</th>
+                            <th>Key Parameters</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td>Main Orchestrator</td>
+                            <td>CLI</td>
+                            <td><code>--max-workers</code>, <code>--seg-workers</code></td>
+                        </tr>
+                        <tr>
+                            <td>Inter-course Parallelism</td>
+                            <td>ThreadPoolExecutor</td>
+                            <td><code>max_workers</code>, <code>min_workers</code></td>
+                        </tr>
+                        <tr>
+                            <td>Radiomics Parallelism</td>
+                            <td>ProcessPoolExecutor</td>
+                            <td><code>max_workers</code>, <code>thread_limit</code></td>
+                        </tr>
+                        <tr>
+                            <td>GPU Segmentation</td>
+                            <td>TotalSegmentator</td>
+                            <td><code>--totalseg-device</code></td>
+                        </tr>
+                        <tr>
+                            <td>Memory Adaptation</td>
+                            <td>Dynamic Scaling</td>
+                            <td>Memory error detection</td>
+                        </tr>
+                        <tr>
+                            <td>Thread Management</td>
+                            <td>Environment Variables</td>
+                            <td><code>OMP_NUM_THREADS</code>, etc.</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </section>
+
+    <footer class="footer">
+        <div class="container">
+            <div class="footer-content">
+                <div class="footer-section">
+                    <h4>RTpipeline</h4>
+                    <p>Open source radiotherapy DICOM processing pipeline for research.</p>
+                </div>
+                <div class="footer-section">
+                    <h4>Documentation</h4>
+                    <ul>
+                        <li><a href="getting-started.html">Getting Started</a></li>
+                        <li><a href="features.html">Features</a></li>
+                        <li><a href="configuration.html">Configuration</a></li>
+                        <li><a href="docker.html">Docker</a></li>
+                        <li><a href="architecture.html">Architecture</a></li>
+                    </ul>
+                </div>
+                <div class="footer-section">
+                    <h4>Resources</h4>
+                    <ul>
+                        <li><a href="faq.html">FAQ</a></li>
+                        <li><a href="output-format.html">Output Format</a></li>
+                        <li><a href="radiomics-robustness.html">Radiomics Robustness</a></li>
+                        <li><a href="custom-models.html">Custom Models</a></li>
+                    </ul>
+                </div>
+                <div class="footer-section">
+                    <h4>Author</h4>
+                    <p><a href="https://konsta.com.pl" target="_blank">Konrad Stawiski, MD</a></p>
+                    <p>Medical University of Lodz</p>
+                    <p><a href="https://github.com/kstawiski/rtpipeline" target="_blank">GitHub Repository</a></p>
+                </div>
+            </div>
+            <div class="footer-bottom">
+                <p>&copy; 2025 RTpipeline. MIT License.</p>
+            </div>
+        </div>
+    </footer>
+
+    <script src="assets/js/main.js"></script>
+</body>
+</html>
