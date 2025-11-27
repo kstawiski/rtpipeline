@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Getting Started - RTpipeline</title>
-    <meta name="description" content="Quick start guide for RTpipeline - Radiotherapy DICOM Processing Pipeline">
+    <meta name="description" content="End-to-end onboarding for RTpipeline: prerequisites, setup wizard, Web UI, CLI/Snakemake, Google Colab, and HPC deployments.">
     <link rel="stylesheet" href="assets/css/style.css">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -23,6 +23,7 @@
                 <li><a href="configuration.html">Configuration</a></li>
                 <li><a href="docker.html">Docker</a></li>
                 <li><a href="faq.html">FAQ</a></li>
+                <li><a href="knowledge.html">Knowledge</a></li>
                 <li><a href="https://github.com/kstawiski/rtpipeline" class="nav-github" target="_blank">
                     <svg height="20" viewBox="0 0 16 16" width="20" fill="currentColor">
                         <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"></path>
@@ -40,27 +41,28 @@
 
     <header class="page-header">
         <h1>Getting Started</h1>
-        <p>Get up and running with RTpipeline in minutes</p>
+        <p>Pick the workflow (Docker, Web UI, CLI, Colab, or HPC) that fits your environment.</p>
     </header>
 
     <section class="content">
         <div class="container">
-            <!-- Table of Contents -->
             <div class="toc-section">
                 <h2>On This Page</h2>
                 <ul class="toc-list">
                     <li><a href="#prerequisites">Prerequisites</a></li>
-                    <li><a href="#installation">Installation</a></li>
-                    <li><a href="#quickstart-webui">Quick Start: Web UI</a></li>
-                    <li><a href="#quickstart-cli">Quick Start: CLI</a></li>
+                    <li><a href="#setup-wizard">Docker Setup Wizard</a></li>
+                    <li><a href="#webui">Web UI Quick Start</a></li>
+                    <li><a href="#cli">Snakemake CLI</a></li>
+                    <li><a href="#colab">Google Colab</a></li>
+                    <li><a href="#hpc">HPC / Singularity</a></li>
                     <li><a href="#results">Understanding Results</a></li>
+                    <li><a href="#validation">Validation &amp; Health Checks</a></li>
                     <li><a href="#use-cases">Common Use Cases</a></li>
                     <li><a href="#troubleshooting">Troubleshooting</a></li>
                 </ul>
             </div>
 
-            <!-- Prerequisites -->
-            <div class="feature-detail" id="prerequisites">
+            <section class="feature-detail" id="prerequisites">
                 <div class="feature-detail-header">
                     <div class="feature-detail-icon">
                         <svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2">
@@ -71,297 +73,197 @@
                     <h2>Prerequisites</h2>
                 </div>
                 <div class="feature-detail-content">
-                    <ul class="feature-list">
-                        <li><strong>Docker</strong> installed (version 19.03 or later)</li>
-                        <li><strong>Docker Compose</strong> installed</li>
-                        <li>For GPU acceleration: <strong>nvidia-docker</strong> or <strong>nvidia-container-toolkit</strong></li>
-                        <li>At least <strong>8 GB RAM</strong> available (16 GB+ recommended)</li>
-                        <li>At least <strong>20 GB free disk space</strong> (more for large datasets)</li>
-                    </ul>
-
-                    <h3>System Requirements</h3>
                     <div class="metrics-grid">
                         <div class="metrics-category">
                             <h4>Minimum</h4>
                             <ul>
                                 <li>4 CPU cores</li>
-                                <li>8 GB RAM</li>
-                                <li>20 GB disk space</li>
-                                <li>Docker 19.03+</li>
+                                <li>8&nbsp;GB RAM</li>
+                                <li>20&nbsp;GB free disk</li>
+                                <li>Docker 19.03+ or Conda 23+</li>
                             </ul>
                         </div>
                         <div class="metrics-category">
                             <h4>Recommended</h4>
                             <ul>
                                 <li>8+ CPU cores</li>
-                                <li>16 GB RAM</li>
-                                <li>50+ GB disk space</li>
-                                <li>NVIDIA GPU with 8+ GB VRAM</li>
+                                <li>16&nbsp;GB RAM</li>
+                                <li>NVIDIA GPU (8&nbsp;GB VRAM) for TotalSegmentator</li>
+                                <li>SSD storage for DICOM IO</li>
                             </ul>
                         </div>
                         <div class="metrics-category">
-                            <h4>Large Datasets</h4>
+                            <h4>Large Cohorts</h4>
                             <ul>
-                                <li>16+ CPU cores</li>
-                                <li>32+ GB RAM</li>
-                                <li>100+ GB disk space</li>
-                                <li>NVIDIA GPU with 16+ GB VRAM</li>
+                                <li>16+ CPU cores / multiple GPUs</li>
+                                <li>32&nbsp;GB RAM</li>
+                                <li>100+&nbsp;GB workspace</li>
+                                <li>High-throughput NAS or local NVMe</li>
                             </ul>
                         </div>
                     </div>
+                    <p>Create the standard directory layout before launching containers:</p>
+                    <div class="code-block"><pre><code>mkdir -p Input Output Logs Uploads totalseg_weights</code></pre></div>
+                    <p><strong>Input</strong> holds raw DICOM exports, <strong>Uploads</strong> stores user submissions from the Web UI, <strong>Output</strong> maps to <code>/data/output</code> (where <code>Data_Snakemake/</code> lives), and <strong>Logs</strong> stores Snakemake + pipeline logs.</p>
                 </div>
-            </div>
+            </section>
 
-            <!-- Installation -->
-            <div class="feature-detail" id="installation">
+            <section class="feature-detail" id="setup-wizard">
                 <div class="feature-detail-header">
                     <div class="feature-detail-icon">
                         <svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2">
-                            <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
-                            <polyline points="7,10 12,15 17,10"/>
-                            <line x1="12" y1="15" x2="12" y2="3"/>
+                            <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
                         </svg>
                     </div>
-                    <h2>Installation</h2>
+                    <h2>Docker Setup Wizard</h2>
                 </div>
                 <div class="feature-detail-content">
-                    <h3>Option 1: Clone Repository</h3>
-                    <div class="code-block">
-                        <pre><code>git clone https://github.com/kstawiski/rtpipeline.git
-cd rtpipeline
-./build.sh</code></pre>
-                    </div>
-
-                    <h3>Option 2: Pull from Docker Hub</h3>
-                    <div class="code-block">
-                        <pre><code>docker pull kstawiski/rtpipeline:latest</code></pre>
-                    </div>
-
-                    <div class="info-box">
-                        <h4>Build Time</h4>
-                        <p>Building from source takes 10-30 minutes depending on your internet connection. Docker Hub pulls are faster.</p>
-                    </div>
+                    <p>The repo ships with <code>setup_docker_project.sh</code>, an interactive script that bootstraps a ready-to-run project directory.</p>
+                    <ol>
+                        <li><strong>Run the wizard</strong><br><code>curl -sSL https://raw.githubusercontent.com/kstawiski/rtpipeline/main/setup_docker_project.sh | bash</code></li>
+                        <li><strong>Answer prompts</strong>: choose Input/Output/Logs paths, enable CT cropping, radiomics, robustness, and GPU vs CPU profiles.</li>
+                        <li><strong>Review generated files</strong>: <code>.env</code>, <code>docker-compose.yml</code>, helper scripts (<code>./pipeline-up.sh</code>, <code>./pipeline-logs.sh</code>), and documentation with the choices captured.</li>
+                    </ol>
+                    <p>You can rerun the script anytime to regenerate overrides. Commit the resulting project folder in Git if you need versioned infrastructure-as-code.</p>
                 </div>
-            </div>
+            </section>
 
-            <!-- Quick Start: Web UI -->
-            <div class="feature-detail" id="quickstart-webui">
+            <section class="feature-detail" id="webui">
                 <div class="feature-detail-header">
                     <div class="feature-detail-icon">
                         <svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2">
-                            <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+                            <rect x="3" y="3" width="18" height="18" rx="2"/>
                             <line x1="3" y1="9" x2="21" y2="9"/>
                             <line x1="9" y1="21" x2="9" y2="9"/>
                         </svg>
                     </div>
-                    <h2>Quick Start: Web UI (Recommended)</h2>
+                    <h2>Web UI Quick Start</h2>
                 </div>
                 <div class="feature-detail-content">
                     <div class="pipeline-steps">
-                        <div class="pipeline-step">
-                            <span class="step-badge">1</span>
-                            <div>
-                                <h4>Create Directories</h4>
-                                <p>Create folders for data and logs</p>
-                            </div>
-                        </div>
-                        <div class="pipeline-step">
-                            <span class="step-badge">2</span>
-                            <div>
-                                <h4>Start Container</h4>
-                                <p>Launch with docker-compose</p>
-                            </div>
-                        </div>
-                        <div class="pipeline-step">
-                            <span class="step-badge">3</span>
-                            <div>
-                                <h4>Upload DICOM</h4>
-                                <p>Drag and drop files</p>
-                            </div>
-                        </div>
-                        <div class="pipeline-step">
-                            <span class="step-badge">4</span>
-                            <div>
-                                <h4>Download Results</h4>
-                                <p>Get processed data</p>
-                            </div>
-                        </div>
+                        <div class="pipeline-step"><span class="step-badge">1</span><h4>Start services</h4><p><code>docker-compose up -d</code> (GPU) or <code>docker-compose --profile cpu-only up -d</code></p></div>
+                        <div class="pipeline-step"><span class="step-badge">2</span><h4>Visit UI</h4><p>Open <a href="http://localhost:8080" target="_blank">http://localhost:8080</a></p></div>
+                        <div class="pipeline-step"><span class="step-badge">3</span><h4>Upload DICOM</h4><p>Drag-and-drop folders, ZIP/TAR archives, or DICOMDIR</p></div>
+                        <div class="pipeline-step"><span class="step-badge">4</span><h4>Configure</h4><p>Adjust segmentation, radiomics, robustness, CT cropping, custom models</p></div>
+                        <div class="pipeline-step"><span class="step-badge">5</span><h4>Monitor</h4><p>Use live stage timeline + log streaming</p></div>
+                        <div class="pipeline-step"><span class="step-badge">6</span><h4>Download</h4><p>Grab the ZIP bundle when the job completes</p></div>
                     </div>
-
-                    <h3>Step 1: Create Project Directories</h3>
-                    <div class="code-block">
-                        <pre><code>mkdir -p Input Output Logs Uploads totalseg_weights</code></pre>
-                    </div>
-
-                    <h3>Step 2: Start the Container</h3>
-                    <p><strong>With GPU (recommended):</strong></p>
-                    <div class="code-block">
-                        <pre><code>docker-compose up -d</code></pre>
-                    </div>
-                    <p><strong>CPU-only:</strong></p>
-                    <div class="code-block">
-                        <pre><code>docker-compose --profile cpu-only up -d</code></pre>
-                    </div>
-
-                    <h3>Step 3: Access the Web UI</h3>
-                    <p>Open your browser and navigate to:</p>
-                    <div class="code-block">
-                        <pre><code>http://localhost:8080</code></pre>
-                    </div>
-
-                    <h3>Step 4: Upload Your DICOM Files</h3>
-                    <p>You can upload files in several ways:</p>
-                    <ul class="feature-list">
-                        <li>Drag and drop files or folders into the upload area</li>
-                        <li>Click "Browse Files" to select files manually</li>
-                        <li>Upload ZIP archives containing DICOM files</li>
-                        <li>Upload DICOMDIR files</li>
-                    </ul>
-
-                    <h4>Supported Formats</h4>
-                    <ul class="feature-list">
-                        <li>Individual .dcm files</li>
-                        <li>.zip archives</li>
-                        <li>.tar, .tar.gz, .tgz archives</li>
-                        <li>Entire directories with subdirectories</li>
-                        <li>DICOMDIR files</li>
-                    </ul>
-
-                    <h3>Step 5: Configure Processing</h3>
-                    <div class="metrics-grid">
-                        <div class="metrics-category">
-                            <h4>Fast Mode</h4>
-                            <p>Recommended for CPU-only systems</p>
-                        </div>
-                        <div class="metrics-category">
-                            <h4>Radiomics</h4>
-                            <p>Extract radiomic features (recommended)</p>
-                        </div>
-                        <div class="metrics-category">
-                            <h4>Custom Models</h4>
-                            <p>Only if you have custom nnUNet models</p>
-                        </div>
-                    </div>
-
-                    <h3>Step 6: Start Processing & Download Results</h3>
-                    <p>Click "Start Processing" and watch the progress bar. When complete, download the ZIP file with all results.</p>
+                    <p>The UI persists jobs under <code>/data/output/WebUI</code> and stores uploads under <code>/data/uploads</code>. The interface enforces a single job per GPU to avoid VRAM exhaustion and cites the related Knowledge topic whenever it raises a warning (e.g., slice thickness drift).</p>
                 </div>
-            </div>
+            </section>
 
-            <!-- Quick Start: CLI -->
-            <div class="feature-detail" id="quickstart-cli">
+            <section class="feature-detail" id="cli">
                 <div class="feature-detail-header">
                     <div class="feature-detail-icon">
                         <svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2">
-                            <polyline points="4,17 10,11 4,5"/>
-                            <line x1="12" y1="19" x2="20" y2="19"/>
+                            <rect x="2" y="7" width="20" height="14" rx="2" ry="2"/>
+                            <path d="M16 21V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v16"/>
                         </svg>
                     </div>
-                    <h2>Quick Start: Command Line</h2>
+                    <h2>Snakemake CLI Workflow</h2>
                 </div>
                 <div class="feature-detail-content">
-                    <h3>1. Start the Container</h3>
-                    <div class="code-block">
-                        <pre><code>docker-compose up -d</code></pre>
-                    </div>
-
-                    <h3>2. Access the Container Shell</h3>
-                    <div class="code-block">
-                        <pre><code>docker exec -it rtpipeline bash</code></pre>
-                    </div>
-
-                    <h3>3. Place DICOM Files</h3>
-                    <div class="code-block">
-                        <pre><code><span class="comment"># On host: copy your DICOM files</span>
-cp -r /path/to/your/dicom/files ./Input/</code></pre>
-                    </div>
-
-                    <h3>4. Run the Pipeline</h3>
-                    <div class="code-block">
-                        <pre><code>snakemake --cores all --use-conda --configfile /app/config.container.yaml</code></pre>
-                    </div>
-
-                    <h3>5. View Results</h3>
-                    <p>Results will appear in the <code>Output/</code> directory on your host machine.</p>
+                    <div class="code-block"><pre><code>git clone https://github.com/kstawiski/rtpipeline.git
+cd rtpipeline
+mamba env create -f envs/rtpipeline.yaml
+mamba env create -f envs/rtpipeline-radiomics.yaml
+cp config.yaml config.local.yaml  # edit paths & options
+conda activate rtpipeline
+rtpipeline validate --config config.local.yaml
+snakemake --cores 16 --configfile config.local.yaml --use-conda</code></pre></div>
+                    <p>Use <code>rtpipeline doctor</code> to verify dcm2niix, TotalSegmentator, CUDA, and NVIDIA drivers. The <code>--course-filter</code> CLI flag lets you resume specific patients without reprocessing everything.</p>
                 </div>
-            </div>
+            </section>
 
-            <!-- Understanding Results -->
-            <div class="feature-detail" id="results">
-                <div class="feature-detail-header">
-                    <div class="feature-detail-icon">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2">
-                            <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>
-                            <polyline points="14,2 14,8 20,8"/>
-                            <line x1="16" y1="13" x2="8" y2="13"/>
-                            <line x1="16" y1="17" x2="8" y2="17"/>
-                            <polyline points="10,9 9,9 8,9"/>
-                        </svg>
-                    </div>
-                    <h2>Understanding the Results</h2>
-                </div>
-                <div class="feature-detail-content">
-                    <h3>Key Output Files</h3>
-                    <table class="config-table">
-                        <thead>
-                            <tr>
-                                <th>File</th>
-                                <th>Description</th>
-                                <th>Use Cases</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            <tr>
-                                <td>dvh_metrics.xlsx</td>
-                                <td>DVH metrics: V95%, V100%, D2cc, Dmean, etc.</td>
-                                <td>Treatment plan evaluation, toxicity analysis</td>
-                            </tr>
-                            <tr>
-                                <td>radiomics_ct.xlsx</td>
-                                <td>150+ radiomic features per ROI</td>
-                                <td>Radiomics research, outcome prediction</td>
-                            </tr>
-                            <tr>
-                                <td>case_metadata.xlsx</td>
-                                <td>Patient and treatment metadata</td>
-                                <td>Quality control, cohort description</td>
-                            </tr>
-                            <tr>
-                                <td>qc_reports.xlsx</td>
-                                <td>Quality control reports</td>
-                                <td>Data verification, issue tracking</td>
-                            </tr>
-                        </tbody>
-                    </table>
-
-                    <h3>Directory Structure</h3>
-                    <div class="code-block directory-tree">
-                        <pre><code>Output/
-├── _RESULTS/                     # Aggregated results (start here!)
-│   ├── dvh_metrics.xlsx
-│   ├── radiomics_ct.xlsx
-│   ├── radiomics_mr.xlsx
-│   ├── case_metadata.xlsx
-│   └── qc_reports.xlsx
-└── &lt;patient_id&gt;/
-    └── &lt;course_id&gt;/
-        ├── DICOM/                # Original DICOM files
-        ├── NIFTI/                # NIfTI images
-        ├── Segmentation_TotalSegmentator/
-        ├── dvh_metrics.xlsx      # Per-course DVH
-        ├── radiomics_ct.xlsx     # Per-course radiomics
-        └── qc_reports/           # Per-course QC</code></pre>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Common Use Cases -->
-            <div class="feature-detail" id="use-cases">
+            <section class="feature-detail" id="colab">
                 <div class="feature-detail-header">
                     <div class="feature-detail-icon">
                         <svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2">
                             <circle cx="12" cy="12" r="10"/>
-                            <polyline points="12,6 12,12 16,14"/>
+                            <path d="M12 6v12M6 12h12"/>
+                        </svg>
+                    </div>
+                    <h2>Google Colab</h2>
+                </div>
+                <div class="feature-detail-content">
+                    <p>Use Colab when you need a GPU for segmentation but cannot install anything locally.</p>
+                    <ul class="feature-list">
+                        <li><strong>Part 1 (GPU)</strong>: <a href="https://colab.research.google.com/github/kstawiski/rtpipeline/blob/master/rtpipeline_colab_part1_gpu.ipynb" target="_blank">rtpipeline_colab_part1_gpu.ipynb</a> – copies DICOM from Drive, runs TotalSegmentator, uploads artefacts back to Drive.</li>
+                        <li><strong>Part 2 (CPU)</strong>: <a href="https://colab.research.google.com/github/kstawiski/rtpipeline/blob/master/rtpipeline_colab_part2_cpu.ipynb" target="_blank">rtpipeline_colab_part2_cpu.ipynb</a> – performs DVH, radiomics, QC, aggregation.</li>
+                    </ul>
+                    <p>Mount Google Drive, keep patient folders zipped, and remember that Colab sessions time out after 12 hours—split cohorts accordingly.</p>
+                </div>
+            </section>
+
+            <section class="feature-detail" id="hpc">
+                <div class="feature-detail-header">
+                    <div class="feature-detail-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2">
+                            <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
+                        </svg>
+                    </div>
+                    <h2>HPC / Singularity</h2>
+                </div>
+                <div class="feature-detail-content">
+                    <div class="code-block"><pre><code>singularity pull rtpipeline.sif docker://kstawiski/rtpipeline:latest
+singularity exec --nv   --bind /data/input:/data/input   --bind /data/output:/data/output   --bind /data/logs:/data/logs   rtpipeline.sif   snakemake --cores $SLURM_CPUS --configfile config.hpc.yaml</code></pre></div>
+                    <p>Add the command to a Slurm submission script and let Snakemake orchestrate jobs with <code>--profile slurm</code> if you prefer per-rule job submission. Apptainer works the same way.</p>
+                </div>
+            </section>
+
+            <section class="feature-detail" id="results">
+                <div class="feature-detail-header">
+                    <div class="feature-detail-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2">
+                            <path d="M6 2v4M18 2v4M6 18v4M18 18v4M2 6h4M2 18h4M18 6h4M18 18h4"/>
+                            <rect x="6" y="6" width="12" height="12" rx="1"/>
+                        </svg>
+                    </div>
+                    <h2>Understanding Results</h2>
+                </div>
+                <div class="feature-detail-content">
+                    <div class="code-block directory-tree"><pre><code>Data_Snakemake/
+├── _RESULTS/ (dvh_metrics.xlsx, radiomics_ct.xlsx, radiomics_mr.xlsx, case_metadata.xlsx, qc_reports.xlsx)
+└── {Patient}/{Course}/
+    ├── DICOM/{CT,MR,RTPLAN,RTDOSE,RTSTRUCT}/
+    ├── NIFTI/ + metadata
+    ├── MR/&lt;SeriesUID&gt;/DICOM + NIFTI + Segmentation_TotalSegmentator/
+    ├── Segmentation_TotalSegmentator/total--*.nii.gz + total.dcm
+    ├── Segmentation_CustomModels/&lt;model&gt;/…
+    ├── RS.dcm | RS_auto.dcm | RS_auto_cropped.dcm | RS_custom.dcm
+    ├── dvh_metrics.xlsx · radiomics_ct.xlsx · MR/radiomics_mr.xlsx · fractions.xlsx
+    ├── qc_reports/*.json, metadata/case_metadata.xlsx
+    └── cropping_metadata.json (when ct_cropping.enabled)
+</code></pre></div>
+                    <p>See the <a href="output-format.html">Output Format guide</a> for detailed column descriptions.</p>
+                </div>
+            </section>
+
+            <section class="feature-detail" id="validation">
+                <div class="feature-detail-header">
+                    <div class="feature-detail-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2">
+                            <path d="M12 1v22"/>
+                            <path d="M5 5h14v14H5z"/>
+                        </svg>
+                    </div>
+                    <h2>Validation &amp; Health Checks</h2>
+                </div>
+                <div class="feature-detail-content">
+                    <ul class="feature-list">
+                        <li><code>rtpipeline validate --config config.yaml</code> – verifies paths, permissions, GPU availability, and warns about unsupported settings before Snakemake starts.</li>
+                        <li><code>rtpipeline doctor</code> – prints Python package versions, dcm2niix/TotalSegmentator availability, CUDA diagnostics, and bundled binaries.</li>
+                        <li><code>RtPipeline Doctor</code> also reports expected TotalSegmentator weight locations (inside <code>Logs/nnunet</code> by default).</li>
+                        <li>Every stage logs into <code>Logs_Snakemake/</code>. When in doubt, run <code>snakemake --retries 1 --printshellcmds</code> to capture full command invocations.</li>
+                    </ul>
+                </div>
+            </section>
+
+            <section class="feature-detail" id="use-cases">
+                <div class="feature-detail-header">
+                    <div class="feature-detail-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2">
+                            <path d="M12 2l4 7-4 7-4-7 4-7z"/>
                         </svg>
                     </div>
                     <h2>Common Use Cases</h2>
@@ -369,74 +271,61 @@ cp -r /path/to/your/dicom/files ./Input/</code></pre>
                 <div class="feature-detail-content">
                     <div class="use-cases">
                         <div class="use-case">
-                            <h4>DVH Analysis</h4>
-                            <p>Upload CT + RTDOSE + RTSTRUCT, enable Fast mode, open dvh_metrics.xlsx for treatment plan evaluation.</p>
+                            <h4>Quality Dashboards</h4>
+                            <p>Feed <code>_RESULTS/qc_reports.xlsx</code> into PowerBI/Tableau for departmental QA.</p>
                         </div>
                         <div class="use-case">
-                            <h4>Radiomics Research</h4>
-                            <p>Upload CT files (RT data optional), enable Radiomics, get 150+ features per ROI ready for ML.</p>
+                            <h4>Radiomics Pipelines</h4>
+                            <p>Filter <code>radiomics_ct.xlsx</code> by <code>Segmentation_Source</code> to compare manual vs TotalSegmentator biomarkers.</p>
                         </div>
                         <div class="use-case">
-                            <h4>Batch Processing</h4>
-                            <p>Create one ZIP with subdirectories per patient, upload, settings apply to all patients.</p>
-                        </div>
-                        <div class="use-case">
-                            <h4>Auto-Segmentation</h4>
-                            <p>Upload CT only, TotalSegmentator generates 100+ structures, import RS_auto.dcm into TPS.</p>
+                            <h4>Clinical Trials</h4>
+                            <p>Use systematic CT cropping + DVH exports to harmonize reporting across institutions.</p>
                         </div>
                     </div>
                 </div>
-            </div>
+            </section>
 
-            <!-- Troubleshooting -->
-            <div class="feature-detail" id="troubleshooting">
+            <section class="feature-detail" id="troubleshooting">
                 <div class="feature-detail-header">
                     <div class="feature-detail-icon">
                         <svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2">
+                            <path d="M12 9v4"/>
+                            <path d="M12 17h.01"/>
                             <circle cx="12" cy="12" r="10"/>
-                            <line x1="12" y1="8" x2="12" y2="12"/>
-                            <line x1="12" y1="16" x2="12.01" y2="16"/>
                         </svg>
                     </div>
-                    <h2>Quick Troubleshooting</h2>
+                    <h2>Troubleshooting</h2>
                 </div>
                 <div class="feature-detail-content">
-                    <div class="faq-item">
-                        <h3>Web UI Won't Load</h3>
-                        <p>Check container is running: <code>docker ps</code></p>
-                        <p>Check logs: <code>docker logs rtpipeline</code></p>
-                        <p>Restart: <code>docker-compose restart</code></p>
-                    </div>
-                    <div class="faq-item">
-                        <h3>Out of Memory</h3>
-                        <p>Increase Docker memory limit in Docker Settings. Use Fast Mode for segmentation. Process fewer patients at once.</p>
-                    </div>
-                    <div class="faq-item">
-                        <h3>No GPU Detected</h3>
-                        <p>Check nvidia-docker: <code>docker run --gpus all nvidia/cuda:11.0-base nvidia-smi</code></p>
-                    </div>
-
-                    <p style="margin-top: 24px;"><a href="faq.html" class="btn btn-outline">View Full FAQ & Troubleshooting</a></p>
+                    <ul class="feature-list">
+                        <li><strong>Segmentation fails immediately</strong>: check GPU memory with <code>nvidia-smi</code>. Set <code>segmentation.force_split: true</code> (default) or switch to CPU mode for extremely large CTs.</li>
+                        <li><strong>Radiomics crashes with SIGSEGV</strong>: ensure the <code>rtpipeline-radiomics</code> env (NumPy&nbsp;1.x) is active. The CLI automatically spawns a separate process to avoid PyRadiomics/OpenMP conflicts.</li>
+                        <li><strong>DVH empty / NaN</strong>: confirm RTDOSE and RTSTRUCT share the same FrameOfReferenceUID. The QC report will flag mismatches.</li>
+                        <li><strong>Slow NAS</strong>: cap <code>max_workers</code> to 2–4 and increase <code>scheduler.*_threads_per_job</code> to favor sequential IO.</li>
+                        <li><strong>Need to re-run a stage</strong>: delete the stage-specific sentinel (e.g., <code>.segmentation_done</code>) or use <code>snakemake --forcerun segmentation</code>.</li>
+                    </ul>
                 </div>
-            </div>
-
+            </section>
         </div>
     </section>
 
     <footer class="footer">
-        <div class="footer-content">
-            <div class="footer-brand">
-                <span class="logo-icon">RT</span>
-                <span class="logo-text">pipeline</span>
-            </div>
-            <p>Open-source radiotherapy DICOM processing pipeline.</p>
-            <div class="footer-links">
-                <a href="https://github.com/kstawiski/rtpipeline">GitHub</a>
-                <a href="https://github.com/kstawiski/rtpipeline/issues">Issues</a>
-                <a href="https://github.com/kstawiski/rtpipeline/blob/master/LICENSE">License</a>
+        <div class="container">
+            <div class="footer-content">
+                <div class="footer-brand">
+                    <span class="logo-icon">RT</span>
+                    <span class="logo-text">pipeline</span>
+                </div>
+                <p>Open source radiotherapy DICOM processing pipeline.</p>
+                <div class="footer-links">
+                    <a href="https://github.com/kstawiski/rtpipeline" target="_blank">GitHub</a>
+                    <a href="https://github.com/kstawiski/rtpipeline/issues" target="_blank">Issues</a>
+                    <a href="https://github.com/kstawiski/rtpipeline/blob/master/LICENSE" target="_blank">License</a>
+                </div>
             </div>
             <div class="footer-bottom">
-                <p>&copy; 2024-2025 RTpipeline Contributors</p>
+                <p>&copy; 2025 RTpipeline. Released under MIT License.</p>
             </div>
         </div>
     </footer>

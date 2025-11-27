@@ -23,6 +23,7 @@
                 <li><a href="configuration.html">Configuration</a></li>
                 <li><a href="docker.html">Docker</a></li>
                 <li><a href="faq.html">FAQ</a></li>
+                <li><a href="knowledge.html">Knowledge</a></li>
                 <li><a href="https://github.com/kstawiski/rtpipeline" class="nav-github" target="_blank">
                     <svg height="20" viewBox="0 0 16 16" width="20" fill="currentColor">
                         <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"></path>
@@ -47,6 +48,83 @@
 
     <main class="content">
         <div class="container">
+            <!-- DICOM Organisation -->
+            <section class="feature-detail" id="organize">
+                <div class="feature-detail-header">
+                    <div class="feature-detail-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M3 7h18M3 12h18M3 17h18"/>
+                            <path d="M5 7v10M19 7v10"/>
+                        </svg>
+                    </div>
+                    <h2>DICOM Course Organisation</h2>
+                </div>
+                <div class="feature-detail-content">
+                    <p class="feature-intro">The <code>organize</code> stage (<code>rtpipeline/organize.py</code>) converts a raw DICOM dump into a deterministic course directory that mirrors the clinical workflow.</p>
+                    <div class="workflow-features">
+                        <div class="workflow-feature">
+                            <h4>Course Detection</h4>
+                            <p>Groups CT, MR, RTPLAN, RTDOSE, RTSTRUCT, and REG objects by <code>PatientID</code> and <code>StudyInstanceUID</code>, producing <code>Data_Snakemake/&lt;patient&gt;/&lt;course&gt;</code>.</p>
+                        </div>
+                        <div class="workflow-feature">
+                            <h4>UID Graph</h4>
+                            <p>Follows Referenced SOP Instance UIDs so RTDOSE ↔ RTPLAN ↔ RTSTRUCT links remain intact (critical for valid DVHs).</p>
+                        </div>
+                        <div class="workflow-feature">
+                            <h4>MR Support</h4>
+                            <p>Copies every MR series referenced via REG objects into <code>MR/&lt;SeriesUID&gt;</code>, converts to NIfTI, and stores metadata JSON.</p>
+                        </div>
+                        <div class="workflow-feature">
+                            <h4>Sentinels</h4>
+                            <p>Writes <code>.organize_done</code> files so re-runs skip work unless new data arrives.</p>
+                        </div>
+                    </div>
+                    <div class="info-box">
+                        <h4>Why it matters</h4>
+                        <ul>
+                            <li>Guarantees FrameOfReference consistency before DVH/radiomics.</li>
+                            <li>Preserves manual RS files untouched for QA.</li>
+                            <li>Supports mixed-modality cohorts (CT-only, CT+MR, MR-only segmentation).</li>
+                        </ul>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Custom Structures -->
+            <section class="feature-detail" id="custom-structures">
+                <div class="feature-detail-header">
+                    <div class="feature-detail-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M4 6h16M4 12h16M4 18h16"/>
+                            <path d="M9 6v12M15 6v12"/>
+                        </svg>
+                    </div>
+                    <h2>Structure Merger &amp; Custom Models</h2>
+                </div>
+                <div class="feature-detail-content">
+                    <p class="feature-intro">The <code>structure_merger.py</code> module fuses manual contours, TotalSegmentator masks, nnU-Net predictions, and Boolean rules from <code>custom_structures*.yaml</code> into <code>RS_custom.dcm</code>.</p>
+                    <div class="workflow-features">
+                        <div class="workflow-feature">
+                            <h4>Boolean Recipes</h4>
+                            <p>Create derived structures (bowel bag, pelvic bones ± margins, iliac vessels) using union, subtraction, dilation, and erosion operators.</p>
+                        </div>
+                        <div class="workflow-feature">
+                            <h4>Provenance Columns</h4>
+                            <p>Every mask carries <code>Segmentation_Source</code> → Manual, AutoTS_total, CustomModel:&lt;id&gt;, Boolean:&lt;name&gt;.</p>
+                        </div>
+                        <div class="workflow-feature">
+                            <h4>nnU-Net Bundles</h4>
+                            <p><code>custom_models/</code> stores zipped nnU-Net v1/v2 predictors. Each folder gets its own manifest, RTSTRUCT, and mask set.</p>
+                        </div>
+                        <div class="workflow-feature">
+                            <h4>Re-run Control</h4>
+                            <p><code>custom_models.force</code> and <code>segmentation.force</code> allow deterministic refreshes without touching completed courses.</p>
+                        </div>
+                    </div>
+                    <p>Downstream stages reference <code>RS_custom.dcm</code> by default so Boolean structures and manual fixes automatically feed DVH/radiomics.</p>
+                </div>
+            </section>
+
             <!-- AI Segmentation -->
             <section class="feature-detail" id="segmentation">
                 <div class="feature-detail-header">
@@ -467,6 +545,63 @@ custom_models:
   keep_original: true        <span class="comment"># Preserve uncropped CT</span></code></pre>
                         </div>
                     </div>
+                </div>
+            </section>
+
+            <!-- Quality Control -->
+            <section class="feature-detail" id="qc">
+                <div class="feature-detail-header">
+                    <div class="feature-detail-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M9 11l3 3L22 4"/>
+                            <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>
+                        </svg>
+                    </div>
+                    <h2>Quality Control &amp; Knowledge Hooks</h2>
+                </div>
+                <div class="feature-detail-content">
+                    <p class="feature-intro">Every course passes through <code>quality_control.py</code>, which references the Knowledge base to produce actionable warnings.</p>
+                    <div class="workflow-features">
+                        <div class="workflow-feature">
+                            <h4>Metadata Checks</h4>
+                            <p>Flags missing RTDOSE/RTSTRUCT, orphaned RTPLANs, inconsistent FrameOfReferenceUIDs, and DVH units.</p>
+                        </div>
+                        <div class="workflow-feature">
+                            <h4>Structure Cropping Detection</h4>
+                            <p>Marks any ROI that touches the CT cropping box (<code>structure_cropped</code>), referencing the CT acquisition Knowledge doc.</p>
+                        </div>
+                        <div class="workflow-feature">
+                            <h4>Knowledge Citations</h4>
+                            <p>Log messages link to relevant Knowledge topics (CT acquisition, DICOM tags, radiomics presets) so operators understand the science behind each rule.</p>
+                        </div>
+                        <div class="workflow-feature">
+                            <h4>Cohort Dashboard</h4>
+                            <p><code>_RESULTS/qc_reports.xlsx</code> summarises PASS/INFO/WARNING/FAIL statuses for custom dashboards.</p>
+                        </div>
+                    </div>
+                    <p>Run <code>scripts/anonymize_pipeline_results.py</code> to share QC outputs externally while keeping a re-identification key.</p>
+                </div>
+            </section>
+
+            <!-- Aggregation -->
+            <section class="feature-detail" id="aggregation">
+                <div class="feature-detail-header">
+                    <div class="feature-detail-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M4 4h16v16H4z"/>
+                            <path d="M4 9h16M9 4v16"/>
+                        </svg>
+                    </div>
+                    <h2>Aggregation &amp; Automation</h2>
+                </div>
+                <div class="feature-detail-content">
+                    <p class="feature-intro">Once courses finish, Snakemake collects every metric under <code>Data_Snakemake/_RESULTS</code> and exposes CLI helpers.</p>
+                    <ul class="feature-list">
+                        <li><strong>Excel exports</strong>: DVH, CT radiomics, MR radiomics, fractions, QC, and case metadata share the same patient/course identifiers.</li>
+                        <li><strong>Robustness summary</strong>: <code>radiomics_robustness_summary.xlsx</code> ranks features by ICC/CoV/QCD tiers.</li>
+                        <li><strong>CLI helpers</strong>: <code>rtpipeline radiomics-robustness</code> to recompute perturbations per course, <code>...-aggregate</code> to rebuild summaries.</li>
+                        <li><strong>Automation friendly</strong>: sentinel files and stage-specific targets make it trivial to schedule nightly <code>snakemake</code> runs.</li>
+                    </ul>
                 </div>
             </section>
         </div>
