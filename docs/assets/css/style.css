@@ -1,13 +1,13 @@
 /* RTpipeline Website Styles */
 
 :root {
-    --primary: #2563eb;
-    --primary-dark: #1d4ed8;
-    --primary-light: #3b82f6;
+    --primary: #05889b;
+    --primary-dark: #046d7c;
+    --primary-light: #0aa3b9;
     --secondary: #64748b;
     --accent: #10b981;
-    --dark: #0f172a;
-    --dark-light: #1e293b;
+    --dark: #111111;
+    --dark-light: #222222;
     --light: #f8fafc;
     --gray-50: #f8fafc;
     --gray-100: #f1f5f9;
@@ -18,8 +18,8 @@
     --gray-600: #475569;
     --gray-700: #334155;
     --gray-800: #1e293b;
-    --gray-900: #0f172a;
-    --gradient: linear-gradient(135deg, var(--primary) 0%, #7c3aed 100%);
+    --gray-900: #111111;
+    --gradient: linear-gradient(135deg, #05889b 0%, #0aa3b9 50%, #06a4a4 100%);
     --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.05);
     --shadow: 0 1px 3px 0 rgb(0 0 0 / 0.1), 0 1px 2px -1px rgb(0 0 0 / 0.1);
     --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
@@ -28,6 +28,7 @@
     --radius: 8px;
     --radius-lg: 12px;
     --radius-xl: 16px;
+    --radius-pill: 9999px;
 }
 
 * {
@@ -154,7 +155,7 @@ body {
 /* Hero Section */
 .hero {
     padding: 140px 24px 80px;
-    background: linear-gradient(180deg, #f8fafc 0%, #e0e7ff 100%);
+    background: linear-gradient(180deg, #f8fafc 0%, #d7f0f4 100%);
     text-align: center;
 }
 
@@ -211,8 +212,8 @@ body {
     display: inline-flex;
     align-items: center;
     gap: 8px;
-    padding: 12px 24px;
-    border-radius: var(--radius);
+    padding: 12px 28px;
+    border-radius: var(--radius-pill);
     font-weight: 600;
     font-size: 1rem;
     text-decoration: none;
@@ -222,12 +223,13 @@ body {
 }
 
 .btn-primary {
-    background: var(--gradient);
+    background: var(--primary);
     color: white;
     box-shadow: var(--shadow-md);
 }
 
 .btn-primary:hover {
+    background: var(--primary-dark);
     transform: translateY(-2px);
     box-shadow: var(--shadow-lg);
 }
@@ -247,7 +249,7 @@ body {
     background: transparent;
     color: var(--primary);
     border: 2px solid var(--primary);
-    padding: 10px 22px;
+    padding: 10px 26px;
 }
 
 .btn-outline:hover {
@@ -469,7 +471,7 @@ section {
 }
 
 .option-badge.hpc {
-    background: #7c3aed;
+    background: var(--primary-dark);
 }
 
 .option-header h3 {
@@ -711,12 +713,14 @@ section {
 .cta .btn-primary {
     background: white;
     color: var(--primary);
+    border-radius: var(--radius-pill);
 }
 
 .cta .btn-secondary {
     background: transparent;
     color: white;
     border-color: rgba(255, 255, 255, 0.5);
+    border-radius: var(--radius-pill);
 }
 
 .cta .btn-secondary:hover {
@@ -1243,8 +1247,8 @@ section {
 
 /* Info Box */
 .info-box {
-    background: #eff6ff;
-    border: 1px solid #bfdbfe;
+    background: #e6f7f9;
+    border: 1px solid #9dd9e2;
     border-radius: var(--radius);
     padding: 20px;
     margin: 24px 0;
@@ -1253,13 +1257,13 @@ section {
 .info-box h4 {
     font-size: 1rem;
     font-weight: 600;
-    color: #1e40af;
+    color: #046d7c;
     margin: 0 0 8px;
 }
 
 .info-box p {
     font-size: 0.9375rem;
-    color: #1e3a8a;
+    color: #05889b;
     margin: 0;
 }
 
