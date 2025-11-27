@@ -15,9 +15,7 @@ This directory contains technical documentation, advanced guides, and developmen
 |----------|-------------|----------|
 | [**GETTING_STARTED.md**](../GETTING_STARTED.md) | Complete beginner's guide | New users |
 | [**WEBUI.md**](../WEBUI.md) | Web UI documentation | All users |
-| [**output_format.md**](../output_format.md) | Comprehensive output reference | Data analysts, AI agents |
-| [**output_format_quick_ref.md**](../output_format_quick_ref.md) | Quick reference cheat sheet | Experienced users |
-| [**rtpipeline_colab.ipynb**](../rtpipeline_colab.ipynb) | Google Colab notebook | Cloud users |
+| [**output_format_quick_ref.md**](../output_format_quick_ref.md) | Output format reference with code snippets | Data analysts |
 | [**setup_new_project.sh**](../setup_new_project.sh) | Interactive setup for native installs | Local installation users |
 | [**setup_docker_project.sh**](../setup_docker_project.sh) | **NEW:** Interactive Docker project setup | Docker users |
 
@@ -46,7 +44,6 @@ This directory contains technical documentation, advanced guides, and developmen
 | Document | Description |
 |----------|-------------|
 | [**custom_models.md**](custom_models.md) | Using custom nnUNet segmentation models |
-| [**pipeline_report.md**](pipeline_report.md) | Pipeline capabilities and features |
 | [**RADIOMICS_ROBUSTNESS.md**](RADIOMICS_ROBUSTNESS.md) | Radiomics robustness workflow, configuration, and research references |
 | [**SYSTEMATIC_CT_CROPPING.md**](SYSTEMATIC_CT_CROPPING.md) | Systematic anatomical cropping guide |
 
@@ -56,12 +53,6 @@ This directory contains technical documentation, advanced guides, and developmen
 |----------|-------------|
 | [**Guide to Results Interpretation.md**](Guide%20to%20Results%20Interpretation.md) | Interpreting pipeline results |
 | [**qc_cropping_audit.md**](qc_cropping_audit.md) | CT cropping quality control |
-
-### Development & Code Quality
-
-| Document | Description |
-|----------|-------------|
-| [**CODE_REVIEW.md**](CODE_REVIEW.md) | Deep code review report and recommendations |
 
 ---
 
@@ -84,7 +75,7 @@ This directory contains technical documentation, advanced guides, and developmen
 → [custom_models.md](custom_models.md)
 
 ### "I need to interpret my results"
-→ [Guide to Results Interpretation.md](Guide%20to%20Results%20Interpretation.md) and [output_format.md](../output_format.md)
+→ [Guide to Results Interpretation.md](Guide%20to%20Results%20Interpretation.md) and [output_format_quick_ref.md](../output_format_quick_ref.md)
 
 ### "I must validate radiomics stability before modelling"
 → [RADIOMICS_ROBUSTNESS.md](RADIOMICS_ROBUSTNESS.md)
@@ -94,10 +85,6 @@ This directory contains technical documentation, advanced guides, and developmen
 
 ### "I'm deploying in production"
 → [SECURITY.md](SECURITY.md)
-
-### "I want to review code quality"
-→ [CODE_REVIEW.md](CODE_REVIEW.md)
-
 
 ---
 
@@ -109,32 +96,23 @@ rtpipeline/
 ├── README.md                          ← Start here
 ├── GETTING_STARTED.md                 ← Beginner's guide
 ├── WEBUI.md                           ← Web UI guide
-├── output_format.md                   ← Complete output reference
-├── output_format_quick_ref.md         ← Quick reference
-├── rtpipeline_colab.ipynb             ← Google Colab notebook
+├── output_format_quick_ref.md         ← Output format reference
 ├── setup_new_project.sh               ← Interactive native setup
-├── setup_docker_project.sh            ← Interactive Docker setup (NEW)
+├── setup_docker_project.sh            ← Interactive Docker setup
 │
 ├── docs/                              ← Technical documentation (you are here)
 │   ├── README.md                      ← This file
 │   ├── PIPELINE_ARCHITECTURE.md       ← Architecture overview
 │   ├── PARALLELIZATION.md             ← Performance tuning
 │   ├── DOCKER.md                      ← Docker technical guide
-│   ├── DOCKER_SETUP_GUIDE.md          ← Docker setup & config guide (NEW)
+│   ├── DOCKER_SETUP_GUIDE.md          ← Docker setup & config guide
 │   ├── TROUBLESHOOTING.md             ← Debugging guide
 │   ├── SECURITY.md                    ← Production security
 │   ├── custom_models.md               ← Custom models
-│   ├── pipeline_report.md             ← Feature report
 │   ├── RADIOMICS_ROBUSTNESS.md        ← Robustness analysis
 │   ├── SYSTEMATIC_CT_CROPPING.md      ← CT cropping guide
 │   ├── Guide to Results Interpretation.md
-│   ├── qc_cropping_audit.md
-│   └── CODE_REVIEW.md
-│
-├── internal/                          ← Development notes (internal use)
-│   ├── Agents.md                      ← AI agent prompts
-│   ├── IMPROVEMENTS.md                ← Improvement backlog
-│   └── PROBLEMS.md                    ← Issue tracker
+│   └── qc_cropping_audit.md
 │
 ├── rtpipeline/                        ← Python package
 ├── envs/                              ← Conda environments
