@@ -1,0 +1,439 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RTpipeline - Radiotherapy DICOM Processing Pipeline</title>
+    <meta name="description" content="Automated radiotherapy DICOM processing pipeline with AI-powered segmentation, DVH analysis, and radiomics feature extraction.">
+    <link rel="stylesheet" href="assets/css/style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+</head>
+<body>
+    <nav class="navbar">
+        <div class="nav-container">
+            <a href="index.html" class="nav-logo">
+                <span class="logo-icon">RT</span>
+                <span class="logo-text">pipeline</span>
+            </a>
+            <ul class="nav-menu">
+                <li><a href="#features">Features</a></li>
+                <li><a href="#quickstart">Quick Start</a></li>
+                <li><a href="#installation">Installation</a></li>
+                <li><a href="#documentation">Documentation</a></li>
+                <li><a href="https://github.com/kstawiski/rtpipeline" class="nav-github" target="_blank">
+                    <svg height="20" viewBox="0 0 16 16" width="20" fill="currentColor">
+                        <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"></path>
+                    </svg>
+                    GitHub
+                </a></li>
+            </ul>
+            <button class="nav-toggle" aria-label="Toggle menu">
+                <span></span>
+                <span></span>
+                <span></span>
+            </button>
+        </div>
+    </nav>
+
+    <header class="hero">
+        <div class="hero-content">
+            <div class="hero-badge">Open Source Medical Imaging</div>
+            <h1>RTpipeline</h1>
+            <p class="hero-subtitle">Automated Radiotherapy DICOM Processing Pipeline</p>
+            <p class="hero-description">
+                End-to-end processing of radiotherapy DICOM data with AI-powered organ segmentation,
+                dose-volume histogram analysis, and IBSI-compliant radiomics feature extraction.
+            </p>
+            <div class="hero-buttons">
+                <a href="#quickstart" class="btn btn-primary">Get Started</a>
+                <a href="https://github.com/kstawiski/rtpipeline" class="btn btn-secondary" target="_blank">View on GitHub</a>
+            </div>
+            <div class="hero-stats">
+                <div class="stat">
+                    <span class="stat-value">100+</span>
+                    <span class="stat-label">Auto-segmented structures</span>
+                </div>
+                <div class="stat">
+                    <span class="stat-value">1,800+</span>
+                    <span class="stat-label">Radiomics features</span>
+                </div>
+                <div class="stat">
+                    <span class="stat-value">GPU</span>
+                    <span class="stat-label">Accelerated</span>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <section id="features" class="features">
+        <div class="container">
+            <h2 class="section-title">Key Features</h2>
+            <p class="section-subtitle">Everything you need for radiotherapy research data processing</p>
+
+            <div class="features-grid">
+                <div class="feature-card">
+                    <div class="feature-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
+                        </svg>
+                    </div>
+                    <h3>AI-Powered Segmentation</h3>
+                    <p>Automatic organ segmentation using TotalSegmentator with 100+ anatomical structures. Support for custom nnU-Net models.</p>
+                </div>
+
+                <div class="feature-card">
+                    <div class="feature-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M3 3v18h18"/>
+                            <path d="M18 17V9"/>
+                            <path d="M13 17V5"/>
+                            <path d="M8 17v-3"/>
+                        </svg>
+                    </div>
+                    <h3>DVH Analysis</h3>
+                    <p>Comprehensive dose-volume histogram calculation with 50+ clinical metrics including Dmean, Dmax, Vx, Dx, and conformity indices.</p>
+                </div>
+
+                <div class="feature-card">
+                    <div class="feature-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <circle cx="12" cy="12" r="3"/>
+                            <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>
+                        </svg>
+                    </div>
+                    <h3>Radiomics Extraction</h3>
+                    <p>IBSI-compliant feature extraction with PyRadiomics. Shape, first-order, texture, and filtered features from CT/MR images.</p>
+                </div>
+
+                <div class="feature-card">
+                    <div class="feature-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <rect x="3" y="3" width="18" height="18" rx="2"/>
+                            <path d="M3 9h18M9 21V9"/>
+                        </svg>
+                    </div>
+                    <h3>Batch Processing</h3>
+                    <p>Snakemake workflow orchestration for processing hundreds of patients. Automatic parallelization and fault tolerance.</p>
+                </div>
+
+                <div class="feature-card">
+                    <div class="feature-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
+                            <polyline points="3.27 6.96 12 12.01 20.73 6.96"/>
+                            <line x1="12" y1="22.08" x2="12" y2="12"/>
+                        </svg>
+                    </div>
+                    <h3>Docker & Singularity</h3>
+                    <p>Pre-built containers with all dependencies. Run on local workstations, HPC clusters, or cloud platforms.</p>
+                </div>
+
+                <div class="feature-card">
+                    <div class="feature-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"/>
+                        </svg>
+                    </div>
+                    <h3>Google Colab</h3>
+                    <p>Run in the cloud with free GPU access. No local installation required. Perfect for testing and small datasets.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section class="pipeline-flow">
+        <div class="container">
+            <h2 class="section-title">Pipeline Workflow</h2>
+            <p class="section-subtitle">From raw DICOM to research-ready datasets</p>
+
+            <div class="flow-diagram">
+                <div class="flow-step">
+                    <div class="flow-number">1</div>
+                    <div class="flow-content">
+                        <h4>DICOM Import</h4>
+                        <p>CT, RTDOSE, RTSTRUCT, MR</p>
+                    </div>
+                </div>
+                <div class="flow-arrow"></div>
+                <div class="flow-step">
+                    <div class="flow-number">2</div>
+                    <div class="flow-content">
+                        <h4>Conversion</h4>
+                        <p>NIfTI volumes & masks</p>
+                    </div>
+                </div>
+                <div class="flow-arrow"></div>
+                <div class="flow-step">
+                    <div class="flow-number">3</div>
+                    <div class="flow-content">
+                        <h4>Segmentation</h4>
+                        <p>TotalSegmentator + custom</p>
+                    </div>
+                </div>
+                <div class="flow-arrow"></div>
+                <div class="flow-step">
+                    <div class="flow-number">4</div>
+                    <div class="flow-content">
+                        <h4>Analysis</h4>
+                        <p>DVH + Radiomics + QC</p>
+                    </div>
+                </div>
+                <div class="flow-arrow"></div>
+                <div class="flow-step">
+                    <div class="flow-number">5</div>
+                    <div class="flow-content">
+                        <h4>Export</h4>
+                        <p>Excel, CSV, DICOM-RT</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section id="quickstart" class="quickstart">
+        <div class="container">
+            <h2 class="section-title">Quick Start</h2>
+            <p class="section-subtitle">Get up and running in minutes</p>
+
+            <div class="quickstart-options">
+                <div class="quickstart-option">
+                    <div class="option-header">
+                        <span class="option-badge">Recommended</span>
+                        <h3>Docker</h3>
+                    </div>
+                    <p>Pre-built container with all dependencies and model weights.</p>
+                    <div class="code-block">
+                        <pre><code><span class="comment"># Pull the image</span>
+docker pull kstawiski/rtpipeline:latest
+
+<span class="comment"># Run the pipeline</span>
+docker run --gpus all \
+  -v /path/to/dicom:/data/input \
+  -v /path/to/output:/data/output \
+  kstawiski/rtpipeline:latest \
+  snakemake --cores all</code></pre>
+                    </div>
+                    <a href="#installation" class="btn btn-outline">Full Instructions</a>
+                </div>
+
+                <div class="quickstart-option">
+                    <div class="option-header">
+                        <span class="option-badge cloud">Cloud</span>
+                        <h3>Google Colab</h3>
+                    </div>
+                    <p>Run in the cloud with free GPU. No installation required.</p>
+                    <div class="colab-buttons">
+                        <a href="https://colab.research.google.com/github/kstawiski/rtpipeline/blob/master/rtpipeline_colab_part1_gpu.ipynb" class="colab-btn" target="_blank">
+                            <img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open Part 1 in Colab">
+                            <span>Part 1: GPU Segmentation</span>
+                        </a>
+                        <a href="https://colab.research.google.com/github/kstawiski/rtpipeline/blob/master/rtpipeline_colab_part2_cpu.ipynb" class="colab-btn" target="_blank">
+                            <img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open Part 2 in Colab">
+                            <span>Part 2: CPU Analysis</span>
+                        </a>
+                    </div>
+                    <p class="colab-note">Upload your DICOM files to Google Drive, then run the notebooks.</p>
+                </div>
+
+                <div class="quickstart-option">
+                    <div class="option-header">
+                        <span class="option-badge hpc">HPC</span>
+                        <h3>Singularity</h3>
+                    </div>
+                    <p>For HPC clusters without Docker support.</p>
+                    <div class="code-block">
+                        <pre><code><span class="comment"># Convert Docker to Singularity</span>
+singularity pull rtpipeline.sif \
+  docker://kstawiski/rtpipeline:latest
+
+<span class="comment"># Run on cluster</span>
+singularity exec --nv rtpipeline.sif \
+  snakemake --cores $SLURM_CPUS</code></pre>
+                    </div>
+                    <a href="#installation" class="btn btn-outline">Full Instructions</a>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section id="installation" class="installation">
+        <div class="container">
+            <h2 class="section-title">Installation</h2>
+
+            <div class="install-tabs">
+                <button class="tab-btn active" data-tab="docker">Docker</button>
+                <button class="tab-btn" data-tab="conda">Conda</button>
+                <button class="tab-btn" data-tab="singularity">Singularity</button>
+            </div>
+
+            <div class="tab-content active" id="docker">
+                <h3>Docker Installation</h3>
+                <div class="install-steps">
+                    <div class="install-step">
+                        <span class="step-num">1</span>
+                        <div class="step-content">
+                            <h4>Prerequisites</h4>
+                            <ul>
+                                <li>Docker 20.10+</li>
+                                <li>NVIDIA Container Toolkit (for GPU)</li>
+                                <li>At least 32GB disk space</li>
+                            </ul>
+                        </div>
+                    </div>
+                    <div class="install-step">
+                        <span class="step-num">2</span>
+                        <div class="step-content">
+                            <h4>Pull the Image</h4>
+                            <div class="code-block">
+                                <pre><code>docker pull kstawiski/rtpipeline:latest</code></pre>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="install-step">
+                        <span class="step-num">3</span>
+                        <div class="step-content">
+                            <h4>Run the Pipeline</h4>
+                            <div class="code-block">
+                                <pre><code>docker run --gpus all --rm \
+  -v /path/to/dicom:/data/input:ro \
+  -v /path/to/output:/data/output:rw \
+  -v /path/to/logs:/data/logs:rw \
+  kstawiski/rtpipeline:latest \
+  snakemake --cores all --configfile /app/config.container.yaml</code></pre>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="tab-content" id="conda">
+                <h3>Conda Installation</h3>
+                <div class="install-steps">
+                    <div class="install-step">
+                        <span class="step-num">1</span>
+                        <div class="step-content">
+                            <h4>Clone Repository</h4>
+                            <div class="code-block">
+                                <pre><code>git clone https://github.com/kstawiski/rtpipeline.git
+cd rtpipeline</code></pre>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="install-step">
+                        <span class="step-num">2</span>
+                        <div class="step-content">
+                            <h4>Create Environments</h4>
+                            <div class="code-block">
+                                <pre><code>mamba env create -f envs/rtpipeline.yaml
+mamba env create -f envs/rtpipeline-radiomics.yaml</code></pre>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="install-step">
+                        <span class="step-num">3</span>
+                        <div class="step-content">
+                            <h4>Configure and Run</h4>
+                            <div class="code-block">
+                                <pre><code>cp config.yaml.example config.yaml
+<span class="comment"># Edit config.yaml with your paths</span>
+
+conda activate rtpipeline
+snakemake --cores all --use-conda</code></pre>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="tab-content" id="singularity">
+                <h3>Singularity Installation</h3>
+                <div class="install-steps">
+                    <div class="install-step">
+                        <span class="step-num">1</span>
+                        <div class="step-content">
+                            <h4>Convert Docker Image</h4>
+                            <div class="code-block">
+                                <pre><code>singularity pull rtpipeline.sif docker://kstawiski/rtpipeline:latest</code></pre>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="install-step">
+                        <span class="step-num">2</span>
+                        <div class="step-content">
+                            <h4>Run with GPU</h4>
+                            <div class="code-block">
+                                <pre><code>singularity exec --nv \
+  --bind /path/to/dicom:/data/input:ro \
+  --bind /path/to/output:/data/output:rw \
+  rtpipeline.sif \
+  snakemake --cores all --configfile /app/config.container.yaml</code></pre>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section id="documentation" class="documentation">
+        <div class="container">
+            <h2 class="section-title">Documentation</h2>
+            <p class="section-subtitle">Learn more about RTpipeline capabilities</p>
+
+            <div class="docs-grid">
+                <a href="https://github.com/kstawiski/rtpipeline/blob/master/README.md" class="doc-card" target="_blank">
+                    <h3>README</h3>
+                    <p>Complete project overview and usage instructions</p>
+                </a>
+                <a href="https://github.com/kstawiski/rtpipeline/blob/master/output_format_quick_ref.md" class="doc-card" target="_blank">
+                    <h3>Output Format</h3>
+                    <p>Guide to pipeline outputs and data analysis</p>
+                </a>
+                <a href="https://github.com/kstawiski/rtpipeline/blob/master/config.yaml.example" class="doc-card" target="_blank">
+                    <h3>Configuration</h3>
+                    <p>All configuration options explained</p>
+                </a>
+                <a href="https://github.com/kstawiski/rtpipeline/issues" class="doc-card" target="_blank">
+                    <h3>Issues & Support</h3>
+                    <p>Report bugs or request features</p>
+                </a>
+            </div>
+        </div>
+    </section>
+
+    <section class="cta">
+        <div class="container">
+            <h2>Ready to streamline your radiotherapy research?</h2>
+            <p>Start processing your DICOM data with RTpipeline today.</p>
+            <div class="cta-buttons">
+                <a href="https://github.com/kstawiski/rtpipeline" class="btn btn-primary" target="_blank">Get Started on GitHub</a>
+                <a href="https://colab.research.google.com/github/kstawiski/rtpipeline/blob/master/rtpipeline_colab_part1_gpu.ipynb" class="btn btn-secondary" target="_blank">Try in Colab</a>
+            </div>
+        </div>
+    </section>
+
+    <footer class="footer">
+        <div class="container">
+            <div class="footer-content">
+                <div class="footer-brand">
+                    <span class="logo-icon">RT</span>
+                    <span class="logo-text">pipeline</span>
+                </div>
+                <p>Open source radiotherapy DICOM processing pipeline.</p>
+                <div class="footer-links">
+                    <a href="https://github.com/kstawiski/rtpipeline" target="_blank">GitHub</a>
+                    <a href="https://github.com/kstawiski/rtpipeline/issues" target="_blank">Issues</a>
+                    <a href="https://github.com/kstawiski/rtpipeline/blob/master/LICENSE" target="_blank">License</a>
+                </div>
+            </div>
+            <div class="footer-bottom">
+                <p>&copy; 2025 RTpipeline. Released under MIT License.</p>
+            </div>
+        </div>
+    </footer>
+
+    <script src="assets/js/main.js"></script>
+</body>
+</html>
