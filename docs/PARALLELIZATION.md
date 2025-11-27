@@ -159,7 +159,7 @@ radiomics:
 - **Disk thrash / NFS saturation**: lower `max_workers` to 2–4 so fewer per-course jobs hammer storage simultaneously.
 - **Desktop becomes sluggish**: increase `scheduler.reserved_cores` to keep spare CPU capacity for the OS / window manager.
 - **Radiomics taking forever**: ensure `radiomics.sequential` is `false` (default) and that you did not override `RTPIPELINE_RADIOMICS_SEQUENTIAL=1`.
-- **Quick smoke test**: `./test.sh` runs against `Example_data/` using the defaults (`--cores all`) and is the fastest way to validate scheduler changes.
+- **Quick smoke test**: run `snakemake --cores all` against your test data to validate scheduler changes.
 - **Dry-run sanity check**: `snakemake --cores 8 -n` prints the DAG with resource usage so you can confirm `seg_workers` is 1 on GPU systems.
 
 ---
