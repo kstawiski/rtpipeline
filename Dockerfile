@@ -132,7 +132,6 @@ WORKDIR /app
 
 # Copy project files
 COPY --chown=rtpipeline:rtpipeline . /app/
-COPY --chown=rtpipeline:rtpipeline .condarc /home/rtpipeline/.condarc
 
 # Install rtpipeline package in base and rtpipeline environments
 # We use 'pip install -e .' to allow read-only mounting of code if needed,
