@@ -803,6 +803,7 @@ def main(argv: list[str] | None = None) -> int:
         radiomics_max_voxels=args.radiomics_max_voxels,
         radiomics_min_voxels=args.radiomics_min_voxels,
         custom_structures_config=None,  # Will be set below
+        task_timeout=args.task_timeout,
     )
 
     worker_budget = cfg.effective_workers()

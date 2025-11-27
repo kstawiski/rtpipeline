@@ -1,5 +1,8 @@
 # Snakemake configuration for rtpipeline
 
+# Container mode for Docker/Apptainer execution
+container_mode: true
+
 # Input/Output directories
 dicom_root: "Example_data"
 output_dir: "Data_Snakemake"
@@ -19,8 +22,9 @@ max_workers: null            # null => auto (cores - 1). Lower this (2-4) for sl
 scheduler:
   reserved_cores: 1                # Keep a core free for the OS / background I/O
   dvh_threads_per_job: 4           # Snakemake `threads:` per DVH job (controls parallel courses)
-  radiomics_threads_per_job: 6     # Snakemake `threads:` per radiomics job
+  radiomics_threads_per_job: 6     # Snakemake `threads:` per radiomics job (reduced to avoid multiprocessing deadlocks)
   qc_threads_per_job: 2            # Snakemake `threads:` per QC job
+  crop_ct_threads_per_job: 4       # Snakemake `threads:` per crop_ct job (I/O bound)
   prioritize_short_courses: true   # Run small courses first to unblock downstream stages sooner
 
 # Adjust worker budget downwards if your storage backend is network bound (e.g., 2-4 for NFS)
@@ -42,7 +46,7 @@ segmentation:
   num_proc_export: 1           # Keep at 1 to avoid Docker multiprocessing issues
 
 custom_models:
-  enabled: false       # SECURITY: Disabled by default - model weights are missing and will cause runtime failures
+  enabled: false      # Disabled for pelvic data - cardiac/HN models not applicable
   root: "custom_models"
   models: []           # Optional allowlist of model names; leave empty to run all
   max_workers: null        # Auto => sequential on GPU/MPS, worker budget on CPU. Override for multi-GPU hosts.

@@ -590,6 +590,20 @@ def radiomics_for_course_mr(config: PipelineConfig, course) -> Optional[Path]:
             except Exception:
                 pass
         return None
+
+    # Check if we need conda fallback (NumPy 2.x)
+    import numpy as np
+    numpy_version = tuple(map(int, np.__version__.split('.')[:2]))
+    if numpy_version[0] >= 2:
+        # Delegate to conda-based MR radiomics
+        try:
+            from .radiomics_conda import radiomics_for_course_mr as conda_radiomics_for_course_mr
+        except ImportError as exc:
+            logger.warning("Conda-based MR radiomics helper unavailable: %s", exc)
+            return None
+        logger.info("Delegating MR radiomics for %s to conda environment", course_dirs.root)
+        return conda_radiomics_for_course_mr(course_dirs.root, config)
+
     rows: List[Dict[str, object]] = []
     for series_root in sorted(p for p in mr_root.iterdir() if p.is_dir()):
         nifti_dir = series_root / 'NIFTI'

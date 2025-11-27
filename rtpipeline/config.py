@@ -80,6 +80,9 @@ class PipelineConfig:
     radiomics_robustness_enabled: bool = True
     radiomics_robustness_config: dict = field(default_factory=dict)
 
+    # Safety timeouts
+    task_timeout: int | None = None
+
     def ensure_dirs(self) -> None:
         self.output_root.mkdir(parents=True, exist_ok=True)
         self.logs_root.mkdir(parents=True, exist_ok=True)
