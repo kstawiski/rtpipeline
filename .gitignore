@@ -94,3 +94,7 @@ pipeline_report.html
 # Containers (build artifacts)
 containers/
 *.sif
+
+# Local container config overrides
+config.container.local.yaml
+container_id.txt

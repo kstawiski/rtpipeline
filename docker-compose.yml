@@ -25,6 +25,7 @@ services:
       - ./Uploads:/data/uploads:rw
       # Code mounted read-only for security
       - ./Code:/app/Code:ro
+      - ./rtpipeline:/app/rtpipeline:ro
     ports:
       - "8080:8080"
     environment:
@@ -46,9 +47,9 @@ services:
       - TOTALSEG_NUM_PROCESSES_SEGMENTATION_EXPORT=1
       - TOTALSEG_FORCE_TORCH_NUM_THREADS=1
       - TOTALSEG_PRELOAD_WEIGHTS=1
-      # PyTorch threading and memory control
-      - OMP_NUM_THREADS=4
-      - MKL_NUM_THREADS=4
+      # PyTorch threading and memory control - use num_cores - 1 for optimal GPU parallelism
+      - OMP_NUM_THREADS=8
+      - MKL_NUM_THREADS=8
       - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
       - PORT=8080
       - DEBUG=false
@@ -69,7 +70,7 @@ services:
       - SETGID
       - SETUID
       - SYS_PTRACE
-    # Resource limits
+    # Resource limits - maximize CPU usage (num_cores - 1 = 23)
     deploy:
       resources:
         reservations:
@@ -78,8 +79,8 @@ services:
               count: 1
               capabilities: [gpu]
         limits:
-          cpus: '16.0'
-          memory: 32G
+          cpus: '23.0'
+          memory: 48G
     # Increased shm_size for TotalSegmentator/PyTorch (prevents container hangs)
     shm_size: '8gb'
     restart: unless-stopped
@@ -106,6 +107,7 @@ services:
 
       - ./Uploads:/data/uploads:rw
       - ./Code:/app/Code:ro
+      - ./rtpipeline:/app/rtpipeline:ro
     ports:
       - "8080:8080"
     environment:
@@ -127,9 +129,9 @@ services:
       - TOTALSEG_NUM_PROCESSES_SEGMENTATION_EXPORT=1
       - TOTALSEG_FORCE_TORCH_NUM_THREADS=1
       - TOTALSEG_PRELOAD_WEIGHTS=1
-      # PyTorch threading control (more threads for CPU mode)
-      - OMP_NUM_THREADS=8
-      - MKL_NUM_THREADS=8
+      # PyTorch threading control - use num_cores - 1 for optimal CPU mode parallelism
+      - OMP_NUM_THREADS=23
+      - MKL_NUM_THREADS=23
       - PORT=8080
       - DEBUG=false
     working_dir: /app
@@ -147,8 +149,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '16.0'
-          memory: 32G
+          cpus: '23.0'
+          memory: 48G
         reservations:
           cpus: '4.0'
           memory: 8G
