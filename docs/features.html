@@ -1,0 +1,496 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Features - RTpipeline</title>
+    <meta name="description" content="Detailed features of RTpipeline - AI segmentation, DVH analysis, radiomics extraction, and more.">
+    <link rel="stylesheet" href="assets/css/style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+</head>
+<body>
+    <nav class="navbar">
+        <div class="nav-container">
+            <a href="index.html" class="nav-logo">
+                <span class="logo-icon">RT</span>
+                <span class="logo-text">pipeline</span>
+            </a>
+            <ul class="nav-menu">
+                <li><a href="features.html" class="active">Features</a></li>
+                <li><a href="output-format.html">Output Format</a></li>
+                <li><a href="configuration.html">Configuration</a></li>
+                <li><a href="faq.html">FAQ</a></li>
+                <li><a href="https://github.com/kstawiski/rtpipeline" class="nav-github" target="_blank">
+                    <svg height="20" viewBox="0 0 16 16" width="20" fill="currentColor">
+                        <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"></path>
+                    </svg>
+                    GitHub
+                </a></li>
+            </ul>
+            <button class="nav-toggle" aria-label="Toggle menu">
+                <span></span>
+                <span></span>
+                <span></span>
+            </button>
+        </div>
+    </nav>
+
+    <header class="page-header">
+        <div class="container">
+            <h1>Features</h1>
+            <p>Comprehensive tools for radiotherapy research data processing</p>
+        </div>
+    </header>
+
+    <main class="content">
+        <div class="container">
+            <!-- AI Segmentation -->
+            <section class="feature-detail" id="segmentation">
+                <div class="feature-detail-header">
+                    <div class="feature-detail-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
+                        </svg>
+                    </div>
+                    <h2>AI-Powered Auto-Segmentation</h2>
+                </div>
+                <div class="feature-detail-content">
+                    <p class="feature-intro">
+                        RTpipeline integrates <strong>TotalSegmentator</strong>, a state-of-the-art deep learning model that automatically
+                        segments over 100 anatomical structures from CT images. This eliminates hours of manual contouring and ensures
+                        consistent, reproducible segmentations across your entire cohort.
+                    </p>
+
+                    <h3>Supported Structures</h3>
+                    <div class="structure-grid">
+                        <div class="structure-category">
+                            <h4>Organs at Risk</h4>
+                            <ul>
+                                <li>Lungs (left/right)</li>
+                                <li>Heart & chambers</li>
+                                <li>Liver, spleen, kidneys</li>
+                                <li>Bladder, rectum</li>
+                                <li>Esophagus, stomach</li>
+                                <li>Spinal cord</li>
+                                <li>Brain structures</li>
+                                <li>Eyes, optic nerves</li>
+                            </ul>
+                        </div>
+                        <div class="structure-category">
+                            <h4>Skeletal Structures</h4>
+                            <ul>
+                                <li>Vertebrae (C1-L5, sacrum)</li>
+                                <li>Ribs (all 24)</li>
+                                <li>Hip bones</li>
+                                <li>Femurs</li>
+                                <li>Scapulae, clavicles</li>
+                                <li>Sternum</li>
+                                <li>Skull bones</li>
+                                <li>Mandible</li>
+                            </ul>
+                        </div>
+                        <div class="structure-category">
+                            <h4>Vascular Structures</h4>
+                            <ul>
+                                <li>Aorta (ascending/descending)</li>
+                                <li>Pulmonary artery</li>
+                                <li>Inferior vena cava</li>
+                                <li>Portal vein</li>
+                                <li>Iliac vessels</li>
+                                <li>Carotid arteries</li>
+                                <li>Jugular veins</li>
+                            </ul>
+                        </div>
+                        <div class="structure-category">
+                            <h4>Muscles & Other</h4>
+                            <ul>
+                                <li>Psoas muscles</li>
+                                <li>Gluteal muscles</li>
+                                <li>Autochthon muscles</li>
+                                <li>Iliopsoas</li>
+                                <li>Skin surface</li>
+                                <li>Body contour</li>
+                                <li>Subcutaneous fat</li>
+                            </ul>
+                        </div>
+                    </div>
+
+                    <h3>Custom Model Support</h3>
+                    <p>
+                        Beyond TotalSegmentator, RTpipeline supports <strong>custom nnU-Net models</strong> for specialized segmentation tasks:
+                    </p>
+                    <ul class="feature-list">
+                        <li><strong>Head & Neck Lymph Nodes</strong> - Automated lymph node level segmentation</li>
+                        <li><strong>Cardiac Substructures</strong> - Detailed heart chamber and vessel segmentation</li>
+                        <li><strong>Prostate Zones</strong> - Peripheral zone, transition zone, central zone</li>
+                        <li><strong>Custom Models</strong> - Integrate your own trained nnU-Net models</li>
+                    </ul>
+
+                    <div class="code-example">
+                        <h4>Configuration Example</h4>
+                        <div class="code-block">
+                            <pre><code>segmentation:
+  device: "gpu"           <span class="comment"># Use GPU for faster inference</span>
+  fast: false             <span class="comment"># Full resolution (set true for 3mm)</span>
+  roi_subset: null        <span class="comment"># null = all structures</span>
+  extra_models:           <span class="comment"># Additional TotalSegmentator tasks</span>
+    - "lung_vessels"
+    - "body"
+    - "vertebrae_body"
+
+custom_models:
+  enabled: true
+  models:
+    - name: "HN_lymph_nodes"
+      task_id: "Task901_LymphNodes"</code></pre>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- DVH Analysis -->
+            <section class="feature-detail" id="dvh">
+                <div class="feature-detail-header">
+                    <div class="feature-detail-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M3 3v18h18"/>
+                            <path d="M18 17V9"/>
+                            <path d="M13 17V5"/>
+                            <path d="M8 17v-3"/>
+                        </svg>
+                    </div>
+                    <h2>DVH Analysis</h2>
+                </div>
+                <div class="feature-detail-content">
+                    <p class="feature-intro">
+                        Comprehensive dose-volume histogram calculation with <strong>50+ clinical metrics</strong> for every structure.
+                        RTpipeline calculates both absolute and relative dose metrics, enabling direct comparison with clinical constraints
+                        and outcomes research.
+                    </p>
+
+                    <h3>Calculated Metrics</h3>
+                    <div class="metrics-grid">
+                        <div class="metrics-category">
+                            <h4>Dose Statistics</h4>
+                            <table class="metrics-table">
+                                <tr><td><code>Dmean_Gy</code></td><td>Mean dose to structure</td></tr>
+                                <tr><td><code>Dmax_Gy</code></td><td>Maximum point dose</td></tr>
+                                <tr><td><code>Dmin_Gy</code></td><td>Minimum dose</td></tr>
+                                <tr><td><code>Dmedian_Gy</code></td><td>Median dose (D50%)</td></tr>
+                                <tr><td><code>Dstd_Gy</code></td><td>Standard deviation</td></tr>
+                            </table>
+                        </div>
+                        <div class="metrics-category">
+                            <h4>Dose-at-Volume (Dx)</h4>
+                            <table class="metrics-table">
+                                <tr><td><code>D2%</code></td><td>Near-maximum dose</td></tr>
+                                <tr><td><code>D50%</code></td><td>Median dose</td></tr>
+                                <tr><td><code>D95%</code></td><td>Target coverage metric</td></tr>
+                                <tr><td><code>D98%</code></td><td>Near-minimum dose</td></tr>
+                                <tr><td><code>D2cc</code></td><td>Dose to hottest 2cc</td></tr>
+                            </table>
+                        </div>
+                        <div class="metrics-category">
+                            <h4>Volume-at-Dose (Vx)</h4>
+                            <table class="metrics-table">
+                                <tr><td><code>V5Gy - V70Gy</code></td><td>Absolute dose levels</td></tr>
+                                <tr><td><code>V95%, V100%, V105%</code></td><td>Relative to prescription</td></tr>
+                                <tr><td><code>V20Gy_cc</code></td><td>Absolute volume at dose</td></tr>
+                            </table>
+                        </div>
+                        <div class="metrics-category">
+                            <h4>Conformity Indices</h4>
+                            <table class="metrics-table">
+                                <tr><td><code>CI</code></td><td>Conformity Index</td></tr>
+                                <tr><td><code>HI</code></td><td>Homogeneity Index</td></tr>
+                                <tr><td><code>GI</code></td><td>Gradient Index</td></tr>
+                                <tr><td><code>RTOG_CI</code></td><td>RTOG Conformity Index</td></tr>
+                            </table>
+                        </div>
+                    </div>
+
+                    <h3>Clinical Applications</h3>
+                    <div class="use-cases">
+                        <div class="use-case">
+                            <h4>Toxicity Prediction</h4>
+                            <p>Use V20Gy lung, Dmean heart, and D2cc rectum metrics for NTCP modeling</p>
+                        </div>
+                        <div class="use-case">
+                            <h4>Plan Quality Assessment</h4>
+                            <p>Automated constraint checking against institutional or QUANTEC guidelines</p>
+                        </div>
+                        <div class="use-case">
+                            <h4>Outcomes Research</h4>
+                            <p>Consistent DVH extraction across large retrospective cohorts</p>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Radiomics -->
+            <section class="feature-detail" id="radiomics">
+                <div class="feature-detail-header">
+                    <div class="feature-detail-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <circle cx="12" cy="12" r="3"/>
+                            <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>
+                        </svg>
+                    </div>
+                    <h2>Radiomics Feature Extraction</h2>
+                </div>
+                <div class="feature-detail-content">
+                    <p class="feature-intro">
+                        <strong>IBSI-compliant</strong> radiomics feature extraction using PyRadiomics. Extract 1,800+ features from
+                        CT and MR images including shape descriptors, first-order statistics, texture features, and filtered image features.
+                    </p>
+
+                    <h3>Feature Categories</h3>
+                    <div class="radiomics-features">
+                        <div class="radiomics-category">
+                            <h4>Shape Features (14)</h4>
+                            <p>3D morphological descriptors independent of gray-level intensities</p>
+                            <ul>
+                                <li>Volume, Surface Area</li>
+                                <li>Sphericity, Compactness</li>
+                                <li>Elongation, Flatness</li>
+                                <li>Maximum 3D Diameter</li>
+                                <li>Major/Minor Axis Length</li>
+                            </ul>
+                        </div>
+                        <div class="radiomics-category">
+                            <h4>First-Order Features (18)</h4>
+                            <p>Statistics describing voxel intensity distribution</p>
+                            <ul>
+                                <li>Mean, Median, Range</li>
+                                <li>Standard Deviation, Variance</li>
+                                <li>Skewness, Kurtosis</li>
+                                <li>Energy, Entropy</li>
+                                <li>10th/90th Percentiles</li>
+                            </ul>
+                        </div>
+                        <div class="radiomics-category">
+                            <h4>Texture Features (75)</h4>
+                            <p>Second and higher-order statistics capturing spatial relationships</p>
+                            <ul>
+                                <li><strong>GLCM</strong> - Gray Level Co-occurrence Matrix (24)</li>
+                                <li><strong>GLRLM</strong> - Gray Level Run Length Matrix (16)</li>
+                                <li><strong>GLSZM</strong> - Gray Level Size Zone Matrix (16)</li>
+                                <li><strong>GLDM</strong> - Gray Level Dependence Matrix (14)</li>
+                                <li><strong>NGTDM</strong> - Neighbourhood Gray Tone Difference (5)</li>
+                            </ul>
+                        </div>
+                        <div class="radiomics-category">
+                            <h4>Filtered Features (1,500+)</h4>
+                            <p>Features extracted from filtered/transformed images</p>
+                            <ul>
+                                <li><strong>Wavelet</strong> - 8 decompositions (LLL, LLH, etc.)</li>
+                                <li><strong>LoG</strong> - Laplacian of Gaussian (sigma: 1-5mm)</li>
+                                <li><strong>Square/Root</strong> - Intensity transformations</li>
+                                <li><strong>Exponential/Logarithm</strong></li>
+                            </ul>
+                        </div>
+                    </div>
+
+                    <h3>Robustness Analysis</h3>
+                    <p>
+                        RTpipeline includes an innovative <strong>radiomics robustness module</strong> that assesses feature stability
+                        through segmentation perturbations:
+                    </p>
+                    <ul class="feature-list">
+                        <li><strong>Contour Perturbation</strong> - Systematic erosion/dilation (-15% to +15% volume)</li>
+                        <li><strong>ICC Calculation</strong> - Intraclass Correlation Coefficient for each feature</li>
+                        <li><strong>Feature Tiering</strong> - Automatic classification into robust/moderate/unstable</li>
+                        <li><strong>CoV Analysis</strong> - Coefficient of Variation across perturbations</li>
+                    </ul>
+
+                    <div class="code-example">
+                        <h4>Robustness Configuration</h4>
+                        <div class="code-block">
+                            <pre><code>radiomics_robustness:
+  enabled: true
+  modes:
+    - segmentation_perturbation
+  segmentation_perturbation:
+    apply_to_structures:
+      - "GTV*"
+      - "CTV*"
+      - "PTV*"
+    small_volume_changes: [-0.15, 0.0, 0.15]
+    large_volume_changes: [-0.30, 0.0, 0.30]
+  thresholds:
+    icc:
+      robust: 0.90        <span class="comment"># ICC > 0.90 = Tier 1</span>
+      acceptable: 0.75    <span class="comment"># ICC > 0.75 = Tier 2</span></code></pre>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Batch Processing -->
+            <section class="feature-detail" id="batch">
+                <div class="feature-detail-header">
+                    <div class="feature-detail-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <rect x="3" y="3" width="18" height="18" rx="2"/>
+                            <path d="M3 9h18M9 21V9"/>
+                        </svg>
+                    </div>
+                    <h2>Batch Processing & Workflow</h2>
+                </div>
+                <div class="feature-detail-content">
+                    <p class="feature-intro">
+                        Built on <strong>Snakemake</strong>, RTpipeline provides intelligent workflow orchestration with automatic
+                        dependency resolution, parallelization, and fault tolerance. Process hundreds of patients with a single command.
+                    </p>
+
+                    <h3>Workflow Capabilities</h3>
+                    <div class="workflow-features">
+                        <div class="workflow-feature">
+                            <h4>Automatic Parallelization</h4>
+                            <p>Independent tasks run concurrently across all available CPU cores. GPU tasks are serialized to prevent memory conflicts.</p>
+                        </div>
+                        <div class="workflow-feature">
+                            <h4>Dependency Resolution</h4>
+                            <p>Snakemake automatically determines task order based on input/output dependencies. No manual orchestration required.</p>
+                        </div>
+                        <div class="workflow-feature">
+                            <h4>Incremental Processing</h4>
+                            <p>Only re-runs tasks when inputs change. Adding new patients doesn't reprocess existing ones.</p>
+                        </div>
+                        <div class="workflow-feature">
+                            <h4>Fault Tolerance</h4>
+                            <p>Failed tasks can be automatically retried. Partial failures don't affect completed work.</p>
+                        </div>
+                    </div>
+
+                    <h3>Processing Steps</h3>
+                    <div class="pipeline-steps">
+                        <div class="pipeline-step">
+                            <span class="step-badge">1</span>
+                            <h4>DICOM Organization</h4>
+                            <p>Scans input directory, identifies patients/courses, links DICOM files</p>
+                        </div>
+                        <div class="pipeline-step">
+                            <span class="step-badge">2</span>
+                            <h4>NIfTI Conversion</h4>
+                            <p>Converts CT, MR, RTDOSE to NIfTI format using dcm2niix</p>
+                        </div>
+                        <div class="pipeline-step">
+                            <span class="step-badge">3</span>
+                            <h4>Structure Extraction</h4>
+                            <p>Extracts RTSTRUCT contours to individual NIfTI masks</p>
+                        </div>
+                        <div class="pipeline-step">
+                            <span class="step-badge">4</span>
+                            <h4>Auto-Segmentation</h4>
+                            <p>Runs TotalSegmentator and custom models (GPU)</p>
+                        </div>
+                        <div class="pipeline-step">
+                            <span class="step-badge">5</span>
+                            <h4>Structure Merging</h4>
+                            <p>Combines manual + auto segmentations, applies custom structure definitions</p>
+                        </div>
+                        <div class="pipeline-step">
+                            <span class="step-badge">6</span>
+                            <h4>DVH Calculation</h4>
+                            <p>Computes dose metrics for all structures (CPU parallel)</p>
+                        </div>
+                        <div class="pipeline-step">
+                            <span class="step-badge">7</span>
+                            <h4>Radiomics Extraction</h4>
+                            <p>Extracts features from CT/MR for each structure (CPU parallel)</p>
+                        </div>
+                        <div class="pipeline-step">
+                            <span class="step-badge">8</span>
+                            <h4>Quality Control</h4>
+                            <p>Generates QC reports, checks data integrity</p>
+                        </div>
+                        <div class="pipeline-step">
+                            <span class="step-badge">9</span>
+                            <h4>Aggregation</h4>
+                            <p>Combines all results into cohort-level Excel files</p>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- CT Cropping -->
+            <section class="feature-detail" id="cropping">
+                <div class="feature-detail-header">
+                    <div class="feature-detail-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M6 2v4M18 2v4M6 18v4M18 18v4M2 6h4M2 18h4M18 6h4M18 18h4"/>
+                            <rect x="6" y="6" width="12" height="12" rx="1"/>
+                        </svg>
+                    </div>
+                    <h2>Systematic CT Cropping</h2>
+                </div>
+                <div class="feature-detail-content">
+                    <p class="feature-intro">
+                        Intelligent region-based CT cropping reduces computational requirements while ensuring relevant anatomy is preserved.
+                        Essential for large cohort processing where full-body CTs are unnecessary.
+                    </p>
+
+                    <h3>Supported Regions</h3>
+                    <div class="regions-grid">
+                        <div class="region-card">
+                            <h4>Pelvis</h4>
+                            <p>L3 vertebra to below lesser trochanter. Ideal for prostate, rectal, gynecologic cancers.</p>
+                        </div>
+                        <div class="region-card">
+                            <h4>Thorax</h4>
+                            <p>Lung apices to diaphragm. For lung cancer, esophageal, breast treatments.</p>
+                        </div>
+                        <div class="region-card">
+                            <h4>Head & Neck</h4>
+                            <p>Skull base to clavicles. Optimized for H&N cancer segmentation.</p>
+                        </div>
+                        <div class="region-card">
+                            <h4>Abdomen</h4>
+                            <p>Diaphragm to iliac crest. For liver, pancreatic, renal treatments.</p>
+                        </div>
+                    </div>
+
+                    <div class="code-example">
+                        <h4>Configuration</h4>
+                        <div class="code-block">
+                            <pre><code>ct_cropping:
+  enabled: true
+  region: "pelvis"
+  superior_margin_cm: 2.0    <span class="comment"># Extra margin above region</span>
+  inferior_margin_cm: 10.0   <span class="comment"># Extra margin below region</span>
+  use_cropped_for_dvh: true
+  use_cropped_for_radiomics: true
+  keep_original: true        <span class="comment"># Preserve uncropped CT</span></code></pre>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </div>
+    </main>
+
+    <footer class="footer">
+        <div class="container">
+            <div class="footer-content">
+                <div class="footer-brand">
+                    <span class="logo-icon">RT</span>
+                    <span class="logo-text">pipeline</span>
+                </div>
+                <p>Open source radiotherapy DICOM processing pipeline.</p>
+                <div class="footer-links">
+                    <a href="https://github.com/kstawiski/rtpipeline" target="_blank">GitHub</a>
+                    <a href="https://github.com/kstawiski/rtpipeline/issues" target="_blank">Issues</a>
+                    <a href="https://github.com/kstawiski/rtpipeline/blob/master/LICENSE" target="_blank">License</a>
+                </div>
+            </div>
+            <div class="footer-bottom">
+                <p>&copy; 2025 RTpipeline. Released under MIT License.</p>
+            </div>
+        </div>
+    </footer>
+
+    <script src="assets/js/main.js"></script>
+</body>
+</html>

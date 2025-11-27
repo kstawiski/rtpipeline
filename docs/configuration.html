@@ -1,0 +1,772 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Configuration Reference - RTpipeline</title>
+    <meta name="description" content="Complete configuration reference for RTpipeline YAML settings.">
+    <link rel="stylesheet" href="assets/css/style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+</head>
+<body>
+    <nav class="navbar">
+        <div class="nav-container">
+            <a href="index.html" class="nav-logo">
+                <span class="logo-icon">RT</span>
+                <span class="logo-text">pipeline</span>
+            </a>
+            <ul class="nav-menu">
+                <li><a href="features.html">Features</a></li>
+                <li><a href="output-format.html">Output Format</a></li>
+                <li><a href="configuration.html" class="active">Configuration</a></li>
+                <li><a href="faq.html">FAQ</a></li>
+                <li><a href="https://github.com/kstawiski/rtpipeline" class="nav-github" target="_blank">
+                    <svg height="20" viewBox="0 0 16 16" width="20" fill="currentColor">
+                        <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"></path>
+                    </svg>
+                    GitHub
+                </a></li>
+            </ul>
+            <button class="nav-toggle" aria-label="Toggle menu">
+                <span></span>
+                <span></span>
+                <span></span>
+            </button>
+        </div>
+    </nav>
+
+    <header class="page-header">
+        <div class="container">
+            <h1>Configuration Reference</h1>
+            <p>Complete guide to RTpipeline YAML configuration options</p>
+        </div>
+    </header>
+
+    <main class="content">
+        <div class="container">
+            <!-- Quick Start -->
+            <section class="feature-detail" id="quickstart">
+                <div class="feature-detail-header">
+                    <div class="feature-detail-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
+                        </svg>
+                    </div>
+                    <h2>Quick Start Configuration</h2>
+                </div>
+                <div class="feature-detail-content">
+                    <p class="feature-intro">
+                        A minimal configuration file to get started. Copy this and customize based on your needs.
+                    </p>
+
+                    <div class="code-block">
+                        <pre><code><span class="comment"># Minimal RTpipeline configuration</span>
+container_mode: true
+
+<span class="comment"># Input/Output paths</span>
+dicom_root: "/data/input"
+output_dir: "/data/output"
+logs_dir: "/data/logs"
+
+<span class="comment"># Parallelism (auto-detected if null)</span>
+max_workers: null
+
+<span class="comment"># Segmentation settings</span>
+segmentation:
+  device: "gpu"
+  fast: false
+
+<span class="comment"># Enable DVH and radiomics (on by default)</span>
+radiomics:
+  params_file: "rtpipeline/radiomics_params.yaml"
+
+<span class="comment"># Optional: CT cropping for consistent volumes</span>
+ct_cropping:
+  enabled: true
+  region: "pelvis"</code></pre>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Core Settings -->
+            <section class="feature-detail" id="core">
+                <div class="feature-detail-header">
+                    <div class="feature-detail-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <circle cx="12" cy="12" r="3"/>
+                            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+                        </svg>
+                    </div>
+                    <h2>Core Settings</h2>
+                </div>
+                <div class="feature-detail-content">
+                    <table class="config-table">
+                        <thead>
+                            <tr>
+                                <th>Option</th>
+                                <th>Type</th>
+                                <th>Default</th>
+                                <th>Description</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><code>container_mode</code></td>
+                                <td>bool</td>
+                                <td>true</td>
+                                <td>Enable when running inside Docker/Singularity. Uses container paths.</td>
+                            </tr>
+                            <tr>
+                                <td><code>dicom_root</code></td>
+                                <td>string</td>
+                                <td>-</td>
+                                <td>Path to input DICOM directory (patients/courses nested inside)</td>
+                            </tr>
+                            <tr>
+                                <td><code>output_dir</code></td>
+                                <td>string</td>
+                                <td>-</td>
+                                <td>Path for output files (NIfTI, Excel, JSON)</td>
+                            </tr>
+                            <tr>
+                                <td><code>logs_dir</code></td>
+                                <td>string</td>
+                                <td>-</td>
+                                <td>Path for log files and Snakemake reports</td>
+                            </tr>
+                            <tr>
+                                <td><code>max_workers</code></td>
+                                <td>int/null</td>
+                                <td>null</td>
+                                <td>Max parallel workers. null = auto (cores - 1). Lower for NFS storage.</td>
+                            </tr>
+                            <tr>
+                                <td><code>custom_structures</code></td>
+                                <td>string</td>
+                                <td>null</td>
+                                <td>Path to custom structures YAML file (see below)</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+            <!-- Scheduler Settings -->
+            <section class="feature-detail" id="scheduler">
+                <div class="feature-detail-header">
+                    <div class="feature-detail-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/>
+                            <line x1="16" y1="2" x2="16" y2="6"/>
+                            <line x1="8" y1="2" x2="8" y2="6"/>
+                            <line x1="3" y1="10" x2="21" y2="10"/>
+                        </svg>
+                    </div>
+                    <h2>Scheduler Settings</h2>
+                </div>
+                <div class="feature-detail-content">
+                    <p>Fine-tune Snakemake job scheduling and resource allocation:</p>
+
+                    <div class="code-block">
+                        <pre><code>scheduler:
+  reserved_cores: 1                <span class="comment"># Keep cores free for OS</span>
+  dvh_threads_per_job: 4           <span class="comment"># Threads per DVH job</span>
+  radiomics_threads_per_job: 4     <span class="comment"># Threads per radiomics job</span>
+  qc_threads_per_job: 2            <span class="comment"># Threads per QC job</span>
+  crop_ct_threads_per_job: 4       <span class="comment"># Threads per CT crop job</span>
+  robustness_threads_per_job: 4    <span class="comment"># Threads per robustness job</span>
+  prioritize_short_courses: true   <span class="comment"># Run small courses first</span></code></pre>
+                    </div>
+
+                    <div class="info-box">
+                        <h4>Performance Tip</h4>
+                        <p>For NFS or slow storage, reduce <code>max_workers</code> to 2-4 and increase thread counts per job.
+                        This reduces I/O contention while maintaining throughput.</p>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Segmentation Settings -->
+            <section class="feature-detail" id="segmentation">
+                <div class="feature-detail-header">
+                    <div class="feature-detail-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
+                        </svg>
+                    </div>
+                    <h2>Segmentation Settings</h2>
+                </div>
+                <div class="feature-detail-content">
+                    <p>Configure TotalSegmentator AI auto-segmentation:</p>
+
+                    <table class="config-table">
+                        <thead>
+                            <tr>
+                                <th>Option</th>
+                                <th>Type</th>
+                                <th>Default</th>
+                                <th>Description</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><code>device</code></td>
+                                <td>string</td>
+                                <td>"gpu"</td>
+                                <td>Inference device: "gpu", "cpu", or "mps" (Apple Silicon)</td>
+                            </tr>
+                            <tr>
+                                <td><code>fast</code></td>
+                                <td>bool</td>
+                                <td>false</td>
+                                <td>Use 3mm resolution for faster inference (less accurate)</td>
+                            </tr>
+                            <tr>
+                                <td><code>force</code></td>
+                                <td>bool</td>
+                                <td>false</td>
+                                <td>Re-run segmentation even if outputs exist</td>
+                            </tr>
+                            <tr>
+                                <td><code>roi_subset</code></td>
+                                <td>list/null</td>
+                                <td>null</td>
+                                <td>Limit to specific structures. null = all structures</td>
+                            </tr>
+                            <tr>
+                                <td><code>extra_models</code></td>
+                                <td>list</td>
+                                <td>[]</td>
+                                <td>Additional TotalSegmentator tasks: "lung_vessels", "body", etc.</td>
+                            </tr>
+                            <tr>
+                                <td><code>force_split</code></td>
+                                <td>bool</td>
+                                <td>true</td>
+                                <td>Chunked inference to reduce memory spikes</td>
+                            </tr>
+                            <tr>
+                                <td><code>max_workers</code></td>
+                                <td>int/null</td>
+                                <td>null</td>
+                                <td>Override parallelism. null = sequential on GPU</td>
+                            </tr>
+                        </tbody>
+                    </table>
+
+                    <div class="code-block">
+                        <pre><code>segmentation:
+  device: "gpu"
+  fast: false
+  force: false
+  roi_subset: null               <span class="comment"># Or: ["liver", "kidney_left", "kidney_right"]</span>
+  extra_models:
+    - "lung_vessels"
+    - "body"
+    - "vertebrae_body"
+  force_split: true
+  nr_threads_resample: null      <span class="comment"># null = auto-detect</span>
+  nr_threads_save: null
+  num_proc_preprocessing: 1      <span class="comment"># Keep at 1 for Docker</span>
+  num_proc_export: 1</code></pre>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Custom Models -->
+            <section class="feature-detail" id="custom-models">
+                <div class="feature-detail-header">
+                    <div class="feature-detail-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
+                        </svg>
+                    </div>
+                    <h2>Custom nnU-Net Models</h2>
+                </div>
+                <div class="feature-detail-content">
+                    <p>Integrate your own trained nnU-Net models for specialized segmentation:</p>
+
+                    <div class="code-block">
+                        <pre><code>custom_models:
+  enabled: true
+  root: "custom_models"          <span class="comment"># Directory containing model folders</span>
+  models: []                     <span class="comment"># Empty = run all, or specify names</span>
+  max_workers: null              <span class="comment"># null = sequential on GPU</span>
+  force: false
+  nnunet_predict: "nnUNet_predict"
+  retain_weights: true           <span class="comment"># Keep model caches between runs</span></code></pre>
+                    </div>
+
+                    <h3>Model Directory Structure</h3>
+                    <div class="code-block directory-tree">
+                        <pre><code>custom_models/
+├── HN_lymph_nodes/
+│   ├── model.zip               <span class="comment"># Compressed nnU-Net weights</span>
+│   ├── model_config.json       <span class="comment"># Model configuration</span>
+│   └── dataset.json            <span class="comment"># Optional label mapping</span>
+└── Cardiac_substructures/
+    ├── model.zip
+    └── model_config.json</code></pre>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Radiomics Settings -->
+            <section class="feature-detail" id="radiomics">
+                <div class="feature-detail-header">
+                    <div class="feature-detail-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <circle cx="12" cy="12" r="3"/>
+                            <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2"/>
+                        </svg>
+                    </div>
+                    <h2>Radiomics Settings</h2>
+                </div>
+                <div class="feature-detail-content">
+                    <table class="config-table">
+                        <thead>
+                            <tr>
+                                <th>Option</th>
+                                <th>Type</th>
+                                <th>Default</th>
+                                <th>Description</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><code>sequential</code></td>
+                                <td>bool</td>
+                                <td>false</td>
+                                <td>Force sequential processing (debug mode)</td>
+                            </tr>
+                            <tr>
+                                <td><code>params_file</code></td>
+                                <td>string</td>
+                                <td>-</td>
+                                <td>PyRadiomics parameters file for CT</td>
+                            </tr>
+                            <tr>
+                                <td><code>mr_params_file</code></td>
+                                <td>string</td>
+                                <td>-</td>
+                                <td>PyRadiomics parameters file for MR</td>
+                            </tr>
+                            <tr>
+                                <td><code>skip_rois</code></td>
+                                <td>list</td>
+                                <td>[]</td>
+                                <td>Structure names to skip (case-insensitive)</td>
+                            </tr>
+                            <tr>
+                                <td><code>max_voxels</code></td>
+                                <td>int</td>
+                                <td>1.5B</td>
+                                <td>Maximum voxels per structure (memory protection)</td>
+                            </tr>
+                            <tr>
+                                <td><code>min_voxels</code></td>
+                                <td>int</td>
+                                <td>10</td>
+                                <td>Minimum voxels required for extraction</td>
+                            </tr>
+                        </tbody>
+                    </table>
+
+                    <div class="code-block">
+                        <pre><code>radiomics:
+  sequential: false
+  params_file: "rtpipeline/radiomics_params.yaml"
+  mr_params_file: "rtpipeline/radiomics_params_mr.yaml"
+  skip_rois:
+    - body
+    - couchsurface
+    - bones
+  max_voxels: 1500000000
+  min_voxels: 10</code></pre>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Radiomics Robustness -->
+            <section class="feature-detail" id="robustness">
+                <div class="feature-detail-header">
+                    <div class="feature-detail-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                        </svg>
+                    </div>
+                    <h2>Radiomics Robustness Analysis</h2>
+                </div>
+                <div class="feature-detail-content">
+                    <p class="feature-intro">
+                        Evaluate feature stability through segmentation perturbations following IBSI guidelines.
+                    </p>
+
+                    <div class="code-block">
+                        <pre><code>radiomics_robustness:
+  enabled: true
+
+  modes:
+    - segmentation_perturbation
+
+  segmentation_perturbation:
+    <span class="comment"># Structures to analyze (supports wildcards)</span>
+    apply_to_structures:
+      - "GTV*"
+      - "CTV*"
+      - "PTV*"
+
+    <span class="comment"># Volume change perturbations</span>
+    small_volume_changes: [-0.15, 0.0, 0.15]   <span class="comment"># +-15%</span>
+    large_volume_changes: [-0.30, 0.0, 0.30]   <span class="comment"># +-30%</span>
+
+    <span class="comment"># Advanced perturbations (set > 0 to enable)</span>
+    max_translation_mm: 0.0          <span class="comment"># Rigid shifts</span>
+    n_random_contour_realizations: 0 <span class="comment"># Boundary noise</span>
+    noise_levels: [0.0]              <span class="comment"># Image noise (HU)</span>
+
+    <span class="comment"># Perturbation intensity</span>
+    intensity: "standard"   <span class="comment"># mild, standard, aggressive</span>
+
+  <span class="comment"># Robustness thresholds</span>
+  thresholds:
+    icc:
+      robust: 0.90       <span class="comment"># ICC >= 0.90 = Tier 1</span>
+      acceptable: 0.75   <span class="comment"># ICC >= 0.75 = Tier 2</span>
+    cov:
+      robust_pct: 10.0
+      acceptable_pct: 20.0</code></pre>
+                    </div>
+
+                    <h3>Perturbation Intensity Levels</h3>
+                    <table class="config-table">
+                        <thead>
+                            <tr>
+                                <th>Level</th>
+                                <th>Perturbations/ROI</th>
+                                <th>Use Case</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><code>mild</code></td>
+                                <td>10-15</td>
+                                <td>Quick testing, development</td>
+                            </tr>
+                            <tr>
+                                <td><code>standard</code></td>
+                                <td>15-30</td>
+                                <td>Production use, balanced</td>
+                            </tr>
+                            <tr>
+                                <td><code>aggressive</code></td>
+                                <td>30-60</td>
+                                <td>Research-grade, comprehensive</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+            <!-- CT Cropping -->
+            <section class="feature-detail" id="ct-cropping">
+                <div class="feature-detail-header">
+                    <div class="feature-detail-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M6 2v4M18 2v4M6 18v4M18 18v4M2 6h4M2 18h4M18 6h4M18 18h4"/>
+                            <rect x="6" y="6" width="12" height="12" rx="1"/>
+                        </svg>
+                    </div>
+                    <h2>CT Cropping Settings</h2>
+                </div>
+                <div class="feature-detail-content">
+                    <p class="feature-intro">
+                        Systematic cropping ensures consistent anatomical boundaries across patients,
+                        making percentage DVH metrics comparable.
+                    </p>
+
+                    <table class="config-table">
+                        <thead>
+                            <tr>
+                                <th>Option</th>
+                                <th>Type</th>
+                                <th>Description</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><code>enabled</code></td>
+                                <td>bool</td>
+                                <td>Enable/disable CT cropping</td>
+                            </tr>
+                            <tr>
+                                <td><code>region</code></td>
+                                <td>string</td>
+                                <td>Anatomical region: pelvis, thorax, abdomen, head_neck, brain</td>
+                            </tr>
+                            <tr>
+                                <td><code>superior_margin_cm</code></td>
+                                <td>float</td>
+                                <td>Extra margin above superior landmark</td>
+                            </tr>
+                            <tr>
+                                <td><code>inferior_margin_cm</code></td>
+                                <td>float</td>
+                                <td>Extra margin below inferior landmark</td>
+                            </tr>
+                            <tr>
+                                <td><code>use_cropped_for_dvh</code></td>
+                                <td>bool</td>
+                                <td>Use cropped volumes for DVH analysis</td>
+                            </tr>
+                            <tr>
+                                <td><code>use_cropped_for_radiomics</code></td>
+                                <td>bool</td>
+                                <td>Use cropped volumes for radiomics</td>
+                            </tr>
+                            <tr>
+                                <td><code>keep_original</code></td>
+                                <td>bool</td>
+                                <td>Preserve uncropped CT files</td>
+                            </tr>
+                        </tbody>
+                    </table>
+
+                    <h3>Region Landmarks</h3>
+                    <table class="config-table">
+                        <thead>
+                            <tr>
+                                <th>Region</th>
+                                <th>Superior</th>
+                                <th>Inferior</th>
+                                <th>Default Margins</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><code>pelvis</code></td>
+                                <td>L1 vertebra</td>
+                                <td>Femoral heads</td>
+                                <td>2cm / 10cm</td>
+                            </tr>
+                            <tr>
+                                <td><code>thorax</code></td>
+                                <td>C7 / Lung apex</td>
+                                <td>L1 / Diaphragm</td>
+                                <td>2cm / 2cm</td>
+                            </tr>
+                            <tr>
+                                <td><code>abdomen</code></td>
+                                <td>T12 / L1</td>
+                                <td>L5 vertebra</td>
+                                <td>2cm / 2cm</td>
+                            </tr>
+                            <tr>
+                                <td><code>head_neck</code></td>
+                                <td>Skull apex</td>
+                                <td>C7 / Clavicles</td>
+                                <td>2cm / 2cm</td>
+                            </tr>
+                            <tr>
+                                <td><code>brain</code></td>
+                                <td>Brain boundary</td>
+                                <td>Brain boundary</td>
+                                <td>1cm / 1cm</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+            <!-- Custom Structures -->
+            <section class="feature-detail" id="custom-structures">
+                <div class="feature-detail-header">
+                    <div class="feature-detail-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <polygon points="12 2 2 7 12 12 22 7 12 2"/>
+                            <polyline points="2 17 12 22 22 17"/>
+                            <polyline points="2 12 12 17 22 12"/>
+                        </svg>
+                    </div>
+                    <h2>Custom Structures Definition</h2>
+                </div>
+                <div class="feature-detail-content">
+                    <p class="feature-intro">
+                        Define custom composite structures by combining or modifying existing segmentations.
+                        Create a separate YAML file and reference it with <code>custom_structures: "filename.yaml"</code>.
+                    </p>
+
+                    <div class="code-block">
+                        <pre><code><span class="comment"># custom_structures_pelvic.yaml</span>
+custom_structures:
+  <span class="comment"># Combine multiple structures</span>
+  pelvic_bones:
+    type: union
+    sources:
+      - hip_left
+      - hip_right
+      - sacrum
+      - vertebrae_L5
+      - vertebrae_L4
+
+  <span class="comment"># Apply morphological operations</span>
+  pelvic_bones_3mm:
+    type: expanded
+    source: pelvic_bones
+    margin_mm: 3.0
+
+  <span class="comment"># Ring structure (outer - inner)</span>
+  ptv_ring:
+    type: ring
+    inner: PTV
+    outer_margin_mm: 10.0
+
+  <span class="comment"># Subtract structures</span>
+  bowel_bag:
+    type: union
+    sources:
+      - small_bowel
+      - colon
+    subtract:
+      - PTV
+      - CTV
+
+  <span class="comment"># Intersection</span>
+  overlap_region:
+    type: intersection
+    sources:
+      - structure_a
+      - structure_b</code></pre>
+                    </div>
+
+                    <h3>Operation Types</h3>
+                    <table class="config-table">
+                        <thead>
+                            <tr>
+                                <th>Type</th>
+                                <th>Description</th>
+                                <th>Required Keys</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><code>union</code></td>
+                                <td>Combine multiple structures (OR)</td>
+                                <td>sources (list)</td>
+                            </tr>
+                            <tr>
+                                <td><code>intersection</code></td>
+                                <td>Overlap of structures (AND)</td>
+                                <td>sources (list)</td>
+                            </tr>
+                            <tr>
+                                <td><code>expanded</code></td>
+                                <td>Dilate a structure</td>
+                                <td>source, margin_mm</td>
+                            </tr>
+                            <tr>
+                                <td><code>contracted</code></td>
+                                <td>Erode a structure</td>
+                                <td>source, margin_mm</td>
+                            </tr>
+                            <tr>
+                                <td><code>ring</code></td>
+                                <td>Ring around structure</td>
+                                <td>inner, outer_margin_mm</td>
+                            </tr>
+                            <tr>
+                                <td><code>subtract</code></td>
+                                <td>Remove structures (optional)</td>
+                                <td>subtract (list)</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+            <!-- Environment Variables -->
+            <section class="feature-detail" id="env-vars">
+                <div class="feature-detail-header">
+                    <div class="feature-detail-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/>
+                            <line x1="8" y1="21" x2="16" y2="21"/>
+                            <line x1="12" y1="17" x2="12" y2="21"/>
+                        </svg>
+                    </div>
+                    <h2>Environment Variables</h2>
+                </div>
+                <div class="feature-detail-content">
+                    <p>Override configuration via environment variables:</p>
+
+                    <table class="config-table">
+                        <thead>
+                            <tr>
+                                <th>Variable</th>
+                                <th>Description</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><code>RTPIPELINE_MAX_WORKERS</code></td>
+                                <td>Override max_workers setting</td>
+                            </tr>
+                            <tr>
+                                <td><code>CUDA_VISIBLE_DEVICES</code></td>
+                                <td>Select GPUs (e.g., "0,1" for multi-GPU)</td>
+                            </tr>
+                            <tr>
+                                <td><code>OMP_NUM_THREADS</code></td>
+                                <td>OpenMP thread count</td>
+                            </tr>
+                            <tr>
+                                <td><code>MKL_NUM_THREADS</code></td>
+                                <td>Intel MKL thread count</td>
+                            </tr>
+                            <tr>
+                                <td><code>PYTHONPATH</code></td>
+                                <td>Python module search path (set to /app in container)</td>
+                            </tr>
+                        </tbody>
+                    </table>
+
+                    <div class="code-block">
+                        <pre><code><span class="comment"># Example: Run with limited workers and specific GPU</span>
+docker run --rm \
+  --gpus '"device=0"' \
+  -e RTPIPELINE_MAX_WORKERS=4 \
+  -e OMP_NUM_THREADS=8 \
+  -v ./Input:/data/input \
+  -v ./Output:/data/output \
+  kstawiski/rtpipeline:latest</code></pre>
+                    </div>
+                </div>
+            </section>
+        </div>
+    </main>
+
+    <footer class="footer">
+        <div class="container">
+            <div class="footer-content">
+                <div class="footer-brand">
+                    <span class="logo-icon">RT</span>
+                    <span class="logo-text">pipeline</span>
+                </div>
+                <p>Open source radiotherapy DICOM processing pipeline.</p>
+                <div class="footer-links">
+                    <a href="https://github.com/kstawiski/rtpipeline" target="_blank">GitHub</a>
+                    <a href="https://github.com/kstawiski/rtpipeline/issues" target="_blank">Issues</a>
+                    <a href="https://github.com/kstawiski/rtpipeline/blob/master/LICENSE" target="_blank">License</a>
+                </div>
+            </div>
+            <div class="footer-bottom">
+                <p>&copy; 2025 RTpipeline. Released under MIT License.</p>
+            </div>
+        </div>
+    </footer>
+
+    <script src="assets/js/main.js"></script>
+</body>
+</html>

@@ -835,3 +835,631 @@ section {
         margin-bottom: 8px;
     }
 }
+
+/* ==========================================
+   Documentation Pages Styles
+   ========================================== */
+
+/* Page Header */
+.page-header {
+    background: var(--gradient);
+    color: white;
+    padding: 120px 24px 60px;
+    text-align: center;
+}
+
+.page-header h1 {
+    font-size: 2.5rem;
+    font-weight: 700;
+    margin-bottom: 12px;
+}
+
+.page-header p {
+    font-size: 1.25rem;
+    opacity: 0.9;
+}
+
+/* Content Section */
+.content {
+    padding: 80px 24px;
+}
+
+/* Feature Detail Sections */
+.feature-detail {
+    background: white;
+    border: 1px solid var(--gray-200);
+    border-radius: var(--radius-xl);
+    padding: 40px;
+    margin-bottom: 40px;
+}
+
+.feature-detail-header {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    margin-bottom: 32px;
+}
+
+.feature-detail-icon {
+    width: 56px;
+    height: 56px;
+    background: var(--gradient);
+    border-radius: var(--radius-lg);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+
+.feature-detail-icon svg {
+    width: 28px;
+    height: 28px;
+    color: white;
+}
+
+.feature-detail-header h2 {
+    font-size: 1.75rem;
+    font-weight: 700;
+    color: var(--gray-900);
+    margin: 0;
+}
+
+.feature-detail-content h3 {
+    font-size: 1.25rem;
+    font-weight: 600;
+    color: var(--gray-900);
+    margin: 32px 0 16px;
+}
+
+.feature-detail-content h4 {
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--gray-800);
+    margin: 20px 0 12px;
+}
+
+.feature-intro {
+    font-size: 1.125rem;
+    color: var(--gray-600);
+    line-height: 1.7;
+}
+
+/* Structure Grid */
+.structure-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 24px;
+    margin-top: 24px;
+}
+
+.structure-category {
+    background: var(--gray-50);
+    border-radius: var(--radius);
+    padding: 20px;
+}
+
+.structure-category h4 {
+    font-size: 0.9375rem;
+    font-weight: 600;
+    color: var(--primary);
+    margin: 0 0 12px;
+}
+
+.structure-category ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+
+.structure-category li {
+    font-size: 0.875rem;
+    color: var(--gray-600);
+    padding: 4px 0;
+}
+
+/* Feature List */
+.feature-list {
+    list-style: none;
+    padding: 0;
+    margin: 16px 0;
+}
+
+.feature-list li {
+    padding: 8px 0 8px 24px;
+    position: relative;
+    color: var(--gray-600);
+}
+
+.feature-list li::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 16px;
+    width: 8px;
+    height: 8px;
+    background: var(--primary);
+    border-radius: 50%;
+}
+
+/* Metrics Grid */
+.metrics-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 24px;
+    margin-top: 24px;
+}
+
+.metrics-category {
+    background: var(--gray-50);
+    border-radius: var(--radius);
+    padding: 20px;
+}
+
+.metrics-category h4 {
+    font-size: 0.9375rem;
+    font-weight: 600;
+    color: var(--primary);
+    margin: 0 0 16px;
+}
+
+.metrics-table {
+    width: 100%;
+    font-size: 0.875rem;
+}
+
+.metrics-table td {
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--gray-200);
+}
+
+.metrics-table td:first-child {
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--gray-800);
+    white-space: nowrap;
+}
+
+.metrics-table td:last-child {
+    color: var(--gray-600);
+}
+
+/* Use Cases */
+.use-cases {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 20px;
+    margin-top: 20px;
+}
+
+.use-case {
+    background: var(--gray-50);
+    border-radius: var(--radius);
+    padding: 20px;
+}
+
+.use-case h4 {
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--gray-900);
+    margin: 0 0 8px;
+}
+
+.use-case p {
+    font-size: 0.9375rem;
+    color: var(--gray-600);
+    margin: 0;
+}
+
+/* Radiomics Features */
+.radiomics-features {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 24px;
+    margin-top: 24px;
+}
+
+.radiomics-category {
+    background: var(--gray-50);
+    border-radius: var(--radius);
+    padding: 24px;
+}
+
+.radiomics-category h4 {
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--primary);
+    margin: 0 0 8px;
+}
+
+.radiomics-category > p {
+    font-size: 0.875rem;
+    color: var(--gray-500);
+    margin: 0 0 16px;
+}
+
+.radiomics-category ul {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+}
+
+.radiomics-category li {
+    font-size: 0.875rem;
+    color: var(--gray-600);
+    padding: 4px 0;
+}
+
+/* Workflow Features */
+.workflow-features {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 20px;
+    margin-top: 20px;
+}
+
+.workflow-feature {
+    background: var(--gray-50);
+    border-radius: var(--radius);
+    padding: 20px;
+}
+
+.workflow-feature h4 {
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--gray-900);
+    margin: 0 0 8px;
+}
+
+.workflow-feature p {
+    font-size: 0.9375rem;
+    color: var(--gray-600);
+    margin: 0;
+}
+
+/* Pipeline Steps */
+.pipeline-steps {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    gap: 16px;
+    margin-top: 24px;
+}
+
+.pipeline-step {
+    display: flex;
+    align-items: flex-start;
+    gap: 16px;
+    background: var(--gray-50);
+    border-radius: var(--radius);
+    padding: 20px;
+}
+
+.step-badge {
+    width: 28px;
+    height: 28px;
+    background: var(--gradient);
+    color: white;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 0.875rem;
+    flex-shrink: 0;
+}
+
+.pipeline-step h4 {
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--gray-900);
+    margin: 0 0 4px;
+}
+
+.pipeline-step p {
+    font-size: 0.875rem;
+    color: var(--gray-600);
+    margin: 0;
+}
+
+/* Region Grid */
+.regions-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 20px;
+    margin-top: 20px;
+}
+
+.region-card {
+    background: var(--gray-50);
+    border-radius: var(--radius);
+    padding: 20px;
+}
+
+.region-card h4 {
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--primary);
+    margin: 0 0 8px;
+}
+
+.region-card p {
+    font-size: 0.9375rem;
+    color: var(--gray-600);
+    margin: 0;
+}
+
+/* Code Example */
+.code-example {
+    margin-top: 24px;
+}
+
+.code-example h4 {
+    font-size: 0.9375rem;
+    font-weight: 600;
+    color: var(--gray-700);
+    margin: 0 0 12px;
+}
+
+/* Directory Tree */
+.directory-tree pre {
+    line-height: 1.4;
+}
+
+/* Tables */
+.config-table,
+.output-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 16px 0;
+    font-size: 0.9375rem;
+}
+
+.config-table th,
+.output-table th {
+    text-align: left;
+    padding: 12px 16px;
+    background: var(--gray-100);
+    color: var(--gray-700);
+    font-weight: 600;
+    border-bottom: 2px solid var(--gray-200);
+}
+
+.config-table td,
+.output-table td {
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--gray-200);
+    color: var(--gray-600);
+}
+
+.config-table td:first-child,
+.output-table td:first-child {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.875rem;
+    color: var(--gray-800);
+}
+
+.config-table tr:hover,
+.output-table tr:hover {
+    background: var(--gray-50);
+}
+
+/* Info Box */
+.info-box {
+    background: #eff6ff;
+    border: 1px solid #bfdbfe;
+    border-radius: var(--radius);
+    padding: 20px;
+    margin: 24px 0;
+}
+
+.info-box h4 {
+    font-size: 1rem;
+    font-weight: 600;
+    color: #1e40af;
+    margin: 0 0 8px;
+}
+
+.info-box p {
+    font-size: 0.9375rem;
+    color: #1e3a8a;
+    margin: 0;
+}
+
+/* FAQ Styles */
+.faq-item {
+    margin-bottom: 32px;
+}
+
+.faq-item h3 {
+    font-size: 1.125rem;
+    font-weight: 600;
+    color: var(--gray-900);
+    margin: 0 0 12px;
+}
+
+.faq-item p {
+    font-size: 0.9375rem;
+    color: var(--gray-600);
+    margin: 8px 0;
+}
+
+.faq-item ul,
+.faq-item ol {
+    margin: 12px 0;
+    padding-left: 24px;
+}
+
+.faq-item li {
+    font-size: 0.9375rem;
+    color: var(--gray-600);
+    margin: 6px 0;
+}
+
+/* TOC Section */
+.toc-section {
+    background: var(--gray-50);
+    border-radius: var(--radius-lg);
+    padding: 24px 32px;
+    margin-bottom: 40px;
+}
+
+.toc-section h2 {
+    font-size: 1.25rem;
+    font-weight: 600;
+    color: var(--gray-900);
+    margin: 0 0 16px;
+}
+
+.toc-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 8px 24px;
+}
+
+.toc-list a {
+    color: var(--primary);
+    text-decoration: none;
+    font-size: 0.9375rem;
+}
+
+.toc-list a:hover {
+    text-decoration: underline;
+}
+
+/* Active nav link */
+.nav-menu a.active {
+    color: var(--primary);
+    font-weight: 500;
+}
+
+/* Author Section */
+.author {
+    background: var(--gray-50);
+}
+
+.author-card {
+    background: white;
+    border: 1px solid var(--gray-200);
+    border-radius: var(--radius-xl);
+    padding: 40px;
+    max-width: 800px;
+    margin: 0 auto;
+}
+
+.author-info h3 {
+    font-size: 1.5rem;
+    font-weight: 700;
+    color: var(--gray-900);
+    margin: 0 0 8px;
+}
+
+.author-title {
+    font-size: 1.125rem;
+    color: var(--primary);
+    font-weight: 500;
+    margin: 0 0 20px;
+}
+
+.author-bio {
+    font-size: 1rem;
+    color: var(--gray-600);
+    line-height: 1.7;
+    margin: 0 0 24px;
+}
+
+.author-affiliations {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    margin-bottom: 24px;
+}
+
+.affiliation {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.affiliation strong {
+    font-size: 0.9375rem;
+    font-weight: 600;
+    color: var(--gray-800);
+}
+
+.affiliation span {
+    font-size: 0.875rem;
+    color: var(--gray-500);
+}
+
+.author-links {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+}
+
+.author-link {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 16px;
+    background: var(--gray-100);
+    border-radius: var(--radius);
+    color: var(--gray-700);
+    text-decoration: none;
+    font-size: 0.9375rem;
+    font-weight: 500;
+    transition: all 0.2s;
+}
+
+.author-link:hover {
+    background: var(--primary);
+    color: white;
+}
+
+.author-link svg {
+    width: 18px;
+    height: 18px;
+}
+
+/* Responsive for documentation pages */
+@media (max-width: 768px) {
+    .page-header {
+        padding: 100px 24px 40px;
+    }
+
+    .page-header h1 {
+        font-size: 2rem;
+    }
+
+    .content {
+        padding: 40px 16px;
+    }
+
+    .feature-detail {
+        padding: 24px;
+    }
+
+    .feature-detail-header {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 12px;
+    }
+
+    .feature-detail-header h2 {
+        font-size: 1.5rem;
+    }
+
+    .config-table,
+    .output-table {
+        display: block;
+        overflow-x: auto;
+    }
+
+    .structure-grid,
+    .metrics-grid,
+    .radiomics-features,
+    .pipeline-steps {
+        grid-template-columns: 1fr;
+    }
+}
