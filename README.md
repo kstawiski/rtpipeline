@@ -1,7 +1,13 @@
 # rtpipeline
 
+[![Website](https://img.shields.io/badge/Website-kstawiski.github.io%2Frtpipeline-blue)](https://kstawiski.github.io/rtpipeline/)
+[![Docker](https://img.shields.io/badge/Docker-kstawiski%2Frtpipeline-blue)](https://hub.docker.com/r/kstawiski/rtpipeline)
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/kstawiski/rtpipeline/blob/master/rtpipeline_colab_part1_gpu.ipynb)
+
 Modern radiotherapy departments produce a rich set of DICOM-RT objects (CT, MR, RTPLAN, RTDOSE, RTSTRUCT, REG).
 **rtpipeline** turns those raw exports into analysis-ready data tables, volumetric masks, DVH metrics, and quality-control reports, while keeping a reproducible record of every step. The workflow is implemented with **Snakemake** and the companion **rtpipeline** Python package.
+
+**[View Documentation Website](https://kstawiski.github.io/rtpipeline/)**
 
 ## 🚀 Quick Start (Recommended)
 
