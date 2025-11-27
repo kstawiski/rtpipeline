@@ -1,0 +1,592 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FAQ & Troubleshooting - RTpipeline</title>
+    <meta name="description" content="Frequently asked questions and troubleshooting guide for RTpipeline.">
+    <link rel="stylesheet" href="assets/css/style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+</head>
+<body>
+    <nav class="navbar">
+        <div class="nav-container">
+            <a href="index.html" class="nav-logo">
+                <span class="logo-icon">RT</span>
+                <span class="logo-text">pipeline</span>
+            </a>
+            <ul class="nav-menu">
+                <li><a href="features.html">Features</a></li>
+                <li><a href="output-format.html">Output Format</a></li>
+                <li><a href="configuration.html">Configuration</a></li>
+                <li><a href="faq.html" class="active">FAQ</a></li>
+                <li><a href="https://github.com/kstawiski/rtpipeline" class="nav-github" target="_blank">
+                    <svg height="20" viewBox="0 0 16 16" width="20" fill="currentColor">
+                        <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"></path>
+                    </svg>
+                    GitHub
+                </a></li>
+            </ul>
+            <button class="nav-toggle" aria-label="Toggle menu">
+                <span></span>
+                <span></span>
+                <span></span>
+            </button>
+        </div>
+    </nav>
+
+    <header class="page-header">
+        <div class="container">
+            <h1>FAQ & Troubleshooting</h1>
+            <p>Common questions and solutions for RTpipeline issues</p>
+        </div>
+    </header>
+
+    <main class="content">
+        <div class="container">
+            <!-- Table of Contents -->
+            <section class="toc-section">
+                <h2>Contents</h2>
+                <ul class="toc-list">
+                    <li><a href="#general">General Questions</a></li>
+                    <li><a href="#installation">Installation Issues</a></li>
+                    <li><a href="#gpu">GPU & Performance</a></li>
+                    <li><a href="#dicom">DICOM Processing</a></li>
+                    <li><a href="#segmentation">Segmentation Issues</a></li>
+                    <li><a href="#radiomics">Radiomics Problems</a></li>
+                    <li><a href="#docker">Docker Troubleshooting</a></li>
+                </ul>
+            </section>
+
+            <!-- General Questions -->
+            <section class="feature-detail" id="general">
+                <div class="feature-detail-header">
+                    <div class="feature-detail-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <circle cx="12" cy="12" r="10"/>
+                            <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/>
+                            <line x1="12" y1="17" x2="12.01" y2="17"/>
+                        </svg>
+                    </div>
+                    <h2>General Questions</h2>
+                </div>
+                <div class="feature-detail-content">
+                    <div class="faq-item">
+                        <h3>What DICOM modalities does RTpipeline support?</h3>
+                        <p>RTpipeline processes:</p>
+                        <ul>
+                            <li><strong>CT</strong> - Planning CT scans (required)</li>
+                            <li><strong>RTDOSE</strong> - Radiation dose distributions (required for DVH)</li>
+                            <li><strong>RTSTRUCT</strong> - Contour sets from treatment planning systems</li>
+                            <li><strong>MR</strong> - MRI sequences (optional, for MR radiomics)</li>
+                        </ul>
+                    </div>
+
+                    <div class="faq-item">
+                        <h3>How should I organize my input DICOM files?</h3>
+                        <p>RTpipeline automatically discovers DICOM files regardless of folder structure. However, for best results:</p>
+                        <div class="code-block">
+                            <pre><code>Input/
+├── Patient_001/
+│   ├── CT/
+│   │   └── *.dcm
+│   ├── RTDOSE/
+│   │   └── *.dcm
+│   └── RTSTRUCT/
+│       └── *.dcm
+└── Patient_002/
+    └── ...</code></pre>
+                        </div>
+                        <p>The pipeline uses DICOM headers (PatientID, StudyDate) to group files into patients and courses.</p>
+                    </div>
+
+                    <div class="faq-item">
+                        <h3>Can I process patients with multiple treatment courses?</h3>
+                        <p>Yes! RTpipeline automatically detects multiple courses per patient based on Study Date.
+                        Each course is processed independently with its own output folder.</p>
+                    </div>
+
+                    <div class="faq-item">
+                        <h3>What's the difference between structures_auto and structures_merged?</h3>
+                        <ul>
+                            <li><strong>structures/</strong> - Contours extracted from RTSTRUCT (manual delineations)</li>
+                            <li><strong>structures_auto/</strong> - AI-generated segmentations from TotalSegmentator</li>
+                            <li><strong>structures_merged/</strong> - Combined set including custom composite structures</li>
+                        </ul>
+                        <p>DVH and radiomics are computed on structures_merged by default.</p>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Installation Issues -->
+            <section class="feature-detail" id="installation">
+                <div class="feature-detail-header">
+                    <div class="feature-detail-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                            <polyline points="7 10 12 15 17 10"/>
+                            <line x1="12" y1="15" x2="12" y2="3"/>
+                        </svg>
+                    </div>
+                    <h2>Installation Issues</h2>
+                </div>
+                <div class="feature-detail-content">
+                    <div class="faq-item">
+                        <h3>Docker pull fails with "permission denied"</h3>
+                        <p><strong>Solution:</strong> Add your user to the docker group:</p>
+                        <div class="code-block">
+                            <pre><code>sudo usermod -aG docker $USER
+newgrp docker  <span class="comment"># Or log out and back in</span></code></pre>
+                        </div>
+                    </div>
+
+                    <div class="faq-item">
+                        <h3>Singularity/Apptainer build fails</h3>
+                        <p><strong>Solution:</strong> Ensure you have enough disk space (>20GB) and use a local temporary directory:</p>
+                        <div class="code-block">
+                            <pre><code>export SINGULARITY_TMPDIR=/local/tmp
+singularity pull rtpipeline.sif docker://kstawiski/rtpipeline:latest</code></pre>
+                        </div>
+                    </div>
+
+                    <div class="faq-item">
+                        <h3>GPU not detected in container</h3>
+                        <p><strong>For Docker:</strong> Ensure NVIDIA Container Toolkit is installed:</p>
+                        <div class="code-block">
+                            <pre><code><span class="comment"># Install nvidia-container-toolkit</span>
+distribution=$(. /etc/os-release;echo $ID$VERSION_ID)
+curl -s -L https://nvidia.github.io/nvidia-docker/gpgkey | sudo apt-key add -
+curl -s -L https://nvidia.github.io/nvidia-docker/$distribution/nvidia-docker.list | \
+  sudo tee /etc/apt/sources.list.d/nvidia-docker.list
+sudo apt-get update && sudo apt-get install -y nvidia-container-toolkit
+sudo systemctl restart docker</code></pre>
+                        </div>
+                        <p><strong>For Singularity:</strong> Use <code>--nv</code> flag:</p>
+                        <div class="code-block">
+                            <pre><code>singularity run --nv rtpipeline.sif</code></pre>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- GPU & Performance -->
+            <section class="feature-detail" id="gpu">
+                <div class="feature-detail-header">
+                    <div class="feature-detail-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
+                        </svg>
+                    </div>
+                    <h2>GPU & Performance</h2>
+                </div>
+                <div class="feature-detail-content">
+                    <div class="faq-item">
+                        <h3>CUDA out of memory during segmentation</h3>
+                        <p><strong>Solutions:</strong></p>
+                        <ol>
+                            <li>Enable <code>force_split: true</code> in segmentation config (default)</li>
+                            <li>Use <code>fast: true</code> for 3mm resolution (less memory)</li>
+                            <li>Increase shared memory: <code>--shm-size=8g</code></li>
+                            <li>Fall back to CPU: <code>device: "cpu"</code></li>
+                        </ol>
+                        <div class="code-block">
+                            <pre><code>segmentation:
+  device: "gpu"
+  fast: true          <span class="comment"># Lower resolution, less memory</span>
+  force_split: true   <span class="comment"># Chunked inference</span></code></pre>
+                        </div>
+                    </div>
+
+                    <div class="faq-item">
+                        <h3>How can I use multiple GPUs?</h3>
+                        <p>RTpipeline auto-detects multiple GPUs. Specify which GPUs to use:</p>
+                        <div class="code-block">
+                            <pre><code><span class="comment"># Use GPUs 0 and 1</span>
+docker run --gpus '"device=0,1"' ...
+
+<span class="comment"># Or via environment variable</span>
+-e CUDA_VISIBLE_DEVICES=0,1</code></pre>
+                        </div>
+                    </div>
+
+                    <div class="faq-item">
+                        <h3>Pipeline is running very slowly</h3>
+                        <p><strong>Checklist:</strong></p>
+                        <ul>
+                            <li>Check GPU is being used: <code>nvidia-smi</code> should show activity</li>
+                            <li>Verify adequate CPU cores: <code>--cpus=16</code> minimum recommended</li>
+                            <li>Check I/O: NFS/network storage is much slower than local SSD</li>
+                            <li>Reduce workers for slow storage: <code>max_workers: 4</code></li>
+                            <li>Monitor resource usage: <code>docker stats</code></li>
+                        </ul>
+                    </div>
+
+                    <div class="faq-item">
+                        <h3>How much memory do I need?</h3>
+                        <table class="config-table">
+                            <thead>
+                                <tr>
+                                    <th>Component</th>
+                                    <th>GPU Memory</th>
+                                    <th>System RAM</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td>TotalSegmentator (fast)</td>
+                                    <td>4 GB</td>
+                                    <td>8 GB</td>
+                                </tr>
+                                <tr>
+                                    <td>TotalSegmentator (full)</td>
+                                    <td>8 GB</td>
+                                    <td>16 GB</td>
+                                </tr>
+                                <tr>
+                                    <td>Radiomics extraction</td>
+                                    <td>-</td>
+                                    <td>4-8 GB per worker</td>
+                                </tr>
+                                <tr>
+                                    <td>Recommended total</td>
+                                    <td>8+ GB</td>
+                                    <td>32+ GB</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </section>
+
+            <!-- DICOM Processing -->
+            <section class="feature-detail" id="dicom">
+                <div class="feature-detail-header">
+                    <div class="feature-detail-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                            <polyline points="14 2 14 8 20 8"/>
+                        </svg>
+                    </div>
+                    <h2>DICOM Processing</h2>
+                </div>
+                <div class="feature-detail-content">
+                    <div class="faq-item">
+                        <h3>No patients found in input directory</h3>
+                        <p><strong>Causes:</strong></p>
+                        <ul>
+                            <li>DICOM files don't have .dcm extension (RTpipeline scans *.dcm)</li>
+                            <li>Missing required modalities (CT is required)</li>
+                            <li>Corrupt DICOM headers</li>
+                        </ul>
+                        <p><strong>Solution:</strong> Verify your DICOMs:</p>
+                        <div class="code-block">
+                            <pre><code><span class="comment"># Check DICOM files exist</span>
+find /path/to/input -name "*.dcm" | head
+
+<span class="comment"># Verify DICOM headers</span>
+python -c "import pydicom; print(pydicom.dcmread('file.dcm'))"</code></pre>
+                        </div>
+                    </div>
+
+                    <div class="faq-item">
+                        <h3>Structure names don't match expected patterns</h3>
+                        <p>RTSTRUCT names vary between institutions. Use pattern matching in custom structures:</p>
+                        <div class="code-block">
+                            <pre><code>custom_structures:
+  gtv:
+    type: union
+    sources:
+      - GTV*      <span class="comment"># Matches GTV, GTV_primary, GTV-1</span>
+      - gtv*      <span class="comment"># Case-insensitive</span>
+      - Tumor*</code></pre>
+                        </div>
+                    </div>
+
+                    <div class="faq-item">
+                        <h3>RTDOSE not aligned with CT</h3>
+                        <p>RTpipeline automatically resamples dose to CT geometry. If issues persist:</p>
+                        <ul>
+                            <li>Verify RTDOSE references the correct CT series (check ReferencedFrameOfReferenceUID)</li>
+                            <li>Check for corrupted DICOM spatial information</li>
+                            <li>Ensure dose grid covers the region of interest</li>
+                        </ul>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Segmentation Issues -->
+            <section class="feature-detail" id="segmentation">
+                <div class="feature-detail-header">
+                    <div class="feature-detail-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
+                        </svg>
+                    </div>
+                    <h2>Segmentation Issues</h2>
+                </div>
+                <div class="feature-detail-content">
+                    <div class="faq-item">
+                        <h3>TotalSegmentator produces empty/wrong segmentations</h3>
+                        <p><strong>Possible causes:</strong></p>
+                        <ul>
+                            <li>CT not in HU units (check window/level)</li>
+                            <li>Limited field of view (anatomy not visible)</li>
+                            <li>Non-standard patient orientation</li>
+                            <li>Very thick slices (>5mm)</li>
+                        </ul>
+                        <p><strong>Solutions:</strong></p>
+                        <ul>
+                            <li>Verify CT looks correct in a DICOM viewer</li>
+                            <li>Try <code>fast: false</code> for better accuracy</li>
+                            <li>Check TotalSegmentator supports your anatomy</li>
+                        </ul>
+                    </div>
+
+                    <div class="faq-item">
+                        <h3>Missing structures in output</h3>
+                        <p>Some structures may not be present in all patients:</p>
+                        <ul>
+                            <li>Anatomy not visible in CT (e.g., brain in thorax scan)</li>
+                            <li>Structure too small to segment reliably</li>
+                            <li>Filtered by <code>roi_subset</code> configuration</li>
+                        </ul>
+                        <p>Check the logs for warnings about skipped structures.</p>
+                    </div>
+
+                    <div class="faq-item">
+                        <h3>How do I add my own segmentation model?</h3>
+                        <p>Create a custom model folder with your nnU-Net weights:</p>
+                        <div class="code-block">
+                            <pre><code>custom_models/
+└── MyModel/
+    ├── model.zip          <span class="comment"># nnU-Net model weights</span>
+    └── model_config.json  <span class="comment"># Configuration</span>
+
+<span class="comment"># model_config.json</span>
+{
+  "task_id": "Task999_MyTask",
+  "trainer": "nnUNetTrainerV2",
+  "plans": "nnUNetPlansv2.1",
+  "fold": "all"
+}</code></pre>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Radiomics Problems -->
+            <section class="feature-detail" id="radiomics">
+                <div class="feature-detail-header">
+                    <div class="feature-detail-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <circle cx="12" cy="12" r="3"/>
+                            <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42"/>
+                        </svg>
+                    </div>
+                    <h2>Radiomics Problems</h2>
+                </div>
+                <div class="feature-detail-content">
+                    <div class="faq-item">
+                        <h3>Radiomics extraction fails with memory error</h3>
+                        <p><strong>Solutions:</strong></p>
+                        <ol>
+                            <li>Reduce parallel workers: <code>max_workers: 2</code></li>
+                            <li>Add structures to skip_rois (body, bones, etc.)</li>
+                            <li>Set <code>max_voxels</code> limit</li>
+                            <li>Enable CT cropping to reduce volume sizes</li>
+                        </ol>
+                        <div class="code-block">
+                            <pre><code>radiomics:
+  skip_rois:
+    - body
+    - skin
+    - bones
+  max_voxels: 500000000  <span class="comment"># 500M voxels max</span></code></pre>
+                        </div>
+                    </div>
+
+                    <div class="faq-item">
+                        <h3>Many NaN values in radiomics output</h3>
+                        <p><strong>Causes:</strong></p>
+                        <ul>
+                            <li>Structure too small (<code>min_voxels: 10</code>)</li>
+                            <li>Constant voxel values (no texture)</li>
+                            <li>Mask doesn't overlap with image</li>
+                        </ul>
+                        <p>NaN values are expected for very small structures. Filter in your analysis:</p>
+                        <div class="code-block">
+                            <pre><code>df = df[df['original_shape_VoxelVolume'] > 100]  <span class="comment"># Min 100 voxels</span></code></pre>
+                        </div>
+                    </div>
+
+                    <div class="faq-item">
+                        <h3>How do I customize radiomics parameters?</h3>
+                        <p>Edit the PyRadiomics YAML file:</p>
+                        <div class="code-block">
+                            <pre><code><span class="comment"># radiomics_params.yaml</span>
+setting:
+  binWidth: 25            <span class="comment"># HU bin width</span>
+  resampledPixelSpacing: [1, 1, 1]  <span class="comment"># Isotropic resampling</span>
+  interpolator: 'sitkBSpline'
+  normalize: false
+  normalizeScale: 100
+
+imageType:
+  Original: {}
+  Wavelet: {}
+  LoG:
+    sigma: [1.0, 2.0, 3.0, 4.0, 5.0]
+
+featureClass:
+  shape:
+  firstorder:
+  glcm:
+  glrlm:
+  glszm:
+  gldm:
+  ngtdm:</code></pre>
+                        </div>
+                    </div>
+
+                    <div class="faq-item">
+                        <h3>Robustness analysis takes too long</h3>
+                        <p>Reduce perturbation count:</p>
+                        <div class="code-block">
+                            <pre><code>radiomics_robustness:
+  segmentation_perturbation:
+    intensity: "mild"     <span class="comment"># Instead of "standard"</span>
+    small_volume_changes: [-0.10, 0.0, 0.10]  <span class="comment"># Fewer levels</span>
+    apply_to_structures:
+      - "GTV*"            <span class="comment"># Only critical structures</span></code></pre>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Docker Troubleshooting -->
+            <section class="feature-detail" id="docker">
+                <div class="feature-detail-header">
+                    <div class="feature-detail-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/>
+                            <line x1="8" y1="21" x2="16" y2="21"/>
+                            <line x1="12" y1="17" x2="12" y2="21"/>
+                        </svg>
+                    </div>
+                    <h2>Docker Troubleshooting</h2>
+                </div>
+                <div class="feature-detail-content">
+                    <div class="faq-item">
+                        <h3>Container exits immediately</h3>
+                        <p>Check container logs:</p>
+                        <div class="code-block">
+                            <pre><code>docker logs &lt;container_id&gt;
+
+<span class="comment"># Or run interactively</span>
+docker run -it --rm kstawiski/rtpipeline:latest bash</code></pre>
+                        </div>
+                    </div>
+
+                    <div class="faq-item">
+                        <h3>Permission denied on output files</h3>
+                        <p>Files created inside container are owned by root. Solutions:</p>
+                        <div class="code-block">
+                            <pre><code><span class="comment"># Option 1: Run as current user</span>
+docker run --user $(id -u):$(id -g) ...
+
+<span class="comment"># Option 2: Fix permissions after run</span>
+sudo chown -R $USER:$USER Output/</code></pre>
+                        </div>
+                    </div>
+
+                    <div class="faq-item">
+                        <h3>How do I check pipeline progress?</h3>
+                        <div class="code-block">
+                            <pre><code><span class="comment"># View live logs</span>
+docker logs -f &lt;container_name&gt;
+
+<span class="comment"># Check resource usage</span>
+docker stats
+
+<span class="comment"># Check Snakemake progress</span>
+ls Output/*/    <span class="comment"># See which patients are done</span></code></pre>
+                        </div>
+                    </div>
+
+                    <div class="faq-item">
+                        <h3>Pipeline failed mid-run. How do I resume?</h3>
+                        <p>Snakemake automatically resumes from where it stopped:</p>
+                        <div class="code-block">
+                            <pre><code><span class="comment"># Just run again - completed tasks are skipped</span>
+docker run ... snakemake --cores 16 --rerun-incomplete</code></pre>
+                        </div>
+                        <p>To force a full re-run of a specific step:</p>
+                        <div class="code-block">
+                            <pre><code><span class="comment"># Delete specific outputs and re-run</span>
+rm -rf Output/Patient001/2024-01/structures_auto/
+docker run ... snakemake --cores 16</code></pre>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Getting Help -->
+            <section class="feature-detail" id="help">
+                <div class="feature-detail-header">
+                    <div class="feature-detail-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+                        </svg>
+                    </div>
+                    <h2>Getting Help</h2>
+                </div>
+                <div class="feature-detail-content">
+                    <p>If you can't find the answer here:</p>
+                    <ol>
+                        <li><strong>Check the logs</strong> - Most errors have descriptive messages in <code>Logs/</code></li>
+                        <li><strong>Search GitHub Issues</strong> - <a href="https://github.com/kstawiski/rtpipeline/issues">github.com/kstawiski/rtpipeline/issues</a></li>
+                        <li><strong>Open a new issue</strong> with:
+                            <ul>
+                                <li>RTpipeline version (<code>docker inspect kstawiski/rtpipeline:latest</code>)</li>
+                                <li>Your config.yaml (remove sensitive paths)</li>
+                                <li>Relevant log output</li>
+                                <li>Steps to reproduce</li>
+                            </ul>
+                        </li>
+                    </ol>
+
+                    <div class="info-box">
+                        <h4>Reporting Bugs</h4>
+                        <p>When reporting issues, please include the Snakemake log and any error messages.
+                        Anonymize patient identifiers before sharing logs publicly.</p>
+                    </div>
+                </div>
+            </section>
+        </div>
+    </main>
+
+    <footer class="footer">
+        <div class="container">
+            <div class="footer-content">
+                <div class="footer-brand">
+                    <span class="logo-icon">RT</span>
+                    <span class="logo-text">pipeline</span>
+                </div>
+                <p>Open source radiotherapy DICOM processing pipeline.</p>
+                <div class="footer-links">
+                    <a href="https://github.com/kstawiski/rtpipeline" target="_blank">GitHub</a>
+                    <a href="https://github.com/kstawiski/rtpipeline/issues" target="_blank">Issues</a>
+                    <a href="https://github.com/kstawiski/rtpipeline/blob/master/LICENSE" target="_blank">License</a>
+                </div>
+            </div>
+            <div class="footer-bottom">
+                <p>&copy; 2025 RTpipeline. Released under MIT License.</p>
+            </div>
+        </div>
+    </footer>
+
+    <script src="assets/js/main.js"></script>
+</body>
+</html>
