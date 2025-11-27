@@ -54,6 +54,23 @@ Drag and drop DICOM files (zipped or folders) and click **Start Processing**.
 
 ---
 
+### Option 3: Google Colab (No Local Setup Required)
+
+Run the pipeline entirely in the cloud using Google Colab with free GPU access:
+
+| Notebook | Description | Runtime |
+|----------|-------------|---------|
+| [**Part 1: GPU Segmentation**](rtpipeline_colab_part1_gpu.ipynb) | DICOM organization + TotalSegmentator | GPU (T4) |
+| [**Part 2: CPU Analysis**](rtpipeline_colab_part2_cpu.ipynb) | DVH, radiomics, QC, aggregation | CPU |
+
+**How to use:**
+1. Upload notebooks to Google Colab
+2. Upload your DICOM data to Google Drive
+3. Run Part 1 with GPU runtime for segmentation
+4. Run Part 2 (CPU is sufficient) for analysis
+
+---
+
 ## Feature Highlights
 
 * **Web UI** (NEW) – browser-based interface with drag-and-drop upload, automatic DICOM validation, real-time progress monitoring, and one-click results download. No command-line experience required!
@@ -87,6 +104,9 @@ Drag and drop DICOM files (zipped or folders) and click **Start Processing**.
 | `GETTING_STARTED.md` | Complete beginner's guide with step-by-step instructions. |
 | `WEBUI.md` | Web UI documentation with screenshots and usage guide. |
 | `output_format_quick_ref.md` | Output format quick reference for data analysts. |
+| **Google Colab Notebooks** | |
+| `rtpipeline_colab_part1_gpu.ipynb` | Part 1: GPU segmentation (TotalSegmentator). |
+| `rtpipeline_colab_part2_cpu.ipynb` | Part 2: CPU analysis (DVH, radiomics, QC, aggregation). |
 | **Core Components** | |
 | `webui/` | Web UI application (Flask-based) for browser-based DICOM upload and processing. |
 | `rtpipeline/` | Python package powering organisation, segmentation, DVH, radiomics, and QC. |
