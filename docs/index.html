@@ -23,6 +23,7 @@
                 <li><a href="configuration.html">Configuration</a></li>
                 <li><a href="docker.html">Docker</a></li>
                 <li><a href="faq.html">FAQ</a></li>
+                <li><a href="knowledge.html">Knowledge</a></li>
                 <li><a href="https://github.com/kstawiski/rtpipeline" class="nav-github" target="_blank">
                     <svg height="20" viewBox="0 0 16 16" width="20" fill="currentColor">
                         <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"></path>
@@ -45,7 +46,8 @@
             <p class="hero-subtitle">Automated Radiotherapy DICOM Processing Pipeline</p>
             <p class="hero-description">
                 End-to-end processing of radiotherapy DICOM data with AI-powered organ segmentation,
-                dose-volume histogram analysis, and IBSI-compliant radiomics feature extraction.
+                dose-volume histogram analysis, and IBSI-compliant radiomics feature extraction—powered by a
+                curated Knowledge base that keeps every default aligned with the latest reproducibility research.
             </p>
             <div class="hero-buttons">
                 <a href="#quickstart" class="btn btn-primary">Get Started</a>
@@ -144,6 +146,40 @@
         </div>
     </section>
 
+    <section class="webui-showcase" id="webui">
+        <div class="container">
+            <div class="webui-grid">
+                <div class="webui-copy">
+                    <h2>Web UI Included</h2>
+                    <p>The <code>webui/</code> app ships with RTpipeline so researchers can manage cohorts without touching the CLI. Launch <code>docker-compose up -d</code> and open <strong>http://localhost:8080</strong>.</p>
+                    <ul class="feature-list">
+                        <li>Drag-and-drop uploads for DICOM folders, ZIP/TAR archives, or DICOMDIR exports.</li>
+                        <li>Automatic validation that counts patients, studies, and required RT objects before processing.</li>
+                        <li>Collapsible configuration panes for segmentation, radiomics, robustness, CT cropping, custom nnU-Net models, and advanced flags.</li>
+                        <li>Stage timeline + streaming logs so you can watch Organize → Segment → DVH → Radiomics → Aggregate in real time.</li>
+                        <li>One-click ZIP download of the <code>Data_Snakemake/&lt;patient&gt;/&lt;course&gt;</code> tree when jobs finish.</li>
+                    </ul>
+                    <div class="webui-links">
+                        <a class="btn btn-primary" href="https://github.com/kstawiski/rtpipeline/blob/master/WEBUI.md" target="_blank">Read the Web UI guide</a>
+                        <a class="btn btn-secondary" href="docker.html#compose">Launch with Docker Compose</a>
+                    </div>
+                </div>
+                <div class="webui-panel">
+                    <h3>Live Status View</h3>
+                    <ul>
+                        <li><span>📁 Upload</span><span>Archive extraction &amp; modality checks</span></li>
+                        <li><span>🧭 Organize</span><span>DICOM → patient/course layout</span></li>
+                        <li><span>🧠 Segment</span><span>TotalSegmentator + custom models</span></li>
+                        <li><span>📊 DVH</span><span>dicompyler-core metrics per ROI</span></li>
+                        <li><span>🧬 Radiomics</span><span>PyRadiomics CT/MR presets</span></li>
+                        <li><span>✔ Aggregate</span><span>_RESULTS Excel exports</span></li>
+                    </ul>
+                    <p class="webui-note">Jobs can be cancelled, retried, or deleted from the browser with safeguards to keep partial data consistent.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
     <section class="pipeline-flow">
         <div class="container">
             <h2 class="section-title">Pipeline Workflow</h2>
@@ -189,6 +225,48 @@
                         <p>Excel, CSV, DICOM-RT</p>
                     </div>
                 </div>
+            </div>
+        </div>
+    </section>
+
+    <section class="knowledge-highlight">
+        <div class="container">
+            <div class="section-heading">
+                <h2>Knowledge-Powered Reliability</h2>
+                <p>RTpipeline doesn’t just automate processing—it encodes the <a href="knowledge.html">Knowledge library</a> of acquisition physics, DICOM semantics, and modality-specific PyRadiomics research so the workflow stays state-of-the-art.</p>
+            </div>
+            <div class="knowledge-grid">
+                <article class="knowledge-card">
+                    <div class="knowledge-card-label">Acquisition Research</div>
+                    <h3>Protocol Intelligence</h3>
+                    <p>Slice thickness, reconstruction kernel, and contrast timing limits come directly from our CT Knowledge paper to keep DVH and radiomics reproducible.</p>
+                    <ul class="knowledge-impact">
+                        <li>Automatic warnings when metadata drifts from validated ranges.</li>
+                        <li>Default resampling (1&nbsp;mm ISO) grounded in literature.</li>
+                    </ul>
+                </article>
+                <article class="knowledge-card">
+                    <div class="knowledge-card-label">DICOM Integrity</div>
+                    <h3>Clinical Graph Reconstruction</h3>
+                    <p>The DICOM-RT guide maps every SOP Instance link our pipeline rebuilds before DVH extraction, avoiding broken RTSTRUCT ↔ RTPLAN ↔ RTDOSE chains.</p>
+                    <ul class="knowledge-impact">
+                        <li>UID mismatch detection across Snakemake checkpoints.</li>
+                        <li>Frame-of-reference validation before metrics are computed.</li>
+                    </ul>
+                </article>
+                <article class="knowledge-card">
+                    <div class="knowledge-card-label">Modality Presets</div>
+                    <h3>Radiomics That Travel</h3>
+                    <p>CT, MR, and PET whitepapers feed the default PyRadiomics parameter files so IBSI-compliant features are consistent across cohorts and institutions.</p>
+                    <ul class="knowledge-impact">
+                        <li>Bin widths, filters, and interpolators vetted per modality.</li>
+                        <li>UI presets explain the science behind each option.</li>
+                    </ul>
+                </article>
+            </div>
+            <div class="knowledge-highlight-cta">
+                <a href="knowledge.html" class="btn btn-primary">Explore the Knowledge Base</a>
+                <a href="radiomics-robustness.html" class="btn btn-secondary">Review Validation Studies</a>
             </div>
         </div>
     </section>
@@ -255,6 +333,60 @@ singularity exec --nv rtpipeline.sif \
                     </div>
                     <a href="#installation" class="btn btn-outline">Full Instructions</a>
                 </div>
+            </div>
+        </div>
+    </section>
+
+    <section class="deployment" id="deployment">
+        <div class="container">
+            <h2 class="section-title">Deployment Modes</h2>
+            <p class="section-subtitle">Choose the workflow that matches your infrastructure</p>
+            <div class="deployment-grid">
+                <article class="deployment-card">
+                    <h3>Docker Setup Wizard</h3>
+                    <p>Run <code>./setup_docker_project.sh</code> (or the curl one-liner) to generate a project placeholder with curated <code>docker-compose</code>, volume layout, and helper scripts.</p>
+                    <ul>
+                        <li>Prompts for Input/Output/Logs paths.</li>
+                        <li>Enables CT cropping, radiomics, robustness from a guided menu.</li>
+                        <li>Outputs <code>project.env</code> and run scripts you can commit.</li>
+                    </ul>
+                </article>
+                <article class="deployment-card">
+                    <h3>Web UI Stack</h3>
+                    <p>Bring up the Flask-based UI via <code>docker-compose up -d</code>. GPU and CPU-only profiles are provided.</p>
+                    <ul>
+                        <li>Mounts <code>Input</code>, <code>Uploads</code>, <code>Output</code>, <code>Logs</code>, and optional <code>totalseg_weights</code>.</li>
+                        <li>NVIDIA Container Toolkit support enabled out of the box.</li>
+                        <li>Reverse proxy friendly (nginx example in <code>docs/nginx-rtpipeline.conf</code>).</li>
+                    </ul>
+                </article>
+                <article class="deployment-card">
+                    <h3>Snakemake CLI</h3>
+                    <p>For power users who prefer the terminal, clone the repo, create the Conda environments in <code>envs/</code>, edit <code>config.yaml</code>, then run Snakemake.</p>
+                    <ul>
+                        <li><code>mamba env create -f envs/rtpipeline.yaml</code></li>
+                        <li><code>snakemake --cores all --use-conda</code></li>
+                        <li><code>rtpipeline validate</code> checks config + env before launching.</li>
+                    </ul>
+                </article>
+                <article class="deployment-card">
+                    <h3>Google Colab</h3>
+                    <p>Use the two official notebooks for cloud processing with free GPUs.</p>
+                    <ul>
+                        <li>Part 1 (GPU): DICOM organise + TotalSegmentator.</li>
+                        <li>Part 2 (CPU): DVH, radiomics, QC, aggregation.</li>
+                        <li>Ideal for pilot studies and teaching workshops.</li>
+                    </ul>
+                </article>
+                <article class="deployment-card">
+                    <h3>HPC / Singularity</h3>
+                    <p>Convert the Docker image with <code>singularity pull rtpipeline.sif docker://kstawiski/rtpipeline:latest</code> and submit Snakemake jobs to Slurm.</p>
+                    <ul>
+                        <li><code>--nv</code> flag exposes cluster GPUs.</li>
+                        <li>Bind <code>/data/input</code>, <code>/data/output</code>, <code>/data/logs</code>.</li>
+                        <li>Works with Apptainer, too.</li>
+                    </ul>
+                </article>
             </div>
         </div>
     </section>
@@ -400,6 +532,39 @@ snakemake --cores all --use-conda</code></pre>
                     <h3>FAQ & Troubleshooting</h3>
                     <p>Common questions and solutions for pipeline issues</p>
                 </a>
+            </div>
+        </div>
+    </section>
+
+    <section class="data-products" id="outputs">
+        <div class="container">
+            <h2 class="section-title">What You Get</h2>
+            <p class="section-subtitle">Every run produces reproducible artefacts under <code>Data_Snakemake/</code></p>
+            <div class="data-grid">
+                <article class="data-card">
+                    <h3>Per-Course Packages</h3>
+                    <p><code>dvh_metrics.xlsx</code>, <code>radiomics_ct.xlsx</code>, <code>MR/radiomics_mr.xlsx</code>, <code>fractions.xlsx</code>, QC JSON, and four RTSTRUCT variants live alongside the original DICOM.</p>
+                </article>
+                <article class="data-card">
+                    <h3>Cohort Workbooks</h3>
+                    <p><code>_RESULTS/dvh_metrics.xlsx</code>, <code>radiomics_ct.xlsx</code>, <code>radiomics_mr.xlsx</code>, <code>case_metadata.xlsx</code>, and <code>qc_reports.xlsx</code> consolidate everything into analysis-ready tables.</p>
+                </article>
+                <article class="data-card">
+                    <h3>Segmentation Provenance</h3>
+                    <p>Manifest files track which TotalSegmentator task, nnU-Net ensemble, or manual contour contributed to each ROI so models remain auditable.</p>
+                </article>
+                <article class="data-card">
+                    <h3>Robustness Metrics</h3>
+                    <p>When enabled, perturbation outputs include ICC/CoV tiers per feature plus the raw <code>radiomics_robustness_ct.parquet</code> for bespoke statistics.</p>
+                </article>
+                <article class="data-card">
+                    <h3>Cropping Metadata</h3>
+                    <p><code>cropping_metadata.json</code> captures anatomical landmarks and margins, ensuring DVH/Radiomics derived from cropped images can be justified.</p>
+                </article>
+                <article class="data-card">
+                    <h3>Anonymisation Script</h3>
+                    <p><code>scripts/anonymize_pipeline_results.py</code> rewrites IDs and keeps a key file, letting you share results externally without re-running the pipeline.</p>
+                </article>
             </div>
         </div>
     </section>

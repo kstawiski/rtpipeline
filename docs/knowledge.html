@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Knowledge Base - RTpipeline</title>
+    <meta name="description" content="RTpipeline Knowledge Base - curated CT/MR/PET acquisition, DICOM-RT tags, and PyRadiomics configuration research powering the pipeline.">
+    <link rel="stylesheet" href="assets/css/style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+</head>
+<body>
+    <nav class="navbar">
+        <div class="nav-container">
+            <a href="index.html" class="nav-logo">
+                <span class="logo-icon">RT</span>
+                <span class="logo-text">pipeline</span>
+            </a>
+            <ul class="nav-menu">
+                <li><a href="getting-started.html">Getting Started</a></li>
+                <li><a href="features.html">Features</a></li>
+                <li><a href="configuration.html">Configuration</a></li>
+                <li><a href="docker.html">Docker</a></li>
+                <li><a href="faq.html">FAQ</a></li>
+                <li><a href="knowledge.html" class="active">Knowledge</a></li>
+                <li><a href="https://github.com/kstawiski/rtpipeline" class="nav-github" target="_blank">
+                    <svg height="20" viewBox="0 0 16 16" width="20" fill="currentColor">
+                        <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"></path>
+                    </svg>
+                    GitHub
+                </a></li>
+            </ul>
+            <button class="nav-toggle" aria-label="Toggle menu">
+                <span></span>
+                <span></span>
+                <span></span>
+            </button>
+        </div>
+    </nav>
+
+    <header class="page-header knowledge-header">
+        <div class="container">
+            <h1>Knowledge Base</h1>
+            <p>Research-grade documentation that keeps RTpipeline reproducible, explainable, and state-of-the-art.</p>
+        </div>
+    </header>
+
+    <main class="content">
+        <div class="container">
+            <section class="knowledge-overview">
+                <div class="knowledge-overview-grid">
+                    <div class="knowledge-overview-card">
+                        <div class="knowledge-badge">Continuous Literature Review</div>
+                        <h2>Engineering rigor that starts with evidence</h2>
+                        <p>
+                            The <strong>Knowledge</strong> directory consolidates internal whitepapers on CT acquisition, DICOM-RT semantics,
+                            and modality-specific PyRadiomics settings. These documents anchor every default we ship—from voxel
+                            resampling to DVH QA thresholds—so the pipeline inherits the best practices that academic centers publish.
+                        </p>
+                    </div>
+                    <div class="knowledge-overview-card">
+                        <h3>How the library is used</h3>
+                        <ul class="knowledge-list">
+                            <li>Translates acquisition physics research into concrete configuration templates.</li>
+                            <li>Defines the DICOM tags RTpipeline validates before calculating DVHs or radiomics.</li>
+                            <li>Locks PyRadiomics parameter files to IBSI-compliant settings for CT, MR, and PET.</li>
+                            <li>Feeds automated checks surfaced in the web UI and Snakemake workflow logs.</li>
+                        </ul>
+                    </div>
+                </div>
+            </section>
+
+            <section class="knowledge-library">
+                <div class="section-heading">
+                    <h2>Knowledge Library</h2>
+                    <p>Each report links directly to the research summary stored in <code>Knowledge/</code> so you can trace pipeline defaults back to first principles.</p>
+                </div>
+                <div class="knowledge-grid">
+                    <article class="knowledge-card">
+                        <div class="knowledge-card-label">Acquisition Physics</div>
+                        <h3>CT Acquisition Parameters for Radiomic Analysis</h3>
+                        <p>Explains how tube voltage, current, slice thickness, reconstruction kernels, and contrast timing perturb radiomic features.</p>
+                        <ul class="knowledge-impact">
+                            <li>Informs default voxel resampling (1 mm isotropic) and de-noising heuristics.</li>
+                            <li>Drives QA warnings when metadata exposes protocol drift.</li>
+                        </ul>
+                        <a class="knowledge-link" href="https://github.com/kstawiski/rtpipeline/blob/main/Knowledge/CT%20Acquisition%20Parameters%20for%20Radiomic%20Analysis_%20A%20Comprehensive%20Guide.md" target="_blank" rel="noopener">Read report →</a>
+                    </article>
+
+                    <article class="knowledge-card">
+                        <div class="knowledge-card-label">DICOM-RT</div>
+                        <h3>DICOM-RT Tags for Radiotherapy Data</h3>
+                        <p>Maps every SOP Instance UID and sequence RTpipeline parses to keep structure sets, dose cubes, and treatment plans aligned.</p>
+                        <ul class="knowledge-impact">
+                            <li>Backs the DICOM integrity checks in <code>rtpipeline/quality_control.py</code>.</li>
+                            <li>Explains why the pipeline re-links RTSTRUCT ↔ RTPLAN ↔ RTDOSE before DVH extraction.</li>
+                        </ul>
+                        <a class="knowledge-link" href="https://github.com/kstawiski/rtpipeline/blob/main/Knowledge/DICOM-RT%20Tags%20for%20Radiotherapy%20Data.md" target="_blank" rel="noopener">Read report →</a>
+                    </article>
+
+                    <article class="knowledge-card">
+                        <div class="knowledge-card-label">PyRadiomics · CT</div>
+                        <h3>PyRadiomics CT Configuration Research</h3>
+                        <p>Documents IBSI-aligned bin widths, interpolators, and Laplacian of Gaussian filters that maximize repeatability on CT cohorts.</p>
+                        <ul class="knowledge-impact">
+                            <li>Directly populates the default <code>rtpipeline/radiomics_params.yaml</code> distributed with RTpipeline.</li>
+                            <li>Guides CLI flags for fixed bin width vs. fixed bin count experiments.</li>
+                        </ul>
+                        <a class="knowledge-link" href="https://github.com/kstawiski/rtpipeline/blob/main/Knowledge/PyRadiomics%20CT%20Configuration%20Research.md" target="_blank" rel="noopener">Read report →</a>
+                    </article>
+
+                    <article class="knowledge-card">
+                        <div class="knowledge-card-label">PyRadiomics · MR</div>
+                        <h3>PyRadiomics MR Image Configuration</h3>
+                        <p>Details bias-field correction, intensity normalization, and resampling strategies that stabilize MR-based radiomics.</p>
+                        <ul class="knowledge-impact">
+                            <li>Feeds modality-aware preprocessing nodes inside the Snakemake workflow.</li>
+                            <li>Defines the MR presets surfaced in the web UI wizard.</li>
+                        </ul>
+                        <a class="knowledge-link" href="https://github.com/kstawiski/rtpipeline/blob/main/Knowledge/PyRadiomics%20MR%20Image%20Configuration.md" target="_blank" rel="noopener">Read report →</a>
+                    </article>
+
+                    <article class="knowledge-card">
+                        <div class="knowledge-card-label">PyRadiomics · PET</div>
+                        <h3>PyRadiomics PET Configuration Research</h3>
+                        <p>Summarizes SUV normalization, partial volume handling, and discretization strategies validated on PET datasets.</p>
+                        <ul class="knowledge-impact">
+                            <li>Updates the PET feature extraction profiles shipped in <code>rtpipeline/radiomics_params_pet_fdg.yaml</code> and <code>rtpipeline/radiomics_params_pet_psma.yaml</code>.</li>
+                            <li>Supports dual-modality studies that mix CT-derived contours with PET uptake features.</li>
+                        </ul>
+                        <a class="knowledge-link" href="https://github.com/kstawiski/rtpipeline/blob/main/Knowledge/Pyradiomics%20PET%20Configuration%20Research.md" target="_blank" rel="noopener">Read report →</a>
+                    </article>
+                </div>
+            </section>
+
+            <section class="knowledge-pipeline">
+                <div class="section-heading">
+                    <h2>From Knowledge to State-of-the-Art Pipeline</h2>
+                    <p>Insights are not static PDFs—they are encoded into validation scripts, configuration presets, and runtime safeguards.</p>
+                </div>
+                <div class="knowledge-flow">
+                    <div class="knowledge-flow-card">
+                        <span class="flow-step">1</span>
+                        <h3>Evidence Capture</h3>
+                        <p>Every Knowledge document cites the physics or methodology work it is based on. The repo includes the raw markdown so the rationale for each rule is always reviewable.</p>
+                        <ul>
+                            <li>Literature findings stored in version control.</li>
+                            <li>Change history explains why defaults evolve.</li>
+                        </ul>
+                    </div>
+                    <div class="knowledge-flow-card">
+                        <span class="flow-step">2</span>
+                        <h3>Encoded Defaults</h3>
+                        <p>The docs map directly to configuration artefacts (Snakemake params, YAML templates, Docker env vars). Updating a paper means updating code in the same pull request.</p>
+                        <ul>
+                            <li>CT/MR/PET settings exposed as presets.</li>
+                            <li>Metadata QA rules mirror DICOM tag guides.</li>
+                        </ul>
+                    </div>
+                    <div class="knowledge-flow-card">
+                        <span class="flow-step">3</span>
+                        <h3>Runtime Feedback</h3>
+                        <p>When RTpipeline detects a protocol drift (slice thickness, kernel, UID mismatch) it references the Knowledge topic in the log so users know the scientific reason.</p>
+                        <ul>
+                            <li>Actionable log messages and web UI badges.</li>
+                            <li>Guides reproducible external validation.</li>
+                        </ul>
+                    </div>
+                </div>
+            </section>
+
+            <section class="knowledge-cta">
+                <div class="knowledge-cta-card">
+                    <div>
+                        <h3>Keep your studies reproducible</h3>
+                        <p>Combine the Knowledge base with RTpipeline’s automation to move from raw DICOM to publishable cohorts faster.</p>
+                    </div>
+                    <div class="knowledge-cta-actions">
+                        <a class="btn btn-primary" href="getting-started.html">Start Processing Data</a>
+                        <a class="btn btn-secondary" href="https://github.com/kstawiski/rtpipeline/tree/main/Knowledge" target="_blank" rel="noopener">Browse Knowledge Files</a>
+                    </div>
+                </div>
+            </section>
+        </div>
+    </main>
+
+    <footer class="footer">
+        <div class="container">
+            <div class="footer-content">
+                <div class="footer-brand">
+                    <span class="logo-icon">RT</span>
+                    <span class="logo-text">pipeline</span>
+                </div>
+                <p>Open source radiotherapy DICOM processing pipeline.</p>
+                <div class="footer-links">
+                    <a href="https://github.com/kstawiski/rtpipeline" target="_blank">GitHub</a>
+                    <a href="https://github.com/kstawiski/rtpipeline/issues" target="_blank">Issues</a>
+                    <a href="https://github.com/kstawiski/rtpipeline/blob/master/LICENSE" target="_blank">License</a>
+                </div>
+            </div>
+            <div class="footer-bottom">
+                <p>&copy; 2025 RTpipeline. Released under MIT License.</p>
+            </div>
+        </div>
+    </footer>
+
+    <script src="assets/js/main.js"></script>
+</body>
+</html>
