@@ -744,3 +744,174 @@ def radiomics_for_course(
         pass
 
     return result
+
+
+def radiomics_for_course_mr(
+    course_dir: Path,
+    config: Any,
+    params_file: Optional[Path] = None
+) -> Optional[Path]:
+    """
+    Extract MR radiomics features using conda environment.
+
+    Processes all MR series in the course directory that have:
+    - NIFTI/ subdirectory with .nii.gz files
+    - Segmentation_TotalSegmentator/ subdirectory with total_mr--*.nii.gz masks
+
+    Args:
+        course_dir: Path to course directory
+        config: Pipeline configuration
+        params_file: Optional path to MR radiomics parameters YAML
+
+    Returns:
+        Path to output radiomics_mr.xlsx if successful, None otherwise
+    """
+    course_dir = Path(course_dir)
+    mr_root = course_dir / "MR"
+    out_path = mr_root / "radiomics_mr.xlsx"
+
+    if not mr_root.exists():
+        logger.debug("No MR directory in %s", course_dir)
+        return None
+
+    # Get MR params file from config if not provided
+    if params_file is None and config is not None:
+        mr_params = getattr(config, 'mr_params_file', None)
+        if mr_params:
+            params_file = Path(mr_params)
+            if not params_file.exists():
+                # Try relative to course dir or config dir
+                for base in [course_dir, Path.cwd()]:
+                    candidate = base / mr_params
+                    if candidate.exists():
+                        params_file = candidate
+                        break
+
+    tasks: List[Dict[str, Any]] = []
+    temp_files: List[Path] = []
+
+    for series_root in sorted(p for p in mr_root.iterdir() if p.is_dir()):
+        nifti_dir = series_root / "NIFTI"
+        seg_dir = series_root / "Segmentation_TotalSegmentator"
+
+        if not nifti_dir.exists() or not seg_dir.exists():
+            continue
+
+        # Find MR NIfTI file
+        nifti_files = sorted(nifti_dir.glob("*.nii.gz"))
+        if not nifti_files:
+            continue
+
+        mr_nifti = nifti_files[0]
+
+        # Check metadata for modality
+        meta_files = sorted(nifti_dir.glob("*.metadata.json"))
+        if meta_files:
+            try:
+                import json
+                meta = json.loads(meta_files[0].read_text(encoding='utf-8'))
+                if str(meta.get('modality', '')).upper() != 'MR':
+                    continue
+            except Exception:
+                pass
+
+        # Convert MR NIfTI to NRRD for radiomics
+        try:
+            mr_img = sitk.ReadImage(str(mr_nifti))
+            mr_nrrd = tempfile.NamedTemporaryFile(
+                suffix=".nrrd", delete=False, prefix="mr_image_"
+            )
+            mr_nrrd.close()
+            sitk.WriteImage(mr_img, mr_nrrd.name)
+            temp_files.append(Path(mr_nrrd.name))
+            mr_image_path = mr_nrrd.name
+        except Exception as exc:
+            logger.warning("Failed to convert MR NIfTI %s: %s", mr_nifti, exc)
+            continue
+
+        series_uid = series_root.name
+
+        # Process each mask in Segmentation_TotalSegmentator
+        for mask_path in sorted(seg_dir.glob("total_mr--*.nii.gz")):
+            try:
+                mask_img = sitk.ReadImage(str(mask_path))
+                mask_arr = sitk.GetArrayFromImage(mask_img)
+
+                # Skip empty masks
+                if not (mask_arr > 0).any():
+                    continue
+
+                # Extract ROI name from mask filename
+                mask_name = mask_path.name
+                if mask_name.startswith("total_mr--"):
+                    roi_name = mask_name[10:]  # Remove "total_mr--"
+                else:
+                    roi_name = mask_name
+                if roi_name.endswith(".nii.gz"):
+                    roi_name = roi_name[:-7]
+
+                # Convert mask to NRRD
+                mask_nrrd = tempfile.NamedTemporaryFile(
+                    suffix=".nrrd", delete=False, prefix=f"mr_mask_{roi_name}_"
+                )
+                mask_nrrd.close()
+                sitk.WriteImage(mask_img, mask_nrrd.name)
+                temp_files.append(Path(mask_nrrd.name))
+
+                tasks.append({
+                    'image_path': mr_image_path,
+                    'mask_path': mask_nrrd.name,
+                    'roi_name': roi_name,
+                    'params_file': str(params_file) if params_file and params_file.exists() else None,
+                    'cleanup': False,  # We'll clean up temp files ourselves
+                    'extra_metadata': {
+                        'modality': 'MR',
+                        'series_uid': series_uid,
+                        'segmentation_source': 'AutoTS_total_mr',
+                    }
+                })
+            except Exception as exc:
+                logger.debug("Failed to process MR mask %s: %s", mask_path, exc)
+                continue
+
+    if not tasks:
+        logger.debug("No valid MR radiomics tasks for %s", course_dir)
+        # Cleanup temp files
+        for tf in temp_files:
+            try:
+                tf.unlink()
+            except Exception:
+                pass
+        return None
+
+    logger.info("Processing %d MR radiomics tasks for %s", len(tasks), course_dir.name)
+
+    # Determine worker count
+    max_workers = None
+    env_workers = int(os.environ.get('RTPIPELINE_MAX_WORKERS', '0') or 0)
+    if env_workers > 0:
+        max_workers = env_workers
+    elif hasattr(config, 'effective_workers') and callable(config.effective_workers):
+        try:
+            max_workers = config.effective_workers()
+        except Exception:
+            pass
+    if max_workers is None:
+        cpu_count = os.cpu_count() or 4
+        max_workers = max(1, cpu_count - 1)
+
+    result = process_radiomics_batch(
+        tasks,
+        out_path,
+        sequential=False,
+        max_workers=max_workers,
+    )
+
+    # Cleanup temp files
+    for tf in temp_files:
+        try:
+            tf.unlink()
+        except Exception:
+            pass
+
+    return result

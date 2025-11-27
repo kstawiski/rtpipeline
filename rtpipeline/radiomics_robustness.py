@@ -174,11 +174,12 @@ def volume_adapt_mask(mask: sitk.Image, tau: float, max_iterations: int = 20) ->
     is_erosion = tau < 0
     operation = sitk.BinaryErode if is_erosion else sitk.BinaryDilate
 
-    # Iterative approach
+    # Iterative approach - track all candidates including overshoot
     current_mask = mask
     current_volume = original_volume
-    best_mask = mask
-    best_diff = abs(original_volume - target_volume)
+    best_mask = None  # Start with None to ensure we return a perturbed mask
+    best_diff = float('inf')
+    last_valid_perturbed = None  # Track last valid perturbed mask even if it overshoots
 
     for iteration in range(1, max_iterations + 1):
         try:
@@ -192,6 +193,10 @@ def volume_adapt_mask(mask: sitk.Image, tau: float, max_iterations: int = 20) ->
                     iteration,
                 )
                 break
+
+            # Always track the last valid perturbed mask (non-empty)
+            if perturbed_volume >= 5:
+                last_valid_perturbed = perturbed
 
             diff = abs(perturbed_volume - target_volume)
             if diff < best_diff:
@@ -207,12 +212,27 @@ def volume_adapt_mask(mask: sitk.Image, tau: float, max_iterations: int = 20) ->
 
             # Stop if we reached target or overshot
             if is_erosion and perturbed_volume <= target_volume:
+                # Even if we overshot, use this perturbed mask if it's closer to target
+                # than any previous candidate (or if we have no candidate yet)
+                if best_mask is None or diff <= best_diff:
+                    best_mask = perturbed
                 break
             elif not is_erosion and perturbed_volume >= target_volume:
+                if best_mask is None or diff <= best_diff:
+                    best_mask = perturbed
                 break
         except Exception as e:
             logger.debug("Volume adaptation failed at iteration %d: %s", iteration, e)
             break
+
+    # If we never found a best_mask (shouldn't happen), use last valid perturbed
+    if best_mask is None:
+        best_mask = last_valid_perturbed
+
+    # Final fallback: if still None, we couldn't create any perturbation
+    if best_mask is None:
+        logger.debug("Could not generate any valid perturbation for tau=%.3f", tau)
+        return None
 
     # Check if result is reasonable
     best_arr = sitk.GetArrayFromImage(best_mask).astype(bool)
@@ -221,6 +241,14 @@ def volume_adapt_mask(mask: sitk.Image, tau: float, max_iterations: int = 20) ->
     if best_volume < 5:
         logger.debug("Perturbed mask too small (volume=%d)", best_volume)
         return None
+
+    # Ensure we're returning a DIFFERENT mask from original
+    if best_volume == original_volume:
+        logger.debug("Perturbation produced no volume change, using last valid perturbed")
+        if last_valid_perturbed is not None:
+            best_mask = last_valid_perturbed
+            best_arr = sitk.GetArrayFromImage(best_mask).astype(bool)
+            best_volume = best_arr.sum()
 
     achieved_tau = (best_volume - original_volume) / original_volume
     logger.debug("Volume adaptation: target τ=%.3f, achieved τ=%.3f (volume %d→%d)",
