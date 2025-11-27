@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Docker & Singularity - RTpipeline</title>
+    <meta name="description" content="Docker and Singularity deployment guide for RTpipeline">
+    <link rel="stylesheet" href="assets/css/style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+</head>
+<body>
+    <nav class="navbar">
+        <div class="nav-container">
+            <a href="index.html" class="nav-logo">
+                <span class="logo-icon">RT</span>
+                <span class="logo-text">pipeline</span>
+            </a>
+            <ul class="nav-menu">
+                <li><a href="getting-started.html">Getting Started</a></li>
+                <li><a href="features.html">Features</a></li>
+                <li><a href="configuration.html">Configuration</a></li>
+                <li><a href="docker.html" class="active">Docker</a></li>
+                <li><a href="faq.html">FAQ</a></li>
+                <li><a href="https://github.com/kstawiski/rtpipeline" class="nav-github" target="_blank">
+                    <svg height="20" viewBox="0 0 16 16" width="20" fill="currentColor">
+                        <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"></path>
+                    </svg>
+                    GitHub
+                </a></li>
+            </ul>
+            <button class="nav-toggle" aria-label="Toggle menu">
+                <span></span>
+                <span></span>
+                <span></span>
+            </button>
+        </div>
+    </nav>
+
+    <header class="page-header">
+        <h1>Docker & Singularity Guide</h1>
+        <p>Container deployment for Docker and HPC environments</p>
+    </header>
+
+    <section class="content">
+        <div class="container">
+            <div class="toc-section">
+                <h2>On This Page</h2>
+                <ul class="toc-list">
+                    <li><a href="#features">Container Features</a></li>
+                    <li><a href="#docker">Running with Docker</a></li>
+                    <li><a href="#compose">Docker Compose</a></li>
+                    <li><a href="#singularity">Singularity / HPC</a></li>
+                    <li><a href="#kubernetes">Kubernetes</a></li>
+                    <li><a href="#troubleshooting">Troubleshooting</a></li>
+                </ul>
+            </div>
+
+            <!-- Container Features -->
+            <div class="feature-detail" id="features">
+                <div class="feature-detail-header">
+                    <div class="feature-detail-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2">
+                            <path d="M22 11.08V12a10 10 0 11-5.93-9.14"/>
+                            <polyline points="22,4 12,14.01 9,11.01"/>
+                        </svg>
+                    </div>
+                    <h2>Container Features</h2>
+                </div>
+                <div class="feature-detail-content">
+                    <p class="feature-intro">All pipeline features work correctly in Docker and Singularity containers.</p>
+
+                    <div class="workflow-features">
+                        <div class="workflow-feature">
+                            <h4>Subprocess Timeouts</h4>
+                            <p>subprocess.run() with timeout, SIGTERM/SIGKILL handled with tini init system.</p>
+                        </div>
+                        <div class="workflow-feature">
+                            <h4>Process Spawning</h4>
+                            <p>Multiprocessing with spawn context works in containers - safer than fork.</p>
+                        </div>
+                        <div class="workflow-feature">
+                            <h4>CPU Detection</h4>
+                            <p>Correctly detects available CPUs, respects cgroup limits in Docker/Kubernetes.</p>
+                        </div>
+                        <div class="workflow-feature">
+                            <h4>GPU Support</h4>
+                            <p>CUDA_VISIBLE_DEVICES and NVIDIA_VISIBLE_DEVICES work correctly.</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Running with Docker -->
+            <div class="feature-detail" id="docker">
+                <div class="feature-detail-header">
+                    <div class="feature-detail-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2">
+                            <rect x="2" y="7" width="20" height="14" rx="2" ry="2"/>
+                            <path d="M16 21V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v16"/>
+                        </svg>
+                    </div>
+                    <h2>Running with Docker</h2>
+                </div>
+                <div class="feature-detail-content">
+                    <h3>Basic Usage (GPU)</h3>
+                    <div class="code-block">
+                        <pre><code>docker run --gpus all \
+  -v ./Input:/data/input:ro \
+  -v ./Output:/data/output:rw \
+  -v ./Logs:/data/logs:rw \
+  kstawiski/rtpipeline:latest \
+  rtpipeline \
+    --dicom-root /data/input \
+    --outdir /data/output \
+    --logs /data/logs</code></pre>
+                    </div>
+
+                    <h3>Custom Timeouts</h3>
+                    <div class="code-block">
+                        <pre><code>docker run --gpus all \
+  -e TOTALSEG_TIMEOUT=7200 \
+  -e DCM2NIIX_TIMEOUT=600 \
+  -e RTPIPELINE_RADIOMICS_TASK_TIMEOUT=1200 \
+  -v ./Input:/data/input:ro \
+  -v ./Output:/data/output:rw \
+  kstawiski/rtpipeline:latest \
+  rtpipeline --dicom-root /data/input --outdir /data/output</code></pre>
+                    </div>
+
+                    <h3>CPU-Limited Container</h3>
+                    <div class="code-block">
+                        <pre><code>docker run \
+  --cpus 8 \
+  --memory 16g \
+  -e TOTALSEG_TIMEOUT=7200 \
+  -v ./Input:/data/input:ro \
+  -v ./Output:/data/output:rw \
+  kstawiski/rtpipeline:latest \
+  rtpipeline \
+    --dicom-root /data/input \
+    --outdir /data/output \
+    --totalseg-device cpu \
+    --max-workers 7</code></pre>
+                    </div>
+
+                    <h3>Environment Variables</h3>
+                    <table class="config-table">
+                        <thead>
+                            <tr><th>Variable</th><th>Default</th><th>Description</th></tr>
+                        </thead>
+                        <tbody>
+                            <tr><td>TOTALSEG_TIMEOUT</td><td>3600</td><td>TotalSegmentator timeout (seconds)</td></tr>
+                            <tr><td>DCM2NIIX_TIMEOUT</td><td>300</td><td>DICOM conversion timeout</td></tr>
+                            <tr><td>RTPIPELINE_RADIOMICS_TASK_TIMEOUT</td><td>600</td><td>Per-ROI radiomics timeout</td></tr>
+                            <tr><td>RTPIPELINE_MAX_WORKERS</td><td>auto</td><td>Override worker count</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Docker Compose -->
+            <div class="feature-detail" id="compose">
+                <div class="feature-detail-header">
+                    <div class="feature-detail-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2">
+                            <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
+                        </svg>
+                    </div>
+                    <h2>Docker Compose</h2>
+                </div>
+                <div class="feature-detail-content">
+                    <h3>GPU Mode (Default)</h3>
+                    <div class="code-block">
+                        <pre><code>docker-compose up rtpipeline</code></pre>
+                    </div>
+
+                    <h3>CPU-Only Mode</h3>
+                    <div class="code-block">
+                        <pre><code>docker-compose --profile cpu-only up rtpipeline-cpu</code></pre>
+                    </div>
+
+                    <h3>Custom Configuration (docker-compose.override.yml)</h3>
+                    <div class="code-block">
+                        <pre><code>version: '3.8'
+services:
+  rtpipeline:
+    environment:
+      - TOTALSEG_TIMEOUT=7200
+      - RTPIPELINE_RADIOMICS_TASK_TIMEOUT=1800
+    deploy:
+      resources:
+        limits:
+          cpus: '12.0'
+          memory: 48G
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]</code></pre>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Singularity -->
+            <div class="feature-detail" id="singularity">
+                <div class="feature-detail-header">
+                    <div class="feature-detail-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2">
+                            <circle cx="12" cy="12" r="10"/>
+                            <path d="M8 14s1.5 2 4 2 4-2 4-2"/>
+                            <line x1="9" y1="9" x2="9.01" y2="9"/>
+                            <line x1="15" y1="9" x2="15.01" y2="9"/>
+                        </svg>
+                    </div>
+                    <h2>Singularity / HPC</h2>
+                </div>
+                <div class="feature-detail-content">
+                    <p class="feature-intro">RTpipeline fully supports Singularity for HPC and secure computing environments.</p>
+
+                    <h3>Build from Docker Hub</h3>
+                    <div class="code-block">
+                        <pre><code>singularity pull rtpipeline.sif docker://kstawiski/rtpipeline:latest</code></pre>
+                    </div>
+
+                    <h3>Run Pipeline</h3>
+                    <div class="code-block">
+                        <pre><code>singularity exec --nv \
+  --bind /path/to/input:/data/input:ro \
+  --bind /path/to/output:/data/output:rw \
+  --bind /path/to/logs:/data/logs:rw \
+  rtpipeline.sif \
+  snakemake --cores all --use-conda --configfile /app/config.container.yaml</code></pre>
+                    </div>
+
+                    <h3>SLURM Job Script</h3>
+                    <div class="code-block">
+                        <pre><code>#!/bin/bash
+#SBATCH --job-name=rtpipeline
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=16
+#SBATCH --mem=64G
+#SBATCH --time=48:00:00
+#SBATCH --gres=gpu:1
+
+module load singularity
+
+INPUT_DIR=/scratch/$USER/dicom_input
+OUTPUT_DIR=/scratch/$USER/rtpipeline_output
+LOGS_DIR=/scratch/$USER/rtpipeline_logs
+
+mkdir -p $OUTPUT_DIR $LOGS_DIR
+
+singularity exec --nv \
+  --bind ${INPUT_DIR}:/data/input:ro \
+  --bind ${OUTPUT_DIR}:/data/output:rw \
+  --bind ${LOGS_DIR}:/data/logs:rw \
+  rtpipeline.sif \
+  snakemake --cores $SLURM_CPUS_PER_TASK --use-conda \
+    --configfile /app/config.container.yaml
+
+echo "Pipeline completed at $(date)"</code></pre>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Kubernetes -->
+            <div class="feature-detail" id="kubernetes">
+                <div class="feature-detail-header">
+                    <div class="feature-detail-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2">
+                            <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
+                        </svg>
+                    </div>
+                    <h2>Kubernetes</h2>
+                </div>
+                <div class="feature-detail-content">
+                    <h3>Pod Specification</h3>
+                    <div class="code-block">
+                        <pre><code>apiVersion: v1
+kind: Pod
+metadata:
+  name: rtpipeline
+spec:
+  containers:
+  - name: rtpipeline
+    image: kstawiski/rtpipeline:latest
+    command: ["rtpipeline"]
+    args:
+      - "--dicom-root"
+      - "/data/input"
+      - "--outdir"
+      - "/data/output"
+      - "--max-workers"
+      - "7"
+    resources:
+      requests:
+        cpu: "4"
+        memory: "16Gi"
+      limits:
+        cpu: "8"
+        memory: "32Gi"
+        nvidia.com/gpu: "1"
+    env:
+    - name: TOTALSEG_TIMEOUT
+      value: "3600"
+    - name: CUDA_VISIBLE_DEVICES
+      value: "0"</code></pre>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Troubleshooting -->
+            <div class="feature-detail" id="troubleshooting">
+                <div class="feature-detail-header">
+                    <div class="feature-detail-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2">
+                            <circle cx="12" cy="12" r="10"/>
+                            <line x1="12" y1="8" x2="12" y2="12"/>
+                            <line x1="12" y1="16" x2="12.01" y2="16"/>
+                        </svg>
+                    </div>
+                    <h2>Troubleshooting</h2>
+                </div>
+                <div class="feature-detail-content">
+                    <div class="faq-item">
+                        <h3>Container uses all host CPUs despite --cpus limit</h3>
+                        <p>Manually set <code>--max-workers</code> to respect the limit:</p>
+                        <div class="code-block">
+                            <pre><code>docker run --cpus 8 ... rtpipeline --max-workers 7 ...</code></pre>
+                        </div>
+                    </div>
+
+                    <div class="faq-item">
+                        <h3>GPU not detected in container</h3>
+                        <p>Check NVIDIA runtime:</p>
+                        <div class="code-block">
+                            <pre><code>docker run --rm --gpus all nvidia/cuda:11.8.0-base-ubuntu22.04 nvidia-smi</code></pre>
+                        </div>
+                    </div>
+
+                    <div class="faq-item">
+                        <h3>Out of shared memory errors</h3>
+                        <p>Increase shared memory size:</p>
+                        <div class="code-block">
+                            <pre><code>docker run --shm-size=4g ...</code></pre>
+                        </div>
+                    </div>
+
+                    <div class="faq-item">
+                        <h3>Pipeline doesn't shut down gracefully</h3>
+                        <p>Ensure tini is being used (included in official image):</p>
+                        <div class="code-block">
+                            <pre><code>docker inspect kstawiski/rtpipeline:latest | grep -A1 Entrypoint
+# Should show: ["/usr/bin/tini", "--"]</code></pre>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+    </section>
+
+    <footer class="footer">
+        <div class="footer-content">
+            <div class="footer-brand">
+                <span class="logo-icon">RT</span>
+                <span class="logo-text">pipeline</span>
+            </div>
+            <p>Open-source radiotherapy DICOM processing pipeline.</p>
+            <div class="footer-links">
+                <a href="https://github.com/kstawiski/rtpipeline">GitHub</a>
+                <a href="https://github.com/kstawiski/rtpipeline/issues">Issues</a>
+                <a href="https://github.com/kstawiski/rtpipeline/blob/master/LICENSE">License</a>
+            </div>
+            <div class="footer-bottom">
+                <p>&copy; 2024-2025 RTpipeline Contributors</p>
+            </div>
+        </div>
+    </footer>
+
+    <script src="assets/js/main.js"></script>
+</body>
+</html>

@@ -1,0 +1,484 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Custom Segmentation Models - RTpipeline Documentation</title>
+    <meta name="description" content="Add custom nnU-Net v2 segmentation models to RTpipeline for specialized organ and tumor delineation.">
+    <link rel="stylesheet" href="assets/css/style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+</head>
+<body>
+    <nav class="navbar">
+        <div class="nav-container">
+            <a href="index.html" class="nav-logo">
+                <span class="logo-icon">RT</span>
+                <span class="logo-text">pipeline</span>
+            </a>
+            <ul class="nav-menu">
+                <li><a href="getting-started.html">Getting Started</a></li>
+                <li><a href="features.html">Features</a></li>
+                <li><a href="configuration.html">Configuration</a></li>
+                <li><a href="docker.html">Docker</a></li>
+                <li><a href="faq.html">FAQ</a></li>
+                <li><a href="https://github.com/kstawiski/rtpipeline" class="nav-github" target="_blank">
+                    <svg height="20" viewBox="0 0 16 16" width="20" fill="currentColor">
+                        <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"></path>
+                    </svg>
+                    GitHub
+                </a></li>
+            </ul>
+            <button class="nav-toggle" aria-label="Toggle menu">
+                <span></span>
+                <span></span>
+                <span></span>
+            </button>
+        </div>
+    </nav>
+
+    <section class="page-header">
+        <div class="container">
+            <h1>Custom Segmentation Models</h1>
+            <p>Add your own nnU-Net v2 models for specialized organ and tumor delineation</p>
+        </div>
+    </section>
+
+    <section class="toc-section">
+        <div class="container">
+            <div class="toc-card">
+                <h3>On This Page</h3>
+                <ul class="toc-list">
+                    <li><a href="#overview">Overview</a></li>
+                    <li><a href="#directory">Directory Layout</a></li>
+                    <li><a href="#yaml">YAML Configuration</a></li>
+                    <li><a href="#outputs">Generated Outputs</a></li>
+                    <li><a href="#integration">Pipeline Integration</a></li>
+                    <li><a href="#caching">Weight Caching</a></li>
+                </ul>
+            </div>
+        </div>
+    </section>
+
+    <section id="overview" class="feature-detail">
+        <div class="container">
+            <h2>Overview</h2>
+            <p>The pipeline can execute additional nnU-Net v2 models that live under <code>custom_models/</code>. Each model resides in its own directory and is configured by a <code>custom_model.yaml</code> file.</p>
+
+            <div class="info-box">
+                <h4>What Custom Models Provide</h4>
+                <ul>
+                    <li>Run specialized segmentation models alongside TotalSegmentator</li>
+                    <li>Support for both nnU-Net v1 and v2 interfaces</li>
+                    <li>Automatic weight extraction from ZIP archives</li>
+                    <li>Multi-network configurations with structure merging</li>
+                    <li>Full integration with DVH and radiomics analysis</li>
+                </ul>
+            </div>
+
+            <p>During the Snakemake stage <code>segmentation_custom_models</code>, the pipeline scans the custom_models directory, extracts any bundled weights, runs the predictors, and writes the outputs to the patient folder.</p>
+        </div>
+    </section>
+
+    <section id="directory" class="feature-detail alt-bg">
+        <div class="container">
+            <h2>Directory Layout</h2>
+
+            <div class="code-block">
+                <pre><code>custom_models/
+  &lt;model_name&gt;/
+    custom_model.yaml       # Model configuration
+    modelXYZ.zip            # One or more nnUNet weight archives
+    ...                     # Optional helper scripts or notes</code></pre>
+            </div>
+
+            <p>All paths in the YAML file are resolved relative to the model directory. Weight archives are unpacked on first use into the configured <code>nnUNet_results</code> folder.</p>
+
+            <h3>Example Structure</h3>
+            <div class="code-block">
+                <pre><code>custom_models/
+  cardiac_STOPSTORM/
+    custom_model.yaml
+    model603.zip              # Heart structures model
+    model605.zip              # Additional structures
+    nnUNet_results/           # Auto-created on first run
+    nnUNet_raw/
+    nnUNet_preprocessed/</code></pre>
+            </div>
+        </div>
+    </section>
+
+    <section id="yaml" class="feature-detail">
+        <div class="container">
+            <h2>YAML Configuration</h2>
+
+            <h3>Minimal Example</h3>
+            <div class="code-block">
+                <pre><code>name: my_model
+description: Optional free-form text.
+nnunet:
+  command: nnUNetv2_predict         # optional, defaults to CLI --nnunet-predict
+  model: 3d_fullres                 # optional, defaults to 3d_fullres
+  folds: all                        # optional, defaults to all
+  interface: nnunetv2               # nnunetv1 or nnunetv2
+  networks:
+    - id: "603"
+      archive: model603.zip
+      dataset_directory: Dataset603_STST_small_full
+      label_order:
+        - Heart
+        - Aorta</code></pre>
+            </div>
+
+            <h3>Full Configuration Example</h3>
+            <div class="code-block">
+                <pre><code>name: my_model
+description: Optional free-form text.
+nnunet:
+  command: nnUNetv2_predict         # optional, defaults to CLI --nnunet-predict
+  model: 3d_fullres                 # optional, defaults to 3d_fullres
+  folds: all                        # optional, defaults to all
+  interface: nnunetv2               # optional, defaults to nnunetv2
+  env:                              # optional environment overrides
+    nnUNet_results: ./nnUNet_results
+    nnUNet_raw: ./nnUNet_raw
+    nnUNet_preprocessed: ./nnUNet_preprocessed
+  networks:
+    - id: "603"                     # nnUNet dataset/task identifier
+      alias: 603                    # optional shorthand
+      archive: model603.zip         # zip containing the nnUNet weights
+      source_directory: null        # optional pre-unpacked weight location
+      dataset_directory: Dataset603_STST_small_full
+      architecture: 3d_fullres      # optional override
+      trainer: nnUNetTrainerV2      # optional trainer name (v1)
+      plans: nnUNetPlansv2.1        # optional plan identifier (v1)
+      label_order:                  # class labels in nnUNet output order
+        - Structure_A
+        - Structure_B
+    - id: "605"
+      archive: model605.zip
+      dataset_directory: Dataset605_STSTplusLung_large_full
+      label_order:
+        - Structure_C
+        - Structure_D
+  combine:
+    ordered_networks: ["603", "605"]   # precedence when merging structures</code></pre>
+            </div>
+
+            <h3>Key Configuration Fields</h3>
+            <div class="table-responsive">
+                <table class="config-table">
+                    <thead>
+                        <tr>
+                            <th>Field</th>
+                            <th>Description</th>
+                            <th>Default</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code>name</code></td>
+                            <td>Human-readable identifier; used for output directory name</td>
+                            <td>Required</td>
+                        </tr>
+                        <tr>
+                            <td><code>description</code></td>
+                            <td>Optional documentation string shown in manifests</td>
+                            <td>-</td>
+                        </tr>
+                        <tr>
+                            <td><code>nnunet.command</code></td>
+                            <td>Command used to launch inference</td>
+                            <td><code>nnUNetv2_predict</code></td>
+                        </tr>
+                        <tr>
+                            <td><code>nnunet.interface</code></td>
+                            <td>Choose between <code>nnunetv2</code> (default) and <code>nnunetv1</code></td>
+                            <td><code>nnunetv2</code></td>
+                        </tr>
+                        <tr>
+                            <td><code>nnunet.model</code></td>
+                            <td>Model configuration (e.g., 3d_fullres)</td>
+                            <td><code>3d_fullres</code></td>
+                        </tr>
+                        <tr>
+                            <td><code>nnunet.folds</code></td>
+                            <td>Folds to use for inference</td>
+                            <td><code>all</code></td>
+                        </tr>
+                        <tr>
+                            <td><code>nnunet.env</code></td>
+                            <td>Environment variables for nnU-Net paths</td>
+                            <td>Auto-created in model dir</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <h3>Network Configuration Fields</h3>
+            <div class="table-responsive">
+                <table class="config-table">
+                    <thead>
+                        <tr>
+                            <th>Field</th>
+                            <th>Description</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code>id</code></td>
+                            <td>nnUNet dataset/task identifier (required)</td>
+                        </tr>
+                        <tr>
+                            <td><code>alias</code></td>
+                            <td>Optional shorthand used elsewhere in the config</td>
+                        </tr>
+                        <tr>
+                            <td><code>archive</code></td>
+                            <td>ZIP file containing the nnUNet weights</td>
+                        </tr>
+                        <tr>
+                            <td><code>source_directory</code></td>
+                            <td>Alternative: pre-unpacked weight location (relative to model)</td>
+                        </tr>
+                        <tr>
+                            <td><code>dataset_directory</code></td>
+                            <td>Folder created/copied into nnUNet_results</td>
+                        </tr>
+                        <tr>
+                            <td><code>label_order</code></td>
+                            <td>List of class labels in order of nnUNet output IDs (label 1 = first name)</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <h3>nnU-Net v1 vs v2</h3>
+            <div class="info-box">
+                <h4>Interface Differences</h4>
+                <p>Set <code>interface: nnunetv1</code> to enable legacy commands:</p>
+                <ul>
+                    <li><code>nnUNet_predict</code> instead of <code>nnUNetv2_predict</code></li>
+                    <li><code>nnUNet_ensemble</code> for ensemble predictions</li>
+                    <li>Additional fields: <code>trainer</code>, <code>plans</code>, <code>architecture</code></li>
+                </ul>
+            </div>
+        </div>
+    </section>
+
+    <section id="outputs" class="feature-detail alt-bg">
+        <div class="container">
+            <h2>Generated Outputs</h2>
+            <p>For each patient/course pair, the pipeline produces:</p>
+
+            <div class="code-block">
+                <pre><code>&lt;output_root&gt;/&lt;patient&gt;/&lt;course&gt;/Segmentation_CustomModels/&lt;model_name&gt;/
+  &lt;structure&gt;.nii.gz           # NIfTI segmentation mask
+  manifest.json                 # Processing metadata
+  rtstruct.dcm                  # DICOM RT Structure Set
+  rtstruct_manifest.json        # RTSTRUCT metadata</code></pre>
+            </div>
+
+            <h3>Output Details</h3>
+            <ul>
+                <li><strong>Structure filenames</strong> are sanitized versions of the labels provided in the YAML</li>
+                <li><strong>manifest.json</strong> records which nnUNet network produced each structure, the command that was run, and the path to the source CT NIfTI</li>
+                <li><strong>No duplicate copies</strong> are kept at the patient root - each course owns its own custom-model directory alongside <code>Segmentation_TotalSegmentator/</code></li>
+            </ul>
+
+            <h3>Example manifest.json</h3>
+            <div class="code-block">
+                <pre><code>{
+  "model_name": "cardiac_STOPSTORM",
+  "networks_run": ["603", "605"],
+  "structures": {
+    "Heart": {"network": "603", "label_index": 1},
+    "Aorta": {"network": "603", "label_index": 2},
+    "Lung_L": {"network": "605", "label_index": 1}
+  },
+  "source_ct": "CT.nii.gz",
+  "command": "nnUNetv2_predict",
+  "timestamp": "2025-01-15T10:30:00"
+}</code></pre>
+            </div>
+        </div>
+    </section>
+
+    <section id="integration" class="feature-detail">
+        <div class="container">
+            <h2>Pipeline Integration</h2>
+
+            <h3>Snakemake Workflow</h3>
+            <p>The custom models stage fits into the pipeline as follows:</p>
+
+            <div class="code-block">
+                <pre><code>organize -> segmentation -> segmentation_custom_models -> dvh_course -> radiomics_course -> aggregate_results</code></pre>
+            </div>
+
+            <ul>
+                <li>Runs after TotalSegmentator segmentation and before DVH/radiomics</li>
+                <li>Downstream rules require the <code>.custom_models_done</code> sentinel</li>
+                <li>Custom-model RTSTRUCTs are always consumed by DVH and radiomics</li>
+            </ul>
+
+            <h3>DVH and Radiomics Integration</h3>
+            <div class="table-responsive">
+                <table class="config-table">
+                    <thead>
+                        <tr>
+                            <th>Analysis</th>
+                            <th>Source Identifier</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td>DVH</td>
+                            <td><code>Segmentation_Source = CustomModel:&lt;model_name&gt;</code></td>
+                        </tr>
+                        <tr>
+                            <td>Radiomics</td>
+                            <td><code>segmentation_source = CustomModel:&lt;model_name&gt;</code></td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <p>This allows direct comparisons with:</p>
+            <ul>
+                <li><code>Manual</code> - Manual contours</li>
+                <li><code>AutoRTS</code> - TotalSegmentator</li>
+                <li><code>Merged</code> - Boolean merged contours</li>
+                <li><code>CustomModel:&lt;name&gt;</code> - Your custom models</li>
+            </ul>
+
+            <h3>Quality Control</h3>
+            <p>QC JSON and Excel reports include any <code>__partial</code> suffixes or cropping flags associated with custom-model structures, mirroring the behavior of other segmentation sources.</p>
+        </div>
+    </section>
+
+    <section id="caching" class="feature-detail alt-bg">
+        <div class="container">
+            <h2>Weight Caching and Cleanup</h2>
+
+            <h3>Default Behavior</h3>
+            <p>Inference requires unpacking the nnUNet archives into:</p>
+            <ul>
+                <li><code>custom_models/&lt;model&gt;/nnUNet_results</code></li>
+                <li><code>custom_models/&lt;model&gt;/nnUNet_raw</code></li>
+                <li><code>custom_models/&lt;model&gt;/nnUNet_preprocessed</code></li>
+            </ul>
+
+            <p>By default, these caches are retained so later courses reuse the weights without re-extracting ~500 MB archives.</p>
+
+            <h3>Cleanup Options</h3>
+            <div class="code-block">
+                <pre><code># In config.yaml
+custom_models:
+  retain_weights: false    # Delete weights after each run
+
+# Or via CLI
+rtpipeline --purge-custom-model-weights ...</code></pre>
+            </div>
+
+            <div class="info-box">
+                <h4>What Gets Cleaned</h4>
+                <ul>
+                    <li><strong>Deleted</strong>: <code>nnUNet_results/</code>, <code>nnUNet_raw/</code>, <code>nnUNet_preprocessed/</code> directories</li>
+                    <li><strong>Preserved</strong>: Original <code>model*.zip</code> files (can restore caches on next run)</li>
+                    <li><strong>Preserved</strong>: Course outputs under <code>Segmentation_CustomModels/&lt;model&gt;/</code></li>
+                </ul>
+            </div>
+
+            <h3>Adding a New Model</h3>
+            <ol>
+                <li>Create directory: <code>custom_models/&lt;your_model_name&gt;/</code></li>
+                <li>Add your nnUNet weight archive(s): <code>model*.zip</code></li>
+                <li>Create <code>custom_model.yaml</code> with proper label order</li>
+                <li>Run: <code>snakemake segmentation_custom_models</code></li>
+            </ol>
+
+            <h3>Re-running Models</h3>
+            <p>If you change a model configuration:</p>
+            <div class="code-block">
+                <pre><code># Option 1: Force re-run via CLI flag
+snakemake --force-custom-models
+
+# Option 2: Delete sentinel files
+rm Data_Snakemake/*/*/.custom_models_done
+snakemake segmentation_custom_models</code></pre>
+            </div>
+        </div>
+    </section>
+
+    <section class="feature-detail">
+        <div class="container">
+            <h2>Troubleshooting</h2>
+
+            <div class="info-box">
+                <h4>Common Issues</h4>
+                <ul>
+                    <li><strong>"Model not found"</strong>: Ensure <code>custom_model.yaml</code> exists in the model directory</li>
+                    <li><strong>"Archive extraction failed"</strong>: Check ZIP file integrity and disk space</li>
+                    <li><strong>"Label mismatch"</strong>: Verify <code>label_order</code> matches your nnUNet model's output classes</li>
+                    <li><strong>"nnUNet command not found"</strong>: Ensure nnUNet is installed and in PATH</li>
+                    <li><strong>"GPU out of memory"</strong>: Try <code>--totalseg-device cpu</code> or reduce batch size</li>
+                </ul>
+            </div>
+
+            <h3>Verifying Model Setup</h3>
+            <div class="code-block">
+                <pre><code># Check model configuration
+cat custom_models/my_model/custom_model.yaml
+
+# Test nnUNet installation
+nnUNetv2_predict --help
+
+# Check GPU availability
+rtpipeline doctor</code></pre>
+            </div>
+        </div>
+    </section>
+
+    <footer class="footer">
+        <div class="container">
+            <div class="footer-content">
+                <div class="footer-section">
+                    <h4>RTpipeline</h4>
+                    <p>Open source radiotherapy DICOM processing pipeline for research.</p>
+                </div>
+                <div class="footer-section">
+                    <h4>Documentation</h4>
+                    <ul>
+                        <li><a href="getting-started.html">Getting Started</a></li>
+                        <li><a href="features.html">Features</a></li>
+                        <li><a href="configuration.html">Configuration</a></li>
+                        <li><a href="docker.html">Docker</a></li>
+                        <li><a href="architecture.html">Architecture</a></li>
+                    </ul>
+                </div>
+                <div class="footer-section">
+                    <h4>Resources</h4>
+                    <ul>
+                        <li><a href="faq.html">FAQ</a></li>
+                        <li><a href="output-format.html">Output Format</a></li>
+                        <li><a href="radiomics-robustness.html">Radiomics Robustness</a></li>
+                        <li><a href="custom-models.html">Custom Models</a></li>
+                    </ul>
+                </div>
+                <div class="footer-section">
+                    <h4>Author</h4>
+                    <p><a href="https://konsta.com.pl" target="_blank">Konrad Stawiski, MD</a></p>
+                    <p>Medical University of Lodz</p>
+                    <p><a href="https://github.com/kstawiski/rtpipeline" target="_blank">GitHub Repository</a></p>
+                </div>
+            </div>
+            <div class="footer-bottom">
+                <p>&copy; 2025 RTpipeline. MIT License.</p>
+            </div>
+        </div>
+    </footer>
+
+    <script src="assets/js/main.js"></script>
+</body>
+</html>
