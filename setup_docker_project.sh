@@ -397,8 +397,6 @@ fi
 
 COMPOSE_PATH="$PROJECT_DIR/docker-compose.project.yml"
 cat > "$COMPOSE_PATH" <<EOF
-version: "3.8"
-
 services:
   rtpipeline:
     image: kstawiski/rtpipeline:latest
@@ -521,9 +519,18 @@ if [ -z "$COMPOSE_BIN" ]; then
   exit 1
 fi
 
+PULL_PROGRESS_FLAG=""
+if $COMPOSE_BIN version 2>/dev/null | head -1 | grep -qi "docker compose version"; then
+  PULL_PROGRESS_FLAG="--progress=plain"
+fi
+
 cd "$SCRIPT_DIR"
 echo "Running rtpipeline via Docker Compose..."
-$COMPOSE_BIN -f docker-compose.project.yml pull rtpipeline >/dev/null 2>&1 || true
+if [ "${SKIP_PULL:-0}" != "1" ]; then
+  echo "  Pulling image (set SKIP_PULL=1 to skip)..."
+  $COMPOSE_BIN ${PULL_PROGRESS_FLAG:+$PULL_PROGRESS_FLAG} -f docker-compose.project.yml pull rtpipeline || true
+fi
+echo "  Starting pipeline (this may take several minutes on first run)..."
 $COMPOSE_BIN -f docker-compose.project.yml run --rm rtpipeline "$@"
 EOF
 chmod +x "$PROJECT_DIR/run_docker.sh"
