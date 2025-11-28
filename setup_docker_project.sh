@@ -6,6 +6,16 @@ set -euo pipefail
 
 VERSION="3.0.0"
 
+# Ensure we have an interactive stdin (handles curl | bash)
+if [ ! -t 0 ]; then
+    if [ -r /dev/tty ]; then
+        exec < /dev/tty
+    else
+        echo "Interactive TTY is required. Run: bash setup_docker_project.sh" >&2
+        exit 1
+    fi
+fi
+
 # ---------------------------
 # Helpers
 # ---------------------------
