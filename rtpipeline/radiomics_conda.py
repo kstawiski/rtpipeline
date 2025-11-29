@@ -846,7 +846,7 @@ def process_radiomics_batch(
         elif use_batch_processing:
             # OPTIMIZED: Split tasks into batches and process each batch in a single subprocess
             # This amortizes the ~2-5 second subprocess startup across multiple ROIs
-            batch_size = max(5, len(tasks_list) // worker_limit)  # At least 5 ROIs per batch
+            batch_size = max(1, len(tasks_list) // worker_limit)  # Allow fine-grained parallelism
             batches = [tasks_list[i:i + batch_size] for i in range(0, len(tasks_list), batch_size)]
 
             logger.info(

@@ -83,6 +83,12 @@ class PipelineConfig:
     # Safety timeouts
     task_timeout: int | None = None
 
+    # DICOM copy optimization (organize step)
+    dicom_copy_dedup_by_sop_uid: bool = True    # Skip duplicate SOPInstanceUIDs
+    dicom_copy_use_hardlinks: bool = True       # Use hardlinks when possible
+    dicom_copy_verify_checksum: bool = False    # Verify MD5 after copy
+    dicom_copy_cache_headers: bool = True       # Cache DICOM headers for re-runs
+
     def ensure_dirs(self) -> None:
         self.output_root.mkdir(parents=True, exist_ok=True)
         self.logs_root.mkdir(parents=True, exist_ok=True)
