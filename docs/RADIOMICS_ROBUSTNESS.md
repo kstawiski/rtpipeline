@@ -1,6 +1,6 @@
 # Radiomics Robustness Module
 
-A built-in feature stability assessment module for rtpipeline that evaluates radiomics features under systematic perturbations following the NTCV methodology of Zwanenburg et al. (2019) and contemporary reproducibility research.[^zwanenburg2019][^loiacono2024]
+A built-in feature stability assessment module for rtpipeline that evaluates radiomics features under systematic perturbations following the NTCV methodology of Zwanenburg et al. (2019).[^zwanenburg2019]
 
 ## Overview
 
@@ -23,8 +23,8 @@ The radiomics robustness module helps you identify stable, reproducible radiomic
 
 This implementation follows the NTCV perturbation methodology from Zwanenburg et al. (2019)[^zwanenburg2019] and related radiomics reproducibility research:
 
-- **Literature-validated perturbation chains:** In the original Zwanenburg et al. (2019) test–retest validation, NTCV and RCV combinations detected ~98–99% of unstable features with <2% false positives in their specific datasets.[^zwanenburg2019] **Important:** These operating characteristics were established on specific test–retest datasets with particular parameter configurations. rtpipeline implements a similar perturbation methodology but has not independently validated these exact figures—users should treat them as **literature benchmarks**, not performance guarantees.
-- **Volume adaptation:** Iterative erosion/dilation (±15% volume change) provides clinically realistic contour perturbations, as described in recent CT radiomics reproducibility studies.
+- **Literature-validated perturbation chains:** In the original Zwanenburg et al. (2019) test–retest validation, NTCV and RCV combinations detected ~98–99% of unstable features with <2% false positives in their specific datasets.[^zwanenburg2019] **Important:** These operating characteristics were established on specific test–retest datasets with particular parameter configurations. rtpipeline currently implements an **NTCV-like perturbation chain only** (RCV is not implemented) and has not independently validated these exact figures—users should treat them as **literature benchmarks**, not performance guarantees.
+- **Volume adaptation:** Iterative erosion/dilation (±15% volume change) provides a clinically plausible approximation of contour perturbations, as commonly used in CT radiomics reproducibility studies.
 - **Reliability statistics:** ICC(3,1) with analytical confidence intervals and complementary CoV thresholds support conservative clinical adoption.[^koo2016]
 - **Standardization:** The IBSI initiative[^ibsi2020] provides standardized definitions for radiomics features and recommends reporting perturbation details and preprocessing provenance.
 
@@ -40,10 +40,12 @@ Following Koo & Li (2016) qualitative descriptors:
 - ICC < 0.50: **Poor**
 
 **CoV (Coefficient of Variation):**
-rtpipeline defaults to CoV ≤10% as "robust" based on common practice in CT radiomics literature:
+CoV is computed as 100 × (standard deviation / mean) of perturbation-level feature values. rtpipeline defaults to CoV ≤10% as "robust" based on thresholds frequently reported in CT radiomics reproducibility studies:
 - CoV ≤ 10%: **Robust** (conservative default threshold)
 - 10% < CoV ≤ 20%: **Acceptable**
 - CoV > 20%: **Poor**
+
+*Note: For features with means close to zero, CoV can become numerically unstable; users should manually review features with extreme CoV values.*
 
 **Important:** These are configurable defaults inspired by published conventions, not consensus standards. Users should adapt thresholds to their specific clinical and statistical context.
 
@@ -236,7 +238,7 @@ radiomics_robustness:
     cov:
       enabled: true
     qcd:
-      enabled: true
+      enabled: true    # QCD = (Q3 - Q1) / (Q3 + Q1), a robust dispersion measure
 
   thresholds:
     icc:
@@ -263,6 +265,8 @@ This design treats perturbations as fixed "raters" of the same underlying subjec
 3. **Consistency:** We measure relative agreement, not absolute agreement (small systematic offsets are acceptable)
 
 **Methodological caveat:** This interpretation is one reasonable choice for perturbation-based robustness analysis, but it is not universally standardized. Other ICC formulations (e.g., absolute-agreement models or ICC(2,1)) could also be justified depending on study design. Users should verify that ICC(3,1) aligns with their specific reliability framework and may adjust the `icc_type` configuration if needed.
+
+**Sample size note:** ICC estimates derived from small numbers of perturbations (e.g., <10) or small cohorts (<20 subjects) may be unstable with wide confidence intervals. Users should ensure sufficient perturbations (typically ≥10–15 per ROI) for reliable ICC estimation.
 
 **Example data structure for ICC computation:**
 ```
@@ -316,7 +320,7 @@ Columns:
 - `icc`: ICC point estimate
 - `icc_ci95_low`, `icc_ci95_high`: 95% confidence interval
 - `cov_pct`: Coefficient of Variation (%)
-- `qcd`: Quartile Coefficient of Dispersion
+- `qcd`: Quartile Coefficient of Dispersion, defined as (Q3 − Q1) / (Q3 + Q1) from perturbation-level values; a robust alternative to CoV for skewed distributions
 - `robustness_label`: "robust", "acceptable", or "poor"
 - `pass_seg_perturb`: Boolean (True if robust or acceptable)
 
@@ -335,8 +339,8 @@ Multiple sheets for easy filtering:
 ### Feature Selection Strategy (Based on 2023-2025 Research)
 
 1. **Primary recommendation**: Use only "robust" features (ICC ≥ 0.90, CoV ≤ 10%) for predictive models
-   - Modern clinical applications increasingly demand ICC >0.90 (conservative threshold)
-   - 60-80% of features typically meet this threshold with proper perturbation testing
+   - Modern clinical applications increasingly demand ICC ≥0.90 (conservative threshold)
+   - A substantial proportion of features can meet this threshold, though the exact fraction is highly dataset- and protocol-dependent
 
 2. **Multi-center studies**: Consider "acceptable" features (ICC ≥ 0.75, CoV ≤ 20%) if data scarcity requires it
    - Standard threshold from Zwanenburg 2019
@@ -401,7 +405,7 @@ When describing rtpipeline's robustness analysis in a manuscript, consider using
 
 ## Typical Feature Families by Robustness
 
-Based on literature (your summary and Azimi 2025):
+Based on radiomics reproducibility literature (feature-type patterns are generally consistent across studies, though specific results vary):
 
 **Generally Robust:**
 - Shape features (Volume, SurfaceArea, Sphericity)
