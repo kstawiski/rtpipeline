@@ -16,8 +16,7 @@ This directory contains technical documentation, advanced guides, and developmen
 | [**GETTING_STARTED.md**](../GETTING_STARTED.md) | Complete beginner's guide | New users |
 | [**WEBUI.md**](../WEBUI.md) | Web UI documentation | All users |
 | [**output_format_quick_ref.md**](../output_format_quick_ref.md) | Output format reference with code snippets | Data analysts |
-| [**setup_new_project.sh**](../setup_new_project.sh) | Interactive setup for native installs | Local installation users |
-| [**setup_docker_project.sh**](../setup_docker_project.sh) | **NEW:** Interactive Docker project setup | Docker users |
+| [**setup_docker_project.sh**](../setup_docker_project.sh) | Interactive Docker project setup | Docker users |
 
 ---
 
@@ -97,7 +96,6 @@ rtpipeline/
 ├── GETTING_STARTED.md                 ← Beginner's guide
 ├── WEBUI.md                           ← Web UI guide
 ├── output_format_quick_ref.md         ← Output format reference
-├── setup_new_project.sh               ← Interactive native setup
 ├── setup_docker_project.sh            ← Interactive Docker setup
 │
 ├── docs/                              ← Technical documentation (you are here)
