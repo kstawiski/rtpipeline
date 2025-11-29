@@ -29,11 +29,57 @@ from .layout import build_course_dirs
 logger = logging.getLogger(__name__)
 
 
+def _run_vec(cmd: List[str], env: Optional[dict] = None, timeout: Optional[int] = None) -> bool:
+    """Execute a command using argument list (shell=False) for better security. Returns True on success.
+
+    This is the preferred method for executing external commands as it avoids shell injection risks.
+
+    Args:
+        cmd: Command as list of arguments (e.g., ['dcm2niix', '-z', 'y', '-o', '/path'])
+        env: Optional environment variables
+        timeout: Optional timeout in seconds (default: 3600 for TotalSegmentator, 300 for others)
+
+    Raises:
+        RuntimeError: If command fails or times out
+    """
+    if not cmd:
+        raise ValueError("Empty command list")
+
+    # Default timeout based on command type
+    if timeout is None:
+        cmd_name = cmd[0].lower() if cmd else ""
+        if 'totalsegmentator' in cmd_name:
+            timeout = int(os.environ.get('TOTALSEG_TIMEOUT', '3600'))  # 1 hour default
+        elif 'dcm2niix' in cmd_name:
+            timeout = int(os.environ.get('DCM2NIIX_TIMEOUT', '300'))  # 5 minutes default
+        else:
+            timeout = 1800  # 30 minutes default for other commands
+
+    try:
+        cmd_preview = ' '.join(cmd[:4]) + ('...' if len(cmd) > 4 else '')
+        logger.debug("Running command (shell=False) with timeout=%ds: %s", timeout, cmd_preview)
+        subprocess.run(cmd, check=True, shell=False, env=env, timeout=timeout)
+        return True
+    except subprocess.TimeoutExpired:
+        cmd_preview = ' '.join(cmd[:3])
+        logger.error("Command timed out after %ds: %s...", timeout, cmd_preview)
+        logger.error("This usually indicates a hung process or insufficient resources.")
+        raise RuntimeError(f"Command timed out: {cmd_preview}...")
+    except subprocess.CalledProcessError as e:
+        cmd_preview = ' '.join(cmd[:3])
+        logger.error("Command failed with exit code %d: %s...", e.returncode, cmd_preview)
+        raise RuntimeError(f"Command failed with exit code {e.returncode}")
+
+
 def _run(cmd: str, env: Optional[dict] = None, timeout: Optional[int] = None) -> bool:
     """Execute a command using shell with timeout protection. Returns True on success.
 
+    WARNING: This function uses shell=True which has security implications.
+    Only use with fully trusted, internally-generated commands.
+    For external tool invocation, prefer _run_vec() with argument lists.
+
     Args:
-        cmd: Shell command to execute
+        cmd: Shell command to execute (must be trusted, not user-controlled)
         env: Optional environment variables
         timeout: Optional timeout in seconds (default: 3600 for TotalSegmentator, 300 for others)
     """
@@ -175,14 +221,28 @@ def run_dcm2niix(config: PipelineConfig, dicom_dir: Path, nifti_out: Path) -> Op
         local_cmd = str(local)
     cmd_name = local_cmd or config.dcm2niix_cmd
 
-    # Use bash to run dcm2niix to avoid permission issues with bundled binaries
-    if local_cmd:
-        inner_cmd = f'{shlex.quote(cmd_name)} -z y -o {shlex.quote(str(nifti_out))} {shlex.quote(str(dicom_dir))}'
-        cmd = f"{_prefix(config)}bash -c {shlex.quote(inner_cmd)}"
+    # Use shell=False when no conda prefix is needed (more secure)
+    if not config.conda_activate:
+        # Build command as argument list for _run_vec (shell=False)
+        cmd_list = [cmd_name, "-z", "y", "-o", str(nifti_out), str(dicom_dir)]
+        logger.info("Running dcm2niix (shell=False): %s", " ".join(cmd_list[:4]) + "...")
+        try:
+            ok = _run_vec(cmd_list)
+        except RuntimeError:
+            ok = False
     else:
-        cmd = f"{_prefix(config)}{shlex.quote(cmd_name)} -z y -o {shlex.quote(str(nifti_out))} {shlex.quote(str(dicom_dir))}"
-    logger.info("Running dcm2niix: %s", cmd)
-    ok = _run(cmd)
+        # Fall back to shell=True for conda activation (trusted config)
+        if local_cmd:
+            inner_cmd = f'{shlex.quote(cmd_name)} -z y -o {shlex.quote(str(nifti_out))} {shlex.quote(str(dicom_dir))}'
+            cmd = f"{_prefix(config)}bash -c {shlex.quote(inner_cmd)}"
+        else:
+            cmd = f"{_prefix(config)}{shlex.quote(cmd_name)} -z y -o {shlex.quote(str(nifti_out))} {shlex.quote(str(dicom_dir))}"
+        logger.info("Running dcm2niix (with conda): %s", cmd)
+        try:
+            ok = _run(cmd)
+        except RuntimeError:
+            ok = False
+
     if not ok:
         logger.warning("dcm2niix failed; continuing with DICOM-only segmentation")
         return None
@@ -323,13 +383,7 @@ def run_totalsegmentator(config: PipelineConfig, input_path: Path, output_path: 
         except (TypeError, ValueError):
             pass
 
-    cmd = "{}{}".format(
-        _prefix(config),
-        " ".join(shlex.quote(part) for part in cmd_parts),
-    )
-
-    logger.info("Running TotalSegmentator (%s): %s", output_type, cmd)
-
+    # Build environment variables
     env = os.environ.copy()
     thread_limit = getattr(config, "segmentation_thread_limit", None)
     thread_vars = (
@@ -377,17 +431,48 @@ def run_totalsegmentator(config: PipelineConfig, input_path: Path, output_path: 
         env.setdefault("nnUNet_preprocessed", weights_env)
         env.setdefault("nnUNet_raw", weights_env)
 
-    # First attempt with default settings
-    ok = _run(cmd, env=env)
+    # Choose execution method based on whether conda activation is needed
+    use_shell = bool(config.conda_activate)
+
+    if use_shell:
+        # Fall back to shell=True for conda activation (trusted config)
+        cmd = "{}{}".format(
+            _prefix(config),
+            " ".join(shlex.quote(part) for part in cmd_parts),
+        )
+        logger.info("Running TotalSegmentator (%s, shell=True): %s", output_type, cmd)
+        try:
+            ok = _run(cmd, env=env)
+        except RuntimeError:
+            ok = False
+    else:
+        # Use shell=False for better security (preferred path)
+        cmd_preview = " ".join(cmd_parts[:5]) + ("..." if len(cmd_parts) > 5 else "")
+        logger.info("Running TotalSegmentator (%s, shell=False): %s", output_type, cmd_preview)
+        try:
+            ok = _run_vec(cmd_parts, env=env)
+        except RuntimeError:
+            ok = False
 
     if not ok:
         if getattr(config, "totalseg_allow_fallback", False):
             logger.info("Retrying TotalSegmentator with CPU-only and single-process env")
             # Add CPU-only flag and disable multiprocessing
-            cmd_retry = cmd + " -d cpu"
             env_retry = env.copy()
             env_retry['CUDA_VISIBLE_DEVICES'] = '-1'
-            ok = _run(cmd_retry, env=env_retry)
+
+            if use_shell:
+                cmd_retry = cmd + " -d cpu"
+                try:
+                    ok = _run(cmd_retry, env=env_retry)
+                except RuntimeError:
+                    ok = False
+            else:
+                cmd_parts_retry = cmd_parts + ["-d", "cpu"]
+                try:
+                    ok = _run_vec(cmd_parts_retry, env=env_retry)
+                except RuntimeError:
+                    ok = False
         else:
             logger.error("TotalSegmentator failed and fallback is disabled.")
 
