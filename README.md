@@ -98,8 +98,7 @@ Run the pipeline entirely in the cloud using Google Colab with free GPU access:
 | --- | --- |
 | `Snakefile` | Snakemake workflow orchestrating all stages. |
 | `config.yaml` | Default configuration (paths, segmentation settings, radiomics options, custom models). |
-| `setup_new_project.sh` | Interactive setup wizard for native installations. |
-| `setup_docker_project.sh` | **NEW:** Interactive Docker project setup with comprehensive configuration wizard. |
+| `setup_docker_project.sh` | Interactive Docker project setup with comprehensive configuration wizard. |
 | **User Documentation** | |
 | `GETTING_STARTED.md` | Complete beginner's guide with step-by-step instructions. |
 | `WEBUI.md` | Web UI documentation with screenshots and usage guide. |
@@ -229,13 +228,6 @@ See [docs/DOCKER.md](docs/DOCKER.md) for detailed Singularity and SLURM instruct
 
 ## Alternative Installation Methods
 
-### Interactive Setup Script
-For local native installations (developers only):
-```bash
-./setup_new_project.sh
-```
-This script verifies local dependencies (Python 3.11+, Conda, GPU) and generates a `config.yaml`.
-
 ### Manual Native Installation
 1.  Install Python >= 3.11 and Snakemake >= 7.
 2.  Ensure Conda/Mamba is available.
@@ -352,13 +344,13 @@ Same absolute dose volume, but different percentages! ❌
    )
    ```
 
-3. **More Consistent Volumes**: Patients now have substantially more comparable analysis volumes (e.g., ~12,000 cm³ ±15% for pelvis):
+3. **More Consistent Volumes**: Patients have substantially reduced field-of-view variability in analysis volumes (e.g., ~12,000 cm³ ±15% for pelvis, compared to >50% variation uncropped):
    ```
    Patient A: V20Gy = 500 cm³ / 12,000 cm³ = 4.2%
    Patient B: V20Gy = 500 cm³ / 11,500 cm³ = 4.3%
-   Substantially more comparable than uncropped (where FOV may vary by >50%)
+   More comparable than uncropped data
    ```
-   *Note: Residual anatomical variation (pelvis shape, prior surgery, missing slices) may still affect denominators. QC reports flag cases with unusual cropped volumes.*
+   *Note: Residual anatomical variation (body habitus, prior surgery, segmentation differences) still affects denominators. QC reports flag cases with unusual cropped volumes. Cropping improves comparability but does not fully "normalize" denominators.*
 
 ### Configuration
 
@@ -383,12 +375,14 @@ ct_cropping:
 
 ### Benefits
 
-- ✅ **Percentage DVH metrics** (V%, D%) have substantially more consistent denominators for cross-patient analysis
-- ✅ **Statistical analysis** on percentage-based metrics is more valid (residual anatomical variation should still be checked via QC)
-- ✅ **Radiomics models** benefit from standardized input volumes
+- ✅ **Percentage DVH metrics** (V%, D%) have more consistent denominators for cross-patient analysis (reduced FOV variability)
+- ✅ **Statistical analysis** on percentage-based metrics is less confounded by FOV differences (residual anatomical variation should still be assessed via QC)
+- ✅ **Radiomics models** benefit from more standardized input volumes
 - ✅ **Automatic** – no manual intervention required
 - ✅ **Anatomically defined** – clinically interpretable boundaries based on TotalSegmentator landmarks
 - ✅ **Backward compatible** – original files preserved if `keep_original: true`
+
+*Note: Cropping reduces but does not eliminate denominator variability. It improves comparability but does not substitute for appropriate statistical adjustment or detailed QC.*
 
 ### When to Use
 
@@ -455,8 +449,7 @@ The script rewrites patient/course identifiers, anonymises DICOM headers, update
 * **[GETTING_STARTED.md](GETTING_STARTED.md)** – Complete beginner's guide with step-by-step instructions
 * **[WEBUI.md](WEBUI.md)** – Web UI documentation with detailed usage guide
 * **[output_format_quick_ref.md](output_format_quick_ref.md)** – Output format reference with common code snippets
-* **[setup_new_project.sh](setup_new_project.sh)** – Interactive setup wizard for native installations
-* **[setup_docker_project.sh](setup_docker_project.sh)** – **NEW:** Interactive Docker project setup wizard
+* **[setup_docker_project.sh](setup_docker_project.sh)** – Interactive Docker project setup wizard
 
 ### Technical Documentation (docs/)
 * **[docs/README.md](docs/README.md)** – 📖 **Documentation index** (start here for technical guides)
@@ -475,7 +468,6 @@ The script rewrites patient/course identifiers, anonymises DICOM headers, update
 * 🚀 **New user?** → [GETTING_STARTED.md](GETTING_STARTED.md)
 * 🌐 **Using Web UI?** → [WEBUI.md](WEBUI.md)
 * 🐳 **Setting up Docker project?** → `./setup_docker_project.sh` or [Docker Setup Guide](docs/DOCKER_SETUP_GUIDE.md)
-* ⚙️ **Setting up native project?** → `./setup_new_project.sh`
 * 📊 **Analyzing results?** → [output_format_quick_ref.md](output_format_quick_ref.md)
 * 🔧 **Performance issues?** → [docs/PARALLELIZATION.md](docs/PARALLELIZATION.md)
 * 🐛 **Pipeline hanging?** → [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)
@@ -484,11 +476,12 @@ The script rewrites patient/course identifiers, anonymises DICOM headers, update
 
 ### Radiomics Robustness References
 
-The perturbation methodology (NTCV chain), threshold conventions, and reporting practices implemented in `rtpipeline` are informed by the recent radiomics reproducibility literature. Note that literature-reported performance metrics (e.g., sensitivity/specificity) were validated on specific datasets and should not be assumed to transfer exactly to new cohorts:
+The perturbation methodology (NTCV chain), threshold conventions, and reporting practices implemented in `rtpipeline` are informed by the radiomics reproducibility literature. Note that literature-reported performance metrics (e.g., sensitivity/specificity) were validated on specific datasets and should not be assumed to transfer exactly to new cohorts. See [docs/RADIOMICS_ROBUSTNESS.md](docs/RADIOMICS_ROBUSTNESS.md) for full methodology details.
 
-[^radiomics-ntcv]: A. Zwanenburg, M. Vallières, M. A. Abdalah *et al.*, "Assessing robustness of radiomic features by image perturbation," *Scientific Reports* 9, 614 (2019).
-[^radiomics-thresholds]: A. Koo and M. Li, "A guideline of selecting and reporting intraclass correlation coefficients for reliability research," *Journal of Chiropractic Medicine* 15(2):155–163 (2016); S. Lo Iacono, G. Ponti, A. Rossi *et al.*, "Robustness of radiomics features for rectal cancer across segmentation perturbations," *European Radiology* 34:2114–2127 (2024); B. K. Bhattacharya, C. R. Harris, S. K. Mukherjee *et al.*, "Feature stability in pelvic radiomics across contour variations," *Scientific Reports* 12, 9891 (2022).
-[^radiomics-bootstrap]: T. Poirot, N. Lahaye, C. L. M. W. Granzier *et al.*, "Pingouin-based reliability assessment for radiomics stability," *Scientific Reports* 12, 2054 (2022).
+**Key References:**
+- Zwanenburg A *et al.*, "Assessing robustness of radiomic features by image perturbation," *Scientific Reports* 9, 614 (2019). DOI: 10.1038/s41598-018-36758-2
+- Koo TK, Li MY, "A guideline of selecting and reporting ICC for reliability research," *J Chiropractic Medicine* 15(2):155–163 (2016). DOI: 10.1016/j.jcm.2016.02.012
+- Vallat R, "Pingouin: statistics in Python," *JOSS* 3(31):1026 (2018). DOI: 10.21105/joss.01026
 
 ---
 

@@ -269,7 +269,7 @@ print(f"Mean fractions: {metadata['NumberOfFractions'].mean():.1f}")
 
 ## 📚 **Resources**
 
-- **Setup Script:** `./setup_new_project.sh` or `./setup_docker_project.sh`
+- **Setup Script:** `./setup_docker_project.sh`
 - **PyRadiomics Docs:** https://pyradiomics.readthedocs.io/
 - **IBSI Standards:** https://theibsi.github.io/
 - **Pipeline README:** [README.md](README.md)
