@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed, wait, FIRST_COMPLETED
 from pathlib import Path
 from time import perf_counter
 from typing import Any, Callable, Iterable, List, Optional, Sequence, TypeVar
@@ -286,13 +286,19 @@ def snap_rtstruct_to_dose_grid(
 _MEMORY_PATTERNS = (
     "out of memory",
     "cuda out of memory",
+    "cuda error: out of memory",
+    "cudamalloc failed",
     "cublas status alloc failed",
+    "cufft error",
+    "cudnn status alloc failed",
     "std::bad_alloc",
     "cannot allocate memory",
     "failed to allocate",
     "not enough memory",
     "mmap failed",
     "oom",
+    "allocator ran out of memory",
+    "ran out of gpu memory",
 )
 
 
@@ -318,6 +324,23 @@ def _log_progress(logger: logging.Logger, label: str, completed: int, total: int
         elapsed,
         eta,
     )
+
+
+def _get_item_desc(item: Any) -> str:
+    """Generate a human-readable description of a task item for logging."""
+    item_desc = getattr(item, 'dir', None)
+    if item_desc is None:
+        if isinstance(item, tuple):
+            parts = []
+            for part in item:
+                if hasattr(part, 'shape'):
+                    parts.append(f"array{tuple(part.shape)}")
+                else:
+                    parts.append(str(part))
+            item_desc = ", ".join(parts)
+        else:
+            item_desc = str(item)
+    return item_desc
 
 
 def run_tasks_with_adaptive_workers(
@@ -400,105 +423,92 @@ def run_tasks_with_adaptive_workers(
         with ExecutorClass(max_workers=workers) as ex:
             future_to_idx = {ex.submit(func, seq[idx]): idx for idx in current_indices}
 
-            # Track task start times for timeout detection
+            # Track task submission times for timeout enforcement
             task_start_times = {fut: perf_counter() for fut in future_to_idx}
             last_heartbeat = perf_counter()
+            remaining = set(future_to_idx.keys())
+            timed_out_indices: set = set()
 
-            for fut in as_completed(future_to_idx):
-                idx = future_to_idx[fut]
-                item = seq[idx]
-                item_desc = getattr(item, 'dir', None)
-                if item_desc is None:
-                    if isinstance(item, tuple):
-                        parts = []
-                        for part in item:
-                            if hasattr(part, 'shape'):
-                                parts.append(f"array{tuple(part.shape)}")
-                            else:
-                                parts.append(str(part))
-                        item_desc = ", ".join(parts)
-                    else:
-                        item_desc = str(item)
+            # Watchdog polling loop: check every 10 seconds for progress or timeouts
+            check_interval = 10.0
+            while remaining:
+                done, remaining = wait(remaining, timeout=check_interval, return_when=FIRST_COMPLETED)
+                now = perf_counter()
 
-                try:
-                    # Use timeout if specified
-                    if task_timeout is not None:
-                        results[idx] = fut.result(timeout=task_timeout)
-                    else:
-                        results[idx] = fut.result()
-                    completed += 1
+                # Process completed futures
+                for fut in done:
+                    idx = future_to_idx[fut]
+                    item = seq[idx]
+                    item_desc = _get_item_desc(item)
 
-                    # Log slow tasks after task completes
-                    now = perf_counter()
-                    task_duration = now - task_start_times[fut]
-                    if task_duration > 300:  # Warn if task took more than 5 minutes
-                        log.warning("%s: task #%d (%s) took %.1fs (slow)",
-                                   label, idx + 1, item_desc, task_duration)
-
-                    # Periodic heartbeat logging to detect hangs
-                    if now - last_heartbeat > 60:  # Log every 60 seconds
-                        log.info("%s: Still processing... %d/%d completed (%.1f%%)",
-                                label, completed, total, 100 * completed / total if total > 0 else 0)
-                        last_heartbeat = now
-
-                except TimeoutError:
-                    if task_timeout is not None:
-                        log.error(
-                            "%s: task #%d (%s) timed out after %ds",
-                            label,
-                            idx + 1,
-                            item_desc,
-                            task_timeout,
-                        )
-                    else:
-                        log.error(
-                            "%s: task #%d (%s) timed out",
-                            label,
-                            idx + 1,
-                            item_desc,
-                        )
-                    completed += 1
-                    results[idx] = None
-                except Exception as exc:  # noqa: BLE001 - propagate with logging
-                    if _is_memory_error(exc):
-                        mem_failures.append(idx)
-                        log.warning(
-                            "%s: memory pressure detected (task #%d: %s): %s",
-                            label,
-                            idx + 1,
-                            item_desc,
-                            exc,
-                        )
-                    else:
-                        log.error(
-                            "%s: task #%d (%s) failed: %s",
-                            label,
-                            idx + 1,
-                            item_desc,
-                            exc,
-                            exc_info=True,
-                        )
+                    try:
+                        results[idx] = fut.result(timeout=0)  # Should be instant since done
                         completed += 1
-                        results[idx] = None
-                if show_progress:
-                    _log_progress(log, label, completed, total, start)
+
+                        # Log slow tasks
+                        task_duration = now - task_start_times[fut]
+                        if task_duration > 300:
+                            log.warning("%s: task #%d (%s) took %.1fs (slow)",
+                                       label, idx + 1, item_desc, task_duration)
+
+                    except Exception as exc:  # noqa: BLE001 - propagate with logging
+                        if _is_memory_error(exc):
+                            mem_failures.append(idx)
+                            log.warning(
+                                "%s: memory pressure detected (task #%d: %s): %s",
+                                label, idx + 1, item_desc, exc,
+                            )
+                        else:
+                            log.error(
+                                "%s: task #%d (%s) failed: %s",
+                                label, idx + 1, item_desc, exc, exc_info=True,
+                            )
+                            completed += 1
+                            results[idx] = None
+
+                    if show_progress:
+                        _log_progress(log, label, completed, total, start)
+
+                # Check for timed-out tasks in remaining set
+                if task_timeout is not None and remaining:
+                    for fut in list(remaining):
+                        idx = future_to_idx[fut]
+                        if idx in timed_out_indices:
+                            continue
+                        elapsed = now - task_start_times[fut]
+                        if elapsed > task_timeout:
+                            item = seq[idx]
+                            item_desc = _get_item_desc(item)
+                            log.error(
+                                "%s: task #%d (%s) timed out after %.0fs (limit: %ds); "
+                                "marking as failed and continuing",
+                                label, idx + 1, item_desc, elapsed, task_timeout,
+                            )
+                            timed_out_indices.add(idx)
+                            completed += 1
+                            results[idx] = None
+                            # Cancel future (won't stop running process, but marks intent)
+                            fut.cancel()
+                            if show_progress:
+                                _log_progress(log, label, completed, total, start)
+
+                # Periodic heartbeat to show we're still alive
+                if now - last_heartbeat > 60:
+                    pending_count = len(remaining) - len(timed_out_indices)
+                    log.info("%s: Still processing... %d/%d completed, %d pending (%.1f%%)",
+                            label, completed, total, pending_count,
+                            100 * completed / total if total > 0 else 0)
+                    last_heartbeat = now
+
+                # Remove timed-out futures from remaining set to avoid blocking
+                if timed_out_indices:
+                    remaining = {f for f in remaining if future_to_idx[f] not in timed_out_indices}
 
         if mem_failures:
             if workers == min_workers == 1:
                 for idx in mem_failures:
                     item = seq[idx]
-                    item_desc = getattr(item, 'dir', None)
-                    if item_desc is None:
-                        if isinstance(item, tuple):
-                            parts = []
-                            for part in item:
-                                if hasattr(part, 'shape'):
-                                    parts.append(f"array{tuple(part.shape)}")
-                                else:
-                                    parts.append(str(part))
-                            item_desc = ", ".join(parts)
-                        else:
-                            item_desc = str(item)
+                    item_desc = _get_item_desc(item)
                     log.error(
                         "%s: memory error even with single worker; giving up on task #%d (%s)",
                         label,

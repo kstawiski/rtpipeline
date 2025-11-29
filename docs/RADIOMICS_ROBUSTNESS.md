@@ -1,6 +1,6 @@
 # Radiomics Robustness Module
 
-A built-in feature stability assessment module for rtpipeline that evaluates radiomics features under systematic perturbations following IBSI guidance and contemporary reproducibility research from 2023–2025.[^ibsi2024][^zwanenburg2019][^loiacono2024]
+A built-in feature stability assessment module for rtpipeline that evaluates radiomics features under systematic perturbations following the NTCV methodology of Zwanenburg et al. (2019) and contemporary reproducibility research.[^zwanenburg2019][^loiacono2024]
 
 ## Overview
 
@@ -21,31 +21,41 @@ The radiomics robustness module helps you identify stable, reproducible radiomic
 
 ## Scientific Background
 
-This implementation follows recent literature on radiomics reproducibility (2023–2025):
+This implementation follows the NTCV perturbation methodology from Zwanenburg et al. (2019) and related radiomics reproducibility research (2023–2025):
 
-- **Validated perturbation chains:** NTCV and RCV combinations detect 98–99% of unstable features when benchmarked against test–retest data, while maintaining <2% false positives.[^zwanenburg2019]
+- **Literature-validated perturbation chains:** In the original Zwanenburg et al. (2019) test–retest validation, NTCV and RCV combinations detected 98–99% of unstable features with <2% false positives.[^zwanenburg2019] **Note:** These operating characteristics were established on specific test–retest datasets; rtpipeline implements the same methodology but has not independently validated these exact figures. Users should treat these as literature benchmarks.
 - **Volume adaptation:** Iterative ±15% erosion/dilation provides clinically realistic contour perturbations for pelvic, rectal, and bladder cohorts.[^loiacono2024]
 - **Reliability statistics:** ICC(3,1) with 1,000-patient bootstrapped confidence intervals and complementary CoV thresholds support conservative clinical adoption.[^poirot2022][^koo2016]
 - **Harmonisation:** CovBat and acquisition-aware GLM models reduce scanner-related variability by >80% in multi-centre CT radiomics.[^chen2024][^huang2024]
 - **Stability-aware feature selection:** Graph-based selection maintains external AUC by preserving inter-feature topology while filtering by stability metrics.[^granzier2025]
 - **Consensus reporting:** IBSI Chapter 2 and METRICS guidelines emphasise provenance tracking, perturbation disclosure, and harmonised preprocessing when publishing radiomics biomarkers.[^ibsi2024][^metrics2024]
 
-### Robustness Thresholds (Research-Based)
+### Robustness Thresholds (Configurable Defaults)
 
-Based on published recommendations:
+The default thresholds in rtpipeline are informed by published recommendations, particularly Koo & Li (2016) for ICC interpretation and recent CT radiomics reproducibility studies:[^koo2016][^loiacono2024][^bhattacharya2022]
 
 **ICC (Intraclass Correlation Coefficient):**
-- ICC ≥ 0.90: **Robust** / Excellent (conservative clinical applications)
-- 0.75 ≤ ICC < 0.90: **Acceptable** / Good (standard threshold)
-- ICC < 0.75: **Poor**
+Following Koo & Li (2016) qualitative descriptors:
+- ICC ≥ 0.90: **Excellent** — used as "robust" threshold in rtpipeline (conservative)
+- 0.75 ≤ ICC < 0.90: **Good** — used as "acceptable" threshold (standard)
+- 0.50 ≤ ICC < 0.75: **Moderate** — not recommended for clinical modeling
+- ICC < 0.50: **Poor**
 
 **CoV (Coefficient of Variation):**
-- CoV ≤ 5%: **Robust** for highly conservative pipelines (delta-radiomics, adaptive RT)[^bhattacharya2022]
-- 5% < CoV ≤ 10%: **Robust** for retrospective modelling and most CT cohorts[^loiacono2024]
-- 10% < CoV ≤ 20%: **Acceptable** exploratory stability
+rtpipeline defaults to CoV ≤10% as "robust" based on retrospective CT radiomics literature:[^loiacono2024]
+- CoV ≤ 10%: **Robust** (default threshold)
+- 10% < CoV ≤ 20%: **Acceptable**
 - CoV > 20%: **Poor**
 
-A feature is classified as "robust" if it meets **both** ICC and CoV robust thresholds.
+*For highly conservative applications (delta-radiomics, adaptive RT), users may configure a stricter CoV ≤5% threshold via `config.yaml`:*
+```yaml
+radiomics_robustness:
+  thresholds:
+    cov:
+      robust_pct: 5.0  # Override default 10%
+```
+
+A feature is classified as "robust" if it meets **both** ICC and CoV thresholds. These are conventions commonly used in the radiomics literature, not universal standards; users should adapt thresholds to their specific clinical context.
 
 ### Perturbation Intensity Levels
 
@@ -237,23 +247,51 @@ radiomics_robustness:
       acceptable_pct: 20.0  # CoV ≤ 20%: "acceptable"
 ```
 
+### ICC Implementation Details
+
+rtpipeline computes ICC using Pingouin's `intraclass_corr` function with the following configuration:[^poirot2022]
+
+- **ICC Type:** ICC(3,1) — two-way mixed effects model, single measurement, consistency agreement
+- **Subject encoding:** Each unique combination of `patient_id + course_id + structure + segmentation_source` is treated as one "subject"
+- **Rater encoding:** Each `perturbation_id` (e.g., `ntcv_n10_t1_0_0_c0_v-0.15`) is treated as a "rater"
+
+This design treats perturbations as fixed effects (we choose specific noise levels, translations, etc.) and measures consistency of feature values across those perturbations for each ROI. The ICC(3,1) model is appropriate because:
+
+1. **Fixed perturbations:** The perturbation set is chosen by the researcher, not randomly sampled
+2. **Single measurements:** Each perturbation produces one feature value per ROI
+3. **Consistency:** We measure relative agreement, not absolute agreement (small systematic offsets are acceptable)
+
+**Example data structure for ICC computation:**
+```
+| subject                          | rater                    | feature_value |
+|----------------------------------|--------------------------|---------------|
+| patient001_course1_bladder_auto  | ntcv_n0_t0_0_0_c0_v0.0   | 0.456         |
+| patient001_course1_bladder_auto  | ntcv_n10_t0_0_0_c0_v0.0  | 0.461         |
+| patient001_course1_bladder_auto  | ntcv_n0_t1_0_0_c0_v-0.15 | 0.448         |
+| ...                              | ...                      | ...           |
+```
+
 ### NTCV Perturbation Chain Explanation
 
-The NTCV chain generates systematic combinations of perturbations:
+The NTCV chain follows the systematic perturbation methodology from Zwanenburg et al. (2019).[^zwanenburg2019] The order (Noise → Translation → Contour → Volume) ensures proper propagation of uncertainty sources:
 
 1. **N (Noise)**: Adds Gaussian noise to the CT image
    - Simulates scanner variability and acquisition differences
+   - Applied to the *image*, not the mask
    - Typical values: 0, 10, 20 HU std dev
-   
+
 2. **T (Translation)**: Applies rigid geometric shifts
    - Simulates positioning uncertainty and registration errors
+   - Applied *before* contour randomization
    - Typical values: ±3-5 mm in x, y, z directions
-   
+
 3. **C (Contour)**: Randomizes ROI boundaries
    - Simulates inter-observer delineation variability
-   - Applies random erosion/dilation operations
-   
+   - Applied to the already-shifted ROI
+   - Uses boundary noise simulation
+
 4. **V (Volume)**: Systematic erosion/dilation
+   - Final morphological adjustment
    - Tests feature stability across ROI size variations
    - Typical values: ±15% (standard) or ±30% (stress testing)
 
@@ -342,6 +380,23 @@ Multiple sheets for easy filtering:
 4. **Preprocessing chains**: Robustness to resampling and discretization variations important for multi-center studies
    - Test with different voxel sizes if data will come from multiple scanners
 
+### Example Methods Paragraph for Publications
+
+When describing rtpipeline's robustness analysis in a manuscript, consider using language similar to:
+
+> **Radiomics Feature Stability Assessment**
+>
+> Radiomics feature stability was assessed using rtpipeline's perturbation-based robustness module, which implements the NTCV (Noise + Translation + Contour + Volume) perturbation chain methodology described by Zwanenburg et al.[1] For each ROI, [N] systematic perturbations were generated combining Gaussian noise injection (σ = 0, 10, 20 HU), rigid translations (±3 mm), contour randomization, and volume adaptation (±15% erosion/dilation). Features were re-extracted for each perturbation using PyRadiomics [version].
+>
+> Feature stability was quantified using the intraclass correlation coefficient ICC(3,1) computed via Pingouin,[2] with each perturbation treated as a fixed rater measuring the same underlying subject (patient-course-structure combination). Features with ICC ≥ 0.90 and coefficient of variation (CoV) ≤ 10% were classified as "robust" following contemporary radiomics reproducibility guidance.[3,4] Only robust features were retained for subsequent modeling.
+>
+> [1] Zwanenburg A, et al. Assessing robustness of radiomic features by image perturbation. Sci Rep. 2019;9:614.
+> [2] Vallat R. Pingouin: statistics in Python. JOSS. 2018;3(31):1026.
+> [3] Koo TK, Li MY. A guideline of selecting and reporting ICC for reliability research. J Chiropr Med. 2016;15(2):155-163.
+> [4] Lo Iacono S, et al. Robustness of rectal cancer radiomics features. Eur Radiol. 2024;34:2114-2127.
+
+**Important:** Adjust the specific parameter values (noise levels, translation distances, volume changes, thresholds) to match your actual configuration. If using the CTV1 D95 heuristic for Rx estimation, explicitly note this limitation. If using Fast Mode for segmentation, note that lower-resolution segmentations were used.
+
 ## Typical Feature Families by Robustness
 
 Based on literature (your summary and Azimi 2025):
@@ -418,16 +473,22 @@ The implementation is grounded in findings that:
 
 ## Future Enhancements
 
-Planned for future releases:
-- **CovBat harmonization**: Advanced harmonization method (outperforms traditional ComBat)
+The following methods are referenced in the literature sections above but are **not yet implemented** in rtpipeline. They are planned for future releases:
+
+- **CovBat harmonization**: Advanced harmonization method (outperforms traditional ComBat) — must be applied as external preprocessing
 - **Graph-FS feature selection**: Stability-aware feature selection maintaining multi-institution performance
 - **Segmentation-method robustness**: Compare Manual vs TotalSegmentator vs custom models
 - **Scan-rescan ICC**: Test-retest reliability for longitudinal studies
 - **Panel-averaged features**: Zwanenburg-style feature averaging across perturbations
 - **Preprocessing variations**: Resampling and discretization robustness testing
 
-[^ibsi2024]: A. Zwanenburg, A. Vallières, K. Cheze Le Rest *et al.*, "The Image Biomarker Standardisation Initiative (IBSI) – Phase II: standardising radiomics image filters," *Radiology and Oncology* 58(2):100–120 (2024).
-[^zwanenburg2019]: A. Zwanenburg, M. Leger, M. Vallières, and S. Löck, "Image biomarker standardisation initiative," *Scientific Reports* 9, 614 (2019).
+---
+
+## References
+
+[^zwanenburg2019]: A. Zwanenburg, M. Vallières, M. A. Abdalah *et al.*, "Assessing robustness of radiomic features by image perturbation," *Scientific Reports* 9, 614 (2019). DOI: 10.1038/s41598-019-41766-y
+[^ibsi2020]: A. Zwanenburg, M. Vallières, M. A. Abdalah *et al.*, "The Image Biomarker Standardization Initiative: Standardized Quantitative Radiomics for High-Throughput Image-based Phenotyping," *Radiology* 295(2):328–338 (2020).
+[^ibsi2024]: A. Zwanenburg, S. Leger, L. Agolli *et al.*, "The Image Biomarker Standardisation Initiative (IBSI) – Phase II: standardising radiomics image filters," *Radiology and Oncology* 58(2):100–120 (2024).
 [^loiacono2024]: S. Lo Iacono, G. Ponti, A. Rossi *et al.*, "Robustness of rectal cancer radiomics features to contour perturbations," *European Radiology* 34:2114–2127 (2024).
 [^poirot2022]: T. Poirot, N. Lahaye, C. L. M. W. Granzier *et al.*, "Reproducible radiomics statistics with Pingouin," *Scientific Reports* 12, 2054 (2022).
 [^koo2016]: T. K. Koo and M. Y. Li, "A guideline of selecting and reporting intraclass correlation coefficients for reliability research," *Journal of Chiropractic Medicine* 15(2):155–163 (2016).

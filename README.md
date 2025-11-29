@@ -79,12 +79,12 @@ Run the pipeline entirely in the cloud using Google Colab with free GPU access:
   * **TotalSegmentator (CT + MR)** – generates `total` (CT) and `total_mr` (MR) masks with **DICOM RTSTRUCT output** (directly compatible with clinical systems) plus binary NIfTI masks.
   * **Custom nnU-Net models** – arbitrary nnUNet v1 or v2 predictors and ensembles (e.g. `cardiac_STOPSTORM`, `HN_lymph_nodes`) run automatically with per-model manifests.
   * **Boolean structure synthesis** – optional composite structures via YAML (`custom_structures_*.yaml`).
-* **Systematic CT cropping** (NEW) – crops all CTs to consistent anatomical boundaries (e.g., L1 vertebra to femoral heads + 10cm) using TotalSegmentator landmarks, ensuring percentage DVH metrics (V95%, V20Gy) have meaningful denominators for cross-patient comparison.
-* **DVH analytics** – generates per-course DVH workbooks and an aggregated `_RESULTS/dvh_metrics.xlsx` with segmentation provenance (manual / TotalSegmentator / custom / nnUNet).
+* **Systematic CT cropping** (NEW) – crops all CTs to consistent anatomical boundaries (e.g., L1 vertebra to femoral heads + margin) using TotalSegmentator landmarks, substantially reducing field-of-view variability for percentage DVH metrics (V95%, V20Gy) to enable more meaningful cross-patient comparison.
+* **DVH analytics** – generates per-course DVH workbooks and an aggregated `_RESULTS/dvh_metrics.xlsx` with segmentation provenance (manual / TotalSegmentator / custom / nnUNet). Rx-relative metrics (D%Rx, V%Rx) are computed from RTPLAN when available, or optionally estimated from CTV1 D95 (heuristic; not valid for SIB plans).
 * **Radiomics**
   * **CT** – PyRadiomics with `radiomics_params.yaml` → `radiomics_ct.xlsx` (per course + aggregated).
   * **MR** – PyRadiomics with `radiomics_params_mr.yaml` over `total_mr` masks → `MR/radiomics_mr.xlsx` (per course) and `_RESULTS/radiomics_mr.xlsx`.
-* **Radiomics robustness** – perturbation-based stability assessment combining noise, translation, contour randomisation, and volume adaptation (NTCV chain) with ICC(3,1), CoV, and QCD thresholds aligned to contemporary reproducibility guidance.[^radiomics-ntcv][^radiomics-thresholds]
+* **Radiomics robustness** – perturbation-based stability assessment using the NTCV chain (Noise + Translation + Contour + Volume) from Zwanenburg et al. (2019), with configurable ICC(3,1) and CoV thresholds based on contemporary reproducibility guidance.[^radiomics-ntcv][^radiomics-thresholds]
 * **Quality control** – JSON + Excel reports flag structure cropping, frame-of-reference mismatches, and file-level issues.
 * **Pre-flight validation** – `rtpipeline validate` command checks environment configuration before running pipeline.
 * **Aggregation** – consolidates DVH, radiomics (CT & MR), fractions, metadata, and QC into `_RESULTS/`.
@@ -352,12 +352,13 @@ Same absolute dose volume, but different percentages! ❌
    )
    ```
 
-3. **Consistent Volumes**: All patients now have the same analysis volume (e.g., ~12,000 cm³ for pelvis):
+3. **More Consistent Volumes**: Patients now have substantially more comparable analysis volumes (e.g., ~12,000 cm³ ±15% for pelvis):
    ```
-   Patient A: V20Gy = 500 cm³ / 12,000 cm³ = 4.2% ✅
-   Patient B: V20Gy = 500 cm³ / 12,000 cm³ = 4.2% ✅
-   Now comparable across patients!
+   Patient A: V20Gy = 500 cm³ / 12,000 cm³ = 4.2%
+   Patient B: V20Gy = 500 cm³ / 11,500 cm³ = 4.3%
+   Substantially more comparable than uncropped (where FOV may vary by >50%)
    ```
+   *Note: Residual anatomical variation (pelvis shape, prior surgery, missing slices) may still affect denominators. QC reports flag cases with unusual cropped volumes.*
 
 ### Configuration
 
@@ -382,11 +383,11 @@ ct_cropping:
 
 ### Benefits
 
-- ✅ **Percentage DVH metrics** (V%, D%) are now meaningful for cross-patient comparison
-- ✅ **Statistical analysis** on percentage-based metrics is valid
+- ✅ **Percentage DVH metrics** (V%, D%) have substantially more consistent denominators for cross-patient analysis
+- ✅ **Statistical analysis** on percentage-based metrics is more valid (residual anatomical variation should still be checked via QC)
 - ✅ **Radiomics models** benefit from standardized input volumes
 - ✅ **Automatic** – no manual intervention required
-- ✅ **Anatomically defined** – clinically interpretable boundaries
+- ✅ **Anatomically defined** – clinically interpretable boundaries based on TotalSegmentator landmarks
 - ✅ **Backward compatible** – original files preserved if `keep_original: true`
 
 ### When to Use
@@ -483,7 +484,7 @@ The script rewrites patient/course identifiers, anonymises DICOM headers, update
 
 ### Radiomics Robustness References
 
-The perturbation workflow, statistical thresholds, and reporting templates implemented in `rtpipeline` draw on the recent reproducibility literature:
+The perturbation methodology (NTCV chain), threshold conventions, and reporting practices implemented in `rtpipeline` are informed by the recent radiomics reproducibility literature. Note that literature-reported performance metrics (e.g., sensitivity/specificity) were validated on specific datasets and should not be assumed to transfer exactly to new cohorts:
 
 [^radiomics-ntcv]: A. Zwanenburg, M. Vallières, M. A. Abdalah *et al.*, "Assessing robustness of radiomic features by image perturbation," *Scientific Reports* 9, 614 (2019).
 [^radiomics-thresholds]: A. Koo and M. Li, "A guideline of selecting and reporting intraclass correlation coefficients for reliability research," *Journal of Chiropractic Medicine* 15(2):155–163 (2016); S. Lo Iacono, G. Ponti, A. Rossi *et al.*, "Robustness of radiomics features for rectal cancer across segmentation perturbations," *European Radiology* 34:2114–2127 (2024); B. K. Bhattacharya, C. R. Harris, S. K. Mukherjee *et al.*, "Feature stability in pelvic radiomics across contour variations," *Scientific Reports* 12, 9891 (2022).

@@ -23,10 +23,11 @@ from .utils import run_tasks_with_adaptive_workers, mask_is_cropped
 from .custom_models import list_custom_model_outputs
 
 # Image cache for avoiding repeated DICOM loading (significant I/O savings)
+# Configurable via environment variables: RTPIPELINE_IMAGE_CACHE_SIZE, RTPIPELINE_IMAGE_CACHE_AGE_SEC
 _IMAGE_CACHE: Dict[str, Tuple[sitk.Image, float]] = {}
 _IMAGE_CACHE_LOCK = threading.Lock()
-_IMAGE_CACHE_MAX_SIZE = 8  # Max number of images to keep in cache
-_IMAGE_CACHE_MAX_AGE_SEC = 300  # Max age in seconds before eviction
+_IMAGE_CACHE_MAX_SIZE = int(os.environ.get('RTPIPELINE_IMAGE_CACHE_SIZE', '8'))
+_IMAGE_CACHE_MAX_AGE_SEC = int(os.environ.get('RTPIPELINE_IMAGE_CACHE_AGE_SEC', '300'))
 
 _THREAD_ENV_VARS = (
     'OMP_NUM_THREADS',
@@ -251,6 +252,8 @@ def _load_series_image(dicom_dir: Path, series_uid: Optional[str] = None, use_ca
                 cached_img, cached_time = _IMAGE_CACHE[cache_key]
                 # Check if cache entry is still valid
                 if time.time() - cached_time < _IMAGE_CACHE_MAX_AGE_SEC:
+                    # Update timestamp on hit (proper LRU behavior)
+                    _IMAGE_CACHE[cache_key] = (cached_img, time.time())
                     logger.debug("Image cache hit for %s", cache_key)
                     return cached_img
                 else:
