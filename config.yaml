@@ -21,12 +21,13 @@ max_workers: null            # null => auto (cores - 1). Lower this (2-4) for sl
 # Scheduler overrides (optional)
 scheduler:
   reserved_cores: 1                # Keep a core free for the OS / background I/O
-  dvh_threads_per_job: 4           # Snakemake `threads:` per DVH job (controls parallel courses)
-  radiomics_threads_per_job: 4     # Snakemake `threads:` per radiomics job (reduced from 6 to avoid memory contention)
-  qc_threads_per_job: 2            # Snakemake `threads:` per QC job
-  crop_ct_threads_per_job: 4       # Snakemake `threads:` per crop_ct job (I/O bound)
+  parallel_courses: 2              # Target number of concurrent courses (per-job threads ≈ cores/parallel_courses)
+  dvh_threads_per_job: null        # null => auto (≈ cores / parallel_courses)
+  radiomics_threads_per_job: null  # null => auto (≈ cores / parallel_courses)
+  qc_threads_per_job: null         # null => auto (≈ cores / parallel_courses)
+  crop_ct_threads_per_job: null    # null => auto (≈ cores / parallel_courses)
   prioritize_short_courses: true   # Run small courses first to unblock downstream stages sooner
-  robustness_threads_per_job: 4    # Threads per radiomics robustness job
+  robustness_threads_per_job: null # null => auto (≈ cores / parallel_courses)
 
 # Adjust worker budget downwards if your storage backend is network bound (e.g., 2-4 for NFS)
 

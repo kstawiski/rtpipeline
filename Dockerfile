@@ -275,16 +275,26 @@ ENV SNAKEMAKE_OUTPUT_CACHE="" \
     PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
     TOTALSEG_TIMEOUT=3600 \
     DCM2NIIX_TIMEOUT=300 \
-    RTPIPELINE_RADIOMICS_TASK_TIMEOUT=600
+    RTPIPELINE_RADIOMICS_TASK_TIMEOUT=600 \
+    SNAKEMAKE_CONDA_PREFIX=/home/rtpipeline/.snakemake/conda
 
 # Pre-create TotalSegmentator weights and nnUNet directories
 RUN mkdir -p /home/rtpipeline/.totalsegmentator/nnunet/results \
              /home/rtpipeline/.totalsegmentator/nnunet/raw \
-             /home/rtpipeline/.totalsegmentator/nnunet/preprocessed && \
-    chown -R rtpipeline:rtpipeline /home/rtpipeline/.totalsegmentator
+             /home/rtpipeline/.totalsegmentator/nnunet/preprocessed \
+             $SNAKEMAKE_CONDA_PREFIX && \
+    chown -R rtpipeline:rtpipeline /home/rtpipeline/.totalsegmentator /home/rtpipeline/.snakemake
 
 # Switch to non-root user
 USER rtpipeline
+
+# Warm up Snakemake-managed conda envs so runtime jobs reuse the baked environments
+RUN snakemake \
+    --cores 1 \
+    --use-conda \
+    --conda-prefix "$SNAKEMAKE_CONDA_PREFIX" \
+    --conda-create-envs-only \
+    --configfile /app/config.container.yaml
 
 # Expose ports
 EXPOSE 8888 8080
