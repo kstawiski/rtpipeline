@@ -10,7 +10,10 @@ import os
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    pass  # For future type hints
 
 import numpy as np
 import pandas as pd
@@ -25,10 +28,39 @@ logger = logging.getLogger(__name__)
 RADIOMICS_ENV = "rtpipeline-radiomics"
 
 
+# Thread-limiting environment variables for subprocesses
+_THREAD_ENV_VARS = (
+    'OMP_NUM_THREADS',
+    'OPENBLAS_NUM_THREADS',
+    'MKL_NUM_THREADS',
+    'NUMEXPR_NUM_THREADS',
+    'NUMBA_NUM_THREADS',
+)
+
+
 def _conda_subprocess_env() -> Dict[str, str]:
+    """Create environment for conda subprocess with thread limits.
+
+    CRITICAL: Each subprocess must have thread limits set to prevent
+    CPU oversubscription. Without this, N workers × M threads each
+    can spawn 100+ threads fighting for CPU cores.
+    """
     env = os.environ.copy()
     env.setdefault("CONDA_NO_PLUGINS", "1")
     env.setdefault("CONDA_OVERRIDE_CUDA", "0")
+
+    # Get thread limit from environment or default to 1
+    # Using 1 thread per subprocess is optimal when running many parallel subprocesses
+    thread_limit = os.environ.get("RTPIPELINE_RADIOMICS_THREAD_LIMIT", "1")
+    try:
+        thread_limit = str(max(1, int(thread_limit)))
+    except (ValueError, TypeError):
+        thread_limit = "1"
+
+    # Set thread limits for all common libraries
+    for var in _THREAD_ENV_VARS:
+        env.setdefault(var, thread_limit)
+
     return env
 
 
@@ -241,6 +273,160 @@ print(json.dumps(output))
         raise RuntimeError(f"Radiomics extraction failed: {e}")
 
 
+def extract_radiomics_batch_with_conda(
+    tasks: List[Dict[str, Any]],
+    params_file: Optional[str] = None,
+    timeout_per_roi: int = 120,
+) -> List[Dict[str, Any]]:
+    """
+    Extract radiomics features for multiple ROIs in a SINGLE subprocess.
+
+    This dramatically reduces overhead by loading the radiomics library once
+    and processing all ROIs sequentially within that subprocess.
+
+    Args:
+        tasks: List of dicts with 'image_path', 'mask_path', optional 'label', 'roi_name'
+        params_file: Optional path to radiomics parameters YAML file
+        timeout_per_roi: Timeout per ROI in seconds (default 120s = 2 min)
+
+    Returns:
+        List of feature dictionaries (one per task), None entries for failed ROIs
+    """
+    if not tasks:
+        return []
+
+    # Calculate total timeout based on number of tasks
+    total_timeout = max(300, len(tasks) * timeout_per_roi)  # At least 5 minutes
+
+    # Create batch extraction script that processes all ROIs in one go
+    batch_script = '''
+import sys
+import json
+import warnings
+import logging
+
+# Suppress warnings before importing radiomics
+warnings.filterwarnings('ignore')
+logging.getLogger('radiomics').setLevel(logging.ERROR)
+logging.getLogger('radiomics.featureextractor').setLevel(logging.ERROR)
+
+from radiomics import featureextractor
+
+# Read batch parameters from file
+with open(sys.argv[1], 'r') as f:
+    batch_params = json.load(f)
+
+tasks = batch_params['tasks']
+params_file = batch_params.get('params_file')
+
+# Create extractor ONCE (this is the expensive operation we're amortizing)
+if params_file:
+    extractor = featureextractor.RadiomicsFeatureExtractor(params_file)
+else:
+    extractor = featureextractor.RadiomicsFeatureExtractor()
+
+# Process each task
+for task in tasks:
+    image_path = task['image_path']
+    mask_path = task['mask_path']
+    label = task.get('label')
+    roi_name = task.get('roi_name', 'ROI')
+
+    try:
+        if label is not None:
+            features = extractor.execute(image_path, mask_path, label=label)
+        else:
+            features = extractor.execute(image_path, mask_path)
+
+        # Convert to JSON-serializable format
+        output = {'__status__': 'success', '__roi_name__': roi_name}
+        for key, value in features.items():
+            try:
+                if hasattr(value, 'item'):
+                    output[key] = value.item()
+                elif hasattr(value, 'tolist'):
+                    output[key] = value.tolist()
+                else:
+                    output[key] = value
+            except Exception:
+                output[key] = str(value)
+        print(json.dumps(output), flush=True)
+
+    except Exception as e:
+        error_msg = str(e).lower()
+        if 'size of the roi is too small' in error_msg:
+            print(json.dumps({'__status__': 'skipped', '__roi_name__': roi_name, '__reason__': 'ROI too small'}), flush=True)
+        else:
+            print(json.dumps({'__status__': 'error', '__roi_name__': roi_name, '__error__': str(e)}), flush=True)
+'''
+
+    try:
+        # Write batch parameters to temporary file
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as batch_file:
+            json.dump({
+                'tasks': [
+                    {
+                        'image_path': t.get('image_path'),
+                        'mask_path': t.get('mask_path'),
+                        'label': t.get('label'),
+                        'roi_name': t.get('roi_name', 'ROI'),
+                    }
+                    for t in tasks
+                ],
+                'params_file': params_file,
+            }, batch_file)
+            batch_file_path = batch_file.name
+
+        # Run batch extraction in conda environment
+        result = subprocess.run(
+            ["conda", "run", "-n", RADIOMICS_ENV, "python", "-c", batch_script, batch_file_path],
+            capture_output=True,
+            text=True,
+            timeout=total_timeout,
+            env=_conda_subprocess_env(),
+        )
+
+        # Parse results - one JSON per line
+        results = []
+        for line in result.stdout.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                parsed = json.loads(line)
+                results.append(parsed)
+            except json.JSONDecodeError:
+                logger.debug("Failed to parse batch output line: %s", line[:100])
+
+        # Clean up
+        try:
+            os.unlink(batch_file_path)
+        except OSError:
+            pass
+
+        if result.returncode != 0 and not results:
+            logger.error("Batch radiomics failed: %s", result.stderr[:500] if result.stderr else "unknown error")
+            return [None] * len(tasks)
+
+        return results
+
+    except subprocess.TimeoutExpired:
+        logger.error("Batch radiomics timed out after %ds for %d tasks", total_timeout, len(tasks))
+        try:
+            os.unlink(batch_file_path)
+        except (OSError, NameError):
+            pass
+        return [None] * len(tasks)
+
+    except Exception as e:
+        logger.error("Batch radiomics failed: %s", e)
+        try:
+            os.unlink(batch_file_path)
+        except (OSError, NameError):
+            pass
+        return [None] * len(tasks)
+
+
 def _write_mask_to_file(mask_array: np.ndarray, mask_path: str, ct_info: Dict[str, Any]) -> None:
     """Write a binary mask with CT geometry metadata."""
 
@@ -397,11 +583,92 @@ def process_radiomics_batch(
         worker_limit = max(1, cpu_total - 1)
     worker_limit = max(1, min(worker_limit, len(tasks_list)))
 
+    # Use batch processing to reduce subprocess overhead
+    # Instead of N subprocesses (each loading radiomics library),
+    # we use N/batch_size subprocesses, dramatically reducing startup overhead
+    use_batch_processing = os.environ.get('RTPIPELINE_RADIOMICS_BATCH', '1').lower() in ('1', 'true', 'yes')
+
     if sequential or len(tasks_list) == 1 or worker_limit == 1:
-        _run_sequential(tasks_list)
-    else:
+        if use_batch_processing:
+            # Even sequential mode benefits from batch processing
+            logger.info("Processing %d radiomics tasks in batch mode (sequential)", len(tasks_list))
+            params_file = tasks_list[0].get('params_file') if tasks_list else None
+            batch_results = extract_radiomics_batch_with_conda(tasks_list, params_file)
+
+            for task, features in zip(tasks_list, batch_results):
+                if features is None or features.get('__status__') != 'success':
+                    status = features.get('__status__', 'failed') if features else 'failed'
+                    roi_name = task.get('roi_name', 'ROI')
+                    if status == 'skipped':
+                        logger.info("Skipped radiomics for %s: %s", roi_name, features.get('__reason__', 'unknown'))
+                    elif status == 'error':
+                        logger.error("Radiomics failed for %s: %s", roi_name, features.get('__error__', 'unknown'))
+                    continue
+
+                # Remove internal status fields and combine with metadata
+                features_clean = {k: v for k, v in features.items() if not k.startswith('__')}
+                metadata = dict(task.get('metadata') or task.get('extra_metadata') or {})
+                metadata.setdefault('roi_name', task.get('roi_name', 'ROI'))
+                metadata.setdefault('roi_original_name', task.get('roi_name', 'ROI'))
+                metadata.setdefault('modality', 'CT')
+                results.append(_combine_feature_record(features_clean, metadata))
+        else:
+            _run_sequential(tasks_list)
+    elif use_batch_processing:
+        # OPTIMIZED: Split tasks into batches and process each batch in a single subprocess
+        # This amortizes the ~2-5 second subprocess startup across multiple ROIs
+        batch_size = max(5, len(tasks_list) // worker_limit)  # At least 5 ROIs per batch
+        batches = [tasks_list[i:i + batch_size] for i in range(0, len(tasks_list), batch_size)]
+
         logger.info(
-            "Processing %d radiomics tasks with up to %d worker threads",
+            "Processing %d radiomics tasks in %d batches (%d ROIs/batch) with %d workers",
+            len(tasks_list),
+            len(batches),
+            batch_size,
+            min(worker_limit, len(batches)),
+        )
+
+        from concurrent.futures import ProcessPoolExecutor, as_completed
+
+        def _process_batch(batch: List[Dict[str, Any]]) -> List[Tuple[Dict[str, Any], Optional[Dict[str, Any]]]]:
+            """Process a batch of tasks and return (task, features) pairs."""
+            params_file = batch[0].get('params_file') if batch else None
+            batch_results = extract_radiomics_batch_with_conda(batch, params_file)
+            return list(zip(batch, batch_results))
+
+        # Use ProcessPoolExecutor for better parallelism (avoids GIL)
+        # Each worker processes one batch (multiple ROIs) per subprocess
+        with ProcessPoolExecutor(max_workers=min(worker_limit, len(batches))) as executor:
+            future_to_batch = {executor.submit(_process_batch, batch): batch for batch in batches}
+
+            for future in as_completed(future_to_batch):
+                batch = future_to_batch[future]
+                try:
+                    batch_results = future.result()
+                    for task, features in batch_results:
+                        if features is None or features.get('__status__') != 'success':
+                            status = features.get('__status__', 'failed') if features else 'failed'
+                            roi_name = task.get('roi_name', 'ROI')
+                            if status == 'skipped':
+                                logger.debug("Skipped radiomics for %s: %s", roi_name, features.get('__reason__', 'unknown'))
+                            elif status == 'error':
+                                logger.warning("Radiomics failed for %s: %s", roi_name, features.get('__error__', 'unknown'))
+                            continue
+
+                        # Remove internal status fields and combine with metadata
+                        features_clean = {k: v for k, v in features.items() if not k.startswith('__')}
+                        metadata = dict(task.get('metadata') or task.get('extra_metadata') or {})
+                        metadata.setdefault('roi_name', task.get('roi_name', 'ROI'))
+                        metadata.setdefault('roi_original_name', task.get('roi_name', 'ROI'))
+                        metadata.setdefault('modality', 'CT')
+                        results.append(_combine_feature_record(features_clean, metadata))
+                        logger.debug("Completed radiomics for %s", task.get('roi_name', 'ROI'))
+                except Exception as exc:
+                    logger.error("Batch processing failed: %s", exc)
+    else:
+        # Legacy per-ROI processing (can be enabled via RTPIPELINE_RADIOMICS_BATCH=0)
+        logger.info(
+            "Processing %d radiomics tasks with up to %d worker threads (legacy mode)",
             len(tasks_list),
             worker_limit,
         )
@@ -711,25 +978,37 @@ def radiomics_for_course(
     output_path = course_dir / "radiomics_ct.xlsx"
     sequential = os.environ.get('RTPIPELINE_RADIOMICS_SEQUENTIAL', '').lower() in ('1', 'true', 'yes')
 
-    # Determine optimal worker count (matching radiomics_parallel.py logic)
+    # Determine worker count - respect Snakemake thread budget via env var or config
     max_workers = None
+    worker_source = "unknown"
 
-    # Check for environment variable override first
+    # Priority 1: Environment variable (set by CLI from --max-workers or by Snakemake)
     env_workers = int(os.environ.get('RTPIPELINE_MAX_WORKERS', '0') or 0)
     if env_workers > 0:
         max_workers = env_workers
-    # Try config.effective_workers() if available
-    elif hasattr(config, 'effective_workers') and callable(config.effective_workers):
+        worker_source = "RTPIPELINE_MAX_WORKERS env"
+
+    # Priority 2: PipelineConfig.effective_workers() (respects --max-workers CLI arg)
+    if max_workers is None and hasattr(config, 'effective_workers') and callable(config.effective_workers):
         try:
             max_workers = config.effective_workers()
+            worker_source = "config.effective_workers()"
         except Exception:
             pass
-    # Fall back to cpu_count - 1 (same as radiomics_parallel.py)
-    if max_workers is None:
-        cpu_count = os.cpu_count() or 4
-        max_workers = max(1, cpu_count - 1)
 
-    logger.info("Conda radiomics using %d workers (CPU cores: %d)", max_workers, os.cpu_count() or 0)
+    # Priority 3: Safe default based on task count (not cpu_count to avoid oversubscription)
+    if max_workers is None:
+        # When no budget is set, use conservative parallelism to avoid oversubscribing
+        # With batch processing, each worker runs one subprocess containing multiple ROIs
+        max_workers = min(4, len(tasks))  # Max 4 parallel batches by default
+        worker_source = "default (no budget set)"
+        logger.warning(
+            "No worker budget set (RTPIPELINE_MAX_WORKERS env or config.effective_workers). "
+            "Using conservative default of %d workers. Set RTPIPELINE_MAX_WORKERS for optimal performance.",
+            max_workers
+        )
+
+    logger.info("Conda radiomics using %d workers (%s, CPU cores: %d)", max_workers, worker_source, os.cpu_count() or 0)
 
     result = process_radiomics_batch(
         tasks,
@@ -864,10 +1143,12 @@ def radiomics_for_course_mr(
                     'roi_name': roi_name,
                     'params_file': str(params_file) if params_file and params_file.exists() else None,
                     'cleanup': False,  # We'll clean up temp files ourselves
-                    'extra_metadata': {
+                    'metadata': {  # Use 'metadata' not 'extra_metadata' for correct handling
                         'modality': 'MR',
                         'series_uid': series_uid,
                         'segmentation_source': 'AutoTS_total_mr',
+                        'patient_id': course_dir.parent.name,
+                        'course_id': course_dir.name,
                     }
                 })
             except Exception as exc:
@@ -886,7 +1167,7 @@ def radiomics_for_course_mr(
 
     logger.info("Processing %d MR radiomics tasks for %s", len(tasks), course_dir.name)
 
-    # Determine worker count
+    # Determine worker count - same logic as CT radiomics
     max_workers = None
     env_workers = int(os.environ.get('RTPIPELINE_MAX_WORKERS', '0') or 0)
     if env_workers > 0:
@@ -897,8 +1178,10 @@ def radiomics_for_course_mr(
         except Exception:
             pass
     if max_workers is None:
-        cpu_count = os.cpu_count() or 4
-        max_workers = max(1, cpu_count - 1)
+        # Conservative default when no budget is set
+        max_workers = min(4, len(tasks))
+
+    logger.info("MR radiomics using %d workers", max_workers)
 
     result = process_radiomics_batch(
         tasks,

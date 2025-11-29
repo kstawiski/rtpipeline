@@ -28,7 +28,7 @@ docker_run/
 # Large files
 *.sif
 *.tar.gz
-totalseg_weights/  <-- Included for offline support
+# Note: totalseg_weights/ is intentionally NOT excluded - included for offline support
 # custom_models exclusions removed for offline support
 custom_models/*/weights/
 custom_models/*/nnUNet_results/
