@@ -109,22 +109,42 @@ SNAKEMAKE_THREADS = WORKER_BUDGET
 
 _parallel_courses_raw = _coerce_positive_int(SCHEDULER_CONFIG.get("parallel_courses"))
 if _parallel_courses_raw is None:
-    # Auto-calculate parallel courses based on available cores
-    # Target: each course gets ~4-6 threads, with minimum 2 parallel courses
-    if SNAKEMAKE_THREADS >= 16:
-        DEFAULT_PARALLEL_COURSES = max(3, SNAKEMAKE_THREADS // 6)  # ~6 threads per course
-    elif SNAKEMAKE_THREADS >= 8:
-        DEFAULT_PARALLEL_COURSES = max(2, SNAKEMAKE_THREADS // 4)  # ~4 threads per course
-    else:
-        DEFAULT_PARALLEL_COURSES = 2  # Minimum 2 parallel courses
+    # Auto-calculate parallel courses to maximize CPU utilization (target: n_cores - 1)
+    #
+    # Key insight: CPU-bound stages (DVH, CT crop) need sufficient threads per job
+    # to efficiently parallelize internal work (ROI processing, I/O). Too few threads
+    # per course hurts throughput more than additional course parallelism helps.
+    #
+    # Formula: parallel_courses = min(threads // MIN_THREADS, threads // TARGET_THREADS + 1)
+    # - MIN_THREADS_PER_JOB = 4 ensures each job has enough internal parallelism
+    # - TARGET_THREADS = 5 balances course concurrency with per-job efficiency
+    #
+    # CPU utilization calculation (threads × courses = active cores):
+    #   24 cores → 23 threads → min(23//4=5, 23//5+1=5) = 5 courses × 4 threads = 20 (~87%)
+    #   16 cores → 15 threads → min(15//4=3, 15//5+1=4) = 3 courses × 5 threads = 15 (100%)
+    #   12 cores → 11 threads → min(11//4=2, 11//5+1=3) = 2 courses × 5 threads = 10 (~91%)
+    #    8 cores →  7 threads → min(7//4=1, 7//5+1=2)  = 1 course  × 7 threads =  7 (100%)
+    #
+    # This formula ensures:
+    # 1. Each job gets at least 4 threads for efficient internal parallelization
+    # 2. Multiple courses run in parallel when resources allow
+    # 3. Total thread usage approaches n_cores - 1
+    MIN_THREADS_PER_JOB = 4
+    TARGET_THREADS_PER_JOB = 5
+    max_courses_by_min = max(1, SNAKEMAKE_THREADS // MIN_THREADS_PER_JOB)
+    target_courses = max(1, SNAKEMAKE_THREADS // TARGET_THREADS_PER_JOB + 1)
+    DEFAULT_PARALLEL_COURSES = max(2, min(max_courses_by_min, target_courses))
 else:
     # User override - but enforce minimum of 2 for parallelism
     DEFAULT_PARALLEL_COURSES = max(2, _parallel_courses_raw)
 
 # Log the parallelization settings for debugging
+_threads_per_course = SNAKEMAKE_THREADS // DEFAULT_PARALLEL_COURSES
+_active_threads = DEFAULT_PARALLEL_COURSES * _threads_per_course
+_utilization_pct = round(100 * _active_threads / max(1, SNAKEMAKE_THREADS))
 sys.stderr.write(
-    f"[rtpipeline] Parallelization: {DEFAULT_PARALLEL_COURSES} parallel courses, "
-    f"{SNAKEMAKE_THREADS} total threads, ~{SNAKEMAKE_THREADS // DEFAULT_PARALLEL_COURSES} threads/course\n"
+    f"[rtpipeline] Parallelization: {DEFAULT_PARALLEL_COURSES} courses × {_threads_per_course} threads = "
+    f"{_active_threads}/{SNAKEMAKE_THREADS} threads ({_utilization_pct}% utilization)\n"
 )
 
 
@@ -697,8 +717,9 @@ if config.get("container_mode", False):
                 --stage segmentation_custom \
                 --course-filter "{wildcards.patient}/{wildcards.course}" \
                 --max-workers {threads} \
+                --manifest "{input.manifest}" \
                 {params.extra_args} > {log} 2>&1
-            
+
             echo "ok" > {output.sentinel}
             """
 else:
@@ -736,8 +757,9 @@ else:
                 --stage segmentation_custom \
                 --course-filter "{wildcards.patient}/{wildcards.course}" \
                 --max-workers {threads} \
+                --manifest "{input.manifest}" \
                 {params.extra_args} > {log} 2>&1
-            
+
             echo "ok" > {output.sentinel}
             """
 
@@ -773,9 +795,9 @@ rule crop_ct_course:
             "--logs", str(LOGS_DIR),
             "--stage", "crop_ct",
             "--course-filter", f"{wildcards.patient}/{wildcards.course}",
+            "--manifest", str(input.manifest),
         ]
         cmd.extend(_max_worker_args(job_threads))
-
 
         with log_path.open("w") as logf:
             subprocess.run(cmd, check=True, stdout=logf, stderr=subprocess.STDOUT, env=env)
@@ -814,6 +836,7 @@ rule dvh_course:
             "--logs", str(LOGS_DIR),
             "--stage", "dvh",
             "--course-filter", f"{wildcards.patient}/{wildcards.course}",
+            "--manifest", str(input.manifest),
         ]
         cmd.extend(_max_worker_args(job_threads))
         if CUSTOM_STRUCTURES_CONFIG:
@@ -948,6 +971,7 @@ rule qc_course:
             "--logs", str(LOGS_DIR),
             "--stage", "qc",
             "--course-filter", f"{wildcards.patient}/{wildcards.course}",
+            "--manifest", str(input.manifest),
         ]
         cmd.extend(_max_worker_args(job_threads))
         with log_path.open("w") as logf:
