@@ -22,6 +22,7 @@ title: Home
 | Guide | Description |
 |-------|-------------|
 | [Pipeline Architecture](PIPELINE_ARCHITECTURE.md) | Technical design and workflow stages |
+| [Parallelization & Resources](PARALLELIZATION.md) | CPU/GPU utilization and worker configuration |
 | [Radiomics Robustness](RADIOMICS_ROBUSTNESS.md) | Feature stability assessment methodology |
 | [Systematic CT Cropping](SYSTEMATIC_CT_CROPPING.md) | Anatomical cropping for DVH/radiomics |
 | [Docker Guide](DOCKER.md) | Container deployment instructions |
