@@ -14,8 +14,7 @@ import pickle
 import tempfile
 import traceback
 import time
-from concurrent.futures import ProcessPoolExecutor, as_completed
-from multiprocessing import get_context
+from concurrent.futures import ProcessPoolExecutor, wait, FIRST_COMPLETED
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
 
@@ -42,7 +41,6 @@ class RestrictedUnpickler(pickle.Unpickler):
         'pathlib': {'Path', 'PosixPath', 'WindowsPath'},
         'collections': {'OrderedDict'},  # Used internally by numpy
         'SimpleITK.SimpleITK': {'Image'},
-        'rtpipeline.config': {'PipelineConfig'},
         'rtpipeline.config': {'PipelineConfig'},
     }
 
@@ -91,22 +89,67 @@ _TASK_TIMEOUT = int(os.environ.get('RTPIPELINE_RADIOMICS_TASK_TIMEOUT', '600')) 
 
 
 def _calculate_optimal_workers() -> int:
-    """Calculate optimal number of workers (cpu_count - 1) with caching."""
+    """
+    Calculate optimal number of workers considering both CPU and memory constraints.
+
+    Memory-aware calculation: Each radiomics worker typically requires 2-4GB RAM
+    for processing CT volumes with masks. This function limits workers to avoid
+    memory exhaustion on systems with limited RAM relative to CPU count.
+    """
     global _OPTIMAL_WORKERS_CACHE
     if _OPTIMAL_WORKERS_CACHE is not None:
         return _OPTIMAL_WORKERS_CACHE
 
     cpu_count = os.cpu_count() or 2
-    optimal = max(1, cpu_count - 1)
+    cpu_based = max(1, cpu_count - 1)
 
-    # Check if user has set a specific override
+    # Memory-aware limiting: estimate ~2GB per worker as baseline
+    memory_per_worker_gb = float(os.environ.get('RTPIPELINE_MEMORY_PER_WORKER_GB', '2.0'))
+    try:
+        import shutil
+        # Get available memory (not total) to account for other processes
+        mem_info = shutil.disk_usage('/')  # Fallback, not actually memory
+        try:
+            # Try psutil if available for accurate memory info
+            import psutil
+            available_gb = psutil.virtual_memory().available / (1024 ** 3)
+        except ImportError:
+            # Fallback: read from /proc/meminfo on Linux
+            try:
+                with open('/proc/meminfo', 'r') as f:
+                    for line in f:
+                        if line.startswith('MemAvailable:'):
+                            available_gb = int(line.split()[1]) / (1024 ** 2)  # kB to GB
+                            break
+                    else:
+                        available_gb = float('inf')  # Unknown, don't limit
+            except (FileNotFoundError, ValueError):
+                available_gb = float('inf')  # Unknown, don't limit
+
+        # Leave 2GB headroom for system and other processes
+        usable_gb = max(0, available_gb - 2.0)
+        memory_based = max(1, int(usable_gb / memory_per_worker_gb))
+
+        if memory_based < cpu_based:
+            logger.info(
+                "Memory-limited worker count: %d (available: %.1fGB, ~%.1fGB/worker) vs CPU-based: %d",
+                memory_based, available_gb, memory_per_worker_gb, cpu_based
+            )
+            optimal = memory_based
+        else:
+            optimal = cpu_based
+    except Exception as e:
+        logger.debug("Memory detection failed (%s), using CPU-based workers only", e)
+        optimal = cpu_based
+
+    # Check if user has set a specific override (takes precedence)
     env_workers = int(os.environ.get('RTPIPELINE_MAX_WORKERS', '0') or 0)
     if env_workers > 0:
         optimal = env_workers
         logger.info("Using %d radiomics workers from RTPIPELINE_MAX_WORKERS", optimal)
     else:
-        logger.info("Calculated optimal radiomics workers: %d (CPU cores: %d, using: %d)",
-                   optimal, cpu_count, optimal)
+        logger.info("Calculated optimal radiomics workers: %d (CPU cores: %d)",
+                   optimal, cpu_count)
 
     _OPTIMAL_WORKERS_CACHE = optimal
     return optimal
@@ -491,6 +534,9 @@ def parallel_radiomics_for_course(
         # Process tasks in parallel using process pool with enhanced efficiency
         results = []
 
+        # Per-task timeout (configurable via env var, default 10 minutes)
+        task_timeout_sec = int(os.environ.get('RTPIPELINE_RADIOMICS_TASK_TIMEOUT', '600'))
+
         if max_workers == 1:
             # Sequential processing for debugging or single-core systems
             logger.info("Using sequential radiomics processing")
@@ -499,38 +545,76 @@ def parallel_radiomics_for_course(
                 if result:
                     results.append(result)
         else:
-            # Parallel processing with process pool and retry logic
+            # Parallel processing with ProcessPoolExecutor and watchdog timeout
             logger.info("Using parallel radiomics processing with %d workers (CPU cores: %d)",
                        max_workers, os.cpu_count() or 'unknown')
 
-            # Use spawn context to avoid issues with forked processes
-            ctx = get_context('spawn')
+            completed_count = 0
+            total_count = len(prepared_tasks)
+            start_time = time.time()
+            timed_out_count = 0
 
-            # Don't use initializer with spawn context as it causes pickling issues
-            with ctx.Pool(max_workers) as pool:
-                # Use imap_unordered for progress monitoring
-                completed_count = 0
-                total_count = len(prepared_tasks)
-                start_time = time.time()
+            with ProcessPoolExecutor(max_workers=max_workers) as executor:
+                # Submit all tasks and track their start times
+                future_to_task = {}
+                task_start_times = {}
 
-                try:
-                    # Use imap_unordered for progress monitoring
-                    for result in pool.imap_unordered(_isolated_radiomics_extraction_with_retry, prepared_tasks):
-                        if result:
-                            results.append(result)
+                for task_data in prepared_tasks:
+                    future = executor.submit(_isolated_radiomics_extraction_with_retry, task_data)
+                    future_to_task[future] = task_data
+                    task_start_times[future] = time.time()
+
+                pending = set(future_to_task.keys())
+
+                # Watchdog loop: poll for completed tasks with timeout enforcement
+                while pending:
+                    # Wait for any task to complete with short timeout for responsiveness
+                    done, pending = wait(pending, timeout=5.0, return_when=FIRST_COMPLETED)
+
+                    # Collect results from completed tasks
+                    for future in done:
+                        try:
+                            result = future.result(timeout=0.1)
+                            if result:
+                                results.append(result)
+                        except Exception as e:
+                            task_data = future_to_task[future]
+                            roi_name = task_data[1].get('roi', 'unknown') if isinstance(task_data, tuple) and len(task_data) > 1 else 'unknown'
+                            logger.warning("Radiomics task failed for %s: %s", roi_name, e)
                         completed_count += 1
 
-                        # Log progress periodically
-                        if completed_count % 10 == 0 or completed_count == total_count:
-                            elapsed = time.time() - start_time
-                            rate = completed_count / elapsed if elapsed > 0 else 0
-                            eta = (total_count - completed_count) / rate if rate > 0 else 0
-                            logger.info("Radiomics progress: %d/%d (%.1f%%), ETA: %.1fs",
-                                       completed_count, total_count,
-                                       100 * completed_count / total_count, eta)
-                except Exception as e:
-                    logger.error("Error during parallel radiomics processing: %s", e)
-                    # Pool will be cleaned up by context manager
+                    # Check for timed-out tasks in pending set
+                    current_time = time.time()
+                    timed_out_futures = []
+                    for future in pending:
+                        elapsed = current_time - task_start_times[future]
+                        if elapsed > task_timeout_sec:
+                            timed_out_futures.append(future)
+
+                    # Cancel timed-out tasks
+                    for future in timed_out_futures:
+                        task_data = future_to_task[future]
+                        roi_name = task_data[1].get('roi', 'unknown') if isinstance(task_data, tuple) and len(task_data) > 1 else 'unknown'
+                        logger.warning(
+                            "Radiomics task for %s timed out after %.1fs, skipping",
+                            roi_name, task_timeout_sec
+                        )
+                        future.cancel()
+                        pending.discard(future)
+                        completed_count += 1
+                        timed_out_count += 1
+
+                    # Log progress periodically
+                    if done or timed_out_futures:
+                        elapsed = time.time() - start_time
+                        rate = completed_count / elapsed if elapsed > 0 else 0
+                        eta = (total_count - completed_count) / rate if rate > 0 else 0
+                        logger.info("Radiomics progress: %d/%d (%.1f%%), ETA: %.1fs",
+                                   completed_count, total_count,
+                                   100 * completed_count / total_count, eta)
+
+            if timed_out_count > 0:
+                logger.warning("%d radiomics tasks timed out and were skipped", timed_out_count)
 
         logger.info("Completed %d/%d radiomics extractions for %s",
                    len(results), len(prepared_tasks), course_dir.name)
@@ -556,18 +640,6 @@ def parallel_radiomics_for_course(
             shutil.rmtree(temp_dir)
         except Exception as e:
             logger.debug("Failed to clean up temp directory %s: %s", temp_dir, e)
-
-
-def _worker_initializer():
-    """Initialize worker process with optimal settings."""
-    _apply_thread_limit(_resolve_thread_limit())
-
-    # Set process priority to normal to avoid system slowdown
-    try:
-        import psutil
-        psutil.Process().nice(0)  # Normal priority
-    except ImportError:
-        pass  # psutil not available, continue without priority adjustment
 
 
 def configure_parallel_radiomics(thread_limit: Optional[int] = None):
