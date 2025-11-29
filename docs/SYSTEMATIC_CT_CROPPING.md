@@ -26,7 +26,7 @@ This makes cohort-level comparison of percentage metrics more interpretable and 
 
 ## Supported Anatomical Regions
 
-The pipeline supports five standard cropping templates defined by stable bony landmarks.
+The pipeline supports five predefined cropping templates based on stable bony landmarks. These templates represent one reasonable standardization scheme; users should adapt boundaries to their clinical protocol if needed.
 
 ### 1. Pelvis (Default)
 *   **Target:** Prostate, Rectum, Bladder, Gyn

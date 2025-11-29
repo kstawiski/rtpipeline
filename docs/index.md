@@ -12,7 +12,7 @@ title: Home
 - **DICOM Organization** - Automatic grouping of series and RT objects per patient course
 - **AI-powered Segmentation** - TotalSegmentator (CT/MR) + custom nnU-Net models
 - **DVH Analytics** - Comprehensive dose-volume histogram analysis
-- **Radiomics Extraction** - PyRadiomics feature extraction with IBSI compliance
+- **Radiomics Extraction** - PyRadiomics feature extraction with IBSI-aligned settings
 - **Robustness Analysis** - Perturbation-based feature stability assessment
 - **Systematic CT Cropping** - Anatomical landmark-based FOV standardization
 - **Quality Control** - Automated QC reports and validation
