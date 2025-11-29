@@ -31,6 +31,13 @@ scheduler:
 
 # Adjust worker budget downwards if your storage backend is network bound (e.g., 2-4 for NFS)
 
+# Organize step optimizations
+organize:
+  dedup_by_sop_uid: true    # Skip copying DICOMs with duplicate SOPInstanceUIDs (saves disk space)
+  use_hardlinks: true       # Use hardlinks instead of copies when source/dest on same filesystem
+  verify_checksum: false    # Verify MD5 checksum after copy (slower but detects corruption)
+  cache_headers: true       # Cache DICOM headers for faster re-indexing on reruns
+
 segmentation:
   # CRITICAL: GPU-limited stage - default is sequential on GPU and fan-out on CPU
   # Set max_workers to a positive integer to override the automatic behavior (e.g., multi-GPU hosts)
