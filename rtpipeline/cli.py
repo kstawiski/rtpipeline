@@ -995,6 +995,13 @@ def main(argv: list[str] | None = None) -> int:
                 logger.info("CT cropping enabled: region=%s, superior_margin=%scm, inferior_margin=%scm",
                            cfg.ct_cropping_region, cfg.ct_cropping_superior_margin_cm,
                            cfg.ct_cropping_inferior_margin_cm)
+
+            # Load organize/dicom_copy settings
+            organize_config = yaml_config.get("organize", {})
+            cfg.dicom_copy_dedup_by_sop_uid = organize_config.get("dedup_by_sop_uid", True)
+            cfg.dicom_copy_use_hardlinks = organize_config.get("use_hardlinks", True)
+            cfg.dicom_copy_verify_checksum = organize_config.get("verify_checksum", False)
+            cfg.dicom_copy_cache_headers = organize_config.get("cache_headers", True)
     except Exception as e:
         logger.debug("Could not load CT cropping config from YAML: %s", e)
 

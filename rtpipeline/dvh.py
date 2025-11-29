@@ -271,6 +271,47 @@ def _is_rs_custom_stale(
         return True  # If we can't check, regenerate to be safe
 
 
+def _is_dvh_up_to_date(course_dir: Path, dvh_path: Path) -> bool:
+    """
+    Check if DVH output is up-to-date with all input dependencies.
+
+    Returns True if dvh_metrics.xlsx is newer than all relevant inputs
+    (RP, RD, RS files, custom model outputs), False otherwise.
+    """
+    if not dvh_path.exists():
+        return False
+
+    try:
+        dvh_mtime = dvh_path.stat().st_mtime
+
+        # Check core RT files and metadata
+        deps = [
+            course_dir / "RP.dcm",
+            course_dir / "RD.dcm",
+            course_dir / "RS.dcm",
+            course_dir / "RS_auto.dcm",
+            course_dir / "RS_auto_cropped.dcm",
+            course_dir / "RS_custom.dcm",
+            course_dir / "cropping_metadata.json",  # Ensure DVH reruns if cropping config changes
+        ]
+
+        # Check custom model outputs
+        for model_name, model_course_dir in list_custom_model_outputs(course_dir):
+            deps.append(model_course_dir / "rtstruct.dcm")
+
+        # If any dependency is newer than DVH output, it's stale
+        for dep in deps:
+            if dep.exists() and dep.stat().st_mtime > dvh_mtime:
+                logger.debug("DVH dependency %s is newer than dvh_metrics.xlsx", dep.name)
+                return False
+
+        return True
+
+    except OSError as e:
+        logger.debug("Failed to check DVH staleness: %s", e)
+        return False
+
+
 def _create_custom_structures_rtstruct(
     course_dir: Path,
     config_path: Optional[Union[str, Path]] = None,
@@ -612,6 +653,12 @@ def dvh_for_course(
     Returns:
         Path to the output dvh_metrics.xlsx file, or None if no results.
     """
+    # Check if DVH is already up-to-date (skip recomputation on re-runs)
+    out_xlsx = course_dir / "dvh_metrics.xlsx"
+    if _is_dvh_up_to_date(course_dir, out_xlsx):
+        logger.info("DVH up-to-date for %s; reusing existing results", course_dir.name)
+        return out_xlsx
+
     course_dirs = build_course_dirs(course_dir)
     rp = course_dir / "RP.dcm"
     rd = course_dir / "RD.dcm"
@@ -655,6 +702,10 @@ def dvh_for_course(
         RTStructBuilder = None  # type: ignore
 
     builder_cache: Dict[Path, Optional["RTStructBuilder"]] = {}  # type: ignore[name-defined]
+
+    # Cache for dose-grid snapping to avoid redundant work within a single dvh_for_course call
+    # Key: (rs_path, dose_sop_uid) -> True if already snapped
+    snap_cache: Dict[tuple, bool] = {}
 
     def _get_builder(rs_path: Path) -> Optional["RTStructBuilder"]:  # type: ignore[name-defined]
         if RTStructBuilder is None:
@@ -738,7 +789,14 @@ def dvh_for_course(
         except Exception as e:
             logger.warning("Cannot read RTSTRUCT %s: %s", rs_path, e)
             return
-        snap_rtstruct_to_dose_grid(rtstruct, rtdose)
+
+        # Use cached snap if we've already snapped this RS+dose combination
+        dose_sop_uid = str(getattr(rtdose, "SOPInstanceUID", ""))
+        snap_key = (rs_path, dose_sop_uid)
+        if snap_key not in snap_cache:
+            snap_rtstruct_to_dose_grid(rtstruct, rtdose)
+            snap_cache[snap_key] = True
+
         builder = _get_builder(rs_path)
         rois = list(getattr(rtstruct, "StructureSetROISequence", []) or [])
         if not rois:
@@ -768,6 +826,7 @@ def dvh_for_course(
             _calc_roi,
             max_workers=worker_cap,
             logger=logger,
+            use_processes=False,  # Use threads: DVH is numpy-bound (releases GIL), avoids pickling large DICOM datasets
         )
         for item in task_results:
             if item:
@@ -867,6 +926,5 @@ def dvh_for_course(
             logger.warning("Failed to save DVH curves JSON: %s", e)
 
     df = pd.DataFrame(clean_results)
-    out_xlsx = course_dir / "dvh_metrics.xlsx"
     df.to_excel(out_xlsx, index=False)
     return out_xlsx
