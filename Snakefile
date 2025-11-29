@@ -107,13 +107,40 @@ if "workers" in config or "snakemake_job_threads" in config:
 
 SNAKEMAKE_THREADS = WORKER_BUDGET
 
+_parallel_courses_raw = _coerce_positive_int(SCHEDULER_CONFIG.get("parallel_courses"))
+if _parallel_courses_raw is None:
+    # Auto-calculate parallel courses based on available cores
+    # Target: each course gets ~4-6 threads, with minimum 2 parallel courses
+    if SNAKEMAKE_THREADS >= 16:
+        DEFAULT_PARALLEL_COURSES = max(3, SNAKEMAKE_THREADS // 6)  # ~6 threads per course
+    elif SNAKEMAKE_THREADS >= 8:
+        DEFAULT_PARALLEL_COURSES = max(2, SNAKEMAKE_THREADS // 4)  # ~4 threads per course
+    else:
+        DEFAULT_PARALLEL_COURSES = 2  # Minimum 2 parallel courses
+else:
+    # User override - but enforce minimum of 2 for parallelism
+    DEFAULT_PARALLEL_COURSES = max(2, _parallel_courses_raw)
 
-def _stage_thread_target(key: str, default: int) -> int:
+# Log the parallelization settings for debugging
+sys.stderr.write(
+    f"[rtpipeline] Parallelization: {DEFAULT_PARALLEL_COURSES} parallel courses, "
+    f"{SNAKEMAKE_THREADS} total threads, ~{SNAKEMAKE_THREADS // DEFAULT_PARALLEL_COURSES} threads/course\n"
+)
+
+
+def _auto_stage_threads() -> int:
+    # Always divide threads among parallel courses for proper Snakemake scheduling
+    return max(1, SNAKEMAKE_THREADS // DEFAULT_PARALLEL_COURSES)
+
+
+def _stage_thread_target(key: str, fallback: int | None) -> int:
     value = _coerce_positive_int(SCHEDULER_CONFIG.get(key))
     if value is not None:
         target = value
+    elif fallback is not None:
+        target = fallback
     else:
-        target = default
+        target = _auto_stage_threads()
     return max(1, min(SNAKEMAKE_THREADS, target))
 
 
@@ -121,11 +148,12 @@ def _max_worker_args(count: int) -> list[str]:
     return ["--max-workers", str(max(1, count))]
 
 
-DVH_RULE_THREADS = _stage_thread_target("dvh_threads_per_job", 4)
-RAD_RULE_THREADS = _stage_thread_target("radiomics_threads_per_job", 4)  # Reduced from 6 to avoid memory contention
-QC_RULE_THREADS = _stage_thread_target("qc_threads_per_job", 2)
-CROP_CT_RULE_THREADS = _stage_thread_target("crop_ct_threads_per_job", 4)  # I/O bound, small default
-ROBUSTNESS_RULE_THREADS = _stage_thread_target("robustness_threads_per_job", 4)  # For radiomics robustness analysis
+# Stage-level thread budgets default to a shared pool (≈ cores / DEFAULT_PARALLEL_COURSES)
+DVH_RULE_THREADS = _stage_thread_target("dvh_threads_per_job", None)
+RAD_RULE_THREADS = _stage_thread_target("radiomics_threads_per_job", None)
+QC_RULE_THREADS = _stage_thread_target("qc_threads_per_job", None)
+CROP_CT_RULE_THREADS = _stage_thread_target("crop_ct_threads_per_job", None)
+ROBUSTNESS_RULE_THREADS = _stage_thread_target("robustness_threads_per_job", None)
 PRIORITIZE_SHORT_COURSES = bool(SCHEDULER_CONFIG.get("prioritize_short_courses", True))
 
 SEG_CONFIG = config.get("segmentation", {})
@@ -703,8 +731,6 @@ rule crop_ct_course:
         str(LOGS_DIR / "crop_ct" / "{patient}_{course}.log")
     threads:
         CROP_CT_RULE_THREADS
-    resources:
-        seg_workers=1
     conda:
         "envs/rtpipeline.yaml"
     run:
@@ -807,6 +833,10 @@ if config.get("container_mode", False):
         shell:
             """
             set -e
+            # Export worker budget for subprocess coordination
+            export RTPIPELINE_MAX_WORKERS={threads}
+            export RTPIPELINE_RADIOMICS_THREAD_LIMIT=1
+            echo "DEBUG: threads={threads} SNAKEMAKE_THREADS={SNAKEMAKE_THREADS} RAD_RULE_THREADS={RAD_RULE_THREADS}" >> {log}
             /opt/conda/envs/rtpipeline-radiomics/bin/python -m rtpipeline.cli \
                 --dicom-root "{DICOM_ROOT}" \
                 --outdir "{OUTPUT_DIR}" \
@@ -814,8 +844,8 @@ if config.get("container_mode", False):
                 --stage radiomics \
                 --course-filter "{wildcards.patient}/{wildcards.course}" \
                 --max-workers {threads} \
-                {params.extra_args} > {log} 2>&1
-            
+                {params.extra_args} >> {log} 2>&1
+
             echo "ok" > {output.sentinel}
             """
 else:
@@ -835,6 +865,10 @@ else:
         shell:
             """
             set -e
+            # Export worker budget for subprocess coordination
+            export RTPIPELINE_MAX_WORKERS={threads}
+            export RTPIPELINE_RADIOMICS_THREAD_LIMIT=1
+            echo "DEBUG: threads={threads} SNAKEMAKE_THREADS={SNAKEMAKE_THREADS} RAD_RULE_THREADS={RAD_RULE_THREADS}" >> {log}
             python -m rtpipeline.cli \
                 --dicom-root "{DICOM_ROOT}" \
                 --outdir "{OUTPUT_DIR}" \
@@ -842,8 +876,8 @@ else:
                 --stage radiomics \
                 --course-filter "{wildcards.patient}/{wildcards.course}" \
                 --max-workers {threads} \
-                {params.extra_args} > {log} 2>&1
-            
+                {params.extra_args} >> {log} 2>&1
+
             echo "ok" > {output.sentinel}
             """
 
@@ -907,12 +941,16 @@ if config.get("container_mode", False):
         shell:
             """
             mkdir -p $(dirname {output.sentinel})
-            
+
             if [ "{params.enabled}" = "False" ]; then
                 echo "disabled" > {output.sentinel}
                 exit 0
             fi
-            
+
+            # Export worker budget for subprocess coordination
+            export RTPIPELINE_MAX_WORKERS={threads}
+            export RTPIPELINE_RADIOMICS_THREAD_LIMIT=1
+
             if /opt/conda/envs/rtpipeline-radiomics/bin/python -m rtpipeline.cli radiomics-robustness \
                 --course-dir "{OUTPUT_DIR}/{wildcards.patient}/{wildcards.course}" \
                 --config "{params.config}" \
@@ -922,7 +960,7 @@ if config.get("container_mode", False):
             else
                 echo "failed: see log" > {output.sentinel}
                 # Don't fail the pipeline for robustness
-                exit 0 
+                exit 0
             fi
             """
 else:
@@ -943,12 +981,16 @@ else:
         shell:
             """
             mkdir -p $(dirname {output.sentinel})
-            
+
             if [ "{params.enabled}" = "False" ]; then
                 echo "disabled" > {output.sentinel}
                 exit 0
             fi
-            
+
+            # Export worker budget for subprocess coordination
+            export RTPIPELINE_MAX_WORKERS={threads}
+            export RTPIPELINE_RADIOMICS_THREAD_LIMIT=1
+
             if python -m rtpipeline.cli radiomics-robustness \
                 --course-dir "{OUTPUT_DIR}/{wildcards.patient}/{wildcards.course}" \
                 --config "{params.config}" \
@@ -958,7 +1000,7 @@ else:
             else
                 echo "failed: see log" > {output.sentinel}
                 # Don't fail the pipeline for robustness
-                exit 0 
+                exit 0
             fi
             """
 

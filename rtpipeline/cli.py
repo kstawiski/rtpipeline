@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,146 @@ from .organize import CourseOutput, organize_and_merge, _hydrate_existing_course
 from .utils import run_tasks_with_adaptive_workers
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(slots=True)
+class _SegmentTask:
+    cfg: PipelineConfig
+    course: CourseOutput
+    force_segmentation: bool
+
+    @property
+    def dir(self) -> Path:
+        return self.course.dirs.root
+
+
+@dataclass(slots=True)
+class _CustomSegmentationTask:
+    cfg: PipelineConfig
+    course: CourseOutput
+    models: tuple
+    force_custom: bool
+
+    @property
+    def dir(self) -> Path:
+        return self.course.dirs.root
+
+
+@dataclass(slots=True)
+class _CropTask:
+    course: CourseOutput
+    region: str
+    superior_margin_cm: float
+    inferior_margin_cm: float
+    keep_original: bool
+
+    @property
+    def dir(self) -> Path:
+        return self.course.dirs.root
+
+
+@dataclass(slots=True)
+class _DVHTask:
+    course: CourseOutput
+    custom_structures: Path | None
+    use_cropped: bool
+    parallel_workers: int
+
+    @property
+    def dir(self) -> Path:
+        return self.course.dirs.root
+
+
+@dataclass(slots=True)
+class _VisualizationTask:
+    course: CourseOutput
+
+    @property
+    def dir(self) -> Path:
+        return self.course.dirs.root
+
+
+@dataclass(slots=True)
+class _QCTask:
+    course: CourseOutput
+
+    @property
+    def dir(self) -> Path:
+        return self.course.dirs.root
+
+
+def _execute_segment_task(task: _SegmentTask) -> None:
+    from .segmentation import segment_course
+    from .auto_rtstruct import build_auto_rtstruct
+
+    try:
+        segment_course(task.cfg, task.course.dirs.root, force=task.force_segmentation)
+        build_auto_rtstruct(task.course.dirs.root)
+    except Exception as exc:  # noqa: BLE001 - log and continue
+        logger.warning("Segmentation failed for %s: %s", task.course.dirs.root, exc)
+
+
+def _execute_custom_segmentation_task(task: _CustomSegmentationTask) -> None:
+    from .custom_models import run_custom_models_for_course
+
+    try:
+        run_custom_models_for_course(task.cfg, task.course, task.models, force=task.force_custom)
+    except Exception as exc:  # noqa: BLE001 - log and continue
+        logger.warning("Custom segmentation failed for %s: %s", task.course.dirs.root, exc)
+
+
+def _execute_crop_task(task: _CropTask) -> None:
+    from .anatomical_cropping import apply_systematic_cropping
+
+    try:
+        apply_systematic_cropping(
+            task.course.dirs.root,
+            region=task.region,
+            superior_margin_cm=task.superior_margin_cm,
+            inferior_margin_cm=task.inferior_margin_cm,
+            keep_original=task.keep_original,
+        )
+    except Exception as exc:  # noqa: BLE001 - log and continue
+        logger.warning("CT cropping failed for %s: %s", task.course.dirs.root, exc)
+
+
+def _execute_dvh_task(task: _DVHTask) -> None:
+    from .dvh import dvh_for_course
+
+    try:
+        dvh_for_course(
+            task.course.dirs.root,
+            task.custom_structures,
+            parallel_workers=task.parallel_workers,
+            use_cropped=task.use_cropped,
+        )
+    except Exception as exc:  # noqa: BLE001 - log and continue
+        logger.warning("DVH failed for %s: %s", task.course.dirs.root, exc)
+
+
+def _execute_visualization_task(task: _VisualizationTask) -> None:
+    from .visualize import generate_axial_review, visualize_course
+
+    try:
+        visualize_course(task.course.dirs.root)
+    finally:
+        try:
+            generate_axial_review(task.course.dirs.root)
+        except Exception as exc:  # noqa: BLE001 - best-effort
+            logger.debug("Axial review failed for %s: %s", task.course.dirs.root, exc)
+
+
+def _execute_qc_task(task: _QCTask) -> bool | None:
+    from .quality_control import generate_qc_report
+
+    try:
+        qc_dir = task.course.dirs.qc_reports
+        qc_dir.mkdir(parents=True, exist_ok=True)
+        generate_qc_report(task.course.dirs.root, qc_dir)
+        return True
+    except Exception as exc:  # noqa: BLE001 - log and continue
+        logger.warning("QC stage failed for %s: %s", task.course.dirs.root, exc)
+        return None
 
 
 def _derive_segmentation_thread_limit(device: str, worker_budget: int) -> int:
@@ -950,23 +1091,11 @@ def main(argv: list[str] | None = None) -> int:
             export_metadata(cfg)
 
     if "segmentation" in stages:
-        from .segmentation import segment_course  # lazy import
-        from .auto_rtstruct import build_auto_rtstruct
-
         courses = ensure_courses()
         selected_courses = _filter_courses(courses)
         if not selected_courses:
             _log_skip("Segmentation")
         else:
-
-            def _segment(course):
-                try:
-                    segment_course(cfg, course.dirs.root, force=args.force_segmentation)
-                    build_auto_rtstruct(course.dirs.root)
-                except Exception as exc:
-                    logger.warning("Segmentation failed for %s: %s", course.dirs.root, exc)
-                return None
-
             # Segmentation workers: sequential on GPU, fan out on CPU
             device = (cfg.totalseg_device or "").lower()
             detected_gpu_count = None
@@ -997,10 +1126,15 @@ def main(argv: list[str] | None = None) -> int:
                 totalseg_nr_thr_saving,
             )
 
+            segment_tasks = [
+                _SegmentTask(cfg=cfg, course=course, force_segmentation=args.force_segmentation)
+                for course in selected_courses
+            ]
+
             run_tasks_with_adaptive_workers(
                 "Segmentation",
-                selected_courses,
-                _segment,
+                segment_tasks,
+                _execute_segment_task,
                 max_workers=seg_worker_limit,
                 logger=logging.getLogger(__name__),
                 show_progress=True,
@@ -1008,7 +1142,7 @@ def main(argv: list[str] | None = None) -> int:
             )
 
     if "segmentation_custom" in stages:
-        from .custom_models import discover_custom_models, run_custom_models_for_course  # lazy import
+        from .custom_models import discover_custom_models  # lazy import
 
         models_root = cfg.custom_models_root
         available_models = []
@@ -1030,13 +1164,6 @@ def main(argv: list[str] | None = None) -> int:
                 _log_skip("Custom Segmentation")
             else:
                 force_custom = cfg.custom_models_force
-
-                def _custom(course):
-                    try:
-                        run_custom_models_for_course(cfg, course, available_models, force=force_custom)
-                    except Exception as exc:
-                        logger.warning("Custom segmentation failed for %s: %s", course.dirs.root, exc)
-                    return None
 
                 # Custom models: sequential on GPU, CPU can fan out
                 device = (cfg.totalseg_device or "").lower()
@@ -1064,10 +1191,21 @@ def main(argv: list[str] | None = None) -> int:
                     custom_detected_gpu_count if custom_detected_gpu_count is not None else "n/a",
                 )
 
+                model_tuple = tuple(available_models)
+                custom_tasks = [
+                    _CustomSegmentationTask(
+                        cfg=cfg,
+                        course=course,
+                        models=model_tuple,
+                        force_custom=force_custom,
+                    )
+                    for course in selected_courses
+                ]
+
                 run_tasks_with_adaptive_workers(
                     "CustomSegmentation",
-                    selected_courses,
-                    _custom,
+                    custom_tasks,
+                    _execute_custom_segmentation_task,
                     max_workers=custom_worker_limit,
                     logger=logging.getLogger(__name__),
                     show_progress=True,
@@ -1075,8 +1213,6 @@ def main(argv: list[str] | None = None) -> int:
                 )
 
     if "crop_ct" in stages:
-        from .anatomical_cropping import apply_systematic_cropping  # lazy import
-
         if not cfg.ct_cropping_enabled:
             logger.info("CT cropping disabled in config; skipping crop_ct stage")
         else:
@@ -1086,24 +1222,21 @@ def main(argv: list[str] | None = None) -> int:
             if not selected_courses:
                 _log_skip("CT Cropping")
             else:
-
-                def _crop(course):
-                    try:
-                        apply_systematic_cropping(
-                            course.dirs.root,
-                            region=cfg.ct_cropping_region,
-                            superior_margin_cm=cfg.ct_cropping_superior_margin_cm,
-                            inferior_margin_cm=cfg.ct_cropping_inferior_margin_cm,
-                            keep_original=cfg.ct_cropping_keep_original,
-                        )
-                    except Exception as exc:
-                        logger.warning("CT cropping failed for %s: %s", course.dirs.root, exc)
-                    return None
+                crop_tasks = [
+                    _CropTask(
+                        course=course,
+                        region=cfg.ct_cropping_region,
+                        superior_margin_cm=cfg.ct_cropping_superior_margin_cm,
+                        inferior_margin_cm=cfg.ct_cropping_inferior_margin_cm,
+                        keep_original=cfg.ct_cropping_keep_original,
+                    )
+                    for course in selected_courses
+                ]
 
                 run_tasks_with_adaptive_workers(
                     "CT_Cropping",
-                    selected_courses,
-                    _crop,
+                    crop_tasks,
+                    _execute_crop_task,
                     max_workers=cfg.effective_workers(),
                     logger=logging.getLogger(__name__),
                     show_progress=True,
@@ -1111,34 +1244,29 @@ def main(argv: list[str] | None = None) -> int:
                 )
 
     if "dvh" in stages:
-        from .dvh import dvh_for_course  # lazy import
-
         courses = ensure_courses()
         selected_courses = _filter_courses(courses)
 
         if not selected_courses:
             _log_skip("DVH")
         else:
-
-            def _dvh(course):
-                try:
-                    return dvh_for_course(
-                        course.dirs.root,
-                        cfg.custom_structures_config,
-                        parallel_workers=cfg.effective_workers(),
-                        use_cropped=cfg.ct_cropping_use_for_dvh,
-                    )
-                except Exception as exc:
-                    logger.warning("DVH failed for %s: %s", course.dirs.root, exc)
-                    return None
-
             effective_workers = cfg.effective_workers()
             logger.info("DVH stage: using %d parallel workers", effective_workers)
 
+            dvh_tasks = [
+                _DVHTask(
+                    course=course,
+                    custom_structures=cfg.custom_structures_config,
+                    use_cropped=cfg.ct_cropping_use_for_dvh,
+                    parallel_workers=effective_workers,
+                )
+                for course in selected_courses
+            ]
+
             run_tasks_with_adaptive_workers(
                 "DVH",
-                selected_courses,
-                _dvh,
+                dvh_tasks,
+                _execute_dvh_task,
                 max_workers=effective_workers,
                 logger=logging.getLogger(__name__),
                 show_progress=True,
@@ -1146,32 +1274,21 @@ def main(argv: list[str] | None = None) -> int:
             )
 
     if "visualize" in stages:
-        from .visualize import generate_axial_review, visualize_course  # lazy import
-
         courses = ensure_courses()
         selected_courses = _filter_courses(courses)
 
         if not selected_courses:
             _log_skip("Visualization")
         else:
-
-            def _visualize(course):
-                try:
-                    visualize_course(course.dirs.root)
-                finally:
-                    try:
-                        generate_axial_review(course.dirs.root)
-                    except Exception as exc:
-                        logger.debug("Axial review failed for %s: %s", course.dirs.root, exc)
-                return None
-
             effective_workers = cfg.effective_workers()
             logger.info("Visualization stage: using %d parallel workers", effective_workers)
 
+            viz_tasks = [_VisualizationTask(course=course) for course in selected_courses]
+
             run_tasks_with_adaptive_workers(
                 "Visualization",
-                selected_courses,
-                _visualize,
+                viz_tasks,
+                _execute_visualization_task,
                 max_workers=effective_workers,
                 logger=logging.getLogger(__name__),
                 show_progress=True,
@@ -1228,33 +1345,21 @@ def main(argv: list[str] | None = None) -> int:
                     logger.warning("Radiomics stage failed: %s", exc)
 
     if "qc" in stages:
-        from .quality_control import generate_qc_report
-
         courses = ensure_courses()
         selected_courses = _filter_courses(courses)
 
         if not selected_courses:
             _log_skip("QC")
         else:
-            # Parallel QC processing for better performance
-            def _run_qc(course):
-                """Run QC for a single course."""
-                try:
-                    qc_dir = course.dirs.qc_reports
-                    qc_dir.mkdir(parents=True, exist_ok=True)
-                    generate_qc_report(course.dirs.root, qc_dir)
-                    return True
-                except Exception as exc:
-                    logger.warning("QC stage failed for %s: %s", course.dirs.root, exc)
-                    return None
-
             effective_workers = cfg.effective_workers()
             logger.info("QC stage: using %d parallel workers", effective_workers)
 
+            qc_tasks = [_QCTask(course=course) for course in selected_courses]
+
             run_tasks_with_adaptive_workers(
                 "QC",
-                selected_courses,
-                _run_qc,
+                qc_tasks,
+                _execute_qc_task,
                 max_workers=effective_workers,
                 logger=logging.getLogger(__name__),
                 show_progress=True,
