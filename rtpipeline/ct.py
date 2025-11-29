@@ -5,9 +5,12 @@ import os
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import TYPE_CHECKING, Dict, List, Optional
 
 from .utils import read_dicom, get, ensure_dir
+
+if TYPE_CHECKING:
+    from .dicom_copy import DicomCopyManager
 
 logger = logging.getLogger(__name__)
 
@@ -53,11 +56,19 @@ def index_ct_series(dicom_root: Path) -> Dict[str, Dict[str, Dict[str, List[CTIn
     return index
 
 
-def copy_ct_series(series: List[CTInstance], dst_dir: Path) -> None:
+def copy_ct_series(
+    series: List[CTInstance],
+    dst_dir: Path,
+    copy_manager: Optional["DicomCopyManager"] = None,
+) -> None:
+    """Copy CT series to destination directory with optional optimizations."""
     ensure_dir(dst_dir)
     for inst in series:
         dst = dst_dir / f"CT_{inst.instance_number or 0}.dcm"
-        shutil.copy2(inst.path, dst)
+        if copy_manager is not None:
+            copy_manager.copy_dicom(inst.path, dst, skip_if_exists=True)
+        else:
+            shutil.copy2(inst.path, dst)
 
 
 def pick_primary_series(series_map: Dict[str, List[CTInstance]]) -> Optional[List[CTInstance]]:
