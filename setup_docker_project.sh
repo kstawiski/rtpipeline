@@ -87,6 +87,36 @@ cpu_count() {
     fi
 }
 
+gpu_count() {
+    if ! command -v nvidia-smi >/dev/null 2>&1; then
+        echo 0
+        return
+    fi
+    local out
+    if ! out="$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null)"; then
+        echo 0
+        return
+    fi
+    if [ -z "$out" ]; then
+        echo 0
+    else
+        printf '%s\n' "$out" | wc -l | tr -d '[:space:]'
+    fi
+}
+
+clamp_int() {
+    local value="$1"
+    local min_val="$2"
+    local max_val="$3"
+    if [ "$value" -lt "$min_val" ]; then
+        echo "$min_val"
+    elif [ "$value" -gt "$max_val" ]; then
+        echo "$max_val"
+    else
+        echo "$value"
+    fi
+}
+
 detect_compose() {
     if docker compose version >/dev/null 2>&1; then
         echo "docker compose"
@@ -122,13 +152,17 @@ echo ":: Environment Check ::"
 echo "  - Docker: $(docker --version | awk '{print $3}' | sed 's/,//')"
 echo "  - Compose: ${COMPOSE_BIN}"
 
-HAS_GPU="no"
+GPU_AVAILABLE="no"
+GPU_COUNT=0
 GPU_DEVICE="cpu"
+USE_GPU_RUNTIME="no"
 if command -v nvidia-smi >/dev/null 2>&1; then
-    HAS_GPU="yes"
+    GPU_AVAILABLE="yes"
     GPU_DEVICE="gpu"
+    USE_GPU_RUNTIME="yes"
+    GPU_COUNT="$(gpu_count)"
     GPU_NAME="$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -n1 || true)"
-    echo "  - GPU detected: ${GPU_NAME:-NVIDIA GPU}"
+    echo "  - GPU detected: ${GPU_NAME:-NVIDIA GPU} (x${GPU_COUNT:-1})"
 else
     echo "  - GPU: not detected (CPU mode)"
 fi
@@ -177,7 +211,7 @@ PARENT_DIR="$(dirname "$DICOM_DIR")"
 PROJECT_DEFAULT="${PARENT_DIR}/$(basename "$DICOM_DIR")_rtpipeline"
 PROJECT_DIR_RAW="$(prompt_input 'Step 2/5 - Project directory (will hold config/output/logs)' "$PROJECT_DEFAULT")"
 PROJECT_DIR="$(abs_path "$PROJECT_DIR_RAW")"
-mkdir -p "$PROJECT_DIR" "$PROJECT_DIR/Output" "$PROJECT_DIR/Logs"
+mkdir -p "$PROJECT_DIR" "$PROJECT_DIR/Output" "$PROJECT_DIR/Logs" "$PROJECT_DIR/.snakemake_cache"
 echo "  Project directory: $PROJECT_DIR"
 
 # ---------------------------
@@ -229,22 +263,254 @@ if [ "$CONFIG_MODE" = "new" ]; then
 fi
 
 # ---------------------------
-# Step 5: Resources
+# Step 5: Resources & profiles
 # ---------------------------
 
 CPU_COUNT="$(cpu_count)"
-CPU_DEFAULT="$CPU_COUNT"
-if [ "$CPU_COUNT" -gt 1 ]; then
-    CPU_DEFAULT=$((CPU_COUNT - 1))
+
+set_profile_custom() {
+    PROFILE_ID="custom"
+    PROFILE_LABEL="Custom"
+    PROFILE_DESC="Manual tuning (same defaults as upstream config)."
+    PROFILE_USE_GPU="inherit"
+    PROFILE_RESERVED_CORES=1
+    PROFILE_PARALLEL_COURSES=1
+    PROFILE_DVH_THREADS="null"
+    PROFILE_RAD_THREADS="null"
+    PROFILE_QC_THREADS="null"
+    PROFILE_CROP_THREADS="null"
+    PROFILE_ROB_THREADS="null"
+    PROFILE_SEG_DEVICE_OVERRIDE=""
+    PROFILE_SEG_MAX_WORKERS="null"
+    PROFILE_SEG_RESAMPLE_THREADS=1
+    PROFILE_SEG_SAVE_THREADS=1
+    PROFILE_RADIOMICS_SEQUENTIAL="false"
+    PROFILE_AGG_THREADS="auto"
+    local cpu_default="$CPU_COUNT"
+    if [ "$cpu_default" -gt 1 ]; then
+        cpu_default=$((cpu_default - 1))
+    fi
+    PROFILE_MAX_CORES_DEFAULT="$cpu_default"
+    PROFILE_MAX_MEMORY_DEFAULT="32G"
+    PROFILE_MAX_WORKERS_DEFAULT="null"
+}
+
+set_profile_single_gpu() {
+    PROFILE_ID="single_gpu"
+    PROFILE_LABEL="Single GPU workstation"
+    PROFILE_DESC="Serialize segmentation on one GPU and overlap CPU-bound stages."
+    PROFILE_USE_GPU="yes"
+    PROFILE_RESERVED_CORES=2
+    PROFILE_PARALLEL_COURSES=2
+    PROFILE_DVH_THREADS="null"
+    PROFILE_RAD_THREADS="null"
+    PROFILE_QC_THREADS="null"
+    PROFILE_CROP_THREADS="null"
+    PROFILE_ROB_THREADS="null"
+    PROFILE_SEG_DEVICE_OVERRIDE="gpu"
+    PROFILE_SEG_MAX_WORKERS="null"
+    PROFILE_SEG_RESAMPLE_THREADS="$(clamp_int $((CPU_COUNT / 2)) 2 8)"
+    PROFILE_SEG_SAVE_THREADS="$(clamp_int $((CPU_COUNT / 4)) 1 6)"
+    PROFILE_RADIOMICS_SEQUENTIAL="false"
+    PROFILE_AGG_THREADS="auto"
+    PROFILE_MAX_CORES_DEFAULT="$CPU_COUNT"
+    PROFILE_MAX_MEMORY_DEFAULT="64G"
+    PROFILE_MAX_WORKERS_DEFAULT="null"
+}
+
+set_profile_multi_gpu() {
+    PROFILE_ID="multi_gpu"
+    PROFILE_LABEL="Multi-GPU server"
+    PROFILE_DESC="Parallelize segmentation across GPUs and stagger multiple CPU courses."
+    PROFILE_USE_GPU="yes"
+    PROFILE_RESERVED_CORES=2
+    PROFILE_PARALLEL_COURSES=4
+    PROFILE_DVH_THREADS=8
+    PROFILE_RAD_THREADS=10
+    PROFILE_QC_THREADS=4
+    PROFILE_CROP_THREADS=4
+    PROFILE_ROB_THREADS=8
+    PROFILE_SEG_DEVICE_OVERRIDE="gpu"
+    local seg_workers="$GPU_COUNT"
+    if [ -z "$seg_workers" ] || [ "$seg_workers" -lt 1 ]; then
+        seg_workers=1
+    fi
+    PROFILE_SEG_MAX_WORKERS="$seg_workers"
+    PROFILE_SEG_RESAMPLE_THREADS="$(clamp_int $((CPU_COUNT / 2)) 4 16)"
+    PROFILE_SEG_SAVE_THREADS="$(clamp_int $((CPU_COUNT / 4)) 2 12)"
+    PROFILE_RADIOMICS_SEQUENTIAL="false"
+    PROFILE_AGG_THREADS="auto"
+    PROFILE_MAX_CORES_DEFAULT="$CPU_COUNT"
+    PROFILE_MAX_MEMORY_DEFAULT="128G"
+    local mw=$((CPU_COUNT - 16))
+    if [ "$mw" -lt 1 ]; then
+        PROFILE_MAX_WORKERS_DEFAULT="null"
+    else
+        PROFILE_MAX_WORKERS_DEFAULT="$mw"
+    fi
+}
+
+set_profile_cpu_only() {
+    PROFILE_ID="cpu_only"
+    PROFILE_LABEL="CPU-only / constrained node"
+    PROFILE_DESC="Disable GPU usage and keep segmentation fan-out conservative."
+    PROFILE_USE_GPU="no"
+    PROFILE_RESERVED_CORES=1
+    PROFILE_PARALLEL_COURSES=1
+    PROFILE_DVH_THREADS=4
+    PROFILE_RAD_THREADS=4
+    PROFILE_QC_THREADS=2
+    PROFILE_CROP_THREADS=2
+    PROFILE_ROB_THREADS=4
+    PROFILE_SEG_DEVICE_OVERRIDE="cpu"
+    local seg_workers=$((CPU_COUNT / 4))
+    if [ "$seg_workers" -lt 1 ]; then
+        seg_workers=1
+    fi
+    if [ "$seg_workers" -gt 4 ]; then
+        seg_workers=4
+    fi
+    PROFILE_SEG_MAX_WORKERS="$seg_workers"
+    PROFILE_SEG_RESAMPLE_THREADS="$(clamp_int $((CPU_COUNT / 3)) 2 6)"
+    PROFILE_SEG_SAVE_THREADS="$(clamp_int $((CPU_COUNT / 4)) 1 4)"
+    PROFILE_RADIOMICS_SEQUENTIAL="true"
+    PROFILE_AGG_THREADS="auto"
+    local cores="$CPU_COUNT"
+    if [ "$cores" -gt 1 ]; then
+        cores=$((cores - 1))
+    fi
+    PROFILE_MAX_CORES_DEFAULT="$cores"
+    PROFILE_MAX_MEMORY_DEFAULT="32G"
+    local mw=$((CPU_COUNT - 2))
+    if [ "$mw" -lt 2 ]; then
+        mw=2
+    fi
+    if [ "$mw" -gt 8 ]; then
+        mw=8
+    fi
+    PROFILE_MAX_WORKERS_DEFAULT="$mw"
+}
+
+echo ""
+echo "Step 5/5 - Resource tuning & optimization profile"
+echo "  - Detected CPU cores: $CPU_COUNT"
+if [ "$GPU_AVAILABLE" = "yes" ]; then
+    echo "  - Detected GPUs: ${GPU_COUNT:-1}"
 fi
-MAX_CORES="$(prompt_input 'Step 5/5 - Max CPU cores for container' "$CPU_DEFAULT")"
-MAX_MEMORY="$(prompt_input 'Max memory for container (e.g., 32G)' "32G")"
-WORKERS_INPUT="$(prompt_input 'Max workers (null for auto or number)' "null")"
+
+PROFILE_DEFAULT_ID="cpu_only"
+if [ "$GPU_AVAILABLE" = "yes" ]; then
+    if [ "$GPU_COUNT" -gt 1 ]; then
+        PROFILE_DEFAULT_ID="multi_gpu"
+    else
+        PROFILE_DEFAULT_ID="single_gpu"
+    fi
+fi
+if [ "$USE_GPU_RUNTIME" = "no" ]; then
+    PROFILE_DEFAULT_ID="cpu_only"
+fi
+
+echo "Available profiles:"
+if [ "$GPU_AVAILABLE" = "yes" ]; then
+    echo "  [single_gpu] Single GPU workstation (serialize segmentation, overlap CPU stages)"
+    if [ "$GPU_COUNT" -gt 1 ]; then
+        echo "  [multi_gpu] Multi-GPU server (parallel segmentation across GPUs)"
+    fi
+fi
+echo "  [cpu_only] CPU-only / low-RAM node"
+echo "  [custom] Custom (manual tuning in config.yaml later)"
+
+PROFILE_SELECTION_RAW="$(prompt_input 'Choose optimization profile' "$PROFILE_DEFAULT_ID")"
+PROFILE_SELECTION="$(printf '%s' "$PROFILE_SELECTION_RAW" | tr '[:upper:]' '[:lower:]')"
+case "$PROFILE_SELECTION" in
+    1|single|single_gpu) SELECTED_PROFILE="single_gpu" ;;
+    2|multi|multi_gpu) SELECTED_PROFILE="multi_gpu" ;;
+    3|cpu|cpu_only) SELECTED_PROFILE="cpu_only" ;;
+    4|custom|manual) SELECTED_PROFILE="custom" ;;
+    *) SELECTED_PROFILE="$PROFILE_DEFAULT_ID" ;;
+esac
+
+if [ "$SELECTED_PROFILE" = "multi_gpu" ] && [ "$GPU_AVAILABLE" != "yes" ]; then
+    echo "  Multi-GPU profile requested but no GPU detected; using CPU-only profile."
+    SELECTED_PROFILE="cpu_only"
+fi
+if [ "$SELECTED_PROFILE" = "multi_gpu" ] && [ "$GPU_AVAILABLE" = "yes" ] && [ "${GPU_COUNT:-0}" -lt 2 ]; then
+    echo "  Only ${GPU_COUNT:-0} GPU detected; using single GPU profile instead."
+    SELECTED_PROFILE="single_gpu"
+fi
+if [ "$SELECTED_PROFILE" = "single_gpu" ] && [ "$GPU_AVAILABLE" != "yes" ]; then
+    echo "  No GPU detected; using CPU-only profile."
+    SELECTED_PROFILE="cpu_only"
+fi
+
+case "$SELECTED_PROFILE" in
+    multi_gpu) set_profile_multi_gpu ;;
+    single_gpu) set_profile_single_gpu ;;
+    cpu_only) set_profile_cpu_only ;;
+    *) set_profile_custom ;;
+esac
+
+if [ "$PROFILE_USE_GPU" = "yes" ]; then
+    if [ "$GPU_AVAILABLE" = "yes" ]; then
+        if [ "$USE_GPU_RUNTIME" = "no" ]; then
+            echo "  Re-enabling GPU runtime to match selected profile."
+        fi
+        USE_GPU_RUNTIME="yes"
+        GPU_DEVICE="gpu"
+    else
+        echo "  GPU profile selected but hardware unavailable; forcing CPU-only settings."
+        set_profile_cpu_only
+        USE_GPU_RUNTIME="no"
+        GPU_DEVICE="cpu"
+    fi
+elif [ "$PROFILE_USE_GPU" = "no" ]; then
+    USE_GPU_RUNTIME="no"
+    GPU_DEVICE="cpu"
+fi
+
+echo "Selected profile: ${PROFILE_LABEL}"
+echo "  ${PROFILE_DESC}"
+echo "  Scheduler: reserved_cores=${PROFILE_RESERVED_CORES}, parallel_courses=${PROFILE_PARALLEL_COURSES}"
+
+MAX_CORES_DEFAULT="${PROFILE_MAX_CORES_DEFAULT:-$CPU_COUNT}"
+if [ -z "$MAX_CORES_DEFAULT" ]; then
+    MAX_CORES_DEFAULT="$CPU_COUNT"
+fi
+MAX_MEMORY_DEFAULT="${PROFILE_MAX_MEMORY_DEFAULT:-32G}"
+MAX_CORES="$(prompt_input 'Max CPU cores for container' "$MAX_CORES_DEFAULT")"
+MAX_MEMORY="$(prompt_input 'Max memory for container (e.g., 64G)' "$MAX_MEMORY_DEFAULT")"
+
+WORKERS_PROMPT_DEFAULT="${PROFILE_MAX_WORKERS_DEFAULT:-null}"
+WORKERS_INPUT="$(prompt_input 'Max workers (null for auto or number)' "$WORKERS_PROMPT_DEFAULT")"
 if [ "$WORKERS_INPUT" = "null" ] || [ "$WORKERS_INPUT" = "auto" ]; then
     MAX_WORKERS="null"
 else
     MAX_WORKERS="$WORKERS_INPUT"
 fi
+
+PROFILE_LABEL="${PROFILE_LABEL:-Custom}"
+PROFILE_DESC="${PROFILE_DESC:-Manual tuning}"
+PROFILE_ID="${PROFILE_ID:-custom}"
+PROFILE_SEG_DEVICE_OVERRIDE="${PROFILE_SEG_DEVICE_OVERRIDE:-}"
+
+SEG_DEVICE_CONFIG="$GPU_DEVICE"
+if [ -n "$PROFILE_SEG_DEVICE_OVERRIDE" ]; then
+    SEG_DEVICE_CONFIG="$PROFILE_SEG_DEVICE_OVERRIDE"
+fi
+GPU_DEVICE="$SEG_DEVICE_CONFIG"
+
+SCHED_RESERVED_CORES="${PROFILE_RESERVED_CORES:-1}"
+SCHED_PARALLEL_COURSES="${PROFILE_PARALLEL_COURSES:-1}"
+SCHED_DVH_THREADS="${PROFILE_DVH_THREADS:-null}"
+SCHED_RAD_THREADS="${PROFILE_RAD_THREADS:-null}"
+SCHED_QC_THREADS="${PROFILE_QC_THREADS:-null}"
+SCHED_CROP_THREADS="${PROFILE_CROP_THREADS:-null}"
+SCHED_ROB_THREADS="${PROFILE_ROB_THREADS:-null}"
+SEG_MAX_WORKERS_CONFIG="${PROFILE_SEG_MAX_WORKERS:-null}"
+SEG_NR_THREADS_RESAMPLE="${PROFILE_SEG_RESAMPLE_THREADS:-1}"
+SEG_NR_THREADS_SAVE="${PROFILE_SEG_SAVE_THREADS:-1}"
+RAD_SEQUENTIAL_VALUE="${PROFILE_RADIOMICS_SEQUENTIAL:-false}"
+AGG_THREADS_VALUE="${PROFILE_AGG_THREADS:-auto}"
 
 # Optional weights mount
 TOTALSEG_WEIGHTS_DIR=""
@@ -252,14 +518,6 @@ if [ "$(prompt_yes_no 'Optional: mount TotalSegmentator weights dir for caching?
     TOTALSEG_WEIGHTS_DIR="$PROJECT_DIR/totalseg_weights"
     mkdir -p "$TOTALSEG_WEIGHTS_DIR"
     echo "  Weights cache: $TOTALSEG_WEIGHTS_DIR"
-fi
-
-# GPU choice (if available)
-if [ "$HAS_GPU" = "yes" ]; then
-    if [ "$(prompt_yes_no 'Use GPU if available?' 'yes')" = "no" ]; then
-        GPU_DEVICE="cpu"
-        HAS_GPU="no"
-    fi
 fi
 
 # ---------------------------
@@ -286,6 +544,8 @@ else
     cat > "$CONFIG_PATH" <<EOF
 # RTpipeline Docker Project Configuration
 # Generated by setup_docker_project.sh v${VERSION} on $(date)
+# Optimization profile: ${PROFILE_LABEL}
+# Notes: ${PROFILE_DESC}
 
 dicom_root: "/data/input"
 output_dir: "/data/output"
@@ -294,22 +554,25 @@ logs_dir: "/data/logs"
 max_workers: ${MAX_WORKERS}  # null = auto
 
 scheduler:
-  reserved_cores: 1
-  dvh_threads_per_job: 4
-  radiomics_threads_per_job: 6
-  qc_threads_per_job: 2
+  reserved_cores: ${SCHED_RESERVED_CORES}
+  parallel_courses: ${SCHED_PARALLEL_COURSES}
+  dvh_threads_per_job: ${SCHED_DVH_THREADS}
+  radiomics_threads_per_job: ${SCHED_RAD_THREADS}
+  qc_threads_per_job: ${SCHED_QC_THREADS}
+  crop_ct_threads_per_job: ${SCHED_CROP_THREADS}
+  robustness_threads_per_job: ${SCHED_ROB_THREADS}
   prioritize_short_courses: true
 
 segmentation:
-  device: "${GPU_DEVICE}"  # gpu or cpu
+  device: "${SEG_DEVICE_CONFIG}"  # gpu or cpu
   fast: false
   force: false
   roi_subset: null
   extra_models: []
-  max_workers: null
+  max_workers: ${SEG_MAX_WORKERS_CONFIG}
   force_split: true
-  nr_threads_resample: 1
-  nr_threads_save: 1
+  nr_threads_resample: ${SEG_NR_THREADS_RESAMPLE}
+  nr_threads_save: ${SEG_NR_THREADS_SAVE}
   num_proc_preprocessing: 1
   num_proc_export: 1
 
@@ -323,7 +586,7 @@ custom_models:
 
 radiomics:
   enabled: ${rad_bool}
-  sequential: false
+  sequential: ${RAD_SEQUENTIAL_VALUE}
   params_file: "rtpipeline/radiomics_params.yaml"
   mr_params_file: "rtpipeline/radiomics_params_mr.yaml"
   skip_rois:
@@ -380,7 +643,7 @@ ct_cropping:
   keep_original: true
 
 aggregation:
-  threads: auto
+  threads: ${AGG_THREADS_VALUE}
 
 environments:
   main: "rtpipeline"
@@ -411,6 +674,7 @@ services:
       - "${PROJECT_DIR}/Output:/data/output:rw"
       - "${PROJECT_DIR}/Logs:/data/logs:rw"
       - "${PROJECT_DIR}/config.yaml:/app/config.custom.yaml:ro"
+      - "${PROJECT_DIR}/.snakemake_cache:/home/rtpipeline/.snakemake:rw"
 EOF
 if [ -n "$TOTALSEG_WEIGHTS_DIR" ]; then
 cat >> "$COMPOSE_PATH" <<EOF
@@ -435,7 +699,7 @@ cat >> "$COMPOSE_PATH" <<EOF
       - DCM2NIIX_TIMEOUT=300
       - RTPIPELINE_RADIOMICS_TASK_TIMEOUT=1200
 EOF
-if [ "$HAS_GPU" = "yes" ]; then
+if [ "$USE_GPU_RUNTIME" = "yes" ]; then
 cat >> "$COMPOSE_PATH" <<'EOF'
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
@@ -464,7 +728,7 @@ cat >> "$COMPOSE_PATH" <<EOF
           memory: "${MAX_MEMORY}"
         reservations:
 EOF
-if [ "$HAS_GPU" = "yes" ]; then
+if [ "$USE_GPU_RUNTIME" = "yes" ]; then
 cat >> "$COMPOSE_PATH" <<'EOF'
           devices:
             - driver: nvidia
@@ -477,7 +741,7 @@ cat >> "$COMPOSE_PATH" <<'EOF'
 EOF
 fi
 
-if [ "$HAS_GPU" = "yes" ]; then
+if [ "$USE_GPU_RUNTIME" = "yes" ]; then
 cat >> "$COMPOSE_PATH" <<'EOF'
 
     runtime: nvidia
@@ -599,7 +863,11 @@ cd ${PROJECT_DIR}
 \`\`\`
 
 ## Feature summary
-- GPU: ${HAS_GPU} (${GPU_DEVICE})
+- GPU hardware detected: ${GPU_AVAILABLE}
+- GPU runtime: ${USE_GPU_RUNTIME} (${GPU_DEVICE})
+- Optimization profile: ${PROFILE_LABEL}
+- Scheduler: reserved=${SCHED_RESERVED_CORES}, parallel_courses=${SCHED_PARALLEL_COURSES}
+- Segmentation: device=${SEG_DEVICE_CONFIG}, max_workers=${SEG_MAX_WORKERS_CONFIG}
 - Radiomics: ${ENABLE_RADIOMICS}
 - Robustness: ${ENABLE_ROBUSTNESS} (${ROBUSTNESS_INTENSITY})
 - CT cropping: ${ENABLE_CT_CROPPING} (${CROPPING_REGION})
