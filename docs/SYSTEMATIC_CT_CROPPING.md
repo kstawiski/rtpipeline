@@ -16,11 +16,11 @@ Even though the treatment is identical, the metrics suggest a significant differ
 
 ### The Solution
 
-By cropping both scans to the same anatomical landmarks (e.g., "Superior: Top of L1", "Inferior: 10cm below femoral heads"), we normalize the denominator:
-*   **Patient A (Cropped):** Volume = 12,000 cm³. V20Gy = **4.2%**
-*   **Patient B (Cropped):** Volume = 12,000 cm³. V20Gy = **4.2%**
+By cropping both scans to the same anatomical landmarks (e.g., "Superior: Top of L1", "Inferior: 10cm below femoral heads"), we substantially reduce field-of-view-related variation in the denominator:
+*   **Patient A (Cropped):** Volume ≈ 12,000 cm³. V20Gy = **4.2%**
+*   **Patient B (Cropped):** Volume ≈ 11,500 cm³. V20Gy = **4.3%**
 
-This makes cohort-level statistical analysis valid.
+This makes cohort-level comparison of percentage metrics more interpretable and statistically defensible, although residual anatomical differences (body habitus, prior surgery, segmentation variability) still need to be considered.
 
 ---
 
