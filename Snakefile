@@ -872,6 +872,7 @@ if config.get("container_mode", False):
                 --stage radiomics \
                 --course-filter "{wildcards.patient}/{wildcards.course}" \
                 --max-workers {threads} \
+                --manifest "{input.manifest}" \
                 {params.extra_args} >> {log} 2>&1
 
             echo "ok" > {output.sentinel}
@@ -910,6 +911,7 @@ else:
                 --stage radiomics \
                 --course-filter "{wildcards.patient}/{wildcards.course}" \
                 --max-workers {threads} \
+                --manifest "{input.manifest}" \
                 {params.extra_args} >> {log} 2>&1
 
             echo "ok" > {output.sentinel}
