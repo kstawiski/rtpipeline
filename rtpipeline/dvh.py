@@ -16,7 +16,6 @@ logger = logging.getLogger(__name__)
 
 from .layout import build_course_dirs
 from .utils import sanitize_rtstruct, mask_is_cropped, run_tasks_with_adaptive_workers, snap_rtstruct_to_dose_grid
-from .layout import build_course_dirs
 from .custom_models import list_custom_model_outputs
 
 # Compatibility shim for dicompyler-core with pydicom>=3
@@ -529,8 +528,47 @@ def _create_custom_structures_rtstruct(
 
 
 def _estimate_rx_from_ctv1(rtstruct: pydicom.dataset.FileDataset, rtdose: pydicom.dataset.FileDataset) -> Optional[float]:
+    """
+    Estimate prescription dose (Rx) from CTV1 D95 as a heuristic fallback.
+
+    WARNING: This is a heuristic approximation with significant limitations:
+    - Only valid for simple single-target IMRT/VMAT plans where plan meets coverage exactly
+    - NOT valid for SIB (Simultaneous Integrated Boost) plans with multiple prescription levels
+    - NOT valid for heterogeneity-corrected prescriptions with escalated hotspots
+    - May be inaccurate if CTV1 naming conventions differ
+
+    Preferred alternatives:
+    - Use RT Plan fields (DoseReferenceSequence, PrescriptionDose) when available
+    - Use user-provided Rx from configuration
+
+    Args:
+        rtstruct: RTSTRUCT dataset containing CTV1
+        rtdose: RTDOSE dataset with dose grid
+
+    Returns:
+        Estimated Rx in Gy based on CTV1 D95, or None if estimation fails
+    """
+    import re
     try:
         snap_rtstruct_to_dose_grid(rtstruct, rtdose)
+
+        # Multi-CTV detection guardrail: check for SIB indicators
+        ctv_pattern = re.compile(r'\bctv\s*(\d+)\b', re.IGNORECASE)
+        ctv_numbers = set()
+        for roi in rtstruct.StructureSetROISequence:
+            name = str(getattr(roi, "ROIName", "") or "")
+            matches = ctv_pattern.findall(name.replace("_", " "))
+            ctv_numbers.update(int(m) for m in matches)
+
+        if len(ctv_numbers) > 1:
+            logger.warning(
+                "Multiple CTV levels detected (CTV%s). This suggests a SIB plan where "
+                "CTV1 D95-based Rx estimation is NOT valid. Consider providing explicit "
+                "rx_dose_gy or disabling estimate_rx_from_ctv1.",
+                ", CTV".join(str(n) for n in sorted(ctv_numbers))
+            )
+            # Still proceed but with warning - user opted in explicitly
+
         for roi in rtstruct.StructureSetROISequence:
             name = str(getattr(roi, "ROIName", "") or "")
             if "ctv1" in name.replace(" ", "").lower():
@@ -538,7 +576,12 @@ def _estimate_rx_from_ctv1(rtstruct: pydicom.dataset.FileDataset, rtdose: pydico
                 if abs_dvh_ctv.volume > 0:
                     bins_ctv = abs_dvh_ctv.bincenters
                     cum_ctv = abs_dvh_ctv.counts
-                    return float(_dose_at_fraction(bins_ctv, cum_ctv, 0.95))
+                    rx_estimate = float(_dose_at_fraction(bins_ctv, cum_ctv, 0.95))
+                    logger.debug(
+                        "Estimated Rx from CTV1 D95: %.2f Gy (CAUTION: heuristic, not valid for SIB)",
+                        rx_estimate
+                    )
+                    return rx_estimate
     except Exception as e:
         logger.debug("RX estimate failed: %s", e)
     return None
@@ -549,7 +592,26 @@ def dvh_for_course(
     custom_structures_config: Optional[Union[str, Path]] = None,
     parallel_workers: Optional[int] = None,
     use_cropped: bool = True,
+    estimate_rx_from_ctv1: bool = False,
+    rx_dose_gy: Optional[float] = None,
 ) -> Optional[Path]:
+    """
+    Compute DVH metrics for a treatment course.
+
+    Args:
+        course_dir: Path to the treatment course directory.
+        custom_structures_config: Path to custom structures YAML config.
+        parallel_workers: Max parallel workers for DVH computation.
+        use_cropped: Whether to use systematically cropped RTSTRUCT if available.
+        estimate_rx_from_ctv1: If True, estimate Rx from CTV1 D95 when no explicit
+                              Rx is provided. WARNING: This heuristic is NOT valid
+                              for SIB plans or heterogeneity-corrected prescriptions.
+                              Default False (opt-in) to avoid silent methodological errors.
+        rx_dose_gy: Explicit prescription dose in Gy. Takes precedence over estimation.
+
+    Returns:
+        Path to the output dvh_metrics.xlsx file, or None if no results.
+    """
     course_dirs = build_course_dirs(course_dir)
     rp = course_dir / "RP.dcm"
     rd = course_dir / "RD.dcm"
@@ -711,16 +773,34 @@ def dvh_for_course(
             if item:
                 results.append(item)
 
-    # Estimate rx from manual if present; else None
+    # Determine Rx dose: explicit > estimation > None
     rx_est = None
-    if rs_manual.exists():
+    if rx_dose_gy is not None and rx_dose_gy > 0:
+        rx_est = float(rx_dose_gy)
+        logger.info("Using explicit Rx dose: %.2f Gy for %s", rx_est, course_dir.name)
+    elif estimate_rx_from_ctv1 and rs_manual.exists():
         try:
             rx_est = _estimate_rx_from_ctv1(pydicom.dcmread(str(rs_manual)), rtdose)
+            if rx_est:
+                logger.info(
+                    "Estimated Rx from CTV1 D95: %.2f Gy for %s (WARNING: heuristic, not valid for SIB)",
+                    rx_est, course_dir.name
+                )
         except Exception:
             pass
-    
+
     if rx_est is None:
-        logger.warning("Could not estimate prescription dose for %s; relative metrics will be missing", course_dir.name)
+        if not estimate_rx_from_ctv1:
+            logger.info(
+                "No Rx dose provided for %s; relative DVH metrics will be missing. "
+                "Set estimate_rx_from_ctv1=True or provide rx_dose_gy to enable Rx-relative metrics.",
+                course_dir.name
+            )
+        else:
+            logger.warning(
+                "Could not estimate prescription dose for %s; relative metrics will be missing",
+                course_dir.name
+            )
 
     # Use RS_custom.dcm if it exists and is up-to-date
     rs_custom = course_dir / "RS_custom.dcm"

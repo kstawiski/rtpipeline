@@ -673,7 +673,7 @@
         <div class="top-bar">
             <div class="brand">
                 <h1>🏥 rtpipeline</h1>
-                <p>Automated Radiotherapy Processing</p>
+                <p>DICOM-RT analysis: segmentation, DVH & radiomics</p>
             </div>
             <div class="system-stats" id="system-stats">
                 <div class="stat-item"><span class="stat-label">CPU</span> <span class="stat-value"
@@ -713,7 +713,7 @@
                                     <input type="checkbox" id="fast-mode" checked>
                                     <span>Fast Segmentation Mode</span>
                                 </label>
-                                <small>Uses lower resolution TotalSegmentator model</small>
+                                <small>Uses lower resolution model (~3x faster). Recommended for QA/exploratory analysis only; disable for publication-grade radiomics or DVH.</small>
                             </div>
                             <div class="config-option">
                                 <label>
@@ -748,8 +748,9 @@
                             <div class="config-option">
                                 <label>
                                     <input type="checkbox" id="robustness-enabled">
-                                    <span>Radiomics Robustness</span>
+                                    <span>Radiomics Robustness Analysis</span>
                                 </label>
+                                <small>Tests feature stability under systematic perturbations (NTCV chain). Computes ICC(3,1) and CoV to identify reproducible features for modeling.</small>
                             </div>
                             <div class="config-option">
                                 <label>
@@ -960,7 +961,7 @@
                 }));
 
                 const layout = {
-                    title: 'Dose Volume Histogram',
+                    title: 'Cumulative Dose-Volume Histogram (cDVH)',
                     xaxis: { title: 'Dose (Gy)' },
                     yaxis: { title: 'Volume (%)', range: [0, 105] },
                     hovermode: 'closest',

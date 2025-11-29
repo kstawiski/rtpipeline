@@ -25,16 +25,15 @@ import logging
 import os
 import shutil
 import tempfile
-from multiprocessing import get_context
 import time
 from dataclasses import dataclass, field
+from multiprocessing import get_context
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
 import numpy as np
 import pandas as pd
 import SimpleITK as sitk
-from multiprocessing import get_context
 
 from .config import PipelineConfig
 from .layout import build_course_dirs
@@ -374,19 +373,55 @@ def generate_ntcv_perturbations(
 ) -> Tuple[Dict[str, sitk.Image], Dict[str, sitk.Image]]:
     """
     Generate NTCV (Noise + Translation + Contour + Volume) perturbation chain.
-    
+
     This implements systematic perturbation chains following Zwanenburg et al. 2019
-    and modern best practices for comprehensive feature stability assessment.
-    
+    (Scientific Reports) and IBSI-2 guidelines for comprehensive feature stability
+    assessment. The NTCV order is standardized and should not be changed.
+
+    Perturbation Order (IBSI-recommended):
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    1. **N (Noise)**: Image intensity noise (Gaussian) - applied first to simulate
+       acquisition variability. Applied to the IMAGE, not the mask.
+
+    2. **T (Translation)**: Geometric shifts - simulates inter-observer ROI
+       placement variability. Applied BEFORE contour randomization so that
+       boundary perturbations are applied to the shifted ROI.
+
+    3. **C (Contour)**: Boundary randomization - simulates segmentation
+       uncertainty at ROI edges. Applied AFTER translation to perturb the
+       already-shifted boundary.
+
+    4. **V (Volume)**: Erosion/dilation - simulates systematic over/under-
+       segmentation. Applied LAST as it represents the final morphological
+       adjustment to the perturbed contour.
+
+    Why This Order Matters:
+    ~~~~~~~~~~~~~~~~~~~~~~~
+    The NTCV order ensures proper propagation of uncertainty sources:
+    - Noise affects feature values but not geometry
+    - Translation affects geometric position before boundary uncertainty
+    - Contour randomization adds edge uncertainty to translated position
+    - Volume adaptation is the final morphological adjustment
+
+    Reversing or randomizing the order would produce non-comparable perturbation
+    sets and potentially invalid ICC estimates. For example, applying volume
+    adaptation before translation would create a different systematic bias.
+
+    References:
+        Zwanenburg et al. (2019). The Image Biomarker Standardization Initiative:
+        Standardized Quantitative Radiomics for High-Throughput Image-based
+        Phenotyping. Radiology, 295(2), 328-338.
+
     Args:
         original_mask: Original binary mask
         original_image: CT/MR image (for noise perturbations)
         config: Perturbation configuration
         structure_name: Structure name for logging
-        
+
     Returns:
         Tuple of (perturbed_masks_dict, perturbed_images_dict)
-        Both dictionaries map perturbation_id to SimpleITK images
+        Both dictionaries map perturbation_id to SimpleITK images.
+        The perturbation_id encodes the full chain: "ntcv_n{noise}_t{x}_{y}_{z}_c{idx}_v{pct}"
     """
     perturbed_masks = {}
     perturbed_images = {}
@@ -671,14 +706,32 @@ def summarize_feature_stability(
             cov = compute_cov(values) if config.metrics.cov_enabled else np.nan
             qcd = compute_qcd(values) if config.metrics.qcd_enabled else np.nan
 
+        # Build unique subject identifier including course_id to avoid collapsing
+        # different courses of the same patient into one subject for ICC computation.
+        # Subject = patient_id + course_id + structure + segmentation_source
+        # This ensures each course/timepoint is treated as a distinct subject instance.
         icc_df = group[["patient_id", "perturbation_id", "value"]].copy()
-        icc_df.rename(columns={"patient_id": "subject", "perturbation_id": "rater"}, inplace=True)
-        icc_df["subject"] = icc_df["subject"].astype(str)
+        icc_df.rename(columns={"perturbation_id": "rater"}, inplace=True)
 
+        # Start with patient_id
+        subject_parts = [group["patient_id"].astype(str)]
+
+        # Include course_id if available (critical for multi-course/longitudinal data)
+        if "course_id" in group.columns:
+            subject_parts.append(group["course_id"].astype(str))
+
+        # Include structure (already fixed by grouping, but ensures uniqueness across groups)
         if "structure" in df_long.columns:
-            icc_df["subject"] = icc_df["subject"] + "_" + group["structure"].astype(str)
+            subject_parts.append(group["structure"].astype(str))
+
+        # Include segmentation_source
         if "segmentation_source" in df_long.columns:
-            icc_df["subject"] = icc_df["subject"] + "_" + group.get("segmentation_source", "unknown").astype(str)
+            subject_parts.append(group.get("segmentation_source", "unknown").astype(str))
+
+        # Combine all parts with underscore separator
+        icc_df["subject"] = subject_parts[0]
+        for part in subject_parts[1:]:
+            icc_df["subject"] = icc_df["subject"] + "_" + part
 
         n_subjects = icc_df["subject"].nunique()
         n_raters = icc_df["rater"].nunique()
@@ -955,21 +1008,65 @@ def robustness_for_course(
             logger.info("Processing %d robustness perturbations with %d workers", len(tasks), max_workers)
 
             ctx = get_context('spawn')
+
+            # Timeout configuration for watchdog
+            course_timeout = int(os.environ.get("RTPIPELINE_ROBUSTNESS_COURSE_TIMEOUT", "3600"))  # 1 hour default
+            progress_timeout = int(os.environ.get("RTPIPELINE_ROBUSTNESS_PROGRESS_TIMEOUT", "300"))  # 5 min default
+
             with ctx.Pool(max_workers) as pool:
                 completed_count = 0
                 total_count = len(tasks)
                 start_time = time.time()
-                
-                # Use imap_unordered for efficiency
-                for result in pool.imap_unordered(_isolated_radiomics_extraction_with_retry, tasks):
-                    completed_count += 1
-                    if completed_count % 10 == 0 or completed_count == total_count:
-                         elapsed = time.time() - start_time
-                         rate = completed_count / elapsed if elapsed > 0 else 0
-                         eta = (total_count - completed_count) / rate if rate > 0 else 0
-                         logger.info("Robustness progress: %d/%d (%.1f%%), ETA: %.1fs",
-                                    completed_count, total_count,
-                                    100 * completed_count / total_count, eta)
+                last_progress_time = time.time()
+                timed_out = False
+
+                # Use imap_unordered with watchdog timeout
+                results_iter = pool.imap_unordered(_isolated_radiomics_extraction_with_retry, tasks)
+
+                while completed_count < total_count and not timed_out:
+                    try:
+                        # Poll for results with a short timeout
+                        result = results_iter.next(timeout=10)  # 10 second poll interval
+                        completed_count += 1
+                        last_progress_time = time.time()
+
+                        if completed_count % 10 == 0 or completed_count == total_count:
+                            elapsed = time.time() - start_time
+                            rate = completed_count / elapsed if elapsed > 0 else 0
+                            eta = (total_count - completed_count) / rate if rate > 0 else 0
+                            logger.info("Robustness progress: %d/%d (%.1f%%), ETA: %.1fs",
+                                       completed_count, total_count,
+                                       100 * completed_count / total_count, eta)
+                    except StopIteration:
+                        # All results processed
+                        break
+                    except TimeoutError:
+                        # Check watchdog conditions
+                        elapsed = time.time() - start_time
+                        no_progress_time = time.time() - last_progress_time
+
+                        if elapsed > course_timeout:
+                            logger.error(
+                                "Robustness analysis exceeded course timeout (%ds), terminating pool",
+                                course_timeout
+                            )
+                            pool.terminate()
+                            timed_out = True
+                        elif no_progress_time > progress_timeout:
+                            logger.error(
+                                "No progress for %ds (threshold: %ds), likely hung worker - terminating pool",
+                                int(no_progress_time), progress_timeout
+                            )
+                            pool.terminate()
+                            timed_out = True
+                        else:
+                            # Continue waiting
+                            continue
+                    except Exception as iter_err:
+                        logger.warning("Error fetching result: %s", iter_err)
+                        continue
+
+                    # Process result if we got one
 
                     if result:
                         # Convert wide result dict (from worker) to long format DataFrame rows
