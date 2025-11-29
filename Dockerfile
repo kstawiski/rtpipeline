@@ -97,6 +97,7 @@ RUN conda config --set channel_priority strict && \
 
 # Install Snakemake and Web UI dependencies in base environment
 # We install these via mamba to ensure GLIBCXX compatibility (pandas/cpp issues with pip wheels)
+# pulp + coin-or-cbc enable Snakemake's ILP scheduler for optimal job ordering
 RUN mamba install -y -c conda-forge -c bioconda \
     python=3.11 \
     'snakemake>=8.4' \
@@ -109,6 +110,8 @@ RUN mamba install -y -c conda-forge -c bioconda \
     openpyxl \
     pynetdicom \
     libstdcxx-ng \
+    pulp \
+    coin-or-cbc \
     && mamba clean -afy && \
     find /opt/conda -follow -type f -name '*.a' -delete && \
     find /opt/conda -follow -type f -name '*.pyc' -delete && \

@@ -9,8 +9,10 @@ import logging
 import os
 import subprocess
 import tempfile
+import time
+import threading
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, Tuple, Set, TYPE_CHECKING
 
 if TYPE_CHECKING:
     pass  # For future type hints
@@ -26,6 +28,179 @@ from .utils import mask_is_cropped
 logger = logging.getLogger(__name__)
 
 RADIOMICS_ENV = "rtpipeline-radiomics"
+
+# Heartbeat interval for progress logging (seconds)
+HEARTBEAT_INTERVAL = 60
+
+
+class RadiomicsCheckpoint:
+    """Manages checkpoint state for resumable radiomics extraction.
+
+    Saves completed ROI results to a Parquet file so extraction can resume
+    if interrupted. This is critical for large datasets where extraction
+    can take hours.
+    """
+
+    def __init__(self, checkpoint_path: Path, buffer_size: int = 50):
+        self.checkpoint_path = Path(checkpoint_path)
+        self.buffer_size = buffer_size
+        self._buffer: List[Dict[str, Any]] = []
+        self._completed_rois: Set[str] = set()
+        self._lock = threading.Lock()
+        self._load_existing()
+
+    def _load_existing(self) -> None:
+        """Load previously completed ROIs from checkpoint file."""
+        if not self.checkpoint_path.exists():
+            return
+        try:
+            df = pd.read_parquet(self.checkpoint_path)
+            if 'roi_name' in df.columns:
+                self._completed_rois = set(df['roi_name'].dropna().astype(str))
+            logger.info("Checkpoint loaded: %d ROIs already completed", len(self._completed_rois))
+        except Exception as exc:
+            logger.warning("Failed to load checkpoint %s: %s", self.checkpoint_path, exc)
+
+    def is_completed(self, roi_name: str) -> bool:
+        """Check if a ROI has already been processed."""
+        return roi_name in self._completed_rois
+
+    def add_result(self, result: Dict[str, Any]) -> None:
+        """Add a completed result and flush if buffer is full."""
+        with self._lock:
+            self._buffer.append(result)
+            roi_name = result.get('roi_name', '')
+            if roi_name:
+                self._completed_rois.add(roi_name)
+
+            if len(self._buffer) >= self.buffer_size:
+                self._flush_buffer()
+
+    def _flush_buffer(self) -> None:
+        """Write buffered results to checkpoint file."""
+        if not self._buffer:
+            return
+
+        try:
+            new_df = pd.DataFrame(self._buffer)
+
+            if self.checkpoint_path.exists():
+                existing_df = pd.read_parquet(self.checkpoint_path)
+                combined_df = pd.concat([existing_df, new_df], ignore_index=True)
+            else:
+                self.checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+                combined_df = new_df
+
+            combined_df.to_parquet(self.checkpoint_path, index=False)
+            self._buffer.clear()
+            logger.debug("Checkpoint flushed: %d total ROIs", len(self._completed_rois))
+        except Exception as exc:
+            logger.error("Failed to flush checkpoint: %s", exc)
+
+    def flush(self) -> None:
+        """Force flush any remaining buffered results."""
+        with self._lock:
+            self._flush_buffer()
+
+    def get_completed_count(self) -> int:
+        """Return number of completed ROIs."""
+        return len(self._completed_rois)
+
+
+class HeartbeatLogger:
+    """Logs periodic progress updates during long-running operations.
+
+    Starts a background thread that logs progress every HEARTBEAT_INTERVAL seconds.
+    This provides visibility when radiomics extraction is running for hours.
+    """
+
+    def __init__(self, total_tasks: int, description: str = "Processing"):
+        self.total_tasks = total_tasks
+        self.description = description
+        self._completed = 0
+        self._failed = 0
+        self._skipped = 0
+        self._lock = threading.Lock()
+        self._running = False
+        self._thread: Optional[threading.Thread] = None
+        self._start_time = 0.0
+
+    def start(self) -> None:
+        """Start the heartbeat logging thread."""
+        self._running = True
+        self._start_time = time.monotonic()
+        self._thread = threading.Thread(target=self._heartbeat_loop, daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        """Stop the heartbeat logging thread and log final summary."""
+        self._running = False
+        if self._thread:
+            self._thread.join(timeout=2)
+        # Log final summary
+        self._log_final_summary()
+
+    def _log_final_summary(self) -> None:
+        """Log the final completion summary."""
+        with self._lock:
+            elapsed = time.monotonic() - self._start_time
+            logger.info(
+                "[Complete] %s: %d completed, %d failed, %d skipped in %.1f minutes",
+                self.description,
+                self._completed,
+                self._failed,
+                self._skipped,
+                elapsed / 60,
+            )
+
+    def update(self, completed: int = 0, failed: int = 0, skipped: int = 0) -> None:
+        """Update progress counters."""
+        with self._lock:
+            self._completed += completed
+            self._failed += failed
+            self._skipped += skipped
+
+    def _heartbeat_loop(self) -> None:
+        """Background thread that logs progress periodically."""
+        last_log = time.monotonic()
+        while self._running:
+            time.sleep(1)
+            now = time.monotonic()
+            if now - last_log >= HEARTBEAT_INTERVAL:
+                self._log_progress()
+                last_log = now
+
+    def _log_progress(self) -> None:
+        """Log current progress."""
+        with self._lock:
+            done = self._completed + self._failed + self._skipped
+            elapsed = time.monotonic() - self._start_time
+
+            if done > 0 and elapsed > 0:
+                rate = done / elapsed
+                remaining = self.total_tasks - done
+                eta_seconds = remaining / rate if rate > 0 else 0
+                eta_str = f"{eta_seconds/60:.1f}min" if eta_seconds < 3600 else f"{eta_seconds/3600:.1f}hr"
+            else:
+                eta_str = "calculating..."
+
+            logger.info(
+                "[Heartbeat] %s: %d/%d done (%d completed, %d failed, %d skipped) - ETA: %s",
+                self.description,
+                done,
+                self.total_tasks,
+                self._completed,
+                self._failed,
+                self._skipped,
+                eta_str,
+            )
+
+    def __enter__(self) -> 'HeartbeatLogger':
+        self.start()
+        return self
+
+    def __exit__(self, *args) -> None:
+        self.stop()  # stop() now includes final summary logging
 
 
 # Thread-limiting environment variables for subprocesses
@@ -497,8 +672,22 @@ def process_radiomics_batch(
     output_path: Path,
     sequential: bool = False,
     max_workers: Optional[int] = None,
+    checkpoint_path: Optional[Path] = None,
+    enable_heartbeat: bool = True,
 ) -> Optional[Path]:
-    """Process radiomics extraction tasks and persist them as an Excel sheet."""
+    """Process radiomics extraction tasks and persist them as an Excel sheet.
+
+    Args:
+        tasks: List of radiomics task dictionaries
+        output_path: Path for output Excel file
+        sequential: Force sequential processing
+        max_workers: Maximum parallel workers
+        checkpoint_path: Optional path for checkpoint file (enables resume)
+        enable_heartbeat: Whether to enable progress heartbeat logging
+
+    Returns:
+        Path to output file if successful, None otherwise
+    """
 
     if not tasks:
         logger.warning("No radiomics tasks to process")
@@ -515,11 +704,27 @@ def process_radiomics_batch(
         )
         return None
 
+    # Initialize checkpoint manager if path provided
+    checkpoint: Optional[RadiomicsCheckpoint] = None
+    if checkpoint_path:
+        checkpoint = RadiomicsCheckpoint(checkpoint_path)
+        already_completed = checkpoint.get_completed_count()
+        if already_completed > 0:
+            logger.info("Resume mode: %d ROIs already completed, filtering tasks", already_completed)
+
     cleanup_paths = {
         task.get('mask_path')
         for task in tasks
         if task.get('mask_path') and task.get('cleanup', True)
     }
+
+    # Filter out already-completed tasks if checkpointing is enabled
+    original_task_count = len(tasks)
+    if checkpoint:
+        tasks = [t for t in tasks if not checkpoint.is_completed(t.get('roi_name', ''))]
+        skipped_count = original_task_count - len(tasks)
+        if skipped_count > 0:
+            logger.info("Skipping %d already-completed ROIs (resume mode)", skipped_count)
 
     def _execute(task: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         roi_name = task.get('roi_name', 'ROI')
@@ -588,104 +793,158 @@ def process_radiomics_batch(
     # we use N/batch_size subprocesses, dramatically reducing startup overhead
     use_batch_processing = os.environ.get('RTPIPELINE_RADIOMICS_BATCH', '1').lower() in ('1', 'true', 'yes')
 
-    if sequential or len(tasks_list) == 1 or worker_limit == 1:
-        if use_batch_processing:
-            # Even sequential mode benefits from batch processing
-            logger.info("Processing %d radiomics tasks in batch mode (sequential)", len(tasks_list))
-            params_file = tasks_list[0].get('params_file') if tasks_list else None
-            batch_results = extract_radiomics_batch_with_conda(tasks_list, params_file)
+    # Initialize heartbeat logger if enabled
+    heartbeat: Optional[HeartbeatLogger] = None
+    if enable_heartbeat and tasks_list:
+        heartbeat = HeartbeatLogger(
+            total_tasks=original_task_count,
+            description=f"Radiomics ({Path(output_path).stem})"
+        )
+        heartbeat.start()
+        # Account for already-skipped tasks from checkpoint
+        if checkpoint:
+            heartbeat.update(completed=checkpoint.get_completed_count())
 
-            for task, features in zip(tasks_list, batch_results):
-                if features is None or features.get('__status__') != 'success':
-                    status = features.get('__status__', 'failed') if features else 'failed'
+    try:
+        if sequential or len(tasks_list) == 1 or worker_limit == 1:
+            if use_batch_processing:
+                # Even sequential mode benefits from batch processing
+                logger.info("Processing %d radiomics tasks in batch mode (sequential)", len(tasks_list))
+                params_file = tasks_list[0].get('params_file') if tasks_list else None
+                batch_results = extract_radiomics_batch_with_conda(tasks_list, params_file)
+
+                for task, features in zip(tasks_list, batch_results):
                     roi_name = task.get('roi_name', 'ROI')
-                    if status == 'skipped':
-                        logger.info("Skipped radiomics for %s: %s", roi_name, features.get('__reason__', 'unknown'))
-                    elif status == 'error':
-                        logger.error("Radiomics failed for %s: %s", roi_name, features.get('__error__', 'unknown'))
-                    continue
+                    if features is None or features.get('__status__') != 'success':
+                        status = features.get('__status__', 'failed') if features else 'failed'
+                        if status == 'skipped':
+                            logger.info("Skipped radiomics for %s: %s", roi_name, features.get('__reason__', 'unknown'))
+                            if heartbeat:
+                                heartbeat.update(skipped=1)
+                        elif status == 'error':
+                            logger.error("Radiomics failed for %s: %s", roi_name, features.get('__error__', 'unknown'))
+                            if heartbeat:
+                                heartbeat.update(failed=1)
+                        continue
 
-                # Remove internal status fields and combine with metadata
-                features_clean = {k: v for k, v in features.items() if not k.startswith('__')}
-                metadata = dict(task.get('metadata') or task.get('extra_metadata') or {})
-                metadata.setdefault('roi_name', task.get('roi_name', 'ROI'))
-                metadata.setdefault('roi_original_name', task.get('roi_name', 'ROI'))
-                metadata.setdefault('modality', 'CT')
-                results.append(_combine_feature_record(features_clean, metadata))
-        else:
-            _run_sequential(tasks_list)
-    elif use_batch_processing:
-        # OPTIMIZED: Split tasks into batches and process each batch in a single subprocess
-        # This amortizes the ~2-5 second subprocess startup across multiple ROIs
-        batch_size = max(5, len(tasks_list) // worker_limit)  # At least 5 ROIs per batch
-        batches = [tasks_list[i:i + batch_size] for i in range(0, len(tasks_list), batch_size)]
+                    # Remove internal status fields and combine with metadata
+                    features_clean = {k: v for k, v in features.items() if not k.startswith('__')}
+                    metadata = dict(task.get('metadata') or task.get('extra_metadata') or {})
+                    metadata.setdefault('roi_name', roi_name)
+                    metadata.setdefault('roi_original_name', roi_name)
+                    metadata.setdefault('modality', 'CT')
+                    record = _combine_feature_record(features_clean, metadata)
+                    results.append(record)
 
-        logger.info(
-            "Processing %d radiomics tasks in %d batches (%d ROIs/batch) with %d workers",
-            len(tasks_list),
-            len(batches),
-            batch_size,
-            min(worker_limit, len(batches)),
-        )
+                    # Save to checkpoint if enabled
+                    if checkpoint:
+                        checkpoint.add_result(record)
+                    if heartbeat:
+                        heartbeat.update(completed=1)
+            else:
+                _run_sequential(tasks_list)
+        elif use_batch_processing:
+            # OPTIMIZED: Split tasks into batches and process each batch in a single subprocess
+            # This amortizes the ~2-5 second subprocess startup across multiple ROIs
+            batch_size = max(1, len(tasks_list) // worker_limit)  # Allow fine-grained parallelism
+            batches = [tasks_list[i:i + batch_size] for i in range(0, len(tasks_list), batch_size)]
 
-        from concurrent.futures import ProcessPoolExecutor, as_completed
+            logger.info(
+                "Processing %d radiomics tasks in %d batches (%d ROIs/batch) with %d workers",
+                len(tasks_list),
+                len(batches),
+                batch_size,
+                min(worker_limit, len(batches)),
+            )
 
-        def _process_batch(batch: List[Dict[str, Any]]) -> List[Tuple[Dict[str, Any], Optional[Dict[str, Any]]]]:
-            """Process a batch of tasks and return (task, features) pairs."""
-            params_file = batch[0].get('params_file') if batch else None
-            batch_results = extract_radiomics_batch_with_conda(batch, params_file)
-            return list(zip(batch, batch_results))
+            from concurrent.futures import ProcessPoolExecutor, as_completed
 
-        # Use ProcessPoolExecutor for better parallelism (avoids GIL)
-        # Each worker processes one batch (multiple ROIs) per subprocess
-        with ProcessPoolExecutor(max_workers=min(worker_limit, len(batches))) as executor:
-            future_to_batch = {executor.submit(_process_batch, batch): batch for batch in batches}
+            def _process_batch(batch: List[Dict[str, Any]]) -> List[Tuple[Dict[str, Any], Optional[Dict[str, Any]]]]:
+                """Process a batch of tasks and return (task, features) pairs."""
+                params_file = batch[0].get('params_file') if batch else None
+                batch_results = extract_radiomics_batch_with_conda(batch, params_file)
+                return list(zip(batch, batch_results))
 
-            for future in as_completed(future_to_batch):
-                batch = future_to_batch[future]
-                try:
-                    batch_results = future.result()
-                    for task, features in batch_results:
-                        if features is None or features.get('__status__') != 'success':
-                            status = features.get('__status__', 'failed') if features else 'failed'
+            # Use ProcessPoolExecutor for better parallelism (avoids GIL)
+            # Each worker processes one batch (multiple ROIs) per subprocess
+            with ProcessPoolExecutor(max_workers=min(worker_limit, len(batches))) as executor:
+                future_to_batch = {executor.submit(_process_batch, batch): batch for batch in batches}
+
+                for future in as_completed(future_to_batch):
+                    batch = future_to_batch[future]
+                    try:
+                        batch_results = future.result()
+                        for task, features in batch_results:
                             roi_name = task.get('roi_name', 'ROI')
-                            if status == 'skipped':
-                                logger.debug("Skipped radiomics for %s: %s", roi_name, features.get('__reason__', 'unknown'))
-                            elif status == 'error':
-                                logger.warning("Radiomics failed for %s: %s", roi_name, features.get('__error__', 'unknown'))
-                            continue
+                            if features is None or features.get('__status__') != 'success':
+                                status = features.get('__status__', 'failed') if features else 'failed'
+                                if status == 'skipped':
+                                    logger.debug("Skipped radiomics for %s: %s", roi_name, features.get('__reason__', 'unknown'))
+                                    if heartbeat:
+                                        heartbeat.update(skipped=1)
+                                elif status == 'error':
+                                    logger.warning("Radiomics failed for %s: %s", roi_name, features.get('__error__', 'unknown'))
+                                    if heartbeat:
+                                        heartbeat.update(failed=1)
+                                continue
 
-                        # Remove internal status fields and combine with metadata
-                        features_clean = {k: v for k, v in features.items() if not k.startswith('__')}
-                        metadata = dict(task.get('metadata') or task.get('extra_metadata') or {})
-                        metadata.setdefault('roi_name', task.get('roi_name', 'ROI'))
-                        metadata.setdefault('roi_original_name', task.get('roi_name', 'ROI'))
-                        metadata.setdefault('modality', 'CT')
-                        results.append(_combine_feature_record(features_clean, metadata))
-                        logger.debug("Completed radiomics for %s", task.get('roi_name', 'ROI'))
-                except Exception as exc:
-                    logger.error("Batch processing failed: %s", exc)
-    else:
-        # Legacy per-ROI processing (can be enabled via RTPIPELINE_RADIOMICS_BATCH=0)
-        logger.info(
-            "Processing %d radiomics tasks with up to %d worker threads (legacy mode)",
-            len(tasks_list),
-            worker_limit,
-        )
-        from concurrent.futures import ThreadPoolExecutor, as_completed
+                            # Remove internal status fields and combine with metadata
+                            features_clean = {k: v for k, v in features.items() if not k.startswith('__')}
+                            metadata = dict(task.get('metadata') or task.get('extra_metadata') or {})
+                            metadata.setdefault('roi_name', roi_name)
+                            metadata.setdefault('roi_original_name', roi_name)
+                            metadata.setdefault('modality', 'CT')
+                            record = _combine_feature_record(features_clean, metadata)
+                            results.append(record)
 
-        with ThreadPoolExecutor(max_workers=worker_limit) as executor:
-            future_to_task = {executor.submit(_execute, task): task for task in tasks_list}
-            for future in as_completed(future_to_task):
-                task = future_to_task[future]
-                roi_name = task.get('roi_name', 'ROI')
-                try:
-                    rec = future.result()
-                    if rec:
-                        results.append(rec)
-                        logger.debug("Completed radiomics for %s", roi_name)
-                except Exception as exc:  # pragma: no cover - defensive
-                    logger.error("Radiomics task crashed for %s: %s", roi_name, exc)
+                            # Save to checkpoint if enabled
+                            if checkpoint:
+                                checkpoint.add_result(record)
+                            if heartbeat:
+                                heartbeat.update(completed=1)
+
+                            logger.debug("Completed radiomics for %s", roi_name)
+                    except Exception as exc:
+                        logger.error("Batch processing failed: %s", exc)
+                        if heartbeat:
+                            heartbeat.update(failed=len(batch))
+        else:
+            # Legacy per-ROI processing (can be enabled via RTPIPELINE_RADIOMICS_BATCH=0)
+            logger.info(
+                "Processing %d radiomics tasks with up to %d worker threads (legacy mode)",
+                len(tasks_list),
+                worker_limit,
+            )
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+
+            with ThreadPoolExecutor(max_workers=worker_limit) as executor:
+                future_to_task = {executor.submit(_execute, task): task for task in tasks_list}
+                for future in as_completed(future_to_task):
+                    task = future_to_task[future]
+                    roi_name = task.get('roi_name', 'ROI')
+                    try:
+                        rec = future.result()
+                        if rec:
+                            results.append(rec)
+                            if checkpoint:
+                                checkpoint.add_result(rec)
+                            if heartbeat:
+                                heartbeat.update(completed=1)
+                            logger.debug("Completed radiomics for %s", roi_name)
+                        else:
+                            if heartbeat:
+                                heartbeat.update(failed=1)
+                    except Exception as exc:  # pragma: no cover - defensive
+                        logger.error("Radiomics task crashed for %s: %s", roi_name, exc)
+                        if heartbeat:
+                            heartbeat.update(failed=1)
+
+    finally:
+        # Always stop heartbeat and flush checkpoint
+        if heartbeat:
+            heartbeat.stop()
+        if checkpoint:
+            checkpoint.flush()
 
     if not results:
         logger.warning("No radiomics features extracted")
@@ -1010,11 +1269,16 @@ def radiomics_for_course(
 
     logger.info("Conda radiomics using %d workers (%s, CPU cores: %d)", max_workers, worker_source, os.cpu_count() or 0)
 
+    # Enable checkpointing for resumable extraction
+    checkpoint_path = course_dir / "metadata" / "radiomics_ct_checkpoint.parquet"
+
     result = process_radiomics_batch(
         tasks,
         output_path,
         sequential=sequential,
         max_workers=max_workers,
+        checkpoint_path=checkpoint_path,
+        enable_heartbeat=True,
     )
 
     try:
@@ -1183,11 +1447,16 @@ def radiomics_for_course_mr(
 
     logger.info("MR radiomics using %d workers", max_workers)
 
+    # Enable checkpointing for resumable extraction
+    checkpoint_path = mr_root / "radiomics_mr_checkpoint.parquet"
+
     result = process_radiomics_batch(
         tasks,
         out_path,
         sequential=False,
         max_workers=max_workers,
+        checkpoint_path=checkpoint_path,
+        enable_heartbeat=True,
     )
 
     # Cleanup temp files
