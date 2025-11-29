@@ -21,6 +21,7 @@ from scipy.ndimage import map_coordinates
 
 from .config import PipelineConfig
 from .ct import index_ct_series, pick_primary_series, copy_ct_series
+from .dicom_copy import DicomCopyConfig, DicomCopyManager, get_copy_manager, reset_copy_manager
 from .layout import CourseDirs, build_course_dirs, course_dir_name
 from .metadata import LinkedSet, group_by_course, link_rt_sets, parse_date
 from .rt_details import extract_rt, StructInfo
@@ -49,15 +50,33 @@ class CourseOutput:
     source_dose_uids: list[str] = field(default_factory=list)
 
 
-def _safe_copy(src: Path, dst: Path) -> None:
-    ensure_dir(dst.parent)
-    if dst.exists() and dst.is_file() and not os.path.samefile(src, dst):
-        dst.unlink()
-    shutil.copy2(src, dst)
+def _safe_copy(
+    src: Path,
+    dst: Path,
+    copy_manager: Optional[DicomCopyManager] = None,
+) -> None:
+    """Copy DICOM file to destination with optional deduplication."""
+    if copy_manager is not None:
+        copy_manager.copy_dicom(src, dst, skip_if_exists=False)
+    else:
+        ensure_dir(dst.parent)
+        if dst.exists() and dst.is_file() and not os.path.samefile(src, dst):
+            dst.unlink()
+        shutil.copy2(src, dst)
 
 
-def _copy_into(src: Path, dst_dir: Path, prefix: Optional[str] = None) -> Path:
+def _copy_into(
+    src: Path,
+    dst_dir: Path,
+    prefix: Optional[str] = None,
+    copy_manager: Optional[DicomCopyManager] = None,
+) -> Path:
     """Copy src into dst_dir, preserving name and avoiding clashes."""
+    if copy_manager is not None:
+        dest, _ = copy_manager.copy_dicom_into(src, dst_dir, prefix)
+        return dest
+
+    # Fallback to original behavior
     ensure_dir(dst_dir)
     name = src.name
     if prefix:
@@ -837,6 +856,23 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
     """End-to-end RT organization and course merging according to config."""
     config.ensure_dirs()
 
+    # Initialize copy manager for optimized DICOM copying
+    copy_config = DicomCopyConfig(
+        dedup_by_sop_uid=getattr(config, "dicom_copy_dedup_by_sop_uid", True),
+        use_hardlinks=getattr(config, "dicom_copy_use_hardlinks", True),
+        verify_checksum=getattr(config, "dicom_copy_verify_checksum", False),
+        cache_headers=getattr(config, "dicom_copy_cache_headers", True),
+        cache_dir=config.output_root / "_CACHE",
+    )
+    copy_manager = DicomCopyManager(copy_config, config.output_root)
+    logger.info(
+        "Copy manager initialized: dedup=%s, hardlinks=%s, verify=%s, cache=%s",
+        copy_config.dedup_by_sop_uid,
+        copy_config.use_hardlinks,
+        copy_config.verify_checksum,
+        copy_config.cache_headers,
+    )
+
     # Index CTs, extract RT sets, link and group into courses
     ct_index = index_ct_series(config.dicom_root)
     rt_file_index = _index_rt_files(config.dicom_root)
@@ -927,11 +963,11 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
                 struct_candidates.append(it.struct.path)
 
         for src in plan_paths:
-            _copy_into(src, course_dirs.dicom_rtplan)
+            _copy_into(src, course_dirs.dicom_rtplan, copy_manager=copy_manager)
         for src in dose_paths:
-            _copy_into(src, course_dirs.dicom_rtdose)
+            _copy_into(src, course_dirs.dicom_rtdose, copy_manager=copy_manager)
         for src in struct_candidates:
-            _copy_into(src, course_dirs.dicom_rtstruct)
+            _copy_into(src, course_dirs.dicom_rtstruct, copy_manager=copy_manager)
 
         total_rx = 0.0
         for p in plan_paths:
@@ -952,8 +988,8 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
 
         if plan_paths and dose_paths:
             if len(plan_paths) == 1 and len(dose_paths) == 1:
-                _safe_copy(plan_paths[0], rp_dst)
-                _safe_copy(dose_paths[0], rd_dst)
+                _safe_copy(plan_paths[0], rp_dst, copy_manager=copy_manager)
+                _safe_copy(dose_paths[0], rd_dst, copy_manager=copy_manager)
                 try:
                     ds_plan_single = pydicom.dcmread(str(plan_paths[0]), stop_before_pixels=True)
                     plan_sop_uid = str(getattr(ds_plan_single, "SOPInstanceUID", "") or None)
@@ -984,7 +1020,7 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
                 dose_sop_uid = str(dose_sum_ds.SOPInstanceUID)
         else:
             if plan_paths:
-                _safe_copy(plan_paths[0], rp_dst)
+                _safe_copy(plan_paths[0], rp_dst, copy_manager=copy_manager)
                 try:
                     ds_plan_single = pydicom.dcmread(str(plan_paths[0]), stop_before_pixels=True)
                     plan_sop_uid = str(getattr(ds_plan_single, "SOPInstanceUID", "") or None)
@@ -993,7 +1029,7 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
                 if plan_sop_uid:
                     source_plan_uids.append(plan_sop_uid)
             if dose_paths:
-                _safe_copy(dose_paths[0], rd_dst)
+                _safe_copy(dose_paths[0], rd_dst, copy_manager=copy_manager)
                 try:
                     ds_dose_single = pydicom.dcmread(str(dose_paths[0]), stop_before_pixels=False)
                     dose_sop_uid = str(getattr(ds_dose_single, "SOPInstanceUID", "") or None)
@@ -1008,10 +1044,10 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
             for s in structs:
                 if str(s.patient_id) == patient_id and (s.study_uid == course_study or not course_study):
                     struct_path = s.path
-                    _copy_into(s.path, course_dirs.dicom_rtstruct)
+                    _copy_into(s.path, course_dirs.dicom_rtstruct, copy_manager=copy_manager)
                     break
         if struct_path:
-            _safe_copy(struct_path, rs_dst)
+            _safe_copy(struct_path, rs_dst, copy_manager=copy_manager)
 
         if course_study and patient_id in ct_index and course_study in ct_index[patient_id]:
             series = pick_primary_series(ct_index[patient_id][course_study])
@@ -1019,7 +1055,7 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
                 first_inst = series[0] if series else None
                 if first_inst is not None and getattr(first_inst, 'series_uid', None):
                     course_ct_series_uids.add(str(first_inst.series_uid))
-                copy_ct_series(series, course_dirs.dicom_ct)
+                copy_ct_series(series, course_dirs.dicom_ct, copy_manager=copy_manager)
                 try:
                     primary_nifti = _ensure_ct_nifti(
                         config,
@@ -1037,7 +1073,7 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
                     continue
                 reg_path = Path(reg.get('path'))
                 if reg_path.exists() and reg_path not in seen_related:
-                    related_outputs.append(_copy_into(reg_path, course_dirs.dicom_related / "REG"))
+                    related_outputs.append(_copy_into(reg_path, course_dirs.dicom_related / "REG", copy_manager=copy_manager))
                     seen_related.add(reg_path)
                 for series_uid in reg.get('referenced_series', set()):
                     if series_uid in course_ct_series_uids:
@@ -1055,7 +1091,7 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
                     dest_dir = dest_parent / _sanitize_name(series_uid, fallback)
                     for src in series_paths:
                         if src not in seen_related and src.exists():
-                            related_outputs.append(_copy_into(src, dest_dir))
+                            related_outputs.append(_copy_into(src, dest_dir, copy_manager=copy_manager))
                             seen_related.add(src)
 
         for series_subdir in sorted(p for p in course_dirs.dicom_related.iterdir() if p.is_dir() and p.name != "REG"):
@@ -1188,9 +1224,9 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
 
             rs_dst = course_dir / "RS.dcm"
             primary_struct = s_list[0].path
-            _safe_copy(primary_struct, rs_dst)
+            _safe_copy(primary_struct, rs_dst, copy_manager=copy_manager)
             for s in s_list:
-                _copy_into(s.path, course_dirs.dicom_rtstruct)
+                _copy_into(s.path, course_dirs.dicom_rtstruct, copy_manager=copy_manager)
 
             course_study = s_list[0].study_uid
             if course_study and patient_id in ct_index and course_study in ct_index[patient_id]:
@@ -1199,7 +1235,7 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
                     first_inst = series[0] if series else None
                     if first_inst is not None and getattr(first_inst, 'series_uid', None):
                         course_ct_series_uids.add(str(first_inst.series_uid))
-                    copy_ct_series(series, course_dirs.dicom_ct)
+                    copy_ct_series(series, course_dirs.dicom_ct, copy_manager=copy_manager)
                     try:
                         primary_nifti = _ensure_ct_nifti(
                             config,
@@ -1217,7 +1253,7 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
                         continue
                     reg_path = Path(reg.get('path'))
                     if reg_path.exists() and reg_path not in seen_related:
-                        related_outputs.append(_copy_into(reg_path, course_dirs.dicom_related / "REG"))
+                        related_outputs.append(_copy_into(reg_path, course_dirs.dicom_related / "REG", copy_manager=copy_manager))
                         seen_related.add(reg_path)
                     for series_uid in reg.get('referenced_series', set()):
                         if series_uid in course_ct_series_uids:
@@ -1233,7 +1269,7 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
                             dest_dir = course_dirs.dicom_related / _sanitize_name(series_uid, "series")
                         for src in series_paths:
                             if src not in seen_related and src.exists():
-                                related_outputs.append(_copy_into(src, dest_dir))
+                                related_outputs.append(_copy_into(src, dest_dir, copy_manager=copy_manager))
                                 seen_related.add(src)
 
             def _convert_related_series(parent: Path, *, modality_hint: Optional[str] = None) -> None:
@@ -1320,7 +1356,7 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
                         dicom_dir = series_root / "DICOM"
                         for src in paths:
                             try:
-                                _copy_into(src, dicom_dir)
+                                _copy_into(src, dicom_dir, copy_manager=copy_manager)
                                 imported_files += 1
                             except Exception as exc:
                                 logger.debug("Failed to import MR file %s: %s", src, exc)
@@ -2243,5 +2279,9 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
                 logger.debug("Failed to write case metadata XLSX for %s: %s", patient_dir, exc)
         except Exception as e:
             logger.debug("Failed to write per-case metadata for %s: %s", patient_dir, e)
+
+    # Save copy manager caches and log statistics
+    copy_manager.save_caches()
+    logger.info("DICOM copy statistics: %s", copy_manager.stats)
 
     return outputs
