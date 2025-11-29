@@ -374,11 +374,33 @@ elif _seg_device_token in {"gpu", "cuda", "mps"}:
 else:
     CUSTOM_SEG_WORKER_POOL = max(1, WORKER_BUDGET)
 
+# Radiomics worker pool: serialize radiomics jobs to prevent nested parallelization explosion
+# Each radiomics job spawns ProcessPoolExecutor workers → conda subprocesses
+# Running 2+ jobs concurrently causes CPU thrashing and memory pressure
+_rad_workers_raw = _coerce_positive_int(RADIOMICS_CONFIG.get("max_parallel_courses"))
+if _rad_workers_raw is not None:
+    RADIOMICS_WORKER_POOL = max(1, _rad_workers_raw)
+else:
+    # Default: serialize radiomics jobs to avoid nested parallelization
+    # Each job gets full thread budget internally
+    RADIOMICS_WORKER_POOL = 1
+
+# Robustness uses same constraint as radiomics
+ROBUSTNESS_WORKER_POOL = RADIOMICS_WORKER_POOL
+
 workflow.global_resources.update(
     {
         "seg_workers": max(1, SEG_WORKER_POOL),
         "custom_seg_workers": max(1, CUSTOM_SEG_WORKER_POOL),
+        "radiomics_workers": max(1, RADIOMICS_WORKER_POOL),
+        "robustness_workers": max(1, ROBUSTNESS_WORKER_POOL),
     }
+)
+
+# Log resource pools for debugging
+sys.stderr.write(
+    f"[rtpipeline] Resource pools: seg_workers={SEG_WORKER_POOL}, custom_seg={CUSTOM_SEG_WORKER_POOL}, "
+    f"radiomics_workers={RADIOMICS_WORKER_POOL}, robustness_workers={ROBUSTNESS_WORKER_POOL}\n"
 )
 
 def course_dir(patient: str, course: str) -> Path:
@@ -827,7 +849,9 @@ if config.get("container_mode", False):
         log:
             str(LOGS_DIR / "radiomics" / "{patient}_{course}.log")
         threads:
-            RAD_RULE_THREADS
+            SNAKEMAKE_THREADS  # Full thread budget when serialized
+        resources:
+            radiomics_workers=1  # Serialize radiomics jobs to avoid nested parallelization
         params:
             extra_args=_radiomics_params_lambda
         shell:
@@ -836,7 +860,11 @@ if config.get("container_mode", False):
             # Export worker budget for subprocess coordination
             export RTPIPELINE_MAX_WORKERS={threads}
             export RTPIPELINE_RADIOMICS_THREAD_LIMIT=1
-            echo "DEBUG: threads={threads} SNAKEMAKE_THREADS={SNAKEMAKE_THREADS} RAD_RULE_THREADS={RAD_RULE_THREADS}" >> {log}
+            # BLAS thread limits to prevent internal parallelism explosion
+            export OMP_NUM_THREADS=1
+            export OPENBLAS_NUM_THREADS=1
+            export MKL_NUM_THREADS=1
+            echo "DEBUG: threads={threads} SNAKEMAKE_THREADS={SNAKEMAKE_THREADS}" >> {log}
             /opt/conda/envs/rtpipeline-radiomics/bin/python -m rtpipeline.cli \
                 --dicom-root "{DICOM_ROOT}" \
                 --outdir "{OUTPUT_DIR}" \
@@ -857,7 +885,9 @@ else:
         log:
             str(LOGS_DIR / "radiomics" / "{patient}_{course}.log")
         threads:
-            RAD_RULE_THREADS
+            SNAKEMAKE_THREADS  # Full thread budget when serialized
+        resources:
+            radiomics_workers=1  # Serialize radiomics jobs to avoid nested parallelization
         conda:
             "envs/rtpipeline-radiomics.yaml"
         params:
@@ -868,7 +898,11 @@ else:
             # Export worker budget for subprocess coordination
             export RTPIPELINE_MAX_WORKERS={threads}
             export RTPIPELINE_RADIOMICS_THREAD_LIMIT=1
-            echo "DEBUG: threads={threads} SNAKEMAKE_THREADS={SNAKEMAKE_THREADS} RAD_RULE_THREADS={RAD_RULE_THREADS}" >> {log}
+            # BLAS thread limits to prevent internal parallelism explosion
+            export OMP_NUM_THREADS=1
+            export OPENBLAS_NUM_THREADS=1
+            export MKL_NUM_THREADS=1
+            echo "DEBUG: threads={threads} SNAKEMAKE_THREADS={SNAKEMAKE_THREADS}" >> {log}
             python -m rtpipeline.cli \
                 --dicom-root "{DICOM_ROOT}" \
                 --outdir "{OUTPUT_DIR}" \
@@ -934,7 +968,9 @@ if config.get("container_mode", False):
         log:
             str(LOGS_DIR / "radiomics_robustness" / "{patient}_{course}.log")
         threads:
-            ROBUSTNESS_RULE_THREADS
+            SNAKEMAKE_THREADS  # Full thread budget when serialized
+        resources:
+            robustness_workers=1  # Serialize robustness jobs like radiomics
         params:
             enabled=str(ROBUSTNESS_ENABLED),
             config=str(ROOT_DIR / "config.yaml")
@@ -972,7 +1008,9 @@ else:
         log:
             str(LOGS_DIR / "radiomics_robustness" / "{patient}_{course}.log")
         threads:
-            ROBUSTNESS_RULE_THREADS
+            SNAKEMAKE_THREADS  # Full thread budget when serialized
+        resources:
+            robustness_workers=1  # Serialize robustness jobs like radiomics
         conda:
             "envs/rtpipeline-radiomics.yaml"
         params:
