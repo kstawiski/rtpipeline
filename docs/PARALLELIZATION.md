@@ -8,23 +8,26 @@ The pipeline uses an optimized parallelization model that automatically calculat
 
 ### Automatic Parallelization Formula (Nov 2025)
 
-The pipeline automatically determines optimal parallelization using this formula:
+The pipeline automatically determines optimal parallelization when `scheduler.parallel_courses` is not set (or `null`):
 
 ```python
+# threads = worker budget = snakemake --cores N - reserved_cores (default 1)
 MIN_THREADS_PER_JOB = 4      # Minimum threads for efficient internal parallelism
 TARGET_THREADS_PER_JOB = 5   # Target threads per course
 
-parallel_courses = min(threads // MIN_THREADS, threads // TARGET_THREADS + 1)
+max_courses_by_min = max(1, threads // MIN_THREADS_PER_JOB)
+target_courses = max(1, threads // TARGET_THREADS_PER_JOB + 1)
+parallel_courses = max(2, min(max_courses_by_min, target_courses))  # Minimum 2 courses
 ```
 
-**CPU Utilization by Core Count:**
+**CPU Utilization by Core Count** (assuming `reserved_cores: 1`):
 
-| Cores | Threads | Parallel Courses | Threads/Course | Active Threads | Utilization |
-|-------|---------|------------------|----------------|----------------|-------------|
-| 24    | 23      | 5                | 4              | 20             | 87%         |
-| 16    | 15      | 3                | 5              | 15             | 100%        |
-| 12    | 11      | 2                | 5              | 10             | 91%         |
-| 8     | 7       | 1                | 7              | 7              | 100%        |
+| `--cores` | Worker Threads | Parallel Courses | Threads/Course | Active Threads | Utilization |
+|-----------|----------------|------------------|----------------|----------------|-------------|
+| 23        | 22             | 5                | 4              | 20             | 91%         |
+| 15        | 14             | 3                | 4              | 12             | 86%         |
+| 11        | 10             | 2                | 5              | 10             | 100%        |
+| 7         | 6              | 2                | 3              | 6              | 100%        |
 
 The pipeline logs this calculation on startup:
 ```
@@ -37,7 +40,7 @@ The pipeline logs this calculation on startup:
    ```bash
    snakemake --cores 23 --use-conda --rerun-incomplete  # Recommended: n_cores - 1
    ```
-2. The scheduler reserves cores for the OS. Worker budget = `cores - 1` (recommended).
+2. The scheduler reserves `scheduler.reserved_cores` (default 1) for the OS. Worker budget = `--cores - reserved_cores`.
 3. Each rule declares Snakemake `threads:` either to that full budget (GPU segmentation) or to a stage-specific cap (DVH, radiomics, QC).
 4. Every CLI invocation receives `--max-workers <threads>`, so `PipelineConfig.effective_workers()` matches Snakemake's allocation.
 5. You can cap the global budget at any time:
@@ -45,7 +48,7 @@ The pipeline logs this calculation on startup:
    - CLI: `snakemake ... --config max_workers=8`
    - Environment: `export RTPIPELINE_MAX_WORKERS=8`
 
-Result: All CPU-bound stages use up to `min(max_workers, cores - 1)` workers. Only GPU segmentation is serialized by default unless you explicitly raise `segmentation.max_workers`.
+Result: All CPU-bound stages use up to `min(max_workers, --cores - reserved_cores)` workers. Only GPU segmentation is serialized by default unless you explicitly raise `segmentation.max_workers`.
 
 ---
 
