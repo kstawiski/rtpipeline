@@ -20,6 +20,7 @@ venv/
 .idea/
 .vscode/
 .DS_Store
+.kilocodemodes
 
 # Testing / coverage
 .pytest_cache/
@@ -32,15 +33,20 @@ htmlcov/
 # Jupyter
 .ipynb_checkpoints/
 
+# Documentation
+site/
+
 # Project outputs (prevent committing patient data / heavy artifacts)
 Logs*/
 Data*/
 DICOM_OrganizedCT/
 Example_data/
 Output/
+Output_test/
 Input/
 Uploads/
 totalseg_weights/
+docker_run*/
 
 # Snakemake
 .snakemake/
@@ -50,6 +56,9 @@ totalseg_weights/
 *.csv
 *.json
 *.log
+!package.json
+!tsconfig.json
+!pyproject.toml
 
 # Medical imaging data
 **/*.dcm
@@ -81,10 +90,6 @@ Segmentation_*/
 .claude/
 .cache/
 .genkit/
-Data_Snakemake/
-Data_Snakemake_fallback/
-Logs_Snakemake/
-Logs_Snakemake_fallback/
 _RESULTS/
 _COURSES/
 
