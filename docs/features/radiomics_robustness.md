@@ -397,7 +397,7 @@ When describing rtpipeline's robustness analysis in a manuscript, consider using
 >
 > Feature stability was quantified using the intraclass correlation coefficient ICC(3,1) computed via Pingouin[2], with each perturbation treated as a fixed rater measuring the same underlying subject (patient-course-structure combination). This interpretation follows the fixed-rater rationale described by Koo & Li[3] but represents an adaptation of ICC to perturbation-based analysis rather than a standard inter-rater scenario. Features with ICC ≥ 0.90 and coefficient of variation (CoV) ≤ 10% were classified as "robust" following commonly used thresholds in the radiomics literature.[3] Only robust features were retained for subsequent modeling.
 >
-> [1] Zwanenburg A, et al. Assessing robustness of radiomic features by image perturbation. Sci Rep. 2019;9:614. DOI: 10.1038/s41598-018-36758-2
+> [1] Zwanenburg A, et al. Assessing robustness of radiomic features by image perturbation. Sci Rep. 2019;9:614. DOI: 10.1038/s41598-018-36938-4
 > [2] Vallat R. Pingouin: statistics in Python. JOSS. 2018;3(31):1026. DOI: 10.21105/joss.01026
 > [3] Koo TK, Li MY. A guideline of selecting and reporting ICC for reliability research. J Chiropr Med. 2016;15(2):155-163. DOI: 10.1016/j.jcm.2016.02.012
 
@@ -440,7 +440,7 @@ Some small structures may fail erosion/dilation. This is expected; they'll be sk
 
 ## Key References
 
-1. Zwanenburg A, et al. (2019). "Assessing robustness of radiomic features by image perturbation." *Scientific Reports* 9, 614. DOI: 10.1038/s41598-018-36758-2
+1. Zwanenburg A, et al. (2019). "Assessing robustness of radiomic features by image perturbation." *Scientific Reports* 9, 614. DOI: 10.1038/s41598-018-36938-4
 2. Zwanenburg A, et al. (2020). "The Image Biomarker Standardization Initiative (IBSI)." *Radiology* 295(2):328-338. DOI: 10.1148/radiol.2020191145
 3. Koo TK, Li MY. (2016). "A guideline of selecting and reporting intraclass correlation coefficients for reliability research." *Journal of Chiropractic Medicine* 15(2):155-163. DOI: 10.1016/j.jcm.2016.02.012
 4. Vallat R. (2018). "Pingouin: statistics in Python." *Journal of Open Source Software* 3(31):1026. DOI: 10.21105/joss.01026
@@ -492,7 +492,7 @@ The following methods are referenced in the literature sections above but are **
 
 ## Footnote References
 
-[^zwanenburg2019]: A. Zwanenburg *et al.*, "Assessing robustness of radiomic features by image perturbation," *Scientific Reports* 9, 614 (2019). DOI: 10.1038/s41598-018-36758-2
+[^zwanenburg2019]: A. Zwanenburg *et al.*, "Assessing robustness of radiomic features by image perturbation," *Scientific Reports* 9, 614 (2019). DOI: 10.1038/s41598-018-36938-4
 [^ibsi2020]: A. Zwanenburg *et al.*, "The Image Biomarker Standardization Initiative," *Radiology* 295(2):328–338 (2020). DOI: 10.1148/radiol.2020191145
 [^koo2016]: T. K. Koo and M. Y. Li, "A guideline of selecting and reporting intraclass correlation coefficients for reliability research," *Journal of Chiropractic Medicine* 15(2):155–163 (2016). DOI: 10.1016/j.jcm.2016.02.012
 [^pingouin]: R. Vallat, "Pingouin: statistics in Python," *Journal of Open Source Software* 3(31):1026 (2018). DOI: 10.21105/joss.01026

@@ -682,7 +682,7 @@ The following text can be adapted for your Methods section:
 
 ## References
 
-1. Zwanenburg A, et al. (2019). Assessing robustness of radiomic features by image perturbation. *Scientific Reports* 9:614. [DOI: 10.1038/s41598-018-36758-2](https://doi.org/10.1038/s41598-018-36758-2)
+1. Zwanenburg A, et al. (2019). Assessing robustness of radiomic features by image perturbation. *Scientific Reports* 9:614. [DOI: 10.1038/s41598-018-36938-4](https://doi.org/10.1038/s41598-018-36938-4)
 
 2. Zwanenburg A, et al. (2020). The Image Biomarker Standardization Initiative. *Radiology* 295(2):328-338. [DOI: 10.1148/radiol.2020191145](https://doi.org/10.1148/radiol.2020191145)
 
