@@ -321,7 +321,7 @@ Because the files are separate, you can import whichever flavor matches your dow
 
 ### Learn More
 
-- **[WEBUI.md](WEBUI.md)**: Complete Web UI documentation
+- **[webui.md](webui.md)**: Complete Web UI documentation
 - **[README.md](README.md)**: Full pipeline documentation
 - **[docs/](docs/)**: Technical documentation
 

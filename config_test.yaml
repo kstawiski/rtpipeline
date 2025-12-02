@@ -1,0 +1,67 @@
+# RTpipeline Configuration
+# Generated manually for testing
+
+# Paths
+dicom_root: "/data/input"
+output_dir: "/data/output"
+logs_dir: "/data/output/logs"
+
+# Processing
+workers: auto              # auto = CPU cores - 1
+max_workers: null          # null = auto
+
+segmentation:
+  device: "gpu"            # Attempt GPU usage
+  fast: false              # Use full quality
+  workers: null            # auto-detect
+
+radiomics:
+  params_file: "rtpipeline/radiomics_params.yaml"
+  mr_params_file: "rtpipeline/radiomics_params_mr.yaml"
+
+# Radiomics Robustness - Extensive/Aggressive Configuration
+radiomics_robustness:
+  enabled: true
+  modes:
+    - segmentation_perturbation
+  segmentation_perturbation:
+    # Comprehensive list of structures to analyze
+    apply_to_structures:
+      - "GTV*"
+      - "CTV*"
+      - "PTV*"
+      - "BLADDER"
+      - "RECTUM"
+      - "PROSTATE"
+      - "FEMUR_L"
+      - "FEMUR_R"
+      - "BOWEL*"
+      - "LUNG*"
+      - "HEART"
+      - "BRAIN"
+      - "SPINAL_CORD"
+    
+    # Aggressive perturbation settings for robust validation
+    intensity: "aggressive"
+    
+    # Volume perturbations (scaling)
+    small_volume_changes: [-0.15, 0.0, 0.15]
+    large_volume_changes: [-0.30, 0.0, 0.30]
+    
+    # Geometric perturbations
+    max_translation_mm: 5.0          # 5mm shift
+    n_random_contour_realizations: 3 # 3 random noise realizations
+
+# Systematic CT Cropping - Enabled
+ct_cropping:
+  enabled: true
+  region: "pelvis"           # Defaulting to pelvis, can be changed in config
+  superior_margin_cm: 2.0
+  inferior_margin_cm: 10.0
+  use_cropped_for_dvh: true
+  use_cropped_for_radiomics: true
+  keep_original: true
+
+# Quality Control
+qc:
+  enabled: true
