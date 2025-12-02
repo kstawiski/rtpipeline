@@ -36,6 +36,9 @@ radiomics = [
   "pyradiomics",  # Optional - may have compatibility issues with Python 3.12+
   "pingouin>=0.5.3",  # For ICC computation in robustness analysis
 ]
+docs = [
+  "mkdocs-material",
+]
 
 [project.scripts]
 rtpipeline = "rtpipeline.cli:main"
