@@ -1,5 +1,5 @@
 site_name: RTpipeline
-site_description: Modern radiotherapy DICOM processing pipeline
+site_description: The Big Data Radiotherapy Pipeline - From raw clinical exports to research-ready datasets
 site_url: https://kstawiski.github.io/rtpipeline/
 repo_url: https://github.com/kstawiski/rtpipeline
 repo_name: kstawiski/rtpipeline
@@ -23,25 +23,56 @@ theme:
     - navigation.tabs
     - navigation.sections
     - navigation.top
+    - navigation.indexes
     - search.suggest
     - search.highlight
     - content.code.copy
+    - content.code.annotate
+    - content.tabs.link
+  icon:
+    repo: fontawesome/brands/github
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/kstawiski/rtpipeline
+    - icon: fontawesome/brands/docker
+      link: https://hub.docker.com/r/kstawiski/rtpipeline
 
 markdown_extensions:
   - admonition
   - pymdownx.details
-  - pymdownx.superfences
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
   - pymdownx.highlight:
       anchor_linenums: true
   - pymdownx.inlinehilite
   - pymdownx.snippets
   - pymdownx.arithmatex:
       generic: true
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.critic
+  - pymdownx.caret
+  - pymdownx.keys
+  - pymdownx.mark
+  - pymdownx.tilde
+  - attr_list
+  - md_in_html
+  - tables
+  - footnotes
   - toc:
       permalink: true
 
 plugins:
   - search
+
+extra_javascript:
+  - https://polyfill.io/v3/polyfill.min.js?features=es6
+  - https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js
 
 nav:
   - Home: index.md
@@ -52,7 +83,10 @@ nav:
   - User Guide:
     - Output Format: user_guide/output_format.md
     - Interpreting Results: user_guide/results_interpretation.md
+    - Reproducibility Guide: user_guide/reproducibility.md
     - Troubleshooting: user_guide/troubleshooting.md
+  - Case Studies:
+    - Overview: case_studies/index.md
   - Features:
     - Custom Models: features/custom_models.md
     - CT Cropping: features/ct_cropping.md
