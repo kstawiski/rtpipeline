@@ -1,0 +1,378 @@
+Config file config.yaml is extended by additional config specified via the command line.
+Assuming unrestricted shared filesystem usage.
+host: 3658dbc69a09
+Building DAG of jobs...
+Using shell: /usr/bin/bash
+Provided cores: 16
+Rules claiming more threads will be scaled down.
+Provided resources: seg_workers=1, custom_seg_workers=1
+Job stats:
+job                               count
+------------------------------  -------
+aggregate_radiomics_robustness        1
+aggregate_results                     1
+all                                   1
+organize_courses                      1
+total                                 4
+
+Select jobs to execute...
+Execute 1 jobs...
+[Mon Nov 24 09:36:03 2025]
+localcheckpoint organize_courses:
+    output: /data/output/_COURSES/manifest.json
+    log: /data/logs/stage_organize.log
+    jobid: 2
+    reason: Missing output files: <TBD>
+    threads: 15
+    resources: tmpdir=/tmp/cache
+DAG of jobs will be updated after completion.
+[Mon Nov 24 09:39:52 2025]
+Finished jobid: 2 (Rule: organize_courses)
+1 of 4 steps (25%) done
+Updating checkpoint dependencies.
+Select jobs to execute...
+Execute 1 jobs...
+[Mon Nov 24 09:39:53 2025]
+localrule segmentation_course:
+    input: /data/output/_COURSES/manifest.json, /data/output/487009/2025-03/.organized
+    output: /data/output/487009/2025-03/.segmentation_done
+    log: /data/logs/segmentation/487009_2025-03.log
+    jobid: 29
+    reason: Missing output files: /data/output/487009/2025-03/.segmentation_done; Params have changed since last execution: Union of exclusive params before and now across all output: before: " --totalseg-device 'gpu' --totalseg-force-split --totalseg-nr-thr-resamp 1 --totalseg-nr-thr-saving 1 --totalseg-num-proc-pre 1 --totalseg-num-proc-export 1 --seg-workers 4 " now: " --totalseg-device 'gpu' --totalseg-force-split --totalseg-nr-thr-resamp 1 --totalseg-nr-thr-saving 1 --totalseg-num-proc-pre 1 --totalseg-num-proc-export 1 " 
+    wildcards: patient=487009, course=2025-03
+    threads: 4
+    resources: tmpdir=/tmp/cache, seg_workers=1
+Activating conda environment: .snakemake/conda/7ddad841791b2d680702d4054598f57c_
+Select jobs to execute...
+[Mon Nov 24 09:40:30 2025]
+Finished jobid: 29 (Rule: segmentation_course)
+2 of 46 steps (4%) done
+Execute 2 jobs...
+[Mon Nov 24 09:40:30 2025]
+localrule segmentation_custom_models:
+    input: /data/output/_COURSES/manifest.json, /data/output/487009/2025-03/.segmentation_done
+    output: /data/output/487009/2025-03/.custom_models_done
+    log: /data/logs/segmentation_custom/487009_2025-03.log
+    jobid: 30
+    reason: Missing output files: /data/output/487009/2025-03/.custom_models_done; Input files updated by another job: /data/output/487009/2025-03/.segmentation_done
+    wildcards: patient=487009, course=2025-03
+    threads: 4
+    resources: tmpdir=/tmp/cache, custom_seg_workers=1
+Activating conda environment: .snakemake/conda/7ddad841791b2d680702d4054598f57c_
+[Mon Nov 24 09:40:30 2025]
+localrule segmentation_course:
+    input: /data/output/_COURSES/manifest.json, /data/output/480007/2024-08/.organized
+    output: /data/output/480007/2024-08/.segmentation_done
+    log: /data/logs/segmentation/480007_2024-08.log
+    jobid: 13
+    reason: Missing output files: /data/output/480007/2024-08/.segmentation_done; Params have changed since last execution: Union of exclusive params before and now across all output: before: " --totalseg-device 'gpu' --totalseg-force-split --totalseg-nr-thr-resamp 1 --totalseg-nr-thr-saving 1 --totalseg-num-proc-pre 1 --totalseg-num-proc-export 1 --seg-workers 4 " now: " --totalseg-device 'gpu' --totalseg-force-split --totalseg-nr-thr-resamp 1 --totalseg-nr-thr-saving 1 --totalseg-num-proc-pre 1 --totalseg-num-proc-export 1 " 
+    wildcards: patient=480007, course=2024-08
+    threads: 4
+    resources: tmpdir=/tmp/cache, seg_workers=1
+Activating conda environment: .snakemake/conda/7ddad841791b2d680702d4054598f57c_
+Select jobs to execute...
+[Mon Nov 24 09:40:36 2025]
+Finished jobid: 13 (Rule: segmentation_course)
+3 of 46 steps (7%) done
+Execute 1 jobs...
+[Mon Nov 24 09:40:36 2025]
+localrule segmentation_course:
+    input: /data/output/_COURSES/manifest.json, /data/output/428459/2019-11/.organized
+    output: /data/output/428459/2019-11/.segmentation_done
+    log: /data/logs/segmentation/428459_2019-11.log
+    jobid: 21
+    reason: Missing output files: /data/output/428459/2019-11/.segmentation_done; Params have changed since last execution: Union of exclusive params before and now across all output: before: " --totalseg-device 'gpu' --totalseg-force-split --totalseg-nr-thr-resamp 1 --totalseg-nr-thr-saving 1 --totalseg-num-proc-pre 1 --totalseg-num-proc-export 1 --seg-workers 4 " now: " --totalseg-device 'gpu' --totalseg-force-split --totalseg-nr-thr-resamp 1 --totalseg-nr-thr-saving 1 --totalseg-num-proc-pre 1 --totalseg-num-proc-export 1 " 
+    wildcards: patient=428459, course=2019-11
+    threads: 4
+    resources: tmpdir=/tmp/cache, seg_workers=1
+Activating conda environment: .snakemake/conda/7ddad841791b2d680702d4054598f57c_
+Select jobs to execute...
+[Mon Nov 24 09:40:41 2025]
+Finished jobid: 21 (Rule: segmentation_course)
+4 of 46 steps (9%) done
+Execute 1 jobs...
+[Mon Nov 24 09:40:41 2025]
+localrule segmentation_course:
+    input: /data/output/_COURSES/manifest.json, /data/output/416435/2018-09/.organized
+    output: /data/output/416435/2018-09/.segmentation_done
+    log: /data/logs/segmentation/416435_2018-09.log
+    jobid: 9
+    reason: Missing output files: /data/output/416435/2018-09/.segmentation_done; Params have changed since last execution: Union of exclusive params before and now across all output: before: " --totalseg-device 'gpu' --totalseg-force-split --totalseg-nr-thr-resamp 1 --totalseg-nr-thr-saving 1 --totalseg-num-proc-pre 1 --totalseg-num-proc-export 1 --seg-workers 4 " now: " --totalseg-device 'gpu' --totalseg-force-split --totalseg-nr-thr-resamp 1 --totalseg-nr-thr-saving 1 --totalseg-num-proc-pre 1 --totalseg-num-proc-export 1 " 
+    wildcards: patient=416435, course=2018-09
+    threads: 4
+    resources: tmpdir=/tmp/cache, seg_workers=1
+Activating conda environment: .snakemake/conda/7ddad841791b2d680702d4054598f57c_
+Select jobs to execute...
+[Mon Nov 24 09:40:46 2025]
+Finished jobid: 9 (Rule: segmentation_course)
+5 of 46 steps (11%) done
+Execute 1 jobs...
+[Mon Nov 24 09:40:46 2025]
+localrule segmentation_course:
+    input: /data/output/_COURSES/manifest.json, /data/output/480008/2024-09/.organized
+    output: /data/output/480008/2024-09/.segmentation_done
+    log: /data/logs/segmentation/480008_2024-09.log
+    jobid: 17
+    reason: Missing output files: /data/output/480008/2024-09/.segmentation_done; Params have changed since last execution: Union of exclusive params before and now across all output: before: " --totalseg-device 'gpu' --totalseg-force-split --totalseg-nr-thr-resamp 1 --totalseg-nr-thr-saving 1 --totalseg-num-proc-pre 1 --totalseg-num-proc-export 1 --seg-workers 4 " now: " --totalseg-device 'gpu' --totalseg-force-split --totalseg-nr-thr-resamp 1 --totalseg-nr-thr-saving 1 --totalseg-num-proc-pre 1 --totalseg-num-proc-export 1 " 
+    wildcards: patient=480008, course=2024-09
+    threads: 4
+    resources: tmpdir=/tmp/cache, seg_workers=1
+Activating conda environment: .snakemake/conda/7ddad841791b2d680702d4054598f57c_
+Select jobs to execute...
+[Mon Nov 24 09:40:52 2025]
+Finished jobid: 17 (Rule: segmentation_course)
+6 of 46 steps (13%) done
+Execute 1 jobs...
+[Mon Nov 24 09:40:52 2025]
+localrule segmentation_course:
+    input: /data/output/_COURSES/manifest.json, /data/output/487009/2025-09/.organized
+    output: /data/output/487009/2025-09/.segmentation_done
+    log: /data/logs/segmentation/487009_2025-09.log
+    jobid: 25
+    reason: Missing output files: /data/output/487009/2025-09/.segmentation_done; Params have changed since last execution: Union of exclusive params before and now across all output: before: " --totalseg-device 'gpu' --totalseg-force-split --totalseg-nr-thr-resamp 1 --totalseg-nr-thr-saving 1 --totalseg-num-proc-pre 1 --totalseg-num-proc-export 1 --seg-workers 4 " now: " --totalseg-device 'gpu' --totalseg-force-split --totalseg-nr-thr-resamp 1 --totalseg-nr-thr-saving 1 --totalseg-num-proc-pre 1 --totalseg-num-proc-export 1 " 
+    wildcards: patient=487009, course=2025-09
+    threads: 4
+    resources: tmpdir=/tmp/cache, seg_workers=1
+Activating conda environment: .snakemake/conda/7ddad841791b2d680702d4054598f57c_
+Select jobs to execute...
+[Mon Nov 24 09:40:57 2025]
+Finished jobid: 25 (Rule: segmentation_course)
+7 of 46 steps (15%) done
+[Mon Nov 24 09:42:49 2025]
+Finished jobid: 30 (Rule: segmentation_custom_models)
+8 of 46 steps (17%) done
+Execute 2 jobs...
+[Mon Nov 24 09:42:49 2025]
+localrule segmentation_custom_models:
+    input: /data/output/_COURSES/manifest.json, /data/output/416435/2018-09/.segmentation_done
+    output: /data/output/416435/2018-09/.custom_models_done
+    log: /data/logs/segmentation_custom/416435_2018-09.log
+    jobid: 10
+    reason: Missing output files: /data/output/416435/2018-09/.custom_models_done; Input files updated by another job: /data/output/416435/2018-09/.segmentation_done
+    wildcards: patient=416435, course=2018-09
+    threads: 4
+    resources: tmpdir=/tmp/cache, custom_seg_workers=1
+Activating conda environment: .snakemake/conda/7ddad841791b2d680702d4054598f57c_
+[Mon Nov 24 09:42:49 2025]
+localrule crop_ct_course:
+    input: /data/output/_COURSES/manifest.json, /data/output/487009/2025-03/.segmentation_done, /data/output/487009/2025-03/.custom_models_done
+    output: /data/output/487009/2025-03/.crop_ct_done
+    log: /data/logs/crop_ct/487009_2025-03.log
+    jobid: 31
+    reason: Missing output files: /data/output/487009/2025-03/.crop_ct_done; Input files updated by another job: /data/output/487009/2025-03/.custom_models_done, /data/output/487009/2025-03/.segmentation_done
+    wildcards: patient=487009, course=2025-03
+    threads: 15
+    resources: tmpdir=/tmp/cache, seg_workers=1
+Select jobs to execute...
+[Mon Nov 24 09:45:15 2025]
+Finished jobid: 31 (Rule: crop_ct_course)
+9 of 46 steps (20%) done
+Execute 3 jobs...
+[Mon Nov 24 09:45:15 2025]
+localrule radiomics_course:
+    input: /data/output/_COURSES/manifest.json, /data/output/487009/2025-03/.segmentation_done, /data/output/487009/2025-03/.custom_models_done, /data/output/487009/2025-03/.crop_ct_done
+    output: /data/output/487009/2025-03/.radiomics_done
+    log: /data/logs/radiomics/487009_2025-03.log
+    jobid: 37
+    reason: Missing output files: /data/output/487009/2025-03/.radiomics_done; Input files updated by another job: /data/output/487009/2025-03/.custom_models_done, /data/output/487009/2025-03/.crop_ct_done, /data/output/487009/2025-03/.segmentation_done
+    wildcards: patient=487009, course=2025-03
+    threads: 6
+    resources: tmpdir=/tmp/cache
+Activating conda environment: .snakemake/conda/46c52b1ec1cf31fec963e147e23c5452_
+[Mon Nov 24 09:45:15 2025]
+localrule dvh_course:
+    input: /data/output/_COURSES/manifest.json, /data/output/487009/2025-03/.segmentation_done, /data/output/487009/2025-03/.custom_models_done, /data/output/487009/2025-03/.crop_ct_done
+    output: /data/output/487009/2025-03/.dvh_done
+    log: /data/logs/dvh/487009_2025-03.log
+    jobid: 28
+    reason: Missing output files: /data/output/487009/2025-03/.dvh_done; Input files updated by another job: /data/output/487009/2025-03/.custom_models_done, /data/output/487009/2025-03/.crop_ct_done, /data/output/487009/2025-03/.segmentation_done
+    wildcards: patient=487009, course=2025-03
+    threads: 4
+    resources: tmpdir=/tmp/cache
+[Mon Nov 24 09:45:15 2025]
+localrule qc_course:
+    input: /data/output/_COURSES/manifest.json, /data/output/487009/2025-03/.segmentation_done, /data/output/487009/2025-03/.crop_ct_done
+    output: /data/output/487009/2025-03/.qc_done
+    log: /data/logs/qc/487009_2025-03.log
+    jobid: 43
+    reason: Missing output files: /data/output/487009/2025-03/.qc_done; Input files updated by another job: /data/output/487009/2025-03/.crop_ct_done, /data/output/487009/2025-03/.segmentation_done
+    wildcards: patient=487009, course=2025-03
+    resources: tmpdir=/tmp/cache
+Select jobs to execute...
+[Mon Nov 24 09:45:25 2025]
+Finished jobid: 10 (Rule: segmentation_custom_models)
+10 of 46 steps (22%) done
+Execute 2 jobs...
+[Mon Nov 24 09:45:25 2025]
+localrule crop_ct_course:
+    input: /data/output/_COURSES/manifest.json, /data/output/416435/2018-09/.segmentation_done, /data/output/416435/2018-09/.custom_models_done
+    output: /data/output/416435/2018-09/.crop_ct_done
+    log: /data/logs/crop_ct/416435_2018-09.log
+    jobid: 11
+    reason: Missing output files: /data/output/416435/2018-09/.crop_ct_done; Input files updated by another job: /data/output/416435/2018-09/.custom_models_done, /data/output/416435/2018-09/.segmentation_done
+    wildcards: patient=416435, course=2018-09
+    threads: 15
+    resources: tmpdir=/tmp/cache, seg_workers=1
+[Mon Nov 24 09:45:25 2025]
+localrule segmentation_custom_models:
+    input: /data/output/_COURSES/manifest.json, /data/output/480008/2024-09/.segmentation_done
+    output: /data/output/480008/2024-09/.custom_models_done
+    log: /data/logs/segmentation_custom/480008_2024-09.log
+    jobid: 18
+    reason: Missing output files: /data/output/480008/2024-09/.custom_models_done; Input files updated by another job: /data/output/480008/2024-09/.segmentation_done
+    wildcards: patient=480008, course=2024-09
+    threads: 4
+    resources: tmpdir=/tmp/cache, custom_seg_workers=1
+Activating conda environment: .snakemake/conda/7ddad841791b2d680702d4054598f57c_
+Select jobs to execute...
+[Mon Nov 24 09:48:52 2025]
+Finished jobid: 11 (Rule: crop_ct_course)
+11 of 46 steps (24%) done
+Execute 3 jobs...
+[Mon Nov 24 09:48:52 2025]
+localrule radiomics_course:
+    input: /data/output/_COURSES/manifest.json, /data/output/416435/2018-09/.segmentation_done, /data/output/416435/2018-09/.custom_models_done, /data/output/416435/2018-09/.crop_ct_done
+    output: /data/output/416435/2018-09/.radiomics_done
+    log: /data/logs/radiomics/416435_2018-09.log
+    jobid: 32
+    reason: Missing output files: /data/output/416435/2018-09/.radiomics_done; Input files updated by another job: /data/output/416435/2018-09/.custom_models_done, /data/output/416435/2018-09/.segmentation_done, /data/output/416435/2018-09/.crop_ct_done
+    wildcards: patient=416435, course=2018-09
+    threads: 6
+    resources: tmpdir=/tmp/cache
+Activating conda environment: .snakemake/conda/46c52b1ec1cf31fec963e147e23c5452_
+[Mon Nov 24 09:48:52 2025]
+localrule dvh_course:
+    input: /data/output/_COURSES/manifest.json, /data/output/416435/2018-09/.segmentation_done, /data/output/416435/2018-09/.custom_models_done, /data/output/416435/2018-09/.crop_ct_done
+    output: /data/output/416435/2018-09/.dvh_done
+    log: /data/logs/dvh/416435_2018-09.log
+    jobid: 8
+    reason: Missing output files: /data/output/416435/2018-09/.dvh_done; Input files updated by another job: /data/output/416435/2018-09/.custom_models_done, /data/output/416435/2018-09/.segmentation_done, /data/output/416435/2018-09/.crop_ct_done
+    wildcards: patient=416435, course=2018-09
+    threads: 4
+    resources: tmpdir=/tmp/cache
+[Mon Nov 24 09:48:52 2025]
+localrule qc_course:
+    input: /data/output/_COURSES/manifest.json, /data/output/416435/2018-09/.segmentation_done, /data/output/416435/2018-09/.crop_ct_done
+    output: /data/output/416435/2018-09/.qc_done
+    log: /data/logs/qc/416435_2018-09.log
+    jobid: 38
+    reason: Missing output files: /data/output/416435/2018-09/.qc_done; Input files updated by another job: /data/output/416435/2018-09/.segmentation_done, /data/output/416435/2018-09/.crop_ct_done
+    wildcards: patient=416435, course=2018-09
+    resources: tmpdir=/tmp/cache
+Select jobs to execute...
+[Mon Nov 24 09:49:02 2025]
+Finished jobid: 18 (Rule: segmentation_custom_models)
+12 of 46 steps (26%) done
+Execute 1 jobs...
+[Mon Nov 24 09:49:02 2025]
+localrule segmentation_custom_models:
+    input: /data/output/_COURSES/manifest.json, /data/output/480007/2024-08/.segmentation_done
+    output: /data/output/480007/2024-08/.custom_models_done
+    log: /data/logs/segmentation_custom/480007_2024-08.log
+    jobid: 14
+    reason: Missing output files: /data/output/480007/2024-08/.custom_models_done; Input files updated by another job: /data/output/480007/2024-08/.segmentation_done
+    wildcards: patient=480007, course=2024-08
+    threads: 4
+    resources: tmpdir=/tmp/cache, custom_seg_workers=1
+Activating conda environment: .snakemake/conda/7ddad841791b2d680702d4054598f57c_
+Select jobs to execute...
+[Mon Nov 24 09:49:19 2025]
+Finished jobid: 43 (Rule: qc_course)
+13 of 46 steps (28%) done
+[Mon Nov 24 09:53:45 2025]
+Finished jobid: 38 (Rule: qc_course)
+14 of 46 steps (30%) done
+[Mon Nov 24 09:53:54 2025]
+Finished jobid: 28 (Rule: dvh_course)
+15 of 46 steps (33%) done
+[Mon Nov 24 09:54:07 2025]
+Finished jobid: 14 (Rule: segmentation_custom_models)
+16 of 46 steps (35%) done
+Execute 1 jobs...
+[Mon Nov 24 09:54:07 2025]
+localrule crop_ct_course:
+    input: /data/output/_COURSES/manifest.json, /data/output/480007/2024-08/.segmentation_done, /data/output/480007/2024-08/.custom_models_done
+    output: /data/output/480007/2024-08/.crop_ct_done
+    log: /data/logs/crop_ct/480007_2024-08.log
+    jobid: 15
+    reason: Missing output files: /data/output/480007/2024-08/.crop_ct_done; Input files updated by another job: /data/output/480007/2024-08/.segmentation_done, /data/output/480007/2024-08/.custom_models_done
+    wildcards: patient=480007, course=2024-08
+    threads: 15
+    resources: tmpdir=/tmp/cache, seg_workers=1
+Select jobs to execute...
+[Mon Nov 24 09:54:19 2025]
+Finished jobid: 8 (Rule: dvh_course)
+17 of 46 steps (37%) done
+Execute 1 jobs...
+[Mon Nov 24 09:54:19 2025]
+localrule segmentation_custom_models:
+    input: /data/output/_COURSES/manifest.json, /data/output/428459/2019-11/.segmentation_done
+    output: /data/output/428459/2019-11/.custom_models_done
+    log: /data/logs/segmentation_custom/428459_2019-11.log
+    jobid: 22
+    reason: Missing output files: /data/output/428459/2019-11/.custom_models_done; Input files updated by another job: /data/output/428459/2019-11/.segmentation_done
+    wildcards: patient=428459, course=2019-11
+    threads: 4
+    resources: tmpdir=/tmp/cache, custom_seg_workers=1
+Activating conda environment: .snakemake/conda/7ddad841791b2d680702d4054598f57c_
+Select jobs to execute...
+[Mon Nov 24 10:01:23 2025]
+Finished jobid: 15 (Rule: crop_ct_course)
+18 of 46 steps (39%) done
+Execute 3 jobs...
+[Mon Nov 24 10:01:23 2025]
+localrule dvh_course:
+    input: /data/output/_COURSES/manifest.json, /data/output/480007/2024-08/.segmentation_done, /data/output/480007/2024-08/.custom_models_done, /data/output/480007/2024-08/.crop_ct_done
+    output: /data/output/480007/2024-08/.dvh_done
+    log: /data/logs/dvh/480007_2024-08.log
+    jobid: 12
+    reason: Missing output files: /data/output/480007/2024-08/.dvh_done; Input files updated by another job: /data/output/480007/2024-08/.segmentation_done, /data/output/480007/2024-08/.custom_models_done, /data/output/480007/2024-08/.crop_ct_done
+    wildcards: patient=480007, course=2024-08
+    threads: 4
+    resources: tmpdir=/tmp/cache
+[Mon Nov 24 10:01:23 2025]
+localrule qc_course:
+    input: /data/output/_COURSES/manifest.json, /data/output/480007/2024-08/.segmentation_done, /data/output/480007/2024-08/.crop_ct_done
+    output: /data/output/480007/2024-08/.qc_done
+    log: /data/logs/qc/480007_2024-08.log
+    jobid: 39
+    reason: Missing output files: /data/output/480007/2024-08/.qc_done; Input files updated by another job: /data/output/480007/2024-08/.segmentation_done, /data/output/480007/2024-08/.crop_ct_done
+    wildcards: patient=480007, course=2024-08
+    resources: tmpdir=/tmp/cache
+[Mon Nov 24 10:01:23 2025]
+localrule radiomics_course:
+    input: /data/output/_COURSES/manifest.json, /data/output/480007/2024-08/.segmentation_done, /data/output/480007/2024-08/.custom_models_done, /data/output/480007/2024-08/.crop_ct_done
+    output: /data/output/480007/2024-08/.radiomics_done
+    log: /data/logs/radiomics/480007_2024-08.log
+    jobid: 33
+    reason: Missing output files: /data/output/480007/2024-08/.radiomics_done; Input files updated by another job: /data/output/480007/2024-08/.segmentation_done, /data/output/480007/2024-08/.custom_models_done, /data/output/480007/2024-08/.crop_ct_done
+    wildcards: patient=480007, course=2024-08
+    threads: 6
+    resources: tmpdir=/tmp/cache
+Activating conda environment: .snakemake/conda/46c52b1ec1cf31fec963e147e23c5452_
+Select jobs to execute...
+[Mon Nov 24 10:01:27 2025]
+Finished jobid: 22 (Rule: segmentation_custom_models)
+19 of 46 steps (41%) done
+Execute 1 jobs...
+[Mon Nov 24 10:01:27 2025]
+localrule segmentation_custom_models:
+    input: /data/output/_COURSES/manifest.json, /data/output/487009/2025-09/.segmentation_done
+    output: /data/output/487009/2025-09/.custom_models_done
+    log: /data/logs/segmentation_custom/487009_2025-09.log
+    jobid: 26
+    reason: Missing output files: /data/output/487009/2025-09/.custom_models_done; Input files updated by another job: /data/output/487009/2025-09/.segmentation_done
+    wildcards: patient=487009, course=2025-09
+    threads: 4
+    resources: tmpdir=/tmp/cache, custom_seg_workers=1
+Activating conda environment: .snakemake/conda/7ddad841791b2d680702d4054598f57c_
+Select jobs to execute...
+[Mon Nov 24 10:09:57 2025]
+Finished jobid: 26 (Rule: segmentation_custom_models)
+20 of 46 steps (43%) done
+[Mon Nov 24 10:10:09 2025]
+Finished jobid: 39 (Rule: qc_course)
+21 of 46 steps (46%) done
+[Mon Nov 24 10:10:59 2025]
+Finished jobid: 12 (Rule: dvh_course)
+22 of 46 steps (48%) done

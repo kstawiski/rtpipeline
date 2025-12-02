@@ -1,0 +1,48 @@
+Config file config.yaml is extended by additional config specified via the command line.
+Assuming unrestricted shared filesystem usage.
+host: eba3980cda39
+Building DAG of jobs...
+Updating checkpoint dependencies.
+Your conda installation is not configured to use strict channel priorities. This is however important for having robust and correct environments (for details, see https://conda-forge.org/docs/user/tipsandtricks.html). Please consider to configure strict priorities by executing 'conda config --set channel_priority strict'.
+Using shell: /usr/bin/bash
+Provided cores: 16
+Rules claiming more threads will be scaled down.
+Provided resources: seg_workers=1, custom_seg_workers=1
+Job stats:
+job                               count
+------------------------------  -------
+aggregate_radiomics_robustness        1
+aggregate_results                     1
+all                                   1
+crop_ct_course                        3
+dvh_course                            3
+qc_course                             3
+radiomics_course                      6
+radiomics_robustness_course           6
+total                                24
+
+Select jobs to execute...
+Execute 2 jobs...
+[Mon Nov 24 17:38:06 2025]
+localrule radiomics_course:
+    input: /data/output/_COURSES/manifest.json, /data/output/487009/2025-03/.segmentation_done, /data/output/487009/2025-03/.custom_models_done, /data/output/487009/2025-03/.crop_ct_done
+    output: /data/output/487009/2025-03/.radiomics_done
+    log: /data/logs/radiomics/487009_2025-03.log
+    jobid: 35
+    reason: Missing output files: /data/output/487009/2025-03/.radiomics_done
+    wildcards: patient=487009, course=2025-03
+    threads: 6
+    resources: tmpdir=/tmp/cache
+Activating conda environment: .snakemake/conda/46c52b1ec1cf31fec963e147e23c5452_
+[Mon Nov 24 17:38:06 2025]
+localrule radiomics_course:
+    input: /data/output/_COURSES/manifest.json, /data/output/480007/2024-08/.segmentation_done, /data/output/480007/2024-08/.custom_models_done, /data/output/480007/2024-08/.crop_ct_done
+    output: /data/output/480007/2024-08/.radiomics_done
+    log: /data/logs/radiomics/480007_2024-08.log
+    jobid: 31
+    reason: Missing output files: /data/output/480007/2024-08/.radiomics_done
+    wildcards: patient=480007, course=2024-08
+    threads: 6
+    resources: tmpdir=/tmp/cache
+Activating conda environment: .snakemake/conda/46c52b1ec1cf31fec963e147e23c5452_
+Select jobs to execute...
