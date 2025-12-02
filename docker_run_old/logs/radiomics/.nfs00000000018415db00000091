@@ -1,0 +1,355 @@
+2025-11-24 13:36:56,840 [INFO] __main__: === Parallelization Configuration ===
+2025-11-24 13:36:56,841 [INFO] __main__: CPU cores detected: 24
+2025-11-24 13:36:56,842 [INFO] __main__: Requested worker cap via --max-workers: 6
+2025-11-24 13:36:56,842 [INFO] __main__: TotalSegmentator: resampling threads=8, saving threads=8
+2025-11-24 13:36:56,842 [INFO] __main__: GPU device: gpu (force_split=True)
+2025-11-24 13:36:56,842 [INFO] __main__: Timeouts: TotalSegmentator=3600s, dcm2niix=300s, task=None, radiomics=600s
+2025-11-24 13:36:56,842 [INFO] __main__: Effective worker budget (non-segmentation stages): 6
+2025-11-24 13:36:56,877 [INFO] __main__: CT cropping enabled: region=pelvis, superior_margin=2.0cm, inferior_margin=10.0cm
+2025-11-24 13:36:56,877 [INFO] __main__: Resume mode enabled (default): skipping existing outputs
+2025-11-24 13:37:12,980 [INFO] rtpipeline.ct: Indexed CT series for 5 patients
+2025-11-24 13:37:13,563 [INFO] rtpipeline.rt_details: Found RTPLAN=7, RTDOSE=7, RTSTRUCT=11
+2025-11-24 13:37:13,563 [INFO] rtpipeline.metadata: Linked 7 Plan-Dose(-Struct) sets
+2025-11-24 13:37:13,563 [INFO] rtpipeline.metadata: Patient 487009: 2 course(s) detected
+2025-11-24 13:37:13,563 [INFO] rtpipeline.metadata: Patient 428459: 1 course(s) detected
+2025-11-24 13:37:13,563 [INFO] rtpipeline.metadata: Patient 416435: 1 course(s) detected
+2025-11-24 13:37:13,563 [INFO] rtpipeline.metadata: Patient 480007: 1 course(s) detected
+2025-11-24 13:37:13,563 [INFO] rtpipeline.metadata: Patient 480008: 1 course(s) detected
+2025-11-24 13:37:14,199 [INFO] rtpipeline.organize: Organize: starting batch with 6 worker(s) for 6 task(s)
+2025-11-24 13:37:14,230 [INFO] rtpipeline.organize: Organize: 1/6 (17%) elapsed 0.0s ETA 0.2s
+2025-11-24 13:37:14,241 [INFO] rtpipeline.organize: Organize: 2/6 (33%) elapsed 0.0s ETA 0.1s
+2025-11-24 13:37:14,246 [INFO] rtpipeline.organize: Organize: 3/6 (50%) elapsed 0.0s ETA 0.0s
+2025-11-24 13:37:14,250 [INFO] rtpipeline.organize: Organize: 4/6 (67%) elapsed 0.1s ETA 0.0s
+2025-11-24 13:37:14,266 [INFO] rtpipeline.organize: Organize: 5/6 (83%) elapsed 0.1s ETA 0.0s
+2025-11-24 13:37:14,280 [INFO] rtpipeline.organize: Organize: 6/6 (100%) elapsed 0.1s ETA 0.0s
+2025-11-24 13:37:14,281 [INFO] rtpipeline.organize: Organized patient 416435 course 2018-09 at /data/output/416435/2018-09
+2025-11-24 13:37:14,281 [INFO] rtpipeline.organize: Organized patient 428459 course 2019-11 at /data/output/428459/2019-11
+2025-11-24 13:37:14,282 [INFO] rtpipeline.organize: Organized patient 480007 course 2024-08 at /data/output/480007/2024-08
+2025-11-24 13:37:14,282 [INFO] rtpipeline.organize: Organized patient 480008 course 2024-09 at /data/output/480008/2024-09
+2025-11-24 13:37:14,282 [INFO] rtpipeline.organize: Organized patient 487009 course 2025-03 at /data/output/487009/2025-03
+2025-11-24 13:37:14,282 [INFO] rtpipeline.organize: Organized patient 487009 course 2025-09 at /data/output/487009/2025-09
+2025-11-24 13:37:22,695 [INFO] rtpipeline.organize: [organize] 416435/2018-09 inferred total prescription=50.400
+2025-11-24 13:37:42,241 [INFO] rtpipeline.organize: [organize] 428459/2019-11 inferred total prescription=50.000
+2025-11-24 13:37:57,329 [INFO] rtpipeline.organize: [organize] 480007/2024-08 inferred total prescription=50.000
+2025-11-24 13:38:14,176 [INFO] rtpipeline.organize: [organize] 480008/2024-09 inferred total prescription=60.000
+2025-11-24 13:39:15,497 [INFO] rtpipeline.organize: [organize] 487009/2025-03 inferred total prescription=62.000
+2025-11-24 13:40:11,782 [INFO] rtpipeline.organize: [organize] 487009/2025-09 inferred total prescription=27.000
+2025-11-24 13:40:12,634 [INFO] rtpipeline.radiomics_parallel: Calculated optimal radiomics workers: 23 (CPU cores: 24, using: 23)
+2025-11-24 13:40:12,634 [INFO] rtpipeline.radiomics_parallel: Enabled parallel radiomics processing with 23 optimal workers
+2025-11-24 13:40:12,634 [INFO] __main__: Enabled parallel radiomics processing: 23 workers (cores-1), thread_limit=1
+2025-11-24 13:40:12,791 [INFO] rtpipeline.radiomics: Using enhanced parallel radiomics implementation
+2025-11-24 13:40:12,792 [INFO] rtpipeline.radiomics: Processing radiomics with up to 6 course workers
+2025-11-24 13:40:12,792 [INFO] rtpipeline.radiomics: Radiomics (CT courses): starting batch with 1 worker(s) for 1 task(s)
+2025-11-24 13:40:46,588 [ERROR] rtpipeline.dvh: Failed to import dicompylercore: No module named 'dicompylercore'. Install with: pip install dicompyler-core
+2025-11-24 13:40:46,588 [WARNING] rtpipeline.radiomics_parallel: Failed to process custom structures for radiomics: No module named 'dicompylercore'
+2025-11-24 13:40:46,588 [INFO] rtpipeline.radiomics_parallel: Processing 27 radiomics tasks with 6 workers for 2025-03
+2025-11-24 13:40:56,773 [INFO] rtpipeline.radiomics_parallel: Using parallel radiomics processing with 6 workers (CPU cores: 24)
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+2025-11-24 13:48:30,069 [INFO] rtpipeline.radiomics_parallel: Radiomics progress: 10/27 (37.0%), ETA: 770.6s
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+2025-11-24 14:17:11,197 [INFO] rtpipeline.radiomics_parallel: Radiomics progress: 20/27 (74.1%), ETA: 761.0s
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
+GLCM is symmetrical, therefore Sum Average = 2 * Joint Average, only 1 needs to be calculated
