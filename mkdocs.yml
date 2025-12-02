@@ -1,0 +1,69 @@
+site_name: RTpipeline
+site_description: Modern radiotherapy DICOM processing pipeline
+site_url: https://kstawiski.github.io/rtpipeline/
+repo_url: https://github.com/kstawiski/rtpipeline
+repo_name: kstawiski/rtpipeline
+
+theme:
+  name: material
+  palette:
+    - scheme: default
+      primary: teal
+      accent: purple
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: teal
+      accent: purple
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.arithmatex:
+      generic: true
+  - toc:
+      permalink: true
+
+plugins:
+  - search
+
+nav:
+  - Home: index.md
+  - Getting Started:
+    - Introduction: getting_started/index.md
+    - Web UI: getting_started/webui.md
+    - Docker Setup: getting_started/docker_setup.md
+  - User Guide:
+    - Output Format: user_guide/output_format.md
+    - Interpreting Results: user_guide/results_interpretation.md
+    - Troubleshooting: user_guide/troubleshooting.md
+  - Features:
+    - Custom Models: features/custom_models.md
+    - CT Cropping: features/ct_cropping.md
+    - Radiomics Robustness: features/radiomics_robustness.md
+    - Quality Control: features/qc_cropping.md
+  - Technical:
+    - Architecture: technical/architecture.md
+    - Parallelization: technical/parallelization.md
+    - Docker Details: technical/docker.md
+    - Security: technical/security.md
+    - Hang Prevention: technical/hang_prevention.md
+  - Developer:
+    - Code Review: developer/code_review.md
+    - Container Testing: developer/container_testing.md
