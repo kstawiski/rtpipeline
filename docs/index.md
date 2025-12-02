@@ -1,490 +1,113 @@
 # rtpipeline
 
-Modern radiotherapy departments produce a rich set of DICOM-RT objects (CT, MR, RTPLAN, RTDOSE, RTSTRUCT, REG).
-**rtpipeline** turns those raw exports into analysis-ready data tables, volumetric masks, DVH metrics, and quality-control reports, while keeping a reproducible record of every step. The workflow is implemented with **Snakemake** and the companion **rtpipeline** Python package.
+**The Big Data Radiotherapy Pipeline**
 
-## 🚀 Quick Start (Recommended)
+*From raw clinical exports to research-ready datasets in one command.*
 
-The easiest way to run **rtpipeline** is via Docker. No complex environment setup required.
+[![Documentation](https://img.shields.io/badge/docs-latest-blue)](https://kstawiski.github.io/rtpipeline/)
+[![Docker](https://img.shields.io/badge/docker-ready-green)](https://hub.docker.com/r/kstawiski/rtpipeline)
+[![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-### Option 1: Interactive Docker Setup (NEW - Recommended)
+---
 
-**One-line installer (no git clone needed):**
+## 🔬 Bridging the Gap: Clinical to Research
+
+Radiotherapy produces some of the most complex data in medicine: 3D imaging (CT/MR), 3D dose distributions, and geometric structures. **But extracting this data for research is painful.**
+
+*   **The Problem:** Clinical Treatment Planning Systems (TPS) export messy, unstructured DICOM files.
+    *   Series are scattered across folders.
+    *   Structure names are inconsistent (`Heart`, `heart`, `hrt`).
+    *   Geometric and dosimetric data is locked in binary files, not dataframes.
+    *   Re-segmentation for consistent analysis is manual and slow.
+
+*   **The Solution:** **rtpipeline** acts as a "normalization engine" for radiotherapy big data. It ingests raw DICOM dumps and outputs **tidy, standardized data tables** ready for immediate analysis in Python, R, or JMP.
+
+## 🌟 Key Capabilities
+
+### 1. Automated Data Engineering
+*   **Organization:** Automatically groups thousands of DICOM files into patient courses (e.g., `Patient123/2023-01`).
+*   **Reconciliation:** Links Plans, Doses, and Images even if they are in different folders.
+*   **TotalSegmentator Integration:** Automatically generates ~100 standardized anatomical structures (OARs) for every patient using state-of-the-art AI.
+
+### 2. Standardization for "Big Data"
+*   **Consistent Anatomy:** By running TotalSegmentator on every patient, you get consistent structures (`heart`, `lung_left`, `esophagus`) regardless of what the physician drew.
+*   **Systematic Cropping:** Automatically crops CTs to a standard anatomical ROI (e.g., L1 to Femur), making DVH volume metrics ($V_{20Gy}$, $V_{95\%}$) comparable across cohorts.
+*   **Radiomics Robustness:** Implements "Stress Testing" for radiomics features (perturbing noise, rotation, volume) to ensure you only analyze stable biomarkers.
+
+### 3. Analysis-Ready Outputs
+Forget parsing DICOM tags. **rtpipeline** gives you ready-to-use Excel/CSV files:
+*   `dvh_metrics.xlsx`: $D_{mean}$, $D_{95\%}$, $V_{20Gy}$ for every structure.
+*   `radiomics.xlsx`: 1000+ IBSI-compliant features per structure.
+*   `metadata.xlsx`: Extracted clinical tags, reconstruction kernels, and scanner info.
+
+---
+
+## 🚀 Quick Start
+
+### 1. Interactive Docker Setup (Recommended)
+
+The easiest way to start—no git cloning required.
 
 ```bash
 curl -sSL https://raw.githubusercontent.com/kstawiski/rtpipeline/main/setup_docker_project.sh | bash
 ```
+*Follow the wizard to generate your `docker-compose.yml` and start the Web UI.*
 
-**Or use the local script if you've cloned the repository:**
+### 2. Manual Start
+
+If you already have the repository:
 
 ```bash
-./setup_docker_project.sh
-```
+# 1. Create folders
+mkdir -p Input Output Logs
 
-The wizard will guide you through:
-- Selecting your DICOM directory
-- Configuring analysis features (radiomics robustness, CT cropping, etc.)
-- Generating project-specific Docker configuration
-- Creating ready-to-run scripts
-
-**See the comprehensive [Docker Setup Guide](getting_started/docker_setup.md) for detailed instructions on configuration, real-world examples, and troubleshooting.**
-
----
-
-### Option 2: Web UI (Simplest for Beginners)
-
-**1. Create project directories:**
-```bash
-mkdir -p Input Output Logs Uploads
-
-# Optional: mkdir -p totalseg_weights (for caching/updating weights - not needed, weights are baked into image)
-```
-
-**2. Start the pipeline (GPU enabled):**
-```bash
-# Make sure you have docker-compose installed
+# 2. Start Pipeline (Web UI + Processing Engine)
 docker-compose up -d
+
+# 3. Open Web UI
+# Go to http://localhost:8080
 ```
-
-**3. Open the Web UI:**
-Navigate to [http://localhost:8080](http://localhost:8080) in your browser.
-
-**4. Process your data:**
-Drag and drop DICOM files (zipped or folders) and click **Start Processing**.
-
----
-
-### Option 3: Google Colab (No Local Setup Required)
-
-Run the pipeline entirely in the cloud using Google Colab with free GPU access:
-
-| Notebook | Description | Runtime |
-|----------|-------------|---------|
-| [**Part 1: GPU Segmentation**](rtpipeline_colab_part1_gpu.ipynb) | DICOM organization + TotalSegmentator | GPU (T4) |
-| [**Part 2: CPU Analysis**](rtpipeline_colab_part2_cpu.ipynb) | DVH, radiomics, QC, aggregation | CPU |
-
-**How to use:**
-1. Upload notebooks to Google Colab
-2. Upload your DICOM data to Google Drive
-3. Run Part 1 with GPU runtime for segmentation
-4. Run Part 2 (CPU is sufficient) for analysis
-
----
-
-## Feature Highlights
-
-* **Web UI** (NEW) – browser-based interface with drag-and-drop upload, automatic DICOM validation, real-time progress monitoring, and one-click results download. No command-line experience required!
-* **Course organisation** – automatically groups series/RT objects per patient course, reconciles registrations, and copies all referenced MR images.
-* **Segmentation**
-  * **TotalSegmentator (CT + MR)** – generates `total` (CT) and `total_mr` (MR) masks with **DICOM RTSTRUCT output** (directly compatible with clinical systems) plus binary NIfTI masks.
-  * **Custom nnU-Net models** – arbitrary nnUNet v1 or v2 predictors and ensembles (e.g. `cardiac_STOPSTORM`, `HN_lymph_nodes`) run automatically with per-model manifests.
-  * **Boolean structure synthesis** – optional composite structures via YAML (`custom_structures_*.yaml`).
-* **Systematic CT cropping** (NEW) – crops all CTs to consistent anatomical boundaries (e.g., L1 vertebra to femoral heads + margin) using TotalSegmentator landmarks, substantially reducing field-of-view variability for percentage DVH metrics (V95%, V20Gy) to enable more meaningful cross-patient comparison.
-* **DVH analytics** – generates per-course DVH workbooks and an aggregated `_RESULTS/dvh_metrics.xlsx` with segmentation provenance (manual / TotalSegmentator / custom / nnUNet). Rx-relative metrics (D%Rx, V%Rx) are computed from RTPLAN when available, or optionally estimated from CTV1 D95 (heuristic; not valid for SIB plans).
-* **Radiomics**
-  * **CT** – PyRadiomics with `radiomics_params.yaml` → `radiomics_ct.xlsx` (per course + aggregated).
-  * **MR** – PyRadiomics with `radiomics_params_mr.yaml` over `total_mr` masks → `MR/radiomics_mr.xlsx` (per course) and `_RESULTS/radiomics_mr.xlsx`.
-* **Radiomics robustness** – perturbation-based stability assessment using the NTCV chain (Noise + Translation + Contour + Volume) from Zwanenburg et al. (2019), with configurable ICC(3,1) and CoV thresholds based on contemporary reproducibility guidance.[^radiomics-ntcv][^radiomics-thresholds]
-* **Quality control** – JSON + Excel reports flag structure cropping, frame-of-reference mismatches, and file-level issues.
-* **Pre-flight validation** – `rtpipeline validate` command checks environment configuration before running pipeline.
-* **Aggregation** – consolidates DVH, radiomics (CT & MR), fractions, metadata, and QC into `_RESULTS/`.
-* **Anonymisation** – `scripts/anonymize_pipeline_results.py` rewrites IDs/names across the data tree.
-
----
-
-## Repository Layout
-
-| Path | Description |
-| --- | --- |
-| `Snakefile` | Snakemake workflow orchestrating all stages. |
-| `config.yaml` | Default configuration (paths, segmentation settings, radiomics options, custom models). |
-| `setup_docker_project.sh` | Interactive Docker project setup with comprehensive configuration wizard. |
-| **User Documentation** | |
-| `getting_started/index.md` | Complete beginner's guide with step-by-step instructions. |
-| `getting_started/webui.md` | Web UI documentation with screenshots and usage guide. |
-| `user_guide/output_format.md` | Output format quick reference for data analysts. |
-| **Google Colab Notebooks** | |
-| `rtpipeline_colab_part1_gpu.ipynb` | Part 1: GPU segmentation (TotalSegmentator). |
-| `rtpipeline_colab_part2_cpu.ipynb` | Part 2: CPU analysis (DVH, radiomics, QC, aggregation). |
-| **Core Components** | |
-| `webui/` | Web UI application (Flask-based) for browser-based DICOM upload and processing. |
-| `rtpipeline/` | Python package powering organisation, segmentation, DVH, radiomics, and QC. |
-| `envs/` | Conda environment definitions (`rtpipeline.yaml`, `rtpipeline-radiomics.yaml`). |
-| `custom_models/` | nnUNet bundles. Each model folder contains `custom_model.yaml` plus weights (zipped or unpacked). |
-| **Technical Documentation** | |
-| `docs/` | Technical guides ([**see index**](index.md)): architecture, parallelization, Docker, troubleshooting, custom models. |
-| **Utilities** | |
-| `scripts/` | Utility scripts (anonymization, validation, etc.). |
-| `build.sh` | Docker image build script. |
-| **Data Directories** | |
-| `Example_data/` | Sample DICOM dump used for testing. |
-| `Data_Snakemake/` | Default output root populated by the workflow (ignored by Git). |
-| `Logs_Snakemake/` | Stage-specific execution logs (ignored by Git). |
-
----
-
-## Data Model & Output Layout
-
-For each patient course the workflow produces a rich directory structure under `Data_Snakemake/<patient>/<course>/`:
-
-```
-DICOM/CT/                         # Planning CT slices
-DICOM/MR/ (if available)          # Any MR referenced via REG objects
-MR/<series>/DICOM/                # MR DICOM copied per registration
-MR/<series>/NIFTI/                # MR NIfTI + metadata
-MR/<series>/Segmentation_TotalSegmentator/
-    total_mr--<roi>.nii.gz        # MR masks
-    <base>--total_mr.dcm          # MR RTSTRUCT
-MR/radiomics_mr.xlsx              # Per-course MR radiomics features
-NIFTI/                            # CT NIfTI + metadata
-Segmentation_TotalSegmentator/    # CT TotalSegmentator outputs
-Segmentation_CustomModels/<model>/...   # nnUNet model masks + RTSTRUCT
-Segmentation_Original/            # Manual RTSTRUCT conversions (if available)
-RS.dcm / RS_auto.dcm / RS_custom.dcm
-radiomics_ct.xlsx
-dvh_metrics.xlsx
-metadata/case_metadata.xlsx
-qc_reports/...
-```
-
-### RTSTRUCT variants
-
-| File | Origin | Contents | Typical consumers |
-| --- | --- | --- | --- |
-| `RS.dcm` | Copied verbatim from the clinical DICOM import during **organize**. | The original planning RTSTRUCT with physician-authored contours. | Metadata exports, DVH/radiomics when manual ROIs exist, downstream audits. |
-| `RS_auto.dcm` | Emitted by TotalSegmentator for the full CT volume. | Automated organ set aligned with the un-cropped CT grid. | Segmentation/QC/radiomics/DVH when an auto contour is requested. |
-| `RS_auto_cropped.dcm` | Generated by the CT cropping module when `ct_cropping.enabled` is `true`. | Same labels as `RS_auto.dcm`, but every mask is intersected with the cropping box (`cropping_metadata.json` tracks the clamp extents). | Radiomics/DVH/QC whenever `ct_cropping.use_cropped_for_*` is enabled; QC marks cropped ROIs as informational. |
-| `RS_custom.dcm` | Built by `structure_merger.py` after combining manual, auto, and `custom_structures*.yaml` definitions. | Sanitised superset of manual+auto contours plus derived boolean ROIs; timestamped for staleness checks. | DVH/radiomics (custom source), robustness, treatment-planning QA exports. |
-
-These files co-exist so that the immutable clinical RTSTRUCT (`RS.dcm`) remains untouched while automated, cropped, and custom variants evolve independently for analytics.
-
-Aggregated workbooks (DVH, radiomics CT/MR, fractions, metadata, QC) are collected under `Data_Snakemake/_RESULTS/`.
-
----
-
-## Docker Deployment (Primary)
-
-**Prerequisites:**
-- Docker Engine and Docker Compose.
-- NVIDIA Drivers and NVIDIA Container Toolkit (for GPU acceleration).
-- ~20 GB free disk space for the image and models.
-
-### 1. Standard Setup (Docker Compose)
-
-This method starts the Web UI service and handles all volume mounts automatically.
-
-**Preparation:**
-```bash
-# Create required data directories
-mkdir -p Input Output Logs Uploads totalseg_weights
-```
-
-**Run (GPU Mode):**
-```bash
-docker-compose up -d
-```
-Access the UI at [http://localhost:8080](http://localhost:8080).
-
-**Run (CPU-Only Mode):**
-For systems without NVIDIA GPUs:
-```bash
-docker-compose --profile cpu-only up -d
-```
-
-### 2. Advanced: CLI Usage
-
-You can run the pipeline purely from the command line without the Web UI.
-
-```bash
-# Run with GPU support
-docker run -it --rm --gpus all --shm-size=8g \
-  -v $(pwd)/Input:/data/input:ro \
-  -v $(pwd)/Output:/data/output:rw \
-  -v $(pwd)/Logs:/data/logs:rw \
-  -v $(pwd)/totalseg_weights:/home/rtpipeline/.totalsegmentator:rw \
-  kstawiski/rtpipeline:latest \
-  snakemake --cores all --use-conda --configfile /app/config.container.yaml
-```
-
-### 3. Singularity (HPC / SLURM)
-
-Ideal for academic clusters where Docker is not available.
-
-```bash
-# Pull image
-singularity pull rtpipeline.sif docker://kstawiski/rtpipeline:latest
-
-# Run pipeline
-singularity exec --nv \
-  --bind $(pwd)/Input:/data/input:ro \
-  --bind $(pwd)/Output:/data/output:rw \
-  --bind $(pwd)/Logs:/data/logs:rw \
-  rtpipeline.sif \
-  snakemake --cores all --use-conda --configfile /app/config.container.yaml
-```
-See [technical/docker.md](technical/docker.md) for detailed Singularity and SLURM instructions.
-
----
-
-## Alternative Installation Methods
-
-### Manual Native Installation
-1.  Install Python >= 3.11 and Snakemake >= 7.
-2.  Ensure Conda/Mamba is available.
-3.  Run: `snakemake --cores all --use-conda`
-
----
-
-## Configuration Reference (`config.yaml`)
-
-| Section | Purpose / Key Keys |
-| --- | --- |
-| `dicom_root`, `output_dir`, `logs_dir` | Path configuration (relative to repo by default). |
-| `max_workers` | Optional cap for intra-course worker fan-out. Leave `null` to auto-use `(--cores - 1)`; set to a small integer (2-4) for slow/NFS storage. |
-| `segmentation` | Controls TotalSegmentator (`max_workers`, `fast`, `roi_subset`, `force`).<br>⚡ **NEW**: TotalSegmentator now outputs DICOM RTSTRUCT directly (requires `rt_utils`). |
-| `custom_models` | Configure nnUNet models (`enabled`, `root`, `models` allowlist, `max_workers`, `retain_weights`, `nnunet_predict`, optional `conda_activate`). |
-| `ct_cropping` | **NEW**: Systematic anatomical cropping options:<br>• `enabled` – enable/disable cropping (default: false)<br>• `region` – anatomical region (currently `"pelvis"` only)<br>• `inferior_margin_cm` – margin below femoral heads (default: 10 cm)<br>• `use_cropped_for_dvh` / `use_cropped_for_radiomics` – use cropped volumes<br>• `keep_original` – preserve uncropped files |
-| `radiomics` | Radiomics options:<br>• `params_file` (CT) and `mr_params_file` (MR)<br>• `thread_limit` / `skip_rois`<br>• `max_voxels` / `min_voxels` filters. |
-| `aggregation` | Optional thread override for aggregation tasks. |
-| `custom_structures` | Path to Boolean structure definition YAML (default pelvic template). |
-
-Segmentation concurrency inherits these settings automatically: on GPU we run courses sequentially unless you explicitly set `segmentation.max_workers`, while CPU mode fans out to the configured `max_workers` pool.
-
-Custom configuration files can be supplied via `--configfile myconfig.yaml`.
-
-> ℹ️ **Rerun policy:** The provided `run_pipeline.sh` wrapper now invokes Snakemake with
-> `--rerun-triggers mtime input`. Code or config changes will *not* force stages to rerun;
-> delete the corresponding outputs (e.g., `.segmentation_done`, `.dvh_done`) if you need to
-> recompute a stage after making modifications.
-
----
-
-## Custom nnU-Net Models
-
-⚠️ **Model weights are not included in this repository** due to their size. Users must download weights separately.
-
-Each folder under `custom_models/` must contain:
-
-```
-custom_models/<name>/
-  custom_model.yaml               # configuration (included in repo)
-  modelXXXX.zip                   # nnUNet weight archives (NOT in repo - download separately)
-  download_weights_example.sh     # optional download script template
-  README.md                       # installation instructions
-```
-
-`custom_model.yaml` supports both nnUNet v2 and v1 interfaces, multiple networks, and optional ensembles.
-
-**Quick Start**:
-
-1. **Download model weights** - See [`custom_models/README.md`](custom_models/README.md) for detailed instructions
-   - Weights are too large for git and must be obtained separately
-   - Place `.zip` archives in the respective model directories
-   - Or extract weights to configured directories
-2. **Verify installation** - Run `rtpipeline doctor` or test model discovery:
-   ```bash
-   python -c "from rtpipeline.custom_models import discover_custom_models; from pathlib import Path; print(discover_custom_models(Path('custom_models')))"
-   ```
-3. **Run custom models** - Execute the pipeline:
-   ```bash
-   snakemake --cores 4 segmentation_custom_models
-   ```
-   Results appear under `<course>/Segmentation_CustomModels/<model>/`
-
-**Documentation**:
-- Installation guide: [`custom_models/README.md`](custom_models/README.md)
-- Configuration reference: `features/custom_models.md`
-- Example download script: [`custom_models/download_weights_example.sh`](custom_models/download_weights_example.sh)
-
----
-
-## MR Handling
-
-* MR series referenced via REG objects are copied to `<course>/MR/<SeriesInstanceUID>/DICOM/`.
-* NIfTI conversions and metadata live in `<course>/MR/<SeriesInstanceUID>/NIFTI/`.
-* TotalSegmentator `total_mr` outputs arrive in `<course>/MR/<SeriesInstanceUID>/Segmentation_TotalSegmentator/`.
-* MR radiomics features are stored as `<course>/MR/radiomics_mr.xlsx`.
-
-This structure keeps MR artefacts separate from CT analysis while allowing DVH and radiomics aggregation.
-
----
-
-## Systematic CT Cropping (NEW)
-
-**Problem**: DVH percentage metrics (V95%, V20Gy) become meaningless when CT field-of-view varies across patients, because the volume denominators are inconsistent.
-
-**Example Issue**:
-```
-Patient A CT captures 18,000 cm³ → V20Gy = 500 cm³ / 18,000 cm³ = 2.8%
-Patient B CT captures 15,000 cm³ → V20Gy = 500 cm³ / 15,000 cm³ = 3.3%
-Same absolute dose volume, but different percentages! ❌
-```
-
-**Solution**: Systematically crop all CTs to the same anatomical boundaries defined by TotalSegmentator landmarks.
-
-### How It Works
-
-1. **Landmark Extraction**: After TotalSegmentator runs, the pipeline extracts anatomical landmarks from segmentation masks based on the selected region:
-
-   **Supported Regions**:
-   - **Pelvis**: L1 vertebra (superior) → Femoral heads + margin (inferior)
-   - **Thorax**: C7/lung apex (superior) → L1/diaphragm (inferior)
-   - **Abdomen**: T12/L1 (superior) → L5 vertebra (inferior)
-   - **Head & Neck**: Brain/skull apex (superior) → C7/clavicles (inferior)
-   - **Brain**: Brain boundaries with minimal margins
-
-2. **Cropping**: All CT images and segmentation masks are cropped to these boundaries:
-   ```python
-   # Automatically applied when ct_cropping.enabled = true
-   apply_systematic_cropping(
-       course_dir,
-       region="pelvis",  # or "thorax", "abdomen", "head_neck", "brain"
-       superior_margin_cm=2.0,
-       inferior_margin_cm=10.0
-   )
-   ```
-
-3. **More Consistent Volumes**: Patients have substantially reduced field-of-view variability in analysis volumes (e.g., ~12,000 cm³ ±15% for pelvis, compared to >50% variation uncropped):
-   ```
-   Patient A: V20Gy = 500 cm³ / 12,000 cm³ = 4.2%
-   Patient B: V20Gy = 500 cm³ / 11,500 cm³ = 4.3%
-   More comparable than uncropped data
-   ```
-   *Note: Residual anatomical variation (body habitus, prior surgery, segmentation differences) still affects denominators. QC reports flag cases with unusual cropped volumes. Cropping improves comparability but does not fully "normalize" denominators.*
-
-### Configuration
-
-Enable in `config.yaml`:
-```yaml
-ct_cropping:
-  enabled: true              # Enable systematic cropping
-  region: "pelvis"           # Options: "pelvis", "thorax", "abdomen", "head_neck", "brain"
-  superior_margin_cm: 2.0    # Margin above superior landmark (cm)
-  inferior_margin_cm: 10.0   # Margin below inferior landmark (cm)
-  use_cropped_for_dvh: true  # Use cropped volumes for DVH
-  use_cropped_for_radiomics: true  # Use cropped volumes for radiomics
-  keep_original: true        # Keep uncropped files
-```
-
-**Recommended Margins by Region**:
-- **Pelvis**: `superior_margin_cm: 2.0`, `inferior_margin_cm: 10.0`
-- **Thorax**: `superior_margin_cm: 2.0`, `inferior_margin_cm: 2.0`
-- **Abdomen**: `superior_margin_cm: 2.0`, `inferior_margin_cm: 2.0`
-- **Head & Neck**: `superior_margin_cm: 2.0`, `inferior_margin_cm: 2.0`
-- **Brain**: `superior_margin_cm: 1.0`, `inferior_margin_cm: 1.0`
-
-### Benefits
-
-- ✅ **Percentage DVH metrics** (V%, D%) have more consistent denominators for cross-patient analysis (reduced FOV variability)
-- ✅ **Statistical analysis** on percentage-based metrics is less confounded by FOV differences (residual anatomical variation should still be assessed via QC)
-- ✅ **Radiomics models** benefit from more standardized input volumes
-- ✅ **Automatic** – no manual intervention required
-- ✅ **Anatomically defined** – clinically interpretable boundaries based on TotalSegmentator landmarks
-- ✅ **Backward compatible** – original files preserved if `keep_original: true`
-
-*Note: Cropping reduces but does not eliminate denominator variability. It improves comparability but does not substitute for appropriate statistical adjustment or detailed QC.*
-
-### When to Use
-
-**Use for**:
-- Multi-patient DVH studies requiring comparable metrics
-- Statistical analysis of percentage-based endpoints
-- Machine learning / radiomics studies
-- Quality assurance across cohorts
-
-**Don't use for**:
-- Single-patient treatment planning verification
-- Research requiring full anatomical extent
-- Structures outside the cropped region
-
-### Technical Details
-
-- **Module**: `rtpipeline/anatomical_cropping.py`
-- **Output**: Cropped files with `_cropped` suffix + `cropping_metadata.json`
-- **Coordinate system**: Handles all DICOM orientation conventions
-- **Error handling**: Graceful degradation if landmarks not found
-
-See [features/ct_cropping.md](features/ct_cropping.md) for complete technical documentation.
-
----
-
-## Quality Assurance & Interpretation
-
-See **user_guide/results_interpretation.md** for:
-
-* Recommended checks before analysis.
-* How to interpret the `structure_cropped` flags and `__partial` suffix.
-* Location and purpose of QC logs, radiomics tables, DVH metrics, and custom-model manifests.
-
----
-
-## Anonymisation
-
-Use `scripts/anonymize_pipeline_results.py` to create a de-identified copy:
-
-```bash
-python scripts/anonymize_pipeline_results.py \
-  --input Data_Snakemake \
-  --output Data_Snakemake_anonymized \
-  --overwrite --verbose
-```
-
-The script rewrites patient/course identifiers, anonymises DICOM headers, updates manifests, and preserves a key CSV for re-identification if requested.
-
----
-
-## Troubleshooting & Tips
-
-* **Conda channel priority**: enable strict priority (`conda config --set channel_priority strict`) to avoid environment inconsistencies.
-* **GPU memory**: TotalSegmentator and nnUNet may require >8 GB VRAM. Use `segmentation.fast` for CPU-friendly runs or reduce concurrency (`segmentation.max_workers`).
-* **Cleaning stale outputs**: remove stage-specific folders (NIFTI, Segmentation\_*) before reruns to ensure fresh results.
-* **Custom model caches**: set `custom_models.retain_weights: false` or use `--purge-custom-model-weights` to delete unpacked nnUNet results after each run.
-* **Debugging stage failures**: check `Logs_Snakemake/<stage>/...` and `.snakemake/log/*.log`. Re-run individual rules with `--keep-going --printshellcmds` for more detail.
 
 ---
 
 ## 📚 Documentation
 
-### User Documentation (Root Directory)
-* **[getting_started/index.md](getting_started/index.md)** – Complete beginner's guide with step-by-step instructions
-* **[getting_started/webui.md](getting_started/webui.md)** – Web UI documentation with detailed usage guide
-* **[user_guide/output_format.md](user_guide/output_format.md)** – Output format reference with common code snippets
-* **[setup_docker_project.sh](setup_docker_project.sh)** – Interactive Docker project setup wizard
+Visit the full documentation site: **[kstawiski.github.io/rtpipeline](https://kstawiski.github.io/rtpipeline/)**
 
-### Technical Documentation (docs/)
-* **[index.md](index.md)** – 📖 **Documentation index** (start here for technical guides)
-* **[technical/architecture.md](technical/architecture.md)** – Architecture overview and design decisions
-* **[technical/parallelization.md](technical/parallelization.md)** – Performance tuning and parallelization strategies
-* **[technical/docker.md](technical/docker.md)** – Docker deployment and compatibility guide
-* **[getting_started/docker_setup.md](getting_started/docker_setup.md)** – **NEW:** Comprehensive Docker setup guide with configuration examples and real-world workflows
-* **[technical/security.md](technical/security.md)** – **Security guide for production deployments**
-* **[user_guide/troubleshooting.md](user_guide/troubleshooting.md)** – Debugging hangs, timeouts, and common issues
-* **[features/custom_models.md](features/custom_models.md)** – nnUNet configuration schema and examples
-* **[user_guide/results_interpretation.md](user_guide/results_interpretation.md)** – Interpreting outputs
-* **[features/ct_cropping.md](features/ct_cropping.md)** – Systematic anatomical cropping guide
-* **[features/qc_cropping.md](features/qc_cropping.md)** – CT cropping quality control
+### Core Guides
+*   **[Getting Started](getting_started/index.md):** From zero to your first analyzed patient.
+*   **[Web UI Guide](getting_started/webui.md):** How to use the drag-and-drop interface.
+*   **[Docker Setup](getting_started/docker_setup.md):** Comprehensive deployment guide.
 
-### Quick Links by Task
-* 🚀 **New user?** → [getting_started/index.md](getting_started/index.md)
-* 🌐 **Using Web UI?** → [getting_started/webui.md](getting_started/webui.md)
-* 🐳 **Setting up Docker project?** → `./setup_docker_project.sh` or [Docker Setup Guide](getting_started/docker_setup.md)
-* 📊 **Analyzing results?** → [user_guide/output_format.md](user_guide/output_format.md)
-* 🔧 **Performance issues?** → [technical/parallelization.md](technical/parallelization.md)
-* 🐛 **Pipeline hanging?** → [user_guide/troubleshooting.md](user_guide/troubleshooting.md)
-* 🐳 **Docker problems?** → [technical/docker.md](technical/docker.md) or [Docker Setup Guide](getting_started/docker_setup.md)
-* 🔐 **Production deployment?** → [technical/security.md](technical/security.md)
-
-### Radiomics Robustness References
-
-The perturbation methodology (NTCV chain), threshold conventions, and reporting practices implemented in `rtpipeline` are informed by the radiomics reproducibility literature. Note that literature-reported performance metrics (e.g., sensitivity/specificity) were validated on specific datasets and should not be assumed to transfer exactly to new cohorts. See [features/radiomics_robustness.md](features/radiomics_robustness.md) for full methodology details.
-
-**Key References:**
-- Zwanenburg A *et al.*, "Assessing robustness of radiomic features by image perturbation," *Scientific Reports* 9, 614 (2019). DOI: 10.1038/s41598-018-36758-2
-- Koo TK, Li MY, "A guideline of selecting and reporting ICC for reliability research," *J Chiropractic Medicine* 15(2):155–163 (2016). DOI: 10.1016/j.jcm.2016.02.012
-- Vallat R, "Pingouin: statistics in Python," *JOSS* 3(31):1026 (2018). DOI: 10.21105/joss.01026
+### Research Features
+*   **[Output Format](user_guide/output_format.md):** Detailed schema of the generated data tables.
+*   **[Systematic CT Cropping](features/ct_cropping.md):** How standardization improves statistical power.
+*   **[Radiomics Robustness](features/radiomics_robustness.md):** Methodology for feature stability.
+*   **[Custom Models](features/custom_models.md):** Plug in your own nnU-Net models.
 
 ---
 
-## License & Citation
+## 🛠️ Data Flow Architecture
 
-Please cite the relevant publications when using the pipeline in research. TotalSegmentator, nnUNet, and other third-party tools retain their respective licenses.
+```mermaid
+graph LR
+    A[TPS Export\n(Raw DICOM)] --> B(rtpipeline\nOrchestrator);
+    B --> C{Organization\nEngine};
+    C --> D[AI Segmentation\nTotalSegmentator];
+    C --> E[Image Processing\nCropping/NIfTI];
+    D --> F[Analysis Engine];
+    E --> F;
+    F --> G[DVH Calculator];
+    F --> H[Radiomics\nExtractor];
+    G --> I[Final Tidy Tables\n(.xlsx / .csv)];
+    H --> I;
+```
+
+---
+
+## 📄 License & Citation
+
+This project is licensed under the MIT License.
+If you use rtpipeline for research, please cite the repository and the underlying tools (TotalSegmentator, PyRadiomics, Snakemake).
+
+```
