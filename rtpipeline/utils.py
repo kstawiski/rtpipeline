@@ -68,7 +68,10 @@ def validate_path(path: Path | str, base: Path | str, allow_absolute: bool = Fal
 
 def read_dicom(path: str | os.PathLike) -> FileDataset | None:
     try:
-        return pydicom.dcmread(str(path), force=True)
+        # This helper is used for header-centric indexing/metadata extraction.
+        # Avoid reading large PixelData blobs (e.g., CT/CBCT) to keep the pipeline I/O-bound
+        # stages (organize, dedup, indexing) fast and memory-efficient.
+        return pydicom.dcmread(str(path), force=True, stop_before_pixels=True)
     except Exception as e:
         logger.debug("Failed to read DICOM %s: %s", path, e)
         return None

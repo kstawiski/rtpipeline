@@ -31,3 +31,4 @@ dependencies:
     - xlsxwriter
     - openpyxl
     - plotly
+    - pingouin  # For ICC computation in robustness analysis
