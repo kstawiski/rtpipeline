@@ -617,7 +617,8 @@ def compute_icc_pingouin(
             data=df,
             targets="subject",
             raters="rater",
-            ratings="value"
+            ratings="value",
+            nan_policy="omit"  # Handle unbalanced data (missing perturbations for some subjects)
         )
 
         # Select appropriate ICC type
@@ -1199,6 +1200,19 @@ def aggregate_robustness_results(
 
     output_excel.parent.mkdir(parents=True, exist_ok=True)
 
+    # Save raw values to parquet (no row limit, unlike Excel's 1,048,576)
+    raw_parquet_path = output_excel.parent / (output_excel.stem + "_raw_values.parquet")
+    try:
+        combined_raw.to_parquet(raw_parquet_path, index=False)
+        logger.info(
+            "Saved raw robustness values to %s (%d rows)",
+            raw_parquet_path,
+            len(combined_raw),
+        )
+    except Exception as e:
+        logger.error("Failed to write raw values parquet: %s", e)
+        raise
+
     try:
         with pd.ExcelWriter(output_excel, engine="openpyxl") as writer:
             global_summary.to_excel(writer, sheet_name="global_summary", index=False)
@@ -1214,7 +1228,8 @@ def aggregate_robustness_results(
             if robust_per_source is not None:
                 robust_per_source.to_excel(writer, sheet_name="robust_features_per_source", index=False)
 
-            combined_raw.to_excel(writer, sheet_name="raw_values", index=False)
+            # Note: Raw values saved to parquet file (see log above)
+            # Excel has 1,048,576 row limit; large datasets exceed this
 
         logger.info(
             "Saved aggregated robustness results to %s (features=%d, structures=%d)",
