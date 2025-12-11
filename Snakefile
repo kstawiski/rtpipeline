@@ -1080,51 +1080,42 @@ rule aggregate_radiomics_robustness:
         str(LOGS_DIR / "aggregate_radiomics_robustness.log")
     threads:
         AGG_THREADS_RESERVED
+    params:
+        output_dir=str(OUTPUT_DIR),
+        root_dir=str(ROOT_DIR),
+        robustness_enabled=ROBUSTNESS_ENABLED
+    conda:
+        "envs/rtpipeline.yaml"
+    shell:
+        """
+        set -euo pipefail
+        mkdir -p $(dirname {log})
+        mkdir -p $(dirname {output.summary})
 
-    run:
-        import subprocess
-        if not ROBUSTNESS_ENABLED:
-            # Create empty file if disabled
-            import pandas as pd
-            summary_path = Path(output.summary)
-            summary_path.parent.mkdir(parents=True, exist_ok=True)
-            pd.DataFrame().to_excel(summary_path, index=False)
-            return
+        if [ "{params.robustness_enabled}" != "True" ]; then
+            # Create empty output if robustness is disabled
+            python -c "import pandas as pd; pd.DataFrame().to_excel('{output.summary}', index=False)"
+            echo "Robustness disabled - empty output created" > {log}
+            exit 0
+        fi
 
-        log_path = Path(log[0])
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        env = _rt_env()
+        # Find all robustness parquet files
+        PARQUET_FILES=$(find {params.output_dir} -name "radiomics_robustness_ct.parquet" -type f 2>/dev/null || true)
 
-        # Collect all parquet files
-        parquet_files = []
-        for patient_id, course_id, course_path in _iter_course_dirs():
-            parquet_path = course_path / "radiomics_robustness_ct.parquet"
-            if parquet_path.exists():
-                parquet_files.append(str(parquet_path))
+        if [ -z "$PARQUET_FILES" ]; then
+            # Create empty output if no parquet files found
+            python -c "import pandas as pd; pd.DataFrame().to_excel('{output.summary}', index=False)"
+            echo "No robustness parquet files found" > {log}
+            exit 0
+        fi
 
-        if not parquet_files:
-            # Create empty output
-            import pandas as pd
-            summary_path = Path(output.summary)
-            summary_path.parent.mkdir(parents=True, exist_ok=True)
-            pd.DataFrame().to_excel(summary_path, index=False)
-            with log_path.open("w") as logf:
-                logf.write("No robustness parquet files found\n")
-            return
-
-        cmd = [
-            sys.executable,
-            "-m",
-            "rtpipeline.cli",
-            "radiomics-robustness-aggregate",
-            "--inputs",
-        ] + parquet_files + [
-            "--output", str(output.summary),
-            "--config", str(ROOT_DIR / "config.yaml"),
-        ]
-
-        with log_path.open("w") as logf:
-            subprocess.run(cmd, check=True, stdout=logf, stderr=subprocess.STDOUT, env=env)
+        # Run the aggregation CLI command with the conda environment's Python
+        PYTHONPATH="{params.root_dir}:${{PYTHONPATH:-}}" python -m rtpipeline.cli radiomics-robustness-aggregate \
+            --inputs $PARQUET_FILES \
+            --output {output.summary} \
+            --config {params.root_dir}/config.yaml \
+            > {log} 2>&1
+        """
 
 
 
