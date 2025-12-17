@@ -22,6 +22,7 @@ dependencies = [
   "matplotlib",
   "openpyxl",
   "TotalSegmentator>=2.4.0",  # Use latest stable version from PyPI
+  "xgboost",  # Required for totalseg_get_phase and totalseg_get_modality
   "dicom2nifti>=2.4",
   "nested-lookup",
   "rt-utils",
