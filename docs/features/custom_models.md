@@ -26,6 +26,10 @@ Minimal example:
 ```yaml
 name: my_model
 description: Optional free-form text.
+# Body region requirements for QC gating (optional)
+required_body_regions:
+  - THORAX                            # Valid regions: HEAD_NECK, THORAX, ABDOMEN, PELVIS
+min_region_confidence: 0.6            # optional, defaults to 0.5
 nnunet:
   command: nnUNetv2_predict         # optional, defaults to CLI --nnunet-predict
   model: 3d_fullres                 # optional, defaults to 3d_fullres
@@ -61,6 +65,11 @@ nnunet:
 
 - `name`: Human-readable identifier. Also used for the output directory name.
 - `description`: Optional documentation string shown in manifests.
+- `required_body_regions`: Optional list of body regions that must be present in the
+  CT scan for this model to run. Valid values: `HEAD_NECK`, `THORAX`, `ABDOMEN`, `PELVIS`.
+  If not specified, the model runs on any CT scan. See [Body Region QC](#body-region-qc) below.
+- `min_region_confidence`: Minimum confidence score (0.0–1.0) required for each region.
+  Defaults to 0.5. Higher values require stronger evidence of region presence.
 - `nnunet.command`: Command used to launch inference. Defaults to the pipeline
   flag `--nnunet-predict` (default `nnUNetv2_predict`).
 - `nnunet.interface`: Choose between `nnunetv2` (default) and `nnunetv1`. v1 enables
@@ -131,3 +140,77 @@ courses reuse the weights without re-extracting ~500 MB archives. Set
 successful run. The original `model*.zip` files remain in place so the next
 invocation can restore the caches if needed; course outputs under
 `Segmentation_CustomModels/<model>/` are unaffected by this cleanup option.
+
+## Body Region QC
+
+The pipeline performs automatic body region detection after TotalSegmentator's
+"total" task completes. This QC step uses anatomical anchor structures (vertebrae,
+organs) to determine which body regions are present in the CT scan:
+
+- **HEAD_NECK**: Cervical spine (C1–C7), brain, skull
+- **THORAX**: Thoracic spine (T1–T12), lungs, heart
+- **ABDOMEN**: Lumbar spine (L1–L5), liver, spleen, kidneys
+- **PELVIS**: Sacrum, hip bones, femurs
+
+Results are saved to `<course>/qc_reports/body_regions.json` with:
+- Boolean flags: `CONTAINS_HEAD_NECK`, `CONTAINS_THORAX`, `CONTAINS_ABDOMEN`, `CONTAINS_PELVIS`
+- Confidence scores (0.0–1.0) per region based on vertebrae count and organ volumes
+- Model eligibility status for each configured model
+- **Contrast phase** detection (native, arterial_early, arterial_late, portal_venous)
+- **Image modality** detection (CT or MR)
+
+### Phase and Modality Detection
+
+The pipeline uses TotalSegmentator's auxiliary tools to detect:
+
+1. **Contrast Phase** (`totalseg_get_phase`): Classifies CT images by contrast phase:
+   - `native`: Non-contrast CT
+   - `arterial_early`: Early arterial phase
+   - `arterial_late`: Late arterial phase
+   - `portal_venous`: Portal venous phase
+
+2. **Image Modality** (`totalseg_get_modality`): Detects whether the image is CT or MR
+
+These values are included in:
+- The `body_regions.json` QC report
+- Aggregated DVH results (`contrast_phase`, `image_modality`, `body_regions` columns)
+- Aggregated radiomics results (same columns)
+- Aggregated QC reports (with detailed body region confidence scores)
+
+**Requirements**: These features require `xgboost` to be installed (included in the
+`rtpipeline.yaml` conda environment).
+
+### Model Gating
+
+When `required_body_regions` is specified in a custom model's YAML, the pipeline
+checks eligibility before running inference. If the required region is missing:
+
+- **Default behavior** (`body_region_qc_block_missing: true`): The model is skipped
+  with a warning logged. The sentinel file records which models were skipped.
+- **Warning-only** (`body_region_qc_block_missing: false`): A warning is logged
+  but inference proceeds anyway.
+
+This prevents running cardiac segmentation models on head CTs, head/neck models on
+pelvis CTs, etc., avoiding wasted GPU time and invalid outputs.
+
+### Configuration
+
+Model region requirements can also be set globally in `config.yaml`:
+
+```yaml
+model_region_requirements:
+  cardiac_STOPSTORM:
+    required_regions: [THORAX]
+    min_confidence: 0.6
+  heartchambers_highres:
+    required_regions: [THORAX]
+    min_confidence: 0.5
+  head_neck_oar:
+    required_regions: [HEAD_NECK]
+    min_confidence: 0.5
+
+body_region_qc_block_missing: true  # true = block, false = warn only
+```
+
+Requirements in `custom_model.yaml` take precedence over config.yaml for that model.
+Models without any requirements (either in YAML or config) run on all CT scans.
