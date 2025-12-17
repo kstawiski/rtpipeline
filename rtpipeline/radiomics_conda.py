@@ -267,7 +267,8 @@ def extract_radiomics_with_conda(
     image_path: str,
     mask_path: str,
     params_file: Optional[str] = None,
-    label: Optional[int] = None
+    label: Optional[int] = None,
+    large_roi: bool = False,
 ) -> Dict[str, Any]:
     """
     Extract radiomics features using conda environment.
@@ -336,7 +337,8 @@ print(json.dumps(output))
         'image_path': image_path,
         'mask_path': mask_path,
         'params_file': params_file,
-        'label': label
+        'label': label,
+        'large_roi': bool(large_roi),
     }
 
     try:
@@ -366,12 +368,31 @@ image_path = params['image_path']
 mask_path = params['mask_path']
 params_file = params.get('params_file')
 label = params.get('label')
+large_roi = bool(params.get('large_roi'))
 
 # Create extractor
 if params_file:
     extractor = featureextractor.RadiomicsFeatureExtractor(params_file)
 else:
     extractor = featureextractor.RadiomicsFeatureExtractor()
+
+# Reduced settings for very large ROIs (feasibility)
+if large_roi:
+    try:
+        extractor.disableAllImageTypes()
+        extractor.enableImageTypeByName('Original')
+    except Exception:
+        pass
+    try:
+        extractor.disableAllFeatures()
+        extractor.enableFeatureClassByName('firstorder')
+        extractor.enableFeatureClassByName('shape')
+    except Exception:
+        pass
+    try:
+        extractor.settings['resampledPixelSpacing'] = [2.0, 2.0, 2.0]
+    except Exception:
+        pass
 
 # Execute extraction
 if label is not None:
@@ -494,11 +515,30 @@ with open(sys.argv[1], 'r') as f:
 tasks = batch_params['tasks']
 params_file = batch_params.get('params_file')
 
-# Create extractor ONCE (this is the expensive operation we're amortizing)
+# Create extractors (full + reduced for large ROIs)
 if params_file:
     extractor = featureextractor.RadiomicsFeatureExtractor(params_file)
+    extractor_large = featureextractor.RadiomicsFeatureExtractor(params_file)
 else:
     extractor = featureextractor.RadiomicsFeatureExtractor()
+    extractor_large = featureextractor.RadiomicsFeatureExtractor()
+
+# Configure the reduced extractor for feasibility on very large masks (e.g., BODY)
+try:
+    extractor_large.disableAllImageTypes()
+    extractor_large.enableImageTypeByName('Original')
+except Exception:
+    pass
+try:
+    extractor_large.disableAllFeatures()
+    extractor_large.enableFeatureClassByName('firstorder')
+    extractor_large.enableFeatureClassByName('shape')
+except Exception:
+    pass
+try:
+    extractor_large.settings['resampledPixelSpacing'] = [2.0, 2.0, 2.0]
+except Exception:
+    pass
 
 # Process each task
 for task in tasks:
@@ -506,12 +546,14 @@ for task in tasks:
     mask_path = task['mask_path']
     label = task.get('label')
     roi_name = task.get('roi_name', 'ROI')
+    large_roi = bool(task.get('large_roi'))
 
     try:
+        current_extractor = extractor_large if large_roi else extractor
         if label is not None:
-            features = extractor.execute(image_path, mask_path, label=label)
+            features = current_extractor.execute(image_path, mask_path, label=label)
         else:
-            features = extractor.execute(image_path, mask_path)
+            features = current_extractor.execute(image_path, mask_path)
 
         # Convert to JSON-serializable format
         output = {'__status__': 'success', '__roi_name__': roi_name}
@@ -545,6 +587,7 @@ for task in tasks:
                         'mask_path': t.get('mask_path'),
                         'label': t.get('label'),
                         'roi_name': t.get('roi_name', 'ROI'),
+                        'large_roi': bool(t.get('large_roi', False)),
                     }
                     for t in tasks
                 ],
@@ -741,7 +784,13 @@ def process_radiomics_batch(
             return None
 
         try:
-            features = extract_radiomics_with_conda(image_path, mask_path, params_file, label)
+            features = extract_radiomics_with_conda(
+                image_path,
+                mask_path,
+                params_file,
+                label,
+                bool(task.get("large_roi", False)),
+            )
         except Exception as exc:
             msg = str(exc).lower()
             if 'size of the roi is too small' in msg:
@@ -756,7 +805,13 @@ def process_radiomics_batch(
                 if repaired:
                     logger.debug("Rewrote 2D mask for ROI %s", roi_name)
                     try:
-                        features = extract_radiomics_with_conda(image_path, mask_path, params_file, label)
+                        features = extract_radiomics_with_conda(
+                            image_path,
+                            mask_path,
+                            params_file,
+                            label,
+                            bool(task.get("large_roi", False)),
+                        )
                     except Exception as inner_exc:
                         logger.error("Radiomics retry failed for %s: %s", roi_name, inner_exc)
                         return None
@@ -1003,8 +1058,20 @@ def radiomics_for_course(
         return None
 
     # Check for segmentation files
+    rs_manual = course_dir / "RS.dcm"
     rs_auto = course_dir / "RS_auto.dcm"
     rs_custom = course_dir / "RS_custom.dcm"
+
+    # Ensure RS_custom exists when a custom structures config is available.
+    custom_cfg = custom_structures_config or getattr(config, "custom_structures_config", None)
+    try:
+        if custom_cfg and Path(custom_cfg).exists():
+            from .custom_structures_rtstruct import _create_custom_structures_rtstruct, _is_rs_custom_stale
+
+            if _is_rs_custom_stale(rs_custom, custom_cfg, rs_manual, rs_auto):
+                rs_custom = _create_custom_structures_rtstruct(course_dir, custom_cfg, rs_manual, rs_auto) or rs_custom
+    except Exception as exc:
+        logger.debug("RS_custom preparation failed for %s: %s", course_dir, exc)
 
     if not rs_auto.exists() and not rs_custom.exists():
         logger.warning(f"No segmentation files found in {course_dir}")
@@ -1112,13 +1179,10 @@ def radiomics_for_course(
         )
 
         skip_rois_default = {
-            "body",
             "couchsurface",
             "couchinterior",
             "couchexterior",
             "bones",
-            "entirebody",
-            "entirebodyroi",
             "m1",
             "m2",
             "table",
@@ -1169,14 +1233,28 @@ def radiomics_for_course(
                     min_voxels_limit,
                 )
                 continue
-            if voxel_count > max_voxels_limit:
+            # Large-ROI detection should be based on *physical volume* rather than
+            # native voxel count, because CT radiomics typically resamples to ~1mm
+            # isotropic (increasing effective voxel counts for thick-slice CT).
+            #
+            # Treat BODY as large unconditionally to avoid pathological runtimes.
+            spacing = tuple(ct_info.get('spacing', (1.0, 1.0, 1.0)))
+            try:
+                native_voxel_mm3 = float(spacing[0]) * float(spacing[1]) * float(spacing[2])
+            except Exception:
+                native_voxel_mm3 = 1.0
+            physical_volume_mm3 = float(voxel_count) * max(1e-9, native_voxel_mm3)
+            estimated_voxels = physical_volume_mm3  # ~ voxels at 1mm isotropic
+
+            large_roi = norm_key.startswith("body") or (estimated_voxels > float(max_voxels_limit))
+            if large_roi:
                 logger.info(
-                    "Skipping radiomics for ROI %s: %d voxels exceeds limit %d",
+                    "ROI %s is large (native=%d voxels, est@1mm=%.0f voxels, cap=%d); using reduced radiomics settings",
                     roi_name,
                     voxel_count,
-                    max_voxels_limit,
+                    estimated_voxels,
+                    int(max_voxels_limit),
                 )
-                continue
 
             try:
                 with tempfile.NamedTemporaryFile(suffix='.nrrd', delete=False) as mask_file:
@@ -1213,6 +1291,7 @@ def radiomics_for_course(
                 'roi_name': display_roi,
                 'params_file': params_file,
                 'label': None,
+                'large_roi': bool(large_roi),
                 'metadata': metadata,
                 'cleanup': True,
                 'ct_info': ct_info,
