@@ -65,7 +65,11 @@ class PipelineConfig:
     ct_cropping_superior_margin_cm: float = 2.0
     ct_cropping_inferior_margin_cm: float = 10.0
     ct_cropping_use_for_dvh: bool = True
-    ct_cropping_use_for_radiomics: bool = True
+    # NOTE: cropped RTSTRUCTs (e.g., RS_auto_cropped.dcm) have shown geometric
+    # misregistration issues when paired with the original DICOM CT series.
+    # Until a robust cropped-geometry path exists for CT radiomics, default to
+    # using the original (uncropped) RTSTRUCTs for radiomics extraction.
+    ct_cropping_use_for_radiomics: bool = False
     ct_cropping_keep_original: bool = True
 
     # Custom segmentation models
@@ -85,7 +89,7 @@ class PipelineConfig:
 
     # DICOM copy optimization (organize step)
     dicom_copy_dedup_by_sop_uid: bool = True    # Skip duplicate SOPInstanceUIDs
-    dicom_copy_use_hardlinks: bool = True       # Use hardlinks when possible
+    dicom_copy_use_hardlinks: bool = False      # Avoid hardlinks in outputs by default
     dicom_copy_verify_checksum: bool = False    # Verify MD5 after copy
     dicom_copy_cache_headers: bool = True       # Cache DICOM headers for re-runs
 

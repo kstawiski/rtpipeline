@@ -1,75 +1,71 @@
-# Snakemake configuration for rtpipeline
+# Snakemake configuration for rtpipeline - Thorax Radiotherapy
+# Optimized for konstax server: RTX A4000 (15GB VRAM), 4 cores, 20GB RAM
+# Target: cardiac_STOPSTORM model + TotalSegmentator heartchambers_highres
 
-# Container mode for Docker/Apptainer execution
+# Container mode enabled with symlinks to local conda envs
 container_mode: true
 
 # Input/Output directories
-dicom_root: "Example_data"
-output_dir: "Data_Snakemake"
-logs_dir: "Logs_Snakemake"
+dicom_root: "/projekty/Immunodozymetria/DICOM"
+output_dir: "/projekty/Immunodozymetria/rtpipeline_konstax/output"
+logs_dir: "/projekty/Immunodozymetria/rtpipeline_konstax/logs"
 
-# Processing parameters
-# ======================
-# Parallelism is now split into two independent knobs:
-#   • Snakemake `--cores N` controls the global CPU budget.
-#   • The pipeline automatically uses (N - 1) workers inside each stage.
-#   • Optional `max_workers` caps the internal worker budget (set to null for automatic detection).
-#
-# Recommended defaults for mixed workloads:
-max_workers: null            # null => auto (cores - 1). Lower this (2-4) for slow/NFS storage
+# Processing parameters - OPTIMIZED for 4 cores, 20GB RAM, A4000 15GB
+# ======================================================================
+max_workers: 3  # Leave 1 core for system + GPU operations
 
-# Scheduler overrides (optional)
+# Scheduler overrides - conservative for limited CPU
 scheduler:
-  reserved_cores: 1                # Keep a core free for the OS / background I/O
-  parallel_courses: 2              # Target number of concurrent courses (per-job threads ≈ cores/parallel_courses)
-  dvh_threads_per_job: null        # null => auto (≈ cores / parallel_courses)
-  radiomics_threads_per_job: null  # null => auto (≈ cores / parallel_courses)
-  qc_threads_per_job: null         # null => auto (≈ cores / parallel_courses)
-  crop_ct_threads_per_job: null    # null => auto (≈ cores / parallel_courses)
-  prioritize_short_courses: true   # Run small courses first to unblock downstream stages sooner
-  robustness_threads_per_job: null # null => auto (≈ cores / parallel_courses)
-
-# Adjust worker budget downwards if your storage backend is network bound (e.g., 2-4 for NFS)
+  reserved_cores: 1                # Keep 1 core free for GPU, I/O, system
+  parallel_courses: 1              # Process 1 patient at a time (limited RAM)
+  dvh_threads_per_job: 2           # 2 threads per job
+  radiomics_threads_per_job: 2     # Similar
+  qc_threads_per_job: 2
+  crop_ct_threads_per_job: 2
+  prioritize_short_courses: true   # Run small courses first
+  robustness_threads_per_job: 2
 
 # Organize step optimizations
 organize:
-  dedup_by_sop_uid: true    # Skip copying DICOMs with duplicate SOPInstanceUIDs (saves disk space)
-  use_hardlinks: true       # Use hardlinks instead of copies when source/dest on same filesystem
-  verify_checksum: false    # Verify MD5 checksum after copy (slower but detects corruption)
-  cache_headers: true       # Cache DICOM headers for faster re-indexing on reruns
+  dedup_by_sop_uid: true
+  use_hardlinks: true
+  verify_checksum: false  # Skip for speed
+  cache_headers: true
 
+# TotalSegmentator configuration - optimized for A4000 15GB
 segmentation:
-  # CRITICAL: GPU-limited stage - default is sequential on GPU and fan-out on CPU
-  # Set max_workers to a positive integer to override the automatic behavior (e.g., multi-GPU hosts)
-  max_workers: null  # Auto => sequential on GPU, worker budget on CPU
-  force: false  # Set true to re-run segmentation even when outputs exist
-  fast: false
+  max_workers: 1        # Single GPU, run sequentially
+  force: false
+  fast: false           # Full resolution for cardiac
   roi_subset: null
-  extra_models: []   # Optional list of additional TotalSegmentator tasks, e.g. ["lung_vessels"]
-  device: "gpu"             # TotalSegmentator device: gpu / cpu / mps
-  force_split: true         # Force chunked inference to reduce memory spikes
-  # Threading: null = auto-detect (25-50% of cores, min 2, max 8)
-  nr_threads_resample: null    # Threads used by TotalSegmentator during resampling
-  nr_threads_save: null        # Threads used when saving results
-  num_proc_preprocessing: 1    # Keep at 1 to avoid Docker multiprocessing issues
-  num_proc_export: 1           # Keep at 1 to avoid Docker multiprocessing issues
-  # Multi-GPU support: set CUDA_VISIBLE_DEVICES to specific GPUs (e.g., "0,1,2")
-  # When max_workers=null and device=gpu, pipeline auto-detects GPU count and parallelizes accordingly
+  # Additional TotalSegmentator tasks for thorax
+  extra_models:
+    - "heartchambers_highres"  # High-resolution heart chambers
+    - "coronary_arteries"      # Coronary arteries segmentation
+  device: "gpu"
+  force_split: false    # 15GB VRAM is sufficient for most cases
+  nr_threads_resample: 2
+  nr_threads_save: 2
+  num_proc_preprocessing: 1
+  num_proc_export: 1
 
+# Custom models - enable cardiac_STOPSTORM
 custom_models:
-  enabled: false      # Disabled for pelvic data - cardiac/HN models not applicable
-  root: "custom_models"
-  models: []           # Optional allowlist of model names; leave empty to run all
-  max_workers: null        # Auto => sequential on GPU/MPS, worker budget on CPU. Override for multi-GPU hosts.
-  force: false         # Force re-run even if outputs already exist
+  enabled: true
+  root: "/projekty/rtpipeline/custom_models"
+  models:
+    - "cardiac_STOPSTORM"  # Cardiac substructure segmentation
+  max_workers: 1           # Single GPU
+  force: false
   nnunet_predict: "nnUNet_predict"
-  retain_weights: true # Keep extracted nnUNet caches between runs (set false to purge after each run)
-  conda_activate: null  # Override conda activation for custom models (default: segmentation setting)
+  retain_weights: true     # Keep extracted weights for speed
+  conda_activate: null
 
+# Radiomics configuration - conservative memory usage
 radiomics:
-  sequential: false
-  params_file: "rtpipeline/radiomics_params.yaml"
-  mr_params_file: "rtpipeline/radiomics_params_mr.yaml"
+  sequential: true         # Run sequentially to save memory
+  params_file: "/projekty/rtpipeline/rtpipeline/radiomics_params.yaml"
+  mr_params_file: "/projekty/rtpipeline/rtpipeline/radiomics_params_mr.yaml"
   skip_rois:
     - body
     - couchsurface
@@ -78,111 +74,70 @@ radiomics:
     - bones
     - m1
     - m2
-  max_voxels: 1500000000  # 1.5 billion voxels max (approx 1500x1000x1000)
+  max_voxels: 500000000    # Reduced for memory
   min_voxels: 10
 
-# Radiomics robustness analysis
-# Evaluates feature stability under segmentation perturbations
-# Based on IBSI guidelines and state-of-the-art methods (Zwanenburg 2019, Lo Iacono 2024)
+# Radiomics robustness - configure for cardiac structures
 radiomics_robustness:
-  enabled: true  # Set to true to enable robustness analysis
-
-  # Analysis modes to run
+  enabled: true
   modes:
-    - segmentation_perturbation  # Mask erosion/dilation perturbations
-    # - segmentation_method       # Compare different segmentation methods (future)
-    # - scan_rescan               # Test-retest reliability (future)
-
-  # Segmentation perturbation settings
+    - segmentation_perturbation
   segmentation_perturbation:
-    # Structures to analyze (supports wildcards: GTV*, CTV*, PTV*)
-    # Works across ALL sources: TotalSegmentator, Custom structures, Custom models
     apply_to_structures:
-      - "GTV*"              # Gross tumor volumes (from Custom or Manual)
-      - "CTV*"              # Clinical target volumes (from Custom or Manual)
-      - "PTV*"              # Planning target volumes (from Custom or Manual)
-      - "pelvic_bones*"     # pelvic_bones, pelvic_bones_3mm (from Custom)
-      - "iliac_*"           # iliac_vess, iliac_area (from Custom)
-      - "bowel_bag"         # Combined bowel structures (from Custom)
-      - "urinary_bladder"   # From TotalSegmentator
-      - "colon"             # From TotalSegmentator
-      - "prostate"          # From TotalSegmentator
-      - "rectum"            # From TotalSegmentator (if available)
-
-    # V: Volume changes for perturbations (τ parameter from Lo Iacono et al. 2024)
-    small_volume_changes: [-0.15, 0.0, 0.15]  # ±15% volume change (standard)
-    large_volume_changes: [-0.30, 0.0, 0.30]  # ±30% volume change (stress testing)
-
-    # T: Translation perturbations (Zwanenburg et al. 2019 NTCV chain)
-    # Rigid geometric shifts to simulate positioning uncertainty
-    max_translation_mm: 0.0  # Set to 3.0 or 5.0 to enable translation perturbations
-
-    # C: Contour randomization (boundary noise simulation)
-    # Simulates inter-observer variability in delineation
-    n_random_contour_realizations: 0  # Set to 2-3 to enable contour randomization
-
-    # N: Noise injection (image-based perturbation)
-    # Gaussian noise to simulate scanner variability
-    noise_levels: [0.0]  # Set to [0.0, 10.0, 20.0] to enable noise perturbations (HU std dev)
-
-    # Perturbation intensity (controls total perturbation count)
-    # - "mild": ~10-15 perturbations per ROI (quick testing)
-    # - "standard": 15-30 perturbations per ROI (recommended, balanced)
-    # - "aggressive": 30-60 perturbations per ROI (research-grade, comprehensive)
+      - "GTV*"
+      - "CTV*"
+      - "PTV*"
+      - "heart"
+      - "heart_*"           # Heart substructures
+      - "Atrium_*"
+      - "Ventricle_*"
+      - "A_LAD"
+      - "A_LCX"
+      - "A_RCA"
+      - "coronary_arteries"
+      - "esophagus"
+      - "spinal_cord"
+      - "lung*"
+    small_volume_changes: [-0.15, 0.0, 0.15]
+    large_volume_changes: [-0.30, 0.0, 0.30]
+    max_translation_mm: 0.0
+    n_random_contour_realizations: 0
+    noise_levels: [0.0]
     intensity: "standard"
-
-  # Robustness metrics configuration
   metrics:
     icc:
-      implementation: "pingouin"  # Use Pingouin library for ICC computation
-      icc_type: "ICC3"            # ICC(3,1): two-way mixed effects, fixed perturbations
-      ci: true                    # Compute 95% confidence intervals
+      implementation: "pingouin"
+      icc_type: "ICC3"
+      ci: true
     cov:
-      enabled: true               # Coefficient of Variation (%)
+      enabled: true
     qcd:
-      enabled: true               # Quartile Coefficient of Dispersion
-
-  # Thresholds for classifying feature robustness
-  # Based on Zwanenburg 2019 and Hosseini 2025 recommendations
+      enabled: true
   thresholds:
     icc:
-      robust: 0.90       # ICC ≥ 0.90: "excellent/robust"
-      acceptable: 0.75   # ICC ≥ 0.75: "good/acceptable"
-                         # ICC < 0.75: "poor"
+      robust: 0.90
+      acceptable: 0.75
     cov:
-      robust_pct: 10.0      # CoV ≤ 10%: "robust"
-      acceptable_pct: 20.0  # CoV ≤ 20%: "acceptable"
-                            # CoV > 20%: "poor"
+      robust_pct: 10.0
+      acceptable_pct: 20.0
 
 aggregation:
-  threads: auto  # auto = use CPU count, or set specific number
+  threads: 2
 
 # Environment names
 environments:
-  main: "rtpipeline"          # NumPy 2.x for TotalSegmentator
-  radiomics: "rtpipeline-radiomics"  # NumPy 1.x for PyRadiomics
+  main: "rtpipeline"
+  radiomics: "rtpipeline-radiomics"
 
-# Custom structures configuration
-custom_structures: "custom_structures_pelvic.yaml"
+# Custom structures configuration - thorax specific
+custom_structures: "/projekty/Immunodozymetria/rtpipeline_konstax/custom_structures_thorax.yaml"
 
-# Systematic CT cropping for consistent volume analysis
-# Crops all CTs to same anatomical boundaries
-# This makes percentage DVH metrics (V95%, V20Gy) meaningful across patients
+# CT cropping for thorax
 ct_cropping:
-  enabled: true  # Enable to crop CTs to consistent anatomical boundaries
-
-  # Supported regions:
-  #   "pelvis"     - L1 vertebra to femoral heads + margin
-  #   "thorax"     - C7/lung apex to L1/diaphragm
-  #   "abdomen"    - T12/L1 to L5 vertebra
-  #   "head_neck"  - Brain/skull apex to C7/clavicles
-  #   "brain"      - Brain boundaries (minimal margins)
-  region: "pelvis"
-
-  # Margins (in cm) - different defaults for different regions:
-  superior_margin_cm: 2.0   # Margin above superior landmark (1 cm for brain, 2 cm for others)
-  inferior_margin_cm: 10.0  # Margin below inferior landmark (1 cm for brain, 2 cm for thorax/abdomen/head_neck, 10 cm for pelvis)
-
-  use_cropped_for_dvh: true       # Use cropped volumes for DVH analysis
-  use_cropped_for_radiomics: true # Use cropped volumes for radiomics
-  keep_original: true             # Keep original uncropped files
+  enabled: true
+  region: "thorax"
+  superior_margin_cm: 2.0
+  inferior_margin_cm: 2.0
+  use_cropped_for_dvh: true
+  use_cropped_for_radiomics: true
+  keep_original: true

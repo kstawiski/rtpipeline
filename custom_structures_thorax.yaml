@@ -1,0 +1,193 @@
+# Custom Structures Configuration for Thorax RT Planning
+# Configured for cardiac radiotherapy (e.g., STOPSTORM, SBRT)
+# Creates clinically relevant structures for thorax radiotherapy
+
+custom_structures:
+  # ============================================
+  # CARDIAC COMPOSITE STRUCTURES
+  # ============================================
+
+  # Whole heart from chambers (if not from TotalSegmentator)
+  - name: "heart_chambers"
+    operation: "union"
+    source_structures:
+      - "Atrium_L"
+      - "Atrium_R"
+      - "Ventricle_L"
+      - "Ventricle_R"
+    description: "Combined cardiac chambers from STOPSTORM model"
+
+  # Cardiac vessels
+  - name: "cardiac_vessels"
+    operation: "union"
+    source_structures:
+      - "A_LAD"
+      - "A_LCX"
+      - "A_LM"
+      - "A_RCA"
+      - "A_Aorta"
+      - "A_Pulmonary"
+    description: "Combined cardiac arterial structures"
+
+  # Great vessels
+  - name: "great_vessels"
+    operation: "union"
+    source_structures:
+      - "A_Aorta"
+      - "A_Pulmonary"
+      - "V_Venacava_I"
+      - "V_Venacava_S"
+    description: "Combined great vessels"
+
+  # Coronary arteries (LAD + LCX + RCA + LM)
+  - name: "coronary_arteries"
+    operation: "union"
+    source_structures:
+      - "A_LAD"
+      - "A_LCX"
+      - "A_LM"
+      - "A_RCA"
+    description: "Combined coronary arteries from STOPSTORM"
+
+  # Heart valves
+  - name: "heart_valves"
+    operation: "union"
+    source_structures:
+      - "Valve_Aortic"
+      - "Valve_Mitral"
+      - "Valve_Pulmonic"
+      - "Valve_Tricuspid"
+    description: "Combined heart valves from STOPSTORM"
+
+  # Left heart (atrium + ventricle)
+  - name: "heart_left"
+    operation: "union"
+    source_structures:
+      - "Atrium_L"
+      - "Ventricle_L"
+    description: "Left heart (atrium + ventricle)"
+
+  # Right heart (atrium + ventricle)
+  - name: "heart_right"
+    operation: "union"
+    source_structures:
+      - "Atrium_R"
+      - "Ventricle_R"
+    description: "Right heart (atrium + ventricle)"
+
+  # ============================================
+  # OAR PLANNING STRUCTURES
+  # ============================================
+
+  # Heart with 5mm margin for planning
+  - name: "heart_5mm"
+    operation: "union"
+    source_structures: ["heart"]
+    margin: 5
+    description: "Heart with 5mm margin for dose constraints"
+
+  # Esophagus with 5mm margin
+  - name: "esophagus_5mm"
+    operation: "union"
+    source_structures: ["esophagus"]
+    margin: 5
+    description: "Esophagus with 5mm margin"
+
+  # Spinal cord with 5mm margin (PRV)
+  - name: "spinalcord_prv"
+    operation: "union"
+    source_structures: ["spinal_cord"]
+    margin: 5
+    description: "Spinal cord PRV (5mm margin)"
+
+  # ============================================
+  # LUNG STRUCTURES
+  # ============================================
+
+  # Total lungs
+  - name: "lungs_total"
+    operation: "union"
+    source_structures:
+      - "lung_upper_lobe_left"
+      - "lung_lower_lobe_left"
+      - "lung_upper_lobe_right"
+      - "lung_middle_lobe_right"
+      - "lung_lower_lobe_right"
+    description: "Combined total lung volume (all lobes)"
+
+  # Left lung combined
+  - name: "lung_left"
+    operation: "union"
+    source_structures:
+      - "lung_upper_lobe_left"
+      - "lung_lower_lobe_left"
+    description: "Combined left lung"
+
+  # Right lung combined
+  - name: "lung_right"
+    operation: "union"
+    source_structures:
+      - "lung_upper_lobe_right"
+      - "lung_middle_lobe_right"
+      - "lung_lower_lobe_right"
+    description: "Combined right lung"
+
+  # ============================================
+  # THORACIC BONES
+  # ============================================
+
+  # Thoracic vertebrae combined
+  - name: "thoracic_spine"
+    operation: "union"
+    source_structures:
+      - "vertebrae_T1"
+      - "vertebrae_T2"
+      - "vertebrae_T3"
+      - "vertebrae_T4"
+      - "vertebrae_T5"
+      - "vertebrae_T6"
+      - "vertebrae_T7"
+      - "vertebrae_T8"
+      - "vertebrae_T9"
+      - "vertebrae_T10"
+      - "vertebrae_T11"
+      - "vertebrae_T12"
+    description: "Combined thoracic vertebrae (T1-T12)"
+
+  # Ribs combined
+  - name: "ribs_all"
+    operation: "union"
+    source_structures:
+      - "rib_left_1"
+      - "rib_left_2"
+      - "rib_left_3"
+      - "rib_left_4"
+      - "rib_left_5"
+      - "rib_left_6"
+      - "rib_left_7"
+      - "rib_left_8"
+      - "rib_left_9"
+      - "rib_left_10"
+      - "rib_left_11"
+      - "rib_left_12"
+      - "rib_right_1"
+      - "rib_right_2"
+      - "rib_right_3"
+      - "rib_right_4"
+      - "rib_right_5"
+      - "rib_right_6"
+      - "rib_right_7"
+      - "rib_right_8"
+      - "rib_right_9"
+      - "rib_right_10"
+      - "rib_right_11"
+      - "rib_right_12"
+    description: "Combined all ribs"
+
+  # Chest wall (ribs + sternum)
+  - name: "chest_wall"
+    operation: "union"
+    source_structures:
+      - "ribs_all"
+      - "sternum"
+    description: "Combined chest wall structures"
