@@ -2,6 +2,13 @@ document.addEventListener('DOMContentLoaded', function () {
     const heroContainer = document.querySelector('.hero-container');
     if (!heroContainer) return;
 
+    // Respect user's motion preferences for accessibility
+    const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (prefersReducedMotion) {
+        // Skip animation entirely for users who prefer reduced motion
+        return;
+    }
+
     // Create canvas
     const canvas = document.createElement('canvas');
     canvas.id = 'hero-canvas';
@@ -13,7 +20,7 @@ document.addEventListener('DOMContentLoaded', function () {
     canvas.style.left = '0';
     canvas.style.width = '100%';
     canvas.style.height = '100%';
-    canvas.style.opacity = '0.4'; // Subtle background
+    canvas.style.opacity = '0.6'; // More visible against dark background
     canvas.style.pointerEvents = 'none'; // Let clicks pass through
 
     // Scene setup
@@ -36,17 +43,17 @@ document.addEventListener('DOMContentLoaded', function () {
     particlesGeometry.setAttribute('position', new THREE.BufferAttribute(posArray, 3));
 
     const material = new THREE.PointsMaterial({
-        size: 0.1,
-        color: 0xffffff, // White particles
+        size: 0.12,
+        color: 0x38BDF8, // Sky blue particles matching theme accent
         transparent: true,
-        opacity: 0.8
+        opacity: 0.7
     });
 
     // Lines
     const linesMaterial = new THREE.LineBasicMaterial({
-        color: 0xffffff,
+        color: 0x38BDF8,
         transparent: true,
-        opacity: 0.15
+        opacity: 0.2
     });
 
     const particlesMesh = new THREE.Points(particlesGeometry, material);
