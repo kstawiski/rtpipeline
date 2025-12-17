@@ -28,6 +28,17 @@ from .layout import build_course_dirs
 
 logger = logging.getLogger(__name__)
 
+# Lazy import for QC functions to avoid circular imports
+_qc_module = None
+
+def _get_qc_functions():
+    """Lazy import of quality_control module to avoid circular imports."""
+    global _qc_module
+    if _qc_module is None:
+        from . import quality_control as qc
+        _qc_module = qc
+    return _qc_module
+
 
 def _run_vec(cmd: List[str], env: Optional[dict] = None, timeout: Optional[int] = None) -> bool:
     """Execute a command using argument list (shell=False) for better security. Returns True on success.
@@ -744,10 +755,55 @@ def segment_course(config: PipelineConfig, course_dir: Path, force: bool = False
     except Exception:
         tmp_parent = course_dir
 
+    # Track skipped models due to body region QC
+    skipped_models: Dict[str, str] = {}
+    body_region_qc_done = False
+
     with tempfile.TemporaryDirectory(prefix="seg_", dir=str(tmp_parent)) as tmp_root_str:
         tmp_root = Path(tmp_root_str)
         for model in models:
             task_name = None if model == "total" else model
+
+            # After "total" completes, run body region QC before extra models
+            if model != "total" and not body_region_qc_done:
+                body_region_qc_done = True
+                try:
+                    qc = _get_qc_functions()
+                    model_requirements = getattr(config, "model_region_requirements", {})
+                    qc.save_body_region_qc(
+                        course_dir,
+                        model_region_requirements=model_requirements,
+                        conda_activate=config.conda_activate,
+                    )
+                    logger.info("Body region QC completed for %s", course_dir)
+                except Exception as exc:
+                    logger.warning("Body region QC failed for %s: %s", course_dir, exc)
+
+            # Check model eligibility for extra models (not "total")
+            if model != "total":
+                try:
+                    qc = _get_qc_functions()
+                    model_requirements = getattr(config, "model_region_requirements", {})
+                    eligible, reason = qc.check_model_eligibility(
+                        course_dir, model, model_requirements
+                    )
+                    if not eligible:
+                        block_missing = getattr(config, "body_region_qc_block_missing", True)
+                        if block_missing:
+                            logger.warning(
+                                "Skipping TotalSegmentator model '%s' for %s: %s",
+                                model, course_dir, reason
+                            )
+                            skipped_models[model] = reason
+                            continue
+                        else:
+                            logger.warning(
+                                "Model '%s' may not be appropriate for %s: %s (continuing anyway)",
+                                model, course_dir, reason
+                            )
+                except Exception as exc:
+                    logger.debug("Model eligibility check failed for %s: %s", model, exc)
+
             model_tmp = tmp_root / model
             dicom_tmp = model_tmp / "dicom"
             nifti_tmp = model_tmp / "nifti"
@@ -800,18 +856,22 @@ def segment_course(config: PipelineConfig, course_dir: Path, force: bool = False
     if default_dicom.exists():
         results["dicom_seg"] = str(default_dicom)
 
-    if manifest_entries:
+    if manifest_entries or skipped_models:
         try:
             manifest = {
                 "source_nifti": f"{base_name}.nii.gz",
                 "generated_at": datetime.datetime.utcnow().isoformat() + "Z",
                 "models": manifest_entries,
             }
+            if skipped_models:
+                manifest["skipped_models"] = skipped_models
             (base_dir / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
         except Exception as exc:
             logger.debug("Failed to persist segmentation manifest for %s: %s", course_dir, exc)
 
     results["nifti_seg_dir"] = str(base_dir)
+    if skipped_models:
+        results["skipped_models"] = skipped_models
 
     # ------------------------------------------------------------------
     # MR segmentation for auxiliary series in DICOM_related/
