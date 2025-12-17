@@ -65,6 +65,9 @@ class CustomModelDefinition:
     description: str = ""
     interface: str = "nnunetv2"
     ensemble: Optional[EnsembleDefinition] = None
+    # Body region requirements for QC gating
+    required_body_regions: List[str] = field(default_factory=list)
+    min_region_confidence: float = 0.5
 
     def get_network(self, network_id: str) -> Optional[NetworkDefinition]:
         for net in self.networks:
@@ -353,6 +356,21 @@ def _parse_custom_model(model_dir: Path, data: dict, default_command: str) -> Cu
 
     description = str(data.get("description") or data.get("summary") or "")
 
+    # Parse body region requirements for QC gating
+    required_body_regions_raw = data.get("required_body_regions") or data.get("required_regions") or []
+    if isinstance(required_body_regions_raw, str):
+        required_body_regions = [r.strip().upper() for r in required_body_regions_raw.split(",") if r.strip()]
+    elif isinstance(required_body_regions_raw, list):
+        required_body_regions = [str(r).strip().upper() for r in required_body_regions_raw if r]
+    else:
+        required_body_regions = []
+
+    min_region_confidence = 0.5
+    try:
+        min_region_confidence = float(data.get("min_region_confidence", 0.5))
+    except (TypeError, ValueError):
+        pass
+
     return CustomModelDefinition(
         name=model_name,
         directory=model_dir,
@@ -365,7 +383,53 @@ def _parse_custom_model(model_dir: Path, data: dict, default_command: str) -> Cu
         description=description,
         interface=interface,
         ensemble=ensemble_def,
+        required_body_regions=required_body_regions,
+        min_region_confidence=min_region_confidence,
     )
+
+
+def _check_custom_model_eligibility(
+    cfg: PipelineConfig,
+    course_dir: Path,
+    model: CustomModelDefinition,
+) -> Tuple[bool, str]:
+    """Check if a custom model is eligible to run based on body region requirements.
+
+    Args:
+        cfg: Pipeline configuration
+        course_dir: Path to course directory
+        model: Custom model definition
+
+    Returns:
+        Tuple of (eligible: bool, reason: str)
+    """
+    if not model.required_body_regions:
+        return True, "No region requirements for this model"
+
+    # Build model requirements dict for QC check
+    model_requirements = {
+        model.name: {
+            "required_regions": model.required_body_regions,
+            "min_confidence": model.min_region_confidence,
+        }
+    }
+
+    # Merge with config requirements
+    config_requirements = getattr(cfg, "model_region_requirements", {})
+    merged_requirements = {**config_requirements, **model_requirements}
+
+    try:
+        from .quality_control import check_model_eligibility
+        return check_model_eligibility(course_dir, model.name, merged_requirements)
+    except Exception as exc:
+        # Respect body_region_qc_block_missing setting on errors
+        block_missing = getattr(cfg, "body_region_qc_block_missing", True)
+        if block_missing:
+            logger.warning("Body region eligibility check failed for %s: %s (blocking)", model.name, exc)
+            return False, f"Eligibility check failed (blocking due to strict mode): {exc}"
+        else:
+            logger.debug("Body region eligibility check failed for %s: %s (allowing)", model.name, exc)
+            return True, f"Eligibility check failed (allowing due to warn-only mode): {exc}"
 
 
 def run_custom_models_for_course(
@@ -386,8 +450,26 @@ def run_custom_models_for_course(
     course.dirs.ensure()
     sentinel_path = course.dirs.root / ".custom_models_done"
     models_to_run = []
+    skipped_models: Dict[str, str] = {}
+
     for model in models:
         if force or not _model_outputs_ready(course.dirs.root, model):
+            # Check body region eligibility before adding to run list
+            eligible, reason = _check_custom_model_eligibility(cfg, course.dirs.root, model)
+            if not eligible:
+                block_missing = getattr(cfg, "body_region_qc_block_missing", True)
+                if block_missing:
+                    logger.warning(
+                        "Skipping custom model '%s' for %s/%s: %s",
+                        model.name, course.patient_id, course.course_id, reason
+                    )
+                    skipped_models[model.name] = reason
+                    continue
+                else:
+                    logger.warning(
+                        "Custom model '%s' may not be appropriate for %s/%s: %s (continuing anyway)",
+                        model.name, course.patient_id, course.course_id, reason
+                    )
             models_to_run.append(model)
 
     if not models_to_run and sentinel_path.exists():
@@ -398,14 +480,29 @@ def run_custom_models_for_course(
         )
         return
 
+    if not models_to_run:
+        if skipped_models:
+            logger.info(
+                "All custom models skipped for %s/%s due to body region requirements",
+                course.patient_id, course.course_id,
+            )
+            # Write sentinel with skipped info
+            sentinel_path.write_text(
+                f"skipped\n{json.dumps(skipped_models)}\n", encoding="utf-8"
+            )
+        return
+
     nifti_path = _ensure_ct_nifti(cfg, ct_dir, course.dirs.nifti, force=False)
     if nifti_path is None:
         raise RuntimeError(f"Unable to obtain NIfTI for course {course.patient_id}/{course.course_id}")
 
-    for model in models_to_run or models:
+    for model in models_to_run:
         _run_single_model(cfg, course, nifti_path, ct_dir, model)
 
-    sentinel_path.write_text("ok\n", encoding="utf-8")
+    sentinel_content = "ok\n"
+    if skipped_models:
+        sentinel_content += f"skipped: {json.dumps(skipped_models)}\n"
+    sentinel_path.write_text(sentinel_content, encoding="utf-8")
 
 
 def _model_outputs_ready(course_root: Path, model: CustomModelDefinition) -> bool:
