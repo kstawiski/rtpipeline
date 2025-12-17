@@ -7,18 +7,19 @@ repo_name: kstawiski/rtpipeline
 theme:
   name: material
   palette:
+    # Dark mode as default for modern "Precision Dark" aesthetic
+    - scheme: slate
+      primary: custom
+      accent: light-blue
+      toggle:
+        icon: material/weather-night
+        name: Switch to light mode
     - scheme: default
       primary: indigo
       accent: light-blue
       toggle:
         icon: material/weather-sunny
         name: Switch to dark mode
-    - scheme: slate
-      primary: indigo
-      accent: light-blue
-      toggle:
-        icon: material/weather-night
-        name: Switch to light mode
   font:
     text: Inter
     code: JetBrains Mono
@@ -101,6 +102,7 @@ nav:
   - Features:
     - Custom Models: features/custom_models.md
     - CT Cropping: features/ct_cropping.md
+    - Dose Classification: features/dose_classification.md
     - Radiomics Robustness: features/radiomics_robustness.md
     - Quality Control: features/qc_cropping.md
   - Technical:

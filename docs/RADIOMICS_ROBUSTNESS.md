@@ -13,7 +13,7 @@ The radiomics robustness module helps you identify stable, reproducible radiomic
 2. **Generating systematic perturbations** via the validated NTCV chain (Noise + Translation + Contour + Volume):[^zwanenburg2019]
    - **N**: Image noise injection (Gaussian noise in HU)
    - **T**: Rigid translations (±3-5 mm geometric shifts)
-   - **C**: Contour randomization (boundary noise simulation with supervoxel sampling)
+   - **C**: Contour randomization (morphological boundary randomization via erosion/dilation smoothing)
    - **V**: Volume adaptation (erosion/dilation ±15-30% volume change)
 3. **Re-extracting radiomics features** for each perturbation using PyRadiomics
 4. **Computing robustness metrics**: ICC(3,1) with analytical 95% CIs (via Pingouin[^pingouin]), CoV, QCD, and cohort-wide pass fractions.[^koo2016]
