@@ -71,6 +71,15 @@ _RESULTS/
 └── qc_reports.xlsx       # Quality control summary
 ```
 
+### 5. High-Performance Computing
+
+Designed for modern hardware with automatic optimization:
+
+- **GPU Acceleration:** CUDA-accelerated deep learning for segmentation
+- **Smart Parallelization:** Automatically scales to available CPU cores
+- **Resource Management:** Adaptive worker scaling prevents memory overflows
+- **Speed:** Process hundreds of patients in hours, not days
+
 ---
 
 ## Quick Start
