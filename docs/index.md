@@ -70,7 +70,7 @@ Within health informatics, the **Extract-Transform-Load (ETL)** paradigm has eme
 
 **Problem:** Physicians only contour clinically relevant structures. A toxicity study on splenic dose requires manual re-contouring of hundreds of patients.
 
-**Solution:** RTpipeline integrates **TotalSegmentator** to automatically generate ~100 standardized anatomical structures for every patient:
+**Solution:** RTpipeline integrates **TotalSegmentator** to automatically generate 100+ standardized anatomical structures (version- and task-dependent) for every patient:
 
 | Structure Category | Examples |
 |-------------------|----------|
@@ -126,7 +126,7 @@ Forget parsing DICOM tags. RTpipeline produces tidy, standardized data tables:
 ```
 _RESULTS/
 ├── dvh_metrics.xlsx      # Dmean, D95%, V20Gy for every structure
-├── radiomics_ct.xlsx     # 1000+ IBSI-compliant features
+├── radiomics_ct.xlsx     # 1000+ IBSI-aligned features (via PyRadiomics)
 ├── case_metadata.xlsx    # Clinical tags, scanner info, kernels
 └── qc_reports.xlsx       # Quality control flags and warnings
 ```
@@ -184,7 +184,7 @@ Try RTpipeline in the cloud with free GPU access:
 
 - Accelerate from data collection to analysis in days, not months
 - Focus thesis time on methods and hypotheses, not infrastructure
-- Built-in tools for methodological rigor (ICC, perturbations, IBSI compliance)
+- Built-in tools for methodological rigor (ICC, perturbations, IBSI-aligned features)
 
 [**PhD Quick Start Guide →**](getting_started/index.md)
 
@@ -246,7 +246,7 @@ Learn how RTpipeline is used in real research scenarios:
 
 ### NTCV Perturbation Chains
 
-Implements the validated methodology from Zwanenburg et al. (2019) for radiomics feature robustness assessment. [Learn more →](features/radiomics_robustness.md)
+Implements the published methodology from Zwanenburg et al. (2019) for radiomics feature robustness assessment. [Learn more →](features/radiomics_robustness.md)
 
 ### Systematic CT Cropping
 
@@ -307,6 +307,20 @@ Plug-and-play support for institution-specific segmentation models. [Learn more 
     [:octicons-arrow-right-24: Case Studies](case_studies/index.md)
 
 </div>
+
+---
+
+## Limitations & Disclaimers
+
+!!! warning "Research Use Only"
+    RTpipeline is a **research tool** and is **not a medical device**. It has not been validated for clinical decision-making and should not be used for patient care without independent validation by qualified professionals.
+
+**Important limitations:**
+
+- **Segmentation accuracy**: TotalSegmentator and custom models may produce errors. Always review AI-generated contours before clinical use.
+- **Robustness benchmarks**: The 98-99% sensitivity figures cited in documentation are **literature benchmarks** from Zwanenburg et al. (2019), not performance guarantees for this implementation.
+- **IBSI alignment**: Features are extracted via PyRadiomics with IBSI-informed settings, but full IBSI compliance requires independent validation against digital phantoms.
+- **Multi-center use**: Site-specific validation is essential before deploying across institutions.
 
 ---
 
