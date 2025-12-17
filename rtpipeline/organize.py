@@ -996,7 +996,7 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
                 except Exception:
                     plan_sop_uid = None
                 try:
-                    ds_dose_single = pydicom.dcmread(str(dose_paths[0]), stop_before_pixels=False)
+                    ds_dose_single = pydicom.dcmread(str(dose_paths[0]), stop_before_pixels=True)
                     dose_sop_uid = str(getattr(ds_dose_single, "SOPInstanceUID", "") or None)
                 except Exception:
                     dose_sop_uid = None
@@ -1031,7 +1031,7 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
             if dose_paths:
                 _safe_copy(dose_paths[0], rd_dst, copy_manager=copy_manager)
                 try:
-                    ds_dose_single = pydicom.dcmread(str(dose_paths[0]), stop_before_pixels=False)
+                    ds_dose_single = pydicom.dcmread(str(dose_paths[0]), stop_before_pixels=True)
                     dose_sop_uid = str(getattr(ds_dose_single, "SOPInstanceUID", "") or None)
                 except Exception:
                     dose_sop_uid = None
