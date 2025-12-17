@@ -55,7 +55,17 @@ It calculates thousands of metrics for both the **Original** (physician) structu
 
 ---
 
-## 3. Output: Your "Tidy Data"
+## 3. Performance & Hardware
+
+You don't need a supercomputer, but RTpipeline takes advantage of what you have:
+
+*   **GPU:** Highly recommended. A single NVIDIA GPU makes segmentation 10-50x faster.
+*   **CPU:** The pipeline automatically uses all available cores (minus one) for math-heavy steps like DVH calculation and Radiomics.
+*   **RAM:** If you run out of memory, the pipeline detects it and automatically reduces the number of parallel workers to keep going.
+
+---
+
+## 4. Output: Your "Tidy Data"
 
 The pipeline doesn't just give you more images; it gives you **Tables**.
 
