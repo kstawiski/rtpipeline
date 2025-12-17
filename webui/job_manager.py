@@ -11,8 +11,10 @@ import threading
 import time
 import zipfile
 import signal
+import re
 from datetime import datetime
 from pathlib import Path
+from pathlib import PurePosixPath
 from typing import Dict, Any, List, Optional
 import logging
 
@@ -238,9 +240,44 @@ class JobManager:
         # Add specific targets if requested
         targets = config.get('targets', [])
         if targets:
-            cmd.extend(targets)
+            cmd.extend(self._validate_snakemake_targets(targets))
 
         return cmd
+
+    @staticmethod
+    def _validate_snakemake_targets(targets: Any) -> List[str]:
+        """Validate user-provided Snakemake targets.
+
+        Targets are appended to the Snakemake argv list. Without validation, a client
+        could smuggle additional Snakemake options (e.g. '--snakefile', '--configfile')
+        by passing them as "targets".
+        """
+        if not isinstance(targets, list):
+            raise ValueError("Invalid targets: expected a list")
+
+        cleaned: List[str] = []
+        for raw in targets:
+            if not isinstance(raw, str):
+                raise ValueError("Invalid target: must be a string")
+            token = raw.strip()
+            if not token:
+                continue
+            if token.startswith("-"):
+                raise ValueError(f"Invalid target '{raw}': options are not allowed")
+            if any(ch.isspace() for ch in token):
+                raise ValueError(f"Invalid target '{raw}': whitespace is not allowed")
+
+            normalized = token.replace("\\", "/")
+            path = PurePosixPath(normalized)
+            if path.is_absolute() or ".." in path.parts:
+                raise ValueError(f"Invalid target '{raw}': absolute/parent paths not allowed")
+
+            if re.fullmatch(r"[A-Za-z0-9_./-]+", normalized) is None:
+                raise ValueError(f"Invalid target '{raw}': contains forbidden characters")
+
+            cleaned.append(normalized)
+
+        return cleaned
 
     def _create_job_config(self, job: Dict[str, Any], config_file: Path):
         """

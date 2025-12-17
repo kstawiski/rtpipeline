@@ -66,6 +66,13 @@ def _rt_env():
             env["PYTHONPATH"] = os.pathsep.join([repo_path, existing_py_path])
     else:
         env["PYTHONPATH"] = repo_path
+
+    # Ensure subprocess stages (python -m rtpipeline.cli) load the same project
+    # config file as Snakemake. Docker projects mount this as config.custom.yaml.
+    for candidate in (ROOT_DIR / "config.custom.yaml", ROOT_DIR / "config.yaml"):
+        if candidate.exists():
+            env.setdefault("RTPIPELINE_CONFIGFILE", str(candidate))
+            break
     return env
 
 # Ensure pip build isolation is disabled so packages like pyradiomics can reuse the conda-provided numpy.
@@ -625,8 +632,10 @@ if config.get("container_mode", False):
             """
             set -e
             export PATH="/opt/conda/envs/rtpipeline/bin:$PATH"
+            mkdir -p $(dirname {output.sentinel})
+            mkdir -p $(dirname {log})
             
-            /opt/conda/envs/rtpipeline/bin/python -m rtpipeline.cli \
+            if /opt/conda/envs/rtpipeline/bin/python -m rtpipeline.cli \
                 --dicom-root "{DICOM_ROOT}" \
                 --outdir "{OUTPUT_DIR}" \
                 --logs "{LOGS_DIR}" \
@@ -634,9 +643,11 @@ if config.get("container_mode", False):
                 --course-filter "{wildcards.patient}/{wildcards.course}" \
                 --max-workers {threads} \
                 --manifest "{input.manifest}" \
-                {params.extra_args} > {log} 2>&1
-            
-            echo "ok" > {output.sentinel}
+                {params.extra_args} > {log} 2>&1; then
+                echo "ok" > {output.sentinel}
+            else
+                echo "failed: see log" > {output.sentinel}
+            fi
             """
 else:
     rule segmentation_course:
@@ -658,7 +669,10 @@ else:
         shell:
             """
             set -e
-            python -m rtpipeline.cli \
+            mkdir -p $(dirname {output.sentinel})
+            mkdir -p $(dirname {log})
+            
+            if python -m rtpipeline.cli \
                 --dicom-root "{DICOM_ROOT}" \
                 --outdir "{OUTPUT_DIR}" \
                 --logs "{LOGS_DIR}" \
@@ -666,9 +680,11 @@ else:
                 --course-filter "{wildcards.patient}/{wildcards.course}" \
                 --max-workers {threads} \
                 --manifest "{input.manifest}" \
-                {params.extra_args} > {log} 2>&1
-            
-            echo "ok" > {output.sentinel}
+                {params.extra_args} > {log} 2>&1; then
+                echo "ok" > {output.sentinel}
+            else
+                echo "failed: see log" > {output.sentinel}
+            fi
             """
 
 
@@ -702,6 +718,12 @@ if config.get("container_mode", False):
             """
             set -e
             mkdir -p $(dirname {output.sentinel})
+            mkdir -p $(dirname {log})
+
+            if [ -f "{input.segmentation}" ] && grep -qi "^failed" "{input.segmentation}"; then
+                echo "skipped: upstream segmentation failed" > {output.sentinel}
+                exit 0
+            fi
             
             if [ "{params.enabled}" = "False" ]; then
                 echo "disabled" > {output.sentinel}
@@ -710,7 +732,7 @@ if config.get("container_mode", False):
             
             export PATH="/opt/conda/envs/rtpipeline/bin:$PATH"
             
-            /opt/conda/envs/rtpipeline/bin/python -m rtpipeline.cli \
+            if /opt/conda/envs/rtpipeline/bin/python -m rtpipeline.cli \
                 --dicom-root "{DICOM_ROOT}" \
                 --outdir "{OUTPUT_DIR}" \
                 --logs "{LOGS_DIR}" \
@@ -718,9 +740,11 @@ if config.get("container_mode", False):
                 --course-filter "{wildcards.patient}/{wildcards.course}" \
                 --max-workers {threads} \
                 --manifest "{input.manifest}" \
-                {params.extra_args} > {log} 2>&1
-
-            echo "ok" > {output.sentinel}
+                {params.extra_args} > {log} 2>&1; then
+                echo "ok" > {output.sentinel}
+            else
+                echo "failed: see log" > {output.sentinel}
+            fi
             """
 else:
     rule segmentation_custom_models:
@@ -744,13 +768,19 @@ else:
             """
             set -e
             mkdir -p $(dirname {output.sentinel})
+            mkdir -p $(dirname {log})
+
+            if [ -f "{input.segmentation}" ] && grep -qi "^failed" "{input.segmentation}"; then
+                echo "skipped: upstream segmentation failed" > {output.sentinel}
+                exit 0
+            fi
             
             if [ "{params.enabled}" = "False" ]; then
                 echo "disabled" > {output.sentinel}
                 exit 0
             fi
             
-            python -m rtpipeline.cli \
+            if python -m rtpipeline.cli \
                 --dicom-root "{DICOM_ROOT}" \
                 --outdir "{OUTPUT_DIR}" \
                 --logs "{LOGS_DIR}" \
@@ -758,9 +788,11 @@ else:
                 --course-filter "{wildcards.patient}/{wildcards.course}" \
                 --max-workers {threads} \
                 --manifest "{input.manifest}" \
-                {params.extra_args} > {log} 2>&1
-
-            echo "ok" > {output.sentinel}
+                {params.extra_args} > {log} 2>&1; then
+                echo "ok" > {output.sentinel}
+            else
+                echo "failed: see log" > {output.sentinel}
+            fi
             """
 
 
@@ -785,6 +817,15 @@ rule crop_ct_course:
         log_path = Path(log[0])
         log_path.parent.mkdir(parents=True, exist_ok=True)
 
+        seg_status = ""
+        try:
+            seg_status = Path(input.segmentation).read_text(encoding="utf-8").strip().lower()
+        except Exception:
+            seg_status = ""
+        if seg_status.startswith("failed"):
+            sentinel_path.write_text("skipped: upstream segmentation failed\n", encoding="utf-8")
+            return
+
         env = _rt_env()
         cmd = [
             sys.executable,
@@ -800,8 +841,11 @@ rule crop_ct_course:
         cmd.extend(_max_worker_args(job_threads))
 
         with log_path.open("w") as logf:
-            subprocess.run(cmd, check=True, stdout=logf, stderr=subprocess.STDOUT, env=env)
-        sentinel_path.write_text("ok\n", encoding="utf-8")
+            result = subprocess.run(cmd, check=False, stdout=logf, stderr=subprocess.STDOUT, env=env)
+        if result.returncode == 0:
+            sentinel_path.write_text("ok\n", encoding="utf-8")
+        else:
+            sentinel_path.write_text("failed: see log\n", encoding="utf-8")
 
 
 
@@ -826,6 +870,16 @@ rule dvh_course:
         sentinel_path.parent.mkdir(parents=True, exist_ok=True)
         log_path = Path(log[0])
         log_path.parent.mkdir(parents=True, exist_ok=True)
+
+        seg_status = ""
+        try:
+            seg_status = Path(input.segmentation).read_text(encoding="utf-8").strip().lower()
+        except Exception:
+            seg_status = ""
+        if seg_status.startswith("failed"):
+            sentinel_path.write_text("skipped: upstream segmentation failed\n", encoding="utf-8")
+            return
+
         env = _rt_env()
         cmd = [
             sys.executable,
@@ -842,8 +896,11 @@ rule dvh_course:
         if CUSTOM_STRUCTURES_CONFIG:
             cmd.extend(["--custom-structures", CUSTOM_STRUCTURES_CONFIG])
         with log_path.open("w") as logf:
-            subprocess.run(cmd, check=True, stdout=logf, stderr=subprocess.STDOUT, env=env)
-        sentinel_path.write_text("ok\n", encoding="utf-8")
+            result = subprocess.run(cmd, check=False, stdout=logf, stderr=subprocess.STDOUT, env=env)
+        if result.returncode == 0:
+            sentinel_path.write_text("ok\n", encoding="utf-8")
+        else:
+            sentinel_path.write_text("failed: see log\n", encoding="utf-8")
 
 
 _radiomics_input_dict = {
@@ -872,7 +929,7 @@ if config.get("container_mode", False):
         log:
             str(LOGS_DIR / "radiomics" / "{patient}_{course}.log")
         threads:
-            SNAKEMAKE_THREADS  # Full thread budget when serialized
+            RAD_RULE_THREADS
         resources:
             radiomics_workers=1  # Serialize radiomics jobs to avoid nested parallelization
         params:
@@ -887,8 +944,16 @@ if config.get("container_mode", False):
             export OMP_NUM_THREADS=1
             export OPENBLAS_NUM_THREADS=1
             export MKL_NUM_THREADS=1
+            mkdir -p $(dirname {log})
             echo "DEBUG: threads={threads} SNAKEMAKE_THREADS={SNAKEMAKE_THREADS}" >> {log}
-            /opt/conda/envs/rtpipeline-radiomics/bin/python -m rtpipeline.cli \
+            mkdir -p $(dirname {output.sentinel})
+
+            if [ -f "{input.segmentation}" ] && grep -qi "^failed" "{input.segmentation}"; then
+                echo "skipped: upstream segmentation failed" > {output.sentinel}
+                exit 0
+            fi
+            
+            if /opt/conda/envs/rtpipeline-radiomics/bin/python -m rtpipeline.cli \
                 --dicom-root "{DICOM_ROOT}" \
                 --outdir "{OUTPUT_DIR}" \
                 --logs "{LOGS_DIR}" \
@@ -896,9 +961,11 @@ if config.get("container_mode", False):
                 --course-filter "{wildcards.patient}/{wildcards.course}" \
                 --max-workers {threads} \
                 --manifest "{input.manifest}" \
-                {params.extra_args} >> {log} 2>&1
-
-            echo "ok" > {output.sentinel}
+                {params.extra_args} >> {log} 2>&1; then
+                echo "ok" > {output.sentinel}
+            else
+                echo "failed: see log" > {output.sentinel}
+            fi
             """
 else:
     rule radiomics_course:
@@ -909,7 +976,7 @@ else:
         log:
             str(LOGS_DIR / "radiomics" / "{patient}_{course}.log")
         threads:
-            SNAKEMAKE_THREADS  # Full thread budget when serialized
+            RAD_RULE_THREADS
         resources:
             radiomics_workers=1  # Serialize radiomics jobs to avoid nested parallelization
         conda:
@@ -926,8 +993,16 @@ else:
             export OMP_NUM_THREADS=1
             export OPENBLAS_NUM_THREADS=1
             export MKL_NUM_THREADS=1
+            mkdir -p $(dirname {log})
             echo "DEBUG: threads={threads} SNAKEMAKE_THREADS={SNAKEMAKE_THREADS}" >> {log}
-            python -m rtpipeline.cli \
+            mkdir -p $(dirname {output.sentinel})
+
+            if [ -f "{input.segmentation}" ] && grep -qi "^failed" "{input.segmentation}"; then
+                echo "skipped: upstream segmentation failed" > {output.sentinel}
+                exit 0
+            fi
+            
+            if python -m rtpipeline.cli \
                 --dicom-root "{DICOM_ROOT}" \
                 --outdir "{OUTPUT_DIR}" \
                 --logs "{LOGS_DIR}" \
@@ -935,9 +1010,11 @@ else:
                 --course-filter "{wildcards.patient}/{wildcards.course}" \
                 --max-workers {threads} \
                 --manifest "{input.manifest}" \
-                {params.extra_args} >> {log} 2>&1
-
-            echo "ok" > {output.sentinel}
+                {params.extra_args} >> {log} 2>&1; then
+                echo "ok" > {output.sentinel}
+            else
+                echo "failed: see log" > {output.sentinel}
+            fi
             """
 
 
@@ -961,6 +1038,16 @@ rule qc_course:
         sentinel_path.parent.mkdir(parents=True, exist_ok=True)
         log_path = Path(log[0])
         log_path.parent.mkdir(parents=True, exist_ok=True)
+
+        seg_status = ""
+        try:
+            seg_status = Path(input.segmentation).read_text(encoding="utf-8").strip().lower()
+        except Exception:
+            seg_status = ""
+        if seg_status.startswith("failed"):
+            sentinel_path.write_text("skipped: upstream segmentation failed\n", encoding="utf-8")
+            return
+
         env = _rt_env()
         cmd = [
             sys.executable,
@@ -975,8 +1062,11 @@ rule qc_course:
         ]
         cmd.extend(_max_worker_args(job_threads))
         with log_path.open("w") as logf:
-            subprocess.run(cmd, check=True, stdout=logf, stderr=subprocess.STDOUT, env=env)
-        sentinel_path.write_text("ok\n", encoding="utf-8")
+            result = subprocess.run(cmd, check=False, stdout=logf, stderr=subprocess.STDOUT, env=env)
+        if result.returncode == 0:
+            sentinel_path.write_text("ok\n", encoding="utf-8")
+        else:
+            sentinel_path.write_text("failed: see log\n", encoding="utf-8")
 
 
 
@@ -994,7 +1084,7 @@ if config.get("container_mode", False):
         log:
             str(LOGS_DIR / "radiomics_robustness" / "{patient}_{course}.log")
         threads:
-            SNAKEMAKE_THREADS  # Full thread budget when serialized
+            ROBUSTNESS_RULE_THREADS
         resources:
             robustness_workers=1  # Serialize robustness jobs like radiomics
         params:
@@ -1003,9 +1093,15 @@ if config.get("container_mode", False):
         shell:
             """
             mkdir -p $(dirname {output.sentinel})
+            mkdir -p $(dirname {log})
 
             if [ "{params.enabled}" = "False" ]; then
                 echo "disabled" > {output.sentinel}
+                exit 0
+            fi
+
+            if [ -f "{input.radiomics}" ] && grep -qi "^failed" "{input.radiomics}"; then
+                echo "skipped: upstream radiomics failed" > {output.sentinel}
                 exit 0
             fi
 
@@ -1034,7 +1130,7 @@ else:
         log:
             str(LOGS_DIR / "radiomics_robustness" / "{patient}_{course}.log")
         threads:
-            SNAKEMAKE_THREADS  # Full thread budget when serialized
+            ROBUSTNESS_RULE_THREADS
         resources:
             robustness_workers=1  # Serialize robustness jobs like radiomics
         conda:
@@ -1045,9 +1141,15 @@ else:
         shell:
             """
             mkdir -p $(dirname {output.sentinel})
+            mkdir -p $(dirname {log})
 
             if [ "{params.enabled}" = "False" ]; then
                 echo "disabled" > {output.sentinel}
+                exit 0
+            fi
+
+            if [ -f "{input.radiomics}" ] && grep -qi "^failed" "{input.radiomics}"; then
+                echo "skipped: upstream radiomics failed" > {output.sentinel}
                 exit 0
             fi
 
@@ -1174,10 +1276,24 @@ rule aggregate_results:
                 pid, cid, cdir = course
                 course_results = {}
 
-                def _read_prefer_parquet(xlsx_path: Path, name: str) -> pd.DataFrame:
-                    """Try Parquet first, fall back to Excel."""
+                def _read_prefer_parquet(xlsx_path: Path, name: str) -> pd.DataFrame | None:
+                    """Try Parquet first (if up-to-date), fall back to Excel.
+
+                    Important: per-course Parquet sidecars are best-effort and can be stale
+                    if a rerun updates only the XLSX. Never prefer an older Parquet over a
+                    newer XLSX, otherwise aggregate outputs may silently miss updated rows
+                    (e.g., newly added Custom ROIs).
+                    """
                     parquet_path = xlsx_path.with_suffix('.parquet')
-                    if parquet_path.exists():
+                    use_parquet = parquet_path.exists()
+                    if use_parquet and xlsx_path.exists():
+                        try:
+                            if parquet_path.stat().st_mtime < xlsx_path.stat().st_mtime:
+                                use_parquet = False
+                        except Exception:
+                            pass
+
+                    if use_parquet:
                         try:
                             return pd.read_parquet(parquet_path)
                         except Exception:

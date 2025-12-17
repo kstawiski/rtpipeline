@@ -83,56 +83,48 @@ class _QCTask:
         return self.course.dirs.root
 
 
-def _execute_segment_task(task: _SegmentTask) -> None:
+def _execute_segment_task(task: _SegmentTask) -> bool:
     from .segmentation import segment_course
     from .auto_rtstruct import build_auto_rtstruct
 
-    try:
-        segment_course(task.cfg, task.course.dirs.root, force=task.force_segmentation)
-        build_auto_rtstruct(task.course.dirs.root)
-    except Exception as exc:  # noqa: BLE001 - log and continue
-        logger.warning("Segmentation failed for %s: %s", task.course.dirs.root, exc)
+    segment_course(task.cfg, task.course.dirs.root, force=task.force_segmentation)
+    build_auto_rtstruct(task.course.dirs.root)
+    return True
 
 
-def _execute_custom_segmentation_task(task: _CustomSegmentationTask) -> None:
+def _execute_custom_segmentation_task(task: _CustomSegmentationTask) -> bool:
     from .custom_models import run_custom_models_for_course
 
-    try:
-        run_custom_models_for_course(task.cfg, task.course, task.models, force=task.force_custom)
-    except Exception as exc:  # noqa: BLE001 - log and continue
-        logger.warning("Custom segmentation failed for %s: %s", task.course.dirs.root, exc)
+    run_custom_models_for_course(task.cfg, task.course, task.models, force=task.force_custom)
+    return True
 
 
-def _execute_crop_task(task: _CropTask) -> None:
+def _execute_crop_task(task: _CropTask) -> bool:
     from .anatomical_cropping import apply_systematic_cropping
 
-    try:
-        apply_systematic_cropping(
-            task.course.dirs.root,
-            region=task.region,
-            superior_margin_cm=task.superior_margin_cm,
-            inferior_margin_cm=task.inferior_margin_cm,
-            keep_original=task.keep_original,
-        )
-    except Exception as exc:  # noqa: BLE001 - log and continue
-        logger.warning("CT cropping failed for %s: %s", task.course.dirs.root, exc)
+    apply_systematic_cropping(
+        task.course.dirs.root,
+        region=task.region,
+        superior_margin_cm=task.superior_margin_cm,
+        inferior_margin_cm=task.inferior_margin_cm,
+        keep_original=task.keep_original,
+    )
+    return True
 
 
-def _execute_dvh_task(task: _DVHTask) -> None:
+def _execute_dvh_task(task: _DVHTask) -> bool:
     from .dvh import dvh_for_course
 
-    try:
-        dvh_for_course(
-            task.course.dirs.root,
-            task.custom_structures,
-            parallel_workers=task.parallel_workers,
-            use_cropped=task.use_cropped,
-        )
-    except Exception as exc:  # noqa: BLE001 - log and continue
-        logger.warning("DVH failed for %s: %s", task.course.dirs.root, exc)
+    dvh_for_course(
+        task.course.dirs.root,
+        task.custom_structures,
+        parallel_workers=task.parallel_workers,
+        use_cropped=task.use_cropped,
+    )
+    return True
 
 
-def _execute_visualization_task(task: _VisualizationTask) -> None:
+def _execute_visualization_task(task: _VisualizationTask) -> bool:
     from .visualize import generate_axial_review, visualize_course
 
     try:
@@ -142,6 +134,7 @@ def _execute_visualization_task(task: _VisualizationTask) -> None:
             generate_axial_review(task.course.dirs.root)
         except Exception as exc:  # noqa: BLE001 - best-effort
             logger.debug("Axial review failed for %s: %s", task.course.dirs.root, exc)
+    return True
 
 
 def _execute_qc_task(task: _QCTask) -> bool | None:
@@ -964,9 +957,13 @@ def main(argv: list[str] | None = None) -> int:
             custom_structures_config = None
     else:
         # Use default pelvic template if it exists
-        default_pelvic_config = Path(__file__).parent.parent / "custom_structures_pelvic.yaml"
-        if default_pelvic_config.exists():
-            custom_structures_config = default_pelvic_config
+        packaged_pelvic_config = Path(__file__).with_name("custom_structures_pelvic.yaml")
+        repo_root_pelvic_config = Path(__file__).parent.parent / "custom_structures_pelvic.yaml"
+        if packaged_pelvic_config.exists():
+            custom_structures_config = packaged_pelvic_config
+            logger.info("Using packaged pelvic custom structures template: %s", custom_structures_config)
+        elif repo_root_pelvic_config.exists():
+            custom_structures_config = repo_root_pelvic_config
             logger.info("Using default pelvic custom structures template: %s", custom_structures_config)
         else:
             logger.info("No custom structures configuration provided")
@@ -974,13 +971,32 @@ def main(argv: list[str] | None = None) -> int:
     # Update config object
     cfg.custom_structures_config = custom_structures_config
 
-    # Load CT cropping settings from config.yaml
+    # Load project YAML settings (e.g., ct_cropping, organize) for CLI-driven stages.
+    #
+    # In Docker projects we mount the project configuration as config.custom.yaml and
+    # Snakemake is invoked with `--configfile /app/config.custom.yaml`. The CLI must
+    # therefore prefer config.custom.yaml (or an explicit env override) over the
+    # repository's default config.yaml to avoid silently using mismatched settings.
     try:
         import yaml
-        config_file_path = Path("config.yaml")
-        if config_file_path.exists():
+        config_file_path: Path | None = None
+        env_config_path = os.environ.get("RTPIPELINE_CONFIGFILE")
+        if env_config_path:
+            candidate = Path(env_config_path).expanduser()
+            if candidate.exists():
+                config_file_path = candidate
+            else:
+                logger.warning("RTPIPELINE_CONFIGFILE points to missing path: %s", candidate)
+        if config_file_path is None:
+            for candidate in (Path("config.custom.yaml"), Path("config.yaml")):
+                if candidate.exists():
+                    config_file_path = candidate
+                    break
+
+        if config_file_path is not None:
             with open(config_file_path) as f:
                 yaml_config = yaml.safe_load(f) or {}
+            logger.info("Loaded pipeline YAML settings from %s", config_file_path)
 
             ct_cropping = yaml_config.get("ct_cropping", {})
             cfg.ct_cropping_enabled = ct_cropping.get("enabled", False)
@@ -988,7 +1004,7 @@ def main(argv: list[str] | None = None) -> int:
             cfg.ct_cropping_superior_margin_cm = ct_cropping.get("superior_margin_cm", 2.0)
             cfg.ct_cropping_inferior_margin_cm = ct_cropping.get("inferior_margin_cm", 10.0)
             cfg.ct_cropping_use_for_dvh = ct_cropping.get("use_cropped_for_dvh", True)
-            cfg.ct_cropping_use_for_radiomics = ct_cropping.get("use_cropped_for_radiomics", True)
+            cfg.ct_cropping_use_for_radiomics = ct_cropping.get("use_cropped_for_radiomics", False)
             cfg.ct_cropping_keep_original = ct_cropping.get("keep_original", True)
 
             if cfg.ct_cropping_enabled:
@@ -1003,7 +1019,7 @@ def main(argv: list[str] | None = None) -> int:
             cfg.dicom_copy_verify_checksum = organize_config.get("verify_checksum", False)
             cfg.dicom_copy_cache_headers = organize_config.get("cache_headers", True)
     except Exception as e:
-        logger.debug("Could not load CT cropping config from YAML: %s", e)
+        logger.debug("Could not load project YAML config overrides: %s", e)
 
     # Configure custom segmentation models
     custom_models_root: Path | None = None
@@ -1097,6 +1113,8 @@ def main(argv: list[str] | None = None) -> int:
             from .meta import export_metadata
             export_metadata(cfg)
 
+    had_failures = False
+
     if "segmentation" in stages:
         courses = ensure_courses()
         selected_courses = _filter_courses(courses)
@@ -1138,7 +1156,7 @@ def main(argv: list[str] | None = None) -> int:
                 for course in selected_courses
             ]
 
-            run_tasks_with_adaptive_workers(
+            seg_results = run_tasks_with_adaptive_workers(
                 "Segmentation",
                 segment_tasks,
                 _execute_segment_task,
@@ -1147,6 +1165,8 @@ def main(argv: list[str] | None = None) -> int:
                 show_progress=True,
                 task_timeout=args.task_timeout,
             )
+            if any(r is None for r in seg_results):
+                had_failures = True
 
     if "segmentation_custom" in stages:
         from .custom_models import discover_custom_models  # lazy import
@@ -1209,7 +1229,7 @@ def main(argv: list[str] | None = None) -> int:
                     for course in selected_courses
                 ]
 
-                run_tasks_with_adaptive_workers(
+                custom_results = run_tasks_with_adaptive_workers(
                     "CustomSegmentation",
                     custom_tasks,
                     _execute_custom_segmentation_task,
@@ -1218,6 +1238,8 @@ def main(argv: list[str] | None = None) -> int:
                     show_progress=True,
                     task_timeout=args.task_timeout,
                 )
+                if any(r is None for r in custom_results):
+                    had_failures = True
 
     if "crop_ct" in stages:
         if not cfg.ct_cropping_enabled:
@@ -1240,7 +1262,7 @@ def main(argv: list[str] | None = None) -> int:
                     for course in selected_courses
                 ]
 
-                run_tasks_with_adaptive_workers(
+                crop_results = run_tasks_with_adaptive_workers(
                     "CT_Cropping",
                     crop_tasks,
                     _execute_crop_task,
@@ -1249,6 +1271,8 @@ def main(argv: list[str] | None = None) -> int:
                     show_progress=True,
                     task_timeout=args.task_timeout,
                 )
+                if any(r is None for r in crop_results):
+                    had_failures = True
 
     if "dvh" in stages:
         courses = ensure_courses()
@@ -1270,7 +1294,7 @@ def main(argv: list[str] | None = None) -> int:
                 for course in selected_courses
             ]
 
-            run_tasks_with_adaptive_workers(
+            dvh_results = run_tasks_with_adaptive_workers(
                 "DVH",
                 dvh_tasks,
                 _execute_dvh_task,
@@ -1279,6 +1303,8 @@ def main(argv: list[str] | None = None) -> int:
                 show_progress=True,
                 task_timeout=args.task_timeout,
             )
+            if any(r is None for r in dvh_results):
+                had_failures = True
 
     if "visualize" in stages:
         courses = ensure_courses()
@@ -1292,7 +1318,7 @@ def main(argv: list[str] | None = None) -> int:
 
             viz_tasks = [_VisualizationTask(course=course) for course in selected_courses]
 
-            run_tasks_with_adaptive_workers(
+            viz_results = run_tasks_with_adaptive_workers(
                 "Visualization",
                 viz_tasks,
                 _execute_visualization_task,
@@ -1301,6 +1327,8 @@ def main(argv: list[str] | None = None) -> int:
                 show_progress=True,
                 task_timeout=args.task_timeout,
             )
+            if any(r is None for r in viz_results):
+                had_failures = True
 
     if "radiomics" in stages:
         import os
@@ -1348,8 +1376,9 @@ def main(argv: list[str] | None = None) -> int:
                 from .radiomics import run_radiomics
                 try:
                     run_radiomics(cfg, selected_courses, cfg.custom_structures_config)
-                except Exception as exc:
-                    logger.warning("Radiomics stage failed: %s", exc)
+                except Exception as exc:  # noqa: BLE001 - report and continue to other stages
+                    had_failures = True
+                    logger.error("Radiomics stage failed: %s", exc, exc_info=True)
 
     if "qc" in stages:
         courses = ensure_courses()
@@ -1363,7 +1392,7 @@ def main(argv: list[str] | None = None) -> int:
 
             qc_tasks = [_QCTask(course=course) for course in selected_courses]
 
-            run_tasks_with_adaptive_workers(
+            qc_results = run_tasks_with_adaptive_workers(
                 "QC",
                 qc_tasks,
                 _execute_qc_task,
@@ -1372,8 +1401,10 @@ def main(argv: list[str] | None = None) -> int:
                 show_progress=True,
                 task_timeout=args.task_timeout,
             )
+            if any(r is None for r in qc_results):
+                had_failures = True
 
-    return 0
+    return 1 if had_failures else 0
 
 
 if __name__ == "__main__":
