@@ -13,7 +13,7 @@ The radiomics robustness module helps you identify stable, reproducible radiomic
 2. **Generating systematic perturbations** via the validated NTCV chain (Noise + Translation + Contour + Volume):[^zwanenburg2019]
    - **N**: Image noise injection (Gaussian noise in HU)
    - **T**: Rigid translations (±3-5 mm geometric shifts)
-   - **C**: Contour randomization (boundary noise simulation with supervoxel sampling)
+   - **C**: Contour randomization (morphological boundary randomization via erosion/dilation smoothing)
    - **V**: Volume adaptation (erosion/dilation ±15-30% volume change)
 3. **Re-extracting radiomics features** for each perturbation using PyRadiomics
 4. **Computing robustness metrics**: ICC(3,1) with analytical 95% CIs (via Pingouin[^pingouin]), CoV, QCD, and cohort-wide pass fractions.[^koo2016]
@@ -66,6 +66,34 @@ The module supports three intensity levels to balance computational cost and tho
 - **mild**: ~10-15 perturbations (QA spot checks, contouring pilot studies)
 - **standard**: 15-30 perturbations (recommended for most pelvic CT applications)
 - **aggressive**: 30-60 perturbations (research-grade, adaptive RT / multi-centre validation)
+
+### Perturbation Parameter Defaults
+
+The following table summarizes the default perturbation parameters used by rtpipeline:
+
+| Parameter | Default Value | Description |
+|-----------|---------------|-------------|
+| **N (Noise)** | `[0.0]` HU | Gaussian noise σ; set `noise_levels: [0.0, 10.0, 20.0]` to enable |
+| **T (Translation)** | `0.0` mm | Max shift; set `max_translation_mm: 3.0` for ±3mm |
+| **C (Contour)** | `0` realizations | Boundary randomizations; set `n_random_contour_realizations: 3` to enable |
+| **V (Volume)** | `[-0.15, 0.0, 0.15]` | Volume change ratios (±15% erosion/dilation) |
+| **Intensity** | `"standard"` | Controls perturbation count: mild/standard/aggressive |
+
+**Algorithm details:**
+
+- **Volume adaptation**: Iterative morphological erosion (τ < 0) or dilation (τ > 0) using ball structuring element until target volume change is achieved (max 20 iterations)
+- **Contour randomization**: Random selection of erosion→dilation or dilation→erosion smoothing sequence with radius proportional to `max_translation_mm / 2`
+- **Translation**: Rigid shifts applied via SimpleITK `ResampleImageFilter` with nearest-neighbor interpolation
+
+### Reproducibility: Random Seed
+
+For deterministic, reproducible perturbations, rtpipeline uses a fixed random seed:
+
+```python
+np.random.seed(42 + perturbation_count)
+```
+
+This ensures that the same configuration produces identical perturbation sequences across runs. The seed is incremented per perturbation to ensure variation while maintaining reproducibility. Currently, this seed is not user-configurable; for different seed values, modify the source code directly.
 
 ## Quick Start
 
@@ -265,6 +293,8 @@ This design treats perturbations as fixed "raters" of the same underlying subjec
 3. **Consistency:** We measure relative agreement, not absolute agreement (small systematic offsets are acceptable)
 
 **Methodological caveat:** This interpretation is one reasonable choice for perturbation-based robustness analysis, but it is not universally standardized. Other ICC formulations (e.g., absolute-agreement models or ICC(2,1)) could also be justified depending on study design. Users should verify that ICC(3,1) aligns with their specific reliability framework and may adjust the `icc_type` configuration if needed.
+
+**Conservative thresholding:** When 95% confidence intervals are available, rtpipeline uses the **lower CI bound** for robustness classification rather than the point estimate. This means a feature is classified as "robust" only if `ICC_CI95_lower ≥ 0.90`. This conservative approach reduces false positives in robustness labeling but may exclude borderline features. If the CI is unavailable, the point estimate is used directly.
 
 **Sample size note:** ICC estimates derived from small numbers of perturbations (e.g., <10) or small cohorts (<20 subjects) may be unstable with wide confidence intervals. Users should ensure sufficient perturbations (typically ≥10–15 per ROI) for reliable ICC estimation.
 
