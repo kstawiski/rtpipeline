@@ -87,12 +87,22 @@ def get(ds: FileDataset, tag: int | tuple[int, int] | str, default: Any = None) 
 
 
 def file_md5(path: str | Path, chunk: int = 1 << 20) -> str:
+    """Compute MD5 checksum of a file. Use file_sha256 for security-sensitive operations."""
     h = hashlib.md5()
     with open(path, "rb") as f:
         while True:
             b = f.read(chunk)
             if not b:
                 break
+            h.update(b)
+    return h.hexdigest()
+
+
+def file_sha256(path: str | Path, chunk: int = 1 << 20) -> str:
+    """Compute SHA-256 checksum of a file. Preferred over MD5 for security-sensitive operations."""
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for b in iter(lambda: f.read(chunk), b""):
             h.update(b)
     return h.hexdigest()
 
@@ -247,15 +257,21 @@ def snap_rtstruct_to_dose_grid(
     tolerance = abs(float(tolerance_mm)) if tolerance_mm is not None else 0.0
     if tolerance == 0.0:
         tolerance = 0.5
+
+    # Safety: do not "snap" contours that genuinely lie between dose planes.
+    # If tolerance approaches half the dose-plane spacing, thin-slice structures
+    # (e.g., CT 1.5mm with dose grid 3mm) can get two adjacent contour planes
+    # collapsed onto the same dose plane. dicompyler-core then interprets the
+    # second contour as a hole, catastrophically underestimating volume/DVH.
     try:
         spacings = np.diff(np.unique(planes))
         min_spacing = float(np.min(spacings)) if spacings.size else None
     except Exception:
         min_spacing = None
-    if min_spacing is not None:
-        spacing_tol = min_spacing * 1.5
-        if tolerance < spacing_tol:
-            tolerance = spacing_tol
+    if min_spacing is not None and min_spacing > 0:
+        max_safe_tol = 0.49 * min_spacing
+        if tolerance > max_safe_tol:
+            tolerance = max_safe_tol
 
     changed = False
     roi_sequence = getattr(rtstruct, "ROIContourSequence", []) or []
@@ -404,12 +420,25 @@ def run_tasks_with_adaptive_workers(
             log.info("%s: function or data not picklable, using threads instead of processes: %s", label, e)
             effective_use_processes = False
 
+    if task_timeout is not None and not effective_use_processes:
+        # ThreadPoolExecutor cannot cancel/kill running work. Enforcing timeouts would
+        # either block on shutdown or leak runaway threads. Prefer correctness over
+        # a misleading "timeout" log entry.
+        log.warning(
+            "%s: task_timeout=%ss requested but threads cannot be stopped safely; ignoring task_timeout",
+            label,
+            task_timeout,
+        )
+        task_timeout = None
+
     pending = list(range(total))
 
     while pending:
         current_indices = pending
         pending = []
         mem_failures: List[int] = []
+        timed_out_final: set[int] = set()
+        finalized: set[int] = set()
         workers = max(min_workers, min(workers, len(current_indices)))
 
         if show_progress:
@@ -423,14 +452,23 @@ def run_tasks_with_adaptive_workers(
             )
 
         ExecutorClass = ProcessPoolExecutor if effective_use_processes else ThreadPoolExecutor
-        with ExecutorClass(max_workers=workers) as ex:
+        baseline_child_pids: set[int] = set()
+        if effective_use_processes:
+            try:
+                import psutil  # type: ignore
+
+                baseline_child_pids = {proc.pid for proc in psutil.Process().children(recursive=False)}
+            except Exception:
+                baseline_child_pids = set()
+        ex = ExecutorClass(max_workers=workers)
+        restart_due_to_timeout = False
+        try:
             future_to_idx = {ex.submit(func, seq[idx]): idx for idx in current_indices}
 
             # Track task submission times for timeout enforcement
             task_start_times = {fut: perf_counter() for fut in future_to_idx}
             last_heartbeat = perf_counter()
             remaining = set(future_to_idx.keys())
-            timed_out_indices: set = set()
 
             # Watchdog polling loop: check every 10 seconds for progress or timeouts
             check_interval = 10.0
@@ -447,67 +485,167 @@ def run_tasks_with_adaptive_workers(
                     try:
                         results[idx] = fut.result(timeout=0)  # Should be instant since done
                         completed += 1
+                        finalized.add(idx)
 
                         # Log slow tasks
                         task_duration = now - task_start_times[fut]
                         if task_duration > 300:
-                            log.warning("%s: task #%d (%s) took %.1fs (slow)",
-                                       label, idx + 1, item_desc, task_duration)
+                            log.warning(
+                                "%s: task #%d (%s) took %.1fs (slow)",
+                                label,
+                                idx + 1,
+                                item_desc,
+                                task_duration,
+                            )
 
                     except Exception as exc:  # noqa: BLE001 - propagate with logging
                         if _is_memory_error(exc):
                             mem_failures.append(idx)
                             log.warning(
                                 "%s: memory pressure detected (task #%d: %s): %s",
-                                label, idx + 1, item_desc, exc,
+                                label,
+                                idx + 1,
+                                item_desc,
+                                exc,
                             )
                         else:
                             log.error(
                                 "%s: task #%d (%s) failed: %s",
-                                label, idx + 1, item_desc, exc, exc_info=True,
+                                label,
+                                idx + 1,
+                                item_desc,
+                                exc,
+                                exc_info=True,
                             )
                             completed += 1
+                            finalized.add(idx)
                             results[idx] = None
 
                     if show_progress:
                         _log_progress(log, label, completed, total, start)
 
-                # Check for timed-out tasks in remaining set
-                if task_timeout is not None and remaining:
+                # Check for timed-out tasks in remaining set.
+                #
+                # IMPORTANT: with ProcessPoolExecutor, cancelling a future does NOT stop the
+                # running work, and the executor will block on shutdown(wait=True). To keep
+                # timeouts meaningful, we terminate the worker pool and retry any unfinished
+                # tasks in a fresh pool. Timed-out tasks are finalized as failures.
+                if task_timeout is not None and remaining and effective_use_processes:
                     for fut in list(remaining):
                         idx = future_to_idx[fut]
-                        if idx in timed_out_indices:
-                            continue
                         elapsed = now - task_start_times[fut]
                         if elapsed > task_timeout:
                             item = seq[idx]
                             item_desc = _get_item_desc(item)
                             log.error(
-                                "%s: task #%d (%s) timed out after %.0fs (limit: %ds); "
-                                "marking as failed and continuing",
-                                label, idx + 1, item_desc, elapsed, task_timeout,
+                                "%s: task #%d (%s) timed out after %.0fs (limit: %ds); marking failed",
+                                label,
+                                idx + 1,
+                                item_desc,
+                                elapsed,
+                                task_timeout,
                             )
-                            timed_out_indices.add(idx)
+                            timed_out_final.add(idx)
+                            finalized.add(idx)
                             completed += 1
                             results[idx] = None
-                            # Cancel future (won't stop running process, but marks intent)
-                            fut.cancel()
-                            if show_progress:
-                                _log_progress(log, label, completed, total, start)
+                            remaining.discard(fut)
+                    if timed_out_final:
+                        restart_due_to_timeout = True
+                        break
 
                 # Periodic heartbeat to show we're still alive
                 if now - last_heartbeat > 60:
-                    pending_count = len(remaining) - len(timed_out_indices)
-                    log.info("%s: Still processing... %d/%d completed, %d pending (%.1f%%)",
-                            label, completed, total, pending_count,
-                            100 * completed / total if total > 0 else 0)
+                    log.info(
+                        "%s: Still processing... %d/%d completed, %d pending (%.1f%%)",
+                        label,
+                        completed,
+                        total,
+                        len(remaining),
+                        100 * completed / total if total > 0 else 0,
+                    )
                     last_heartbeat = now
+        finally:
+            if restart_due_to_timeout and effective_use_processes:
+                # Abort worker processes so we don't block here.
+                ex.shutdown(wait=False, cancel_futures=True)
+                try:
+                    processes = getattr(ex, "_processes", None)
+                    pids = []
+                    if processes:
+                        for proc in list(processes.values()):
+                            pid = getattr(proc, "pid", None)
+                            if isinstance(pid, int) and pid > 0:
+                                pids.append(pid)
+                            try:
+                                proc.terminate()
+                            except Exception:
+                                pass
+                        for proc in list(processes.values()):
+                            try:
+                                proc.join(timeout=5)
+                            except Exception:
+                                pass
 
-                # Remove timed-out futures from remaining set to avoid blocking
-                if timed_out_indices:
-                    remaining = {f for f in remaining if future_to_idx[f] not in timed_out_indices}
+                    # Escalate: terminate/kill any lingering worker processes (and children) when possible.
+                    if not pids and baseline_child_pids:
+                        try:
+                            import psutil  # type: ignore
 
-        if mem_failures:
+                            current_children = {proc.pid for proc in psutil.Process().children(recursive=False)}
+                            pids = sorted(pid for pid in (current_children - baseline_child_pids) if pid > 0)
+                        except Exception:
+                            pids = []
+                    if pids:
+                        try:
+                            import psutil  # type: ignore
+
+                            targets = []
+                            for pid in pids:
+                                try:
+                                    targets.append(psutil.Process(pid))
+                                except Exception:
+                                    continue
+                            children = []
+                            for proc in targets:
+                                try:
+                                    children.extend(proc.children(recursive=True))
+                                except Exception:
+                                    pass
+                            for proc in children + targets:
+                                try:
+                                    proc.terminate()
+                                except Exception:
+                                    pass
+                            _, alive = psutil.wait_procs(children + targets, timeout=3)
+                            for proc in alive:
+                                try:
+                                    proc.kill()
+                                except Exception:
+                                    pass
+                        except Exception:
+                            import signal
+
+                            for pid in pids:
+                                try:
+                                    os.kill(pid, signal.SIGKILL)
+                                except Exception:
+                                    pass
+                except Exception:
+                    pass
+            else:
+                ex.shutdown(wait=True)
+
+        if restart_due_to_timeout and effective_use_processes:
+            # Retry unfinished tasks (excluding finalized timeouts and successes/failures).
+            unfinished = [idx for idx in current_indices if idx not in finalized]
+            if unfinished:
+                # Conservative backoff to reduce contention and repeated hangs.
+                workers = max(min_workers, max(1, workers // 2))
+                pending = unfinished
+            else:
+                pending = []
+        elif mem_failures:
             if workers == min_workers == 1:
                 for idx in mem_failures:
                     item = seq[idx]

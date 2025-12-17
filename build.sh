@@ -94,7 +94,14 @@ done
 
 # Set full image name
 if [ -n "$USERNAME" ]; then
-    FULL_IMAGE_NAME="${REGISTRY}/${USERNAME}/${IMAGE_NAME}"
+    # Docker Hub does not require (and sometimes hides) the explicit `docker.io/` prefix
+    # when listing/tagging images locally. Prefer the canonical `username/name` tag for
+    # local builds/pushes when using Docker Hub.
+    if [ "$REGISTRY" = "docker.io" ] || [ "$REGISTRY" = "index.docker.io" ] || [ "$REGISTRY" = "registry-1.docker.io" ]; then
+        FULL_IMAGE_NAME="${USERNAME}/${IMAGE_NAME}"
+    else
+        FULL_IMAGE_NAME="${REGISTRY}/${USERNAME}/${IMAGE_NAME}"
+    fi
 else
     FULL_IMAGE_NAME="${IMAGE_NAME}"
 fi
@@ -351,7 +358,7 @@ fi
 # Show image info
 echo ""
 echo -e "${YELLOW}Image information:${NC}"
-docker images "${FULL_IMAGE_NAME}" | grep -E "(REPOSITORY|${IMAGE_NAME})"
+docker image ls "${FULL_IMAGE_NAME}:${TAG}" || docker image ls "${FULL_IMAGE_NAME}" || true
 
 # Push to registry if requested
 if [ "$PUSH" = true ]; then

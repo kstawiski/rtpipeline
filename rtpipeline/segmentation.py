@@ -175,12 +175,46 @@ def _ensure_local_dcm2niix(config: PipelineConfig) -> Optional[Path]:
     dest = config.logs_root / "bin"
     try:
         dest.mkdir(parents=True, exist_ok=True)
+        dest_resolved = dest.resolve()
+
+        def _safe_extract_bundled_zip(zf: zipfile.ZipFile, dest_root: Path) -> None:
+            """Extract bundled zip with path traversal protection."""
+            for member in zf.infolist():
+                raw_name = member.filename or ""
+                # Check for path traversal
+                if ".." in raw_name or raw_name.startswith("/"):
+                    logger.warning("Skipping unsafe bundled zip entry: %s", raw_name)
+                    continue
+                # Check for symlinks
+                try:
+                    mode = (member.external_attr >> 16) & 0o177777
+                    if stat.S_ISLNK(mode):
+                        logger.warning("Skipping symlink in bundled zip: %s", raw_name)
+                        continue
+                except Exception:
+                    pass
+                # Verify target stays within dest
+                target = (dest_root / raw_name).resolve()
+                try:
+                    target.relative_to(dest_root)
+                except ValueError:
+                    logger.warning("Skipping zip entry that escapes dest: %s", raw_name)
+                    continue
+                # Extract
+                if raw_name.endswith('/'):
+                    target.mkdir(parents=True, exist_ok=True)
+                else:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    with zf.open(member, 'r') as src, open(target, 'wb') as dst:
+                        import shutil as _shutil
+                        _shutil.copyfileobj(src, dst)
+
         if data is not None:
             with zipfile.ZipFile(io.BytesIO(data), "r") as zf:
-                zf.extractall(dest)
+                _safe_extract_bundled_zip(zf, dest_resolved)
         else:
             with zipfile.ZipFile(zpath, "r") as zf:
-                zf.extractall(dest)
+                _safe_extract_bundled_zip(zf, dest_resolved)
         # Search for binary inside extracted tree
         candidates = []
         for base, _, files in os.walk(dest):
@@ -199,8 +233,8 @@ def _ensure_local_dcm2niix(config: PipelineConfig) -> Optional[Path]:
             if os.name != "nt":
                 mode = os.stat(bin_path).st_mode
                 os.chmod(bin_path, mode | stat.S_IEXEC)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Failed to set executable permission on %s: %s", bin_path, exc)
         logger.info("Using bundled dcm2niix at %s", bin_path)
         return bin_path
     except Exception as e:
@@ -290,7 +324,7 @@ def _validate_totalseg_environment(config: PipelineConfig) -> bool:
         return True  # Don't fail completely on validation error
 
 
-@functools.lru_cache(maxsize=None)
+@functools.lru_cache(maxsize=32)
 def _totalseg_supported_output_types_cached(prefix: str, cmd: str) -> set[str]:
     """Inspect TotalSegmentator CLI to determine supported output types."""
     shell = os.environ.get('SHELL', '/bin/bash')
@@ -603,10 +637,8 @@ def _ensure_ct_nifti(
         if target.exists():
             target.unlink()
         shutil.move(str(generated), str(target))
-        for leftover in tmp_dir.iterdir():
-            if leftover.is_file():
-                leftover.unlink()
-        tmp_dir.rmdir()
+        # Clean up temp directory completely
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
     metadata.update(
         {
@@ -856,8 +888,9 @@ def segment_course(config: PipelineConfig, course_dir: Path, force: bool = False
 
             def _mr_ready(model: str) -> bool:
                 rt_path = base_dir_mr / f"{base_name_mr}--{model}.dcm"
-                mask_paths = list(base_dir_mr.glob(f"{base_name_mr}--{model}--*.nii*"))
-                return rt_path.exists() and len(mask_paths) > 0
+                # Masks are materialized with a "<model>--" prefix (mirrors CT segmentation layout)
+                mask_paths = list(base_dir_mr.glob(f"{model}--*.nii*"))
+                return rt_path.exists() and bool(mask_paths)
 
             if not force and all(_mr_ready(model) for model in mr_models):
                 continue
@@ -891,7 +924,7 @@ def segment_course(config: PipelineConfig, course_dir: Path, force: bool = False
                     if ok_nifti:
                         _materialize_masks(nifti_tmp, base_dir_mr, base_name_mr, model)
 
-                    masks_for_model = sorted(base_dir_mr.glob(f"{base_name_mr}--{model}--*.nii*"))
+                    masks_for_model = sorted(base_dir_mr.glob(f"{model}--*.nii*"))
                     if masks_for_model:
                         entry["masks"] = [str(p.relative_to(base_dir_mr)) for p in masks_for_model]
                     if entry["rtstruct"] or entry["masks"]:
