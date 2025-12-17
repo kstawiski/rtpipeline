@@ -247,6 +247,458 @@ def _sanitize_name(text: str, fallback: str = "item") -> str:
     return cleaned[:80]
 
 
+
+@dataclass
+class DoseClassification:
+    """Result of dose classification analysis."""
+    classification: str
+    selected_doses: List[Path]
+    selected_plans: List[Path]
+    excluded_doses: List[Path]
+    should_sum: bool
+    warnings: List[str]
+    reason: str
+
+
+def _extract_dose_metadata(dose_path: Path) -> dict:
+    """Extract relevant metadata from a dose file for classification."""
+    try:
+        ds = pydicom.dcmread(str(dose_path), stop_before_pixels=True)
+
+        ref_plan_uids = []
+        if hasattr(ds, "ReferencedRTPlanSequence") and ds.ReferencedRTPlanSequence:
+            for ref in ds.ReferencedRTPlanSequence:
+                uid = getattr(ref, "ReferencedSOPInstanceUID", None)
+                if uid:
+                    ref_plan_uids.append(str(uid))
+
+        origin = list(map(float, getattr(ds, "ImagePositionPatient", [0, 0, 0])))
+        pixel_spacing = list(map(float, getattr(ds, "PixelSpacing", [1.0, 1.0])))
+        rows = int(getattr(ds, "Rows", 1))
+        cols = int(getattr(ds, "Columns", 1))
+        frames = int(getattr(ds, "NumberOfFrames", 1) or 1)
+        offsets = getattr(ds, "GridFrameOffsetVector", None)
+
+        if offsets is not None and len(offsets) >= 2:
+            z_offsets = [float(o) for o in offsets]
+            z_min = origin[2] + min(z_offsets)
+            z_max = origin[2] + max(z_offsets)
+        else:
+            z_min = origin[2]
+            z_max = origin[2] + frames - 1
+
+        x_min = origin[0]
+        y_min = origin[1]
+        x_max = origin[0] + (cols - 1) * pixel_spacing[1]
+        y_max = origin[1] + (rows - 1) * pixel_spacing[0]
+
+        bbox = (x_min, y_min, z_min, x_max, y_max, z_max)
+
+        return {
+            "path": dose_path,
+            "sop_uid": str(getattr(ds, "SOPInstanceUID", "")),
+            "summation_type": str(getattr(ds, "DoseSummationType", "PLAN")).upper(),
+            "frame_of_reference": str(getattr(ds, "FrameOfReferenceUID", "")),
+            "referenced_plan_uids": ref_plan_uids,
+            "creation_date": str(getattr(ds, "InstanceCreationDate", "")),
+            "creation_time": str(getattr(ds, "InstanceCreationTime", "")),
+            "bbox": bbox,
+        }
+    except Exception as e:
+        logger.warning(f"Failed to extract dose metadata from {dose_path}: {e}")
+        return {
+            "path": dose_path,
+            "sop_uid": "",
+            "summation_type": "PLAN",
+            "frame_of_reference": "",
+            "referenced_plan_uids": [],
+            "creation_date": "",
+            "creation_time": "",
+            "bbox": None,
+        }
+
+
+def _extract_plan_metadata(plan_path: Path) -> dict:
+    """Extract relevant metadata from a plan file for classification."""
+    try:
+        ds = pydicom.dcmread(str(plan_path), stop_before_pixels=True)
+
+        prescriptions = []
+        if hasattr(ds, "DoseReferenceSequence") and ds.DoseReferenceSequence:
+            for dr in ds.DoseReferenceSequence:
+                rx_dose = getattr(dr, "TargetPrescriptionDose", None)
+                roi_name = str(getattr(dr, "DoseReferenceDescription", "")).lower()
+                if rx_dose is not None:
+                    prescriptions.append({
+                        "dose_gy": float(rx_dose),
+                        "roi_name": roi_name,
+                    })
+
+        plan_label = str(getattr(ds, "RTPlanLabel", "")).lower()
+        plan_name = str(getattr(ds, "RTPlanName", "")).lower()
+        plan_desc = str(getattr(ds, "RTPlanDescription", "")).lower()
+
+        plan_date = str(getattr(ds, "RTPlanDate", "") or getattr(ds, "InstanceCreationDate", ""))
+        plan_time = str(getattr(ds, "RTPlanTime", "") or getattr(ds, "InstanceCreationTime", ""))
+
+        return {
+            "path": plan_path,
+            "sop_uid": str(getattr(ds, "SOPInstanceUID", "")),
+            "frame_of_reference": str(getattr(ds, "FrameOfReferenceUID", "")),
+            "plan_label": plan_label,
+            "plan_name": plan_name,
+            "plan_description": plan_desc,
+            "plan_text": f"{plan_label} {plan_name} {plan_desc}",
+            "plan_date": plan_date,
+            "plan_time": plan_time,
+            "prescriptions": prescriptions,
+            "total_rx_gy": sum(p["dose_gy"] for p in prescriptions) if prescriptions else 0.0,
+        }
+    except Exception as e:
+        logger.warning(f"Failed to extract plan metadata from {plan_path}: {e}")
+        return {
+            "path": plan_path,
+            "sop_uid": "",
+            "frame_of_reference": "",
+            "plan_label": "",
+            "plan_name": "",
+            "plan_description": "",
+            "plan_text": "",
+            "plan_date": "",
+            "plan_time": "",
+            "prescriptions": [],
+            "total_rx_gy": 0.0,
+        }
+
+
+def _is_replan_text(plan_text: str) -> bool:
+    """Check if plan text indicates a replan/adaptation."""
+    replan_keywords = [
+        "replan", "re-plan", "adapt", "adaptive", "revision", "rev",
+        "v2", "v3", "v4", "v5", "copy", "fx change", "new ct", "resim",
+        "replanning", "modified", "adjusted", "corrected",
+    ]
+    text_lower = plan_text.lower()
+    return any(kw in text_lower for kw in replan_keywords)
+
+
+def _is_boost_text(plan_text: str) -> bool:
+    """Check if plan text indicates a boost phase."""
+    boost_keywords = [
+        "boost", "cone", "conedown", "cone down", "cd", "phase 2",
+        "phase2", "ph2", "reduced", "sib", "sequential",
+    ]
+    text_lower = plan_text.lower()
+    return any(kw in text_lower for kw in boost_keywords)
+
+
+def _bboxes_overlap(bbox1: tuple, bbox2: tuple, min_overlap_fraction: float = 0.3) -> bool:
+    """
+    Check if two 3D bounding boxes have significant spatial overlap.
+
+    Args:
+        bbox1: (x_min, y_min, z_min, x_max, y_max, z_max) for dose 1
+        bbox2: (x_min, y_min, z_min, x_max, y_max, z_max) for dose 2
+        min_overlap_fraction: Minimum fraction of smaller volume that must overlap (0-1)
+
+    Returns:
+        True if bboxes overlap significantly, False otherwise
+    """
+    if bbox1 is None or bbox2 is None:
+        return True
+
+    x1_min, y1_min, z1_min, x1_max, y1_max, z1_max = bbox1
+    x2_min, y2_min, z2_min, x2_max, y2_max, z2_max = bbox2
+
+    x_overlap = max(0, min(x1_max, x2_max) - max(x1_min, x2_min))
+    y_overlap = max(0, min(y1_max, y2_max) - max(y1_min, y2_min))
+    z_overlap = max(0, min(z1_max, z2_max) - max(z1_min, z2_min))
+
+    intersection_vol = x_overlap * y_overlap * z_overlap
+
+    if intersection_vol <= 0:
+        return False
+
+    vol1 = (x1_max - x1_min) * (y1_max - y1_min) * (z1_max - z1_min)
+    vol2 = (x2_max - x2_min) * (y2_max - y2_min) * (z2_max - z2_min)
+
+    if vol1 <= 0 or vol2 <= 0:
+        return True
+
+    smaller_vol = min(vol1, vol2)
+    overlap_fraction = intersection_vol / smaller_vol
+
+    return overlap_fraction >= min_overlap_fraction
+
+
+def _prescription_similarity(rx1: float, rx2: float) -> float:
+    """Calculate similarity between two prescription doses (0-1)."""
+    if rx1 == 0 and rx2 == 0:
+        return 1.0
+    if rx1 == 0 or rx2 == 0:
+        return 0.0
+    diff = abs(rx1 - rx2)
+    avg = (rx1 + rx2) / 2
+    return max(0.0, 1.0 - (diff / avg))
+
+
+def _classify_doses(
+    plan_paths: List[Path],
+    dose_paths: List[Path],
+    max_total_dose_gy: float = 100.0,
+) -> DoseClassification:
+    """
+    Classify doses using 5-phase algorithm to determine correct summation strategy.
+
+    Phase 1: Detect TPS-provided PLAN_SUM (use directly)
+    Phase 2: Separate courses by FrameOfReference
+    Phase 3: Detect replans (keep first plan only - ITT)
+    Phase 4: Identify primary+boost (should sum)
+    Phase 5: Apply plausibility safeguards
+    """
+    warnings: List[str] = []
+
+    if not dose_paths:
+        return DoseClassification(
+            classification="no_doses",
+            selected_doses=[],
+            selected_plans=plan_paths,
+            excluded_doses=[],
+            should_sum=False,
+            warnings=["No dose files found"],
+            reason="No dose files available",
+        )
+
+    dose_meta = [_extract_dose_metadata(p) for p in dose_paths]
+    plan_meta = [_extract_plan_metadata(p) for p in plan_paths] if plan_paths else []
+
+    plan_by_uid = {pm["sop_uid"]: pm for pm in plan_meta if pm["sop_uid"]}
+
+    plan_sum_doses = [d for d in dose_meta if d["summation_type"] == "PLAN_SUM"]
+    individual_doses = [d for d in dose_meta if d["summation_type"] != "PLAN_SUM"]
+
+    if plan_sum_doses:
+        best_sum = max(plan_sum_doses, key=lambda d: len(d["referenced_plan_uids"]))
+
+        covered_plan_uids = set(best_sum["referenced_plan_uids"])
+
+        excluded_dose_paths = []
+        for ind_dose in individual_doses:
+            ind_refs = set(ind_dose["referenced_plan_uids"])
+            if ind_refs and ind_refs.issubset(covered_plan_uids):
+                excluded_dose_paths.append(ind_dose["path"])
+
+        logger.info(
+            "Phase 1: Found TPS PLAN_SUM covering %d plans, excluding %d individual doses",
+            len(covered_plan_uids), len(excluded_dose_paths)
+        )
+
+        return DoseClassification(
+            classification="PLAN_SUM_used",
+            selected_doses=[best_sum["path"]],
+            selected_plans=plan_paths,
+            excluded_doses=excluded_dose_paths,
+            should_sum=False,
+            warnings=warnings,
+            reason=f"TPS-provided PLAN_SUM found (references {len(covered_plan_uids)} plans)",
+        )
+
+    frame_of_refs = set(d["frame_of_reference"] for d in dose_meta if d["frame_of_reference"])
+    if len(frame_of_refs) > 1:
+        warnings.append(f"Multiple FrameOfReferenceUIDs found: {len(frame_of_refs)} - treating as separate courses")
+        logger.warning("Phase 2: Multiple FrameOfReference detected - using first dose only (conservative)")
+        return DoseClassification(
+            classification="separate_courses_no_sum",
+            selected_doses=[dose_meta[0]["path"]],
+            selected_plans=plan_paths[:1] if plan_paths else [],
+            excluded_doses=[d["path"] for d in dose_meta[1:]],
+            should_sum=False,
+            warnings=warnings,
+            reason="Multiple FrameOfReferenceUIDs - cannot sum across different coordinate systems",
+        )
+
+    if len(dose_meta) >= 2:
+        all_overlap = True
+        for i in range(len(dose_meta)):
+            for j in range(i + 1, len(dose_meta)):
+                bbox1 = dose_meta[i].get("bbox")
+                bbox2 = dose_meta[j].get("bbox")
+                if not _bboxes_overlap(bbox1, bbox2, min_overlap_fraction=0.3):
+                    all_overlap = False
+                    logger.info(
+                        "Phase 2.5: Non-overlapping dose grids detected: %s vs %s",
+                        dose_meta[i]["path"].name, dose_meta[j]["path"].name
+                    )
+                    break
+            if not all_overlap:
+                break
+
+        if not all_overlap:
+            warnings.append("Dose grids do not spatially overlap - likely treating different anatomical regions")
+            logger.warning("Phase 2.5: Non-overlapping dose grids - using first dose only (different regions)")
+            return DoseClassification(
+                classification="separate_regions_no_sum",
+                selected_doses=[dose_meta[0]["path"]],
+                selected_plans=plan_paths[:1] if plan_paths else [],
+                excluded_doses=[d["path"] for d in dose_meta[1:]],
+                should_sum=False,
+                warnings=warnings,
+                reason="Dose grids do not spatially overlap - cannot sum different anatomical regions",
+            )
+
+    if len(dose_meta) == 1:
+        return DoseClassification(
+            classification="single_dose",
+            selected_doses=[dose_meta[0]["path"]],
+            selected_plans=plan_paths,
+            excluded_doses=[],
+            should_sum=False,
+            warnings=warnings,
+            reason="Single dose file - no summation needed",
+        )
+
+    doses_with_plans = []
+    for dm in dose_meta:
+        linked_plans = []
+        for ref_uid in dm["referenced_plan_uids"]:
+            if ref_uid in plan_by_uid:
+                linked_plans.append(plan_by_uid[ref_uid])
+        doses_with_plans.append({
+            "dose": dm,
+            "plans": linked_plans,
+        })
+
+    def get_earliest_plan_date(dwp: dict) -> str:
+        dates = [p["plan_date"] for p in dwp["plans"] if p["plan_date"]]
+        return min(dates) if dates else "99999999"
+
+    doses_with_plans.sort(key=get_earliest_plan_date)
+
+    replan_detected = False
+    first_dose = doses_with_plans[0] if doses_with_plans else None
+    excluded_replans = []
+
+    for i, dwp in enumerate(doses_with_plans[1:], 1):
+        later_plans = dwp["plans"]
+        first_plans = first_dose["plans"] if first_dose else []
+
+        is_replan = False
+
+        for lp in later_plans:
+            if _is_replan_text(lp["plan_text"]):
+                is_replan = True
+                logger.info("Phase 3: Detected replan by text: '%s'", lp["plan_text"][:50])
+                break
+
+        if not is_replan and first_plans and later_plans:
+            first_rx = first_plans[0]["total_rx_gy"]
+            later_rx = later_plans[0]["total_rx_gy"]
+            if first_rx > 0 and later_rx > 0:
+                similarity = _prescription_similarity(first_rx, later_rx)
+                if similarity > 0.9:
+                    is_boost = any(_is_boost_text(p["plan_text"]) for p in later_plans)
+                    if not is_boost:
+                        is_replan = True
+                        logger.info(
+                            "Phase 3: Detected replan by similar Rx: %.1f Gy vs %.1f Gy (similarity=%.2f)",
+                            first_rx, later_rx, similarity
+                        )
+
+        if is_replan:
+            replan_detected = True
+            excluded_replans.append(dwp["dose"]["path"])
+
+    if replan_detected:
+        warnings.append(f"Replan detected - using first plan only (ITT), excluding {len(excluded_replans)} later dose(s)")
+        return DoseClassification(
+            classification="replan_itt_first",
+            selected_doses=[first_dose["dose"]["path"]] if first_dose else [],
+            selected_plans=[p["path"] for p in (first_dose["plans"] if first_dose else [])],
+            excluded_doses=excluded_replans,
+            should_sum=False,
+            warnings=warnings,
+            reason="Replan detected - intention-to-treat uses first plan only",
+        )
+
+    boost_detected = False
+    primary_doses = []
+    boost_doses = []
+
+    for dwp in doses_with_plans:
+        is_boost = any(_is_boost_text(p["plan_text"]) for p in dwp["plans"])
+        if is_boost:
+            boost_detected = True
+            boost_doses.append(dwp["dose"]["path"])
+        else:
+            primary_doses.append(dwp["dose"]["path"])
+
+    if not boost_detected and len(doses_with_plans) >= 2:
+        doses_with_rx = [
+            dwp for dwp in doses_with_plans
+            if dwp["plans"] and dwp["plans"][0]["total_rx_gy"] > 0
+        ]
+
+        if len(doses_with_rx) >= 2:
+            rx_sorted = sorted(doses_with_rx, key=lambda d: d["plans"][0]["total_rx_gy"])
+
+            lower_rx = rx_sorted[0]["plans"][0]["total_rx_gy"]
+            higher_rx = rx_sorted[-1]["plans"][0]["total_rx_gy"]
+
+            if higher_rx > lower_rx * 1.1:
+                boost_detected = True
+                primary_doses = [rx_sorted[0]["dose"]["path"]]
+                boost_doses = [d["dose"]["path"] for d in rx_sorted[1:]]
+                logger.info(
+                    "Phase 4: Detected primary+boost by Rx pattern: %.1f Gy (primary) + %.1f Gy (higher Rx)",
+                    lower_rx, higher_rx
+                )
+
+    if boost_detected and primary_doses and boost_doses:
+        all_doses = primary_doses + boost_doses
+
+        total_rx = sum(
+            dwp["plans"][0]["total_rx_gy"]
+            for dwp in doses_with_plans
+            if dwp["plans"]
+        )
+
+        if total_rx > max_total_dose_gy:
+            warnings.append(
+                f"PLAUSIBILITY WARNING: Total Rx {total_rx:.1f} Gy exceeds threshold {max_total_dose_gy:.1f} Gy - "
+                "possible summation error, verify data integrity"
+            )
+            logger.warning(
+                "Phase 5: Implausible total dose %.1f Gy > %.1f Gy threshold - flagging but proceeding",
+                total_rx, max_total_dose_gy
+            )
+
+        return DoseClassification(
+            classification="primary_boost_summed",
+            selected_doses=all_doses,
+            selected_plans=plan_paths,
+            excluded_doses=[],
+            should_sum=True,
+            warnings=warnings,
+            reason=f"Primary + boost detected ({len(primary_doses)} primary + {len(boost_doses)} boost)",
+        )
+
+    warnings.append("Ambiguous case - cannot confidently classify as primary+boost, using first dose only")
+    logger.warning(
+        "Phase 4: Ambiguous case with %d doses - conservative: using first only",
+        len(dose_meta)
+    )
+
+    return DoseClassification(
+        classification="ambiguous_no_sum",
+        selected_doses=[dose_meta[0]["path"]],
+        selected_plans=plan_paths[:1] if plan_paths else [],
+        excluded_doses=[d["path"] for d in dose_meta[1:]],
+        should_sum=False,
+        warnings=warnings,
+        reason="Ambiguous case - cannot confidently identify primary+boost relationship",
+    )
+
+
 def _mask_array_to_image(ct_img: sitk.Image, mask: np.ndarray) -> Optional[sitk.Image]:
     arr = np.asarray(mask)
     if arr.size == 0:
@@ -655,11 +1107,14 @@ def _sum_doses_with_resample(
         z_positions_ref = np.array([origin_ref[2] + float(offset) for offset in offsets_ref])
     else:
         z_positions_ref = np.array([origin_ref[2] + i for i in range(frames_ref)])
-    
+
+    if len(z_positions_ref) > 1 and z_positions_ref[0] > z_positions_ref[-1]:
+        z_positions_ref = z_positions_ref[::-1]
+        accumulated = accumulated[::-1, :, :]
+
     y_positions_ref = np.array([origin_ref[1] + r * pixel_spacing_ref[0] for r in range(rows_ref)])
     x_positions_ref = np.array([origin_ref[0] + c * pixel_spacing_ref[1] for c in range(cols_ref)])
 
-    Z, Y, X = np.meshgrid(z_positions_ref, y_positions_ref, x_positions_ref, indexing="ij")
 
     source_dose_uids = []
     uid = str(getattr(ds_ref, "SOPInstanceUID", ""))
@@ -695,6 +1150,12 @@ def _sum_doses_with_resample(
             if frames == 1:
                 arr = arr.reshape((1, rows, cols))
 
+            if len(z_coords) > 1 and z_coords[0] > z_coords[-1]:
+                z_coords = z_coords[::-1]
+                arr = arr[::-1, :, :]
+
+            Z, Y, X = np.meshgrid(z_positions_ref, y_positions_ref, x_positions_ref, indexing="ij")
+
             z_min, z_max = z_coords.min(), z_coords.max()
             y_min, y_max = origin[1], origin[1] + (rows - 1) * pixel_spacing[0]
             x_min, x_max = origin[0], origin[0] + (cols - 1) * pixel_spacing[1]
@@ -703,13 +1164,16 @@ def _sum_doses_with_resample(
             Yc = np.clip(Y, y_min, y_max)
             Xc = np.clip(X, x_min, x_max)
 
-            z_idx = np.searchsorted(z_coords, Zc) - 0.5
+            z_idx_values = np.arange(len(z_coords), dtype=np.float64)
+            z_idx = np.interp(Zc.ravel(), z_coords, z_idx_values).reshape(Zc.shape)
             y_idx = (Yc - origin[1]) / pixel_spacing[0]
             x_idx = (Xc - origin[0]) / pixel_spacing[1]
 
             coords = np.stack([z_idx, y_idx, x_idx], axis=0)
             resampled = map_coordinates(arr, coords, order=1, mode="constant", cval=0.0)
             resampled = resampled.reshape((frames_ref, rows_ref, cols_ref))
+
+            del Z, Y, X, Zc, Yc, Xc
             
             accumulated += resampled
             
@@ -953,28 +1417,43 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
         dose_sop_uid: Optional[str] = None
         source_plan_uids: list[str] = []
         source_dose_uids: list[str] = []
+        dose_classification_info: dict = {}
 
         if plan_paths and dose_paths:
-            if len(plan_paths) == 1 and len(dose_paths) == 1:
-                _safe_copy(plan_paths[0], rp_dst, copy_manager=copy_manager)
-                _safe_copy(dose_paths[0], rd_dst, copy_manager=copy_manager)
-                try:
-                    ds_plan_single = pydicom.dcmread(str(plan_paths[0]), stop_before_pixels=True)
-                    plan_sop_uid = str(getattr(ds_plan_single, "SOPInstanceUID", "") or None)
-                except Exception:
-                    plan_sop_uid = None
-                try:
-                    ds_dose_single = pydicom.dcmread(str(dose_paths[0]), stop_before_pixels=True)
-                    dose_sop_uid = str(getattr(ds_dose_single, "SOPInstanceUID", "") or None)
-                except Exception:
-                    dose_sop_uid = None
-                if plan_sop_uid:
-                    source_plan_uids.append(plan_sop_uid)
-                if dose_sop_uid:
-                    source_dose_uids.append(dose_sop_uid)
-            else:
-                plan_sum_ds, plan_ds_list, source_plan_uids = _create_summed_plan(plan_paths, total_rx if total_rx else None)
-                dose_sum_ds, dose_ds_list, source_dose_uids = _sum_doses_with_resample(dose_paths, plan_sum_ds, plan_ds_list)
+            dose_classification = _classify_doses(
+                plan_paths=plan_paths,
+                dose_paths=dose_paths,
+                max_total_dose_gy=100.0,
+            )
+
+            logger.info(
+                "Dose classification for %s/%s: %s (%s)",
+                patient_id, course_id, dose_classification.classification, dose_classification.reason
+            )
+
+            for warn in dose_classification.warnings:
+                logger.warning("Dose classification warning: %s", warn)
+
+            dose_classification_info = {
+                "classification": dose_classification.classification,
+                "reason": dose_classification.reason,
+                "selected_doses": [str(p) for p in dose_classification.selected_doses],
+                "excluded_doses": [str(p) for p in dose_classification.excluded_doses],
+                "should_sum": dose_classification.should_sum,
+                "warnings": dose_classification.warnings,
+            }
+
+            selected_doses = dose_classification.selected_doses
+            selected_plans = dose_classification.selected_plans if dose_classification.selected_plans else plan_paths
+
+            if dose_classification.should_sum and len(selected_doses) > 1:
+                logger.info("Summing %d doses (primary + boost)", len(selected_doses))
+                plan_sum_ds, plan_ds_list, source_plan_uids = _create_summed_plan(
+                    selected_plans, total_rx if total_rx else None
+                )
+                dose_sum_ds, dose_ds_list, source_dose_uids = _sum_doses_with_resample(
+                    selected_doses, plan_sum_ds, plan_ds_list
+                )
 
                 ref_dose_item = Dataset()
                 ref_dose_item.ReferencedSOPClassUID = str(getattr(dose_sum_ds, "SOPClassUID", "1.2.840.10008.5.1.4.1.1.481.2"))
@@ -986,6 +1465,45 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
 
                 plan_sop_uid = str(plan_sum_ds.SOPInstanceUID)
                 dose_sop_uid = str(dose_sum_ds.SOPInstanceUID)
+
+            elif len(selected_doses) == 1:
+                _safe_copy(selected_doses[0], rd_dst, copy_manager=copy_manager)
+                try:
+                    ds_dose_single = pydicom.dcmread(str(selected_doses[0]), stop_before_pixels=True)
+                    dose_sop_uid = str(getattr(ds_dose_single, "SOPInstanceUID", "") or None)
+                except Exception:
+                    dose_sop_uid = None
+                if dose_sop_uid:
+                    source_dose_uids.append(dose_sop_uid)
+
+                if len(selected_plans) == 1:
+                    _safe_copy(selected_plans[0], rp_dst, copy_manager=copy_manager)
+                    try:
+                        ds_plan_single = pydicom.dcmread(str(selected_plans[0]), stop_before_pixels=True)
+                        plan_sop_uid = str(getattr(ds_plan_single, "SOPInstanceUID", "") or None)
+                    except Exception:
+                        plan_sop_uid = None
+                    if plan_sop_uid:
+                        source_plan_uids.append(plan_sop_uid)
+                else:
+                    plan_sum_ds, plan_ds_list, source_plan_uids = _create_summed_plan(
+                        selected_plans, total_rx if total_rx else None
+                    )
+                    plan_sum_ds.save_as(str(rp_dst))
+                    plan_sop_uid = str(plan_sum_ds.SOPInstanceUID)
+
+            else:
+                logger.warning("No doses selected after classification for %s/%s", patient_id, course_id)
+                if plan_paths:
+                    _safe_copy(plan_paths[0], rp_dst, copy_manager=copy_manager)
+                    try:
+                        ds_plan_single = pydicom.dcmread(str(plan_paths[0]), stop_before_pixels=True)
+                        plan_sop_uid = str(getattr(ds_plan_single, "SOPInstanceUID", "") or None)
+                    except Exception:
+                        plan_sop_uid = None
+                    if plan_sop_uid:
+                        source_plan_uids.append(plan_sop_uid)
+
         else:
             if plan_paths:
                 _safe_copy(plan_paths[0], rp_dst, copy_manager=copy_manager)
