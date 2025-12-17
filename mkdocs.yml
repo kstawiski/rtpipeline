@@ -8,27 +8,33 @@ theme:
   name: material
   palette:
     - scheme: default
-      primary: teal
-      accent: purple
+      primary: indigo
+      accent: light-blue
       toggle:
-        icon: material/brightness-7
+        icon: material/weather-sunny
         name: Switch to dark mode
     - scheme: slate
-      primary: teal
-      accent: purple
+      primary: indigo
+      accent: light-blue
       toggle:
-        icon: material/brightness-4
+        icon: material/weather-night
         name: Switch to light mode
+  font:
+    text: Inter
+    code: JetBrains Mono
   features:
+    - navigation.instant
+    - navigation.tracking
     - navigation.tabs
     - navigation.sections
     - navigation.top
     - navigation.indexes
     - search.suggest
     - search.highlight
+    - search.share
+    - header.autohide
     - content.code.copy
-    - content.code.annotate
-    - content.tabs.link
+    - content.tooltips
   icon:
     repo: fontawesome/brands/github
 
@@ -70,9 +76,14 @@ markdown_extensions:
 plugins:
   - search
 
+extra_css:
+  - stylesheets/extra.css
+
 extra_javascript:
   - https://polyfill.io/v3/polyfill.min.js?features=es6
   - https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js
+  - https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js
+  - javascripts/hero-animation.js
 
 nav:
   - Home: index.md
