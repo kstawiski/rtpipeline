@@ -80,6 +80,25 @@ class PipelineConfig:
     custom_models_conda_activate: str | None = None
     custom_models_retain_weights: bool = True
 
+    # Body region QC and model gating
+    # Maps model names to their required body regions and confidence thresholds
+    # Example: {"cardiac_STOPSTORM": {"required_regions": ["THORAX"], "min_confidence": 0.6}}
+    model_region_requirements: dict[str, dict] = field(default_factory=lambda: {
+        # Custom models (cardiac)
+        "cardiac_STOPSTORM": {"required_regions": ["THORAX"], "min_confidence": 0.6},
+        # TotalSegmentator extra models (thorax-specific)
+        "heartchambers_highres": {"required_regions": ["THORAX"], "min_confidence": 0.5},
+        "coronary_arteries": {"required_regions": ["THORAX"], "min_confidence": 0.6},
+        # Head/neck models
+        "head_neck_oar": {"required_regions": ["HEAD_NECK"], "min_confidence": 0.5},
+        "head_glands_cavities": {"required_regions": ["HEAD_NECK"], "min_confidence": 0.5},
+        # Generic models (no region requirements)
+        "total": {"required_regions": []},
+        "total_mr": {"required_regions": []},
+    })
+    # Whether to block models when required regions are missing (True) or just warn (False)
+    body_region_qc_block_missing: bool = True
+
     # Radiomics robustness analysis
     radiomics_robustness_enabled: bool = True
     radiomics_robustness_config: dict = field(default_factory=dict)

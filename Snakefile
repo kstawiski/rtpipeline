@@ -1276,6 +1276,26 @@ rule aggregate_results:
                 pid, cid, cdir = course
                 course_results = {}
 
+                # Load body region QC data (phase/modality) for this course
+                body_region_data = {}
+                body_region_path = cdir / "qc_reports" / "body_regions.json"
+                if body_region_path.exists():
+                    try:
+                        with open(body_region_path) as f:
+                            body_region_data = json.load(f)
+                    except (OSError, json.JSONDecodeError) as e:
+                        errors.append(f"Body region QC read error {pid}/{cid}: {e}")
+
+                # Extract phase and modality from QC data
+                contrast_phase = body_region_data.get("contrast_phase", {}).get("phase", "unknown")
+                image_modality = body_region_data.get("image_modality", {}).get("modality", "unknown")
+                # Also extract body regions for context
+                body_regions_present = []
+                for region in ["HEAD_NECK", "THORAX", "ABDOMEN", "PELVIS"]:
+                    if body_region_data.get("body_regions", {}).get(f"CONTAINS_{region}", False):
+                        body_regions_present.append(region)
+                body_regions_str = ",".join(body_regions_present) if body_regions_present else "unknown"
+
                 def _read_prefer_parquet(xlsx_path: Path, name: str) -> pd.DataFrame | None:
                     """Try Parquet first (if up-to-date), fall back to Excel.
 
@@ -1317,6 +1337,10 @@ rule aggregate_results:
                             df.insert(1, "course_id", cid)
                         if "structure_cropped" not in df.columns:
                             df["structure_cropped"] = False
+                        # Add phase, modality, and body regions from QC
+                        df["contrast_phase"] = contrast_phase
+                        df["image_modality"] = image_modality
+                        df["body_regions"] = body_regions_str
                         course_results['dvh'] = df
                 except Exception as e:
                     errors.append(f"DVH error {pid}/{cid}: {e}")
@@ -1336,6 +1360,10 @@ rule aggregate_results:
                             df["course_id"] = df["course_id"].fillna(cid)
                         if "structure_cropped" not in df.columns:
                             df["structure_cropped"] = False
+                        # Add phase, modality, and body regions from QC
+                        df["contrast_phase"] = contrast_phase
+                        df["image_modality"] = image_modality
+                        df["body_regions"] = body_regions_str
                         course_results['radiomics'] = df
                 except Exception as e:
                     errors.append(f"Radiomics error {pid}/{cid}: {e}")
@@ -1353,6 +1381,10 @@ rule aggregate_results:
                             df.insert(1, "course_id", cid)
                         else:
                             df["course_id"] = df["course_id"].fillna(cid)
+                        # For MR, don't apply CT-derived phase/regions (semantically incorrect)
+                        df["contrast_phase"] = "unknown"  # CT contrast phases don't apply to MR
+                        df["image_modality"] = "MR"
+                        df["body_regions"] = "unknown"  # CT body region detection doesn't apply to MR
                         course_results['radiomics_mr'] = df
                 except Exception as e:
                     errors.append(f"Radiomics MR error {pid}/{cid}: {e}")
@@ -1508,16 +1540,35 @@ rule aggregate_results:
                     data = json.loads(report_path.read_text(encoding="utf-8"))
                 except Exception:
                     continue
-                qc_rows.append(
-                    {
-                        "patient_id": pid,
-                        "course_id": cid,
-                        "report_name": report_path.name,
-                        "overall_status": data.get("overall_status"),
-                        "structure_cropping": json.dumps(data.get("checks", {}).get("structure_cropping", {})),
-                        "checks": json.dumps(data.get("checks", {})),
-                    }
-                )
+
+                row = {
+                    "patient_id": pid,
+                    "course_id": cid,
+                    "report_name": report_path.name,
+                    "overall_status": data.get("overall_status") or data.get("status"),
+                    "structure_cropping": json.dumps(data.get("checks", {}).get("structure_cropping", {})),
+                    "checks": json.dumps(data.get("checks", {})),
+                }
+
+                # Extract phase, modality, and body regions from body_regions.json
+                if report_path.name == "body_regions.json":
+                    row["contrast_phase"] = data.get("contrast_phase", {}).get("phase", "unknown")
+                    row["image_modality"] = data.get("image_modality", {}).get("modality", "unknown")
+                    # Extract body regions presence
+                    body_regs = data.get("body_regions", {})
+                    row["contains_head_neck"] = body_regs.get("CONTAINS_HEAD_NECK", False)
+                    row["contains_thorax"] = body_regs.get("CONTAINS_THORAX", False)
+                    row["contains_abdomen"] = body_regs.get("CONTAINS_ABDOMEN", False)
+                    row["contains_pelvis"] = body_regs.get("CONTAINS_PELVIS", False)
+                    # Confidence scores
+                    conf = data.get("confidence", {})
+                    row["head_neck_confidence"] = conf.get("HEAD_NECK", 0.0)
+                    row["thorax_confidence"] = conf.get("THORAX", 0.0)
+                    row["abdomen_confidence"] = conf.get("ABDOMEN", 0.0)
+                    row["pelvis_confidence"] = conf.get("PELVIS", 0.0)
+
+                qc_rows.append(row)
+
         if qc_rows:
             pd.DataFrame(qc_rows).to_excel(output.qc, index=False)
         else:

@@ -3,6 +3,10 @@ description: >
   STOPSTORM nnUNetv2 ensemble for automated segmentation of cardiac substructures.
   Includes small-structure task 603 and large-structure task 605 combined into a
   single RTSTRUCT output.
+# Body region requirements - cardiac model requires thorax CT
+required_body_regions:
+  - THORAX
+min_region_confidence: 0.6
 nnunet:
   command: nnUNetv2_predict
   model: 3d_fullres
