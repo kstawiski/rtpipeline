@@ -1,12 +1,20 @@
-# RTpipeline
+<div class="hero-container">
+  <div class="hero-title">RTpipeline</div>
+  <div class="hero-subtitle">The Big Data Radiotherapy Pipeline<br>From raw clinical exports to research-ready datasets in one command.</div>
+  <div class="hero-buttons">
+    <a href="getting_started/" class="md-button md-button--primary">Get Started</a>
+    <a href="https://github.com/kstawiski/rtpipeline" class="md-button">View on GitHub</a>
+  </div>
+</div>
 
-**The Big Data Radiotherapy Pipeline**
-
-*From raw clinical exports to research-ready datasets in one command.*
-
-[![Documentation](https://img.shields.io/badge/docs-latest-blue)](https://kstawiski.github.io/rtpipeline/)
-[![Docker](https://img.shields.io/badge/docker-ready-green)](https://hub.docker.com/r/kstawiski/rtpipeline)
-[![License](https://img.shields.io/badge/license-MIT-green)](https://github.com/kstawiski/rtpipeline/blob/main/LICENSE)
+<div class="grid cards" markdown>
+-   :material-animation: **Automated Workflow**
+    From DICOM to Analysis in one step
+-   :material-brain: **AI Segmentation**
+    Built-in TotalSegmentator & nnU-Net
+-   :material-chart-box: **Standardized Data**
+    Comparable metrics across cohorts
+</div>
 
 ---
 
@@ -122,6 +130,18 @@ _RESULTS/
 ├── case_metadata.xlsx    # Clinical tags, scanner info, kernels
 └── qc_reports.xlsx       # Quality control flags and warnings
 ```
+
+### 6. High-Performance Architecture
+
+**Problem:** Analyzing 1,000 patients with deep learning models usually takes weeks of compute time.
+
+**Solution:** RTpipeline is built for speed:
+
+- **GPU Acceleration:** Uses CUDA for TotalSegmentator and custom models
+- **Parallel Optimization:** Automatically saturates available CPU cores for DVH and Radiomics
+- **Smart Scaling:** Prevents crashes by adapting to available RAM
+
+[**Technical Details →**](technical/parallelization.md)
 
 ---
 
