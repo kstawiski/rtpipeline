@@ -21,6 +21,45 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 
+def _ct_z_extent_mm(course_dir: Path) -> Optional[Tuple[float, float]]:
+    """Return (superior_z_mm, inferior_z_mm) for the course CT NIfTI if available.
+
+    This is used as a robust fallback when landmark masks (e.g. L1) are not present
+    because the scan does not cover them. Coordinates are in patient space (mm).
+    """
+
+    from .layout import build_course_dirs
+
+    course_dirs = build_course_dirs(course_dir)
+    ct_nifti = course_dirs.nifti / "ct.nii.gz"
+    if not ct_nifti.exists():
+        candidates = sorted(course_dirs.nifti.glob("*.nii.gz"))
+        if not candidates:
+            return None
+        ct_nifti = candidates[0]
+
+    try:
+        img = sitk.ReadImage(str(ct_nifti))
+        size = img.GetSize()  # (x, y, z)
+        if len(size) < 3 or size[2] < 1:
+            return None
+        origin = img.GetOrigin()
+        spacing = img.GetSpacing()
+        direction = img.GetDirection()
+        z_direction = direction[8] if len(direction) >= 9 else 1.0
+
+        z0 = origin[2]
+        z1 = origin[2] + (size[2] - 1) * spacing[2]
+        if z_direction < 0:
+            z0, z1 = z1, z0
+        superior = float(max(z0, z1))
+        inferior = float(min(z0, z1))
+        return superior, inferior
+    except Exception as exc:
+        logger.debug("Failed reading CT extent for %s: %s", course_dir, exc)
+        return None
+
+
 def extract_vertebrae_boundaries(course_dir: Path) -> Dict[str, Dict[str, float]]:
     """
     Extract superior/inferior z-coordinates for vertebrae from TotalSegmentator.
@@ -209,21 +248,59 @@ def determine_pelvic_crop_boundaries(
     Returns:
         Tuple of (superior_z, inferior_z) in mm (patient coordinates)
 
-    Raises:
-        ValueError: If required landmarks (L1, femurs) are not found
+    Notes:
+        Some prostate planning CTs do not extend cranially to L1. In that case we
+        fall back to the **CT superior extent** (i.e., do not crop superiorly),
+        while still cropping inferiorly based on femoral heads when available.
     """
-    vertebrae = extract_vertebrae_boundaries(course_dir)
-    femurs = extract_femur_boundaries(course_dir)
+    try:
+        vertebrae = extract_vertebrae_boundaries(course_dir)
+    except Exception as exc:
+        logger.warning("Pelvic cropping: unable to read vertebrae landmarks for %s: %s", course_dir, exc)
+        vertebrae = {}
+
+    try:
+        femurs = extract_femur_boundaries(course_dir)
+    except Exception as exc:
+        logger.warning("Pelvic cropping: unable to read femur landmarks for %s: %s", course_dir, exc)
+        femurs = {}
+
+    ct_extent = _ct_z_extent_mm(course_dir)
+    fallback_notes: list[str] = []
 
     # Superior boundary: top of L1
-    if 'vertebrae_L1' not in vertebrae:
-        raise ValueError(
-            "L1 vertebra not found in TotalSegmentator output - "
-            "required for pelvic cropping. Available vertebrae: "
-            f"{list(vertebrae.keys())}"
-        )
-
-    superior_z = vertebrae['vertebrae_L1']['superior']
+    if 'vertebrae_L1' in vertebrae:
+        superior_z = vertebrae['vertebrae_L1']['superior']
+        superior_source = "vertebrae_L1"
+    else:
+        if ct_extent is not None:
+            superior_z = ct_extent[0]
+            superior_source = "ct_superior_extent"
+            fallback_notes.append(f"missing_vertebrae_L1 (available={sorted(vertebrae.keys())}); using CT superior extent")
+            logger.warning(
+                "Pelvic cropping: L1 missing for %s (available=%s); using CT superior extent (%.1fmm)",
+                course_dir,
+                sorted(vertebrae.keys()),
+                superior_z,
+            )
+        elif vertebrae:
+            # Best-effort: use the most superior vertebra we have (still better than failing).
+            best_name, best = max(vertebrae.items(), key=lambda kv: kv[1].get("superior", float("-inf")))
+            superior_z = float(best.get("superior", 0.0))
+            superior_source = f"{best_name}_fallback"
+            fallback_notes.append(f"missing_vertebrae_L1; using {best_name} superior as fallback")
+            logger.warning(
+                "Pelvic cropping: L1 missing for %s; using %s superior (%.1fmm) as fallback",
+                course_dir,
+                best_name,
+                superior_z,
+            )
+        else:
+            # Last resort: avoid crashing; downstream clamping will keep bounds sane if CT is readable.
+            superior_z = 0.0
+            superior_source = "unknown_fallback"
+            fallback_notes.append("missing_vertebrae_L1 and CT extent unavailable; using 0.0mm fallback")
+            logger.warning("Pelvic cropping: L1 missing and CT extent unavailable for %s; using 0.0mm fallback", course_dir)
 
     # Inferior boundary: margin below bottom of femoral heads
     femur_inferiors = [
@@ -232,20 +309,66 @@ def determine_pelvic_crop_boundaries(
         if 'inferior' in femurs[key]
     ]
 
-    if not femur_inferiors:
-        raise ValueError(
-            "Femoral heads not found in TotalSegmentator output - "
-            "required for pelvic cropping. Available structures: "
-            f"{list(femurs.keys())}"
-        )
+    if femur_inferiors:
+        # Use the most inferior point of both femurs
+        femur_inferior = min(femur_inferiors)
+        inferior_z = femur_inferior - (inferior_margin_cm * 10)  # cm to mm
+        inferior_source = f"femur_inferior_minus_{inferior_margin_cm}cm"
+    else:
+        if ct_extent is not None:
+            inferior_z = ct_extent[1]
+            inferior_source = "ct_inferior_extent"
+            fallback_notes.append(f"missing_femurs (available={sorted(femurs.keys())}); using CT inferior extent")
+            logger.warning(
+                "Pelvic cropping: femurs missing for %s (available=%s); using CT inferior extent (%.1fmm)",
+                course_dir,
+                sorted(femurs.keys()),
+                inferior_z,
+            )
+        elif vertebrae:
+            inferior_z = float(min(v.get("inferior", 0.0) for v in vertebrae.values()))
+            inferior_source = "vertebra_inferior_fallback"
+            fallback_notes.append("missing_femurs and CT extent unavailable; using inferior of available vertebrae")
+            logger.warning(
+                "Pelvic cropping: femurs missing and CT extent unavailable for %s; using vertebra inferior fallback (%.1fmm)",
+                course_dir,
+                inferior_z,
+            )
+        else:
+            inferior_z = 0.0
+            inferior_source = "unknown_fallback"
+            fallback_notes.append("missing_femurs and CT extent unavailable; using 0.0mm fallback")
+            logger.warning("Pelvic cropping: femurs missing and CT extent unavailable for %s; using 0.0mm fallback", course_dir)
 
-    # Use the most inferior point of both femurs
-    femur_inferior = min(femur_inferiors)
-    inferior_z = femur_inferior - (inferior_margin_cm * 10)  # cm to mm
+    if superior_z <= inferior_z:
+        if ct_extent is not None:
+            logger.warning(
+                "Pelvic cropping: invalid boundaries for %s (superior=%.1f <= inferior=%.1f); using CT extent fallback",
+                course_dir,
+                superior_z,
+                inferior_z,
+            )
+            superior_z, inferior_z = ct_extent
+            superior_source = "ct_extent_fallback"
+            inferior_source = "ct_extent_fallback"
+            fallback_notes.append("invalid_boundary_order; using CT extent fallback")
+        else:
+            logger.warning(
+                "Pelvic cropping: invalid boundaries for %s (superior=%.1f <= inferior=%.1f); swapping",
+                course_dir,
+                superior_z,
+                inferior_z,
+            )
+            superior_z, inferior_z = inferior_z, superior_z
+            fallback_notes.append("invalid_boundary_order; swapped")
 
     logger.info(
-        f"Pelvic crop boundaries: superior={superior_z:.1f}mm (L1), "
-        f"inferior={inferior_z:.1f}mm (femur-{inferior_margin_cm}cm)"
+        "Pelvic crop boundaries for %s: superior=%.1fmm (%s), inferior=%.1fmm (%s)",
+        course_dir.name,
+        superior_z,
+        superior_source,
+        inferior_z,
+        inferior_source,
     )
 
     return superior_z, inferior_z

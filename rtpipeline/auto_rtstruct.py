@@ -262,6 +262,18 @@ def build_auto_rtstruct(course_dir: Path) -> Optional[Path]:
                 except Exception as e:
                     logger.error('Failed to copy RTSTRUCT to RS_auto: %s', e)
                     return None
+                # Keep behavior consistent with NIfTI-derived RTSTRUCTs.
+                try:
+                    sanitize_rtstruct(out_path)
+                    summary = fix_rtstruct_rois(ct_dir, out_path)
+                    if summary and summary.changed:
+                        logger.info(
+                            "Auto RTSTRUCT ROI fix: %d repaired, %d still problematic",
+                            len(summary.fixed),
+                            len(summary.failed),
+                        )
+                except Exception as e:
+                    logger.debug("Post-processing copied RTSTRUCT failed: %s", e)
                 logger.info("Wrote auto RTSTRUCT (from RTSTRUCT): %s", out_path)
                 return out_path
         except Exception as e:

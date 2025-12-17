@@ -31,6 +31,12 @@ These are the outstanding clinical/technical concerns flagged after reviewing th
 - Indicates mismatched naming between expected TotalSegmentator outputs and custom structure definitions.
 - **Action:** Align custom-structure YAML with actual RTSTRUCT ROI names or adjust the importer to sanitize names before Boolean ops.
 
+## DVH Catastrophic Underestimation for Thin-Slice Contours ✅
+- **Status:** Fixed 2025-12-12. Some cohorts with contour planes at higher resolution than the RTDOSE grid (e.g., CT/RTSTRUCT contours every 1.5 mm with dose planes every 3.0 mm) produced clinically impossible DVHs (tiny volumes, very low Dmax).
+- **Root cause:** `snap_rtstruct_to_dose_grid()` was over-aggressive and snapped contour plane `z` coordinates across half-plane distances, collapsing adjacent contour planes onto the same dose plane. dicompyler-core then interpreted the second contour as a hole, catastrophically underestimating area/volume and all DVH metrics.
+- **Fix:** Cap snapping tolerance to `< 0.5 × min(dose-plane spacing)` (implemented as `0.49 * min_spacing`) to prevent collapsing real intermediate planes; keep snapping only for small sub-plane deviations.
+- **Follow-up:** Consider adding an integration test that computes DVH on an Example_data case with mismatched contour/dose plane spacing (and asserts BODY Dmax is within a plausible range).
+
 ### dicompylercore missing in Docker image
 - **Status:** New (2025-11-26). During the Dockerized Example_data run, every radiomics job logs `Failed to import dicompylercore...` (see `Logs/radiomics/487009_2025-09.log`).
 - **Impact:** When dicompylercore is unavailable the custom-structure pre-processing inside the radiomics stage is skipped, so downstream features never include Boolean composites such as pelvic_bones, and QC silently reports partial coverage.

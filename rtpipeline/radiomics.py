@@ -21,6 +21,7 @@ from importlib import resources as importlib_resources
 import yaml
 from .utils import run_tasks_with_adaptive_workers, mask_is_cropped
 from .custom_models import list_custom_model_outputs
+from .custom_structures_rtstruct import _create_custom_structures_rtstruct, _is_rs_custom_stale
 
 # Image cache for avoiding repeated DICOM loading (significant I/O savings)
 # Configurable via environment variables: RTPIPELINE_IMAGE_CACHE_SIZE, RTPIPELINE_IMAGE_CACHE_AGE_SEC
@@ -67,6 +68,10 @@ def _apply_radiomics_thread_limit(limit: Optional[int]) -> None:
         os.environ[var] = value
 
 logger = logging.getLogger(__name__)
+
+_DEFAULT_MIN_VOXELS = 120
+_DEFAULT_MAX_VOXELS_FULL = 15_000_000
+_LARGE_ROI_RESAMPLED_SPACING_MM = (2.0, 2.0, 2.0)
 
 
 _PARAM_CACHE_LOCK = threading.Lock()
@@ -414,6 +419,95 @@ def _extractor(config: PipelineConfig, modality: str = 'CT', normalize_override:
         return None
 
 
+def _derive_voxel_limits(config: PipelineConfig) -> tuple[int, int]:
+    min_voxels = getattr(config, "radiomics_min_voxels", None)
+    max_voxels = getattr(config, "radiomics_max_voxels", None)
+    try:
+        min_v = int(min_voxels) if min_voxels not in (None, "") else _DEFAULT_MIN_VOXELS
+    except Exception:
+        min_v = _DEFAULT_MIN_VOXELS
+    try:
+        max_v = int(max_voxels) if max_voxels not in (None, "") else _DEFAULT_MAX_VOXELS_FULL
+    except Exception:
+        max_v = _DEFAULT_MAX_VOXELS_FULL
+    if min_v < 1:
+        min_v = 1
+    if max_v < 1:
+        max_v = _DEFAULT_MAX_VOXELS_FULL
+    return min_v, max_v
+
+
+def _extractor_large_roi(config: PipelineConfig, modality: str = "CT") -> Optional["radiomics.featureextractor.RadiomicsFeatureExtractor"]:
+    """Reduced extractor for very large ROIs (e.g., BODY).
+
+    Uses:
+    - Original image only (no LoG/Wavelet)
+    - shape + firstorder only
+    - coarser isotropic resampling (default 2mm) for feasibility
+    """
+    ext = _extractor(config, modality)
+    if ext is None:
+        return None
+    try:
+        ext.disableAllImageTypes()
+        ext.enableImageTypeByName("Original")
+    except Exception:
+        pass
+    try:
+        ext.disableAllFeatures()
+        ext.enableFeatureClassByName("firstorder")
+        ext.enableFeatureClassByName("shape")
+    except Exception:
+        pass
+    try:
+        # Coarser resampling dramatically reduces runtime/memory for large ROIs.
+        ext.settings["resampledPixelSpacing"] = list(_LARGE_ROI_RESAMPLED_SPACING_MM)
+    except Exception:
+        pass
+    return ext
+
+
+def _custom_roi_names_from_config(path: Path) -> set[str]:
+    """Parse a custom-structures YAML/JSON file and return ROI base names."""
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except Exception:
+        return set()
+    data: Any
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        try:
+            data = yaml.safe_load(raw)
+        except Exception:
+            return set()
+    if not isinstance(data, dict):
+        return set()
+    items = data.get("custom_structures") or data.get("custom_structures_config") or []
+    if not isinstance(items, list):
+        return set()
+    out: set[str] = set()
+    for item in items:
+        if isinstance(item, dict):
+            name = str(item.get("name") or "").strip()
+            if name:
+                out.add(name)
+    return out
+
+
+def _list_roi_names_dicom(rs_path: Path) -> list[str]:
+    try:
+        ds = pydicom.dcmread(str(rs_path), stop_before_pixels=True, force=True)
+    except Exception:
+        return []
+    out: list[str] = []
+    for roi in getattr(ds, "StructureSetROISequence", []) or []:
+        name = str(getattr(roi, "ROIName", "") or "").strip()
+        if name:
+            out.append(name)
+    return out
+
+
 def _rtstruct_masks(dicom_series_path: Path, rs_path: Path) -> Dict[str, np.ndarray]:
     try:
         from rt_utils import RTStructBuilder
@@ -446,33 +540,34 @@ def _rtstruct_masks(dicom_series_path: Path, rs_path: Path) -> Dict[str, np.ndar
         return {}
 
 
-def radiomics_for_course(config: PipelineConfig, course_dir: Path, custom_structures_config: Optional[Path] = None, use_cropped: bool = True) -> Optional[Path]:
+def radiomics_for_course(config: PipelineConfig, course_dir: Path, custom_structures_config: Optional[Path] = None, use_cropped: bool = False) -> Optional[Path]:
     """Run pyradiomics on CT course with manual RS, RS_auto, and custom structures if present."""
 
     course_dirs = build_course_dirs(course_dir)
-    # Resume-friendly: skip if output exists
     out_path = course_dir / 'radiomics_ct.xlsx'
-    if getattr(config, 'resume', False) and out_path.exists():
-        return out_path
 
-    # Check for systematically cropped RTSTRUCT
-    rs_auto_cropped = course_dir / "RS_auto_cropped.dcm"
-    cropping_metadata_path = course_dir / "cropping_metadata.json"
-    using_cropped = False
-
-    if use_cropped and rs_auto_cropped.exists() and cropping_metadata_path.exists():
+    # Resume-friendly: if output exists, only recompute when required ROIs are missing
+    existing_df = None
+    if getattr(config, "resume", False) and out_path.exists():
         try:
-            with open(cropping_metadata_path) as f:
-                crop_meta = json.load(f)
-            logger.info(
-                f"Using systematically cropped RTSTRUCT for radiomics "
-                f"(region: {crop_meta.get('region', 'unknown')}, "
-                f"superior: {crop_meta.get('superior_z_mm', 0):.1f}mm, "
-                f"inferior: {crop_meta.get('inferior_z_mm', 0):.1f}mm)"
-            )
-            using_cropped = True
-        except Exception as e:
-            logger.warning(f"Failed to load cropping metadata from {cropping_metadata_path}: {e}")
+            import pandas as pd
+
+            existing_df = pd.read_excel(out_path, engine="openpyxl")
+        except Exception as exc:
+            logger.debug("Failed reading existing radiomics_ct.xlsx for %s: %s", course_dir, exc)
+            existing_df = None
+
+    # CT radiomics uses masks derived from RTSTRUCT contours paired with the original
+    # DICOM CT series. Cropped RTSTRUCTs (RS_auto_cropped.dcm) have been observed to
+    # be misregistered in physical space when used with the original CT series
+    # (e.g., shifted into air), producing invalid radiomics.
+    rs_auto_cropped = course_dir / "RS_auto_cropped.dcm"
+    if use_cropped and rs_auto_cropped.exists():
+        logger.warning(
+            "Ignoring RS_auto_cropped.dcm for radiomics in %s due to known geometric misregistration; "
+            "using RS_auto.dcm instead.",
+            course_dir,
+        )
 
     extractor = _extractor(config, 'CT')
     if extractor is None:
@@ -490,56 +585,174 @@ def radiomics_for_course(config: PipelineConfig, course_dir: Path, custom_struct
     rows: List[Dict] = []
     tasks: List[tuple[str, str, np.ndarray, bool]] = []
 
-    # Process standard RTSTRUCTs (use cropped version if available)
-    rs_manual = "RS.dcm"
-    rs_auto = "RS_auto_cropped.dcm" if using_cropped else "RS_auto.dcm"
-
-    for source, rs_name in (("Manual", rs_manual), ("AutoRTS_total", rs_auto)):
-        rs_path = course_dir / rs_name
-        if not rs_path.exists():
-            continue
-        masks = _rtstruct_masks(course_dirs.dicom_ct, rs_path)
-        for roi, mask in masks.items():
-            tasks.append((source, roi, mask, mask_is_cropped(mask)))
-
-    # Process custom structures if configuration provided
+    # Determine which custom ROIs should exist (used for resume top-ups)
+    desired_custom_bases: set[str] = set()
     if custom_structures_config and custom_structures_config.exists():
-        try:
-            from .dvh import _create_custom_structures_rtstruct, _is_rs_custom_stale
-            rs_custom = course_dir / "RS_custom.dcm"
-            rs_manual = course_dir / "RS.dcm"
-            rs_auto = course_dir / "RS_auto.dcm"
+        desired_custom_bases = _custom_roi_names_from_config(custom_structures_config)
 
-            # Check if RS_custom needs regeneration
-            if _is_rs_custom_stale(rs_custom, custom_structures_config, rs_manual, rs_auto):
+    missing_custom_bases: set[str] = set(desired_custom_bases)
+    body_missing = False
+    if existing_df is not None:
+        try:
+            # Custom bases are considered present when either base or base__partial exists.
+            if "segmentation_source" in existing_df.columns and "roi_original_name" in existing_df.columns:
+                existing_custom = set(
+                    existing_df.loc[existing_df["segmentation_source"] == "Custom", "roi_original_name"]
+                    .astype(str)
+                    .tolist()
+                )
+            else:
+                existing_custom = set()
+            for base in list(missing_custom_bases):
+                if base in existing_custom or f"{base}__partial" in existing_custom:
+                    missing_custom_bases.discard(base)
+        except Exception:
+            pass
+        try:
+            if "segmentation_source" in existing_df.columns and "roi_original_name" in existing_df.columns:
+                body_missing = not bool(
+                    (
+                        (existing_df["segmentation_source"] == "Manual")
+                        & (existing_df["roi_original_name"].astype(str).str.upper() == "BODY")
+                    ).any()
+                )
+            else:
+                body_missing = False
+        except Exception:
+            body_missing = False
+
+    # If we are resuming and nothing is missing, skip work.
+    if (
+        getattr(config, "resume", False)
+        and out_path.exists()
+        and existing_df is not None
+        and not missing_custom_bases
+        and not body_missing
+    ):
+        return out_path
+
+    # Process standard RTSTRUCTs
+    rs_manual = "RS.dcm"
+    rs_auto = "RS_auto.dcm"
+
+    full_run = not (getattr(config, "resume", False) and out_path.exists() and existing_df is not None)
+    if full_run:
+        for source, rs_name in (("Manual", rs_manual), ("AutoRTS_total", rs_auto)):
+            rs_path = course_dir / rs_name
+            if not rs_path.exists():
+                continue
+            masks = _rtstruct_masks(course_dirs.dicom_ct, rs_path)
+            for roi, mask in masks.items():
+                tasks.append((source, roi, mask, mask_is_cropped(mask)))
+    else:
+        # Resume top-up: add only missing BODY from manual RS if needed.
+        if body_missing:
+            try:
+                from rt_utils import RTStructBuilder
+
+                rs_path = course_dir / rs_manual
+                if rs_path.exists():
+                    rt = RTStructBuilder.create_from(dicom_series_path=str(course_dirs.dicom_ct), rt_struct_path=str(rs_path))
+                    if "BODY" in rt.get_roi_names():
+                        mask = rt.get_roi_mask_by_name("BODY")
+                        if mask is not None and np.asarray(mask).astype(bool).any():
+                            tasks.append(("Manual", "BODY", mask.astype(bool), mask_is_cropped(mask)))
+            except Exception as exc:
+                logger.debug("Resume BODY top-up failed for %s: %s", course_dir, exc)
+
+    # Process custom structures (extract only custom ROIs; avoid duplicating base ROIs in RS_custom)
+    rs_custom = course_dir / "RS_custom.dcm"
+    want_custom = bool(desired_custom_bases)
+    if not want_custom and rs_custom.exists():
+        # Fallback: infer custom-only ROIs as those present in RS_custom but absent in RS and RS_auto.
+        try:
+            base_names = set(_list_roi_names_dicom(rs_custom))
+            manual_names = set(_list_roi_names_dicom(course_dir / "RS.dcm"))
+            auto_names = set(_list_roi_names_dicom(course_dir / "RS_auto.dcm"))
+            inferred = {n for n in (base_names - (manual_names | auto_names)) if n}
+            # Strip __partial suffix for base matching.
+            desired_custom_bases = {n[:-9] if n.endswith("__partial") else n for n in inferred}
+            missing_custom_bases = set(desired_custom_bases)
+            want_custom = bool(desired_custom_bases)
+        except Exception:
+            want_custom = False
+
+    if want_custom and (full_run or missing_custom_bases):
+        try:
+            from rt_utils import RTStructBuilder
+
+            rs_manual_path = course_dir / "RS.dcm"
+            rs_auto_path = course_dir / "RS_auto.dcm"
+
+            # Ensure RS_custom exists and is current when a config is available.
+            if custom_structures_config and custom_structures_config.exists() and _is_rs_custom_stale(
+                rs_custom, custom_structures_config, rs_manual_path, rs_auto_path
+            ):
                 logger.info("Regenerating RS_custom.dcm for radiomics in %s", course_dir.name)
                 rs_custom = _create_custom_structures_rtstruct(
                     course_dir,
                     custom_structures_config,
-                    rs_manual,
-                    rs_auto
+                    rs_manual_path,
+                    rs_auto_path,
                 )
 
             if rs_custom and rs_custom.exists():
-                masks = _rtstruct_masks(course_dirs.dicom_ct, rs_custom)
-                for roi, mask in masks.items():
-                    tasks.append(("Custom", roi, mask, mask_is_cropped(mask)))
+                # Resolve which actual ROI names to extract (base vs base__partial).
+                available = set(_list_roi_names_dicom(rs_custom))
+                bases_to_do = desired_custom_bases if full_run else missing_custom_bases
+                wanted_names: list[str] = []
+                for base in sorted(bases_to_do):
+                    if base in available:
+                        wanted_names.append(base)
+                    elif f"{base}__partial" in available:
+                        wanted_names.append(f"{base}__partial")
+                if wanted_names:
+                    rt = RTStructBuilder.create_from(dicom_series_path=str(course_dirs.dicom_ct), rt_struct_path=str(rs_custom))
+                    for roi_name in wanted_names:
+                        try:
+                            mask = rt.get_roi_mask_by_name(roi_name)
+                        except Exception:
+                            continue
+                        if mask is None:
+                            continue
+                        mask_bool = np.asarray(mask).astype(bool)
+                        if not mask_bool.any():
+                            continue
+                        tasks.append(("Custom", roi_name, mask_bool, mask_is_cropped(mask_bool)))
         except Exception as e:
             logger.warning("Failed to process custom structures for radiomics: %s", e)
 
     # Include segmentation outputs from custom nnUNet models by default
-    for model_name, model_course_dir in list_custom_model_outputs(course_dir):
-        rs_path = model_course_dir / "rtstruct.dcm"
-        if not rs_path.exists():
-            continue
-        masks = _rtstruct_masks(course_dirs.dicom_ct, rs_path)
-        for roi, mask in masks.items():
-            tasks.append((f"CustomModel:{model_name}", roi, mask, mask_is_cropped(mask)))
+    if full_run:
+        for model_name, model_course_dir in list_custom_model_outputs(course_dir):
+            rs_path = model_course_dir / "rtstruct.dcm"
+            if not rs_path.exists():
+                continue
+            masks = _rtstruct_masks(course_dirs.dicom_ct, rs_path)
+            for roi, mask in masks.items():
+                tasks.append((f"CustomModel:{model_name}", roi, mask, mask_is_cropped(mask)))
     def _do_ct_task(t):
         source, roi, mask, cropped = t
         try:
             # Create fresh extractor instance for each task to avoid threading issues
-            ext = _extractor(config, 'CT')
+            min_voxels, max_voxels_full = _derive_voxel_limits(config)
+            voxel_count = int(np.asarray(mask).astype(bool).sum())
+            if voxel_count < min_voxels:
+                return None
+
+            # Large-ROI detection should reflect the *effective* workload after resampling.
+            # CT radiomics typically resamples to ~1mm isotropic, so thick-slice CT can
+            # inflate voxel counts substantially. Treat BODY as large unconditionally.
+            try:
+                spacing = tuple(float(x) for x in img.GetSpacing())
+            except Exception:
+                spacing = (1.0, 1.0, 1.0)
+            native_voxel_mm3 = float(spacing[0]) * float(spacing[1]) * float(spacing[2])
+            physical_volume_mm3 = float(voxel_count) * max(1e-9, native_voxel_mm3)
+            estimated_voxels = physical_volume_mm3  # ~ voxels at 1mm isotropic
+            is_body = str(roi).strip().lower().startswith("body")
+            use_large = is_body or (estimated_voxels > float(max_voxels_full))
+            ext = _extractor_large_roi(config, "CT") if use_large else _extractor(config, 'CT')
             if ext is None:
                 logger.debug("No radiomics extractor available for %s/%s", source, roi)
                 return None
@@ -587,16 +800,50 @@ def radiomics_for_course(config: PipelineConfig, course_dir: Path, custom_struct
         return None
     try:
         import pandas as pd
-        df = pd.DataFrame(rows)
+        df_new = pd.DataFrame(rows)
+        if existing_df is not None and out_path.exists():
+            # Append-only update (resume top-up): keep original column order and avoid duplicates.
+            try:
+                template_cols = list(existing_df.columns)
+                for col in template_cols:
+                    if col not in df_new.columns:
+                        df_new[col] = np.nan
+                df_new = df_new.loc[:, template_cols]
+                df = pd.concat([existing_df, df_new], ignore_index=True)
+                df = df.drop_duplicates(subset=["segmentation_source", "roi_original_name", "patient_id", "course_id"], keep="first")
+            except Exception:
+                df = pd.concat([existing_df, df_new], ignore_index=True)
+        else:
+            df = df_new
         out = out_path
         df.to_excel(out, index=False)
         # Also save Parquet for faster aggregation (10-50x I/O speedup)
+        parquet_path = out_path.with_suffix('.parquet')
+        tmp_parquet = parquet_path.with_suffix('.parquet.tmp')
         try:
-            parquet_path = out_path.with_suffix('.parquet')
-            df.to_parquet(parquet_path, index=False, engine='pyarrow')
+            df.to_parquet(tmp_parquet, index=False, engine='pyarrow')
+            tmp_parquet.replace(parquet_path)
             logger.debug("Saved Parquet: %s", parquet_path)
         except Exception as parquet_err:
-            logger.debug("Parquet save failed (non-critical): %s", parquet_err)
+            # Retry via an Excel round-trip to coerce non-scalar objects to strings.
+            try:
+                df_roundtrip = pd.read_excel(out_path, engine="openpyxl")
+                df_roundtrip.to_parquet(tmp_parquet, index=False, engine="pyarrow")
+                tmp_parquet.replace(parquet_path)
+                logger.debug("Saved Parquet (round-trip): %s", parquet_path)
+            except Exception as parquet_err2:
+                try:
+                    if tmp_parquet.exists():
+                        tmp_parquet.unlink()
+                except Exception:
+                    pass
+                # Avoid leaving a stale sidecar if we failed to update it.
+                try:
+                    if parquet_path.exists():
+                        parquet_path.unlink()
+                except Exception:
+                    pass
+                logger.debug("Parquet save failed (non-critical): %s (retry: %s)", parquet_err, parquet_err2)
         return out
     except Exception as e:
         logger.warning("Failed to write CT radiomics: %s", e)

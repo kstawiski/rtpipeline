@@ -13,7 +13,9 @@ dependencies:
   - pip
   - pip:
     - "numpy<2.0"
-    - file:///projekty/rtpipeline/third_party/wheels/pyradiomics-3.0.1-cp310-cp310-linux_x86_64.whl
+    # NOTE: conda runs pip from the env YAML directory (`/app/envs` in Docker),
+    # so the wheel path must be relative to that location.
+    - ../third_party/wheels/pyradiomics-3.0.1-cp310-cp310-linux_x86_64.whl
     - xlsxwriter
     - pingouin
     - pyarrow

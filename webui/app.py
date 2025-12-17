@@ -4,6 +4,7 @@ Provides a web interface for uploading DICOM files and processing them through r
 """
 
 import os
+import stat
 import uuid
 import shutil
 import zipfile
@@ -12,6 +13,7 @@ import pandas as pd
 import json
 from datetime import datetime
 from pathlib import Path
+from pathlib import PurePosixPath
 from flask import Flask, render_template, request, jsonify, send_file
 from werkzeug.utils import secure_filename
 import logging
@@ -30,11 +32,38 @@ logger = logging.getLogger(__name__)
 
 # Initialize Flask app
 app = Flask(__name__)
-app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', str(uuid.uuid4()))
+
+# SECRET_KEY configuration - require stable key in production
+_secret_key = os.environ.get('SECRET_KEY')
+if not _secret_key:
+    if os.environ.get('FLASK_DEBUG', '').lower() == 'true' or os.environ.get('DEBUG', '').lower() == 'true':
+        _secret_key = 'dev-key-do-not-use-in-production'
+        logger.warning("Using development SECRET_KEY - do not use in production!")
+    else:
+        # In production, generate a persistent key file if not provided
+        _key_file = Path('/data/.secret_key')
+        if _key_file.exists():
+            _secret_key = _key_file.read_text().strip()
+        else:
+            _secret_key = str(uuid.uuid4())
+            try:
+                _key_file.write_text(_secret_key)
+                os.chmod(_key_file, 0o600)
+                logger.info("Generated persistent SECRET_KEY at %s", _key_file)
+            except Exception as e:
+                logger.warning("Could not persist SECRET_KEY: %s", e)
+app.config['SECRET_KEY'] = _secret_key
+
 # 50GB max upload - large limit to handle complete patient imaging datasets
 # Note: For very large uploads, consider splitting into smaller batches to avoid
 # browser timeouts and reduce memory consumption
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024 * 1024  # 50GB max upload
+
+# Security and resource limits
+MAX_EXTRACTED_BYTES = int(os.environ.get('MAX_EXTRACTED_BYTES', 100 * 1024 * 1024 * 1024))  # 100GB default
+MAX_EXTRACTED_FILES = int(os.environ.get('MAX_EXTRACTED_FILES', 100000))  # 100k files default
+MIN_FREE_DISK_BYTES = int(os.environ.get('MIN_FREE_DISK_BYTES', 1 * 1024 * 1024 * 1024))  # 1GB buffer
+WEBUI_API_KEY = os.environ.get('WEBUI_API_KEY')  # Optional API key for auth
 
 # Directories configuration
 BASE_DIR = Path('/data')
@@ -60,6 +89,26 @@ def allowed_file(filename):
     return any(filename.lower().endswith(ext) for ext in ALLOWED_EXTENSIONS)
 
 
+def check_api_key():
+    """Check API key if configured. Returns error response or None if OK."""
+    if WEBUI_API_KEY:
+        provided_key = request.headers.get('X-API-Key')
+        if provided_key != WEBUI_API_KEY:
+            return jsonify({'error': 'Unauthorized - invalid or missing API key'}), 401
+    return None
+
+
+def check_disk_space(required_bytes: int = 0) -> bool:
+    """Check if sufficient disk space is available."""
+    try:
+        usage = shutil.disk_usage(BASE_DIR)
+        available = usage.free - MIN_FREE_DISK_BYTES
+        return available > required_bytes
+    except Exception as e:
+        logger.warning("Failed to check disk space: %s", e)
+        return True  # Fail open if we can't check
+
+
 @app.route('/')
 def index():
     """Main page with upload interface"""
@@ -72,6 +121,11 @@ def upload_files():
     Handle file uploads
     Accepts: DICOM files, ZIP archives, directories
     """
+    # Check API key if configured
+    auth_error = check_api_key()
+    if auth_error:
+        return auth_error
+
     try:
         if 'files[]' not in request.files:
             return jsonify({'error': 'No files provided'}), 400
@@ -79,6 +133,10 @@ def upload_files():
         files = request.files.getlist('files[]')
         if not files:
             return jsonify({'error': 'No files selected'}), 400
+
+        # Check disk space before processing
+        if not check_disk_space():
+            return jsonify({'error': 'Insufficient disk space'}), 507
 
         # Create unique job ID
         job_id = str(uuid.uuid4())
@@ -148,6 +206,132 @@ def extract_and_organize(job_id, uploaded_files):
     Extract uploaded files and organize DICOM files
     Handles: ZIP files, direct DICOM files, nested directories
     """
+    def _safe_extract_zip(zip_path: Path, dest_dir: Path) -> None:
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        dest_root = dest_dir.resolve()
+        total_extracted_bytes = 0
+        total_extracted_files = 0
+
+        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+            # First pass: validate all entries and check total size
+            total_uncompressed = 0
+            for member in zip_ref.infolist():
+                raw_name = member.filename or ""
+                normalized_name = raw_name.replace("\\", "/")
+                member_path = PurePosixPath(normalized_name)
+                if member_path.is_absolute() or ".." in member_path.parts:
+                    raise ValueError(f"Unsafe zip entry path: {raw_name}")
+                # Block symlinks inside ZIP archives (Zip Slip via symlink chaining).
+                is_symlink = False
+                try:
+                    mode = (member.external_attr >> 16) & 0o177777
+                    is_symlink = stat.S_ISLNK(mode)
+                except Exception:
+                    is_symlink = False
+                if is_symlink:
+                    raise ValueError(f"Symlinks are not allowed in zip archives: {raw_name}")
+                target = (dest_root / Path(*member_path.parts)).resolve()
+                try:
+                    target.relative_to(dest_root)
+                except ValueError as exc:
+                    raise ValueError(f"Unsafe zip entry path (escapes dest): {raw_name}") from exc
+                total_uncompressed += member.file_size
+
+            # Check for zip bomb (excessive uncompressed size)
+            if total_uncompressed > MAX_EXTRACTED_BYTES:
+                raise ValueError(f"Archive exceeds maximum extraction size ({total_uncompressed} > {MAX_EXTRACTED_BYTES})")
+            if len(zip_ref.infolist()) > MAX_EXTRACTED_FILES:
+                raise ValueError(f"Archive contains too many files ({len(zip_ref.infolist())} > {MAX_EXTRACTED_FILES})")
+
+            # Second pass: extract with size tracking
+            for member in zip_ref.infolist():
+                raw_name = member.filename or ""
+                normalized_name = raw_name.replace("\\", "/")
+                member_path = PurePosixPath(normalized_name)
+                if raw_name.endswith('/'):
+                    (dest_root / Path(*member_path.parts)).mkdir(parents=True, exist_ok=True)
+                    continue
+                target = dest_root / Path(*member_path.parts)
+                target.parent.mkdir(parents=True, exist_ok=True)
+
+                total_extracted_files += 1
+                with zip_ref.open(member, 'r') as src, open(target, 'wb') as dst:
+                    # Copy with size tracking
+                    chunk_size = 1024 * 1024  # 1MB chunks
+                    while True:
+                        chunk = src.read(chunk_size)
+                        if not chunk:
+                            break
+                        total_extracted_bytes += len(chunk)
+                        if total_extracted_bytes > MAX_EXTRACTED_BYTES:
+                            raise ValueError(f"Extraction exceeded maximum size limit ({MAX_EXTRACTED_BYTES} bytes)")
+                        dst.write(chunk)
+
+    def _safe_extract_tar(tar_path: Path, dest_dir: Path) -> None:
+        import tarfile
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        dest_root = dest_dir.resolve()
+        total_extracted_bytes = 0
+        total_extracted_files = 0
+
+        with tarfile.open(tar_path, 'r:*') as tar_ref:
+            members = tar_ref.getmembers()
+
+            # Check file count limit
+            if len(members) > MAX_EXTRACTED_FILES:
+                raise ValueError(f"Archive contains too many files ({len(members)} > {MAX_EXTRACTED_FILES})")
+
+            # First pass: validate and calculate total size
+            total_size = 0
+            for member in members:
+                raw_name = member.name or ""
+                normalized_name = raw_name.replace("\\", "/")
+                member_path = PurePosixPath(normalized_name)
+                if member_path.is_absolute() or ".." in member_path.parts:
+                    raise ValueError(f"Unsafe tar entry path: {raw_name}")
+                if member.issym() or member.islnk():
+                    raise ValueError(f"Links are not allowed in tar archives: {raw_name}")
+                target = (dest_root / Path(*member_path.parts)).resolve()
+                try:
+                    target.relative_to(dest_root)
+                except ValueError as exc:
+                    raise ValueError(f"Unsafe tar entry path (escapes dest): {raw_name}") from exc
+                total_size += member.size
+
+            # Check for tar bomb
+            if total_size > MAX_EXTRACTED_BYTES:
+                raise ValueError(f"Archive exceeds maximum extraction size ({total_size} > {MAX_EXTRACTED_BYTES})")
+
+            # Second pass: extract with size tracking
+            for member in members:
+                raw_name = member.name or ""
+                normalized_name = raw_name.replace("\\", "/")
+                member_path = PurePosixPath(normalized_name)
+                target = dest_root / Path(*member_path.parts)
+                if member.isdir():
+                    target.mkdir(parents=True, exist_ok=True)
+                    continue
+                if member.isfile():
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    src_fh = tar_ref.extractfile(member)
+                    if src_fh is None:
+                        continue
+                    total_extracted_files += 1
+                    with src_fh, open(target, 'wb') as dst:
+                        # Copy with size tracking
+                        chunk_size = 1024 * 1024  # 1MB chunks
+                        while True:
+                            chunk = src_fh.read(chunk_size)
+                            if not chunk:
+                                break
+                            total_extracted_bytes += len(chunk)
+                            if total_extracted_bytes > MAX_EXTRACTED_BYTES:
+                                raise ValueError(f"Extraction exceeded maximum size limit ({MAX_EXTRACTED_BYTES} bytes)")
+                            dst.write(chunk)
+                    continue
+                # Skip device files, fifos, etc.
+                logger.warning("Skipping unsupported tar member type: %s", raw_name)
+
     try:
         job_dicom_dir = INPUT_DIR / job_id
         job_dicom_dir.mkdir(parents=True, exist_ok=True)
@@ -158,15 +342,12 @@ def extract_and_organize(job_id, uploaded_files):
             # Handle ZIP files
             if file_path.suffix.lower() == '.zip':
                 logger.info(f"Extracting ZIP: {file_path.name}")
-                with zipfile.ZipFile(file_path, 'r') as zip_ref:
-                    zip_ref.extractall(job_dicom_dir)
+                _safe_extract_zip(file_path, job_dicom_dir)
 
             # Handle TAR files
             elif file_path.suffix.lower() in ['.tar', '.gz', '.tgz'] or '.tar.gz' in file_path.name.lower():
                 logger.info(f"Extracting TAR: {file_path.name}")
-                import tarfile
-                with tarfile.open(file_path, 'r:*') as tar_ref:
-                    tar_ref.extractall(job_dicom_dir)
+                _safe_extract_tar(file_path, job_dicom_dir)
 
             # Handle direct DICOM files or DICOMDIR
             else:
@@ -351,8 +532,10 @@ def view_report(job_id, filename):
         output_dir = Path(status['output_dir']).resolve()
         file_path = (output_dir / filename).resolve()
 
-        # Security check: ensure file is within output directory
-        if not str(file_path).startswith(str(output_dir)):
+        # Security check: ensure file is within output directory (path traversal protection)
+        try:
+            file_path.relative_to(output_dir)
+        except ValueError:
             return jsonify({'error': 'Access denied'}), 403
 
         if not file_path.exists():
@@ -392,6 +575,7 @@ def system_status():
                 capture_output=True,
                 text=True,
                 check=False,
+                timeout=5,  # Fail fast if GPU driver is hung
             )
             if result.returncode == 0:
                 for line in result.stdout.strip().split('\n'):
@@ -425,8 +609,8 @@ def system_status():
             'gpu': gpu_stats
         })
     except Exception as e:
-        logger.error(f"System status error: {str(e)}")
-        return jsonify({'error': str(e)}), 500
+        logger.error(f"System status error: {str(e)}", exc_info=True)
+        return jsonify({'error': 'Failed to retrieve system status'}), 500
 
 
 @app.route('/api/jobs/<job_id>/preview')
@@ -549,6 +733,8 @@ def serve_job_file(job_id, filepath):
         requested_path = Path(filepath)
         parts = requested_path.parts
         if not parts:
+            return jsonify({'error': 'Invalid path'}), 400
+        if ".." in parts:
             return jsonify({'error': 'Invalid path'}), 400
 
         if parts[0] == 'input':

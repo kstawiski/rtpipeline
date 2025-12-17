@@ -51,29 +51,25 @@ except Exception as e:
 try:
     from dicompylercore import dvhcalc
     # Patch missing validate_file_meta into dicompyler-core modules for pydicom>=3
+    # NOTE: We intentionally do NOT patch builtins (global namespace pollution is dangerous)
+    # Only patch the specific dicompylercore modules that need it
     try:
-        import sys as _sys2, types as _types2, pydicom as _pyd2
+        import sys as _sys2
         import pydicom.filewriter as _fw2
         if not hasattr(_fw2, 'validate_file_meta'):
             def _validate_file_meta(*args, **kwargs):  # type: ignore
                 return True
             _fw2.validate_file_meta = _validate_file_meta  # type: ignore[attr-defined]
-        # Also expose via builtins for modules that reference it unqualified
-        try:
-            import builtins as _bi
-            if not hasattr(_bi, 'validate_file_meta'):
-                _bi.validate_file_meta = _fw2.validate_file_meta  # type: ignore[attr-defined]
-        except Exception:
-            pass
+        # Patch only dicompylercore modules (scoped, not global)
         for _name, _mod in list(_sys2.modules.items()):
             if _name and _name.startswith('dicompylercore') and hasattr(_mod, '__dict__'):
                 if 'validate_file_meta' not in _mod.__dict__:
                     try:
                         _mod.validate_file_meta = _fw2.validate_file_meta  # type: ignore[attr-defined]
                     except Exception:
-                        pass
-    except Exception:
-        pass
+                        logger.debug("Failed to patch validate_file_meta into %s", _name)
+    except Exception as e:
+        logger.debug("dicompyler-core compatibility patching failed: %s", e)
 except ImportError as e:
     logger.error("Failed to import dicompylercore: %s. Install with: pip install dicompyler-core", e)
     raise
@@ -149,8 +145,8 @@ def _compute_metrics(abs_dvh, rx_dose: Optional[float]) -> Optional[Dict[str, fl
                 D1ccGy = _dose_at_fraction(bins_abs, cum_abs, 1.0 / V_total)
             if V_total >= 0.1:
                 D0_1ccGy = _dose_at_fraction(bins_abs, cum_abs, 0.1 / V_total)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("Failed computing D1cc/D0.1cc metrics: %s", exc)
 
     # Coverage at 95% and 100% of Rx dose
     V95Rx_cc = None
@@ -174,7 +170,7 @@ def _compute_metrics(abs_dvh, rx_dose: Optional[float]) -> Optional[Dict[str, fl
             V100Rx_cc = _get_volume_at_threshold(bins_abs, cum_abs, 1.00 * rx_dose)
             V95Rx_pct = (V95Rx_cc / V_total) * 100.0 if V_total > 0 else None
             V100Rx_pct = (V100Rx_cc / V_total) * 100.0 if V_total > 0 else None
-            
+
             rel_dvh = abs_dvh.relative_dose(float(rx_dose))
             bins_rel = rel_dvh.bincenters
             cum_rel = rel_dvh.counts
@@ -187,8 +183,8 @@ def _compute_metrics(abs_dvh, rx_dose: Optional[float]) -> Optional[Dict[str, fl
             D50_pct = _dose_at_fraction(bins_rel, cum_rel, 0.50)
             HI_pct = (D2_pct - D98_pct) / D50_pct if D50_pct != 0 else float("nan")
             Spread_pct = Dmax_pct - Dmin_pct
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Failed computing relative DVH metrics (Rx=%.2f): %s", rx_dose, exc)
 
     metrics: Dict[str, float] = {
         "DmeanGy": DmeanGy,
@@ -920,8 +916,8 @@ def dvh_for_course(
     if curve_data_export:
         try:
             json_path = course_dir / "dvh_curves.json"
-            with open(json_path, "w") as f:
-                json.dump({"points": curve_data_export}, f)
+            with open(json_path, "w", encoding="utf-8") as f:
+                json.dump({"points": curve_data_export}, f, ensure_ascii=False)
         except Exception as e:
             logger.warning("Failed to save DVH curves JSON: %s", e)
 

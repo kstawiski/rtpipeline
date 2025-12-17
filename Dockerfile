@@ -291,14 +291,6 @@ RUN mkdir -p /home/rtpipeline/.totalsegmentator/nnunet/results \
 # Switch to non-root user
 USER rtpipeline
 
-# Warm up Snakemake-managed conda envs so runtime jobs reuse the baked environments
-RUN snakemake \
-    --cores 1 \
-    --use-conda \
-    --conda-prefix "$SNAKEMAKE_CONDA_PREFIX" \
-    --conda-create-envs-only \
-    --configfile /app/config.container.yaml
-
 # Expose ports
 EXPOSE 8888 8080
 
@@ -310,6 +302,7 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD curl -f http://localhost:8080/health || exit 1
 
 # Singularity-specific labels
+ARG BUILD_DATE=unknown
 LABEL org.label-schema.build-date=$BUILD_DATE \
       org.label-schema.name="rtpipeline" \
       org.label-schema.description="Radiotherapy DICOM processing pipeline" \

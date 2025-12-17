@@ -182,6 +182,9 @@ class DICOMValidator:
                 "modality": getattr(ds, 'Modality', None),
                 "frame_of_reference_uid": getattr(ds, 'FrameOfReferenceUID', None),
                 "dose_grid_scaling": getattr(ds, 'DoseGridScaling', None),
+                "dose_units": getattr(ds, 'DoseUnits', None),
+                "dose_type": getattr(ds, 'DoseType', None),
+                "dose_summation_type": getattr(ds, 'DoseSummationType', None),
                 "issues": []
             }
 
@@ -195,6 +198,22 @@ class DICOMValidator:
 
             if validation["dose_grid_scaling"] is None:
                 validation["issues"].append("Missing DoseGridScaling")
+
+            # Dose units/type sanity checks (header-only; do not force PixelData read)
+            dose_units = str(validation.get("dose_units") or "").strip().upper()
+            if dose_units and dose_units not in {"GY", "CGY"}:
+                validation["issues"].append(f"Unexpected DoseUnits: {validation.get('dose_units')}")
+            if not dose_units:
+                validation["issues"].append("Missing DoseUnits")
+
+            dose_type = str(validation.get("dose_type") or "").strip().upper()
+            if dose_type and dose_type not in {"PHYSICAL"}:
+                # Many TPS export PHYSICAL; flag anything else for review.
+                validation["issues"].append(f"Unexpected DoseType: {validation.get('dose_type')}")
+
+            dose_sum = str(validation.get("dose_summation_type") or "").strip().upper()
+            if not dose_sum:
+                validation["issues"].append("Missing DoseSummationType")
 
             if validation["issues"]:
                 validation["status"] = "WARNING"
@@ -248,6 +267,14 @@ class DICOMValidator:
 
         This method checks if any ROI masks touch the image boundaries,
         which indicates the structure may have been cropped by the CT scan field of view.
+
+        Notes
+        -----
+        - Systematic CT cropping in this pipeline is **axial-only (z)**. Therefore, masks
+          touching the in-plane boundaries (x/y) are stronger evidence of problematic
+          acquisition truncation (true FOV crop) and are escalated to WARNING.
+        - z-only boundary touches are common for pelvic RT planning CTs with limited
+          cranio-caudal coverage and are reported as INFO by default.
         """
         info = {
             "status": "PASS",
@@ -276,6 +303,52 @@ class DICOMValidator:
         if not ct_files:
             info["status"] = "SKIP"
             return info
+        ct_num_slices = len(ct_files)
+
+        def _axis_name_map(z_axis: int | None) -> dict[int, str]:
+            # rt_utils masks are typically either [z, y, x] or [y, x, z]. We identify the
+            # z axis by matching the CT slice count; if ambiguous, we fall back to axisN.
+            if z_axis == 0:
+                return {0: "z", 1: "y", 2: "x"}
+            if z_axis == 2:
+                return {0: "y", 1: "x", 2: "z"}
+            if z_axis == 1:
+                return {0: "y", 1: "z", 2: "x"}
+            return {0: "axis0", 1: "axis1", 2: "axis2"}
+
+        def _cropping_sides(mask: np.ndarray) -> tuple[list[str], bool]:
+            """Return (cropped_sides, inplane_cropped) for a binary mask."""
+            arr = np.asarray(mask).astype(bool)
+            if arr.ndim != 3 or not arr.any():
+                return [], False
+
+            z_axis: int | None = None
+            candidates = [i for i, dim in enumerate(arr.shape) if dim == ct_num_slices]
+            if len(candidates) == 1:
+                z_axis = candidates[0]
+
+            names = _axis_name_map(z_axis)
+            touched_axes: set[int] = set()
+            sides: list[str] = []
+            for axis in range(arr.ndim):
+                slicer = [slice(None)] * arr.ndim
+                slicer[axis] = 0
+                if arr[tuple(slicer)].any():
+                    touched_axes.add(axis)
+                    sides.append(f"{names[axis]}_min")
+                slicer[axis] = arr.shape[axis] - 1
+                if arr[tuple(slicer)].any():
+                    touched_axes.add(axis)
+                    sides.append(f"{names[axis]}_max")
+
+            if not sides:
+                return [], False
+
+            if z_axis is None:
+                # Conservative: if we cannot infer z axis, treat any crop as potentially in-plane.
+                return sides, True
+            inplane_cropped = any(axis != z_axis for axis in touched_axes)
+            return sides, inplane_cropped
 
         def _evaluate(rs_path: Path, source: str) -> None:
             """Evaluate cropping for a single structure set."""
@@ -303,26 +376,43 @@ class DICOMValidator:
                 # Optimization: skip empty masks early (avoids boundary checking)
                 if not np.any(mask):
                     continue
-                if mask_is_cropped(mask):
-                    entry: Dict[str, Any] = {"source": source, "roi_name": roi_name}
-                    if cropping_metadata:
-                        entry["expected_due_to_ct_crop"] = True
-                        entry["crop_region"] = cropping_metadata.get("region")
-                        entry["clamped_axes"] = cropping_metadata.get("clamped_axes", [])
-                    else:
-                        entry["expected_due_to_ct_crop"] = False
-                    info["structures"].append(entry)
+                if not mask_is_cropped(mask):
+                    continue
+                cropped_sides, inplane_cropped = _cropping_sides(mask)
+                if not cropped_sides:
+                    continue
+
+                roi_norm = str(roi_name).strip().lower()
+                ignore_for_status = "couch" in roi_norm
+
+                entry: Dict[str, Any] = {
+                    "source": source,
+                    "roi_name": roi_name,
+                    "cropped_sides": cropped_sides,
+                    "inplane_cropped": bool(inplane_cropped),
+                    "ignore_for_status": bool(ignore_for_status),
+                    # Expected if cropping occurs only in z (limited scan range or systematic cropping).
+                    "expected_due_to_ct_crop": not bool(inplane_cropped),
+                    "cropping_metadata_present": bool(cropping_metadata),
+                }
+                if cropping_metadata:
+                    entry["crop_region"] = cropping_metadata.get("region")
+                    entry["clamped_axes"] = cropping_metadata.get("clamped_axes", [])
+                info["structures"].append(entry)
 
         # Evaluate both structure sets (manual and auto)
         _evaluate(self.rs_path, "manual")
         _evaluate(self.rs_auto_path, "auto")
 
         if info["structures"]:
-            unexpected = [entry for entry in info["structures"] if not entry.get("expected_due_to_ct_crop")]
-            if unexpected:
-                info["status"] = "WARNING"
-            else:
-                info["status"] = "INFO"
+            # Escalate only when there is evidence of in-plane truncation (true FOV crop),
+            # ignoring couch-related helper ROIs.
+            unexpected = [
+                entry
+                for entry in info["structures"]
+                if entry.get("inplane_cropped") and not entry.get("ignore_for_status")
+            ]
+            info["status"] = "WARNING" if unexpected else "INFO"
         return info
 
     def _calculate_overall_status(self, checks: Dict[str, Any]) -> str:

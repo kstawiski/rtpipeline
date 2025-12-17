@@ -48,4 +48,11 @@ packages = ["rtpipeline"]
 include-package-data = true
 
 [tool.setuptools.package-data]
-rtpipeline = ["ext/*.zip", "radiomics_params.yaml"]
+rtpipeline = [
+  "ext/*.zip",
+  "radiomics_params.yaml",
+  "radiomics_params_mr.yaml",
+  "radiomics_params_pet_fdg.yaml",
+  "radiomics_params_pet_psma.yaml",
+  "custom_structures_pelvic.yaml",
+]

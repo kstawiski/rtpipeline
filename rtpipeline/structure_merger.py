@@ -13,7 +13,7 @@ from datetime import datetime
 from scipy import ndimage
 from skimage import morphology
 
-from .dvh import _create_custom_structures_rtstruct
+from .custom_structures_rtstruct import _create_custom_structures_rtstruct
 from .utils import sanitize_rtstruct
 
 logger = logging.getLogger(__name__)
