@@ -26,6 +26,7 @@ dependencies:
   - pip
   - pip:
     - TotalSegmentator>=2.4.0  # Use latest stable version
+    - xgboost  # Required for totalseg_get_phase and totalseg_get_modality
     - dicompyler-core>=0.5.6
     - rt-utils
     - xlsxwriter
