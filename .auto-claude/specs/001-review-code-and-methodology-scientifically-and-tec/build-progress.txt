@@ -162,3 +162,131 @@ Date: 2026-01-06
 2. Add improvement ideas to IDEAS.md
 
 === END SUBTASK 2-1 REVIEW ===
+
+=== SESSION 3: Subtask 2-2 Review - dicom_copy.py ===
+Date: 2026-01-06
+
+## Subtask: subtask-2-2 (dicom_copy.py file handling and deduplication review)
+
+### OVERALL ASSESSMENT: APPROVED ✓
+
+The dicom_copy.py module implements a well-designed DICOM file copy manager with
+deduplication, caching, and optional integrity verification. The implementation
+is scientifically sound and follows best practices for thread safety.
+
+---
+
+### 1. THREAD SAFETY - APPROVED ✓
+
+**Findings:**
+1. All stats increments are protected by `self._lock` (lines 214-215, 231-234, 276, 295-296, 342-343)
+2. Registry and header cache updates are locked (lines 169-170, 286-287, 295-298)
+3. Module-level singleton uses `_copy_manager_lock` for initialization (lines 397-402)
+4. Lock usage is consistent and prevents race conditions
+
+**Verdict**: Thread-safe for concurrent copy operations as documented.
+
+---
+
+### 2. DICOM INTEGRITY PRESERVATION - APPROVED ✓
+
+**Findings:**
+1. Uses `shutil.copy2()` (line 293) which preserves file metadata (timestamps, permissions)
+2. Optional MD5 checksum verification (lines 220-242) with `file_md5()` from utils.py
+3. Re-copy on verification failure (lines 301-305)
+4. Hardlink support preserves exact byte content when on same filesystem
+
+**Verdict**: File copying preserves DICOM integrity. Checksum verification provides
+optional but recommended integrity assurance.
+
+---
+
+### 3. DEDUPLICATION LOGIC - APPROVED ✓
+
+**Findings:**
+1. **SOPInstanceUID-based deduplication** is scientifically correct per DICOM standard
+   - SOPInstanceUID (0008,0018) is the globally unique identifier for each DICOM object
+   - Each SOP Instance should appear exactly once in an organized dataset
+   - Deduplication prevents duplicate files while maintaining referential integrity
+
+2. **Registry persistence** (lines 98-125) allows resumption after crash
+   - Only keeps entries where destination file still exists (line 106)
+   - Handles corrupted JSON gracefully with warning (line 113)
+
+3. **Header caching** (lines 115-125) reduces I/O for re-indexing
+   - Caches essential DICOM tags including SOPInstanceUID, Modality, SeriesInstanceUID
+
+**Verdict**: Deduplication logic is correct and follows DICOM standard requirements.
+
+---
+
+### 4. FILE HANDLING - APPROVED WITH MINOR NOTES ⚠️
+
+**Minor Issues Identified (non-blocking):**
+
+| Issue | Location | Severity | Impact |
+|-------|----------|----------|--------|
+| Non-atomic cache writes | lines 135-149 | Low | Cache corruption on crash → re-index |
+| Hardlink race condition | lines 209-213 | Very Low | Falls back to copy gracefully |
+| No counter limit in copy_dicom_into | lines 350-352 | Very Low | Pathological edge case |
+| Silent re-copy verification failure | lines 301-305 | Low | Logged but not raised |
+| Singleton config ignored | lines 390-402 | Low | First config wins |
+
+**Detailed Analysis:**
+
+1. **Non-atomic cache writes** (save_caches, lines 135-149):
+   - Cache files written directly without atomic rename pattern
+   - Mid-write crash could corrupt JSON
+   - **Mitigation**: Cache is non-critical; corruption triggers clean rebuild
+
+2. **Hardlink TOCTOU race** (_try_hardlink, lines 209-213):
+   - Between `dst.exists()` check and `os.link()` another process could create file
+   - **Mitigation**: OSError caught and falls back to copy (line 217)
+
+3. **Copy counter has no upper limit** (copy_dicom_into, lines 350-352):
+   ```python
+   while dest.exists():
+       dest = dst_dir / f"{stem}_{counter}{suffix}"
+       counter += 1
+   ```
+   - Theoretical infinite loop if pathological collision pattern
+   - **Mitigation**: Would require extreme edge case; not practical concern
+
+4. **Checksum verification re-copy** (lines 301-305):
+   - If second copy also fails verification, error is logged but function returns success
+   - **Mitigation**: Error is logged; caller can check stats.verification_failed
+
+5. **Global singleton pattern** (lines 390-402):
+   - `get_copy_manager(output_root, config)` ignores config if manager exists
+   - **Mitigation**: Documented behavior; first initialization wins
+
+---
+
+### 5. EDGE CASES - HANDLED ✓
+
+| Edge Case | Handling | Verdict |
+|-----------|----------|---------|
+| Missing SOPInstanceUID | Returns None, skips dedup (line 188-189) | ✓ |
+| Corrupted DICOM | read_dicom() returns None (utils.py line 76-77) | ✓ |
+| Different filesystem for hardlink | Detects st_dev mismatch, falls back (lines 203-207) | ✓ |
+| Destination exists but different file | Unlinks then copies (line 291-293) | ✓ |
+| Same file different path | os.path.samefile check (line 291) | ✓ |
+
+---
+
+### SUMMARY FOR SUBTASK 2-2
+
+| Aspect | Status |
+|--------|--------|
+| Thread Safety | APPROVED |
+| DICOM Integrity | APPROVED |
+| Deduplication Logic | APPROVED |
+| File Handling | APPROVED (minor notes) |
+| Edge Case Handling | APPROVED |
+
+**Overall Verdict**: APPROVED ✓
+
+The module is well-implemented and handles DICOM file copying correctly with proper
+deduplication based on SOPInstanceUID. Minor improvements suggested in IDEAS.md.
+
+=== END SUBTASK 2-2 REVIEW ===

@@ -55,6 +55,38 @@ Each idea follows this format:
 - **Rationale**: While rare, interleaved treatment schedules exist. A more sophisticated clustering algorithm (e.g., DBSCAN on date differences) could handle these cases better.
 - **References**: N/A - edge case enhancement
 
+### IDEA-006: Atomic Cache Writes for Crash Safety
+
+- **Stage**: 1. DICOM Organization
+- **Priority**: Low
+- **Description**: The `save_caches()` method in `dicom_copy.py` writes JSON cache files directly without atomic rename pattern. A crash during write could corrupt the cache.
+- **Rationale**: Atomic writes (write to temp file, then rename) are the standard pattern for crash-safe file updates. While cache corruption only triggers a rebuild on next run, atomic writes would improve robustness.
+- **References**: Python tempfile.NamedTemporaryFile + os.replace() pattern
+
+### IDEA-007: Checksum Verification Failure Handling
+
+- **Stage**: 1. DICOM Organization
+- **Priority**: Low
+- **Description**: In `dicom_copy.py`, if checksum verification fails on both initial copy and re-copy, the error is logged but the function returns success. Consider raising an exception or returning a failure status.
+- **Rationale**: Silent acceptance of corrupted files could lead to downstream processing issues. Explicit failure handling would allow callers to decide how to proceed.
+- **References**: N/A - defensive programming improvement
+
+### IDEA-008: Copy Counter Limit for Name Collisions
+
+- **Stage**: 1. DICOM Organization
+- **Priority**: Very Low
+- **Description**: The `copy_dicom_into()` method has an unbounded while loop for handling name collisions. Adding a reasonable limit (e.g., 10000) would prevent theoretical infinite loops.
+- **Rationale**: While extremely unlikely in practice, a bounded loop is more defensive. Could log an error and raise an exception if limit is reached.
+- **References**: N/A - defensive programming improvement
+
+### IDEA-009: SHA-256 Option for Checksum Verification
+
+- **Stage**: 1. DICOM Organization
+- **Priority**: Low
+- **Description**: The checksum verification in `dicom_copy.py` uses MD5. While MD5 is fine for integrity checking (not security), offering SHA-256 as an option via `file_sha256()` from utils.py would provide a more modern alternative.
+- **Rationale**: Some institutional policies require SHA-256 for data integrity verification. The infrastructure is already in place (`file_sha256()` exists in utils.py).
+- **References**: NIST recommendations on hash functions
+
 <!-- Template for new ideas:
 
 ### IDEA-XXX: [Short Title]
@@ -73,7 +105,7 @@ Each idea follows this format:
 
 | Stage | Ideas Count |
 |-------|-------------|
-| 1. DICOM Organization | 5 |
+| 1. DICOM Organization | 9 |
 | 2. CT Processing | 0 |
 | 3. Segmentation | 0 |
 | 4. Custom Models | 0 |
@@ -92,7 +124,8 @@ Each idea follows this format:
 
 - **High Priority**: 0
 - **Medium Priority**: 2 (IDEA-001, IDEA-003)
-- **Low Priority**: 3 (IDEA-002, IDEA-004, IDEA-005)
+- **Low Priority**: 6 (IDEA-002, IDEA-004, IDEA-005, IDEA-006, IDEA-007, IDEA-009)
+- **Very Low Priority**: 1 (IDEA-008)
 
 ---
 
