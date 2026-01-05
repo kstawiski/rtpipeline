@@ -61,10 +61,26 @@ def copy_ct_series(
     dst_dir: Path,
     copy_manager: Optional["DicomCopyManager"] = None,
 ) -> None:
-    """Copy CT series to destination directory with optional optimizations."""
+    """Copy CT series to destination directory with optional optimizations.
+
+    Files are named CT_{index}.dcm where index is the instance_number if available
+    and unique, otherwise a sequential index is used to prevent filename collisions.
+    This handles vendors that set all InstanceNumbers to the same value or omit them.
+    """
     ensure_dir(dst_dir)
-    for inst in series:
-        dst = dst_dir / f"CT_{inst.instance_number or 0}.dcm"
+    # Track used indices to prevent collisions when InstanceNumber is not unique
+    used_indices: set[int] = set()
+    for idx, inst in enumerate(series):
+        # Prefer instance_number if valid and not already used, else use enumeration index
+        if inst.instance_number is not None and inst.instance_number not in used_indices:
+            file_idx = inst.instance_number
+        else:
+            # Find next available index starting from enumeration position
+            file_idx = idx
+            while file_idx in used_indices:
+                file_idx += 1
+        used_indices.add(file_idx)
+        dst = dst_dir / f"CT_{file_idx:05d}.dcm"
         if copy_manager is not None:
             copy_manager.copy_dicom(inst.path, dst, skip_if_exists=True)
         else:
