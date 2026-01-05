@@ -598,3 +598,153 @@ standard, regardless of what InstanceNumber-based sorting was done in ct.py.
 3. **CONSULT Pal**: Validate findings before proceeding to Stage 3
 
 === END SUBTASK 3-1 REVIEW ===
+
+=== SESSION 6: Subtask 3-2 - Pal Consultation for Stage 2 ===
+Date: 2026-01-06
+
+## Subtask: subtask-3-2 (Dual validation consensus on CT Processing)
+
+### PAL CONSULTATION SUMMARY
+
+**Purpose**: Reach dual validation consensus with Pal (external validator) on Stage 2
+CT Processing review findings before proceeding to Stage 3.
+
+---
+
+### FINDINGS PRESENTED TO PAL
+
+#### 1. ct.py Review
+
+| Component | Status | Key Findings |
+|-----------|--------|--------------|
+| index_ct_series() | APPROVED | Correct DICOM tag extraction, proper series grouping |
+| copy_ct_series() | APPROVED (bug fixed) | HIGH severity filename collision bug fixed |
+| pick_primary_series() | APPROVED | Sound heuristic for primary series selection |
+
+**Critical Bug Fixed**: InstanceNumber-based filename collision at lines 66-87. Original
+code would overwrite files when InstanceNumber values were non-unique (some vendors set
+all slices to "1" or omit the tag). The fix uses a `used_indices` set to track and
+prevent collisions with sequential fallback indexing.
+
+**Bug Fix Details**:
+```python
+# Before (BROKEN):
+dst = dst_dir / f"CT_{inst.instance_number or 0}.dcm"
+
+# After (FIXED):
+used_indices: set[int] = set()
+for idx, inst in enumerate(series):
+    if inst.instance_number is not None and inst.instance_number not in used_indices:
+        file_idx = inst.instance_number
+    else:
+        file_idx = idx
+        while file_idx in used_indices:
+            file_idx += 1
+    used_indices.add(file_idx)
+    dst = dst_dir / f"CT_{file_idx:05d}.dcm"
+```
+
+#### 2. NIfTI Conversion via dcm2niix
+
+| Aspect | Status | Key Findings |
+|--------|--------|--------------|
+| Slice Ordering | APPROVED | dcm2niix uses ImagePositionPatient internally (correct per DICOM standard) |
+| HU Preservation | APPROVED | Raw pixel values preserved with correct RescaleSlope/Intercept |
+| Geometry Preservation | APPROVED | Affine matrix correctly encodes spatial relationships |
+| Compression | APPROVED | Uses -z y flag for .nii.gz output |
+
+---
+
+### PAL REVIEW CHECKLIST
+
+| Criterion | Pal Assessment | Notes |
+|-----------|----------------|-------|
+| CT indexing methodology | ✓ Confirmed | Proper nested dict hierarchy for patient/study/series |
+| Filename collision fix | ✓ Confirmed | Robust collision prevention with tracked indices |
+| Primary series heuristic | ✓ Confirmed | Largest series is clinically reasonable selection |
+| dcm2niix invocation | ✓ Confirmed | Correct CLI usage and output handling |
+| Geometry preservation | ✓ Confirmed | ImagePositionPatient used for spatial ordering |
+| HU value integrity | ✓ Confirmed | RescaleSlope/Intercept handling correct |
+
+---
+
+### SCIENTIFIC METHODOLOGY VALIDATION
+
+**1. DICOM Standard Compliance**
+
+The CT processing module correctly handles:
+- PatientID (0x0010, 0x0020)
+- StudyInstanceUID (0x0020, 0x000D)
+- SeriesInstanceUID (0x0020, 0x000E)
+- InstanceNumber (0x0020, 0x0013) - with proper fallback when unreliable
+- ImagePositionPatient handling delegated to dcm2niix (correct approach)
+
+**2. NIfTI Conversion Best Practices**
+
+dcm2niix is the gold standard for DICOM-to-NIfTI conversion because:
+- Uses ImagePositionPatient for spatial ordering (not InstanceNumber)
+- Handles gantry tilt correctly
+- Preserves HU calibration
+- Supports enhanced DICOM formats
+- Widely validated in neuroimaging research
+
+**3. Robustness to Vendor Variability**
+
+The bug fix addresses a real-world issue where certain vendors:
+- Set InstanceNumber to constant values (e.g., all "1")
+- Omit InstanceNumber entirely
+- Use non-sequential InstanceNumber values
+
+The fixed code gracefully handles all these scenarios.
+
+---
+
+### CONSENSUS DETERMINATION
+
+**Stage 2: CT Processing - APPROVED** ✓
+
+Both reviewers (Claude + Pal) confirm:
+
+1. **index_ct_series()** correctly extracts and organizes CT metadata
+   - Proper DICOM tag usage
+   - Graceful handling of malformed files
+   - Appropriate sorting with None-safe key function
+
+2. **copy_ct_series()** is now robust after bug fix
+   - Filename collision prevention implemented
+   - 5-digit zero-padded naming for proper lexicographic sorting
+   - Handles unreliable InstanceNumber gracefully
+
+3. **pick_primary_series()** uses sound clinical heuristic
+   - Largest series selection is appropriate for planning CT identification
+   - Edge cases (empty input, ties) handled
+
+4. **NIfTI conversion via dcm2niix** follows best practices
+   - Geometry and HU values preserved
+   - Proper slice ordering handled internally by dcm2niix
+
+5. **3 improvement ideas** (IDEA-010, IDEA-011, IDEA-012) documented for future enhancement
+
+---
+
+### STAGE 2 SUMMARY
+
+| Metric | Value |
+|--------|-------|
+| Files Reviewed | 2 (ct.py, segmentation.py for dcm2niix) |
+| Critical Bugs Found | 1 (filename collision - FIXED) |
+| Minor Issues Found | 0 |
+| Improvement Ideas Logged | 3 |
+| Dual Consensus | ACHIEVED |
+| Stage Status | **APPROVED** |
+
+---
+
+### NEXT STEPS
+
+✓ Stage 2 APPROVED - proceed to Stage 3 (Segmentation Review)
+
+Ready for subtask-4-1: Review segmentation.py for TotalSegmentator CLI wrapper,
+task selection, GPU/CPU fallback, and output handling.
+
+=== END SUBTASK 3-2 - STAGE 2 CONSENSUS ===
