@@ -111,6 +111,38 @@ Each idea follows this format:
 - **Rationale**: dcm2niix may exclude non-equidistant slices or fail to convert certain enhanced DICOM formats. A post-conversion validation would catch these issues early and alert users to potential data loss.
 - **References**: dcm2niix documentation on edge cases
 
+### IDEA-013: Post-Segmentation Geometry Validation
+
+- **Stage**: 3. Segmentation
+- **Priority**: Low
+- **Description**: Add validation that verifies output segmentation masks have the same geometry (shape, affine transform, voxel spacing) as the input CT NIfTI. Log a warning if they differ.
+- **Rationale**: While TotalSegmentator guarantees geometry preservation, rare bugs or version mismatches could cause subtle geometry misalignments. Post-segmentation validation would catch these issues before they propagate to DVH/radiomics extraction, where misaligned masks produce incorrect results.
+- **References**: nibabel.spatially_same() or SimpleITK geometry comparison
+
+### IDEA-014: Call TotalSegmentator Environment Validation
+
+- **Stage**: 3. Segmentation
+- **Priority**: Low
+- **Description**: The `_validate_totalseg_environment()` function (lines 300-335 in segmentation.py) is defined but never called. Consider calling it before the first TotalSegmentator invocation to provide early error detection.
+- **Rationale**: Early validation would catch NumPy version incompatibilities, missing TotalSegmentator installation, or environment issues before running potentially long segmentation jobs. Currently, users only discover these issues when segmentation fails.
+- **References**: N/A - defensive programming improvement
+
+### IDEA-015: Remove Deprecated segment_extra_models_mr Function
+
+- **Stage**: 3. Segmentation
+- **Priority**: Very Low
+- **Description**: The `segment_extra_models_mr()` function (lines 1042-1044) is marked deprecated with a no-op body. Schedule removal in the next major version release.
+- **Rationale**: Code hygiene - deprecated functions that do nothing should be removed to avoid confusion. The MR segmentation is now handled per-course within `segment_course()`.
+- **References**: Semantic versioning (removal in major version)
+
+### IDEA-016: TotalSegmentator Version Pinning for Reproducibility
+
+- **Stage**: 3. Segmentation
+- **Priority**: Medium
+- **Description**: Log or record the TotalSegmentator version used for each segmentation run in the manifest.json. Consider adding a configurable version requirement to ensure reproducibility.
+- **Rationale**: Different TotalSegmentator versions may produce slightly different segmentation results due to model updates. For research reproducibility, knowing which version was used is important. Version pinning would ensure consistent results across runs.
+- **References**: Wasserthal et al. 2023, Radiology: AI; TotalSegmentator changelog
+
 <!-- Template for new ideas:
 
 ### IDEA-XXX: [Short Title]
@@ -131,7 +163,7 @@ Each idea follows this format:
 |-------|-------------|
 | 1. DICOM Organization | 9 |
 | 2. CT Processing | 3 |
-| 3. Segmentation | 0 |
+| 3. Segmentation | 4 |
 | 4. Custom Models | 0 |
 | 5. Custom Structures | 0 |
 | 6. CT Cropping | 0 |
@@ -147,9 +179,9 @@ Each idea follows this format:
 ## Priority Summary
 
 - **High Priority**: 0
-- **Medium Priority**: 3 (IDEA-001, IDEA-003, IDEA-011)
-- **Low Priority**: 8 (IDEA-002, IDEA-004, IDEA-005, IDEA-006, IDEA-007, IDEA-009, IDEA-010, IDEA-012)
-- **Very Low Priority**: 1 (IDEA-008)
+- **Medium Priority**: 4 (IDEA-001, IDEA-003, IDEA-011, IDEA-016)
+- **Low Priority**: 10 (IDEA-002, IDEA-004, IDEA-005, IDEA-006, IDEA-007, IDEA-009, IDEA-010, IDEA-012, IDEA-013, IDEA-014)
+- **Very Low Priority**: 2 (IDEA-008, IDEA-015)
 
 ---
 
