@@ -1,0 +1,164 @@
+=== AUTO-BUILD PROGRESS ===
+
+Project: RTpipeline Scientific and Technical Code Review
+Workspace: /Users/konrad/Documents/GitHub/rtpipeline
+Started: 2026-01-06
+
+Workflow Type: feature (investigation + implementation)
+Rationale: Combines systematic review (investigation) of each pipeline stage with
+iterative bug fixes (implementation). Requires dual validation with Pal (gpt-5.2).
+
+Session 1 (Planner):
+- Created implementation_plan.json
+- Phases: 15
+- Total subtasks: 28
+- Created init.sh
+- Updated context.json with detailed file mappings
+
+Phase Summary:
+- Phase 1 (Setup): 1 subtask - Create IDEAS.md
+- Phase 2 (DICOM Organization): 3 subtasks - Review organize.py, dicom_copy.py + Pal consensus
+- Phase 3 (CT Processing): 2 subtasks - Review ct.py + Pal consensus
+- Phase 4 (Segmentation): 2 subtasks - Review segmentation.py + Pal consensus
+- Phase 5 (Custom Models): 2 subtasks - Review custom_models.py + Pal consensus
+- Phase 6 (Custom Structures): 2 subtasks - Review custom_structures.py + Pal consensus
+- Phase 7 (CT Cropping): 2 subtasks - Review anatomical_cropping.py + Pal consensus
+- Phase 8 (DVH Analysis): 2 subtasks - Review dvh.py + Pal consensus (AAPM/RTOG)
+- Phase 9 (Radiomics): 3 subtasks - Review radiomics*.py + Pal consensus (IBSI)
+- Phase 10 (Robustness): 2 subtasks - Review radiomics_robustness.py + Pal consensus (ICC)
+- Phase 11 (Quality Control): 2 subtasks - Review quality_control.py + Pal consensus
+- Phase 12 (Aggregation): 2 subtasks - Review aggregation scripts + Pal consensus
+- Phase 13 (Configuration): 2 subtasks - Review config.py + Pal consensus
+- Phase 14 (Implementation Fixes): 1 subtask - Fix identified issues
+- Phase 15 (Final Validation): 2 subtasks - Re-review with Pal + E2E verification
+
+Services Involved:
+- main: RTpipeline Python package (primary focus)
+
+Scientific Standards to Validate:
+- IBSI: Radiomics feature extraction (PyRadiomics config)
+- AAPM/RTOG: DVH metrics (D100, D98, D95, D50, D2, Dcc, Vxx)
+- ICC: pingouin ICC(3,1) for robustness analysis
+
+Key Files to Review:
+- rtpipeline/dvh.py - DVH metric calculations
+- rtpipeline/radiomics.py - IBSI-compliant feature extraction
+- rtpipeline/radiomics_robustness.py - ICC computation, volume_adapt_mask()
+- rtpipeline/custom_structures.py - Boolean operations, margin calculations
+- rtpipeline/segmentation.py - TotalSegmentator integration
+- rtpipeline/organize.py - DICOM parsing, course identification
+- rtpipeline/quality_control.py - Validation checks, body region detection
+
+Known Issues to Verify Fixed:
+- volume_adapt_mask() was returning original mask on perturbation failure (Nov 2025 fix)
+- NumPy version conflict (1.x vs 2.x) handled via dual conda environments
+
+Parallelism Analysis:
+- Max parallel phases: 1 (sequential due to stage dependencies)
+- Recommended workers: 1
+- Parallel groups: None (each stage depends on previous)
+
+Deliverables:
+1. IDEAS.md - Improvement suggestions (non-blocking)
+2. Code fixes for identified scientific/technical issues
+3. Dual validation consensus for all 12 pipeline stages
+
+=== STARTUP COMMAND ===
+
+This is a manual code review task. No services need starting.
+
+To continue building this spec, run:
+
+  source auto-claude/.venv/bin/activate && python auto-claude/run.py --spec 001 --parallel 1
+
+Or simply begin reviewing the first pipeline stage:
+
+  1. Read rtpipeline/organize.py
+  2. Validate DICOM parsing methodology
+  3. Consult with Pal for consensus
+  4. Document issues in IDEAS.md
+  5. Proceed to next stage
+
+=== END SESSION 1 ===
+
+=== SESSION 2: Stage 1 Review - organize.py ===
+Date: 2026-01-06
+
+## Subtask: subtask-2-1 (organize.py scientific review)
+
+### DICOM Parsing Correctness - APPROVED ✓
+
+**Findings:**
+1. `read_dicom()` in utils.py correctly uses `force=True, stop_before_pixels=True` for efficient metadata extraction
+2. Tag access via `get()` helper handles missing tags gracefully with default values
+3. Patient ID extraction uses standard DICOM tag (0x0010, 0x0020) - correct
+4. SOP Instance UID extraction uses (0x0008, 0x0018) - correct
+5. Study Instance UID extraction uses (0x0020, 0x000D) - correct
+
+**Frame of Reference UID Issue Identified:**
+- In rt_details.py line 84, 103, 114: Uses tag (0x3006, 0x0024) for Frame of Reference UID
+- This is RTSS-specific (Referenced Frame of Reference UID in Structure Set Module)
+- For RTDOSE, the standard tag is (0x0020, 0x0052) - general Frame of Reference UID
+- **Impact**: Low - most TPS export the same FOR UID in both tags, but some may differ
+
+### Course Identification Logic - APPROVED WITH NOTES ✓
+
+**Findings:**
+1. `link_rt_sets()` correctly links RTDOSE to RTPLAN via ReferencedSOPInstanceUID
+2. `group_by_course()` supports two merge criteria:
+   - `same_ct_study` (default, preferred) - groups by CT Study UID
+   - `frame_of_reference` - groups by FOR UID
+3. Optional `max_days_between_plans` filter correctly separates temporally distant treatments
+4. Fallback to per-plan grouping (`SOP:{uid}`) when no reliable key exists - correct
+
+**Minor Concern:**
+- Date-based course splitting (lines 108-122) uses simple pivot-based clustering
+- May incorrectly split interleaved courses (rare in practice)
+
+### Dose Classification Algorithm - MOSTLY APPROVED ✓
+
+**5-Phase Algorithm Assessment:**
+
+| Phase | Implementation | Verdict |
+|-------|----------------|---------|
+| Phase 1: TPS PLAN_SUM detection | Correct - uses DoseSummationType tag | ✓ |
+| Phase 2: FOR separation | Correct - prevents cross-geometry summation | ✓ |
+| Phase 2.5: Geometric overlap | Good addition - prevents non-overlapping sum | ✓ |
+| Phase 3: Replan detection (ITT) | Correct - uses text + Rx similarity | ✓ |
+| Phase 4: Primary+boost detection | Correct - text + Rx pattern analysis | ✓ |
+| Phase 5: Plausibility check | Correct but threshold hardcoded | ⚠️ |
+
+**Issues Identified:**
+
+1. **BUG - Indentation Error (Lines 2150-2161):**
+   ```python
+   if getattr(ds_rt, 'PatientID', None) and str(ds_rt.PatientID).strip() != str(co.patient_id):
+       continue
+       ref_uid = None  # <- This line and below are incorrectly indented
+   ```
+   The code after `continue` is unreachable. The entire fraction processing block is skipped.
+   **Severity**: HIGH - Treatment fraction data not being collected.
+
+2. **Minor - Z-extent calculation (Line 302):**
+   When `GridFrameOffsetVector` is empty, assumes 1mm spacing:
+   ```python
+   z_max = origin[2] + frames - 1  # Assume 1mm spacing if no offsets
+   ```
+   Should use SliceThickness if available from dose file.
+
+3. **Hardcoded threshold (Line 471):**
+   `max_total_dose_gy: float = 100.0` - should be configurable for hypofractionated regimens
+
+### Summary for Subtask 2-1
+
+| Aspect | Status |
+|--------|--------|
+| DICOM Parsing | APPROVED - minor FOR tag improvement suggested |
+| Course Identification | APPROVED - logic sound, edge cases handled |
+| Dose Classification | APPROVED with BUG FIX NEEDED |
+
+**Action Required:**
+1. Fix indentation bug at lines 2150-2161 (HIGH priority)
+2. Add improvement ideas to IDEAS.md
+
+=== END SUBTASK 2-1 REVIEW ===
