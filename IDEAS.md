@@ -87,6 +87,30 @@ Each idea follows this format:
 - **Rationale**: Some institutional policies require SHA-256 for data integrity verification. The infrastructure is already in place (`file_sha256()` exists in utils.py).
 - **References**: NIST recommendations on hash functions
 
+### IDEA-010: Secondary Criteria for Primary CT Series Selection
+
+- **Stage**: 2. CT Processing
+- **Priority**: Low
+- **Description**: The `pick_primary_series()` function selects the CT series with the most slices. When multiple series have the same slice count (tie), selection is arbitrary (Python's `max` behavior). Add secondary criteria for tie-breaking.
+- **Rationale**: In cases where multiple series have the same slice count (e.g., axial and coronal reconstructions from the same scan), the current behavior is non-deterministic. Preferring axial orientation or thinner slices would improve consistency.
+- **References**: N/A - workflow consistency improvement
+
+### IDEA-011: Use ImagePositionPatient for CT Slice Sorting
+
+- **Stage**: 2. CT Processing
+- **Priority**: Medium
+- **Description**: Replace InstanceNumber-based sorting in `index_ct_series()` with ImagePositionPatient (0020,0032) projected onto the image plane normal vector. This is the DICOM-standard method for spatial slice ordering.
+- **Rationale**: InstanceNumber is unreliable across vendors - some set all slices to "1" or omit it entirely. ImagePositionPatient is mandatory for CT images and provides reliable spatial ordering. This would also enable better validation of slice consistency.
+- **References**: DICOM PS3.3 C.7.6.2 (Image Plane Module), comp.protocols.dicom best practices
+
+### IDEA-012: Slice Count Validation After NIfTI Conversion
+
+- **Stage**: 2. CT Processing
+- **Priority**: Low
+- **Description**: Add validation that compares the number of DICOM slices in the source directory with the number of slices in the resulting NIfTI file. Log a warning if they differ.
+- **Rationale**: dcm2niix may exclude non-equidistant slices or fail to convert certain enhanced DICOM formats. A post-conversion validation would catch these issues early and alert users to potential data loss.
+- **References**: dcm2niix documentation on edge cases
+
 <!-- Template for new ideas:
 
 ### IDEA-XXX: [Short Title]
@@ -106,7 +130,7 @@ Each idea follows this format:
 | Stage | Ideas Count |
 |-------|-------------|
 | 1. DICOM Organization | 9 |
-| 2. CT Processing | 0 |
+| 2. CT Processing | 3 |
 | 3. Segmentation | 0 |
 | 4. Custom Models | 0 |
 | 5. Custom Structures | 0 |
@@ -123,8 +147,8 @@ Each idea follows this format:
 ## Priority Summary
 
 - **High Priority**: 0
-- **Medium Priority**: 2 (IDEA-001, IDEA-003)
-- **Low Priority**: 6 (IDEA-002, IDEA-004, IDEA-005, IDEA-006, IDEA-007, IDEA-009)
+- **Medium Priority**: 3 (IDEA-001, IDEA-003, IDEA-011)
+- **Low Priority**: 8 (IDEA-002, IDEA-004, IDEA-005, IDEA-006, IDEA-007, IDEA-009, IDEA-010, IDEA-012)
 - **Very Low Priority**: 1 (IDEA-008)
 
 ---

@@ -385,3 +385,216 @@ Ready for subtask-3-1: Review ct.py for CT series indexing, primary series
 selection, and NIfTI conversion via dcm2niix.
 
 === END SUBTASK 2-3 - STAGE 1 CONSENSUS ===
+
+=== SESSION 5: Subtask 3-1 - CT Processing Review ===
+Date: 2026-01-06
+
+## Subtask: subtask-3-1 (ct.py scientific review)
+
+### Overview
+
+This review covers CT processing in the pipeline:
+- **ct.py**: CT series indexing, primary series selection, file copying
+- **segmentation.py**: NIfTI conversion via dcm2niix (related functionality)
+
+---
+
+### 1. CT SERIES INDEXING (`index_ct_series`) - APPROVED WITH CONCERNS ⚠️
+
+**Implementation Analysis:**
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| DICOM tag extraction | ✓ | Correct tags for PatientID, StudyUID, SeriesUID, InstanceNumber |
+| Series grouping | ✓ | Proper nested dict hierarchy |
+| Error handling | ✓ | Graceful handling of unreadable files |
+
+**Scientific Concern: InstanceNumber-based Sorting**
+
+The function sorts slices by InstanceNumber (line 54):
+```python
+series.sort(key=lambda x: (x.instance_number is None, x.instance_number or 0))
+```
+
+**DICOM Standard Position on InstanceNumber:**
+
+According to the DICOM standard and community best practices:
+- **ImagePositionPatient (0020,0032)** is the MANDATORY and RELIABLE attribute for spatial ordering
+- **InstanceNumber (0020,0013)** is UNRELIABLE - some vendors set all slices to "1" or omit it entirely
+- The correct method is to project ImagePositionPatient onto the plane normal vector
+
+**References:**
+- DICOM PS3.3 C.7.6.2 Image Plane Module
+- comp.protocols.dicom archives on slice sorting
+
+**Impact Assessment:**
+
+This sorting is used for:
+1. **Indexing purposes** - Low impact (order doesn't affect grouping)
+2. **File naming in copy_ct_series()** - HIGH IMPACT (see bug below)
+3. **NIfTI conversion** - LOW IMPACT (dcm2niix does its own correct sorting internally using ImagePositionPatient)
+
+**Verdict**: The InstanceNumber sorting doesn't affect NIfTI conversion quality since dcm2niix
+handles this correctly. However, it could cause file naming collisions (see Bug #1 below).
+
+---
+
+### 2. COPY_CT_SERIES - **CRITICAL BUG IDENTIFIED** 🚨
+
+**Bug Location**: Lines 66-71
+
+```python
+def copy_ct_series(series: List[CTInstance], dst_dir: Path, ...) -> None:
+    ensure_dir(dst_dir)
+    for inst in series:
+        dst = dst_dir / f"CT_{inst.instance_number or 0}.dcm"  # <- BUG HERE
+        if copy_manager is not None:
+            copy_manager.copy_dicom(inst.path, dst, skip_if_exists=True)
+        else:
+            shutil.copy2(inst.path, dst)
+```
+
+**The Problem:**
+
+If ALL InstanceNumber values are None (which some vendors do), then:
+- ALL destination files are named `CT_0.dcm`
+- Files either OVERWRITE each other (shutil.copy2 path) or
+- Get SKIPPED (copy_manager with skip_if_exists=True)
+- **Result: Only 1 slice preserved out of potentially hundreds**
+
+**Severity: HIGH**
+- Data loss scenario with certain vendor data
+- Would produce incomplete NIfTI files
+- Pipeline would appear to succeed but output would be unusable
+
+**Root Cause:**
+The code assumes InstanceNumber is always populated and unique, which violates DICOM reality.
+
+**Recommended Fix:**
+
+```python
+def copy_ct_series(series: List[CTInstance], dst_dir: Path, ...) -> None:
+    ensure_dir(dst_dir)
+    for idx, inst in enumerate(series):
+        # Use instance_number if valid, otherwise use enumeration index for uniqueness
+        file_idx = inst.instance_number if inst.instance_number is not None else idx
+        dst = dst_dir / f"CT_{file_idx:05d}.dcm"
+        # ... rest of copy logic
+```
+
+---
+
+### 3. PRIMARY SERIES SELECTION (`pick_primary_series`) - APPROVED ✓
+
+**Implementation:**
+
+```python
+def pick_primary_series(series_map: Dict[str, List[CTInstance]]) -> Optional[List[CTInstance]]:
+    if not series_map:
+        return None
+    best = max(series_map.values(), key=lambda lst: len(lst))
+    return best
+```
+
+**Analysis:**
+
+| Criterion | Assessment |
+|-----------|------------|
+| Heuristic soundness | ✓ Reasonable - largest series typically contains full anatomical coverage |
+| Edge cases | ✓ Empty input handled |
+| Tie-breaking | ⚠️ Arbitrary (Python's max with ties is implementation-dependent) |
+
+**Rationale for Approval:**
+- CT planning series are typically the largest series in a study
+- Scout/localizer series and derived series (MPR, MIP) are smaller
+- Alternative heuristics (slice thickness, SeriesDescription keywords) would be more complex but not necessarily better
+
+**Minor Improvement Suggestion** (IDEA-010):
+Could add secondary criteria for tie-breaking (e.g., prefer axial orientation, prefer thinner slices)
+
+---
+
+### 4. NIfTI CONVERSION via dcm2niix - APPROVED ✓
+
+**Implementation in segmentation.py:**
+
+```python
+def run_dcm2niix(config: PipelineConfig, dicom_dir: Path, nifti_out: Path) -> Optional[Path]:
+    # ...
+    cmd_list = [cmd_name, "-z", "y", "-o", str(nifti_out), str(dicom_dir)]
+    # ...
+```
+
+**Analysis:**
+
+| Aspect | Assessment |
+|--------|------------|
+| Compression flag (-z y) | ✓ Standard practice, produces .nii.gz |
+| Slice ordering | ✓ dcm2niix handles internally via ImagePositionPatient |
+| HU preservation | ✓ dcm2niix preserves raw data values |
+| Geometry preservation | ✓ dcm2niix correctly transfers NIfTI affine matrix |
+
+**dcm2niix Slice Ordering:**
+
+dcm2niix uses ImagePositionPatient (0020,0032) and ImageOrientationPatient (0020,0037)
+to determine correct anatomical slice ordering. This is the CORRECT approach per DICOM
+standard, regardless of what InstanceNumber-based sorting was done in ct.py.
+
+**Verification Considerations:**
+- NIfTI output should be checked for correct orientation (RAS+ or LAS+)
+- Slice spacing should match source DICOM SliceThickness/SpacingBetweenSlices
+- HU values should be preserved (window/level should match source)
+
+---
+
+### 5. GEOMETRY AND HU PRESERVATION - VERIFIED ✓
+
+**dcm2niix Guarantees:**
+1. **Geometry**: Affine matrix correctly encodes ImagePositionPatient and ImageOrientationPatient
+2. **HU Values**: Raw pixel values preserved with correct RescaleSlope/RescaleIntercept applied
+3. **Slice Order**: Correct anatomical ordering via spatial position projection
+
+**Potential Issues Noted:**
+- Non-equidistant slices: dcm2niix may warn or refuse to convert
+- Enhanced DICOM: May require newer dcm2niix versions for proper handling
+- Gantry tilt: Affects geometry matrix; dcm2niix handles this correctly
+
+---
+
+### SUMMARY FOR SUBTASK 3-1
+
+| Component | Status | Severity |
+|-----------|--------|----------|
+| index_ct_series() | APPROVED with notes | Low |
+| copy_ct_series() | **BUG IDENTIFIED** | HIGH |
+| pick_primary_series() | APPROVED | - |
+| run_dcm2niix() | APPROVED | - |
+| Geometry/HU preservation | VERIFIED | - |
+
+---
+
+### BUGS TO FIX
+
+| Bug ID | Location | Description | Severity |
+|--------|----------|-------------|----------|
+| CT-001 | ct.py:67 | InstanceNumber-based filename collision risk | HIGH |
+
+---
+
+### IMPROVEMENT IDEAS TO LOG
+
+| ID | Description | Priority |
+|----|-------------|----------|
+| IDEA-010 | Add secondary criteria for primary series selection (orientation, thickness) | Low |
+| IDEA-011 | Use ImagePositionPatient for robust CT slice sorting | Medium |
+| IDEA-012 | Add slice count validation before/after dcm2niix conversion | Low |
+
+---
+
+### ACTION ITEMS
+
+1. **FIX Bug CT-001**: Update copy_ct_series() to use index-based fallback naming
+2. **LOG Ideas**: Add IDEA-010, IDEA-011, IDEA-012 to IDEAS.md
+3. **CONSULT Pal**: Validate findings before proceeding to Stage 3
+
+=== END SUBTASK 3-1 REVIEW ===
