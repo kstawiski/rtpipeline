@@ -2149,110 +2149,110 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
                         continue
                     if getattr(ds_rt, 'PatientID', None) and str(ds_rt.PatientID).strip() != str(co.patient_id):
                         continue
-                        ref_uid = None
+                    ref_uid = None
+                    try:
+                        for ref in getattr(ds_rt, 'ReferencedRTPlanSequence', []) or []:
+                            ref_uid = getattr(ref, 'ReferencedSOPInstanceUID', None)
+                            if ref_uid:
+                                break
+                    except Exception:
+                        pass
+                    if plan_uids and ref_uid and ref_uid not in plan_uids:
+                        continue
+                    rt_date = getattr(ds_rt, 'TreatmentDate', None) or getattr(ds_rt, 'SeriesDate', None)
+                    rt_time = getattr(ds_rt, 'TreatmentTime', None)
+                    frac_num = getattr(ds_rt, 'ReferencedFractionNumber', None)
+                    machine = getattr(ds_rt, 'TreatmentMachineName', None) or getattr(ds_rt, 'ReferencedTreatmentMachineName', None)
+                    if rt_date:
+                        fractions_count += 1
                         try:
-                            for ref in getattr(ds_rt, 'ReferencedRTPlanSequence', []) or []:
-                                ref_uid = getattr(ref, 'ReferencedSOPInstanceUID', None)
-                                if ref_uid:
-                                    break
+                            d = datetime.datetime.strptime(str(rt_date), '%Y%m%d').date()
                         except Exception:
-                            pass
-                        if plan_uids and ref_uid and ref_uid not in plan_uids:
-                            continue
-                        rt_date = getattr(ds_rt, 'TreatmentDate', None) or getattr(ds_rt, 'SeriesDate', None)
-                        rt_time = getattr(ds_rt, 'TreatmentTime', None)
-                        frac_num = getattr(ds_rt, 'ReferencedFractionNumber', None)
-                        machine = getattr(ds_rt, 'TreatmentMachineName', None) or getattr(ds_rt, 'ReferencedTreatmentMachineName', None)
-                        if rt_date:
-                            fractions_count += 1
                             try:
-                                d = datetime.datetime.strptime(str(rt_date), '%Y%m%d').date()
+                                d = datetime.datetime.strptime(str(rt_date), '%Y-%m-%d').date()
                             except Exception:
-                                try:
-                                    d = datetime.datetime.strptime(str(rt_date), '%Y-%m-%d').date()
-                                except Exception:
-                                    d = None
-                            if d:
-                                start_date = d if start_date is None or d < start_date else start_date
-                                end_date = d if end_date is None or d > end_date else end_date
-                        machine_name_rt = machine
-                        try:
-                            seq = getattr(ds_rt, 'TreatmentMachineSequence', None)
-                            if seq:
-                                tm = getattr(seq[0], 'TreatmentMachineName', None)
-                                if tm:
-                                    machine_name_rt = str(tm)
-                        except Exception:
-                            pass
+                                d = None
+                        if d:
+                            start_date = d if start_date is None or d < start_date else start_date
+                            end_date = d if end_date is None or d > end_date else end_date
+                    machine_name_rt = machine
+                    try:
+                        seq = getattr(ds_rt, 'TreatmentMachineSequence', None)
+                        if seq:
+                            tm = getattr(seq[0], 'TreatmentMachineName', None)
+                            if tm:
+                                machine_name_rt = str(tm)
+                    except Exception:
+                        pass
 
-                        frac_entry: Dict[str, object] = {
-                            "treatment_date": d.isoformat() if d else str(rt_date),
-                            "treatment_time": str(rt_time or ""),
-                            "plan_sop": ref_uid or "",
-                            "fraction_number": int(frac_num) if frac_num is not None else None,
-                            "treatment_machine": str(machine_name_rt or ""),
-                            "source_path": str(p),
-                            "sop_instance_uid": str(getattr(ds_rt, "SOPInstanceUID", "")),
-                            "delivered_dose_gy": None,
-                            "beam_meterset": None,
-                            "delivered_meterset": None,
-                            "beam_delivery": [],
-                        }
-                        try:
-                            delivered = getattr(ds_rt, "ReferencedDoseReferenceSequence", None)
-                            if delivered:
-                                first = delivered[0]
-                                dose_value = getattr(first, "DeliveredDoseReferenceDoseValue", None)
-                                if dose_value is not None:
-                                    frac_entry["delivered_dose_gy"] = float(dose_value)
-                        except Exception:
-                            pass
-                        delivered_total = 0.0
-                        try:
-                            tsb_seq = getattr(ds_rt, 'TreatmentSessionBeamSequence', None) or []
-                            beam_deliveries = []
-                            for beam in tsb_seq:
-                                beam_num = getattr(beam, 'ReferencedBeamNumber', None)
-                                delivered_mu = getattr(beam, 'DeliveredMeterset', None)
-                                if delivered_mu not in (None, ""):
-                                    try:
-                                        delivered_val = float(delivered_mu)
-                                        delivered_total += delivered_val
-                                    except Exception:
-                                        delivered_val = None
-                                else:
+                    frac_entry: Dict[str, object] = {
+                        "treatment_date": d.isoformat() if d else str(rt_date),
+                        "treatment_time": str(rt_time or ""),
+                        "plan_sop": ref_uid or "",
+                        "fraction_number": int(frac_num) if frac_num is not None else None,
+                        "treatment_machine": str(machine_name_rt or ""),
+                        "source_path": str(p),
+                        "sop_instance_uid": str(getattr(ds_rt, "SOPInstanceUID", "")),
+                        "delivered_dose_gy": None,
+                        "beam_meterset": None,
+                        "delivered_meterset": None,
+                        "beam_delivery": [],
+                    }
+                    try:
+                        delivered = getattr(ds_rt, "ReferencedDoseReferenceSequence", None)
+                        if delivered:
+                            first = delivered[0]
+                            dose_value = getattr(first, "DeliveredDoseReferenceDoseValue", None)
+                            if dose_value is not None:
+                                frac_entry["delivered_dose_gy"] = float(dose_value)
+                    except Exception:
+                        pass
+                    delivered_total = 0.0
+                    try:
+                        tsb_seq = getattr(ds_rt, 'TreatmentSessionBeamSequence', None) or []
+                        beam_deliveries = []
+                        for beam in tsb_seq:
+                            beam_num = getattr(beam, 'ReferencedBeamNumber', None)
+                            delivered_mu = getattr(beam, 'DeliveredMeterset', None)
+                            if delivered_mu not in (None, ""):
+                                try:
+                                    delivered_val = float(delivered_mu)
+                                    delivered_total += delivered_val
+                                except Exception:
                                     delivered_val = None
-                                cp_seq = getattr(beam, 'ControlPointDeliverySequence', None) or []
-                                gantries = []
-                                meterset_weights = []
-                                for cp in cp_seq:
-                                    if hasattr(cp, 'GantryAngle'):
-                                        try:
-                                            gantries.append(float(cp.GantryAngle))
-                                        except Exception:
-                                            pass
-                                    if hasattr(cp, 'CumulativeMetersetWeight'):
-                                        try:
-                                            meterset_weights.append(float(cp.CumulativeMetersetWeight))
-                                        except Exception:
-                                            pass
-                                beam_deliveries.append({
-                                    'beam_number': int(beam_num) if beam_num is not None else None,
-                                    'delivered_meterset': delivered_val,
-                                    'gantry_start': float(gantries[0]) if gantries else None,
-                                    'gantry_end': float(gantries[-1]) if gantries else None,
-                                    'control_points': len(cp_seq),
-                                    'meterset_weights': meterset_weights or None,
-                                })
-                            if beam_deliveries:
-                                frac_entry['beam_delivery'] = beam_deliveries
-                            if delivered_total > 0:
-                                frac_entry['delivered_meterset'] = delivered_total
-                                if not frac_entry.get('beam_meterset'):
-                                    frac_entry['beam_meterset'] = delivered_total
-                        except Exception:
-                            pass
-                        fractions_details.append(frac_entry)
+                            else:
+                                delivered_val = None
+                            cp_seq = getattr(beam, 'ControlPointDeliverySequence', None) or []
+                            gantries = []
+                            meterset_weights = []
+                            for cp in cp_seq:
+                                if hasattr(cp, 'GantryAngle'):
+                                    try:
+                                        gantries.append(float(cp.GantryAngle))
+                                    except Exception:
+                                        pass
+                                if hasattr(cp, 'CumulativeMetersetWeight'):
+                                    try:
+                                        meterset_weights.append(float(cp.CumulativeMetersetWeight))
+                                    except Exception:
+                                        pass
+                            beam_deliveries.append({
+                                'beam_number': int(beam_num) if beam_num is not None else None,
+                                'delivered_meterset': delivered_val,
+                                'gantry_start': float(gantries[0]) if gantries else None,
+                                'gantry_end': float(gantries[-1]) if gantries else None,
+                                'control_points': len(cp_seq),
+                                'meterset_weights': meterset_weights or None,
+                            })
+                        if beam_deliveries:
+                            frac_entry['beam_delivery'] = beam_deliveries
+                        if delivered_total > 0:
+                            frac_entry['delivered_meterset'] = delivered_total
+                            if not frac_entry.get('beam_meterset'):
+                                frac_entry['beam_meterset'] = delivered_total
+                    except Exception:
+                        pass
+                    fractions_details.append(frac_entry)
             except Exception:
                 pass
 
