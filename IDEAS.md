@@ -143,6 +143,46 @@ Each idea follows this format:
 - **Rationale**: Different TotalSegmentator versions may produce slightly different segmentation results due to model updates. For research reproducibility, knowing which version was used is important. Version pinning would ensure consistent results across runs.
 - **References**: Wasserthal et al. 2023, Radiology: AI; TotalSegmentator changelog
 
+### IDEA-017: Add Trainer and Plans Support for nnU-Net v2 Custom Models
+
+- **Stage**: 4. Custom Models
+- **Priority**: Medium
+- **Description**: The `_run_nnunet_prediction()` function adds `-tr` (trainer) and `-p` (plans) arguments only for nnU-Net v1 models. nnU-Net v2 also supports these arguments but they're currently ignored in the command construction.
+- **Rationale**: Custom models trained with non-default trainers (e.g., `nnUNetTrainer_250epochs`) or custom plans will fail to predict correctly because the inference uses default settings instead of the configured ones. This is scientifically important for reproducibility.
+- **References**: [nnU-Net v2 documentation](https://github.com/MIC-DKFZ/nnUNet/blob/master/documentation/how_to_use_nnunet.md)
+
+### IDEA-018: Validate Label Presence in nnU-Net Output
+
+- **Stage**: 4. Custom Models
+- **Priority**: Low
+- **Description**: The `_make_binary_masks()` function assumes all configured labels exist in the nnU-Net output. Add validation to warn when expected labels are missing from the segmentation output (i.e., no voxels predicted for a structure).
+- **Rationale**: Empty masks are silently created for missing labels, which may indicate a model mismatch or unexpected data. A warning would help debug custom model configuration issues.
+- **References**: N/A - diagnostic improvement
+
+### IDEA-019: Post-Inference Geometry Validation for Custom Models
+
+- **Stage**: 4. Custom Models
+- **Priority**: Low
+- **Description**: Add validation that verifies the output segmentation from nnU-Net has the same geometry (shape, spacing, origin, direction) as the input CT NIfTI before proceeding to mask extraction.
+- **Rationale**: Geometry mismatches between input and output could cause subtle errors in DVH and radiomics extraction. While nnU-Net typically preserves geometry, validation provides an early warning for unusual configurations.
+- **References**: nibabel.spatially_same() or SimpleITK geometry comparison
+
+### IDEA-020: Support Non-Contiguous Label Indices
+
+- **Stage**: 4. Custom Models
+- **Priority**: Low
+- **Description**: The `_make_binary_masks()` function assumes labels are 1-indexed and contiguous. Consider supporting a label mapping from the nnU-Net `plans.json` file to handle models with non-contiguous label indices or different background conventions.
+- **Rationale**: Some custom models may use non-standard label mappings. The current code would produce incorrect mask assignments if labels are non-contiguous (e.g., using indices 1, 2, 5 instead of 1, 2, 3).
+- **References**: nnU-Net plans.json format, dataset.json format
+
+### IDEA-021: Log nnU-Net Model Version for Reproducibility
+
+- **Stage**: 4. Custom Models
+- **Priority**: Low
+- **Description**: Record the nnU-Net version and checkpoint metadata (e.g., training date, fold information) in the output manifest.json for each custom model inference.
+- **Rationale**: Similar to IDEA-016 for TotalSegmentator, knowing which model version was used is important for research reproducibility. Custom models may be updated over time.
+- **References**: nnU-Net checkpoint structure (checkpoint_final.pth metadata)
+
 <!-- Template for new ideas:
 
 ### IDEA-XXX: [Short Title]
@@ -164,7 +204,7 @@ Each idea follows this format:
 | 1. DICOM Organization | 9 |
 | 2. CT Processing | 3 |
 | 3. Segmentation | 4 |
-| 4. Custom Models | 0 |
+| 4. Custom Models | 5 |
 | 5. Custom Structures | 0 |
 | 6. CT Cropping | 0 |
 | 7. DVH Analysis | 0 |
@@ -179,8 +219,8 @@ Each idea follows this format:
 ## Priority Summary
 
 - **High Priority**: 0
-- **Medium Priority**: 4 (IDEA-001, IDEA-003, IDEA-011, IDEA-016)
-- **Low Priority**: 10 (IDEA-002, IDEA-004, IDEA-005, IDEA-006, IDEA-007, IDEA-009, IDEA-010, IDEA-012, IDEA-013, IDEA-014)
+- **Medium Priority**: 5 (IDEA-001, IDEA-003, IDEA-011, IDEA-016, IDEA-017)
+- **Low Priority**: 14 (IDEA-002, IDEA-004, IDEA-005, IDEA-006, IDEA-007, IDEA-009, IDEA-010, IDEA-012, IDEA-013, IDEA-014, IDEA-018, IDEA-019, IDEA-020, IDEA-021)
 - **Very Low Priority**: 2 (IDEA-008, IDEA-015)
 
 ---
