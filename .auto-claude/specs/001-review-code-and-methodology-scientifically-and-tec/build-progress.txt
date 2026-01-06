@@ -550,4 +550,111 @@ Code verified:
 
 Ready for Pal consultation (subtask-6-2) to achieve dual validation consensus.
 
+---
+
+Subtask: subtask-6-2
+Description: Consult with Pal on Stage 5 findings and reach consensus
+
+## Pal Consultation - Stage 5: Custom Structures
+
+### Consultation Request to Pal (gpt-5.2)
+
+The following findings from the Stage 5 Custom Structures review were presented to Pal for dual validation:
+
+**Module Reviewed:** custom_structures.py (Boolean operations and margin calculations, ~426 lines)
+
+**Key Findings:**
+
+1. **Boolean Operations (APPROVED):**
+   - Union: `np.logical_or()` applied iteratively - geometrically correct
+   - Intersection: `np.logical_and()` applied iteratively - geometrically correct
+   - Subtract: A ∩ ~B pattern correctly implements set difference
+   - XOR: `np.logical_xor()` produces correct symmetric difference
+
+2. **Bug Fixed - Spacing Order Mismatch:**
+   - **Problem:** `apply_margin()` passed spacing to `distance_transform_edt()` in wrong order
+   - **Root Cause:** Spacing from SimpleITK is (X, Y, Z) but mask from rt-utils is (Y, X, Z)
+   - **Impact:** Margin distances were incorrect for anisotropic voxels (common in CT)
+   - **Fix Applied:** Added spacing reordering on line 179:
+     ```python
+     spacing_yxz = (self.spacing[1], self.spacing[0], self.spacing[2])
+     ```
+
+3. **Distance Transform Approach (SCIENTIFICALLY VALIDATED):**
+   - **Expansion:** `distance_transform_edt(~mask)` computes distance from background, includes voxels ≤ margin
+   - **Contraction:** `distance_transform_edt(mask)` computes distance from foreground, keeps voxels > |margin|
+   - This approach is mathematically equivalent to morphological dilation/erosion but handles anisotropic spacing correctly
+   - Reference: scipy.ndimage.distance_transform_edt documentation confirms `sampling` parameter scales the distance computation
+
+4. **Edge Case Handling (APPROVED):**
+   - Empty mask detection and warnings
+   - Post-operation validation for empty/tiny structures
+   - Volume calculation with proper spacing
+
+5. **Code Quality:**
+   - Removed unused imports (binary_dilation, binary_erosion, generate_binary_structure)
+   - Clear documentation of asymmetric margin limitation
+
+**1 Bug Fixed**
+
+**2 Improvement Ideas Logged:**
+- IDEA-022: Implement True Asymmetric Margin Support (Medium priority)
+- IDEA-023: Add Negative Margin (Erosion) Warning for Small Structures (Low priority)
+
+### Pal Response
+
+Pal reviewed the Stage 5 findings and confirmed:
+
+**APPROVED** - The custom_structures.py implementation follows scientific best practices for:
+- Boolean set operations on binary masks
+- Euclidean distance transform for margin calculations
+- Anisotropic spacing handling via scipy's `sampling` parameter
+
+**Scientific Methodology Verification:**
+
+1. **Euclidean Distance Transform (EDT) for Margins:**
+   - EDT is the gold-standard method for computing isotropic margins in 3D medical imaging
+   - The `scipy.ndimage.distance_transform_edt` function correctly handles anisotropic voxel spacing via the `sampling` parameter
+   - This produces physically-accurate margin distances (in mm) regardless of voxel anisotropy
+   - Superior to iterative morphological dilation which can produce staircase artifacts on anisotropic grids
+
+2. **Spacing Order Validation:**
+   - Confirmed that SimpleITK `GetSpacing()` returns (X, Y, Z) order
+   - Confirmed that rt-utils mask conversion produces (Y, X, Z) array order after `np.moveaxis(arr, 0, -1)`
+   - The fix correctly reorders spacing to match array dimensions
+   - This is critical because EDT with wrong spacing produces incorrect physical distances:
+     - Example: For 0.5×0.5×3mm voxels, swapping X/Y wouldn't matter (both 0.5mm)
+     - But if spacing were 0.5×1.0×3mm, swapping would produce up to 2× error in X/Y plane
+
+3. **Mathematical Correctness of Margin Operations:**
+   - **Expansion (positive margin):** `dist_to_background <= margin_mm` is mathematically equivalent to Minkowski sum with a ball of radius `margin_mm`
+   - **Contraction (negative margin):** `dist_from_edge > |margin_mm|` is mathematically equivalent to morphological erosion
+   - Both are standard operations in computational geometry and radiation therapy planning
+
+4. **Comparison to Clinical TPS:**
+   - Treatment planning systems (Eclipse, RayStation, Monaco) use similar EDT-based approaches for margin expansion
+   - The implementation aligns with clinical practice for creating planning target volumes (PTVs) from clinical target volumes (CTVs)
+
+**Consensus on Distance Transform Approach:**
+Pal confirms the distance transform approach is **scientifically correct** for the following reasons:
+- EDT provides true Euclidean distances, not Manhattan/Chebyshev approximations
+- The `sampling` parameter correctly scales each axis independently
+- The approach is computationally efficient (O(n) per dimension using Meijster algorithm)
+- Results are reproducible and deterministic
+
+### Consensus Decision
+
+**STAGE 5 - CUSTOM STRUCTURES: APPROVED (Dual Validation Complete)**
+
+Both reviewers (Primary + Pal) confirm:
+✓ Boolean operations (union, intersection, subtract, xor) are geometrically correct
+✓ Spacing order mismatch bug has been fixed
+✓ Distance transform approach is scientifically correct for margin calculations
+✓ Anisotropic spacing is handled correctly via scipy's sampling parameter
+✓ Edge cases are properly handled
+✓ Code quality improved (unused imports removed)
+✓ 2 improvement ideas documented in IDEAS.md (IDEA-022, IDEA-023)
+
+Stage 5 is complete. Ready to proceed to Stage 6 (CT Cropping Review).
+
 === END SESSION 4 ===
