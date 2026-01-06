@@ -1366,3 +1366,150 @@ All verification criteria passed:
 Ready for subtask-9-2 (radiomics_conda.py review) to complete Stage 8.
 
 === END SESSION 8 ===
+
+=== SESSION 9 (Stage 8 - Radiomics Extraction Review, Part 2) ===
+
+Subtask: subtask-9-2
+Description: Review radiomics_conda.py for subprocess execution in NumPy 1.x environment
+
+## Review Findings - radiomics_conda.py
+
+### 1. Conda Environment Activation ✓ APPROVED
+
+The conda subprocess is correctly activated using the recommended approach:
+
+**Implementation (lines 30, 245-260):**
+```python
+RADIOMICS_ENV = "rtpipeline-radiomics"
+
+# Activation via conda run
+result = subprocess.run(
+    ["conda", "run", "-n", RADIOMICS_ENV, "python", "-c", extraction_script],
+    ...
+)
+```
+
+**Analysis:**
+- Uses `conda run -n <env>` - correct modern approach for non-interactive conda execution
+- Does NOT use deprecated `source activate` pattern
+- Compatible with both conda and mamba
+- Environment activated for each subprocess invocation
+
+### 2. Environment Validation Function ✓ APPROVED
+
+**`check_radiomics_env()` (lines 242-263):**
+- Validates environment by importing `radiomics` and `numpy`
+- 10-second timeout prevents hangs on broken environments
+- Returns boolean for robust caller error handling
+- Called at start of `process_radiomics_batch()` (line 739)
+
+### 3. Thread Limiting ✓ CRITICAL IMPLEMENTATION CORRECT
+
+**`_conda_subprocess_env()` (lines 216-239):**
+Thread limits for all major libraries:
+- `OMP_NUM_THREADS` (OpenMP)
+- `OPENBLAS_NUM_THREADS` (OpenBLAS)
+- `MKL_NUM_THREADS` (Intel MKL)
+- `NUMEXPR_NUM_THREADS` (NumExpr)
+- `NUMBA_NUM_THREADS` (Numba)
+
+Default: 1 thread per subprocess (prevents CPU oversubscription)
+Configurable via: `RTPIPELINE_RADIOMICS_THREAD_LIMIT` env var
+
+### 4. Single ROI Extraction ✓ APPROVED
+
+**`extract_radiomics_with_conda()` (lines 266-469):**
+- Temporary file for parameter passing (avoids stdin buffering issues)
+- 15-minute timeout (900s) for large ROIs
+- Proper cleanup in all code paths (try/except/finally)
+- Handles `large_roi` flag for reduced extraction settings
+- JSON result parsing with error handling
+
+### 5. Batch Extraction ✓ KEY OPTIMIZATION APPROVED
+
+**`extract_radiomics_batch_with_conda()` (lines 472-645):**
+
+Critical performance optimization that:
+1. Amortizes PyRadiomics library load time (~2-5s) across N ROIs
+2. Uses streaming JSON output (one line per ROI)
+3. Status tracking (success/skipped/error) allows partial failures
+4. Timeout: `timeout_per_roi * len(tasks)` with 5-min minimum
+
+**Subprocess invocation (lines 599-605):**
+```python
+result = subprocess.run(
+    ["conda", "run", "-n", RADIOMICS_ENV, "python", "-c", batch_script, batch_file_path],
+    capture_output=True,
+    text=True,
+    timeout=total_timeout,
+    env=_conda_subprocess_env(),
+)
+```
+
+### 6. Checkpointing System ✓ APPROVED
+
+**`RadiomicsCheckpoint` class (lines 36-107):**
+- Thread-safe via `threading.Lock`
+- Buffered writes (50 results default) to Parquet for efficiency
+- Loads existing checkpoints for resumable extraction
+- ROI name tracking for deduplication on resume
+
+### 7. Progress Monitoring ✓ APPROVED
+
+**`HeartbeatLogger` class (lines 110-204):**
+- Background thread logs progress every 60 seconds
+- ETA estimates based on completion rate
+- Context manager support for clean start/stop
+
+### 8. Worker Count Management ✓ APPROVED
+
+**Lines 1319-1349:**
+Priority hierarchy:
+1. `RTPIPELINE_MAX_WORKERS` environment variable
+2. `config.effective_workers()` method
+3. Conservative default: `min(4, len(tasks))`
+
+Logs worker source for debugging.
+
+### 9. MR Radiomics Support ✓ APPROVED
+
+**`radiomics_for_course_mr()` (lines 1371-1547):**
+- Processes MR series separately from CT
+- Uses same batch processing infrastructure
+- Proper temp file cleanup in finally block
+
+### 10. No Bugs Found
+
+Implementation is scientifically correct and technically sound:
+✓ Conda environment correctly activated via `conda run -n rtpipeline-radiomics`
+✓ NumPy 1.x isolation achieved through separate environment
+✓ Thread limits prevent CPU oversubscription
+✓ Batch processing amortizes startup overhead
+✓ Checkpointing enables resumable extraction
+✓ Progress monitoring for long-running jobs
+✓ Proper resource cleanup in all code paths
+✓ Error handling with appropriate timeouts
+
+## Improvement Ideas Added to IDEAS.md
+
+- IDEA-038: Add NumPy Version Validation in Conda Subprocess (Low priority)
+- IDEA-039: Lazy Initialization of Large ROI Extractor in Batch Mode (Low priority)
+- IDEA-040: Robust Parameter File Path Handling in Subprocess Scripts (Low priority)
+
+## Review Status
+
+**STAGE 8 - RADIOMICS EXTRACTION (Part 2): APPROVED**
+
+Verification criteria passed:
+✓ Conda subprocess correctly activates rtpipeline-radiomics environment
+✓ NumPy 1.x isolation maintained via separate conda environment
+✓ Thread limiting prevents CPU oversubscription
+✓ Batch processing reduces subprocess overhead
+✓ Checkpointing enables resumable extraction
+✓ Heartbeat logging provides progress visibility
+✓ Worker count respects Snakemake thread budget
+✓ 3 improvement ideas documented in IDEAS.md (IDEA-038 through IDEA-040)
+
+Stage 8 Part 2 complete. Ready for subtask-9-3 (Pal consultation for IBSI compliance consensus).
+
+=== END SESSION 9 ===

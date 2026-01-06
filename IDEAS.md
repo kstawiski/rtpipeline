@@ -311,6 +311,30 @@ Each idea follows this format:
 - **Rationale**: Large ROIs like BODY can legitimately take longer to process, especially with wavelet decomposition enabled. The current fixed timeout may cause false positives. More detailed timeout logging would help identify problematic ROIs for configuration tuning.
 - **References**: N/A - workflow reliability improvement
 
+### IDEA-038: Add NumPy Version Validation in Conda Subprocess
+
+- **Stage**: 8. Radiomics Extraction
+- **Priority**: Low
+- **Description**: Add explicit NumPy version validation at the start of the conda subprocess scripts. Currently, the subprocess assumes NumPy 1.x is available but doesn't verify this at runtime.
+- **Rationale**: While the `rtpipeline-radiomics.yaml` environment pins NumPy 1.26.*, a runtime check would provide better diagnostics when environments are misconfigured. A simple `assert numpy.__version__.startswith('1.')` at the start of the batch script would catch version mismatches early with a clear error message.
+- **References**: PyRadiomics NumPy 1.x requirement, NumPy version API
+
+### IDEA-039: Lazy Initialization of Large ROI Extractor in Batch Mode
+
+- **Stage**: 8. Radiomics Extraction
+- **Priority**: Low
+- **Description**: In `extract_radiomics_batch_with_conda()`, the `extractor_large` is always created alongside the normal extractor. Consider lazy initialization only when a task has `large_roi=True`.
+- **Rationale**: Creating two extractors adds ~1-2 seconds of initialization time per batch. For datasets without BODY or large structures, this overhead is unnecessary. Lazy initialization would reduce batch startup time for the common case.
+- **References**: N/A - performance optimization
+
+### IDEA-040: Robust Parameter File Path Handling in Subprocess Scripts
+
+- **Stage**: 8. Radiomics Extraction
+- **Priority**: Low
+- **Description**: The batch extraction script uses f-strings to embed temporary file paths into inline Python scripts. Consider using JSON serialization or base64 encoding for more robust handling of paths with special characters (spaces, quotes, Unicode).
+- **Rationale**: While tempfile.NamedTemporaryFile generates safe paths, the current f-string embedding could theoretically break on unusual system configurations with special characters in temp directories. JSON serialization would be more robust.
+- **References**: N/A - defensive programming improvement
+
 <!-- Template for new ideas:
 
 ### IDEA-XXX: [Short Title]
@@ -336,7 +360,7 @@ Each idea follows this format:
 | 5. Custom Structures | 2 |
 | 6. CT Cropping | 4 |
 | 7. DVH Analysis | 5 |
-| 8. Radiomics Extraction | 5 |
+| 8. Radiomics Extraction | 8 |
 | 9. Robustness Analysis | 0 |
 | 10. Quality Control | 0 |
 | 11. Aggregation | 0 |
@@ -348,7 +372,7 @@ Each idea follows this format:
 
 - **High Priority**: 0
 - **Medium Priority**: 10 (IDEA-001, IDEA-003, IDEA-011, IDEA-016, IDEA-017, IDEA-022, IDEA-024, IDEA-027, IDEA-029, IDEA-033)
-- **Low Priority**: 25 (IDEA-002, IDEA-004, IDEA-005, IDEA-006, IDEA-007, IDEA-009, IDEA-010, IDEA-012, IDEA-013, IDEA-014, IDEA-018, IDEA-019, IDEA-020, IDEA-021, IDEA-023, IDEA-025, IDEA-026, IDEA-028, IDEA-030, IDEA-031, IDEA-032, IDEA-034, IDEA-035, IDEA-036, IDEA-037)
+- **Low Priority**: 28 (IDEA-002, IDEA-004, IDEA-005, IDEA-006, IDEA-007, IDEA-009, IDEA-010, IDEA-012, IDEA-013, IDEA-014, IDEA-018, IDEA-019, IDEA-020, IDEA-021, IDEA-023, IDEA-025, IDEA-026, IDEA-028, IDEA-030, IDEA-031, IDEA-032, IDEA-034, IDEA-035, IDEA-036, IDEA-037, IDEA-038, IDEA-039, IDEA-040)
 - **Very Low Priority**: 2 (IDEA-008, IDEA-015)
 
 ---
