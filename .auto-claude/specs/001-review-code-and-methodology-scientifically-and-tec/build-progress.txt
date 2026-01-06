@@ -658,3 +658,124 @@ Both reviewers (Primary + Pal) confirm:
 Stage 5 is complete. Ready to proceed to Stage 6 (CT Cropping Review).
 
 === END SESSION 4 ===
+
+=== SESSION 5 (Stage 6 - CT Cropping Review) ===
+
+Subtask: subtask-7-1
+Description: Review anatomical_cropping.py for region detection, boundary calculation, and axial-only cropping
+
+## Review Findings - anatomical_cropping.py
+
+### 1. Region Detection Logic ✓ APPROVED
+
+The module correctly implements anatomical cropping for 5 regions:
+
+**Pelvis (determine_pelvic_crop_boundaries):**
+- Superior: L1 vertebra superior edge
+- Inferior: Femoral heads inferior edge - 10cm margin
+- Fallback logic: CT extent → best available vertebra → 0.0mm (last resort)
+- ✓ CLINICALLY APPROPRIATE for pelvic radiotherapy
+
+**Thorax (determine_thorax_crop_boundaries):**
+- Superior: C7 superior + 2cm OR lung apex + 2cm
+- Inferior: L1 inferior - 2cm OR liver superior - 2cm OR lung base - 2cm
+- ✓ COVERS THORACIC OARS
+
+**Abdomen (determine_abdomen_crop_boundaries):**
+- Superior: T12 superior + 2cm OR L1 superior + 2cm OR liver superior + 2cm
+- Inferior: L5 inferior - 2cm
+- ✓ COVERS DIAPHRAGM TO PELVIC INLET
+
+**Head & Neck (determine_head_neck_crop_boundaries):**
+- Superior: Brain apex + 2cm OR skull apex + 2cm
+- Inferior: C7 inferior - 2cm OR clavicles inferior - 2cm
+- ✓ CLINICALLY APPROPRIATE
+
+**Brain (determine_brain_crop_boundaries):**
+- Superior: Brain superior + 1cm
+- Inferior: Brain inferior - 1cm
+- ✓ MINIMAL MARGINS FOR FOCUSED BRAIN ANALYSIS
+
+### 2. Boundary Calculation ✓ APPROVED
+
+The vertebrae/organ boundary extraction correctly:
+- Reads TotalSegmentator masks from segmentation directory
+- Finds z-indices where mask has voxels using `np.where(mask_array.any(axis=(1, 2)))[0]`
+- Converts indices to physical coordinates: `origin[2] + idx * spacing[2]`
+- Handles z_direction properly: swaps superior/inferior when direction[8] < 0
+- Returns coordinates in mm (patient coordinate system)
+
+### 3. Axial-Only Cropping ✓ APPROVED
+
+The `crop_image_to_boundaries()` function (lines 724-839) correctly:
+- Only modifies z-axis boundaries (superior_z, inferior_z)
+- Preserves full x and y dimensions: `extract_size = [size[0], size[1], z_span]`
+- Uses SimpleITK ExtractImageFilter for clean extraction
+- Properly handles both normal and flipped z-orientations
+
+### 4. Metadata Documentation ✓ APPROVED
+
+The `apply_systematic_cropping()` function saves comprehensive metadata:
+- `region`: Anatomical region name
+- `superior_z_mm`, `inferior_z_mm`: Requested boundaries
+- `crop_boundaries_mm`: Applied boundaries (after clamping)
+- `clamped_axes`: List of axes where boundaries exceeded CT extent
+- `cropped_files`: Mapping of structure names to cropped file paths
+
+The `clamped_axes` field properly documents when boundaries were clamped to CT extent, which is critical for research transparency.
+
+### 5. Bug Fixed - RTSTRUCT Geometry Mismatch (HIGH Severity)
+
+**Original Issue:**
+The `_create_rtstruct_from_cropped_masks()` function (lines 1030-1144) created RTSTRUCT from original CT DICOM but used cropped masks with different geometry:
+- RTStructBuilder created from uncropped CT (full z-extent)
+- Cropped masks have fewer z-slices (cropped z-extent)
+- rt-utils expects masks to match CT geometry exactly
+- This caused geometry mismatch → incorrect contours or errors
+
+**Fix Applied:**
+1. Read original CT geometry (size, origin, spacing) at lines 1092-1096
+2. For each cropped mask:
+   - Calculate z-offset from origins (line 1134)
+   - Compute z_start_idx in original CT space (line 1135)
+   - Create full-size mask array matching CT geometry (line 1154)
+   - Embed cropped mask at correct z-position (lines 1165-1168)
+3. Added z-spacing validation with 0.01mm tolerance (lines 1142-1150)
+4. Added edge case handling for masks outside CT z-range (lines 1161-1163)
+
+**Verification:**
+- Full mask now matches CT geometry (rows × cols × slices)
+- Cropped contours appear at correct anatomical position
+- Spacing mismatches are detected and logged
+
+## Bug Fixed
+
+| Bug | Location | Severity | Fix |
+|-----|----------|----------|-----|
+| RTSTRUCT geometry mismatch | `_create_rtstruct_from_cropped_masks()` | HIGH | Embed cropped masks at correct z-position within full CT geometry |
+
+## Improvement Ideas Added
+
+- IDEA-024: Add Fallback Logic for Non-Pelvic Cropping Regions (Medium priority)
+- IDEA-025: Document Clamping Percentage for Research Transparency (Low priority)
+- IDEA-026: Add Geometry Validation for Cropped Images (Low priority)
+- IDEA-027: Consider Removing Cropped RTSTRUCT Generation (Medium priority)
+
+## Review Status
+
+**STAGE 6 - CT CROPPING REVIEW: APPROVED (with bug fix)**
+
+Bug fixed:
+✓ RTSTRUCT geometry mismatch corrected - cropped masks now embedded at correct z-position
+
+Code verified:
+✓ Region detection uses anatomically appropriate landmarks
+✓ Boundary calculation handles z-direction correctly
+✓ Axial-only cropping preserves x,y dimensions
+✓ Metadata documents clamped axes for research transparency
+✓ Pelvic fallback logic is robust (multiple levels)
+✓ z-spacing validation prevents geometry errors
+
+Ready for Pal consultation (subtask-7-2) to achieve dual validation consensus.
+
+=== END SESSION 5 ===
