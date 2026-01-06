@@ -335,6 +335,38 @@ Each idea follows this format:
 - **Rationale**: While tempfile.NamedTemporaryFile generates safe paths, the current f-string embedding could theoretically break on unusual system configurations with special characters in temp directories. JSON serialization would be more robust.
 - **References**: N/A - defensive programming improvement
 
+### IDEA-041: Add Perturbation Count Warning for Underpowered ICC
+
+- **Stage**: 9. Robustness Analysis
+- **Priority**: Low
+- **Description**: Add a warning when the number of perturbations (raters) is below a recommended minimum (e.g., 15-20) for reliable ICC estimation. Currently, ICC is computed whenever n_raters >= 2, but statistical power may be insufficient with very few raters.
+- **Rationale**: ICC estimates become unstable with small sample sizes. The confidence interval width increases dramatically below ~15 raters. A warning would alert users when results may be unreliable due to insufficient perturbation count.
+- **References**: Shrout & Fleiss (1979), "Intraclass Correlations: Uses in Assessing Rater Reliability"
+
+### IDEA-042: Expose NTCV Chain Configuration via Config.yaml
+
+- **Stage**: 9. Robustness Analysis
+- **Priority**: Medium
+- **Description**: The NTCV (Noise + Translation + Contour + Volume) perturbation chain parameters are currently hardcoded or partially exposed via `PerturbationConfig`. Expose all chain parameters via config.yaml for easier experimentation.
+- **Rationale**: Researchers may want to test different perturbation intensities or enable/disable specific chain components without modifying code. Current config.yaml only exposes `volume_changes` and `intensity`, but not `max_translation_mm`, `n_random_contour_realizations`, or `noise_levels` directly in a discoverable way.
+- **References**: Zwanenburg et al. 2019 (NTCV chain methodology)
+
+### IDEA-043: Add ICC Confidence Interval Width to Robustness Classification
+
+- **Stage**: 9. Robustness Analysis
+- **Priority**: Low
+- **Description**: Currently, robustness classification uses `icc_ci95_low` when available to be conservative. Consider also checking CI width (CI_high - CI_low) as an additional quality indicator. Very wide CIs may indicate unreliable ICC estimates even if the point estimate is high.
+- **Rationale**: An ICC of 0.92 with CI [0.30, 0.99] is less informative than an ICC of 0.88 with CI [0.85, 0.91]. Wide confidence intervals suggest high uncertainty that should factor into robustness classification.
+- **References**: Koo & Li (2016), "A Guideline of Selecting and Reporting ICC for Reliability Research"
+
+### IDEA-044: Support Multi-Rater ICC for Cross-Method Comparison
+
+- **Stage**: 9. Robustness Analysis
+- **Priority**: Medium
+- **Description**: Add a "segmentation_method" robustness mode that computes ICC across different segmentation sources (TotalSegmentator, custom models, clinical contours) for the same structure. This would quantify inter-method variability beyond perturbation-based robustness.
+- **Rationale**: The current "segmentation_perturbation" mode tests robustness to small mask changes within a single method. Comparing features across methods (e.g., TotalSegmentator vs clinical RTSTRUCT) provides a different axis of robustness that may be more clinically relevant. The infrastructure for multi-source ICC exists in `summarize_feature_stability()` but isn't exposed as a distinct analysis mode.
+- **References**: Poirot et al. 2022 (multi-method ICC in radiomics)
+
 <!-- Template for new ideas:
 
 ### IDEA-XXX: [Short Title]
@@ -361,7 +393,7 @@ Each idea follows this format:
 | 6. CT Cropping | 4 |
 | 7. DVH Analysis | 5 |
 | 8. Radiomics Extraction | 8 |
-| 9. Robustness Analysis | 0 |
+| 9. Robustness Analysis | 4 |
 | 10. Quality Control | 0 |
 | 11. Aggregation | 0 |
 | 12. Configuration | 0 |
@@ -371,8 +403,8 @@ Each idea follows this format:
 ## Priority Summary
 
 - **High Priority**: 0
-- **Medium Priority**: 10 (IDEA-001, IDEA-003, IDEA-011, IDEA-016, IDEA-017, IDEA-022, IDEA-024, IDEA-027, IDEA-029, IDEA-033)
-- **Low Priority**: 28 (IDEA-002, IDEA-004, IDEA-005, IDEA-006, IDEA-007, IDEA-009, IDEA-010, IDEA-012, IDEA-013, IDEA-014, IDEA-018, IDEA-019, IDEA-020, IDEA-021, IDEA-023, IDEA-025, IDEA-026, IDEA-028, IDEA-030, IDEA-031, IDEA-032, IDEA-034, IDEA-035, IDEA-036, IDEA-037, IDEA-038, IDEA-039, IDEA-040)
+- **Medium Priority**: 12 (IDEA-001, IDEA-003, IDEA-011, IDEA-016, IDEA-017, IDEA-022, IDEA-024, IDEA-027, IDEA-029, IDEA-033, IDEA-042, IDEA-044)
+- **Low Priority**: 30 (IDEA-002, IDEA-004, IDEA-005, IDEA-006, IDEA-007, IDEA-009, IDEA-010, IDEA-012, IDEA-013, IDEA-014, IDEA-018, IDEA-019, IDEA-020, IDEA-021, IDEA-023, IDEA-025, IDEA-026, IDEA-028, IDEA-030, IDEA-031, IDEA-032, IDEA-034, IDEA-035, IDEA-036, IDEA-037, IDEA-038, IDEA-039, IDEA-040, IDEA-041, IDEA-043)
 - **Very Low Priority**: 2 (IDEA-008, IDEA-015)
 
 ---

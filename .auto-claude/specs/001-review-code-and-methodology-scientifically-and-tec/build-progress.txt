@@ -1677,3 +1677,202 @@ The implementation supports feature reproducibility through:
 Stage 8 is complete. Ready to proceed to Stage 9 (Robustness Analysis Review).
 
 === END SESSION 10 ===
+
+=== SESSION 11 (Stage 9 - Robustness Analysis Review, Part 1) ===
+
+Subtask: subtask-10-1
+Description: Review radiomics_robustness.py for ICC(3,1) computation using pingouin and mask perturbation via volume_adapt_mask()
+
+## Review Findings - radiomics_robustness.py
+
+### 1. ICC(3,1) Computation Using Pingouin ✓ APPROVED
+
+**Implementation (lines 595-645):**
+```python
+def compute_icc_pingouin(df: pd.DataFrame, icc_config: ICCConfig) -> Dict[str, float]:
+    icc_res = pg.intraclass_corr(
+        data=df,
+        targets="subject",
+        raters="rater",
+        ratings="value",
+        nan_policy="omit"
+    )
+    filtered = icc_res.loc[icc_res["Type"] == icc_config.icc_type]  # Default: "ICC3"
+```
+
+**Analysis:**
+- Uses `pingouin.intraclass_corr()` correctly with proper parameters
+- Default `icc_type="ICC3"` correctly maps to ICC(3,1) - two-way mixed effects, single rater
+- This is the CORRECT ICC model for robustness analysis because:
+  - Raters (perturbations) are FIXED - the same perturbations are applied to all subjects
+  - Subjects (ROIs from different patients/courses) are RANDOM
+  - Single measurement per rater-subject combination
+- `nan_policy="omit"` correctly handles missing data (unbalanced designs)
+- Returns confidence intervals when `icc_config.ci=True`
+
+**ICC Type Mapping in Pingouin:**
+| Pingouin Type | ICC Model | Description |
+|---------------|-----------|-------------|
+| ICC1 | ICC(1,1) | One-way random effects |
+| ICC2 | ICC(2,1) | Two-way random effects |
+| ICC3 | ICC(3,1) | Two-way mixed effects, single rater ✓ |
+
+**ICC(3,1) Usage Status: PASS ✓**
+
+---
+
+### 2. Mask Perturbation via volume_adapt_mask() ✓ APPROVED
+
+**Implementation (lines 149-256):**
+
+The function correctly applies IBSI-style volume adaptation via iterative erosion/dilation:
+
+**Key Implementation Details:**
+
+1. **Zero Tau Handling (line 161-162):**
+   ```python
+   if abs(tau) < 1e-6:
+       return mask
+   ```
+   Returns original mask when tau≈0 - this is INTENTIONAL since no perturbation is requested.
+
+2. **Morphological Operations (lines 183-225):**
+   - Uses `sitk.BinaryErode` for negative tau (shrinking)
+   - Uses `sitk.BinaryDilate` for positive tau (expanding)
+   - Ball structuring element: `[1] * 3, sitk.sitkBall`
+   - Iteratively applies operations until target volume reached or exceeded
+
+3. **Best Candidate Tracking (lines 179-203):**
+   - `best_mask = None` - starts with no candidate
+   - `last_valid_perturbed = None` - tracks any valid perturbed mask
+   - Updates `best_mask` when closer to target volume
+
+4. **CRITICAL: Nov 2025 Bug Fix (lines 244-250):**
+   ```python
+   # Ensure we're returning a DIFFERENT mask from original
+   if best_volume == original_volume:
+       logger.debug("Perturbation produced no volume change, using last valid perturbed")
+       if last_valid_perturbed is not None:
+           best_mask = last_valid_perturbed
+   ```
+   This check ensures the function NEVER returns the original mask unchanged when tau≠0 (unless all perturbation attempts genuinely fail).
+
+5. **Fallback Logic (lines 227-234):**
+   - If `best_mask` is None, uses `last_valid_perturbed`
+   - Returns `None` only if genuinely couldn't create any perturbation
+
+**Verification of Nov 2025 Fix:**
+The CLAUDE.md mentions: "Robustness Bug Fix: Fixed `volume_adapt_mask()` to properly apply perturbations"
+
+The fix is present and working:
+- Lines 196-198: Track `last_valid_perturbed` for any successful perturbation (volume >= 5)
+- Lines 244-250: If `best_volume == original_volume`, use `last_valid_perturbed` instead
+- Lines 227-234: Final fallback to `last_valid_perturbed` if `best_mask` is None
+
+**volume_adapt_mask() Status: PASS ✓**
+
+---
+
+### 3. Artificial ICC=1.0 Prevention ✓ APPROVED
+
+The implementation has multiple safeguards against artificial ICC=1.0 values:
+
+**Safeguard 1 - Insufficient Raters/Subjects (lines 740-741):**
+```python
+if n_subjects < 2 or n_raters < 2:
+    icc_info = {"icc": np.nan, "icc_ci95_low": np.nan, "icc_ci95_high": np.nan}
+```
+Returns NaN (not 1.0) when there aren't enough measurements for meaningful ICC.
+
+**Safeguard 2 - Unique Subject Construction (lines 717-735):**
+```python
+subject_parts = [group["patient_id"].astype(str)]
+if "course_id" in group.columns:
+    subject_parts.append(group["course_id"].astype(str))
+if "structure" in df_long.columns:
+    subject_parts.append(group["structure"].astype(str))
+if "segmentation_source" in df_long.columns:
+    subject_parts.append(group.get("segmentation_source", "unknown").astype(str))
+```
+Creates composite subject IDs (patient + course + structure + source) to ensure each measurement is correctly attributed.
+
+**Safeguard 3 - Perturbation Validation (generate_perturbed_masks, lines 334-366):**
+- When `tau≈0`: Original mask is included as one valid measurement
+- When `tau≠0`: Only includes masks where perturbation succeeded
+- If all perturbations fail, n_raters < 2 triggers NaN return
+
+**Safeguard 4 - Empty Mask Check in volume_adapt_mask() (lines 167-169, 240-241):**
+```python
+if original_volume < 10:
+    return None
+if best_volume < 5:
+    return None
+```
+Returns None for masks too small to perturb, preventing extraction on invalid masks.
+
+**Potential Sources of Legitimate ICC=1.0:**
+The only scenario where ICC=1.0 could occur is if all perturbations produce IDENTICAL feature values (not identical masks). This is rare but possible for:
+- Constant features on very simple masks
+- Shape features on masks where perturbation doesn't change the computed metric
+
+This is a LEGITIMATE case where ICC=1.0 is correct - identical values across perturbations indicates perfect robustness.
+
+**Artificial ICC=1.0 Prevention Status: PASS ✓**
+
+---
+
+### 4. Additional Verified Implementations
+
+**NTCV Perturbation Chain (lines 368-524):**
+- Implements IBSI-recommended Noise + Translation + Contour + Volume chain
+- Order follows Zwanenburg et al. 2019 methodology
+- Combinatorial perturbation generation based on intensity level
+
+**Robustness Metrics (lines 647-671):**
+- CoV (Coefficient of Variation) uses ddof=1 (sample standard deviation)
+- QCD (Quartile Coefficient of Dispersion) uses correct formula: (Q3-Q1)/(Q3+Q1)
+
+**Robustness Classification (lines 757-762):**
+- Uses conservative threshold approach: `icc_ci95_low` when available
+- Thresholds: robust (ICC≥0.90, CoV≤10%), acceptable (ICC≥0.75, CoV≤20%), poor (else)
+
+**Multi-Source Support (lines 837-879):**
+- Collects masks from TotalSegmentator, custom structures, and custom models
+- Tracks segmentation source for per-source ICC analysis
+
+---
+
+### 5. No Bugs Found
+
+The implementation is **scientifically correct** and follows best practices:
+✓ ICC(3,1) correctly computed using pingouin with proper model selection
+✓ volume_adapt_mask() actually applies morphological operations
+✓ Nov 2025 bug fix properly prevents returning original mask unchanged
+✓ Artificial ICC=1.0 prevented through multiple safeguards
+✓ NTCV chain follows IBSI methodology
+✓ Robustness thresholds align with literature standards
+
+## Improvement Ideas Added to IDEAS.md
+
+- IDEA-041: Add Perturbation Count Warning for Underpowered ICC (Low priority)
+- IDEA-042: Expose NTCV Chain Configuration via Config.yaml (Medium priority)
+- IDEA-043: Add ICC Confidence Interval Width to Robustness Classification (Low priority)
+- IDEA-044: Support Multi-Rater ICC for Cross-Method Comparison (Medium priority)
+
+## Review Status
+
+**STAGE 9 - ROBUSTNESS ANALYSIS REVIEW (Part 1): APPROVED**
+
+All verification criteria passed:
+✓ ICC(3,1) correctly computed using pingouin's `intraclass_corr()` with `icc_type="ICC3"`
+✓ volume_adapt_mask() properly applies morphological operations via sitk.BinaryErode/BinaryDilate
+✓ Nov 2025 bug fix (lines 244-250) ensures perturbed masks are different from originals
+✓ Artificial ICC=1.0 prevented through multiple safeguards (n_raters check, unique subjects, etc.)
+✓ NTCV perturbation chain follows IBSI/Zwanenburg methodology
+✓ CoV and QCD computations are mathematically correct
+✓ Robustness thresholds align with literature (ICC≥0.90 robust, ≥0.75 acceptable)
+✓ 4 improvement ideas documented in IDEAS.md (IDEA-041 through IDEA-044)
+
+Ready for subtask-10-2 (Pal consultation for ICC methodology consensus).
+
+=== END SESSION 11 ===
