@@ -778,4 +778,123 @@ Code verified:
 
 Ready for Pal consultation (subtask-7-2) to achieve dual validation consensus.
 
+---
+
+Subtask: subtask-7-2
+Description: Consult with Pal on Stage 6 findings and reach consensus
+
+## Pal Consultation - Stage 6: CT Cropping
+
+### Consultation Request to Pal (gpt-5.2)
+
+The following findings from the Stage 6 CT Cropping review were presented to Pal for dual validation:
+
+**Module Reviewed:** anatomical_cropping.py (CT cropping by anatomical region, ~1200 lines)
+
+**Key Findings:**
+
+1. **Region Detection Logic (APPROVED):**
+   - 5 anatomical regions supported: pelvis, thorax, abdomen, head_neck, brain
+   - Each region uses anatomically appropriate landmarks from TotalSegmentator outputs
+   - Pelvic region has excellent multi-level fallback (CT extent → best vertebra → 0.0mm)
+   - Boundary extraction correctly handles z_direction (flipped vs normal orientation)
+
+2. **Bug Fixed - RTSTRUCT Geometry Mismatch (HIGH Severity):**
+   - **Problem:** Cropped masks were used with full CT geometry reference, causing geometry mismatch
+   - **Root Cause:** RTStructBuilder created from uncropped CT but cropped masks have fewer z-slices
+   - **Impact:** Incorrect contour positions in generated RTSTRUCT files
+   - **Fix Applied:**
+     - Read original CT geometry (size, origin, spacing) at lines 1092-1096
+     - Calculate z-offset from physical coordinates (lines 1131-1135)
+     - Create full-size mask array matching CT geometry (line 1154)
+     - Embed cropped mask at correct z-position with zeros padding (lines 1165-1168)
+     - Added z-spacing validation with 0.01mm tolerance (lines 1142-1150)
+     - Edge case handling for masks outside CT z-range (lines 1161-1163)
+
+3. **Axial-Only Cropping (APPROVED):**
+   - Only z-axis is cropped; x and y dimensions preserved
+   - Uses SimpleITK ExtractImageFilter for clean extraction
+   - Handles both normal and flipped z-orientations correctly
+
+4. **Metadata Documentation (APPROVED):**
+   - Comprehensive metadata saved including clamped_axes field
+   - Critical for research transparency when boundaries exceed CT extent
+
+**1 Bug Fixed (HIGH Severity)**
+
+**4 Improvement Ideas Logged:**
+- IDEA-024: Add Fallback Logic for Non-Pelvic Cropping Regions (Medium priority)
+- IDEA-025: Document Clamping Percentage for Research Transparency (Low priority)
+- IDEA-026: Add Geometry Validation for Cropped Images (Low priority)
+- IDEA-027: Consider Removing Cropped RTSTRUCT Generation (Medium priority)
+
+### Pal Response
+
+Pal reviewed the Stage 6 findings and confirmed:
+
+**APPROVED** - The anatomical_cropping.py implementation follows scientific best practices for:
+- Anatomical landmark-based region detection
+- Physical coordinate transformations
+- Geometry preservation during cropping
+- Metadata documentation for research transparency
+
+**Scientific Methodology Verification:**
+
+1. **Anatomical Landmark Selection:**
+   - **Pelvis:** L1 superior to femoral heads - 10cm is anatomically correct for pelvic RT
+   - **Thorax:** C7/lung apex to L1/liver/lung base captures thoracic OARs comprehensively
+   - **Abdomen:** T12/L1 to L5 covers the abdominal cavity appropriately
+   - **Head & Neck:** Brain apex to C7/clavicles includes relevant H&N anatomy
+   - **Brain:** Brain ± 1cm is appropriate for focused analysis
+   - Pal confirms these landmarks align with clinical radiotherapy planning conventions
+
+2. **Geometry Embedding Fix Validation:**
+   - The fix correctly addresses the RTSTRUCT geometry mismatch by:
+     - Computing physical coordinate offset between cropped and original CT origins
+     - Converting to voxel indices using spacing
+     - Creating full-size mask array with zeros (background)
+     - Embedding cropped contours at geometrically correct position
+   - This approach ensures RTSTRUCT contours appear at correct anatomical locations
+   - The 0.01mm spacing tolerance is appropriate (sub-voxel precision)
+
+3. **Z-Direction Handling:**
+   - The code correctly handles both positive and negative z-directions
+   - Superior/inferior swap when direction[8] < 0 is mathematically correct
+   - This is essential for DICOM compliance across different scanner orientations
+
+4. **Clinical Relevance:**
+   - Axial-only cropping preserves in-plane resolution (important for radiomics)
+   - Systematic cropping enables cross-patient comparison studies
+   - Metadata documentation (clamped_axes) supports research reporting
+
+**Consensus on Geometry Fix:**
+Pal confirms the geometry embedding approach is **scientifically correct** because:
+- Uses physical coordinate system for positioning (not just index-based)
+- Validates spacing compatibility before embedding
+- Handles edge cases (masks outside CT z-range) gracefully
+- Result: RTSTRUCT contours are geometrically consistent with referenced CT
+
+**IDEA-027 Discussion:**
+Pal notes that IDEA-027 (Consider Removing Cropped RTSTRUCT Generation) raises a valid architectural concern. The fix makes the feature work correctly, but the conceptual issue remains: cropped RTSTRUCTs reference uncropped CT but contain only partial coverage. The team should decide whether to:
+- Keep the feature with clear documentation of its limitations
+- Deprecate in favor of NIfTI-only workflows for cropped analysis
+- This is a Medium priority decision, not a bug
+
+### Consensus Decision
+
+**STAGE 6 - CT CROPPING: APPROVED (Dual Validation Complete)**
+
+Both reviewers (Primary + Pal) confirm:
+✓ Region detection uses anatomically appropriate landmarks
+✓ Boundary calculation handles z-direction correctly
+✓ Axial-only cropping preserves x,y dimensions
+✓ HIGH severity RTSTRUCT geometry mismatch bug has been fixed
+✓ Cropped masks correctly embedded at proper z-position within full CT geometry
+✓ Z-spacing validation prevents geometry errors
+✓ Metadata documents clamped axes for research transparency
+✓ Pelvic fallback logic is robust with multiple levels
+✓ 4 improvement ideas documented in IDEAS.md (IDEA-024 through IDEA-027)
+
+Stage 6 is complete. Ready to proceed to Stage 7 (DVH Analysis Review).
+
 === END SESSION 5 ===
