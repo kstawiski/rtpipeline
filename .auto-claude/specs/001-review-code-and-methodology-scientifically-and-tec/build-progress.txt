@@ -2459,3 +2459,159 @@ Both reviewers (Primary + Pal) confirm:
 No bugs found. Stage 11 is complete. Ready to proceed to Stage 12 (Configuration Review).
 
 === END SESSION 15 ===
+
+=== SESSION 16 (Stage 12 - Configuration Review, Pal Consultation) ===
+
+Subtask: subtask-13-2
+Description: Consult with Pal on Stage 12 findings and reach consensus
+
+## Pal Consultation - Stage 12: Configuration Review
+
+### Consultation Request to Pal (gpt-5.2)
+
+The following findings from the Stage 12 Configuration review were presented to Pal for dual validation:
+
+**Module Reviewed:** config.py PipelineConfig dataclass (~136 lines)
+
+**Key Findings:**
+
+1. **effective_workers() Implementation (VERIFIED ✓):**
+   - Correctly handles null/None with proper fallback chain:
+     1. First tries `max_workers_override` from config
+     2. Falls back to `RTPIPELINE_MAX_WORKERS` environment variable
+     3. Auto-detects from `os.cpu_count() - 1`
+   - Override acts as a CAP, not absolute value: `min(base, override)`
+   - Always caps at `os.cpu_count() - 1` to prevent CPU oversubscription
+   - Inner `_coerce()` function handles type conversion from string/int/None robustly
+
+2. **Default Values (SCIENTIFICALLY APPROPRIATE ✓):**
+   - `totalseg_force_split: bool = True` - Memory-safe default for GPU
+   - `totalseg_device: str = "gpu"` - Correct priority (GPU preferred)
+   - `totalseg_num_proc_pre: int = 1` - Docker stability (avoids multiprocessing issues)
+   - `totalseg_num_proc_export: int = 1` - Docker stability
+   - `body_region_qc_block_missing: bool = True` - Conservative default (prevents wrong model execution)
+   - `radiomics_robustness_enabled: bool = True` - Enables robustness analysis by default
+   - `ct_cropping_use_for_radiomics: bool = False` - Documented decision due to geometry mismatch issues
+
+3. **CT Cropping Margins (INTENTIONALLY ASYMMETRIC ✓):**
+   - `ct_cropping_superior_margin_cm: float = 2.0` (small superior margin)
+   - `ct_cropping_inferior_margin_cm: float = 10.0` (large inferior margin)
+   - **Rationale:** For pelvic radiotherapy:
+     - Superior: L1 vertebra is a consistent anatomical landmark, minimal additional margin needed
+     - Inferior: Femoral heads are variable in position, 10cm ensures complete pelvic coverage
+   - Asymmetry is intentional and clinically appropriate for pelvic RT planning volumes
+
+4. **Model Region Requirements (CORRECT DEFAULTS ✓):**
+   - Cardiac models (cardiac_STOPSTORM, heartchambers_highres, coronary_arteries) require THORAX
+   - Head/neck models (head_neck_oar, head_glands_cavities) require HEAD_NECK
+   - Generic models (total, total_mr) have no region requirements (whole-body capable)
+   - Confidence thresholds (0.5-0.6) are appropriately conservative
+
+5. **No Bugs Found**
+
+**5 Improvement Ideas Logged:**
+- IDEA-055: Add from_yaml() Factory Method to PipelineConfig (Medium priority)
+- IDEA-056: Add __post_init__ Validation for Parameter Values (Medium priority)
+- IDEA-057: Document effective_workers() Behavior in Docstring (Low priority)
+- IDEA-058: Remove Default ct_cropping_region When ct_cropping_enabled is False (Low priority)
+- IDEA-059: Add Path Coercion in PipelineConfig Initialization (Low priority)
+
+### Pal Response
+
+Pal reviewed the Stage 12 findings and confirmed:
+
+**APPROVED** - The config.py PipelineConfig implementation follows best practices for:
+- Worker count management with CPU oversubscription prevention
+- Sensible defaults for radiotherapy processing
+- Dataclass-based configuration structure
+
+**Scientific Methodology Verification:**
+
+1. **effective_workers() Design:**
+   - The cap behavior (`min(base, override)`) is scientifically correct because:
+     - Prevents users from requesting more workers than available cores
+     - Reserves 1 core for system/overhead to avoid thrashing
+     - Handles None/null gracefully with auto-detection
+   - Pal confirms this pattern is standard in scientific computing pipelines
+   - Inner `_coerce()` function robustly handles:
+     - Integer values (direct use)
+     - String values (parse to int)
+     - None values (fall through)
+     - Invalid values (return None, trigger fallback)
+
+2. **Asymmetric CT Cropping Margins:**
+   - Pal confirms the 2cm/10cm asymmetry is clinically appropriate for pelvic RT:
+     - **Superior (2cm):** L1 vertebra is 10-12cm above pubic symphysis; 2cm margin captures entire pelvis
+     - **Inferior (10cm):** Femoral heads are variable; 10cm below ensures complete coverage
+   - This asymmetry reflects clinical practice where:
+     - Superior boundary is well-defined (vertebral level)
+     - Inferior boundary has more anatomical variation (leg positioning, body habitus)
+   - Pal notes this would need adjustment for other regions (documented as IDEA-024)
+
+3. **Default Parameter Correctness:**
+   - **`totalseg_force_split=True`:** Correct default for memory safety across varied GPU VRAM sizes
+   - **`totalseg_num_proc_*=1`:** Essential for Docker stability (multiprocessing + containers = problems)
+   - **`body_region_qc_block_missing=True`:** Conservative default prevents silent misuse
+   - **`ct_cropping_use_for_radiomics=False`:** Pragmatic workaround for documented geometry mismatch issue
+   - Pal confirms all defaults are scientifically sound and production-appropriate
+
+4. **Configuration Structure:**
+   - Dataclass with field defaults is Pythonic and maintainable
+   - Grouping related parameters (segmentation, radiomics, cropping) improves readability
+   - `field(default_factory=...)` correctly handles mutable defaults (lists, dicts)
+
+5. **IDEA-055 and IDEA-056 Endorsement:**
+   - Pal strongly endorses IDEA-055 (`from_yaml()` factory method) as DRY improvement
+   - IDEA-056 (`__post_init__` validation) would catch configuration errors early
+   - Both are correctly categorized as Medium priority (code quality, not correctness)
+
+**Minor Observations:**
+- IDEA-058 (ct_cropping_region default) is a valid architectural concern
+- The current default of "pelvis" when ct_cropping_enabled=False is a minor inconsistency
+- However, it's low-impact since the feature is disabled by default
+
+### Consensus Decision
+
+**STAGE 12 - CONFIGURATION REVIEW: APPROVED (Dual Validation Complete)**
+
+Both reviewers (Primary + Pal) confirm:
+✓ effective_workers() correctly handles null/None with proper fallback chain
+✓ Override acts as CAP (not absolute) to prevent CPU oversubscription
+✓ Auto-detection caps at cores-1 (scientifically correct)
+✓ Default values are scientifically appropriate for radiotherapy processing
+✓ Asymmetric CT cropping margins (2cm/10cm) are intentionally asymmetric and clinically correct for pelvic RT
+✓ Model region requirements correctly map anatomical models to body regions
+✓ Docker stability settings (num_proc=1) prevent multiprocessing issues
+✓ Dataclass structure with field defaults is Pythonic and maintainable
+✓ 5 improvement ideas documented in IDEAS.md (IDEA-055 through IDEA-059)
+
+No bugs found. **Stage 12 is complete.**
+
+**ALL 12 PIPELINE STAGES HAVE NOW BEEN REVIEWED AND APPROVED**
+
+## Review Summary Across All Stages
+
+| Stage | Module(s) | Status | Bugs Fixed | Ideas Logged |
+|-------|-----------|--------|------------|--------------|
+| 1. DICOM Organization | organize.py, dicom_copy.py | ✓ APPROVED | 1 (indentation bug) | 9 |
+| 2. CT Processing | ct.py | ✓ APPROVED | 1 (filename collision) | 3 |
+| 3. Segmentation | segmentation.py | ✓ APPROVED | 0 | 4 |
+| 4. Custom Models | custom_models.py | ✓ APPROVED | 0 | 5 |
+| 5. Custom Structures | custom_structures.py | ✓ APPROVED | 1 (spacing order) | 2 |
+| 6. CT Cropping | anatomical_cropping.py | ✓ APPROVED | 1 (RTSTRUCT geometry) | 4 |
+| 7. DVH Analysis | dvh.py | ✓ APPROVED | 0 | 5 |
+| 8. Radiomics Extraction | radiomics.py, radiomics_conda.py | ✓ APPROVED | 0 | 8 |
+| 9. Robustness Analysis | radiomics_robustness.py | ✓ APPROVED | 0 (Nov 2025 fix verified) | 4 |
+| 10. Quality Control | quality_control.py | ✓ APPROVED | 0 | 6 |
+| 11. Aggregation | aggregation scripts | ✓ APPROVED | 0 | 4 |
+| 12. Configuration | config.py | ✓ APPROVED | 0 | 5 |
+
+**TOTALS:**
+- **12/12 Stages Approved** with Dual Validation (Primary + Pal)
+- **4 Bugs Fixed** during review
+- **59 Improvement Ideas** logged to IDEAS.md
+- **0 Outstanding Issues** blocking completion
+
+Ready to proceed to Phase 14 (Implementation Fixes) and Phase 15 (Final Validation).
+
+=== END SESSION 16 ===
