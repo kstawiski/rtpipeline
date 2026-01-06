@@ -415,6 +415,38 @@ Each idea follows this format:
 - **Rationale**: Some AI models are trained on specific contrast phases and perform poorly on non-contrast or wrong-phase images. The infrastructure for contrast phase detection exists (`detect_contrast_phase()`), but it's not integrated into the model eligibility gating logic.
 - **References**: TotalSegmentator contrast phase detection documentation
 
+### IDEA-051: Remove Unused scripts/run_aggregate_robustness.py or Integrate It
+
+- **Stage**: 11. Aggregation
+- **Priority**: Low
+- **Description**: The `scripts/run_aggregate_robustness.py` file references `snakemake` object and appears intended as a Snakemake script, but the `aggregate_radiomics_robustness` rule in Snakefile uses shell commands directly to call the CLI. The script contains extensive developer comments (lines 30-52) and is effectively dead code.
+- **Rationale**: Dead code creates maintenance burden and confusion. Either (1) delete the unused script, or (2) refactor the Snakemake rule to use it via `script:` directive. Option 2 would provide better error handling than shell commands.
+- **References**: Snakemake `script:` directive documentation
+
+### IDEA-052: Add Parquet Freshness Validation to Robustness Aggregation
+
+- **Stage**: 11. Aggregation
+- **Priority**: Low
+- **Description**: The main `aggregate_results` rule in Snakefile has `_read_prefer_parquet()` (lines 1299-1323) that checks if Parquet is newer than Excel to avoid stale data. The robustness aggregation doesn't implement similar freshness validation because inputs are Parquet-only.
+- **Rationale**: For consistency and future-proofing, the robustness aggregation should validate that input Parquet files are newer than any corresponding Excel files that may exist. This prevents accidentally using stale data if someone manually modifies Excel files.
+- **References**: Snakefile `_read_prefer_parquet()` implementation pattern
+
+### IDEA-053: Clean Up Development Comments in Aggregation Scripts
+
+- **Stage**: 11. Aggregation
+- **Priority**: Very Low
+- **Description**: `scripts/run_aggregate_robustness.py` contains extensive development notes (lines 30-52) explaining design decisions. These should either be formalized as module docstrings or removed if the script is unused.
+- **Rationale**: Inline development comments create visual noise and may become outdated. Converting to proper documentation (docstrings, CLAUDE.md updates) improves maintainability.
+- **References**: PEP 257 (Docstring Conventions)
+
+### IDEA-054: Add Row Count Validation to Aggregation Output
+
+- **Stage**: 11. Aggregation
+- **Priority**: Low
+- **Description**: After concatenating per-course data frames, add validation that the output row count equals the sum of input row counts. Log a warning if there's a mismatch, which could indicate data loss or silent deduplication.
+- **Rationale**: Data integrity validation during aggregation ensures no silent data loss. The current implementation uses `ignore_index=True` which is correct, but explicit row counting would provide defense-in-depth.
+- **References**: N/A - defensive programming improvement
+
 <!-- Template for new ideas:
 
 ### IDEA-XXX: [Short Title]
@@ -443,7 +475,7 @@ Each idea follows this format:
 | 8. Radiomics Extraction | 8 |
 | 9. Robustness Analysis | 4 |
 | 10. Quality Control | 6 |
-| 11. Aggregation | 0 |
+| 11. Aggregation | 4 |
 | 12. Configuration | 0 |
 
 ---
@@ -452,8 +484,8 @@ Each idea follows this format:
 
 - **High Priority**: 0
 - **Medium Priority**: 14 (IDEA-001, IDEA-003, IDEA-011, IDEA-016, IDEA-017, IDEA-022, IDEA-024, IDEA-027, IDEA-029, IDEA-033, IDEA-042, IDEA-044, IDEA-046, IDEA-047)
-- **Low Priority**: 33 (IDEA-002, IDEA-004, IDEA-005, IDEA-006, IDEA-007, IDEA-009, IDEA-010, IDEA-012, IDEA-013, IDEA-014, IDEA-018, IDEA-019, IDEA-020, IDEA-021, IDEA-023, IDEA-025, IDEA-026, IDEA-028, IDEA-030, IDEA-031, IDEA-032, IDEA-034, IDEA-035, IDEA-036, IDEA-037, IDEA-038, IDEA-039, IDEA-040, IDEA-041, IDEA-043, IDEA-048, IDEA-049, IDEA-050)
-- **Very Low Priority**: 3 (IDEA-008, IDEA-015, IDEA-045)
+- **Low Priority**: 36 (IDEA-002, IDEA-004, IDEA-005, IDEA-006, IDEA-007, IDEA-009, IDEA-010, IDEA-012, IDEA-013, IDEA-014, IDEA-018, IDEA-019, IDEA-020, IDEA-021, IDEA-023, IDEA-025, IDEA-026, IDEA-028, IDEA-030, IDEA-031, IDEA-032, IDEA-034, IDEA-035, IDEA-036, IDEA-037, IDEA-038, IDEA-039, IDEA-040, IDEA-041, IDEA-043, IDEA-048, IDEA-049, IDEA-050, IDEA-051, IDEA-052, IDEA-054)
+- **Very Low Priority**: 4 (IDEA-008, IDEA-015, IDEA-045, IDEA-053)
 
 ---
 
