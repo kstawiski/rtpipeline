@@ -2336,3 +2336,126 @@ Both reviewers (Primary + Pal) confirm:
 No bugs found. Stage 10 is complete. Ready to proceed to Stage 11 (Aggregation Review).
 
 === END SESSION 14 ===
+
+=== SESSION 15 (Stage 11 - Aggregation Review, Pal Consultation) ===
+
+Subtask: subtask-12-2
+Description: Consult with Pal on Stage 11 findings and reach consensus
+
+## Pal Consultation - Stage 11: Aggregation Review
+
+### Consultation Request to Pal (gpt-5.2)
+
+The following findings from the Stage 11 Aggregation review were presented to Pal for dual validation:
+
+**Module Reviewed:** radiomics_robustness.py aggregate_robustness_results() function, scripts/run_aggregate_robustness.py, Snakefile aggregation rules
+
+**Key Findings:**
+
+1. **Results Merging (VERIFIED ✓):**
+   - `aggregate_robustness_results()` uses `pd.concat(all_dfs, ignore_index=True)` for proper DataFrame concatenation
+   - Column normalization handles `roi_name` → `structure` conversion
+   - Multiple summary sheets generated (global, per-source, per-structure)
+   - Properly handles empty input with empty Excel output
+
+2. **Deduplication Logic (VERIFIED ✓):**
+   - No explicit deduplication needed - records have natural composite keys
+   - Composite keys: (patient_id, course_id, structure, segmentation_source, perturbation_id, feature_name)
+   - ICC computation in `summarize_feature_stability()` groups by these keys correctly
+   - DVH aggregation has Manual-over-Custom/Merged preference pattern if needed
+
+3. **File Format Handling (VERIFIED ✓):**
+   - Parquet is primary input format (preferred for large data)
+   - Excel is summary output format (multi-sheet for different views)
+   - Raw values saved to Parquet to avoid Excel's 1,048,576 row limit
+   - Good practice: Parquet for intermediate data, Excel for human-readable summaries
+
+4. **Newer Files Preferred (VERIFIED ✓):**
+   - Main `aggregate_results` rule has `_read_prefer_parquet()` implementing freshness checks
+   - For robustness aggregation, inputs are Parquet-only so Snakemake DAG ensures correct ordering
+   - Freshness checking prevents stale data issues
+
+5. **Additional Findings:**
+   - `scripts/run_aggregate_robustness.py` appears UNUSED (IDEA-051)
+   - Script has development comments that should be cleaned up (IDEA-053)
+
+**No Bugs Found**
+
+**4 Improvement Ideas Logged:**
+- IDEA-051: Remove Unused scripts/run_aggregate_robustness.py or Integrate It (Low priority)
+- IDEA-052: Add Parquet Freshness Validation to Robustness Aggregation (Low priority)
+- IDEA-053: Clean Up Development Comments in Aggregation Scripts (Very Low priority)
+- IDEA-054: Add Row Count Validation to Aggregation Output (Low priority)
+
+### Pal Response
+
+Pal reviewed the Stage 11 findings and confirmed:
+
+**APPROVED** - The aggregation implementation follows best practices for:
+- Data integrity during concatenation
+- File format selection (Parquet for data, Excel for reports)
+- Snakemake DAG-driven data freshness
+
+**Scientific Methodology Verification:**
+
+1. **Results Merging Approach:**
+   - `pd.concat(all_dfs, ignore_index=True)` is the correct method for vertical concatenation
+   - Using `ignore_index=True` prevents index collisions from multiple DataFrames
+   - Column normalization (`roi_name` → `structure`) ensures consistent naming across sources
+   - Pal confirms this approach preserves data integrity during aggregation
+
+2. **Composite Key Deduplication Strategy:**
+   - Natural composite keys (patient_id, course_id, structure, segmentation_source, perturbation_id, feature_name) provide uniqueness without explicit deduplication
+   - This is scientifically appropriate because each combination represents a distinct measurement
+   - ICC computation correctly groups by these keys to compute inter-rater reliability
+   - Pal confirms this is preferable to explicit deduplication which could mask data issues
+
+3. **File Format Design Decision:**
+   - **Parquet for intermediate data:** Correct for:
+     - Type preservation (floats remain floats, not strings)
+     - Compression efficiency (~10x smaller than Excel)
+     - Fast I/O for large datasets
+     - No row limit (vs Excel's 1,048,576)
+   - **Excel for summary reports:** Correct for:
+     - Human-readable output
+     - Multi-sheet capability (global, per-source, per-structure views)
+     - Research sharing (Excel is universally accessible)
+   - Pal endorses this two-tier approach as best practice for research pipelines
+
+4. **Freshness Validation Logic:**
+   - `_read_prefer_parquet()` pattern correctly implements:
+     - Check if Parquet exists and is newer than Excel
+     - Prefer Parquet when available and fresh
+     - Log warning when using older Excel as fallback
+   - Snakemake DAG ensures robustness aggregation inputs are always current
+   - Pal confirms this prevents accidental use of stale manually-edited Excel files
+
+5. **Dead Code Handling (IDEA-051 endorsement):**
+   - Pal confirms `scripts/run_aggregate_robustness.py` should either be:
+     - Deleted if truly unused, or
+     - Integrated via Snakemake `script:` directive for better error handling
+   - Low priority is appropriate (dead code is maintenance burden, not correctness issue)
+
+6. **Row Count Validation (IDEA-054 endorsement):**
+   - Pal agrees that post-aggregation row count validation would provide defense-in-depth
+   - Formula: `output_rows == sum(input_rows)` after concatenation
+   - Would catch silent data loss from unexpected filtering or deduplication
+
+### Consensus Decision
+
+**STAGE 11 - AGGREGATION REVIEW: APPROVED (Dual Validation Complete)**
+
+Both reviewers (Primary + Pal) confirm:
+✓ Results merging via pd.concat() preserves data integrity
+✓ Column normalization handles cross-source naming consistency
+✓ Composite key strategy provides correct uniqueness without explicit deduplication
+✓ Parquet for intermediate data, Excel for human-readable summaries is best practice
+✓ Snakemake DAG ensures data freshness for robustness aggregation inputs
+✓ Main aggregation rule has explicit freshness checking via _read_prefer_parquet()
+✓ Multi-sheet Excel output provides appropriate views (global, per-source, per-structure)
+✓ Empty input handling produces valid empty output (no crashes)
+✓ 4 improvement ideas documented in IDEAS.md (IDEA-051 through IDEA-054)
+
+No bugs found. Stage 11 is complete. Ready to proceed to Stage 12 (Configuration Review).
+
+=== END SESSION 15 ===
