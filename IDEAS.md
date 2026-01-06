@@ -271,6 +271,46 @@ Each idea follows this format:
 - **Rationale**: The custom implementation is mathematically correct (linear interpolation on cumulative DVH), but using the library's method would ensure consistency if dicompyler-core's interpolation algorithm changes. The custom implementation also uses consistent linear interpolation, so this is a minor maintainability improvement rather than a correctness issue.
 - **References**: dicompyler-core DVH.statistic() documentation
 
+### IDEA-033: Log PyRadiomics Version for Reproducibility
+
+- **Stage**: 8. Radiomics Extraction
+- **Priority**: Medium
+- **Description**: Record the PyRadiomics version used for each extraction in the output files (radiomics_ct.xlsx, radiomics_mr.xlsx). Currently, extraction parameters are logged via `additionalInfo: True`, but the library version is not explicitly captured.
+- **Rationale**: Different PyRadiomics versions may produce slightly different feature values due to algorithm refinements or bug fixes. For research reproducibility and multi-center study harmonization, knowing the exact library version is important. This is analogous to IDEA-016 for TotalSegmentator.
+- **References**: IBSI reporting guidelines, PyRadiomics changelog
+
+### IDEA-034: Add Explicit IBSI Compliance Log Entry
+
+- **Stage**: 8. Radiomics Extraction
+- **Priority**: Low
+- **Description**: Add a validation step that checks the loaded PyRadiomics parameters against a list of IBSI-required settings and logs the compliance status at the start of extraction. This would produce a log line like: "IBSI compliance: PASS (all required settings validated)"
+- **Rationale**: The current `radiomics_params.yaml` files are IBSI-compliant, but users may provide custom parameter files. Explicit validation would catch misconfigurations early and provide audit evidence that IBSI standards were followed.
+- **References**: IBSI standardization guidelines (Zwanenburg et al. 2020)
+
+### IDEA-035: Pre-Extraction Mask Voxel Count Logging
+
+- **Stage**: 8. Radiomics Extraction
+- **Priority**: Low
+- **Description**: Add verbose logging that reports the voxel count for each mask before attempting extraction, not just when skipping due to min_voxels. This would help debug cases where extraction fails silently.
+- **Rationale**: The current code logs at DEBUG level when masks are skipped, but doesn't log successful extractions with their voxel counts. This information is valuable for quality control (e.g., detecting unexpectedly small organ volumes) and debugging extraction failures.
+- **References**: N/A - diagnostic improvement
+
+### IDEA-036: Feature Name Standardization Documentation
+
+- **Stage**: 8. Radiomics Extraction
+- **Priority**: Low
+- **Description**: Add documentation clarifying the feature naming convention across the pipeline. PyRadiomics uses names like `original_shape_VoxelVolume` while some downstream analysis may expect IBSI standard names like `Morphology_Volume`.
+- **Rationale**: Multi-center studies and radiomics model sharing require consistent feature naming. Documenting the name mappings (PyRadiomics → IBSI standard names) would facilitate interoperability with external radiomics tools and databases.
+- **References**: IBSI feature naming standard, PyRadiomics feature documentation
+
+### IDEA-037: Add Radiomics Extraction Timeout Escalation
+
+- **Stage**: 8. Radiomics Extraction
+- **Priority**: Low
+- **Description**: The parallel radiomics implementation uses a fixed per-ROI timeout (default 600s in radiomics_parallel.py). Consider adding exponential backoff or progressive timeout escalation for retry attempts, or at minimum log which specific ROIs are timing out.
+- **Rationale**: Large ROIs like BODY can legitimately take longer to process, especially with wavelet decomposition enabled. The current fixed timeout may cause false positives. More detailed timeout logging would help identify problematic ROIs for configuration tuning.
+- **References**: N/A - workflow reliability improvement
+
 <!-- Template for new ideas:
 
 ### IDEA-XXX: [Short Title]
@@ -296,7 +336,7 @@ Each idea follows this format:
 | 5. Custom Structures | 2 |
 | 6. CT Cropping | 4 |
 | 7. DVH Analysis | 5 |
-| 8. Radiomics Extraction | 0 |
+| 8. Radiomics Extraction | 5 |
 | 9. Robustness Analysis | 0 |
 | 10. Quality Control | 0 |
 | 11. Aggregation | 0 |
@@ -307,8 +347,8 @@ Each idea follows this format:
 ## Priority Summary
 
 - **High Priority**: 0
-- **Medium Priority**: 9 (IDEA-001, IDEA-003, IDEA-011, IDEA-016, IDEA-017, IDEA-022, IDEA-024, IDEA-027, IDEA-029)
-- **Low Priority**: 21 (IDEA-002, IDEA-004, IDEA-005, IDEA-006, IDEA-007, IDEA-009, IDEA-010, IDEA-012, IDEA-013, IDEA-014, IDEA-018, IDEA-019, IDEA-020, IDEA-021, IDEA-023, IDEA-025, IDEA-026, IDEA-028, IDEA-030, IDEA-031, IDEA-032)
+- **Medium Priority**: 10 (IDEA-001, IDEA-003, IDEA-011, IDEA-016, IDEA-017, IDEA-022, IDEA-024, IDEA-027, IDEA-029, IDEA-033)
+- **Low Priority**: 25 (IDEA-002, IDEA-004, IDEA-005, IDEA-006, IDEA-007, IDEA-009, IDEA-010, IDEA-012, IDEA-013, IDEA-014, IDEA-018, IDEA-019, IDEA-020, IDEA-021, IDEA-023, IDEA-025, IDEA-026, IDEA-028, IDEA-030, IDEA-031, IDEA-032, IDEA-034, IDEA-035, IDEA-036, IDEA-037)
 - **Very Low Priority**: 2 (IDEA-008, IDEA-015)
 
 ---
