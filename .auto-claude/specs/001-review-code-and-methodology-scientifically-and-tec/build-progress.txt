@@ -1876,3 +1876,150 @@ All verification criteria passed:
 Ready for subtask-10-2 (Pal consultation for ICC methodology consensus).
 
 === END SESSION 11 ===
+
+=== SESSION 12 (Stage 9 - Pal Consultation for ICC Methodology Consensus) ===
+
+Subtask: subtask-10-2
+Description: Consult with Pal on Stage 9 findings and reach consensus on ICC methodology
+
+## Pal Consultation - Stage 9: Robustness Analysis
+
+### Consultation Request to Pal (gpt-5.2)
+
+The following findings from the Stage 9 Robustness Analysis review were presented to Pal for dual validation:
+
+**Module Reviewed:** radiomics_robustness.py (~1254 lines)
+
+**Key Findings:**
+
+1. **ICC(3,1) Computation (VERIFIED):**
+   - Uses `pingouin.intraclass_corr()` with `icc_type="ICC3"` (two-way mixed effects, single rater)
+   - Correct model for robustness analysis: fixed raters (perturbations), random subjects (ROIs)
+   - `nan_policy="omit"` correctly handles missing data
+   - Returns confidence intervals for conservative robustness classification
+
+2. **volume_adapt_mask() (VERIFIED):**
+   - Actually applies morphological operations via `sitk.BinaryErode`/`sitk.BinaryDilate`
+   - Nov 2025 bug fix (lines 244-250) ensures perturbed masks are different from originals
+   - Ball structuring element with iterative application to reach target volume
+   - Proper fallback logic: returns None only if perturbation genuinely fails
+
+3. **Artificial ICC=1.0 Prevention (VERIFIED):**
+   - Safeguard 1: Returns NaN when n_subjects < 2 or n_raters < 2
+   - Safeguard 2: Composite subject IDs (patient + course + structure + source)
+   - Safeguard 3: Perturbation validation - only includes masks where perturbation succeeded
+   - Safeguard 4: Empty mask checks (original_volume < 10, best_volume < 5 → None)
+
+4. **NTCV Chain (VERIFIED):**
+   - Implements IBSI-recommended Noise + Translation + Contour + Volume chain
+   - Order follows Zwanenburg et al. 2019 methodology (Sci Rep)
+   - Combinatorial perturbation generation based on intensity level
+
+5. **Robustness Metrics (VERIFIED):**
+   - CoV uses ddof=1 (sample standard deviation) - mathematically correct
+   - QCD uses (Q3-Q1)/(Q3+Q1) - correct quartile coefficient of dispersion formula
+
+**No Bugs Found**
+
+**4 Improvement Ideas Logged:**
+- IDEA-041: Perturbation Count Warning for Underpowered ICC (Low priority)
+- IDEA-042: Expose NTCV Chain Configuration via Config.yaml (Medium priority)
+- IDEA-043: Add ICC Confidence Interval Width to Robustness Classification (Low priority)
+- IDEA-044: Support Multi-Rater ICC for Cross-Method Comparison (Medium priority)
+
+### Pal Response
+
+Pal reviewed the Stage 9 findings and confirmed:
+
+**APPROVED** - The radiomics_robustness.py implementation follows best practices for ICC computation and mask perturbation.
+
+**ICC Interpretation Threshold Verification:**
+
+The spec requires verification of ICC interpretation thresholds: >0.9 excellent, 0.75-0.9 good, 0.5-0.75 moderate, <0.5 poor
+
+**Standard ICC Interpretation (Koo & Li 2016, Cicchetti 1994):**
+| ICC Range | Interpretation |
+|-----------|---------------|
+| > 0.90 | Excellent |
+| 0.75 - 0.90 | Good |
+| 0.50 - 0.75 | Moderate |
+| < 0.50 | Poor |
+
+**Implementation Classification (RobustnessThresholds dataclass, lines 77-82):**
+| ICC Threshold | Classification | Rationale |
+|---------------|---------------|-----------|
+| ICC ≥ 0.90 | Robust | Equivalent to "Excellent" - gold standard for clinical use |
+| ICC ≥ 0.75 | Acceptable | Equivalent to "Good" - meets minimum reliability threshold |
+| ICC < 0.75 | Poor | Combines "Moderate" and "Poor" - insufficient for quantitative analysis |
+
+**Pal's Validation of Simplified Classification:**
+
+The implementation's 3-tier classification (robust/acceptable/poor) is a **scientifically justified simplification** because:
+
+1. **Clinical Relevance**: Features with ICC < 0.75 are generally not reliable enough for clinical decision-making or quantitative radiomics analysis, regardless of whether they're "moderate" (0.5-0.75) or "poor" (<0.5).
+
+2. **Conservative Threshold**: Using the lower 95% CI bound (`icc_ci95_low`) for classification is conservative, ensuring robust classification doesn't rely on uncertain point estimates.
+
+3. **Combined ICC + CoV Requirement**: The implementation requires BOTH ICC ≥ 0.90 AND CoV ≤ 10% for "robust" classification, which is stricter than ICC alone.
+
+4. **Literature Support**:
+   - Zwanenburg et al. 2019 recommend ICC > 0.90 and CoV < 10% for "robust" features
+   - Lo Iacono et al. 2024 use similar thresholds for clinical radiomics
+   - Poirot et al. 2022 recommend ICC ≥ 0.75 as minimum threshold
+
+**ICC(3,1) Model Selection Validation:**
+
+Pal confirms ICC(3,1) is the **correct model** for robustness analysis:
+
+1. **Two-way Mixed Effects**: Subjects (ROIs from different patients/courses) are random; raters (perturbations) are fixed
+2. **Single Rater**: Each subject-rater combination produces one measurement
+3. **Fixed Raters**: The same perturbations (e.g., ±15% volume) are applied systematically to all subjects
+4. **Pingouin Implementation**: `ICC3` in pingouin correctly maps to ICC(3,1) using ANOVA approach
+
+**Alternative ICC Models Considered:**
+- ICC(1,1): One-way random - would be incorrect because raters are fixed
+- ICC(2,1): Two-way random - would be incorrect because raters are fixed, not random
+- ICC(3,k): Two-way mixed, average - would be incorrect for single measurements
+
+**Scientific Methodology Verification:**
+
+1. **NTCV Chain Order**: The implementation correctly follows IBSI-recommended order (Noise → Translation → Contour → Volume), which ensures proper uncertainty propagation.
+
+2. **Volume Adaptation Algorithm**: Iterative erosion/dilation with target tracking is scientifically sound for simulating inter-observer segmentation variability.
+
+3. **November 2025 Bug Fix**: The fix at lines 244-250 ensures volume_adapt_mask() NEVER returns the original mask unchanged when tau≠0, preventing artificial ICC=1.0 values.
+
+**References Validated:**
+- Zwanenburg A et al. (2019). Sci Rep. NTCV perturbation methodology.
+- Koo TK, Li MY (2016). J Chiropr Med. ICC interpretation guidelines.
+- Cicchetti DV (1994). Psychol Assess. ICC reliability thresholds.
+- Poirot MG et al. (2022). Sci Rep. Multi-method ICC in radiomics.
+- Shrout PE, Fleiss JL (1979). Psychol Bull. ICC theory and applications.
+
+### Consensus Decision
+
+**STAGE 9 - ROBUSTNESS ANALYSIS: APPROVED (Dual Validation Complete)**
+
+Both reviewers (Primary + Pal) confirm:
+✓ ICC(3,1) correctly computed using pingouin with proper model selection
+✓ ICC interpretation thresholds align with literature standards (Koo & Li 2016)
+✓ Simplified 3-tier classification (robust/acceptable/poor) is scientifically justified
+✓ Conservative threshold approach using CI lower bound is correct
+✓ Combined ICC + CoV requirements are stricter than ICC alone
+✓ volume_adapt_mask() properly applies morphological operations
+✓ Nov 2025 bug fix ensures perturbed masks are different from originals
+✓ Artificial ICC=1.0 prevented through 4 safeguards
+✓ NTCV perturbation chain follows IBSI methodology
+✓ 4 improvement ideas documented in IDEAS.md (IDEA-041 through IDEA-044)
+✓ No bugs found - module is scientifically correct
+
+**ICC Threshold Summary:**
+| Classification | ICC Threshold | Equivalent Standard | Combined Requirement |
+|---------------|---------------|---------------------|---------------------|
+| Robust | ≥ 0.90 | Excellent | ICC ≥ 0.90 AND CoV ≤ 10% |
+| Acceptable | ≥ 0.75 | Good | ICC ≥ 0.75 AND CoV ≤ 20% |
+| Poor | < 0.75 | Moderate + Poor | Not meeting acceptable criteria |
+
+Stage 9 is complete. Ready to proceed to Stage 10 (Quality Control Review).
+
+=== END SESSION 12 ===
