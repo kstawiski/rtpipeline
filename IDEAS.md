@@ -447,6 +447,46 @@ Each idea follows this format:
 - **Rationale**: Data integrity validation during aggregation ensures no silent data loss. The current implementation uses `ignore_index=True` which is correct, but explicit row counting would provide defense-in-depth.
 - **References**: N/A - defensive programming improvement
 
+### IDEA-055: Add from_yaml() Factory Method to PipelineConfig
+
+- **Stage**: 12. Configuration
+- **Priority**: Medium
+- **Description**: Add a `@classmethod from_yaml(cls, path: Path) -> PipelineConfig` factory method that encapsulates YAML loading and config construction. Currently, cli.py (lines 650-732, 905-1022) manually parses YAML and constructs config with extensive repetitive logic.
+- **Rationale**: The current approach violates DRY (Don't Repeat Yourself) and separation of concerns. Multiple CLI entry points (_radiomics_robustness_course, _radiomics_robustness_aggregate, main) each implement their own YAML parsing. A factory method would centralize this logic, ensure consistent defaults, and simplify the CLI code.
+- **References**: Python dataclass patterns, Python typing.Self (3.11+) for return type annotation
+
+### IDEA-056: Add __post_init__ Validation for Parameter Values
+
+- **Stage**: 12. Configuration
+- **Priority**: Medium
+- **Description**: Add `__post_init__` validation to PipelineConfig that checks: (1) `merge_criteria` in ["same_ct_study", "frame_of_reference"], (2) `totalseg_device` in ["gpu", "cpu", "mps"], (3) `ct_cropping_region` in ["pelvis", "thorax", "abdomen", "head_neck", "brain"], (4) numeric margins/thresholds are non-negative.
+- **Rationale**: The current dataclass accepts any string values without validation, leading to runtime errors deep in the pipeline rather than immediate configuration errors. Early validation with clear error messages improves developer experience and prevents silent misconfigurations.
+- **References**: Python dataclasses __post_init__ documentation
+
+### IDEA-057: Document effective_workers() Behavior in Docstring
+
+- **Stage**: 12. Configuration
+- **Priority**: Low
+- **Description**: Add a docstring to `effective_workers()` that clearly explains: (1) the override acts as a CAP, not an absolute value, (2) result is always capped at `os.cpu_count() - 1` to prevent oversubscription, (3) priority order: instance override > environment > auto-detect. Current inline implementation is correct but semantics are not documented.
+- **Rationale**: Users expecting `--max-workers 32` to use 32 workers on a 64-core machine may be surprised when only 63 workers are used. While the behavior is intentional and scientifically correct (prevents CPU oversubscription), it should be documented to avoid confusion.
+- **References**: N/A - documentation improvement
+
+### IDEA-058: Remove Default Value for ct_cropping_region When ct_cropping_enabled is False
+
+- **Stage**: 12. Configuration
+- **Priority**: Low
+- **Description**: The `ct_cropping_region` defaults to `"pelvis"` even though `ct_cropping_enabled` defaults to `False`. Consider using `None` as the default and requiring explicit region selection when cropping is enabled.
+- **Rationale**: The current default implies pelvis-focused processing even for thorax or head-neck studies. While the feature is disabled by default, a None default would make it explicit that region selection is required. This prevents accidentally inheriting a pelvis configuration for non-pelvic studies.
+- **References**: N/A - configuration hygiene improvement
+
+### IDEA-059: Add Path Coercion in PipelineConfig Initialization
+
+- **Stage**: 12. Configuration
+- **Priority**: Low
+- **Description**: Add automatic coercion of string paths to Path objects in `__post_init__`. Currently, string paths passed to path-typed parameters work because Path operations are duck-typed, but explicit coercion would ensure consistent types throughout the codebase.
+- **Rationale**: The CLI code explicitly calls `Path(...).resolve()` when constructing configs, but direct instantiation with strings would bypass this. Automatic coercion in __post_init__ would ensure all Path parameters are actual Path objects regardless of how the config was constructed.
+- **References**: Python pathlib.Path constructor
+
 <!-- Template for new ideas:
 
 ### IDEA-XXX: [Short Title]
@@ -476,15 +516,15 @@ Each idea follows this format:
 | 9. Robustness Analysis | 4 |
 | 10. Quality Control | 6 |
 | 11. Aggregation | 4 |
-| 12. Configuration | 0 |
+| 12. Configuration | 5 |
 
 ---
 
 ## Priority Summary
 
 - **High Priority**: 0
-- **Medium Priority**: 14 (IDEA-001, IDEA-003, IDEA-011, IDEA-016, IDEA-017, IDEA-022, IDEA-024, IDEA-027, IDEA-029, IDEA-033, IDEA-042, IDEA-044, IDEA-046, IDEA-047)
-- **Low Priority**: 36 (IDEA-002, IDEA-004, IDEA-005, IDEA-006, IDEA-007, IDEA-009, IDEA-010, IDEA-012, IDEA-013, IDEA-014, IDEA-018, IDEA-019, IDEA-020, IDEA-021, IDEA-023, IDEA-025, IDEA-026, IDEA-028, IDEA-030, IDEA-031, IDEA-032, IDEA-034, IDEA-035, IDEA-036, IDEA-037, IDEA-038, IDEA-039, IDEA-040, IDEA-041, IDEA-043, IDEA-048, IDEA-049, IDEA-050, IDEA-051, IDEA-052, IDEA-054)
+- **Medium Priority**: 16 (IDEA-001, IDEA-003, IDEA-011, IDEA-016, IDEA-017, IDEA-022, IDEA-024, IDEA-027, IDEA-029, IDEA-033, IDEA-042, IDEA-044, IDEA-046, IDEA-047, IDEA-055, IDEA-056)
+- **Low Priority**: 39 (IDEA-002, IDEA-004, IDEA-005, IDEA-006, IDEA-007, IDEA-009, IDEA-010, IDEA-012, IDEA-013, IDEA-014, IDEA-018, IDEA-019, IDEA-020, IDEA-021, IDEA-023, IDEA-025, IDEA-026, IDEA-028, IDEA-030, IDEA-031, IDEA-032, IDEA-034, IDEA-035, IDEA-036, IDEA-037, IDEA-038, IDEA-039, IDEA-040, IDEA-041, IDEA-043, IDEA-048, IDEA-049, IDEA-050, IDEA-051, IDEA-052, IDEA-054, IDEA-057, IDEA-058, IDEA-059)
 - **Very Low Priority**: 4 (IDEA-008, IDEA-015, IDEA-045, IDEA-053)
 
 ---
