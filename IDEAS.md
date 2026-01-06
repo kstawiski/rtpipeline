@@ -183,6 +183,22 @@ Each idea follows this format:
 - **Rationale**: Similar to IDEA-016 for TotalSegmentator, knowing which model version was used is important for research reproducibility. Custom models may be updated over time.
 - **References**: nnU-Net checkpoint structure (checkpoint_final.pth metadata)
 
+### IDEA-022: Implement True Asymmetric Margin Support
+
+- **Stage**: 5. Custom Structures
+- **Priority**: Medium
+- **Description**: The `apply_margin()` function in `custom_structures.py` only supports uniform (isotropic) margins. When asymmetric margins are specified (e.g., different anterior/posterior expansion), the code falls back to using the maximum margin value, which over-expands in some directions.
+- **Rationale**: In radiotherapy planning, asymmetric margins are clinically important. For example, a PTV might require 5mm anterior, 10mm posterior, 5mm lateral, and 3mm superior/inferior margins. The current implementation would use 10mm in all directions, which is geometrically incorrect and could lead to unnecessarily large irradiation volumes.
+- **References**: ICRU Report 62 (margins for PTV), RTOG structure naming conventions for asymmetric margins
+
+### IDEA-023: Add Negative Margin (Erosion) Warning for Small Structures
+
+- **Stage**: 5. Custom Structures
+- **Priority**: Low
+- **Description**: Add a warning when applying negative margins (erosion) to small structures that could result in empty or very small output masks.
+- **Rationale**: When eroding a structure that is smaller than the erosion distance, the result will be empty. Currently this is caught after the fact (lines 368-373), but a pre-operation warning based on structure size vs margin distance would provide better diagnostic feedback.
+- **References**: N/A - diagnostic improvement
+
 <!-- Template for new ideas:
 
 ### IDEA-XXX: [Short Title]
@@ -205,7 +221,7 @@ Each idea follows this format:
 | 2. CT Processing | 3 |
 | 3. Segmentation | 4 |
 | 4. Custom Models | 5 |
-| 5. Custom Structures | 0 |
+| 5. Custom Structures | 2 |
 | 6. CT Cropping | 0 |
 | 7. DVH Analysis | 0 |
 | 8. Radiomics Extraction | 0 |
@@ -219,8 +235,8 @@ Each idea follows this format:
 ## Priority Summary
 
 - **High Priority**: 0
-- **Medium Priority**: 5 (IDEA-001, IDEA-003, IDEA-011, IDEA-016, IDEA-017)
-- **Low Priority**: 14 (IDEA-002, IDEA-004, IDEA-005, IDEA-006, IDEA-007, IDEA-009, IDEA-010, IDEA-012, IDEA-013, IDEA-014, IDEA-018, IDEA-019, IDEA-020, IDEA-021)
+- **Medium Priority**: 6 (IDEA-001, IDEA-003, IDEA-011, IDEA-016, IDEA-017, IDEA-022)
+- **Low Priority**: 15 (IDEA-002, IDEA-004, IDEA-005, IDEA-006, IDEA-007, IDEA-009, IDEA-010, IDEA-012, IDEA-013, IDEA-014, IDEA-018, IDEA-019, IDEA-020, IDEA-021, IDEA-023)
 - **Very Low Priority**: 2 (IDEA-008, IDEA-015)
 
 ---

@@ -431,3 +431,123 @@ Both reviewers (Primary + Pal) confirm:
 Stage 4 is complete. Ready to proceed to Stage 5 (Custom Structures Review).
 
 === END SESSION 3 ===
+
+=== SESSION 4 (Stage 5 - Custom Structures Review) ===
+
+Subtask: subtask-6-1
+Description: Review custom_structures.py for boolean operations (union, intersection, subtract, xor) and margin calculations
+
+## Review Findings - custom_structures.py
+
+### 1. Boolean Operations ✓ APPROVED
+
+All four boolean operations are correctly implemented using NumPy logical operations:
+
+**Union (lines 99-107)**:
+- Uses `np.logical_or()` iteratively
+- Correctly handles empty mask list with ValueError
+- Returns uint8 type appropriate for binary masks
+- ✓ GEOMETRICALLY CORRECT
+
+**Intersection (lines 109-117)**:
+- Uses `np.logical_and()` iteratively
+- Correctly handles empty mask list with ValueError
+- ✓ GEOMETRICALLY CORRECT
+
+**Subtract (lines 119-127)**:
+- Correctly implements A - B = A ∩ ~B using `np.logical_and(result, np.logical_not(mask))`
+- Requires at least 2 masks (validated)
+- ✓ GEOMETRICALLY CORRECT
+
+**XOR (lines 129-137)**:
+- Uses `np.logical_xor()` iteratively
+- Correctly produces symmetric difference
+- ✓ GEOMETRICALLY CORRECT
+
+### 2. Margin Calculations - BUG FIXED
+
+**Original Issue Found:**
+The `apply_margin()` function (lines 139-193) passed spacing to `distance_transform_edt()` without reordering to match the mask array dimensions.
+
+- **Spacing from SimpleITK**: (X, Y, Z) order
+- **Mask from rt-utils**: (Y, X, Z) order (after `np.moveaxis(arr, 0, -1)` conversion)
+- **distance_transform_edt requirement**: spacing must match array dimensions
+
+**Bug:** Spacing order mismatch caused incorrect margin distances. For example, with anisotropic spacing like (0.5mm, 0.5mm, 3mm), passing X-Y-Z spacing to a Y-X-Z array would swap X and Y components.
+
+**Fix Applied:**
+Added spacing reordering before calling distance_transform_edt:
+```python
+# Reorder spacing to match mask array dimensions.
+# Mask is (Y, X, Z), spacing from SimpleITK is (X, Y, Z).
+# We need spacing in (Y, X, Z) order for distance_transform_edt.
+spacing_yxz = (self.spacing[1], self.spacing[0], self.spacing[2])
+```
+
+### 3. distance_transform_edt Usage ✓ APPROVED (After Fix)
+
+The Euclidean distance transform is correctly used:
+- **Expansion**: Computes distance from background (inverted mask), includes voxels ≤ margin distance
+- **Contraction**: Computes distance from foreground, keeps voxels > |margin| distance
+- Uses `sampling` parameter with properly ordered spacing for anisotropic grids
+- ✓ SCIENTIFICALLY CORRECT
+
+### 4. Asymmetric Margin Limitation (Documented, Not a Bug)
+
+The code explicitly documents (lines 155-158) that asymmetric margins (e.g., different anterior vs posterior expansion) are not supported:
+```python
+# Asymmetric margins (e.g. anterior vs posterior) require vector distance fields
+# or iterative approaches which are computationally expensive.
+```
+
+When asymmetric margins are specified, the code falls back to the maximum margin value. This is documented behavior, not a bug, but logged as IDEA-022 for future improvement.
+
+### 5. Code Quality Improvements Made
+
+**Removed Unused Imports:**
+Changed from:
+```python
+from scipy.ndimage import binary_dilation, binary_erosion, generate_binary_structure
+```
+To:
+```python
+from scipy.ndimage import distance_transform_edt
+```
+
+The binary_dilation, binary_erosion, and generate_binary_structure were imported but never used. The distance_transform_edt was previously imported inside the function (line 174), now moved to top of file for efficiency.
+
+### 6. Edge Case Handling ✓ APPROVED
+
+- **Empty mask warning**: Lines 307-315 warn when no source structures found
+- **Missing sources tracking**: `partial_structures` dict tracks which sources were missing
+- **Post-operation validation**: Lines 349-362 check for empty or very small structures after boolean operations
+- **Post-margin validation**: Lines 368-373 check for empty structures after margin operations
+- **Volume calculation**: Lines 380-394 compute and log structure volumes
+
+## Bug Fixed
+
+| Bug | Location | Fix |
+|-----|----------|-----|
+| Spacing order mismatch | `apply_margin()` line 184 | Reorder spacing from (X,Y,Z) to (Y,X,Z) before distance_transform_edt |
+
+## Improvement Ideas Added
+
+- IDEA-022: Implement True Asymmetric Margin Support (Medium priority)
+- IDEA-023: Add Negative Margin (Erosion) Warning for Small Structures (Low priority)
+
+## Review Status
+
+**STAGE 5 - CUSTOM STRUCTURES REVIEW: APPROVED (with bug fix)**
+
+Bug fixed:
+✓ Spacing order mismatch in apply_margin() corrected
+
+Code verified:
+✓ Union, intersection, subtract, xor operations geometrically correct
+✓ distance_transform_edt used correctly with proper spacing
+✓ Edge cases handled appropriately
+✓ Unused imports removed
+
+Ready for Pal consultation (subtask-6-2) to achieve dual validation consensus.
+
+=== END SESSION 4 ===
