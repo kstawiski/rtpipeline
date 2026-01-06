@@ -1038,6 +1038,10 @@ def _create_rtstruct_from_cropped_masks(
     This creates RS_auto_cropped.dcm from the systematically cropped masks,
     ensuring that all structure volumes are consistently defined across patients.
 
+    The cropped masks are embedded back into full CT geometry before adding to
+    the RTSTRUCT, with zeros padding the non-cropped regions. This ensures the
+    RTSTRUCT contours are geometrically consistent with the referenced CT series.
+
     Args:
         course_dir: Course directory
         course_dirs: Course directory structure
@@ -1085,7 +1089,11 @@ def _create_rtstruct_from_cropped_masks(
             return None
         files = reader.GetGDCMSeriesFileNames(str(course_dirs.dicom_ct), series_ids[0])
         reader.SetFileNames(files)
-        reader.Execute()
+        ct_img = reader.Execute()
+        ct_size = ct_img.GetSize()  # (x, y, z)
+        ct_origin = ct_img.GetOrigin()
+        ct_spacing = ct_img.GetSpacing()
+        logger.debug(f"Original CT geometry: size={ct_size}, origin={ct_origin}, spacing={ct_spacing}")
     except Exception as e:
         logger.error(f"Failed to load CT DICOM: {e}")
         return None
@@ -1113,16 +1121,58 @@ def _create_rtstruct_from_cropped_masks(
             # Read cropped mask
             mask_img = sitk.ReadImage(str(mask_path))
             mask_array = sitk.GetArrayFromImage(mask_img)  # [z, y, x]
+            cropped_origin = mask_img.GetOrigin()
+            cropped_spacing = mask_img.GetSpacing()
+            cropped_size = mask_img.GetSize()  # (x, y, z)
 
             if not np.any(mask_array):
                 continue  # Skip empty masks
 
-            # Convert to [y, x, z] for rt-utils
-            mask_array = np.moveaxis(mask_array, 0, -1)
+            # Calculate where the cropped mask fits within the original CT geometry
+            # The cropped mask's origin tells us where it starts in physical space
+            # Convert to index in original CT space
+            z_offset_physical = cropped_origin[2] - ct_origin[2]
+            z_start_idx = int(round(z_offset_physical / ct_spacing[2]))
 
-            rtstruct.add_roi(mask=mask_array > 0, name=roi_name)
+            # Clamp to valid range
+            z_start_idx = max(0, z_start_idx)
+            z_end_idx = z_start_idx + cropped_size[2]
+            z_end_idx = min(ct_size[2], z_end_idx)
+
+            # Verify spacing compatibility
+            spacing_tolerance = 0.01  # 0.01mm tolerance
+            if abs(cropped_spacing[2] - ct_spacing[2]) > spacing_tolerance:
+                logger.warning(
+                    f"Cropped mask {roi_name} has different z-spacing "
+                    f"({cropped_spacing[2]:.3f}) than CT ({ct_spacing[2]:.3f}). "
+                    f"Skipping to avoid geometry mismatch."
+                )
+                continue
+
+            # Create full-size mask array matching original CT geometry
+            # rt-utils expects [y, x, z] format (rows, cols, slices)
+            full_mask = np.zeros((ct_size[1], ct_size[0], ct_size[2]), dtype=bool)
+
+            # The cropped mask is [z, y, x], need to convert to [y, x, z]
+            cropped_yxz = np.moveaxis(mask_array, 0, -1)  # [z, y, x] -> [y, x, z]
+
+            # Calculate how many slices we can actually copy (handle edge cases)
+            slices_to_copy = min(cropped_yxz.shape[2], z_end_idx - z_start_idx)
+            if slices_to_copy <= 0:
+                logger.warning(f"Cropped mask {roi_name} falls outside CT z-range. Skipping.")
+                continue
+
+            # Embed cropped mask into full mask at the correct z-position
+            full_mask[:, :, z_start_idx:z_start_idx + slices_to_copy] = (
+                cropped_yxz[:, :, :slices_to_copy] > 0
+            )
+
+            rtstruct.add_roi(mask=full_mask, name=roi_name)
             added_count += 1
-            logger.debug(f"Added cropped ROI: {roi_name}")
+            logger.debug(
+                f"Added cropped ROI {roi_name}: embedded at z-slices "
+                f"[{z_start_idx}:{z_start_idx + slices_to_copy}] of {ct_size[2]} total"
+            )
 
         except Exception as e:
             logger.warning(f"Failed to add ROI {roi_name}: {e}")
