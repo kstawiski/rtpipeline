@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Union
 import yaml
 import numpy as np
-from scipy.ndimage import binary_dilation, binary_erosion, generate_binary_structure
+from scipy.ndimage import distance_transform_edt
 import SimpleITK as sitk
 
 logger = logging.getLogger(__name__)
@@ -142,7 +142,7 @@ class CustomStructureProcessor:
         This handles anisotropic spacing correctly.
 
         Args:
-            mask: Input binary mask
+            mask: Input binary mask (expected in Y, X, Z order from rt-utils)
             margin: Margin configuration
 
         Returns:
@@ -153,10 +153,10 @@ class CustomStructureProcessor:
             return mask
 
         # For now, we support uniform expansion/contraction or symmetric 3D margins.
-        # Asymmetric margins (e.g. anterior vs posterior) require vector distance fields 
+        # Asymmetric margins (e.g. anterior vs posterior) require vector distance fields
         # or iterative approaches which are computationally expensive.
         # We use the uniform_mm or take the maximum of specific margins for expansion.
-        
+
         # Check if we are effectively doing a uniform margin
         # (We prioritize the largest requested expansion for safety if asymmetric)
         target_margin = margin.uniform_mm
@@ -171,7 +171,12 @@ class CustomStructureProcessor:
         if target_margin == 0:
             return mask
 
-        from scipy.ndimage import distance_transform_edt
+        # Reorder spacing to match mask array dimensions.
+        # The mask from rt-utils is in (Y, X, Z) order (see np.moveaxis calls in dvh.py
+        # and custom_structures_rtstruct.py that convert from SimpleITK's (Z, Y, X) order).
+        # SimpleITK's GetSpacing() returns (X, Y, Z) order.
+        # We need spacing in (Y, X, Z) order for distance_transform_edt.
+        spacing_yxz = (self.spacing[1], self.spacing[0], self.spacing[2])
 
         # Ensure mask is boolean
         mask_bool = mask.astype(bool)
@@ -181,13 +186,13 @@ class CustomStructureProcessor:
             # distance_transform_edt calculates distance to the nearest BACKGROUND (0) pixel.
             # So we run it on the INVERTED mask.
             # Pixels in the background with dist <= margin become foreground.
-            dist = distance_transform_edt(np.logical_not(mask_bool), sampling=self.spacing)
+            dist = distance_transform_edt(np.logical_not(mask_bool), sampling=spacing_yxz)
             result = np.logical_or(mask_bool, dist <= target_margin)
         else:
             # Contraction: Compute distance from foreground to background
             # distance_transform_edt on the mask gives distance to nearest 0.
             # We keep pixels that are far enough from the edge.
-            dist = distance_transform_edt(mask_bool, sampling=self.spacing)
+            dist = distance_transform_edt(mask_bool, sampling=spacing_yxz)
             result = dist > abs(target_margin)
 
         return result.astype(np.uint8)
