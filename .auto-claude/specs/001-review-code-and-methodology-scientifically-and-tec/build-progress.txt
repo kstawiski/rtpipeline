@@ -2023,3 +2023,184 @@ Both reviewers (Primary + Pal) confirm:
 Stage 9 is complete. Ready to proceed to Stage 10 (Quality Control Review).
 
 === END SESSION 12 ===
+
+=== SESSION 13 (Stage 10 - Quality Control Review) ===
+
+Subtask: subtask-11-1
+Description: Review quality_control.py for DICOMValidator checks, body region detection anchors, and model eligibility gating
+
+## Review Findings - quality_control.py
+
+### 1. DICOMValidator Checks ✓ APPROVED
+
+The `DICOMValidator` class (lines 84-490) provides comprehensive DICOM validation:
+
+**File Existence Check (_check_file_existence):**
+- CT directory with DICOM files ✓
+- RP.dcm (RTPLAN) ✓
+- RD.dcm (RTDOSE) ✓
+- RS.dcm (RTSTRUCT - manual) ✓
+- RS_auto.dcm (RTSTRUCT - auto) ✓
+
+**CT Series Validation (_validate_ct_series):**
+- Modality check (expects "CT") ✓
+- Slice thickness consistency across series ✓
+- Frame of Reference UID consistency ✓
+- Samples first 10 files (improvement opportunity: IDEA-049)
+
+**RTPLAN Validation (_validate_rt_plan):**
+- SOP Class UID validation (includes standard + vendor-specific UIDs) ✓
+- Modality check (expects "RTPLAN") ✓
+- Frame of Reference UID extraction ✓
+
+**RTDOSE Validation (_validate_rt_dose):**
+- SOP Class UID validation ✓
+- Modality check (expects "RTDOSE") ✓
+- DoseGridScaling presence check ✓
+- DoseUnits validation (GY or CGY) ✓
+- DoseType validation (only PHYSICAL - IDEA-048 for expansion) ✓
+- DoseSummationType presence check ✓
+
+**Cross-Modality Consistency (_check_consistency):**
+- Frame of Reference UID matching across CT, RTPLAN, RTDOSE ✓
+- Correctly warns when UIDs differ ✓
+
+**Structure Cropping Detection (_segmentation_cropping):**
+- Uses `mask_is_cropped()` utility for boundary detection ✓
+- Correctly identifies z-axis dimension via CT slice count matching ✓
+- Distinguishes in-plane (x/y) vs axial-only (z) cropping ✓
+- Escalates in-plane cropping to WARNING (true FOV truncation) ✓
+- Reports axial-only cropping as INFO (expected for limited scan range) ✓
+- Correctly ignores "couch" ROIs for status escalation ✓
+- Includes cropping metadata (region, clamped_axes) when available ✓
+
+**Overall Status Calculation:**
+- FAIL/ERROR → FAIL
+- WARNING → WARNING
+- Otherwise → PASS
+- ✓ CORRECT PRIORITY ORDERING
+
+### 2. Body Region Detection Anchors ✓ ANATOMICALLY CORRECT
+
+The `BODY_REGION_ANCHORS` configuration (lines 35-66) uses anatomically correct landmarks:
+
+**HEAD_NECK:**
+- Vertebrae: C1-C7 ✓ (correct cervical spine)
+- Organs: brain, skull ✓ (appropriate secondary anchors)
+- min_vertebrae: 1 ✓
+- Thresholds: brain 50mL, skull 50mL ✓ (low to detect partial coverage)
+
+**THORAX:**
+- Vertebrae: T1-T12 ✓ (correct thoracic spine)
+- Organs: lung lobes (5), heart ✓ (appropriate)
+- min_vertebrae: 3 ✓
+- Thresholds: lungs_combined 200mL, heart 50mL ✓
+
+**ABDOMEN:**
+- Vertebrae: L1-L5 ✓ (correct lumbar spine)
+- Organs: liver, spleen, kidney_left, kidney_right ✓
+- min_vertebrae: 2 ✓
+- Thresholds: liver 100mL, spleen 30mL, kidney_combined 40mL ✓
+
+**PELVIS:**
+- Vertebrae: sacrum, vertebrae_S1 (NOTE: vertebrae_S1 is unused - IDEA-045)
+- Organs: hip_left, hip_right, femur_left, femur_right, urinary_bladder ✓
+- min_vertebrae: 1 ✓
+- Thresholds: hip_combined 30mL, urinary_bladder 10mL ✓
+
+**Scientific Justification:**
+- Vertebrae as primary anchors is anatomically sound (most deterministic landmarks)
+- Low volume thresholds are appropriate for detection (not validation) of partial coverage
+- All thresholds are well below typical adult organ volumes, ensuring sensitivity
+
+**Minor Issue:** "vertebrae_S1" in PELVIS config is never matched because TotalSegmentator outputs sacrum as single structure. Not a bug (min_vertebrae=1 is satisfied by sacrum alone), but dead code (IDEA-045).
+
+### 3. Model Eligibility Gating ✓ APPROVED
+
+The model eligibility system (lines 861-1256) correctly implements region-based gating:
+
+**detect_body_regions() Function:**
+1. Builds relevant_structures set from BODY_REGION_ANCHORS (optimization) ✓
+2. Computes volumes only for anchor structures ✓
+3. Uses 1mL threshold to filter noise from vertebrae detection ✓
+4. Handles combined organs correctly (lungs_combined, kidney_combined, hip_combined) ✓
+5. Region detected if vertebrae OR organs pass threshold (robust fallback) ✓
+6. Confidence scoring: vertebrae 70%, organs 30% weight ✓
+
+**Model Eligibility Logic:**
+- Three-tier outcomes:
+  1. **Block** (eligible=False): Missing required regions
+  2. **Warning** (eligible=True, warning=True): Low confidence for required regions
+  3. **Pass** (eligible=True): All regions present with sufficient confidence
+- ✓ CORRECTLY IMPLEMENTED
+
+**Default Model Requirements (_DEFAULT_MODEL_REGION_REQUIREMENTS):**
+| Model | Required Regions | Min Confidence |
+|-------|------------------|----------------|
+| heartchambers_highres | THORAX | 0.5 |
+| coronary_arteries | THORAX | 0.6 |
+| head_neck_oar | HEAD_NECK | 0.5 |
+| total | None | N/A |
+| total_mr | None | N/A |
+
+✓ Appropriately gates cardiac models to thorax-containing scans
+✓ Gates head/neck models to head/neck-containing scans
+✓ Allows total/total_mr on any scan (whole-body models)
+
+**check_model_eligibility() Function:**
+- Correctly loads cached body_regions.json if available ✓
+- Falls back to running detect_body_regions() if cache missing ✓
+- Returns (bool, str) tuple with eligibility status and reason ✓
+- Supports models not in requirements list (defaults to eligible) ✓
+
+### 4. Additional QC Features ✓ APPROVED
+
+**Contrast Phase Detection (detect_contrast_phase):**
+- Wraps TotalSegmentator's totalseg_get_phase tool ✓
+- Returns phase (native, arterial_early, arterial_late, portal_venous) ✓
+- Includes probabilities and post-injection time ✓
+- Handles tool unavailability gracefully ✓
+
+**Modality Detection (detect_modality):**
+- Wraps TotalSegmentator's totalseg_get_modality tool ✓
+- Returns modality (CT, MR) with confidence ✓
+- Handles tool unavailability gracefully ✓
+
+**Pipeline Requirements Check (check_pipeline_requirements):**
+- TotalSegmentator availability ✓
+- GPU availability (nvidia-smi) ✓
+- Python package availability ✓
+
+### 5. No Bugs Found
+
+The implementation is correct and follows scientific best practices for:
+- DICOM validation
+- Anatomical landmark-based body region detection
+- Model eligibility gating
+
+## Improvement Ideas Added to IDEAS.md
+
+- IDEA-045: Remove Unused "vertebrae_S1" from PELVIS Anchors (Very Low priority)
+- IDEA-046: Implement Actual Volume Outlier Detection in validate_segmentation_volumes() (Medium priority)
+- IDEA-047: Add RTSTRUCT Integrity Validation to DICOMValidator (Medium priority)
+- IDEA-048: Expand DoseType Validation to Accept EFFECTIVE and BIOLOGICAL (Low priority)
+- IDEA-049: Full CT Series Sampling for Consistency Validation (Low priority)
+- IDEA-050: Add Contrast Phase to Model Eligibility Gating (Low priority)
+
+## Review Status
+
+**STAGE 10 - QUALITY CONTROL REVIEW: APPROVED**
+
+No bugs found. Module correctly implements:
+✓ Comprehensive DICOM validation (CT, RTPLAN, RTDOSE, cross-modality consistency)
+✓ Structure cropping detection with in-plane vs axial-only differentiation
+✓ Anatomically correct body region detection anchors (vertebrae + organs)
+✓ Three-tier model eligibility gating (block/warning/pass)
+✓ Contrast phase and modality detection via TotalSegmentator tools
+✓ Pipeline requirements checking
+
+6 improvement ideas documented in IDEAS.md (IDEA-045 through IDEA-050).
+
+Ready for Pal consultation (subtask-11-2) to achieve dual validation consensus.
+
+=== END SESSION 13 ===

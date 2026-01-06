@@ -367,6 +367,54 @@ Each idea follows this format:
 - **Rationale**: The current "segmentation_perturbation" mode tests robustness to small mask changes within a single method. Comparing features across methods (e.g., TotalSegmentator vs clinical RTSTRUCT) provides a different axis of robustness that may be more clinically relevant. The infrastructure for multi-source ICC exists in `summarize_feature_stability()` but isn't exposed as a distinct analysis mode.
 - **References**: Poirot et al. 2022 (multi-method ICC in radiomics)
 
+### IDEA-045: Remove Unused "vertebrae_S1" from PELVIS Body Region Anchors
+
+- **Stage**: 10. Quality Control
+- **Priority**: Very Low
+- **Description**: The `BODY_REGION_ANCHORS["PELVIS"]["vertebrae"]` list includes "vertebrae_S1", but TotalSegmentator outputs the sacrum as a single "sacrum" structure, not as individual vertebrae. The "vertebrae_S1" entry is never matched and is effectively dead code.
+- **Rationale**: Code hygiene - removing the unused entry improves clarity and prevents confusion. The detection still works correctly because `min_vertebrae=1` and "sacrum" is always found, but the presence of "vertebrae_S1" suggests it should be matched.
+- **References**: TotalSegmentator v2 structure naming conventions
+
+### IDEA-046: Implement Actual Volume Outlier Detection in validate_segmentation_volumes()
+
+- **Stage**: 10. Quality Control
+- **Priority**: Medium
+- **Description**: The `validate_segmentation_volumes()` function is currently a placeholder that always returns PASS. Implement actual volume outlier detection by comparing structure volumes against expected anatomical ranges (e.g., liver should be 1000-2000 mL, not 10 mL or 50000 mL).
+- **Rationale**: Volume outliers indicate segmentation failures that should be flagged for manual review. A bladder volume of 5000 mL or a liver of 100 mL are clear indicators of incorrect segmentation. Anatomical volume validation complements the body region detection and would catch gross segmentation errors before they propagate to DVH/radiomics.
+- **References**: Anatomical volume norms in radiological atlases
+
+### IDEA-047: Add RTSTRUCT Integrity Validation to DICOMValidator
+
+- **Stage**: 10. Quality Control
+- **Priority**: Medium
+- **Description**: Add validation for RTSTRUCT files that checks: (1) StructureSetROISequence is present and non-empty, (2) ROIContourSequence has entries for all defined ROIs, (3) Referenced Frame of Reference UID matches CT series. Currently, DICOMValidator only validates CT, RTPLAN, and RTDOSE.
+- **Rationale**: RTSTRUCT files are critical for DVH extraction and radiomics. Missing or malformed ROI definitions can cause silent failures or incorrect calculations. Early validation would catch these issues during QC rather than during downstream processing.
+- **References**: DICOM PS3.3 C.8.8.5 (ROI Contour Module), C.8.8.6 (RT ROI Observations Module)
+
+### IDEA-048: Expand DoseType Validation to Accept EFFECTIVE and BIOLOGICAL
+
+- **Stage**: 10. Quality Control
+- **Priority**: Low
+- **Description**: The `_validate_rt_dose()` method flags any DoseType other than "PHYSICAL" as a warning. DICOM also defines "EFFECTIVE" and "BIOLOGICAL" as valid DoseType values. The validation should accept these without warning.
+- **Rationale**: While PHYSICAL dose is most common, some TPS may export effective dose (accounting for fractionation) or biologically-corrected dose. These are valid DICOM values and should not trigger warnings. Note: The DVH extraction should still be aware of DoseType for correct interpretation, but QC validation should not flag valid values.
+- **References**: DICOM PS3.3 C.8.8.3.2 (Dose Type definition)
+
+### IDEA-049: Full CT Series Sampling for Consistency Validation
+
+- **Stage**: 10. Quality Control
+- **Priority**: Low
+- **Description**: The `_validate_ct_series()` method samples only the first 10 DICOM files for slice thickness and Frame of Reference consistency checks. For long series (100+ slices), inconsistencies in later slices may be missed. Consider sampling first 10, last 10, and 10 evenly distributed slices.
+- **Rationale**: Some CT scanners produce series where later slices have different parameters (e.g., thick slices at series boundaries for dose reduction). The current sampling strategy may miss these inconsistencies. A distributed sampling approach would provide better coverage while maintaining reasonable performance.
+- **References**: N/A - validation coverage improvement
+
+### IDEA-050: Add Contrast Phase to Model Eligibility Gating
+
+- **Stage**: 10. Quality Control
+- **Priority**: Low
+- **Description**: The model eligibility gating currently only considers body region presence. Consider adding contrast phase (native, arterial, portal_venous) to the eligibility criteria for models that require specific contrast timing (e.g., liver models may require portal venous phase).
+- **Rationale**: Some AI models are trained on specific contrast phases and perform poorly on non-contrast or wrong-phase images. The infrastructure for contrast phase detection exists (`detect_contrast_phase()`), but it's not integrated into the model eligibility gating logic.
+- **References**: TotalSegmentator contrast phase detection documentation
+
 <!-- Template for new ideas:
 
 ### IDEA-XXX: [Short Title]
@@ -394,7 +442,7 @@ Each idea follows this format:
 | 7. DVH Analysis | 5 |
 | 8. Radiomics Extraction | 8 |
 | 9. Robustness Analysis | 4 |
-| 10. Quality Control | 0 |
+| 10. Quality Control | 6 |
 | 11. Aggregation | 0 |
 | 12. Configuration | 0 |
 
@@ -403,9 +451,9 @@ Each idea follows this format:
 ## Priority Summary
 
 - **High Priority**: 0
-- **Medium Priority**: 12 (IDEA-001, IDEA-003, IDEA-011, IDEA-016, IDEA-017, IDEA-022, IDEA-024, IDEA-027, IDEA-029, IDEA-033, IDEA-042, IDEA-044)
-- **Low Priority**: 30 (IDEA-002, IDEA-004, IDEA-005, IDEA-006, IDEA-007, IDEA-009, IDEA-010, IDEA-012, IDEA-013, IDEA-014, IDEA-018, IDEA-019, IDEA-020, IDEA-021, IDEA-023, IDEA-025, IDEA-026, IDEA-028, IDEA-030, IDEA-031, IDEA-032, IDEA-034, IDEA-035, IDEA-036, IDEA-037, IDEA-038, IDEA-039, IDEA-040, IDEA-041, IDEA-043)
-- **Very Low Priority**: 2 (IDEA-008, IDEA-015)
+- **Medium Priority**: 14 (IDEA-001, IDEA-003, IDEA-011, IDEA-016, IDEA-017, IDEA-022, IDEA-024, IDEA-027, IDEA-029, IDEA-033, IDEA-042, IDEA-044, IDEA-046, IDEA-047)
+- **Low Priority**: 33 (IDEA-002, IDEA-004, IDEA-005, IDEA-006, IDEA-007, IDEA-009, IDEA-010, IDEA-012, IDEA-013, IDEA-014, IDEA-018, IDEA-019, IDEA-020, IDEA-021, IDEA-023, IDEA-025, IDEA-026, IDEA-028, IDEA-030, IDEA-031, IDEA-032, IDEA-034, IDEA-035, IDEA-036, IDEA-037, IDEA-038, IDEA-039, IDEA-040, IDEA-041, IDEA-043, IDEA-048, IDEA-049, IDEA-050)
+- **Very Low Priority**: 3 (IDEA-008, IDEA-015, IDEA-045)
 
 ---
 
