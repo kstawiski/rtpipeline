@@ -898,3 +898,141 @@ Both reviewers (Primary + Pal) confirm:
 Stage 6 is complete. Ready to proceed to Stage 7 (DVH Analysis Review).
 
 === END SESSION 5 ===
+
+=== SESSION 6 (Stage 7 - DVH Analysis Review) ===
+
+Subtask: subtask-8-1
+Description: Review dvh.py for DVH calculation methodology, metric extraction (D100, D98, D95, D50, D2, Dcc, Vxx), and dose unit handling
+
+## Review Findings - dvh.py
+
+### 1. DVH Calculation Methodology ✓ APPROVED
+
+The DVH calculation correctly uses dicompyler-core's `dvhcalc.get_dvh()`:
+- Line 735: `abs_dvh = dvhcalc.get_dvh(rtstruct_ds, rtdose, roi_number)`
+- **calculate_full_volume**: Uses default value of `True` (confirmed via dicompyler-core documentation)
+- This correctly handles structures extending beyond dose grid by including full structure volume
+
+**dicompyler-core DVH.get_dvh() defaults verified:**
+- `calculate_full_volume=True` - includes full structure volume
+- Uses 1 cGy bin width for high precision
+
+### 2. Dx Metric Extraction ✓ APPROVED (with naming consideration)
+
+The `_dose_at_fraction()` helper (lines 78-91) correctly implements Dx metrics:
+
+**Mathematical Approach:**
+- Finds dose where `fraction * V_total` volume receives at least that dose
+- Uses linear interpolation on cumulative DVH for precision
+- Returns dose in Gy
+
+**Metrics computed correctly per AAPM TG-263:**
+| Metric | Implementation | Status |
+|--------|---------------|--------|
+| D95 | `_dose_at_fraction(bins_abs, cum_abs, 0.95)` | ✓ Correct |
+| D98 | `_dose_at_fraction(bins_abs, cum_abs, 0.98)` | ✓ Correct |
+| D50 | `_dose_at_fraction(bins_abs, cum_abs, 0.50)` | ✓ Correct |
+| D2  | `_dose_at_fraction(bins_abs, cum_abs, 0.02)` | ✓ Correct |
+| Dmin | `abs_dvh.min` | ✓ Equivalent to D100 |
+
+**Note:** D100 is mathematically equivalent to Dmin. The code outputs `DminGy` which is the same value. Logged as IDEA-028 for TG-263 naming compatibility.
+
+### 3. Dcc Metrics (D1cc, D0.1cc) ✓ APPROVED
+
+Lines 140-148 correctly compute absolute volume metrics:
+```python
+D1ccGy = _dose_at_fraction(bins_abs, cum_abs, 1.0 / V_total)
+D0_1ccGy = _dose_at_fraction(bins_abs, cum_abs, 0.1 / V_total)
+```
+
+This computes dose to the hottest 1cc and 0.1cc volumes:
+- Divides absolute volume by total volume to get fractional position
+- Then applies same DVH interpolation
+- ✓ SCIENTIFICALLY CORRECT per AAPM/RTOG definitions
+
+### 4. Vxx Metrics ✓ APPROVED (with range limitation)
+
+The `_get_volume_at_threshold()` helper (lines 94-110) correctly computes Vxx:
+- Finds volume receiving at least threshold dose
+- Uses linear interpolation on cumulative DVH
+- Returns volume in cm³
+
+**Range limitation:**
+- Lines 131-134 only compute V1Gy through V60Gy
+- This is insufficient for SBRT (>60 Gy prescriptions)
+- Logged as IDEA-029 for expansion
+
+### 5. Homogeneity Index ✓ APPROVED
+
+Line 126: `HI_abs = (D2Gy - D98Gy) / D50Gy if D50Gy != 0 else float("nan")`
+
+This matches ICRU 83 definition: **(D2% - D98%) / D50%**
+✓ SCIENTIFICALLY CORRECT
+
+### 6. Dose Unit Handling ✓ ACCEPTABLE
+
+The code relies on dicompyler-core for dose unit handling:
+- dicompyler-core reads DoseGridScaling from RTDOSE
+- Returns dose values in Gy
+- Comment on line 759 confirms 1 cGy bin width
+
+**Validation gap:**
+- No explicit validation of DoseUnits tag
+- quality_control.py already validates DoseUnits (lines 243-266)
+- Logged as IDEA-030 for explicit validation in dvh.py
+
+### 7. calculate_full_volume Usage ✓ CORRECT
+
+Verified that dicompyler-core's `get_dvh()` defaults to `calculate_full_volume=True`:
+- From dicompyler-core documentation: "Calculate the full structure volume including contours outside of the dose grid"
+- This ensures correct volume percentages for structures extending beyond dose grid
+- No code change needed - default behavior is correct
+
+### 8. Additional Correct Implementations
+
+**Integral Dose:** Line 136: `IntegralDose = DmeanGy * V_total`
+- ✓ Correct formula (mean dose × volume)
+
+**Spread:** Line 127: `SpreadGy = DmaxGy - DminGy`
+- ✓ Correct (dose range)
+
+**Relative DVH Metrics (when rx_dose provided):**
+- Lines 174-185 correctly scale metrics to prescription dose
+- Uses dicompyler-core's `relative_dose()` method
+
+**Structure cropping detection:**
+- Uses `mask_is_cropped()` from utils.py to detect boundary-touching structures
+- Appends `__partial` suffix for research transparency
+
+### 9. No Bugs Found
+
+All DVH calculations are scientifically correct and match AAPM/RTOG definitions.
+
+## Improvement Ideas Added to IDEAS.md
+
+- IDEA-028: Add D100 Metric for TG-263 Compatibility (Low priority)
+- IDEA-029: Expand Vxx Dose Range for SBRT Support (Medium priority)
+- IDEA-030: Add Explicit Dose Unit Validation (Low priority)
+- IDEA-031: Add Configurable DVH Bin Width (Low priority)
+- IDEA-032: Use dicompyler-core DVH.statistic() for Dx Metrics (Low priority)
+
+## Review Status
+
+**STAGE 7 - DVH ANALYSIS REVIEW: APPROVED**
+
+No bugs found. Module correctly implements:
+✓ DVH calculation with calculate_full_volume=True (default)
+✓ D95, D98, D50, D2 via linear interpolation on cumulative DVH
+✓ Dcc metrics (D1cc, D0.1cc) for hottest small volumes
+✓ Vxx metrics for volume receiving at least threshold dose
+✓ Homogeneity Index per ICRU 83 definition
+✓ Dose unit handling via dicompyler-core
+✓ Integral dose and spread calculations
+✓ Relative DVH metrics when Rx provided
+✓ Structure cropping detection for research transparency
+
+5 improvement ideas documented in IDEAS.md (IDEA-028 through IDEA-032).
+
+Ready for Pal consultation (subtask-8-2) to achieve dual validation consensus.
+
+=== END SESSION 6 ===

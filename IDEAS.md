@@ -231,6 +231,46 @@ Each idea follows this format:
 - **Rationale**: RTSTRUCT files should be geometrically consistent with their referenced CT series. Creating an RTSTRUCT that references uncropped CT but contains contours only for the cropped region may confuse downstream systems expecting full coverage. The NIfTI cropped masks are sufficient for pipeline-internal use.
 - **References**: DICOM PS3.3 C.8.8.5 (ROI Contour Module)
 
+### IDEA-028: Add D100 Metric for TG-263 Compatibility
+
+- **Stage**: 7. DVH Analysis
+- **Priority**: Low
+- **Description**: The code computes `DminGy` using `abs_dvh.min` but doesn't explicitly output D100 as a named metric. AAPM TG-263 defines D100 as the minimum dose covering 100% of the volume, which is equivalent to Dmin. Add explicit D100Gy metric for naming consistency with TG-263 conventions.
+- **Rationale**: While DminGy is mathematically equivalent to D100, clinical reporting tools and multi-institutional data aggregation often expect TG-263 nomenclature (D100, D95, etc.). Explicit naming improves interoperability.
+- **References**: AAPM TG-263 Report (Section 9.2), ICRU Report 83
+
+### IDEA-029: Expand Vxx Dose Range for SBRT Support
+
+- **Stage**: 7. DVH Analysis
+- **Priority**: Medium
+- **Description**: The code computes V1Gy through V60Gy (lines 131-134), which is insufficient for SBRT and SRS prescriptions that can exceed 60 Gy. Expand the range to V100Gy or make it configurable.
+- **Rationale**: SBRT lung treatments prescribe 54 Gy in 3 fractions (equivalent dose >100 Gy BED), spine SRS can deliver 18-24 Gy in single fractions, and cranial SRS often exceeds 60 Gy total. The current V60Gy limit truncates clinically relevant dosimetric data for these increasingly common treatment modalities.
+- **References**: RTOG 0236 (SBRT lung), RTOG 0631 (spine SRS), ASTRO SBRT guidelines
+
+### IDEA-030: Add Explicit Dose Unit Validation
+
+- **Stage**: 7. DVH Analysis
+- **Priority**: Low
+- **Description**: The DVH code relies on dicompyler-core to handle dose unit conversion (DoseGridScaling, DoseUnits) but doesn't explicitly validate that the returned values are in Gy. Add validation that checks DoseUnits tag and logs a warning if unexpected units are encountered.
+- **Rationale**: While dicompyler-core handles this correctly in most cases, some TPS may export dose in non-standard units (e.g., relative Gy, cGy with incorrect scaling). Explicit validation would catch these edge cases before they propagate to aggregate results.
+- **References**: DICOM PS3.3 C.8.8.3.2 (Dose Units), quality_control.py already validates DoseUnits
+
+### IDEA-031: Add Configurable DVH Bin Width
+
+- **Stage**: 7. DVH Analysis
+- **Priority**: Low
+- **Description**: Dicompyler-core uses 1 cGy bin width by default. Consider making this configurable for scenarios where coarser binning (e.g., 10 cGy) would reduce DVH curve JSON size without clinically relevant precision loss.
+- **Rationale**: The DVH curves JSON can become large for high-dose treatments. For web visualization or export purposes, coarser binning reduces file size. The current 1 cGy resolution is appropriate for clinical QA but may be excessive for research aggregation.
+- **References**: N/A - performance/usability improvement
+
+### IDEA-032: Use dicompyler-core DVH.statistic() for Dx Metrics
+
+- **Stage**: 7. DVH Analysis
+- **Priority**: Low
+- **Description**: The code implements custom `_dose_at_fraction()` for Dx metrics instead of using dicompyler-core's built-in `DVH.statistic()` method which supports D100, D98, D95, etc. directly. Consider using the library's method for consistency with dicompyler ecosystem.
+- **Rationale**: The custom implementation is mathematically correct (linear interpolation on cumulative DVH), but using the library's method would ensure consistency if dicompyler-core's interpolation algorithm changes. The custom implementation also uses consistent linear interpolation, so this is a minor maintainability improvement rather than a correctness issue.
+- **References**: dicompyler-core DVH.statistic() documentation
+
 <!-- Template for new ideas:
 
 ### IDEA-XXX: [Short Title]
@@ -255,7 +295,7 @@ Each idea follows this format:
 | 4. Custom Models | 5 |
 | 5. Custom Structures | 2 |
 | 6. CT Cropping | 4 |
-| 7. DVH Analysis | 0 |
+| 7. DVH Analysis | 5 |
 | 8. Radiomics Extraction | 0 |
 | 9. Robustness Analysis | 0 |
 | 10. Quality Control | 0 |
@@ -267,8 +307,8 @@ Each idea follows this format:
 ## Priority Summary
 
 - **High Priority**: 0
-- **Medium Priority**: 8 (IDEA-001, IDEA-003, IDEA-011, IDEA-016, IDEA-017, IDEA-022, IDEA-024, IDEA-027)
-- **Low Priority**: 17 (IDEA-002, IDEA-004, IDEA-005, IDEA-006, IDEA-007, IDEA-009, IDEA-010, IDEA-012, IDEA-013, IDEA-014, IDEA-018, IDEA-019, IDEA-020, IDEA-021, IDEA-023, IDEA-025, IDEA-026)
+- **Medium Priority**: 9 (IDEA-001, IDEA-003, IDEA-011, IDEA-016, IDEA-017, IDEA-022, IDEA-024, IDEA-027, IDEA-029)
+- **Low Priority**: 21 (IDEA-002, IDEA-004, IDEA-005, IDEA-006, IDEA-007, IDEA-009, IDEA-010, IDEA-012, IDEA-013, IDEA-014, IDEA-018, IDEA-019, IDEA-020, IDEA-021, IDEA-023, IDEA-025, IDEA-026, IDEA-028, IDEA-030, IDEA-031, IDEA-032)
 - **Very Low Priority**: 2 (IDEA-008, IDEA-015)
 
 ---
