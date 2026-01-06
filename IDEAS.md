@@ -199,6 +199,38 @@ Each idea follows this format:
 - **Rationale**: When eroding a structure that is smaller than the erosion distance, the result will be empty. Currently this is caught after the fact (lines 368-373), but a pre-operation warning based on structure size vs margin distance would provide better diagnostic feedback.
 - **References**: N/A - diagnostic improvement
 
+### IDEA-024: Add Fallback Logic for Non-Pelvic Cropping Regions
+
+- **Stage**: 6. CT Cropping
+- **Priority**: Medium
+- **Description**: The `determine_pelvic_crop_boundaries()` function has excellent multi-level fallback logic when landmarks are missing (CT extent → best available vertebra → 0.0mm). However, `determine_thorax_crop_boundaries()`, `determine_abdomen_crop_boundaries()`, `determine_head_neck_crop_boundaries()`, and `determine_brain_crop_boundaries()` raise ValueError when required landmarks are missing.
+- **Rationale**: For specialized regions (thorax, abdomen, etc.), strict landmark requirements are appropriate. However, adding optional fallback to CT extent (similar to pelvic) would make the cropping more robust for edge cases where segmentation partially fails. This could be controlled by a `strict=True` parameter that defaults to the current behavior.
+- **References**: N/A - workflow robustness improvement
+
+### IDEA-025: Document Clamping Percentage for Research Transparency
+
+- **Stage**: 6. CT Cropping
+- **Priority**: Low
+- **Description**: The cropping metadata documents whether superior/inferior axes were clamped, but doesn't report the percentage of the requested crop region that falls outside the CT extent. Adding this metric would help researchers understand data quality.
+- **Rationale**: For cross-patient comparison studies, knowing that 5% of patients had their pelvic cropping clamped superiorly vs 30% provides important context for interpreting results. This is particularly relevant when L1 vertebra falls outside typical prostate CT planning scans.
+- **References**: IBSI guidelines on reporting preprocessing parameters
+
+### IDEA-026: Add Geometry Validation for Cropped Images
+
+- **Stage**: 6. CT Cropping
+- **Priority**: Low
+- **Description**: After cropping CT and masks, validate that all cropped images have consistent geometry (same origin, spacing, size, direction). This would catch rare cases where individual mask files have slightly different geometry than the CT.
+- **Rationale**: Geometry mismatches between CT and masks in the cropped set would cause downstream DVH and radiomics extraction errors. Early validation would catch these issues before they propagate.
+- **References**: SimpleITK geometry comparison functions
+
+### IDEA-027: Consider Removing Cropped RTSTRUCT Generation
+
+- **Stage**: 6. CT Cropping
+- **Priority**: Medium
+- **Description**: The `_create_rtstruct_from_cropped_masks()` function attempts to create an RTSTRUCT from cropped masks aligned to the original (uncropped) CT DICOM. This is conceptually problematic because the cropped masks have different z-extent than the original CT. Consider deprecating this feature or documenting its limitations clearly.
+- **Rationale**: RTSTRUCT files should be geometrically consistent with their referenced CT series. Creating an RTSTRUCT that references uncropped CT but contains contours only for the cropped region may confuse downstream systems expecting full coverage. The NIfTI cropped masks are sufficient for pipeline-internal use.
+- **References**: DICOM PS3.3 C.8.8.5 (ROI Contour Module)
+
 <!-- Template for new ideas:
 
 ### IDEA-XXX: [Short Title]
@@ -222,7 +254,7 @@ Each idea follows this format:
 | 3. Segmentation | 4 |
 | 4. Custom Models | 5 |
 | 5. Custom Structures | 2 |
-| 6. CT Cropping | 0 |
+| 6. CT Cropping | 4 |
 | 7. DVH Analysis | 0 |
 | 8. Radiomics Extraction | 0 |
 | 9. Robustness Analysis | 0 |
@@ -235,8 +267,8 @@ Each idea follows this format:
 ## Priority Summary
 
 - **High Priority**: 0
-- **Medium Priority**: 6 (IDEA-001, IDEA-003, IDEA-011, IDEA-016, IDEA-017, IDEA-022)
-- **Low Priority**: 15 (IDEA-002, IDEA-004, IDEA-005, IDEA-006, IDEA-007, IDEA-009, IDEA-010, IDEA-012, IDEA-013, IDEA-014, IDEA-018, IDEA-019, IDEA-020, IDEA-021, IDEA-023)
+- **Medium Priority**: 8 (IDEA-001, IDEA-003, IDEA-011, IDEA-016, IDEA-017, IDEA-022, IDEA-024, IDEA-027)
+- **Low Priority**: 17 (IDEA-002, IDEA-004, IDEA-005, IDEA-006, IDEA-007, IDEA-009, IDEA-010, IDEA-012, IDEA-013, IDEA-014, IDEA-018, IDEA-019, IDEA-020, IDEA-021, IDEA-023, IDEA-025, IDEA-026)
 - **Very Low Priority**: 2 (IDEA-008, IDEA-015)
 
 ---
