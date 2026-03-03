@@ -104,3 +104,15 @@ containers/
 # Local container config overrides
 config.container.local.yaml
 container_id.txt
+
+# Manuscript data directories (large DICOM downloads, analysis outputs)
+manuscript/data/
+manuscript/analysis/figures/*.png
+manuscript/analysis/figures/*.pdf
+manuscript/analysis/tables/*.xlsx
+manuscript/analysis/tables/*.csv
+manuscript/analysis/supplementary/*.xlsx
+manuscript/analysis/supplementary/*.csv
+!manuscript/scripts/
+!manuscript/PLAN.md
+!manuscript/*.md
