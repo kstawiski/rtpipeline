@@ -164,8 +164,13 @@ def _hydrate_existing_course(
     primary_str = data.get("primary_nifti") if data else None
     if isinstance(primary_str, str) and primary_str:
         cand = Path(primary_str)
-        if cand.exists():
-            primary_nifti = cand
+        try:
+            from .utils import validate_path
+            cand = validate_path(cand, course_dir, allow_absolute=True)
+            if cand.exists():
+                primary_nifti = cand
+        except ValueError:
+            logger.warning("Path traversal blocked for primary_nifti: %s", primary_str)
     if primary_nifti is None and course_dirs.nifti.exists():
         candidates = sorted(course_dirs.nifti.glob("*.nii*"))
         for cand in candidates:
@@ -180,8 +185,12 @@ def _hydrate_existing_course(
             if not isinstance(entry, str):
                 continue
             cand = Path(entry)
-            if cand.exists():
-                related_files.append(cand)
+            try:
+                cand = validate_path(cand, course_dir, allow_absolute=True)
+                if cand.exists():
+                    related_files.append(cand)
+            except ValueError:
+                logger.warning("Path traversal blocked for related file: %s", entry)
     if not related_files and course_dirs.dicom_related.exists():
         related_files = [p for p in course_dirs.dicom_related.rglob("*.dcm") if p.is_file()]
 
@@ -639,18 +648,18 @@ def _classify_doses(
         ]
 
         if len(doses_with_rx) >= 2:
-            rx_sorted = sorted(doses_with_rx, key=lambda d: d["plans"][0]["total_rx_gy"])
+            rx_sorted = sorted(doses_with_rx, key=lambda d: d["plans"][0]["total_rx_gy"], reverse=True)
 
-            lower_rx = rx_sorted[0]["plans"][0]["total_rx_gy"]
-            higher_rx = rx_sorted[-1]["plans"][0]["total_rx_gy"]
+            higher_rx = rx_sorted[0]["plans"][0]["total_rx_gy"]
+            lower_rx = rx_sorted[-1]["plans"][0]["total_rx_gy"]
 
             if higher_rx > lower_rx * 1.1:
                 boost_detected = True
                 primary_doses = [rx_sorted[0]["dose"]["path"]]
                 boost_doses = [d["dose"]["path"] for d in rx_sorted[1:]]
                 logger.info(
-                    "Phase 4: Detected primary+boost by Rx pattern: %.1f Gy (primary) + %.1f Gy (higher Rx)",
-                    lower_rx, higher_rx
+                    "Phase 4: Detected primary+boost by Rx pattern: %.1f Gy (primary, highest Rx) + %.1f Gy (boost)",
+                    higher_rx, lower_rx
                 )
 
     if boost_detected and primary_doses and boost_doses:
@@ -1099,21 +1108,31 @@ def _sum_doses_with_resample(
 
     rows_ref, cols_ref = ds_ref.Rows, ds_ref.Columns
     frames_ref = int(getattr(ds_ref, "NumberOfFrames", 1) or 1)
-    origin_ref = list(map(float, getattr(ds_ref, "ImagePositionPatient", [0, 0, 0])))
+    origin_ref = np.array(list(map(float, getattr(ds_ref, "ImagePositionPatient", [0, 0, 0]))))
     pixel_spacing_ref = list(map(float, getattr(ds_ref, "PixelSpacing", [1.0, 1.0])))
     offsets_ref = getattr(ds_ref, "GridFrameOffsetVector", None)
-    
+
+    iop_ref = list(map(float, getattr(ds_ref, "ImageOrientationPatient", [1, 0, 0, 0, 1, 0])))
+    row_cosines_ref = np.array(iop_ref[0:3])
+    col_cosines_ref = np.array(iop_ref[3:6])
+    slice_cosines_ref = np.cross(row_cosines_ref, col_cosines_ref)
+
     if offsets_ref is not None and len(offsets_ref) == frames_ref:
-        z_positions_ref = np.array([origin_ref[2] + float(offset) for offset in offsets_ref])
+        z_offsets_ref = np.array([float(offset) for offset in offsets_ref])
     else:
-        z_positions_ref = np.array([origin_ref[2] + i for i in range(frames_ref)])
+        z_offsets_ref = np.arange(frames_ref, dtype=np.float64)
+
+    z_positions_ref = origin_ref[2] + z_offsets_ref * slice_cosines_ref[2]
 
     if len(z_positions_ref) > 1 and z_positions_ref[0] > z_positions_ref[-1]:
         z_positions_ref = z_positions_ref[::-1]
+        z_offsets_ref = z_offsets_ref[::-1]
         accumulated = accumulated[::-1, :, :]
 
-    y_positions_ref = np.array([origin_ref[1] + r * pixel_spacing_ref[0] for r in range(rows_ref)])
-    x_positions_ref = np.array([origin_ref[0] + c * pixel_spacing_ref[1] for c in range(cols_ref)])
+    y_positions_ref = np.array([origin_ref[1] + r * pixel_spacing_ref[0] * col_cosines_ref[1]
+                                + 0 * pixel_spacing_ref[1] * row_cosines_ref[1] for r in range(rows_ref)])
+    x_positions_ref = np.array([origin_ref[0] + 0 * pixel_spacing_ref[0] * col_cosines_ref[0]
+                                + c * pixel_spacing_ref[1] * row_cosines_ref[0] for c in range(cols_ref)])
 
 
     source_dose_uids = []
@@ -1138,14 +1157,29 @@ def _sum_doses_with_resample(
 
             rows, cols = ds.Rows, ds.Columns
             frames = int(getattr(ds, "NumberOfFrames", 1) or 1)
-            origin = list(map(float, getattr(ds, "ImagePositionPatient", [0, 0, 0])))
+            origin = np.array(list(map(float, getattr(ds, "ImagePositionPatient", [0, 0, 0]))))
             pixel_spacing = list(map(float, getattr(ds, "PixelSpacing", [1.0, 1.0])))
             offsets = getattr(ds, "GridFrameOffsetVector", None)
-            
+
+            iop_src = list(map(float, getattr(ds, "ImageOrientationPatient", [1, 0, 0, 0, 1, 0])))
+            row_cos_src = np.array(iop_src[0:3])
+            col_cos_src = np.array(iop_src[3:6])
+            slice_cos_src = np.cross(row_cos_src, col_cos_src)
+
+            if (np.dot(slice_cosines_ref, slice_cos_src) < 0.99 or
+                    np.dot(row_cosines_ref, row_cos_src) < 0.99):
+                logger.warning(
+                    "Dose %s has different ImageOrientationPatient than reference. "
+                    "Resampling may produce spatially misaligned results.",
+                    path.name,
+                )
+
             if offsets is not None and len(offsets) == frames:
-                z_coords = np.array([origin[2] + float(offset) for offset in offsets])
+                z_offsets_src = np.array([float(offset) for offset in offsets])
             else:
-                z_coords = np.array([origin[2] + j for j in range(frames)])
+                z_offsets_src = np.arange(frames, dtype=np.float64)
+
+            z_coords = origin[2] + z_offsets_src * slice_cos_src[2]
 
             if frames == 1:
                 arr = arr.reshape((1, rows, cols))
@@ -1156,24 +1190,22 @@ def _sum_doses_with_resample(
 
             Z, Y, X = np.meshgrid(z_positions_ref, y_positions_ref, x_positions_ref, indexing="ij")
 
-            z_min, z_max = z_coords.min(), z_coords.max()
-            y_min, y_max = origin[1], origin[1] + (rows - 1) * pixel_spacing[0]
-            x_min, x_max = origin[0], origin[0] + (cols - 1) * pixel_spacing[1]
-
-            Zc = np.clip(Z, z_min, z_max)
-            Yc = np.clip(Y, y_min, y_max)
-            Xc = np.clip(X, x_min, x_max)
 
             z_idx_values = np.arange(len(z_coords), dtype=np.float64)
-            z_idx = np.interp(Zc.ravel(), z_coords, z_idx_values).reshape(Zc.shape)
-            y_idx = (Yc - origin[1]) / pixel_spacing[0]
-            x_idx = (Xc - origin[0]) / pixel_spacing[1]
+            z_idx = np.interp(Z.ravel(), z_coords, z_idx_values, left=-1, right=-1).reshape(Z.shape)
+            y_idx = (Y - origin[1]) / pixel_spacing[0]
+            x_idx = (X - origin[0]) / pixel_spacing[1]
+
+            z_oob = (z_idx < 0)
+            z_idx = np.clip(z_idx, 0, len(z_coords) - 1)
 
             coords = np.stack([z_idx, y_idx, x_idx], axis=0)
             resampled = map_coordinates(arr, coords, order=1, mode="constant", cval=0.0)
             resampled = resampled.reshape((frames_ref, rows_ref, cols_ref))
 
-            del Z, Y, X, Zc, Yc, Xc
+            resampled[z_oob] = 0.0
+
+            del Z, Y, X
             
             accumulated += resampled
             
@@ -1195,7 +1227,7 @@ def _sum_doses_with_resample(
         scaling_factor = 1000.0
 
     accumulated = np.nan_to_num(accumulated, nan=0.0)
-    accumulated_int = np.rint(accumulated * scaling_factor).astype("int32")
+    accumulated_int = np.rint(accumulated * scaling_factor).astype("uint32")
 
     new_ds = copy.deepcopy(ds_ref)
     now = datetime.datetime.now()
