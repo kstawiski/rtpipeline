@@ -1108,6 +1108,10 @@ if config.get("container_mode", False):
             # Export worker budget for subprocess coordination
             export RTPIPELINE_MAX_WORKERS={threads}
             export RTPIPELINE_RADIOMICS_THREAD_LIMIT=1
+            # BLAS thread limits to prevent internal parallelism explosion
+            export OMP_NUM_THREADS=1
+            export MKL_NUM_THREADS=1
+            export OPENBLAS_NUM_THREADS=1
 
             if /opt/conda/envs/rtpipeline-radiomics/bin/python -m rtpipeline.cli radiomics-robustness \
                 --course-dir "{OUTPUT_DIR}/{wildcards.patient}/{wildcards.course}" \
@@ -1156,6 +1160,10 @@ else:
             # Export worker budget for subprocess coordination
             export RTPIPELINE_MAX_WORKERS={threads}
             export RTPIPELINE_RADIOMICS_THREAD_LIMIT=1
+            # BLAS thread limits to prevent internal parallelism explosion
+            export OMP_NUM_THREADS=1
+            export MKL_NUM_THREADS=1
+            export OPENBLAS_NUM_THREADS=1
 
             if python -m rtpipeline.cli radiomics-robustness \
                 --course-dir "{OUTPUT_DIR}/{wildcards.patient}/{wildcards.course}" \

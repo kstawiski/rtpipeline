@@ -129,7 +129,7 @@ def _run(cmd: str, env: Optional[dict] = None, timeout: Optional[int] = None) ->
 
 
 def _prefix(config: PipelineConfig) -> str:
-    return f"{config.conda_activate} && " if config.conda_activate else ""
+    return f"{shlex.quote(config.conda_activate)} && " if config.conda_activate else ""
 
 
 def _pkg_zip_bytes(name: str) -> Optional[bytes]:
@@ -228,8 +228,12 @@ def _ensure_local_dcm2niix(config: PipelineConfig) -> Optional[Path]:
                 _safe_extract_bundled_zip(zf, dest_resolved)
         # Search for binary inside extracted tree
         candidates = []
-        for base, _, files in os.walk(dest):
+        for base, dirs, files in os.walk(dest):
+            # Filter out macOS resource fork directories
+            dirs[:] = [d for d in dirs if d != "__MACOSX"]
             for fn in files:
+                if fn.startswith("._"):
+                    continue
                 if fn.lower() == bin_name.lower():
                     candidates.append(Path(base) / fn)
         if not candidates:
@@ -291,10 +295,12 @@ def run_dcm2niix(config: PipelineConfig, dicom_dir: Path, nifti_out: Path) -> Op
     if not ok:
         logger.warning("dcm2niix failed; continuing with DICOM-only segmentation")
         return None
-    # pick first nii(.gz)
-    for fn in os.listdir(nifti_out):
-        if fn.endswith(".nii") or fn.endswith(".nii.gz"):
-            return nifti_out / fn
+    # pick largest nii(.gz) – deterministic selection of the primary volume
+    nii_files = [fn for fn in os.listdir(nifti_out)
+                 if fn.endswith(".nii") or fn.endswith(".nii.gz")]
+    nii_files.sort(key=lambda fn: os.path.getsize(nifti_out / fn), reverse=True)
+    if nii_files:
+        return nifti_out / nii_files[0]
     return None
 
 def _validate_totalseg_environment(config: PipelineConfig) -> bool:
@@ -603,7 +609,7 @@ def _collect_series_metadata(ct_dir: Path) -> dict:
             metadata["instances"].append(str(sop))
     metadata["instance_count"] = len(metadata["instances"])
     concat = "".join(metadata["instances"])
-    metadata["sop_hash"] = hashlib.sha1(concat.encode("utf-8")).hexdigest() if concat else ""
+    metadata["sop_hash"] = hashlib.sha256(concat.encode("utf-8")).hexdigest() if concat else ""
     return metadata
 
 
@@ -655,7 +661,7 @@ def _ensure_ct_nifti(
         {
             "nifti_path": str(target),
             "source_directory": str(ct_dir),
-            "generated_at": datetime.datetime.utcnow().isoformat() + "Z",
+            "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "modality": metadata.get("modality") or "CT",
         }
     )
@@ -860,7 +866,7 @@ def segment_course(config: PipelineConfig, course_dir: Path, force: bool = False
         try:
             manifest = {
                 "source_nifti": f"{base_name}.nii.gz",
-                "generated_at": datetime.datetime.utcnow().isoformat() + "Z",
+                "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
                 "models": manifest_entries,
             }
             if skipped_models:
@@ -921,7 +927,7 @@ def segment_course(config: PipelineConfig, course_dir: Path, force: bool = False
                         "nifti_path": str(target_path),
                         "source_directory": str(source_dir),
                         "series_instance_uid": series_uid or "",
-                        "generated_at": datetime.datetime.utcnow().isoformat() + "Z",
+                        "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
                     }
                     meta_path = nifti_dir / f"{target_path.stem}.metadata.json"
                     meta_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
@@ -997,7 +1003,7 @@ def segment_course(config: PipelineConfig, course_dir: Path, force: bool = False
                             json.dumps(
                                 {
                                     "source_nifti": str(nifti_path.name),
-                                    "generated_at": datetime.datetime.utcnow().isoformat() + "Z",
+                                    "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
                                     "models": manifest_mr,
                                 },
                                 indent=2,

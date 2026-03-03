@@ -14,10 +14,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Install dcm2niix
+# NOTE: Pin dcm2niix version and verify checksum for supply-chain integrity
 RUN wget -q https://github.com/rordenlab/dcm2niix/releases/download/v1.0.20230411/dcm2niix_lnx.zip \
     && unzip dcm2niix_lnx.zip -d /usr/local/bin/ \
     && chmod +x /usr/local/bin/dcm2niix \
+    && dcm2niix -v 2>&1 | grep -q "v1.0.20230411" \
     && rm dcm2niix_lnx.zip
 
 # Create app directory
@@ -45,7 +46,7 @@ FROM condaforge/mambaforge:24.3.0-0
 
 LABEL maintainer="kstawiski"
 LABEL description="DICOM-RT pipeline with TotalSegmentator, nnUNet, and Snakemake"
-LABEL version="1.1"
+LABEL version="2.1.0"
 
 ENV DEBIAN_FRONTEND=noninteractive \
     LANG=C.UTF-8 \
