@@ -16,6 +16,8 @@ from pathlib import Path
 from pathlib import PurePosixPath
 from flask import Flask, render_template, request, jsonify, send_file
 from werkzeug.utils import secure_filename
+import hmac
+import re
 import logging
 import pydicom
 
@@ -32,6 +34,8 @@ logger = logging.getLogger(__name__)
 
 # Initialize Flask app
 app = Flask(__name__)
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+app.config['SESSION_COOKIE_HTTPONLY'] = True
 
 # SECRET_KEY configuration - require stable key in production
 _secret_key = os.environ.get('SECRET_KEY')
@@ -92,9 +96,18 @@ def allowed_file(filename):
 def check_api_key():
     """Check API key if configured. Returns error response or None if OK."""
     if WEBUI_API_KEY:
-        provided_key = request.headers.get('X-API-Key')
-        if provided_key != WEBUI_API_KEY:
+        provided_key = request.headers.get('X-API-Key', '')
+        if not hmac.compare_digest(provided_key, WEBUI_API_KEY):
             return jsonify({'error': 'Unauthorized - invalid or missing API key'}), 401
+    return None
+
+
+_JOB_ID_RE = re.compile(r'^[a-zA-Z0-9_-]+$')
+
+def _validate_job_id(job_id: str):
+    """Validate job_id is a safe alphanumeric string."""
+    if not _JOB_ID_RE.match(job_id) or len(job_id) > 128:
+        return jsonify({'error': 'Invalid job ID format'}), 400
     return None
 
 
@@ -106,7 +119,7 @@ def check_disk_space(required_bytes: int = 0) -> bool:
         return available > required_bytes
     except Exception as e:
         logger.warning("Failed to check disk space: %s", e)
-        return True  # Fail open if we can't check
+        return False  # Fail closed if we can't check
 
 
 @app.route('/')
@@ -371,6 +384,12 @@ def extract_and_organize(job_id, uploaded_files):
 @app.route('/api/jobs/<job_id>/start', methods=['POST'])
 def start_job(job_id):
     """Start processing a job"""
+    auth_error = check_api_key()
+    if auth_error:
+        return auth_error
+    id_error = _validate_job_id(job_id)
+    if id_error:
+        return id_error
     try:
         config = request.get_json() or {}
         result = job_manager.start_job(job_id, config)
@@ -392,6 +411,9 @@ def start_job(job_id):
 @app.route('/api/jobs/<job_id>/status', methods=['GET'])
 def get_job_status(job_id):
     """Get job status and progress"""
+    id_error = _validate_job_id(job_id)
+    if id_error:
+        return id_error
     try:
         status = job_manager.get_job_status(job_id)
 
@@ -408,6 +430,9 @@ def get_job_status(job_id):
 @app.route('/api/jobs/<job_id>/logs', methods=['GET'])
 def get_job_logs(job_id):
     """Get job logs"""
+    id_error = _validate_job_id(job_id)
+    if id_error:
+        return id_error
     try:
         logs = job_manager.get_job_logs(job_id)
         return jsonify({'logs': logs}), 200
@@ -420,6 +445,12 @@ def get_job_logs(job_id):
 @app.route('/api/jobs/<job_id>/cancel', methods=['POST'])
 def cancel_job(job_id):
     """Cancel a running job"""
+    auth_error = check_api_key()
+    if auth_error:
+        return auth_error
+    id_error = _validate_job_id(job_id)
+    if id_error:
+        return id_error
     try:
         result = job_manager.cancel_job(job_id)
 
@@ -440,6 +471,9 @@ def cancel_job(job_id):
 @app.route('/api/jobs/<job_id>/results', methods=['GET'])
 def get_job_results(job_id):
     """Get list of result files"""
+    id_error = _validate_job_id(job_id)
+    if id_error:
+        return id_error
     try:
         results = job_manager.get_job_results(job_id)
         return jsonify({'results': results}), 200
@@ -452,6 +486,12 @@ def get_job_results(job_id):
 @app.route('/api/jobs/<job_id>/download', methods=['GET'])
 def download_results(job_id):
     """Download all results as ZIP"""
+    auth_error = check_api_key()
+    if auth_error:
+        return auth_error
+    id_error = _validate_job_id(job_id)
+    if id_error:
+        return id_error
     try:
         zip_path = job_manager.create_results_archive(job_id)
 
@@ -505,6 +545,12 @@ def list_custom_models():
 @app.route('/api/jobs/<job_id>', methods=['DELETE'])
 def delete_job(job_id):
     """Delete a job and its data"""
+    auth_error = check_api_key()
+    if auth_error:
+        return auth_error
+    id_error = _validate_job_id(job_id)
+    if id_error:
+        return id_error
     try:
         result = job_manager.delete_job(job_id)
 
@@ -524,6 +570,9 @@ def delete_job(job_id):
 @app.route('/api/jobs/<job_id>/report/<path:filename>', methods=['GET'])
 def view_report(job_id, filename):
     """Serve HTML reports and assets"""
+    id_error = _validate_job_id(job_id)
+    if id_error:
+        return id_error
     try:
         status = job_manager.get_job_status(job_id)
         if not status:
@@ -616,6 +665,9 @@ def system_status():
 @app.route('/api/jobs/<job_id>/preview')
 def preview_results(job_id):
     """Get preview data from result files"""
+    id_error = _validate_job_id(job_id)
+    if id_error:
+        return id_error
     try:
         status = job_manager.get_job_status(job_id)
         if not status:
@@ -670,6 +722,9 @@ def preview_results(job_id):
 @app.route('/api/jobs/<job_id>/dvh-curves')
 def get_dvh_curves(job_id):
     """Get raw DVH curve data for plotting"""
+    id_error = _validate_job_id(job_id)
+    if id_error:
+        return id_error
     try:
         status = job_manager.get_job_status(job_id)
         if not status:
@@ -713,6 +768,12 @@ def get_dvh_curves(job_id):
 @app.route('/api/jobs/<job_id>/files/<path:filepath>')
 def serve_job_file(job_id, filepath):
     """Serve any file from the job directory (input or output) for visualization"""
+    auth_error = check_api_key()
+    if auth_error:
+        return auth_error
+    id_error = _validate_job_id(job_id)
+    if id_error:
+        return id_error
     try:
         status = job_manager.get_job_status(job_id)
         if not status:
@@ -765,6 +826,9 @@ def serve_job_file(job_id, filepath):
 @app.route('/api/jobs/<job_id>/dicom-series')
 def list_dicom_series(job_id):
     """List DICOM series for the viewer"""
+    id_error = _validate_job_id(job_id)
+    if id_error:
+        return id_error
     try:
         status = job_manager.get_job_status(job_id)
         if not status:
@@ -816,6 +880,9 @@ def list_dicom_series(job_id):
 @app.route('/api/jobs/<job_id>/segmentations')
 def list_segmentations(job_id):
     """List available RTSTRUCT files"""
+    id_error = _validate_job_id(job_id)
+    if id_error:
+        return id_error
     try:
         status = job_manager.get_job_status(job_id)
         if not status:

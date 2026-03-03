@@ -236,6 +236,10 @@ def snap_rtstruct_to_dose_grid(
     degrading DVH accuracy. This helper adjusts each contour ``z`` coordinate to
     the nearest plane within ``tolerance_mm``. Returns True when any coordinate
     was updated.
+
+    Note: This function mutates the pydicom dataset in-place. A snap_cache
+    prevents double-snapping, but callers should be aware that coordinates
+    are modified on the original dataset object.
     """
 
     if rtstruct is None or rtdose is None:
