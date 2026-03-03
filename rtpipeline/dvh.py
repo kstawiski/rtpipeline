@@ -19,34 +19,42 @@ from .utils import sanitize_rtstruct, mask_is_cropped, run_tasks_with_adaptive_w
 from .custom_models import list_custom_model_outputs
 
 # Compatibility shim for dicompyler-core with pydicom>=3
+# Only apply when dicompyler-core cannot work natively with current pydicom
 try:
-    import sys as _sys, types as _types, pydicom as _pyd
-    _m = _sys.modules.get('dicom') or _types.ModuleType('dicom')
-    _m.read_file = getattr(_pyd, 'dcmread', None)
-    _sys.modules['dicom'] = _m
-    _mds = _types.ModuleType('dicom.dataset')
-    _mds.Dataset = _pyd.dataset.Dataset
-    _mds.FileDataset = _pyd.dataset.FileDataset
-    _sys.modules['dicom.dataset'] = _mds
-    _mtag = _types.ModuleType('dicom.tag')
-    _mtag.Tag = _pyd.tag.Tag
-    _sys.modules['dicom.tag'] = _mtag
-    _muid = _types.ModuleType('dicom.uid')
-    _muid.UID = _pyd.uid.UID
-    _sys.modules['dicom.uid'] = _muid
-    # Patch pydicom.filewriter API expected by older libs
+    from dicompylercore import dvhcalc as _dvhcalc_test  # noqa: F401
+    _NEEDS_SHIM = False
+except (ImportError, AttributeError):
+    _NEEDS_SHIM = True
+
+if _NEEDS_SHIM:
     try:
-        import pydicom.filewriter as _fw
-        if not hasattr(_fw, 'validate_file_meta'):
-            def validate_file_meta(*args, **kwargs):  # type: ignore
-                return True
-            _fw.validate_file_meta = validate_file_meta  # type: ignore[attr-defined]
-    except Exception:
-        pass
-except (ImportError, AttributeError) as e:
-    logger.warning("Failed to set up dicompyler-core compatibility: %s", e)
-except Exception as e:
-    logger.error("Unexpected error in dicompyler-core compatibility setup: %s", e)
+        import sys as _sys, types as _types, pydicom as _pyd
+        _m = _sys.modules.get('dicom') or _types.ModuleType('dicom')
+        _m.read_file = getattr(_pyd, 'dcmread', None)
+        _sys.modules['dicom'] = _m
+        _mds = _types.ModuleType('dicom.dataset')
+        _mds.Dataset = _pyd.dataset.Dataset
+        _mds.FileDataset = _pyd.dataset.FileDataset
+        _sys.modules['dicom.dataset'] = _mds
+        _mtag = _types.ModuleType('dicom.tag')
+        _mtag.Tag = _pyd.tag.Tag
+        _sys.modules['dicom.tag'] = _mtag
+        _muid = _types.ModuleType('dicom.uid')
+        _muid.UID = _pyd.uid.UID
+        _sys.modules['dicom.uid'] = _muid
+        # Patch pydicom.filewriter API expected by older libs
+        try:
+            import pydicom.filewriter as _fw
+            if not hasattr(_fw, 'validate_file_meta'):
+                def validate_file_meta(*args, **kwargs):  # type: ignore
+                    return True
+                _fw.validate_file_meta = validate_file_meta  # type: ignore[attr-defined]
+        except Exception:
+            pass
+    except (ImportError, AttributeError) as e:
+        logger.warning("Failed to set up dicompyler-core compatibility: %s", e)
+    except Exception as e:
+        logger.error("Unexpected error in dicompyler-core compatibility setup: %s", e)
 
 try:
     from dicompylercore import dvhcalc
@@ -604,7 +612,7 @@ def _estimate_rx_from_ctv1(rtstruct: pydicom.dataset.FileDataset, rtdose: pydico
                 "rx_dose_gy or disabling estimate_rx_from_ctv1.",
                 ", CTV".join(str(n) for n in sorted(ctv_numbers))
             )
-            # Still proceed but with warning - user opted in explicitly
+            return None
 
         for roi in rtstruct.StructureSetROISequence:
             name = str(getattr(roi, "ROIName", "") or "")
@@ -738,6 +746,12 @@ def dvh_for_course(
             return None
         if abs_dvh.volume == 0:
             return None
+        if abs_dvh.volume < 1.0:
+            logger.warning(
+                "Structure '%s' has very small volume (%.3f cc); "
+                "DVH interpolation may be unreliable for dose-volume metrics.",
+                roi_name, abs_dvh.volume,
+            )
         metrics = _compute_metrics(abs_dvh, rx_value)
         if metrics is None:
             return None
@@ -830,13 +844,16 @@ def dvh_for_course(
 
     # Determine Rx dose: explicit > estimation > None
     rx_est = None
+    rx_source = "none"
     if rx_dose_gy is not None and rx_dose_gy > 0:
         rx_est = float(rx_dose_gy)
+        rx_source = "explicit"
         logger.info("Using explicit Rx dose: %.2f Gy for %s", rx_est, course_dir.name)
     elif estimate_rx_from_ctv1 and rs_manual.exists():
         try:
             rx_est = _estimate_rx_from_ctv1(pydicom.dcmread(str(rs_manual)), rtdose)
             if rx_est:
+                rx_source = "estimated_ctv1_d95"
                 logger.info(
                     "Estimated Rx from CTV1 D95: %.2f Gy for %s (WARNING: heuristic, not valid for SIB)",
                     rx_est, course_dir.name
@@ -845,6 +862,7 @@ def dvh_for_course(
             pass
 
     if rx_est is None:
+        rx_source = "none"
         if not estimate_rx_from_ctv1:
             logger.info(
                 "No Rx dose provided for %s; relative DVH metrics will be missing. "
@@ -902,6 +920,7 @@ def dvh_for_course(
         # Deep copy to avoid modifying original if needed (though we consume it here)
         r_copy = res.copy()
         points = r_copy.pop("_curve_data", [])
+        r_copy["rx_source"] = rx_source
         clean_results.append(r_copy)
         
         if points:

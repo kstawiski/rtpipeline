@@ -25,7 +25,7 @@ dependencies:
   - future
   - pip
   - pip:
-    - TotalSegmentator>=2.4.0  # Use latest stable version
+    - TotalSegmentator==2.12.0  # Pinned for manuscript reproducibility
     - xgboost  # Required for totalseg_get_phase and totalseg_get_modality
     - dicompyler-core>=0.5.6
     - rt-utils

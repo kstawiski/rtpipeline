@@ -1,20 +1,33 @@
 """
 Radiomics robustness analysis module.
 
-Implements IBSI-compliant feature stability assessment via:
+Implements an **RTpipeline-adapted perturbation framework** inspired by
+Zwanenburg et al. 2019 (Sci Rep) for feature stability assessment:
+
 - NTCV perturbation chain (Noise + Translation + Contour + Volume)
+- Rotation sensitivity analysis (optional, for Zwanenburg N/T/R/V/C parity)
 - Mask perturbations (erosion/dilation with volume adaptation)
 - Image noise injection (Gaussian noise in HU)
-- Rigid translations (±3-5 mm shifts)
-- Contour randomization (boundary noise simulation)
+- Rigid translations (±2-4 mm shifts)
+- Contour randomization (morphological boundary perturbation)
 - ICC (Intraclass Correlation Coefficient) computation
 - CoV (Coefficient of Variation) and QCD metrics
+- Redundancy pruning (Spearman correlation clustering)
+- Determinants-of-instability analysis (mixed-effects regression)
 - Multi-axis robustness evaluation (segmentation perturbation, segmentation method, scan-rescan)
+
+Note: The default NTCV chain omits **Rotation (R)** and uses **morphological**
+contour perturbation rather than supervoxel-based randomization. These
+differences from the original Zwanenburg 2019 N/T/R/V/C framework are
+intentional simplifications documented in the manuscript. Rotation sensitivity
+analysis is available via `generate_rotation_sensitivity_perturbations()`.
 
 Based on 2023-2025 radiomics stability research:
 - Zwanenburg et al. 2019 (Sci Rep): NTCV perturbation chains with ICC >0.75
 - Lo Iacono et al. 2024 (SpringerLink): volume adaptation for stability
 - Poirot et al. 2022 (Sci Rep): multi-method ICC with Pingouin
+- Traverso et al. 2024: cross-extractor reproducibility
+- OPC RobustDB 2025 (PMID: 41367878): feature stability atlas with pruning
 - Modern best practice: 30-60 perturbations per ROI for comprehensive stability testing
 - Conservative clinical thresholds: ICC >0.90 and CoV <10%
 """
@@ -47,14 +60,20 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class PerturbationConfig:
-    """Configuration for mask perturbation (NTCV chain: Noise + Translation + Contour + Volume)."""
+    """Configuration for mask perturbation (RTpipeline-adapted NTCV chain: Noise + Translation + Contour + Volume).
+
+    Note: The original Zwanenburg 2019 framework uses N/T/R/V/C including Rotation.
+    Rotation is available as a separate sensitivity analysis via rotation_angles.
+    """
     apply_to_structures: List[str] = field(default_factory=lambda: ["GTV", "CTV", "PTV", "BLADDER", "RECTUM"])
     small_volume_changes: List[float] = field(default_factory=lambda: [-0.15, 0.0, 0.15])
     large_volume_changes: List[float] = field(default_factory=lambda: [-0.30, 0.0, 0.30])
     n_random_contour_realizations: int = 0
     max_translation_mm: float = 0.0
+    contour_randomization_mm: float = 0.0  # C8 fix: independent contour noise (0 = auto from max_translation_mm/2 for backwards compat)
     noise_levels: List[float] = field(default_factory=lambda: [0.0])  # Gaussian noise std dev in HU
     intensity: str = "standard"  # "mild", "standard", "aggressive" - controls perturbation count
+    rotation_angles: List[float] = field(default_factory=list)  # Rotation sensitivity: e.g., [1, -1, 3, -3] degrees
 
 
 @dataclass
@@ -110,6 +129,7 @@ class RobustnessConfig:
             large_volume_changes=pert_data.get("large_volume_changes", [-0.30, 0.0, 0.30]),
             n_random_contour_realizations=pert_data.get("n_random_contour_realizations", 0),
             max_translation_mm=pert_data.get("max_translation_mm", 0.0),
+            contour_randomization_mm=pert_data.get("contour_randomization_mm", 0.0),
             noise_levels=pert_data.get("noise_levels", [0.0]),
             intensity=pert_data.get("intensity", "standard"),
         )
@@ -150,6 +170,9 @@ def volume_adapt_mask(mask: sitk.Image, tau: float, max_iterations: int = 20) ->
     """
     Apply IBSI-style volume adaptation to mask via iterative erosion/dilation.
 
+    Uses spacing-aware structuring elements to ensure isotropic physical-space
+    morphology on anisotropic voxel grids (e.g., 1x1x3 mm clinical CTs).
+
     Args:
         mask: Binary SimpleITK image
         tau: Target volume change ratio (e.g., 0.15 for +15%, -0.15 for -15%)
@@ -164,14 +187,26 @@ def volume_adapt_mask(mask: sitk.Image, tau: float, max_iterations: int = 20) ->
     arr = sitk.GetArrayFromImage(mask).astype(bool)
     original_volume = arr.sum()
 
-    if original_volume < 10:
-        logger.debug("Mask too small for volume adaptation (volume=%d)", original_volume)
+    # C2 fix: spacing-aware minimum volume threshold (at least 0.01 cm³ = 10 mm³)
+    spacing = mask.GetSpacing()  # (x, y, z) in mm
+    voxel_vol_mm3 = float(np.prod(spacing))
+    min_voxels = max(10, int(np.ceil(10.0 / voxel_vol_mm3)))  # at least 10 mm³
+
+    if original_volume < min_voxels:
+        logger.debug("Mask too small for volume adaptation (volume=%d voxels, min=%d)", original_volume, min_voxels)
         return None
 
     target_volume = int(original_volume * (1.0 + tau))
     # Determine operation (erosion or dilation)
     is_erosion = tau < 0
     operation = sitk.BinaryErode if is_erosion else sitk.BinaryDilate
+
+    # C2 fix: compute spacing-aware structuring element radii
+    # Target ~1mm physical radius per iteration; scale inversely by voxel spacing
+    target_radius_mm = 1.0
+    kernel_radius = [max(1, int(round(target_radius_mm / s))) for s in spacing]
+    # SimpleITK uses (x, y, z) ordering for kernel radius
+    logger.debug("Volume adaptation kernel radius (voxels): %s for spacing %s mm", kernel_radius, spacing)
 
     # Iterative approach - track all candidates including overshoot
     current_mask = mask
@@ -182,7 +217,7 @@ def volume_adapt_mask(mask: sitk.Image, tau: float, max_iterations: int = 20) ->
 
     for iteration in range(1, max_iterations + 1):
         try:
-            perturbed = operation(current_mask, [1] * 3, sitk.sitkBall)
+            perturbed = operation(current_mask, kernel_radius, sitk.sitkBall)
             perturbed_arr = sitk.GetArrayFromImage(perturbed).astype(bool)
             perturbed_volume = perturbed_arr.sum()
 
@@ -237,8 +272,8 @@ def volume_adapt_mask(mask: sitk.Image, tau: float, max_iterations: int = 20) ->
     best_arr = sitk.GetArrayFromImage(best_mask).astype(bool)
     best_volume = best_arr.sum()
 
-    if best_volume < 5:
-        logger.debug("Perturbed mask too small (volume=%d)", best_volume)
+    if best_volume < min_voxels:
+        logger.debug("Perturbed mask too small (volume=%d voxels, min=%d)", best_volume, min_voxels)
         return None
 
     # Ensure we're returning a DIFFERENT mask from original
@@ -277,52 +312,68 @@ def translate_mask(mask: sitk.Image, translation_mm: Tuple[float, float, float])
     return resampler.Execute(mask)
 
 
-def randomize_contour(mask: sitk.Image, randomization_mm: float) -> sitk.Image:
+def randomize_contour(
+    mask: sitk.Image,
+    randomization_mm: float,
+    rng: Optional[np.random.Generator] = None,
+) -> sitk.Image:
     """
     Apply boundary randomization to simulate inter-observer variability.
-    
-    Applies a combination of small erosion and dilation with random morphological operations.
-    
+
+    Applies morphological opening or closing with spacing-aware structuring elements.
+
     Args:
         mask: Binary SimpleITK image
         randomization_mm: Maximum boundary displacement in mm
-        
+        rng: Optional numpy Generator for reproducible randomization (avoids global state)
+
     Returns:
         Mask with randomized contour
     """
+    if rng is None:
+        rng = np.random.default_rng()
+
     spacing = mask.GetSpacing()
-    avg_spacing = float(np.mean(spacing))
-    radius_vox = max(1, int(round(randomization_mm / avg_spacing)))
-    
+    # C2 fix: spacing-aware kernel radii instead of isotropic voxel radius
+    kernel_radius = [max(1, int(round(randomization_mm / s))) for s in spacing]
+
     # Randomly choose erosion or dilation
-    if np.random.rand() > 0.5:
-        # Slight erosion followed by dilation (smoothing)
-        temp = sitk.BinaryErode(mask, [radius_vox] * 3, sitk.sitkBall)
-        result = sitk.BinaryDilate(temp, [radius_vox] * 3, sitk.sitkBall)
+    if rng.random() > 0.5:
+        # Slight erosion followed by dilation (morphological opening)
+        temp = sitk.BinaryErode(mask, kernel_radius, sitk.sitkBall)
+        result = sitk.BinaryDilate(temp, kernel_radius, sitk.sitkBall)
     else:
-        # Slight dilation followed by erosion (smoothing)
-        temp = sitk.BinaryDilate(mask, [radius_vox] * 3, sitk.sitkBall)
-        result = sitk.BinaryErode(temp, [radius_vox] * 3, sitk.sitkBall)
-    
+        # Slight dilation followed by erosion (morphological closing)
+        temp = sitk.BinaryDilate(mask, kernel_radius, sitk.sitkBall)
+        result = sitk.BinaryErode(temp, kernel_radius, sitk.sitkBall)
+
     return result
 
 
-def add_noise_to_image(image: sitk.Image, noise_std_hu: float) -> sitk.Image:
+def add_noise_to_image(
+    image: sitk.Image,
+    noise_std_hu: float,
+    rng: Optional[np.random.Generator] = None,
+) -> sitk.Image:
     """
     Add Gaussian noise to image for image-based perturbation testing.
-    
+
     Args:
         image: CT/MR image
         noise_std_hu: Standard deviation of Gaussian noise in HU
-        
+        rng: Optional numpy Generator for reproducible noise (avoids global state)
+
     Returns:
         Noisy image
     """
     if noise_std_hu <= 0:
         return image
-    
+
+    if rng is None:
+        rng = np.random.default_rng()
+
     arr = sitk.GetArrayFromImage(image).astype(np.float32)
-    noise = np.random.normal(0, noise_std_hu, arr.shape).astype(np.float32)
+    noise = rng.normal(0, noise_std_hu, arr.shape).astype(np.float32)
     noisy_arr = arr + noise
     
     noisy_img = sitk.GetImageFromArray(noisy_arr)
@@ -447,12 +498,15 @@ def generate_ntcv_perturbations(
         noise_levels = config.noise_levels
     
     pert_count = 0
-    
+    # C9 fix: master RNG for reproducible but isolated random state
+    master_rng = np.random.Generator(np.random.PCG64(42))
+
     # Generate perturbations using combinatorial approach
     for noise_std in noise_levels:
         # N: Noise perturbation (image-based)
         if noise_std > 0:
-            noisy_image = add_noise_to_image(original_image, noise_std)
+            noise_rng = np.random.Generator(np.random.PCG64(master_rng.integers(2**63)))
+            noisy_image = add_noise_to_image(original_image, noise_std, rng=noise_rng)
             noise_suffix = f"_n{int(noise_std)}"
         else:
             noisy_image = original_image
@@ -486,10 +540,14 @@ def generate_ntcv_perturbations(
             # C: Contour randomization (boundary noise)
             contour_variants = [translated_mask]  # Always include original contour
             if config.n_random_contour_realizations > 0 and contour_realizations > 0:
-                np.random.seed(42 + pert_count)  # Reproducible randomization
+                # C9 fix: use isolated RNG instead of polluting global np.random state
+                rng = np.random.Generator(np.random.PCG64(42 + pert_count))
+                # C8 fix: use independent contour_randomization_mm config;
+                # fall back to max_translation_mm/2 for backwards compatibility
+                contour_noise_mm = config.contour_randomization_mm if config.contour_randomization_mm > 0 else config.max_translation_mm / 2
                 for c_idx in range(contour_realizations):
                     try:
-                        randomized = randomize_contour(translated_mask, config.max_translation_mm / 2)
+                        randomized = randomize_contour(translated_mask, contour_noise_mm, rng=rng)
                         contour_variants.append(randomized)
                     except Exception as e:
                         logger.debug("Contour randomization failed for %s: %s", structure_name, e)
@@ -613,12 +671,50 @@ def compute_icc_pingouin(
         return {"icc": np.nan, "icc_ci95_low": np.nan, "icc_ci95_high": np.nan}
 
     try:
+        # --- C1 fix: detect unbalanced data before ICC computation ---
+        # Pingouin's nan_policy="omit" performs listwise deletion, dropping entire
+        # subjects when ANY rater value is missing. This silently biases ICC upward
+        # (surviving subjects are easier cases). We detect and report this explicitly.
+        n_raters_expected = df["rater"].nunique()
+        subject_counts = df.groupby("subject")["rater"].nunique()
+        complete_subjects = (subject_counts == n_raters_expected).sum()
+        total_subjects = len(subject_counts)
+        incomplete_subjects = total_subjects - complete_subjects
+        drop_pct = (incomplete_subjects / total_subjects * 100) if total_subjects > 0 else 0
+
+        if incomplete_subjects > 0:
+            logger.warning(
+                "ICC: %d/%d subjects (%.1f%%) have missing perturbations and will be "
+                "dropped by listwise deletion. ICC may be biased upward.",
+                incomplete_subjects, total_subjects, drop_pct,
+            )
+            if drop_pct > 10:
+                logger.warning(
+                    "ICC: >10%% subjects dropped — consider using ICC2 (two-way random) "
+                    "or mixed-effects models for unbalanced designs."
+                )
+
+        # Use only complete cases to make the listwise deletion explicit
+        # (rather than relying on Pingouin's silent nan_policy="omit")
+        if incomplete_subjects > 0:
+            complete_subject_ids = subject_counts[subject_counts == n_raters_expected].index
+            df_balanced = df[df["subject"].isin(complete_subject_ids)].copy()
+            if df_balanced["subject"].nunique() < 2:
+                logger.warning("ICC: fewer than 2 complete subjects remain after dropping incomplete cases")
+                return {
+                    "icc": np.nan, "icc_ci95_low": np.nan, "icc_ci95_high": np.nan,
+                    "n_subjects_dropped": int(incomplete_subjects),
+                    "n_subjects_complete": int(complete_subjects),
+                }
+        else:
+            df_balanced = df
+
         icc_res = pg.intraclass_corr(
-            data=df,
+            data=df_balanced,
             targets="subject",
             raters="rater",
             ratings="value",
-            nan_policy="omit"  # Handle unbalanced data (missing perturbations for some subjects)
+            nan_policy="raise"  # Fail loudly if data is still unbalanced
         )
 
         # Select appropriate ICC type
@@ -628,7 +724,11 @@ def compute_icc_pingouin(
             return {"icc": np.nan, "icc_ci95_low": np.nan, "icc_ci95_high": np.nan}
         row = filtered.iloc[0]
 
-        result = {"icc": float(row["ICC"])}
+        result = {
+            "icc": float(row["ICC"]),
+            "n_subjects_dropped": int(incomplete_subjects),
+            "n_subjects_complete": int(complete_subjects),
+        }
 
         if icc_config.ci:
             ci = row["CI95%"]
@@ -778,6 +878,402 @@ def summarize_feature_stability(
         rows.append(row_data)
 
     return pd.DataFrame(rows)
+
+
+# ============================================================================
+# Rotation Perturbation (v1.2 — sensitivity analysis)
+# ============================================================================
+
+def rotate_image_and_mask(
+    image: sitk.Image,
+    mask: sitk.Image,
+    angle_degrees: float,
+    axis: Tuple[float, float, float] = (0.0, 0.0, 1.0),
+) -> Tuple[sitk.Image, sitk.Image]:
+    """
+    Apply rigid rotation to both image and mask around the volume center.
+
+    This implements the **R** (Rotation) perturbation absent from the default
+    RTpipeline NTCV chain. The original Zwanenburg 2019 framework (N/T/R/V/C)
+    included rotation; RTpipeline's adapted framework omits it by default.
+    This function enables rotation sensitivity analyses to quantify the impact
+    of that omission.
+
+    Args:
+        image: CT/MR SimpleITK image
+        mask: Binary SimpleITK mask (same geometry as image)
+        angle_degrees: Rotation angle in degrees
+        axis: Rotation axis as (x, y, z) unit vector.
+              Default (0,0,1) = axial rotation (around superior-inferior axis).
+
+    Returns:
+        Tuple of (rotated_image, rotated_mask)
+    """
+    angle_rad = np.deg2rad(angle_degrees)
+
+    # Compute center of rotation (volume center in physical coordinates)
+    size = image.GetSize()
+    center_index = [s / 2.0 for s in size]
+    center_physical = image.TransformContinuousIndexToPhysicalPoint(center_index)
+
+    # Create Euler3D transform (rotation around center)
+    transform = sitk.Euler3DTransform()
+    transform.SetCenter(center_physical)
+
+    # Set rotation angles based on axis
+    ax = np.array(axis, dtype=float)
+    ax = ax / (np.linalg.norm(ax) + 1e-12)
+    # Euler3D uses rotations around x, y, z axes
+    transform.SetRotation(
+        float(ax[0] * angle_rad),
+        float(ax[1] * angle_rad),
+        float(ax[2] * angle_rad),
+    )
+
+    # Resample image with linear interpolation
+    rotated_image = sitk.Resample(
+        image,
+        image,  # reference
+        transform,
+        sitk.sitkLinear,
+        float(sitk.GetArrayViewFromImage(image).min()),  # default pixel value
+    )
+
+    # Resample mask with nearest neighbor (preserve binary)
+    rotated_mask = sitk.Resample(
+        mask,
+        mask,
+        transform,
+        sitk.sitkNearestNeighbor,
+        0,
+    )
+
+    return rotated_image, rotated_mask
+
+
+def generate_rotation_sensitivity_perturbations(
+    original_mask: sitk.Image,
+    original_image: sitk.Image,
+    rotation_angles: Optional[List[float]] = None,
+    base_config: Optional[PerturbationConfig] = None,
+    structure_name: str = "",
+) -> Tuple[Dict[str, sitk.Image], Dict[str, sitk.Image]]:
+    """
+    Generate rotation-augmented perturbations for sensitivity analysis.
+
+    Produces perturbation sets with and without rotation, enabling direct
+    comparison of ICC values to quantify the impact of omitting rotation
+    from the default NTCV chain.
+
+    Default rotation angles: [+1, -1, +3, -3] degrees (axial plane).
+
+    Args:
+        original_mask: Original binary mask
+        original_image: CT/MR image
+        rotation_angles: List of rotation angles in degrees. Default: [1, -1, 3, -3]
+        base_config: Optional base perturbation config (for combining with NTCV)
+        structure_name: Structure name for logging
+
+    Returns:
+        Tuple of (perturbed_masks_dict, perturbed_images_dict)
+    """
+    if rotation_angles is None:
+        rotation_angles = [1.0, -1.0, 3.0, -3.0]
+
+    perturbed_masks = {"rot_original": original_mask}
+    perturbed_images = {"rot_original": original_image}
+
+    for angle in rotation_angles:
+        try:
+            rot_img, rot_mask = rotate_image_and_mask(
+                original_image, original_mask, angle
+            )
+            pert_id = f"rot_{angle:+.1f}deg".replace(".", "p").replace("+", "plus").replace("-", "minus")
+            perturbed_masks[pert_id] = rot_mask
+            perturbed_images[pert_id] = rot_img
+        except Exception as e:
+            logger.warning(
+                "Rotation perturbation failed for %s at %.1f°: %s",
+                structure_name, angle, e,
+            )
+
+    logger.info(
+        "Generated %d rotation perturbations for %s (angles: %s)",
+        len(perturbed_masks) - 1, structure_name, rotation_angles,
+    )
+
+    return perturbed_masks, perturbed_images
+
+
+# ============================================================================
+# Redundancy Pruning (v1.2 — non-redundant robust feature panels)
+# ============================================================================
+
+def prune_redundant_features(
+    stability_df: pd.DataFrame,
+    feature_values_df: pd.DataFrame,
+    correlation_threshold: float = 0.90,
+    robustness_label_col: str = "robustness_label",
+    icc_col: str = "icc",
+    feature_col: str = "feature_name",
+    structure_col: str = "structure",
+) -> pd.DataFrame:
+    """
+    Prune redundant features using Spearman correlation clustering.
+
+    For each structure, clusters robust features by Spearman |r| > threshold,
+    then selects the representative with the highest mean ICC from each cluster.
+    Reports both the full robust set and the non-redundant subset.
+
+    This addresses the concern that wavelet/filter-expanded feature families
+    can inflate robustness counts without adding independent information
+    (METRICS, PMID: 38228979).
+
+    Args:
+        stability_df: Output from summarize_feature_stability() with ICC/robustness labels.
+        feature_values_df: Wide-format DataFrame with features as columns, patients as rows.
+            Must contain 'structure' and 'patient_id' columns plus feature value columns.
+        correlation_threshold: Spearman |r| above which features are considered redundant.
+            Default: 0.90 (conservative, per IBSI recommendations).
+        robustness_label_col: Column name for robustness classification.
+        icc_col: Column name for ICC values.
+        feature_col: Column name for feature names.
+        structure_col: Column name for structure names.
+
+    Returns:
+        stability_df with additional columns:
+        - 'redundancy_cluster': cluster ID (integer) within each structure
+        - 'is_cluster_representative': True if this feature is the cluster representative
+        - 'cluster_size': number of features in the cluster
+    """
+    from scipy.cluster.hierarchy import fcluster, linkage
+    from scipy.spatial.distance import squareform
+
+    result_rows = []
+
+    for structure, struct_stability in stability_df.groupby(structure_col):
+        # Filter to robust/acceptable features only
+        robust_mask = struct_stability[robustness_label_col].isin(["robust", "acceptable"])
+        robust_features = struct_stability.loc[robust_mask, feature_col].tolist()
+
+        if len(robust_features) < 2:
+            # No clustering needed
+            for _, row in struct_stability.iterrows():
+                row_copy = row.to_dict()
+                row_copy["redundancy_cluster"] = 0
+                row_copy["is_cluster_representative"] = row[feature_col] in robust_features
+                row_copy["cluster_size"] = 1
+                result_rows.append(row_copy)
+            continue
+
+        # Get feature values for this structure
+        struct_values = feature_values_df[
+            feature_values_df[structure_col] == structure
+        ] if structure_col in feature_values_df.columns else feature_values_df
+
+        # Build correlation matrix for robust features
+        available_features = [f for f in robust_features if f in struct_values.columns]
+        if len(available_features) < 2:
+            for _, row in struct_stability.iterrows():
+                row_copy = row.to_dict()
+                row_copy["redundancy_cluster"] = 0
+                row_copy["is_cluster_representative"] = row[feature_col] in robust_features
+                row_copy["cluster_size"] = 1
+                result_rows.append(row_copy)
+            continue
+
+        corr_matrix = struct_values[available_features].corr(method="spearman").abs()
+
+        # Convert to distance matrix and cluster
+        distance_matrix = 1.0 - corr_matrix.values
+        np.fill_diagonal(distance_matrix, 0)
+        # Ensure symmetry and non-negativity
+        distance_matrix = np.maximum(distance_matrix, 0)
+        distance_matrix = (distance_matrix + distance_matrix.T) / 2
+
+        try:
+            condensed = squareform(distance_matrix)
+            Z = linkage(condensed, method="complete")
+            clusters = fcluster(Z, t=1.0 - correlation_threshold, criterion="distance")
+        except Exception as e:
+            logger.warning("Clustering failed for %s: %s", structure, e)
+            clusters = np.arange(len(available_features))
+
+        # Map features to clusters
+        feature_to_cluster = dict(zip(available_features, clusters))
+
+        # Select representatives (highest ICC per cluster)
+        icc_lookup = dict(
+            zip(
+                struct_stability[feature_col],
+                struct_stability[icc_col],
+            )
+        )
+
+        cluster_representatives = {}
+        cluster_sizes = {}
+        for cluster_id in set(clusters):
+            cluster_features = [f for f, c in feature_to_cluster.items() if c == cluster_id]
+            cluster_sizes[cluster_id] = len(cluster_features)
+            # Pick feature with highest ICC
+            best_feature = max(cluster_features, key=lambda f: icc_lookup.get(f, -1))
+            cluster_representatives[cluster_id] = best_feature
+
+        # Build output
+        for _, row in struct_stability.iterrows():
+            row_copy = row.to_dict()
+            fname = row[feature_col]
+            if fname in feature_to_cluster:
+                cid = feature_to_cluster[fname]
+                row_copy["redundancy_cluster"] = int(cid)
+                row_copy["is_cluster_representative"] = (cluster_representatives.get(cid) == fname)
+                row_copy["cluster_size"] = cluster_sizes.get(cid, 1)
+            else:
+                # Non-robust feature
+                row_copy["redundancy_cluster"] = -1
+                row_copy["is_cluster_representative"] = False
+                row_copy["cluster_size"] = 0
+            result_rows.append(row_copy)
+
+    return pd.DataFrame(result_rows)
+
+
+# ============================================================================
+# Determinants of Feature Instability (v1.2 — exploratory mixed-effects)
+# ============================================================================
+
+def model_instability_determinants(
+    stability_df: pd.DataFrame,
+    metadata_df: pd.DataFrame,
+    icc_col: str = "icc",
+    structure_col: str = "structure",
+    feature_col: str = "feature_name",
+) -> Dict[str, Any]:
+    """
+    Fit exploratory mixed-effects model to identify determinants of feature instability.
+
+    Model: ICC ~ ROI_volume + surface_volume_ratio + manufacturer + slice_thickness + feature_family + (1|patient)
+
+    This answers: "which ROIs are radiomics-ready on planning CT, and which are not?"
+    Bounded to pre-specified predictors only (no data-driven variable selection).
+
+    Args:
+        stability_df: Output from summarize_feature_stability() with per-(structure, feature) ICC.
+            Must contain 'icc', 'structure', 'feature_name' columns.
+        metadata_df: Patient/acquisition metadata with columns:
+            - 'patient_id': patient identifier
+            - 'manufacturer' (optional): CT manufacturer
+            - 'slice_thickness' (optional): slice thickness in mm
+            - 'pixel_spacing' (optional): pixel spacing in mm
+            - 'roi_volume_cc' (optional): ROI volume in cc
+            - 'surface_volume_ratio' (optional): surface/volume ratio
+        icc_col: Column name for ICC values.
+        structure_col: Column name for structure names.
+        feature_col: Column name for feature names.
+
+    Returns:
+        Dictionary with:
+        - 'model_summary': string summary of the mixed-effects model
+        - 'fixed_effects': DataFrame of fixed effect coefficients
+        - 'significant_predictors': list of significant predictors (p < 0.05)
+        - 'radiomics_ready_rois': list of ROIs with mean ICC > 0.75
+        - 'high_risk_rois': list of ROIs with mean ICC < 0.50
+        - 'feature_family_effects': DataFrame of per-family mean ICC
+    """
+    results: Dict[str, Any] = {}
+
+    # --- Feature family extraction ---
+    def _extract_family(feature_name: str) -> str:
+        """Extract feature family from PyRadiomics feature name."""
+        parts = feature_name.split("_")
+        if len(parts) >= 2:
+            # e.g., "original_glcm_Autocorrelation" → "glcm"
+            # or "wavelet-LLH_firstorder_Mean" → "firstorder"
+            for i, part in enumerate(parts):
+                if part.lower() in (
+                    "shape", "shape2d", "firstorder",
+                    "glcm", "glrlm", "glszm", "gldm", "ngtdm",
+                ):
+                    return part.lower()
+        return "unknown"
+
+    df = stability_df.copy()
+    df["feature_family"] = df[feature_col].apply(_extract_family)
+
+    # --- Per-structure summary ---
+    structure_icc = df.groupby(structure_col)[icc_col].agg(["mean", "median", "std", "count"])
+    structure_icc.columns = ["mean_icc", "median_icc", "std_icc", "n_features"]
+    results["structure_summary"] = structure_icc.reset_index()
+
+    results["radiomics_ready_rois"] = structure_icc[
+        structure_icc["mean_icc"] >= 0.75
+    ].index.tolist()
+
+    results["high_risk_rois"] = structure_icc[
+        structure_icc["mean_icc"] < 0.50
+    ].index.tolist()
+
+    # --- Per-feature-family summary ---
+    family_icc = df.groupby("feature_family")[icc_col].agg(["mean", "median", "std", "count"])
+    family_icc.columns = ["mean_icc", "median_icc", "std_icc", "n_features"]
+    results["feature_family_effects"] = family_icc.reset_index()
+
+    # --- Mixed-effects model (if statsmodels available) ---
+    try:
+        import statsmodels.formula.api as smf
+
+        # Merge with metadata if available
+        if metadata_df is not None and not metadata_df.empty:
+            # Try to merge on patient_id if both have it
+            if "patient_id" in df.columns and "patient_id" in metadata_df.columns:
+                df = df.merge(metadata_df, on="patient_id", how="left", suffixes=("", "_meta"))
+
+        # Build formula from available predictors
+        predictors = []
+        for col in ["feature_family", structure_col]:
+            if col in df.columns and df[col].nunique() > 1:
+                predictors.append(f"C({col})")
+        for col in ["manufacturer"]:
+            if col in df.columns and df[col].nunique() > 1:
+                predictors.append(f"C({col})")
+        for col in ["slice_thickness", "pixel_spacing", "roi_volume_cc", "surface_volume_ratio"]:
+            if col in df.columns and df[col].notna().sum() > 10:
+                predictors.append(col)
+
+        if predictors and "patient_id" in df.columns:
+            formula = f"{icc_col} ~ " + " + ".join(predictors)
+            # Drop NaN ICC values
+            df_model = df.dropna(subset=[icc_col])
+
+            if df_model["patient_id"].nunique() > 2:
+                try:
+                    model = smf.mixedlm(
+                        formula, df_model, groups=df_model["patient_id"]
+                    )
+                    fit = model.fit(reml=True)
+                    results["model_summary"] = str(fit.summary())
+                    results["fixed_effects"] = fit.summary().tables[1] if hasattr(fit.summary(), "tables") else str(fit.params)
+                    results["significant_predictors"] = [
+                        name for name, pval in fit.pvalues.items()
+                        if pval < 0.05 and name != "Intercept"
+                    ]
+                except Exception as e:
+                    logger.warning("Mixed-effects model fitting failed: %s", e)
+                    results["model_summary"] = f"Model fitting failed: {e}"
+                    results["significant_predictors"] = []
+            else:
+                results["model_summary"] = "Insufficient patient groups for mixed-effects model"
+                results["significant_predictors"] = []
+        else:
+            results["model_summary"] = "Insufficient predictors for mixed-effects model"
+            results["significant_predictors"] = []
+
+    except ImportError:
+        logger.info("statsmodels not available; skipping mixed-effects model")
+        results["model_summary"] = "statsmodels not installed"
+        results["significant_predictors"] = []
+
+    return results
 
 
 # ============================================================================
@@ -952,9 +1448,15 @@ def robustness_for_course(
                 )
             else:
                 # Legacy mode: volume-only perturbations
+                # C19 fix: honor intensity config — use large_volume_changes for aggressive
+                intensity = rob_config.perturbation.intensity
+                if intensity == "aggressive":
+                    volume_changes = rob_config.perturbation.large_volume_changes
+                else:
+                    volume_changes = rob_config.perturbation.small_volume_changes
                 perturbed_masks = generate_perturbed_masks(
                     mask_img,
-                    rob_config.perturbation.small_volume_changes,
+                    volume_changes,
                     roi_name,
                 )
                 perturbed_images = None
