@@ -14,7 +14,7 @@ import SimpleITK as sitk
 
 logger = logging.getLogger(__name__)
 
-from .layout import build_course_dirs
+from .layout import build_course_dirs, find_dcm
 from .utils import sanitize_rtstruct, mask_is_cropped, run_tasks_with_adaptive_workers, snap_rtstruct_to_dose_grid
 from .custom_models import list_custom_model_outputs
 
@@ -227,6 +227,123 @@ def _compute_metrics(abs_dvh, rx_dose: Optional[float]) -> Optional[Dict[str, fl
     return metrics
 
 
+def _compute_metrics_from_arrays(
+    dose_values: np.ndarray,
+    voxel_vol_cm3: float,
+    max_dose_gy: float,
+    rx_dose: Optional[float] = None,
+) -> Optional[Dict[str, float]]:
+    """Compute DVH metrics directly from dose values within a structure mask.
+
+    Produces output identical in format to _compute_metrics() but works from raw
+    dose arrays rather than dicompyler-core DVH objects.  Used for structures
+    loaded from NIfTI masks (TotalSegmentator, custom composites) that bypass
+    RTSTRUCT.
+    """
+    if dose_values.size == 0:
+        return None
+
+    V_total = float(dose_values.size) * voxel_vol_cm3
+    if V_total < 0.001:
+        return None
+
+    DmeanGy = float(np.mean(dose_values))
+    DmaxGy = float(np.max(dose_values))
+    DminGy = float(np.min(dose_values))
+
+    # Build cumulative DVH (0.01 Gy bins = 1 cGy, matching dicompyler-core)
+    bin_width = 0.01
+    n_bins = max(int(np.ceil(max_dose_gy / bin_width)) + 1, 2)
+    bin_edges = np.linspace(0, n_bins * bin_width, n_bins + 1)
+    hist, _ = np.histogram(dose_values, bins=bin_edges)
+    cumulative_counts = np.cumsum(hist[::-1])[::-1]
+    cumulative_vol = cumulative_counts.astype(np.float64) * voxel_vol_cm3
+    bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2.0
+
+    D95Gy = _dose_at_fraction(bin_centers, cumulative_vol, 0.95)
+    D98Gy = _dose_at_fraction(bin_centers, cumulative_vol, 0.98)
+    D2Gy = _dose_at_fraction(bin_centers, cumulative_vol, 0.02)
+    D50Gy = _dose_at_fraction(bin_centers, cumulative_vol, 0.50)
+    HI_abs = (D2Gy - D98Gy) / D50Gy if D50Gy != 0 else float("nan")
+    SpreadGy = DmaxGy - DminGy
+
+    V_abs: Dict[str, float] = {}
+    V_rel: Dict[str, float] = {}
+    for x in range(1, 61):
+        vol = _get_volume_at_threshold(bin_centers, cumulative_vol, float(x))
+        V_abs[f"V{x}Gy (cm³)"] = float(vol)
+        V_rel[f"V{x}Gy (%)"] = float((vol / V_total) * 100.0)
+
+    IntegralDose = DmeanGy * V_total
+
+    D1ccGy = None
+    D0_1ccGy = None
+    try:
+        if V_total > 0:
+            if V_total >= 1.0:
+                D1ccGy = _dose_at_fraction(bin_centers, cumulative_vol, 1.0 / V_total)
+            if V_total >= 0.1:
+                D0_1ccGy = _dose_at_fraction(bin_centers, cumulative_vol, 0.1 / V_total)
+    except Exception:
+        pass
+
+    V95Rx_cc = V95Rx_pct = V100Rx_cc = V100Rx_pct = None
+    Dmean_pct = Dmax_pct = Dmin_pct = D95_pct = D98_pct = D2_pct = D50_pct = None
+    HI_pct = Spread_pct = None
+
+    if rx_dose and rx_dose > 0:
+        try:
+            V95Rx_cc = _get_volume_at_threshold(bin_centers, cumulative_vol, 0.95 * rx_dose)
+            V100Rx_cc = _get_volume_at_threshold(bin_centers, cumulative_vol, 1.00 * rx_dose)
+            V95Rx_pct = (V95Rx_cc / V_total) * 100.0 if V_total > 0 else None
+            V100Rx_pct = (V100Rx_cc / V_total) * 100.0 if V_total > 0 else None
+
+            Dmean_pct = DmeanGy / rx_dose * 100.0
+            Dmax_pct = DmaxGy / rx_dose * 100.0
+            Dmin_pct = DminGy / rx_dose * 100.0
+            rel_bin_centers = bin_centers / rx_dose * 100.0
+            D95_pct = _dose_at_fraction(rel_bin_centers, cumulative_vol, 0.95)
+            D98_pct = _dose_at_fraction(rel_bin_centers, cumulative_vol, 0.98)
+            D2_pct = _dose_at_fraction(rel_bin_centers, cumulative_vol, 0.02)
+            D50_pct = _dose_at_fraction(rel_bin_centers, cumulative_vol, 0.50)
+            HI_pct = (D2_pct - D98_pct) / D50_pct if D50_pct != 0 else float("nan")
+            Spread_pct = Dmax_pct - Dmin_pct
+        except Exception:
+            pass
+
+    metrics: Dict[str, float] = {
+        "DmeanGy": DmeanGy,
+        "DmaxGy": DmaxGy,
+        "DminGy": DminGy,
+        "D95Gy": D95Gy,
+        "D98Gy": D98Gy,
+        "D2Gy": D2Gy,
+        "D50Gy": D50Gy,
+        "HI": HI_abs,
+        "SpreadGy": SpreadGy,
+        "D1ccGy": D1ccGy,
+        "D0.1ccGy": D0_1ccGy,
+        "Dmean%": Dmean_pct,
+        "Dmax%": Dmax_pct,
+        "Dmin%": Dmin_pct,
+        "D95%": D95_pct,
+        "D98%": D98_pct,
+        "D2%": D2_pct,
+        "D50%": D50_pct,
+        "HI%": HI_pct,
+        "Spread%": Spread_pct,
+        "Volume (cm³)": V_total,
+        "IntegralDose_Gycm3": float(IntegralDose),
+        "V95%Rx (cm³)": V95Rx_cc,
+        "V95%Rx (%)": V95Rx_pct,
+        "V100%Rx (cm³)": V100Rx_cc,
+        "V100%Rx (%)": V100Rx_pct,
+    }
+    metrics.update(V_abs)
+    metrics.update(V_rel)
+    return metrics
+
+
 def _is_rs_custom_stale(
     rs_custom_path: Path,
     config_path: Optional[Union[str, Path]],
@@ -289,10 +406,11 @@ def _is_dvh_up_to_date(course_dir: Path, dvh_path: Path) -> bool:
         dvh_mtime = dvh_path.stat().st_mtime
 
         # Check core RT files and metadata
+        _cd = build_course_dirs(course_dir)
         deps = [
-            course_dir / "RP.dcm",
-            course_dir / "RD.dcm",
-            course_dir / "RS.dcm",
+            find_dcm(_cd.dicom_rtplan, "RP.dcm", course_dir),
+            find_dcm(_cd.dicom_rtdose, "RD.dcm", course_dir),
+            find_dcm(_cd.dicom_rtstruct, "RS.dcm", course_dir),
             course_dir / "RS_auto.dcm",
             course_dir / "RS_auto_cropped.dcm",
             course_dir / "RS_custom.dcm",
@@ -308,6 +426,15 @@ def _is_dvh_up_to_date(course_dir: Path, dvh_path: Path) -> bool:
             if dep.exists() and dep.stat().st_mtime > dvh_mtime:
                 logger.debug("DVH dependency %s is newer than dvh_metrics.xlsx", dep.name)
                 return False
+
+        # Check TotalSegmentator NIfTI outputs
+        seg_root = course_dir / "Segmentation_TotalSegmentator"
+        if seg_root.exists():
+            for nii_file in seg_root.glob("*.nii.gz"):
+                if nii_file.stat().st_mtime > dvh_mtime:
+                    logger.debug("TotalSegmentator NIfTI %s is newer than dvh_metrics.xlsx", nii_file.name)
+                    return False
+                break  # Only check the first one (all generated in same batch)
 
         return True
 
@@ -372,6 +499,27 @@ def _create_custom_structures_rtstruct(
                 logger.warning("No CT series found for spacing calculation")
                 return None
             dicom_files = reader.GetGDCMSeriesFileNames(str(ct_dir), series_ids[0])
+
+            # Deduplicate slices by ImagePositionPatient[2] (z-coordinate)
+            # DICOM directories may contain multiple acquisitions at the same position
+            try:
+                import pydicom as _pyd
+                seen_z = {}
+                for fpath in dicom_files:
+                    ds = _pyd.dcmread(fpath, stop_before_pixels=True)
+                    z = float(ds.ImagePositionPatient[2])
+                    if z not in seen_z:
+                        seen_z[z] = fpath
+                deduped = [seen_z[z] for z in sorted(seen_z.keys())]
+                if len(deduped) < len(dicom_files):
+                    logger.info(
+                        "CT DICOM deduplication: %d -> %d unique slice positions",
+                        len(dicom_files), len(deduped)
+                    )
+                    dicom_files = deduped
+            except Exception as exc:
+                logger.debug("CT deduplication failed, using all files: %s", exc)
+
             reader.SetFileNames(dicom_files)
             try:
                 ct_image = reader.Execute()
@@ -389,31 +537,40 @@ def _create_custom_structures_rtstruct(
                 totalseg_mask_cache[key] = None
                 return None
             mask_path: Optional[Path] = None
-            for subdir in seg_root.iterdir():
-                if not subdir.is_dir():
-                    continue
-                manifest_path = subdir / "manifest.json"
-                if not manifest_path.exists():
-                    continue
-                try:
-                    data = json.loads(manifest_path.read_text(encoding="utf-8"))
-                except Exception:
-                    continue
-                for model in data.get("models", []):
-                    for mask_file in model.get("masks", []):
-                        if "--" not in mask_file:
-                            continue
-                        _, roi_part = mask_file.split("--", 1)
-                        roi_base = roi_part.replace('.nii.gz', '').strip().lower()
-                        if roi_base == key:
-                            candidate = subdir / mask_file
-                            if candidate.exists():
-                                mask_path = candidate
-                                break
+
+            # Strategy 1: Direct flat NIfTI files (e.g. sacrum.nii.gz)
+            flat_candidate = seg_root / f"{key}.nii.gz"
+            if flat_candidate.exists():
+                mask_path = flat_candidate
+
+            # Strategy 2: Manifest-based subdirectory lookup (modelname--structurename.nii.gz)
+            if not mask_path:
+                for subdir in seg_root.iterdir():
+                    if not subdir.is_dir():
+                        continue
+                    manifest_path = subdir / "manifest.json"
+                    if not manifest_path.exists():
+                        continue
+                    try:
+                        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+                    except Exception:
+                        continue
+                    for model in data.get("models", []):
+                        for mask_file in model.get("masks", []):
+                            if "--" not in mask_file:
+                                continue
+                            _, roi_part = mask_file.split("--", 1)
+                            roi_base = roi_part.replace('.nii.gz', '').strip().lower()
+                            if roi_base == key:
+                                candidate = subdir / mask_file
+                                if candidate.exists():
+                                    mask_path = candidate
+                                    break
+                        if mask_path:
+                            break
                     if mask_path:
                         break
-                if mask_path:
-                    break
+
             if not mask_path:
                 totalseg_mask_cache[key] = None
                 return None
@@ -487,6 +644,25 @@ def _create_custom_structures_rtstruct(
                 _harvest_masks(auto_builder, "auto", add_missing=True)
             except Exception as exc:
                 logger.warning("Failed to integrate auto structures: %s", exc)
+
+        # Load TotalSegmentator NIfTI masks directly into available_masks
+        # This ensures custom structure composites can reference them
+        seg_root = course_dir / "Segmentation_TotalSegmentator"
+        if seg_root.exists():
+            for nii_file in sorted(seg_root.glob("*.nii.gz")):
+                ts_name = nii_file.name.replace(".nii.gz", "")
+                if ts_name in available_masks:
+                    continue  # Already loaded from RTSTRUCT
+                ts_mask = _totalseg_mask(ts_name)
+                if ts_mask is not None and np.any(ts_mask):
+                    available_masks[ts_name] = ts_mask.astype(bool)
+                    if ts_name not in existing_names:
+                        try:
+                            rtstruct.add_roi(mask=ts_mask.astype(bool), name=ts_name, color=[0, 128, 255])
+                            existing_names.add(ts_name)
+                            logger.debug("Added TotalSegmentator structure: %s", ts_name)
+                        except Exception as exc:
+                            logger.debug("Failed to add TotalSegmentator ROI %s: %s", ts_name, exc)
 
         ct_image = _ensure_ct_image()
         if ct_image is None:
@@ -570,6 +746,195 @@ def _create_custom_structures_rtstruct(
     except Exception as e:
         logger.error("Failed to create custom structures RTSTRUCT: %s", e)
         return None
+
+
+def _compute_nifti_based_dvh(
+    course_dir: Path,
+    custom_structures_config: Optional[Union[str, Path]],
+    rtdose_ds: pydicom.dataset.FileDataset,
+    rd_path: Path,
+    rx_est: Optional[float],
+    existing_roi_names: set,
+) -> List[Dict]:
+    """Compute DVH for TotalSegmentator and custom composite structures directly from NIfTI masks.
+
+    This bypasses RTStructBuilder, which may have geometry mismatches when CT DICOM
+    directories contain duplicate slices at the same z-position.  Instead, the dose
+    grid is resampled to the (deduplicated) CT geometry, and DVH is computed via
+    numpy boolean indexing on the aligned arrays.
+    """
+    results: List[Dict] = []
+    seg_root = course_dir / "Segmentation_TotalSegmentator"
+    if not seg_root.exists():
+        return results
+
+    course_dirs = build_course_dirs(course_dir)
+    ct_dir = course_dirs.dicom_ct
+    if not ct_dir.exists():
+        return results
+
+    # --- Load CT with deduplication ---
+    reader = sitk.ImageSeriesReader()
+    series_ids = reader.GetGDCMSeriesIDs(str(ct_dir))
+    if not series_ids:
+        return results
+    dicom_files = list(reader.GetGDCMSeriesFileNames(str(ct_dir), series_ids[0]))
+
+    try:
+        seen_z: Dict[float, str] = {}
+        for fpath in dicom_files:
+            ds = pydicom.dcmread(fpath, stop_before_pixels=True)
+            z = float(ds.ImagePositionPatient[2])
+            if z not in seen_z:
+                seen_z[z] = fpath
+        deduped = [seen_z[z] for z in sorted(seen_z.keys())]
+        if len(deduped) < len(dicom_files):
+            logger.info("NIfTI DVH: CT dedup %d -> %d slices", len(dicom_files), len(deduped))
+        dicom_files = deduped
+    except Exception:
+        pass
+
+    reader.SetFileNames(dicom_files)
+    try:
+        ct_image = reader.Execute()
+    except Exception as exc:
+        logger.warning("NIfTI DVH: Failed to load CT: %s", exc)
+        return results
+
+    ct_spacing = ct_image.GetSpacing()  # (x, y, z) mm
+
+    # --- Load RTDOSE and resample to CT grid ---
+    try:
+        dose_sitk = sitk.ReadImage(str(rd_path))
+    except Exception as exc:
+        logger.warning("NIfTI DVH: Failed to read RTDOSE: %s", exc)
+        return results
+
+    dose_grid_scaling = float(getattr(rtdose_ds, "DoseGridScaling", 1.0))
+
+    # Resample dose to CT geometry (linear interpolation)
+    dose_in_ct = sitk.Resample(
+        dose_sitk, ct_image,
+        sitk.Transform(), sitk.sitkLinear,
+        0.0, dose_sitk.GetPixelID(),
+    )
+    dose_ct_arr = sitk.GetArrayFromImage(dose_in_ct).astype(np.float64) * dose_grid_scaling
+    max_dose_gy = float(np.max(dose_ct_arr)) if dose_ct_arr.size > 0 else 0.0
+    ct_voxel_vol_cm3 = (ct_spacing[0] * ct_spacing[1] * ct_spacing[2]) / 1000.0
+
+    # --- Load TotalSegmentator NIfTI masks (resampled to CT) ---
+    # Masks stored as (z, y, x) — SimpleITK native order
+    ts_masks_zyx: Dict[str, np.ndarray] = {}
+    for nii_file in sorted(seg_root.glob("*.nii.gz")):
+        ts_name = nii_file.name.replace(".nii.gz", "")
+        try:
+            img = sitk.ReadImage(str(nii_file))
+            img = sitk.Resample(
+                img, ct_image,
+                sitk.Transform(), sitk.sitkNearestNeighbor,
+                0, img.GetPixelID(),
+            )
+            arr = sitk.GetArrayFromImage(img).astype(bool)
+            if np.any(arr):
+                ts_masks_zyx[ts_name] = arr
+        except Exception as exc:
+            logger.debug("NIfTI DVH: Failed to load %s: %s", ts_name, exc)
+
+    logger.info("NIfTI DVH: Loaded %d TotalSegmentator masks", len(ts_masks_zyx))
+
+    # --- Build custom composite structures ---
+    custom_masks_zyx: Dict[str, np.ndarray] = {}
+    if custom_structures_config:
+        try:
+            from .custom_structures import CustomStructureProcessor
+            processor = CustomStructureProcessor(spacing=ct_spacing)
+            processor.load_config(custom_structures_config)
+
+            # CustomStructureProcessor expects (Y, X, Z) masks (rt-utils convention)
+            masks_yxz = {name: np.moveaxis(m, 0, -1) for name, m in ts_masks_zyx.items()}
+            custom_yxz = processor.process_all_custom_structures(masks_yxz)
+
+            # Convert back to (Z, Y, X) for dose array indexing
+            for name, mask in custom_yxz.items():
+                arr = np.moveaxis(mask.astype(bool), -1, 0)
+                if np.any(arr):
+                    custom_masks_zyx[name] = arr
+        except Exception as exc:
+            logger.warning("NIfTI DVH: Failed to build custom composites: %s", exc)
+
+    # --- Merge all masks, skip already-computed structures ---
+    all_masks = {}
+    all_masks.update(ts_masks_zyx)
+    all_masks.update(custom_masks_zyx)
+
+    existing_lower = {n.lower().replace("__partial", "") for n in existing_roi_names}
+    masks_to_compute = {n: m for n, m in all_masks.items() if n.lower() not in existing_lower}
+
+    logger.info(
+        "NIfTI DVH: Computing DVH for %d structures (skipping %d already in RTSTRUCT)",
+        len(masks_to_compute), len(all_masks) - len(masks_to_compute),
+    )
+
+    # --- Compute DVH for each mask ---
+    for name, mask_zyx in masks_to_compute.items():
+        try:
+            dose_values = dose_ct_arr[mask_zyx]
+            if dose_values.size == 0:
+                continue
+
+            metrics = _compute_metrics_from_arrays(
+                dose_values, ct_voxel_vol_cm3, max_dose_gy, rx_est,
+            )
+            if metrics is None:
+                continue
+
+            # Check if mask is cropped at image boundary
+            cropped = False
+            try:
+                mask_yxz = np.moveaxis(mask_zyx, 0, -1)
+                cropped = mask_is_cropped(mask_yxz)
+            except Exception:
+                pass
+
+            display_name = name
+            if cropped and not display_name.endswith("__partial"):
+                display_name = f"{display_name}__partial"
+
+            # Build curve data for JSON export
+            curve_points: list = []
+            try:
+                bin_width = 0.01
+                n_bins = max(int(np.ceil(max_dose_gy / bin_width)) + 1, 2)
+                bin_edges = np.linspace(0, n_bins * bin_width, n_bins + 1)
+                hist, _ = np.histogram(dose_values, bins=bin_edges)
+                cum_counts = np.cumsum(hist[::-1])[::-1]
+                if cum_counts[0] > 0:
+                    vol_pct = cum_counts.astype(float) / cum_counts[0] * 100.0
+                    centers = (bin_edges[:-1] + bin_edges[1:]) / 2.0
+                    for d, v in zip(centers, vol_pct):
+                        curve_points.append({"x": float(d), "y": float(v)})
+            except Exception:
+                pass
+
+            metrics.update({
+                "ROI_Number": -1,
+                "ROI_Name": display_name,
+                "ROI_OriginalName": name,
+                "Segmentation_Source": "NIfTI_Direct",
+                "structure_cropped": cropped,
+                "_curve_data": curve_points,
+            })
+            results.append(metrics)
+            logger.debug(
+                "NIfTI DVH: %s -> Dmean=%.2f Gy, Vol=%.1f cm³",
+                name, metrics["DmeanGy"], metrics["Volume (cm³)"],
+            )
+
+        except Exception as exc:
+            logger.debug("NIfTI DVH: Failed for %s: %s", name, exc)
+
+    logger.info("NIfTI DVH: Computed DVH for %d structures", len(results))
+    return results
 
 
 def _estimate_rx_from_ctv1(rtstruct: pydicom.dataset.FileDataset, rtdose: pydicom.dataset.FileDataset) -> Optional[float]:
@@ -664,9 +1029,9 @@ def dvh_for_course(
         return out_xlsx
 
     course_dirs = build_course_dirs(course_dir)
-    rp = course_dir / "RP.dcm"
-    rd = course_dir / "RD.dcm"
-    rs_manual = course_dir / "RS.dcm"
+    rp = find_dcm(course_dirs.dicom_rtplan, "RP.dcm", course_dir)
+    rd = find_dcm(course_dirs.dicom_rtdose, "RD.dcm", course_dir)
+    rs_manual = find_dcm(course_dirs.dicom_rtstruct, "RS.dcm", course_dir)
     rs_auto = course_dir / "RS_auto.dcm"
 
     # Check for systematically cropped RTSTRUCT
@@ -908,6 +1273,19 @@ def dvh_for_course(
             continue
         source_label = f"CustomModel:{model_name}"
         process_struct(rs_model, source_label, rx_est)
+
+    # --- Direct NIfTI-based DVH for TotalSegmentator + custom structures ---
+    # Bypasses RTStructBuilder to avoid geometry mismatches from duplicate CT slices
+    existing_roi_names = {r.get("ROI_OriginalName", r.get("ROI_Name", "")) for r in results}
+    nifti_results = _compute_nifti_based_dvh(
+        course_dir=course_dir,
+        custom_structures_config=custom_structures_config,
+        rtdose_ds=rtdose,
+        rd_path=rd,
+        rx_est=rx_est,
+        existing_roi_names=existing_roi_names,
+    )
+    results.extend(nifti_results)
 
     if not results:
         logger.info("No DVH results for %s", course_dir)
