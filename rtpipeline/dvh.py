@@ -1059,9 +1059,15 @@ def dvh_for_course(
     try:
         rtdose = pydicom.dcmread(str(rd))
         rtplan = pydicom.dcmread(str(rp))
-    except Exception as e:
-        logger.error("Failed to read RP/RD: %s", e)
-        return None
+    except Exception:
+        # Retry with force=True for DICOM files missing preamble/meta header
+        try:
+            rtdose = pydicom.dcmread(str(rd), force=True)
+            rtplan = pydicom.dcmread(str(rp), force=True)
+            logger.info("Read RP/RD with force=True (missing DICOM preamble) in %s", course_dir)
+        except Exception as e:
+            logger.error("Failed to read RP/RD even with force=True: %s", e)
+            return None
 
     results: List[Dict] = []
 
