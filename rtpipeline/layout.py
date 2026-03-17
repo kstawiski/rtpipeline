@@ -63,6 +63,43 @@ def build_course_dirs(root: Path) -> CourseDirs:
     )
 
 
+def find_dcm(subdir: Path, legacy_name: str, course_dir: Path) -> Path:
+    """Find first DICOM file in subdir, fallback to legacy path at course root.
+
+    The organize stage stores DICOM files in subdirectories
+    (e.g. DICOM/RTPLAN/RP.12345.plan_name.dcm) but some code references
+    the legacy flat layout (e.g. course_dir/RP.dcm).  This helper resolves
+    the actual path regardless of layout.
+
+    Handles non-standard extensions (.dicom, no extension) common in
+    multi-centre data by checking file size and DICOM magic bytes.
+    """
+    _DICOM_EXTENSIONS = {".dcm", ".dicom", ".ima"}
+
+    if subdir.is_dir():
+        # First pass: standard .dcm extension
+        for f in sorted(subdir.iterdir()):
+            if f.suffix.lower() == ".dcm" and f.is_file():
+                return f
+        # Second pass: other DICOM extensions (.dicom, .ima)
+        for f in sorted(subdir.iterdir()):
+            if f.suffix.lower() in _DICOM_EXTENSIONS and f.is_file():
+                return f
+        # Third pass: files without recognised extension but likely DICOM
+        # (> 1 KB and either has DICM magic or starts with DICOM group tags)
+        for f in sorted(subdir.iterdir()):
+            if f.is_file() and f.suffix.lower() not in _DICOM_EXTENSIONS and f.stat().st_size > 1024:
+                try:
+                    with open(f, "rb") as fh:
+                        header = fh.read(132)
+                        if header[128:132] == b"DICM" or header[:2] in (b"\x08\x00", b"\x00\x08"):
+                            return f
+                except (OSError, IndexError):
+                    pass
+    legacy = course_dir / legacy_name
+    return legacy
+
+
 def course_dir_name(
     course_start: Optional[str],
     fallback_key: str,
