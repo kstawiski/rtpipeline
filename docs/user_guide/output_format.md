@@ -13,6 +13,7 @@ _RESULTS/
 ├── dvh_metrics.xlsx         ← All dose-volume metrics
 ├── radiomics_ct.xlsx        ← All CT radiomic features
 ├── radiomics_mr.xlsx        ← All MR radiomic features
+├── radiomics_robustness_summary.xlsx ← Cohort stability summary (if enabled)
 ├── case_metadata.xlsx       ← Patient/treatment info
 └── qc_reports.xlsx          ← Quality control summary
 ```
@@ -47,6 +48,17 @@ shape_features = radiomics.filter(regex='shape')
 
 # Filter by structure
 ptv = radiomics[radiomics['Structure'].str.contains('ptv', case=False)]
+```
+
+### Load Robustness Summary
+```python
+robustness = pd.read_excel(
+    "_RESULTS/radiomics_robustness_summary.xlsx",
+    sheet_name="robust_features"
+)
+
+# Features that passed the default RTpipeline v2.1.0 thresholds
+robust_feature_names = robustness["feature_name"].tolist()
 ```
 
 ### Compare Auto vs Manual Segmentation
@@ -173,6 +185,7 @@ stable_features = radiomics[tier1_features]
 │   └── [100+ more structures]
 ├── RS.dcm / RS_auto(.cropped).dcm / RS_custom.dcm
 ├── radiomics_ct.xlsx            # Per-course radiomics
+├── radiomics_robustness_ct.parquet  # Per-course perturbation-level robustness data
 ├── dvh_metrics.xlsx             # Per-course DVH
 └── qc_reports/                  # Quality control
 ```
@@ -272,7 +285,7 @@ print(f"Mean fractions: {metadata['NumberOfFractions'].mean():.1f}")
 - **Setup Script:** `./setup_docker_project.sh`
 - **PyRadiomics Docs:** https://pyradiomics.readthedocs.io/
 - **IBSI Standards:** https://theibsi.github.io/
-- **Pipeline README:** [README.md](README.md)
+- **Pipeline Overview:** [Home](../index.md)
 
 ---
 
@@ -280,10 +293,10 @@ print(f"Mean fractions: {metadata['NumberOfFractions'].mean():.1f}")
 
 1. Check QC reports first: `_RESULTS/qc_reports.xlsx`
 2. Check logs: `{logs_dir}/`
-3. Review documentation: [docs/README.md](docs/README.md)
+3. Review technical documentation: [Architecture](../technical/architecture.md)
 
 ---
 
 **Document Version:** 1.0
-**Compatible with:** rtpipeline v2.0+
+**Compatible with:** rtpipeline v2.1.0+
 **Last Updated:** 2025-11-13
