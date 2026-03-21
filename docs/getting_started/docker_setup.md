@@ -4,6 +4,9 @@
 
 This guide provides a comprehensive walkthrough for setting up and running **rtpipeline** using Docker. It covers everything from basic setup to advanced configuration, addressing common questions about configuration, default behavior, and real-world usage patterns.
 
+!!! info "RTpipeline v2.1.0 container runtime"
+    The Docker image builds two conda environments up front: `rtpipeline` for organization, TotalSegmentator, DVH, QC, and orchestration; and `rtpipeline-radiomics` for PyRadiomics and Pingouin. In normal use you do not activate them manually; the pipeline dispatches radiomics and robustness work to the compatible environment automatically.
+
 **Target Audience:**
 - Users who want to run rtpipeline without installing dependencies locally
 - HPC/cluster users who need reproducible environments
@@ -220,28 +223,43 @@ radiomics_robustness:
       - "prostate"
       - "rectum"
     small_volume_changes: [-0.15, 0.0, 0.15]  # ±15% erosion/dilation
+    max_translation_mm: 0.0
+    n_random_contour_realizations: 0
+    noise_levels: [0.0]
 ```
 
 **What happens:**
 
-1. For each ROI (e.g., `GTV_1`), the pipeline creates 15-30 perturbed versions:
-   - Volume changes: -15%, 0%, +15%
-   - Translation shifts: ±3mm in X/Y/Z
-   - Contour randomization: 2 random realizations
+1. In the container default profile, each selected ROI is re-evaluated under **volume adaptation perturbations** (`V` in the NTCV chain). This is the conservative quick-start setting shipped in `/app/config.container.yaml`.
 
-2. Radiomics features are extracted from each perturbed version
+2. Radiomics features are re-extracted for each perturbation in the dedicated `rtpipeline-radiomics` environment.
 
 3. Robustness metrics are computed:
    - **ICC (Intraclass Correlation)**: ICC ≥ 0.90 = "robust", ICC < 0.75 = "poor"
    - **CoV (Coefficient of Variation)**: CoV ≤ 10% = "robust", CoV > 20% = "poor"
    - **QCD (Quartile Coefficient of Dispersion)**: Additional stability metric
 
-4. Results saved to: `<course>/radiomics_robustness/`
+4. Results are saved to:
+   - Per course: `<course>/radiomics_robustness_ct.parquet`
+   - Cohort aggregate: `_RESULTS/radiomics_robustness_summary.xlsx`
+
+**To enable the full manuscript-oriented NTCV chain**, explicitly add the missing perturbation axes:
+
+```yaml
+radiomics_robustness:
+  enabled: true
+  segmentation_perturbation:
+    intensity: "standard"
+    small_volume_changes: [-0.15, 0.0, 0.15]
+    max_translation_mm: 3.0
+    n_random_contour_realizations: 2
+    noise_levels: [0.0, 10.0, 20.0]
+```
 
 **Processing time impact:**
 
-- Standard intensity: ~3-5x longer than basic radiomics
-- Aggressive intensity: ~6-10x longer
+- Volume-only default: modest overhead versus baseline radiomics
+- Full N/T/C/V configuration: typically several-fold slower than baseline radiomics, depending on ROI count and perturbation intensity
 
 **When to disable:**
 
