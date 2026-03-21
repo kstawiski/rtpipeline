@@ -22,12 +22,12 @@ import pandas as pd
 import SimpleITK as sitk
 import pydicom
 
-from .layout import build_course_dirs
+from .layout import build_course_dirs, find_dcm
 from .utils import mask_is_cropped
 
 logger = logging.getLogger(__name__)
 
-RADIOMICS_ENV = "rtpipeline-radiomics"
+RADIOMICS_ENV = os.environ.get("RTPIPELINE_RADIOMICS_ENV", "rtpipeline-radiomics")
 
 # Heartbeat interval for progress logging (seconds)
 HEARTBEAT_INTERVAL = 60
@@ -710,6 +710,13 @@ def _combine_feature_record(features: Dict[str, Any], metadata: Dict[str, Any]) 
     return record
 
 
+def _process_batch(batch: List[Dict[str, Any]]) -> List[Tuple[Dict[str, Any], Optional[Dict[str, Any]]]]:
+    """Process a batch of radiomics tasks in a subprocess and return (task, features) pairs."""
+    params_file = batch[0].get('params_file') if batch else None
+    batch_results = extract_radiomics_batch_with_conda(batch, params_file)
+    return list(zip(batch, batch_results))
+
+
 def process_radiomics_batch(
     tasks: List[Dict[str, Any]],
     output_path: Path,
@@ -914,12 +921,6 @@ def process_radiomics_batch(
 
             from concurrent.futures import ProcessPoolExecutor, as_completed
 
-            def _process_batch(batch: List[Dict[str, Any]]) -> List[Tuple[Dict[str, Any], Optional[Dict[str, Any]]]]:
-                """Process a batch of tasks and return (task, features) pairs."""
-                params_file = batch[0].get('params_file') if batch else None
-                batch_results = extract_radiomics_batch_with_conda(batch, params_file)
-                return list(zip(batch, batch_results))
-
             # Use ProcessPoolExecutor for better parallelism (avoids GIL)
             # Each worker processes one batch (multiple ROIs) per subprocess
             with ProcessPoolExecutor(max_workers=min(worker_limit, len(batches))) as executor:
@@ -1058,7 +1059,7 @@ def radiomics_for_course(
         return None
 
     # Check for segmentation files
-    rs_manual = course_dir / "RS.dcm"
+    rs_manual = find_dcm(course_dirs.dicom_rtstruct, "RS.dcm", course_dir)
     rs_auto = course_dir / "RS_auto.dcm"
     rs_custom = course_dir / "RS_custom.dcm"
 
@@ -1118,7 +1119,7 @@ def radiomics_for_course(
     def _norm(name: str) -> str:
         return ''.join(ch for ch in name.lower() if ch.isalnum())
 
-    manual_rs = course_dir / "RS.dcm"
+    manual_rs = find_dcm(course_dirs.dicom_rtstruct, "RS.dcm", course_dir)
     auto_rs = course_dir / "RS_auto.dcm"
     manual_names: set[str] = set()
     auto_names: set[str] = set()
