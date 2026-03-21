@@ -318,6 +318,73 @@ Output/
 **Problem**: High I/O parallelism overwhelms network storage
 **Solution**: Set `max_workers: 2-4` for NFS environments
 
+### 6. TotalSegmentator /dev/shm Requirement (CRITICAL)
+
+**Problem**: TotalSegmentator uses nnU-Net v2 which requires `/dev/shm` (POSIX shared memory) for PyTorch multiprocessing data loaders. Default Docker containers have only 64MB `/dev/shm`, causing `RuntimeError: unable to write to file </torch_*>: No space left on device`.
+
+**Workarounds that DO NOT work:**
+- `--totalseg-num-proc-pre 0 --totalseg-num-proc-export 0` — flags don't propagate to nnU-Net internals
+- `nnUNet_def_n_proc=0` — causes `torch.set_num_threads(0)` which is invalid
+- `nnUNet_def_n_proc=1` — nnU-Net still uses shared memory for inter-process communication
+- `torch.multiprocessing.set_sharing_strategy('file_system')` — CUDA tensors still use `/dev/shm`
+- Apptainer with `--bind /tmp/shm:/dev/shm` inside Docker — can't mount `/proc` (no capabilities)
+
+**Solution**: Ensure `/dev/shm` is at least 4GB. For Docker: `docker run --shm-size=4g` or `--shm-size=64g`. For existing containers: request host admin to resize.
+
+**Running TotalSegmentator with micromamba:**
+```bash
+~/.local/bin/micromamba run -n rtpipeline \
+  TotalSegmentator -i input.nii.gz -o output_dir/ \
+  --device gpu --force_split --nr_thr_resamp 1 --nr_thr_saving 1
+```
+
+**Environment variables for nnU-Net:**
+```bash
+export nnUNet_def_n_proc=1          # Minimize multiprocessing workers
+export OMP_NUM_THREADS=1            # Prevent OpenMP oversubscription
+export MKL_NUM_THREADS=1            # Prevent MKL oversubscription
+```
+
+### 7. dicompyler-core + pydicom 3.x Incompatibility
+
+**Problem**: dicompyler-core 0.5.6 imports `pydicom.dicomio.read_file` which was removed in pydicom 3.x. Falls back to `import dicom` (ancient package).
+**Solution**: Patch `dicompylercore/dicomparser.py` to use `from pydicom import dcmread as read_file`. Applied in rtpipeline env at:
+`~/micromamba/envs/rtpipeline/lib/python3.11/site-packages/dicompylercore/dicomparser.py`
+
+### 8. Organize Flat File Symlinks
+
+**Problem**: DVH module expects `RP.dcm`, `RD.dcm`, `RS.dcm` at course directory root. If organize ran in resume mode, these flat copies may not exist (only files in `DICOM/RTDOSE/`, `DICOM/RTPLAN/`, `DICOM/RTSTRUCT/`).
+**Solution**: Create symlinks manually or re-run organize with `--force-redo`.
+
+### 9. Radiomics Conda Subprocess Requires `conda` Command
+
+**Problem**: `radiomics_conda.py` hardcodes `"conda"` for subprocess calls. With micromamba, `conda` is not found.
+**Solution**: Created wrapper at `/home/konrad/.local/bin/conda` that delegates to micromamba:
+```bash
+#!/bin/bash
+exec /home/konrad/.local/bin/micromamba "$@"
+```
+
+### 10. RTpipeline CLI Syntax
+
+**Correct syntax** (click-based CLI):
+```bash
+python -m rtpipeline.cli --dicom-root /path/to/dicom --outdir /path/to/output --stage organize
+```
+- Use `--stage` flag, not subcommands
+- Output dir is `--outdir`, NOT `--output-dir`
+- Stages: `organize`, `segmentation`, `dvh`, `radiomics`, `robustness`, `qc`, `aggregate`
+
+### 11. Robustness Analysis Requires Conda Fallback for NumPy 2.x
+
+**Problem**: `radiomics_robustness.py` called `_extractor()` which returns `None` with NumPy 2.x,
+but had no fallback to the conda subprocess — all perturbation feature extractions were silently skipped.
+**Solution**: Fixed `extract_features_for_masks()` to use `extract_radiomics_batch_with_conda()` when
+`_extractor()` returns None. Saves perturbed images/masks as temp NRRD files, extracts all perturbations
+for a structure in a single conda subprocess call.
+**Performance**: ~81 perturbations per structure (standard intensity) × 8 structures = ~648 extractions.
+Single-patient robustness takes several hours. Plan cluster execution for full cohort.
+
 ---
 
 ## Testing Checklist
@@ -378,6 +445,36 @@ docker run -p 5000:5000 kstawiski/rtpipeline:latest \
 | Documentation | `docs/` |
 | Custom structures | `custom_structures_*.yaml` |
 | Custom models | `custom_models/` |
+
+---
+
+## Manuscript Analysis Rules (MANDATORY)
+
+These rules apply to ALL manuscript-related work. No exceptions.
+
+1. **No inferior analyses, no skipping, no fallbacks.** Everything must be done in the best possible way. Technical issues are not an excuse — fix them.
+2. **Dual conda environments required.** `rtpipeline` (NumPy 2.x, TotalSegmentator) and `rtpipeline-radiomics` (NumPy 1.x, PyRadiomics). This is how the pipeline solves the NumPy incompatibility.
+3. **All output goes to `/umed-projekty/DICOMRT-datasets/`.** Never use symlinks for output directories. Input symlinks to `/projekty/` are OK.
+4. **Local development + Apptainer for processing.** This machine (`cdp-umed-worker`) is inside a Docker container. Use micromamba (`~/.local/bin/micromamba`) for local envs, Apptainer for containerized pipeline runs.
+5. **RTpipeline code modifications happen locally**, then rebuild Docker/Apptainer image as needed.
+6. **Full NTCV perturbation chain for all cohorts.** Noise [0, 10, 20 HU] + Translation ±4mm + 2 Contour realizations + ±15% Volume. No partial perturbation sets.
+7. **Delegate aggressively to Codex.** Use codex-delegator for implementation tasks. Opus orchestrates, Codex implements.
+8. **Manuscript plan is at `manuscript/PLAN.md` v3.0.** This is the authoritative reference. All analysis must follow it exactly.
+9. **High CPU load tasks must be delegated to Argos cluster** (`/argos-cluster` skill). Transfer required files temporarily to `/home/kgs24` on `argos-worker` (Tailscale: 100.64.0.5), process there, retrieve results, then **delete temporary files from Argos** to conserve space. Argos has 822 CPUs across 28 nodes — use for full-scale pipeline processing (Phase 4).
+
+## Infrastructure (cdp-umed-worker)
+
+| Component | Status |
+|-----------|--------|
+| GPU | NVIDIA H100 NVL 96GB (driver 560.35.05). **Safe to parallelize TotalSegmentator** — sufficient VRAM for multiple concurrent inference tasks. |
+| Apptainer | 1.4.5 (at /home/linuxbrew/.linuxbrew/bin/apptainer) |
+| Micromamba | 2.5.0 (at ~/.local/bin/micromamba) |
+| Codex CLI | 0.107.0 |
+| Python | 3.14.3 (linuxbrew) |
+| RTpipeline | 2.1.0 (installed in system Python) |
+| Storage | 2.7 PB NFS (/umed-projekty/), 2% used |
+| Docker | NOT available (we are inside a container) |
+| Argos HPC | 822 CPUs, 28 nodes. Access via SSH/Tailscale (`argos-worker` 100.64.0.5), user `kgs24`, temp dir `/home/kgs24`. **Clean up after use.** |
 
 ---
 

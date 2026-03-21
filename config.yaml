@@ -1,71 +1,42 @@
-# Snakemake configuration for rtpipeline - Thorax Radiotherapy
-# Optimized for konstax server: RTX A4000 (15GB VRAM), 4 cores, 20GB RAM
-# Target: cardiac_STOPSTORM model + TotalSegmentator heartchambers_highres
+# RTpipeline manuscript config: Pluca RCHT (Cohort 4 — Thorax)
+# n=58 lung chemoradiotherapy, single institution (Kopernik Lodz)
+# Scanners: Sensation Open (46), SOMATOM go.Sim (9), Biograph128 (3); 120kVp
+# Protocol version: 1.0 (locked 2026-03-03, PLAN.md v1.2.1)
 
-# Container mode enabled with symlinks to local conda envs
-container_mode: true
+container_mode: false
 
-# Input/Output directories
-dicom_root: "/projekty/Immunodozymetria/DICOM"
-output_dir: "/projekty/Immunodozymetria/rtpipeline_konstax/output"
-logs_dir: "/projekty/Immunodozymetria/rtpipeline_konstax/logs"
+dicom_root: "/projekty/Pluca/Lucjan_RCHT/v202511/DICOM"
+output_dir: "/umed-projekty/DICOMRT-datasets/PlucaRCHT/output"
+logs_dir: "/umed-projekty/DICOMRT-datasets/PlucaRCHT/logs"
 
-# Processing parameters - OPTIMIZED for 4 cores, 20GB RAM, A4000 15GB
-# ======================================================================
-max_workers: 3  # Leave 1 core for system + GPU operations
+max_workers: null
 
-# Scheduler overrides - conservative for limited CPU
 scheduler:
-  reserved_cores: 1                # Keep 1 core free for GPU, I/O, system
-  parallel_courses: 1              # Process 1 patient at a time (limited RAM)
-  dvh_threads_per_job: 2           # 2 threads per job
-  radiomics_threads_per_job: 2     # Similar
-  qc_threads_per_job: 2
-  crop_ct_threads_per_job: 2
-  prioritize_short_courses: true   # Run small courses first
-  robustness_threads_per_job: 2
+  reserved_cores: 1
+  parallel_courses: 4
+  radiomics_threads_per_job: 8
+  prioritize_short_courses: true
 
-# Organize step optimizations
-organize:
-  dedup_by_sop_uid: true
-  use_hardlinks: true
-  verify_checksum: false  # Skip for speed
-  cache_headers: true
-
-# TotalSegmentator configuration - optimized for A4000 15GB
 segmentation:
-  max_workers: 1        # Single GPU, run sequentially
-  force: false
-  fast: false           # Full resolution for cardiac
-  roi_subset: null
-  # Additional TotalSegmentator tasks for thorax
-  extra_models:
-    - "heartchambers_highres"  # High-resolution heart chambers
-    - "coronary_arteries"      # Coronary arteries segmentation
   device: "gpu"
-  force_split: false    # 15GB VRAM is sufficient for most cases
-  nr_threads_resample: 2
-  nr_threads_save: 2
+  fast: false
+  force: false
+  roi_subset: null
+  extra_models: []
+  max_workers: 1
+  force_split: true
+  nr_threads_resample: 4
+  nr_threads_save: 4
   num_proc_preprocessing: 1
   num_proc_export: 1
 
-# Custom models - enable cardiac_STOPSTORM
 custom_models:
-  enabled: true
-  root: "/projekty/rtpipeline/custom_models"
-  models:
-    - "cardiac_STOPSTORM"  # Cardiac substructure segmentation
-  max_workers: 1           # Single GPU
-  force: false
-  nnunet_predict: "nnUNet_predict"
-  retain_weights: true     # Keep extracted weights for speed
-  conda_activate: null
+  enabled: false
 
-# Radiomics configuration - conservative memory usage
 radiomics:
-  sequential: true         # Run sequentially to save memory
-  params_file: "/projekty/rtpipeline/rtpipeline/radiomics_params.yaml"
-  mr_params_file: "/projekty/rtpipeline/rtpipeline/radiomics_params_mr.yaml"
+  enabled: true
+  sequential: false
+  params_file: "rtpipeline/radiomics_params.yaml"
   skip_rois:
     - body
     - couchsurface
@@ -74,36 +45,31 @@ radiomics:
     - bones
     - m1
     - m2
-  max_voxels: 500000000    # Reduced for memory
-  min_voxels: 10
+  max_voxels: 1500000000
+  min_voxels: 64
 
-# Radiomics robustness - configure for cardiac structures
+# FULL NTCV Perturbation Chain — thorax structures (same as immunodozymetria)
 radiomics_robustness:
   enabled: true
   modes:
     - segmentation_perturbation
   segmentation_perturbation:
+    intensity: "standard"
     apply_to_structures:
-      - "GTV*"
-      - "CTV*"
-      - "PTV*"
+      - "lung_upper_lobe_left"
+      - "lung_lower_lobe_left"
+      - "lung_upper_lobe_right"
+      - "lung_middle_lobe_right"
+      - "lung_lower_lobe_right"
       - "heart"
-      - "heart_*"           # Heart substructures
-      - "Atrium_*"
-      - "Ventricle_*"
-      - "A_LAD"
-      - "A_LCX"
-      - "A_RCA"
-      - "coronary_arteries"
       - "esophagus"
       - "spinal_cord"
-      - "lung*"
+      - "trachea"
+      - "aorta"
     small_volume_changes: [-0.15, 0.0, 0.15]
-    large_volume_changes: [-0.30, 0.0, 0.30]
-    max_translation_mm: 0.0
-    n_random_contour_realizations: 0
-    noise_levels: [0.0]
-    intensity: "standard"
+    max_translation_mm: 4.0
+    n_random_contour_realizations: 2
+    noise_levels: [0.0, 10.0, 20.0]
   metrics:
     icc:
       implementation: "pingouin"
@@ -121,23 +87,15 @@ radiomics_robustness:
       robust_pct: 10.0
       acceptable_pct: 20.0
 
-aggregation:
-  threads: 2
-
-# Environment names
-environments:
-  main: "rtpipeline"
-  radiomics: "rtpipeline-radiomics"
-
-# Custom structures configuration - thorax specific
-custom_structures: "/projekty/Immunodozymetria/rtpipeline_konstax/custom_structures_thorax.yaml"
-
-# CT cropping for thorax
 ct_cropping:
   enabled: true
   region: "thorax"
   superior_margin_cm: 2.0
   inferior_margin_cm: 2.0
-  use_cropped_for_dvh: true
-  use_cropped_for_radiomics: true
+  use_cropped_for_dvh: false
+  use_cropped_for_radiomics: false
   keep_original: true
+
+environments:
+  main: "rtpipeline"
+  radiomics: "rtpipeline-radiomics"

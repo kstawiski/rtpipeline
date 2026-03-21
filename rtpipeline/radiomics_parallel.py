@@ -30,7 +30,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 import pydicom
 
-from .layout import build_course_dirs
+from .layout import build_course_dirs, find_dcm
 from .utils import mask_is_cropped
 from .custom_models import list_custom_model_outputs
 from .custom_structures_rtstruct import _create_custom_structures_rtstruct, _is_rs_custom_stale
@@ -490,7 +490,7 @@ def parallel_radiomics_for_course(
             )
 
     sources: List[Tuple[str, Path]] = []
-    rs_manual = course_dir / "RS.dcm"
+    rs_manual = find_dcm(course_dirs.dicom_rtstruct, "RS.dcm", course_dir)
     if rs_manual.exists():
         sources.append(("Manual", rs_manual))
     rs_auto = course_dir / rs_auto_name
@@ -566,7 +566,7 @@ def parallel_radiomics_for_course(
 
             avail = set(_list_roi_names_dicom(rs_custom))
             if not desired_custom:
-                manual_names = set(_list_roi_names_dicom(course_dir / "RS.dcm"))
+                manual_names = set(_list_roi_names_dicom(find_dcm(course_dirs.dicom_rtstruct, "RS.dcm", course_dir)))
                 auto_names = set(_list_roi_names_dicom(course_dir / "RS_auto.dcm"))
                 inferred = {n for n in (avail - (manual_names | auto_names)) if n}
                 desired_custom = {n[:-9] if n.endswith("__partial") else n for n in inferred}
@@ -738,4 +738,144 @@ def parallel_radiomics_for_course(
         return out_path
     except Exception as exc:
         logger.error("Failed to write radiomics output for %s: %s", course_dir, exc)
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Robustness parallel helpers
+# ---------------------------------------------------------------------------
+# These functions are imported by radiomics_robustness.py to enable parallel
+# feature extraction across perturbations.  The main radiomics extraction
+# (above) uses _extract_one / _worker_init for a different parallelism
+# pattern; these helpers use a simpler file-based approach that is compatible
+# with multiprocessing.Pool.imap_unordered().
+
+_ROBUSTNESS_WORKER_STATE: Dict[str, Any] = {}
+
+
+def _prepare_radiomics_task(
+    image,  # SimpleITK Image
+    mask,   # SimpleITK Image (binary mask)
+    config: Any,
+    source: str,
+    roi_name: str,
+    course_dir: Path,
+    temp_dir: Path,
+    large_roi: bool,
+) -> Tuple[Path, Dict[str, Any]]:
+    """Save image/mask to temp files and prepare a task descriptor.
+
+    Returns (mask_path, task_params) tuple suitable for passing to
+    ``_isolated_radiomics_extraction_with_retry``.
+    """
+    import SimpleITK as sitk
+    from .radiomics import _get_params_file
+
+    # Deduplicate only when the exact same SimpleITK image object is reused.
+    # Geometry-only keys are unsafe here because noise perturbations share
+    # origin/spacing/size but differ in voxel intensities.
+    img_key = id(image)
+    img_path = temp_dir / f"img_{img_key}.nrrd"
+    if not img_path.exists():
+        sitk.WriteImage(image, str(img_path))
+
+    # Each mask is unique
+    mask_id = abs(hash((id(mask), roi_name, source)))
+    mask_path = temp_dir / f"mask_{mask_id}.nrrd"
+    sitk.WriteImage(sitk.Cast(mask, sitk.sitkUInt8), str(mask_path))
+
+    params_file = _get_params_file(config, "CT")
+    task_params = {
+        "image_path": str(img_path),
+        "mask_path": str(mask_path),
+        "segmentation_source": source,
+        "roi_name": roi_name,
+        "patient_id": course_dir.parent.name,
+        "course_id": course_dir.name,
+        "large_roi": large_roi,
+        "params_file": str(params_file) if params_file else None,
+    }
+    return mask_path, task_params
+
+
+def _isolated_radiomics_extraction_with_retry(task) -> Optional[Dict[str, Any]]:
+    """Extract radiomics features from pre-saved image/mask files.
+
+    Designed for ``multiprocessing.Pool.imap_unordered()``.
+    *task* is a ``(mask_path, task_params)`` tuple produced by
+    ``_prepare_radiomics_task``.
+
+    The RadiomicsFeatureExtractor is lazily cached per worker process to
+    avoid re-creating it for every perturbation.
+    """
+    _apply_thread_limit(1)
+
+    _mask_path, task_params = task
+    params_file = task_params.get("params_file")
+    large_roi = task_params.get("large_roi", False)
+    extra_metadata = task_params.get("extra_metadata", {})
+
+    # Lazy-init cached extractor (persists within the worker process)
+    cache_key = f"{'large' if large_roi else 'normal'}_{params_file or 'default'}"
+    if cache_key not in _ROBUSTNESS_WORKER_STATE:
+        import warnings
+        warnings.filterwarnings("ignore")
+        import logging as _logging
+        _logging.getLogger("radiomics").setLevel(_logging.ERROR)
+
+        from radiomics import featureextractor  # type: ignore
+
+        if params_file:
+            ext = featureextractor.RadiomicsFeatureExtractor(params_file)
+        else:
+            ext = featureextractor.RadiomicsFeatureExtractor()
+
+        if large_roi:
+            try:
+                ext.disableAllImageTypes()
+                ext.enableImageTypeByName("Original")
+                ext.disableAllFeatures()
+                ext.enableFeatureClassByName("firstorder")
+                ext.enableFeatureClassByName("shape")
+                ext.settings["resampledPixelSpacing"] = [2.0, 2.0, 2.0]
+            except Exception:
+                pass
+
+        _ROBUSTNESS_WORKER_STATE[cache_key] = ext
+
+    ext = _ROBUSTNESS_WORKER_STATE[cache_key]
+
+    try:
+        result = ext.execute(task_params["image_path"], task_params["mask_path"])
+
+        output: Dict[str, Any] = {}
+        for k, v in result.items():
+            if k.startswith("diagnostics_"):
+                continue
+            try:
+                if hasattr(v, "item"):
+                    output[k] = v.item()
+                elif hasattr(v, "tolist"):
+                    output[k] = v.tolist()
+                elif isinstance(v, (int, float)):
+                    output[k] = v
+            except Exception:
+                pass
+
+        # Attach metadata expected by the robustness result parser
+        output["segmentation_source"] = task_params.get("segmentation_source", "")
+        output["roi_name"] = task_params.get("roi_name", "")
+        output["patient_id"] = task_params.get("patient_id", "")
+        output["course_id"] = task_params.get("course_id", "")
+        output.update(extra_metadata)
+
+        return output
+
+    except Exception as e:
+        logger.debug(
+            "Isolated extraction failed for %s/%s: %s",
+            task_params.get("roi_name"),
+            extra_metadata.get("perturbation_id", "?"),
+            e,
+        )
         return None
