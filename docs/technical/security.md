@@ -9,11 +9,11 @@ This document provides security guidance for deploying rtpipeline in production 
 1. [Security Overview](#security-overview)
 2. [Default Configuration Security](#default-configuration-security)
 3. [Production Deployment Security](#production-deployment-security)
-4. [Authentication & Authorization](#authentication--authorization)
+4. [Authentication & Authorization](#authentication-authorization)
 5. [Network Security](#network-security)
 6. [Data Protection](#data-protection)
 7. [Container Security](#container-security)
-8. [Monitoring & Incident Response](#monitoring--incident-response)
+8. [Monitoring & Incident Response](#monitoring-incident-response)
 9. [HIPAA Compliance Considerations](#hipaa-compliance-considerations)
 10. [Security Checklist](#security-checklist)
 

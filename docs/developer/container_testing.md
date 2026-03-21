@@ -530,6 +530,6 @@ chmod +x test_containers.sh
 - [ ] No import or dependency errors
 
 For issues, consult:
-- [docs/DOCKER.md](DOCKER.md) - Container deployment guide
-- [docs/TROUBLESHOOTING.md](TROUBLESHOOTING.md) - General troubleshooting
+- [Docker details](../technical/docker.md) - Container deployment guide
+- [User troubleshooting](../user_guide/troubleshooting.md) - General troubleshooting
 - GitHub Issues: https://github.com/kstawiski/rtpipeline/issues

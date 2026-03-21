@@ -1,371 +1,114 @@
-# RT Pipeline - Architecture & Parallelization Analysis
+# RTpipeline v2.1.0 Architecture
 
-## Executive Summary
-The rtpipeline is a comprehensive radiotherapy data processing pipeline with:
-- **Multi-stage parallel execution** using ThreadPoolExecutor for inter-course parallelization
-- **Process-based parallelism** for radiomics with segmentation fault protection
-- **GPU acceleration** for TotalSegmentator segmentation (CUDA/cuBLAS support)
-- **Adaptive worker scaling** with automatic fallback on memory pressure
-- **Thread-limited processing** to prevent OpenMP/threading conflicts
+RTpipeline is a radiotherapy ETL pipeline that turns raw DICOM exports into research-ready tables, derived RTSTRUCTs, QC artifacts, and robustness summaries. In `v2.1.0`, the architecture centers on three design choices:
 
----
+- **Course-first orchestration:** organize DICOM into patient/course units, then run every downstream stage on those units.
+- **Dual-environment execution:** keep TotalSegmentator and the rest of the pipeline on a modern NumPy 2.x stack while routing PyRadiomics and robustness analysis through a compatible NumPy 1.26 environment.
+- **Robustness as a first-class stage:** radiomics stability screening is integrated into the main workflow, not bolted on afterward.
 
-## 1. MAIN PIPELINE IMPLEMENTATION FILES
+## High-Level Flow
 
-### Core Entry Points
-- **`/home/user/rtpipeline/rtpipeline/cli.py`** (924 lines)
-  - Main command-line interface with full argument parsing
-  - Orchestrates all pipeline stages: organize, segmentation, dvh, visualize, radiomics, qc
-  - Implements adaptive worker management per stage
-  - Subcommands: `doctor` (environment check), `validate` (config validation)
-
-- **`/home/user/rtpipeline/rtpipeline/config.py`** (89 lines)
-  - Central configuration dataclass: `PipelineConfig`
-  - Defines all pipeline parameters and defaults
-  - Key method: `effective_workers()` - auto-calculates workers (CPU count - 1)
-
-### Configuration Files
-- **`config.yaml`** - Master configuration (YAML format)
-  - Workers: auto/manual setting
-  - Device selection (gpu/cpu/mps)
-  - Thread limits per stage
-  - Resource allocation parameters
-
----
-
-## 2. CURRENT PARALLEL PROCESSING MECHANISMS
-
-### A. ThreadPoolExecutor-Based Inter-Course Parallelization
-**File:** `/home/user/rtpipeline/rtpipeline/utils.py` (lines 323-465)
-
-**Function:** `run_tasks_with_adaptive_workers()`
-
-**Key Features:**
-```python
-- Parallel execution of independent course processing tasks
-- Uses concurrent.futures.ThreadPoolExecutor
-- Intelligent memory pressure detection
-- Automatic worker scaling: reduces workers when MemoryError detected
-- Fallback strategy:
-  * Half workers on first memory error
-  * Single worker on continued errors
-  * Complete failure only after exhausting all options
+```mermaid
+graph LR
+    A[Raw DICOM export] --> B[Organize and hydrate courses]
+    B --> C[Segmentation and RTSTRUCT synthesis]
+    B --> D[CT cropping]
+    C --> E[DVH and metadata]
+    C --> F[Radiomics extraction]
+    D --> E
+    D --> F
+    F --> G[Robustness perturbations]
+    E --> H[_RESULTS tables]
+    F --> H
+    G --> H
 ```
 
-**Worker Scaling Logic:**
-```
-Initial Workers = min(max_workers, len(tasks))
-If memory_error detected AND workers > min_workers:
-  new_workers = max(min_workers, workers // 2)
-  if new_workers == workers:
-    new_workers = workers - 1
-Retry with reduced workers
-```
+## Core Runtime Components
 
-**Progress Monitoring:**
-- Tracks: completed/total, percentage, elapsed time, ETA
-- Logs every completion if `show_progress=True`
+| Layer | Primary modules | What it does | Main outputs |
+|-------|-----------------|--------------|--------------|
+| Organization | `rtpipeline.cli`, `rtpipeline.organize` | Groups scattered DICOM into coherent patient/course folders and hydrates existing manifests | Course directories under `output_dir/{patient}/{course}` |
+| Segmentation | `rtpipeline.segmentation`, `rtpipeline.auto_rtstruct`, `rtpipeline.custom_models` | Runs TotalSegmentator and optional custom nnU-Net models, then emits standardized RTSTRUCTs | `RS_auto.dcm`, custom-model RTSTRUCTs, segmentation NIfTIs |
+| CT standardization | `rtpipeline.anatomical_cropping` | Applies anatomy-aware FOV normalization when enabled | Cropped CT/RTSTRUCT variants |
+| Dose/QC/metadata | `rtpipeline.dvh`, `rtpipeline.quality_control`, `rtpipeline.metadata` | Computes DVH metrics, QC reports, and case-level metadata | `dvh_metrics.xlsx`, `qc_reports.xlsx`, `case_metadata.xlsx` |
+| Radiomics | `rtpipeline.radiomics`, `rtpipeline.radiomics_conda`, `rtpipeline.radiomics_parallel` | Extracts IBSI-oriented CT/MR radiomics with process isolation and thread caps | `radiomics_ct.xlsx`, `radiomics_mr.xlsx` |
+| Robustness | `rtpipeline.radiomics_robustness`, CLI subcommands `radiomics-robustness` and `radiomics-robustness-aggregate` | Runs perturbation-based feature stability analysis and cohort aggregation | Per-course `radiomics_robustness_ct.parquet`, aggregate `radiomics_robustness_summary.xlsx` |
 
----
+## Dual-Environment Design
 
-### B. Process-Based Radiomics Parallelization
-**File:** `/home/user/rtpipeline/rtpipeline/radiomics_parallel.py` (590 lines)
+`v2.1.0` deliberately separates the pipeline into two conda environments:
 
-**Process Pool Implementation:**
-```python
-- Uses multiprocessing.Pool with 'spawn' context (safer than 'fork')
-- Function: parallel_radiomics_for_course()
-- Optimal workers: _calculate_optimal_workers() → CPU count - 1
-- Task distribution: One task per ROI/source combination
-- Retry mechanism: Up to 3 attempts per task with exponential backoff
-```
+| Environment | Defined in | Main purpose | Key packages |
+|-------------|------------|--------------|--------------|
+| `rtpipeline` | `envs/rtpipeline.yaml` | Organization, segmentation, DVH, QC, orchestration | Python 3.11, NumPy 2.x, TotalSegmentator 2.12.0, PyTorch 2.3 |
+| `rtpipeline-radiomics` | `envs/rtpipeline-radiomics.yaml` | Radiomics extraction and robustness statistics | Python 3.10, NumPy 1.26, PyRadiomics 3.0.1, Pingouin, PyArrow |
 
-**Key Advantages Over Threading:**
-- Avoids segmentation faults from pyradiomics/OpenMP interactions
-- Process isolation prevents memory leaks
-- Each process: dedicated thread limit (OMP_NUM_THREADS=1)
+### Why this exists
 
-**Task Processing:**
-```python
-_isolated_radiomics_extraction():
-  1. Load task data from temporary pickle file (RestrictedUnpickler for security)
-  2. Reconstruct SimpleITK image
-  3. Apply per-process thread limit (OMP_NUM_THREADS=1)
-  4. Execute radiomics feature extraction
-  5. Serialize results to DataFrame
-  6. Clean up temp file
-```
+TotalSegmentator and the modern imaging toolchain are happiest on newer NumPy and Python versions, while PyRadiomics remains pinned to an older compatibility window. Rather than forcing one compromise environment, RTpipeline detects when radiomics work must be delegated and launches it in `rtpipeline-radiomics`.
 
-**Security Feature:** RestrictedUnpickler
-- Whitelist approach: only allows safe types
-- Prevents arbitrary code execution from pickle files
-- Allowed: numpy arrays, Path, dict, list, basic types
+### What this means operationally
 
----
+- **Docker builds both environments ahead of time** in the image, so users do not need to manage them manually.
+- **Local/conda runs should preserve both YAMLs** for reproducibility if radiomics or robustness are enabled.
+- **Radiomics and robustness inherit their own thread limits** to avoid BLAS/OpenMP oversubscription.
 
-## 3. GPU UTILIZATION CODE
+## Robustness Module Architecture
 
-### A. TotalSegmentator GPU Configuration
-**File:** `/home/user/rtpipeline/rtpipeline/segmentation.py` (lines 243-363)
+The robustness module is a standard stage in the pipeline rather than a side workflow.
 
-**GPU Device Selection:**
-```python
-# From config:
-totalseg_device: str = "gpu"  # choices: "gpu", "cpu", "mps"
-totalseg_force_split: bool = True  # Force chunked inference
+### Perturbation model
 
-# Environment variables set:
-env["TOTALSEG_DEVICE"] = device
-env["TOTALSEG_ACCELERATOR"] = "cuda" if device=="gpu" else device
-env["CUDA_VISIBLE_DEVICES"] = "all"  # Default
-```
+RTpipeline implements a configurable **NTCV-style perturbation chain**:
 
-**CUDA Environment Variables:**
-```python
-# Fallback strategy for OOM:
-if TotalSegmentator fails with GPU:
-    retry with: -d cpu + CUDA_VISIBLE_DEVICES='-1'
-```
+- **N**: Gaussian noise injection
+- **T**: rigid translations
+- **C**: contour randomization
+- **V**: volume adaptation via erosion/dilation
 
-**Memory Optimization:**
-- `--force_split`: Chunks large volumes for GPU memory reduction
-- `TOTALSEG_PRELOAD_WEIGHTS`: "1" (pre-load model into GPU)
-- Thread constraints to prevent GPU overload
+The shipped container profile keeps a conservative default with **volume perturbations enabled** and the other axes disabled unless explicitly configured. For manuscript-grade robustness studies, `noise_levels`, `max_translation_mm`, and `n_random_contour_realizations` should be set in `config.yaml`.
 
-### B. PyTorch/CUDA Initialization
-**File:** `/home/user/rtpipeline/rtpipeline/cli.py` (lines 207-229)
+### Outputs
 
-**Doctor Command - CUDA Diagnostics:**
-```bash
-rtpipeline doctor
+- **Per course:** `radiomics_robustness_ct.parquet`
+- **Cohort aggregate:** `_RESULTS/radiomics_robustness_summary.xlsx`
+- **Typical aggregate sheets:** `global_summary`, `robust_features`, `acceptable_features`, and source-aware breakdowns when multiple segmentation sources are present
 
-Checks:
-- torch.cuda availability
-- CUDA device count
-- nvidia-smi GPU info
-- TotalSegmentator version
-```
+### Failure model
 
----
+Robustness is designed to be informative without making the entire ETL brittle:
 
-## 4. CPU/CORE ALLOCATION SETTINGS
+- per-course sentinel files record success/failure
+- aggregation skips missing or failed course-level outputs
+- thread and worker limits mirror the same defensive scheduling used for radiomics
 
-### Configuration Hierarchy (Priority Order)
+## Orchestration and Scheduling
 
-1. **Explicit Command-Line Arguments**
-   ```
-   --max-workers N                    # Overall parallelism
-   --seg-workers N                # TotalSegmentator parallelism
-   --seg-proc-threads N           # CPU threads per TotalSegmentator
-   --radiomics-proc-threads N     # CPU threads per radiomics worker
-   --custom-model-workers N       # Concurrent custom model courses
-   ```
+RTpipeline can be launched directly through `rtpipeline` CLI commands or via Snakemake.
 
-2. **Config File (config.yaml)**
-   ```yaml
-   workers: auto                  # Default: CPU count - 1
-   
-   segmentation:
-     workers: 4                   # TotalSegmentator concurrency
-     threads_per_worker: null     # No per-worker limit
-     nr_threads_resample: 1       # nnUNet preprocessing threads
-     nr_threads_save: 1           # nnUNet export threads
-     num_proc_preprocessing: 1    # nnUNet preprocessing workers
-     num_proc_export: 1           # nnUNet export workers
-   
-   radiomics:
-     thread_limit: 4              # CPU threads per radiomics worker
-   
-   custom_models:
-     workers: 1                   # Concurrent custom model courses
-   ```
+### CLI surface
 
-### Auto-Calculation Logic
-**Method:** `PipelineConfig.effective_workers()` (config.py, lines 83-88)
-```python
-def effective_workers(self) -> int:
-    import os
-    if self.workers and self.workers > 0:
-        return int(self.workers)
-    cpu = os.cpu_count() or 2
-    return max(1, cpu - 1)
-```
+- `rtpipeline doctor`: environment and GPU sanity checks
+- `rtpipeline validate`: config and environment validation
+- `rtpipeline radiomics-robustness`: course-level robustness extraction
+- `rtpipeline radiomics-robustness-aggregate`: cohort-level aggregation
 
-### Per-Stage Worker Allocation
-```
-Stage                Calculation                    Default
-─────────────────────────────────────────────────────────────
-Segmentation        min(seg_workers, effective)    1
-Custom Models       min(custom_workers, effective) 1
-DVH                 effective_workers              CPU-1
-Radiomics           min(optimal, effective)        CPU-1
-Visualization       effective_workers              CPU-1
-CT Cropping         effective_workers              CPU-1
-```
+### Scheduling model
 
-### Thread Limit Management
+- **Inter-course parallelism:** adaptive worker pools fan out independent patient/course tasks
+- **Segmentation:** typically serialized or lightly parallelized on GPU hosts to avoid memory contention
+- **Radiomics/robustness:** process-isolated workloads with explicit thread caps
+- **Memory pressure handling:** worker pools can back off automatically instead of hard-failing immediately
 
-**Environment Variables Controlled:**
-```python
-_THREAD_VARS = (
-    'OMP_NUM_THREADS',            # OpenMP
-    'OPENBLAS_NUM_THREADS',       # OpenBLAS
-    'MKL_NUM_THREADS',            # Intel MKL
-    'NUMEXPR_NUM_THREADS',        # NumExpr
-    'NUMBA_NUM_THREADS',          # Numba
-)
-```
+## Versioned Artifacts
 
-**Application Points:**
-1. TotalSegmentator execution (segmentation.py)
-2. Radiomics extraction per process (radiomics_parallel.py)
-3. Radiomics extraction per worker (radiomics.py)
+The architecture described here corresponds to `RTpipeline 2.1.0`, with the version declared in:
 
----
+- `pyproject.toml`
+- `rtpipeline/__init__.py`
+- `Dockerfile` image label
 
-## 5. PARALLELIZATION CONFIGURATION
-
-### Configuration File Locations
-```
-/home/user/rtpipeline/config.yaml              # Main runtime config
-/home/user/rtpipeline/rtpipeline/config.py     # Config dataclass definition
-/home/user/rtpipeline/envs/rtpipeline.yaml    # Conda environment
-/home/user/rtpipeline/docker-compose.yml       # Container orchestration
-```
-
-### Stage-by-Stage Parallelization Strategy
-
-#### 1. ORGANIZE Stage (Sequential)
-- Single-threaded discovery and metadata extraction
-- No parallelization (I/O bound, metadata parsing)
-
-#### 2. SEGMENTATION Stage
-```python
-Workers: min(segmentation_workers, effective_workers)
-Default: 1 worker (GPU memory constraint)
-Concurrency: Multiple TotalSegmentator jobs per course
-Memory Management: Adaptive fallback on OOM
-```
-
-**Code Location:** cli.py lines 679-713
-
-#### 3. CUSTOM SEGMENTATION Stage
-```python
-Workers: min(custom_models_workers, effective_workers)
-Default: 1 worker
-Per-task: One course per worker (GPU intensive)
-```
-
-**Code Location:** cli.py lines 715-762
-
-#### 4. DVH Stage
-```python
-Workers: effective_workers
-Method: ThreadPoolExecutor
-Parallelism: One course per thread
-Per-course: radiomics feature extraction parallelized
-```
-
-**Code Location:** cli.py lines 799-828
-
-#### 5. RADIOMICS Stage
-```python
-Workers: _calculate_optimal_workers() [CPU - 1]
-Method: ProcessPoolExecutor (spawn context)
-Per-course: ROI extraction tasks parallelized
-Thread limit: Applied per worker process
-```
-
-**Code Location:** cli.py lines 859-902
-
-#### 6. VISUALIZE Stage
-```python
-Workers: effective_workers
-Method: ThreadPoolExecutor
-Per-course: HTML/image generation parallelized
-```
-
-**Code Location:** cli.py lines 830-857
-
-#### 7. QC Stage
-```python
-Method: Sequential loop over courses
-Single-threaded quality control report generation
-```
-
-**Code Location:** cli.py lines 904-919
-
-### Radiomics Parallelization Control
-
-**Environment Variables:**
-```python
-RTPIPELINE_USE_PARALLEL_RADIOMICS = '1'  # Enable parallel mode
-RTPIPELINE_MAX_WORKERS = 'N'             # Override worker count globally
-RTPIPELINE_RADIOMICS_THREAD_LIMIT = 'N'  # Thread limit per worker
-RTPIPELINE_RADIOMICS_SEQUENTIAL = '1'    # Force sequential (legacy)
-```
-
-**Sequential Mode Trigger:**
-```python
-# CLI: --sequential-radiomics flag
-# Sets: os.environ['RTPIPELINE_RADIOMICS_SEQUENTIAL'] = '1'
-# Uses: Original radiomics.py implementation (no parallelization)
-```
-
----
-
-## 6. DOCKER CONTAINER RESOURCE ALLOCATION
-
-**File:** `/home/user/rtpipeline/docker-compose.yml`
-
-### GPU Configuration (Default)
-```yaml
-rtpipeline (GPU-enabled):
-  environment:
-    - NVIDIA_VISIBLE_DEVICES=all     # All GPUs visible
-    - CUDA_VISIBLE_DEVICES=all       # All GPUs accessible
-  shm_size: '4gb'                    # PyTorch shared memory
-  restart: unless-stopped
-```
-
-### CPU-Only Configuration
-```yaml
-rtpipeline-cpu (profile: cpu-only):
-  deploy:
-    resources:
-      limits:
-        cpus: '16.0'
-        memory: 32G
-      reservations:
-        cpus: '4.0'
-        memory: 8G
-  profiles:
-    - cpu-only
-```
-
-**Activation:** `docker-compose --profile cpu-only up`
-
-### Jupyter Service
-```yaml
-jupyter:
-  deploy:
-    resources:
-      reservations:
-        devices:
-          - driver: nvidia
-            count: 1              # Single GPU
-            capabilities: [gpu]
-```
-
----
-
-## 7. PERFORMANCE MONITORING & LOGGING
-
-### Log Output Files
-```
-/home/user/rtpipeline/Logs/rtpipeline.log  # Main pipeline log
-Per-stage logs with progress tracking
-```
+If you publish results, cite the exact Docker tag or git commit alongside the configuration file used for the run.
 
 ### Adaptive Worker Progress Logging
 **Function:** `_log_progress()` (utils.py, lines 306-320)
