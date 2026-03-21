@@ -57,7 +57,45 @@ LOGS_DIR = _ensure_writable_dir((ROOT_DIR / config.get("logs_dir", "Logs_Snakema
 RESULTS_DIR = OUTPUT_DIR / "_RESULTS"
 
 
-def _rt_env():
+def _workflow_configfiles() -> list[Path]:
+    try:
+        configfiles = getattr(workflow, "configfiles", [])
+    except NameError:
+        configfiles = []
+    paths: list[Path] = []
+    for fp in configfiles or []:
+        try:
+            paths.append(Path(str(fp)).resolve())
+        except Exception:
+            paths.append(Path(str(fp)))
+    return paths
+
+
+def _materialize_effective_config() -> Path:
+    """Persist the merged Snakemake config for subprocess stages."""
+    target = LOGS_DIR / "_workflow" / "effective_config.yaml"
+    try:
+        import yaml
+
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with target.open("w", encoding="utf-8") as handle:
+            yaml.safe_dump(config, handle, sort_keys=False)
+        return target.resolve()
+    except Exception as exc:
+        configfiles = _workflow_configfiles()
+        fallback = configfiles[-1] if configfiles else (ROOT_DIR / "config.yaml").resolve()
+        sys.stderr.write(
+            f"[rtpipeline] Warning: unable to write merged config to {target}: {exc}. "
+            f"Falling back to {fallback}\n"
+        )
+        return fallback
+
+
+EFFECTIVE_CONFIGFILE = _materialize_effective_config()
+os.environ["RTPIPELINE_CONFIGFILE"] = str(EFFECTIVE_CONFIGFILE)
+
+
+def _rt_env(python_bin_dir: str | None = None):
     env = os.environ.copy()
     repo_path = str(ROOT_DIR)
     existing_py_path = env.get("PYTHONPATH")
@@ -67,16 +105,57 @@ def _rt_env():
     else:
         env["PYTHONPATH"] = repo_path
 
-    # Ensure subprocess stages (python -m rtpipeline.cli) load the same project
-    # config file as Snakemake. Docker projects mount this as config.custom.yaml.
-    for candidate in (ROOT_DIR / "config.custom.yaml", ROOT_DIR / "config.yaml"):
-        if candidate.exists():
-            env.setdefault("RTPIPELINE_CONFIGFILE", str(candidate))
-            break
+    # Ensure subprocess stages (python -m rtpipeline.cli) see the same merged
+    # config Snakemake used after applying workflow configfiles and CLI overrides.
+    env["RTPIPELINE_CONFIGFILE"] = str(EFFECTIVE_CONFIGFILE)
+
+    # Ensure the conda env's bin directory is on PATH so dcm2niix, python, etc. resolve
+    if python_bin_dir:
+        current_path = env.get("PATH", "")
+        if python_bin_dir not in current_path.split(os.pathsep):
+            env["PATH"] = os.pathsep.join([python_bin_dir, current_path])
     return env
 
 # Ensure pip build isolation is disabled so packages like pyradiomics can reuse the conda-provided numpy.
 os.environ.setdefault("PIP_NO_BUILD_ISOLATION", "1")
+
+
+def _resolve_env_python(env_name: str) -> str:
+    """Resolve the full path to python for a named conda/micromamba environment.
+
+    Searches common prefixes (CONDA_PREFIX parent, ~/micromamba/envs, ~/miniforge3/envs,
+    /opt/conda/envs). Falls back to sys.executable if not found.
+    """
+    candidates = []
+    # Try CONDA_PREFIX-based sibling envs
+    conda_prefix = os.environ.get("CONDA_PREFIX")
+    if conda_prefix:
+        candidates.append(Path(conda_prefix).parent / env_name / "bin" / "python")
+    # Try common micromamba/conda locations
+    home = Path.home()
+    for base in [
+        home / "micromamba" / "envs",
+        home / "miniforge3" / "envs",
+        home / "miniconda3" / "envs",
+        Path("/opt/conda/envs"),
+    ]:
+        candidates.append(base / env_name / "bin" / "python")
+    for c in candidates:
+        if c.exists():
+            return str(c)
+    return sys.executable
+
+
+# Resolve python executables for configured environments
+_envs_cfg = config.get("environments", {})
+_ENV_MAIN = _envs_cfg.get("main", "rtpipeline")
+_ENV_RADIOMICS = _envs_cfg.get("radiomics", "rtpipeline-radiomics")
+os.environ["RTPIPELINE_RADIOMICS_ENV"] = _ENV_RADIOMICS
+PYTHON_MAIN = _resolve_env_python(_ENV_MAIN)
+PYTHON_RADIOMICS = _resolve_env_python(_ENV_RADIOMICS)
+# Derive bin dirs for PATH export in shell rules
+PYTHON_MAIN_BIN = str(Path(PYTHON_MAIN).parent)
+PYTHON_RADIOMICS_BIN = str(Path(PYTHON_RADIOMICS).parent)
 
 
 def _coerce_int(value, default=None):
@@ -269,6 +348,7 @@ CUSTOM_MODELS_CONDA = CUSTOM_MODELS_CONFIG.get("conda_activate")
 CUSTOM_MODELS_RETAIN = bool(CUSTOM_MODELS_CONFIG.get("retain_weights", True))
 
 RADIOMICS_CONFIG = config.get("radiomics", {})
+RADIOMICS_ENABLED = bool(RADIOMICS_CONFIG.get("enabled", False))
 RADIOMICS_SEQUENTIAL = bool(RADIOMICS_CONFIG.get("sequential", False))
 _radiomics_params = RADIOMICS_CONFIG.get("params_file")
 if _radiomics_params:
@@ -328,7 +408,13 @@ else:
     AGG_THREADS_RESERVED = SNAKEMAKE_THREADS
 
 ROBUSTNESS_CONFIG = config.get("radiomics_robustness", {})
-ROBUSTNESS_ENABLED = bool(ROBUSTNESS_CONFIG.get("enabled", False))
+ROBUSTNESS_REQUESTED = bool(ROBUSTNESS_CONFIG.get("enabled", False))
+ROBUSTNESS_ENABLED = RADIOMICS_ENABLED and ROBUSTNESS_REQUESTED
+if ROBUSTNESS_REQUESTED and not RADIOMICS_ENABLED:
+    sys.stderr.write(
+        "[rtpipeline] Warning: radiomics_robustness.enabled=true ignored because "
+        "radiomics.enabled=false.\n"
+    )
 
 CT_CROPPING_CONFIG = config.get("ct_cropping", {})
 CT_CROPPING_ENABLED = bool(CT_CROPPING_CONFIG.get("enabled", False))
@@ -338,12 +424,14 @@ COURSE_MANIFEST = COURSE_META_DIR / "manifest.json"
 
 AGG_OUTPUTS = {
     "dvh": RESULTS_DIR / "dvh_metrics.xlsx",
-    "radiomics": RESULTS_DIR / "radiomics_ct.xlsx",
-    "radiomics_mr": RESULTS_DIR / "radiomics_mr.xlsx",
     "fractions": RESULTS_DIR / "fractions.xlsx",
     "metadata": RESULTS_DIR / "case_metadata.xlsx",
     "qc": RESULTS_DIR / "qc_reports.xlsx",
 }
+
+if RADIOMICS_ENABLED:
+    AGG_OUTPUTS["radiomics"] = RESULTS_DIR / "radiomics_ct.xlsx"
+    AGG_OUTPUTS["radiomics_mr"] = RESULTS_DIR / "radiomics_mr.xlsx"
 
 if ROBUSTNESS_ENABLED:
     AGG_OUTPUTS["radiomics_robustness"] = RESULTS_DIR / "radiomics_robustness_summary.xlsx"
@@ -514,6 +602,25 @@ RADIOMICS_ROBUSTNESS_SENTINEL_PATTERN = str(OUTPUT_DIR / "{patient}" / "{course}
 CROP_CT_SENTINEL_PATTERN = str(OUTPUT_DIR / "{patient}" / "{course}" / ".crop_ct_done")
 QC_SENTINEL_PATTERN = str(OUTPUT_DIR / "{patient}" / "{course}" / ".qc_done")
 
+AGGREGATE_RESULTS_INPUTS = {
+    "manifest": _manifest_input,
+    "dvh": _per_course_sentinels(".dvh_done"),
+    "qc": _per_course_sentinels(".qc_done"),
+    "custom": _per_course_sentinels(".custom_models_done"),
+}
+
+AGGREGATE_RESULTS_OUTPUTS = {
+    "dvh": str(AGG_OUTPUTS["dvh"]),
+    "fractions": str(AGG_OUTPUTS["fractions"]),
+    "metadata": str(AGG_OUTPUTS["metadata"]),
+    "qc": str(AGG_OUTPUTS["qc"]),
+}
+
+if RADIOMICS_ENABLED:
+    AGGREGATE_RESULTS_INPUTS["radiomics"] = _per_course_sentinels(".radiomics_done")
+    AGGREGATE_RESULTS_OUTPUTS["radiomics"] = str(AGG_OUTPUTS["radiomics"])
+    AGGREGATE_RESULTS_OUTPUTS["radiomics_mr"] = str(AGG_OUTPUTS["radiomics_mr"])
+
 
 rule all:
     input:
@@ -560,7 +667,7 @@ checkpoint organize_courses:
             log_path.write_text("Organize stage skipped (manifest already present).\n", encoding="utf-8")
             return
 
-        env = _rt_env()
+        env = _rt_env(PYTHON_MAIN_BIN)
         cmd = [
             sys.executable,
             "-m",
@@ -669,10 +776,11 @@ else:
         shell:
             """
             set -e
+            export PATH="{PYTHON_MAIN_BIN}:$PATH"
             mkdir -p $(dirname {output.sentinel})
             mkdir -p $(dirname {log})
-            
-            if python -m rtpipeline.cli \
+
+            if {PYTHON_MAIN} -m rtpipeline.cli \
                 --dicom-root "{DICOM_ROOT}" \
                 --outdir "{OUTPUT_DIR}" \
                 --logs "{LOGS_DIR}" \
@@ -780,7 +888,8 @@ else:
                 exit 0
             fi
             
-            if python -m rtpipeline.cli \
+            export PATH="{PYTHON_MAIN_BIN}:$PATH"
+            if {PYTHON_MAIN} -m rtpipeline.cli \
                 --dicom-root "{DICOM_ROOT}" \
                 --outdir "{OUTPUT_DIR}" \
                 --logs "{LOGS_DIR}" \
@@ -826,7 +935,7 @@ rule crop_ct_course:
             sentinel_path.write_text("skipped: upstream segmentation failed\n", encoding="utf-8")
             return
 
-        env = _rt_env()
+        env = _rt_env(PYTHON_MAIN_BIN)
         cmd = [
             sys.executable,
             "-m",
@@ -880,7 +989,7 @@ rule dvh_course:
             sentinel_path.write_text("skipped: upstream segmentation failed\n", encoding="utf-8")
             return
 
-        env = _rt_env()
+        env = _rt_env(PYTHON_MAIN_BIN)
         cmd = [
             sys.executable,
             "-m",
@@ -1002,7 +1111,8 @@ else:
                 exit 0
             fi
             
-            if python -m rtpipeline.cli \
+            export PATH="{PYTHON_RADIOMICS_BIN}:$PATH"
+            if {PYTHON_RADIOMICS} -m rtpipeline.cli \
                 --dicom-root "{DICOM_ROOT}" \
                 --outdir "{OUTPUT_DIR}" \
                 --logs "{LOGS_DIR}" \
@@ -1048,7 +1158,7 @@ rule qc_course:
             sentinel_path.write_text("skipped: upstream segmentation failed\n", encoding="utf-8")
             return
 
-        env = _rt_env()
+        env = _rt_env(PYTHON_MAIN_BIN)
         cmd = [
             sys.executable,
             "-m",
@@ -1089,7 +1199,7 @@ if config.get("container_mode", False):
             robustness_workers=1  # Serialize robustness jobs like radiomics
         params:
             enabled=str(ROBUSTNESS_ENABLED),
-            config=str(ROOT_DIR / "config.yaml")
+            config=str(EFFECTIVE_CONFIGFILE)
         shell:
             """
             mkdir -p $(dirname {output.sentinel})
@@ -1141,7 +1251,7 @@ else:
             "envs/rtpipeline-radiomics.yaml"
         params:
             enabled=str(ROBUSTNESS_ENABLED),
-            config=str(ROOT_DIR / "config.yaml")
+            config=str(EFFECTIVE_CONFIGFILE)
         shell:
             """
             mkdir -p $(dirname {output.sentinel})
@@ -1165,7 +1275,8 @@ else:
             export MKL_NUM_THREADS=1
             export OPENBLAS_NUM_THREADS=1
 
-            if python -m rtpipeline.cli radiomics-robustness \
+            export PATH="{PYTHON_RADIOMICS_BIN}:$PATH"
+            if {PYTHON_RADIOMICS} -m rtpipeline.cli radiomics-robustness \
                 --course-dir "{OUTPUT_DIR}/{wildcards.patient}/{wildcards.course}" \
                 --config "{params.config}" \
                 --output "{OUTPUT_DIR}/{wildcards.patient}/{wildcards.course}/radiomics_robustness_ct.parquet" \
@@ -1193,6 +1304,7 @@ rule aggregate_radiomics_robustness:
     params:
         output_dir=str(OUTPUT_DIR),
         root_dir=str(ROOT_DIR),
+        configfile=str(EFFECTIVE_CONFIGFILE),
         robustness_enabled=ROBUSTNESS_ENABLED
     conda:
         "envs/rtpipeline.yaml"
@@ -1202,28 +1314,38 @@ rule aggregate_radiomics_robustness:
         mkdir -p $(dirname {log})
         mkdir -p $(dirname {output.summary})
 
+        export PATH="{PYTHON_MAIN_BIN}:$PATH"
         if [ "{params.robustness_enabled}" != "True" ]; then
             # Create empty output if robustness is disabled
-            python -c "import pandas as pd; pd.DataFrame().to_excel('{output.summary}', index=False)"
+            {PYTHON_MAIN} -c "import pandas as pd; pd.DataFrame().to_excel('{output.summary}', index=False)"
             echo "Robustness disabled - empty output created" > {log}
             exit 0
         fi
 
-        # Find all robustness parquet files
-        PARQUET_FILES=$(find {params.output_dir} -name "radiomics_robustness_ct.parquet" -type f 2>/dev/null || true)
+        # Find robustness parquets only where sentinel says "ok" (skip failed/partial)
+        PARQUET_FILES=""
+        for sentinel in $(find {params.output_dir} -name ".radiomics_robustness_done" -type f 2>/dev/null); do
+            if head -1 "$sentinel" 2>/dev/null | grep -q "^ok"; then
+                course_dir=$(dirname "$sentinel")
+                pf="$course_dir/radiomics_robustness_ct.parquet"
+                if [ -f "$pf" ]; then
+                    PARQUET_FILES="$PARQUET_FILES $pf"
+                fi
+            fi
+        done
 
         if [ -z "$PARQUET_FILES" ]; then
             # Create empty output if no parquet files found
-            python -c "import pandas as pd; pd.DataFrame().to_excel('{output.summary}', index=False)"
+            {PYTHON_MAIN} -c "import pandas as pd; pd.DataFrame().to_excel('{output.summary}', index=False)"
             echo "No robustness parquet files found" > {log}
             exit 0
         fi
 
         # Run the aggregation CLI command with the conda environment's Python
-        PYTHONPATH="{params.root_dir}:${{PYTHONPATH:-}}" python -m rtpipeline.cli radiomics-robustness-aggregate \
+        PYTHONPATH="{params.root_dir}:${{PYTHONPATH:-}}" {PYTHON_MAIN} -m rtpipeline.cli radiomics-robustness-aggregate \
             --inputs $PARQUET_FILES \
             --output {output.summary} \
-            --config {params.root_dir}/config.yaml \
+            --config {params.configfile} \
             > {log} 2>&1
         """
 
@@ -1231,18 +1353,9 @@ rule aggregate_radiomics_robustness:
 
 rule aggregate_results:
     input:
-        manifest=_manifest_input,
-        dvh=_per_course_sentinels(".dvh_done"),
-        radiomics=_per_course_sentinels(".radiomics_done"),
-        qc=_per_course_sentinels(".qc_done"),
-        custom=_per_course_sentinels(".custom_models_done")
+        **AGGREGATE_RESULTS_INPUTS
     output:
-        dvh=str(AGG_OUTPUTS["dvh"]),
-        radiomics=str(AGG_OUTPUTS["radiomics"]),
-        radiomics_mr=str(AGG_OUTPUTS["radiomics_mr"]),
-        fractions=str(AGG_OUTPUTS["fractions"]),
-        metadata=str(AGG_OUTPUTS["metadata"]),
-        qc=str(AGG_OUTPUTS["qc"])
+        **AGGREGATE_RESULTS_OUTPUTS
     threads:
         AGG_THREADS_RESERVED
     run:
@@ -1353,49 +1466,49 @@ rule aggregate_results:
                 except Exception as e:
                     errors.append(f"DVH error {pid}/{cid}: {e}")
 
-                # Radiomics CT (prefer Parquet)
-                rad_path = cdir / "radiomics_ct.xlsx"
-                try:
-                    df = _read_prefer_parquet(rad_path, "Radiomics CT")
-                    if df is not None:
-                        if "patient_id" not in df.columns:
-                            df.insert(0, "patient_id", pid)
-                        else:
-                            df["patient_id"] = df["patient_id"].fillna(pid)
-                        if "course_id" not in df.columns:
-                            df.insert(1, "course_id", cid)
-                        else:
-                            df["course_id"] = df["course_id"].fillna(cid)
-                        if "structure_cropped" not in df.columns:
-                            df["structure_cropped"] = False
-                        # Add phase, modality, and body regions from QC
-                        df["contrast_phase"] = contrast_phase
-                        df["image_modality"] = image_modality
-                        df["body_regions"] = body_regions_str
-                        course_results['radiomics'] = df
-                except Exception as e:
-                    errors.append(f"Radiomics error {pid}/{cid}: {e}")
+                if RADIOMICS_ENABLED:
+                    # Skip radiomics I/O entirely when the stage is disabled.
+                    rad_path = cdir / "radiomics_ct.xlsx"
+                    try:
+                        df = _read_prefer_parquet(rad_path, "Radiomics CT")
+                        if df is not None:
+                            if "patient_id" not in df.columns:
+                                df.insert(0, "patient_id", pid)
+                            else:
+                                df["patient_id"] = df["patient_id"].fillna(pid)
+                            if "course_id" not in df.columns:
+                                df.insert(1, "course_id", cid)
+                            else:
+                                df["course_id"] = df["course_id"].fillna(cid)
+                            if "structure_cropped" not in df.columns:
+                                df["structure_cropped"] = False
+                            # Add phase, modality, and body regions from QC
+                            df["contrast_phase"] = contrast_phase
+                            df["image_modality"] = image_modality
+                            df["body_regions"] = body_regions_str
+                            course_results['radiomics'] = df
+                    except Exception as e:
+                        errors.append(f"Radiomics error {pid}/{cid}: {e}")
 
-                # Radiomics MR (prefer Parquet)
-                rad_mr_path = cdir / "MR" / "radiomics_mr.xlsx"
-                try:
-                    df = _read_prefer_parquet(rad_mr_path, "Radiomics MR")
-                    if df is not None:
-                        if "patient_id" not in df.columns:
-                            df.insert(0, "patient_id", pid)
-                        else:
-                            df["patient_id"] = df["patient_id"].fillna(pid)
-                        if "course_id" not in df.columns:
-                            df.insert(1, "course_id", cid)
-                        else:
-                            df["course_id"] = df["course_id"].fillna(cid)
-                        # For MR, don't apply CT-derived phase/regions (semantically incorrect)
-                        df["contrast_phase"] = "unknown"  # CT contrast phases don't apply to MR
-                        df["image_modality"] = "MR"
-                        df["body_regions"] = "unknown"  # CT body region detection doesn't apply to MR
-                        course_results['radiomics_mr'] = df
-                except Exception as e:
-                    errors.append(f"Radiomics MR error {pid}/{cid}: {e}")
+                    rad_mr_path = cdir / "MR" / "radiomics_mr.xlsx"
+                    try:
+                        df = _read_prefer_parquet(rad_mr_path, "Radiomics MR")
+                        if df is not None:
+                            if "patient_id" not in df.columns:
+                                df.insert(0, "patient_id", pid)
+                            else:
+                                df["patient_id"] = df["patient_id"].fillna(pid)
+                            if "course_id" not in df.columns:
+                                df.insert(1, "course_id", cid)
+                            else:
+                                df["course_id"] = df["course_id"].fillna(cid)
+                            # For MR, don't apply CT-derived phase/regions (semantically incorrect)
+                            df["contrast_phase"] = "unknown"
+                            df["image_modality"] = "MR"
+                            df["body_regions"] = "unknown"
+                            course_results['radiomics_mr'] = df
+                    except Exception as e:
+                        errors.append(f"Radiomics MR error {pid}/{cid}: {e}")
 
                 # Fractions
                 frac_path = cdir / "fractions.xlsx"
@@ -1498,17 +1611,16 @@ rule aggregate_results:
         else:
             pd.DataFrame(columns=["patient_id", "course_id", "ROI_Name", "structure_cropped"]).to_excel(output.dvh, index=False)
 
-        # Radiomics frames already collected above
-        if rad_frames:
-            pd.concat(rad_frames, ignore_index=True).to_excel(output.radiomics, index=False)
-        else:
-            pd.DataFrame(columns=["patient_id", "course_id", "roi_name", "structure_cropped"]).to_excel(output.radiomics, index=False)
+        if RADIOMICS_ENABLED:
+            if rad_frames:
+                pd.concat(rad_frames, ignore_index=True).to_excel(output.radiomics, index=False)
+            else:
+                pd.DataFrame(columns=["patient_id", "course_id", "roi_name", "structure_cropped"]).to_excel(output.radiomics, index=False)
 
-        # Radiomics MR frames already collected above
-        if rad_mr_frames:
-            pd.concat(rad_mr_frames, ignore_index=True).to_excel(output.radiomics_mr, index=False)
-        else:
-            pd.DataFrame(columns=["patient_id", "course_id", "roi_name"]).to_excel(output.radiomics_mr, index=False)
+            if rad_mr_frames:
+                pd.concat(rad_mr_frames, ignore_index=True).to_excel(output.radiomics_mr, index=False)
+            else:
+                pd.DataFrame(columns=["patient_id", "course_id", "roi_name"]).to_excel(output.radiomics_mr, index=False)
 
         # Fraction frames already collected above
         if frac_frames:
@@ -1591,4 +1703,4 @@ rule generate_report:
     log:
         str(LOGS_DIR / "report.log")
     run:
-        shell("snakemake --report {output} --configfile config.yaml")
+        shell(f"snakemake --report {{output}} --configfile {EFFECTIVE_CONFIGFILE}")
