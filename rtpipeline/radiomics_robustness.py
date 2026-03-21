@@ -41,6 +41,7 @@ import tempfile
 import time
 from dataclasses import dataclass, field
 from multiprocessing import get_context
+from multiprocessing import TimeoutError as MPTimeoutError
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
@@ -611,24 +612,118 @@ def extract_features_for_masks(
     Returns:
         Tidy DataFrame with columns [patient_id, course_id, structure, perturbation_id, feature_name, value]
     """
-    from .radiomics import _extractor
+    from .radiomics import _extractor, _get_params_file
 
     rows = []
 
+    # Check once whether we need the conda fallback
+    ext_probe = _extractor(config, modality)
+    use_conda = ext_probe is None
+
+    if use_conda:
+        from .radiomics_conda import extract_radiomics_batch_with_conda, check_radiomics_env
+        if not check_radiomics_env():
+            logger.warning(
+                "Radiomics conda environment not available; "
+                "cannot extract features for robustness analysis"
+            )
+            return pd.DataFrame(rows)
+        params_file = _get_params_file(config, modality)
+        params_file_str = str(params_file) if params_file else None
+        logger.info(
+            "Using conda-based batch radiomics for robustness (%d perturbations for %s)",
+            len(masks), structure_name,
+        )
+
+        # Batch approach: save all images/masks to temp files, extract in single subprocess
+        tmp_dir = tempfile.mkdtemp(prefix="rtpipe_robust_batch_")
+        try:
+            batch_tasks = []
+
+            # Cache unique images to avoid writing duplicates
+            image_cache: Dict[int, str] = {}  # id(sitk_image) -> file path
+
+            for pert_id, mask in masks.items():
+                current_image = perturbed_images.get(pert_id, image) if perturbed_images else image
+                img_id = id(current_image)
+
+                if img_id not in image_cache:
+                    img_path = os.path.join(tmp_dir, f"img_{len(image_cache)}.nrrd")
+                    sitk.WriteImage(current_image, img_path)
+                    image_cache[img_id] = img_path
+
+                mask_path = os.path.join(tmp_dir, f"mask_{len(batch_tasks)}.nrrd")
+                sitk.WriteImage(sitk.Cast(mask, sitk.sitkUInt8), mask_path)
+
+                batch_tasks.append({
+                    "image_path": image_cache[img_id],
+                    "mask_path": mask_path,
+                    "roi_name": f"{structure_name}/{pert_id}",
+                })
+
+            logger.info(
+                "Saved %d perturbation files (%d unique images) for %s; "
+                "starting batch conda extraction",
+                len(batch_tasks), len(image_cache), structure_name,
+            )
+
+            batch_results = extract_radiomics_batch_with_conda(
+                tasks=batch_tasks,
+                params_file=params_file_str,
+                timeout_per_roi=120,
+            )
+
+            for result in batch_results:
+                if result is None:
+                    continue
+                status = result.get("__status__", "")
+                # Extract pert_id from __roi_name__ (format: "structure/pert_id")
+                # instead of positional indexing to avoid misattribution
+                # if batch output lines are dropped or unparseable.
+                roi_name = result.get("__roi_name__", "")
+                if "/" in roi_name:
+                    pert_id = roi_name.split("/", 1)[1]
+                else:
+                    logger.debug(
+                        "Batch result missing valid __roi_name__: %r", roi_name,
+                    )
+                    continue
+                if status != "success":
+                    logger.debug(
+                        "Batch extraction %s for %s/%s: %s",
+                        status, structure_name, pert_id,
+                        result.get("__error__", result.get("__reason__", "")),
+                    )
+                    continue
+                for key, value in result.items():
+                    if key.startswith("__"):
+                        continue
+                    if isinstance(value, (int, float)):
+                        rows.append({
+                            "patient_id": patient_id,
+                            "course_id": course_id,
+                            "modality": modality,
+                            "structure": structure_name,
+                            "perturbation_id": pert_id,
+                            "feature_name": str(key),
+                            "value": float(value),
+                        })
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+        return pd.DataFrame(rows)
+
+    # Direct PyRadiomics path (NumPy 1.x) — reuse single extractor instance
+    ext = _extractor(config, modality)
+    if ext is None:
+        logger.warning("No radiomics extractor available for %s", structure_name)
+        return pd.DataFrame(rows)
+
     for pert_id, mask in masks.items():
         try:
-            ext = _extractor(config, modality)
-            if ext is None:
-                logger.debug("No radiomics extractor available for %s/%s", structure_name, pert_id)
-                continue
-
-            # Use perturbed image if available (for noise perturbations)
             current_image = perturbed_images.get(pert_id, image) if perturbed_images else image
-
-            # Execute PyRadiomics
             result = ext.execute(current_image, mask)
 
-            # Convert to flat dictionary
             for key, value in result.items():
                 if isinstance(value, (int, float, np.floating, np.integer)):
                     rows.append({
@@ -1319,6 +1414,23 @@ def robustness_for_course(
     # Load CT image
     from .radiomics import _load_series_image
     ct_image = _load_series_image(course_dirs.dicom_ct)
+
+    # NIfTI fallback when DICOM/CT is not available (e.g. remote staging)
+    _use_nifti_masks = False
+    if ct_image is None:
+        nifti_dir = course_dir / "NIFTI"
+        if nifti_dir.exists():
+            nifti_files = [f for f in nifti_dir.glob("*.nii.gz")
+                           if not f.name.endswith(".metadata.nii.gz")]
+            if nifti_files:
+                ct_nifti = max(nifti_files, key=lambda f: f.stat().st_size)
+                try:
+                    ct_image = sitk.ReadImage(str(ct_nifti))
+                    _use_nifti_masks = True
+                    logger.info("Loaded CT from NIfTI fallback: %s", ct_nifti.name)
+                except Exception as e:
+                    logger.warning("Failed to load CT from NIfTI: %s", e)
+
     if ct_image is None:
         logger.warning("No CT image found for robustness analysis in %s", course_dir)
         return None
@@ -1333,28 +1445,85 @@ def robustness_for_course(
     # Dictionary: {(roi_name, source): mask_array}
     all_masks: Dict[Tuple[str, str], np.ndarray] = {}
 
-    # 1. TotalSegmentator (RS_auto.dcm)
-    rs_auto = course_dir / "RS_auto.dcm"
-    if rs_auto.exists():
-        ts_masks = _rtstruct_masks(course_dirs.dicom_ct, rs_auto)
-        for roi_name, mask_array in ts_masks.items():
-            all_masks[(roi_name, "AutoRTS_total")] = mask_array
-        logger.info("Loaded %d structures from TotalSegmentator", len(ts_masks))
-    else:
-        logger.info("RS_auto.dcm not found")
+    if _use_nifti_masks:
+        # Load masks directly from NIfTI segmentation files (no DICOM needed)
+        seg_dir = course_dir / "Segmentation_TotalSegmentator"
+        if seg_dir.exists():
+            loaded = 0
+            # Search both flat and nested structures (some cohorts use scan subdirs)
+            nii_files = list(seg_dir.glob("*.nii.gz"))
+            if not nii_files:
+                nii_files = list(seg_dir.glob("*/*.nii.gz"))
+            for seg_file in sorted(nii_files):
+                if "_cropped" in seg_file.name:
+                    continue
+                roi_name = seg_file.name.replace(".nii.gz", "")
+                if roi_name.startswith("total--"):
+                    roi_name = roi_name[len("total--"):]
+                try:
+                    mask_img = sitk.ReadImage(str(seg_file))
+                    if mask_img.GetSize() != ct_image.GetSize():
+                        mask_img = sitk.Resample(
+                            mask_img, ct_image, sitk.Transform(),
+                            sitk.sitkNearestNeighbor, 0)
+                    mask_array = sitk.GetArrayFromImage(mask_img).astype(bool)
+                    if mask_array.any():
+                        all_masks[(roi_name, "AutoRTS_total")] = mask_array
+                        loaded += 1
+                except Exception as e:
+                    logger.debug("Failed to load seg mask %s: %s", seg_file.name, e)
+            logger.info("Loaded %d structures from NIfTI segmentation files", loaded)
+        else:
+            logger.info("Segmentation_TotalSegmentator not found")
 
-    # 2. Custom structures (RS_custom.dcm)
-    rs_custom = course_dir / "RS_custom.dcm"
-    if rs_custom.exists():
-        custom_masks = _rtstruct_masks(course_dirs.dicom_ct, rs_custom)
-        for roi_name, mask_array in custom_masks.items():
-            all_masks[(roi_name, "Custom")] = mask_array
-        logger.info("Loaded %d structures from custom structures", len(custom_masks))
+        # Custom models NIfTI loading
+        seg_custom = course_dir / "Segmentation_CustomModels"
+        if seg_custom.exists():
+            loaded = 0
+            for model_dir in sorted(seg_custom.iterdir()):
+                if not model_dir.is_dir():
+                    continue
+                for seg_file in sorted(model_dir.glob("*.nii.gz")):
+                    roi_name = seg_file.name.replace(".nii.gz", "")
+                    try:
+                        mask_img = sitk.ReadImage(str(seg_file))
+                        if mask_img.GetSize() != ct_image.GetSize():
+                            mask_img = sitk.Resample(
+                                mask_img, ct_image, sitk.Transform(),
+                                sitk.sitkNearestNeighbor, 0)
+                        mask_array = sitk.GetArrayFromImage(mask_img).astype(bool)
+                        if mask_array.any():
+                            all_masks[(roi_name, f"CustomModel:{model_dir.name}")] = mask_array
+                            loaded += 1
+                    except Exception as e:
+                        logger.debug("Failed to load custom mask %s: %s", seg_file.name, e)
+            if loaded:
+                logger.info("Loaded %d structures from custom model NIfTI files", loaded)
     else:
-        logger.debug("RS_custom.dcm not found")
+        # Standard DICOM-based mask loading
+        # 1. TotalSegmentator (RS_auto.dcm)
+        rs_auto = course_dir / "RS_auto.dcm"
+        if rs_auto.exists():
+            ts_masks = _rtstruct_masks(course_dirs.dicom_ct, rs_auto)
+            for roi_name, mask_array in ts_masks.items():
+                all_masks[(roi_name, "AutoRTS_total")] = mask_array
+            logger.info("Loaded %d structures from TotalSegmentator", len(ts_masks))
+        else:
+            logger.info("RS_auto.dcm not found")
 
-    # 3. Custom models
-    try:
+        # 2. Custom structures (RS_custom.dcm)
+        rs_custom = course_dir / "RS_custom.dcm"
+        if rs_custom.exists():
+            custom_masks = _rtstruct_masks(course_dirs.dicom_ct, rs_custom)
+            for roi_name, mask_array in custom_masks.items():
+                all_masks[(roi_name, "Custom")] = mask_array
+            logger.info("Loaded %d structures from custom structures", len(custom_masks))
+        else:
+            logger.debug("RS_custom.dcm not found")
+
+    # 3. Custom models (DICOM path — skipped in NIfTI mode, handled above)
+    if not _use_nifti_masks:
+      try:
         for model_name, model_dir in list_custom_model_outputs(course_dir):
             rs_model = model_dir / "rtstruct.dcm"
             if rs_model.exists():
@@ -1363,8 +1532,40 @@ def robustness_for_course(
                 for roi_name, mask_array in model_masks.items():
                     all_masks[(roi_name, source_label)] = mask_array
                 logger.info("Loaded %d structures from custom model '%s'", len(model_masks), model_name)
-    except Exception as e:
+      except Exception as e:
         logger.debug("Failed to load custom model outputs: %s", e)
+
+    # NIfTI fallback: if DICOM-based mask loading returned 0 masks, try NIfTI
+    if not all_masks and not _use_nifti_masks:
+        logger.info("DICOM mask loading returned 0 masks; trying NIfTI fallback")
+        seg_dir = course_dir / "Segmentation_TotalSegmentator"
+        if seg_dir.exists():
+            loaded = 0
+            # Search both flat and nested structures (some cohorts use scan subdirs)
+            nii_files = list(seg_dir.glob("*.nii.gz"))
+            if not nii_files:
+                nii_files = list(seg_dir.glob("*/*.nii.gz"))
+            for seg_file in sorted(nii_files):
+                # Skip cropped variants
+                if "_cropped" in seg_file.name:
+                    continue
+                roi_name = seg_file.name.replace(".nii.gz", "")
+                # Strip common prefixes (e.g. "total--")
+                if roi_name.startswith("total--"):
+                    roi_name = roi_name[len("total--"):]
+                try:
+                    mask_img = sitk.ReadImage(str(seg_file))
+                    if mask_img.GetSize() != ct_image.GetSize():
+                        mask_img = sitk.Resample(
+                            mask_img, ct_image, sitk.Transform(),
+                            sitk.sitkNearestNeighbor, 0)
+                    mask_array = sitk.GetArrayFromImage(mask_img).astype(bool)
+                    if mask_array.any():
+                        all_masks[(roi_name, "AutoRTS_total")] = mask_array
+                        loaded += 1
+                except Exception as e:
+                    logger.debug("Failed to load seg mask %s: %s", seg_file.name, e)
+            logger.info("NIfTI fallback: loaded %d structures from segmentation files", loaded)
 
     if not all_masks:
         logger.warning("No masks found from any source for %s", course_dir)
@@ -1513,7 +1714,7 @@ def robustness_for_course(
             ctx = get_context('spawn')
 
             # Timeout configuration for watchdog
-            course_timeout = int(os.environ.get("RTPIPELINE_ROBUSTNESS_COURSE_TIMEOUT", "3600"))  # 1 hour default
+            course_timeout = int(os.environ.get("RTPIPELINE_ROBUSTNESS_COURSE_TIMEOUT", "14400"))  # 4 hour default
             progress_timeout = int(os.environ.get("RTPIPELINE_ROBUSTNESS_PROGRESS_TIMEOUT", "300"))  # 5 min default
 
             with ctx.Pool(max_workers) as pool:
@@ -1543,7 +1744,7 @@ def robustness_for_course(
                     except StopIteration:
                         # All results processed
                         break
-                    except TimeoutError:
+                    except (TimeoutError, MPTimeoutError):
                         # Check watchdog conditions
                         elapsed = time.time() - start_time
                         no_progress_time = time.time() - last_progress_time
@@ -1555,6 +1756,7 @@ def robustness_for_course(
                             )
                             pool.terminate()
                             timed_out = True
+                            break
                         elif no_progress_time > progress_timeout:
                             logger.error(
                                 "No progress for %ds (threshold: %ds), likely hung worker - terminating pool",
@@ -1562,11 +1764,16 @@ def robustness_for_course(
                             )
                             pool.terminate()
                             timed_out = True
+                            break
                         else:
                             # Continue waiting
                             continue
                     except Exception as iter_err:
-                        logger.warning("Error fetching result: %s", iter_err)
+                        # Worker raised an exception — count it as completed (failed) to avoid
+                        # spinning until course timeout when some tasks fail
+                        completed_count += 1
+                        last_progress_time = time.time()
+                        logger.warning("Worker error on task %d/%d: %s", completed_count, total_count, iter_err)
                         continue
 
                     # Process result if we got one
