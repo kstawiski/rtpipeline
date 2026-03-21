@@ -7,7 +7,7 @@ This document provides comprehensive guidance for running rtpipeline in Docker a
 
 All pipeline features work correctly in Docker and Singularity containers:
 
-### Latest Updates (2024)
+### Latest Updates (v2.1.0)
 - **Radiomics Robustness Module**: Comprehensive feature stability assessment with ICC, CoV, and QCD metrics
 - **Web UI**: Browser-based interface for drag-and-drop DICOM upload and processing
 - **Enhanced Configuration**: Container-specific config includes all recent pipeline features
@@ -200,7 +200,7 @@ docker run --cpus 8 ... rtpipeline --max-workers 7 ...
 
 Or use environment variable:
 ```bash
-docker run --cpus 8 -e RTPIPELINE_WORKERS=7 ...
+docker run --cpus 8 -e RTPIPELINE_MAX_WORKERS=7 ...
 ```
 
 ### Cgroup CPU Limits

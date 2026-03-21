@@ -16,6 +16,9 @@
     Comparable metrics across cohorts
 </div>
 
+!!! info "RTpipeline v2.1.0"
+    The current release centers on three manuscript-critical capabilities: a first-class radiomics robustness stage with per-course Parquet plus cohort-level Excel summaries, a dual-environment execution model that separates TotalSegmentator from PyRadiomics, and configurable NTCV perturbation chains for robustness screening.
+
 ---
 
 ## Introduction
@@ -111,6 +114,8 @@ This makes cohort-level comparison statistically defensible.
 - **C**ontour: Boundary randomization simulating inter-observer variability
 - **V**olume: Erosion/dilation simulating segmentation uncertainty
 
+The quick-start container profile can run a conservative, volume-first robustness configuration, while manuscript-grade N/T/C/V chains are enabled explicitly in `config.yaml`.
+
 Features are classified by robustness:
 
 | ICC Threshold | Classification | Recommendation |
@@ -127,6 +132,7 @@ Forget parsing DICOM tags. RTpipeline produces tidy, standardized data tables:
 _RESULTS/
 ├── dvh_metrics.xlsx      # Dmean, D95%, V20Gy for every structure
 ├── radiomics_ct.xlsx     # 1000+ IBSI-aligned features (via PyRadiomics)
+├── radiomics_robustness_summary.xlsx  # ICC/CoV/QCD summary across perturbations
 ├── case_metadata.xlsx    # Clinical tags, scanner info, kernels
 └── qc_reports.xlsx       # Quality control flags and warnings
 ```
@@ -254,7 +260,7 @@ Anatomical landmark-based cropping for standardized FOV across cohorts. [Learn m
 
 ### Dual Environment Architecture
 
-Resolves NumPy 1.x vs 2.x incompatibility between PyRadiomics and TotalSegmentator via isolated conda environments. [Learn more →](technical/architecture.md)
+Resolves NumPy 1.x vs 2.x incompatibility between PyRadiomics and TotalSegmentator via isolated `rtpipeline` and `rtpipeline-radiomics` conda environments. [Learn more →](technical/architecture.md)
 
 ### Custom nnU-Net Models
 
