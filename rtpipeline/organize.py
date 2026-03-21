@@ -22,7 +22,7 @@ from scipy.ndimage import map_coordinates
 from .config import PipelineConfig
 from .ct import index_ct_series, pick_primary_series, copy_ct_series
 from .dicom_copy import DicomCopyConfig, DicomCopyManager, get_copy_manager, reset_copy_manager
-from .layout import CourseDirs, build_course_dirs, course_dir_name
+from .layout import CourseDirs, build_course_dirs, course_dir_name, find_dcm
 from .metadata import LinkedSet, group_by_course, link_rt_sets, parse_date
 from .rt_details import extract_rt, StructInfo
 from .utils import ensure_dir, run_tasks_with_adaptive_workers, read_dicom, get
@@ -149,16 +149,22 @@ def _hydrate_existing_course(
         except Exception:
             data = {}
 
+    rs_candidate = course_dirs.dicom_rtstruct if hasattr(course_dirs, 'dicom_rtstruct') else None
+    has_rs = (course_dir / "RS.dcm").exists() or (
+        rs_candidate is not None and rs_candidate.exists() and any(rs_candidate.iterdir())
+    )
+    has_ct = course_dirs.dicom_ct.exists() and any(course_dirs.dicom_ct.iterdir())
+    if not data and not has_rs and not has_ct:
+        return None
+
     course_id = str(data.get("course_id") or (meta_hint.get("dir_name") if meta_hint else course_dir.name))
     course_start = data.get("course_start_date") or data.get("course_start") or (meta_hint.get("start_iso") if meta_hint else None)
     if isinstance(course_start, str) and not course_start:
         course_start = None
 
-    rp_path = course_dir / "RP.dcm"
-    rd_path = course_dir / "RD.dcm"
-    rs_path = course_dir / "RS.dcm"
-    if not rp_path.exists() or not rd_path.exists():
-        return None
+    rp_path = find_dcm(course_dirs.dicom_rtplan, "RP.dcm", course_dir)
+    rd_path = find_dcm(course_dirs.dicom_rtdose, "RD.dcm", course_dir)
+    rs_path = find_dcm(course_dirs.dicom_rtstruct, "RS.dcm", course_dir)
 
     primary_nifti: Optional[Path] = None
     primary_str = data.get("primary_nifti") if data else None
@@ -181,12 +187,13 @@ def _hydrate_existing_course(
     related_files: List[Path] = []
     related_list = data.get("dicom_related_files") if data else None
     if isinstance(related_list, list):
+        from .utils import validate_path as _validate_path
         for entry in related_list:
             if not isinstance(entry, str):
                 continue
             cand = Path(entry)
             try:
-                cand = validate_path(cand, course_dir, allow_absolute=True)
+                cand = _validate_path(cand, course_dir, allow_absolute=True)
                 if cand.exists():
                     related_files.append(cand)
             except ValueError:

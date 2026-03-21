@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 from datetime import datetime
 
-from .layout import build_course_dirs
+from .layout import build_course_dirs, find_dcm
 from .utils import mask_is_cropped
 
 try:
@@ -95,9 +95,10 @@ class DICOMValidator:
         self.course_dir = course_dir
         self.dirs = build_course_dirs(course_dir)
         self.ct_dir = self.dirs.dicom_ct
-        self.rp_path = course_dir / "RP.dcm"
-        self.rd_path = course_dir / "RD.dcm"
-        self.rs_path = course_dir / "RS.dcm"
+
+        self.rp_path = find_dcm(self.dirs.dicom_rtplan, "RP.dcm", course_dir)
+        self.rd_path = find_dcm(self.dirs.dicom_rtdose, "RD.dcm", course_dir)
+        self.rs_path = find_dcm(self.dirs.dicom_rtstruct, "RS.dcm", course_dir)
         self.rs_auto_path = course_dir / "RS_auto.dcm"
         self.skip_structure_cropping = skip_structure_cropping
 

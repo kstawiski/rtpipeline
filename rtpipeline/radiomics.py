@@ -16,7 +16,7 @@ import pydicom
 
 
 from .config import PipelineConfig
-from .layout import build_course_dirs
+from .layout import build_course_dirs, find_dcm
 from importlib import resources as importlib_resources
 import yaml
 from .utils import run_tasks_with_adaptive_workers, mask_is_cropped
@@ -632,13 +632,12 @@ def radiomics_for_course(config: PipelineConfig, course_dir: Path, custom_struct
         return out_path
 
     # Process standard RTSTRUCTs
-    rs_manual = "RS.dcm"
-    rs_auto = "RS_auto.dcm"
+    rs_manual_path = find_dcm(course_dirs.dicom_rtstruct, "RS.dcm", course_dir)
+    rs_auto_path_name = "RS_auto.dcm"
 
     full_run = not (getattr(config, "resume", False) and out_path.exists() and existing_df is not None)
     if full_run:
-        for source, rs_name in (("Manual", rs_manual), ("AutoRTS_total", rs_auto)):
-            rs_path = course_dir / rs_name
+        for source, rs_path in (("Manual", rs_manual_path), ("AutoRTS_total", course_dir / rs_auto_path_name)):
             if not rs_path.exists():
                 continue
             masks = _rtstruct_masks(course_dirs.dicom_ct, rs_path)
@@ -650,7 +649,7 @@ def radiomics_for_course(config: PipelineConfig, course_dir: Path, custom_struct
             try:
                 from rt_utils import RTStructBuilder
 
-                rs_path = course_dir / rs_manual
+                rs_path = rs_manual_path
                 if rs_path.exists():
                     rt = RTStructBuilder.create_from(dicom_series_path=str(course_dirs.dicom_ct), rt_struct_path=str(rs_path))
                     if "BODY" in rt.get_roi_names():
@@ -667,7 +666,7 @@ def radiomics_for_course(config: PipelineConfig, course_dir: Path, custom_struct
         # Fallback: infer custom-only ROIs as those present in RS_custom but absent in RS and RS_auto.
         try:
             base_names = set(_list_roi_names_dicom(rs_custom))
-            manual_names = set(_list_roi_names_dicom(course_dir / "RS.dcm"))
+            manual_names = set(_list_roi_names_dicom(find_dcm(course_dirs.dicom_rtstruct, "RS.dcm", course_dir)))
             auto_names = set(_list_roi_names_dicom(course_dir / "RS_auto.dcm"))
             inferred = {n for n in (base_names - (manual_names | auto_names)) if n}
             # Strip __partial suffix for base matching.
@@ -681,7 +680,7 @@ def radiomics_for_course(config: PipelineConfig, course_dir: Path, custom_struct
         try:
             from rt_utils import RTStructBuilder
 
-            rs_manual_path = course_dir / "RS.dcm"
+            rs_manual_path = find_dcm(course_dirs.dicom_rtstruct, "RS.dcm", course_dir)
             rs_auto_path = course_dir / "RS_auto.dcm"
 
             # Ensure RS_custom exists and is current when a config is available.
