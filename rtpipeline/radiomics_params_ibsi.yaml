@@ -1,0 +1,85 @@
+# =================================================================================================
+# IBSI Phase 1 Digital Phantom — PyRadiomics Configuration
+#
+# Strict IBSI-compliant settings for validation against the IBSI-1 consensus
+# reference values (Zwanenburg et al., Radiology 295(2):328-338, 2020).
+#
+# Key differences from the manuscript pipeline config (radiomics_params.yaml):
+#   - No resampling (phantom is already on the reference grid)
+#   - binWidth: 1 (phantom integer intensities 1-6; bin width=1 preserves them)
+#   - distances: [1] only (IBSI reference uses single-voxel distance)
+#   - Original image type only (no LoG, no wavelet)
+#
+# Usage:
+#   snakemake --cores all --configfile config_ibsi.yaml
+#
+# Reference phantom: https://github.com/theibsi/data_sets
+# =================================================================================================
+
+setting:
+  # ----------------------------------------------------------
+  # No resampling — phantom is on the IBSI reference grid
+  # ----------------------------------------------------------
+  # resampledPixelSpacing is intentionally omitted (no resampling)
+
+  # B-spline interpolation (not used since no resampling, but set for consistency)
+  interpolator: 'sitkBSpline'
+
+  # No normalization — preserve raw phantom integer values
+  normalize: False
+
+  # No voxel array shift
+  voxelArrayShift: 0
+
+  # ----------------------------------------------------------
+  # Intensity Discretization
+  # ----------------------------------------------------------
+  # binWidth=1 for the digital phantom (integer intensities 1-6)
+  # This preserves the exact grey-level structure expected by IBSI
+  binWidth: 1
+
+  # ----------------------------------------------------------
+  # ROI and Texture Settings
+  # ----------------------------------------------------------
+  minimumROIDimensions: 2
+  minimumROISize: 64
+
+  # Single-voxel distance only (IBSI reference)
+  distances: [1]
+
+  # 3D texture analysis
+  force2D: False
+  force2Ddimension: 0
+
+  # ----------------------------------------------------------
+  # IBSI Compliance
+  # ----------------------------------------------------------
+  padDistance: 5
+  geometryTolerance: 1e-6
+  correctMask: True
+  weightingNorm: null
+
+  # ----------------------------------------------------------
+  # Provenance
+  # ----------------------------------------------------------
+  additionalInfo: True
+  label: 1
+  preCrop: False
+
+# ============================================================
+# Image Types: Original only for IBSI validation
+# ============================================================
+imageType:
+  Original: {}
+
+# ============================================================
+# Feature Classes: All 7 IBSI families enabled
+# ============================================================
+featureClass:
+  shape: []
+  firstorder: []
+  glcm: []
+  glrlm: []
+  glszm: []
+  gldm: []
+  ngtdm: []

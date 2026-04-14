@@ -1,0 +1,78 @@
+# RTpipeline config: IBSI Phase 1 Digital Phantom Validation
+#
+# Reproduces IBSI-1 feature accuracy validation using the digital phantom
+# from Zwanenburg et al., Radiology 295(2):328-338, 2020.
+#
+# Usage:
+#   git clone https://github.com/kstawiski/rtpipeline && cd rtpipeline
+#   snakemake --cores all --configfile config_ibsi.yaml
+#
+# Prerequisites:
+#   1. Download the IBSI-1 digital phantom from:
+#      https://github.com/theibsi/data_sets
+#   2. Convert to NIfTI format and place in:
+#      IBSI_data/ibsi_1_digital_phantom/nifti/image/phantom.nii.gz
+#      IBSI_data/ibsi_1_digital_phantom/nifti/mask/mask.nii.gz
+#   3. Or update dicom_root below to point to your IBSI phantom location.
+#
+# This config disables all stages except radiomics extraction, using
+# IBSI-compliant PyRadiomics settings (binWidth=1, no resampling,
+# distance=1, Original image type only, all 7 IBSI feature families).
+
+container_mode: false
+
+# --- Paths ---
+# Point to a directory containing the IBSI phantom in DICOM or NIfTI format.
+# If using NIfTI directly, the organize step will simply copy the files.
+dicom_root: "IBSI_data"
+output_dir: "IBSI_output"
+logs_dir: "IBSI_logs"
+
+max_workers: null
+
+scheduler:
+  reserved_cores: 1
+  parallel_courses: 1
+  radiomics_threads_per_job: 4
+  prioritize_short_courses: false
+
+# --- Segmentation: DISABLED ---
+# IBSI phantom uses a provided binary mask; no AI segmentation needed.
+segmentation:
+  device: "cpu"
+  fast: false
+  force: false
+  roi_subset: null
+  extra_models: []
+  max_workers: 1
+  force_split: false
+  nr_threads_resample: 1
+  nr_threads_save: 1
+  num_proc_preprocessing: 1
+  num_proc_export: 1
+
+custom_models:
+  enabled: false
+
+# --- Radiomics: IBSI-compliant settings ---
+radiomics:
+  enabled: true
+  sequential: true
+  params_file: "rtpipeline/radiomics_params_ibsi.yaml"
+  skip_rois: []
+  max_voxels: 1500000000
+  min_voxels: 1
+
+# --- Robustness: DISABLED ---
+# Not applicable for IBSI phantom validation.
+radiomics_robustness:
+  enabled: false
+
+# --- CT Cropping: DISABLED ---
+ct_cropping:
+  enabled: false
+
+# --- Environments ---
+environments:
+  main: "rtpipeline"
+  radiomics: "rtpipeline-radiomics"
