@@ -187,7 +187,7 @@ and processed using the following standardized protocol:
 
 The complete preprocessing configuration is available as Supplementary File S2.
 
-[1] RTpipeline. https://github.com/kstawiski/rtpipeline
+[1] RTpipeline software citation (see repository `CITATION.cff`).
 ```
 
 ### Template 2: Radiomics with Robustness Assessment
@@ -229,7 +229,7 @@ Features were classified as:
 [N] features ([X]%) met robustness criteria and were retained for modeling.
 
 **References:**
-[1] RTpipeline. https://github.com/kstawiski/rtpipeline
+[1] RTpipeline software citation (see repository `CITATION.cff`).
 [2] van Griethuysen JJM, et al. Cancer Res. 2017;77(21):e104-e107.
 [3] Zwanenburg A, et al. Radiology. 2020;295(2):328-338.
 [4] Zwanenburg A, et al. Sci Rep. 2019;9:614.
@@ -270,7 +270,7 @@ coordinating center.
 
 The RTpipeline configuration bundle is available at [DOI/URL].
 
-[1] RTpipeline. https://github.com/kstawiski/rtpipeline
+[1] RTpipeline software citation (see repository `CITATION.cff`).
 ```
 
 ---

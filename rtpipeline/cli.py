@@ -455,10 +455,6 @@ def _doctor(argv: list[str]) -> int:
     print(f"- Bundled dcm2niix zips in package: {', '.join(bundled) if bundled else 'none'}")
 
     # Fallback decision
-    from .segmentation import _ensure_local_dcm2niix
-    if args.max_workers and args.max_workers > 0:
-        os.environ['RTPIPELINE_MAX_WORKERS'] = str(args.max_workers)
-
     cfg = PipelineConfig(
         dicom_root=Path('.'),
         output_root=Path('.'),
