@@ -11,6 +11,12 @@ import subprocess
 import signal
 from pathlib import Path
 
+
+def _spawn_worker_double(value):
+    """Module-level worker so spawn-context multiprocessing can pickle it."""
+    return value * 2
+
+
 def test_cpu_detection():
     """Test CPU count detection in Docker environment."""
     print("=" * 60)
@@ -127,13 +133,10 @@ def test_multiprocessing():
 
     from multiprocessing import get_context
 
-    def worker_func(x):
-        return x * 2
-
     try:
         ctx = get_context('spawn')
         with ctx.Pool(2) as pool:
-            results = pool.map(worker_func, [1, 2, 3, 4])
+            results = pool.map(_spawn_worker_double, [1, 2, 3, 4])
             print(f"Results: {results}")
             if results == [2, 4, 6, 8]:
                 print("✅ Multiprocessing with spawn context works")
