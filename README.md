@@ -171,16 +171,18 @@ Federated learning with identical preprocessing at every institution.
 
 ## Citation
 
-If you use RTpipeline in your research, please cite:
+If you use RTpipeline in your research, cite the software itself:
 
 ```bibtex
 @software{rtpipeline,
   title = {RTpipeline: Automated Radiotherapy DICOM Processing Pipeline},
   author = {Stawiski, Konrad},
   url = {https://github.com/kstawiski/rtpipeline},
-  year = {2025}
+  year = {2026}
 }
 ```
+
+The repository also includes `CITATION.cff` for machine-readable citation metadata.
 
 Also cite the underlying tools:
 - **TotalSegmentator:** Wasserthal et al., *Radiology: AI* (2023)
