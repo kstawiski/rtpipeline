@@ -332,16 +332,18 @@ Plug-and-play support for institution-specific segmentation models. [Learn more 
 
 ## Citation
 
-If you use RTpipeline for research, please cite the repository and the underlying tools:
+If you use RTpipeline for research, cite the software itself and the underlying tools:
 
 ```bibtex
 @software{rtpipeline,
   title = {RTpipeline: Automated Radiotherapy DICOM Processing Pipeline},
   author = {Stawiski, Konrad},
   url = {https://github.com/kstawiski/rtpipeline},
-  year = {2025}
+  year = {2026}
 }
 ```
+
+The repository also includes `CITATION.cff` for machine-readable citation metadata.
 
 Additionally, please cite:
 
