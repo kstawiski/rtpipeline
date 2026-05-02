@@ -44,12 +44,19 @@ This directory contains configurations for custom nnUNet segmentation models. Mo
 
 **Status**: ⚠️ **Weights not included** - run `custom_models/download_weights.sh lung_tumor_pancancer_lung`
 
-### 5. lung_tumor_aimi_nsclc_rg
-**Description**: BAMF Health AIMI NSCLC/Radiogenomics nnU-Net v1 open-weight model. This is leakage-flagged because its training data include NSCLC-Radiomics/NSCLC-Radiogenomics.
+### 5. lung_tumor_medsam_boxprompt
+**Description**: MedSAM ViT-B foundation model prompted deterministically from the TotalSegmentator lung_nodules custom-model mask and confined to the bilateral lung mask.
 
 **Structures**: `lung_tumor`
 
-**Status**: ⚠️ **Weights not included** - run `custom_models/download_weights.sh lung_tumor_aimi_nsclc_rg`; requires an nnU-Net v1 runtime.
+**Status**: ⚠️ **Weights not included** - run `custom_models/download_weights.sh lung_tumor_medsam_boxprompt`
+
+### Disabled: _disabled_lung_tumor_aimi_nsclc_rg
+**Description**: BAMF Health AIMI NSCLC/Radiogenomics nnU-Net v1 open-weight model.
+
+**Structures**: `lung_tumor`
+
+**Status**: DISABLED for R8 Phase 1c. The model is explicitly trained on NSCLC-Radiomics/NSCLC-Radiogenomics, creating HIGH leakage risk for NSCLC analyses, and the current `rtpipeline` environment lacks the required nnU-Net v1 `nnUNet_predict` runtime. Weights remain extracted under the `_disabled_` directory for a future deliberately isolated runtime.
 
 ## Installing Model Weights
 
@@ -78,7 +85,7 @@ For **R8 lung tumor comparators**:
 ```bash
 custom_models/download_weights.sh lung_tumor_totalseg_lung_nodules
 custom_models/download_weights.sh lung_tumor_pancancer_lung
-custom_models/download_weights.sh lung_tumor_aimi_nsclc_rg
+custom_models/download_weights.sh lung_tumor_medsam_boxprompt
 ```
 
 ### Step 2: Verify Installation
