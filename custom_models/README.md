@@ -30,6 +30,27 @@ This directory contains configurations for custom nnUNet segmentation models. Mo
 
 **Status**: ⚠️ **Weights not included** - Download required
 
+### 3. lung_tumor_totalseg_lung_nodules
+**Description**: TotalSegmentator `lung_nodules` task exposed through the custom-model stage for R8 thoracic tumor/nodule triangulation.
+
+**Structures**: `lung_nodules`
+
+**Status**: ⚠️ **Weights not included** - run `custom_models/download_weights.sh lung_tumor_totalseg_lung_nodules`
+
+### 4. lung_tumor_pancancer_lung
+**Description**: CVPR 2026 FLARE PanCancerSeg specialized lung-cancer nnU-Net v2 ResEnc model from Hugging Face.
+
+**Structures**: `lung_tumor`
+
+**Status**: ⚠️ **Weights not included** - run `custom_models/download_weights.sh lung_tumor_pancancer_lung`
+
+### 5. lung_tumor_aimi_nsclc_rg
+**Description**: BAMF Health AIMI NSCLC/Radiogenomics nnU-Net v1 open-weight model. This is leakage-flagged because its training data include NSCLC-Radiomics/NSCLC-Radiogenomics.
+
+**Structures**: `lung_tumor`
+
+**Status**: ⚠️ **Weights not included** - run `custom_models/download_weights.sh lung_tumor_aimi_nsclc_rg`; requires an nnU-Net v1 runtime.
+
 ## Installing Model Weights
 
 ### Step 1: Download Weights
@@ -51,6 +72,13 @@ tar -xzf hnln_weights.tar.gz -C custom_models/HN_lymph_nodes/
 
 # Option 2: Place weight archives in the model directory
 cp *.zip custom_models/HN_lymph_nodes/
+```
+
+For **R8 lung tumor comparators**:
+```bash
+custom_models/download_weights.sh lung_tumor_totalseg_lung_nodules
+custom_models/download_weights.sh lung_tumor_pancancer_lung
+custom_models/download_weights.sh lung_tumor_aimi_nsclc_rg
 ```
 
 ### Step 2: Verify Installation
@@ -154,7 +182,7 @@ See `custom_model.yaml` files in existing models for examples. Key fields:
 name: model_name
 description: Model description
 nnunet:
-  interface: nnunetv2  # or nnunetv1
+  interface: nnunetv2  # or nnunetv1, nnunetv2_modelfolder, totalsegmentator
   command: nnUNetv2_predict  # or nnUNet_predict for v1
   model: 3d_fullres
   folds: all  # or [0, 1, 2, 3, 4]
