@@ -1,0 +1,34 @@
+enabled: false
+name: lung_tumor_medsam_boxprompt_rider
+description: >
+  Deferred RIDER variant of the MedSAM ViT-B comparator. It prompts from the
+  clinician bbox anchor instead of TotalSegmentator. Enable only after the
+  clinician bbox anchor manifest is staged.
+required_body_regions:
+  - THORAX
+min_region_confidence: 0.5
+nnunet:
+  interface: medsam_boxprompt
+  command: MedSAM
+  model: vit_b
+  folds: all
+  networks:
+    - id: medsam_vit_b
+      alias: medsam_boxprompt
+      architecture: vit_b
+      source_directory: ../lung_tumor_medsam_boxprompt/weights/MedSAM
+      dataset_directory: ../lung_tumor_medsam_boxprompt/weights/MedSAM
+      checkpoint: ../lung_tumor_medsam_boxprompt/weights/medsam_vit_b.pth
+      prompt:
+        prompt_source: anchor_bbox
+        bbox_margin_voxels: 3
+      postprocessing:
+        anchor_source: rider_clinician_bbox
+        anchor_manifest_path: Segmentation_RIDER_anchor/_clinician_bbox_manifest.json
+        anchor_max_distance_cm: 5.0
+        confine_to_lung_mask: true
+        min_component_volume_cm3: 0.5
+      label_order:
+        - lung_tumor
+  combine:
+    ordered_networks: ["medsam_boxprompt"]

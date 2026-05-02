@@ -9,7 +9,7 @@ import tempfile
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple, TYPE_CHECKING
+from typing import Any, Dict, Iterable, List, Optional, Tuple, TYPE_CHECKING
 
 import numpy as np
 import SimpleITK as sitk
@@ -46,9 +46,14 @@ class NetworkDefinition:
     predict_args: List[str] = field(default_factory=list)
     prompt_model: Optional[str] = None
     prompt_structure: Optional[str] = None
+    prompt_source: Optional[str] = None
     bbox_margin_voxels: int = 5
     confine_to_lung_mask: bool = False
     min_component_volume_cm3: float = 0.5
+    anchor_source: Optional[str] = None
+    anchor_max_distance_cm: float = 5.0
+    anchor_glob: str = "Segmentation_Original/CT_*/GTV-*.nii.gz"
+    anchor_manifest_path: str = "Segmentation_RIDER_anchor/_clinician_bbox_manifest.json"
 
 
 @dataclass(slots=True)
@@ -124,6 +129,14 @@ def _structure_filename(name: str) -> str:
     return token or "structure"
 
 
+def _as_bool(value: object, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
 def discover_custom_models(
     root: Path,
     selected_names: Optional[Iterable[str]] = None,
@@ -146,6 +159,9 @@ def discover_custom_models(
             data = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
         except Exception as exc:
             logger.warning("Failed to read custom model config %s: %s", config_path, exc)
+            continue
+        if not _as_bool(data.get("enabled"), True):
+            logger.info("Skipping disabled custom model config %s", config_path)
             continue
         try:
             definition = _parse_custom_model(model_dir, data, default_command)
@@ -332,6 +348,18 @@ def _parse_custom_model(model_dir: Path, data: dict, default_command: str) -> Cu
             prompt_cfg = {}
         prompt_model = entry.get("prompt_model") or prompt_cfg.get("model")
         prompt_structure = entry.get("prompt_structure") or prompt_cfg.get("structure")
+        prompt_source_raw = (
+            entry.get("prompt_source")
+            or prompt_cfg.get("prompt_source")
+            or prompt_cfg.get("source")
+        )
+        prompt_source = str(prompt_source_raw).strip() if prompt_source_raw else None
+        if prompt_source and prompt_source != "anchor_bbox" and ":" in prompt_source:
+            prompt_model_part, prompt_structure_part = prompt_source.split(":", 1)
+            prompt_model = prompt_model or prompt_model_part.strip()
+            prompt_structure = prompt_structure or prompt_structure_part.strip()
+        elif prompt_model and prompt_structure and not prompt_source:
+            prompt_source = f"{prompt_model}:{prompt_structure}"
         try:
             bbox_margin_voxels = int(
                 entry.get("bbox_margin_voxels")
@@ -346,13 +374,6 @@ def _parse_custom_model(model_dir: Path, data: dict, default_command: str) -> Cu
         if not isinstance(post_cfg, dict):
             post_cfg = {}
 
-        def _as_bool(value: object, default: bool = False) -> bool:
-            if value is None:
-                return default
-            if isinstance(value, bool):
-                return value
-            return str(value).strip().lower() in {"1", "true", "yes", "on"}
-
         confine_to_lung_mask = _as_bool(
             entry.get("confine_to_lung_mask", post_cfg.get("confine_to_lung_mask")),
             False,
@@ -365,6 +386,30 @@ def _parse_custom_model(model_dir: Path, data: dict, default_command: str) -> Cu
             )
         except (TypeError, ValueError):
             min_component_volume_cm3 = 0.5
+        anchor_source_raw = entry.get("anchor_source", post_cfg.get("anchor_source"))
+        anchor_source = str(anchor_source_raw).strip().lower() if anchor_source_raw else None
+        if anchor_source and anchor_source not in {"specialist_reference", "rider_clinician_bbox"}:
+            raise ValueError(
+                f"Network {network_id}: anchor_source must be specialist_reference or rider_clinician_bbox"
+            )
+        try:
+            anchor_max_distance_cm = float(
+                entry.get("anchor_max_distance_cm")
+                or post_cfg.get("anchor_max_distance_cm")
+                or 5.0
+            )
+        except (TypeError, ValueError):
+            anchor_max_distance_cm = 5.0
+        anchor_glob = str(
+            entry.get("anchor_glob")
+            or post_cfg.get("anchor_glob")
+            or "Segmentation_Original/CT_*/GTV-*.nii.gz"
+        )
+        anchor_manifest_path = str(
+            entry.get("anchor_manifest_path")
+            or post_cfg.get("anchor_manifest_path")
+            or "Segmentation_RIDER_anchor/_clinician_bbox_manifest.json"
+        )
 
         networks.append(
             NetworkDefinition(
@@ -385,9 +430,14 @@ def _parse_custom_model(model_dir: Path, data: dict, default_command: str) -> Cu
                 predict_args=predict_args,
                 prompt_model=str(prompt_model).strip() if prompt_model else None,
                 prompt_structure=str(prompt_structure).strip() if prompt_structure else None,
+                prompt_source=prompt_source,
                 bbox_margin_voxels=max(0, bbox_margin_voxels),
                 confine_to_lung_mask=confine_to_lung_mask,
                 min_component_volume_cm3=max(0.0, min_component_volume_cm3),
+                anchor_source=anchor_source,
+                anchor_max_distance_cm=max(0.0, anchor_max_distance_cm),
+                anchor_glob=anchor_glob,
+                anchor_manifest_path=anchor_manifest_path,
             )
         )
 
@@ -613,6 +663,128 @@ def _prompt_mask_path(course_root: Path, model_name: str, structure_name: str) -
     return path
 
 
+def _optional_prompt_mask_path(
+    course_root: Path,
+    model_name: Optional[str],
+    structure_name: Optional[str],
+) -> Optional[Path]:
+    if not model_name or not structure_name:
+        return None
+    path = (
+        course_root
+        / "Segmentation_CustomModels"
+        / model_name
+        / f"{_structure_filename(structure_name)}.nii.gz"
+    )
+    return path if path.exists() else None
+
+
+def _jsonable(value: Any) -> Any:
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, np.integer):
+        return int(value)
+    if isinstance(value, np.floating):
+        return float(value)
+    if isinstance(value, dict):
+        return {str(k): _jsonable(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(v) for v in value]
+    return value
+
+
+def _empty_structures_from_reference(
+    reference_img: sitk.Image,
+    label_names: List[str],
+) -> Dict[str, sitk.Image]:
+    arr = np.zeros(sitk.GetArrayFromImage(reference_img).shape, dtype=np.uint8)
+    structures: Dict[str, sitk.Image] = {}
+    for name in label_names:
+        img = sitk.GetImageFromArray(arr.copy())
+        img.CopyInformation(reference_img)
+        structures[name] = img
+    return structures
+
+
+def _anchor_pattern(course_root: Path, pattern: str) -> str:
+    path = Path(pattern)
+    if path.is_absolute():
+        return str(path)
+    return str(course_root / pattern)
+
+
+def _derive_anchor_for_network(
+    course_root: Path,
+    patient_id: str,
+    network: NetworkDefinition,
+) -> tuple[Optional[dict[str, Any]], dict[str, Any]]:
+    diagnostics: dict[str, Any] = {
+        "anchor_source": network.anchor_source,
+        "anchor_max_distance_cm": network.anchor_max_distance_cm,
+    }
+    if not network.anchor_source:
+        diagnostics["status"] = "not_configured"
+        return None, diagnostics
+
+    if network.anchor_source == "specialist_reference":
+        from .segmenters.postprocessing import anchor_to_jsonable, derive_anchor_from_reference
+
+        pattern = _anchor_pattern(course_root, network.anchor_glob)
+        anchor = derive_anchor_from_reference(pattern)
+        diagnostics["anchor_glob"] = pattern
+        diagnostics["anchor"] = anchor_to_jsonable(anchor)
+        diagnostics["status"] = "anchor_found" if anchor else "anchor_missing"
+        return anchor, diagnostics
+
+    if network.anchor_source == "rider_clinician_bbox":
+        manifest_path = Path(network.anchor_manifest_path)
+        if not manifest_path.is_absolute():
+            manifest_path = course_root / manifest_path
+        diagnostics["anchor_manifest_path"] = str(manifest_path)
+        if not manifest_path.exists():
+            diagnostics["status"] = "anchor_missing"
+            diagnostics["reason"] = "missing_anchor_manifest"
+            return None, diagnostics
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            diagnostics["status"] = "anchor_missing"
+            diagnostics["reason"] = f"invalid_anchor_manifest: {exc}"
+            return None, diagnostics
+        entry = manifest.get(patient_id)
+        if not isinstance(entry, dict):
+            diagnostics["status"] = "anchor_missing"
+            diagnostics["reason"] = "patient_not_in_anchor_manifest"
+            return None, diagnostics
+        bbox = entry.get("bbox_zyx")
+        centroid = entry.get("centroid_zyx")
+        if bbox and not centroid:
+            mins = np.asarray(bbox[0], dtype=float)
+            maxs = np.asarray(bbox[1], dtype=float)
+            centroid = ((mins + maxs) / 2.0).tolist()
+        if not bbox or not centroid:
+            diagnostics["status"] = "anchor_missing"
+            diagnostics["reason"] = "manifest_entry_missing_bbox_or_centroid"
+            return None, diagnostics
+        anchor = {
+            "centroid_zyx": tuple(float(v) for v in centroid),
+            "bbox_zyx": (
+                tuple(int(v) for v in bbox[0]),
+                tuple(int(v) for v in bbox[1]),
+            ),
+            "source": entry.get("source", "clinician_bbox"),
+        }
+        diagnostics["anchor"] = _jsonable(anchor)
+        diagnostics["status"] = "anchor_found"
+        return anchor, diagnostics
+
+    diagnostics["status"] = "anchor_missing"
+    diagnostics["reason"] = f"unsupported_anchor_source: {network.anchor_source}"
+    return None, diagnostics
+
+
 def _maybe_confine_to_lung(
     structures: Dict[str, sitk.Image],
     course_root: Path,
@@ -630,6 +802,64 @@ def _maybe_confine_to_lung(
         )
         for name, img in structures.items()
     }
+
+
+def _postprocess_structures(
+    structures: Dict[str, sitk.Image],
+    course_root: Path,
+    network: NetworkDefinition,
+    anchor: Optional[dict[str, Any]],
+    diagnostics: dict[str, Any],
+) -> tuple[Dict[str, sitk.Image], dict[str, Any]]:
+    if not network.anchor_source and not network.confine_to_lung_mask:
+        return structures, diagnostics
+
+    from .segmenters.postprocessing import (
+        confine_to_total_lung,
+        confine_to_total_lung_largest_component,
+        select_component_nearest_anchor,
+    )
+
+    out: Dict[str, sitk.Image] = {}
+    diagnostics.setdefault("structures", {})
+    for name, img in structures.items():
+        current = img
+        struct_diag: dict[str, Any] = {}
+        if network.anchor_source:
+            if anchor is None:
+                current = _empty_structures_from_reference(img, [name])[name]
+                struct_diag["anchor_selection"] = {
+                    "status": "skipped_no_anchor",
+                    "anchor_source": network.anchor_source,
+                }
+            else:
+                current, selection_meta = select_component_nearest_anchor(
+                    current,
+                    anchor["centroid_zyx"],
+                    max_distance_cm=network.anchor_max_distance_cm,
+                    min_component_volume_cm3=network.min_component_volume_cm3,
+                )
+                struct_diag["anchor_selection"] = selection_meta
+
+        if network.confine_to_lung_mask:
+            before_voxels = int(np.count_nonzero(sitk.GetArrayFromImage(current) > 0))
+            if network.anchor_source:
+                current = confine_to_total_lung(current, course_root)
+            else:
+                current = confine_to_total_lung_largest_component(
+                    current,
+                    course_root,
+                    min_component_volume_cm3=network.min_component_volume_cm3,
+                )
+            after_voxels = int(np.count_nonzero(sitk.GetArrayFromImage(current) > 0))
+            struct_diag["lung_confinement"] = {
+                "applied": True,
+                "before_voxels": before_voxels,
+                "after_voxels": after_voxels,
+            }
+        out[name] = current
+        diagnostics["structures"][name] = struct_diag
+    return out, diagnostics
 
 
 def _prepare_network_weights(model: CustomModelDefinition, network: NetworkDefinition) -> Path:
@@ -993,13 +1223,37 @@ def _run_single_model(
 
         structures_by_network: Dict[str, Dict[str, sitk.Image]] = {}
         output_dirs: Dict[str, Path] = {}
+        anchor_diagnostics: Dict[str, Any] = {}
 
         for network in model.networks:
             network_env = _combined_env(env, network.env)
-            if model.interface not in {"totalsegmentator", "medsam_boxprompt"}:
-                _prepare_network_weights(model, network)
             output_dir = tmp_root / f"output_{_sanitize_token(network.alias)}"
             output_dir.mkdir(parents=True, exist_ok=True)
+            anchor, anchor_diag = _derive_anchor_for_network(
+                course.dirs.root,
+                course.patient_id,
+                network,
+            )
+            if network.anchor_source and anchor is None:
+                logger.warning(
+                    "Skipping custom model network '%s/%s' for %s/%s: no %s anchor available",
+                    model.name,
+                    network.alias,
+                    course.patient_id,
+                    course.course_id,
+                    network.anchor_source,
+                )
+                reference_img = sitk.ReadImage(str(nifti_path))
+                structures_by_network[network.alias] = _empty_structures_from_reference(
+                    reference_img,
+                    network.label_names,
+                )
+                anchor_diag["status"] = "skipped_no_anchor"
+                anchor_diagnostics[network.alias] = anchor_diag
+                output_dirs[network.alias] = output_dir
+                continue
+            if model.interface not in {"totalsegmentator", "medsam_boxprompt"}:
+                _prepare_network_weights(model, network)
             if model.interface == "totalsegmentator":
                 from .segmenters.totalsegmentator import run_totalsegmentator_prediction
 
@@ -1017,44 +1271,68 @@ def _run_single_model(
                     env=network_env,
                     runner=_run_shell,
                 )
-                structures_by_network[network.alias] = _load_named_binary_masks(output_dir, network.label_names)
+                structures = _load_named_binary_masks(output_dir, network.label_names)
+                structures, anchor_diag = _postprocess_structures(
+                    structures,
+                    course.dirs.root,
+                    network,
+                    anchor,
+                    anchor_diag,
+                )
+                structures_by_network[network.alias] = structures
+                if network.anchor_source or network.confine_to_lung_mask:
+                    anchor_diagnostics[network.alias] = anchor_diag
             elif model.interface == "medsam_boxprompt":
                 from .segmenters.medsam_boxprompt import run_medsam_boxprompt_prediction
 
                 if not network.checkpoint_path:
                     raise RuntimeError(f"MedSAM model {model.name}/{network.alias} has no checkpoint configured")
-                if not network.prompt_model or not network.prompt_structure:
-                    raise RuntimeError(
-                        f"MedSAM model {model.name}/{network.alias} requires prompt.model and prompt.structure"
-                    )
                 source_dir = (model.directory / network.source_dir).resolve() if network.source_dir else None
-                prompt_mask = _prompt_mask_path(course.dirs.root, network.prompt_model, network.prompt_structure)
-                run_medsam_boxprompt_prediction(
+                prompt_mask = None
+                if network.prompt_source != "anchor_bbox":
+                    prompt_mask = _optional_prompt_mask_path(
+                        course.dirs.root,
+                        network.prompt_model,
+                        network.prompt_structure,
+                    )
+                medsam_metadata = run_medsam_boxprompt_prediction(
                     input_path=nifti_path,
                     output_dir=output_dir,
                     checkpoint_path=network.checkpoint_path,
                     source_dir=source_dir,
                     prompt_mask_path=prompt_mask,
+                    prompt_source=network.prompt_source,
+                    anchor=anchor,
                     output_name=network.label_names[0],
                     model_type=network.architecture or model.model or "vit_b",
                     device=cfg.totalseg_device,
                     bbox_margin_voxels=network.bbox_margin_voxels,
                 )
                 structures = _load_named_binary_masks(output_dir, network.label_names)
-                structures_by_network[network.alias] = _maybe_confine_to_lung(
+                anchor_diag["medsam"] = medsam_metadata
+                structures, anchor_diag = _postprocess_structures(
                     structures,
                     course.dirs.root,
                     network,
+                    anchor,
+                    anchor_diag,
                 )
+                structures_by_network[network.alias] = structures
+                anchor_diagnostics[network.alias] = anchor_diag
             else:
                 _run_nnunet_prediction(cfg, model, network, input_dir, output_dir, network_env)
                 seg_img = _load_segmentation_output(output_dir)
                 structures = _make_binary_masks(seg_img, network.label_names)
-                structures_by_network[network.alias] = _maybe_confine_to_lung(
+                structures, anchor_diag = _postprocess_structures(
                     structures,
                     course.dirs.root,
                     network,
+                    anchor,
+                    anchor_diag,
                 )
+                structures_by_network[network.alias] = structures
+                if network.anchor_source or network.confine_to_lung_mask:
+                    anchor_diagnostics[network.alias] = anchor_diag
             output_dirs[network.alias] = output_dir
 
         if model.ensemble:
@@ -1106,6 +1384,11 @@ def _run_single_model(
         structure_source,
         output_root,
     )
+    if anchor_diagnostics:
+        (output_root / "anchor_diagnostics.json").write_text(
+            json.dumps(_jsonable(anchor_diagnostics), indent=2),
+            encoding="utf-8",
+        )
 
     if not manifest_entries:
         raise RuntimeError(f"No structures were produced for model {model.name}")
@@ -1139,7 +1422,20 @@ def _run_single_model(
         len(expected_structures)
     )
 
-    rtstruct_path = _build_rtstruct(ct_dir, combined_structures, output_root, structure_paths)
+    any_nonempty_structure = any(
+        np.any(sitk.GetArrayFromImage(img) > 0)
+        for img in combined_structures.values()
+    )
+    rtstruct_path: Optional[Path] = None
+    if any_nonempty_structure:
+        rtstruct_path = _build_rtstruct(ct_dir, combined_structures, output_root, structure_paths)
+    else:
+        logger.warning(
+            "Custom model '%s' produced only empty structures for %s/%s; RTSTRUCT skipped",
+            model.name,
+            course.patient_id,
+            course.course_id,
+        )
 
     manifest = {
         "model": model.name,
@@ -1154,7 +1450,7 @@ def _run_single_model(
             "combine_order": model.combine_order,
         },
         "structures": manifest_entries,
-        "rtstruct": str(rtstruct_path.name),
+        "rtstruct": str(rtstruct_path.name) if rtstruct_path else None,
         "source_nifti": str(nifti_path),
         "expected_structures": expected_structures,
         "produced_structures": produced_structures,
