@@ -27,6 +27,10 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+anchor_glob_default = "Segmentation_Original/CT_*/GTV-1*-*.nii.gz"
+dice_reference_glob_default = "Segmentation_Original/CT_*/GTV-1vis-*.nii.gz"
+
+
 @dataclass(slots=True)
 class NetworkDefinition:
     network_id: str
@@ -52,7 +56,8 @@ class NetworkDefinition:
     min_component_volume_cm3: float = 0.5
     anchor_source: Optional[str] = None
     anchor_max_distance_cm: float = 5.0
-    anchor_glob: str = "Segmentation_Original/CT_*/GTV-*.nii.gz"
+    anchor_glob: str = anchor_glob_default
+    dice_reference_glob: str = dice_reference_glob_default
     anchor_manifest_path: str = "Segmentation_RIDER_anchor/_clinician_bbox_manifest.json"
 
 
@@ -403,7 +408,12 @@ def _parse_custom_model(model_dir: Path, data: dict, default_command: str) -> Cu
         anchor_glob = str(
             entry.get("anchor_glob")
             or post_cfg.get("anchor_glob")
-            or "Segmentation_Original/CT_*/GTV-*.nii.gz"
+            or anchor_glob_default
+        )
+        dice_reference_glob = str(
+            entry.get("dice_reference_glob")
+            or post_cfg.get("dice_reference_glob")
+            or dice_reference_glob_default
         )
         anchor_manifest_path = str(
             entry.get("anchor_manifest_path")
@@ -437,6 +447,7 @@ def _parse_custom_model(model_dir: Path, data: dict, default_command: str) -> Cu
                 anchor_source=anchor_source,
                 anchor_max_distance_cm=max(0.0, anchor_max_distance_cm),
                 anchor_glob=anchor_glob,
+                dice_reference_glob=dice_reference_glob,
                 anchor_manifest_path=anchor_manifest_path,
             )
         )
@@ -857,6 +868,14 @@ def _postprocess_structures(
                 "before_voxels": before_voxels,
                 "after_voxels": after_voxels,
             }
+            anchor_selection = struct_diag.get("anchor_selection")
+            if (
+                isinstance(anchor_selection, dict)
+                and anchor_selection.get("status") == "selected"
+                and before_voxels > 0
+                and after_voxels == 0
+            ):
+                struct_diag["failure_reason"] = "anchor_matched_but_lung_confine_zeroed"
         out[name] = current
         diagnostics["structures"][name] = struct_diag
     return out, diagnostics
