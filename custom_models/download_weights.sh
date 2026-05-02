@@ -84,6 +84,24 @@ download_file() {
     return 1
 }
 
+clone_repo_once() {
+    local repo_url="$1"
+    local output_dir="$2"
+
+    if [ -d "$output_dir/.git" ]; then
+        echo -e "  ${GREEN}ok${NC} $output_dir already exists, skipping"
+        return 0
+    fi
+    if ! command -v git >/dev/null 2>&1; then
+        echo -e "  ${RED}ERROR:${NC} git is required to clone $repo_url"
+        return 1
+    fi
+    rm -rf "$output_dir"
+    mkdir -p "$(dirname "$output_dir")"
+    echo -e "  ${YELLOW}Cloning${NC} $repo_url..."
+    git clone --depth 1 "$repo_url" "$output_dir"
+}
+
 download_hf_snapshot() {
     local repo_id="$1"
     local local_dir="$2"
@@ -147,14 +165,29 @@ if should_download "lung_tumor_pancancer_lung"; then
         "Dataset105_Lung/*" || DOWNLOAD_FAILED=1
 fi
 
-if should_download "lung_tumor_aimi_nsclc_rg"; then
+if should_download "lung_tumor_medsam_boxprompt"; then
     echo ""
-    echo -e "${YELLOW}R8. Downloading AIMI/BAMF NSCLC-RG nnU-Net v1 weights${NC}"
+    echo -e "${YELLOW}R8. Downloading MedSAM box-prompt weights/source${NC}"
+    echo "   Source: https://github.com/bowang-lab/MedSAM and Zenodo 10.5281/zenodo.10689643"
+    echo "-----------------------------------------------------------------------"
+    MEDSAM_DIR="lung_tumor_medsam_boxprompt"
+    clone_repo_once \
+        "https://github.com/bowang-lab/MedSAM.git" \
+        "$MEDSAM_DIR/weights/MedSAM" || DOWNLOAD_FAILED=1
+    download_file \
+        "https://zenodo.org/records/10689643/files/medsam_vit_b.pth?download=1" \
+        "$MEDSAM_DIR/weights/medsam_vit_b.pth" \
+        300 || DOWNLOAD_FAILED=1
+fi
+
+if should_download "lung_tumor_aimi_nsclc_rg_disabled"; then
+    echo ""
+    echo -e "${YELLOW}R8. Downloading disabled AIMI/BAMF NSCLC-RG nnU-Net v1 weights${NC}"
     echo "   Source: https://zenodo.org/records/8290169"
     echo "-------------------------------------------------------"
     download_file \
         "https://zenodo.org/records/8290169/files/Task775_CT_NSCLC_RG.zip?download=1" \
-        "lung_tumor_aimi_nsclc_rg/Task775_CT_NSCLC_RG.zip" \
+        "_disabled_lung_tumor_aimi_nsclc_rg/Task775_CT_NSCLC_RG.zip" \
         1000 || DOWNLOAD_FAILED=1
 fi
 

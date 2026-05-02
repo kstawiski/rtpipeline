@@ -108,6 +108,11 @@ def _predict_from_data_iterator_serial(predictor, data_iterator, save_probabilit
 
         properties = preprocessed["data_properties"]
         prediction = predictor.predict_logits_from_preprocessed_data(data).cpu().detach().numpy()
+        class_ids, class_counts = np.unique(np.argmax(prediction, axis=0), return_counts=True)
+        print(
+            "nnUNet v2 logits argmax voxel counts: "
+            + ", ".join(f"class_{int(cls)}={int(count)}" for cls, count in zip(class_ids, class_counts))
+        )
         if ofile is not None:
             print("exporting prediction")
             ret.append(

@@ -89,7 +89,7 @@ class PipelineConfig:
         # R8 thoracic tumor comparator models
         "lung_tumor_totalseg_lung_nodules": {"required_regions": ["THORAX"], "min_confidence": 0.5},
         "lung_tumor_pancancer_lung": {"required_regions": ["THORAX"], "min_confidence": 0.5},
-        "lung_tumor_aimi_nsclc_rg": {"required_regions": ["THORAX"], "min_confidence": 0.5},
+        "lung_tumor_medsam_boxprompt": {"required_regions": ["THORAX"], "min_confidence": 0.5},
         # TotalSegmentator extra models (thorax-specific)
         "heartchambers_highres": {"required_regions": ["THORAX"], "min_confidence": 0.5},
         "coronary_arteries": {"required_regions": ["THORAX"], "min_confidence": 0.6},

@@ -62,7 +62,18 @@ def _model_yaml(interface: str, name: str, source_dir: str) -> str:
     command = "nnUNetv2_predict_from_modelfolder" if interface == "nnunetv2_modelfolder" else "TotalSegmentator"
     if interface == "nnunetv1":
         command = "nnUNet_predict"
+    if interface == "medsam_boxprompt":
+        command = "MedSAM"
     task_line = "      task: lung_nodules\n" if interface == "totalsegmentator" else ""
+    checkpoint_line = "      checkpoint: weights/fake_checkpoint.pth\n" if interface == "medsam_boxprompt" else ""
+    prompt_block = (
+        "      prompt:\n"
+        "        model: lung_tumor_totalseg_lung_nodules\n"
+        "        structure: lung_nodules\n"
+        "        bbox_margin_voxels: 1\n"
+        if interface == "medsam_boxprompt"
+        else ""
+    )
     return f"""
 name: {name}
 description: R8 test model
@@ -78,7 +89,7 @@ nnunet:
   networks:
     - id: test_dataset
       alias: test
-{task_line}      source_directory: {source_dir}
+{task_line}{checkpoint_line}{prompt_block}      source_directory: {source_dir}
       dataset_directory: {source_dir}
       label_order:
         - lung_tumor
@@ -92,13 +103,14 @@ nnunet:
     [
         ("lung_tumor_totalseg_lung_nodules", "totalsegmentator"),
         ("lung_tumor_pancancer_lung", "nnunetv2_modelfolder"),
-        ("lung_tumor_aimi_nsclc_rg", "nnunetv1"),
+        ("lung_tumor_medsam_boxprompt", "medsam_boxprompt"),
     ],
 )
 def test_r8_custom_model_discovery_and_phantom_smoke(tmp_path, monkeypatch, name, interface):
     model_dir = tmp_path / name
     source = model_dir / "weights" / "test_source"
     source.mkdir(parents=True)
+    (model_dir / "weights" / "fake_checkpoint.pth").write_bytes(b"fake")
     (model_dir / "custom_model.yaml").write_text(
         _model_yaml(interface, name, "weights/test_source"),
         encoding="utf-8",
@@ -112,11 +124,18 @@ def test_r8_custom_model_discovery_and_phantom_smoke(tmp_path, monkeypatch, name
     course = _Course(tmp_path / "course")
     nifti = tmp_path / "phantom.nii.gz"
     _write_phantom(nifti)
+    if interface == "medsam_boxprompt":
+        prompt_dir = course.dirs.segmentation_custom_models / "lung_tumor_totalseg_lung_nodules"
+        prompt_dir.mkdir(parents=True, exist_ok=True)
+        _write_seg(prompt_dir / "lung_nodules.nii.gz", nifti)
 
     def fake_nnunet(_cfg, _model, _network, _input_dir, output_dir, _env):
         _write_seg(output_dir / "case.nii.gz", nifti)
 
     def fake_totalseg(**kwargs):
+        _write_seg(Path(kwargs["output_dir"]) / "lung_tumor.nii.gz", nifti)
+
+    def fake_medsam(**kwargs):
         _write_seg(Path(kwargs["output_dir"]) / "lung_tumor.nii.gz", nifti)
 
     def fake_rtstruct(_ct_dir, _structure_masks, output_dir, _structure_paths):
@@ -126,6 +145,7 @@ def test_r8_custom_model_discovery_and_phantom_smoke(tmp_path, monkeypatch, name
 
     monkeypatch.setattr("rtpipeline.custom_models._run_nnunet_prediction", fake_nnunet)
     monkeypatch.setattr("rtpipeline.segmenters.totalsegmentator.run_totalsegmentator_prediction", fake_totalseg)
+    monkeypatch.setattr("rtpipeline.segmenters.medsam_boxprompt.run_medsam_boxprompt_prediction", fake_medsam)
     monkeypatch.setattr("rtpipeline.custom_models._build_rtstruct", fake_rtstruct)
 
     cfg = PipelineConfig(dicom_root=tmp_path, output_root=tmp_path / "out", logs_root=tmp_path / "logs")
@@ -133,3 +153,14 @@ def test_r8_custom_model_discovery_and_phantom_smoke(tmp_path, monkeypatch, name
     out_mask = course.dirs.segmentation_custom_models / name / "lung_tumor.nii.gz"
     assert out_mask.exists()
     assert (course.dirs.segmentation_custom_models / name / "manifest.json").exists()
+
+
+def test_discover_custom_models_skips_underscore_prefixed_dirs(tmp_path):
+    model_dir = tmp_path / "_disabled_lung_tumor_aimi_nsclc_rg"
+    source = model_dir / "weights" / "test_source"
+    source.mkdir(parents=True)
+    (model_dir / "custom_model.yaml").write_text(
+        _model_yaml("nnunetv1", "lung_tumor_aimi_nsclc_rg", "weights/test_source"),
+        encoding="utf-8",
+    )
+    assert discover_custom_models(tmp_path) == []
