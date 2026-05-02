@@ -32,6 +32,7 @@ class NetworkDefinition:
     network_id: str
     alias: str
     archive_path: Optional[Path]
+    checkpoint_path: Optional[Path]
     dataset_dir: str
     label_names: List[str]
     env: Dict[str, str] = field(default_factory=dict)
@@ -43,6 +44,11 @@ class NetworkDefinition:
     folds: object = "all"
     task: Optional[str] = None
     predict_args: List[str] = field(default_factory=list)
+    prompt_model: Optional[str] = None
+    prompt_structure: Optional[str] = None
+    bbox_margin_voxels: int = 5
+    confine_to_lung_mask: bool = False
+    min_component_volume_cm3: float = 0.5
 
 
 @dataclass(slots=True)
@@ -131,6 +137,8 @@ def discover_custom_models(
     selected = {name.lower() for name in (selected_names or []) if name}
 
     for model_dir in sorted(p for p in root.iterdir() if p.is_dir()):
+        if model_dir.name.startswith("_"):
+            continue
         config_path = model_dir / "custom_model.yaml"
         if not config_path.exists():
             continue
@@ -180,6 +188,13 @@ def _validate_model_weights(model: CustomModelDefinition) -> tuple[bool, List[st
     missing_files: List[str] = []
 
     for network in model.networks:
+        if network.checkpoint_path and not network.checkpoint_path.exists():
+            missing_files.append(f"{network.alias}: {network.checkpoint_path.name}")
+            continue
+        if model.interface == "medsam_boxprompt" and not network.checkpoint_path:
+            missing_files.append(f"{network.alias}: checkpoint not configured")
+            continue
+
         # Check if weights exist via archive file
         if network.archive_path:
             if not network.archive_path.exists():
@@ -260,6 +275,8 @@ def _parse_custom_model(model_dir: Path, data: dict, default_command: str) -> Cu
         alias = str(entry.get("alias") or entry.get("name") or entry.get("architecture") or network_id).strip()
         archive = entry.get("archive") or entry.get("weights")
         archive_path = (model_dir / str(archive)).resolve() if archive else None
+        checkpoint = entry.get("checkpoint") or entry.get("checkpoint_path")
+        checkpoint_path = (model_dir / str(checkpoint)).resolve() if checkpoint else None
 
         dataset_dir_raw = entry.get("dataset_directory") or entry.get("dataset_dir") or entry.get("dataset")
         if dataset_dir_raw:
@@ -310,11 +327,51 @@ def _parse_custom_model(model_dir: Path, data: dict, default_command: str) -> Cu
         else:
             predict_args = []
 
+        prompt_cfg = entry.get("prompt") or {}
+        if not isinstance(prompt_cfg, dict):
+            prompt_cfg = {}
+        prompt_model = entry.get("prompt_model") or prompt_cfg.get("model")
+        prompt_structure = entry.get("prompt_structure") or prompt_cfg.get("structure")
+        try:
+            bbox_margin_voxels = int(
+                entry.get("bbox_margin_voxels")
+                or prompt_cfg.get("bbox_margin_voxels")
+                or prompt_cfg.get("margin_voxels")
+                or 5
+            )
+        except (TypeError, ValueError):
+            bbox_margin_voxels = 5
+
+        post_cfg = entry.get("postprocessing") or {}
+        if not isinstance(post_cfg, dict):
+            post_cfg = {}
+
+        def _as_bool(value: object, default: bool = False) -> bool:
+            if value is None:
+                return default
+            if isinstance(value, bool):
+                return value
+            return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+        confine_to_lung_mask = _as_bool(
+            entry.get("confine_to_lung_mask", post_cfg.get("confine_to_lung_mask")),
+            False,
+        )
+        try:
+            min_component_volume_cm3 = float(
+                entry.get("min_component_volume_cm3")
+                or post_cfg.get("min_component_volume_cm3")
+                or 0.5
+            )
+        except (TypeError, ValueError):
+            min_component_volume_cm3 = 0.5
+
         networks.append(
             NetworkDefinition(
                 network_id=network_id,
                 alias=alias,
                 archive_path=archive_path,
+                checkpoint_path=checkpoint_path,
                 dataset_dir=dataset_dir,
                 label_names=label_names,
                 env=net_env,
@@ -326,6 +383,11 @@ def _parse_custom_model(model_dir: Path, data: dict, default_command: str) -> Cu
                 folds=folds_override,
                 task=task,
                 predict_args=predict_args,
+                prompt_model=str(prompt_model).strip() if prompt_model else None,
+                prompt_structure=str(prompt_structure).strip() if prompt_structure else None,
+                bbox_margin_voxels=max(0, bbox_margin_voxels),
+                confine_to_lung_mask=confine_to_lung_mask,
+                min_component_volume_cm3=max(0.0, min_component_volume_cm3),
             )
         )
 
@@ -535,6 +597,39 @@ def _combined_env(base_env: Dict[str, str], extra: Dict[str, str]) -> Dict[str, 
     env = base_env.copy()
     env.update(extra)
     return env
+
+
+def _prompt_mask_path(course_root: Path, model_name: str, structure_name: str) -> Path:
+    path = (
+        course_root
+        / "Segmentation_CustomModels"
+        / model_name
+        / f"{_structure_filename(structure_name)}.nii.gz"
+    )
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Prompt mask not found for {model_name}/{structure_name}: {path}"
+        )
+    return path
+
+
+def _maybe_confine_to_lung(
+    structures: Dict[str, sitk.Image],
+    course_root: Path,
+    network: NetworkDefinition,
+) -> Dict[str, sitk.Image]:
+    if not network.confine_to_lung_mask:
+        return structures
+    from .segmenters.postprocessing import confine_to_total_lung_largest_component
+
+    return {
+        name: confine_to_total_lung_largest_component(
+            img,
+            course_root,
+            min_component_volume_cm3=network.min_component_volume_cm3,
+        )
+        for name, img in structures.items()
+    }
 
 
 def _prepare_network_weights(model: CustomModelDefinition, network: NetworkDefinition) -> Path:
@@ -901,7 +996,7 @@ def _run_single_model(
 
         for network in model.networks:
             network_env = _combined_env(env, network.env)
-            if model.interface != "totalsegmentator":
+            if model.interface not in {"totalsegmentator", "medsam_boxprompt"}:
                 _prepare_network_weights(model, network)
             output_dir = tmp_root / f"output_{_sanitize_token(network.alias)}"
             output_dir.mkdir(parents=True, exist_ok=True)
@@ -923,10 +1018,43 @@ def _run_single_model(
                     runner=_run_shell,
                 )
                 structures_by_network[network.alias] = _load_named_binary_masks(output_dir, network.label_names)
+            elif model.interface == "medsam_boxprompt":
+                from .segmenters.medsam_boxprompt import run_medsam_boxprompt_prediction
+
+                if not network.checkpoint_path:
+                    raise RuntimeError(f"MedSAM model {model.name}/{network.alias} has no checkpoint configured")
+                if not network.prompt_model or not network.prompt_structure:
+                    raise RuntimeError(
+                        f"MedSAM model {model.name}/{network.alias} requires prompt.model and prompt.structure"
+                    )
+                source_dir = (model.directory / network.source_dir).resolve() if network.source_dir else None
+                prompt_mask = _prompt_mask_path(course.dirs.root, network.prompt_model, network.prompt_structure)
+                run_medsam_boxprompt_prediction(
+                    input_path=nifti_path,
+                    output_dir=output_dir,
+                    checkpoint_path=network.checkpoint_path,
+                    source_dir=source_dir,
+                    prompt_mask_path=prompt_mask,
+                    output_name=network.label_names[0],
+                    model_type=network.architecture or model.model or "vit_b",
+                    device=cfg.totalseg_device,
+                    bbox_margin_voxels=network.bbox_margin_voxels,
+                )
+                structures = _load_named_binary_masks(output_dir, network.label_names)
+                structures_by_network[network.alias] = _maybe_confine_to_lung(
+                    structures,
+                    course.dirs.root,
+                    network,
+                )
             else:
                 _run_nnunet_prediction(cfg, model, network, input_dir, output_dir, network_env)
                 seg_img = _load_segmentation_output(output_dir)
-                structures_by_network[network.alias] = _make_binary_masks(seg_img, network.label_names)
+                structures = _make_binary_masks(seg_img, network.label_names)
+                structures_by_network[network.alias] = _maybe_confine_to_lung(
+                    structures,
+                    course.dirs.root,
+                    network,
+                )
             output_dirs[network.alias] = output_dir
 
         if model.ensemble:
