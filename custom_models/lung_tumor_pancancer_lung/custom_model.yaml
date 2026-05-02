@@ -1,0 +1,33 @@
+name: lung_tumor_pancancer_lung
+description: >
+  CVPR 2026 FLARE PanCancerSeg specialized lung-cancer nnU-Net v2 ResEnc model
+  from Hugging Face, used as a recent public-weights CT tumor comparator.
+required_body_regions:
+  - THORAX
+min_region_confidence: 0.5
+nnunet:
+  interface: nnunetv2_modelfolder
+  command: nnUNetv2_predict_from_modelfolder
+  model: 3d_fullres
+  folds: [0]
+  env:
+    nnUNet_results: ./weights/PanCancerSeg-Specialized-weights
+    nnUNet_raw: ./nnUNet_raw
+    nnUNet_preprocessed: ./nnUNet_preprocessed
+  networks:
+    - id: Dataset105_Lung
+      alias: pancancer_lung
+      source_directory: weights/PanCancerSeg-Specialized-weights/Dataset105_Lung/nnUNetTrainerWandb2000__nnUNetResEncUNetMPlans__3d_fullres
+      dataset_directory: Dataset105_Lung/nnUNetTrainerWandb2000__nnUNetResEncUNetMPlans__3d_fullres
+      trainer: nnUNetTrainerWandb2000
+      folds: [0]
+      predict_args:
+        - -chk
+        - checkpoint_best.pth
+        - --disable_tta
+        - -device
+        - cuda
+      label_order:
+        - lung_tumor
+  combine:
+    ordered_networks: ["pancancer_lung"]

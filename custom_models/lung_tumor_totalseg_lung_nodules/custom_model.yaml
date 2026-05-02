@@ -1,0 +1,25 @@
+name: lung_tumor_totalseg_lung_nodules
+description: >
+  TotalSegmentator lung_nodules task for thoracic CT nodule/tumor candidate masks.
+  Included for R8 modern-segmenter triangulation; intended as a deterministic
+  public-weights comparator, not a clinically accepted GTV.
+required_body_regions:
+  - THORAX
+min_region_confidence: 0.5
+nnunet:
+  interface: totalsegmentator
+  command: TotalSegmentator
+  model: 3d_fullres
+  folds: all
+  env:
+    TOTALSEG_HOME_DIR: ./.totalsegmentator
+  networks:
+    - id: lung_nodules
+      alias: lung_nodules
+      task: lung_nodules
+      source_directory: .totalsegmentator/nnunet/results
+      dataset_directory: .totalsegmentator/nnunet/results
+      label_order:
+        - lung_nodules
+  combine:
+    ordered_networks: ["lung_nodules"]

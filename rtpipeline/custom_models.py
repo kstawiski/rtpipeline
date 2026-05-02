@@ -42,6 +42,7 @@ class NetworkDefinition:
     plans: Optional[str] = None
     folds: object = "all"
     task: Optional[str] = None
+    predict_args: List[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -94,7 +95,7 @@ class CustomModelDefinition:
     def resolved_env(self) -> Dict[str, str]:
         out: Dict[str, str] = {}
         for key, value in self.env.items():
-            if key in {"nnUNet_results", "nnUNet_raw", "nnUNet_preprocessed"}:
+            if key in {"nnUNet_results", "nnUNet_raw", "nnUNet_preprocessed", "TOTALSEG_HOME_DIR"}:
                 path = Path(value)
                 if not path.is_absolute():
                     path = (self.directory / path).resolve()
@@ -299,6 +300,15 @@ def _parse_custom_model(model_dir: Path, data: dict, default_command: str) -> Cu
         task = entry.get("task")
         if task:
             task = str(task).strip()
+        predict_args_raw = entry.get("predict_args") or entry.get("extra_args") or []
+        if isinstance(predict_args_raw, str):
+            import shlex
+
+            predict_args = shlex.split(predict_args_raw)
+        elif isinstance(predict_args_raw, list):
+            predict_args = [str(arg) for arg in predict_args_raw]
+        else:
+            predict_args = []
 
         networks.append(
             NetworkDefinition(
@@ -315,6 +325,7 @@ def _parse_custom_model(model_dir: Path, data: dict, default_command: str) -> Cu
                 plans=str(plans).strip() if plans else None,
                 folds=folds_override,
                 task=task,
+                predict_args=predict_args,
             )
         )
 
@@ -538,6 +549,15 @@ def _prepare_network_weights(model: CustomModelDefinition, network: NetworkDefin
         logger.info("Extracting weights for model %s network %s", model.name, network.network_id)
         with zipfile.ZipFile(archive_path, "r") as zf:
             zf.extractall(results_root)
+        if model.interface == "nnunetv1" and not dataset_dir.exists():
+            parts = Path(network.dataset_dir).parts
+            if parts and parts[0] == "nnUNet":
+                extracted_without_prefix = results_root.joinpath(*parts[1:])
+                if extracted_without_prefix.exists():
+                    target = results_root / parts[0] / Path(*parts[1:])
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    if not target.exists():
+                        shutil.move(str(extracted_without_prefix), str(target))
     else:
         source_dir = network.source_dir
         candidate_source: Optional[Path] = None
@@ -614,6 +634,28 @@ def _run_nnunet_prediction(
             cmd_parts.extend(["-ctr", str(network.cascade_trainer)])
         if network.plans:
             cmd_parts.extend(["-p", str(network.plans)])
+        cmd_parts.extend(network.predict_args)
+    elif model.interface == "nnunetv2_modelfolder":
+        model_folder = _prepare_network_weights(model, network)
+        from .segmenters.nnunetv2_modelfolder import run_modelfolder_prediction
+
+        logger.info(
+            "Running nnUNet v2 modelfolder prediction: model=%s input=%s output=%s folds=%s",
+            model_folder,
+            input_dir,
+            output_dir,
+            network.folds or model.folds,
+        )
+        run_modelfolder_prediction(
+            model_folder=model_folder,
+            input_dir=input_dir,
+            output_dir=output_dir,
+            folds=network.folds or model.folds,
+            predict_args=network.predict_args,
+            env=env,
+            trainer_shims=[network.trainer] if network.trainer else [],
+        )
+        return
     else:
         base_cmd = model.command or cfg.nnunet_predict_cmd
         folds_arg = network.folds or model.folds
@@ -638,6 +680,11 @@ def _run_nnunet_prediction(
             str(network.architecture or model.model),
             "-f",
         ] + fold_parts
+        if network.trainer:
+            cmd_parts.extend(["-tr", str(network.trainer)])
+        if network.plans:
+            cmd_parts.extend(["-p", str(network.plans)])
+        cmd_parts.extend(network.predict_args)
 
     import shutil as _shutil
 
@@ -664,6 +711,38 @@ def _load_segmentation_output(output_dir: Path) -> sitk.Image:
     if not candidates:
         raise FileNotFoundError(f"No nnUNet output found in {output_dir}")
     return sitk.ReadImage(str(candidates[0]))
+
+
+def _norm_label_token(name: str) -> str:
+    return _sanitize_token(name).replace("-", "_").lower()
+
+
+def _load_named_binary_masks(output_dir: Path, label_names: List[str]) -> Dict[str, sitk.Image]:
+    files = [p for p in output_dir.glob("*.nii*") if p.name.endswith((".nii", ".nii.gz"))]
+    by_token = {
+        _norm_label_token(p.name.removesuffix(".nii.gz").removesuffix(".nii")): p
+        for p in files
+    }
+    masks: Dict[str, sitk.Image] = {}
+    for structure_name in label_names:
+        token = _norm_label_token(structure_name)
+        candidates = [
+            token,
+            token.replace("total_segmentator", "totalsegmentator"),
+            token.replace("lung_nodule", "lung_nodules"),
+        ]
+        path = next((by_token[candidate] for candidate in candidates if candidate in by_token), None)
+        if path is None:
+            continue
+        img = sitk.ReadImage(str(path))
+        arr = (sitk.GetArrayFromImage(img) > 0).astype(np.uint8)
+        mask_img = sitk.GetImageFromArray(arr)
+        mask_img.CopyInformation(img)
+        masks[structure_name] = mask_img
+    if masks:
+        return masks
+    seg_img = _load_segmentation_output(output_dir)
+    return _make_binary_masks(seg_img, label_names)
 
 
 def _make_binary_masks(seg_img: sitk.Image, label_names: List[str]) -> Dict[str, sitk.Image]:
@@ -822,12 +901,32 @@ def _run_single_model(
 
         for network in model.networks:
             network_env = _combined_env(env, network.env)
-            _prepare_network_weights(model, network)
+            if model.interface != "totalsegmentator":
+                _prepare_network_weights(model, network)
             output_dir = tmp_root / f"output_{_sanitize_token(network.alias)}"
             output_dir.mkdir(parents=True, exist_ok=True)
-            _run_nnunet_prediction(cfg, model, network, input_dir, output_dir, network_env)
-            seg_img = _load_segmentation_output(output_dir)
-            structures_by_network[network.alias] = _make_binary_masks(seg_img, network.label_names)
+            if model.interface == "totalsegmentator":
+                from .segmenters.totalsegmentator import run_totalsegmentator_prediction
+
+                task = network.task or network.network_id
+                run_totalsegmentator_prediction(
+                    input_path=nifti_path,
+                    output_dir=output_dir,
+                    command=model.command or "TotalSegmentator",
+                    task=task,
+                    device=cfg.totalseg_device,
+                    fast=cfg.totalseg_fast,
+                    force_split=cfg.totalseg_force_split,
+                    extra_args=network.predict_args,
+                    command_prefix=_command_prefix(cfg),
+                    env=network_env,
+                    runner=_run_shell,
+                )
+                structures_by_network[network.alias] = _load_named_binary_masks(output_dir, network.label_names)
+            else:
+                _run_nnunet_prediction(cfg, model, network, input_dir, output_dir, network_env)
+                seg_img = _load_segmentation_output(output_dir)
+                structures_by_network[network.alias] = _make_binary_masks(seg_img, network.label_names)
             output_dirs[network.alias] = output_dir
 
         if model.ensemble:
