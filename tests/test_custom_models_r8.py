@@ -9,6 +9,11 @@ import SimpleITK as sitk
 
 from rtpipeline.config import PipelineConfig
 from rtpipeline.custom_models import discover_custom_models, _run_single_model
+from rtpipeline.segmenters.medsam_boxprompt import run_medsam_boxprompt_prediction
+from rtpipeline.segmenters.postprocessing import (
+    derive_anchor_from_reference,
+    select_component_nearest_anchor,
+)
 
 
 @dataclass(slots=True)
@@ -164,3 +169,71 @@ def test_discover_custom_models_skips_underscore_prefixed_dirs(tmp_path):
         encoding="utf-8",
     )
     assert discover_custom_models(tmp_path) == []
+
+
+def test_derive_anchor_from_reference_glob_unions_gtv_masks(tmp_path):
+    arr = np.zeros((5, 12, 12), dtype=np.uint8)
+    arr[1:3, 4:6, 6:8] = 1
+    img = sitk.GetImageFromArray(arr)
+    img.SetSpacing((2.0, 2.0, 5.0))
+    ref_dir = tmp_path / "Segmentation_Original" / "CT_1"
+    ref_dir.mkdir(parents=True)
+    sitk.WriteImage(img, str(ref_dir / "GTV-a.nii.gz"))
+
+    anchor = derive_anchor_from_reference(str(tmp_path / "Segmentation_Original" / "CT_*" / "GTV-*.nii.gz"))
+
+    assert anchor is not None
+    assert anchor["voxels"] == 8
+    assert anchor["bbox_zyx"] == ((1, 4, 6), (2, 5, 7))
+    assert np.allclose(anchor["centroid_zyx"], (1.5, 4.5, 6.5), atol=1.0)
+
+
+def test_select_component_nearest_anchor_keeps_near_component_or_empty(tmp_path):
+    arr = np.zeros((6, 14, 14), dtype=np.uint8)
+    arr[1:3, 2:5, 2:5] = 1
+    arr[3:5, 9:12, 9:12] = 1
+    img = sitk.GetImageFromArray(arr)
+    img.SetSpacing((1.0, 1.0, 1.0))
+
+    selected, meta = select_component_nearest_anchor(
+        img,
+        anchor_centroid_zyx=(1.5, 3.0, 3.0),
+        max_distance_cm=1.0,
+        min_component_volume_cm3=0.001,
+    )
+    selected_arr = sitk.GetArrayFromImage(selected)
+    assert meta["status"] == "selected"
+    assert meta["n_components_evaluated"] == 2
+    assert selected_arr.sum() == arr[1:3, 2:5, 2:5].sum()
+    assert selected_arr[1:3, 2:5, 2:5].all()
+    assert not selected_arr[3:5, 9:12, 9:12].any()
+
+    empty, far_meta = select_component_nearest_anchor(
+        img,
+        anchor_centroid_zyx=(100.0, 100.0, 100.0),
+        max_distance_cm=1.0,
+        min_component_volume_cm3=0.001,
+    )
+    assert far_meta["status"] == "no_anchor_match"
+    assert sitk.GetArrayFromImage(empty).sum() == 0
+
+
+def test_medsam_anchor_bbox_empty_prompt_is_graceful(tmp_path):
+    nifti = tmp_path / "phantom.nii.gz"
+    _write_phantom(nifti)
+
+    metadata = run_medsam_boxprompt_prediction(
+        input_path=nifti,
+        output_dir=tmp_path / "medsam_out",
+        checkpoint_path=tmp_path / "missing_checkpoint.pth",
+        source_dir=None,
+        prompt_source="anchor_bbox",
+        anchor=None,
+        output_name="lung_tumor",
+        bbox_margin_voxels=1,
+    )
+
+    out_path = tmp_path / "medsam_out" / "lung_tumor.nii.gz"
+    assert metadata["status"] == "skipped_no_prompt"
+    assert out_path.exists()
+    assert sitk.GetArrayFromImage(sitk.ReadImage(str(out_path))).sum() == 0
