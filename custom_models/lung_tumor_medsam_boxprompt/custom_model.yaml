@@ -26,6 +26,8 @@ nnunet:
       postprocessing:
         anchor_source: specialist_reference
         anchor_max_distance_cm: 5.0
+        anchor_glob: Segmentation_Original/CT_*/GTV-1*-*.nii.gz
+        dice_reference_glob: Segmentation_Original/CT_*/GTV-1vis-*.nii.gz
         confine_to_lung_mask: false
         min_component_volume_cm3: 0.5
       label_order:
