@@ -27,6 +27,9 @@ nnunet:
         - --disable_tta
         - -device
         - cuda
+      postprocessing:
+        confine_to_lung_mask: true
+        min_component_volume_cm3: 0.5
       label_order:
         - lung_tumor
   combine:
