@@ -1,7 +1,8 @@
-name: lung_tumor_pancancer_lung
+enabled: false
+name: lung_tumor_pancancer_lung_rider
 description: >
-  CVPR 2026 FLARE PanCancerSeg specialized lung-cancer nnU-Net v2 ResEnc model
-  from Hugging Face, used as a recent public-weights CT tumor comparator.
+  Deferred RIDER variant of the PanCancerSeg lung comparator. Enable only after
+  the clinician bbox anchor manifest is staged.
 required_body_regions:
   - THORAX
 min_region_confidence: 0.5
@@ -11,13 +12,13 @@ nnunet:
   model: 3d_fullres
   folds: [0]
   env:
-    nnUNet_results: ./weights/PanCancerSeg-Specialized-weights
+    nnUNet_results: ../lung_tumor_pancancer_lung/weights/PanCancerSeg-Specialized-weights
     nnUNet_raw: ./nnUNet_raw
     nnUNet_preprocessed: ./nnUNet_preprocessed
   networks:
     - id: Dataset105_Lung
       alias: pancancer_lung
-      source_directory: weights/PanCancerSeg-Specialized-weights/Dataset105_Lung/nnUNetTrainerWandb2000__nnUNetResEncUNetMPlans__3d_fullres
+      source_directory: ../lung_tumor_pancancer_lung/weights/PanCancerSeg-Specialized-weights/Dataset105_Lung/nnUNetTrainerWandb2000__nnUNetResEncUNetMPlans__3d_fullres
       dataset_directory: Dataset105_Lung/nnUNetTrainerWandb2000__nnUNetResEncUNetMPlans__3d_fullres
       trainer: nnUNetTrainerWandb2000
       folds: [0]
@@ -28,7 +29,8 @@ nnunet:
         - -device
         - cuda
       postprocessing:
-        anchor_source: specialist_reference
+        anchor_source: rider_clinician_bbox
+        anchor_manifest_path: Segmentation_RIDER_anchor/_clinician_bbox_manifest.json
         anchor_max_distance_cm: 5.0
         confine_to_lung_mask: true
         min_component_volume_cm3: 0.5

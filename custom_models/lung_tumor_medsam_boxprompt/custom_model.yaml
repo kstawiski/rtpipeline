@@ -1,8 +1,7 @@
 name: lung_tumor_medsam_boxprompt
 description: >
   MedSAM ViT-B foundation segmentation model prompted deterministically from the
-  TotalSegmentator lung_nodules custom-model mask, then confined to the
-  TotalSegmentator bilateral lung mask.
+  lesion anchor bbox, then confined to the TotalSegmentator bilateral lung mask.
 required_body_regions:
   - THORAX
 min_region_confidence: 0.5
@@ -19,10 +18,11 @@ nnunet:
       dataset_directory: weights/MedSAM
       checkpoint: weights/medsam_vit_b.pth
       prompt:
-        model: lung_tumor_totalseg_lung_nodules
-        structure: lung_nodules
+        prompt_source: anchor_bbox
         bbox_margin_voxels: 3
       postprocessing:
+        anchor_source: specialist_reference
+        anchor_max_distance_cm: 5.0
         confine_to_lung_mask: true
         min_component_volume_cm3: 0.5
       label_order:
