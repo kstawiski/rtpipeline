@@ -802,6 +802,14 @@ def main(argv: list[str] | None = None) -> int:
         return _doctor(argv[1:])
     if argv and argv[0] == "validate":
         return _validate(argv[1:])
+    if argv and argv[0] == "tcia-rider-lung-ct":
+        from .tcia_acquisition import rider_acquisition_main
+
+        return rider_acquisition_main(argv[1:])
+    if argv and argv[0] == "rider-manifest":
+        from .tcia_acquisition import rider_manifest_main
+
+        return rider_manifest_main(argv[1:])
     if argv and argv[0] == "radiomics-robustness":
         return _radiomics_robustness_course(argv[1:])
     if argv and argv[0] == "radiomics-robustness-aggregate":
