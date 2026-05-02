@@ -268,6 +268,32 @@ def _sanitize_name(text: str, fallback: str = "item") -> str:
     return cleaned[:80]
 
 
+def _looks_like_patient_series_layout(dicom_root: Path) -> bool:
+    """Detect TCIA-style PatientID/SeriesInstanceUID/*.dcm input trees."""
+    try:
+        patient_dirs = [path for path in dicom_root.iterdir() if path.is_dir()]
+    except OSError:
+        return False
+    if not patient_dirs:
+        return False
+    for patient_dir in patient_dirs:
+        try:
+            entries = list(patient_dir.iterdir())
+        except OSError:
+            return False
+        series_dirs = [path for path in entries if path.is_dir()]
+        if not series_dirs or any(path.is_file() for path in entries):
+            return False
+        for series_dir in series_dirs:
+            try:
+                names = os.listdir(series_dir)
+            except OSError:
+                return False
+            if not any(name.lower().endswith(".dcm") for name in names):
+                return False
+    return True
+
+
 # =============================================================================
 # DOSE CLASSIFICATION SYSTEM (5-Phase Algorithm)
 # =============================================================================
@@ -1463,11 +1489,20 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
 
     # Index CTs, extract RT sets, link and group into courses
     ct_index = index_ct_series(config.dicom_root)
-    rt_file_index = _index_rt_files(config.dicom_root)
-    plans, doses, structs = extract_rt(config.dicom_root)
-    linked_sets = link_rt_sets(plans, doses, structs)
-    courses = group_by_course(linked_sets, config.merge_criteria, config.max_days_between_plans)
-    series_index, registrations_index, series_meta = _index_series_and_registrations(config.dicom_root)
+    patient_series_layout = _looks_like_patient_series_layout(config.dicom_root)
+    if patient_series_layout:
+        logger.info("Detected patient/series CT-only layout; skipping RT and registration scans")
+        rt_file_index = {}
+        plans, doses, structs = [], [], []
+        linked_sets = []
+        courses = {}
+        series_index, registrations_index, series_meta = {}, {}, {}
+    else:
+        rt_file_index = _index_rt_files(config.dicom_root)
+        plans, doses, structs = extract_rt(config.dicom_root)
+        linked_sets = link_rt_sets(plans, doses, structs)
+        courses = group_by_course(linked_sets, config.merge_criteria, config.max_days_between_plans)
+        series_index, registrations_index, series_meta = _index_series_and_registrations(config.dicom_root)
 
     outputs: List[CourseOutput] = []
 
@@ -2045,6 +2080,105 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
             "Organize (RS-only)",
             rs_entries,
             lambda task: _process_rs_group(task[0], task[1], task[2], task[3]),
+            max_workers=config.effective_workers(),
+            logger=logger,
+            show_progress=True,
+            task_timeout=config.task_timeout,
+        )
+        for res in results:
+            if res:
+                outputs.append(res)
+    elif ct_index:
+        ct_entries: List[Tuple[str, str, List[object], Dict[str, Optional[str] | Optional[datetime.datetime]]]] = []
+        for pid, studies in sorted(ct_index.items(), key=lambda item: str(item[0])):
+            for study_uid, series_map in sorted(studies.items(), key=lambda item: str(item[0])):
+                for series_uid, series in sorted(series_map.items(), key=lambda item: str(item[0])):
+                    if not series:
+                        continue
+                    first_inst = series[0]
+                    start_dt: Optional[datetime.datetime] = None
+                    series_number = getattr(first_inst, "series_number", None)
+                    try:
+                        ds = pydicom.dcmread(str(first_inst.path), stop_before_pixels=True)
+                        raw_date = (
+                            getattr(ds, "SeriesDate", None)
+                            or getattr(ds, "StudyDate", None)
+                            or getattr(ds, "AcquisitionDate", None)
+                        )
+                        if raw_date:
+                            start_dt = parse_date(str(raw_date))
+                        series_number = getattr(ds, "SeriesNumber", series_number)
+                    except Exception:
+                        start_dt = None
+                    start_token = start_dt.strftime("%Y-%m") if start_dt else None
+                    fallback = f"ct_{series_number or 'series'}_{str(series_uid)[-12:]}"
+                    dir_name = course_dir_name(start_token, fallback, existing_names[str(pid)])
+                    meta: Dict[str, Optional[str] | Optional[datetime.datetime]] = {
+                        "dir_name": dir_name,
+                        "start_token": start_token,
+                        "start_iso": start_dt.strftime("%Y-%m-%d") if start_dt else None,
+                        "start_dt": start_dt,
+                    }
+                    ct_entries.append((str(pid), str(series_uid), list(series), meta))
+
+        ct_entries.sort(
+            key=lambda entry: (
+                entry[0],
+                entry[3].get("start_token") or "ZZZZ-99",
+                entry[3].get("dir_name") or "",
+                entry[1],
+            )
+        )
+
+        def _process_ct_series(
+            patient_id: str,
+            series_uid: str,
+            series: list,
+            meta: Dict[str, Optional[str] | Optional[datetime.datetime]],
+        ) -> CourseOutput:
+            course_key = "".join(ch if ch.isalnum() else "_" for ch in str(series_uid))[:64]
+            patient_root = config.output_root / patient_id
+            ensure_dir(patient_root)
+            course_id = str(meta.get("dir_name") or course_key)
+            course_dir = patient_root / course_id
+            course_dirs = build_course_dirs(course_dir)
+            course_dirs.ensure()
+
+            if config.resume and course_dir.exists():
+                hydrated = _hydrate_existing_course(patient_id, course_key, course_dir, meta)
+                if hydrated:
+                    return hydrated
+
+            primary_nifti: Optional[Path] = None
+            copy_ct_series(series, course_dirs.dicom_ct, copy_manager=copy_manager)
+            try:
+                primary_nifti = _ensure_ct_nifti(
+                    config,
+                    course_dirs.dicom_ct,
+                    course_dirs.nifti,
+                    force=bool(config.resume),
+                )
+            except Exception as exc:
+                logger.warning("CT NIfTI conversion failed (CT-only) for %s: %s", course_dir, exc)
+
+            return CourseOutput(
+                patient_id=patient_id,
+                course_key=course_key,
+                course_id=course_id,
+                course_start=meta.get("start_token") if isinstance(meta.get("start_token"), (str, type(None))) else None,
+                dirs=course_dirs,
+                rp_path=course_dir / "RP.dcm",
+                rd_path=course_dir / "RD.dcm",
+                rs_path=None,
+                primary_nifti=Path(primary_nifti) if primary_nifti else None,
+                related_dicom=[],
+                total_prescription_gy=None,
+            )
+
+        results = run_tasks_with_adaptive_workers(
+            "Organize (CT-only)",
+            ct_entries,
+            lambda task: _process_ct_series(task[0], task[1], task[2], task[3]),
             max_workers=config.effective_workers(),
             logger=logger,
             show_progress=True,
