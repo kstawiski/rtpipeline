@@ -405,16 +405,20 @@ def _parse_custom_model(model_dir: Path, data: dict, default_command: str) -> Cu
             )
         except (TypeError, ValueError):
             anchor_max_distance_cm = 5.0
-        anchor_glob = str(
-            entry.get("anchor_glob")
-            or post_cfg.get("anchor_glob")
-            or anchor_glob_default
-        )
-        dice_reference_glob = str(
-            entry.get("dice_reference_glob")
-            or post_cfg.get("dice_reference_glob")
-            or dice_reference_glob_default
-        )
+        # Resolve anchor_glob and dice_reference_glob with explicit None semantics
+        # so empty string disables the glob rather than falling through to the default.
+        if "anchor_glob" in entry and entry.get("anchor_glob") is not None:
+            anchor_glob = str(entry["anchor_glob"])
+        elif "anchor_glob" in post_cfg and post_cfg.get("anchor_glob") is not None:
+            anchor_glob = str(post_cfg["anchor_glob"])
+        else:
+            anchor_glob = anchor_glob_default
+        if "dice_reference_glob" in entry and entry.get("dice_reference_glob") is not None:
+            dice_reference_glob = str(entry["dice_reference_glob"])
+        elif "dice_reference_glob" in post_cfg and post_cfg.get("dice_reference_glob") is not None:
+            dice_reference_glob = str(post_cfg["dice_reference_glob"])
+        else:
+            dice_reference_glob = dice_reference_glob_default
         anchor_manifest_path = str(
             entry.get("anchor_manifest_path")
             or post_cfg.get("anchor_manifest_path")
