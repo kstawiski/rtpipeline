@@ -79,8 +79,14 @@ custom_models/**
 custom_models/**/*.zip
 custom_models/**/*.tar
 custom_models/**/*.tar.gz
+custom_models/**/*.tar.zst
+custom_models/**/*.pt
+custom_models/**/*.npz
 custom_models/**/*.pth
 custom_models/**/*.pkl
+custom_models/lung_tumor_*/weights/**
+custom_models/lung_tumor_*/nnUNet_results/**
+custom_models/lung_tumor_*/.totalsegmentator/**
 custom_models/**/2d/
 custom_models/**/3d_fullres/
 custom_models/**/nnUNet_*/

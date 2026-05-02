@@ -322,6 +322,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=[],
         help="Restrict custom segmentation to selected model names (comma-separated or repeat)",
     )
+    p.add_argument(
+        "--custom-model-only",
+        action="append",
+        default=[],
+        help="Alias for --custom-model; restrict custom segmentation to selected model names.",
+    )
     p.add_argument("--custom-model-workers", type=int, default=None, help="Maximum concurrent courses for custom segmentation models")
     p.add_argument("--force-custom-models", action="store_true", help="Force re-run custom segmentation models even if outputs exist")
     p.add_argument("--custom-model-conda-activate", default=None, help="Override conda activation prefix for custom segmentation models")
@@ -374,6 +380,7 @@ def build_parser() -> argparse.ArgumentParser:
             "organize",
             "segmentation",
             "segmentation_custom",
+            "segmentation_custom_models",
             "crop_ct",
             "dvh",
             "visualize",
@@ -1030,7 +1037,7 @@ def main(argv: list[str] | None = None) -> int:
         custom_models_root = None
 
     selected_models: list[str] = []
-    for entry in args.custom_model or []:
+    for entry in (args.custom_model or []) + (args.custom_model_only or []):
         if not entry:
             continue
         parts = [seg.strip() for seg in str(entry).replace(";", ",").split(",") if seg.strip()]
@@ -1063,7 +1070,8 @@ def main(argv: list[str] | None = None) -> int:
         pass
 
     default_order = ["organize", "segmentation", "segmentation_custom", "crop_ct", "dvh", "visualize", "radiomics", "qc"]
-    requested = [stage.lower() for stage in (args.stage or default_order)]
+    stage_aliases = {"segmentation_custom_models": "segmentation_custom"}
+    requested = [stage_aliases.get(stage.lower(), stage.lower()) for stage in (args.stage or default_order)]
     stages = [stage for stage in default_order if stage in requested]
     if not stages:
         stages = default_order
@@ -1233,6 +1241,7 @@ def main(argv: list[str] | None = None) -> int:
                     logger=logging.getLogger(__name__),
                     show_progress=True,
                     task_timeout=args.task_timeout,
+                    use_processes=(device == "cpu"),
                 )
                 if any(r is None for r in custom_results):
                     had_failures = True
