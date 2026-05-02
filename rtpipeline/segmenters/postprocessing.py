@@ -122,8 +122,8 @@ def derive_anchor_from_reference(reference_mask_path: str | Path) -> dict[str, A
 
     If ``reference_mask_path`` contains glob wildcards, all matching masks are
     resampled to the first mask geometry and unioned before the centroid and
-    bounding box are computed.  This is intentional for interobserver GTVs:
-    the union makes the anchor robust to individual specialist contour style.
+    bounding box are computed.  The caller is responsible for keeping the glob
+    scoped to one indexed lesion.
     Coordinates are returned in SimpleITK array order: z, y, x.
     """
     paths = _resolve_reference_paths(reference_mask_path)

@@ -8,7 +8,12 @@ import pytest
 import SimpleITK as sitk
 
 from rtpipeline.config import PipelineConfig
-from rtpipeline.custom_models import discover_custom_models, _run_single_model
+from rtpipeline.custom_models import (
+    NetworkDefinition,
+    _postprocess_structures,
+    _run_single_model,
+    discover_custom_models,
+)
 from rtpipeline.segmenters.medsam_boxprompt import run_medsam_boxprompt_prediction
 from rtpipeline.segmenters.postprocessing import (
     derive_anchor_from_reference,
@@ -188,6 +193,40 @@ def test_derive_anchor_from_reference_glob_unions_gtv_masks(tmp_path):
     assert np.allclose(anchor["centroid_zyx"], (1.5, 4.5, 6.5), atol=1.0)
 
 
+def test_derive_anchor_from_reference_indexed_glob_excludes_second_lesion(tmp_path):
+    ref_dir = tmp_path / "Segmentation_Original" / "CT_1"
+    ref_dir.mkdir(parents=True)
+
+    def write_box(name: str, y0: int, x0: int) -> None:
+        arr = np.zeros((4, 24, 24), dtype=np.uint8)
+        arr[1:3, y0 : y0 + 3, x0 : x0 + 3] = 1
+        img = sitk.GetImageFromArray(arr)
+        img.SetSpacing((1.0, 1.0, 2.0))
+        sitk.WriteImage(img, str(ref_dir / name))
+
+    write_box("GTV-1vis-1.nii.gz", 3, 3)
+    write_box("GTV-1auto-1.nii.gz", 4, 4)
+    write_box("GTV-2vis-1.nii.gz", 17, 17)
+    write_box("GTV-2auto-3.nii.gz", 18, 18)
+
+    mixed_anchor = derive_anchor_from_reference(
+        str(tmp_path / "Segmentation_Original" / "CT_*" / "GTV-*.nii.gz")
+    )
+    primary_anchor = derive_anchor_from_reference(
+        str(tmp_path / "Segmentation_Original" / "CT_*" / "GTV-1*-*.nii.gz")
+    )
+
+    assert mixed_anchor is not None
+    assert primary_anchor is not None
+    assert mixed_anchor["bbox_zyx"] == ((1, 3, 3), (2, 20, 20))
+    assert primary_anchor["bbox_zyx"] == ((1, 3, 3), (2, 6, 6))
+    assert primary_anchor["centroid_zyx"][1] < 6.0
+    assert primary_anchor["centroid_zyx"][2] < 6.0
+    assert mixed_anchor["centroid_zyx"][1] > 10.0
+    assert mixed_anchor["centroid_zyx"][2] > 10.0
+    assert all("GTV-1" in Path(path).name for path in primary_anchor["reference_paths"])
+
+
 def test_select_component_nearest_anchor_keeps_near_component_or_empty(tmp_path):
     arr = np.zeros((6, 14, 14), dtype=np.uint8)
     arr[1:3, 2:5, 2:5] = 1
@@ -216,6 +255,46 @@ def test_select_component_nearest_anchor_keeps_near_component_or_empty(tmp_path)
     )
     assert far_meta["status"] == "no_anchor_match"
     assert sitk.GetArrayFromImage(empty).sum() == 0
+
+
+def test_postprocess_reports_anchor_selected_then_lung_confine_zeroed(tmp_path):
+    arr = np.zeros((4, 12, 12), dtype=np.uint8)
+    arr[1:3, 4:7, 4:7] = 1
+    mask = sitk.GetImageFromArray(arr)
+    mask.SetSpacing((1.0, 1.0, 1.0))
+
+    lung_dir = tmp_path / "Segmentation_TotalSegmentator" / "CT_1"
+    lung_dir.mkdir(parents=True)
+    empty_lung = sitk.GetImageFromArray(np.zeros_like(arr, dtype=np.uint8))
+    empty_lung.CopyInformation(mask)
+    sitk.WriteImage(empty_lung, str(lung_dir / "total--lung.nii.gz"))
+
+    network = NetworkDefinition(
+        network_id="test",
+        alias="test",
+        archive_path=None,
+        checkpoint_path=None,
+        dataset_dir="",
+        label_names=["lung_tumor"],
+        anchor_source="specialist_reference",
+        confine_to_lung_mask=True,
+        min_component_volume_cm3=0.001,
+    )
+
+    postprocessed, diagnostics = _postprocess_structures(
+        {"lung_tumor": mask},
+        tmp_path,
+        network,
+        anchor={"centroid_zyx": (1.5, 5.0, 5.0)},
+        diagnostics={},
+    )
+
+    struct_diag = diagnostics["structures"]["lung_tumor"]
+    assert struct_diag["anchor_selection"]["status"] == "selected"
+    assert struct_diag["lung_confinement"]["before_voxels"] > 0
+    assert struct_diag["lung_confinement"]["after_voxels"] == 0
+    assert struct_diag["failure_reason"] == "anchor_matched_but_lung_confine_zeroed"
+    assert sitk.GetArrayFromImage(postprocessed["lung_tumor"]).sum() == 0
 
 
 def test_medsam_anchor_bbox_empty_prompt_is_graceful(tmp_path):
