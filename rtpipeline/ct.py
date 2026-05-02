@@ -29,6 +29,10 @@ def index_ct_series(dicom_root: Path) -> Dict[str, Dict[str, Dict[str, List[CTIn
     """
     Returns nested dict: patient_id -> study_uid -> series_uid -> [CTInstance...]
     """
+    fast_index = _index_tcia_patient_series_layout(dicom_root)
+    if fast_index is not None:
+        return fast_index
+
     index: Dict[str, Dict[str, Dict[str, List[CTInstance]]]] = {}
     for base, _, files in os.walk(dicom_root):
         for name in files:
@@ -54,6 +58,84 @@ def index_ct_series(dicom_root: Path) -> Dict[str, Dict[str, Dict[str, List[CTIn
                 series.sort(key=lambda x: (x.instance_number is None, x.instance_number or 0))
     logger.info("Indexed CT series for %d patients", len(index))
     return index
+
+
+def _looks_like_dicom(path: Path) -> bool:
+    try:
+        if path.stat().st_size < 132:
+            return False
+        with open(path, "rb") as handle:
+            header = handle.read(132)
+        return header[128:132] == b"DICM" or header[:2] in (b"\x08\x00", b"\x00\x08")
+    except OSError:
+        return False
+
+
+def _index_tcia_patient_series_layout(
+    dicom_root: Path,
+) -> Optional[Dict[str, Dict[str, Dict[str, List[CTInstance]]]]]:
+    """Fast path for TCIA downloads laid out as PatientID/SeriesInstanceUID/files.
+
+    The generic indexer reads every DICOM header. On NFS-backed TCIA trees this can
+    be very slow. For the patient/series directory layout produced by the TCIA
+    acquisition helper, one representative header per series is sufficient; slice
+    ordering can be delegated to dcm2niix downstream.
+    """
+
+    try:
+        patient_dirs = sorted(path for path in dicom_root.iterdir() if path.is_dir())
+    except OSError:
+        return None
+    if not patient_dirs:
+        return None
+
+    indexed: Dict[str, Dict[str, Dict[str, List[CTInstance]]]] = {}
+    indexed_series = 0
+
+    for patient_dir in patient_dirs:
+        try:
+            series_dirs = sorted(path for path in patient_dir.iterdir() if path.is_dir())
+        except OSError:
+            return None
+        if not series_dirs:
+            return None
+
+        for series_dir in series_dirs:
+            try:
+                names = sorted(os.listdir(series_dir))
+            except OSError:
+                return None
+            dicom_files = [series_dir / name for name in names if name.lower().endswith(".dcm")]
+            if not dicom_files:
+                dicom_files = [series_dir / name for name in names if _looks_like_dicom(series_dir / name)]
+            if not dicom_files:
+                continue
+            ds = read_dicom(dicom_files[0])
+            if ds is None:
+                return None
+            if getattr(ds, "Modality", None) != "CT":
+                continue
+            pid = str(get(ds, (0x0010, 0x0020), "")) or patient_dir.name
+            study_uid = str(get(ds, (0x0020, 0x000D), ""))
+            series_uid = str(get(ds, (0x0020, 0x000E), "")) or series_dir.name
+            series_num = get(ds, (0x0020, 0x0011))
+            if not pid or not study_uid or not series_uid:
+                return None
+            instances = [
+                CTInstance(path=path, patient_id=pid, study_uid=study_uid, series_uid=series_uid, series_number=series_num, instance_number=None)
+                for path in dicom_files
+            ]
+            indexed.setdefault(pid, {}).setdefault(study_uid, {})[series_uid] = instances
+            indexed_series += 1
+
+    if indexed_series == 0:
+        return None
+    logger.info(
+        "Fast-indexed TCIA-style CT series for %d patients (%d series)",
+        len(indexed),
+        indexed_series,
+    )
+    return indexed
 
 
 def copy_ct_series(
@@ -93,4 +175,3 @@ def pick_primary_series(series_map: Dict[str, List[CTInstance]]) -> Optional[Lis
         return None
     best = max(series_map.values(), key=lambda lst: len(lst))
     return best
-

@@ -407,7 +407,13 @@ def run_totalsegmentator(config: PipelineConfig, input_path: Path, output_path: 
         cmd_parts.append("--fast")
 
     if getattr(config, "totalseg_roi_subset", None):
-        cmd_parts.extend(["--roi_subset", str(config.totalseg_roi_subset)])
+        roi_tokens = [
+            token
+            for token in re.split(r"[\s,]+", str(config.totalseg_roi_subset).strip())
+            if token
+        ]
+        if roi_tokens:
+            cmd_parts.extend(["--roi_subset", *roi_tokens])
 
     if getattr(config, "totalseg_license_key", None):
         logger.debug("Using TotalSegmentator license key from config")
