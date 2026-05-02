@@ -316,3 +316,59 @@ def test_medsam_anchor_bbox_empty_prompt_is_graceful(tmp_path):
     assert metadata["status"] == "skipped_no_prompt"
     assert out_path.exists()
     assert sitk.GetArrayFromImage(sitk.ReadImage(str(out_path))).sum() == 0
+
+
+def test_dice_reference_glob_explicit_empty_disables_default(tmp_path):
+    name = "lung_tumor_pancancer_lung_rider_test"
+    model_dir = tmp_path / name
+    source = model_dir / "weights" / "test_source"
+    source.mkdir(parents=True)
+    (model_dir / "custom_model.yaml").write_text(
+        f"""
+name: {name}
+description: parser-fix regression
+nnunet:
+  interface: nnunetv2_modelfolder
+  command: nnUNetv2_predict_from_modelfolder
+  model: 3d_fullres
+  folds: [0]
+  env:
+    nnUNet_results: ./weights
+    nnUNet_raw: ./raw
+    nnUNet_preprocessed: ./preprocessed
+  networks:
+    - id: test_dataset
+      alias: test
+      source_directory: weights/test_source
+      dataset_directory: weights/test_source
+      postprocessing:
+        anchor_source: specialist_reference
+        anchor_glob: Segmentation_CustomModels/lung_tumor_totalseg_lung_nodules/lung_nodules.nii.gz
+        dice_reference_glob: ""
+      label_order:
+        - lung_tumor
+  combine:
+    ordered_networks: ["test"]
+""",
+        encoding="utf-8",
+    )
+    [model] = discover_custom_models(tmp_path, selected_names=[name])
+    [network] = model.networks
+    assert network.dice_reference_glob == ""
+    assert network.anchor_glob == "Segmentation_CustomModels/lung_tumor_totalseg_lung_nodules/lung_nodules.nii.gz"
+    assert network.anchor_source == "specialist_reference"
+
+
+def test_dice_reference_glob_omitted_uses_default(tmp_path):
+    name = "lung_tumor_default_glob_test"
+    model_dir = tmp_path / name
+    source = model_dir / "weights" / "test_source"
+    source.mkdir(parents=True)
+    (model_dir / "custom_model.yaml").write_text(
+        _model_yaml("nnunetv2_modelfolder", name, "weights/test_source"),
+        encoding="utf-8",
+    )
+    [model] = discover_custom_models(tmp_path, selected_names=[name])
+    [network] = model.networks
+    assert network.dice_reference_glob == "Segmentation_Original/CT_*/GTV-1vis-*.nii.gz"
+    assert network.anchor_glob == "Segmentation_Original/CT_*/GTV-1*-*.nii.gz"
