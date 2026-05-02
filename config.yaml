@@ -32,6 +32,15 @@ segmentation:
 
 custom_models:
   enabled: false
+  # root: "custom_models"
+  # R8 thoracic tumor comparators are available after downloading weights:
+  #   custom_models/download_weights.sh lung_tumor_totalseg_lung_nodules
+  #   custom_models/download_weights.sh lung_tumor_pancancer_lung
+  #   custom_models/download_weights.sh lung_tumor_aimi_nsclc_rg
+  # models:
+  #   - lung_tumor_totalseg_lung_nodules
+  #   - lung_tumor_pancancer_lung
+  #   - lung_tumor_aimi_nsclc_rg
 
 radiomics:
   enabled: true

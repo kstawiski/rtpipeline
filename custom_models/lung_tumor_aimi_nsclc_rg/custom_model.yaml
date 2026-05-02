@@ -1,0 +1,27 @@
+name: lung_tumor_aimi_nsclc_rg
+description: >
+  BAMF Health AIMI lung CT nnU-Net v1 model trained on NSCLC-Radiomics and
+  NSCLC-Radiogenomics; included as an open-weight leakage-flagged comparator.
+required_body_regions:
+  - THORAX
+min_region_confidence: 0.5
+nnunet:
+  interface: nnunetv1
+  command: nnUNet_predict
+  model: 3d_fullres
+  folds: [0]
+  env:
+    nnUNet_results: ./nnUNet_results
+    nnUNet_raw: ./nnUNet_raw
+    nnUNet_preprocessed: ./nnUNet_preprocessed
+  networks:
+    - id: Task775_CT_NSCLC_RG
+      alias: aimi_nsclc_rg
+      task: Task775_CT_NSCLC_RG
+      archive: Task775_CT_NSCLC_RG.zip
+      dataset_directory: nnUNet/3d_fullres/Task775_CT_NSCLC_RG
+      folds: [0]
+      label_order:
+        - lung_tumor
+  combine:
+    ordered_networks: ["aimi_nsclc_rg"]
