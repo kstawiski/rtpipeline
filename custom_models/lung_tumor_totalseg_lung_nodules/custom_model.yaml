@@ -19,6 +19,9 @@ nnunet:
       task: lung_nodules
       source_directory: .totalsegmentator/nnunet/results
       dataset_directory: .totalsegmentator/nnunet/results
+      postprocessing:
+        anchor_source: specialist_reference
+        anchor_max_distance_cm: 5.0
       label_order:
         - lung_nodules
   combine:
