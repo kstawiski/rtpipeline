@@ -1,8 +1,9 @@
-enabled: false
 name: lung_tumor_totalseg_lung_nodules_rider
 description: >
-  Deferred RIDER variant of the TotalSegmentator lung_nodules comparator.
-  Enable only after Segmentation_RIDER_anchor/_clinician_bbox_manifest.json is staged.
+  RIDER scan-rescan variant of the TotalSegmentator lung_nodules comparator.
+  No anchor postprocessing because RIDER lacks specialist GTV contours; the
+  raw TS lung_nodules mask is preserved as the localisation reference for
+  PanCancer-RIDER and MedSAM-RIDER and as the test-retest comparator itself.
 required_body_regions:
   - THORAX
 min_region_confidence: 0.5
@@ -12,18 +13,14 @@ nnunet:
   model: 3d_fullres
   folds: all
   env:
-    TOTALSEG_HOME_DIR: ../lung_tumor_totalseg_lung_nodules/.totalsegmentator
+    TOTALSEG_HOME_DIR: ./.totalsegmentator
   networks:
     - id: lung_nodules
-      alias: lung_nodules
+      alias: lung_nodules_rider
       task: lung_nodules
-      source_directory: ../lung_tumor_totalseg_lung_nodules/.totalsegmentator/nnunet/results
-      dataset_directory: ../lung_tumor_totalseg_lung_nodules/.totalsegmentator/nnunet/results
-      postprocessing:
-        anchor_source: rider_clinician_bbox
-        anchor_manifest_path: Segmentation_RIDER_anchor/_clinician_bbox_manifest.json
-        anchor_max_distance_cm: 5.0
+      source_directory: .totalsegmentator/nnunet/results
+      dataset_directory: .totalsegmentator/nnunet/results
       label_order:
         - lung_nodules
   combine:
-    ordered_networks: ["lung_nodules"]
+    ordered_networks: ["lung_nodules_rider"]
