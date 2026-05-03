@@ -23,6 +23,12 @@ venv/
 .nfs*
 .kilocodemodes
 
+# Crash dumps and CLI work artifacts
+core
+core.*
+.codex
+delegated_tasks/
+
 # Testing / coverage
 .pytest_cache/
 .mypy_cache/
