@@ -25,7 +25,7 @@ nnunet:
         bbox_margin_voxels: 3
       postprocessing:
         anchor_source: specialist_reference
-        anchor_glob: Segmentation_CustomModels/lung_tumor_totalseg_lung_nodules/lung_nodules.nii.gz
+        anchor_glob: Segmentation_CustomModels/lung_tumor_totalseg_lung_nodules_rider/lung_nodules.nii.gz
         dice_reference_glob: ""
         anchor_max_distance_cm: 5.0
         confine_to_lung_mask: false
