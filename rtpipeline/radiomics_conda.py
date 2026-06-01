@@ -91,11 +91,27 @@ class RadiomicsCheckpoint:
                 self.checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
                 combined_df = new_df
 
-            combined_df.to_parquet(self.checkpoint_path, index=False)
+            try:
+                combined_df.to_parquet(self.checkpoint_path, index=False)
+            except Exception:
+                # Some PyRadiomics diagnostics values are empty structs/objects that
+                # pyarrow cannot serialize ("Cannot write struct type 'Original' with
+                # no child field to Parquet"). Coerce object columns to str and retry
+                # so the checkpoint still persists and resume stays functional. The
+                # checkpoint is resume-only metadata; per-course feature output is
+                # unaffected (numerics-neutral).
+                obj_cols = combined_df.select_dtypes(include=["object"]).columns
+                combined_df[obj_cols] = combined_df[obj_cols].astype(str)
+                combined_df.to_parquet(self.checkpoint_path, index=False)
             self._buffer.clear()
             logger.debug("Checkpoint flushed: %d total ROIs", len(self._completed_rois))
         except Exception as exc:
             logger.error("Failed to flush checkpoint: %s", exc)
+            # Bound memory: always clear the buffer, even when the checkpoint cannot
+            # be written, so a persistently failing flush does not accumulate every
+            # result row in RAM for the entire run (observed ~21 GB growth on a
+            # 210-course cohort). Resume coverage is lost only for this batch.
+            self._buffer.clear()
 
     def flush(self) -> None:
         """Force flush any remaining buffered results."""
