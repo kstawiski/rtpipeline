@@ -226,6 +226,11 @@ _THREAD_ENV_VARS = (
     'MKL_NUM_THREADS',
     'NUMEXPR_NUM_THREADS',
     'NUMBA_NUM_THREADS',
+    # PyRadiomics computes features via SimpleITK -> ITK, which defaults to ALL cores per
+    # process. Without this, each extraction spawns ~ncores threads; N concurrent workers
+    # then oversubscribe catastrophically (observed: load 257 on a 56-core host with 32
+    # single-worker extractions, 2026-06-01). This var is what actually bounds ITK threads.
+    'ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS',
 )
 
 
@@ -270,7 +275,9 @@ def check_radiomics_env() -> bool:
             ],
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=120,  # cold `conda run` + import radiomics/SimpleITK/numpy can exceed 10s under
+                          # CPU load; a too-short preflight silently abandons a course's radiomics
+                          # (returns None, no xlsx written). Observed ~161/172 false failures, 2026-06-01.
             env=_conda_subprocess_env(),
         )
         return result.returncode == 0 and "OK" in result.stdout
@@ -438,7 +445,8 @@ print(json.dumps(output))
             ["conda", "run", "-n", RADIOMICS_ENV, "python", "-c", extraction_script_with_file],
             capture_output=True,
             text=True,
-            timeout=900,  # allow up to 15 minutes for large ROIs
+            timeout=1800,  # heavy composites (e.g. dilated pelvic-bone masks) under CPU contention
+                           # can exceed 15min; raised 900->1800 so a loaded host doesn't drop the ROI
             env=_conda_subprocess_env(),
         )
 
@@ -488,7 +496,7 @@ print(json.dumps(output))
 def extract_radiomics_batch_with_conda(
     tasks: List[Dict[str, Any]],
     params_file: Optional[str] = None,
-    timeout_per_roi: int = 120,
+    timeout_per_roi: int = 300,
 ) -> List[Dict[str, Any]]:
     """
     Extract radiomics features for multiple ROIs in a SINGLE subprocess.
@@ -499,7 +507,7 @@ def extract_radiomics_batch_with_conda(
     Args:
         tasks: List of dicts with 'image_path', 'mask_path', optional 'label', 'roi_name'
         params_file: Optional path to radiomics parameters YAML file
-        timeout_per_roi: Timeout per ROI in seconds (default 120s = 2 min)
+        timeout_per_roi: Timeout per ROI in seconds (default 300s = 5 min)
 
     Returns:
         List of feature dictionaries (one per task), None entries for failed ROIs
@@ -508,7 +516,7 @@ def extract_radiomics_batch_with_conda(
         return []
 
     # Calculate total timeout based on number of tasks
-    total_timeout = max(300, len(tasks) * timeout_per_roi)  # At least 5 minutes
+    total_timeout = max(1800, len(tasks) * timeout_per_roi)  # At least 30 minutes (heavy composites)
 
     # Create batch extraction script that processes all ROIs in one go
     batch_script = '''
