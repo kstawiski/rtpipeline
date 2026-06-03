@@ -496,7 +496,7 @@ print(json.dumps(output))
 def extract_radiomics_batch_with_conda(
     tasks: List[Dict[str, Any]],
     params_file: Optional[str] = None,
-    timeout_per_roi: int = 300,
+    timeout_per_roi: int = 900,
 ) -> List[Dict[str, Any]]:
     """
     Extract radiomics features for multiple ROIs in a SINGLE subprocess.
