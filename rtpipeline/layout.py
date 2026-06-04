@@ -12,7 +12,13 @@ class CourseDirs:
     root: Path
     dicom: Path
     dicom_ct: Path
+    dicom_ct_diagnostic: Path
+    dicom_cbct: Path
+    dicom_4dct: Path
+    dicom_petct: Path
+    dicom_pt: Path
     dicom_mr: Path
+    dicom_mr_functional: Path
     dicom_rtplan: Path
     dicom_rtdose: Path
     dicom_rtstruct: Path
@@ -42,6 +48,19 @@ class CourseDirs:
         ):
             path.mkdir(parents=True, exist_ok=True)
 
+    def ensure_all_series(self) -> None:
+        """Create optional per-series modality roots for all-series mode."""
+        self.ensure()
+        for path in (
+            self.dicom_ct_diagnostic,
+            self.dicom_cbct,
+            self.dicom_4dct,
+            self.dicom_petct,
+            self.dicom_pt,
+            self.dicom_mr_functional,
+        ):
+            path.mkdir(parents=True, exist_ok=True)
+
 
 def build_course_dirs(root: Path) -> CourseDirs:
     dicom = root / "DICOM"
@@ -49,7 +68,13 @@ def build_course_dirs(root: Path) -> CourseDirs:
         root=root,
         dicom=dicom,
         dicom_ct=dicom / "CT",
+        dicom_ct_diagnostic=dicom / "CT_diagnostic",
+        dicom_cbct=dicom / "CBCT",
+        dicom_4dct=dicom / "4DCT",
+        dicom_petct=dicom / "PETCT",
+        dicom_pt=dicom / "PT",
         dicom_mr=root / "MR",
+        dicom_mr_functional=root / "MR_functional",
         dicom_rtplan=dicom / "RTPLAN",
         dicom_rtdose=dicom / "RTDOSE",
         dicom_rtstruct=dicom / "RTSTRUCT",

@@ -4,12 +4,12 @@ import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, Iterable, List, Optional
 
 import pydicom
 from pydicom.dataset import FileDataset
 
-from .utils import read_dicom, get
+from .utils import read_dicom, get, _scoped_walk
 
 logger = logging.getLogger(__name__)
 
@@ -59,12 +59,15 @@ def _safe_roi_names(ds: FileDataset) -> List[str]:
     return names
 
 
-def extract_rt(dicom_root: Path) -> tuple[List[PlanInfo], List[DoseInfo], List[StructInfo]]:
+def extract_rt(
+    dicom_root: Path,
+    patient_ids: Optional[Iterable[str]] = None,
+) -> tuple[List[PlanInfo], List[DoseInfo], List[StructInfo]]:
     plans: List[PlanInfo] = []
     doses: List[DoseInfo] = []
     structs: List[StructInfo] = []
 
-    for base, _, files in os.walk(dicom_root):
+    for base, _, files in _scoped_walk(dicom_root, patient_ids):
         for name in files:
             p = Path(base) / name
             ds = read_dicom(p)
