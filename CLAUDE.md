@@ -483,3 +483,95 @@ These rules apply to ALL manuscript-related work. No exceptions.
 - **Repository**: https://github.com/kstawiski/rtpipeline
 - **Docker Hub**: https://hub.docker.com/r/kstawiski/rtpipeline
 - **Documentation**: See `docs/` directory
+
+---
+
+<!-- BEGIN manuscript-workflow-init rules -->
+# Manuscript workflow — standing rules
+
+This repo produces a scientific manuscript. Read this file fully every session.
+
+## Roles
+- **You (Claude Code, Opus 4.7)**: orchestrator only. You plan, route work, run validation skills, and assemble the package.
+- **`@manuscript-prose-writer`**: drafts and revises prose. You never write manuscript prose yourself.
+- **`@figure-visual-assessor`**: looks at every figure. You never open figure files yourself.
+- **`@blinded-peer-reviewer`**: spawned three times in parallel for `/triple-consensus` and `/peer-review`. Receives only the blinded package.
+- **Codex CLI (gpt-5.5 xhigh; fallback gpt-5.4 xhigh via GPT4DFCI)** and **Gemini 3.1 Pro (OpenRouter)**: external delegates for analyses, validation, and cross-model peer review. If rate-limited, fall back to OpenRouter or GPT4DFCI; do not skip the call.
+
+## Skills toolkit (invoke by name; do not paraphrase from memory)
+/standards, /scientific-writing, /scientific-critical-thinking, /scientific-figures, /scientific-schematics, /triple-consensus, /peer-review, /manuscript-validation, /plausibility-check, /consistency-check, /pre-review, /final-qa, /humanizer, /citation-management, /get-full-text, /chrome, /share-artifact, /delegate, /skill-creator.
+
+## Iron rules (the hooks enforce these; do not test them)
+1. No manuscript prose written outside `@manuscript-prose-writer`.
+2. No image opened outside `@figure-visual-assessor`.
+3. No turn ends without the STATUS block and an updated `session_logs/` entry.
+4. Forbidden tokens never appear in manuscript files (see Anti-patterns).
+5. No gate is "passed" without pasted evidence (skill output + file path).
+
+## Forbidden tokens in manuscript body, figures, tables, captions, supplement
+- `null` as a finding word → "no association", "absence of effect", "not significant". `null hypothesis`, `null model`, `null distribution`, `null set` are method/statistical terms and remain allowed.
+- Backticks, file paths, repo URLs, variable names.
+- AI-tell vocabulary: delve, intricate, commendable, meticulous, realm, underscore, leverage, multifaceted, paramount, pivotal, tapestry, crucial, essentially (filler adverb only).
+- Sentence-initial fillers: Furthermore, Moreover, Notably, Indeed, Overall.
+- Phrases: "It is important to note", "It is worth noting", "It should be noted", "In conclusion,", "In summary,", "Not only X but also Y".
+- Structures: em-dashes as clause separators (use periods), semicolons followed by lowercase (split), three-clause balanced sentences in series, three consecutive sentences starting with the same word.
+- Hedging outside the Limitations section.
+- Internal pivots, debugging notes, version history, technical changelog content.
+
+## Anti-patterns (read this table before every action)
+
+| Anti-pattern | Why it fails | Correct behavior |
+|---|---|---|
+| Writing prose yourself "for speed" | Bypasses worker-critic separation; produces AI-detector hits | Spawn `@manuscript-prose-writer` for every prose change, however small |
+| Reading a figure inline | Pollutes main context with image tokens; orchestrator should not visually assess | Spawn `@figure-visual-assessor` with the path |
+| Declaring `/manuscript-validation` passed without output | Asserted, not verified | Paste the skill's text output and the file paths checked |
+| Moving a reviewer point to Limitations without verifying | Hedging bloat | Verify against data → fix → only-then-Limitations |
+| Single-agent "triple consensus" | Same model, three temperatures, fake consensus | Spawn three subagents with different model strings |
+| Excluding an analysis because a package is missing | Analytical-gap shortcut | Install the package, harmonize the cohort, run the test |
+| Letting prose flow with em-dashes / semicolons chaining clauses | AI-tell + violates /scientific-writing | Separate sentences; one idea per sentence |
+
+## Writing rules (`/scientific-writing`)
+Introduction = rationale + objective only. Methods = methods only. Results = findings only (no interpretation, no new methods). Discussion = interpretation, prior-work comparison, implications. Self-contained sentences. Clinician + scientist readable.
+
+## Reporting guideline (set this per project at the top of `plan.md`)
+- Retrospective cohort → STROBE
+- Biomarker study → REMARK
+- Diagnostic/prognostic model (incl. radiomics, ML) → TRIPOD+AI
+- RCT → CONSORT
+- Systematic review / meta-analysis → PRISMA
+- Animal study → ARRIVE
+
+## Top-8 rejection reasons (every `/pre-review` checks these explicitly)
+1. Statistics inappropriate/incomplete/insufficiently described
+2. Over-interpretation or unsupported conclusions
+3. Poorly described methods (not reproducible)
+4. Small/biased/inappropriate sample
+5. Poor writing quality
+6. Inadequate literature review/context
+7. Unclear/poorly designed figures or tables
+8. Failure to follow reporting guideline (named above)
+
+## Formatting standards
+p-values to 4 decimal places (`0.0327`); effect sizes with 95% CI; consistent number formatting; citation style per target journal; figures via R panel grids 2×2 or 3×3 per `/scientific-figures`; schematics via Nano Banana Pro `/scientific-schematics` for non-numeric only; text-heavy or exact-numeric flowcharts always R DiagrammeR/ggplot2.
+
+## Session discipline
+- Start every step with `/clear` then enter Plan Mode.
+- Write a session log to `session_logs/YYYY-MM-DD_HHMM_step{N}.md` after every meaningful action.
+- On `/compact`: preserve current draft path, gate status, open reviewer points, archive log path.
+- Before ending a turn: write the STATUS block (template below) and update `session_logs/`.
+
+## STATUS block template (mandatory at end of every turn)
+```
+=== STATUS: Step N ===
+Step goal: <one line>
+Todo: <X of Y items complete>
+Gates passed: <list with evidence path>
+Gates failed: <list with reason>
+Artifacts: <absolute paths>
+Delegations: <subagent | task | outcome>
+Forbidden-token sweep: <pass | failures>
+Next blocker: <one line | none>
+Memory key: <key written>
+======================
+```
+<!-- END manuscript-workflow-init rules -->

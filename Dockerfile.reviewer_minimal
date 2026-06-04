@@ -1,0 +1,26 @@
+FROM python:3.11-slim
+
+ENV PIP_NO_CACHE_DIR=1 \
+    PIP_PROGRESS_BAR=off \
+    OPENBLAS_NUM_THREADS=1 \
+    OMP_NUM_THREADS=1 \
+    MKL_NUM_THREADS=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    git \
+    libgl1 \
+    libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY pyproject.toml README.md ./
+COPY rtpipeline/ ./rtpipeline/
+COPY manuscript/scripts/ ./manuscript/scripts/
+COPY manuscript/submission/ijrobp-v3-r11/supplement/radiomics_params_ct_2026-05-05.yaml ./manuscript/submission/ijrobp-v3-r11/supplement/
+
+RUN pip install -e . && \
+    pip install lifelines scikit-survival statsmodels scikit-learn python-docx openpyxl
+
+CMD ["python", "-c", "import rtpipeline; print('rtpipeline reviewer smoke import OK')"]

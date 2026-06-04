@@ -5,7 +5,7 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, Iterable, List, Optional
 
 import pandas as pd
 """Compatibility shim to let dicompyler-core import against pydicom>=3.
@@ -44,7 +44,7 @@ from pydicom.sequence import Sequence
 from pydicom.tag import Tag
 
 from .config import PipelineConfig
-from .utils import run_tasks_with_adaptive_workers
+from .utils import run_tasks_with_adaptive_workers, _scoped_walk
 
 logger = logging.getLogger(__name__)
 
@@ -103,9 +103,13 @@ def _export_dir(base: Path) -> ExportPaths:
     )
 
 
-def _list_files(dicom_root: Path, pattern_prefix: str) -> List[Path]:
+def _list_files(
+    dicom_root: Path,
+    pattern_prefix: str,
+    patient_ids: Optional[Iterable[str]] = None,
+) -> List[Path]:
     out: List[Path] = []
-    for base, _, files in os.walk(dicom_root):
+    for base, _, files in _scoped_walk(dicom_root, patient_ids):
         for fn in files:
             if fn.startswith(pattern_prefix) and fn.lower().endswith('.dcm'):
                 out.append(Path(base) / fn)
@@ -116,9 +120,11 @@ def export_metadata(config: PipelineConfig) -> Dict[str, Path]:
     """Extract metadata for plans, doses, structures, fractions and write XLSX files."""
     paths = _export_dir(config.output_root)
     dicom_root = config.dicom_root
+    # Scope discovery to the requested cohort when set (matches organize stage).
+    scope_ids = list(getattr(config, "discover_patient_ids", []) or []) or None
 
     # Collect RP
-    rp_files = _list_files(dicom_root, 'RP')
+    rp_files = _list_files(dicom_root, 'RP', scope_ids)
     def _rp_row(p: Path) -> dict | None:
         try:
             ds = pydicom.dcmread(str(p), stop_before_pixels=True)
@@ -153,7 +159,7 @@ def export_metadata(config: PipelineConfig) -> Dict[str, Path]:
         plans_df.to_excel(paths.plans_xlsx, index=False)
 
     # Collect RD
-    rd_files = _list_files(dicom_root, 'RD')
+    rd_files = _list_files(dicom_root, 'RD', scope_ids)
     def _rd_row(p: Path) -> dict | None:
         try:
             ds = pydicom.dcmread(str(p), stop_before_pixels=True)
@@ -182,7 +188,7 @@ def export_metadata(config: PipelineConfig) -> Dict[str, Path]:
         doses_df.to_excel(paths.doses_xlsx, index=False)
 
     # Collect RS
-    rs_files = _list_files(dicom_root, 'RS')
+    rs_files = _list_files(dicom_root, 'RS', scope_ids)
     def _rs_row(p: Path) -> dict | None:
         try:
             ds = pydicom.dcmread(str(p), stop_before_pixels=True)
@@ -218,7 +224,7 @@ def export_metadata(config: PipelineConfig) -> Dict[str, Path]:
         structs_df.to_excel(paths.structures_xlsx, index=False)
 
     # Collect RT* (fractions/treatment records)
-    rt_files = _list_files(dicom_root, 'RT')
+    rt_files = _list_files(dicom_root, 'RT', scope_ids)
     def _rt_row(p: Path) -> dict | None:
         try:
             ds = pydicom.dcmread(str(p), stop_before_pixels=True)
@@ -254,7 +260,7 @@ def export_metadata(config: PipelineConfig) -> Dict[str, Path]:
         fractions_df.to_excel(paths.fractions_xlsx, index=False)
 
     # CT images index (PatientID, Study, Series, Instance)
-    ct_files = _list_files(dicom_root, 'CT')
+    ct_files = _list_files(dicom_root, 'CT', scope_ids)
     def _ct_row(p: Path) -> dict | None:
         try:
             ds = pydicom.dcmread(str(p), stop_before_pixels=True)

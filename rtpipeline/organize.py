@@ -9,7 +9,7 @@ import shutil
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, cast
+from typing import Dict, Iterable, List, Optional, Tuple, cast
 
 import numpy as np
 import pydicom
@@ -22,10 +22,11 @@ from scipy.ndimage import map_coordinates
 from .config import PipelineConfig
 from .ct import index_ct_series, pick_primary_series, copy_ct_series
 from .dicom_copy import DicomCopyConfig, DicomCopyManager, get_copy_manager, reset_copy_manager
+from .inventory import materialize_patient_series_from_inventory
 from .layout import CourseDirs, build_course_dirs, course_dir_name, find_dcm
 from .metadata import LinkedSet, group_by_course, link_rt_sets, parse_date
 from .rt_details import extract_rt, StructInfo
-from .utils import ensure_dir, run_tasks_with_adaptive_workers, read_dicom, get
+from .utils import ensure_dir, run_tasks_with_adaptive_workers, read_dicom, get, _scoped_walk
 from .segmentation import _ensure_ct_nifti, _strip_nifti_base, run_dcm2niix, _derive_nifti_name
 
 logger = logging.getLogger(__name__)
@@ -108,6 +109,95 @@ def _normalize_dicom_text(value: object) -> str:
     if not any(ch.isalpha() for ch in text) and text.replace(".", "").isdigit() and float(text or 0) == 0.0:
         return ""
     return text
+
+
+def infer_plan_rx_gy(ds_plan: Dataset) -> float | None:
+    """Infer total prescription dose in Gy from an RTPLAN dataset."""
+    dose_seq = getattr(ds_plan, "DoseReferenceSequence", None) or []
+    for dr in dose_seq:
+        dtype = str(getattr(dr, "DoseReferenceType", ""))
+        dtype_norm = dtype.upper()
+        if dtype_norm and dtype_norm not in {"TARGET", "TREATED_VOLUME", "PLANNED_TARGET_VOLUME"}:
+            continue
+        target = getattr(dr, "TargetPrescriptionDose", None)
+        if target not in (None, ""):
+            try:
+                return float(target)
+            except Exception:
+                pass
+
+    # Fallback to alternative target-dose fields used by some planners.
+    # OAR constraints are deliberately excluded: they are dose limits, not Rx.
+    for dr in dose_seq:
+        dtype = str(getattr(dr, "DoseReferenceType", ""))
+        dtype_norm = dtype.upper()
+        if dtype_norm and dtype_norm not in {"TARGET", "TREATED_VOLUME", "PLANNED_TARGET_VOLUME"}:
+            continue
+        alt_fields = [
+            getattr(dr, "DeliveredDoseReferenceDoseValue", None),
+            getattr(dr, "DeliveryMaximumDose", None),
+        ]
+        for val in alt_fields:
+            if val not in (None, ""):
+                try:
+                    return float(val)
+                except Exception:
+                    continue
+
+    fg_seq = getattr(ds_plan, "FractionGroupSequence", None) or []
+    for fg in fg_seq:
+        fractions = getattr(fg, "NumberOfFractionsPlanned", None)
+        if fractions in (None, "", 0):
+            continue
+        try:
+            fractions = float(fractions)
+        except Exception:
+            continue
+        per_fraction = 0.0
+        has_dose = False
+        if hasattr(fg, "ReferencedDoseReferenceSequence") and fg.ReferencedDoseReferenceSequence:
+            for ref in fg.ReferencedDoseReferenceSequence:
+                dose_val = getattr(ref, "TargetPrescriptionDose", None)
+                if dose_val not in (None, ""):
+                    try:
+                        per_fraction = float(dose_val)
+                        has_dose = True
+                        break
+                    except Exception:
+                        pass
+        if not has_dose and hasattr(fg, "ReferencedBeamSequence") and fg.ReferencedBeamSequence:
+            beam_doses = []
+            for ref in fg.ReferencedBeamSequence:
+                dose_val = getattr(ref, "BeamDose", None)
+                if dose_val not in (None, ""):
+                    try:
+                        beam_doses.append(float(dose_val))
+                    except Exception:
+                        continue
+            if beam_doses:
+                per_fraction = sum(beam_doses)
+                has_dose = True
+        if has_dose and per_fraction:
+            return float(per_fraction * fractions)
+
+    return None
+
+
+def _infer_rx_from_plan_paths(plan_paths: List[Path], *, sum_all: bool = False) -> float | None:
+    values: list[float] = []
+    for plan_path in plan_paths:
+        try:
+            ds_plan = pydicom.dcmread(str(plan_path), stop_before_pixels=True)
+        except Exception:
+            continue
+        value = infer_plan_rx_gy(ds_plan)
+        if value is not None and value > 0:
+            values.append(float(value))
+    if not values:
+        return None
+    if sum_all:
+        return float(sum(values))
+    return float(values[0])
 
 
 def _summarize_reconstruction(ds: Dataset) -> str:
@@ -269,7 +359,15 @@ def _sanitize_name(text: str, fallback: str = "item") -> str:
 
 
 def _looks_like_patient_series_layout(dicom_root: Path) -> bool:
-    """Detect TCIA-style PatientID/SeriesInstanceUID/*.dcm input trees."""
+    """Detect TCIA-style PatientID/SeriesInstanceUID/*.dcm input trees.
+
+    NOTE: intentionally NOT cohort-scoped. It must inspect the IMMEDIATE children
+    of dicom_root so that a nested multi-center layout (CENTER/PATIENT/SERIES) is
+    correctly rejected (the CENTER dirs do not look like a patient/series tree). A
+    scoped variant that resolved to nested patient dirs would falsely detect a
+    flat TCIA tree and skip RT scanning. The full-tree iterdir here is cheap and
+    short-circuits on the first non-conforming patient dir.
+    """
     try:
         patient_dirs = [path for path in dicom_root.iterdir() if path.is_dir()]
     except OSError:
@@ -557,6 +655,10 @@ def _classify_doses(
 
         # Check if this PLAN_SUM covers the individual doses
         covered_plan_uids = set(best_sum["referenced_plan_uids"])
+        selected_plan_paths = [
+            pm["path"] for pm in plan_meta
+            if pm["sop_uid"] and pm["sop_uid"] in covered_plan_uids
+        ]
 
         # Exclude individual doses that are covered by this PLAN_SUM
         excluded_dose_paths = []
@@ -573,7 +675,7 @@ def _classify_doses(
         return DoseClassification(
             classification="PLAN_SUM_used",
             selected_doses=[best_sum["path"]],
-            selected_plans=plan_paths,
+            selected_plans=selected_plan_paths,
             excluded_doses=excluded_dose_paths,
             should_sum=False,  # Already summed by TPS
             warnings=warnings,
@@ -633,10 +735,17 @@ def _classify_doses(
 
     # Single dose case - no classification needed
     if len(dose_meta) == 1:
+        ref_uids = set(dose_meta[0].get("referenced_plan_uids") or [])
+        selected_plan_paths = [
+            pm["path"] for pm in plan_meta
+            if pm["sop_uid"] and pm["sop_uid"] in ref_uids
+        ]
+        if not selected_plan_paths and len(plan_paths) == 1:
+            selected_plan_paths = plan_paths[:1]
         return DoseClassification(
             classification="single_dose",
             selected_doses=[dose_meta[0]["path"]],
-            selected_plans=plan_paths,
+            selected_plans=selected_plan_paths,
             excluded_doses=[],
             should_sum=False,
             warnings=warnings,
@@ -924,11 +1033,12 @@ def _export_original_segmentation(
 
 def _index_series_and_registrations(
     dicom_root: Path,
+    patient_ids: Optional[Iterable[str]] = None,
 ) -> tuple[Dict[tuple[str, str], List[Path]], Dict[str, List[Dict[str, object]]]]:
     series_index: Dict[tuple[str, str], List[Path]] = {}
     registrations: Dict[str, List[Dict[str, object]]] = {}
     series_meta: Dict[tuple[str, str], Dict[str, object]] = {}
-    for base, _, files in os.walk(dicom_root):
+    for base, _, files in _scoped_walk(dicom_root, patient_ids):
         for name in files:
             if not name.lower().endswith('.dcm'):
                 continue
@@ -1441,12 +1551,16 @@ def _sum_doses_with_resample(
     return new_ds, [], source_dose_uids
 
 
-def _index_rt_files(root: Path) -> Dict[str, List[Path]]:
-    """Index all RT DICOM files by PatientID to avoid repeated scanning."""
+def _index_rt_files(root: Path, patient_ids: Optional[Iterable[str]] = None) -> Dict[str, List[Path]]:
+    """Index all RT DICOM files by PatientID to avoid repeated scanning.
+
+    When ``patient_ids`` is provided, only those top-level patient directories
+    are scanned (cohort-scoped); otherwise the whole ``root`` is walked.
+    """
     index = defaultdict(list)
     logger.info("Indexing RT files in %s...", root)
     count = 0
-    for base, _, files in os.walk(root):
+    for base, _, files in _scoped_walk(root, patient_ids):
         for fn in files:
             if not (fn.startswith('RT') and fn.lower().endswith('.dcm')):
                 continue
@@ -1487,8 +1601,15 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
         copy_config.cache_headers,
     )
 
+    # Cohort scope for organize-stage discovery: when set (by the CLI from active
+    # course/patient filters), only these patient directories are walked instead
+    # of the entire dicom_root. None => walk everything (unchanged behaviour).
+    scope_ids = list(getattr(config, "discover_patient_ids", []) or []) or None
+    if scope_ids:
+        logger.info("Organize discovery scoped to %d cohort patient(s)", len(scope_ids))
+
     # Index CTs, extract RT sets, link and group into courses
-    ct_index = index_ct_series(config.dicom_root)
+    ct_index = index_ct_series(config.dicom_root, scope_ids)
     patient_series_layout = _looks_like_patient_series_layout(config.dicom_root)
     if patient_series_layout:
         logger.info("Detected patient/series CT-only layout; skipping RT and registration scans")
@@ -1498,11 +1619,11 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
         courses = {}
         series_index, registrations_index, series_meta = {}, {}, {}
     else:
-        rt_file_index = _index_rt_files(config.dicom_root)
-        plans, doses, structs = extract_rt(config.dicom_root)
+        rt_file_index = _index_rt_files(config.dicom_root, scope_ids)
+        plans, doses, structs = extract_rt(config.dicom_root, scope_ids)
         linked_sets = link_rt_sets(plans, doses, structs)
         courses = group_by_course(linked_sets, config.merge_criteria, config.max_days_between_plans)
-        series_index, registrations_index, series_meta = _index_series_and_registrations(config.dicom_root)
+        series_index, registrations_index, series_meta = _index_series_and_registrations(config.dicom_root, scope_ids)
 
     outputs: List[CourseOutput] = []
 
@@ -1592,18 +1713,7 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
         for src in struct_candidates:
             _copy_into(src, course_dirs.dicom_rtstruct, copy_manager=copy_manager)
 
-        total_rx = 0.0
-        for p in plan_paths:
-            try:
-                ds = pydicom.dcmread(str(p), stop_before_pixels=True)
-                if hasattr(ds, "DoseReferenceSequence") and ds.DoseReferenceSequence:
-                    for dr in ds.DoseReferenceSequence:
-                        if hasattr(dr, "TargetPrescriptionDose") and dr.TargetPrescriptionDose is not None:
-                            total_rx += float(dr.TargetPrescriptionDose)
-                            break
-            except Exception:
-                continue
-
+        total_rx: float | None = None
         plan_sop_uid: Optional[str] = None
         dose_sop_uid: Optional[str] = None
         source_plan_uids: list[str] = []
@@ -1642,12 +1752,17 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
 
             selected_doses = dose_classification.selected_doses
             selected_plans = dose_classification.selected_plans if dose_classification.selected_plans else plan_paths
+            if dose_classification.selected_plans:
+                total_rx = _infer_rx_from_plan_paths(
+                    dose_classification.selected_plans,
+                    sum_all=bool(dose_classification.should_sum and len(selected_doses) > 1),
+                )
 
             if dose_classification.should_sum and len(selected_doses) > 1:
                 # Primary + boost case: sum the selected doses
                 logger.info("Summing %d doses (primary + boost)", len(selected_doses))
                 plan_sum_ds, plan_ds_list, source_plan_uids = _create_summed_plan(
-                    selected_plans, total_rx if total_rx else None
+                    selected_plans, total_rx
                 )
                 dose_sum_ds, dose_ds_list, source_dose_uids = _sum_doses_with_resample(
                     selected_doses, plan_sum_ds, plan_ds_list
@@ -1689,7 +1804,7 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
                     # Multiple plans but single dose (e.g., TPS PLAN_SUM)
                     # Create a summed plan to reference them
                     plan_sum_ds, plan_ds_list, source_plan_uids = _create_summed_plan(
-                        selected_plans, total_rx if total_rx else None
+                        selected_plans, total_rx
                     )
                     plan_sum_ds.save_as(str(rp_dst))
                     plan_sop_uid = str(plan_sum_ds.SOPInstanceUID)
@@ -1727,6 +1842,12 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
                     dose_sop_uid = None
                 if dose_sop_uid:
                     source_dose_uids.append(dose_sop_uid)
+
+        if total_rx is None and rp_dst.exists():
+            try:
+                total_rx = infer_plan_rx_gy(pydicom.dcmread(str(rp_dst), stop_before_pixels=True))
+            except Exception:
+                total_rx = None
 
         course_study = items_sorted[0].ct_study_uid if items_sorted else None
         struct_path = struct_candidates[0] if struct_candidates else None
@@ -2188,6 +2309,22 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
             if res:
                 outputs.append(res)
 
+    if getattr(config, "do_segment_all_series", False):
+        if not getattr(config, "inventory_db_path", None):
+            raise ValueError("do_segment_all_series=True requires config.inventory_db_path")
+        patient_ids = list(getattr(config, "inventory_patient_ids", []) or [])
+        if not patient_ids:
+            patient_ids = sorted({co.patient_id for co in outputs if co.patient_id})
+        if not patient_ids:
+            logger.warning("All-series inventory mode requested, but no patient IDs were available")
+        for patient_id in patient_ids:
+            try:
+                manifest_path = materialize_patient_series_from_inventory(config, patient_id)
+                logger.info("Wrote all-series manifest for %s at %s", patient_id, manifest_path)
+            except Exception as exc:
+                logger.warning("All-series inventory materialization failed for %s: %s", patient_id, exc)
+                raise
+
     # After course-level copying and plan/dose synthesis, write per-case metadata serially to avoid overwhelming IO
     for co in outputs:
         patient_dir = co.dirs.root
@@ -2217,79 +2354,13 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
                         plan_uids.add(sop_uid)
             except Exception:
                 pass
-            # Total prescription dose across plans
-            def _infer_plan_rx(ds_plan: pydicom.dataset.FileDataset) -> float | None:
-                dose_seq = getattr(ds_plan, "DoseReferenceSequence", None) or []
-                for dr in dose_seq:
-                    dtype = str(getattr(dr, "DoseReferenceType", ""))
-                    dtype_norm = dtype.upper()
-                    if dtype_norm and dtype_norm not in {"TARGET", "TREATED_VOLUME", "PLANNED_TARGET_VOLUME"}:
-                        continue
-                    target = getattr(dr, "TargetPrescriptionDose", None)
-                    if target not in (None, ""):
-                        try:
-                            return float(target)
-                        except Exception:
-                            pass
-                # fallback to alternative dose fields (common in some planners)
-                for dr in dose_seq:
-                    alt_fields = [
-                        getattr(dr, "DeliveredDoseReferenceDoseValue", None),
-                        getattr(dr, "DeliveryMaximumDose", None),
-                        getattr(dr, "OrganAtRiskMaximumDose", None),
-                    ]
-                    for val in alt_fields:
-                        if val not in (None, ""):
-                            try:
-                                return float(val)
-                            except Exception:
-                                continue
-
-                fg_seq = getattr(ds_plan, "FractionGroupSequence", None) or []
-                for fg in fg_seq:
-                    fractions = getattr(fg, "NumberOfFractionsPlanned", None)
-                    if fractions in (None, "", 0):
-                        continue
-                    try:
-                        fractions = float(fractions)
-                    except Exception:
-                        continue
-                    per_fraction = 0.0
-                    has_dose = False
-                    if hasattr(fg, "ReferencedDoseReferenceSequence") and fg.ReferencedDoseReferenceSequence:
-                        for ref in fg.ReferencedDoseReferenceSequence:
-                            dose_val = getattr(ref, "TargetPrescriptionDose", None)
-                            if dose_val not in (None, ""):
-                                try:
-                                    per_fraction = float(dose_val)
-                                    has_dose = True
-                                    break
-                                except Exception:
-                                    pass
-                    if not has_dose and hasattr(fg, "ReferencedBeamSequence") and fg.ReferencedBeamSequence:
-                        beam_doses = []
-                        for ref in fg.ReferencedBeamSequence:
-                            dose_val = getattr(ref, "BeamDose", None)
-                            if dose_val not in (None, ""):
-                                try:
-                                    beam_doses.append(float(dose_val))
-                                except Exception:
-                                    continue
-                        if beam_doses:
-                            per_fraction = sum(beam_doses)
-                            has_dose = True
-                    if has_dose and per_fraction:
-                        return float(per_fraction * fractions)
-
-                return None
-
             plan_total_rx = 0.0
             try:
                 ds_plan = pydicom.dcmread(str(co.rp_path), stop_before_pixels=True)
             except Exception:
                 ds_plan = None
             if ds_plan is not None:
-                inferred = _infer_plan_rx(ds_plan)
+                inferred = infer_plan_rx_gy(ds_plan)
                 if inferred is not None:
                     plan_total_rx += inferred
             logger.info(
