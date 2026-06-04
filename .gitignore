@@ -117,14 +117,26 @@ containers/
 config.container.local.yaml
 container_id.txt
 
-# Manuscript data directories (large DICOM downloads, analysis outputs)
-manuscript/data/
-manuscript/analysis/figures/*.png
-manuscript/analysis/figures/*.pdf
-manuscript/analysis/tables/*.xlsx
-manuscript/analysis/tables/*.csv
-manuscript/analysis/supplementary/*.xlsx
-manuscript/analysis/supplementary/*.csv
-!manuscript/scripts/
-!manuscript/PLAN.md
-!manuscript/*.md
+# Local conversation drafts and triple-consensus ledgers (not for public repo)
+conversations/
+triple_consensus_logs/
+
+# Manuscript directory and v3 manuscript-workflow scaffolding (not part of the rtpipeline package; share via Nextcloud only)
+manuscript/
+session_logs/
+step_prompts/
+plan/
+submission/
+supplement/
+figures/
+tables/
+compliance/
+Logs/
+cache/
+
+# Local dependency/cache artifacts
+micromamba/
+archive/20260511_core_dumps/
+
+# Local environment-specific override config (not for public repo)
+config.custom.yaml

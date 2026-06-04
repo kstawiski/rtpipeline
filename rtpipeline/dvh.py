@@ -13,8 +13,10 @@ import pydicom
 import SimpleITK as sitk
 
 logger = logging.getLogger(__name__)
+DVH_METRIC_VERSION = "2026-05-23-dose-bounds-v1"
 
 from .layout import build_course_dirs, find_dcm
+from .organize import infer_plan_rx_gy
 from .utils import sanitize_rtstruct, mask_is_cropped, run_tasks_with_adaptive_workers, snap_rtstruct_to_dose_grid
 from .custom_models import list_custom_model_outputs
 
@@ -29,12 +31,14 @@ except (ImportError, AttributeError):
 if _NEEDS_SHIM:
     try:
         import sys as _sys, types as _types, pydicom as _pyd
+        from pydicom.pixel_data_handlers.util import pixel_dtype as _pixel_dtype
         _m = _sys.modules.get('dicom') or _types.ModuleType('dicom')
         _m.read_file = getattr(_pyd, 'dcmread', None)
         _sys.modules['dicom'] = _m
         _mds = _types.ModuleType('dicom.dataset')
         _mds.Dataset = _pyd.dataset.Dataset
         _mds.FileDataset = _pyd.dataset.FileDataset
+        _mds.pixel_dtype = _pixel_dtype
         _sys.modules['dicom.dataset'] = _mds
         _mtag = _types.ModuleType('dicom.tag')
         _mtag.Tag = _pyd.tag.Tag
@@ -45,10 +49,9 @@ if _NEEDS_SHIM:
         # Patch pydicom.filewriter API expected by older libs
         try:
             import pydicom.filewriter as _fw
-            if not hasattr(_fw, 'validate_file_meta'):
-                def validate_file_meta(*args, **kwargs):  # type: ignore
-                    return True
-                _fw.validate_file_meta = validate_file_meta  # type: ignore[attr-defined]
+            def _compat_validate_file_meta(*args, **kwargs):  # type: ignore
+                return True
+            _mds.validate_file_meta = getattr(_fw, 'validate_file_meta', _compat_validate_file_meta)  # type: ignore[attr-defined]
         except Exception:
             pass
     except (ImportError, AttributeError) as e:
@@ -58,24 +61,34 @@ if _NEEDS_SHIM:
 
 try:
     from dicompylercore import dvhcalc
+    import dicompylercore.dicomparser as _dicomparser
     # Patch missing validate_file_meta into dicompyler-core modules for pydicom>=3
     # NOTE: We intentionally do NOT patch builtins (global namespace pollution is dangerous)
     # Only patch the specific dicompylercore modules that need it
     try:
         import sys as _sys2
-        import pydicom.filewriter as _fw2
-        if not hasattr(_fw2, 'validate_file_meta'):
-            def _validate_file_meta(*args, **kwargs):  # type: ignore
-                return True
-            _fw2.validate_file_meta = _validate_file_meta  # type: ignore[attr-defined]
+        from pydicom.pixel_data_handlers.util import pixel_dtype as _pixel_dtype2
+        def _validate_file_meta(*args, **kwargs):  # type: ignore
+            return True
         # Patch only dicompylercore modules (scoped, not global)
-        for _name, _mod in list(_sys2.modules.items()):
+        _modules = [
+            (_name, _mod)
+            for _name, _mod in list(_sys2.modules.items())
+            if _name and _name.startswith('dicompylercore')
+        ]
+        _modules.append(('dicompylercore.dicomparser', _dicomparser))
+        for _name, _mod in _modules:
             if _name and _name.startswith('dicompylercore') and hasattr(_mod, '__dict__'):
                 if 'validate_file_meta' not in _mod.__dict__:
                     try:
-                        _mod.validate_file_meta = _fw2.validate_file_meta  # type: ignore[attr-defined]
+                        _mod.validate_file_meta = _validate_file_meta  # type: ignore[attr-defined]
                     except Exception:
                         logger.debug("Failed to patch validate_file_meta into %s", _name)
+                if 'pixel_dtype' not in _mod.__dict__:
+                    try:
+                        _mod.pixel_dtype = _pixel_dtype2  # type: ignore[attr-defined]
+                    except Exception:
+                        logger.debug("Failed to patch pixel_dtype into %s", _name)
     except Exception as e:
         logger.debug("dicompyler-core compatibility patching failed: %s", e)
 except ImportError as e:
@@ -97,6 +110,25 @@ def _dose_at_fraction(bins, cumulative, fraction: float) -> float:
     if y1 == y0:
         return x0
     return x0 + (target - y0) * (x1 - x0) / (y1 - y0)
+
+
+def _bounded_dose_at_fraction(
+    bins,
+    cumulative,
+    fraction: float,
+    minimum: float,
+    maximum: float,
+) -> float:
+    value = float(_dose_at_fraction(bins, cumulative, fraction))
+    if not np.isfinite(value):
+        return value
+    lower = float(minimum)
+    upper = float(maximum)
+    if np.isfinite(lower):
+        value = max(value, lower)
+    if np.isfinite(upper):
+        value = min(value, upper)
+    return float(value)
 
 
 def _get_volume_at_threshold(bins, cumulative, threshold: float) -> float:
@@ -127,10 +159,10 @@ def _compute_metrics(abs_dvh, rx_dose: Optional[float]) -> Optional[Dict[str, fl
     DmeanGy = float(abs_dvh.mean)
     DmaxGy = float(abs_dvh.max)
     DminGy = float(abs_dvh.min)
-    D95Gy = _dose_at_fraction(bins_abs, cum_abs, 0.95)
-    D98Gy = _dose_at_fraction(bins_abs, cum_abs, 0.98)
-    D2Gy = _dose_at_fraction(bins_abs, cum_abs, 0.02)
-    D50Gy = _dose_at_fraction(bins_abs, cum_abs, 0.50)
+    D95Gy = _bounded_dose_at_fraction(bins_abs, cum_abs, 0.95, DminGy, DmaxGy)
+    D98Gy = _bounded_dose_at_fraction(bins_abs, cum_abs, 0.98, DminGy, DmaxGy)
+    D2Gy = _bounded_dose_at_fraction(bins_abs, cum_abs, 0.02, DminGy, DmaxGy)
+    D50Gy = _bounded_dose_at_fraction(bins_abs, cum_abs, 0.50, DminGy, DmaxGy)
     HI_abs = (D2Gy - D98Gy) / D50Gy if D50Gy != 0 else float("nan")
     SpreadGy = DmaxGy - DminGy
 
@@ -150,9 +182,13 @@ def _compute_metrics(abs_dvh, rx_dose: Optional[float]) -> Optional[Dict[str, fl
     try:
         if V_total > 0:
             if V_total >= 1.0:
-                D1ccGy = _dose_at_fraction(bins_abs, cum_abs, 1.0 / V_total)
+                D1ccGy = _bounded_dose_at_fraction(
+                    bins_abs, cum_abs, 1.0 / V_total, DminGy, DmaxGy
+                )
             if V_total >= 0.1:
-                D0_1ccGy = _dose_at_fraction(bins_abs, cum_abs, 0.1 / V_total)
+                D0_1ccGy = _bounded_dose_at_fraction(
+                    bins_abs, cum_abs, 0.1 / V_total, DminGy, DmaxGy
+                )
     except Exception as exc:
         logger.debug("Failed computing D1cc/D0.1cc metrics: %s", exc)
 
@@ -185,10 +221,10 @@ def _compute_metrics(abs_dvh, rx_dose: Optional[float]) -> Optional[Dict[str, fl
             Dmean_pct = float(rel_dvh.mean)
             Dmax_pct = float(rel_dvh.max)
             Dmin_pct = float(rel_dvh.min)
-            D95_pct = _dose_at_fraction(bins_rel, cum_rel, 0.95)
-            D98_pct = _dose_at_fraction(bins_rel, cum_rel, 0.98)
-            D2_pct = _dose_at_fraction(bins_rel, cum_rel, 0.02)
-            D50_pct = _dose_at_fraction(bins_rel, cum_rel, 0.50)
+            D95_pct = _bounded_dose_at_fraction(bins_rel, cum_rel, 0.95, Dmin_pct, Dmax_pct)
+            D98_pct = _bounded_dose_at_fraction(bins_rel, cum_rel, 0.98, Dmin_pct, Dmax_pct)
+            D2_pct = _bounded_dose_at_fraction(bins_rel, cum_rel, 0.02, Dmin_pct, Dmax_pct)
+            D50_pct = _bounded_dose_at_fraction(bins_rel, cum_rel, 0.50, Dmin_pct, Dmax_pct)
             HI_pct = (D2_pct - D98_pct) / D50_pct if D50_pct != 0 else float("nan")
             Spread_pct = Dmax_pct - Dmin_pct
         except Exception as exc:
@@ -260,10 +296,10 @@ def _compute_metrics_from_arrays(
     cumulative_vol = cumulative_counts.astype(np.float64) * voxel_vol_cm3
     bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2.0
 
-    D95Gy = _dose_at_fraction(bin_centers, cumulative_vol, 0.95)
-    D98Gy = _dose_at_fraction(bin_centers, cumulative_vol, 0.98)
-    D2Gy = _dose_at_fraction(bin_centers, cumulative_vol, 0.02)
-    D50Gy = _dose_at_fraction(bin_centers, cumulative_vol, 0.50)
+    D95Gy = _bounded_dose_at_fraction(bin_centers, cumulative_vol, 0.95, DminGy, DmaxGy)
+    D98Gy = _bounded_dose_at_fraction(bin_centers, cumulative_vol, 0.98, DminGy, DmaxGy)
+    D2Gy = _bounded_dose_at_fraction(bin_centers, cumulative_vol, 0.02, DminGy, DmaxGy)
+    D50Gy = _bounded_dose_at_fraction(bin_centers, cumulative_vol, 0.50, DminGy, DmaxGy)
     HI_abs = (D2Gy - D98Gy) / D50Gy if D50Gy != 0 else float("nan")
     SpreadGy = DmaxGy - DminGy
 
@@ -281,9 +317,13 @@ def _compute_metrics_from_arrays(
     try:
         if V_total > 0:
             if V_total >= 1.0:
-                D1ccGy = _dose_at_fraction(bin_centers, cumulative_vol, 1.0 / V_total)
+                D1ccGy = _bounded_dose_at_fraction(
+                    bin_centers, cumulative_vol, 1.0 / V_total, DminGy, DmaxGy
+                )
             if V_total >= 0.1:
-                D0_1ccGy = _dose_at_fraction(bin_centers, cumulative_vol, 0.1 / V_total)
+                D0_1ccGy = _bounded_dose_at_fraction(
+                    bin_centers, cumulative_vol, 0.1 / V_total, DminGy, DmaxGy
+                )
     except Exception:
         pass
 
@@ -302,10 +342,18 @@ def _compute_metrics_from_arrays(
             Dmax_pct = DmaxGy / rx_dose * 100.0
             Dmin_pct = DminGy / rx_dose * 100.0
             rel_bin_centers = bin_centers / rx_dose * 100.0
-            D95_pct = _dose_at_fraction(rel_bin_centers, cumulative_vol, 0.95)
-            D98_pct = _dose_at_fraction(rel_bin_centers, cumulative_vol, 0.98)
-            D2_pct = _dose_at_fraction(rel_bin_centers, cumulative_vol, 0.02)
-            D50_pct = _dose_at_fraction(rel_bin_centers, cumulative_vol, 0.50)
+            D95_pct = _bounded_dose_at_fraction(
+                rel_bin_centers, cumulative_vol, 0.95, Dmin_pct, Dmax_pct
+            )
+            D98_pct = _bounded_dose_at_fraction(
+                rel_bin_centers, cumulative_vol, 0.98, Dmin_pct, Dmax_pct
+            )
+            D2_pct = _bounded_dose_at_fraction(
+                rel_bin_centers, cumulative_vol, 0.02, Dmin_pct, Dmax_pct
+            )
+            D50_pct = _bounded_dose_at_fraction(
+                rel_bin_centers, cumulative_vol, 0.50, Dmin_pct, Dmax_pct
+            )
             HI_pct = (D2_pct - D98_pct) / D50_pct if D50_pct != 0 else float("nan")
             Spread_pct = Dmax_pct - Dmin_pct
         except Exception:
@@ -392,7 +440,133 @@ def _is_rs_custom_stale(
         return True  # If we can't check, regenerate to be safe
 
 
-def _is_dvh_up_to_date(course_dir: Path, dvh_path: Path) -> bool:
+def _normalize_structure_name(name: object) -> str:
+    return str(name or "").strip().lower().removesuffix("__partial")
+
+
+def _expected_custom_structure_names(config_path: Optional[Union[str, Path]]) -> List[str]:
+    if not config_path:
+        return []
+    try:
+        from .custom_structures import CustomStructureProcessor
+
+        processor = CustomStructureProcessor()
+        processor.load_config(config_path)
+        return [cfg.name for cfg in processor.custom_configs]
+    except Exception as exc:
+        logger.warning("Failed to load custom structure expectations from %s: %s", config_path, exc)
+        return []
+
+
+def _mask_name_from_path(mask_path: Path) -> str:
+    name = mask_path.name
+    if name.endswith(".nii.gz"):
+        name = name[:-7]
+    elif name.endswith(".nii"):
+        name = name[:-4]
+    if "--" in name:
+        name = name.split("--", 1)[1]
+    return name.strip()
+
+
+def _iter_totalseg_masks(seg_root: Path):
+    """Yield (structure_name, mask_path) from flat and manifest-based TotalSegmentator outputs."""
+    if not seg_root.exists():
+        return
+
+    seen: set[Path] = set()
+    for nii_file in sorted(seg_root.glob("*.nii.gz")):
+        resolved = nii_file.resolve(strict=False)
+        seen.add(resolved)
+        yield _mask_name_from_path(nii_file), nii_file
+
+    for manifest_path in sorted(seg_root.glob("*/manifest.json")):
+        try:
+            data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        for model in data.get("models", []):
+            for mask_file in model.get("masks", []):
+                candidate = manifest_path.parent / mask_file
+                if not candidate.exists():
+                    continue
+                resolved = candidate.resolve(strict=False)
+                if resolved in seen:
+                    continue
+                seen.add(resolved)
+                yield _mask_name_from_path(candidate), candidate
+
+    for nii_file in sorted(seg_root.glob("*/*.nii.gz")):
+        resolved = nii_file.resolve(strict=False)
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        yield _mask_name_from_path(nii_file), nii_file
+
+
+def _dvh_has_expected_custom_structures(dvh_path: Path, expected_names: List[str]) -> bool:
+    if not expected_names:
+        return True
+    try:
+        df = pd.read_excel(dvh_path, usecols=lambda c: c in {"ROI_Name", "ROI_OriginalName"})
+    except Exception as exc:
+        logger.debug("Failed to inspect custom DVH structures in %s: %s", dvh_path, exc)
+        return False
+    present: set[str] = set()
+    for column in ("ROI_Name", "ROI_OriginalName"):
+        if column in df:
+            present.update(_normalize_structure_name(value) for value in df[column].dropna().tolist())
+    return all(_normalize_structure_name(name) in present for name in expected_names)
+
+
+def _write_dvh_qc(
+    course_dir: Path,
+    df: pd.DataFrame,
+    expected_custom_names: List[str],
+    rx_source: str,
+    rx_dose_gy: Optional[float] = None,
+    rx_recovery_attempted: bool = True,
+) -> None:
+    present: set[str] = set()
+    partial: set[str] = set()
+    for column in ("ROI_Name", "ROI_OriginalName"):
+        if column not in df:
+            continue
+        for value in df[column].dropna().tolist():
+            text = str(value)
+            normalized = _normalize_structure_name(text)
+            present.add(normalized)
+            if text.endswith("__partial"):
+                partial.add(normalized)
+    missing_custom = [
+        name for name in expected_custom_names
+        if _normalize_structure_name(name) not in present
+    ]
+    payload = {
+        "status": "ok" if not missing_custom else "degraded",
+        "metric_version": DVH_METRIC_VERSION,
+        "rx_source": rx_source,
+        "rx_relative_metrics_available": rx_source != "none",
+        "rx_recovery_attempted": rx_recovery_attempted,
+        "custom_structures_expected": expected_custom_names,
+        "custom_structures_missing": missing_custom,
+        "custom_structures_partial": sorted(partial),
+        "row_count": int(len(df)),
+    }
+    if rx_dose_gy is not None and rx_dose_gy > 0:
+        payload["rx_dose_gy"] = float(rx_dose_gy)
+    if rx_source == "none":
+        payload["warning"] = "Prescription-relative DVH metrics are unavailable; absolute Gy/cc metrics are present."
+    meta_dir = course_dir / "metadata"
+    meta_dir.mkdir(parents=True, exist_ok=True)
+    (meta_dir / "dvh_qc.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def _is_dvh_up_to_date(
+    course_dir: Path,
+    dvh_path: Path,
+    custom_structures_config: Optional[Union[str, Path]] = None,
+) -> bool:
     """
     Check if DVH output is up-to-date with all input dependencies.
 
@@ -403,6 +577,39 @@ def _is_dvh_up_to_date(course_dir: Path, dvh_path: Path) -> bool:
         return False
 
     try:
+        expected_custom = _expected_custom_structure_names(custom_structures_config)
+        if expected_custom and not _dvh_has_expected_custom_structures(dvh_path, expected_custom):
+            logger.info("DVH output is missing expected custom structures; regenerating")
+            return False
+
+        qc_path = course_dir / "metadata" / "dvh_qc.json"
+        if not qc_path.exists():
+            logger.info("DVH QC metadata is missing; regenerating")
+            return False
+        try:
+            qc_data = json.loads(qc_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            logger.info("DVH QC metadata is unreadable (%s); regenerating", exc)
+            return False
+        if str(qc_data.get("status") or "").strip().lower() != "ok":
+            logger.info("DVH QC status is not ok; regenerating")
+            return False
+        if qc_data.get("metric_version") != DVH_METRIC_VERSION:
+            logger.info("DVH metric version is stale or missing; regenerating")
+            return False
+        if int(qc_data.get("row_count") or 0) <= 0:
+            logger.info("DVH QC row count is empty; regenerating")
+            return False
+        if qc_data.get("custom_structures_missing"):
+            logger.info("DVH QC reports missing custom structures; regenerating")
+            return False
+        if (
+            not qc_data.get("rx_relative_metrics_available")
+            and not qc_data.get("rx_recovery_attempted")
+        ):
+            logger.info("DVH output predates Rx recovery QC; regenerating")
+            return False
+
         dvh_mtime = dvh_path.stat().st_mtime
 
         # Check core RT files and metadata
@@ -430,7 +637,7 @@ def _is_dvh_up_to_date(course_dir: Path, dvh_path: Path) -> bool:
         # Check TotalSegmentator NIfTI outputs
         seg_root = course_dir / "Segmentation_TotalSegmentator"
         if seg_root.exists():
-            for nii_file in seg_root.glob("*.nii.gz"):
+            for _name, nii_file in _iter_totalseg_masks(seg_root):
                 if nii_file.stat().st_mtime > dvh_mtime:
                     logger.debug("TotalSegmentator NIfTI %s is newer than dvh_metrics.xlsx", nii_file.name)
                     return False
@@ -537,39 +744,10 @@ def _create_custom_structures_rtstruct(
                 totalseg_mask_cache[key] = None
                 return None
             mask_path: Optional[Path] = None
-
-            # Strategy 1: Direct flat NIfTI files (e.g. sacrum.nii.gz)
-            flat_candidate = seg_root / f"{key}.nii.gz"
-            if flat_candidate.exists():
-                mask_path = flat_candidate
-
-            # Strategy 2: Manifest-based subdirectory lookup (modelname--structurename.nii.gz)
-            if not mask_path:
-                for subdir in seg_root.iterdir():
-                    if not subdir.is_dir():
-                        continue
-                    manifest_path = subdir / "manifest.json"
-                    if not manifest_path.exists():
-                        continue
-                    try:
-                        data = json.loads(manifest_path.read_text(encoding="utf-8"))
-                    except Exception:
-                        continue
-                    for model in data.get("models", []):
-                        for mask_file in model.get("masks", []):
-                            if "--" not in mask_file:
-                                continue
-                            _, roi_part = mask_file.split("--", 1)
-                            roi_base = roi_part.replace('.nii.gz', '').strip().lower()
-                            if roi_base == key:
-                                candidate = subdir / mask_file
-                                if candidate.exists():
-                                    mask_path = candidate
-                                    break
-                        if mask_path:
-                            break
-                    if mask_path:
-                        break
+            for ts_name, candidate in _iter_totalseg_masks(seg_root):
+                if ts_name.strip().lower() == key:
+                    mask_path = candidate
+                    break
 
             if not mask_path:
                 totalseg_mask_cache[key] = None
@@ -649,8 +827,7 @@ def _create_custom_structures_rtstruct(
         # This ensures custom structure composites can reference them
         seg_root = course_dir / "Segmentation_TotalSegmentator"
         if seg_root.exists():
-            for nii_file in sorted(seg_root.glob("*.nii.gz")):
-                ts_name = nii_file.name.replace(".nii.gz", "")
+            for ts_name, nii_file in _iter_totalseg_masks(seg_root):
                 if ts_name in available_masks:
                     continue  # Already loaded from RTSTRUCT
                 ts_mask = _totalseg_mask(ts_name)
@@ -825,8 +1002,7 @@ def _compute_nifti_based_dvh(
     # --- Load TotalSegmentator NIfTI masks (resampled to CT) ---
     # Masks stored as (z, y, x) — SimpleITK native order
     ts_masks_zyx: Dict[str, np.ndarray] = {}
-    for nii_file in sorted(seg_root.glob("*.nii.gz")):
-        ts_name = nii_file.name.replace(".nii.gz", "")
+    for ts_name, nii_file in _iter_totalseg_masks(seg_root):
         try:
             img = sitk.ReadImage(str(nii_file))
             img = sitk.Resample(
@@ -1024,7 +1200,7 @@ def dvh_for_course(
     """
     # Check if DVH is already up-to-date (skip recomputation on re-runs)
     out_xlsx = course_dir / "dvh_metrics.xlsx"
-    if _is_dvh_up_to_date(course_dir, out_xlsx):
+    if _is_dvh_up_to_date(course_dir, out_xlsx, custom_structures_config):
         logger.info("DVH up-to-date for %s; reusing existing results", course_dir.name)
         return out_xlsx
 
@@ -1213,31 +1389,43 @@ def dvh_for_course(
             if item:
                 results.append(item)
 
-    # Determine Rx dose: explicit > estimation > None
+    # Determine Rx dose: explicit > RTPLAN metadata > cautious opt-in heuristic > None.
     rx_est = None
     rx_source = "none"
+    rx_recovery_attempted = True
     if rx_dose_gy is not None and rx_dose_gy > 0:
         rx_est = float(rx_dose_gy)
         rx_source = "explicit"
         logger.info("Using explicit Rx dose: %.2f Gy for %s", rx_est, course_dir.name)
-    elif estimate_rx_from_ctv1 and rs_manual.exists():
+    else:
         try:
-            rx_est = _estimate_rx_from_ctv1(pydicom.dcmread(str(rs_manual)), rtdose)
-            if rx_est:
-                rx_source = "estimated_ctv1_d95"
-                logger.info(
-                    "Estimated Rx from CTV1 D95: %.2f Gy for %s (WARNING: heuristic, not valid for SIB)",
-                    rx_est, course_dir.name
-                )
-        except Exception:
-            pass
+            inferred_rx = infer_plan_rx_gy(rtplan)
+        except Exception as exc:
+            logger.debug("Failed to recover Rx from RTPLAN for %s: %s", course_dir.name, exc)
+            inferred_rx = None
+        if inferred_rx is not None and inferred_rx > 0:
+            rx_est = float(inferred_rx)
+            rx_source = "rtplan_dicom"
+            logger.info("Recovered Rx dose from RTPLAN: %.2f Gy for %s", rx_est, course_dir.name)
+        elif estimate_rx_from_ctv1 and rs_manual.exists():
+            try:
+                rx_est = _estimate_rx_from_ctv1(pydicom.dcmread(str(rs_manual)), rtdose)
+                if rx_est:
+                    rx_source = "estimated_ctv1_d95"
+                    logger.info(
+                        "Estimated Rx from CTV1 D95: %.2f Gy for %s (WARNING: heuristic, not valid for SIB)",
+                        rx_est, course_dir.name
+                    )
+            except Exception as exc:
+                logger.debug("CTV1 D95 Rx estimate failed for %s: %s", course_dir.name, exc)
 
     if rx_est is None:
         rx_source = "none"
         if not estimate_rx_from_ctv1:
             logger.info(
                 "No Rx dose provided for %s; relative DVH metrics will be missing. "
-                "Set estimate_rx_from_ctv1=True or provide rx_dose_gy to enable Rx-relative metrics.",
+                "No recoverable RTPLAN prescription dose found. Set estimate_rx_from_ctv1=True "
+                "or provide rx_dose_gy to enable Rx-relative metrics.",
                 course_dir.name
             )
         else:
@@ -1326,4 +1514,17 @@ def dvh_for_course(
 
     df = pd.DataFrame(clean_results)
     df.to_excel(out_xlsx, index=False)
+    expected_custom = _expected_custom_structure_names(custom_structures_config)
+    if expected_custom:
+        missing_custom = [
+            name for name in expected_custom
+            if not _dvh_has_expected_custom_structures(out_xlsx, [name])
+        ]
+        if missing_custom:
+            logger.warning(
+                "DVH output for %s is missing expected custom structures: %s",
+                course_dir.name,
+                ", ".join(missing_custom),
+            )
+    _write_dvh_qc(course_dir, df, expected_custom, rx_source, rx_est, rx_recovery_attempted)
     return out_xlsx

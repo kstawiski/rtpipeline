@@ -19,7 +19,7 @@ from .config import PipelineConfig
 from .layout import build_course_dirs, find_dcm
 from importlib import resources as importlib_resources
 import yaml
-from .utils import run_tasks_with_adaptive_workers, mask_is_cropped
+from .utils import run_tasks_with_adaptive_workers, mask_is_cropped, _scoped_walk
 from .custom_models import list_custom_model_outputs
 from .custom_structures_rtstruct import _create_custom_structures_rtstruct, _is_rs_custom_stale
 
@@ -1009,7 +1009,9 @@ def radiomics_for_course_mr(config: PipelineConfig, course) -> Optional[Path]:
 
 def _find_mr_manual_rs(dicom_root: Path, patient_id: str, mr_for_uid: str) -> List[Path]:
     rs_list: List[Path] = []
-    for base, _, files in os.walk(dicom_root):
+    # Already filters by PatientID below; scope the walk to that patient's dir so
+    # this does not stat the entire DICOM root for every MR series.
+    for base, _, files in _scoped_walk(dicom_root, [patient_id]):
         for fn in files:
             if not fn.startswith('RS') or not fn.lower().endswith('.dcm'):
                 continue

@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Dict, Optional, Union
 
 import numpy as np
+import pydicom
 import SimpleITK as sitk
 
 from .layout import build_course_dirs
@@ -24,6 +25,35 @@ from .utils import mask_is_cropped, sanitize_rtstruct
 logger = logging.getLogger(__name__)
 
 _RS_CUSTOM_META_VERSION = 2
+
+
+def _roi_numbers(rtstruct_ds) -> list[int]:
+    numbers: list[int] = []
+    for roi in getattr(rtstruct_ds, "StructureSetROISequence", []) or []:
+        try:
+            numbers.append(int(roi.ROINumber))
+        except Exception:
+            continue
+    return numbers
+
+
+def _assert_unique_roi_numbers(rtstruct_ds, context: str) -> None:
+    numbers = _roi_numbers(rtstruct_ds)
+    duplicates = sorted({number for number in numbers if numbers.count(number) > 1})
+    if duplicates:
+        raise ValueError(f"Duplicate ROI numbers in {context}: {duplicates}")
+
+
+def _add_roi_with_unique_number(rtstruct, *, mask: np.ndarray, name: str, **kwargs) -> None:
+    """Add an ROI while avoiding rt-utils len(sequence)+1 number collisions."""
+    next_number = max(_roi_numbers(rtstruct.ds), default=0) + 1
+    rtstruct.add_roi(mask=mask, name=name, **kwargs)
+
+    rtstruct.ds.StructureSetROISequence[-1].ROINumber = next_number
+    rtstruct.ds.ROIContourSequence[-1].ReferencedROINumber = next_number
+    rtstruct.ds.RTROIObservationsSequence[-1].ObservationNumber = next_number
+    rtstruct.ds.RTROIObservationsSequence[-1].ReferencedROINumber = next_number
+    _assert_unique_roi_numbers(rtstruct.ds, f"after adding {name}")
 
 
 def _is_rs_custom_stale(
@@ -291,7 +321,12 @@ def _create_custom_structures_rtstruct(
                             logger.warning("CustomModel structure %s is cropped at image boundary; marking as partial", prefixed_name)
                             final_name = f"{final_name}__partial"
 
-                        rtstruct.add_roi(mask=mask.astype(bool), name=final_name, color=[0, 128, 255])
+                        _add_roi_with_unique_number(
+                            rtstruct,
+                            mask=mask.astype(bool),
+                            name=final_name,
+                            color=[0, 128, 255],
+                        )
                         existing_names.add(final_name)
                         available_masks[final_name] = mask
                         logger.info("Added CustomModel structure: %s from %s", final_name, model_name)
@@ -317,7 +352,7 @@ def _create_custom_structures_rtstruct(
                 already_present = roi_name in existing_names
                 if add_missing and not already_present:
                     try:
-                        rtstruct.add_roi(mask=mask_bool, name=roi_name)
+                        _add_roi_with_unique_number(rtstruct, mask=mask_bool, name=roi_name)
                         existing_names.add(roi_name)
                     except Exception as exc:
                         logger.debug("Unable to add ROI %s from %s: %s", roi_name, label, exc)
@@ -382,7 +417,12 @@ def _create_custom_structures_rtstruct(
                     }
                 )
             try:
-                rtstruct.add_roi(mask=mask.astype(bool), name=final_name, color=[255, 0, 0])
+                _add_roi_with_unique_number(
+                    rtstruct,
+                    mask=mask.astype(bool),
+                    name=final_name,
+                    color=[255, 0, 0],
+                )
                 logger.info("Added custom structure: %s", final_name)
             except Exception as exc:
                 logger.warning("Failed to add custom structure %s: %s", final_name, exc)
@@ -407,11 +447,17 @@ def _create_custom_structures_rtstruct(
                 pass
 
         out_path = course_dir / "RS_custom.dcm"
+        _assert_unique_roi_numbers(rtstruct.ds, f"RS_custom before save for {course_dir}")
         rtstruct.save(str(out_path))
         try:
             sanitize_rtstruct(out_path)
         except Exception as exc:
             logger.debug("Sanitising RS_custom failed for %s: %s", out_path, exc)
+        try:
+            _assert_unique_roi_numbers(pydicom.dcmread(str(out_path)), f"saved RS_custom for {course_dir}")
+        except Exception:
+            out_path.unlink(missing_ok=True)
+            raise
 
         # Record generator metadata to enable safe/stable staleness checks.
         try:

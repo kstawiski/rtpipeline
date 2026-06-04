@@ -29,6 +29,28 @@ class _SegmentTask:
 
 
 @dataclass(slots=True)
+class _AllSeriesSegmentTask:
+    cfg: PipelineConfig
+    patient_id: str
+    force_segmentation: bool
+
+    @property
+    def dir(self) -> Path:
+        return Path(self.cfg.output_root) / str(self.patient_id) / "all_series"
+
+
+@dataclass(slots=True)
+class _PetSuvTask:
+    cfg: PipelineConfig
+    patient_id: str
+    force: bool
+
+    @property
+    def dir(self) -> Path:
+        return Path(self.cfg.output_root) / str(self.patient_id) / "all_series"
+
+
+@dataclass(slots=True)
 class _CustomSegmentationTask:
     cfg: PipelineConfig
     course: CourseOutput
@@ -92,6 +114,20 @@ def _execute_segment_task(task: _SegmentTask) -> bool:
     return True
 
 
+def _execute_all_series_segment_task(task: _AllSeriesSegmentTask) -> bool:
+    from .segmentation import segment_all_series_for_patient
+
+    segment_all_series_for_patient(task.cfg, task.patient_id, force=task.force_segmentation)
+    return True
+
+
+def _execute_pet_suv_task(task: _PetSuvTask) -> bool:
+    from .pet_suv import ingest_pet_suv_for_patient
+
+    ingest_pet_suv_for_patient(task.cfg, task.patient_id, force=task.force)
+    return True
+
+
 def _execute_custom_segmentation_task(task: _CustomSegmentationTask) -> bool:
     from .custom_models import run_custom_models_for_course
 
@@ -120,6 +156,7 @@ def _execute_dvh_task(task: _DVHTask) -> bool:
         task.custom_structures,
         parallel_workers=task.parallel_workers,
         use_cropped=task.use_cropped,
+        rx_dose_gy=task.course.total_prescription_gy,
     )
     return True
 
@@ -1029,8 +1066,84 @@ def main(argv: list[str] | None = None) -> int:
             cfg.dicom_copy_use_hardlinks = organize_config.get("use_hardlinks", True)
             cfg.dicom_copy_verify_checksum = organize_config.get("verify_checksum", False)
             cfg.dicom_copy_cache_headers = organize_config.get("cache_headers", True)
+            cfg.do_segment_all_series = bool(organize_config.get("do_segment_all_series", False))
+            _seg_classes = organize_config.get("all_series_segment_classes", None)
+            if isinstance(_seg_classes, str):
+                cfg.all_series_segment_classes = [
+                    s.strip() for s in _seg_classes.replace(";", ",").split(",") if s.strip()
+                ]
+            elif isinstance(_seg_classes, (list, tuple, set)):
+                cfg.all_series_segment_classes = [str(c).strip() for c in _seg_classes if str(c).strip()]
+            elif _seg_classes is not None:
+                raise ValueError(
+                    "organize.all_series_segment_classes must be a YAML list (or comma-separated string) of "
+                    f"image_class names, got {type(_seg_classes).__name__}"
+                )
+            cfg.all_series_fourdct_single_representative = bool(
+                organize_config.get("all_series_fourdct_single_representative", False)
+            )
+            _mat_classes = organize_config.get("all_series_materialize_classes", None)
+            if isinstance(_mat_classes, str):
+                _mat_list = [s.strip() for s in _mat_classes.replace(";", ",").split(",") if s.strip()]
+            elif isinstance(_mat_classes, (list, tuple, set)):
+                _mat_list = [str(c).strip() for c in _mat_classes if str(c).strip()]
+            elif _mat_classes is None:
+                _mat_list = None
+            else:
+                raise ValueError(
+                    "organize.all_series_materialize_classes must be a YAML list (or comma-separated string) of "
+                    f"image_class names, got {type(_mat_classes).__name__}"
+                )
+            if _mat_list is not None:
+                # Store the raw allow-list. The all-series materialization stage (inventory.py) unions
+                # in the effective segmentation scope so a segmented class is never skip-materialized.
+                cfg.all_series_materialize_classes = _mat_list
+            pet_config = yaml_config.get("pet", {}) or {}
+            cfg.do_ingest_pet_suv = bool(
+                pet_config.get("do_ingest_pet_suv", organize_config.get("do_ingest_pet_suv", False))
+            )
+            cfg.suv_decay_guard_tol = float(
+                pet_config.get("suv_decay_guard_tol", organize_config.get("suv_decay_guard_tol", cfg.suv_decay_guard_tol))
+            )
+            cfg.suv_zextent_primary_fraction = float(
+                pet_config.get(
+                    "suv_zextent_primary_fraction",
+                    organize_config.get("suv_zextent_primary_fraction", cfg.suv_zextent_primary_fraction),
+                )
+            )
+            cfg.pet_clinical_weight_window_days = int(
+                pet_config.get(
+                    "pet_clinical_weight_window_days",
+                    organize_config.get("pet_clinical_weight_window_days", cfg.pet_clinical_weight_window_days),
+                )
+            )
+            inventory_db = organize_config.get("inventory_db_path")
+            if inventory_db:
+                cfg.inventory_db_path = Path(inventory_db).expanduser().resolve()
+            scan_run_id = organize_config.get("inventory_scan_run_id")
+            if scan_run_id not in (None, ""):
+                cfg.inventory_scan_run_id = int(scan_run_id)
+            patient_ids = organize_config.get("inventory_patient_ids") or []
+            if isinstance(patient_ids, str):
+                patient_ids = [item.strip() for item in patient_ids.split(",") if item.strip()]
+            cfg.inventory_patient_ids = [str(item) for item in patient_ids]
     except Exception as e:
         logger.debug("Could not load project YAML config overrides: %s", e)
+
+    # Scope organize-stage discovery walks to the requested cohort when explicit
+    # course/patient filters are active. This avoids statting the entire DICOM
+    # root (potentially tens of millions of NFS files) for a run that targets
+    # only a handful of patients. The scope is exactly the set of patients that
+    # will be PROCESSED (the filter set); all-series inventory materialization
+    # reads absolute paths from the inventory DB and does not depend on this
+    # discovery walk, so inventory_patient_ids is intentionally NOT unioned in
+    # (that would over-scope a single-patient smoke to the whole inventory).
+    # Without active filters, discover_patient_ids stays empty and discovery
+    # walks the whole tree (unchanged behaviour).
+    if filters_active:
+        _discover_ids = set(patient_filter_ids)
+        _discover_ids |= {pid for (pid, _cid) in course_filter_pairs}
+        cfg.discover_patient_ids = sorted(_discover_ids)
 
     # Configure custom segmentation models
     custom_models_root: Path | None = None
@@ -1179,6 +1292,50 @@ def main(argv: list[str] | None = None) -> int:
             )
             if any(r is None for r in seg_results):
                 had_failures = True
+
+            if getattr(cfg, "do_segment_all_series", False):
+                patient_ids = sorted({str(course.patient_id) for course in selected_courses if course.patient_id})
+                all_series_tasks = [
+                    _AllSeriesSegmentTask(
+                        cfg=cfg,
+                        patient_id=patient_id,
+                        force_segmentation=args.force_segmentation,
+                    )
+                    for patient_id in patient_ids
+                ]
+                all_series_results = run_tasks_with_adaptive_workers(
+                    "All-series segmentation",
+                    all_series_tasks,
+                    _execute_all_series_segment_task,
+                    max_workers=seg_worker_limit,
+                    logger=logging.getLogger(__name__),
+                    show_progress=True,
+                    task_timeout=args.task_timeout,
+                )
+                if any(r is None for r in all_series_results):
+                    had_failures = True
+
+            if getattr(cfg, "do_ingest_pet_suv", False):
+                patient_ids = sorted({str(course.patient_id) for course in selected_courses if course.patient_id})
+                pet_suv_tasks = [
+                    _PetSuvTask(
+                        cfg=cfg,
+                        patient_id=patient_id,
+                        force=args.force_redo,
+                    )
+                    for patient_id in patient_ids
+                ]
+                pet_suv_results = run_tasks_with_adaptive_workers(
+                    "PET SUV ingestion",
+                    pet_suv_tasks,
+                    _execute_pet_suv_task,
+                    max_workers=max(1, cfg.effective_workers()),
+                    logger=logging.getLogger(__name__),
+                    show_progress=True,
+                    task_timeout=args.task_timeout,
+                )
+                if any(r is None for r in pet_suv_results):
+                    had_failures = True
 
     if "segmentation_custom" in stages:
         from .custom_models import discover_custom_models  # lazy import
