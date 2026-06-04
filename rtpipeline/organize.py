@@ -20,7 +20,7 @@ from pydicom.uid import generate_uid
 from scipy.ndimage import map_coordinates
 
 from .config import PipelineConfig
-from .ct import index_ct_series, pick_primary_series, copy_ct_series
+from .ct import index_ct_series, pick_primary_series, copy_ct_series, _clear_dir
 from .dicom_copy import DicomCopyConfig, DicomCopyManager, get_copy_manager, reset_copy_manager
 from .inventory import materialize_patient_series_from_inventory
 from .layout import CourseDirs, build_course_dirs, course_dir_name, find_dcm
@@ -1580,6 +1580,107 @@ def _index_rt_files(root: Path, patient_ids: Optional[Iterable[str]] = None) -> 
     return index
 
 
+def referenced_ct_series_uids(rtstruct_path: "Path | str") -> set:
+    """Return the CT SeriesInstanceUIDs referenced by an RTSTRUCT.
+
+    Walks ReferencedFrameOfReferenceSequence -> RTReferencedStudySequence ->
+    RTReferencedSeriesSequence (the structure-set -> planning-image link). Returns an
+    empty set when the file is unreadable or carries no such references (e.g. CT-only
+    cohorts with no structure set), in which case the caller falls back to a heuristic.
+    """
+    uids: set = set()
+    try:
+        ds = pydicom.dcmread(str(rtstruct_path), stop_before_pixels=True, force=True)
+    except Exception as exc:
+        logger.warning("Could not read RTSTRUCT %s for CT reference: %s", rtstruct_path, exc)
+        return uids
+    for ref_for in getattr(ds, "ReferencedFrameOfReferenceSequence", []) or []:
+        for study in getattr(ref_for, "RTReferencedStudySequence", []) or []:
+            for series in getattr(study, "RTReferencedSeriesSequence", []) or []:
+                uid = str(getattr(series, "SeriesInstanceUID", "") or "").strip()
+                if uid:
+                    uids.add(uid)
+    return uids
+
+
+def select_course_ct_series(
+    ct_index: dict,
+    patient_id: str,
+    struct_source_path: "Path | str | None",
+    course_study: Optional[str],
+) -> Tuple[Optional[list], str]:
+    """Select the planning CT series for a course and report how it was chosen.
+
+    Returns ``(series_instances_or_None, status)``. For auto-OAR DVH the planning CT must
+    be the CT the structure set was drawn on, i.e. the series referenced by the course's
+    PRIMARY RTSTRUCT -- NOT merely the largest series in the study (verified: referenced
+    CTs are frequently smaller than the largest series). Resolution order:
+
+      - references resolve to exactly one indexed CT series -> that series ("referenced")
+      - references resolve to several indexed CT series -> deterministic tie-break:
+        largest by slice count, then lowest series_uid ("referenced_multi")
+      - RTSTRUCT HAS references but none resolve to an indexed CT series -> FAIL CLOSED:
+        (None, "unresolved_reference"); the caller skips per-course CT so we never silently
+        segment the wrong/largest CT against mismatched structures/dose
+      - no RTSTRUCT / no references at all -> legacy largest-in-course-study heuristic via
+        pick_primary_series ("fallback_largest"), or (None, "none") if unavailable
+
+    The struct source path must be the ORIGINAL RTSTRUCT, not the per-course RS.dcm copy:
+    copy-manager SOP dedup may skip materialising the root RS.dcm.
+    """
+    patient_studies = ct_index.get(patient_id) or {}
+
+    refs: set = set()
+    if struct_source_path:
+        refs = referenced_ct_series_uids(struct_source_path)
+
+    if refs:
+        resolved: list = []
+        for series_map in patient_studies.values():
+            for uid in refs:
+                series = series_map.get(uid)
+                if series:
+                    resolved.append((uid, series))
+        if len(resolved) == 1:
+            return resolved[0][1], "referenced"
+        if len(resolved) > 1:
+            # Deterministic tie-break: most slices first, then lowest series_uid.
+            resolved.sort(key=lambda kv: (-len(kv[1]), kv[0]))
+            return resolved[0][1], "referenced_multi"
+        # References exist but none are indexed -> fail closed (no silent wrong-CT selection).
+        return None, "unresolved_reference"
+
+    # No structure-set references available -> legacy largest-in-study heuristic (CT-only cohorts).
+    if course_study and course_study in patient_studies:
+        series = pick_primary_series(patient_studies[course_study])
+        if series:
+            return series, "fallback_largest"
+    return None, "none"
+
+
+def _clear_course_ct_outputs(course_dirs) -> None:
+    """Remove per-course CT-derived outputs (CT DICOM, CT NIfTI, auto-OAR TotalSegmentator).
+
+    Called when NO planning CT is selected for a course (fail-closed unresolved reference, or
+    no CT available). Without this, a resume/re-run over existing outputs could keep a prior
+    WRONG CT in ``DICOM/CT`` and segment it into a wrong per-course OAR DVH for a course that
+    must be skipped -- and resume hydration / metadata generation would treat the stale CT,
+    NIfTI, and masks as valid. ``copy_ct_series`` already purges ``DICOM/CT`` on the success
+    path, so this only matters for the no-CT branch.
+    """
+    for d in (
+        getattr(course_dirs, "dicom_ct", None),
+        getattr(course_dirs, "nifti", None),
+        getattr(course_dirs, "segmentation_totalseg", None),
+    ):
+        if d is None:
+            continue
+        try:
+            _clear_dir(Path(d))
+        except Exception as exc:
+            logger.warning("Failed to clear stale per-course CT output %s: %s", d, exc)
+
+
 def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
     """End-to-end RT organization and course merging according to config."""
     config.ensure_dirs()
@@ -1860,22 +1961,35 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
         if struct_path:
             _safe_copy(struct_path, rs_dst, copy_manager=copy_manager)
 
-        if course_study and patient_id in ct_index and course_study in ct_index[patient_id]:
-            series = pick_primary_series(ct_index[patient_id][course_study])
-            if series:
-                first_inst = series[0] if series else None
-                if first_inst is not None and getattr(first_inst, 'series_uid', None):
-                    course_ct_series_uids.add(str(first_inst.series_uid))
-                copy_ct_series(series, course_dirs.dicom_ct, copy_manager=copy_manager)
-                try:
-                    primary_nifti = _ensure_ct_nifti(
-                        config,
-                        course_dirs.dicom_ct,
-                        course_dirs.nifti,
-                        force=bool(config.resume),
-                    )
-                except Exception as exc:
-                    logger.warning("CT NIfTI conversion failed for %s: %s", course_dir, exc)
+        series, ct_select_status = select_course_ct_series(ct_index, patient_id, struct_path, course_study)
+        if series:
+            first_inst = series[0] if series else None
+            if first_inst is not None and getattr(first_inst, 'series_uid', None):
+                course_ct_series_uids.add(str(first_inst.series_uid))
+            logger.info(
+                "Per-course planning CT for %s (%s): %s -> series ...%s (%d slices)",
+                patient_id, course_id, ct_select_status,
+                str(getattr(first_inst, 'series_uid', '') or '')[-12:], len(series),
+            )
+            copy_ct_series(series, course_dirs.dicom_ct, copy_manager=copy_manager)
+            try:
+                primary_nifti = _ensure_ct_nifti(
+                    config,
+                    course_dirs.dicom_ct,
+                    course_dirs.nifti,
+                    force=bool(config.resume),
+                )
+            except Exception as exc:
+                logger.warning("CT NIfTI conversion failed for %s: %s", course_dir, exc)
+        else:
+            if ct_select_status == "unresolved_reference":
+                logger.warning(
+                    "Per-course CT fail-closed for %s (%s): primary RTSTRUCT references a CT series "
+                    "absent from the indexed CT; skipping per-course CT/segmentation.",
+                    patient_id, course_id,
+                )
+            # No planning CT -> remove any stale per-course CT/NIfTI/segmentation from a prior run.
+            _clear_course_ct_outputs(course_dirs)
 
         if registrations_index.get(patient_id):
             for reg in registrations_index.get(patient_id, []):
@@ -2040,22 +2154,35 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
                 _copy_into(s.path, course_dirs.dicom_rtstruct, copy_manager=copy_manager)
 
             course_study = s_list[0].study_uid
-            if course_study and patient_id in ct_index and course_study in ct_index[patient_id]:
-                series = pick_primary_series(ct_index[patient_id][course_study])
-                if series:
-                    first_inst = series[0] if series else None
-                    if first_inst is not None and getattr(first_inst, 'series_uid', None):
-                        course_ct_series_uids.add(str(first_inst.series_uid))
-                    copy_ct_series(series, course_dirs.dicom_ct, copy_manager=copy_manager)
-                    try:
-                        primary_nifti = _ensure_ct_nifti(
-                            config,
-                            course_dirs.dicom_ct,
-                            course_dirs.nifti,
-                            force=bool(config.resume),
-                        )
-                    except Exception as exc:
-                        logger.warning("CT NIfTI conversion failed (RS-only) for %s: %s", course_dir, exc)
+            series, ct_select_status = select_course_ct_series(ct_index, patient_id, primary_struct, course_study)
+            if series:
+                first_inst = series[0] if series else None
+                if first_inst is not None and getattr(first_inst, 'series_uid', None):
+                    course_ct_series_uids.add(str(first_inst.series_uid))
+                logger.info(
+                    "Per-course planning CT (RS) for %s (%s): %s -> series ...%s (%d slices)",
+                    patient_id, course_dir, ct_select_status,
+                    str(getattr(first_inst, 'series_uid', '') or '')[-12:], len(series),
+                )
+                copy_ct_series(series, course_dirs.dicom_ct, copy_manager=copy_manager)
+                try:
+                    primary_nifti = _ensure_ct_nifti(
+                        config,
+                        course_dirs.dicom_ct,
+                        course_dirs.nifti,
+                        force=bool(config.resume),
+                    )
+                except Exception as exc:
+                    logger.warning("CT NIfTI conversion failed (RS-only) for %s: %s", course_dir, exc)
+            else:
+                if ct_select_status == "unresolved_reference":
+                    logger.warning(
+                        "Per-course CT fail-closed for %s (%s): primary RTSTRUCT references a CT series "
+                        "absent from the indexed CT; skipping per-course CT/segmentation.",
+                        patient_id, course_dir,
+                    )
+                # No planning CT -> remove any stale per-course CT/NIfTI/segmentation from a prior run.
+                _clear_course_ct_outputs(course_dirs)
 
             if registrations_index.get(patient_id):
                 for reg in registrations_index.get(patient_id, []):
