@@ -1,0 +1,97 @@
+# STOPSTORM D5.4 custom structures for rtpipeline.
+#
+# Note:
+# - rtpipeline resolves boolean structure inputs by normalized exact-name matching,
+#   not regex. This file therefore enumerates common target aliases explicitly.
+# - The downstream 02_prepare_dvh_extraction.py script re-computes target-in-organ
+#   geometry from the NIfTI masks and is the authoritative fallback when a given
+#   course uses an unexpected target label.
+
+custom_structures:
+  - name: "coronary_arteries"
+    operation: "union"
+    source_structures:
+      - "A_LAD"
+      - "A_LCX"
+      - "A_LM"
+      - "A_RCA"
+    description: "Combined coronary artery tree from the STOPSTORM cardiac model."
+
+  - name: "target_union_stopstorm"
+    operation: "union"
+    source_structures:
+      - "PTV"
+      - "PTV1"
+      - "PTV2"
+      - "PTV3"
+      - "PTV_1"
+      - "PTV_2"
+      - "PTV_3"
+      - "PTV25"
+      - "PTV_25"
+      - "PTV25Gy"
+      - "PTV_25Gy"
+      - "PTV2500"
+      - "PTV_2500"
+      - "PTV2500cGy"
+      - "PTV_2500cGy"
+      - "CTV"
+      - "CTV1"
+      - "CTV2"
+      - "CTV_1"
+      - "CTV_2"
+      - "GTV"
+      - "GTV1"
+      - "GTV2"
+      - "GTV_1"
+      - "GTV_2"
+      - "Target"
+      - "Target1"
+      - "Target_1"
+      - "TargetVolume"
+      - "Target_Volume"
+      - "Zielvolumen"
+      - "Ziel_Volumen"
+    description: "Best-effort union of common STOPSTORM target aliases."
+
+  - name: "heart_minus_PTV"
+    operation: "subtract"
+    source_structures:
+      - "heart"
+      - "target_union_stopstorm"
+    description: "Whole heart minus target union for uninvolved-tissue DVH extraction."
+
+  - name: "LV_minus_PTV"
+    operation: "subtract"
+    source_structures:
+      - "Ventricle_L"
+      - "target_union_stopstorm"
+    description: "Left ventricle minus target union."
+
+  - name: "RV_minus_PTV"
+    operation: "subtract"
+    source_structures:
+      - "Ventricle_R"
+      - "target_union_stopstorm"
+    description: "Right ventricle minus target union."
+
+  - name: "LA_minus_PTV"
+    operation: "subtract"
+    source_structures:
+      - "Atrium_L"
+      - "target_union_stopstorm"
+    description: "Left atrium minus target union."
+
+  - name: "RA_minus_PTV"
+    operation: "subtract"
+    source_structures:
+      - "Atrium_R"
+      - "target_union_stopstorm"
+    description: "Right atrium minus target union."
+
+  - name: "Pericardium_minus_PTV"
+    operation: "subtract"
+    source_structures:
+      - "pericardium"
+      - "target_union_stopstorm"
+    description: "Pericardium minus target union."

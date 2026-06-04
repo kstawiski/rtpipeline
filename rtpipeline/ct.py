@@ -5,9 +5,9 @@ import os
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict, List, Optional
+from typing import TYPE_CHECKING, Dict, Iterable, List, Optional
 
-from .utils import read_dicom, get, ensure_dir
+from .utils import read_dicom, get, ensure_dir, _scoped_walk, _scoped_patient_dirs
 
 if TYPE_CHECKING:
     from .dicom_copy import DicomCopyManager
@@ -25,16 +25,22 @@ class CTInstance:
     instance_number: int | None
 
 
-def index_ct_series(dicom_root: Path) -> Dict[str, Dict[str, Dict[str, List[CTInstance]]]]:
+def index_ct_series(
+    dicom_root: Path,
+    patient_ids: Optional[Iterable[str]] = None,
+) -> Dict[str, Dict[str, Dict[str, List[CTInstance]]]]:
     """
     Returns nested dict: patient_id -> study_uid -> series_uid -> [CTInstance...]
+
+    When ``patient_ids`` is provided, only those top-level patient directories
+    are indexed (cohort-scoped); otherwise the whole ``dicom_root`` is scanned.
     """
-    fast_index = _index_tcia_patient_series_layout(dicom_root)
+    fast_index = _index_tcia_patient_series_layout(dicom_root, patient_ids)
     if fast_index is not None:
         return fast_index
 
     index: Dict[str, Dict[str, Dict[str, List[CTInstance]]]] = {}
-    for base, _, files in os.walk(dicom_root):
+    for base, _, files in _scoped_walk(dicom_root, patient_ids):
         for name in files:
             p = Path(base) / name
             ds = read_dicom(p)
@@ -73,6 +79,7 @@ def _looks_like_dicom(path: Path) -> bool:
 
 def _index_tcia_patient_series_layout(
     dicom_root: Path,
+    patient_ids: Optional[Iterable[str]] = None,
 ) -> Optional[Dict[str, Dict[str, Dict[str, List[CTInstance]]]]]:
     """Fast path for TCIA downloads laid out as PatientID/SeriesInstanceUID/files.
 
@@ -83,7 +90,7 @@ def _index_tcia_patient_series_layout(
     """
 
     try:
-        patient_dirs = sorted(path for path in dicom_root.iterdir() if path.is_dir())
+        patient_dirs = _scoped_patient_dirs(dicom_root, patient_ids)
     except OSError:
         return None
     if not patient_dirs:
