@@ -254,7 +254,7 @@ def check_radiomics_env() -> bool:
             ],
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=60,
             env=_conda_subprocess_env(),
         )
         return result.returncode == 0 and "OK" in result.stdout

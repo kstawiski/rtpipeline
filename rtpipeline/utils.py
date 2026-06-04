@@ -20,6 +20,143 @@ T = TypeVar('T')
 R = TypeVar('R')
 
 
+def _resolve_scoped_dirs(root: Path, patient_ids: Iterable[str]) -> tuple[List[Path], List[str]]:
+    """Locate the directories for ``patient_ids`` under ``root``.
+
+    For each id, collects EVERY directory that holds it at two depths: a direct
+    child ``root/<pid>`` AND one level down ``root/<center>/<pid>`` (multi-center
+    layouts). All matches are returned and de-duplicated by resolved path — a
+    patient id may, in a malformed export, appear in more than one place, and the
+    original full-tree walk would have discovered all of them, so returning a
+    strict superset preserves the "discovered ⊇ processed" safety property.
+    Returns ``(resolved_dirs, missing_ids)``; an id is ``missing`` only when zero
+    directories match.
+
+    Safety: patient ids are treated as opaque single path components. An id that
+    is empty, ``.``/``..``, absolute, or contains a path separator is rejected
+    (added to ``missing``), and every resolved candidate is confirmed to remain
+    inside ``root`` after symlink resolution — so a stray id or symlink can never
+    make the scoped walk escape the DICOM root. The immediate sub-directory
+    listing (for the one-level scan) is computed at most once.
+    """
+    root = Path(root)
+    try:
+        root_real = root.resolve()
+    except OSError:
+        root_real = root
+    dirs: List[Path] = []
+    missing: List[str] = []
+    centers: Optional[List[Path]] = None
+
+    def _dir_inside_root(candidate: Path) -> Optional[Path]:
+        try:
+            if not candidate.is_dir():
+                return None
+            real = candidate.resolve()
+        except OSError:
+            return None
+        if real == root_real or root_real in real.parents:
+            return candidate
+        return None
+
+    for raw in patient_ids:
+        pid = str(raw)
+        if (pid in ("", ".", "..") or "/" in pid or os.sep in pid
+                or (os.altsep and os.altsep in pid) or os.path.isabs(pid)):
+            missing.append(pid)
+            continue
+        matches: List[Path] = []
+        direct = _dir_inside_root(root / pid)
+        if direct is not None:
+            matches.append(direct)
+        if centers is None:
+            try:
+                centers = [p for p in root.iterdir() if p.is_dir()]
+            except OSError:
+                centers = []
+        for c in centers:
+            nested = _dir_inside_root(c / pid)
+            if nested is not None:
+                matches.append(nested)
+        # De-duplicate by resolved path, preserving discovery order.
+        seen: set = set()
+        uniq: List[Path] = []
+        for m in matches:
+            try:
+                key = m.resolve()
+            except OSError:
+                key = m
+            if key not in seen:
+                seen.add(key)
+                uniq.append(m)
+        if uniq:
+            if len(uniq) > 1:
+                logger.warning(
+                    "Cohort-scoped resolve: patient id %r matched %d directories under %s; "
+                    "walking all of them.", pid, len(uniq), root,
+                )
+            dirs.extend(uniq)
+        else:
+            missing.append(pid)
+    return dirs, missing
+
+
+def _scoped_walk(root: Path, patient_ids: Optional[Iterable[str]] = None):
+    """``os.walk`` over ``root``, optionally restricted to the cohort's subtrees.
+
+    ``patient_ids is None`` walks the entire ``root`` exactly like ``os.walk``
+    (original behaviour). When an iterable is given, only the resolved patient
+    directories are walked — located directly (``root/<pid>``) or one level down
+    (``root/<center>/<pid>``). This scopes organize-stage RT/series discovery to a
+    requested cohort so a run targeting N patients does not stat the whole DICOM
+    root. If ANY requested patient directory cannot be located, it falls back to a
+    full-root walk and warns, so a layout the scoper does not understand never
+    silently drops data (correctness over speed). An empty iterable scopes to
+    nothing (walks no files).
+    """
+    if patient_ids is None:
+        yield from os.walk(root)
+        return
+    patient_ids = list(patient_ids)
+    dirs, missing = _resolve_scoped_dirs(root, patient_ids)
+    if missing:
+        logger.warning(
+            "Cohort-scoped walk could not locate %d of %d requested patient dir(s) under %s "
+            "(e.g. %s); falling back to a full-root walk to avoid dropping data.",
+            len(missing), len(patient_ids), root, ", ".join(missing[:5]),
+        )
+        yield from os.walk(root)
+        return
+    for d in dirs:
+        yield from os.walk(d)
+
+
+def _scoped_patient_dirs(root: Path, patient_ids: Optional[Iterable[str]] = None) -> List[Path]:
+    """Return sorted top-level patient directories under ``root``.
+
+    ``patient_ids is None`` returns every immediate sub-directory (original
+    behaviour, via ``iterdir`` which may raise ``OSError`` for the caller to
+    handle). When an iterable is given, returns the resolved patient directories
+    (direct or one level down). If ANY requested patient cannot be located, falls
+    back to listing every immediate sub-directory so the caller's header-based
+    logic still finds them (never silently drops a patient). An empty iterable
+    returns no directories.
+    """
+    root = Path(root)
+    if patient_ids is None:
+        return sorted(path for path in root.iterdir() if path.is_dir())
+    patient_ids = list(patient_ids)
+    dirs, missing = _resolve_scoped_dirs(root, patient_ids)
+    if missing:
+        logger.warning(
+            "Cohort-scoped dir listing could not locate %d of %d requested patient dir(s) under %s "
+            "(e.g. %s); falling back to listing all patient directories.",
+            len(missing), len(patient_ids), root, ", ".join(missing[:5]),
+        )
+        return sorted(path for path in root.iterdir() if path.is_dir())
+    return sorted(dirs)
+
+
 def validate_path(path: Path | str, base: Path | str, allow_absolute: bool = False) -> Path:
     """
     Validate that a path doesn't escape the base directory (path traversal protection).
