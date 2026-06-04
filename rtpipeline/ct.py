@@ -120,11 +120,29 @@ def _index_tcia_patient_series_layout(
             ds = read_dicom(dicom_files[0])
             if ds is None:
                 return None
-            if getattr(ds, "Modality", None) != "CT":
-                continue
-            pid = str(get(ds, (0x0010, 0x0020), "")) or patient_dir.name
             study_uid = str(get(ds, (0x0020, 0x000D), ""))
             series_uid = str(get(ds, (0x0020, 0x000E), "")) or series_dir.name
+            # TCIA fast-path contract: each <patient>/<dir> is exactly ONE SeriesInstanceUID and the
+            # directory is NAMED by that UID (see tcia_acquisition.py: series_dir = input_dir/pid/series_uid).
+            # If the directory name does not match the series UID, this is NOT a genuine
+            # one-series-per-directory tree — e.g. a STUDY-level directory holding many series and
+            # modalities (common in non-TCIA hospital exports). Reading only the first file's header
+            # would then lump the entire study into a single bogus CT "series". Bail to the generic
+            # per-file indexer in index_ct_series(), which groups by real SeriesInstanceUID and filters
+            # Modality==CT. Keying this on the directory-name contract (not the first file's modality)
+            # also correctly bails for study dirs whose first sorted file happens to be non-CT.
+            if series_dir.name != series_uid:
+                logger.info(
+                    "CT fast-path: directory %s does not match its SeriesInstanceUID; falling back "
+                    "to generic per-series CT indexing for correctness.",
+                    series_dir,
+                )
+                return None
+            if getattr(ds, "Modality", None) != "CT":
+                # Genuine single-series directory that is not CT (e.g. PET/MR series dir): skip it and
+                # keep the fast path for the remaining CT series directories.
+                continue
+            pid = str(get(ds, (0x0010, 0x0020), "")) or patient_dir.name
             series_num = get(ds, (0x0020, 0x0011))
             if not pid or not study_uid or not series_uid:
                 return None
@@ -145,6 +163,29 @@ def _index_tcia_patient_series_layout(
     return indexed
 
 
+def _clear_dir(path: Path) -> None:
+    """Remove all contents of ``path`` (files, symlinks, sub-directories) if it is a directory.
+
+    No-op when ``path`` does not exist or is not a directory. Used to stop per-course
+    CT-derived outputs from a previous (incorrect) run surviving a corrected re-run.
+
+    A top-level symlink is treated as a no-op: deleting *through* a symlinked directory
+    would remove contents OUTSIDE this tree. Course directories are real ``mkdir``'d paths,
+    so this guard is defensive in practice but keeps the "no traversal outside the dir"
+    guarantee honest.
+    """
+    if path.is_symlink() or not path.is_dir():
+        return
+    for item in path.iterdir():
+        try:
+            if item.is_dir() and not item.is_symlink():
+                shutil.rmtree(item, ignore_errors=True)
+            else:
+                item.unlink()
+        except OSError as exc:
+            logger.warning("_clear_dir: could not remove %s: %s", item, exc)
+
+
 def copy_ct_series(
     series: List[CTInstance],
     dst_dir: Path,
@@ -155,7 +196,18 @@ def copy_ct_series(
     Files are named CT_{index}.dcm where index is the instance_number if available
     and unique, otherwise a sequential index is used to prevent filename collisions.
     This handles vendors that set all InstanceNumbers to the same value or omit them.
+
+    The destination directory is PURGED before copying so a re-run with a corrected
+    (different) series selection cannot leave stale slices from a previous run behind;
+    a mixed leftover folder would otherwise make dcm2niix fail to build one volume.
+    Each instance is guaranteed to physically land at ``dst``: when ``copy_manager``
+    SOP-deduplication returns an existing copy at a FOREIGN path (e.g. another course
+    sharing the same CT, or the all-series materialisation), the file is still
+    materialised at ``dst`` (hardlink, else copy) so this course's DICOM/CT folder is
+    never left empty.
     """
+    # Purge stale contents so a corrected re-run does not inherit a prior garbage-bag CT.
+    _clear_dir(dst_dir)
     ensure_dir(dst_dir)
     # Track used indices to prevent collisions when InstanceNumber is not unique
     used_indices: set[int] = set()
@@ -171,7 +223,14 @@ def copy_ct_series(
         used_indices.add(file_idx)
         dst = dst_dir / f"CT_{file_idx:05d}.dcm"
         if copy_manager is not None:
-            copy_manager.copy_dicom(inst.path, dst, skip_if_exists=True)
+            actual, _copied = copy_manager.copy_dicom(inst.path, dst, skip_if_exists=True)
+            # SOP dedup may return a copy at a foreign path without placing a file at dst.
+            # The per-course CT folder MUST contain real files for dcm2niix, so materialise dst.
+            if Path(actual) != dst and not dst.exists():
+                try:
+                    os.link(actual, dst)
+                except OSError:
+                    shutil.copy2(actual, dst)
         else:
             shutil.copy2(inst.path, dst)
 
