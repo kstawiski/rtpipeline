@@ -1,6 +1,12 @@
 # Dockerfile for rtpipeline - Radiotherapy DICOM Processing Pipeline
 # Compatible with Docker and Singularity
 # Supports both CPU and GPU execution
+#
+# Reviewer-package note: this is the full production/offline image definition.
+# It expects optional build-context directories such as envs/, third_party/,
+# totalseg_weights/, and custom_models/ that are intentionally not bundled in
+# the blinded reviewer archive. Use Dockerfile.reviewer_minimal from the
+# reviewer code/config bundle for a buildable source-tree smoke-test container.
 
 # Stage 1: Builder
 FROM condaforge/mambaforge:24.3.0-0 AS builder

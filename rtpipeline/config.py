@@ -20,6 +20,8 @@ class PipelineConfig:
     do_dvh: bool = True
     do_visualize: bool = True
     do_radiomics: bool = True
+    do_segment_all_series: bool = False
+    do_ingest_pet_suv: bool = False
     # Resume mode
     resume: bool = False
 
@@ -36,12 +38,37 @@ class PipelineConfig:
     totalseg_num_proc_pre: int | None = 1      # Keep at 1 for Docker stability
     totalseg_num_proc_export: int | None = 1   # Keep at 1 for Docker stability
     totalseg_allow_fallback: bool = False
+    cbct_totalseg_extra_args: list[str] = field(default_factory=lambda: ["--body_seg"])
+    # All-series segmentation scope (P5). None => segment every eligible image_class (legacy behavior).
+    # When set, only series whose image_class is in this allow-list are segmented in the all-series stage;
+    # excluded series stay materialized but unsegmented.
+    all_series_segment_classes: list[str] | None = None
+    # When True, segment at most ONE representative 4DCT volume per patient: the first fourdct_ave
+    # (averaged reconstruction) if any exists, else the first fourdct_phase. All other 4DCT series are
+    # left materialized but unsegmented. No effect when 4DCT classes are not in all_series_segment_classes.
+    all_series_fourdct_single_representative: bool = False
+    # Optional allow-list of image_class names to MATERIALIZE (byte-copy) in the all-series inventory
+    # path. None (default) => materialize every non-excluded series (legacy behavior). An explicit list
+    # ([] included) is an allow-list: series whose image_class is not in it are recorded in the manifest
+    # with status "materialize_skipped_out_of_scope" and NOT copied (matches the all_series_segment_classes
+    # contract: [] => none, None => all). This avoids the heavy per-file NFS copy of classes nothing
+    # downstream consumes (e.g. CBCT, 70-90% of per-patient DICOM files, never segmented/extracted when not
+    # in all_series_segment_classes). Fail-closed: the materialization stage unions the EFFECTIVE
+    # segmentation scope into this set (the explicit all_series_segment_classes, or every
+    # TotalSegmentator-eligible class when segmentation runs over all classes) so a class that will be
+    # segmented is never skip-materialized.
+    all_series_materialize_classes: list[str] | None = None
 
     # Additional segmentation models (in addition to default 'total')
     extra_seg_models: list[str] = field(default_factory=list)
     segmentation_workers: int | None = None
     segmentation_thread_limit: int | None = None
     segmentation_temp_root: Path | None = None
+
+    # PET SUV ingestion (P3 modality expansion). Disabled by default.
+    suv_decay_guard_tol: float = 0.02
+    suv_zextent_primary_fraction: float = 0.90
+    pet_clinical_weight_window_days: int = 30
 
     # Performance/CPU options
     totalseg_fast: bool = False
@@ -115,6 +142,28 @@ class PipelineConfig:
     dicom_copy_use_hardlinks: bool = False      # Avoid hardlinks in outputs by default
     dicom_copy_verify_checksum: bool = False    # Verify MD5 after copy
     dicom_copy_cache_headers: bool = True       # Cache DICOM headers for re-runs
+
+    # Inventory-driven all-series discovery (P1 modality expansion)
+    inventory_db_path: Path | None = None
+    inventory_scan_run_id: int | None = None
+    inventory_patient_ids: list[str] = field(default_factory=list)
+    # Optional cohort scope for organize-stage discovery walks (RT/CT/series).
+    # When non-empty, RT/series/CT indexing only traverses these top-level
+    # patient directories instead of the entire dicom_root. Empty => walk
+    # everything (unchanged behaviour). Populated by the CLI from active
+    # course/patient filters so a filtered run does not stat the whole DICOM tree.
+    discover_patient_ids: list[str] = field(default_factory=list)
+    cbct_manufacturer_models: list[str] = field(default_factory=lambda: [
+        "Patient Verification",
+        "Halcyon - PVA",
+        "OBI Cone-beam CT",
+        "Acuity Cone-beam CT",
+        "RDS - PVA",
+    ])
+    fourdct_models: list[str] = field(default_factory=lambda: [
+        "Advanced Reconstruction",
+        "ARIA RTM",
+    ])
 
     def ensure_dirs(self) -> None:
         self.output_root.mkdir(parents=True, exist_ok=True)
