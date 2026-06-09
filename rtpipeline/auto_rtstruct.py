@@ -256,7 +256,7 @@ def _read_ct_series_uid(ct_dir: Path) -> str:
         for slice_path in sorted(ct_dir.glob("*.dcm")):
             try:
                 ds = pydicom.dcmread(
-                    str(slice_path), stop_before_pixels=True,
+                    str(slice_path), stop_before_pixels=True, force=True,
                     specific_tags=["SeriesInstanceUID"],
                 )
             except Exception:
@@ -325,7 +325,21 @@ def _select_seg_dir_for_ct(
             if seg is not None and ct_series_uid in _seg_source_series_uids(seg)
         ]
         if len(matches) == 1:
-            return matches[0]
+            d, seg, name = matches[0]
+            # Defense-in-depth: a well-formed TS RTSTRUCT references the planning
+            # series AND carries its FrameOfReferenceUID. A readable disagreement
+            # signals a malformed/stale structure set -> fail-closed (the RTSTRUCT
+            # is later copied verbatim, bypassing the geometry net).
+            seg_for = _read_for_uid(seg)
+            if ct_for_uid and seg_for and seg_for != ct_for_uid:
+                logger.error(
+                    "Auto RTSTRUCT: %s references the planning CT series %s but carries "
+                    "FrameOfReferenceUID %s (!= planning %s); malformed provenance, "
+                    "refusing to bind.",
+                    seg, ct_series_uid, seg_for, ct_for_uid,
+                )
+                return (None, None, None)
+            return (d, seg, name)
         if len(matches) > 1:
             logger.error(
                 "Auto RTSTRUCT: %d TotalSegmentator outputs reference the planning CT "
@@ -557,15 +571,18 @@ def build_auto_rtstruct(course_dir: Path) -> Optional[Path]:
         # Fall back to per-ROI binary masks produced by TotalSegmentator
         mask_prefix = f"{base_name}--total--" if base_name else None
         binary_masks = list(_iter_binary_masks(fallback_dir, prefix=mask_prefix))
-        # Same geometry net as the seg_img path: per-ROI masks share the source
-        # series' physical space, so a single representative check fail-closes a
-        # cross-frame fallback before any mask is resampled onto the planning CT.
-        if binary_masks and not _geometry_compatible(binary_masks[0][1], ct_img):
+        # Universal geometry net: EVERY per-ROI mask must share the planning CT's
+        # physical space before any is resampled. Checking only one would let a
+        # mixed/stale dir (a compatible mask plus an incompatible later one) bind a
+        # cross-frame ROI, so a single incompatible mask fail-closes the whole
+        # fallback (matching the seg_img path's whole-build fail-closed).
+        incompatible = [n for n, m in binary_masks if not _geometry_compatible(m, ct_img)]
+        if incompatible:
             logger.error(
-                "Auto RTSTRUCT: per-ROI binary masks (%s) do not share the planning CT's "
-                "physical space; refusing to resample cross-frame masks. Skipping RS_auto for %s.",
-                fallback_dir,
-                course_dir,
+                "Auto RTSTRUCT: %d of %d per-ROI binary masks in %s do not share the "
+                "planning CT's physical space (e.g. %s); refusing the fallback to avoid "
+                "binding cross-frame ROIs. Skipping RS_auto for %s.",
+                len(incompatible), len(binary_masks), fallback_dir, incompatible[0], course_dir,
             )
             binary_masks = []
         for name, mask_img in binary_masks:
