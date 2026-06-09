@@ -36,6 +36,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
+import pydicom
 import SimpleITK as sitk
 from pydicom.dataset import Dataset, FileDataset, FileMetaDataset
 from pydicom.sequence import Sequence
@@ -189,10 +191,12 @@ def test_picks_series_matched_dir_among_same_for(tmp_path: Path) -> None:
 
 
 def test_single_matching_series(tmp_path: Path) -> None:
+    """Series-identity match selects, with no CT FoR available to cross-check
+    (the rung-1 FoR-contradiction guard only fires on a readable disagreement)."""
     series_uid = generate_uid()
     only = tmp_path / "planning"
     only_dcm = _write_total_rtstruct(only, generate_uid(), ref_series_uid=series_uid)
-    selected_dir, seg_path, base_name = _select_seg_dir_for_ct([only], series_uid, generate_uid())
+    selected_dir, seg_path, base_name = _select_seg_dir_for_ct([only], series_uid, "")
     assert (selected_dir, seg_path, base_name) == (only, only_dcm, "planning")
 
 
@@ -383,3 +387,165 @@ def test_build_auto_rtstruct_fail_closed_when_no_planning_match(tmp_path, monkey
     monkeypatch.setattr(ar, "fix_rtstruct_rois", lambda ct, p: None)
 
     assert ar.build_auto_rtstruct(course) is None
+
+
+# --------------------------------------------------------------------------- #
+# _read_ct_series_uid — must tolerate non-Part-10 / no-preamble CT slices      #
+# --------------------------------------------------------------------------- #
+
+def test_read_ct_series_uid_no_preamble(tmp_path: Path) -> None:
+    """Regression (Codex P2): a raw implicit-VR CT slice without a Part-10 preamble
+    must still yield its SeriesInstanceUID (the pipeline reads such files with
+    force=True elsewhere). Without force=True the read raised and returned ''."""
+    from rtpipeline.auto_rtstruct import _read_ct_series_uid
+
+    ds = Dataset()
+    ds.SOPClassUID = "1.2.840.10008.5.1.4.1.1.2"
+    ds.SOPInstanceUID = generate_uid()
+    ds.Modality = "CT"
+    series = generate_uid()
+    ds.SeriesInstanceUID = series
+    ds.FrameOfReferenceUID = generate_uid()
+    pydicom.dcmwrite(
+        str(tmp_path / "CT_00001.dcm"), ds,
+        enforce_file_format=False, implicit_vr=True, little_endian=True,
+    )
+    assert _read_ct_series_uid(tmp_path) == series
+
+
+# --------------------------------------------------------------------------- #
+# _select_seg_dir_for_ct — rung-1 FoR-contradiction guard (defense-in-depth)   #
+# --------------------------------------------------------------------------- #
+
+def test_rung1_for_contradiction_fail_closed(tmp_path: Path) -> None:
+    """A --total.dcm references the planning series but carries a DIFFERENT FoR
+    (malformed/stale): the series match must not be trusted -> fail closed."""
+    planning_series = generate_uid()
+    ct_for = generate_uid()
+    only = tmp_path / "planning"
+    _write_total_rtstruct(only, for_uid=generate_uid(), ref_series_uid=planning_series)
+    selected_dir, seg_path, base_name = _select_seg_dir_for_ct(
+        [only], planning_series, ct_for
+    )
+    assert (selected_dir, seg_path, base_name) == (None, None, None)
+
+
+def test_rung1_series_match_consistent_for_ok(tmp_path: Path) -> None:
+    """Series match + consistent FoR -> selected (the guard must not over-reject)."""
+    planning_series = generate_uid()
+    ct_for = generate_uid()
+    only = tmp_path / "planning"
+    seg = _write_total_rtstruct(only, for_uid=ct_for, ref_series_uid=planning_series)
+    assert _select_seg_dir_for_ct([only], planning_series, ct_for) == (only, seg, "planning")
+
+
+# --------------------------------------------------------------------------- #
+# build_auto_rtstruct — geometry net is wired into the seg_img + binary paths  #
+# --------------------------------------------------------------------------- #
+
+class _StubRT:
+    def __init__(self) -> None:
+        self.rois: list = []
+
+    def add_roi(self, mask, name) -> None:
+        self.rois.append(name)
+
+    def save(self, path) -> None:
+        Path(path).write_bytes(b"RTSTUB")
+
+
+class _StubBuilder:
+    @staticmethod
+    def create_new(dicom_series_path):
+        return _StubRT()
+
+
+def _write_multilabel(seg_dir: Path, base_name: str, ref: sitk.Image) -> None:
+    seg_dir.mkdir(parents=True, exist_ok=True)
+    arr = np.zeros((8, 8, 8), dtype=np.uint8)
+    arr[2:5, 2:5, 2:5] = 1
+    img = sitk.GetImageFromArray(arr)
+    img.SetOrigin(ref.GetOrigin())
+    img.SetSpacing(ref.GetSpacing())
+    img.SetDirection(ref.GetDirection())
+    sitk.WriteImage(img, str(seg_dir / f"{base_name}_total_multilabel.nii.gz"))
+
+
+def _patch_build_env(ar, monkeypatch, ct_img: sitk.Image) -> None:
+    monkeypatch.setattr(ar, "_load_ct_image", lambda d: ct_img)
+    monkeypatch.setattr(ar, "sanitize_rtstruct", lambda p: None)
+    monkeypatch.setattr(ar, "fix_rtstruct_rois", lambda ct, p: None)
+    monkeypatch.setattr("rt_utils.RTStructBuilder", _StubBuilder)
+
+
+def test_build_geometry_net_skips_mismatched_nifti(tmp_path, monkeypatch) -> None:
+    """seg_img path: a NIfTI multilabel whose physical space differs from the
+    planning CT must abort the build (no RS_auto), exercising the net at the
+    build level (Opus #2)."""
+    from rtpipeline import auto_rtstruct as ar
+
+    course = tmp_path / "course"
+    dirs = ar.build_course_dirs(course)
+    _write_ct_slice(dirs.dicom_ct, generate_uid(), generate_uid())
+    seg = _img(origin=(0.0, 0.0, 0.0))
+    _write_multilabel(dirs.segmentation_totalseg / "planning", "planning", seg)
+    # CT far from the seg -> geometry net must skip.
+    _patch_build_env(ar, monkeypatch, _img(origin=(500.0, 500.0, 500.0)))
+    assert ar.build_auto_rtstruct(course) is None
+    assert not (course / "RS_auto.dcm").exists()
+
+
+def test_build_geometry_net_accepts_matching_nifti(tmp_path, monkeypatch) -> None:
+    """seg_img path: matching geometry passes the net and ROIs are added."""
+    from rtpipeline import auto_rtstruct as ar
+
+    course = tmp_path / "course"
+    dirs = ar.build_course_dirs(course)
+    _write_ct_slice(dirs.dicom_ct, generate_uid(), generate_uid())
+    ref = _img(origin=(0.0, 0.0, 0.0))
+    _write_multilabel(dirs.segmentation_totalseg / "planning", "planning", ref)
+    _patch_build_env(ar, monkeypatch, _img(origin=(0.0, 0.0, 0.0)))
+    out = ar.build_auto_rtstruct(course)
+    assert out is not None and out.exists()
+
+
+def _write_binary_mask(seg_dir: Path, name: str, ref: sitk.Image) -> None:
+    seg_dir.mkdir(parents=True, exist_ok=True)
+    arr = np.zeros((8, 8, 8), dtype=np.uint8)
+    arr[1:4, 1:4, 1:4] = 1
+    img = sitk.GetImageFromArray(arr)
+    img.SetOrigin(ref.GetOrigin())
+    img.SetSpacing(ref.GetSpacing())
+    img.SetDirection(ref.GetDirection())
+    sitk.WriteImage(img, str(seg_dir / f"{name}.nii.gz"))
+
+
+def test_build_binary_fallback_fail_closed_on_any_incompatible_mask(tmp_path, monkeypatch) -> None:
+    """Binary-mask fallback (Codex P1): one compatible + one cross-frame mask must
+    fail-close the whole fallback rather than bind the wrong-frame ROI."""
+    from rtpipeline import auto_rtstruct as ar
+
+    course = tmp_path / "course"
+    dirs = ar.build_course_dirs(course)
+    _write_ct_slice(dirs.dicom_ct, generate_uid(), generate_uid())
+    seg_dir = dirs.segmentation_totalseg / "planning"
+    # No multilabel -> seg_img is None -> per-ROI binary fallback path.
+    _write_binary_mask(seg_dir, "planning--total--liver", _img(origin=(0.0, 0.0, 0.0)))
+    _write_binary_mask(seg_dir, "planning--total--bone", _img(origin=(500.0, 0.0, 0.0)))
+    _patch_build_env(ar, monkeypatch, _img(origin=(0.0, 0.0, 0.0)))
+    assert ar.build_auto_rtstruct(course) is None
+
+
+def test_build_binary_fallback_succeeds_when_all_compatible(tmp_path, monkeypatch) -> None:
+    """Binary-mask fallback: all masks share the CT space -> ROIs added."""
+    from rtpipeline import auto_rtstruct as ar
+
+    course = tmp_path / "course"
+    dirs = ar.build_course_dirs(course)
+    _write_ct_slice(dirs.dicom_ct, generate_uid(), generate_uid())
+    seg_dir = dirs.segmentation_totalseg / "planning"
+    _write_binary_mask(seg_dir, "planning--total--liver", _img(origin=(0.0, 0.0, 0.0)))
+    _write_binary_mask(seg_dir, "planning--total--bone", _img(origin=(0.0, 0.0, 0.0)))
+    _patch_build_env(ar, monkeypatch, _img(origin=(0.0, 0.0, 0.0)))
+    out = ar.build_auto_rtstruct(course)
+    assert out is not None and out.exists()
