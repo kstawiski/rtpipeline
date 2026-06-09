@@ -199,15 +199,74 @@ def _resample_to_reference(seg_img: sitk.Image, ref_img: sitk.Image) -> sitk.Ima
 
 
 def _read_for_uid(dcm_path: Path) -> str:
-    """FrameOfReferenceUID from a DICOM file (header only); '' if unreadable/absent."""
+    """FrameOfReferenceUID from a DICOM file; '' if unreadable/absent.
+
+    Reads the top-level tag (present on CT slices and DICOM-SEG) and, when absent,
+    the nested ``ReferencedFrameOfReferenceSequence`` carried by an RTSTRUCT. The
+    rtpipeline ``--total.dcm`` default output type is ``dicom_rtstruct`` (SOP
+    481.3), which has no top-level FrameOfReferenceUID, so the nested read is the
+    common path here — without it every RTSTRUCT ``--total.dcm`` would report ''.
+    """
     try:
-        ds = pydicom.dcmread(
-            str(dcm_path), stop_before_pixels=True, specific_tags=["FrameOfReferenceUID"]
-        )
-        return str(getattr(ds, "FrameOfReferenceUID", "") or "")
+        ds = pydicom.dcmread(str(dcm_path), stop_before_pixels=True, force=True)
     except Exception as e:
         logger.debug("Could not read FrameOfReferenceUID from %s: %s", dcm_path, e)
         return ""
+    uid = str(getattr(ds, "FrameOfReferenceUID", "") or "")
+    if uid:
+        return uid
+    for ref_for in getattr(ds, "ReferencedFrameOfReferenceSequence", []) or []:
+        nested = str(getattr(ref_for, "FrameOfReferenceUID", "") or "")
+        if nested:
+            return nested
+    return ""
+
+
+def _seg_source_series_uids(dcm_path: Path) -> set[str]:
+    """Source CT SeriesInstanceUIDs that a ``--total.dcm`` references.
+
+    The exact provenance link used to bind masks to the planning CT:
+      * RTSTRUCT (rtpipeline default): ReferencedFrameOfReferenceSequence ->
+        RTReferencedStudySequence -> RTReferencedSeriesSequence, reusing the
+        already-reviewed :func:`rtpipeline.organize.referenced_ct_series_uids`.
+      * DICOM-SEG: the top-level ``ReferencedSeriesSequence``.
+    Empty set when the file is unreadable or carries no such link.
+    """
+    uids: set[str] = set()
+    try:
+        from .organize import referenced_ct_series_uids
+        uids |= set(referenced_ct_series_uids(dcm_path))
+    except Exception as e:
+        logger.debug("RTSTRUCT source-series read failed for %s: %s", dcm_path, e)
+    if not uids:
+        try:
+            ds = pydicom.dcmread(str(dcm_path), stop_before_pixels=True, force=True)
+            for series in getattr(ds, "ReferencedSeriesSequence", []) or []:
+                uid = str(getattr(series, "SeriesInstanceUID", "") or "").strip()
+                if uid:
+                    uids.add(uid)
+        except Exception as e:
+            logger.debug("SEG source-series read failed for %s: %s", dcm_path, e)
+    return uids
+
+
+def _read_ct_series_uid(ct_dir: Path) -> str:
+    """SeriesInstanceUID of the planning-CT series (first readable slice); '' if unknown."""
+    try:
+        for slice_path in sorted(ct_dir.glob("*.dcm")):
+            try:
+                ds = pydicom.dcmread(
+                    str(slice_path), stop_before_pixels=True,
+                    specific_tags=["SeriesInstanceUID"],
+                )
+            except Exception:
+                continue
+            uid = str(getattr(ds, "SeriesInstanceUID", "") or "").strip()
+            if uid:
+                return uid
+    except Exception as e:
+        logger.debug("Could not determine CT SeriesInstanceUID for %s: %s", ct_dir, e)
+    return ""
 
 
 def _read_ct_for_uid(ct_dir: Path) -> str:
@@ -223,18 +282,30 @@ def _read_ct_for_uid(ct_dir: Path) -> str:
 
 
 def _select_seg_dir_for_ct(
-    candidate_dirs: Iterable[Path], ct_for_uid: Optional[str]
+    candidate_dirs: Iterable[Path],
+    ct_series_uid: Optional[str],
+    ct_for_uid: Optional[str],
 ) -> Tuple[Optional[Path], Optional[Path], Optional[str]]:
-    """Pick the TotalSegmentator seg dir whose ``--total.dcm`` shares the planning CT's
-    FrameOfReferenceUID. Returns ``(selected_dir, dicom_seg_path, base_name)``.
+    """Pick the TotalSegmentator seg dir built from the planning CT.
 
-    Fail-closed: with several candidate series and no FoR match (or no CT FoR to
-    disambiguate), returns ``(None, None, None)`` rather than guessing
-    ``candidate_dirs[0]`` — binding masks from the wrong series/frame onto the
-    planning CT is a correctness defect, not a degraded-but-acceptable output.
-    Back-compat: a lone candidate is accepted even when the CT FoR is unknown.
-    ``dicom_seg_path`` is ``None`` for a NIfTI-only seg dir (the caller then
-    geometry-checks the loaded image via :func:`_geometry_compatible`).
+    Returns ``(selected_dir, dicom_seg_path, base_name)``. Selection order:
+
+      1. **Source-series identity** (exact): the seg dir whose ``--total.dcm``
+         references the planning CT's SeriesInstanceUID. This is the only signal
+         that disambiguates 4DCT phases / multiple reconstructions that *share* a
+         FrameOfReferenceUID but are distinct series.
+      2. **FrameOfReferenceUID** (coarser): when no source-series link is readable,
+         the seg dir whose ``--total.dcm`` shares the planning CT's FoR.
+      3. **Lone-candidate back-compat**: a single candidate with no *contradicting*
+         readable identity (legacy single-series / NIfTI-only dirs).
+
+    Fail-closed at every rung: several candidates with no unambiguous match (or a
+    lone candidate whose readable identity contradicts the planning CT) returns
+    ``(None, None, None)`` rather than guessing ``candidate_dirs[0]`` — binding masks
+    from the wrong series/frame onto the planning CT is a correctness defect, not a
+    degraded-but-acceptable output. ``dicom_seg_path`` is ``None`` for a NIfTI-only
+    seg dir (the caller then geometry-checks the loaded image via
+    :func:`_geometry_compatible`).
     """
     dirs = [d for d in candidate_dirs if d.is_dir()]
     if not dirs:
@@ -244,18 +315,68 @@ def _select_seg_dir_for_ct(
         cand = d / f"{d.name}--total.dcm"
         return cand if cand.exists() else None
 
-    if ct_for_uid:
-        for d in dirs:
-            seg = _total_dcm(d)
-            if seg is not None and _read_for_uid(seg) == ct_for_uid:
-                return (d, seg, d.name)
-        # CT FoR known but no candidate matched -> only wrong-series outputs present.
-        return (None, None, None)
+    segs = [(d, _total_dcm(d)) for d in dirs]
 
-    # CT FoR unknown: only safe when there is exactly one candidate (legacy single-series).
+    # 1. Source-series identity — exact provenance, disambiguates same-FoR series.
+    if ct_series_uid:
+        matches = [
+            (d, seg, d.name)
+            for d, seg in segs
+            if seg is not None and ct_series_uid in _seg_source_series_uids(seg)
+        ]
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            logger.error(
+                "Auto RTSTRUCT: %d TotalSegmentator outputs reference the planning CT "
+                "series %s; ambiguous provenance, refusing to guess.",
+                len(matches), ct_series_uid,
+            )
+            return (None, None, None)
+
+    # 2. FrameOfReferenceUID — coarser fallback when no source-series link is readable.
+    if ct_for_uid:
+        for_matches = [
+            (d, seg, d.name)
+            for d, seg in segs
+            if seg is not None and _read_for_uid(seg) == ct_for_uid
+        ]
+        if len(for_matches) == 1:
+            return for_matches[0]
+        if len(for_matches) > 1:
+            logger.error(
+                "Auto RTSTRUCT: %d TotalSegmentator outputs share the planning CT "
+                "FrameOfReferenceUID %s but none resolves by source series; refusing "
+                "to guess among same-frame series (e.g. 4DCT phases).",
+                len(for_matches), ct_for_uid,
+            )
+            return (None, None, None)
+
+    # 3. Lone-candidate back-compat (legacy single-series / NIfTI-only). Use it unless
+    #    its readable identity actively contradicts the planning CT.
     if len(dirs) == 1:
         only = dirs[0]
-        return (only, _total_dcm(only), only.name)
+        seg = _total_dcm(only)
+        if seg is not None:
+            src = _seg_source_series_uids(seg)
+            if ct_series_uid and src and ct_series_uid not in src:
+                logger.error(
+                    "Auto RTSTRUCT: the only TotalSegmentator output references series "
+                    "%s, not the planning CT series %s; refusing to bind.",
+                    sorted(src), ct_series_uid,
+                )
+                return (None, None, None)
+            for_uid = _read_for_uid(seg)
+            if ct_for_uid and for_uid and for_uid != ct_for_uid:
+                logger.error(
+                    "Auto RTSTRUCT: the only TotalSegmentator output FrameOfReferenceUID "
+                    "%s != planning CT %s; refusing to bind.",
+                    for_uid, ct_for_uid,
+                )
+                return (None, None, None)
+        return (only, seg, only.name)
+
+    # Several candidates, none identifiable -> fail-closed.
     return (None, None, None)
 
 
@@ -274,11 +395,17 @@ def _geometry_compatible(
             return False
 
         def _extent(img: sitk.Image):
-            origin = np.array(img.GetOrigin(), dtype=float)
-            size = np.array(img.GetSize(), dtype=float)
-            spacing = np.array(img.GetSpacing(), dtype=float)
-            far = origin + (size - 1.0) * spacing  # axes already matched above
-            return np.minimum(origin, far), np.maximum(origin, far)
+            # Physical bounding box over the 8 grid corners — orientation-safe for
+            # flipped/oblique direction cosines (a plain origin + size*spacing only
+            # holds for the identity direction matrix).
+            sx, sy, sz = img.GetSize()
+            corners = np.array([
+                img.TransformIndexToPhysicalPoint((int(x), int(y), int(z)))
+                for x in (0, sx - 1)
+                for y in (0, sy - 1)
+                for z in (0, sz - 1)
+            ], dtype=float)
+            return corners.min(axis=0), corners.max(axis=0)
 
         seg_lo, seg_hi = _extent(seg_img)
         ct_lo, ct_hi = _extent(ct_img)
@@ -330,15 +457,17 @@ def build_auto_rtstruct(course_dir: Path) -> Optional[Path]:
         # Bind masks to the planning CT by FrameOfReferenceUID, never candidate_dirs[0]:
         # in all-series mode several series (CBCT, 4DCT phases, diagnostic CT) are
         # segmented and an alpha-first pick can map the wrong series onto this CT.
+        ct_series_uid = _read_ct_series_uid(ct_dir)
         ct_for_uid = _read_ct_for_uid(ct_dir)
         selected_dir, dicom_seg_path, base_name = _select_seg_dir_for_ct(
-            candidate_dirs, ct_for_uid
+            candidate_dirs, ct_series_uid, ct_for_uid
         )
         if selected_dir is None and candidate_dirs:
             logger.error(
                 "Auto RTSTRUCT: no TotalSegmentator output matches the planning CT "
-                "FrameOfReferenceUID (%s) among %d candidate series in %s; refusing to "
-                "bind masks from a different series. Skipping RS_auto for %s.",
+                "(series %s, FrameOfReference %s) among %d candidate series in %s; "
+                "refusing to bind masks from a different series. Skipping RS_auto for %s.",
+                ct_series_uid or "unknown",
                 ct_for_uid or "unknown",
                 len(candidate_dirs),
                 seg_root,
@@ -427,7 +556,19 @@ def build_auto_rtstruct(course_dir: Path) -> Optional[Path]:
     if not added_any and fallback_dir.exists():
         # Fall back to per-ROI binary masks produced by TotalSegmentator
         mask_prefix = f"{base_name}--total--" if base_name else None
-        for name, mask_img in _iter_binary_masks(fallback_dir, prefix=mask_prefix):
+        binary_masks = list(_iter_binary_masks(fallback_dir, prefix=mask_prefix))
+        # Same geometry net as the seg_img path: per-ROI masks share the source
+        # series' physical space, so a single representative check fail-closes a
+        # cross-frame fallback before any mask is resampled onto the planning CT.
+        if binary_masks and not _geometry_compatible(binary_masks[0][1], ct_img):
+            logger.error(
+                "Auto RTSTRUCT: per-ROI binary masks (%s) do not share the planning CT's "
+                "physical space; refusing to resample cross-frame masks. Skipping RS_auto for %s.",
+                fallback_dir,
+                course_dir,
+            )
+            binary_masks = []
+        for name, mask_img in binary_masks:
             try:
                 resampled = _resample_to_reference(mask_img, ct_img)
                 mask_arr = sitk.GetArrayFromImage(resampled)
