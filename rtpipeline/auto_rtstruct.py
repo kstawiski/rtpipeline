@@ -198,6 +198,99 @@ def _resample_to_reference(seg_img: sitk.Image, ref_img: sitk.Image) -> sitk.Ima
     return res
 
 
+def _read_for_uid(dcm_path: Path) -> str:
+    """FrameOfReferenceUID from a DICOM file (header only); '' if unreadable/absent."""
+    try:
+        ds = pydicom.dcmread(
+            str(dcm_path), stop_before_pixels=True, specific_tags=["FrameOfReferenceUID"]
+        )
+        return str(getattr(ds, "FrameOfReferenceUID", "") or "")
+    except Exception as e:
+        logger.debug("Could not read FrameOfReferenceUID from %s: %s", dcm_path, e)
+        return ""
+
+
+def _read_ct_for_uid(ct_dir: Path) -> str:
+    """FrameOfReferenceUID of the planning-CT series (first readable slice); '' if unknown."""
+    try:
+        for slice_path in sorted(ct_dir.glob("*.dcm")):
+            uid = _read_for_uid(slice_path)
+            if uid:
+                return uid
+    except Exception as e:
+        logger.debug("Could not determine CT FrameOfReferenceUID for %s: %s", ct_dir, e)
+    return ""
+
+
+def _select_seg_dir_for_ct(
+    candidate_dirs: Iterable[Path], ct_for_uid: Optional[str]
+) -> Tuple[Optional[Path], Optional[Path], Optional[str]]:
+    """Pick the TotalSegmentator seg dir whose ``--total.dcm`` shares the planning CT's
+    FrameOfReferenceUID. Returns ``(selected_dir, dicom_seg_path, base_name)``.
+
+    Fail-closed: with several candidate series and no FoR match (or no CT FoR to
+    disambiguate), returns ``(None, None, None)`` rather than guessing
+    ``candidate_dirs[0]`` — binding masks from the wrong series/frame onto the
+    planning CT is a correctness defect, not a degraded-but-acceptable output.
+    Back-compat: a lone candidate is accepted even when the CT FoR is unknown.
+    ``dicom_seg_path`` is ``None`` for a NIfTI-only seg dir (the caller then
+    geometry-checks the loaded image via :func:`_geometry_compatible`).
+    """
+    dirs = [d for d in candidate_dirs if d.is_dir()]
+    if not dirs:
+        return (None, None, None)
+
+    def _total_dcm(d: Path) -> Optional[Path]:
+        cand = d / f"{d.name}--total.dcm"
+        return cand if cand.exists() else None
+
+    if ct_for_uid:
+        for d in dirs:
+            seg = _total_dcm(d)
+            if seg is not None and _read_for_uid(seg) == ct_for_uid:
+                return (d, seg, d.name)
+        # CT FoR known but no candidate matched -> only wrong-series outputs present.
+        return (None, None, None)
+
+    # CT FoR unknown: only safe when there is exactly one candidate (legacy single-series).
+    if len(dirs) == 1:
+        only = dirs[0]
+        return (only, _total_dcm(only), only.name)
+    return (None, None, None)
+
+
+def _geometry_compatible(
+    seg_img: sitk.Image, ct_img: sitk.Image, tol_mm: float = 2.0
+) -> bool:
+    """True iff ``seg_img`` occupies the same physical space as ``ct_img``.
+
+    The pre-resample safety net behind :func:`_select_seg_dir_for_ct`: requires
+    aligned axes (matching direction cosines) and overlapping physical extent, so a
+    segmentation from a different series/frame (CBCT, diagnostic CT, off-isocenter
+    scan) can never be silently resampled onto the planning CT.
+    """
+    try:
+        if not np.allclose(seg_img.GetDirection(), ct_img.GetDirection(), atol=1e-3):
+            return False
+
+        def _extent(img: sitk.Image):
+            origin = np.array(img.GetOrigin(), dtype=float)
+            size = np.array(img.GetSize(), dtype=float)
+            spacing = np.array(img.GetSpacing(), dtype=float)
+            far = origin + (size - 1.0) * spacing  # axes already matched above
+            return np.minimum(origin, far), np.maximum(origin, far)
+
+        seg_lo, seg_hi = _extent(seg_img)
+        ct_lo, ct_hi = _extent(ct_img)
+        # Bounding boxes must overlap (within tol_mm) on every axis.
+        return bool(
+            np.all(seg_lo <= ct_hi + tol_mm) and np.all(ct_lo <= seg_hi + tol_mm)
+        )
+    except Exception as e:
+        logger.debug("Geometry compatibility check failed: %s", e)
+        return False
+
+
 def build_auto_rtstruct(course_dir: Path) -> Optional[Path]:
     """Create an RTSTRUCT (RS_auto.dcm) from TotalSegmentator output if present.
     Returns path to RTSTRUCT or None.
@@ -234,19 +327,24 @@ def build_auto_rtstruct(course_dir: Path) -> Optional[Path]:
 
     if seg_root.exists():
         candidate_dirs = sorted(p for p in seg_root.iterdir() if p.is_dir())
-        for base_dir in candidate_dirs:
-            cand = base_dir / f"{base_dir.name}--total.dcm"
-            if cand.exists():
-                selected_dir = base_dir
-                dicom_seg_path = cand
-                base_name = base_dir.name
-                break
+        # Bind masks to the planning CT by FrameOfReferenceUID, never candidate_dirs[0]:
+        # in all-series mode several series (CBCT, 4DCT phases, diagnostic CT) are
+        # segmented and an alpha-first pick can map the wrong series onto this CT.
+        ct_for_uid = _read_ct_for_uid(ct_dir)
+        selected_dir, dicom_seg_path, base_name = _select_seg_dir_for_ct(
+            candidate_dirs, ct_for_uid
+        )
         if selected_dir is None and candidate_dirs:
-            selected_dir = candidate_dirs[0]
-            base_name = selected_dir.name
-            cand = selected_dir / f"{base_name}--total.dcm"
-            if cand.exists():
-                dicom_seg_path = cand
+            logger.error(
+                "Auto RTSTRUCT: no TotalSegmentator output matches the planning CT "
+                "FrameOfReferenceUID (%s) among %d candidate series in %s; refusing to "
+                "bind masks from a different series. Skipping RS_auto for %s.",
+                ct_for_uid or "unknown",
+                len(candidate_dirs),
+                seg_root,
+                course_dir,
+            )
+            return None
 
     if dicom_seg_path and dicom_seg_path.exists():
         try:
@@ -281,6 +379,15 @@ def build_auto_rtstruct(course_dir: Path) -> Optional[Path]:
 
     if seg_img is None:
         seg_img, label_map = _load_seg_nifti(selected_dir or seg_root, base_name)
+
+    if seg_img is not None and not _geometry_compatible(seg_img, ct_img):
+        logger.error(
+            "Auto RTSTRUCT: selected segmentation (%s) does not share the planning CT's "
+            "physical space; refusing to resample cross-frame masks. Skipping RS_auto for %s.",
+            selected_dir or seg_root,
+            course_dir,
+        )
+        return None
 
     try:
         rtstruct = RTStructBuilder.create_new(dicom_series_path=str(ct_dir))
