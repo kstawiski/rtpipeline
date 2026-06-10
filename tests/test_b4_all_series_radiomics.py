@@ -375,6 +375,28 @@ def test_series_without_rtstruct_is_skipped(tmp_path, monkeypatch, fake_dispatch
     assert not (out_root / ".all_series_radiomics").exists()
 
 
+def test_e2e_4dct_phase_fallback_through_real_rtstruct_probe(tmp_path, monkeypatch, fake_dispatch):
+    # End-to-end exercise of the REAL _row_has_rtstruct probe (not an injected lambda): an ave-less
+    # 4DCT study whose preferred 50% phase was NOT segmented (no on-disk RTSTRUCT) but a 0% phase was.
+    # B4 must radiomic the segmented 0% phase, not silently drop the study by picking the absent 50%.
+    calls, fake = fake_dispatch
+    out_root = tmp_path / "out"
+    pid = "P3"
+    _build_patient_tree(out_root, pid, [
+        {"image_class": "fourdct_phase", "series_uid": "ph0", "study_uid": "S_C",
+         "series_description": "0%", "with_rtstruct": True},
+        {"image_class": "fourdct_phase", "series_uid": "ph50", "study_uid": "S_C",
+         "series_description": "50%", "with_rtstruct": False},  # preferred but unsegmented
+    ])
+    _install(monkeypatch, fake, "serial")
+    out_csv = rad.run_radiomics_all_series(_Cfg(out_root), [pid])
+    df = pd.read_csv(out_csv)
+    assert set(df["series_uid"]) == {"ph0"}                       # segmented phase, not the absent 50%
+    assert all(bool(v) for v in df["is_4d_phase"].astype(bool))    # tagged, excluded from pooling
+    assert len(calls) == 1
+    assert not (out_root / ".all_series_radiomics").exists()
+
+
 def test_empty_patient_list_returns_none(tmp_path, monkeypatch, fake_dispatch):
     calls, fake = fake_dispatch
     _install(monkeypatch, fake, "serial")
