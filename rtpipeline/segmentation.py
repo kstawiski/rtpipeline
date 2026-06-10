@@ -42,6 +42,30 @@ def _get_qc_functions():
     return _qc_module
 
 
+# B5 [SAFE-3]: persist contrast phase as a queryable per-series manifest field, for the
+# calibrated-CT classes only (CBCT is uncalibrated; 4DCT is projection/respiratory -> both
+# excluded, per plan v2.4 §4 contrast-phase footnote).
+_CONTRAST_PHASE_CLASSES = frozenset({"planning_ct", "diagnostic_ct", "petct_ct"})
+
+
+def _detect_contrast_phase_safe(config, nifti_path) -> Optional[str]:
+    """B5: classify a calibrated-CT NIfTI's contrast phase via TotalSegmentator's
+    ``totalseg_get_phase`` and return the phase string (native / arterial_early /
+    arterial_late / portal_venous / unknown) for persistence in the series manifest.
+    Returns None on any failure -- this QC enrichment must NEVER fail segmentation."""
+    try:
+        qc = _get_qc_functions()
+        result = qc.detect_contrast_phase(
+            Path(nifti_path), conda_activate=getattr(config, "conda_activate", None)
+        )
+        if isinstance(result, dict):
+            phase = result.get("phase")
+            return str(phase) if phase else None
+    except Exception as exc:
+        logger.debug("B5 contrast-phase detection failed for %s: %s", nifti_path, exc)
+    return None
+
+
 def _run_vec(cmd: List[str], env: Optional[dict] = None, timeout: Optional[int] = None) -> bool:
     """Execute a command using argument list (shell=False) for better security. Returns True on success.
 
@@ -900,6 +924,14 @@ def segment_all_series_for_patient(config: PipelineConfig, patient_id: str, *, f
                 bucket["attempted"] += 1
                 bucket["failed"] += 1
                 continue
+
+            # B5: persist contrast phase (queryable) for calibrated-CT classes. QC-only,
+            # runs whenever the CT NIfTI exists (even if segmentation is idempotent-skipped),
+            # never blocks segmentation; idempotent unless force.
+            if image_class in _CONTRAST_PHASE_CLASSES and (force or not row.get("contrast_phase")):
+                phase = _detect_contrast_phase_safe(config, nifti_path)
+                if phase is not None:
+                    row["contrast_phase"] = phase
 
             base_name = _strip_nifti_base(nifti_path)
             seg_root.mkdir(parents=True, exist_ok=True)
