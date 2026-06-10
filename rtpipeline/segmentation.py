@@ -1275,6 +1275,21 @@ def segment_course(config: PipelineConfig, course_dir: Path, force: bool = False
 _C2_BACKCOMPAT_SEGMENT_REASONS = frozenset({"sub_volumetric_lt10", "mr_unrecognized_default_deny"})
 
 
+def _imagetype_to_list(raw_it) -> List[str]:
+    """Normalize a DICOM ImageType value to a list of strings. Handles the pydicom
+    ``MultiValue`` (a MutableSequence — NOT ``list``/``tuple``), a backslash/slash-joined
+    string, a plain list/tuple, and None. (A bare ``isinstance(x,(list,tuple))`` check
+    misses MultiValue and stringifies it to a malformed single token.)"""
+    if raw_it is None:
+        return []
+    if isinstance(raw_it, str):
+        return [s for s in raw_it.replace("/", "\\").split("\\") if s]
+    try:
+        return [str(x) for x in raw_it]
+    except TypeError:
+        return [s for s in str(raw_it).replace("/", "\\").split("\\") if s]
+
+
 def _mr_series_is_anatomic(source_dir: Path) -> bool:
     """C2 [defense-in-depth]: classify an MR series from its DICOM headers and decide
     whether to run ``total_mr`` on it. The course-MR path routes series to ``dicom_mr``
@@ -1316,13 +1331,7 @@ def _mr_series_is_anatomic(source_dir: Path) -> bool:
                 break
         if ds is None:
             return True
-        raw_it = getattr(ds, "ImageType", None)
-        if raw_it is None:
-            image_types: List[str] = []
-        elif isinstance(raw_it, (list, tuple)):
-            image_types = [str(x) for x in raw_it]
-        else:
-            image_types = [s for s in str(raw_it).replace("/", "\\").split("\\") if s]
+        image_types = _imagetype_to_list(getattr(ds, "ImageType", None))
         meta = {
             "modality": str(getattr(ds, "Modality", "") or "MR"),
             "series_description": str(getattr(ds, "SeriesDescription", "") or ""),
