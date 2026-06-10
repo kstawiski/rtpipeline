@@ -1319,7 +1319,27 @@ def segment_course(config: PipelineConfig, course_dir: Path, force: bool = False
 # A series classified ("exclude", <one of these>) was SEGMENTED before C2, so it must keep
 # segmenting (back-compat). In particular a <10-slice *anatomic* MR classifies
 # 'sub_volumetric_lt10' and must NOT be dropped (it yields a thin but valid mask).
+# Accepted side effect (non-regression): _common_image_exclusion checks n<10 BEFORE the
+# description, so a <10-slice *functional*/localizer MR also reports 'sub_volumetric_lt10'
+# and is segmented too — identical to pre-C2 behavior, negligible (<10 slices), and
+# total_mr on such a tiny series is harmless. The functional-misroute we actually target
+# (REG-referenced DWI/ADC/DCE) is volumetric (>=10 slices) -> caught as mr_functional.
 _C2_BACKCOMPAT_SEGMENT_REASONS = frozenset({"sub_volumetric_lt10", "mr_unrecognized_default_deny"})
+
+
+def _imagetype_to_list(raw_it) -> List[str]:
+    """Normalize a DICOM ImageType value to a list of strings. Handles the pydicom
+    ``MultiValue`` (a MutableSequence — NOT ``list``/``tuple``), a backslash/slash-joined
+    string, a plain list/tuple, and None. (A bare ``isinstance(x,(list,tuple))`` check
+    misses MultiValue and stringifies it to a malformed single token.)"""
+    if raw_it is None:
+        return []
+    if isinstance(raw_it, str):
+        return [s for s in raw_it.replace("/", "\\").split("\\") if s]
+    try:
+        return [str(x) for x in raw_it]
+    except TypeError:
+        return [s for s in str(raw_it).replace("/", "\\").split("\\") if s]
 
 
 def _mr_series_is_anatomic(source_dir: Path) -> bool:
@@ -1366,13 +1386,7 @@ def _mr_series_is_anatomic(source_dir: Path) -> bool:
                 break
         if ds is None:
             return True  # no readable header -> preserve back-compat (segment)
-        raw_it = getattr(ds, "ImageType", None)
-        if raw_it is None:
-            image_types: List[str] = []
-        elif isinstance(raw_it, (list, tuple)):
-            image_types = [str(x) for x in raw_it]
-        else:
-            image_types = [s for s in str(raw_it).replace("/", "\\").split("\\") if s]
+        image_types = _imagetype_to_list(getattr(ds, "ImageType", None))
         meta = {
             "modality": str(getattr(ds, "Modality", "") or "MR"),
             "series_description": str(getattr(ds, "SeriesDescription", "") or ""),
