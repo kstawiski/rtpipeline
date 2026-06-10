@@ -92,10 +92,42 @@ def test_c2_empty_dir_is_segmented_backcompat(tmp_path):
     assert _mr_series_is_anatomic(d) is True
 
 
-def test_c2_malformed_dcm_does_not_crash(tmp_path):
-    # Resilience contract: a malformed/non-DICOM .dcm must never raise out of the guard
-    # (it must never break a previously-working course); it returns a plain bool.
+def test_c2_malformed_dcm_segments_backcompat(tmp_path):
+    # Resilience + back-compat: a single malformed/non-DICOM .dcm must never raise and
+    # must fail OPEN to segment. (force=True yields an empty Dataset; n_slices=1 -> the
+    # adequacy exclusion 'sub_volumetric_lt10' -> segment, never a content skip.)
     d = tmp_path / "bad"
     d.mkdir()
     (d / "garbage.dcm").write_bytes(b"not a dicom file")
-    assert isinstance(_mr_series_is_anatomic(d), bool)
+    assert _mr_series_is_anatomic(d) is True
+
+
+def test_c2_thin_anatomic_mr_is_segmented_bc2(tmp_path):
+    # BC-2 regression guard: a <10-slice ANATOMIC MR classifies 'sub_volumetric_lt10';
+    # it was segmented before C2 and must STILL segment (do not silently drop thin MR).
+    d = _series_dir(tmp_path, "thin", "T2 TSE ax pelvis", n=6)
+    assert _mr_series_is_anatomic(d) is True
+
+
+def test_c2_dce_perfusion_is_skipped(tmp_path):
+    d = _series_dir(tmp_path, "dce", "DCE perfusion dyn twist")
+    assert _mr_series_is_anatomic(d) is False
+
+
+def test_c2_derived_secondary_is_skipped(tmp_path):
+    # DERIVED/SECONDARY MR with no anatomic/functional token -> mr_derived_secondary (skip)
+    d = _series_dir(tmp_path, "deriv", "", image_type=["DERIVED", "SECONDARY"])
+    assert _mr_series_is_anatomic(d) is False
+
+
+def test_c2_prefers_slice_with_description(tmp_path):
+    # Hardening: a corrupted/empty first slice must not drive the decision. First slice
+    # has no SeriesDescription; the rest are functional -> the guard classifies from a
+    # described slice and skips (without the read-until-description loop it would wrongly
+    # fall to mr_unrecognized -> segment).
+    d = tmp_path / "mixed"
+    d.mkdir()
+    _write_min_dcm(d / "s000.dcm", "")  # empty description (corrupted/odd first frame)
+    for i in range(1, 12):
+        _write_min_dcm(d / f"s{i:03d}.dcm", "ep2d diff DWI b1000")
+    assert _mr_series_is_anatomic(d) is False
