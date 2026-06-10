@@ -111,6 +111,57 @@ def test_pick_representative_phase_helper():
     assert rad._pick_representative_4dct_phase([{"series_uid": "x"}])["series_uid"] == "x"
 
 
+def test_c4_representative_chosen_among_segmented_only():
+    # The 50% phase was NOT segmented (no RTSTRUCT); the only segmented volume is ph0. B4 must pick
+    # the segmented one, not the (preferred-but-absent) 50% phase, so the study is not silently dropped.
+    rows = [
+        _row("fourdct_phase", "ph0", study_uid="S1", series_description="0%"),
+        _row("fourdct_phase", "ph50", study_uid="S1", series_description="50%"),
+    ]
+    segmented = {"ph0"}
+    sel = rad._select_all_series_radiomics_rows(rows, has_rtstruct=lambda r: r["series_uid"] in segmented)
+    assert len(sel) == 1
+    row, is4d = sel[0]
+    assert row["series_uid"] == "ph0" and is4d is True
+
+
+def test_c4_prefers_50pct_among_segmented():
+    rows = [
+        _row("fourdct_phase", "ph0", study_uid="S1", series_description="0%"),
+        _row("fourdct_phase", "ph50", study_uid="S1", series_description="50%"),
+        _row("fourdct_phase", "ph90", study_uid="S1", series_description="90%"),
+    ]
+    segmented = {"ph50", "ph90"}  # ph0 unsegmented
+    sel = rad._select_all_series_radiomics_rows(rows, has_rtstruct=lambda r: r["series_uid"] in segmented)
+    assert len(sel) == 1 and sel[0][0]["series_uid"] == "ph50" and sel[0][1] is True
+
+
+def test_c4_ave_without_rtstruct_falls_back_to_segmented_phase():
+    rows = [
+        _row("fourdct_ave", "ave1", study_uid="S1"),
+        _row("fourdct_phase", "ph50", study_uid="S1", series_description="50%"),
+    ]
+    segmented = {"ph50"}  # ave failed to segment
+    sel = rad._select_all_series_radiomics_rows(rows, has_rtstruct=lambda r: r["series_uid"] in segmented)
+    assert len(sel) == 1 and sel[0][0]["series_uid"] == "ph50" and sel[0][1] is True
+
+
+def test_c4_study_dropped_when_no_segmented_4dct():
+    rows = [_row("fourdct_phase", "ph0", study_uid="S1", series_description="0%")]
+    sel = rad._select_all_series_radiomics_rows(rows, has_rtstruct=lambda r: False)
+    assert sel == []
+
+
+def test_empty_study_uid_not_collapsed():
+    # two distinct ave-less 4DCT acquisitions with MISSING study_uid must NOT collapse into one bucket
+    rows = [
+        _row("fourdct_phase", "ph_a", study_uid="", series_description="50%"),
+        _row("fourdct_phase", "ph_b", study_uid="", series_description="50%"),
+    ]
+    got = {r["series_uid"]: is4d for r, is4d in rad._select_all_series_radiomics_rows(rows)}
+    assert got == {"ph_a": True, "ph_b": True}
+
+
 # --------------------------------------------------------------------------- #
 # temp-tree materialization + RTSTRUCT discovery
 # --------------------------------------------------------------------------- #
@@ -230,6 +281,8 @@ def fake_dispatch():
 
 
 def _install(monkeypatch, fake, mode):
+    # the new early gate: a backend (native or conda) is "available" — the dispatch is mocked anyway
+    monkeypatch.setattr(rad, "_have_pyradiomics", lambda: True)
     if mode == "serial":
         monkeypatch.setattr(radpar, "is_parallel_radiomics_enabled", lambda: False)
         monkeypatch.setattr(rad, "radiomics_for_course", fake)
@@ -283,6 +336,9 @@ def test_run_radiomics_all_series_e2e(tmp_path, monkeypatch, fake_dispatch, mode
     # 5 series * 2 feature rows
     assert len(df) == 10
 
+    # the course-shaped course_id column is dropped (series_uid is the identifier here)
+    assert "course_id" not in df.columns
+
     # course-path artifacts NOT created; temp tree cleaned up
     assert not (out_root / "Data" / "radiomics_all.xlsx").exists()
     assert not (out_root / ".all_series_radiomics").exists()
@@ -324,3 +380,18 @@ def test_empty_patient_list_returns_none(tmp_path, monkeypatch, fake_dispatch):
     _install(monkeypatch, fake, "serial")
     assert rad.run_radiomics_all_series(_Cfg(tmp_path / "out"), []) is None
     assert len(calls) == 0
+
+
+def test_no_backend_short_circuits(tmp_path, monkeypatch, fake_dispatch):
+    # when neither native nor conda PyRadiomics is available, skip cleanly without materializing anything
+    calls, fake = fake_dispatch
+    monkeypatch.setattr(rad, "_have_pyradiomics", lambda: False)
+    monkeypatch.setattr(radpar, "is_parallel_radiomics_enabled", lambda: False)
+    monkeypatch.setattr(rad, "radiomics_for_course", fake)
+    out_root = tmp_path / "out"
+    _build_patient_tree(out_root, "P9", [
+        {"image_class": "planning_ct", "series_uid": "u", "study_uid": "S"},
+    ])
+    assert rad.run_radiomics_all_series(_Cfg(out_root), ["P9"]) is None
+    assert len(calls) == 0
+    assert not (out_root / ".all_series_radiomics").exists()
