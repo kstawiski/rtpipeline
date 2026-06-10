@@ -38,8 +38,11 @@ NON_QUANTITATIVE_IMAGE_CLASSES = frozenset({"cbct"})
 
 
 def is_quantitative_image_class(image_class: str) -> bool:
-    """C3 default-deny guard. Return False if masks from ``image_class`` must not
-    feed a quantitative endpoint (currently CBCT). Case-insensitive."""
+    """C3 CBCT-denylist guard. Return False ONLY for classes in
+    NON_QUANTITATIVE_IMAGE_CLASSES (currently CBCT — uncalibrated, reference/QC-only);
+    every other class, including unknown ones, returns True. Case-insensitive. The
+    all-series radiomics/DVH path (B4) additionally constrains its FEEDING classes by an
+    explicit allow-list, so this denylist is the belt-and-suspenders CBCT block."""
     return (image_class or "").strip().lower() not in NON_QUANTITATIVE_IMAGE_CLASSES
 
 
@@ -338,4 +341,9 @@ def _machine_token(value: str) -> str:
     return token or "unknown"
 
 
-__all__ = ["IMAGE_CLASSES", "classify_series"]
+__all__ = [
+    "IMAGE_CLASSES",
+    "classify_series",
+    "NON_QUANTITATIVE_IMAGE_CLASSES",
+    "is_quantitative_image_class",
+]

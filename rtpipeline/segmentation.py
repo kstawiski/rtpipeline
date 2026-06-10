@@ -1315,28 +1315,35 @@ def segment_course(config: PipelineConfig, course_dir: Path, force: bool = False
     return results
 
 
+# C2: exclusion reasons that are ADEQUACY-only / unrecognized, NOT non-anatomic content.
+# A series classified ("exclude", <one of these>) was SEGMENTED before C2, so it must keep
+# segmenting (back-compat). In particular a <10-slice *anatomic* MR classifies
+# 'sub_volumetric_lt10' and must NOT be dropped (it yields a thin but valid mask).
+_C2_BACKCOMPAT_SEGMENT_REASONS = frozenset({"sub_volumetric_lt10", "mr_unrecognized_default_deny"})
+
+
 def _mr_series_is_anatomic(source_dir: Path) -> bool:
     """C2 [defense-in-depth]: classify an MR series from its DICOM headers and decide
-    whether to run ``total_mr`` on it. The course-MR path routes series here on a bare
-    ``modality=='MR'`` check, so a REG-referenced functional series (DWI/ADC/DCE) dragged
-    into a course would otherwise be mis-segmented by the anatomic model.
+    whether to run ``total_mr`` on it. The course-MR path routes series to ``dicom_mr``
+    on a bare ``modality=='MR'`` check, so a REG-referenced functional series
+    (DWI/ADC/DCE) dragged into a course would otherwise be mis-segmented by the anatomic model.
 
-    Reads SeriesDescription/ImageType/instance-count from the first readable DICOM header
-    (the dcm2niix sidecar does not carry these), builds the lowercase classifier-meta
-    (incl. modality='MR' so ``classify_series`` does not default-deny on missing modality),
-    and calls ``classify_series``.
+    Reads SeriesDescription/ImageType/instance-count from the first readable DICOM slice
+    that carries a SeriesDescription (the dcm2niix sidecar does not carry these), builds the
+    lowercase classifier-meta (incl. modality='MR' so ``classify_series`` does not
+    default-deny on missing modality), and calls ``classify_series``.
 
-    Returns True (segment) for ``mr_anatomic`` AND for series that cannot be positively
-    classified as non-anatomic — anatomic and *unrecognized* MR are segmented as before
-    (back-compat). Returns False (skip, with a structured log) only for series POSITIVELY
-    classified as ``mr_functional`` or an explicit non-anatomic exclusion
-    (localizer/scout/MIP/derived).
+    Back-compat-safe LENIENT boundary (endorsed over the strict WORK_PLAN reading by the
+    code gate): SEGMENT (True) for ``mr_anatomic`` and for adequacy-only/unrecognized
+    exclusions (``sub_volumetric_lt10`` / ``mr_unrecognized_default_deny`` — segmented
+    before C2). SKIP (False, with a structured log) only series POSITIVELY classified as
+    non-anatomic CONTENT: ``mr_functional`` (DWI/ADC/DCE) or a content exclusion
+    (localizer/scout/derived/report). Any error / no-DICOM / unreadable header fails OPEN
+    to segment, so the guard can never break a previously-working course.
 
-    NOTE [flagged for the code gate]: this is the back-compat-safe LENIENT boundary. The
-    strict WORK_PLAN reading ("assert image_class=='mr_anatomic'") would ALSO skip
-    ``mr_unrecognized_default_deny``, which risks regressing valid-but-unrecognized
-    anatomic MR that was segmented before. Chosen to catch the concrete functional
-    misroute while preserving back-compat; reviewers to adjudicate strict-vs-lenient.
+    NB: MR MIP-by-description is intentionally NOT excluded here — ``_classify_mr`` calls
+    ``_common_image_exclusion(include_mip=False)`` by design; changing that is out of C2's
+    scope. Only ImageType/description localizer + derived/report content are caught.
     """
     from .modality_classifier import classify_series
     try:
@@ -1346,12 +1353,19 @@ def _mr_series_is_anatomic(source_dir: Path) -> bool:
         ds = None
         for cand in dcms:
             try:
-                ds = pydicom.dcmread(str(cand), stop_before_pixels=True, force=True)
-                break
+                cand_ds = pydicom.dcmread(str(cand), stop_before_pixels=True, force=True)
             except Exception:
                 continue
+            if ds is None:
+                ds = cand_ds  # first readable header, kept as a fallback
+            # prefer a slice that actually carries a SeriesDescription: a corrupted or
+            # empty first slice (force=True yields an empty Dataset) must not drive the
+            # whole-series decision.
+            if str(getattr(cand_ds, "SeriesDescription", "") or "").strip():
+                ds = cand_ds
+                break
         if ds is None:
-            return True  # unreadable header -> preserve back-compat (segment)
+            return True  # no readable header -> preserve back-compat (segment)
         raw_it = getattr(ds, "ImageType", None)
         if raw_it is None:
             image_types: List[str] = []
@@ -1372,8 +1386,10 @@ def _mr_series_is_anatomic(source_dir: Path) -> bool:
         image_class, reason = classify_series(meta)
         if image_class == "mr_anatomic":
             return True
-        if image_class == "exclude" and reason == "mr_unrecognized_default_deny":
-            return True  # back-compat: unrecognized MR still segmented as before
+        # adequacy-only / unrecognized exclusions were segmented pre-C2 -> keep segmenting
+        # (BC-2: a <10-slice anatomic MR is 'sub_volumetric_lt10' and must not be dropped)
+        if image_class == "exclude" and reason in _C2_BACKCOMPAT_SEGMENT_REASONS:
+            return True
         logger.info(
             "C2: skipping non-anatomic MR series for total_mr "
             "(image_class=%s, reason=%s, desc=%r, dir=%s)",
