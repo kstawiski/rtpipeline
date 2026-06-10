@@ -9,7 +9,7 @@ import weakref
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 import SimpleITK as sitk
@@ -1432,14 +1432,27 @@ def _pick_representative_4dct_phase(phase_rows: List[dict]) -> dict:
     return phase_rows[0]
 
 
-def _select_all_series_radiomics_rows(rows: List[dict]) -> List[Tuple[dict, bool]]:
+def _select_all_series_radiomics_rows(
+    rows: List[dict],
+    has_rtstruct: Optional[Callable[[dict], bool]] = None,
+) -> List[Tuple[dict, bool]]:
     """B4 selection + C4 dedup. Returns ``(row, is_4d_phase)`` pairs to radiomic.
 
     Base CT classes (planning_ct/diagnostic_ct/petct_ct) are taken as-is (``is_4d_phase=False``).
     For 4DCT, only one volume per ``study_uid`` is radiomic'd: the averaged reconstruction if present
     (``is_4d_phase=False``), else one representative phase (``is_4d_phase=True``, excluded from pooling).
+
+    The 4DCT representative is chosen ONLY among volumes that were actually segmented: ``has_rtstruct``
+    (default: every row) gates 4DCT eligibility. This matters when segmentation keeps a single 4DCT
+    representative (``all_series_fourdct_single_representative``, patient-level, first-ave-else-first-phase):
+    without the gate B4's per-study 50%-preference could pick a phase that was never segmented, find no
+    RTSTRUCT, and silently drop the whole study. With the gate, B4 picks the segmented volume.
+
     ``is_quantitative_image_class`` (C3) is enforced as a denylist guard so CBCT can never be radiomic'd
-    even if a future edit adds it to the class sets (defense-in-depth; CBCT is not in the sets today)."""
+    even if a future edit adds it to the class sets. A missing/empty ``study_uid`` is keyed per-series
+    (not collapsed into one bucket) so distinct acquisitions with absent UIDs are not silently lost."""
+    if has_rtstruct is None:
+        has_rtstruct = lambda _row: True
     selected: List[Tuple[dict, bool]] = []
     fourdct_by_study: Dict[str, Dict[str, List[dict]]] = {}
     for row in rows:
@@ -1451,14 +1464,17 @@ def _select_all_series_radiomics_rows(rows: List[dict]) -> List[Tuple[dict, bool
         if cls in _ALL_SERIES_RADIOMICS_BASE_CLASSES:
             selected.append((row, False))
         elif cls in _FOURDCT_RADIOMICS_CLASSES:
-            study = str(row.get("study_uid") or "")
+            study = str(row.get("study_uid") or "").strip() or f"__nostudy__:{row.get('series_uid') or ''}"
             bucket = fourdct_by_study.setdefault(study, {"ave": [], "phase": []})
             bucket["ave" if cls == "fourdct_ave" else "phase"].append(row)
     for bucket in fourdct_by_study.values():
-        if bucket["ave"]:
-            selected.append((bucket["ave"][0], False))   # representative = first ave; all phases dropped
-        elif bucket["phase"]:
-            selected.append((_pick_representative_4dct_phase(bucket["phase"]), True))  # excluded from pooling
+        aves = [r for r in bucket["ave"] if has_rtstruct(r)]
+        if aves:
+            selected.append((aves[0], False))   # representative = first segmented ave; all phases dropped
+            continue
+        phases = [r for r in bucket["phase"] if has_rtstruct(r)]
+        if phases:
+            selected.append((_pick_representative_4dct_phase(phases), True))  # excluded from pooling
     return selected
 
 
@@ -1491,9 +1507,24 @@ def run_radiomics_all_series(config: PipelineConfig, patient_ids: List[str]) -> 
     """
     import pandas as pd
 
+    # Parity with run_radiomics: honor a configured radiomics thread limit (BLAS oversubscription
+    # control) and skip cleanly if no extraction backend (native OR conda) is available, so we don't
+    # materialize temp trees only to no-op per series.
+    _apply_radiomics_thread_limit(_resolve_thread_limit(getattr(config, 'radiomics_thread_limit', None)))
+    if not _have_pyradiomics():
+        logger.warning("PyRadiomics unavailable (native + conda) - skipping all-series radiomics")
+        return None
+
     output_root = Path(config.output_root)
     temp_base = output_root / ".all_series_radiomics"
     all_dfs = []
+
+    def _row_has_rtstruct(row: dict) -> bool:
+        """A 4DCT volume is eligible as the per-study representative only if it was actually segmented."""
+        od = str(row.get("output_dir") or "")
+        if not od:
+            return False
+        return _find_all_series_auto_rtstruct(Path(od), str(row.get("ts_task") or "total")) is not None
 
     for patient_id in patient_ids:
         course_dirs = build_course_dirs(output_root / str(patient_id) / "all_series")
@@ -1510,7 +1541,7 @@ def run_radiomics_all_series(config: PipelineConfig, patient_ids: List[str]) -> 
         if not isinstance(rows, list):
             continue
 
-        for row, is_4d_phase in _select_all_series_radiomics_rows(rows):
+        for row, is_4d_phase in _select_all_series_radiomics_rows(rows, has_rtstruct=_row_has_rtstruct):
             series_uid = str(row.get("series_uid") or "")
             image_class = str(row.get("image_class") or "")
             study_uid = str(row.get("study_uid") or "")
@@ -1557,9 +1588,12 @@ def run_radiomics_all_series(config: PipelineConfig, patient_ids: List[str]) -> 
                 df["image_class"] = image_class
                 df["is_4d_phase"] = bool(is_4d_phase)
                 df["series_dir"] = str(input_dir)
+                # the temp course dir is deleted; repoint course_dir at the persistent series dir and
+                # drop the course-shaped course_id (meaningless in an all-series artifact — series_uid
+                # is the identifier; both CT workers emit it as the temp course basename).
                 if "course_dir" in df.columns:
-                    # the temp course dir is deleted; repoint provenance at the persistent series dir
                     df["course_dir"] = str(input_dir)
+                df = df.drop(columns=[c for c in ("course_id",) if c in df.columns])
                 all_dfs.append(df)
             finally:
                 shutil.rmtree(course_dir, ignore_errors=True)
