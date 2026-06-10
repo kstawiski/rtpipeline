@@ -1204,6 +1204,9 @@ def segment_course(config: PipelineConfig, course_dir: Path, force: bool = False
             if not any(source_dir.glob("*.dcm")):
                 continue
 
+            if not _mr_series_is_anatomic(source_dir):
+                continue  # C2: skip non-anatomic MR (DWI/ADC/DCE/localizer) before conversion
+
             nifti_dir = series_root / "NIFTI"
             nifti_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1312,6 +1315,76 @@ def segment_course(config: PipelineConfig, course_dir: Path, force: bool = False
     return results
 
 
+def _mr_series_is_anatomic(source_dir: Path) -> bool:
+    """C2 [defense-in-depth]: classify an MR series from its DICOM headers and decide
+    whether to run ``total_mr`` on it. The course-MR path routes series here on a bare
+    ``modality=='MR'`` check, so a REG-referenced functional series (DWI/ADC/DCE) dragged
+    into a course would otherwise be mis-segmented by the anatomic model.
+
+    Reads SeriesDescription/ImageType/instance-count from the first readable DICOM header
+    (the dcm2niix sidecar does not carry these), builds the lowercase classifier-meta
+    (incl. modality='MR' so ``classify_series`` does not default-deny on missing modality),
+    and calls ``classify_series``.
+
+    Returns True (segment) for ``mr_anatomic`` AND for series that cannot be positively
+    classified as non-anatomic — anatomic and *unrecognized* MR are segmented as before
+    (back-compat). Returns False (skip, with a structured log) only for series POSITIVELY
+    classified as ``mr_functional`` or an explicit non-anatomic exclusion
+    (localizer/scout/MIP/derived).
+
+    NOTE [flagged for the code gate]: this is the back-compat-safe LENIENT boundary. The
+    strict WORK_PLAN reading ("assert image_class=='mr_anatomic'") would ALSO skip
+    ``mr_unrecognized_default_deny``, which risks regressing valid-but-unrecognized
+    anatomic MR that was segmented before. Chosen to catch the concrete functional
+    misroute while preserving back-compat; reviewers to adjudicate strict-vs-lenient.
+    """
+    from .modality_classifier import classify_series
+    try:
+        dcms = sorted(source_dir.glob("*.dcm"))
+        if not dcms:
+            return True  # nothing to classify here; let the existing flow proceed
+        ds = None
+        for cand in dcms:
+            try:
+                ds = pydicom.dcmread(str(cand), stop_before_pixels=True, force=True)
+                break
+            except Exception:
+                continue
+        if ds is None:
+            return True  # unreadable header -> preserve back-compat (segment)
+        raw_it = getattr(ds, "ImageType", None)
+        if raw_it is None:
+            image_types: List[str] = []
+        elif isinstance(raw_it, (list, tuple)):
+            image_types = [str(x) for x in raw_it]
+        else:
+            image_types = [s for s in str(raw_it).replace("/", "\\").split("\\") if s]
+        meta = {
+            "modality": str(getattr(ds, "Modality", "") or "MR"),
+            "series_description": str(getattr(ds, "SeriesDescription", "") or ""),
+            "image_type": image_types,
+            "image_types": image_types,
+            "n_slices": len(dcms),
+            "n_instances": len(dcms),
+            "manufacturer": str(getattr(ds, "Manufacturer", "") or ""),
+            "manufacturer_model": str(getattr(ds, "ManufacturerModelName", "") or ""),
+        }
+        image_class, reason = classify_series(meta)
+        if image_class == "mr_anatomic":
+            return True
+        if image_class == "exclude" and reason == "mr_unrecognized_default_deny":
+            return True  # back-compat: unrecognized MR still segmented as before
+        logger.info(
+            "C2: skipping non-anatomic MR series for total_mr "
+            "(image_class=%s, reason=%s, desc=%r, dir=%s)",
+            image_class, reason, meta["series_description"], str(source_dir),
+        )
+        return False
+    except Exception as exc:  # never let the guard break a previously-working course
+        logger.debug("C2 MR classify failed for %s: %s; proceeding (back-compat)", source_dir, exc)
+        return True
+
+
 def _segment_mr_series_for_course(config: PipelineConfig, course_dirs, course_dir: Path, force: bool = False) -> None:
     """Run MR TotalSegmentator even when CT/planning data are unavailable."""
 
@@ -1341,6 +1414,9 @@ def _segment_mr_series_for_course(config: PipelineConfig, course_dirs, course_di
             source_dir = series_root
         if not any(source_dir.glob("*.dcm")):
             continue
+
+        if not _mr_series_is_anatomic(source_dir):
+            continue  # C2: skip non-anatomic MR (DWI/ADC/DCE/localizer) before conversion
 
         nifti_dir = series_root / "NIFTI"
         nifti_dir.mkdir(parents=True, exist_ok=True)

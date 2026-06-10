@@ -29,6 +29,20 @@ CBCT_MANUFACTURER_MODELS = frozenset(
 )
 FOURDCT_MODELS = frozenset({"advanced reconstruction", "aria rtm"})
 
+# C3 [SAFE-1]: image classes whose TotalSegmentator masks must NEVER reach a
+# quantitative endpoint (CT/MR radiomics, DVH, PBM, RIL). CBCT is uncalibrated
+# (scatter/cupping/truncated-FOV), so its masks are reference/QC-only. This is a
+# machine-enforced default-deny: the all-series radiomics/DVH paths call
+# is_quantitative_image_class() and refuse any class listed here.
+NON_QUANTITATIVE_IMAGE_CLASSES = frozenset({"cbct"})
+
+
+def is_quantitative_image_class(image_class: str) -> bool:
+    """C3 default-deny guard. Return False if masks from ``image_class`` must not
+    feed a quantitative endpoint (currently CBCT). Case-insensitive."""
+    return (image_class or "").strip().lower() not in NON_QUANTITATIVE_IMAGE_CLASSES
+
+
 _DESC_EXCLUDE_PATTERNS = (
     ("description_topogram", re.compile(r"\btopogram\b", re.I)),
     ("description_scout", re.compile(r"\bscout\b", re.I)),
