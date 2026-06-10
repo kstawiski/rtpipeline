@@ -16,7 +16,7 @@ from rtpipeline.modality_classifier import (
     NON_QUANTITATIVE_IMAGE_CLASSES,
     is_quantitative_image_class,
 )
-from rtpipeline.segmentation import _mr_series_is_anatomic
+from rtpipeline.segmentation import _imagetype_to_list, _mr_series_is_anatomic
 
 
 def _write_min_dcm(path: Path, description: str, modality: str = "MR", image_type=None) -> None:
@@ -56,6 +56,39 @@ def test_c3_cbct_is_non_quantitative():
 def test_c3_calibrated_classes_are_quantitative():
     for cls in ("planning_ct", "diagnostic_ct", "petct_ct", "fourdct_ave", "mr_anatomic"):
         assert is_quantitative_image_class(cls) is True
+
+
+# ---------------- C2: ImageType normalization (pydicom MultiValue) ----------------
+
+def test_imagetype_multivalue_parsed_not_malformed():
+    # Regression: pydicom stores multi-valued ImageType as MultiValue (a MutableSequence,
+    # NOT list/tuple). A bare isinstance(x,(list,tuple)) check stringifies it to a single
+    # malformed token like "['DERIVED', 'SECONDARY']". _imagetype_to_list must yield the
+    # real per-value list.
+    from pydicom.multival import MultiValue
+    mv = MultiValue(str, ["DERIVED", "SECONDARY"])
+    assert _imagetype_to_list(mv) == ["DERIVED", "SECONDARY"]
+    assert _imagetype_to_list("ORIGINAL\\PRIMARY\\M\\NORM") == ["ORIGINAL", "PRIMARY", "M", "NORM"]
+    assert _imagetype_to_list(["A", "B"]) == ["A", "B"]
+    assert _imagetype_to_list(None) == []
+    # round-trip through a real written/read DICOM (the production path)
+    import pydicom
+    from pydicom.dataset import Dataset, FileMetaDataset
+    from pydicom.uid import ExplicitVRLittleEndian, generate_uid
+    import tempfile, os
+    ds = Dataset()
+    ds.ImageType = ["DERIVED", "SECONDARY"]
+    ds.SeriesInstanceUID = generate_uid()
+    fm = FileMetaDataset(); fm.TransferSyntaxUID = ExplicitVRLittleEndian
+    fm.MediaStorageSOPClassUID = generate_uid(); fm.MediaStorageSOPInstanceUID = generate_uid()
+    ds.file_meta = fm; ds.is_little_endian = True; ds.is_implicit_VR = False
+    p = tempfile.mktemp(suffix=".dcm")
+    pydicom.dcmwrite(p, ds, write_like_original=False)
+    try:
+        rd = pydicom.dcmread(p, stop_before_pixels=True, force=True)
+        assert _imagetype_to_list(getattr(rd, "ImageType", None)) == ["DERIVED", "SECONDARY"]
+    finally:
+        os.remove(p)
 
 
 # ---------------- C2: MR header-classify guard ----------------
