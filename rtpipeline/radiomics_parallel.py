@@ -680,8 +680,13 @@ def parallel_radiomics_for_course(
 
         finally:
             if pending_tasks:
-                executor.shutdown(wait=False, cancel_futures=True)
+                # Terminate workers BEFORE shutdown(): CPython 3.11 sets executor._processes=None
+                # inside shutdown(), so _terminate_executor_processes must read it while still
+                # populated. Otherwise it falls back to diffing the MAIN process's direct children,
+                # which misses forkserver/spawn workers (forked by the forkserver daemon, not the
+                # main process) and leaks the timed-out workers.
                 _terminate_executor_processes(executor, baseline_child_pids=baseline_children)
+                executor.shutdown(wait=False, cancel_futures=True)
             else:
                 executor.shutdown(wait=True)
 

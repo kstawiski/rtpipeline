@@ -627,7 +627,6 @@ def run_tasks_with_adaptive_workers(
                 len(current_indices),
             )
 
-        ExecutorClass = ProcessPoolExecutor if effective_use_processes else ThreadPoolExecutor
         baseline_child_pids: set[int] = set()
         if effective_use_processes:
             try:
@@ -636,7 +635,14 @@ def run_tasks_with_adaptive_workers(
                 baseline_child_pids = {proc.pid for proc in psutil.Process().children(recursive=False)}
             except Exception:
                 baseline_child_pids = set()
-        ex = ExecutorClass(max_workers=workers)
+            # Fork-safe start method: this executor can be created while the process already has
+            # live threads (logging/heartbeat/SimpleITK), and a default 'fork' ProcessPoolExecutor
+            # would inherit locked mutexes from the multi-threaded parent and deadlock (same failure
+            # class as the radiomics pools). Submitted tasks are pickled under fork too, so this adds
+            # no new picklability requirement.
+            ex = ProcessPoolExecutor(max_workers=workers, mp_context=radiomics_mp_context())
+        else:
+            ex = ThreadPoolExecutor(max_workers=workers)
         restart_due_to_timeout = False
         try:
             future_to_idx = {ex.submit(func, seq[idx]): idx for idx in current_indices}
