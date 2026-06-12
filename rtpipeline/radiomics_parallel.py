@@ -31,7 +31,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 import pydicom
 
 from .layout import build_course_dirs, find_dcm
-from .utils import mask_is_cropped
+from .utils import mask_is_cropped, radiomics_mp_context
 from .custom_models import list_custom_model_outputs
 from .custom_structures_rtstruct import _create_custom_structures_rtstruct, _is_rs_custom_stale
 
@@ -621,8 +621,12 @@ def parallel_radiomics_for_course(
 
     while pending_tasks:
         baseline_children = _current_child_pids()
+        # This pool is created from WITHIN a course-level ThreadPoolExecutor worker thread;
+        # a default 'fork' context inherits locked mutexes from the multi-threaded parent and
+        # deadlocks. Use a forkserver/spawn context (initializer + initargs are picklable).
         executor = ProcessPoolExecutor(
             max_workers=min(worker_count, len(pending_tasks)),
+            mp_context=radiomics_mp_context(),
             initializer=_worker_init,
             initargs=(str(ct_dir), config, thread_limit, skip_rois, min_voxels, max_voxels),
         )
