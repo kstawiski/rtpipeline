@@ -23,7 +23,7 @@ import SimpleITK as sitk
 import pydicom
 
 from .layout import build_course_dirs, find_dcm
-from .utils import mask_is_cropped
+from .utils import mask_is_cropped, radiomics_mp_context
 
 logger = logging.getLogger(__name__)
 
@@ -921,9 +921,16 @@ def process_radiomics_batch(
 
             from concurrent.futures import ProcessPoolExecutor, as_completed
 
-            # Use ProcessPoolExecutor for better parallelism (avoids GIL)
-            # Each worker processes one batch (multiple ROIs) per subprocess
-            with ProcessPoolExecutor(max_workers=min(worker_limit, len(batches))) as executor:
+            # Use ProcessPoolExecutor for better parallelism (avoids GIL).
+            # Each worker processes one batch (multiple ROIs) per subprocess.
+            # NOTE: this pool is created from WITHIN a course-level ThreadPoolExecutor
+            # worker thread. The default 'fork' start method copies locked mutexes from the
+            # multi-threaded parent into workers and deadlocks (workers block forever on an
+            # inherited-locked SemLock); use a forkserver/spawn context instead.
+            with ProcessPoolExecutor(
+                max_workers=min(worker_limit, len(batches)),
+                mp_context=radiomics_mp_context(),
+            ) as executor:
                 future_to_batch = {executor.submit(_process_batch, batch): batch for batch in batches}
 
                 for future in as_completed(future_to_batch):
