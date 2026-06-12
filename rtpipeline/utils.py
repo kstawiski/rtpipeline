@@ -20,6 +20,41 @@ T = TypeVar('T')
 R = TypeVar('R')
 
 
+def radiomics_mp_context(method: Optional[str] = None):
+    """Return a fork-safe multiprocessing context for nested radiomics process pools.
+
+    The radiomics ``ProcessPoolExecutor`` pools (``radiomics_conda.process_radiomics_batch``
+    and ``radiomics_parallel.parallel_radiomics_for_course``) are created from *inside* the
+    course-level ``ThreadPoolExecutor`` workers. With the POSIX default ``fork`` start method
+    each pool worker is forked from the multi-threaded parent and inherits a COPY of every
+    lock in whatever state it had at fork time. If a sibling thread holds an internal lock
+    (a ``multiprocessing.Queue`` ``SemLock``, or a malloc/BLAS lock) at that instant, the
+    child's copy is permanently locked and the worker deadlocks forever acquiring it —
+    observed live as workers blocked in ``synchronize.py __enter__`` / ``queues.py get``
+    while the pool's ``as_completed`` waits indefinitely.
+
+    ``forkserver`` forks workers from a clean, single-threaded server process instead of the
+    multi-threaded main process, eliminating the inherited-lock deadlock while keeping a warm
+    import (cheaper than ``spawn`` for the many short-lived pools radiomics creates).
+    ``spawn`` is the bullet-proof fallback (a brand-new interpreter per worker, no fork at
+    all). Both pickle the pool callable + initargs, so those must be picklable (they are).
+
+    Override with ``RTPIPELINE_RADIOMICS_MP_START=spawn`` (or ``forkserver``); any other
+    value falls back to ``forkserver``.
+    """
+    import multiprocessing as mp
+
+    requested = (method or os.environ.get("RTPIPELINE_RADIOMICS_MP_START", "forkserver")).strip().lower()
+    if requested not in ("forkserver", "spawn"):
+        requested = "forkserver"
+    for candidate in (requested, "spawn", "forkserver"):
+        try:
+            return mp.get_context(candidate)
+        except ValueError:
+            continue
+    return mp.get_context()
+
+
 def _resolve_scoped_dirs(root: Path, patient_ids: Iterable[str]) -> tuple[List[Path], List[str]]:
     """Locate the directories for ``patient_ids`` under ``root``.
 
