@@ -12,14 +12,18 @@ forked from the multi-threaded parent.
 """
 
 import inspect
+import multiprocessing as mp
 import os
+import signal
 import threading
+import time
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 
 import pytest
 
 import rtpipeline.radiomics_conda as rc
 import rtpipeline.radiomics_parallel as rp
+import rtpipeline.utils as ru
 from rtpipeline.utils import radiomics_mp_context
 
 
@@ -27,6 +31,11 @@ from rtpipeline.utils import radiomics_mp_context
 
 def _square(x):
     return x * x
+
+
+def _sleep_a_while(_):
+    time.sleep(60)
+    return 0
 
 
 def _nested_course_worker(n):
@@ -136,3 +145,63 @@ def test_fork_after_threads_lock_inheritance_is_the_hazard():
     os.waitpid(pid, 0)
     lock.release()
     assert out == b"0", "child unexpectedly acquired the inherited-locked copy"
+
+
+# ---- remediation: forkserver worker termination + adaptive-executor process path -------
+
+def test_adaptive_executor_process_path_uses_mp_context():
+    """The outer adaptive executor must NOT create a bare fork ProcessPoolExecutor on the
+    process path (same fork-after-threads deadlock class as the radiomics pools)."""
+    src = inspect.getsource(ru.run_tasks_with_adaptive_workers)
+    assert "ExecutorClass(max_workers=workers)" not in src, (
+        "bare ExecutorClass()/fork ProcessPoolExecutor on the process path re-introduces the bug"
+    )
+    assert "mp_context=radiomics_mp_context()" in src, (
+        "run_tasks_with_adaptive_workers must build its ProcessPoolExecutor with a fork-safe context"
+    )
+
+
+def test_parallel_radiomics_terminates_before_shutdown():
+    """In the timeout/restart branch, _terminate_executor_processes must run BEFORE
+    executor.shutdown() — shutdown() clears executor._processes, and the child-diff fallback
+    misses forkserver/spawn workers."""
+    src = inspect.getsource(rp.parallel_radiomics_for_course)
+    t = src.find("_terminate_executor_processes(executor")
+    s = src.find("executor.shutdown(wait=False, cancel_futures=True)")
+    assert t != -1 and s != -1, "expected both terminate and shutdown(cancel_futures) in restart branch"
+    assert t < s, "terminate must precede shutdown (shutdown clears executor._processes)"
+
+
+def test_terminate_executor_processes_kills_forkserver_workers():
+    """Functional proof of the fix: under forkserver, _terminate_executor_processes called on a
+    LIVE executor (before shutdown) actually kills the worker processes."""
+    psutil = pytest.importorskip("psutil")
+    ctx = mp.get_context("forkserver")
+    ex = ProcessPoolExecutor(max_workers=2, mp_context=ctx)
+    pids = []
+    try:
+        for i in range(2):
+            ex.submit(_sleep_a_while, i)
+        # Wait for the pool to actually spin up its workers.
+        deadline = time.monotonic() + 60
+        while time.monotonic() < deadline:
+            procs = dict(getattr(ex, "_processes", {}) or {})
+            pids = [p.pid for p in procs.values() if getattr(p, "pid", None)]
+            if pids and all(psutil.pid_exists(pid) for pid in pids):
+                break
+            time.sleep(0.2)
+        assert pids, "expected live forkserver worker processes"
+        # The fix: terminate reads the still-populated executor._processes BEFORE shutdown clears it.
+        rp._terminate_executor_processes(ex, baseline_child_pids=set())
+        gone_deadline = time.monotonic() + 10
+        while time.monotonic() < gone_deadline and any(psutil.pid_exists(pid) for pid in pids):
+            time.sleep(0.2)
+        survivors = [pid for pid in pids if psutil.pid_exists(pid)]
+        assert not survivors, f"forkserver workers survived termination: {survivors}"
+    finally:
+        for pid in pids:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except Exception:
+                pass
+        ex.shutdown(wait=False, cancel_futures=True)
