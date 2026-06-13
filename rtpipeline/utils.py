@@ -749,8 +749,10 @@ def run_tasks_with_adaptive_workers(
                     last_heartbeat = now
         finally:
             if restart_due_to_timeout and effective_use_processes:
-                # Abort worker processes so we don't block here.
-                ex.shutdown(wait=False, cancel_futures=True)
+                # Terminate workers BEFORE shutdown(): shutdown() sets ex._processes=None, after
+                # which the child-diff fallback misses forkserver/spawn workers (forked by the
+                # forkserver daemon, not the main process) and leaks them. Read ex._processes while
+                # still populated, terminate, THEN shut down.
                 try:
                     processes = getattr(ex, "_processes", None)
                     pids = []
@@ -815,6 +817,8 @@ def run_tasks_with_adaptive_workers(
                                     pass
                 except Exception:
                     pass
+                finally:
+                    ex.shutdown(wait=False, cancel_futures=True)
             else:
                 ex.shutdown(wait=True)
 
