@@ -38,6 +38,14 @@ def _sleep_a_while(_):
     return 0
 
 
+def _record_pid_then_sleep(pidfile_dir):
+    # Worker records its OWN pid (so the test can assert it gets killed), then hangs.
+    with open(os.path.join(pidfile_dir, "worker_%d.pid" % os.getpid()), "w") as fh:
+        fh.write(str(os.getpid()))
+    time.sleep(40)
+    return 0
+
+
 def _nested_course_worker(n):
     """Mimic radiomics: a ProcessPoolExecutor created INSIDE a worker thread.
 
@@ -205,3 +213,56 @@ def test_terminate_executor_processes_kills_forkserver_workers():
             except Exception:
                 pass
         ex.shutdown(wait=False, cancel_futures=True)
+
+
+def test_adaptive_executor_terminates_before_shutdown():
+    """In run_tasks_with_adaptive_workers' timeout branch, the executor's _processes must be
+    read/terminated BEFORE shutdown(wait=False, cancel_futures=True) — shutdown() clears
+    _processes, and the child-diff fallback misses forkserver workers."""
+    src = inspect.getsource(ru.run_tasks_with_adaptive_workers)
+    branch = src.find("if restart_due_to_timeout and effective_use_processes:")
+    assert branch != -1, "expected the timeout-cleanup branch"
+    seg = src[branch:]
+    read_procs = seg.find('getattr(ex, "_processes", None)')
+    cancel_shutdown = seg.find("ex.shutdown(wait=False, cancel_futures=True)")
+    assert read_procs != -1 and cancel_shutdown != -1
+    assert read_procs < cancel_shutdown, (
+        "must read/terminate ex._processes before shutdown(cancel_futures); otherwise forkserver "
+        "workers leak on task timeout"
+    )
+
+
+def test_adaptive_executor_timeout_kills_forkserver_workers(tmp_path):
+    """Functional: a use_processes=True adaptive run whose tasks time out must KILL the worker
+    processes (not leak them) under the default forkserver context."""
+    psutil = pytest.importorskip("psutil")
+    pdir = str(tmp_path)
+    # task_timeout small; workers sleep well past the watchdog interval so they time out and are
+    # finalized + terminated. Returns once both tasks are finalized (no infinite retry).
+    ru.run_tasks_with_adaptive_workers(
+        "leak-test", [pdir, pdir], _record_pid_then_sleep,
+        max_workers=2, task_timeout=3, use_processes=True,
+    )
+    import glob
+    time.sleep(3)  # grace for the forkserver daemon to reap terminated workers
+    pids = []
+    for fp in glob.glob(os.path.join(pdir, "worker_*.pid")):
+        try:
+            pids.append(int(open(fp).read().strip()))
+        except Exception:
+            pass
+    assert pids, "expected at least one worker to start and record its pid"
+    survivors = []
+    for pid in pids:
+        if psutil.pid_exists(pid):
+            try:
+                if psutil.Process(pid).status() != psutil.STATUS_ZOMBIE:
+                    survivors.append(pid)
+            except psutil.NoSuchProcess:
+                pass
+    for pid in survivors:  # cleanup before asserting
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except Exception:
+            pass
+    assert not survivors, f"timed-out adaptive-executor workers leaked: {survivors}"
