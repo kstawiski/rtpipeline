@@ -32,6 +32,70 @@ RADIOMICS_ENV = os.environ.get("RTPIPELINE_RADIOMICS_ENV", "rtpipeline-radiomics
 # Heartbeat interval for progress logging (seconds)
 HEARTBEAT_INTERVAL = 60
 
+# Cache for a confirmed-functional radiomics conda env. The env does not change
+# mid-run, but ``process_radiomics_batch`` is called once per course, so a naive
+# per-course ``conda run`` probe spawns a fresh subprocess every time. Under the
+# nested worker load (course-level threads each driving a ProcessPoolExecutor of
+# radiomics workers) that probe's startup contends for the box and times out,
+# returning False and silently skipping an otherwise-healthy course. We therefore
+# cache the first SUCCESSFUL check process-wide (double-checked under a lock) so a
+# transient probe timeout cannot drop courses. A False result is never cached, so
+# a genuinely-not-yet-ready env can still recover on a later call.
+_ENV_CHECK_LOCK = threading.Lock()
+_ENV_CHECK_OK: Optional[bool] = None
+
+
+def _jsonify_nested_columns(df: "pd.DataFrame") -> "pd.DataFrame":
+    """JSON-encode any column holding nested (dict/list/set/tuple) values for Parquet.
+
+    PyRadiomics emits diagnostics fields such as
+    ``diagnostics_Configuration_EnabledImageTypes`` whose value can be a nested
+    dict like ``{'Original': {}}`` — an empty-child struct that PyArrow cannot
+    encode ("Cannot write struct type 'Original' with no child field to
+    Parquet"), so every checkpoint flush failed. We JSON-encode nested values to
+    strings (rather than dropping the columns) so the checkpoint remains a
+    FAITHFUL record of every completed ROI: it is the data source used to rebuild
+    the per-course workbook on resume, and dropping provenance columns would make
+    a resumed course's ``radiomics_ct.xlsx`` lose those columns. Scalar columns
+    are left untouched.
+    """
+    if df.empty:
+        return df
+    out = df
+    copied = False
+    for col in df.columns:
+        if df[col].map(lambda v: isinstance(v, (dict, list, set, tuple))).any():
+            if not copied:
+                out = df.copy()
+                copied = True
+            out[col] = out[col].map(
+                lambda v: json.dumps(v, default=str, sort_keys=True)
+                if isinstance(v, (dict, list, set, tuple))
+                else v
+            )
+    return out
+
+
+def _roi_instance_key(obj: Dict[str, Any]) -> str:
+    """Stable per-ROI-instance checkpoint key.
+
+    ``roi_name`` alone is NOT unique: the MR path derives roi_name from the mask
+    filename and reuses it across MR series, disambiguating only via ``series_uid``
+    in the task metadata (radiomics_conda.py MR task build). Keying resume-skip,
+    checkpoint dedup, and the workbook union on ``roi_name`` alone collapses distinct
+    ROI instances (the same ``liver`` in two MR series), silently dropping rows on
+    resume. Combine roi_name with series_uid. Accepts a task (series_uid under
+    ``metadata``) or a flattened record (series_uid at top level, possibly NaN when
+    read back from Parquet).
+    """
+    roi = str(obj.get('roi_name', '') or '')
+    series = obj.get('series_uid')
+    if series is None or (isinstance(series, float) and series != series):  # None / NaN
+        series = (obj.get('metadata') or {}).get('series_uid')
+    if series is None or (isinstance(series, float) and series != series):
+        series = ''
+    return f"{roi}\x1f{series}"
+
 
 class RadiomicsCheckpoint:
     """Manages checkpoint state for resumable radiomics extraction.
@@ -45,33 +109,32 @@ class RadiomicsCheckpoint:
         self.checkpoint_path = Path(checkpoint_path)
         self.buffer_size = buffer_size
         self._buffer: List[Dict[str, Any]] = []
-        self._completed_rois: Set[str] = set()
+        self._completed_keys: Set[str] = set()
         self._lock = threading.Lock()
         self._load_existing()
 
     def _load_existing(self) -> None:
-        """Load previously completed ROIs from checkpoint file."""
+        """Load previously completed ROI instances from checkpoint file."""
         if not self.checkpoint_path.exists():
             return
         try:
             df = pd.read_parquet(self.checkpoint_path)
             if 'roi_name' in df.columns:
-                self._completed_rois = set(df['roi_name'].dropna().astype(str))
-            logger.info("Checkpoint loaded: %d ROIs already completed", len(self._completed_rois))
+                self._completed_keys = {_roi_instance_key(rec) for rec in df.to_dict('records')}
+            logger.info("Checkpoint loaded: %d ROIs already completed", len(self._completed_keys))
         except Exception as exc:
             logger.warning("Failed to load checkpoint %s: %s", self.checkpoint_path, exc)
 
-    def is_completed(self, roi_name: str) -> bool:
-        """Check if a ROI has already been processed."""
-        return roi_name in self._completed_rois
+    def is_completed(self, key: str) -> bool:
+        """Check if a ROI instance (see ``_roi_instance_key``) has been processed."""
+        return key in self._completed_keys
 
     def add_result(self, result: Dict[str, Any]) -> None:
         """Add a completed result and flush if buffer is full."""
         with self._lock:
             self._buffer.append(result)
-            roi_name = result.get('roi_name', '')
-            if roi_name:
-                self._completed_rois.add(roi_name)
+            if result.get('roi_name'):
+                self._completed_keys.add(_roi_instance_key(result))
 
             if len(self._buffer) >= self.buffer_size:
                 self._flush_buffer()
@@ -82,7 +145,7 @@ class RadiomicsCheckpoint:
             return
 
         try:
-            new_df = pd.DataFrame(self._buffer)
+            new_df = _jsonify_nested_columns(pd.DataFrame(self._buffer))
 
             if self.checkpoint_path.exists():
                 existing_df = pd.read_parquet(self.checkpoint_path)
@@ -93,7 +156,7 @@ class RadiomicsCheckpoint:
 
             combined_df.to_parquet(self.checkpoint_path, index=False)
             self._buffer.clear()
-            logger.debug("Checkpoint flushed: %d total ROIs", len(self._completed_rois))
+            logger.debug("Checkpoint flushed: %d total ROIs", len(self._completed_keys))
         except Exception as exc:
             logger.error("Failed to flush checkpoint: %s", exc)
 
@@ -103,8 +166,32 @@ class RadiomicsCheckpoint:
             self._flush_buffer()
 
     def get_completed_count(self) -> int:
-        """Return number of completed ROIs."""
-        return len(self._completed_rois)
+        """Return number of completed ROI instances."""
+        return len(self._completed_keys)
+
+    def load_records(self) -> List[Dict[str, Any]]:
+        """Return all checkpointed ROI records (deduped by ROI instance key, last wins).
+
+        Used to rebuild the per-course workbook on resume: a course that skips
+        already-completed ROIs must still write EVERY completed ROI to its
+        ``radiomics_ct.xlsx``, not just the subset processed in the current run.
+        """
+        with self._lock:
+            self._flush_buffer()  # make sure buffered rows are on disk first
+            if not self.checkpoint_path.exists():
+                return []
+            try:
+                df = pd.read_parquet(self.checkpoint_path)
+            except Exception as exc:
+                logger.warning("Failed to read checkpoint records %s: %s", self.checkpoint_path, exc)
+                return []
+        records = df.to_dict('records')
+        if 'roi_name' in df.columns:
+            deduped: Dict[str, Dict[str, Any]] = {}
+            for rec in records:
+                deduped[_roi_instance_key(rec)] = rec  # last write wins
+            records = list(deduped.values())
+        return records
 
 
 class HeartbeatLogger:
@@ -239,27 +326,53 @@ def _conda_subprocess_env() -> Dict[str, str]:
     return env
 
 
-def check_radiomics_env() -> bool:
-    """Check if the radiomics conda environment exists and is functional."""
-    try:
-        result = subprocess.run(
-            [
-                "conda",
-                "run",
-                "-n",
-                RADIOMICS_ENV,
-                "python",
-                "-c",
-                "import radiomics; import numpy; print('OK')",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=60,
-            env=_conda_subprocess_env(),
-        )
-        return result.returncode == 0 and "OK" in result.stdout
-    except Exception as e:
-        logger.error(f"Failed to check radiomics environment: {e}")
+def check_radiomics_env(timeout: int = 180, retries: int = 1) -> bool:
+    """Check if the radiomics conda environment exists and is functional.
+
+    A successful result is cached process-wide: the env cannot disappear
+    mid-run, and re-probing per course spawned a ``conda run`` subprocess whose
+    cold-start under heavy worker load timed out spuriously, silently skipping
+    healthy courses. The first check uses a generous timeout and one retry so a
+    transient cold-start stall does not produce a false negative; only a True
+    result is cached, so a genuinely-unready env can still recover later.
+    """
+    global _ENV_CHECK_OK
+    if _ENV_CHECK_OK:
+        return True
+    with _ENV_CHECK_LOCK:
+        if _ENV_CHECK_OK:
+            return True
+        last_err: Optional[str] = None
+        for attempt in range(retries + 1):
+            try:
+                result = subprocess.run(
+                    [
+                        "conda",
+                        "run",
+                        "-n",
+                        RADIOMICS_ENV,
+                        "python",
+                        "-c",
+                        "import radiomics; import numpy; print('OK')",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout,
+                    env=_conda_subprocess_env(),
+                )
+                if result.returncode == 0 and "OK" in result.stdout:
+                    _ENV_CHECK_OK = True
+                    return True
+                last_err = (result.stderr or "").strip() or f"returncode={result.returncode}"
+            except Exception as e:
+                last_err = str(e)
+                logger.warning(
+                    "Radiomics env check attempt %d/%d failed: %s",
+                    attempt + 1,
+                    retries + 1,
+                    e,
+                )
+        logger.error("Failed to verify radiomics environment after %d attempts: %s", retries + 1, last_err)
         return False
 
 
@@ -743,17 +856,6 @@ def process_radiomics_batch(
         logger.warning("No radiomics tasks to process")
         return None
 
-    if not check_radiomics_env():
-        logger.error(
-            "Radiomics conda environment '%s' not found or not functional",
-            RADIOMICS_ENV,
-        )
-        logger.error(
-            "Please run: conda create -n %s python=3.11 numpy=1.26.* pyradiomics SimpleITK -c conda-forge",
-            RADIOMICS_ENV,
-        )
-        return None
-
     # Initialize checkpoint manager if path provided
     checkpoint: Optional[RadiomicsCheckpoint] = None
     if checkpoint_path:
@@ -771,10 +873,25 @@ def process_radiomics_batch(
     # Filter out already-completed tasks if checkpointing is enabled
     original_task_count = len(tasks)
     if checkpoint:
-        tasks = [t for t in tasks if not checkpoint.is_completed(t.get('roi_name', ''))]
+        tasks = [t for t in tasks if not checkpoint.is_completed(_roi_instance_key(t))]
         skipped_count = original_task_count - len(tasks)
         if skipped_count > 0:
             logger.info("Skipping %d already-completed ROIs (resume mode)", skipped_count)
+
+    # The conda env is only needed to COMPUTE features. If every ROI was already
+    # completed in a prior run (tasks is now empty after checkpoint filtering), skip
+    # the probe entirely and fall through to rebuild the workbook from the checkpoint
+    # below. Otherwise the env must be functional before we try to extract anything.
+    if tasks and not check_radiomics_env():
+        logger.error(
+            "Radiomics conda environment '%s' not found or not functional",
+            RADIOMICS_ENV,
+        )
+        logger.error(
+            "Please run: conda create -n %s python=3.11 numpy=1.26.* pyradiomics SimpleITK -c conda-forge",
+            RADIOMICS_ENV,
+        )
+        return None
 
     def _execute(task: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         roi_name = task.get('roi_name', 'ROI')
@@ -1009,7 +1126,23 @@ def process_radiomics_batch(
         if checkpoint:
             checkpoint.flush()
 
-    if not results:
+    # Build the complete row set for the workbook: ROIs computed this run UNION any
+    # ROIs completed in a prior run, recorded in the checkpoint, and skipped this run.
+    # Without this, a resumed course (or one whose ROI set grew) would overwrite
+    # radiomics_ct.xlsx with only the newly-processed subset, silently dropping
+    # already-completed ROIs from the per-course table and the downstream cohort merge.
+    rows: List[Dict[str, Any]] = list(results)
+    if checkpoint is not None:
+        done_now = {_roi_instance_key(r) for r in results}
+        prior = [rec for rec in checkpoint.load_records() if _roi_instance_key(rec) not in done_now]
+        if prior:
+            logger.info(
+                "Resume: merging %d previously-completed ROI(s) from checkpoint into %s",
+                len(prior), output_path,
+            )
+            rows.extend(prior)
+
+    if not rows:
         logger.warning("No radiomics features extracted")
         for mask_path in cleanup_paths:
             try:
@@ -1022,7 +1155,7 @@ def process_radiomics_batch(
         return None
 
     try:
-        df = pd.DataFrame(results)
+        df = pd.DataFrame(rows)
         df.to_excel(output_path, index=False)
         logger.info("Saved %d radiomics rows to %s", len(df), output_path)
     except Exception as exc:
