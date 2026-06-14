@@ -337,6 +337,21 @@ class CustomStructureProcessor:
             )
             self.partial_structures.pop(config.name, None)
 
+        # Fail closed for set operations that require ALL sources. Applying
+        # intersection/subtract/xor to a partial source set silently produces a
+        # mathematically incorrect structure (over-inclusive intersection,
+        # under-subtracted subtract, wrong xor). Union of the available subset is
+        # incomplete but not spurious, so it is allowed (flagged as partial above).
+        if missing_sources and config.operation in ('intersection', 'subtract', 'xor'):
+            logger.warning(
+                "Custom structure '%s': %s operation requires all %d source structures "
+                "but %d are missing (%s); skipping to avoid an incorrect structure.",
+                config.name, config.operation, len(config.source_structures),
+                len(missing_sources), ", ".join(sorted({src for src in missing_sources})),
+            )
+            self.partial_structures.pop(config.name, None)
+            return None
+
         # Apply boolean operation
         if config.operation == 'union':
             result = self.union(source_masks)
