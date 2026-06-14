@@ -683,6 +683,62 @@ def _classify_doses(
         )
 
     # ==========================================================================
+    # PHASE 1.5: Prefer plan-level doses over component beam doses
+    # ==========================================================================
+    plan_doses = [d for d in dose_meta if d["summation_type"] == "PLAN"]
+    if plan_doses:
+        covered_plan_uids: set[str] = set()
+        for plan_dose in plan_doses:
+            covered_plan_uids.update(plan_dose["referenced_plan_uids"])
+        covered_beam_doses = [
+            d for d in dose_meta
+            if d["summation_type"] == "BEAM"
+            and set(d["referenced_plan_uids"])
+            and set(d["referenced_plan_uids"]).issubset(covered_plan_uids)
+        ]
+        if covered_beam_doses:
+            logger.info(
+                "Phase 1.5: Using %d PLAN dose(s), excluding %d component BEAM dose(s)",
+                len(plan_doses), len(covered_beam_doses)
+            )
+            dose_meta = [
+                d for d in dose_meta
+                if d["summation_type"] != "BEAM"
+                or not set(d["referenced_plan_uids"]).issubset(covered_plan_uids)
+            ]
+            warnings.append(
+                f"Excluded {len(covered_beam_doses)} BEAM dose(s) because matching PLAN dose(s) exist"
+            )
+
+    beam_only_doses = [d for d in dose_meta if d["summation_type"] == "BEAM"]
+    if beam_only_doses and len(beam_only_doses) == len(dose_meta):
+        beam_plan_uids = {
+            uid
+            for d in beam_only_doses
+            for uid in d["referenced_plan_uids"]
+            if uid
+        }
+        if len(beam_plan_uids) == 1:
+            selected_plan_paths = [
+                pm["path"] for pm in plan_meta
+                if pm["sop_uid"] and pm["sop_uid"] in beam_plan_uids
+            ]
+            if selected_plan_paths:
+                logger.info(
+                    "Phase 1.6: Summing %d BEAM dose(s) for a single RTPLAN",
+                    len(beam_only_doses)
+                )
+                return DoseClassification(
+                    classification="beam_doses_summed_to_plan",
+                    selected_doses=[d["path"] for d in beam_only_doses],
+                    selected_plans=selected_plan_paths,
+                    excluded_doses=[],
+                    should_sum=len(beam_only_doses) > 1,
+                    warnings=warnings,
+                    reason=f"Summing {len(beam_only_doses)} BEAM dose(s) for one RTPLAN",
+                )
+
+    # ==========================================================================
     # PHASE 2: Separate courses by FrameOfReference
     # ==========================================================================
     frame_of_refs = set(d["frame_of_reference"] for d in dose_meta if d["frame_of_reference"])
@@ -1868,6 +1924,9 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
                 dose_sum_ds, dose_ds_list, source_dose_uids = _sum_doses_with_resample(
                     selected_doses, plan_sum_ds, plan_ds_list
                 )
+                if dose_classification.classification == "beam_doses_summed_to_plan":
+                    dose_sum_ds.DoseSummationType = "PLAN"
+                    dose_sum_ds.SeriesDescription = f"Plan Dose Sum ({len(selected_doses)} beams)"
 
                 ref_dose_item = Dataset()
                 ref_dose_item.ReferencedSOPClassUID = str(getattr(dose_sum_ds, "SOPClassUID", "1.2.840.10008.5.1.4.1.1.481.2"))
