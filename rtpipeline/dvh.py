@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import hashlib
 import json
 import logging
 import os
 from pathlib import Path
-from typing import Dict, List, Optional, Union
+import shutil
+from typing import Dict, Iterable, List, Optional, Union
 
 import numpy as np
 import pandas as pd
@@ -13,10 +15,16 @@ import pydicom
 import SimpleITK as sitk
 
 logger = logging.getLogger(__name__)
-DVH_METRIC_VERSION = "2026-05-23-dose-bounds-v1"
+DVH_METRIC_VERSION = "2026-06-14-plan-dose-rtstruct-v2"
 
 from .layout import build_course_dirs, find_dcm
-from .organize import infer_plan_rx_gy
+from .organize import (
+    _classify_doses,
+    _create_summed_plan,
+    _infer_rx_from_plan_paths,
+    _sum_doses_with_resample,
+    infer_plan_rx_gy,
+)
 from .utils import sanitize_rtstruct, mask_is_cropped, run_tasks_with_adaptive_workers, snap_rtstruct_to_dose_grid
 from .custom_models import list_custom_model_outputs
 
@@ -94,6 +102,665 @@ try:
 except ImportError as e:
     logger.error("Failed to import dicompylercore: %s. Install with: pip install dicompyler-core", e)
     raise
+
+
+_PLAN_DOSE_TYPES = {"PLAN", "PLAN_SUM"}
+_DICOM_EXTENSIONS = {".dcm", ".dicom", ".ima"}
+
+
+@dataclass
+class DVHDoseResolution:
+    rd_path: Optional[Path]
+    rp_path: Optional[Path]
+    classification: str
+    reason: str
+    source_dose_sop_instance_uids: List[str]
+    source_dose_summation_types: List[str]
+    output_dose_sop_instance_uid: Optional[str]
+    output_dose_summation_type: Optional[str]
+    source_plan_sop_instance_uids: List[str]
+    skip_reason: Optional[str] = None
+
+    @property
+    def ok(self) -> bool:
+        return self.rd_path is not None and self.rp_path is not None and self.skip_reason is None
+
+
+@dataclass
+class DVHRTStructSource:
+    path: Path
+    source_label: str
+    sop_instance_uid: Optional[str]
+
+
+@dataclass
+class DVHStructureResolution:
+    sources: List[DVHRTStructSource]
+    classification: str
+    reason: str
+    plan_referenced_rtstruct_sop_instance_uids: List[str]
+    selected_rtstruct_sop_instance_uids: List[str]
+    allow_nifti_direct: bool
+    skip_reason: Optional[str] = None
+
+    @property
+    def ok(self) -> bool:
+        return bool(self.sources) and self.skip_reason is None
+
+
+def _read_header(path: Path) -> Optional[pydicom.dataset.FileDataset]:
+    try:
+        return pydicom.dcmread(str(path), stop_before_pixels=True)
+    except Exception:
+        try:
+            return pydicom.dcmread(str(path), stop_before_pixels=True, force=True)
+        except Exception as exc:
+            logger.debug("Failed to read DICOM header %s: %s", path, exc)
+            return None
+
+
+def _looks_like_dicom(path: Path) -> bool:
+    if not path.is_file():
+        return False
+    if path.suffix.lower() in _DICOM_EXTENSIONS:
+        return True
+    try:
+        if path.stat().st_size <= 1024:
+            return False
+        with open(path, "rb") as fh:
+            header = fh.read(132)
+        return header[128:132] == b"DICM" or header[:2] in (b"\x08\x00", b"\x00\x08")
+    except OSError:
+        return False
+
+
+def _iter_dicom_files(subdir: Path) -> List[Path]:
+    if not subdir.is_dir():
+        return []
+    return [path for path in sorted(subdir.iterdir()) if _looks_like_dicom(path)]
+
+
+def _sop_uid(path: Path) -> str:
+    ds = _read_header(path)
+    return str(getattr(ds, "SOPInstanceUID", "") or "") if ds is not None else ""
+
+
+def _dedupe_by_sop(paths: List[Path]) -> List[Path]:
+    out: List[Path] = []
+    seen: set[str] = set()
+    for path in paths:
+        if not path.exists() or not path.is_file():
+            continue
+        uid = _sop_uid(path)
+        key = uid or str(path.resolve(strict=False))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(path)
+    return out
+
+
+def _dose_summation_type(path: Path) -> str:
+    ds = _read_header(path)
+    return str(getattr(ds, "DoseSummationType", "") or "").strip().upper() if ds is not None else ""
+
+
+def _dose_frame_of_reference_uid(path: Path) -> str:
+    ds = _read_header(path)
+    return str(getattr(ds, "FrameOfReferenceUID", "") or "").strip() if ds is not None else ""
+
+
+def _rtstruct_frame_of_reference_uids(path: Path) -> set[str]:
+    ds = _read_header(path)
+    if ds is None:
+        return set()
+    uids: set[str] = set()
+    uid = str(getattr(ds, "FrameOfReferenceUID", "") or "").strip()
+    if uid:
+        uids.add(uid)
+    for ref_for in getattr(ds, "ReferencedFrameOfReferenceSequence", []) or []:
+        uid = str(getattr(ref_for, "FrameOfReferenceUID", "") or "").strip()
+        if uid:
+            uids.add(uid)
+    return uids
+
+
+def _ct_frame_of_reference_uids(course_dirs) -> set[str]:
+    uids: set[str] = set()
+    for ct_path in _iter_dicom_files(course_dirs.dicom_ct)[:5]:
+        ds = _read_header(ct_path)
+        uid = str(getattr(ds, "FrameOfReferenceUID", "") or "").strip() if ds is not None else ""
+        if uid:
+            uids.add(uid)
+    return uids
+
+
+def _referenced_plan_uids_from_dose(path: Path) -> List[str]:
+    ds = _read_header(path)
+    if ds is None:
+        return []
+    refs: List[str] = []
+    for ref in getattr(ds, "ReferencedRTPlanSequence", []) or []:
+        uid = str(getattr(ref, "ReferencedSOPInstanceUID", "") or "").strip()
+        if uid and uid not in refs:
+            refs.append(uid)
+    return refs
+
+
+def _referenced_rtstruct_uids_from_plan(path: Path) -> List[str]:
+    ds = _read_header(path)
+    if ds is None:
+        return []
+    refs: List[str] = []
+    for ref in getattr(ds, "ReferencedStructureSetSequence", []) or []:
+        uid = str(getattr(ref, "ReferencedSOPInstanceUID", "") or "").strip()
+        if uid and uid not in refs:
+            refs.append(uid)
+    return refs
+
+
+def _course_frame_of_reference_uids(course_dirs, rs_manual: Path) -> set[str]:
+    uids: set[str] = set()
+    if rs_manual.exists():
+        ds = _read_header(rs_manual)
+        if ds is not None:
+            uid = str(getattr(ds, "FrameOfReferenceUID", "") or "").strip()
+            if uid:
+                uids.add(uid)
+            for ref_for in getattr(ds, "ReferencedFrameOfReferenceSequence", []) or []:
+                uid = str(getattr(ref_for, "FrameOfReferenceUID", "") or "").strip()
+                if uid:
+                    uids.add(uid)
+    uids.update(_ct_frame_of_reference_uids(course_dirs))
+    return uids
+
+
+def _plan_paths_for_doses(plan_paths: List[Path], dose_paths: List[Path]) -> List[Path]:
+    ref_uids: set[str] = set()
+    for dose_path in dose_paths:
+        ref_uids.update(_referenced_plan_uids_from_dose(dose_path))
+    if not ref_uids:
+        return plan_paths[:1] if len(plan_paths) == 1 else []
+    selected: List[Path] = []
+    for plan_path in plan_paths:
+        uid = _sop_uid(plan_path)
+        if uid and uid in ref_uids:
+            selected.append(plan_path)
+    return selected
+
+
+def _source_dose_uids_and_types(dose_paths: List[Path]) -> tuple[List[str], List[str]]:
+    uids: List[str] = []
+    types: List[str] = []
+    for path in dose_paths:
+        ds = _read_header(path)
+        if ds is None:
+            continue
+        uid = str(getattr(ds, "SOPInstanceUID", "") or "").strip()
+        dtype = str(getattr(ds, "DoseSummationType", "") or "").strip().upper()
+        if uid and uid not in uids:
+            uids.append(uid)
+        if dtype and dtype not in types:
+            types.append(dtype)
+    return uids, types
+
+
+def _skip_dose_resolution(reason: str, classification: str = "unresolved") -> DVHDoseResolution:
+    return DVHDoseResolution(
+        rd_path=None,
+        rp_path=None,
+        classification=classification,
+        reason=reason,
+        source_dose_sop_instance_uids=[],
+        source_dose_summation_types=[],
+        output_dose_sop_instance_uid=None,
+        output_dose_summation_type=None,
+        source_plan_sop_instance_uids=[],
+        skip_reason=reason,
+    )
+
+
+def _resolve_dvh_dose(course_dir: Path, course_dirs, rs_manual: Path) -> DVHDoseResolution:
+    """Resolve the clinically valid plan-level RTDOSE used for DVH.
+
+    The generic layout helper intentionally returns the first DICOM file in a
+    modality folder.  DVH cannot use that shortcut for RTDOSE, because a course
+    can contain both PLAN and BEAM dose grids.
+    """
+    root_rp = course_dir / "RP.dcm"
+    root_rd = course_dir / "RD.dcm"
+    plan_paths = _dedupe_by_sop(([root_rp] if root_rp.exists() else []) + _iter_dicom_files(course_dirs.dicom_rtplan))
+    dose_paths_all = _dedupe_by_sop(([root_rd] if root_rd.exists() else []) + _iter_dicom_files(course_dirs.dicom_rtdose))
+
+    if not plan_paths:
+        return _skip_dose_resolution("No RTPLAN file available for DVH dose resolution", "missing_rtplan")
+    if not dose_paths_all:
+        return _skip_dose_resolution("No RTDOSE file available for DVH dose resolution", "missing_rtdose")
+
+    course_for_uids = _course_frame_of_reference_uids(course_dirs, rs_manual)
+    if course_for_uids:
+        matched = [
+            path for path in dose_paths_all
+            if (_dose_frame_of_reference_uid(path) in course_for_uids)
+        ]
+        if matched:
+            if len(matched) < len(dose_paths_all):
+                logger.warning(
+                    "Ignoring %d RTDOSE file(s) whose FrameOfReferenceUID does not match %s",
+                    len(dose_paths_all) - len(matched),
+                    sorted(course_for_uids),
+                )
+            dose_paths_all = matched
+        else:
+            logger.warning(
+                "No RTDOSE FrameOfReferenceUID matches course RTSTRUCT/CT FOR %s; "
+                "falling back to RTPLAN-referenced dose resolution",
+                sorted(course_for_uids),
+            )
+
+    root_dtype = _dose_summation_type(root_rd) if root_rd.exists() else ""
+    if root_rd.exists() and root_rp.exists() and root_dtype in _PLAN_DOSE_TYPES and root_rd in dose_paths_all:
+        source_uids, source_types = _source_dose_uids_and_types([root_rd])
+        return DVHDoseResolution(
+            rd_path=root_rd,
+            rp_path=root_rp,
+            classification="course_root_plan_dose",
+            reason="Existing course-root RTDOSE has plan-level DoseSummationType",
+            source_dose_sop_instance_uids=source_uids,
+            source_dose_summation_types=source_types,
+            output_dose_sop_instance_uid=source_uids[0] if source_uids else None,
+            output_dose_summation_type=root_dtype,
+            source_plan_sop_instance_uids=[_sop_uid(root_rp)] if _sop_uid(root_rp) else [],
+        )
+    if root_rd.exists() and root_dtype and root_dtype not in _PLAN_DOSE_TYPES:
+        logger.warning(
+            "Refusing to use course-root RTDOSE %s with DoseSummationType=%s for DVH; resolving from source doses",
+            root_rd,
+            root_dtype,
+        )
+
+    source_dose_paths = [path for path in dose_paths_all if path != root_rd]
+    if not source_dose_paths:
+        source_dose_paths = dose_paths_all
+
+    non_beam_doses = [
+        path for path in source_dose_paths
+        if _dose_summation_type(path) in _PLAN_DOSE_TYPES
+    ]
+    candidate_doses = non_beam_doses or source_dose_paths
+
+    if not non_beam_doses:
+        beam_ref_uids = {
+            tuple(_referenced_plan_uids_from_dose(path))
+            for path in candidate_doses
+            if _dose_summation_type(path) == "BEAM"
+        }
+        flat_refs = {uid for refs in beam_ref_uids for uid in refs}
+        if (
+            candidate_doses
+            and len(flat_refs) == 1
+            and all(_dose_summation_type(path) == "BEAM" for path in candidate_doses)
+        ):
+            selected_plans = [path for path in plan_paths if _sop_uid(path) in flat_refs]
+            if len(selected_plans) != 1:
+                return _skip_dose_resolution(
+                    "BEAM-only RTDOSE set could not be matched to exactly one RTPLAN",
+                    "beam_only_plan_match_failed",
+                )
+            classification = "beam_doses_summed_to_plan"
+            selected_doses = candidate_doses
+            should_sum = True
+            reason = f"Summing {len(selected_doses)} BEAM RTDOSE files for one RTPLAN"
+        else:
+            return _skip_dose_resolution(
+                "Only BEAM RTDOSE files were found and they do not form a single-plan summation set",
+                "beam_only_unresolved",
+            )
+    else:
+        dose_classification = _classify_doses(
+            plan_paths=plan_paths,
+            dose_paths=candidate_doses,
+            max_total_dose_gy=100.0,
+        )
+        for warn in dose_classification.warnings:
+            logger.warning("DVH dose classification warning: %s", warn)
+
+        fail_closed_classes = {
+            "ambiguous_no_sum",
+            "separate_courses_no_sum",
+            "separate_regions_no_sum",
+            "no_doses",
+        }
+        if dose_classification.classification in fail_closed_classes:
+            return _skip_dose_resolution(
+                f"{dose_classification.classification}: {dose_classification.reason}",
+                dose_classification.classification,
+            )
+        selected_doses = dose_classification.selected_doses
+        selected_plans = dose_classification.selected_plans or _plan_paths_for_doses(plan_paths, selected_doses)
+        should_sum = bool(dose_classification.should_sum and len(selected_doses) > 1)
+        classification = dose_classification.classification
+        reason = dose_classification.reason
+
+    if not selected_doses:
+        return _skip_dose_resolution("Dose classification selected no RTDOSE files", classification)
+    if not selected_plans:
+        return _skip_dose_resolution("Selected RTDOSE file(s) could not be matched to RTPLAN", classification)
+
+    source_uids, source_types = _source_dose_uids_and_types(selected_doses)
+    selected_types = [_dose_summation_type(path) for path in selected_doses]
+
+    if not should_sum and len(selected_doses) == 1:
+        dtype = selected_types[0] if selected_types else ""
+        if dtype not in _PLAN_DOSE_TYPES:
+            return _skip_dose_resolution(
+                f"Refusing single RTDOSE with DoseSummationType={dtype or 'missing'}",
+                classification,
+            )
+        output_uid = source_uids[0] if source_uids else _sop_uid(selected_doses[0])
+        return DVHDoseResolution(
+            rd_path=selected_doses[0],
+            rp_path=selected_plans[0],
+            classification=classification,
+            reason=reason,
+            source_dose_sop_instance_uids=source_uids,
+            source_dose_summation_types=source_types,
+            output_dose_sop_instance_uid=output_uid or None,
+            output_dose_summation_type=dtype,
+            source_plan_sop_instance_uids=[uid for uid in (_sop_uid(p) for p in selected_plans) if uid],
+        )
+
+    if len(selected_doses) <= 1:
+        return _skip_dose_resolution(
+            "Dose classification requested summation but selected fewer than two RTDOSE files",
+            classification,
+        )
+
+    try:
+        sum_all_rx = classification not in {"beam_doses_summed_to_plan"} and len(selected_plans) > 1
+        total_rx = _infer_rx_from_plan_paths(selected_plans, sum_all=sum_all_rx)
+        plan_sum_ds, plan_ds_list, source_plan_uids = _create_summed_plan(selected_plans, total_rx)
+        dose_sum_ds, _dose_ds_list, summed_source_uids = _sum_doses_with_resample(
+            selected_doses,
+            plan_sum_ds,
+            plan_ds_list,
+        )
+        if classification == "beam_doses_summed_to_plan":
+            dose_sum_ds.DoseSummationType = "PLAN"
+            dose_sum_ds.SeriesDescription = f"Plan Dose Sum ({len(selected_doses)} beams)"
+        rp_out = course_dir / "RP.dcm"
+        rd_out = course_dir / "RD.dcm"
+        plan_sum_ds.save_as(str(rp_out))
+        dose_sum_ds.save_as(str(rd_out))
+        output_dtype = str(getattr(dose_sum_ds, "DoseSummationType", "") or "").strip().upper()
+        output_uid = str(getattr(dose_sum_ds, "SOPInstanceUID", "") or "").strip()
+        return DVHDoseResolution(
+            rd_path=rd_out,
+            rp_path=rp_out,
+            classification=classification,
+            reason=reason,
+            source_dose_sop_instance_uids=summed_source_uids or source_uids,
+            source_dose_summation_types=source_types,
+            output_dose_sop_instance_uid=output_uid or None,
+            output_dose_summation_type=output_dtype or None,
+            source_plan_sop_instance_uids=source_plan_uids,
+        )
+    except Exception as exc:
+        logger.warning("Failed to synthesize DVH plan dose for %s: %s", course_dir, exc)
+        return _skip_dose_resolution(f"Failed to synthesize plan dose: {exc}", classification)
+
+
+def _read_course_metadata(course_dir: Path) -> Dict:
+    meta_path = course_dir / "metadata" / "case_metadata.json"
+    if not meta_path.exists():
+        return {}
+    try:
+        data = json.loads(meta_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        logger.debug("Failed to read course metadata %s: %s", meta_path, exc)
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _candidate_source_study_dirs(course_dir: Path) -> List[Path]:
+    """Return bounded source-study directories that may hold plan-referenced RTSTRUCTs."""
+    meta = _read_course_metadata(course_dir)
+    patient_id = str(meta.get("patient_id") or course_dir.parent.name or "").strip()
+    study_uids: List[str] = []
+    for key in ("ct_study_uid", "course_key"):
+        value = str(meta.get(key) or "").strip()
+        if value and value not in study_uids:
+            study_uids.append(value)
+
+    dirs: List[Path] = []
+    if not patient_id or not study_uids:
+        return dirs
+
+    for ancestor in course_dir.parents:
+        patient_root = ancestor / "data_bucket" / "dicom" / patient_id
+        if not patient_root.is_dir():
+            continue
+        for study_uid in study_uids:
+            candidate = patient_root / study_uid
+            if candidate.is_dir() and candidate not in dirs:
+                dirs.append(candidate)
+    return dirs
+
+
+def _iter_dicom_files_recursive(root: Path, limit: int = 20000) -> Iterable[Path]:
+    if not root.is_dir():
+        return
+    count = 0
+    for path in sorted(root.rglob("*")):
+        if not path.is_file():
+            continue
+        if _looks_like_dicom(path):
+            yield path
+            count += 1
+            if count >= limit:
+                logger.warning("Stopping recursive DICOM scan at %d files under %s", limit, root)
+                return
+
+
+def _is_rtstruct_path(path: Path) -> bool:
+    ds = _read_header(path)
+    if ds is None:
+        return False
+    modality = str(getattr(ds, "Modality", "") or "").strip().upper()
+    sop_class = str(getattr(ds, "SOPClassUID", "") or "").strip()
+    return modality == "RTSTRUCT" or sop_class == "1.2.840.10008.5.1.4.1.1.481.3"
+
+
+def _find_rtstruct_by_sop(
+    course_dir: Path,
+    course_dirs,
+    sop_instance_uids: List[str],
+) -> Optional[Path]:
+    if not sop_instance_uids:
+        return None
+
+    search_roots: List[Path] = [
+        course_dir,
+        course_dirs.dicom_rtstruct,
+        course_dirs.dicom_related,
+        *(_candidate_source_study_dirs(course_dir)),
+    ]
+    seen_roots: set[Path] = set()
+    roots: List[Path] = []
+    for root in search_roots:
+        if not root.exists():
+            continue
+        resolved = root.resolve(strict=False)
+        if resolved in seen_roots:
+            continue
+        seen_roots.add(resolved)
+        roots.append(root)
+
+    def _check(path: Path) -> Optional[Path]:
+        if not path.is_file() or not _looks_like_dicom(path):
+            return None
+        ds = _read_header(path)
+        if ds is None:
+            return None
+        modality = str(getattr(ds, "Modality", "") or "").strip().upper()
+        sop_class = str(getattr(ds, "SOPClassUID", "") or "").strip()
+        if modality != "RTSTRUCT" and sop_class != "1.2.840.10008.5.1.4.1.1.481.3":
+            return None
+        uid = str(getattr(ds, "SOPInstanceUID", "") or "").strip()
+        return path if uid in sop_instance_uids else None
+
+    def _name_matches(root: Path, pattern: str) -> List[Path]:
+        if root in {course_dir, course_dirs.dicom_rtstruct}:
+            return sorted(root.glob(pattern))
+        return sorted(root.rglob(pattern))
+
+    for root in roots:
+        for uid in sop_instance_uids:
+            for candidate in _name_matches(root, f"*{uid}*.dcm"):
+                found = _check(candidate)
+                if found is not None:
+                    return found
+            for candidate in _name_matches(root, f"*{uid}*"):
+                found = _check(candidate)
+                if found is not None:
+                    return found
+
+    for root in roots:
+        if root in (course_dirs.dicom_related, *(_candidate_source_study_dirs(course_dir))):
+            candidates = _iter_dicom_files_recursive(root)
+        else:
+            candidates = _iter_dicom_files(root)
+        for candidate in candidates:
+            found = _check(candidate)
+            if found is not None:
+                return found
+    return None
+
+
+def _copy_plan_rtstruct_to_course(course_dir: Path, source: Path) -> Path:
+    """Keep the plan-referenced RTSTRUCT beside DVH outputs for resumability/provenance."""
+    dst = course_dir / "RS_plan.dcm"
+    try:
+        if source.resolve(strict=False) != dst.resolve(strict=False):
+            shutil.copy2(source, dst)
+    except Exception as exc:
+        logger.debug("Failed to copy plan-referenced RTSTRUCT %s to %s: %s", source, dst, exc)
+        return source
+    return dst
+
+
+def _rtstruct_matches_dose_for(rs_path: Path, dose_for_uid: str) -> bool:
+    if not dose_for_uid:
+        return True
+    rs_for_uids = _rtstruct_frame_of_reference_uids(rs_path)
+    return bool(rs_for_uids) and dose_for_uid in rs_for_uids
+
+
+def _resolve_dvh_structures(
+    course_dir: Path,
+    course_dirs,
+    rtplan_path: Path,
+    rtdose: pydicom.dataset.FileDataset,
+    rs_manual: Path,
+    rs_auto: Path,
+    rs_custom: Optional[Path],
+) -> DVHStructureResolution:
+    dose_for_uid = str(getattr(rtdose, "FrameOfReferenceUID", "") or "").strip()
+    plan_ref_uids = _referenced_rtstruct_uids_from_plan(rtplan_path)
+    selected: List[DVHRTStructSource] = []
+    selected_uids: List[str] = []
+    reasons: List[str] = []
+
+    plan_rs_path = _find_rtstruct_by_sop(course_dir, course_dirs, plan_ref_uids)
+    if plan_rs_path is not None:
+        if _rtstruct_matches_dose_for(plan_rs_path, dose_for_uid):
+            local_plan_rs = _copy_plan_rtstruct_to_course(course_dir, plan_rs_path)
+            sop_uid = _sop_uid(local_plan_rs)
+            selected.append(DVHRTStructSource(local_plan_rs, "PlanRTSTRUCT", sop_uid or None))
+            if sop_uid:
+                selected_uids.append(sop_uid)
+            reasons.append("Using RTSTRUCT referenced by selected RTPLAN")
+        else:
+            reasons.append("Plan-referenced RTSTRUCT FrameOfReferenceUID does not match selected RTDOSE")
+            logger.warning(
+                "Plan-referenced RTSTRUCT %s does not match RTDOSE FrameOfReferenceUID=%s",
+                plan_rs_path,
+                dose_for_uid or "missing",
+            )
+
+    course_ct_for = _ct_frame_of_reference_uids(course_dirs)
+    allow_nifti_direct = bool(not dose_for_uid or not course_ct_for or dose_for_uid in course_ct_for)
+    if not allow_nifti_direct:
+        logger.warning(
+            "Skipping CT/NIfTI-derived DVH structures for %s: course CT FrameOfReferenceUID %s "
+            "does not match selected RTDOSE FrameOfReferenceUID %s",
+            course_dir,
+            sorted(course_ct_for),
+            dose_for_uid,
+        )
+
+    candidate_sources: List[tuple[Optional[Path], str]] = [
+        (rs_custom if rs_custom and rs_custom.exists() else None, "Merged"),
+        (rs_manual if rs_manual.exists() else None, "Manual"),
+        (rs_auto if rs_auto.exists() else None, "AutoRTS"),
+    ]
+    selected_path_keys = {src.path.resolve(strict=False) for src in selected}
+    for candidate, label in candidate_sources:
+        if candidate is None:
+            continue
+        if not _is_rtstruct_path(candidate):
+            continue
+        if not _rtstruct_matches_dose_for(candidate, dose_for_uid):
+            logger.warning(
+                "Skipping %s RTSTRUCT %s: FrameOfReferenceUID %s does not match selected RTDOSE %s",
+                label,
+                candidate,
+                sorted(_rtstruct_frame_of_reference_uids(candidate)),
+                dose_for_uid,
+            )
+            continue
+        key = candidate.resolve(strict=False)
+        if key in selected_path_keys:
+            continue
+        sop_uid = _sop_uid(candidate)
+        if sop_uid and sop_uid in selected_uids:
+            continue
+        selected.append(DVHRTStructSource(candidate, label, sop_uid or None))
+        selected_path_keys.add(key)
+        if sop_uid:
+            selected_uids.append(sop_uid)
+
+    if not selected:
+        if plan_ref_uids:
+            reason = (
+                "No RTSTRUCT compatible with the selected plan-level RTDOSE was found; "
+                "the RTPLAN-referenced structure set could not be resolved or did not match dose geometry"
+            )
+        else:
+            reason = "No RTSTRUCT compatible with the selected plan-level RTDOSE was found"
+        return DVHStructureResolution(
+            sources=[],
+            classification="missing_compatible_rtstruct",
+            reason=reason,
+            plan_referenced_rtstruct_sop_instance_uids=plan_ref_uids,
+            selected_rtstruct_sop_instance_uids=[],
+            allow_nifti_direct=allow_nifti_direct,
+            skip_reason=reason,
+        )
+
+    if plan_rs_path is not None and selected and selected[0].source_label == "PlanRTSTRUCT":
+        classification = "plan_referenced_rtstruct"
+    else:
+        classification = "course_rtstruct"
+    reason = "; ".join(reasons) if reasons else "Using course RTSTRUCT compatible with selected RTDOSE"
+    return DVHStructureResolution(
+        sources=selected,
+        classification=classification,
+        reason=reason,
+        plan_referenced_rtstruct_sop_instance_uids=plan_ref_uids,
+        selected_rtstruct_sop_instance_uids=selected_uids,
+        allow_nifti_direct=allow_nifti_direct,
+    )
 
 
 def _dose_at_fraction(bins, cumulative, fraction: float) -> float:
@@ -526,6 +1193,8 @@ def _write_dvh_qc(
     rx_source: str,
     rx_dose_gy: Optional[float] = None,
     rx_recovery_attempted: bool = True,
+    dose_resolution: Optional[DVHDoseResolution] = None,
+    structure_resolution: Optional[DVHStructureResolution] = None,
 ) -> None:
     present: set[str] = set()
     partial: set[str] = set()
@@ -557,6 +1226,58 @@ def _write_dvh_qc(
         payload["rx_dose_gy"] = float(rx_dose_gy)
     if rx_source == "none":
         payload["warning"] = "Prescription-relative DVH metrics are unavailable; absolute Gy/cc metrics are present."
+    if dose_resolution is not None:
+        payload["dose_resolution"] = {
+            "classification": dose_resolution.classification,
+            "reason": dose_resolution.reason,
+            "rd_path": str(dose_resolution.rd_path) if dose_resolution.rd_path else None,
+            "rp_path": str(dose_resolution.rp_path) if dose_resolution.rp_path else None,
+            "source_dose_sop_instance_uids": dose_resolution.source_dose_sop_instance_uids,
+            "source_dose_summation_types": dose_resolution.source_dose_summation_types,
+            "output_dose_sop_instance_uid": dose_resolution.output_dose_sop_instance_uid,
+            "output_dose_summation_type": dose_resolution.output_dose_summation_type,
+            "source_plan_sop_instance_uids": dose_resolution.source_plan_sop_instance_uids,
+        }
+    if structure_resolution is not None:
+        payload["structure_resolution"] = {
+            "classification": structure_resolution.classification,
+            "reason": structure_resolution.reason,
+            "plan_referenced_rtstruct_sop_instance_uids": structure_resolution.plan_referenced_rtstruct_sop_instance_uids,
+            "selected_rtstruct_sop_instance_uids": structure_resolution.selected_rtstruct_sop_instance_uids,
+            "selected_rtstruct_paths": [str(source.path) for source in structure_resolution.sources],
+            "allow_nifti_direct": structure_resolution.allow_nifti_direct,
+        }
+    meta_dir = course_dir / "metadata"
+    meta_dir.mkdir(parents=True, exist_ok=True)
+    (meta_dir / "dvh_qc.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def _write_dvh_skip_qc(
+    course_dir: Path,
+    dose_resolution: DVHDoseResolution,
+    reason: Optional[str] = None,
+    structure_resolution: Optional[DVHStructureResolution] = None,
+) -> None:
+    payload = {
+        "status": "skipped",
+        "metric_version": DVH_METRIC_VERSION,
+        "reason": reason or dose_resolution.skip_reason or dose_resolution.reason,
+        "dose_resolution": {
+            "classification": dose_resolution.classification,
+            "reason": dose_resolution.reason,
+            "source_dose_sop_instance_uids": dose_resolution.source_dose_sop_instance_uids,
+            "source_dose_summation_types": dose_resolution.source_dose_summation_types,
+        },
+    }
+    if structure_resolution is not None:
+        payload["structure_resolution"] = {
+            "classification": structure_resolution.classification,
+            "reason": structure_resolution.reason,
+            "plan_referenced_rtstruct_sop_instance_uids": structure_resolution.plan_referenced_rtstruct_sop_instance_uids,
+            "selected_rtstruct_sop_instance_uids": structure_resolution.selected_rtstruct_sop_instance_uids,
+            "selected_rtstruct_paths": [str(source.path) for source in structure_resolution.sources],
+            "allow_nifti_direct": structure_resolution.allow_nifti_direct,
+        }
     meta_dir = course_dir / "metadata"
     meta_dir.mkdir(parents=True, exist_ok=True)
     (meta_dir / "dvh_qc.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
@@ -609,6 +1330,9 @@ def _is_dvh_up_to_date(
         ):
             logger.info("DVH output predates Rx recovery QC; regenerating")
             return False
+        if not qc_data.get("structure_resolution"):
+            logger.info("DVH output predates RTSTRUCT provenance QC; regenerating")
+            return False
 
         dvh_mtime = dvh_path.stat().st_mtime
 
@@ -621,8 +1345,15 @@ def _is_dvh_up_to_date(
             course_dir / "RS_auto.dcm",
             course_dir / "RS_auto_cropped.dcm",
             course_dir / "RS_custom.dcm",
+            course_dir / "RS_plan.dcm",
             course_dir / "cropping_metadata.json",  # Ensure DVH reruns if cropping config changes
         ]
+        deps.extend(_iter_dicom_files(_cd.dicom_rtplan))
+        deps.extend(_iter_dicom_files(_cd.dicom_rtdose))
+        structure_meta = qc_data.get("structure_resolution") or {}
+        for dep_path in structure_meta.get("selected_rtstruct_paths") or []:
+            if dep_path:
+                deps.append(Path(dep_path))
 
         # Check custom model outputs
         for model_name, model_course_dir in list_custom_model_outputs(course_dir):
@@ -1205,8 +1936,6 @@ def dvh_for_course(
         return out_xlsx
 
     course_dirs = build_course_dirs(course_dir)
-    rp = find_dcm(course_dirs.dicom_rtplan, "RP.dcm", course_dir)
-    rd = find_dcm(course_dirs.dicom_rtdose, "RD.dcm", course_dir)
     rs_manual = find_dcm(course_dirs.dicom_rtstruct, "RS.dcm", course_dir)
     rs_auto = course_dir / "RS_auto.dcm"
 
@@ -1229,8 +1958,21 @@ def dvh_for_course(
         except Exception as e:
             logger.warning(f"Failed to load cropping metadata from {cropping_metadata_path}: {e}")
 
-    if not rd.exists() or not rp.exists():
-        logger.warning("Missing RP/RD in %s; skipping DVH", course_dir)
+    dose_resolution = _resolve_dvh_dose(course_dir, course_dirs, rs_manual)
+    if not dose_resolution.ok:
+        logger.warning(
+            "Skipping DVH for %s: %s",
+            course_dir,
+            dose_resolution.skip_reason or dose_resolution.reason,
+        )
+        _write_dvh_skip_qc(course_dir, dose_resolution)
+        return None
+    rd = dose_resolution.rd_path
+    rp = dose_resolution.rp_path
+    if rd is None or rp is None or not rd.exists() or not rp.exists():
+        reason = "Resolved RP/RD path is missing on disk"
+        logger.warning("Skipping DVH for %s: %s", course_dir, reason)
+        _write_dvh_skip_qc(course_dir, _skip_dose_resolution(reason, "resolved_path_missing"))
         return None
     try:
         rtdose = pydicom.dcmread(str(rd))
@@ -1285,6 +2027,8 @@ def dvh_for_course(
             rx_value,
             rtstruct_ds,
             builder_obj,
+            rtstruct_sop_uid,
+            rtstruct_path,
         ) = task
         try:
             abs_dvh = dvhcalc.get_dvh(rtstruct_ds, rtdose, roi_number)
@@ -1335,12 +2079,15 @@ def dvh_for_course(
                 "ROI_OriginalName": roi_name,
                 "Segmentation_Source": source_label,
                 "structure_cropped": cropped,
+                "rtstruct_sop_instance_uid": rtstruct_sop_uid,
+                "rtstruct_path": str(rtstruct_path),
                 "_curve_data": curve_points, # Internal key for JSON export
             }
         )
         return metrics
 
-    def process_struct(rs_path: Path, source: str, rx_dose: float) -> None:
+    def process_struct(rs_source: DVHRTStructSource, rx_dose: float) -> None:
+        rs_path = rs_source.path
         try:
             rtstruct = pydicom.dcmread(str(rs_path))
         except Exception as e:
@@ -1367,7 +2114,16 @@ def dvh_for_course(
                 roi_number = int(getattr(roi, "ROINumber", 0) or 0)
             if roi_number <= 0:
                 continue
-            tasks.append((roi_number, roi_name, source, rx_dose, rtstruct, builder))
+            tasks.append((
+                roi_number,
+                roi_name,
+                rs_source.source_label,
+                rx_dose,
+                rtstruct,
+                builder,
+                rs_source.sop_instance_uid,
+                rs_path,
+            ))
 
         if not tasks:
             return
@@ -1378,7 +2134,7 @@ def dvh_for_course(
             cpu_total = os.cpu_count() or 2
             worker_cap = max(1, cpu_total - 1)
         task_results = run_tasks_with_adaptive_workers(
-            f"DVH ({source})",
+            f"DVH ({rs_source.source_label})",
             tasks,
             _calc_roi,
             max_workers=worker_cap,
@@ -1451,35 +2207,64 @@ def dvh_for_course(
             logger.warning("Failed to create custom structures: %s", e)
             rs_custom = None
 
-    if rs_custom and rs_custom.exists():
-        process_struct(rs_custom, "Merged", rx_est)
-    else:
-        # Fallback to individual files if RS_custom doesn't exist
-        if rs_manual.exists():
-            process_struct(rs_manual, "Manual", rx_est)
-        if rs_auto.exists():
-            process_struct(rs_auto, "AutoRTS", rx_est)
+    structure_resolution = _resolve_dvh_structures(
+        course_dir=course_dir,
+        course_dirs=course_dirs,
+        rtplan_path=rp,
+        rtdose=rtdose,
+        rs_manual=rs_manual,
+        rs_auto=rs_auto,
+        rs_custom=rs_custom if rs_custom and rs_custom.exists() else None,
+    )
+    if not structure_resolution.ok:
+        logger.warning(
+            "Skipping DVH for %s: %s",
+            course_dir,
+            structure_resolution.skip_reason or structure_resolution.reason,
+        )
+        _write_dvh_skip_qc(
+            course_dir,
+            dose_resolution,
+            reason=structure_resolution.skip_reason or structure_resolution.reason,
+            structure_resolution=structure_resolution,
+        )
+        return None
+
+    for rs_source in structure_resolution.sources:
+        process_struct(rs_source, rx_est)
 
     # Always include per-model custom segmentation outputs if present
     for model_name, model_course_dir in list_custom_model_outputs(course_dir):
         rs_model = model_course_dir / "rtstruct.dcm"
         if not rs_model.exists():
             continue
+        if not structure_resolution.allow_nifti_direct or not _rtstruct_matches_dose_for(rs_model, _dose_frame_of_reference_uid(rd)):
+            logger.warning(
+                "Skipping custom model RTSTRUCT %s: structure geometry is not compatible with selected RTDOSE",
+                rs_model,
+            )
+            continue
         source_label = f"CustomModel:{model_name}"
-        process_struct(rs_model, source_label, rx_est)
+        process_struct(DVHRTStructSource(rs_model, source_label, _sop_uid(rs_model) or None), rx_est)
 
     # --- Direct NIfTI-based DVH for TotalSegmentator + custom structures ---
     # Bypasses RTStructBuilder to avoid geometry mismatches from duplicate CT slices
     existing_roi_names = {r.get("ROI_OriginalName", r.get("ROI_Name", "")) for r in results}
-    nifti_results = _compute_nifti_based_dvh(
-        course_dir=course_dir,
-        custom_structures_config=custom_structures_config,
-        rtdose_ds=rtdose,
-        rd_path=rd,
-        rx_est=rx_est,
-        existing_roi_names=existing_roi_names,
-    )
-    results.extend(nifti_results)
+    if structure_resolution.allow_nifti_direct:
+        nifti_results = _compute_nifti_based_dvh(
+            course_dir=course_dir,
+            custom_structures_config=custom_structures_config,
+            rtdose_ds=rtdose,
+            rd_path=rd,
+            rx_est=rx_est,
+            existing_roi_names=existing_roi_names,
+        )
+        results.extend(nifti_results)
+    else:
+        logger.warning(
+            "Skipping NIfTI-based DVH for %s because selected RTDOSE is not in course CT geometry",
+            course_dir,
+        )
 
     if not results:
         logger.info("No DVH results for %s", course_dir)
@@ -1493,6 +2278,18 @@ def dvh_for_course(
         r_copy = res.copy()
         points = r_copy.pop("_curve_data", [])
         r_copy["rx_source"] = rx_source
+        r_copy["dose_resolution"] = dose_resolution.classification
+        r_copy["dose_resolution_reason"] = dose_resolution.reason
+        r_copy["dose_sop_instance_uid"] = dose_resolution.output_dose_sop_instance_uid
+        r_copy["dose_summation_type"] = dose_resolution.output_dose_summation_type
+        r_copy["source_dose_sop_instance_uids"] = ";".join(dose_resolution.source_dose_sop_instance_uids)
+        r_copy["source_dose_summation_types"] = ";".join(dose_resolution.source_dose_summation_types)
+        r_copy["source_plan_sop_instance_uids"] = ";".join(dose_resolution.source_plan_sop_instance_uids)
+        r_copy["rtstruct_resolution"] = structure_resolution.classification
+        r_copy["rtstruct_resolution_reason"] = structure_resolution.reason
+        r_copy["plan_referenced_rtstruct_sop_instance_uids"] = ";".join(
+            structure_resolution.plan_referenced_rtstruct_sop_instance_uids
+        )
         clean_results.append(r_copy)
         
         if points:
@@ -1526,5 +2323,14 @@ def dvh_for_course(
                 course_dir.name,
                 ", ".join(missing_custom),
             )
-    _write_dvh_qc(course_dir, df, expected_custom, rx_source, rx_est, rx_recovery_attempted)
+    _write_dvh_qc(
+        course_dir,
+        df,
+        expected_custom,
+        rx_source,
+        rx_est,
+        rx_recovery_attempted,
+        dose_resolution,
+        structure_resolution,
+    )
     return out_xlsx
