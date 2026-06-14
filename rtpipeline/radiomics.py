@@ -796,6 +796,20 @@ def radiomics_for_course(config: PipelineConfig, course_dir: Path, custom_struct
             if rec:
                 rows.append(rec)
     if not rows:
+        try:
+            from .radiomics_conda import (
+                _select_usable_rtstruct,
+                radiomics_for_course_ct_nifti_fallback,
+            )
+
+            if _select_usable_rtstruct(course_dir / "RS_custom.dcm", course_dir / "RS_auto.dcm") is None:
+                logger.info(
+                    "No usable RS_custom.dcm/RS_auto.dcm rows for %s; trying CT TotalSegmentator NIfTI fallback",
+                    course_dir,
+                )
+                return radiomics_for_course_ct_nifti_fallback(course_dir, config)
+        except Exception as exc:
+            logger.debug("CT TotalSegmentator NIfTI fallback unavailable for %s: %s", course_dir, exc)
         return None
     try:
         import pandas as pd

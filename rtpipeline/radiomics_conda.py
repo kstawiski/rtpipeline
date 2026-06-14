@@ -97,6 +97,104 @@ def _roi_instance_key(obj: Dict[str, Any]) -> str:
     return f"{roi}\x1f{series}"
 
 
+def _strip_nii_suffix(path: Path) -> str:
+    """Return a NIfTI filename stem, handling .nii.gz as one suffix."""
+    name = path.name
+    if name.endswith(".nii.gz"):
+        return name[:-7]
+    if name.endswith(".nii"):
+        return name[:-4]
+    return path.stem
+
+
+def _norm_roi_key(name: str) -> str:
+    return ''.join(ch for ch in str(name).lower() if ch.isalnum())
+
+
+def _ct_skip_rois(config: Any) -> Set[str]:
+    skip_rois_default = {
+        "couchsurface",
+        "couchinterior",
+        "couchexterior",
+        "bones",
+        "m1",
+        "m2",
+        "table",
+        "support",
+    }
+    cfg_skip = {
+        _norm_roi_key(item)
+        for item in getattr(config, "radiomics_skip_rois", [])
+        if isinstance(item, str) and item.strip()
+    }
+    return skip_rois_default | cfg_skip
+
+
+def _ct_voxel_limits(config: Any) -> Tuple[int, int]:
+    max_voxels_limit = getattr(config, "radiomics_max_voxels", None)
+    if max_voxels_limit is None:
+        max_voxels_limit = 15_000_000
+    elif max_voxels_limit < 1:
+        max_voxels_limit = 15_000_000
+
+    min_voxels_limit = getattr(config, "radiomics_min_voxels", None)
+    if min_voxels_limit is None:
+        min_voxels_limit = 120
+    elif min_voxels_limit < 1:
+        min_voxels_limit = 1
+    return int(min_voxels_limit), int(max_voxels_limit)
+
+
+def _select_usable_rtstruct(*paths: Path) -> Optional[Path]:
+    """Return the first RTSTRUCT path that exists and has at least one ROI."""
+    for path in paths:
+        if not path.exists():
+            continue
+        try:
+            ds = pydicom.dcmread(str(path), stop_before_pixels=True)
+            rois = getattr(ds, "StructureSetROISequence", []) or []
+            if rois:
+                return path
+            logger.warning("Ignoring RTSTRUCT with no ROIs for CT radiomics: %s", path)
+        except Exception as exc:
+            logger.warning("Ignoring unreadable RTSTRUCT for CT radiomics %s: %s", path, exc)
+    return None
+
+
+def _ct_nifti_candidates(course_dir: Path) -> Dict[str, Path]:
+    nifti_dir = course_dir / "NIFTI"
+    if not nifti_dir.exists():
+        return {}
+    out: Dict[str, Path] = {}
+    for path in sorted(nifti_dir.glob("*.nii*")):
+        if not path.is_file() or path.name.startswith(".") or "_cropped" in path.name:
+            continue
+        out[_strip_nii_suffix(path)] = path
+    return out
+
+
+def _series_uid_from_nifti(nifti_path: Path, fallback: str) -> str:
+    meta_path = nifti_path.with_name(f"{_strip_nii_suffix(nifti_path)}.metadata.json")
+    if meta_path.exists():
+        try:
+            data = json.loads(meta_path.read_text(encoding="utf-8"))
+            uid = data.get("series_instance_uid")
+            if uid:
+                return str(uid)
+        except Exception as exc:
+            logger.debug("Failed to read NIfTI metadata %s: %s", meta_path, exc)
+    return fallback
+
+
+def _totalseg_roi_name(mask_path: Path) -> Optional[str]:
+    name = _strip_nii_suffix(mask_path)
+    if "--" in name:
+        _model, name = name.split("--", 1)
+    if name.endswith("_cropped"):
+        return None
+    return name or None
+
+
 class RadiomicsCheckpoint:
     """Manages checkpoint state for resumable radiomics extraction.
 
@@ -1174,6 +1272,225 @@ def process_radiomics_batch(
     return output_path
 
 
+def radiomics_for_course_ct_nifti_fallback(
+    course_dir: Path,
+    config: Any,
+) -> Optional[Path]:
+    """Extract CT radiomics from TotalSegmentator NIfTI masks when no RS is usable."""
+    course_dir = Path(course_dir)
+    course_dirs = build_course_dirs(course_dir)
+    seg_dir = course_dirs.segmentation_totalseg
+    output_path = course_dir / "radiomics_ct.xlsx"
+
+    if not seg_dir.exists():
+        logger.debug("No TotalSegmentator NIfTI mask directory for CT fallback in %s", course_dir)
+        return None
+
+    params_file = str(config.radiomics_params_file) if getattr(config, "radiomics_params_file", None) else None
+    skip_rois = _ct_skip_rois(config)
+    min_voxels_limit, max_voxels_limit = _ct_voxel_limits(config)
+    nifti_by_stem = _ct_nifti_candidates(course_dir)
+
+    series_dirs = [p for p in sorted(seg_dir.iterdir()) if p.is_dir()]
+    if any(seg_dir.glob("*.nii*")):
+        series_dirs.insert(0, seg_dir)
+
+    tasks: List[Dict[str, Any]] = []
+    temp_files: List[Path] = []
+    image_cache: Dict[Path, Tuple[str, Tuple[float, float, float]]] = {}
+    dicom_image_path: Optional[str] = None
+    dicom_spacing: Optional[Tuple[float, float, float]] = None
+
+    def _dicom_image() -> Optional[Tuple[str, Tuple[float, float, float]]]:
+        nonlocal dicom_image_path, dicom_spacing
+        if dicom_image_path is not None and dicom_spacing is not None:
+            return dicom_image_path, dicom_spacing
+        ct_dir = course_dirs.dicom_ct
+        if not ct_dir.exists():
+            return None
+        try:
+            reader = sitk.ImageSeriesReader()
+            dicom_files = reader.GetGDCMSeriesFileNames(str(ct_dir))
+            if not dicom_files:
+                return None
+            reader.SetFileNames(dicom_files)
+            img = reader.Execute()
+            tmp = tempfile.NamedTemporaryFile(suffix=".nrrd", delete=False, prefix="ct_dicom_fallback_")
+            tmp.close()
+            sitk.WriteImage(img, tmp.name, useCompression=True)
+            temp_files.append(Path(tmp.name))
+            dicom_image_path = tmp.name
+            dicom_spacing = tuple(float(x) for x in img.GetSpacing())
+            return dicom_image_path, dicom_spacing
+        except Exception as exc:
+            logger.warning("Failed to load DICOM CT for NIfTI-mask fallback in %s: %s", course_dir, exc)
+            return None
+
+    def _image_for_series(series_name: str) -> Optional[Tuple[str, str, Tuple[float, float, float], str]]:
+        nifti_path = nifti_by_stem.get(series_name)
+        if nifti_path is None and len(nifti_by_stem) == 1:
+            nifti_path = next(iter(nifti_by_stem.values()))
+
+        if nifti_path is not None:
+            cached = image_cache.get(nifti_path)
+            if cached is None:
+                try:
+                    img = sitk.ReadImage(str(nifti_path))
+                    tmp = tempfile.NamedTemporaryFile(suffix=".nrrd", delete=False, prefix="ct_nifti_fallback_")
+                    tmp.close()
+                    sitk.WriteImage(img, tmp.name, useCompression=True)
+                    cached = (tmp.name, tuple(float(x) for x in img.GetSpacing()))
+                    image_cache[nifti_path] = cached
+                    temp_files.append(Path(tmp.name))
+                except Exception as exc:
+                    logger.warning("Failed to convert CT NIfTI %s for radiomics fallback: %s", nifti_path, exc)
+                    return None
+            image_path, spacing = cached
+            return image_path, str(nifti_path), spacing, _series_uid_from_nifti(nifti_path, series_name)
+
+        dicom = _dicom_image()
+        if dicom is None:
+            return None
+        image_path, spacing = dicom
+        return image_path, "", spacing, series_name
+
+    for series_root in series_dirs:
+        series_name = series_root.name if series_root != seg_dir else "CT"
+        image_info = _image_for_series(series_name)
+        if image_info is None:
+            logger.warning("No CT image matched TotalSegmentator mask series %s in %s", series_name, course_dir)
+            continue
+        image_path, nifti_path_str, image_spacing, series_uid = image_info
+
+        for mask_path in sorted(series_root.glob("*.nii*")):
+            roi_name = _totalseg_roi_name(mask_path)
+            if not roi_name:
+                continue
+            norm_key = _norm_roi_key(roi_name)
+            if norm_key in skip_rois:
+                logger.debug("Skipping CT fallback ROI %s (skip list)", roi_name)
+                continue
+
+            try:
+                mask_img = sitk.ReadImage(str(mask_path))
+                mask_arr = sitk.GetArrayFromImage(mask_img)
+            except Exception as exc:
+                logger.debug("Failed to read CT fallback mask %s: %s", mask_path, exc)
+                continue
+
+            mask_bool = mask_arr > 0
+            if not mask_bool.any():
+                logger.debug("Skipping CT fallback ROI %s: empty mask", roi_name)
+                continue
+
+            voxel_count = int(mask_bool.sum())
+            if voxel_count < min_voxels_limit:
+                logger.info(
+                    "Skipping CT fallback ROI %s: %d voxels below minimum %d",
+                    roi_name,
+                    voxel_count,
+                    min_voxels_limit,
+                )
+                continue
+
+            try:
+                native_voxel_mm3 = float(image_spacing[0]) * float(image_spacing[1]) * float(image_spacing[2])
+            except Exception:
+                native_voxel_mm3 = 1.0
+            physical_volume_mm3 = float(voxel_count) * max(1e-9, native_voxel_mm3)
+            estimated_voxels = physical_volume_mm3
+            large_roi = norm_key.startswith("body") or (estimated_voxels > float(max_voxels_limit))
+            if large_roi:
+                logger.info(
+                    "CT fallback ROI %s is large (native=%d voxels, est@1mm=%.0f voxels, cap=%d); using reduced radiomics settings",
+                    roi_name,
+                    voxel_count,
+                    estimated_voxels,
+                    int(max_voxels_limit),
+                )
+
+            try:
+                mask_nrrd = tempfile.NamedTemporaryFile(
+                    suffix=".nrrd",
+                    delete=False,
+                    prefix=f"ct_ts_mask_{roi_name}_",
+                )
+                mask_nrrd.close()
+                sitk.WriteImage(mask_img, mask_nrrd.name, useCompression=True)
+                temp_files.append(Path(mask_nrrd.name))
+            except Exception as exc:
+                logger.debug("Failed to convert CT fallback mask %s: %s", mask_path, exc)
+                continue
+
+            cropped_flag = mask_is_cropped(mask_bool)
+            display_roi = roi_name if (not cropped_flag or roi_name.endswith("__partial")) else f"{roi_name}__partial"
+
+            tasks.append({
+                "image_path": image_path,
+                "mask_path": mask_nrrd.name,
+                "roi_name": display_roi,
+                "params_file": params_file,
+                "label": None,
+                "large_roi": bool(large_roi),
+                "cleanup": False,
+                "metadata": {
+                    "modality": "CT",
+                    "series_uid": series_uid,
+                    "segmentation_source": "AutoTS_total_nifti_fallback",
+                    "course_dir": str(course_dir),
+                    "patient_id": course_dir.parent.name,
+                    "course_id": course_dir.name,
+                    "structure_cropped": cropped_flag,
+                    "roi_original_name": roi_name,
+                    "nifti_path": nifti_path_str,
+                    "mask_path_source": str(mask_path),
+                },
+            })
+
+    if not tasks:
+        logger.warning("No valid TotalSegmentator NIfTI ROIs found for CT fallback in %s", course_dir)
+        for tf in temp_files:
+            try:
+                tf.unlink()
+            except Exception:
+                pass
+        return None
+
+    logger.info("Processing %d CT radiomics fallback tasks for %s", len(tasks), course_dir.name)
+
+    max_workers = None
+    env_workers = int(os.environ.get("RTPIPELINE_MAX_WORKERS", "0") or 0)
+    if env_workers > 0:
+        max_workers = env_workers
+    elif hasattr(config, "effective_workers") and callable(config.effective_workers):
+        try:
+            max_workers = config.effective_workers()
+        except Exception:
+            pass
+    if max_workers is None:
+        max_workers = min(4, len(tasks))
+
+    sequential = os.environ.get("RTPIPELINE_RADIOMICS_SEQUENTIAL", "").lower() in ("1", "true", "yes")
+    checkpoint_path = course_dir / "metadata" / "radiomics_ct_checkpoint.parquet"
+
+    result = process_radiomics_batch(
+        tasks,
+        output_path,
+        sequential=sequential,
+        max_workers=max_workers,
+        checkpoint_path=checkpoint_path,
+        enable_heartbeat=True,
+    )
+
+    for tf in temp_files:
+        try:
+            tf.unlink()
+        except Exception:
+            pass
+
+    return result
+
+
 def radiomics_for_course(
     course_dir: Path,
     config: Any,
@@ -1194,8 +1511,10 @@ def radiomics_for_course(
 
     # Check for CT DICOM files
     ct_dir = course_dirs.dicom_ct
-    if not ct_dir.exists():
-        logger.warning(f"No CT_DICOM directory found in {course_dir}")
+    has_ct_dicom = ct_dir.exists()
+    has_ct_nifti = bool(_ct_nifti_candidates(course_dir))
+    if not has_ct_dicom and not has_ct_nifti:
+        logger.warning(f"No CT image found in {course_dir}")
         return None
 
     # Check for segmentation files
@@ -1214,12 +1533,19 @@ def radiomics_for_course(
     except Exception as exc:
         logger.debug("RS_custom preparation failed for %s: %s", course_dir, exc)
 
-    if not rs_auto.exists() and not rs_custom.exists():
-        logger.warning(f"No segmentation files found in {course_dir}")
-        return None
+    # Use the available RTSTRUCT segmentation. If neither generated RTSTRUCT is
+    # present/readable, recover directly from the TotalSegmentator NIfTI masks.
+    rs_file = _select_usable_rtstruct(rs_custom, rs_auto)
+    if rs_file is None:
+        logger.info(
+            "No usable RS_custom.dcm/RS_auto.dcm for %s; trying CT TotalSegmentator NIfTI fallback",
+            course_dir,
+        )
+        return radiomics_for_course_ct_nifti_fallback(course_dir, config)
 
-    # Use the available segmentation
-    rs_file = rs_custom if rs_custom.exists() else rs_auto
+    if not ct_dir.exists():
+        logger.warning("No CT_DICOM directory found for RTSTRUCT radiomics in %s", course_dir)
+        return None
 
     # Load CT image
     try:
@@ -1319,34 +1645,8 @@ def radiomics_for_course(
             rt_struct_path=str(rs_file)
         )
 
-        skip_rois_default = {
-            "couchsurface",
-            "couchinterior",
-            "couchexterior",
-            "bones",
-            "m1",
-            "m2",
-            "table",
-            "support",
-        }
-        cfg_skip = {
-            _norm(item)
-            for item in getattr(config, "radiomics_skip_rois", [])
-            if isinstance(item, str) and item.strip()
-        }
-        skip_rois = skip_rois_default | cfg_skip
-
-        max_voxels_limit = getattr(config, "radiomics_max_voxels", None)
-        if max_voxels_limit is None:
-            max_voxels_limit = 15_000_000
-        elif max_voxels_limit < 1:
-            max_voxels_limit = 15_000_000
-
-        min_voxels_limit = getattr(config, "radiomics_min_voxels", None)
-        if min_voxels_limit is None:
-            min_voxels_limit = 120
-        elif min_voxels_limit < 1:
-            min_voxels_limit = 1
+        skip_rois = _ct_skip_rois(config)
+        min_voxels_limit, max_voxels_limit = _ct_voxel_limits(config)
 
         for roi_name in rtstruct.get_roi_names():
             norm_key = _norm(roi_name)
@@ -1444,7 +1744,11 @@ def radiomics_for_course(
             os.unlink(ct_image_path)
         except Exception:
             pass
-        return None
+        logger.info(
+            "RTSTRUCT radiomics preparation failed for %s; trying CT TotalSegmentator NIfTI fallback",
+            course_dir,
+        )
+        return radiomics_for_course_ct_nifti_fallback(course_dir, config)
 
     if not tasks:
         logger.warning("No valid ROIs found in %s", rs_file)
