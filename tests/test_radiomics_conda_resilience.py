@@ -18,10 +18,16 @@ Bug B — per-course conda env probe times out under load and silently skips cou
     the probe a generous timeout + one retry.
 """
 
+import json
 import subprocess
+import sys
+import types
+from types import SimpleNamespace
 
+import numpy as np
 import pandas as pd
 import pytest
+import SimpleITK as sitk
 
 import rtpipeline.radiomics_conda as rc
 from rtpipeline.radiomics_conda import (
@@ -49,6 +55,24 @@ def _feature_record(roi_name):
         "roi_original_name": roi_name,
         "modality": "CT",
     }
+
+
+def _write_nifti(path, array, *, spacing=(1.0, 1.0, 1.0)):
+    img = sitk.GetImageFromArray(np.asarray(array))
+    img.SetSpacing(tuple(float(x) for x in spacing))
+    sitk.WriteImage(img, str(path))
+
+
+def _minimal_config(**overrides):
+    data = {
+        "radiomics_params_file": None,
+        "radiomics_skip_rois": [],
+        "radiomics_max_voxels": 10_000_000,
+        "radiomics_min_voxels": 2,
+        "effective_workers": lambda: 1,
+    }
+    data.update(overrides)
+    return SimpleNamespace(**data)
 
 
 # ---- Bug A: checkpoint flush must survive nested diagnostics ----------------------------
@@ -232,6 +256,83 @@ def test_mr_duplicate_roi_name_across_series_not_collapsed(tmp_path, monkeypatch
     assert result is not None
     series = sorted(str(s) for s in pd.read_excel(out)["series_uid"].tolist())
     assert series == ["1.2.A", "1.2.B"], f"both MR series' liver must survive resume; got {series}"
+
+
+def test_ct_totalseg_nifti_fallback_writes_tagged_workbook(tmp_path, monkeypatch):
+    """No generated RS file: CT radiomics should recover directly from TS NIfTI masks."""
+    course = tmp_path / "P1" / "2024-12"
+    nifti_dir = course / "NIFTI"
+    seg_dir = course / "Segmentation_TotalSegmentator" / "CT_SERIES"
+    nifti_dir.mkdir(parents=True)
+    seg_dir.mkdir(parents=True)
+    (course / "metadata").mkdir(parents=True)
+
+    _write_nifti(nifti_dir / "CT_SERIES.nii.gz", np.ones((5, 5, 5), dtype=np.int16))
+    (nifti_dir / "CT_SERIES.metadata.json").write_text(
+        json.dumps({"series_instance_uid": "1.2.3.CT"}),
+        encoding="utf-8",
+    )
+    mask = np.zeros((5, 5, 5), dtype=np.uint8)
+    mask[1:4, 1:4, 1:4] = 1
+    _write_nifti(seg_dir / "total--liver.nii.gz", mask)
+    _write_nifti(seg_dir / "total--liver_cropped.nii.gz", mask)
+    _write_nifti(seg_dir / "total--skip_me.nii.gz", mask)
+
+    seen = {}
+
+    def fake_batch(tasks, params_file=None):
+        seen["tasks"] = tasks
+        return [
+            {"__status__": "success", "original_firstorder_Mean": float(i + 1)}
+            for i, _task in enumerate(tasks)
+        ]
+
+    monkeypatch.setattr(rc, "check_radiomics_env", lambda *a, **k: True)
+    monkeypatch.setattr(rc, "extract_radiomics_batch_with_conda", fake_batch)
+    monkeypatch.setenv("RTPIPELINE_RADIOMICS_SEQUENTIAL", "1")
+
+    out = rc.radiomics_for_course(course, _minimal_config(radiomics_skip_rois=["skip_me"]))
+
+    assert out == course / "radiomics_ct.xlsx"
+    tasks = seen["tasks"]
+    assert len(tasks) == 1
+    assert tasks[0]["roi_name"] == "liver"
+    assert tasks[0]["metadata"]["series_uid"] == "1.2.3.CT"
+    assert tasks[0]["metadata"]["segmentation_source"] == "AutoTS_total_nifti_fallback"
+    assert tasks[0]["metadata"]["roi_original_name"] == "liver"
+
+    df = pd.read_excel(out)
+    assert df["segmentation_source"].tolist() == ["AutoTS_total_nifti_fallback"]
+    assert df["series_uid"].tolist() == ["1.2.3.CT"]
+    assert df["roi_name"].tolist() == ["liver"]
+    assert df["original_firstorder_Mean"].tolist() == [1]
+
+
+def test_ct_totalseg_nifti_fallback_not_used_when_rs_selected(tmp_path, monkeypatch):
+    """A selected RS path keeps the RTSTRUCT branch; fallback is only for no usable RS."""
+    course = tmp_path / "P1" / "2024-12"
+    (course / "DICOM" / "CT").mkdir(parents=True)
+    (course / "RS_auto.dcm").write_bytes(b"not read by this test")
+
+    monkeypatch.setattr(rc, "_select_usable_rtstruct", lambda *paths: course / "RS_auto.dcm")
+
+    class _FakeRTStruct:
+        def get_roi_names(self):
+            return []
+
+    fake_rt_utils = types.SimpleNamespace(
+        RTStructBuilder=types.SimpleNamespace(
+            create_from=lambda dicom_series_path, rt_struct_path: _FakeRTStruct()
+        )
+    )
+    monkeypatch.setitem(sys.modules, "rt_utils", fake_rt_utils)
+
+    def fail_fallback(*args, **kwargs):
+        raise AssertionError("NIfTI fallback must not run when an RS is selected")
+
+    monkeypatch.setattr(rc, "radiomics_for_course_ct_nifti_fallback", fail_fallback)
+
+    assert rc.radiomics_for_course(course, _minimal_config()) is None
 
 
 # ---- Bug B: env check caching + robust first probe --------------------------------------
