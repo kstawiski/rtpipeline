@@ -724,6 +724,38 @@ def _clear_previous_masks(seg_dir: Path, base_name: str, model: str) -> None:
             pass
 
 
+@functools.lru_cache(maxsize=1)
+def _totalseg_version() -> str:
+    """Installed TotalSegmentator version, for per-series segmentation provenance.
+
+    Cached because it is identical for every series in a run. Returns ``"unknown"``
+    if the package metadata cannot be read, so provenance never breaks segmentation.
+    """
+    try:
+        from importlib.metadata import version as _pkg_version
+        return str(_pkg_version("TotalSegmentator"))
+    except Exception:
+        return "unknown"
+
+
+def _write_ts_version_sidecar(dest: Path, model: str) -> None:
+    """Record the TotalSegmentator version used for this series/model alongside its masks.
+
+    Lets cohort-wide version uniformity be audited from the outputs themselves
+    rather than assumed from the run environment. Fail-soft: a write error is
+    logged at debug and never aborts segmentation.
+    """
+    try:
+        prov = {
+            "totalsegmentator_version": _totalseg_version(),
+            "model": model,
+            "written_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
+        }
+        (dest / f"{model}--ts_version.json").write_text(json.dumps(prov, indent=2), encoding="utf-8")
+    except Exception as exc:  # pragma: no cover - provenance must never break seg
+        logger.debug("Could not write TS version sidecar in %s: %s", dest, exc)
+
+
 def _materialize_masks(source: Path, dest: Path, base_name: str, model: str) -> None:
     dest.mkdir(parents=True, exist_ok=True)
     _clear_previous_masks(dest, base_name, model)
@@ -749,6 +781,8 @@ def _materialize_masks(source: Path, dest: Path, base_name: str, model: str) -> 
             continue
         dest_mask = dest / f"{model}--{mask.name}"
         shutil.copy2(mask, dest_mask)
+
+    _write_ts_version_sidecar(dest, model)
 
 
 def _series_segmentation_ready(base_dir: Path, base_name: str, model: str) -> bool:
