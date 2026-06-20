@@ -77,9 +77,16 @@ _MR_EXCLUDE_TOKENS = frozenset({
 # dwi/adc/dixon are matched as substrings (not \b-anchored) because vendors embed
 # them inside single tokens with no separator (IsoDWI, cDWI, mDIXON) — anchoring would
 # silently drop them. They are unambiguous in MR naming, so substring matching is safe.
+# B3 (functional-MR sampling) adds DCE wash-out/wash-in/subtraction maps. These use the
+# OPPOSITE rationale: wo/wi/sub are short and ambiguous, so they are \b-bounded (standalone
+# tokens) to avoid over-match — e.g. an unanchored "wi" would hit "twist"/"width", and an
+# open "sub" would hit cross-cohort anatomy (subclavian, subcutaneous). Validated against
+# the P0 MR inventory (2,696 descriptions): \bsub\b|\bsubtract newly captures exactly the 3
+# in-cohort DCE-subtraction series (currently misrouted to mr_anatomic via "vibe"); \bwo\b
+# /\bwi\b capture nothing new (no bare WO/WI maps in-cohort) and never collide with T1WI/T2WI.
 _MR_FUNCTIONAL_RE = re.compile(
     r"dwi|\bdiff|\bep2d|adc|\bperf|\btwist\b|\bdyn|\bdce\b|"
-    r"\bttp\b|\bpei\b|\bmipt\b",
+    r"\bttp\b|\bpei\b|\bmipt\b|\bwo\b|\bwi\b|\bsub\b|\bsubtract",
     re.I,
 )
 _MR_ANATOMIC_SEQ_RE = re.compile(

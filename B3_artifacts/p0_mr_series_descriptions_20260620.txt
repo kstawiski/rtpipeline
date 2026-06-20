@@ -1,0 +1,2696 @@
+localizer
+t2_tse_fs_sag
+t1_tse_sag
+t1_tse_tra
+t2_tse_tra 3 mm
+t2_tse_fs_tra
+ep2d_diff_tra_0-800
+ep2d_diff_tra_0-800_ADC
+t1_tse_cor
+t2_tse_cor 3mm
+t1_tse_tra_fs_CM
+t1_tse_sag_fs_CM
+t1_tse_cor_CM
+PosDisp: [2] t2_tse_fs_sag
+PosDisp: [5] t2_tse_tra 3 mm
+PosDisp: [10] t2_tse_cor 3mm
+Odbytnica STAGING przed leczeniem
+t2_tse_sag 3 mm
+t2_tse_tra 5 mm calosc
+t2_tse_tra
+t1_se_tra
+ep2d_diff_b_0-500_1000
+ep2d_diff_b_0-500_1000_ADC
+t2_tirm_tra_dark-fluid
+t2_blade_sag
+t1_mpr_tra_p2_iso
+t2_swi3d_tra
+t1_se_sag_CM
+t1_se_cor_CM
+t1_se_tra_CM
+t1_mpr_tra_p2_iso_CM
+PosDisp: [2] t2_tse_tra
+PosDisp: [7] t2_blade_sag
+pelvis localizer
+t1_tse_tra_320
+t2_tse_tra_320
+t2_blade_sag_p2
+ep2d_diff_tra_b0_b500_b1000_b1200_p2_260
+ep2d_diff_tra_b0_b500_b1000_b1200_p2_260_ADC
+t2_tse_cor
+t2_tse_tra_fs
+t1_tse_tra_fs
+localizer@center
+ep2d_diff_b50_800_tra_TRACEW_DFC
+ep2d_diff_b50_800_tra_ADC_DFC
+ep2d_diff_b50_800_tra_CALC_BVAL_DFC
+t1_tse_dixon_tra_largeFoV_opp
+t1_tse_dixon_tra_largeFoV_in
+t1_tse_dixon_tra_largeFoV_W
+t1_tse_dixon_tra_largeFoV_F
+t1_tse_dixon_cor_largeFoV_in
+t1_tse_dixon_cor_largeFoV_opp
+t1_tse_dixon_cor_largeFoV_F
+t1_tse_dixon_cor_largeFoV_W
+t2_localizer - pelvis
+T2W_MVXD_cor scaled
+T2W_MVXD_cor scaled scaled
+DWI_b2500 scaled
+dReg - DWI_3b scaled
+T2W_MVXD_sag scaled
+T2W_MVXD_ax scaled
+t2_tse_rst_tra
+t2_tse_sag
+localizer- glowa
+t2_tirm_dark-fluid_fs_tra
+PosDisp: [2] t2_blade_sag
+PosDisp: [3] t2_tse_tra
+PosDisp: [8] t2_tse_cor
+t1_vibe_tra_perf_test
+t1_vibe_tra_perf_CM
+t1_vibe_tra_perf_CM_SUB
+t1_vibe_tra_perf_CM_WI
+t1_vibe_tra_perf_CM_WO
+t1_vibe_tra_perf_CM_TTP
+t1_vibe_tra_perf_CM_MIPt
+t1_vibe_tra_perf_CM_PEI
+t1_tse_fs_tra_CM
+PosDisp: [2] t2_tse_rst_sag
+PosDisp: [5] t1_tse_tra
+dADC
+SURVEY_BFFE
+T2_AX_MV_HR_RT
+T1W_TSE_Tra
+T2W_TSE_sag
+T2W_TSE
+DWI_3b_dS_ZOOM
+DWI_b1500
+Ax T2 SFOV
++c Ax T1  LAVA 9s
+WATER: +c-Ax T1 MPh LAVA-Flex
+FAT: +c-Ax T1 MPh LAVA-Flex
+Sag T2 Prop
+Ax T2 Prop
+Cor T2 Prop
+Ax DWI 2000
+ADC (10^-6 mm2/s)
+eADC
+t1_twist_tra_dyn_TT=7.0s
+ep2d_diff_tra_b50_400_1000_1400
+ep2d_diff_tra_b50_400_1000_1400_ADC
+t1_twist_tra_dyn_TT=11.7s
+t1_twist_tra_dyn_TT=16.5s
+t1_twist_tra_dyn_TT=44.9s
+t1_twist_tra_dyn_TT=35.4s
+t1_twist_tra_dyn_TT=49.6s
+t1_twist_tra_dyn_TT=21.2s
+t1_twist_tra_dyn_TT=26.0s
+t1_twist_tra_dyn_TT=59.1s
+t1_twist_tra_dyn_TT=40.2s
+t1_twist_tra_dyn_TT=30.7s
+t1_twist_tra_dyn_TT=54.4s
+t1_twist_tra_dyn_TT=63.8s
+t1_twist_tra_dyn_TT=68.6s
+t1_twist_tra_dyn_TT=101.7s
+t1_twist_tra_dyn_TT=87.5s
+t1_twist_tra_dyn_TT=82.8s
+t1_twist_tra_dyn_TT=92.3s
+t1_twist_tra_dyn_TT=73.3s
+t1_twist_tra_dyn_TT=111.2s
+t1_twist_tra_dyn_TT=78.1s
+t1_twist_tra_dyn_TT=97.0s
+t1_twist_tra_dyn_TT=106.5s
+t1_twist_tra_dyn_TT=115.9s
+t1_twist_tra_dyn_TT=144.4s
+t1_twist_tra_dyn_TT=196.5s
+t1_twist_tra_dyn_TT=333.8s
+t1_twist_tra_dyn_TT=191.7s
+t1_twist_tra_dyn_TT=149.1s
+t1_twist_tra_dyn_TT=168.1s
+t1_twist_tra_dyn_TT=210.7s
+t1_twist_tra_dyn_TT=286.5s
+t1_twist_tra_dyn_TT=205.9s
+t1_twist_tra_dyn_TT=158.6s
+t1_twist_tra_dyn_TT=139.6s
+t1_twist_tra_dyn_TT=338.6s
+t1_twist_tra_dyn_TT=243.8s
+t1_twist_tra_dyn_TT=172.8s
+t1_twist_tra_dyn_TT=234.4s
+t1_twist_tra_dyn_TT=220.2s
+t1_twist_tra_dyn_TT=134.9s
+t1_twist_tra_dyn_TT=215.4s
+t1_twist_tra_dyn_TT=177.5s
+t1_twist_tra_dyn_TT=153.8s
+t1_twist_tra_dyn_TT=182.3s
+t1_twist_tra_dyn_TT=125.4s
+t1_twist_tra_dyn_TT=187.0s
+t1_twist_tra_dyn_TT=163.3s
+t1_twist_tra_dyn_TT=201.2s
+t1_twist_tra_dyn_TT=130.2s
+t1_twist_tra_dyn_TT=300.7s
+t1_twist_tra_dyn_TT=281.7s
+t1_twist_tra_dyn_TT=348.0s
+t1_twist_tra_dyn_TT=248.6s
+t1_twist_tra_dyn_TT=324.4s
+t1_twist_tra_dyn_TT=267.5s
+t1_twist_tra_dyn_TT=295.9s
+t1_twist_tra_dyn_TT=291.2s
+t1_twist_tra_dyn_TT=277.0s
+t1_twist_tra_dyn_TT=310.1s
+t1_twist_tra_dyn_TT=272.3s
+t1_twist_tra_dyn_TT=262.8s
+t1_twist_tra_dyn_TT=305.4s
++C t1_tse_tra_fs
+t1_twist_tra_dyn_TT=253.3s
+t1_twist_tra_dyn_TT=258.0s
+t1_tse_tra_lymph-nodes AX
+t1_twist_tra_dyn_TT=357.5s
+t1_twist_tra_dyn_TT=229.6s
+t1_twist_tra_dyn_TT=352.8s
+t1_twist_tra_dyn_TT=329.1s
+t1_twist_tra_dyn_TT=314.9s
+t1_twist_tra_dyn_TT=343.3s
+t1_twist_tra_dyn_TT=239.1s
+t1_twist_tra_dyn_TT=120.7s
+t1_twist_tra_dyn_TT=224.9s
+t1_twist_tra_dyn_TT=319.6s
+T2W_TSE_tra  HR DNE2 HRES_Lo_SHD
+T2W_TSE_cor DNE2 HRES_Lo_SHD
+T2W_TSE_sag DNE3 2D_SHD
+LOCATOR_t2_trufi_cor
+3 Plane Localizer
+calibration
+Sag FSE T2
+Ax DWI
+T2 FLAIR
+AX T2 FSE
+3D T1 FSPGR
+COR T2 FSE
+3D T1 FSPGR +C
+t2_tse_tra_512 scaled
+t1_qtse_cor scaled
+t2_tse_rst_sag
+t2_tse_rst_cor
+t1_tse_tra-cala miednica
+ep2d_diff_tra
+ep2d_diff_tra_ADC
+t1_tse_fs_tra_CM cala miednica
+PosDisp: [5] t1_tse_tra-cala miednica
+t2_tse_tra_FOV200
+ep2d_diff_b50_400_800_1500_tra_FOV200_TRACEW_DFC_MIX
+ep2d_diff_b50_400_800_1500_tra_FOV200_ADC_DFC_MIX
+t2_tse_stir_tra
+t2_trufi_fs_cor_bh
+t2_blade_tra_p2_mbh
+t2_blade_fs_tra_p2_mbh
+t1_fl2d_in-opp_tra_p2_mbh
+t1_fl2d_cor_mbh
+t1_vibe_fs_tra_bh_test
+t1_vibe_fs_tra_dyn_mbh-CM MULTIHACE
+t1_fl2d_in-opp_tra_p2_mbh_CM  MULTIHANCE
+t1_fl2d_cor_mbh_CM  MULTIHANCE
+t1_vibe_fs_tra_CM MULTIHANCE
+t1_vibe_fs_tra_dyn_CM- od 60 min do 120min MULTIHANCE
+localizer_trufi_cor_bh
+ep2d_diff_b0 50 100 200 400 800
+ep2d_diff_b0 50 100 200 400 800_ADC
+PosDisp: [6] t2_tse_tra 3 mm
+PosDisp: [8] t2_tse_tra 5 mm calosc
+PosDisp: [12] t2_tse_cor 3mm
+Th_localizer
+C_localizer_COMP_AD_1
+t2_tirm_sag
+t2_spc_sag_iso
+PosDisp: [4] t2_tse_sag
+PosDisp: [9] t2_tse_tra
+t1_mpr_iso_1.5mm_cor
+ep2d_diff_tra_0-800_3mm
+ep2d_diff_tra_0-800_3mm_ADC
+3-pl FIESTA_LS
+Sag T2 frFSE _Lspine
+Sag T1 FSE _Lspine
+Sag T2 frFSE fs_Lspine
+Ax T2 frFSE _Lspine
+mDIXON-W_dyn
+t2_tse_sag_FOV200
+t2_tse_cor_FOV200
+t1_tse_tra_lymph_nodes
+localizer@Center
+t2_tse_bl_sag
+t2_tse_bl_cor
+t2_tse_bl_tra
+t2_blade_tra
+t2_tirm_tra_dark-fluid_FIL
+t2_blade_cor
+t2_tirm_sag_dark-fluid_FIL
+ep2d_diff_3scan_trace_p2
+ep2d_diff_3scan_trace_p2_ADC
+t2_swi3d_tra_p2_fast
+t2_ci3d_tra_iso
+t1_mpr_tra_iso +C
+t1_se_cor +C
+ep2d_diff_b50_400_800_tra_FOV200_CALC_BVAL
+t1_tse_dixon_tra_CM_W
+ep2d_diff_b50_400_800_tra_FOV200_TRACEW
+t1_vibe_fs_tra_dyn_CM_SUB
+t1_tse_dixon_tra_opp
+ep2d_diff_b50_400_800_tra_ADC
+t1_vibe_dixon_sag_iso_CM_opp
+t1_vibe_fs_tra_dyn_CM
+t1_vibe_dixon_sag_iso_CM_in
+ep2d_diff_b50_400_800_tra
+t1_qtse_fs_cor
+t1_tse_dixon_tra_CM_F
+t1_tse_dixon_tra_CM_in
+t1_tse_dixon_tra_CM_opp
+t1_tse_dixon_tra_in
+ep2d_diff_b50_400_800_tra_FOV200_ADC
+t1_tse_dixon_tra_W
+t1_vibe_dixon_sag_iso_CM_W
+t1_tse_dixon_tra_F
+t1_vibe_dixon_sag_iso_F
+t1_vibe_dixon_sag_iso_opp
+t1_vibe_dixon_sag_iso_CM_F
+ep2d_diff_b50_400_800_tra_CALC_BVAL
+t1_vibe_dixon_sag_iso_W
+t1_vibe_dixon_sag_iso_in
+t2_qtse_stir_tra
+C_localizer
+TH_localizer
+L_localizer
+C_localizer_COMP_SP_1
+prec_localizer [scan] cor
+ep2d_diff_tra__ADC
+t2_tse_tra 3 ,5 mm
+DWI_3b_RT
+mDIXON XD
+T2_AX_MV_SPAIR
+dDWI_3b_RT ADC
+haste_localizer
+t2_tse_tra_p2_320
+t1_vibe_tra_dyn
+t1_tse_tra_fs_p2
+t1_vibe_dixon_tra_p2_352_lymph_nodes_F
+ep2d_diff_b50_400_800_tra_p2_TRACEW_DFC_MIX
+t1_vibe_dixon_tra_p2_352_lymph_nodes_W
+t1_fl2d_fs_tra_p2_mbh_320
+ep2d_diff_b50_400_800_tra_p2_ADC_DFC_MIX
+ep2d_diff_b50_400_800_tra_p2_CALC_BVAL_DFC_MIX
+ep2d_diff_b1000_2000_tra_p2_TRACEW_DFC_MIX
+ep2d_diff_b1000_2000_tra_p2_ADC_DFC_MIX
+t2_tse_sag_p2_320
+ep2d_diff_b1000_2000_tra_p2_CALC_BVAL_DFC_MIX
+t2_blade_cor_p2_320
+Scano SCA
+T2 SAG PILOT  C
+Scano SA
+T2 SAG
+T1 SAG
+STIR SAG
+T2 COR
+T2 AX
+T1 AX
+T2 AX-2
+localizer_bh
+t2_trufi_cor_bh
+t2_tse_tra_resp trig_blade
+t2_tse_fs_tra_resp trig_blade
+t1_fl2d_in-opp_tra_mbh
+localizer_trufi_2D
+ep2d_diff_b50_800_tra_lymph_nodes_ADC
+ep2d_diff_b50_800_tra_lymph_nodes_TRACEW
+ep2d_diff_b50_800_tra_TRACEW
+ep2d_diff_b50_800_tra_CALC_BVAL
+ep2d_diff_b50_800_tra_ADC
+t2_space_tra
+DW_Synthetic: AX DWI b1000 miednica
+DW_Synthetic: Ax FOCUS b50-1000 Synthetic b1500
+WATER: Cor T1 LAVA DX
+FAT: Cor T1 LAVA DX
+WATER: +c Cor T1 LAVA DX
+FAT: +c Cor T1 LAVA DX
+WATER: +c Dyn AX T1 LAVA DX
+FAT: +c Dyn AX T1 LAVA DX
+WATER: +c Sag T1 LAVA DX
+FAT: +c Sag T1 LAVA DX
+3Plane Loc
+Sag T2
+Ax T2 small FOV
+Cor T2
+AX DWI b1000 miednica
+Ax FOCUS b50-1000 Synthetic b1500
+Ax T1 FSE miednica
++c Ax T1 FSE miednica
+ADC (10^-6 mm?/s)
+t2_localizer
+t2_tse_tra_2mm
+t2_spc_sag_iso+_1mm
+COR_3D_TFE
+dADC DWI TRA
+TRA_3D_TFE
+COR_Brain_VIEW_FLAIR_SHC
+TRA_Brain_VIEW_FLAIR_SHC
+VEN_BOLD MinIP 6/-3
+T2W_MV_XD SAG
+3D_Brain_VIEW_FLAIR SAG
+sT1W_3D_TFE SAG
+T2W_MV_XD TRA
+VEN_BOLD TRA
+DWI TRA
+T2W_MV_XD COR +C
++C sT1W_3D_TFE SAG +C
+Ax t2 Flair Propeller
+C+ Ax t1 SPGR
+C+ Cor t1 SPGR
+C+ Sag t1 SPGR
+Reformatted
+Screen Save
+Ax T2 Propeller
+3-pl T2* FGRE
+Ax t1 SPGR
+Cor t2 fse 4mm HiRes
+Sag t2 flair
+SWI
+Ax DWI 1000b
+ep2d_diff_b50_400_800_1500_tra_FOV200_CALC_BVAL_DFC_MIX
+ep2d_diff_b50_1000_calc1500_tra_pelvis_TRACEW_DFC_MIX
+ep2d_diff_b50_1000_calc1500_tra_pelvis_ADC_DFC_MIX
+ep2d_diff_b50_1000_calc1500_tra_pelvis_CALC_BVAL_DFC_MIX
+t1_vibe_tra_dynamic_CM
+t1_vibe_tra_dynamic_CM_SUB
+t1_vibe_dixon_tra_CM_F
+t1_vibe_dixon_tra_CM_W
+t1_vibe_dixon_cor_CM_F
+t1_vibe_dixon_cor_CM_W
+cDWI.b=1000
+IsoADC
+IsoDWI
+AX T1WI
++K AX T1 3D FSat MPR (do odbytnicy)
+AX T1 (przeglad)
+COR T1WI
+3 Plan locator (M/S)
+COR T2 (do odbytnicy)
++K AX T1 3D FSat MPR (prosto)
+SAG T2
+COR STIR (przeglad)
+AX T2 (przeglad)
+AX DWI Exsper (przeglad)
+COR T2 (do kanalu odbytu)
+AX T2
+AX T2 FSat
+PosDisp: [3] t2_tse_tra 3 mm
+PosDisp: [7] t2_tse_fs_sag
+PosDisp: [10] t2_tse_tra 3 mm
+PosDisp: [15] t2_tse_cor 3mm
+Odbytnica plan bad bez kontrastu tylko dr Kupnicki
+t2_tse_fs_cor
+ep2d_diff_tra_
+PosDisp: [7] t2_tse_cor 3mm
+dADC BO 1000
+VEN_BOLD_HR
+FLAIR_longTR
+sT1W_3D_TFE+gad
+T1 cor 3mm
+T1 sag 3mm
+Reg - DWI_og_HR
+minIP SWI
+Patient Aligned MPR AWPLAN_SMARTPLAN_TYPE_BRAIN
+SmartBrain
+DWI_og_HR
+MPR - SmartBrain
+sT1W_3D_TFE
+localizer- glowa PLANOWANIE MR
+t1_se_tra_CM DUZY FOV wszystko na prosto
+MPR TRA
+VSWIp_fast
+MPR COR
+SWIp_fast
+3D_Brain_VIEW_FLAIR
+sT2W_TSE
+dReg - DWI_og_HR
+eReg - DWI_og_HR
+Scano S/C/A
+T2 AX Seq
+FLAIR AXIAL HMSE
+T1 AX 6mm
+T2 COR 6mm
+T1 COR 6mm
+T2 SAG 6mm
+T1 SAG 6mm
+Shim COR
+DWI Trace
+T1 AX + C  6mm
+T1 COR + C 6mm
+t2_me2d_tra
+t2_spc_tra_2mm
+t1_tse_fs_tra
+t1_vibe_dixon_tra_dyn_W
+L/S_localizer
+t2_spc_tra_iso
+t2_tirm_sag_p2
+PosDisp: [13] t2_tse_sag
+PosDisp: [14] t1_tse_sag
+PosDisp: [17] t2_trufi_cor_bh
+ep2d_diff_tra_3mm
+ep2d_diff_tra_3mm_ADC
+t2_qtse_cor
+t1_vibe_dix_cor_iso_opp
+t1_vibe_dix_cor_iso_in
+t1_vibe_dix_cor_iso_F
+t2_qtse_tra
+t1_tse_tra big fov
+t2_qtse_sag_sFoV
+t1_qtse_sag_fs
+t1_qtse_tra
+ep2d_diff_b50_1000_tra_TRACEW
+ep2d_diff_b50_1000_tra_ADC
+t2_tirm_cor
+Ax T1 LFOV
+Sag T2 SFOV
+Cor T2 SFOV
+Ax DWI b1400
+PosDisp: [2] t2_tse_sag
+PosDisp: [5] t2_tse_tra
+PosDisp: [8] t1_tse_tra
+PosDisp: [11] t1_tse_cor_CM
+t1_vibe_tra_2mm
+t1_se_tra    DUZY FOV NA PROSTO
+t1_vibe_fs_tra_dyn
+Localizer
+Calibration
+AX T2 przeglad
+3Plane Loc SSFSE
+Calibration Scan
+BH Cor T2 FIESTA
+BH- CorT1 FSPGR
+Ax T2 SSFSE  ARC
+Ax DWI B=500
+BH- AxT1 FSPGR
+BH Ax T2 FIESTA FATSAT Asset
+BH +c-AxT1 LAVA DYNAMICZNA
+Ph1/BH +c-AxT1 LAVA DYNAMICZNA
+Ph2/BH +c-AxT1 LAVA DYNAMICZNA
+Ph3/BH +c-AxT1 LAVA DYNAMICZNA
+BH +c-CorT1 FSPGR
+BH 5min +c-AxT1 LAVA
+Ph1/BH 5min +c-AxT1 LAVA
+BH 6min+c-AxT1 LAVA
+Ph1/BH 6min+c-AxT1 LAVA
+AX T2 FRFSE wezly
+Ax T2 P
+Ax DWI b2000
+t2_spc_tra_p2_iso
+PosDisp: [3] LOCATOR_t2_trufi_cor
+prec_localizer [scan]
+t2_spc_sag
+t1_tse_sag_fatsat
+t1_tse_sag CE
+t1_tse_cor CE
+t1_tse_tra CE
+t1_tse_sag_fs CE
+PosDisp: [7] t2_tse_sag
+PosDisp: [11] t2_tse_tra
+PosDisp: [12] t1_tse_tra
+PosDisp: [15] t2_tse_cor
+PosDisp: [18] t1_tse_tra CE
+Th_t2_tirm_sag
+Th_t2_tse_tra
+L/S_t2_tirm_sag
+Th_t2_tirm_sag_COMP_AD_4
+L/S_t2_tse_tra
+Th_t1_tse_tra
+L/S_t1_tse_tra_CM
+PosDisp: [5] Th_t2_tse_tra
+PosDisp: [7] Th_t2_tirm_sag_COMP_AD_4
+PosDisp: [9] Th_t1_tse_tra
+PosDisp: [10] L/S_t1_tse_tra_CM
+Ax T2 FLAIR PROPELLER
+Ax T2  FSE  propeller
+3 pl loc
+ASSET calibration
+AX DWI b1000
++c- 3D T1 FSPGR
+t1_tse_sag_CM
+t1_tse_tra_CM
+t2_tse_tra 1mm
+t1_tse_tra_2mm
+PosDisp: [3] t2_tse_tra 1mm
+t1_se_tra_p2
+t2_trufi_cor_p2_bh_4mm
+t1_se_fs_cor_p2
+ep2d_diff_b50_b800_b1500_192
+ep2d_diff_b50_b800_b1500_192_ADC
+t1 VIBE_sag_fs
++C_t1_VIBE_tra_SPAIR
++C_t1_VIBE_tra_SPAIR_MoCo
++C_t1_ VIBE_cor_SPAIR
++C_t1_tse_tra
+PosDisp: [10] t1_tse_cor_CM
+pd_tse_tra_fs
+ep2d_diff_tra_b0_b800
+ep2d_diff_tra_b0_b800_ADC
+t1_tirm_cor
+t2_trufi_tra
+t2_trufi_cor
+t2_blade_tra_mbh
+t2_tse_fs_tra_trig-RESP
+t2_tse_fs_tra_trig
+t1_fl2d_fs_tra_mbh
+MRCP_t2_spc_rst_cor_iso_trig-RESP
+MRCP_t2_spc_rst_cor_iso_trig
+MRCP_t2_spc_rst_cor_iso_trig_MIP_COR
+t1_fl2d_in-opp_tra_mbh_CM
+t1_fl2d_fs_tra_mbh_CM
+t1_vibe_fs_cor_delayed_bh_CM
+t2_trufi_loc
+PosDisp: [4] t2_tse_tra
+ep2d_diff_tra b0_50_400_800_TRACEW
+t1_vibe_fs_tra
+pd_tse_fs_tra
+pd_tse_fs_sag
+PosDisp: [3] t2_blade_sag
+T2W_TSE_tra
+dDWI_3b ADC B50 B400 B1000
+DWI_b2500
+t1_vibe-grasp_fs_tra_STATIC
+t1_vibe-grasp_fs_tra
+t2_tse_sag_counter
+PosDisp: [6] t1_tse_tra
+PosDisp: [9] t2_tse_cor 3mm
+loc
+Sag T1
+Sag STIR
+Ax T2
+t1_tse_tra_lymph-nodes
+t2_tse_tra_sFOV
+t2_tse_cor_sFOV
+ep2d_diff_b50_400_800_1500_tra_sFOV_TRACEW
+tirm_sag
+t2_tse_tra_Th12-S1
+t2_blade_cor_resp trig
+t1_vibe_fs_tra_dyn_mbh_CM
+t1_fl2d_fs_cor_mbh_CM
+PosDisp: [2] t2_trufi_cor_bh
+PosDisp: [3] t2_trufi_cor_bh
+PosDisp: [7] t2_tse_tra_resp trig_blade
+PosDisp: [3] t2_tse_rst_sag
+MobiView SURVEY_COR
+sb0
+MobiView SURVEY_SAG
+Reg - Reg
+SURVEY_SAG
+SURVEY_COR
+SURVEY
+T1W_SPIR
+T1W_TSE
+T2W_SPAIR
+DWI
+T1W_TSE spir
+T1W_SPIR+gad
+T1W_TSE spir gad
+sb800
+localizer  bad bez kontrastu tylko dr Kupnicki
+PosDisp: [4] t2_tse_tra 5 mm calosc
+PosDisp: [5] t2_tse_cor 3mm
+t1_tse_tra +C_TH
+t1_tse_cor_ fs+C_TH_FIL
+t2_tse_tra_TH_FIL
+t1_tse_sag_ fs+C_TH_FIL
+C+ T1W_FFE
+DWI_og
+Reg - DWI_og SENSE
+dReg - DWI_og SENSE
+T1W_FFE
+T1W_FFE+CM
+PosDisp: [3] t2_tse_tra 5 mm calosc
+PosDisp: [4] t2_tse_tra 3 mm
+3-pl T2* LOKALIZER
+Cal BrainArray
+MultiPlanar Reconstruction (MPR) Ob_Ax_I -> S_Average_sp:3.0_th:
+Ax T2 FSE
+Ax T2 FLAIR
+Ax DWI: b1000
+AX 3D T1
+eSWAN-SWI
+Ax 3D FIESTA
+Cor T2 FRFSE
++C AX 3D T1
+Apparent Diffusion Coefficient (mm2/s)
+FILT_PHA: eSWAN-SWI
++C AX 3D T1 FSPGR
+localizer- glowa PLAN MR
+t2_tse_tra NA PROSTO
+t2_tirm_dark-fluid_fs_tra NA PROSTO
+t2_tse_sag_sFOV
+ep2d_diff_b50_800_1500_tra_sFOV_TRACEW
+PosDisp: [11] t2_tse_cor 3mm
+COR T2 frFSE
+Sag T2 frFSE
+SAG T1 FSE
+SAG T1 FSE FS
+SAG STIR
+Ax T2 frFSE
+AX T1 FS
++C SAG T1 FSE FS
++C AX T1 FS
+t2_haste_cor_bh
+t2_haste_tra_bh
+t2_haste_fs_tra_bh
+t2_haste_sag_bh
+T1W_TSE_SPIR+gad
+T1W_FFE+gad
+Exponential Apparent Diffusion Coefficient
+Sag T2 PROPELLER
+Ax T2 PROPELLER
+Cor T2 PROPELLER
+3 plane loc 706
+Ax T1 FSE
+Ax DWI B50/600
+WATER: Ax LAVA-Flex
+FAT: Ax LAVA-Flex
+InPhase: Ax LAVA-Flex
+OutPhase: Ax LAVA-Flex
+WATER: +C Ax LAVA-Flex
+FAT: +C Ax LAVA-Flex
+InPhase: +C Ax LAVA-Flex
+OutPhase: +C Ax LAVA-Flex
++C Sag T1 FSE FS
+PosDisp: [5] t2_tirm_sag
+PosDisp: [6] t1_tse_sag
+3-pl loc
+DUZY Sag T2 frFSE
+Cor T2 frFSE
+Sag T1 FSE
+AX T1 FSE
++C AX T1 FSE FS
++C Cor T1 FSE FS
+AX Loc DUZY
+3-Plane Loc
+Cor PD FS
+COR T2
+Cor T1
+Cor T1 FS
+AX T1
+Ax PD FS
+Ax T2* GRE
+Cor STIR
++C Cor T1 FS
++C SAG T1 FS
+localizer_brzuch
+localizer_miednica
+localizer_miednica_COMPOSED_1
+B_t2_trufi_cor_bh
+B_t2_tse_tra_resp trig_blade
+B_t2_tse_fs_tra_resp trig_blade
+B_t1_fl2d_in-opp_tra_mbh
+MM_t2_tse_sag
+MM_t1_tse_tra
+MM_t2_tse_fs_tra
+MM_ep2d_diff_tra_0-800
+MM_ep2d_diff_tra_0-800_ADC
+MM_t2_tse_cor
+Sag T1 dlugi scan
+cor T2 frFSE
+C+ Ax T1 FSE fs
+C+ Cor T1 FSE fs
+C+ Sag T1 FSE fs
+PosDisp: [6] t2_tse_tra
+PosDisp: [7] t1_tse_tra
+PosDisp: [3] t1_tse_sag
+PosDisp: [47] t1_tse_cor_CM
+mDIXON-W Cor
+mDIXON_all
+WB_t2_tse_tra_RESP_COMPOSED
+WB_t1_vibe_tra_BH_COMPOSED
+WB_t2_haste_stir_cor_RESP_COMP_PT
+Pelvis_t2_tse_bl_sag
+Pelvis_t2_tse_bl_cor
+Pelvis_t2_tse_bl_tra
+Pelvis_t2_tse_bl_fs_tra
+Pelvis_t1_vibe_opp-in_tra_p2_bh_320
+Pelvis_t1_tse_fs_tra
+PosDisp: [2] t2_tse_tra 3 mm
+Ax T2 Prop FS
+SAG T2 FSE
+AX 3D T1 FSPGR
+Art- 3D TOF ASSET
+Ven-Sag InHance 3D Velocity
++c-Sag T1 FSE
++c-Cor T1 SE
+Ax 3D SWAN (SWI)
+t2_localizer_multi
+t2_tse_tra_512
+PosDisp: [3] t2_tse_tra_512
+PosDisp: [5] t2_tse_tra_fs
+ep2d_diff_b50_b500_b1000_b1500
+ep2d_diff_b50_b500_b1000_b1500_ADC
+PosDisp: [9] t1_tse_tra
+t1_vibe_fs_phase_tra_288
+PosDisp: [11] t1_vibe_fs_phase_tra_288
+t1_vibe_fs_phase_tra_288_ce
+PosDisp: [16] t1_vibe_fs_phase_tra_288_ce
+t1_tse_tra_ce
+PosDisp: [17] t1_tse_tra_ce
+t1_tse_cor_ce
+t1_tse_sag_ce
+PosDisp: [19] t1_tse_sag_ce
+PosDisp: [6] t2_tse_cor 3mm
+PosDisp: [3] t2_tse_tra_resp trig_blade
+t1_tse_tra_lymph-nodes AX3
+ep2d_diff_0-500-1000-1500
+ep2d_diff_0-500-1000-1500_ADC
+t1_tse_tra fs
+t2_tse_tra AX1
+t1_vibe_tra_fs_dyn
+t1_vibe_tra_fs_dyn_SUB
+t1_vibe_tra_fs_dyn_SUB_MIP_TRA
+t1_vibe_tra_fs_dyn_WI
+t1_vibe_tra_fs_dyn_WO
+t1_vibe_tra_fs_dyn_TTP
+t1_vibe_tra_fs_dyn_PEI
++C t1_tse_tra fs
+PosDisp: [7] t2_haste_cor_thin_slab_mbh_3mm
+PosDisp: [34] t1_vibe_fs_TE1.1_tra_bh_288_ce_after 70 min.
+PosDisp: [18] t2_spc_tra_cholangio_iso_trig_384
+t2_spc_tra_cholangio_iso_trig_384_MIP_COR
+PosDisp: [20] t2_trufi_cor_bh_3mm
+t2_blade_cor_mbh_fs
+t2_spc_cor_cholangio_ISO_trig_FOV270_MIP_SAG
+t2+t2_tse_tra_mbh_p2
+t1_vibe_fs_tra_hr_320_bh_ce_after 70min
+<MIP Range[1]>
+PosDisp: [8] t2_haste_fs_mbh_thick_sl10_radial
+t2_blade_tra_trigg_fs
+PosDisp: [4] t2_blade_tra_mbh_fs
+t2_blade_tra_mbh_fs
+t1_vibe_fs_TE1.1_tra_bh_288
+t1_vibe_fs_tra_hr_288_bh
+t1_vibe_fs_tra_hr_288_bh_ce
+t1_fl2d_in_opp_ph_tra_mbh
+t1_vibe_fs_TE1.1_tra_bh_288_ce
+t1_vibe_fs_tra_hr_320_bh
+t1_vibe_fs_TE1.1_tra_bh_288_ce_after 5 min.
+t2_haste_fs_mbh_thick_sl10_radial
+t2_spc_tra_cholangio_iso_trig_384-RESP
+t2_spc_tra_cholangio_iso_trig_384
+PosDisp: [3] t2_blade_tra_trigg_fs
+PosDisp: [6] t1_fl2d_in_opp_ph_tra_mbh
+t1_vibe_fs_tra_hr_320_bh_ce
+t1_vibe_fs_TE1.1_tra_bh_288_ce_after 70 min.
+t1_vibe_fs_cor_p2_bh_288_ce
+ep2d_diff_tra_b50_400_800_1200_trig
+ep2d_diff_tra_b50_400_800_1200_trig_ADC
+PosDisp: [22] t1_vibe_fs_TE1.1_tra_bh_288
+t2_blade_tra_trigg_fs-RESP
+<MIP Range>
+ep2d_diff_tra_b50_400_800_1200_trig-RESP
+t2_spc_cor_cholangio_ISO_trig_FOV270-RESP
+t2_localizer_multi_after 70min
+t2_haste_cor_thin_slab_mbh_3mm
+AX T2W_ TSE
+AX T1W
+AX T1WFATSAT
+AX STIR_longTE
+AX DWI_3b
+AX T1WFATSAT+C
+Ax DWI b=800
+AX T1 FSE fs
+COR 3D T1
+SAG 3D T1
+AX FLAIR
+AX T2W
+PosDisp: [4] t2_tse_cor 3mm
+Lokalizer
+T2 VISTA MPR cor oblique
+VISTA
+mDIXON XD+gad
+T2 VISTA MPR tra oblique
+PosDisp: [8] t2_tse_tra 3 mm
+DWI_3b
+mDIXON_ALL +C
+e-THRIVE_Cor_BH +C
+mDIXON_ALL
+mDIXON-ALL_TRA
+e-THRIVE_Cor_BH
+t1_mpr_iso_3mm_cor
+bh 3Plane Loc SSFSE
+resp Ax T2 SSFSE FatSat ARC
+bh Ax T1  DualEcho
+resp Ax T2 SSFSE  ARC
+bh Cor T2 FIESTA FatSat
+bh Cor T1 FSPGR fs
+resp Ax DWI
+bh +c-Cor T1 FSPGR fs
+BH Ax 2D FIESTA FatSat
+bh-10min+c Ax T1  LAVA
+bh-MPh +c Ax T1  LAVA
+Ph1/bh-MPh +c Ax T1  LAVA
+Ph2/bh-MPh +c Ax T1  LAVA
+Ph3/bh-MPh +c Ax T1  LAVA
+Ph4/bh-MPh +c Ax T1  LAVA
+t2_tse_stir_cor
+t1_vibe_fs_tra_bh_dynamic
+t1_vibe_fs_tra_bh_dynamic_SUB
+t1_vibe_dixon_tra_bh_CM_opp
+t1_vibe_dixon_tra_bh_CM_in
+t1_vibe_dixon_tra_bh_CM_F
+t1_vibe_dixon_tra_bh_CM_W
+t1_vibe_dixon_cor_bh_CM_opp
+t1_vibe_dixon_cor_bh_CM_in
+t1_vibe_dixon_cor_bh_CM_F
+t1_vibe_dixon_cor_bh_CM_W
+t1_vibe_fs_tra_delayed
+t1_tse_sag_p2_320 FS
+t1_twist_tra_dyn_TT=7.5s
+t1_twist_tra_dyn_TT=12.7s
+t1_twist_tra_dyn_TT=18.0s
+t1_twist_tra_dyn_TT=23.3s
+t1_twist_tra_dyn_TT=28.5s
+t1_twist_tra_dyn_TT=33.8s
+t1_twist_tra_dyn_TT=39.0s
+t1_twist_tra_dyn_TT=44.3s
+t1_twist_tra_dyn_TT=49.5s
+t1_twist_tra_dyn_TT=54.8s
+t1_twist_tra_dyn_TT=60.0s
+t1_twist_tra_dyn_TT=65.3s
+t1_twist_tra_dyn_TT=70.5s
+t1_twist_tra_dyn_TT=75.8s
+t1_twist_tra_dyn_TT=81.0s
+t1_twist_tra_dyn_TT=86.3s
+t1_twist_tra_dyn_TT=91.5s
+t1_twist_tra_dyn_TT=96.8s
+t1_twist_tra_dyn_TT=102.0s
+t1_twist_tra_dyn_TT=107.3s
+t1_twist_tra_dyn_TT=112.5s
+t1_twist_tra_dyn_TT=117.8s
+t1_twist_tra_dyn_TT=123.0s
+t1_twist_tra_dyn_TT=128.3s
+t1_twist_tra_dyn_TT=133.5s
+t1_twist_tra_dyn_TT=138.8s
+t1_twist_tra_dyn_TT=144.0s
+t1_twist_tra_dyn_TT=149.3s
+t1_twist_tra_dyn_TT=154.5s
+t1_twist_tra_dyn_TT=159.8s
+t1_twist_tra_dyn_TT=165.1s
+t1_twist_tra_dyn_TT=170.3s
+t1_twist_tra_dyn_TT=175.6s
+t1_twist_tra_dyn_TT=180.8s
+t1_twist_tra_dyn_TT=186.1s
+t1_twist_tra_dyn_TT=191.3s
+t1_twist_tra_dyn_TT=196.6s
+t1_twist_tra_dyn_TT=201.8s
+t1_twist_tra_dyn_TT=207.1s
+t1_twist_tra_dyn_TT=212.3s
+t1_twist_tra_dyn_TT=217.6s
+t1_twist_tra_dyn_TT=222.8s
+t1_twist_tra_dyn_TT=228.1s
+t1_twist_tra_dyn_TT=233.3s
+t1_twist_tra_dyn_TT=238.6s
+t1_twist_tra_dyn_TT=249.1s
+t1_twist_tra_dyn_TT=254.3s
+t1_twist_tra_dyn_TT=259.6s
+t1_twist_tra_dyn_TT=264.8s
+t1_twist_tra_dyn_TT=270.1s
+t1_twist_tra_dyn_TT=275.3s
+t1_twist_tra_dyn_TT=280.6s
+t1_twist_tra_dyn_TT=285.8s
+t1_twist_tra_dyn_TT=291.1s
+t1_twist_tra_dyn_TT=296.3s
+t1_twist_tra_dyn_TT=301.6s
+t1_twist_tra_dyn_TT=306.9s
+t1_twist_tra_dyn_TT=312.1s
+t1_twist_tra_dyn_TT=317.4s
+t1_twist_tra_dyn_TT=322.6s
+t1_twist_tra_dyn_TT=327.9s
+t1_twist_tra_dyn_TT=333.1s
+t1_twist_tra_dyn_TT=338.4s
+t1_twist_tra_dyn_TT=343.6s
+t1_twist_tra_dyn_TT=348.9s
+t1_twist_tra_dyn_TT=354.1s
+t1_twist_tra_dyn_TT=359.4s
+t1_twist_tra_dyn_TT=364.6s
+t1_twist_tra_dyn_TT=369.9s
+t1_twist_tra_dyn_TT=375.1s
+t1_twist_tra_dyn_TT=380.4s
+t1_twist_tra_dyn_TT=385.6s
+t1_twist_tra_dyn_TT=390.9s
+t1_twist_tra_dyn_TT=396.1s
+T2W_TSE CLEAR
+t1_tse_tra FS
+t1_tse_COR_ FS
+t1_tse_SAG
+t2_tse_tra ODBYTNICA
+t2_tse_cor ODBYTNICA
+ep2d_diff_b0_50_400_800
+ep2d_diff_b0_50_400_800_ADC
+t1_tse_tra FS+C
+t1_tse_COR_ FS+C
+t1_tse_SAG_ FS+C
+PosDisp: [6] t1_tse_COR_ FS
+PosDisp: [8] t1_tse_SAG
+t1_se_cor
+pd_fs_tse_tra
+t1_se_fs_cor
+PosDisp: [8] t2_tse_rst_cor
+PosDisp: [9] pd_fs_tse_tra
+localizer bh
+t2_trufi2d_fs_cor_bh
+t2_tse_tra_mbh
+PosDisp: [5] t2_trufi2d_fs_cor_bh
+PosDisp: [6] t2_tse_tra_mbh
+t2_tse_fs_tra_mbh
+t1_fl2d_in_opp_tra_mbh
+t2_tse_cor_mbh
+t1_vibe_fs_tra_bh dyn test
+t1_vibe_fs_tra_bh dynamic
+t1_fl2d_fs_cor_mbh
+t1_vibe_fs_tra_bh delayed
+PosDisp: [9] t2_tse_cor
+PosDisp: [5] t2_tse_tra 5 mm calosc
+SAG T2 FRFSE
+Ax DWI b650
+COR T2 FRFSE
+Ax T2 FSE+FS
+Ax T1 FSE+FS
++C- LAVA Multiphase BH Asset
++C Ax T1 FSE
++c- Cor  T1fs FSE
++C Sag  T1fs FSE
+Sag T2 FSE P
+Sag T1 FSE FS
+Ax DWI b1500
+COR T2fs FSE
++C Ax T1fs  LAVA
+Ph1/+C Ax T1fs  LAVA
+Ph2/+C Ax T1fs  LAVA
+Ph3/+C Ax T1fs  LAVA
+Ph4/+C Ax T1fs  LAVA
+C_sag_localizer
+TH-L_sag_localizer
+C_sag_localizer_COMP_SP_1
+Lokalizer cor
+Th t2_tse_cor
+PosDisp: [5] Th t2_tse_cor
+Th t2_tse_sag
+PosDisp: [6] Th t2_tse_sag
+Th t1_tse_sag
+Th t2_tirm_sag
+Th t2_tse_tra
+PosDisp: [9] Th t2_tse_tra
+Th t1_tse_sag_fs
+Th t1_tse_tra_fs
+PosDisp: [8] t2_tse_cor 3mm
+AX T1 lava 1 faza
++c COR T1
+Ax T1 fs
++c Ax T1 fs
++C sagT1
+Ax T1
+sagT1
+t2_loc_multi
+t1_tse_sag_4mm
+t2_tse_sag_fs
+t1_tse_sag_4mm_fs
+t2_tse_4mm_tra_fs
+t2_tse_4mm_tra
+t2_tse_4mm_cor
+diff_b50_400_800_16sl
+diff_b50_400_800_16sl_ADC
+t1_tse_cor_fs
+t1_tse_fs-dixon_tra_p2_384_F
+t1_tse_fs-dixon_tra_p2_384_W
+Results MR Basic Reading
+t1_mprage_sag_iso_CM
++C COR_3D_TFE
+t1_mprage_sag_iso_CM_MPR_cor
++C sT1W_3D_TFE SAG
+t1_mprage_sag_iso_CM_MPR_tra
+TRA_3D_TFE scaled
++C sT1W_3D_TFE +C scaled
+T2W_TSE_cor
+t2_tse_dark-fluid_sag_p2
+t1_mprage_sag_iso
+t1_mprage_sag_iso_MPR_tra
+t2_tse_sag_blade
+PosDisp: [2] t2_tse_sag_blade
+t2_tse_tra_FIL
+PosDisp: [5] t2_tse_tra_FIL
+t2_tse_cor_blade
+PosDisp: [6] t2_tse_cor_blade
+ep2d_diff_tra_0-500-1000
+ep2d_diff_tra_0-500-1000_ADC
+mIP_Images(SW)_ND
+mIP_Images(SW)_FIL
+SWI_Images_ND
+SWI_Images_FIL
+t1_mpr_tra_iso
+t1_se_sag+MTC
+t1_se_cor_CM_FIL
+SAG T1W FSat
+COR T1W FSat
+AX T1W FSat
+DWI Body
+COR T1
+t1_se_tra    DUZY FOV wszystko na prosto
+PosDisp: [2] t2_tse_tra NA PROSTO
+T1W_TSE_SPIR gad
+Ax T2 FSE PROP
+Ax DWI b1000
+Cor T2 FSE PROP
+PosDisp: [4] t2_tse_rst_sag
+Sag T2 PROP
+Ax T2 PROP
+Ax T2 FATSAT
+Cor T2 PROP
+Cor STIR miednica
+Ax T1 miednica
+AX DWI B 50/800 miednica
+WATER: +C Ax  LAVA pre&post
+InPhase: +C Ax  LAVA pre&post
+OutPhase: +C Ax  LAVA pre&post
+WATER: Ph1/+C Ax  LAVA pre&post
+FAT: Ph1/+C Ax  LAVA pre&post
+InPhase: Ph1/+C Ax  LAVA pre&post
+InPhase: Ph2/+C Ax  LAVA pre&post
+OutPhase: Ph2/+C Ax  LAVA pre&post
+WATER: Ph3/+C Ax  LAVA pre&post
+FAT: Ph3/+C Ax  LAVA pre&post
+InPhase: Ph3/+C Ax  LAVA pre&post
+OutPhase: Ph3/+C Ax  LAVA pre&post
++C Ax T1+FS miednica
++C SAG T1+FS miednica
++C COR T1+FS miednica
+ADC (10^-6 mm²/s):Aug 28 2020 09-31-25
+CDWI_MonoExp_Reg__AX cDWI 1500
+Reg - AX DWI
+dRegAX DWI ADC
+AX_T1W_TSE
+AX_STIR
+AX DWI
+cor_T2W_TSE_cs
+AX_T2W_TSE_hM_cs
+AX DYN mDIXON
+COR_mDIXON-W/IP+C
+SAG  mDIXON-W/IP
+FAST LOCALIZER
+FAST COR PILOT
+Created from   H
+Created from   G
+Created from   D
+Created from   F
+Created from   E
+Created from   C
+ep2d_perf_p2_CM
+t1_mpr_tra_p2_iso CM
+FLAIR_longTR 2mm
+PosDisp: [10] t2_tse_fs_sag
+PosDisp: [13] t2_tse_cor 3mm
+PosDisp: [7] t2_tse_tra
+t1_vibe_dixon_tra_bh_pelvis_opp
+t2_tse_tra_p3_mbh_3mm
+t2_tse_fs_tra_p3_mbh_3mm
+t2_tse_stir_cor_p2_384
+t1_vibe_dixon_tra_bh_pelvis_W
+t1_tse_fs_tra_p2_256
+t1_vibe_dixon_tra_bh_pelvis_F
+t1_vibe_dixon_tra_bh_pelvis_in
+t1_vibe_dixon_cor_bh_pelvis_F
+t1_vibe_dixon_cor_bh_pelvis_W
+Pelvis_t2_tse_sag_320_p2_Fov
+Pelvis_t2_tse_tra_320_p2
+Pelvis_t2_tse_cor_320_p2
+Pelvis_ep2d_diff_b50_1500
+Pelvis_ep2d_diff_b50_1500_ADC
+Pelvis_t1_tse_tra_lymph-nodes
+Pelvis_t1_tse_fs_tra_gad
+t1_tse_tra_lymph-nodes_gad
+t1_vibe_opp-in_tra_p2_bh_320_gad
+Cor T2fs FSE
+Cor T2 FSE
+t1_tse_tra-RESP
+T2W_TSE_ax
+T2W_SPAIR_ax
+T1W_TSE_ax
+DWIBS_SBC
+T1W_TSE_sag
+T1W_SPIR_cor
+MIP DWIBS
+T1W_TSE_ax+SPIR
+T1W_TSE_ax+SPIR+ce
+T1W_TSE_sag_SPIR+ce
+T1W_SPIR_cor+ce
+Reg - DWI_3b SENSE
+t2_haste_cor_mbh
+t2_trufi3d_cor_bh_1.6mm
+t2_haste_tra_mbh
+t2_blade_fs_tra_mbh
+t1_vibe_dixon_tra_opp
+t1_vibe_dixon_tra_in
+t1_vibe_dixon_tra_F
+t1_vibe_dixon_tra_W
+ep2d_diff_b50_400_800_TRACEW
+ep2d_diff_b50_400_800_ADC
+ep2d_diff_b50_400_800_CALC_BVAL
+t2_blade_fs_cor_mbh
+t2_tirm_tra
+ep2d_diff_tra_b50_400_800_TRACEW_DFC_MIX
+ep2d_diff_tra_b50_400_800_ADC_DFC_MIX
+ep2d_diff_tra_b50_400_800_CALC_BVAL_DFC_MIX
+t1_vibe_fs_tra_dyn_test
+t1_vibe_fs_tra_dyn_SUB
+t1_tse_sag+C
+t1_vibe_fs_tra_bh_CM
+t1_vibe_dixon_tra_CM_opp
+t1_vibe_dixon_tra_CM_in
+PosDisp: [2] t2_haste_cor_mbh
+PosDisp: [4] t2_haste_tra_mbh
+PosDisp: [17] t2_tse_cor
+bh  Ax T2 SSFSE FatSat ARC
+bh Ax T2 SSFSE  ARC
+bh Cor T2 SSFSE  ARC
+bh +c Cor T1 FSPGR fs
+Ax DWI b=1000
+ep2d_diff_tra_4mm
+ep2d_diff_tra_4mm_ADC
+T2W_TSE_COR
+T2W_TSE_SAG
+STIR_AX
+DWI_3b AX SENSE
+dDWI_3b AX SENSE
+eDWI_3b AX SENSE
+e-THRIVE AX dyn6
+T1W_SPIR_COR+CONT SENSE
+T1W_SPIR_SAG+CONT SENSE
+SAG T1 FSEFS
+SAG T2 fs FRFSE
+Ax T1 FSE fs
+C+COR  T1fs FSE
+C+Ax T1 FSE fs
+COR  T1fs FSE
+LOCALIZER TH
+Sag T1 loc long
+Sag T1 FS
+Ax T1+GORA +C
+Ax T1+DOL +C
+Cor  T1 C+ FS
+Sag T1 + C
+Sag T1 FS + C
+t1_tse_sag CM
+t1_tse_tra CM
+t1_tse_cor CM
+t1_tse_sag_fs CM
+PosDisp: [10] t1_tse_tra CM
+MIP 6DYN mDIXON_all AXIAL
+MIP 6DYN mDIXON_all CORONAL
+sdual_FFE
+PosDisp: [3] t2_tse_cor 3mm
+Sag T2 FSE Propeller
+t2_tse_cor 1v1
++C t1_tse_sag fs
+t2_tse_tra_p2
+t1_tse_sag_p2_CM
+PosDisp: [3] t2_tse_tra_p2
+localizer tra
+t2_blade_sag_fs
+t1_tse_sag fs
+t2_blade_ax
+t1_tse_cor fs
+con t1_tse_tra
+con t1_tse_cor fs
+con t1_tse_sag fs
+T2W_TSE_mied
+T2W_SPAIR_mied
+T2W_mied
+DWI_BB_mied
+mDIXON-All_mied
+e-THRIVE_HR _mied
+T2W_TSE_j.b
+MPR - T2W_TSE_Cor_BH
+e-THRIVE_j.b
+T2W_TSE_BH j.b
+DWI_JB
+mDIXON-W_dyn miednica
+C+mDIXON_ALL
+C+mDIXON-W_mied+j.b
+C+e-THRIVE_mied
+C+e-THRIVE_j.b
+VSWI SENSE
+T1W_SE
+eSWI 50-50
+cDWI.b=2000
+AX DWI ES+RDC b=1400(prostata)
+AX 3D FSat Dynamic
+AX 3D T1 FSat MPR+K (przeglad)
+COR T2 (przeglad)
+SAG T1 fs+C
+COR STIR
+SAG T2 FSat
+SAG T1
+DWI_b2000_dS_ZOOM
+mDIXON-W_HR
+AX T1 FSE_FS
+Ax DWI b500
+Ax LAVA BH Asset
+C+ Ax LAVA Multiphase BH Asset
+C+ SAG T1 FSE
+C+ AX T1 FSE_FS
+C+ COR T1 FSE+FS
+PJN
+t1_fl2d_cor_CM
+PosDisp: [2] t2_blade_tra
+PosDisp: [5] t2_blade_cor
+PosDisp: [8] ep2d_diff_3scan_trace_p2_ADC
+PosDisp: [9] t2_swi3d_tra_p2_fast
+PosDisp: [10] t1_mpr_tra_iso +C
+Ax T2 FS
+WATER: Ph3/+c- Ax LAVA-Flex
+AX T1+C
+FAT: Ph1/+c- Ax LAVA-Flex
+FAT: +c-  Cor T1 LAVA-Flex
+WATER: Ph2/+c- Ax LAVA-Flex
+eADC:Apr 28 2021 09-24-01
+FAT: Ph4/+c- Ax LAVA-Flex
+WATER: +c- Ax LAVA-Flex
+FAT: +c- Ax LAVA-Flex
+FAT: Ph3/+c- Ax LAVA-Flex
+AX DWI B 50/800/1500
+FAT: Ph5/+c- Ax LAVA-Flex
+WATER: +c-  Cor T1 LAVA-Flex
+WATER: Ph5/+c- Ax LAVA-Flex
+InPhase: +c-  Cor T1 LAVA-Flex
+ADC (10^-6 mm²/s):Apr 28 2021 09-24-01
+AX T1 CALA MIEDNICA
+FAT: Ph2/+c- Ax LAVA-Flex
+COR T2 FS
+OutPhase: +c-  Cor T1 LAVA-Flex
+WATER: Ph4/+c- Ax LAVA-Flex
+WATER: Ph1/+c- Ax LAVA-Flex
+T2_tse_sag
+T1_3D_se_sag
+T2_tse_tra
+T2_tse_cor
+T1_3D_se_sag+C
+t1_fl3d_tra_CM
+PosDisp: [2] T2_tse_sag
+FLAIR_3D_sag
+PosDisp: [5] T2_tse_tra
+ep2d_diff_orth_p2
+ep2d_diff_orth_p2_ADC
+mIP_Images(SW)
+SWI_Images
+PosDisp: [11] T2_tse_cor
+WATER: +C AX LAVA-Flex
+WATER: +C Cor LAVA-Flex
+SAG T2 PROP SFOV
+AX T2 PROP SFOV
+COR T2 PROP SFOV
+Ax DWI 50/800/1500
+SAG T1 FSE+FAT SAT
++C SAG T1 FSE+FAT SAT
+t2_tse_sag 3 mm CM
+t2_tse_tra 5 mm calosc CM
+t2_tse_tra 3 mm CM
+t2_tse_cor 3mm CM
+ep2d_diff_tra_0-800 CM
+ep2d_diff_tra_0-800 CM_ADC
+PosDisp: [3] t2_tse_tra 5 mm calosc CM
+PosDisp: [4] t2_tse_tra 3 mm CM
+PosDisp: [5] t2_tse_cor 3mm CM
+T1W_TSE_FS_ax
+DWI_500_1000_1500
+T2W_TSE_HR_ax
+T1W_TSE_FS_ax+C
+t1_tse_fs_sag
+t2_tse_spair_sag
+PosDisp: [2] LOCATOR_t2_trufi_cor
+t2_blade_sag_dark-fl
+t2_blade_tra_dark-fl
+tra SWI
+Scano SAG/COR/AX
+T2 SAG 8mm
+T1 SAG 8mm
+T2 AX 8mm
+T1 AX 8mm
+T1 COR 8mm
+T2 COR 8mm
+T1 COR 8mm + C
+T1 AX 8mm + C
+T1 SAG 8mm + C
+Scano SAG/COR/AX-3
+STIR AX
+STIR SAG-2
+t1_fl2d_cor_p2_trig-RESP
+t1_fl2d_cor_p2_trig
+t2_trufi_cor_p2_trig-RESP
+t2_trufi_cor_p2_trig
+ep2d_diff_b50_400_800_1000p2
+ep2d_diff_b50_400_800_1000p2_ADC
+t2_blade_tra_p2_trig
+t2_blade_tra_p2_trig-RESP
+t1_fl2d_tra_p2_trig-RESP
+t1_fl2d_tra_p2_trig
+RL T2_AX_MVXD_RT_Fast
+RL T2_SPIR_AX_MVXD_FB
+3D_Free_Breathing_mDIXON
+Initialized by sequence
++C t1_tse_tra_lymph-nodes AX
+ep2d_diff_b50_400_800_tra_ORIG
+ep2d_diff_b50_400_800_tra_ADC_DFC_MIX
+ep2d_diff_b50_400_800_tra_TRACEW_DFC_MIX
+t2_space_sag_iso
+AX T1 FSE FS
+COR T2 FS FRFSE
+C+ AX T1 FSE FS
+RL T2_AX_MVXD_RT cienki
++C 3D_Free_Breathing_mDIXON
+dADC B0 1000
+PosDisp: [7] t2_tse_tra 3 mm
+t2_loc
+SAG T2 FRFSE FS
+COR T2 fs FRFSE
++CAx T1 FSE fs
++C SAG T1 FSE
+mDIXON XD/CM
+T1W_TSE_MVXD_CM
+LOCALIZER C-TH
+SAG T2 DLUGI
+COR T2 TH
+SAG T2 TH
+SAG  STIR
+AX T2 FRFSE
+t1_tse_sag_p2
+haste_localizer_430_F
+t1_tse_fs_tra_200mm_#25
+t2_tse_tra_4mm
+t2_tse_tra_LOWER
+II_localizer_220_F
+III_localizer_430_F
+t2_tse_stir_sag
+t2_space_tra_p2_2mm
+t1_mpr_iso_1.5mm
+t1_vibe_fs_tra_SUB
+t1_vibe_dix_tra_bh_CM_F
+t1_vibe_dix_tra_bh_in
+t1_vibe_fs_tra_test
+t2_haste_fs_radial_mbh
+t1_vibe_dix_tra_bh_F
+t1_vibe_dix_tra_bh_CM_W
+t1_vibe_dix_tra_bh_W
+t1_vibe_dix_tra_bh_opp
+t1_vibe_dix_tra_bh_CM_in
+t1_vibe_dix_tra_bh_CM_opp
+t2_haste_fs_tra_mbh
+ep2d_diff_b1200_tra_largeFoV_TRACEW_DFC_MIX
+tof_fl3d_tra_multi-slab
+tof_fl3d_tra_multi-slab_MIP_TRA
+tof_fl3d_tra_multi-slab_MIP_COR
+tof_fl3d_tra_multi-slab_MIP_SAG
+ep2d_diff_b50_800_sag_TRACEW_DFC_MIX
+ep2d_diff_b50_800_sag_ADC_DFC_MIX
+ep2d_diff_b50_800_sag_CALC_BVAL_DFC_MIX
+t1_vibe_dixon_tra_dyn_F
+t1_tse_sag_fs gad
+t1_tse_cor_fs gad
+ep2d_diff_b50_800_tra_TRACEW_DFC_MIX
+ep2d_diff_b50_800_tra_ADC_DFC_MIX
+ep2d_diff_b50_800_tra_CALC_BVAL_DFC_MIX
+Sag T1 FSE  FAT SAT
+3D Ax T2 Cube
++C Sag T1 FSE  FAT SAT
++C Sag T1 FSE
+mDIXON_dyn_W dynamika
++c3D_Free_Breathing_mDIXON
+Reg - DWI_3b
+ddDWI_3b ADC 1400
+ddDWI_3b ADC 900
+edDWI_3b ADC 900
+T2W_MVXD_sag
+T2W_TSE_TRA
+DWI_3b 0 500 900
+DWI_3b 0 1000 1400
++C mDIXON-W_HR
+mDIXON-W gad
+Ax T2 SSFSE FatSat ARC
+Ax T1  DualEcho
+Ax 2D FIESTA FatSat
+Cor T2 FIESTA FatSat
+Cor T1 FSPGR fs
+Ax T1  LAVA
++c Ax T1  LAVA
++c-Cor T1 FSPGR fs
++c Ax T1  LAVA 10 min
++C Sag T1 FS LFOV
+B_t2_blade_cor_resp trig
+B_ep2d_diff_b0 50 100 200 400 800
+B_ep2d_diff_b0 50 100 200 400 800_ADC
+MM_t2_tse_tra
+B_t1_vibe_fs_tra_bh_test
+B_t1_vibe_fs_tra_dyn_mbh_CM
+B_t1_fl2d_in-opp_tra_mbh_CM
+B_t1_fl2d_fs_cor_mbh_CM
+MM_t1_tse_sag_CM
+MM_t1_tse_fs_tra_CM
+MM_t1_tse_cor_CM
+B_t1_vibe_fs_tra_delayed_mbh_CM
+PosDisp: [7] B_t2_trufi_cor_bh
+PosDisp: [8] B_t2_tse_tra_resp trig_blade
+PosDisp: [16] MM_t2_tse_tra
+PosDisp: [17] t2_tse_tra 3 mm
+PosDisp: [18] t2_tse_tra 3 mm
+PosDisp: [23] MM_t2_tse_cor
+localizer_trufi
+C t2_tirm_sag
+t1_tse_sag_fatsat  th
+t1_tse_tra th
+t1_se_tra C
+C t1_tse_cor_fs CM
+C t1_se_tra CM
+C t1_tse_sag  CM
+Th t1_tse_sag CM
+TH t1_tse_tra  CM
+t1_tse_sag_fatsat  th CM
+t2_tse_sag_FIL
+t2_tse_cor_FIL
+t1_tse_sag_FIL
+t2_tirm_sag_FIL
+t1_tse_sag fs_FIL
+t2_tse_tra 2.5mm_FIL
+t1_tse_cor fs +C_FIL
+t1_tse_sag fs +C_FIL
+t1_tse_tra +C
+PosDisp: [3] t2_tse_fs_sag
++C Sag T1 FS scaled
++C Sag T1 scaled
++C Ax T1 FS scaled
+Ax T2 scaled
+Sag T2 scaled
+Cor T2 scaled
+loc scaled
+Sag T1 FS scaled
+Sag STIR scaled
+ep2d_diff_b50_b800_b1500
+ep2d_diff_b50_b800_b1500_ADC
++C_t1_VIBE_sag_fs
+Sag T2 FSE
+Ax STIR FSE
+Cor frFSE T2 fatsat
+Ax 3D T1  LAVA
+Sag T2 cube
+T2 LARGE FOV
+DWI_BB_AX
+T2 TSE 3 MM
+THRIVE_HR
+AX T2 FATSAT
+THRIVE POST
+WAVE_POST
+Reg - DWI_BB_AX SENSE
+Rot_RL_MIP_nov:19.0_angle:10.0
+BH Rot T2 SSFSE FatSat ARC
+BH 3D MRCP  ASSET
+COL:BH 3D MRCP  ASSET
+WATER: Sag T2 FSE Flex
+FAT: Sag T2 FSE Flex
+Sag T2 STIR
++C Ax T1 FSE FS
+t1_se_sag_CM na prosto
+t1_se_cor_CM na prosto ale jak coronal
+SAG T2 PROP
+Ax STIR
+AX DWI B 1400 2000 LONG FOV
+Ax FOCUS DWI sFOV
+WATER: Perfusion LAVA AX
+t2_spc_AX_iso
+T1 Axial Pelvis
+T2 Axial
++C T1 VIBE Axial SPAIR Dynamic
++C T1 VIBE Cor SPAIR
+t1_mpr_iso_1.0mm_cor
+t2_tse_tra 1 mm
+t1_tse_tra_1,9mm
+Patient Aligned MPR AWPLAN_SMARTPLAN_TYPE_L_SPINE
+T1W_TSE_Cor
+SmartSpine_L
+MPR - SmartSpine_L
+T2W_TSE_DRIVE_HR
+STIR_TSE
+T1W_TSE gad
+t1_vibe-twist_dixon_tra_dyn_TTC=9.3s_F
+t1_vibe-twist_dixon_tra_dyn_TTC=9.3s_W
+t1_vibe-twist_dixon_tra_dyn_TTC=12.7s_F
+t1_vibe-twist_dixon_tra_dyn_TTC=12.7s_W
+t1_vibe-twist_dixon_tra_dyn_TTC=16.1s_F
+t1_vibe-twist_dixon_tra_dyn_TTC=16.1s_W
+t1_vibe-twist_dixon_tra_dyn_TTC=19.6s_F
+t1_vibe-twist_dixon_tra_dyn_TTC=19.6s_W
+t1_vibe-twist_dixon_tra_dyn_TTC=23.0s_F
+t1_vibe-twist_dixon_tra_dyn_TTC=23.0s_W
+t1_vibe-twist_dixon_tra_dyn_TTC=26.4s_F
+t1_vibe-twist_dixon_tra_dyn_TTC=26.4s_W
+t1_vibe-twist_dixon_tra_dyn_TTC=29.9s_F
+t1_vibe-twist_dixon_tra_dyn_TTC=29.9s_W
+t1_vibe-twist_dixon_tra_dyn_TTC=33.3s_F
+t1_vibe-twist_dixon_tra_dyn_TTC=33.3s_W
+t1_vibe-twist_dixon_tra_dyn_TTC=36.7s_F
+t1_vibe-twist_dixon_tra_dyn_TTC=36.7s_W
+t1_vibe-twist_dixon_tra_dyn_TTC=40.1s_F
+t1_vibe-twist_dixon_tra_dyn_TTC=40.1s_W
+t1_vibe-twist_dixon_tra_dyn_TTC=43.6s_F
+t1_vibe-twist_dixon_tra_dyn_TTC=43.6s_W
+t1_vibe-twist_dixon_tra_dyn_TTC=47.0s_F
+t1_vibe-twist_dixon_tra_dyn_TTC=47.0s_W
+t1_vibe-twist_dixon_tra_dyn_TTC=50.4s_F
+t1_vibe-twist_dixon_tra_dyn_TTC=50.4s_W
+t1_vibe-twist_dixon_tra_dyn_TTC=53.9s_F
+t1_vibe-twist_dixon_tra_dyn_TTC=53.9s_W
+t1_vibe-twist_dixon_tra_dyn_TTC=57.3s_F
+t1_vibe-twist_dixon_tra_dyn_TTC=57.3s_W
+t1_vibe-twist_dixon_tra_dyn_TTC=60.7s_F
+t1_vibe-twist_dixon_tra_dyn_TTC=60.7s_W
+t1_vibe-twist_dixon_tra_dyn_TTC=64.1s_F
+t1_vibe-twist_dixon_tra_dyn_TTC=64.1s_W
+t1_vibe-twist_dixon_tra_dyn_TTC=67.6s_F
+t1_vibe-twist_dixon_tra_dyn_TTC=67.6s_W
+t1_vibe-twist_dixon_tra_dyn_TTC=71.0s_F
+t1_vibe-twist_dixon_tra_dyn_TTC=71.0s_W
+t1_vibe-twist_dixon_tra_dyn_TTC=74.4s_W
+t1_vibe-twist_dixon_tra_dyn_TTC=74.4s_F
+PosDisp: [4] t2_tirm_sag
+PosDisp: [5] t2_spc_sag_iso
+PosDisp: [6] t2_me2d_tra
+PosDisp: [7] t2_spc_tra_2mm
+t2_fl2d_tra_hemo
+<MPR Range[2]>
+Ax T1 LFOV fs
+t1_vibe_fs_tra_JB
+t1_vibe_dixon_cor_F
+t1_vibe_dixon_cor_W
+t1_vibe_fs_tra_dyn -test
+t1_vibe_fs_tra_dyn CM
+t1_fl2d_tra
+res_diff_tra_b 0 1000_TRACEW
+res_diff_tra_b 0 1000_ADC
+t2_swi_tra_Mag
+t2_swi_tra_Pha
+t2_swi_tra_SWI
+ciss3d_tra_iso
+t1_starvibe_tra_1.5mm
+t2_spc_d-fluid_sag_iso_MPR_tra
+pd+t2_tse_tra_3mm
+t1_tse_fs_sag_CM
+t1_vibe_dixon_tra_bh_dyn_CM_W
+t1_vibe_dixon_tra_bh_pre_W
+t1_vibe_dixon_sag+cm_W
+t1_vibe_dixon_cor +cm_W
+t1_vibe_dixon_tra_bh_opp
+t1_vibe_dixon_tra_bh_in
+t1_vibe_dixon_tra_bh_F
+t1_vibe_dixon_tra_bh_W
+t1_vibe_fs_tra_bh
+ep2d_diff_b50_400_800_tra_pelvis_TRACEW_DFC
+ep2d_diff_b50_400_800_tra_pelvis_ADC_DFC
+t2_haste_sag_p2_320
+t1_tse_sag_p2 FS_320
+t2_space_sag_p2_iso
+t1_vibe_tra_dynamic
+t1_vibe_tra_dynamic_SUB
+t1_NEURONAWIGACJA TRA
+Fusion
+Fusion (1)
+Reg - DWI_3b_dS_ZOOM
+dRegADC
+T1W_TSE_cor
+e-THRIVE_mied+j.b
+mDIXON-W_dyn FB miednica
+T1W_TSE_ax_CE
+C+mDIXON-W_mied
+T1W_SPIR_sag_CE
+T1W_TSE_cor_CE
+ep2d_diff_b50_b800_1200_b1500
+ep2d_diff_b50_b800_1200_b1500_ADC
+WB_t2_tse_tra_fs_resp_COMPOSED
+WB_t1_vibe_tra_fs_bh_COMPOSED
+Head_ep2d_diff_tra_TRACEW_COMP_DIF_5
+Head_ep2d_diff_tra_ADC_COMP_DIF_5
+I_III_localizer_COMP_SP
+T2W_TSE spir
+T2_AX_MV_HR_RT spir
+T2W_TSE spr
+t2_spc_sag_iso 0.8mm scaled
+t2_spc_sag_iso 0.8mm scaled scaled
+t2_space_tra scaled
+Th t2_tse_cor scaled
+SpineLine+ Loc SG/CO
+SL MPR
+COR T2 Lokator
+SG T1 FSat
+AX T2 BLOK
+AX T1 BLOK
+AX 3D_SSFP
++K SG T1 FSat
++K AX T1 BLOK
++K AX 3D T1 FSat
+PosDisp: [6] t2_tse_cor
+T2W_MVXD_tra scaled
+t2_tse_tra 1.5 mm
+ep2d_diff_tra_0-800_1,5mm_ADC
+t2_tirm_sag_dark-fl_3mm
+t1_mpr_tra
+t2_tse_cor_5mm
+Mag_Images
+Pha_Images
+t2_tirm_tra_dark-fl_5mm
+t2_tse_tra_512_5mm
+t1_mpr_tra_C+
+<MPR Range>
+<MPR Range[1]>
+<MPR Range[3]>
+ep2d_diff_tra_0-800_1.5mm_ADC
+t1_tse_tra_fs scaled
+t2_tse_4mm_tra scaled
+t2_tse_tra_4mm scaled
+t1_tse_tra_4mm_wezly_CM scaled
+t2_tse_cor_4mm scaled
+Ax T2 FSE scaled
+t1_mpr_iso_1mm_cor
+t1_tse_cor_320_
+t2_tse_rst_tra_fs
+t1_tse_cor_320_fs_CM
+Ax DWI: b2000
+t1_mprage_sag_CM_MPR_tra
+pd+t2_tse_tra_p2_4mm
+t2_space_tra_iso
+t1_vibe_dixon_tra_lymph_nodes_in
+ep2d_diff_tra_b50-400-800 prostata_TRACEW_DFC_MIX
+ep2d_diff_tra_b50-400-800 prostata_ADC_DFC_MIX
+ep2d_diff_tra_b50-400-800 prostata_CALC_BVAL_DFC_MIX
+t1_vibe_dixon_tra_p2_320_in
+t1_vibe_dixon_tra_p2_320_opp
+t1_vibe_dixon_tra_p2_320_W
+t1_vibe_dixon_tra_p2_320_F
+ep2d_diff_diff b50_500_1000_tra_I_TRACEW
+ep2d_diff_diff b50_500_1000_tra_I_ADC
+ep2d_diff_diff b50_500_1000_tra_II_TRACEW
+ep2d_diff_diff b50_500_1000_tra_II_ADC
+t1_vibe_fs_tra_dynamika
+t1_tse_tra_fs+C
+t1_vibe_fs_cor+C
+t1_vibe_dixon_tra_p2_320+C_in
+t1_vibe_dixon_tra_p2_320+C_opp
+t1_vibe_dixon_tra_p2_320+C_W
+t1_vibe_dixon_tra_p2_320+C_F
+t1_mprage_sag_p2_iso_CM_MPR_cor scaled
+t2_qblade_cor scaled
+AAhead_scout
+t1_mprage_sag_p2
+t1_mprage_sag_p2_iso_CM_MPR_cor
+Sag T1fs FSE
+Ax T2 FRFSE
+COR T2 frFSE scaled
+Ax T1 FSE scaled
+SAG T2 frFSE fov20 scaled
+T1W_TSE_ax scaled
+T2W_TSE_ax scaled
+T2W_TSE_sag scaled
+Ax T2 LFOV
+WATER: Ph1/+C Ax LAVA dyn.
+WATER: +C Cor LAVA
+t1_tse_cor_lymph_nodes
+t1_vibe_dixon_cor_in
+t1_vibe_dixon_cor_opp
+ep2d_diff_0_50_300_600_900_1000
+ep2d_diff_0_50_300_600_900_1000_ADC
+t2_blade_cor_p2_3mm
+t1_tse_tra_320_fs
+MM
+t1_tse_sag_320_fs
+C+ t1_vibe_fs_tra_DYN_CM
+t2_tse_tra_3mm
+C+ t1_tse_tra_320_fs
+C+ t1_tse_cor_320_fs
+C+ t1_tse_sag_320_FS
+<MPR Thick Range>
+<MPR Thick Range[1]>
+(BH) AX  2D FIESTA
+(BH)Ax T2fs
+(BH)Ax T2
+WATER: (BH)+c-Ax T1 LAVA Multiphase BH Asset
+FAT: (BH)+c-Ax T1 LAVA Multiphase BH Asset
+InPhase: (BH)+c-Ax T1 LAVA Multiphase BH Asset
+OutPhase: (BH)+c-Ax T1 LAVA Multiphase BH Asset
+FAT: Ph1/(BH)+c-Ax T1 LAVA Multiphase BH Asset
+InPhase: Ph1/(BH)+c-Ax T1 LAVA Multiphase BH Asset
+OutPhase: Ph1/(BH)+c-Ax T1 LAVA Multiphase BH Asset
+WATER: Ph2/(BH)+c-Ax T1 LAVA Multiphase BH Asset
+FAT: Ph2/(BH)+c-Ax T1 LAVA Multiphase BH Asset
+InPhase: Ph2/(BH)+c-Ax T1 LAVA Multiphase BH Asset
+OutPhase: Ph2/(BH)+c-Ax T1 LAVA Multiphase BH Asset
+WATER: Ph3/(BH)+c-Ax T1 LAVA Multiphase BH Asset
+FAT: Ph3/(BH)+c-Ax T1 LAVA Multiphase BH Asset
+InPhase: Ph3/(BH)+c-Ax T1 LAVA Multiphase BH Asset
+OutPhase: Ph3/(BH)+c-Ax T1 LAVA Multiphase BH Asset
+WATER: (BH)+c-Ax T1 LAVA POZNA
+FAT: (BH)+c-Ax T1 LAVA POZNA
+InPhase: (BH)+c-Ax T1 LAVA POZNA
+OutPhase: (BH)+c-Ax T1 LAVA POZNA
+AX T1 MIEDNICA
++C AX T1 MIEDNICA
+Sag T2 Prop SFOV
+T2W_TSE_ax oblique
+t2_haste_stir_tra_mbh
+t1_vibe_dixon_cor_bh_F
+t1_fl2d_opp-in_tra_p2_mbh
+t1_vibe_dixon_cor_bh_opp
+t1_vibe_dixon_cor_bh_in
+t1_vibe_dixon_tra_bh_CM_po7min_in
+t1_vibe_dixon_tra_bh_CM_po7min_W
+t1_vibe-grasp_fs_tra_SUB
+t1_vibe_dixon_tra_bh_CM_po7min_opp
+t1_vibe_dixon_tra_bh_CM_po7min_F
+gre_scout
+t2_arms_sag
+t2_fse_tra
+stir_fse_TRA_uCS
+t2_arms_tra
+t2_arms_cor
+epi_dwi_tra_b50
+epi_dwi_tra_b800
+epi_dwi_tra_b1000
+epi_dwi_tra_b1400
+epi_dwi_tra_ADC
+t1_quick3d_tra_fs_dyn
+t1_quick3d_cor_fs_bh
+T1W_TSE_ax+ce
+T1W_TSE_sag+ce
+t1_tse_tra_FIL
+t2_tirm_tra_FIL
+t1_tse_tra_fs_FIL
+t1_tse_tra_fs_CM_FIL
+t1_tse_tra_CM_FIL
+Ax FOCUS DWI
+WATER: +c Cor  LAVA-Flex
+DW_Synthetic: Ax FOCUS DWI
+FAT: +c Cor  LAVA-Flex
+InPhase: +c Cor  LAVA-Flex
+OutPhase: +c Cor  LAVA-Flex
+T1 cor 3mm scaled
+T2W_TSE scaled
+FLAIR_longTR scaled
+T1 sag 3mm scaled
+ep2d_diff_b50_400_800_tra_p2_TRACEW
+ep2d_diff_b50_400_800_tra_p2_ADC
+ep2d_diff_b50_400_800_tra_p2_CALC_BVAL
+t1_vibe_tra_dyn test
+t1_vibe_tra_dyn_WI
+t1_vibe_tra_dyn_PEI
+Ax T1 FSE miednica scaled
+Ax T2 Prop scaled
+t1_mprage_sag_p2_MPR_tra
+t1_mprage_sag_p2_MPR_cor
+t2_space_dark-fluid_sag_cs_iso
+t2_space_dark-fluid_sag_cs_iso_MPR_cor
+t2_space_dark-fluid_sag_cs_iso_MPR_tra
+dir_space_sag_p2_iso
+dir_space_sag_p2_iso_MPR_cor
+dir_space_sag_p2_iso_MPR_tra
+t2_fse_sag_fs
+t2_fse_cor
+t2_fse_cor+fs
+t1_fse_tra
+t1_quick3d_tra_fs_bh
+t2_trufi_tra_p2_bh
+t1_vibe_dixon_tra_mbh_CM_7min_W
+t2_qtse_stir_tra_whole body
+t2_tse_cor_whole body
+t1_tse_tra_lymph_nodes_CM
+WB_t1_vibe_dix_tra_bh_W_COMPOSED
+WB_t2_haste stir_tra_COMPOSED
+WB_t2_haste_tra_COMPOSED
+WB
+WB_FILT_50
+WB_FILT_800
+FastView_FoV
+WB_t2_tse_dixon_fast_cor_W_COMP_PT
+WB_t1_vibe_dix_tra_bh_F_COMPOSED
+WB_MRAC_CAIPI_HiRes_in_COMP_PT_UMAP
+WB_t1_vibe_dix_tra_bh_opp_COMPOSED
+WB_t1_vibe_dix_tra_bh_in_COMPOSED
+PosDisp: [6] t1_tse_tra-cala miednica
+t1_vibe_fs_sag
+t2_tse_bl_sag FS
+t1_vibe_sag
+t1_vibe_fs_cor
+t1_vibe_cor
+t2_tse_bl_cor FS
+t2_tse_bl_fs_tra
+ep2d_diff_tra_b50-400-800-1200
+ep2d_diff_tra_b50-400-800-1200_ADC
+ep2d_diff_tra_b50-400-800-1200_CALC_BVAL
+t1_tse_fs-dixon_tra_opp
+t1_tse_fs-dixon_tra_in
+t1_tse_fs-dixon_tra_F
+t1_tse_fs-dixon_tra_W
+CM+t1_tse_fs-dixon_tra_opp
+CM+t1_tse_fs-dixon_tra_in
+CM+t1_tse_fs-dixon_tra_F
+CM+t1_tse_fs-dixon_tra_W
+CM+t1_vibe_fs_cor
+CM+t1_vibe_fs_sag
+CM+t1_tse_tra_lymph-nodes
+CM+t1_tse_fs-dixon_tra Delayed_opp
+CM+t1_tse_fs-dixon_tra Delayed_in
+CM+t1_tse_fs-dixon_tra Delayed_F
+CM+t1_tse_fs-dixon_tra Delayed_W
+CM+t1_vibe_fs_cor Delayed
+CM+t1_vibe_fs_sag Delayed
+t1_tse_tra_largeFoV
+ep2d_diff_tra_b50_b400_b1000_ADC
+ep2d_diff_tra_b50_b400_b1000
+t2_tse_tra_largeFoV
+Loc@Center
+t1_vibe_fs_tra_DYN_CM
+t1_tse_cor_320_fs
+t2_haste_fs_cor_mbh
+t2_haste_fs_tra
+t2_tse_tra_p2_320 scaled
+t1_vibe_dixon_tra_dyn_W scaled
+t2_tse_cor_p2_320
+t1_se_tra_FIL
+t1_mpr_tra_iso_CM
+AX STIR
+AX T1 FSat
+COR SSFP
+AX T2 (FASE)
+COR T2 (FASE)
+t1_vibe_dixon_sag_opp
+t1_vibe_dixon_sag_in
+t1_vibe_dixon_sag_W
+t1_se_tra_CM_FS
+PosDisp: [5] t2_tse_sag
+PosDisp: [7] t2_tse_cor
+PosDisp: [8] t2_tse_spair_sag
+t1_tse_tra_C
+PosDisp: [3] t2_tse_sag
+PosDisp: [14] t1_tse_tra
+t1_vibe-twist_dixon_tra_dyn_TTC=13.3s_F
+t1_vibe-twist_dixon_tra_dyn_TTC=13.3s_W
+t1_vibe-twist_dixon_tra_dyn_TTC=19.4s_F
+t1_vibe-twist_dixon_tra_dyn_TTC=19.4s_W
+t1_vibe-twist_dixon_tra_dyn_TTC=25.5s_F
+t1_vibe-twist_dixon_tra_dyn_TTC=25.5s_W
+t1_vibe-twist_dixon_tra_dyn_TTC=31.6s_F
+t1_vibe-twist_dixon_tra_dyn_TTC=31.6s_W
+t1_vibe-twist_dixon_tra_dyn_TTC=37.7s_F
+t1_vibe-twist_dixon_tra_dyn_TTC=37.7s_W
+t1_vibe-twist_dixon_tra_dyn_TTC=43.8s_F
+t1_vibe-twist_dixon_tra_dyn_TTC=43.8s_W
+t1_vibe-twist_dixon_tra_dyn_TTC=49.9s_F
+t1_vibe-twist_dixon_tra_dyn_TTC=49.9s_W
+t1_vibe-twist_dixon_tra_dyn_TTC=56.0s_F
+t1_vibe-twist_dixon_tra_dyn_TTC=56.0s_W
+ep2d_diff_b50_1000_TRACEW_DFC_MIX
+ep2d_diff_b50_1000_ADC_DFC_MIX
+ep2d_diff_b50_1000_ORIG
+t1_vibe_dixon_tra_bh_pre_opp
+t1_vibe_dixon_tra_bh_pre_in
+t1_vibe_dixon_tra_bh_pre_F
+t1_tse_tra_CM+FS
+t1_vibe_dixon_sag_bh_CM_opp
+t1_vibe_dixon_sag_bh_CM_in
+FAT: Ph1/+c-Ax T1 MPh LAVA-Flex
++c Ax T1 FSE
+COR T2 frFSE ukosny 3.0
++C Ax T1 FSE+fatsat
+t2_tse_tra_blade
+t2_tse_tra_fs_blade
+ep2d_diff_tra_b0_b500_750_1000
+ep2d_diff_tra_b0_b500_750_1000_ADC
+PosDisp: [4] t2_tse_tra_blade
+t1_vibe_fs_tra_S11_DIS2D
+ep2d_diff_tra_b50_b400_b1000_ADC_S10_DIS2D
+t1_vibe_fs_tra_dyn_S12_DIS2D
+t1_tse_cor_fs_CM
+t2_tse_tra_hr
+prostate_ep2d_diff_b50_1000_1500_tra_TRACEW_DFC_MIX
+prostate_ep2d_diff_b50_1000_1500_tra_ADC_DFC_MIX
+t2_tse_cor_hr
+t1_tse_dixon_cor_in
+t1_tse_dixon_cor_opp
+t1_tse_dixon_cor_W
+t1_tse_dixon_cor_F
+t2_tse_cor_hr_kanal_odbytu
+t1_tse_dixon_tra-male pole_opp
+t1_tse_dixon_tra-male pole_in
+t1_tse_dixon_tra-male pole_W
+t1_tse_dixon_tra-male pole_F
+t1_vibe_fs_tra_dynamic
+t1_tse_dixon_tra-male pole_CM_opp
+t1_tse_dixon_tra-male pole_CM_in
+t1_tse_dixon_tra-male pole_CM_F
+t1_tse_dixon_tra-male pole_CM_W
+t1_tse_dixon_cor_CM_opp
+t1_tse_dixon_cor_CM_in
+t1_tse_dixon_cor_CM_F
+t1_tse_dixon_cor_CM_W
+t1_vibe_fs_tra_pozna
+localizer_center
+ep2d_diff_b50_500_1000_1500_tra_TRACEW_DFC_MIX
+ep2d_diff_b50_500_1000_1500_tra_ADC_DFC_MIX
+abdomen localizer
+PosDisp: [2] t2_tse_sag_FIL
+t2_tirm_cor_FOV_400_FIL
+t1_tse_cor lymph noods_FIL
+PosDisp: [4] t1_tse_cor lymph noods_FIL
+t1_tse_sag_fs_FIL
+PosDisp: [6] t2_tse_cor_FIL
+ep2d_diff_b50_b400_b800_164
+ep2d_diff_b50_b400_b800_164_ADC
+ep2d_diff_b_100_1000
+ep2d_diff_b_100_1000_ADC
+t1_vibe_fs_tra dyn_CM_FIL
+t1_vibe_fs_tra dyn_CM_FIL_SUB
+t1_vibe_fs_tra dyn_CM_FIL_WI
+t1_vibe_fs_tra dyn_CM_FIL_WO
+t1_tse_sag_fs_CM_FIL
+eReg - DWI_3b scaled
+t2_haste_cor_COMP
+t2_tse_bl_tra 2.5 mm
+ep2d_diff_tra_b50-400-1000_TRACEW
+ep2d_diff_tra_b50-400-1000_ADC
+t1_tse_fs_tra GAD
+t1_tse_sag_p2_GAD
+t1_vibe_fs_tra_p2_bh_TP GAD_COMP
+t2_tse_sag_blade_FIL
+t1_tse_cor_FIL
+t2_tse_cor_blade_FIL
+PosDisp: [5] t2_tse_cor_blade_FIL
+t2_tse_fs_tra_blade_FIL
+PosDisp: [6] t2_tse_fs_tra_blade_FIL
+ep2d_diff_diff b50_400_800_Duzy FOV
+ep2d_diff_diff b50_400_800_Duzy FOV_ADC
+t1_vibe_fs_tra_CM_FIL
+t1_tse_cor_CM_FIL
+t1_tse_sag_CM_FIL
+DWI_3b_dS_ZOOM scaled
+SAG T2  FS
+SAG SE T1 FS
+Ax DWI B-650
+t1_tse_fs_tra_CM_FIL
+ep2d_diff_b1500_big
+ep2d_diff_b1500_ADC
+t1_vibe-twist_dixon_tra_dyn_TTC=29.3s_W
+t1_tse_sag_fs
+PosDisp: [6] t2_tse_sag
+PosDisp: [12] t2_tse_tra
+PosDisp: [13] t1_tse_tra
+PosDisp: [16] t2_tse_cor
+PosDisp: [21] t2_tse_sag
+PosDisp: [22] t1_tse_sag_fs
+PosDisp: [26] t1_tse_tra
+PosDisp: [28] t1_tse_sag_CM
+PosDisp: [29] t1_tse_sag_fs_CM
+t1_tse_sag_320_
+t1_tse_cor_320_CM
+T1W_MPR TRA
+T1W_MPR COR
+V3D_Brain_VIEW_FLAIR_1nsa_TRA
+3D_Brain_VIEW_FLAIR_1nsa
+V3D_Brain_VIEW_FLAIR_1nsa_COR
+AAhead_scout_MPR_sag
+AAhead_scout_MPR_cor
+AAhead_scout_MPR_tra
+t2_tse_dark-fluid_tra
+t2_swi_tra_SWI_mIP
+t1_qse_tra
+DWI_resolve_b0_1000_tra_TRACEW
+DWI_resolve_b0_1000_tra_ADC
+t1_mprage_tra
+ep2d_perf_p2
+TTP_ep2d_perf_p2
+PBP_ep2d_perf_p2
+RELCBV_LOCAL_ep2d_perf_p2
+RELCBF_LOCAL_ep2d_perf_p2
+RELMTT_LOCAL_ep2d_perf_p2
+RELCCBV_LOCAL_ep2d_perf_p2
+t1_qse_tra_CM
+t1_mprage_tra_CM
+SAG T2 sFOV
+Ax T2 sFOV
+Cor T2 sFOV
+Cal BodyArray_23
+AX STIR miednica
+AX DWI B 800 miednica
+AX DWI B 1000 proststa
+AX DWI B 1500 proststa
+Ax T1fs miednica
++c AX T1 LAVA dyn
++c COR T1 LAVA
++C- Ax T1fs miednica
+t1_se_sag+MTC_CM_FIL
+dADC_mied
+T1W_TSE_sag_CE
+t2_trufi_cor_loc multi
+t2_bl_tse_SAG_P
+t2_bl_tse_tra_P
+t2_bl_tse_fs_tra_WIDE
+t2_bl_tse_COR_P
+ep2d_diff_b 50 400 800 1200_TRACEW
+ep2d_diff_b 50 400 800 1200_ADC
+t1_fl3d_tra fs_dyn CM
+t1_fl3d_tra fs_dyn CM_SUB
+t1_fl3d_tra fs_dyn CM_SUB_MIP_COR
+t1_fl3d_tra fs_dyn CM_PEI
+t1_vibe_dix_cor_bh_opp
+t1_vibe_dix_cor_bh_in
+t1_vibe_dix_cor_bh_W
+t1_fl2d_tra_mbh_CM
+Sag FOCUS DWI
+DW_Synthetic: Sag FOCUS DWI
+t2_tse_tra 4 mm
+t1_vibe_dixon_tra_whole_pelvis_CM_opp
+t1_vibe_dixon_tra_whole_pelvis_CM_F
+t1_vibe_dixon_tra_whole_pelvis_CM_W
+t1_vibe_dixon_cor_whole_pelvis_CM_opp
+t1_vibe_dixon_cor_whole_pelvis_CM_in
+t1_vibe_dixon_cor_whole_pelvis_CM_F
+t1_vibe_dixon_cor_whole_pelvis_CM_W
+t2_blade_sag_p2_320
+t2_tse_tra_320_p2
+t2_tse_cor_320_p2
+t2_tse_cor_320_p20 ESICA
+t1_vibe_fs_tra_p2_bh_iso
+ep2d_diff_tra_b50-400-800_TRACEW_DFC_MIX
+ep2d_diff_tra_b50-400-800_ADC_DFC_MIX
+ep2d_diff_tra_b50-400-800_CALC_BVAL_DFC_MIX
+t1_tse_fs-dixon_sag_opp
+t1_tse_fs-dixon_sag_in
+t1_tse_fs-dixon_sag_W
+t1_tse_fs-dixon_sag_F
+t2_tse_fs-dixon_sag_F
+t2_tse_fs-dixon_sag_W
+t2_tse_sag_5mm_loc
+t1_tse_tra_4mm_wezly
+t2_qtse_stir_tra_4mm
+t2_tse_sag_3.5mm_celowane
+t1_tse_tra_4mm_wezly_CM
+T2_sag
+T2_cor
+T1W_SE_Tra
+T2W_FFE
+T1_Tra_cm
+WATER: +C Perfusion LAVA AX
+dDWI_3b_RT
+eDWI_3b_RT
+T2W_SPAIR TRA
+T2W_TSE_Cor
+T2W_SPAIR_Cor
+3 plane Loc BH
+CALIBRATION
+COR SE T1 FS
++C SAG SE T1 FS
++C AX T1
++C COR SE T1 FS
+ep2d_diff_z_b50_0,8k_1,5k_calc. 2k_TRACEW
+ep2d_diff_z_b50_0,8k_1,5k_calc. 2k_ADC
+Ax  T2
+Ax  T2 FS
+WATER: +C- COR LAVA
+WATER: +C- LAVA AX MPH
+WATER: Ph1/+C- LAVA AX MPH
+WATER: Ph2/+C- LAVA AX MPH
+WATER: Ph3/+C- LAVA AX MPH
+FAT: +C- LAVA AX MPH
+FAT: Ph1/+C- LAVA AX MPH
+FAT: Ph2/+C- LAVA AX MPH
+FAT: Ph3/+C- LAVA AX MPH
+FAT: +C- COR LAVA
+InPhase: +C- COR LAVA
+PosDisp: [10] t2_tse_cor
+AX T1 3D FSat MPR +C
+Sag T2 FRFSE
+Ax T1fs FSE
+Cor T2 FRFSE FatSat
+Ax DWI b100/500/1000
++c-COR T1fs FSE
++c-Sag T1fs FSE
++c-Dyn Ax T1 LAVA Multiphase
+Ph1/+c-Dyn Ax T1 LAVA Multiphase
+Ph2/+c-Dyn Ax T1 LAVA Multiphase
+Ph3/+c-Dyn Ax T1 LAVA Multiphase
+Ph4/+c-Dyn Ax T1 LAVA Multiphase
+Ph5/+c-Dyn Ax T1 LAVA Multiphase
++C Ax T1  LAVA
+SAG T2 FRFSE fat sat
+localizer_t2
+Ax T2 FRFSE scaled
+t1_tse_cor_fs_CM_FIL
+ep2d_diff_stir_b50_800_tra_cala_miednica_CALC_BVAL
+ep2d_diff_b1500
+t2_tse_sag scaled
+t1_qtse_fs_cor scaled
+t1_tse_dixon_tra_F scaled
+t1_vibe_dixon_tra_native_F
+t1_vibe_dixon_tra_dyn_CM_F
+t1_vibe_dixon_tra_dyn_CM_W_SUB
+t1_vibe_dixon_tra_dyn_CM_opp_SUB
+t1_qtse_sag
+t1_vibe_dixon_tra_native_W
+t1_vibe_dixon_tra_dyn_CM_opp
+t1_vibe_dixon_tra_dyn_CM_in
+t1_vibe_dixon_tra_dyn_CM_F_SUB
+t1_vibe_dixon_tra_dyn_CM_W
+t1_vibe_dixon_tra_native_opp
+t1_vibe_dixon_tra_dyn_CM_in_SUB
+t1_vibe_dixon_tra_native_in
+MPR Batch
+AX DWI Exsper b=800
+AX T1 3D FSat MPR
+AX 3D T1 (przeglad)
+AX 3D T2 (przeglad)
+AX T1 3D FSat MPR+c
+AX 3D T1 +c
+Cor STIR FSE
+Ax T1 FS FSE
++c-COR T1 FSE FS
++c-SAG T1 FSE FS
+Ax T1 LAVA Multiphase
+T2W_MVXD_cor
+T2W_MVXD_ax
+T2W_TSE_SPAIR_Cor
+t2_bl_tse_sag
+t2_bl_tse_tra_sFOV
+t2_bl_tse_cor
+ep2d_diff_b 50 800 calc 1400_TRACEW
+ep2d_diff_b 50 800 calc 1400_ADC
+ep2d_diff_b 50 800 calc 1400_CALC_BVAL
+ep2d_diff_b  1400_TRACEW
+t1_vibe_dixon_cor_p5_bh_288_iso_F
+t1_vibe_dixon_cor_p5_bh_288_iso_W
+t1_vibe_dixon_cor_p5_bh_288_iso_CM_F
+t1_vibe_dixon_cor_p5_bh_288_iso_CM_W
+t1_vibe_dixon_sag_bh_iso_opp
+t1_vibe_dixon_sag_bh_iso_in
+t1_vibe_dixon_sag_bh_iso_F
+t1_vibe_dixon_sag_bh_iso_W
+t1_vibe_fs_sag_bh_lower
+t2_haste_fs_sag_p2_256
+ep2d_diff_b50_400_800_tra_pelvis_TRACEW_DFC_MIX
+ep2d_diff_b50_400_800_tra_pelvis_ADC_DFC_MIX
+t1_vibe_dixon_tra_bh cm_opp
+t1_vibe_dixon_tra_bh cm_in
+t1_vibe_dixon_tra_bh cm_F
+t1_vibe_dixon_tra_bh cm_W
+t1_vibe_dixon_cor_bh cm_F
+t1_vibe_dixon_cor_bh cm_W
+t1_vibe_dixon_sag_bh_iso cm_opp
+t1_vibe_dixon_sag_bh_iso cm_in
+t1_vibe_dixon_sag_bh_iso cm_F
+t1_vibe_dixon_sag_bh_iso cm_W
+t1_vibe_fs_cor_bh_lower_CM
+t1_vibe_dixon_sag_CM_in
+t1_vibe_dixon_sag_CM_W
+ep2d_diff_b50_800_tra
+t2_spc_sag_iso_LS
+PosDisp: [11] Th_t2_tirm_sag_COMP_AD_4
+Th_t1_tse_sag_COMP_AD_3
+t2_tse_tra_LS
+Ax T1 (CALA)
+AX T2 (CALA)
+AX DWI B 1000-CALA
+InPhase: +c- Ax LAVA-Flex
+InPhase: Ph1/+c- Ax LAVA-Flex
+InPhase: Ph2/+c- Ax LAVA-Flex
+InPhase: Ph3/+c- Ax LAVA-Flex
+OutPhase: +c- Ax LAVA-Flex
+OutPhase: Ph1/+c- Ax LAVA-Flex
+OutPhase: Ph2/+c- Ax LAVA-Flex
+OutPhase: Ph3/+c- Ax LAVA-Flex
+PosDisp: [11] t2_tse_cor
+t2_tse_tra_whole_pelvis
+t2_tse_fs_tra_whole_pelvis
+t1_tse_tra_whole_pelvis
+ep2d_diff_b50_800_tra_whole_pelvis
+t1_vibe_tra_dyn_fs_CM
+t1_tse_fs_cor_sFOV_CM
+dDWI_3b
+eDWI_3b
+mDIXON MPR TRA  1mm
+t2_qtse_stir_cor_4mm
+t2_tse_cor_4mm
+ep2d_diff_b50_400_800_tra_TRACEW
+t1_vibe_tra_dyn_pre
+t1_tse_fs_cor_4mm_CM
+t1_tse_fs_sag_4mm_CM
+Result series: MR Basic Pelvis Snapshots
+KRG Th - Sag T2 FSE Survey
+KRG Th - Cor T2 frFSE
+KRG Th - Sag T2 frFSE
+KRG Th - Sag T1 FLAIR
+KRG Th - Sag STIR
+KRG Th - Sag T1 FSE FS
+KRG Th - Ax T2
+ORIENT...3-pl loc
+Cal SpineArray_12
+KRG Th - Ax T1
+KRG Th - Ax T1 +fs
+Sag T1 + FS
+Ax T1 FSE +FS
++C Sag T1 FSE + FS
++C Ax T1+fs
++ C Sag T1 + FS
++ C Ax T1 FSE +FS
+t2_bl_cor
+t1_vibe_fs_MC tra_p2_320_TIM PLAmbh_COMP
+t1_vibe_dixon_tra_p4_bh_320_opp
+t1_vibe_dixon_tra_p4_bh_320_in
+t1_vibe_dixon_tra_p4_bh_320_F
+t1_vibe_dixon_tra_p4_bh_320_W
+t1_vibe_dixon_cor_p4_bh_F
+t1_vibe_dixon_cor_p4_bh_W
+CM_t1_tse_cor_odbytnica
+CM_t1_tse_tra_odbytnica
+CM_t1_tse_cor_odbytnica-fs
+CM_t1_vibe_dixon_tra_2mm_448_F
+CM_t1_vibe_dixon_tra_2mm_448_W
+CM_t1_tse_tra_odbytnica-fs
+CM_t1_vibe_dixon_sag_2mm-H>>F_F
+CM_t1_vibe_dixon_sag_2mm-H>>F_W
+CM_t1_qtse_cor_320-fs
+CM_t1_qtse_tra_320
+t2_haste_cor_p3_mbh_384
+t2_haste_tra_p2_trig_384
+t2_haste_fs_tra_p2_trig_384
+t2_haste_stir_cor_p3_trig_272
+ep2d_diff_b50_800_tra_p2_trig
+ep2d_diff_b50_800_tra_p2_trig_ADC
+t2_haste_tra_p2_trig_TRZUSTKA
+t2_space_cor_cs23_bh_352_FoV300-MRCP
+t2_space_cor_cs23_bh_352_FoV300-MRCP_MIP_Radials
+t2_qtse_sag
+t2_tse_tra_bl_fs
+t2_qtse_stir_cor
+t1_vibe_dixon_tra_2mm_448_F
+t1_vibe_dixon_tra_2mm_448_W
+ep2d_diff_b50_800_tra_p2_pelvis_TRACEW
+ep2d_diff_b50_800_tra_p2_pelvis_ADC
+t2_tse_cor_p3_odbytnica
+t1_tse_tra_odbytnica
+t2_tse_tra_p3_odbytnica
+t2_tse_sag_3mm-odbytnica
+3-Plane Localizer
+Ax DWI All MultiB
+DW_Synthetic: Ax DWI All MultiB
+Ax T2 fs FSE
+COR T1 FSE
+WATER: 3D COR LAVA Flex
+FAT: 3D COR LAVA Flex
+InPhase: 3D COR LAVA Flex
+OutPhase: 3D COR LAVA Flex
+WATER: Ax T1 DX miednica
+FAT: Ax T1 DX miednica
+InPhase: Ax T1 DX miednica
+OutPhase: Ax T1 DX miednica
+ep2d_diff_b50_800_ADC
+ep2d_diff_b50_800_CALC_BVAL
+ep2d_diff_z_b50_0,8k_1,5k_calc. 2k_CALC_BVAL
+T2W_TSE sag
+DWI_b2000
+T2W_TSE COR
+PosDisp: [7] t2_tse_tra 5 mm calosc
++C AX 3D T1 FSat
++C_t1_vibe_tra_dyn
+dDWI_3b ADC B50 B400 B1000 B1400
+t1_tse_dixon_tra_W scaled
+t1_vibe_dixon_tra_lymph_nodes_CM_in
+t1_vibe_dixon_tra_lymph_nodes_CM_F
+t1_vibe_dixon_tra_lymph_nodes_CM_W
+Results Viewing
+t2_tse_sag_5mm
+ep2d_diff_stir_b50_800_tra_abdomen&pelvis
+T2W_TSE_tra scaled
+ADC (10^-6 mm2/s)[No-Q]:May 26 2024 08-47-30
+ep2d_diff_b50_800_1500_tra_sFOV_ADC
+ep2d_diff_b50_800_1500_tra_sFOV_CALC_BVAL
+t2_tse_cor_sFOV_ZWIERACZE
+ep2d_diff_b50_800_tra_whole_pelvis_ADC
+ep2d_diff_b50_800_tra_whole_pelvis_CALC_BVAL
+t1_starvibe_fs_tra_iso
+SAG T1 FS
+BH 3Plane Loc SSFSE
+Ax T2 - miednica
+Ax T1 sFOV
+Ax DWI b800
+Ax T2 PROP sFOV
+DW_Synthetic: Ax DWI b800
+WATER: 3D Ax LAVA Flex
+FAT: 3D Ax LAVA Flex
+WATER: +C 3D Ax LAVA Flex Mph
+FAT: +C 3D Ax LAVA Flex Mph
+t2_tse_sag_LargeFoV
+t2_tse_stir_cor_LargeFOV
+t1_vibe_dixon_cor Large_FOV_in
+t1_vibe_dixon_tra Large_FOV_in
+t1_vibe_dixon_tra Large_FOV_F
+t1_vibe_dixon_tra Large_FOV_W
+ep2d_diff_b50_400_800_tra_LargeFOV_TRACEW
+t1_vibe_dixon_cor Large_FOV_F
+t1_vibe_dixon_cor Large_FOV_W
+ep2d_diff_b50_400_800_tra_LargeFOV_ADC
+t2_tse_cor_FOV180
+t2_tse_tra_FOV180
+ep2d_diff_zoomit_tra_TRACEW
+ep2d_diff_zoomit_tra_ADC
+ep2d_diff_zoomit_tra_CALC_BVAL
+t2_qtse_tra_largeFoV
+t1_vibe_dixon_tra Large_FOV_CM_in
+t1_vibe_dixon_tra Large_FOV_CM_F
+t1_vibe_dixon_tra Large_FOV_CM_W
+t1_vibe_dixon_cor Large FOV_CM_in
+t1_vibe_dixon_cor Large FOV_CM_F
+t1_vibe_dixon_cor Large FOV_CM_W
+t1_vibe_dixon_sag_CM_F
++c 3D Ax T1 MPRAGE
++c SAG T1
+t1_tse_tra_whole_pelvis_CM
+t2_blade_fs_cor
+t2_tse_fs_tra_4mm scaled
+t2_tse_sag_4mm scaled
+t1_tse_dixon_tra_in scaled
+t1_tse_dixon_tra_CM_in scaled
+localizer_liver_free
+localizer_liver_bh
+t2_haste_tra_fs_mbh
+t1_vibe_dixon_tra_bh_2ptFF
+ep2d_diff_b50-800_tra_ADC
+ep2d_diff_b50-800_tra
+ep2d_diff_b50-800_tra_CALC_BVAL
+t2_space_tra_trig_iso_MIP_Radials
+t2_space_tra_trig_iso
+t2_space_tra_trig_iso_MIP_TRA
+t2_space_tra_trig_iso_MIP_SAG
+t2_space_tra_trig_iso_MIP_COR
+t1_vibe_dixon_tra_dyn_mbh_CM_W
+t1_vibe_dixon_tra_dyn_mbh_CM_W_SUB
+t2_haste_sag_mbh
+t2_haste_tra_TE250_mbh
+ep2d_diff_b50_400_800_1500_tra_sFOV_ADC
+ep2d_diff_b50_400_800_1500_tra_sFOV_CALC_BVAL
+ep2d_diff_b50_800_1500_tra_whole_pelvis_TRACEW
+ep2d_diff_b50_800_1500_tra_whole_pelvis_ADC
+ep2d_diff_b50_800_1500_tra_whole_pelvis_CALC_BVAL
+t1_tse_tra_fs_sFOV
+t1_tse_tra_sFOV
+t1_tse_fs_cor_CM
+t1_tse_tra_fs_sFOV_CM
+t1_tse_tra_sFOV_CM
+t2_tse_cor_whole_pelvis
+t1_tse_fs_cor_sFOV
+t2_tse_sag_320_p2
+t2_tse_tra_384_FS_p2
+resolve_diff_b50_400_800_1000_tra_TRACEW
+resolve_diff_b50_400_800_1000_tra_ADC
+resolve_diff_b50_400_800_1000_tra_CALC_BVAL
+t2_tse_cor_fs_320_p2
+t1_vibe_cor_CM
+t2_spc_rst_sag_p2_iso_1mm
+Ax T2 Prop fatsat
+t1_mprage_tra_p2_iso
+t1_mprage_tra_p2_iso_MPR_sag
+t2_space_tra_iso_1mm
+t2_space_tra_iso_1mm_MPR_cor
+t2_space_tra_iso_1mm_MPR_sag
+t1_mprage_tra_p2_iso_CM
+t1_mprage_tra_p2_iso_CM_MPR_sag
+t2_tse_cor_FOV200_2 na zmiane
+t2_tse_stir_cor_384
+t2_tse_tra_FOV200_2
+AX T2WI
++C AX 3D T1 IR
+t1_mprage_tra_iso_CM
+SAG T2 PROPELLER
+Ax T1(CALA MIEDNICA)
+COR T2 PROPELLER
+AX T2 PROPELLER
+t1_tse_tra_pelvis
+t1_tse_fs_tra_pelvis_CM
+dDWI_3b_dS_ZOOM
+eDWI_3b_dS_ZOOM
+t1_starvibe_fs_tra_iso_CM
+t1_vibe_dixon_sag_F
+t2_ftse_fs_tra
+t1_fl2d_opp-in_tra
+ep2d_diff_b50_200_800_ADC
+t2_tse_dix_tra_in
+Ax T1 cala miednica
+Ax STIR cala miednica
+AX DWI B 1000- cala miednica
+Cor T2 prop
+SAG T2 prop
+OBL/AX T2
+OBL/COR T2
+WATER: Ax LAVA-Flex cala miednica
+WATER: Sag LAVA-Flex
+WATER: +c Sag LAVA-Flex
+FAT: Ax LAVA-Flex cala miednica
+InPhase: Ax LAVA-Flex cala miednica
+OutPhase: Ax LAVA-Flex cala miednica
+FAT: Sag LAVA-Flex
+InPhase: Sag LAVA-Flex
+OutPhase: Sag LAVA-Flex
+FAT: +c Sag LAVA-Flex
+InPhase: +c Sag LAVA-Flex
+OutPhase: +c Sag LAVA-Flex
+t1_fl2d_tra scaled
+t1_mprage_sag
+t1_mprage_sag_MPR_tra
+t1_mprage_sag_MPR_cor
+t2_space_dark-fluid_sag_cs5.6_iso
+t2_space_dark-fluid_sag_cs5.6_iso_MPR_tra
+t2_space_dark-fluid_sag_cs5.6_iso_MPR_cor
+t2_swi_wave4_2mm_Mag
+t2_swi_wave4_2mm_Pha
+t2_swi_wave4_2mm_SWI
+t2_swi_wave4_2mm_SWI_mIP
+resolve_4scan_trace_tra_TRACEW
+resolve_4scan_trace_tra_ADC
+t1_mprage_sag_CM
+t1_mprage_sag_CM_MPR_cor
+t2_tse_dixon_tra_in
+t2_tse_dixon_tra_F
+t2_tse_dixon_tra_W
+ep2d_diff_b50_800_tra_FOV200_TRACEW
+ep2d_diff_b50_800_tra_FOV200_ADC
+ep2d_diff_b50_800_tra_FOV200_CALC_BVAL
+t2_tse_cor_FOV200_ZWIERACZE
+t1_vibe_dixon_cor_CM_in
+PosDisp: [6] t2_tse_tra 5 mm calosc
+ORIG KR.TH Ax T1 fs FSE
+ORIG KR.TH +C Ax T1 fs FSE
+KR.TH Localizer TH-SPINE
+KR.TH SAG T2 LONG LOC
+KR.TH COR T2
+KR.TH SAG T2
+KR. TH SAG T1
+KR.TH SAG T1 fs
+KR.TH SAG STIR
+KR.TH Ax T2 FSE blok
+KR.TH Ax T1 fs FSE
+KR.LS Localizer
+KR.LS COR T2 FSE
+KR.LS Sag T2 FSE
+KR. LS Sag T1 FSE
+KR.LS Sag T1 fs FSE
+KR.LS Sag T2 STIR FSE
+KR.LS Ax T2 FSE dyski
+KR.LS AX T1 fs
+KR.TH +C SAG T1 fs
+KR.TH +C Ax T1 fs FSE
+KR.TH +C COR T1 fs
+KR.LS +C AX T1 fs
+KR.LS +C Sag T1 fs FSE
+KR.LS +C Cor T1 fs FSE
+T2_AX_MVXD_RT 3mm
+T1W_TSE_ax +C
+t1_vibe_dixon_tra_lymph_nodes_W
+t1_vibe_dixon_tra_lymph_nodes_2ptFF
+t1_vibe-twist_dixon_tra_dyn_TTC=9.7s_F
+t1_vibe-twist_dixon_tra_dyn_TTC=9.7s_W
+t1_vibe-twist_dixon_tra_dyn_TTC=17.0s_F
+t1_vibe-twist_dixon_tra_dyn_TTC=17.0s_W
+t1_vibe-twist_dixon_tra_dyn_TTC=20.7s_F
+t1_vibe-twist_dixon_tra_dyn_TTC=20.7s_W
+t1_vibe-twist_dixon_tra_dyn_TTC=24.4s_F
+t1_vibe-twist_dixon_tra_dyn_TTC=24.4s_W
+t1_vibe-twist_dixon_tra_dyn_TTC=28.1s_F
+t1_vibe-twist_dixon_tra_dyn_TTC=28.1s_W
+t1_vibe-twist_dixon_tra_dyn_TTC=31.7s_F
+t1_vibe-twist_dixon_tra_dyn_TTC=31.7s_W
+t1_vibe-twist_dixon_tra_dyn_TTC=35.4s_F
+t1_vibe-twist_dixon_tra_dyn_TTC=35.4s_W
+t1_vibe-twist_dixon_tra_dyn_TTC=39.1s_F
+t1_vibe-twist_dixon_tra_dyn_TTC=39.1s_W
+t1_vibe-twist_dixon_tra_dyn_TTC=42.8s_F
+t1_vibe-twist_dixon_tra_dyn_TTC=42.8s_W
+t1_vibe-twist_dixon_tra_dyn_TTC=46.5s_F
+t1_vibe-twist_dixon_tra_dyn_TTC=46.5s_W
+t1_vibe-twist_dixon_tra_dyn_TTC=50.1s_F
+t1_vibe-twist_dixon_tra_dyn_TTC=50.1s_W
+t1_vibe-twist_dixon_tra_dyn_TTC=53.8s_F
+t1_vibe-twist_dixon_tra_dyn_TTC=53.8s_W
+t1_vibe-twist_dixon_tra_dyn_TTC=57.5s_F
+t1_vibe-twist_dixon_tra_dyn_TTC=57.5s_W
+t1_vibe-twist_dixon_tra_dyn_TTC=61.2s_F
+t1_vibe-twist_dixon_tra_dyn_TTC=61.2s_W
+t1_vibe-twist_dixon_tra_dyn_TTC=64.9s_F
+t1_vibe-twist_dixon_tra_dyn_TTC=64.9s_W
+t1_vibe-twist_dixon_tra_dyn_TTC=68.5s_F
+t1_vibe-twist_dixon_tra_dyn_TTC=68.5s_W
+t1_vibe-twist_dixon_tra_dyn_TTC=72.2s_F
+t1_vibe-twist_dixon_tra_dyn_TTC=72.2s_W
+t1_vibe-twist_dixon_tra_dyn_TTC=75.9s_F
+t1_vibe-twist_dixon_tra_dyn_TTC=75.9s_W
+t1_vibe-twist_dixon_tra_dyn_TTC=79.6s_F
+t1_vibe-twist_dixon_tra_dyn_TTC=79.6s_W
+t2_tse_tra_cala mm
+PosDisp: [9] t2_tse_tra 5 mm calosc
+FAT: +C Ax LAVA dyn.
+t1_vibe_dixon_tra_iso_CM_in
+t1_vibe_dixon_tra_iso_CM_F
+t1_vibe_cor_SPAIR_bh
+ep2d_diff_b50_800_CALC1000_tra_FOV200_TRACEW
+ep2d_diff_b50_800_CALC1000_tra_FOV200_ADC
+ep2d_diff_b50_800_CALC1000_tra_FOV200_CALC_BVAL
+ep2d_diff_b50_800_CALC1000_tra_whole_pelvis
+ep2d_diff_b50_800_CALC1000_tra_whole_pelvis_ADC
+ep2d_diff_b50_800_CALC1000_tra_whole_pelvis_CALC_BVAL
+ep2d_diff_b50_1000_TRACEW_DFC
+ep2d_diff_b50_1000_ADC_DFC
+t1_vibe_dixon_sag_bh_CM_W
+T2W_TSE_SPAIR_sag DNE2 HRES_Lo_SHD
+smDIXON FS COR DNE5 HRES_SHD
+smDIXON WT COR DNE5 HRES_SHD
+smDIXON IN COR DNE5 HRES_SHD
+mDIXON All COR DNE5 HRES_SHD
+smDIXON OUT COR DNE5 HRES_SHD
+T1W_SPIR_sag +C DNE2 HRES_Lo_SHD
+T2W_TSE_sag DNE2 HRES_Lo_SHD
+T2W_TSE_TRA DNE2 HRES_Lo_SHD
+DWI_3b  DNE2 _ HRES_Lo_SHD
+mDIXON COR W +C DNE2 HRES_Lo_SHD
+T2W_TSE_COR DNE2 HRES_Lo_SHD
+T1W_SPIR_TRA +C DNE2 HRES_Lo_SHD
+diff_stir_b50_800_tra_largeFoV_ADC
+diff_zoomit_b50_800_tra_ADC
+t1_vibe_dix_cor_iso_W
+t1_vibe_tra_dyn_CM
+t1_vibe_dixon_cor_bh_W
+t1_tse_fs_sag_p2_320
+COR PD FS
+SAG PD
+SAG PD FS
+OBL PD FS_P na szyjke
+OBL PD FS_L na szyjke
+OBL PD_P na szyjke
+OBL PD_L  na szyjke
+SAG PD P+L
+SAG PD FS P+L
+Lokalizer Expiration
+T2 HASTE tra nativ mbh
+T2 SPAIR HASTE tra nativ mbh
+T2 HASTE cor nativ mbh
+t2_trufi_cor_p2_bh_
+t2_trufi_tra_p2_bh_
+t1_fl2d_fs_cor_p2_mbh
+t1_vibe_dixon_tra_p2_bh_320_in
+t1_vibe_dixon_tra_p2_bh_320_opp
+t1_vibe_dixon_tra_p2_bh_320_F
+t1_vibe_dixon_tra_p2_bh_320_W
+DWI ax-RESP
+DWI ax
+DWI ax_ADC
+T1 fs Vibe ax bh nativ  dynamic
+T1 fs Vibe ax bh nativ 5 minut
+PosDisp: [9] t1_tse_cor_CM
+t2_tse_tra_pelvis
+t2_tse_tra_tumor
+t2_tse_cor_sFOV_tumor
+ep2d_diff_3scan-trace_TRACEW
+ep2d_diff_3scan-trace_ADC
+T2W_MVXD_sag przed ta sek. buskolizyna
+T2W_TSE_SPAIR_sag
+Ax DWI 50/400/800/1400b
++C cs_3D_PelvisVIEW_T1  DNE2 HRES_Lo_SHD
++C e-THRIVE DNE2 HRES_Lo_SHD
+e-THRIVE DNE2 HRES_Lo_SHD
+T2W_TSE_ax DNE5 HRES_SHD
++c-Ax T1fs FSE
+Th_t2_tse_sag
+Th_t1_tse_sag
+L/S_t2_tse_sag
+Th_t2_tse_sag_COMP_AD_2
+L/S_t1_tse_sag
+t2_tse_tra_384_p2
+ep2d_diff_tra_b50_800_p2_NoNorm_TRACEW_DFC
+ep2d_diff_tra_b50_800_p2_NoNorm_ADC_DFC
+t1_tse_tra_p2_384
+t2_tse_sag_384_p2
+t2_tirm_cor_p2_384_pelvis
+t1_vibe_fs_tra_p2_320_bh_dyn_+c
+t1_tse_tra_p2_384_cm
+t1_tse_sag_p2_cm
+AX T2 5mm
+Ax DWI b1000  ir
+Ax T2 PROP 3mm
+Cor T2 PROP 3mm
+Ax T1 fs FSE
+AX STIR 5mm
+3D Ax LAVA Dyn +ce
++c Ax T1 fs FSE
+_t1_ftse fs_tra
+t2_fse_sag
+T2W_TSE_cor DNE7 HR_M_t_SHD
+T2W_TSE_sag DNE7 HR_M_t_SHD
+T2W_TSE_ax DNE7 HR_M_t_SHD
+t1_vibe_tra_dyn_CM_PEI
+t1_vibe_dix_cor_iso_CM_in
+t1_vibe_dix_cor_iso_CM_F
+t1_vibe_dix_cor_iso_CM_W
+DWI_4b_dS_ZOOM 0 100 800 1000
+DWI_4b_dS_ZOOM 0 1000 1500 1800
+t2_fse_cor_fs
+epi_dwi_tra_50_1000_1800_ADC
+t1_qtse_fs_cor_CM
+DW_Synthetic: Ax DWI All B1500/2000synth
+AX DWI B 800/1500
+PosDisp: [2] t2_tse_cor
+PosDisp: [4] t1_tse_sag_fs
+PosDisp: [5] t1_tse_sag
+PosDisp: [11] t1_tse_sag_CM
+PosDisp: [12] t1_tse_sag_fs_CM
+PosDisp: [13] t1_tse_tra_CM
+haste_loc_multi
+t1_vibe_fs_tra_SUB_MIP_COR
+t2_tse_stir_tra_largeFoV
+Ax T2 Mied
+FAT: C+ 3D Ax T1 LAVA
+t2_bl_tse_tra
+t2_bl_fs_tse_tra
+t2_bl_tirm_cor
+ep2d_diff_b50_1000_calc1500_tra_FOV200_TRACEW_DFC_MIX
+ep2d_diff_b50_1000_calc1500_tra_FOV200_ADC_DFC_MIX
+t2_haste_tra
+t2_haste_cor
+t2_tse_sag_pelvis
+diff_stir_b50_800_tra_largeFoV
+t1_vibe_dixon_tra_largeFoV_in
+diff_b50_800_tra_TRACEW
+diff_b50_800_tra_ADC
+diff_b50_800_tra_CALC_BVAL
+t1_vibe_dixon_tra_largeFoV_W
+t1_vibe_dixon_tra_largeFoV_CM_in
+t1_vibe_dixon_tra_largeFoV_CM_W
+ep2d_diff_tra_b0_b800_b1500
+ep2d_diff_tra_b0_b800_b1500_ADC
+epi_dwi_tra_50_1000_1800_b1800
+Ax T2 sFOV 4mm
+Ph5/+c-Ax T1 LAVA Multiphase

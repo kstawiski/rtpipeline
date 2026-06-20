@@ -250,7 +250,13 @@ _MR_FUNCTIONAL_DESCS = [
     "dADC",                 # Philips derived ADC map (no separator before adc)
     "ep2d_diff_tra_0-800_ADC",  # Siemens ADC map
     "t1_twist_tra_dyn_TT=7.0s",  # Siemens TWIST DCE-perfusion
-    "t1_vibe_tra_perf_CM_SUB",   # Siemens perfusion subtraction
+    "t1_vibe_tra_perf_CM_SUB",   # Siemens perfusion subtraction (already functional via 'perf')
+    # B3 regex extension (\bsub\b|\bsubtract): bare-SUB DCE-subtraction maps that the cohort
+    # currently MISROUTES to mr_anatomic (they hit 'vibe'); functional precedes anatomic, so
+    # the new token correctly reclaims them. Verified against the P0 inventory (exactly 3 new).
+    "t1_vibe_fs_tra_SUB",
+    "t1_vibe-grasp_fs_tra_SUB",
+    "t1_vibe_fs_tra_SUB_MIP_COR",  # MIP at classification = functional; MIP-excluded at B3 sampling
 ]
 
 _MR_EXCLUDE_DESCS = [
@@ -290,6 +296,50 @@ def test_mr_anatomic_does_not_swallow_functional_with_t2_token():
         _meta(modality="MR", series_description="ep2d_diff_tra t2 trace")
     )
     assert image_class == "mr_functional"
+
+
+# --- B3 (functional-MR sampling) regex extension: \bsub\b|\bsubtract cross-cohort safety ---
+
+@pytest.mark.parametrize("desc", [
+    "AX subclavian T1 FSE",       # thorax cohort anatomy with 'sub' prefix
+    "subcutaneous fat T2 TSE",    # 'sub' prefix, anatomic
+    "submandibular T1W_TSE",      # 'sub' prefix, anatomic
+])
+def test_b3_sub_token_does_not_capture_sub_prefixed_anatomy(desc):
+    # \bsub\b (standalone token) must NOT fire on sub-PREFIXED anatomy words present in other
+    # cohorts; these carry anatomic weighting/sequence tokens and must stay mr_anatomic. An
+    # open-prefix \bsub would have wrongly routed them to mr_functional (out of total_mr seg).
+    image_class, _ = classify_series(_meta(modality="MR", series_description=desc))
+    assert image_class == "mr_anatomic", f"{desc!r} -> {image_class}"
+
+
+def test_b3_p0_inventory_regex_case():
+    """The DESIGN-mandated P0 MR-inventory case-test, wired as pytest.
+
+    Against the real 2,696 distinct cohort MR descriptions, the B3 regex extension must newly
+    capture EXACTLY the bare-SUB DCE-subtraction maps (token 'sub') and introduce no anatomic
+    over-capture; \\bwo\\b/\\bwi\\b add nothing in-cohort (no T1WI/T2WI collision).
+    """
+    import re as _re
+    from pathlib import Path as _Path
+
+    inv = _Path(__file__).resolve().parents[1] / "B3_artifacts" / "p0_mr_series_descriptions_20260620.txt"
+    if not inv.exists():
+        pytest.skip("P0 MR inventory artifact not present in this checkout")
+    descs = [ln.rstrip("\n") for ln in inv.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    old = _re.compile(r"dwi|\bdiff|\bep2d|adc|\bperf|\btwist\b|\bdyn|\bdce\b|\bttp\b|\bpei\b|\bmipt\b", _re.I)
+    new = _re.compile(r"dwi|\bdiff|\bep2d|adc|\bperf|\btwist\b|\bdyn|\bdce\b|\bttp\b|\bpei\b|\bmipt\b|\bwo\b|\bwi\b|\bsub\b|\bsubtract", _re.I)
+
+    def _norm(d):
+        toks = _re.findall(r"[a-z0-9]+", d.lower())
+        return " ".join(toks), set(toks)
+
+    newly = [(d, ts) for d in descs for (n, ts) in [_norm(d)] if not old.search(n) and new.search(n)]
+    assert len(newly) == 3, f"expected 3 newly-captured DCE-subtraction series, got {len(newly)}: {[d for d,_ in newly]}"
+    assert all("sub" in ts for _, ts in newly), "every newly-captured series must carry a standalone 'sub' token"
+    # Cross-cohort safety: tightened regex rejects sub-prefixed anatomy.
+    for anat in ("subclavian artery", "AX subcutaneous fat", "submandibular T2", "subcarinal node"):
+        assert not new.search(_norm(anat)[0]), f"regex wrongly captured anatomy {anat!r}"
 
 
 # --- P1fix-2 (Round-2 consensus): RTSTRUCT-bound recovery + projection/derived gates ---
