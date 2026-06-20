@@ -31,7 +31,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 import pydicom
 
 from .layout import build_course_dirs, find_dcm
-from .utils import mask_is_cropped
+from .utils import mask_is_cropped, radiomics_mp_context
 from .custom_models import list_custom_model_outputs
 from .custom_structures_rtstruct import _create_custom_structures_rtstruct, _is_rs_custom_stale
 
@@ -621,8 +621,12 @@ def parallel_radiomics_for_course(
 
     while pending_tasks:
         baseline_children = _current_child_pids()
+        # This pool is created from WITHIN a course-level ThreadPoolExecutor worker thread;
+        # a default 'fork' context inherits locked mutexes from the multi-threaded parent and
+        # deadlocks. Use a forkserver/spawn context (initializer + initargs are picklable).
         executor = ProcessPoolExecutor(
             max_workers=min(worker_count, len(pending_tasks)),
+            mp_context=radiomics_mp_context(),
             initializer=_worker_init,
             initargs=(str(ct_dir), config, thread_limit, skip_rois, min_voxels, max_voxels),
         )
@@ -676,8 +680,13 @@ def parallel_radiomics_for_course(
 
         finally:
             if pending_tasks:
-                executor.shutdown(wait=False, cancel_futures=True)
+                # Terminate workers BEFORE shutdown(): CPython 3.11 sets executor._processes=None
+                # inside shutdown(), so _terminate_executor_processes must read it while still
+                # populated. Otherwise it falls back to diffing the MAIN process's direct children,
+                # which misses forkserver/spawn workers (forked by the forkserver daemon, not the
+                # main process) and leaks the timed-out workers.
                 _terminate_executor_processes(executor, baseline_child_pids=baseline_children)
+                executor.shutdown(wait=False, cancel_futures=True)
             else:
                 executor.shutdown(wait=True)
 
