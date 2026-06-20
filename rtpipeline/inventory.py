@@ -291,6 +291,157 @@ def write_patient_series_manifest(
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
 
 
+def manual_rtstruct_bindings_from_inventory(
+    db_path: Path | str | None,
+    patient_id: str,
+    rows: list[dict[str, Any]],
+) -> dict[str, Path]:
+    """Resolve all-series manifest rows to source manual RTSTRUCTs via inventory RT links.
+
+    Exact RTSTRUCT->SeriesInstanceUID links win. RTSTRUCT->(StudyInstanceUID,
+    FrameOfReferenceUID) links are used only when the manifest row was already
+    marked unique by inventory classification, or when the manifest itself has a
+    single row for that study/frame pair.
+    """
+    if not db_path:
+        return {}
+    db_path = Path(db_path)
+    if not db_path.exists():
+        return {}
+
+    rows_by_study_for: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        study_uid = str(row.get("study_uid") or "").strip()
+        for_uid = str(row.get("frame_of_reference_uid") or "").strip()
+        if study_uid and for_uid:
+            rows_by_study_for.setdefault((study_uid, for_uid), []).append(row)
+
+    try:
+        with _connect_readonly(db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            source_rows = conn.execute(
+                """
+                SELECT
+                    i.sop_instance_uid,
+                    f.file_path
+                FROM instances i
+                JOIN series s ON s.series_uid = i.series_uid
+                JOIN studies st ON st.study_uid = s.study_uid
+                JOIN dicom_files f ON f.file_id = i.primary_file_id
+                WHERE st.patient_id = ?
+                  AND i.modality = 'RTSTRUCT'
+                """,
+                (str(patient_id),),
+            ).fetchall()
+
+            source_paths = {
+                str(row["sop_instance_uid"]): Path(str(row["file_path"]))
+                for row in source_rows
+                if row["sop_instance_uid"] and row["file_path"]
+            }
+            if not source_paths:
+                return {}
+
+            exact_by_series: dict[str, list[Path]] = {}
+            by_study_for: dict[tuple[str, str], list[Path]] = {}
+            source_sops = list(source_paths)
+            for chunk_start in range(0, len(source_sops), 500):
+                chunk = source_sops[chunk_start : chunk_start + 500]
+                placeholders = ",".join("?" for _ in chunk)
+                link_rows = conn.execute(
+                    f"""
+                    SELECT
+                        source_sop_uid,
+                        relationship,
+                        target_series_uid,
+                        target_for_uid,
+                        target_study_uid
+                    FROM rt_links
+                    WHERE relationship IN ('rtstruct_to_series', 'rtstruct_to_for')
+                      AND source_sop_uid IN ({placeholders})
+                    """,
+                    chunk,
+                ).fetchall()
+                for link in link_rows:
+                    source_path = source_paths.get(str(link["source_sop_uid"] or ""))
+                    if source_path is None:
+                        continue
+                    relationship = str(link["relationship"] or "")
+                    target_series = str(link["target_series_uid"] or "").strip()
+                    target_for = str(link["target_for_uid"] or "").strip()
+                    target_study = str(link["target_study_uid"] or "").strip()
+                    if relationship == "rtstruct_to_series" and target_series:
+                        exact_by_series.setdefault(target_series, []).append(source_path)
+                    elif relationship == "rtstruct_to_for" and target_study and target_for:
+                        # D1 is stricter than C1's target inference: only explicit FoR links can match, so misses fail closed without wrong-series export.
+                        by_study_for.setdefault((target_study, target_for), []).append(source_path)
+    except Exception as exc:
+        logger.warning(
+            "D1 original-export disabled for patient %s: unable to resolve manual RTSTRUCT bindings "
+            "from inventory %s (inventory schema/rt_links absent or unreadable): %s",
+            patient_id,
+            db_path,
+            exc,
+        )
+        return {}
+
+    def _unique_paths(paths: list[Path]) -> list[Path]:
+        unique: list[Path] = []
+        seen: set[str] = set()
+        for path in paths:
+            key = str(path)
+            if key not in seen:
+                unique.append(path)
+                seen.add(key)
+        return unique
+
+    bindings: dict[str, Path] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        series_uid = str(row.get("series_uid") or "").strip()
+        if not series_uid:
+            continue
+
+        exact = _unique_paths(exact_by_series.get(series_uid, []))
+        if len(exact) == 1:
+            bindings[series_uid] = exact[0]
+            continue
+        if len(exact) > 1:
+            logger.warning(
+                "Multiple manual RTSTRUCTs reference patient %s series %s; skipping all-series original export",
+                patient_id,
+                series_uid,
+            )
+            continue
+
+        study_uid = str(row.get("study_uid") or "").strip()
+        for_uid = str(row.get("frame_of_reference_uid") or "").strip()
+        if not study_uid or not for_uid:
+            continue
+        for_key = (study_uid, for_uid)
+        for_matches = _unique_paths(by_study_for.get(for_key, []))
+        if len(for_matches) != 1:
+            if len(for_matches) > 1:
+                logger.warning(
+                    "Multiple manual RTSTRUCTs reference patient %s study %s FrameOfReferenceUID %s; "
+                    "skipping all-series original export for series %s",
+                    patient_id,
+                    study_uid,
+                    for_uid,
+                    series_uid,
+                )
+            continue
+        basis = str(row.get("rt_link_basis") or "")
+        if basis == "rtstruct_to_for_unique" or (
+            not basis and len(rows_by_study_for.get(for_key, [])) == 1
+        ):
+            bindings[series_uid] = for_matches[0]
+    return bindings
+
+
 def output_dir_for_image_class(course_dirs: CourseDirs, image_class: str, series_uid: str) -> Path:
     safe_uid = _safe_uid(series_uid)
     if image_class == "planning_ct":
@@ -523,6 +674,7 @@ __all__ = [
     "enumerate_patient_series",
     "list_inventory_patient_ids",
     "load_scan_run_metadata",
+    "manual_rtstruct_bindings_from_inventory",
     "materialize_patient_series_from_inventory",
     "output_dir_for_image_class",
     "write_patient_series_manifest",
