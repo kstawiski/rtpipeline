@@ -1122,6 +1122,12 @@ def main(argv: list[str] | None = None) -> int:
                         f"petct_ct; got {invalid}"
                     )
                 cfg.body_composition_classes = _bc_list
+            cfg.mr_functional_sampling = bool(
+                organize_config.get(
+                    "mr_functional_sampling",
+                    yaml_config.get("mr_functional_sampling", False),
+                )
+            )
             pet_config = yaml_config.get("pet", {}) or {}
             cfg.do_ingest_pet_suv = bool(
                 pet_config.get("do_ingest_pet_suv", organize_config.get("do_ingest_pet_suv", False))
@@ -1353,6 +1359,45 @@ def main(argv: list[str] | None = None) -> int:
                             logging.getLogger(__name__).info("Body-composition CSV written: %s", bc_csv)
                     except Exception as exc:
                         logging.getLogger(__name__).warning("Body-composition CSV aggregation failed: %s", exc)
+
+                # B3: functional-MR sampling under anatomic total_mr masks (opt-in, default
+                # off). Runs post-segmentation so masks exist; per-patient (rigid-MI is heavy),
+                # then a serial CSV aggregation. Never flips a series to seg_failed. Failure is
+                # non-fatal (logged). Precondition warn-loud: mr_anatomic must be in the
+                # effective segmentation scope, else every functional series -> anatomic_out_of_scope.
+                if getattr(cfg, "mr_functional_sampling", False):
+                    _log = logging.getLogger(__name__)
+                    _eff_scope = cfg.all_series_segment_classes
+                    _anat_in_scope = (_eff_scope is None) or ("mr_anatomic" in set(_eff_scope))
+                    if not _anat_in_scope:
+                        _log.warning(
+                            "mr_functional_sampling=True but mr_anatomic is NOT in "
+                            "all_series_segment_classes (%s) — no total_mr masks will exist; "
+                            "every functional series will be flagged anatomic_out_of_scope.",
+                            _eff_scope,
+                        )
+                    try:
+                        from .mr_functional import (
+                            sample_patient_mr_functional,
+                            write_mr_functional_structures_csv,
+                        )
+
+                        _ver = getattr(cfg, "rtpipeline_version", "") or ""
+                        for _pid in patient_ids:
+                            try:
+                                sample_patient_mr_functional(
+                                    Path(cfg.output_root), _pid,
+                                    rtpipeline_version=_ver,
+                                    anatomic_in_scope=_anat_in_scope,
+                                    force=args.force_segmentation,
+                                )
+                            except Exception as exc:
+                                _log.warning("B3 functional-MR sampling failed for %s: %s", _pid, exc)
+                        mrf_csv = write_mr_functional_structures_csv(Path(cfg.output_root))
+                        if mrf_csv is not None:
+                            _log.info("Functional-MR structures CSV written: %s", mrf_csv)
+                    except Exception as exc:
+                        _log.warning("B3 functional-MR stage failed: %s", exc)
 
             if getattr(cfg, "do_ingest_pet_suv", False):
                 patient_ids = sorted({str(course.patient_id) for course in selected_courses if course.patient_id})
