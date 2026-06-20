@@ -24,7 +24,7 @@ import pydicom
 # Modern NumPy/SciPy work fine with TotalSegmentator - no compatibility shims needed
 
 from .config import PipelineConfig
-from .inventory import TS_TASK_BY_CLASS
+from .inventory import TS_TASK_BY_CLASS, manual_rtstruct_bindings_from_inventory
 from .layout import build_course_dirs
 
 logger = logging.getLogger(__name__)
@@ -823,6 +823,24 @@ def _series_artifact_dirs(input_dir: Path) -> tuple[Path, Path]:
     )
 
 
+def _series_original_artifact_dir(input_dir: Path) -> Path:
+    if input_dir.name == "DICOM":
+        return input_dir.parent / "Segmentation_Original"
+    return input_dir.parent / "Segmentation_Original" / input_dir.name
+
+
+def _log_no_all_series_original(patient_id: str, row: dict) -> None:
+    logger.debug(
+        "all_series_original_segmentation event=no_original_available patient_id=%s "
+        "series_uid=%s study_uid=%s frame_of_reference_uid=%s image_class=%s",
+        patient_id,
+        row.get("series_uid", ""),
+        row.get("study_uid", ""),
+        row.get("frame_of_reference_uid", ""),
+        row.get("image_class", ""),
+    )
+
+
 def _summary_bucket(summary: dict, image_class: str) -> dict:
     return summary.setdefault(
         image_class,
@@ -911,6 +929,11 @@ def segment_all_series_for_patient(config: PipelineConfig, patient_id: str, *, f
     # P5 scope: optionally restrict which image_classes are segmented and cap 4DCT to one representative.
     # Excluded rows stay in `manifest` (written back below) with their materialized status untouched.
     seg_rows = _select_all_series_rows(config, rows)
+    manual_rtstructs = manual_rtstruct_bindings_from_inventory(
+        getattr(config, "inventory_db_path", None),
+        patient_id,
+        rows,
+    )
 
     for row in seg_rows:
         if not isinstance(row, dict):
@@ -918,6 +941,7 @@ def segment_all_series_for_patient(config: PipelineConfig, patient_id: str, *, f
         task = str(row.get("ts_task") or "none")
         status = str(row.get("status") or "")
         image_class = str(row.get("image_class") or "unknown")
+        series_uid = str(row.get("series_uid") or "")
         if task == "none" or status not in segmentable_statuses:
             continue
 
@@ -968,6 +992,35 @@ def segment_all_series_for_patient(config: PipelineConfig, patient_id: str, *, f
                     row["contrast_phase"] = phase
 
             base_name = _strip_nifti_base(nifti_path)
+            manual_rtstruct = manual_rtstructs.get(series_uid)
+            if manual_rtstruct and Path(manual_rtstruct).exists():
+                try:
+                    from .organize import _export_original_segmentation_from_paths
+
+                    manual_manifest = _export_original_segmentation_from_paths(
+                        rs_path=Path(manual_rtstruct),
+                        primary_nifti=Path(nifti_path),
+                        dicom_ct_dir=input_dir,
+                        segmentation_original_dir=_series_original_artifact_dir(input_dir),
+                        log_root=input_dir,
+                        overwrite=force,
+                    )
+                    if manual_manifest:
+                        row["manual_segmentation_manifest"] = str(
+                            _series_original_artifact_dir(input_dir) / base_name / "metadata.json"
+                        )
+                except Exception as exc:
+                    logger.warning(
+                        "all_series_original_segmentation event=export_failed patient_id=%s "
+                        "series_uid=%s rtstruct=%s error=%s",
+                        patient_id,
+                        series_uid,
+                        manual_rtstruct,
+                        exc,
+                    )
+            else:
+                _log_no_all_series_original(patient_id, row)
+
             seg_root.mkdir(parents=True, exist_ok=True)
             base_dir = seg_root / base_name
             base_dir.mkdir(parents=True, exist_ok=True)
