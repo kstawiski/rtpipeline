@@ -1421,6 +1421,42 @@ def main(argv: list[str] | None = None) -> int:
                 if any(r is None for r in pet_suv_results):
                     had_failures = True
 
+                # B2: per-structure PET SUV under the paired PET-CT CT-component's `total`
+                # masks (opt-in, default off). Runs after PET-SUV ingestion (SUVbw NIfTI) and
+                # all-series segmentation (petct_ct total masks). Per-patient serial + serial
+                # CSV aggregation; failure is non-fatal. MTV/TLG excluded (PI-gated).
+                if getattr(cfg, "pet_suv_structures", False):
+                    _log2 = logging.getLogger(__name__)
+                    _seg_scope = cfg.all_series_segment_classes
+                    _petct_in_scope = (_seg_scope is None) or ("petct_ct" in set(_seg_scope))
+                    if not _petct_in_scope:
+                        _log2.warning(
+                            "pet_suv_structures=True but petct_ct is NOT in "
+                            "all_series_segment_classes (%s) — no `total` masks will exist; "
+                            "every PET series will be flagged petct_ct_masks_missing.",
+                            _seg_scope,
+                        )
+                    try:
+                        from .pet_structures import (
+                            sample_patient_pet_suv,
+                            write_pet_suv_structures_csv,
+                        )
+
+                        _ver2 = getattr(cfg, "rtpipeline_version", "") or ""
+                        for _pid2 in patient_ids:
+                            try:
+                                sample_patient_pet_suv(
+                                    Path(cfg.output_root), _pid2,
+                                    rtpipeline_version=_ver2, force=args.force_redo,
+                                )
+                            except Exception as exc:
+                                _log2.warning("B2 PET-SUV structures failed for %s: %s", _pid2, exc)
+                        b2_csv = write_pet_suv_structures_csv(Path(cfg.output_root))
+                        if b2_csv is not None:
+                            _log2.info("PET-SUV structures CSV written: %s", b2_csv)
+                    except Exception as exc:
+                        _log2.warning("B2 PET-SUV structures stage failed: %s", exc)
+
     if "segmentation_custom" in stages:
         from .custom_models import discover_custom_models  # lazy import
 
