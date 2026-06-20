@@ -1098,6 +1098,30 @@ def main(argv: list[str] | None = None) -> int:
                 # Store the raw allow-list. The all-series materialization stage (inventory.py) unions
                 # in the effective segmentation scope so a segmented class is never skip-materialized.
                 cfg.all_series_materialize_classes = _mat_list
+            _bc_classes = organize_config.get(
+                "body_composition_classes",
+                yaml_config.get("body_composition_classes", None),
+            )
+            if isinstance(_bc_classes, str):
+                _bc_list = [s.strip() for s in _bc_classes.replace(";", ",").split(",") if s.strip()]
+            elif isinstance(_bc_classes, (list, tuple, set)):
+                _bc_list = [str(c).strip() for c in _bc_classes if str(c).strip()]
+            elif _bc_classes is None:
+                _bc_list = None
+            else:
+                raise ValueError(
+                    "organize.body_composition_classes must be a YAML list (or comma-separated string) of "
+                    f"image_class names, got {type(_bc_classes).__name__}"
+                )
+            if _bc_list is not None:
+                allowed_body_classes = {"planning_ct", "diagnostic_ct", "petct_ct"}
+                invalid = sorted(set(_bc_list) - allowed_body_classes)
+                if invalid:
+                    raise ValueError(
+                        "organize.body_composition_classes supports only planning_ct, diagnostic_ct, "
+                        f"petct_ct; got {invalid}"
+                    )
+                cfg.body_composition_classes = _bc_list
             pet_config = yaml_config.get("pet", {}) or {}
             cfg.do_ingest_pet_suv = bool(
                 pet_config.get("do_ingest_pet_suv", organize_config.get("do_ingest_pet_suv", False))
@@ -1314,6 +1338,21 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 if any(r is None for r in all_series_results):
                     had_failures = True
+
+                # Aggregate the per-series body-composition JSONs into the global
+                # Data/body_composition.csv ONCE, serially, now that all parallel
+                # all-series workers have joined. Doing it here (rather than per
+                # series inside each worker) avoids a cross-process write race and
+                # an O(N^2) full-tree rescan. Aggregation failure is non-fatal.
+                if getattr(cfg, "body_composition_classes", None):
+                    try:
+                        from .body_composition import write_body_composition_csv
+
+                        bc_csv = write_body_composition_csv(Path(cfg.output_root))
+                        if bc_csv is not None:
+                            logging.getLogger(__name__).info("Body-composition CSV written: %s", bc_csv)
+                    except Exception as exc:
+                        logging.getLogger(__name__).warning("Body-composition CSV aggregation failed: %s", exc)
 
             if getattr(cfg, "do_ingest_pet_suv", False):
                 patient_ids = sorted({str(course.patient_id) for course in selected_courses if course.patient_id})

@@ -193,7 +193,7 @@ Also cite the underlying tools:
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) for details.
+MIT License - see [LICENSE](LICENSE) for details. TotalSegmentator model/task licensing is upstream-specific; the optional `tissue_types` task used for body-composition extraction is under the TotalSegmentator non-commercial license.
 
 ---
 
