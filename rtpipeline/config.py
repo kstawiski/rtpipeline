@@ -58,6 +58,9 @@ class PipelineConfig:
     # TotalSegmentator-eligible class when segmentation runs over all classes) so a class that will be
     # segmented is never skip-materialized.
     all_series_materialize_classes: list[str] | None = None
+    # Body-composition extraction is opt-in. None => OFF and no all-series routing changes.
+    # When set, eligible calibrated CT classes receive additional TotalSegmentator tissue/body tasks.
+    body_composition_classes: list[str] | None = None
 
     # Additional segmentation models (in addition to default 'total')
     extra_seg_models: list[str] = field(default_factory=list)
