@@ -24,7 +24,7 @@ import pydicom
 # Modern NumPy/SciPy work fine with TotalSegmentator - no compatibility shims needed
 
 from .config import PipelineConfig
-from .inventory import TS_TASK_BY_CLASS, manual_rtstruct_bindings_from_inventory
+from .inventory import TS_TASK_BY_CLASS, manual_rtstruct_bindings_from_inventory, ts_tasks_for_image_class
 from .layout import build_course_dirs
 
 logger = logging.getLogger(__name__)
@@ -814,6 +814,22 @@ def _series_segmentation_ready(base_dir: Path, base_name: str, model: str) -> bo
     return bool(mask_files)
 
 
+def _series_model_manifest_entry(base_dir: Path, base_name: str, model: str) -> dict[str, object] | None:
+    named_dicom = base_dir / f"{base_name}--{model}.dcm"
+    legacy_dicom = base_dir / f"{model}.dcm"
+    rt_out = named_dicom if named_dicom.exists() else legacy_dicom
+    masks_for_model = sorted(base_dir.glob(f"{model}--*.nii*")) or sorted(
+        base_dir.glob(f"{base_name}--{model}--*.nii*")
+    )
+    entry: dict[str, object] = {"model": model, "rtstruct_ok": False, "rtstruct": "", "masks": []}
+    if rt_out.exists() and rt_out.is_file():
+        entry["rtstruct_ok"] = True
+        entry["rtstruct"] = str(rt_out.relative_to(base_dir))
+    if masks_for_model:
+        entry["masks"] = [str(p.relative_to(base_dir)) for p in masks_for_model]
+    return entry if entry["rtstruct"] or entry["masks"] else None
+
+
 def _series_artifact_dirs(input_dir: Path) -> tuple[Path, Path]:
     if input_dir.name == "DICOM":
         return input_dir.parent / "NIFTI", input_dir.parent / "Segmentation_TotalSegmentator"
@@ -967,11 +983,7 @@ def segment_all_series_for_patient(config: PipelineConfig, patient_id: str, *, f
             bucket["failed"] += 1
             continue
 
-        extra_args = (
-            list(getattr(config, "cbct_totalseg_extra_args", []) or [])
-            if image_class == "cbct"
-            else None
-        )
+        models = ts_tasks_for_image_class(image_class, getattr(config, "body_composition_classes", None))
 
         try:
             nifti_dir, seg_root = _series_artifact_dirs(input_dir)
@@ -1024,78 +1036,85 @@ def segment_all_series_for_patient(config: PipelineConfig, patient_id: str, *, f
             seg_root.mkdir(parents=True, exist_ok=True)
             base_dir = seg_root / base_name
             base_dir.mkdir(parents=True, exist_ok=True)
-            model = task
-
-            if not force and _series_segmentation_ready(base_dir, base_name, model):
-                row["status"] = "seg_skipped_idempotent"
-                bucket["skipped"] += 1
-                continue
-
-            bucket["attempted"] += 1
             tmp_parent = Path(config.segmentation_temp_root) if getattr(config, "segmentation_temp_root", None) else nifti_dir.parent
             try:
                 tmp_parent.mkdir(parents=True, exist_ok=True)
             except Exception:
                 tmp_parent = nifti_dir.parent
 
-            entry: Dict[str, object] = {"model": model, "rtstruct_ok": False, "rtstruct": "", "masks": []}
-            with tempfile.TemporaryDirectory(prefix="seg_series_", dir=str(tmp_parent)) as tmp_root_str:
-                tmp_root = Path(tmp_root_str)
-                dicom_input_tmp = tmp_root / model / "dicom"
-                dicom_input_tmp.mkdir(parents=True, exist_ok=True)
-                for dicom_slice in sorted(input_dir.glob("*.dcm")):
-                    if dicom_slice.is_file():
-                        shutil.copy2(dicom_slice, dicom_input_tmp / dicom_slice.name)
-                nifti_tmp = tmp_root / model / "nifti"
-                nifti_tmp.mkdir(parents=True, exist_ok=True)
+            attempted_any = False
+            failed_models: list[str] = []
+            manifest_entries: list[dict[str, object]] = []
 
-                rt_out = base_dir / f"{base_name}--{model}.dcm"
-                if rt_out.exists():
-                    if rt_out.is_dir():
-                        shutil.rmtree(rt_out, ignore_errors=True)
-                    else:
-                        rt_out.unlink()
-                ok_dicom = run_totalsegmentator(
-                    config,
-                    dicom_input_tmp,
-                    rt_out,
-                    "dicom_rtstruct",
-                    task=task,
-                    extra_args=extra_args,
+            for model in models:
+                if not force and _series_segmentation_ready(base_dir, base_name, model):
+                    ready_entry = _series_model_manifest_entry(base_dir, base_name, model)
+                    if ready_entry:
+                        manifest_entries.append(ready_entry)
+                    continue
+
+                attempted_any = True
+                model_extra_args = (
+                    list(getattr(config, "cbct_totalseg_extra_args", []) or [])
+                    if image_class == "cbct" and model == "total"
+                    else None
                 )
-                ok_nifti = run_totalsegmentator(
-                    config,
-                    nifti_path,
-                    nifti_tmp,
-                    "nifti",
-                    task=task,
-                    extra_args=extra_args,
-                )
+                with tempfile.TemporaryDirectory(prefix="seg_series_", dir=str(tmp_parent)) as tmp_root_str:
+                    tmp_root = Path(tmp_root_str)
+                    dicom_input_tmp = tmp_root / model / "dicom"
+                    dicom_input_tmp.mkdir(parents=True, exist_ok=True)
+                    for dicom_slice in sorted(input_dir.glob("*.dcm")):
+                        if dicom_slice.is_file():
+                            shutil.copy2(dicom_slice, dicom_input_tmp / dicom_slice.name)
+                    nifti_tmp = tmp_root / model / "nifti"
+                    nifti_tmp.mkdir(parents=True, exist_ok=True)
 
-                if ok_dicom and rt_out.exists() and rt_out.is_file():
-                    entry["rtstruct_ok"] = True
-                elif ok_dicom and rt_out.exists() and rt_out.is_dir():
-                    dicom_files = sorted(rt_out.rglob("*.dcm"))
-                    if dicom_files:
-                        tmp_rt = base_dir / f".{base_name}--{model}.rtstruct.tmp.dcm"
-                        if tmp_rt.exists():
-                            tmp_rt.unlink()
-                        shutil.copy2(dicom_files[0], tmp_rt)
-                        shutil.rmtree(rt_out, ignore_errors=True)
-                        shutil.move(str(tmp_rt), str(rt_out))
-                        entry["rtstruct_ok"] = True
-                if rt_out.exists():
-                    entry["rtstruct"] = str(rt_out.relative_to(base_dir))
+                    rt_out = base_dir / f"{base_name}--{model}.dcm"
+                    if rt_out.exists():
+                        if rt_out.is_dir():
+                            shutil.rmtree(rt_out, ignore_errors=True)
+                        else:
+                            rt_out.unlink()
+                    ok_dicom = run_totalsegmentator(
+                        config,
+                        dicom_input_tmp,
+                        rt_out,
+                        "dicom_rtstruct",
+                        task=model,
+                        extra_args=model_extra_args,
+                    )
+                    ok_nifti = run_totalsegmentator(
+                        config,
+                        nifti_path,
+                        nifti_tmp,
+                        "nifti",
+                        task=model,
+                        extra_args=model_extra_args,
+                    )
 
-                if ok_nifti:
-                    _materialize_masks(nifti_tmp, base_dir, base_name, model)
+                    if ok_dicom and rt_out.exists() and rt_out.is_dir():
+                        dicom_files = sorted(rt_out.rglob("*.dcm"))
+                        if dicom_files:
+                            tmp_rt = base_dir / f".{base_name}--{model}.rtstruct.tmp.dcm"
+                            if tmp_rt.exists():
+                                tmp_rt.unlink()
+                            shutil.copy2(dicom_files[0], tmp_rt)
+                            shutil.rmtree(rt_out, ignore_errors=True)
+                            shutil.move(str(tmp_rt), str(rt_out))
 
-                masks_for_model = sorted(base_dir.glob(f"{model}--*.nii*"))
-                if masks_for_model:
-                    entry["masks"] = [str(p.relative_to(base_dir)) for p in masks_for_model]
+                    if ok_nifti:
+                        _materialize_masks(nifti_tmp, base_dir, base_name, model)
 
-            manifest_entries = [entry] if entry["rtstruct"] or entry["masks"] else []
-            if manifest_entries:
+                    entry = _series_model_manifest_entry(base_dir, base_name, model)
+                    if entry:
+                        manifest_entries.append(entry)
+                    if not (ok_nifti and _series_segmentation_ready(base_dir, base_name, model)):
+                        failed_models.append(model)
+
+            if attempted_any:
+                bucket["attempted"] += 1
+
+            if attempted_any and manifest_entries:
                 series_manifest = {
                     "source_nifti": str(nifti_path.name),
                     "source_dicom": str(input_dir),
@@ -1107,12 +1126,44 @@ def segment_all_series_for_patient(config: PipelineConfig, patient_id: str, *, f
                     encoding="utf-8",
                 )
 
-            if ok_nifti and _series_segmentation_ready(base_dir, base_name, model):
+            if not failed_models and len(models) > 1:
+                # Per-series body-composition JSON is the collision-free source of
+                # truth. The global Data/body_composition.csv is aggregated once,
+                # serially, at the end of the all-series stage (rtpipeline.cli) to
+                # avoid the cross-process race + O(N^2) full-tree rescan that a
+                # per-series rewrite caused. A derived-metric failure here must NOT
+                # invalidate an otherwise-successful segmentation.
+                try:
+                    from .body_composition import write_series_body_composition
+
+                    body_json = write_series_body_composition(
+                        ct_nifti=nifti_path,
+                        segmentation_dir=base_dir,
+                        dicom_dir=input_dir,
+                        patient_id=str(row.get("patient_id") or patient_id),
+                        series_uid=series_uid,
+                        image_class=image_class,
+                    )
+                    row["body_composition_json"] = str(body_json)
+                except Exception as exc:
+                    logger.warning(
+                        "Body-composition metrics failed for patient %s series %s: %s",
+                        patient_id,
+                        series_uid,
+                        exc,
+                    )
+                    row["body_composition_error"] = str(exc)
+
+            if failed_models:
+                row["status"] = "seg_failed"
+                row["segmentation_error"] = "failed models: " + ",".join(failed_models)
+                bucket["failed"] += 1
+            elif attempted_any:
                 row["status"] = "segmented"
                 bucket["segmented"] += 1
             else:
-                row["status"] = "seg_failed"
-                bucket["failed"] += 1
+                row["status"] = "seg_skipped_idempotent"
+                bucket["skipped"] += 1
         except Exception as exc:
             logger.warning(
                 "All-series segmentation failed for patient %s series %s: %s",

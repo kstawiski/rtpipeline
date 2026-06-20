@@ -28,6 +28,38 @@ TS_TASK_BY_CLASS = {
     "exclude": "none",
 }
 
+BODY_COMPOSITION_ELIGIBLE_CLASSES = frozenset({"planning_ct", "diagnostic_ct", "petct_ct"})
+BODY_COMPOSITION_TS_TASKS = ("tissue_types", "body")
+
+
+def ts_tasks_for_image_class(
+    image_class: str,
+    body_composition_classes: Iterable[str] | None = None,
+) -> list[str]:
+    """Return TotalSegmentator tasks for an image_class.
+
+    The base ``ts_task`` stays unchanged for backward compatibility. Body-composition
+    tasks are opt-in, CT-only add-ons and never replace the base ``total`` task.
+    """
+    base_task = TS_TASK_BY_CLASS.get(str(image_class), "none")
+    if base_task == "none":
+        return []
+
+    tasks = [base_task]
+    if isinstance(body_composition_classes, str):
+        configured = {
+            item.strip()
+            for item in body_composition_classes.replace(";", ",").split(",")
+            if item.strip()
+        }
+    elif body_composition_classes is not None:
+        configured = {str(item).strip() for item in body_composition_classes if str(item).strip()}
+    else:
+        configured = set()
+    if str(image_class) in BODY_COMPOSITION_ELIGIBLE_CLASSES and str(image_class) in configured:
+        tasks.extend(BODY_COMPOSITION_TS_TASKS)
+    return tasks
+
 
 @dataclass(slots=True)
 class InventoryInstance:
@@ -172,27 +204,32 @@ def build_patient_series_manifest_rows(
         output_dir = ""
         if image_class != "exclude":
             output_dir = str(output_dir_for_image_class(course_dirs, image_class, series.series_uid))
-        rows.append(
-            {
-                "patient_id": series.patient_id,
-                "study_uid": series.study_uid,
-                "series_uid": series.series_uid,
-                "modality": series.modality,
-                "series_description": series.series_description,
-                "manufacturer": series.manufacturer,
-                "image_class": image_class,
-                "manufacturer_model": series.manufacturer_model,
-                "frame_of_reference_uid": series.frame_of_reference_uid,
-                "image_types": series.image_types,
-                "is_planning_ct": series.is_planning_ct,
-                "rt_link_basis": series.rt_link_basis,
-                "n_slices": series.n_slices,
-                "ts_task": TS_TASK_BY_CLASS.get(image_class, "none"),
-                "output_dir": output_dir,
-                "status": "excluded" if image_class == "exclude" else "classified",
-                "exclusion_reason": reason or "",
-            }
+        row = {
+            "patient_id": series.patient_id,
+            "study_uid": series.study_uid,
+            "series_uid": series.series_uid,
+            "modality": series.modality,
+            "series_description": series.series_description,
+            "manufacturer": series.manufacturer,
+            "image_class": image_class,
+            "manufacturer_model": series.manufacturer_model,
+            "frame_of_reference_uid": series.frame_of_reference_uid,
+            "image_types": series.image_types,
+            "is_planning_ct": series.is_planning_ct,
+            "rt_link_basis": series.rt_link_basis,
+            "n_slices": series.n_slices,
+            "ts_task": TS_TASK_BY_CLASS.get(image_class, "none"),
+            "output_dir": output_dir,
+            "status": "excluded" if image_class == "exclude" else "classified",
+            "exclusion_reason": reason or "",
+        }
+        tasks = ts_tasks_for_image_class(
+            image_class,
+            getattr(config, "body_composition_classes", None) if config is not None else None,
         )
+        if len(tasks) > 1:
+            row["ts_tasks"] = tasks
+        rows.append(row)
     return rows
 
 
@@ -669,6 +706,8 @@ def _safe_uid(series_uid: str) -> str:
 __all__ = [
     "InventoryInstance",
     "InventorySeries",
+    "BODY_COMPOSITION_ELIGIBLE_CLASSES",
+    "BODY_COMPOSITION_TS_TASKS",
     "TS_TASK_BY_CLASS",
     "build_patient_series_manifest_rows",
     "enumerate_patient_series",
@@ -677,5 +716,6 @@ __all__ = [
     "manual_rtstruct_bindings_from_inventory",
     "materialize_patient_series_from_inventory",
     "output_dir_for_image_class",
+    "ts_tasks_for_image_class",
     "write_patient_series_manifest",
 ]
