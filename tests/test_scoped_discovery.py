@@ -118,6 +118,20 @@ def test_scoped_patient_dirs_matches_resolver(tmp_path: Path) -> None:
     }
 
 
+def test_hidden_scratch_dir_not_matched_as_second_location(tmp_path: Path) -> None:
+    """A stale hidden scratch dir (e.g. ``.worker_0``) holding a partial patient-id copy
+    must NOT be resolved as a second directory for that patient — otherwise discovery
+    double-walks the patient and can mix series from the scratch copy into the course."""
+    _build_tree(tmp_path)  # provides canonical flat_pid/RP_flat.dcm
+    _touch(tmp_path / ".worker_0" / "flat_pid" / "RP_scratch.dcm")  # stale hidden copy
+    dirs, missing = _resolve_scoped_dirs(tmp_path, ["flat_pid"])
+    assert missing == []
+    # only the canonical flat dir, NOT .worker_0/flat_pid
+    assert [p.relative_to(tmp_path).as_posix() for p in dirs] == ["flat_pid"]
+    # the scratch copy's file must not be surfaced by the scoped walk
+    assert "RP_scratch.dcm" not in _walk_files(_scoped_walk(tmp_path, ["flat_pid"]))
+
+
 def test_discovered_superset_of_processed(tmp_path: Path) -> None:
     """For every requested patient, the scoped walk surfaces at least the files the
     unscoped full walk would have surfaced for that patient (no silent drops)."""
