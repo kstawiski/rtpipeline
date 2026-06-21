@@ -106,7 +106,12 @@ def _resolve_scoped_dirs(root: Path, patient_ids: Iterable[str]) -> tuple[List[P
             matches.append(direct)
         if centers is None:
             try:
-                centers = [p for p in root.iterdir() if p.is_dir()]
+                # Skip hidden dirs (names starting with '.') when scanning for nested
+                # multi-center patient layouts: scratch/staging dirs like ".worker_N"
+                # can hold partial patient-id copies and would otherwise be matched as a
+                # second directory for a patient, causing double-walking of that patient.
+                # A real center directory is never a dotfile.
+                centers = [p for p in root.iterdir() if p.is_dir() and not p.name.startswith(".")]
             except OSError:
                 centers = []
         for c in centers:
