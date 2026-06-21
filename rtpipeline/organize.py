@@ -2503,13 +2503,29 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
             patient_ids = sorted({co.patient_id for co in outputs if co.patient_id})
         if not patient_ids:
             logger.warning("All-series inventory mode requested, but no patient IDs were available")
+        failed_patients: list[str] = []
         for patient_id in patient_ids:
             try:
                 manifest_path = materialize_patient_series_from_inventory(config, patient_id)
                 logger.info("Wrote all-series manifest for %s at %s", patient_id, manifest_path)
             except Exception as exc:
-                logger.warning("All-series inventory materialization failed for %s: %s", patient_id, exc)
-                raise
+                # Log-and-continue: a single patient's materialization failure (NFS blip, DB
+                # lock, unreadable instance) must not abort an entire cohort run. The failed
+                # patient simply has no all-series manifest and is surfaced in the summary
+                # below; resume reprocesses it on the next launch.
+                logger.error(
+                    "All-series inventory materialization FAILED for %s: %s (continuing)",
+                    patient_id,
+                    exc,
+                )
+                failed_patients.append(str(patient_id))
+        if failed_patients:
+            logger.error(
+                "All-series materialization failed for %d/%d patient(s): %s",
+                len(failed_patients),
+                len(patient_ids),
+                ", ".join(failed_patients[:50]) + (" ..." if len(failed_patients) > 50 else ""),
+            )
 
     # After course-level copying and plan/dose synthesis, write per-case metadata serially to avoid overwhelming IO
     for co in outputs:

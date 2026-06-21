@@ -69,7 +69,7 @@ def patched(monkeypatch, tmp_path):
             if cls != "exclude"
         ]
 
-    def fake_copy(instances, output_dir, modality):
+    def fake_copy(instances, output_dir, modality, use_hardlinks=False):
         from pathlib import Path
 
         Path(output_dir).mkdir(parents=True, exist_ok=True)
