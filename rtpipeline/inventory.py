@@ -3,6 +3,7 @@ from __future__ import annotations
 import datetime as _dt
 import json
 import logging
+import os
 import shutil
 import sqlite3
 from dataclasses import dataclass
@@ -257,7 +258,12 @@ def materialize_patient_series_from_inventory(
             continue
         output_dir = Path(str(row["output_dir"]))
         output_dir.mkdir(parents=True, exist_ok=True)
-        missing = _copy_instances(series.instances, output_dir, series.modality)
+        missing = _copy_instances(
+            series.instances,
+            output_dir,
+            series.modality,
+            use_hardlinks=bool(getattr(config, "dicom_copy_use_hardlinks", False)),
+        )
         row["materialized_n_slices"] = len(list(output_dir.glob("*.dcm")))
         row["status"] = "missing_source_file" if missing else "materialized"
 
@@ -476,7 +482,12 @@ def _filter_localizer_instances(instances: list[InventoryInstance]) -> list[Inve
     return filtered
 
 
-def _copy_instances(instances: Iterable[InventoryInstance], output_dir: Path, modality: str) -> bool:
+def _copy_instances(
+    instances: Iterable[InventoryInstance],
+    output_dir: Path,
+    modality: str,
+    use_hardlinks: bool = False,
+) -> bool:
     used: set[int] = set()
     missing = False
     prefix = (modality or "DICOM").upper()
@@ -501,6 +512,17 @@ def _copy_instances(instances: Iterable[InventoryInstance], output_dir: Path, mo
             continue
         if destination.exists():
             continue
+        # Prefer hardlinks when enabled: source and output share one NFS device in the
+        # MIEDNICE layout, so os.link avoids byte-copying ~all materialized DICOM (tens of
+        # TB / days of single-threaded NFS I/O at full-cohort scale). Materialized DICOMs are
+        # only ever read downstream (dcm2niix), never modified in place, so a shared inode is
+        # safe. Fall back to copy2 on any OSError (e.g. EXDEV cross-device, EMLINK).
+        if use_hardlinks:
+            try:
+                os.link(source, destination)
+                continue
+            except OSError:
+                pass
         shutil.copy2(source, destination)
     return missing
 
