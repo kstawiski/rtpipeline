@@ -785,9 +785,57 @@ def _materialize_masks(source: Path, dest: Path, base_name: str, model: str) -> 
     _write_ts_version_sidecar(dest, model)
 
 
+def _write_manifest_atomic(path: Path, data: dict) -> None:
+    """Write ``manifest.json`` atomically (unique temp file + ``os.replace``) so a process killed
+    mid-write can never leave `_series_segmentation_ready` looking at a truncated/partial file.
+
+    The temp name is PID-qualified so concurrent same-dir writers cannot collide, and any temp
+    left behind by a failed write is removed in ``finally`` (the successful ``os.replace`` consumes
+    the temp, so cleanup is a no-op on the happy path)."""
+    tmp_path = path.parent / f".{path.name}.{os.getpid()}.tmp"
+    try:
+        tmp_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        os.replace(tmp_path, path)
+    finally:
+        try:
+            tmp_path.unlink()
+        except OSError:
+            pass
+
+
 def _series_segmentation_ready(base_dir: Path, base_name: str, model: str) -> bool:
+    """Return True only if `model`'s masks are present AND `manifest.json` confirms completeness.
+
+    Mask-file presence alone is not a reliable completion signal: a run killed mid-write
+    (e.g. during `_materialize_masks`, which copies masks one at a time) can leave a partial
+    set of mask files on disk. `manifest.json` is written last, after every mask for a model
+    has been copied, so require it to also exist, parse as valid JSON, contain an entry for
+    this `model`, and have a NON-EMPTY mask list whose every entry is present on disk. Any
+    deviation (manifest missing/corrupt, no entry for this model, an empty mask list — which a
+    failed rtstruct-only run records — or a recorded mask absent from disk) means the
+    segmentation is incomplete and must be re-run.
+    """
     mask_files = list(base_dir.glob(f"{model}--*.nii*")) or list(base_dir.glob(f"{base_name}--{model}--*.nii*"))
-    return bool(mask_files)
+    if not mask_files:
+        return False
+    manifest_path = base_dir / "manifest.json"
+    if not manifest_path.exists():
+        return False
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    model_entries = manifest.get("models") if isinstance(manifest, dict) else None
+    if not isinstance(model_entries, list):
+        return False
+    for entry in model_entries:
+        if not isinstance(entry, dict) or entry.get("model") != model:
+            continue
+        masks = entry.get("masks") or []
+        # Require a NON-EMPTY mask list: a failed run records rtstruct-only (masks==[]),
+        # and an empty list would otherwise vacuously satisfy `all(...)` and forge readiness.
+        return bool(masks) and all((base_dir / str(m)).exists() for m in masks)
+    return False
 
 
 def _series_artifact_dirs(input_dir: Path) -> tuple[Path, Path]:
@@ -1002,12 +1050,15 @@ def segment_all_series_for_patient(config: PipelineConfig, patient_id: str, *, f
                 if rt_out.exists():
                     entry["rtstruct"] = str(rt_out.relative_to(base_dir))
 
+                # Capture masks ONLY on a successful current run. On a failed retry
+                # (ok_nifti False) `_materialize_masks`/`_clear_previous_masks` did not run,
+                # so any masks on disk are STALE from a prior partial run; recording them here
+                # would forge a completion signal and skip the course forever incomplete.
                 if ok_nifti:
                     _materialize_masks(nifti_tmp, base_dir, base_name, model)
-
-                masks_for_model = sorted(base_dir.glob(f"{model}--*.nii*"))
-                if masks_for_model:
-                    entry["masks"] = [str(p.relative_to(base_dir)) for p in masks_for_model]
+                    masks_for_model = sorted(base_dir.glob(f"{model}--*.nii*"))
+                    if masks_for_model:
+                        entry["masks"] = [str(p.relative_to(base_dir)) for p in masks_for_model]
 
             manifest_entries = [entry] if entry["rtstruct"] or entry["masks"] else []
             if manifest_entries:
@@ -1017,10 +1068,7 @@ def segment_all_series_for_patient(config: PipelineConfig, patient_id: str, *, f
                     "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
                     "models": manifest_entries,
                 }
-                (base_dir / "manifest.json").write_text(
-                    json.dumps(series_manifest, indent=2),
-                    encoding="utf-8",
-                )
+                _write_manifest_atomic(base_dir / "manifest.json", series_manifest)
 
             if ok_nifti and _series_segmentation_ready(base_dir, base_name, model):
                 row["status"] = "segmented"
@@ -1073,8 +1121,7 @@ def segment_course(config: PipelineConfig, course_dir: Path, force: bool = False
         legacy_dicom = base_dir / f"{model}.dcm"
         named_dicom = base_dir / f"{base_name}--{model}.dcm"
         dicom_file = named_dicom if named_dicom.exists() else legacy_dicom
-        mask_files = list(base_dir.glob(f"{model}--*.nii*")) or list(base_dir.glob(f"{base_name}--{model}--*.nii*"))
-        return dicom_file.exists() and bool(mask_files)
+        return dicom_file.exists() and _series_segmentation_ready(base_dir, base_name, model)
 
     models = ["total"] + [m for m in (config.extra_seg_models or []) if not m.endswith("_mr")]
 
@@ -1179,12 +1226,13 @@ def segment_course(config: PipelineConfig, course_dir: Path, force: bool = False
             if dest_dicom.exists():
                 model_entry["rtstruct"] = str(dest_dicom.relative_to(base_dir))
 
+            # Capture masks ONLY on a successful current run (see all-series path): a failed
+            # retry skips `_materialize_masks`, so on-disk masks would be stale.
             if ok_nifti:
                 _materialize_masks(nifti_tmp, base_dir, base_name, model)
-
-            masks_for_model = sorted(base_dir.glob(f"{model}--*.nii*"))
-            if masks_for_model:
-                model_entry["masks"] = [str(p.relative_to(base_dir)) for p in masks_for_model]
+                masks_for_model = sorted(base_dir.glob(f"{model}--*.nii*"))
+                if masks_for_model:
+                    model_entry["masks"] = [str(p.relative_to(base_dir)) for p in masks_for_model]
             if model_entry["rtstruct"] or model_entry["masks"]:
                 manifest_entries.append(model_entry)
 
@@ -1201,7 +1249,7 @@ def segment_course(config: PipelineConfig, course_dir: Path, force: bool = False
             }
             if skipped_models:
                 manifest["skipped_models"] = skipped_models
-            (base_dir / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+            _write_manifest_atomic(base_dir / "manifest.json", manifest)
         except Exception as exc:
             logger.debug("Failed to persist segmentation manifest for %s: %s", course_dir, exc)
 
@@ -1285,8 +1333,7 @@ def segment_course(config: PipelineConfig, course_dir: Path, force: bool = False
             def _mr_ready(model: str) -> bool:
                 rt_path = base_dir_mr / f"{base_name_mr}--{model}.dcm"
                 # Masks are materialized with a "<model>--" prefix (mirrors CT segmentation layout)
-                mask_paths = list(base_dir_mr.glob(f"{model}--*.nii*"))
-                return rt_path.exists() and bool(mask_paths)
+                return rt_path.exists() and _series_segmentation_ready(base_dir_mr, base_name_mr, model)
 
             if not force and all(_mr_ready(model) for model in mr_models):
                 continue
@@ -1317,28 +1364,26 @@ def segment_course(config: PipelineConfig, course_dir: Path, force: bool = False
                     if rt_out.exists():
                         entry["rtstruct"] = str(rt_out.relative_to(base_dir_mr))
 
+                    # Capture masks ONLY on a successful current run (see all-series path):
+                    # a failed retry skips `_materialize_masks`, so on-disk masks would be stale.
                     if ok_nifti:
                         _materialize_masks(nifti_tmp, base_dir_mr, base_name_mr, model)
-
-                    masks_for_model = sorted(base_dir_mr.glob(f"{model}--*.nii*"))
-                    if masks_for_model:
-                        entry["masks"] = [str(p.relative_to(base_dir_mr)) for p in masks_for_model]
+                        masks_for_model = sorted(base_dir_mr.glob(f"{model}--*.nii*"))
+                        if masks_for_model:
+                            entry["masks"] = [str(p.relative_to(base_dir_mr)) for p in masks_for_model]
                     if entry["rtstruct"] or entry["masks"]:
                         manifest_mr.append(entry)
 
                 if manifest_mr:
                     try:
                         manifest_path = base_dir_mr / "manifest.json"
-                        manifest_path.write_text(
-                            json.dumps(
-                                {
-                                    "source_nifti": str(nifti_path.name),
-                                    "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                                    "models": manifest_mr,
-                                },
-                                indent=2,
-                            ),
-                            encoding="utf-8",
+                        _write_manifest_atomic(
+                            manifest_path,
+                            {
+                                "source_nifti": str(nifti_path.name),
+                                "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                                "models": manifest_mr,
+                            },
                         )
                     except Exception as exc:
                         logger.debug("Failed to persist MR segmentation manifest for %s: %s", base_dir_mr, exc)
@@ -1422,8 +1467,7 @@ def _segment_mr_series_for_course(config: PipelineConfig, course_dirs, course_di
 
         def _mr_ready(model: str) -> bool:
             rt_path = base_dir_mr / f"{base_name_mr}--{model}.dcm"
-            mask_paths = list(base_dir_mr.glob(f"{model}--*.nii*"))
-            return rt_path.exists() and bool(mask_paths)
+            return rt_path.exists() and _series_segmentation_ready(base_dir_mr, base_name_mr, model)
 
         if not force and all(_mr_ready(model) for model in mr_models):
             continue
@@ -1454,28 +1498,26 @@ def _segment_mr_series_for_course(config: PipelineConfig, course_dirs, course_di
                 if rt_out.exists():
                     entry["rtstruct"] = str(rt_out.relative_to(base_dir_mr))
 
+                # Capture masks ONLY on a successful current run (see all-series path): a failed
+                # retry skips `_materialize_masks`, so on-disk masks would be stale.
                 if ok_nifti:
                     _materialize_masks(nifti_tmp, base_dir_mr, base_name_mr, model)
-
-                masks_for_model = sorted(base_dir_mr.glob(f"{model}--*.nii*"))
-                if masks_for_model:
-                    entry["masks"] = [str(p.relative_to(base_dir_mr)) for p in masks_for_model]
+                    masks_for_model = sorted(base_dir_mr.glob(f"{model}--*.nii*"))
+                    if masks_for_model:
+                        entry["masks"] = [str(p.relative_to(base_dir_mr)) for p in masks_for_model]
                 if entry["rtstruct"] or entry["masks"]:
                     manifest_mr.append(entry)
 
             if manifest_mr:
                 try:
                     manifest_path = base_dir_mr / "manifest.json"
-                    manifest_path.write_text(
-                        json.dumps(
-                            {
-                                "source_nifti": str(nifti_path.name),
-                                "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                                "models": manifest_mr,
-                            },
-                            indent=2,
-                        ),
-                        encoding="utf-8",
+                    _write_manifest_atomic(
+                        manifest_path,
+                        {
+                            "source_nifti": str(nifti_path.name),
+                            "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                            "models": manifest_mr,
+                        },
                     )
                 except Exception as exc:
                     logger.debug("Failed to persist MR segmentation manifest for %s: %s", base_dir_mr, exc)
