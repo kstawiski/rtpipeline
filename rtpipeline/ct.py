@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Dict, Iterable, List, Optional
 
-from .utils import read_dicom, get, ensure_dir, _scoped_walk, _scoped_patient_dirs
+from .utils import read_dicom, get, ensure_dir, _scoped_walk, _scoped_patient_dirs, parallel_map_files, DEFAULT_INDEX_WORKERS
 
 if TYPE_CHECKING:
     from .dicom_copy import DicomCopyManager
@@ -28,35 +28,49 @@ class CTInstance:
 def index_ct_series(
     dicom_root: Path,
     patient_ids: Optional[Iterable[str]] = None,
+    max_workers: Optional[int] = None,
 ) -> Dict[str, Dict[str, Dict[str, List[CTInstance]]]]:
     """
     Returns nested dict: patient_id -> study_uid -> series_uid -> [CTInstance...]
 
     When ``patient_ids`` is provided, only those top-level patient directories
     are indexed (cohort-scoped); otherwise the whole ``dicom_root`` is scanned.
+
+    ``max_workers`` controls how many threads read DICOM headers concurrently in
+    the generic fallback loop below (NFS-backed trees are latency- not
+    CPU-bound, so concurrent reads win heavily over one file at a time).
+    Defaults to ``RTPIPELINE_INDEX_WORKERS`` (see ``utils.DEFAULT_INDEX_WORKERS``)
+    when not given. ``max_workers=1`` reproduces the exact single-threaded
+    behaviour; the final per-series sort below makes the result independent of
+    the order files are read in, so parallel reads cannot change the output.
     """
     fast_index = _index_tcia_patient_series_layout(dicom_root, patient_ids)
     if fast_index is not None:
         return fast_index
 
-    index: Dict[str, Dict[str, Dict[str, List[CTInstance]]]] = {}
+    paths: List[Path] = []
     for base, _, files in _scoped_walk(dicom_root, patient_ids):
         for name in files:
-            p = Path(base) / name
-            ds = read_dicom(p)
-            if ds is None:
-                continue
-            if getattr(ds, "Modality", None) != "CT":
-                continue
-            pid = str(get(ds, (0x0010, 0x0020), ""))
-            study_uid = str(get(ds, (0x0020, 0x000D), ""))
-            series_uid = str(get(ds, (0x0020, 0x000E), ""))
-            series_num = get(ds, (0x0020, 0x0011))
-            inst_num = get(ds, (0x0020, 0x0013))
-            if not pid or not study_uid or not series_uid:
-                continue
-            entry = CTInstance(p, pid, study_uid, series_uid, series_num, int(inst_num) if inst_num is not None else None)
-            index.setdefault(pid, {}).setdefault(study_uid, {}).setdefault(series_uid, []).append(entry)
+            paths.append(Path(base) / name)
+
+    workers = max_workers if max_workers is not None else DEFAULT_INDEX_WORKERS
+    datasets = parallel_map_files(paths, read_dicom, workers)
+
+    index: Dict[str, Dict[str, Dict[str, List[CTInstance]]]] = {}
+    for p, ds in zip(paths, datasets):
+        if ds is None:
+            continue
+        if getattr(ds, "Modality", None) != "CT":
+            continue
+        pid = str(get(ds, (0x0010, 0x0020), ""))
+        study_uid = str(get(ds, (0x0020, 0x000D), ""))
+        series_uid = str(get(ds, (0x0020, 0x000E), ""))
+        series_num = get(ds, (0x0020, 0x0011))
+        inst_num = get(ds, (0x0020, 0x0013))
+        if not pid or not study_uid or not series_uid:
+            continue
+        entry = CTInstance(p, pid, study_uid, series_uid, series_num, int(inst_num) if inst_num is not None else None)
+        index.setdefault(pid, {}).setdefault(study_uid, {}).setdefault(series_uid, []).append(entry)
     # sort by instance number
     for pid in index.values():
         for study in pid.values():
