@@ -4,9 +4,10 @@ import hashlib
 import logging
 import os
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed, wait, FIRST_COMPLETED
+from itertools import chain, islice
 from pathlib import Path
 from time import perf_counter
-from typing import Any, Callable, Iterable, List, Optional, Sequence, TypeVar
+from typing import Any, Callable, Iterable, Iterator, List, Optional, Sequence, TypeVar
 
 import numpy as np
 import pydicom
@@ -195,6 +196,80 @@ def _scoped_patient_dirs(root: Path, patient_ids: Optional[Iterable[str]] = None
         )
         return sorted(path for path in root.iterdir() if path.is_dir())
     return sorted(dirs)
+
+
+def _default_index_workers() -> int:
+    """Read the organize-stage header-read worker count from the environment (once).
+
+    ``RTPIPELINE_INDEX_WORKERS`` (default 32) controls how many threads the
+    generic per-file DICOM-header discovery loops (``index_ct_series``,
+    ``extract_rt``, ``_index_series_and_registrations``) use to read files
+    concurrently. Capped to 64 to avoid oversubscribing NFS/thread resources on
+    hosts with few cores or a conservative NFS server.
+    """
+    raw = os.environ.get("RTPIPELINE_INDEX_WORKERS", "32")
+    try:
+        workers = int(raw)
+    except (TypeError, ValueError):
+        workers = 32
+    return max(1, min(workers, 64))
+
+
+# Read once at import time; callers pass max_workers=None to pick this default up.
+DEFAULT_INDEX_WORKERS = _default_index_workers()
+
+
+def parallel_map_files(
+    paths: Iterable[Any],
+    fn: Callable[[Any], R],
+    max_workers: int = 1,
+    chunk_size: int = 2048,
+) -> Iterator[R]:
+    """Lazily apply ``fn`` to each item in ``paths`` concurrently, preserving input order.
+
+    Intended for I/O-bound per-file work (e.g. reading DICOM headers over NFS),
+    where each blocking read releases the GIL so concurrent threads win heavily
+    over a single-threaded loop on latency-bound storage. Results are yielded in
+    the SAME order as ``paths`` regardless of completion order -- consumers see
+    the exact sequence a plain serial ``(fn(p) for p in paths)`` would produce,
+    just faster, so downstream assembly logic is unaffected by thread scheduling.
+
+    Memory is BOUNDED: ``paths`` is consumed in chunks of at most ``chunk_size``
+    and each chunk's results are yielded before the next chunk is submitted, so
+    at most ``~chunk_size`` in-flight futures / decoded results (e.g. pydicom
+    ``FileDataset`` headers) are resident at once -- NOT all N of them. This is
+    the critical property when N is ~600k header reads over a large NFS tree: a
+    naive ``list(ex.map(...))`` would hold every decoded header in RAM at peak
+    and risk OOM, whereas streaming keeps the footprint flat. A single
+    ``ThreadPoolExecutor`` is reused across all chunks (not recreated per chunk).
+
+    ``max_workers <= 1`` (or fewer than 2 items) runs a plain serial generator
+    with no executor and no threads at all, reproducing the original
+    single-threaded behaviour exactly.
+    """
+    items_iter = iter(paths)
+    if max_workers <= 1:
+        for item in items_iter:
+            yield fn(item)
+        return
+
+    chunk_size = max(1, chunk_size)
+    # Peek the first two items: a 0- or 1-item input never justifies a thread pool.
+    head = list(islice(items_iter, 2))
+    if len(head) < 2:
+        for item in head:
+            yield fn(item)
+        return
+
+    stream = chain(head, items_iter)
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        while True:
+            chunk = list(islice(stream, chunk_size))
+            if not chunk:
+                return
+            # Executor.map submits the whole chunk and yields results in submission
+            # order, so at most chunk_size futures/results are alive for this chunk.
+            yield from ex.map(fn, chunk)
 
 
 def validate_path(path: Path | str, base: Path | str, allow_absolute: bool = False) -> Path:
