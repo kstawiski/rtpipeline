@@ -532,6 +532,47 @@ def _extract_plan_metadata(plan_path: Path) -> dict:
         }
 
 
+def _earliest_dated_plan_path(items_sorted: List[LinkedSet], plan_paths: List[Path]) -> Path:
+    """Return the earliest-dated plan path for the ITT (first/earliest course plan)
+    fallback degrade.
+
+    ``items_sorted`` is sorted ascending by ``plan.plan_date or ""``, so plans MISSING
+    a date sort FIRST (an empty string is less than any real date string) -- meaning
+    ``plan_paths[0]`` is NOT reliably the chronologically earliest plan whenever any
+    plan in the course lacks a date. This scans in that same sorted order and returns
+    the first entry that actually HAS a plan_date, which is chronologically earliest
+    among the dated plans. If no plan in the course has a date at all, there is no way
+    to order them chronologically; this documents that limitation by falling back to
+    ``plan_paths[0]`` (the prior behavior) in that edge case.
+    """
+    for it in items_sorted:
+        if it.plan.plan_date:
+            return it.plan.path
+    return plan_paths[0]
+
+
+def _plan_paths_for_doses(plan_paths: List[Path], dose_paths: List[Path]) -> List[Path]:
+    """Derive the plans actually referenced by ``dose_paths``.
+
+    Mirrors ``dvh.py::_plan_paths_for_doses`` (the safe consumer used for DVH
+    computation): used as a fail-closed fallback when a ``DoseClassification``
+    legitimately selects no plans (e.g. a replan whose referenced plan UID
+    could not be resolved), so callers don't silently substitute every plan
+    in the course - which would defeat ITT replan exclusion.
+    """
+    ref_uids: set[str] = set()
+    for dose_path in dose_paths:
+        ref_uids.update(_extract_dose_metadata(dose_path).get("referenced_plan_uids", []))
+    if not ref_uids:
+        return plan_paths[:1] if len(plan_paths) == 1 else []
+    selected: List[Path] = []
+    for plan_path in plan_paths:
+        uid = _extract_plan_metadata(plan_path).get("sop_uid", "")
+        if uid and uid in ref_uids:
+            selected.append(plan_path)
+    return selected
+
+
 def _is_replan_text(plan_text: str) -> bool:
     """Check if plan text indicates a replan/adaptation."""
     replan_keywords = [
@@ -1424,10 +1465,28 @@ def _sum_doses_with_resample(
         z_offsets_ref = z_offsets_ref[::-1]
         accumulated = accumulated[::-1, :, :]  # Flip along z-axis to match
 
-    y_positions_ref = np.array([origin_ref[1] + r * pixel_spacing_ref[0] * col_cosines_ref[1]
-                                + 0 * pixel_spacing_ref[1] * row_cosines_ref[1] for r in range(rows_ref)])
-    x_positions_ref = np.array([origin_ref[0] + 0 * pixel_spacing_ref[0] * col_cosines_ref[0]
-                                + c * pixel_spacing_ref[1] * row_cosines_ref[0] for c in range(cols_ref)])
+    # In-plane (X/Y) reference positions must include BOTH the row-index and the
+    # column-index direction-cosine contributions, not just the axis-aligned term.
+    # For an oblique-but-consistent grid (in-plane rotation), row_cosines_ref/
+    # col_cosines_ref have nonzero cross components (e.g. row direction contributes
+    # to Y, column direction contributes to X); dropping them silently resamples to
+    # the wrong physical position. This mirrors the full-vector treatment already
+    # used for the Z axis above. For axis-aligned grids the added cross terms are
+    # exactly zero, so behavior for the common case is unchanged.
+    # NOTE (scope): this corrects the REFERENCE grid's forward in-plane mapping.
+    # The source-side inverse index mapping and the Z axis' in-plane coupling remain
+    # axis-aligned approximations, so a fully in-plane-rotated SOURCE grid is still
+    # approximate. Clinical RTDOSE grids are axis-aligned and a source/reference
+    # orientation-mismatch warning fires below, so production impact is nil; a full
+    # 3D-affine resample would be needed to handle oblique source grids exactly.
+    row_idx_ref = np.arange(rows_ref, dtype=np.float64)[:, None]
+    col_idx_ref = np.arange(cols_ref, dtype=np.float64)[None, :]
+    y_positions_ref = (origin_ref[1]
+                       + row_idx_ref * pixel_spacing_ref[0] * col_cosines_ref[1]
+                       + col_idx_ref * pixel_spacing_ref[1] * row_cosines_ref[1])
+    x_positions_ref = (origin_ref[0]
+                       + row_idx_ref * pixel_spacing_ref[0] * col_cosines_ref[0]
+                       + col_idx_ref * pixel_spacing_ref[1] * row_cosines_ref[0])
 
     # Store 1D coordinate arrays for memory-efficient resampling (avoid full meshgrid)
     # These will be broadcast during resampling
@@ -1489,8 +1548,12 @@ def _sum_doses_with_resample(
                 z_coords = z_coords[::-1]
                 arr = arr[::-1, :, :]  # Flip along z-axis to match
 
-            # Build coordinate meshgrid for reference positions
-            Z, Y, X = np.meshgrid(z_positions_ref, y_positions_ref, x_positions_ref, indexing="ij")
+            # Build coordinate grids for reference positions. y_positions_ref/x_positions_ref
+            # are now (rows_ref, cols_ref) grids (see above), so broadcast them across frames
+            # instead of np.meshgrid (which requires 1-D inputs).
+            Z = np.broadcast_to(z_positions_ref[:, None, None], (frames_ref, rows_ref, cols_ref))
+            Y = np.broadcast_to(y_positions_ref[None, :, :], (frames_ref, rows_ref, cols_ref))
+            X = np.broadcast_to(x_positions_ref[None, :, :], (frames_ref, rows_ref, cols_ref))
 
             # C6 fix: do NOT clip source coordinates — let map_coordinates use cval=0
             # for out-of-bounds voxels (true zero-fill instead of edge-value leak)
@@ -1930,10 +1993,32 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
             }
 
             selected_doses = dose_classification.selected_doses
-            selected_plans = dose_classification.selected_plans if dose_classification.selected_plans else plan_paths
-            if dose_classification.selected_plans:
+            selected_plans = dose_classification.selected_plans or _plan_paths_for_doses(plan_paths, selected_doses)
+            if not selected_plans:
+                # Fail closed: the classifier legitimately selected no plans (e.g. a
+                # replan/PLAN_SUM whose referenced plan UID could not be resolved).
+                # Substituting every course plan here would reintroduce ITT-excluded
+                # replans into a summed plan. Fall back to the single earliest
+                # (first/ITT) course plan instead. dvh.py handles the equivalent
+                # case by SKIPPING dose resolution; organize must emit a course
+                # output, so it degrades to the single ITT plan rather than skipping
+                # (both share the _plan_paths_for_doses dose-reference primitive).
+                logger.warning(
+                    "Dose classification for %s/%s (%s) selected no plans matching the "
+                    "selected dose(s); falling back to the first course plan instead of "
+                    "summing all %d course plan(s)",
+                    patient_id, course_id, dose_classification.classification, len(plan_paths),
+                )
+                selected_plans = [_earliest_dated_plan_path(items_sorted, plan_paths)]
+            # Recompute total_rx from the FINAL resolved selected_plans (whichever of
+            # the three sources above populated it) rather than only
+            # dose_classification.selected_plans: a resolved-multi-plan sum via
+            # _plan_paths_for_doses(), or the ITT fallback above, previously got no Rx
+            # at all because this was gated on the classifier's own (possibly empty)
+            # selected_plans instead of the variable actually used downstream.
+            if selected_plans:
                 total_rx = _infer_rx_from_plan_paths(
-                    dose_classification.selected_plans,
+                    selected_plans,
                     sum_all=bool(dose_classification.should_sum and len(selected_doses) > 1),
                 )
 

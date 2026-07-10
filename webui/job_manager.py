@@ -365,7 +365,7 @@ class JobManager:
                     'inferior_margin_cm': inf,
                     'use_cropped_for_dvh': True,
                     'use_cropped_for_radiomics': True,
-                    'keep_original': True
+                    'keep_original': True  # deprecated, ignored: uncropped files are always kept
                 }
 
         # Write config file

@@ -1126,7 +1126,8 @@ def segment_course(config: PipelineConfig, course_dir: Path, force: bool = False
     models = ["total"] + [m for m in (config.extra_seg_models or []) if not m.endswith("_mr")]
 
     if not force and all(_model_ready(model) for model in models):
-        default_dicom = base_dir / f"total.dcm"
+        default_named_dicom = base_dir / f"{base_name}--total.dcm"
+        default_dicom = default_named_dicom if default_named_dicom.exists() else base_dir / "total.dcm"
         if default_dicom.exists():
             results["dicom_seg"] = str(default_dicom)
         results["nifti_seg_dir"] = str(base_dir)

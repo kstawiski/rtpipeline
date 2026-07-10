@@ -442,11 +442,21 @@ def sanitize_rtstruct(rtstruct_path: Path | str, *, minimum_points: int = 3) -> 
             changed = True
 
     if changed:
+        # Write to a temp file and replace atomically: `path` is already the published
+        # RTSTRUCT (the initial write already went through _write_rtstruct_atomic), so
+        # a kill mid-save must not truncate it in place.
+        tmp_path = path.parent / f".{path.name}.{os.getpid()}.tmp.dcm"
         try:
-            ds.save_as(str(path))
+            ds.save_as(str(tmp_path))
+            os.replace(tmp_path, path)
         except Exception as exc:  # pragma: no cover - defensive
             logger.warning("sanitize_rtstruct: failed saving %s (%s)", path, exc)
             return False
+        finally:
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
 
     return changed
 
@@ -724,13 +734,33 @@ def run_tasks_with_adaptive_workers(
         else:
             ex = ThreadPoolExecutor(max_workers=workers)
         restart_due_to_timeout = False
+        restart_due_to_pool_failure = False
         try:
-            future_to_idx = {ex.submit(func, seq[idx]): idx for idx in current_indices}
+            # Submit lazily: keep at most `workers` futures in flight and stamp each
+            # future's start time at the moment it is actually submitted. Submitting
+            # the whole batch upfront (as before) stamped every future's start time
+            # immediately, even though tasks beyond the `workers` active slots sat
+            # queued — inflating "slow"/timeout measurements by the queue-wait time.
+            idx_iter = iter(current_indices)
+            future_to_idx: dict = {}
+            task_start_times: dict = {}
 
-            # Track task submission times for timeout enforcement
-            task_start_times = {fut: perf_counter() for fut in future_to_idx}
+            def _submit_next():
+                idx = next(idx_iter, None)
+                if idx is None:
+                    return None
+                fut = ex.submit(func, seq[idx])
+                future_to_idx[fut] = idx
+                task_start_times[fut] = perf_counter()
+                return fut
+
+            remaining = set()
+            for _ in range(workers):
+                fut = _submit_next()
+                if fut is None:
+                    break
+                remaining.add(fut)
             last_heartbeat = perf_counter()
-            remaining = set(future_to_idx.keys())
 
             # Watchdog polling loop: check every 10 seconds for progress or timeouts
             check_interval = 10.0
@@ -786,6 +816,34 @@ def run_tasks_with_adaptive_workers(
                     if show_progress:
                         _log_progress(log, label, completed, total, start)
 
+                # Backfill: submit the next pending task(s) into the slot(s) just freed,
+                # keeping at most `workers` futures in flight at any time.
+                #
+                # A dead worker (e.g. OOM-killed) can make the pool itself broken, so
+                # ex.submit() here can raise (e.g. BrokenProcessPool). That must not
+                # propagate uncaught - it would abandon every not-yet-finalized task in
+                # this batch instead of restarting with a fresh pool. Stop backfilling
+                # and fall through to the existing restart-with-unfinished path, which
+                # requeues everything not in `finalized` (submitted-but-incomplete AND
+                # never-submitted indices alike).
+                pool_broken = False
+                for _ in range(len(done)):
+                    try:
+                        new_fut = _submit_next()
+                    except Exception as exc:
+                        log.error(
+                            "%s: submit failed during backfill (%s); restarting with a fresh pool",
+                            label,
+                            exc,
+                        )
+                        pool_broken = True
+                        break
+                    if new_fut is not None:
+                        remaining.add(new_fut)
+                if pool_broken:
+                    restart_due_to_pool_failure = True
+                    break
+
                 # Check for timed-out tasks in remaining set.
                 #
                 # IMPORTANT: with ProcessPoolExecutor, cancelling a future does NOT stop the
@@ -828,7 +886,7 @@ def run_tasks_with_adaptive_workers(
                     )
                     last_heartbeat = now
         finally:
-            if restart_due_to_timeout and effective_use_processes:
+            if (restart_due_to_timeout or restart_due_to_pool_failure) and effective_use_processes:
                 # Terminate workers BEFORE shutdown(): shutdown() sets ex._processes=None, after
                 # which the child-diff fallback misses forkserver/spawn workers (forked by the
                 # forkserver daemon, not the main process) and leaks them. Read ex._processes while
@@ -902,8 +960,9 @@ def run_tasks_with_adaptive_workers(
             else:
                 ex.shutdown(wait=True)
 
-        if restart_due_to_timeout and effective_use_processes:
-            # Retry unfinished tasks (excluding finalized timeouts and successes/failures).
+        if (restart_due_to_timeout or restart_due_to_pool_failure) and effective_use_processes:
+            # Retry unfinished tasks (excluding finalized timeouts/successes/failures, and
+            # including any index never submitted because the pool broke mid-backfill).
             unfinished = [idx for idx in current_indices if idx not in finalized]
             if unfinished:
                 # Conservative backoff to reduce contention and repeated hangs.

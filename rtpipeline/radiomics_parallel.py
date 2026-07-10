@@ -26,7 +26,7 @@ import time
 from concurrent.futures import ProcessPoolExecutor, wait, FIRST_COMPLETED
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
+from typing import Any, Dict, Iterable, Iterator, List, Optional, Sequence, Set, Tuple
 
 import pydicom
 
@@ -437,6 +437,33 @@ def _terminate_executor_processes(executor: ProcessPoolExecutor, *, baseline_chi
                 pass
 
 
+def _submit_lazy(
+    executor: ProcessPoolExecutor,
+    pending: Iterator[Any],
+    submit_fn: Any,
+    futures: Dict[Any, Any],
+    task_start: Dict[Any, float],
+    count: int,
+) -> List[Any]:
+    """Submit up to ``count`` more tasks from ``pending``, stamping each future's
+    start time at the moment it is actually submitted rather than when a whole
+    batch is queued upfront. Submitting everything upfront timestamps tasks that
+    sit queued behind the executor's worker slots, inflating timeout measurements
+    by their queue-wait time. Mutates ``futures``/``task_start`` in place; returns
+    the newly created futures.
+    """
+    new_futures = []
+    for _ in range(count):
+        task = next(pending, None)
+        if task is None:
+            break
+        fut = executor.submit(submit_fn, task)
+        futures[fut] = task
+        task_start[fut] = time.monotonic()
+        new_futures.append(fut)
+    return new_futures
+
+
 def parallel_radiomics_for_course(
     config: Any,
     course_dir: Path,
@@ -620,22 +647,30 @@ def parallel_radiomics_for_course(
     last_log = start_time
 
     while pending_tasks:
+        # Fixed snapshot of this round's tasks. Reconstructing the next round's
+        # pending_tasks as "round_tasks minus completed" (below) is robust to a
+        # submit failing partway through backfill: unlike tracking remaining
+        # futures/task_iter state, it doesn't depend on exactly which task was
+        # being submitted when the pool broke, so nothing is silently dropped.
+        round_tasks = list(pending_tasks)
         baseline_children = _current_child_pids()
         # This pool is created from WITHIN a course-level ThreadPoolExecutor worker thread;
         # a default 'fork' context inherits locked mutexes from the multi-threaded parent and
         # deadlocks. Use a forkserver/spawn context (initializer + initargs are picklable).
+        pool_size = min(worker_count, len(pending_tasks))
         executor = ProcessPoolExecutor(
-            max_workers=min(worker_count, len(pending_tasks)),
+            max_workers=pool_size,
             mp_context=radiomics_mp_context(),
             initializer=_worker_init,
             initargs=(str(ct_dir), config, thread_limit, skip_rois, min_voxels, max_voxels),
         )
-        futures = {}
+        futures: Dict[Any, _RoiTask] = {}
+        task_start: Dict[Any, float] = {}
         try:
-            for task in pending_tasks:
-                futures[executor.submit(_extract_one, task)] = task
-            task_start = {fut: time.monotonic() for fut in futures}
-            remaining = set(futures.keys())
+            # Submit lazily (at most `pool_size` in flight) so task_start reflects
+            # actual execution start, not queue-wait time behind busy workers.
+            task_iter = iter(pending_tasks)
+            remaining = set(_submit_lazy(executor, task_iter, _extract_one, futures, task_start, pool_size))
             restart = False
 
             while remaining:
@@ -651,6 +686,26 @@ def parallel_radiomics_for_course(
                         rec = None
                     if rec:
                         rows.append(rec)
+
+                # Backfill: submit the next pending task(s) into the slot(s) just freed.
+                #
+                # A dead worker (e.g. OOM-killed) can make the pool itself broken, so
+                # executor.submit() inside _submit_lazy can raise (e.g. BrokenProcessPool).
+                # That must not propagate uncaught - it would abandon every unfinished
+                # task in this round instead of restarting with a fresh pool. Stop
+                # backfilling and restart; round_tasks-minus-completed below recovers
+                # both in-flight and never-submitted tasks regardless of exactly which
+                # task submission failed.
+                try:
+                    remaining.update(_submit_lazy(executor, task_iter, _extract_one, futures, task_start, len(done)))
+                except Exception as exc:
+                    logger.error(
+                        "Radiomics: submit failed during backfill for %s (%s); restarting worker pool",
+                        course_dir.name,
+                        exc,
+                    )
+                    restart = True
+                    break
 
                 # Timeouts: mark tasks as skipped and restart the pool so we don't block on shutdown.
                 timed_out_tasks: List[_RoiTask] = []
@@ -674,7 +729,11 @@ def parallel_radiomics_for_course(
                     last_log = now
 
             if restart:
-                pending_tasks = [futures[fut] for fut in remaining if futures[fut] not in completed]
+                # Everything in this round not yet finalized (success, failure, or
+                # timeout): still-in-flight futures, tasks never submitted because
+                # they were still in task_iter, AND a task lost mid-submit if the
+                # pool broke during backfill.
+                pending_tasks = [task for task in round_tasks if task not in completed]
             else:
                 pending_tasks = []
 
@@ -777,13 +836,19 @@ def _prepare_radiomics_task(
     Returns (mask_path, task_params) tuple suitable for passing to
     ``_isolated_radiomics_extraction_with_retry``.
     """
+    import hashlib
+
     import SimpleITK as sitk
     from .radiomics import _get_params_file
 
-    # Deduplicate only when the exact same SimpleITK image object is reused.
+    # Deduplicate only when the exact same image content is reused.
     # Geometry-only keys are unsafe here because noise perturbations share
-    # origin/spacing/size but differ in voxel intensities.
-    img_key = id(image)
+    # origin/spacing/size but differ in voxel intensities. id(image) is also
+    # unsafe: CPython can reuse the id of a garbage-collected image for an
+    # unrelated later image, which would silently return a stale on-disk
+    # NRRD cache hit for different voxel data. Hash the actual voxel bytes
+    # instead so the key tracks content, not object identity.
+    img_key = hashlib.sha1(sitk.GetArrayViewFromImage(image).tobytes()).hexdigest()
     img_path = temp_dir / f"img_{img_key}.nrrd"
     if not img_path.exists():
         sitk.WriteImage(image, str(img_path))

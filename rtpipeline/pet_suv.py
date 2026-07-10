@@ -4,6 +4,7 @@ import datetime as _dt
 import json
 import logging
 import math
+import os
 import re
 from collections import Counter
 from dataclasses import asdict, dataclass, field, is_dataclass
@@ -20,7 +21,16 @@ from .utils import read_dicom
 
 logger = logging.getLogger(__name__)
 
-CLINICAL_ROOT = Path("/umed-projekty/KOPERNIK/MIEDNICE/data/clinical")
+
+def _resolve_clinical_root_env() -> Path | None:
+    """Read the optional clinical-record root for weight/height SUV fallback
+    lookups from RTPIPELINE_CLINICAL_ROOT. Institution-specific; unset (None) by
+    default so the feature is inactive unless explicitly configured."""
+    value = os.environ.get("RTPIPELINE_CLINICAL_ROOT")
+    return Path(value) if value else None
+
+
+CLINICAL_ROOT = _resolve_clinical_root_env()
 
 PET_SUV_CANDIDATE_STATUSES = {
     "materialized",
@@ -937,8 +947,10 @@ def _clinical_measurement(
     key_predicate,
     window_days: int,
 ) -> tuple[float | None, str | None, str | None]:
+    if CLINICAL_ROOT is None or study_date is None:
+        return None, None, None
     path = CLINICAL_ROOT / str(patient_id) / "extraction_canonical.json"
-    if not path.exists() or study_date is None:
+    if not path.exists():
         return None, None, None
     try:
         data = json.loads(path.read_text(encoding="utf-8"))

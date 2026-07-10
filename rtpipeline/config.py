@@ -89,14 +89,18 @@ class PipelineConfig:
     # Systematic CT cropping for consistent volume analysis
     ct_cropping_enabled: bool = False
     ct_cropping_region: str = "pelvis"  # "pelvis", "thorax", "abdomen", "head_neck", "brain"
-    ct_cropping_superior_margin_cm: float = 2.0
-    ct_cropping_inferior_margin_cm: float = 10.0
+    # None means "use the region-specific default" (see anatomical_cropping.apply_systematic_cropping)
+    ct_cropping_superior_margin_cm: float | None = None
+    ct_cropping_inferior_margin_cm: float | None = None
     ct_cropping_use_for_dvh: bool = True
     # NOTE: cropped RTSTRUCTs (e.g., RS_auto_cropped.dcm) have shown geometric
     # misregistration issues when paired with the original DICOM CT series.
     # Until a robust cropped-geometry path exists for CT radiomics, default to
     # using the original (uncropped) RTSTRUCTs for radiomics extraction.
     ct_cropping_use_for_radiomics: bool = False
+    # Deprecated, ignored: uncropped files are always kept (see
+    # anatomical_cropping.apply_systematic_cropping). Retained for backward
+    # compatibility with existing config files/callers.
     ct_cropping_keep_original: bool = True
 
     # Custom segmentation models

@@ -575,7 +575,7 @@ def check_pipeline_requirements() -> Dict[str, Any]:
             requirements["checks"]["gpu"] = {"available": False}
 
         # Check Python packages
-        packages = ["pydicom", "SimpleITK", "pyradiomics", "pandas", "numpy"]
+        packages = ["pydicom", "SimpleITK", "radiomics", "pandas", "numpy"]
         for package in packages:
             try:
                 __import__(package)
