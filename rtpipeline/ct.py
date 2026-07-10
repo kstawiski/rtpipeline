@@ -220,6 +220,19 @@ def copy_ct_series(
     materialised at ``dst`` (hardlink, else copy) so this course's DICOM/CT folder is
     never left empty.
     """
+    # FAIL-SAFE: never purge a populated destination when there is nothing to copy in
+    # its place. An empty `series` means no CT instances were resolved for this course
+    # (e.g. a wrong/misconfigured --dicom-root, or a transient source outage). Purging
+    # here would empty an already-valid DICOM/CT folder and copy nothing, destroying a
+    # good course's raw CT. Only purge when we will actually refill it.
+    if not series:
+        if dst_dir.is_dir() and any(dst_dir.iterdir()):
+            logger.warning(
+                "copy_ct_series: empty series for %s but destination is already "
+                "populated; refusing to purge (fail-safe against source-config errors).",
+                dst_dir,
+            )
+        return
     # Purge stale contents so a corrected re-run does not inherit a prior garbage-bag CT.
     _clear_dir(dst_dir)
     ensure_dir(dst_dir)
