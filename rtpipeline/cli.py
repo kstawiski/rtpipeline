@@ -66,9 +66,9 @@ class _CustomSegmentationTask:
 class _CropTask:
     course: CourseOutput
     region: str
-    superior_margin_cm: float
-    inferior_margin_cm: float
-    keep_original: bool
+    superior_margin_cm: float | None
+    inferior_margin_cm: float | None
+    keep_original: bool = True
 
     @property
     def dir(self) -> Path:
@@ -831,6 +831,18 @@ def _radiomics_robustness_aggregate(argv: list[str]) -> int:
         return 1
 
 
+def _apply_dicom_copy_yaml_config(cfg: PipelineConfig, organize_config: dict) -> None:
+    """Populate cfg.dicom_copy_* fields from the parsed 'organize' section of a
+    project YAML config. Extracted from main() for unit testability. Defaults
+    mirror the PipelineConfig dataclass fields (config.py) exactly, so omitting a
+    key in the YAML falls back to the same default as an unconfigured pipeline run.
+    """
+    cfg.dicom_copy_dedup_by_sop_uid = organize_config.get("dedup_by_sop_uid", True)
+    cfg.dicom_copy_use_hardlinks = organize_config.get("use_hardlinks", False)
+    cfg.dicom_copy_verify_checksum = organize_config.get("verify_checksum", False)
+    cfg.dicom_copy_cache_headers = organize_config.get("cache_headers", True)
+
+
 def main(argv: list[str] | None = None) -> int:
     if argv is None:
         argv = sys.argv[1:]
@@ -1049,8 +1061,9 @@ def main(argv: list[str] | None = None) -> int:
             ct_cropping = yaml_config.get("ct_cropping", {})
             cfg.ct_cropping_enabled = ct_cropping.get("enabled", False)
             cfg.ct_cropping_region = ct_cropping.get("region", "pelvis")
-            cfg.ct_cropping_superior_margin_cm = ct_cropping.get("superior_margin_cm", 2.0)
-            cfg.ct_cropping_inferior_margin_cm = ct_cropping.get("inferior_margin_cm", 10.0)
+            # None (unspecified) lets apply_systematic_cropping apply the region-specific default.
+            cfg.ct_cropping_superior_margin_cm = ct_cropping.get("superior_margin_cm", None)
+            cfg.ct_cropping_inferior_margin_cm = ct_cropping.get("inferior_margin_cm", None)
             cfg.ct_cropping_use_for_dvh = ct_cropping.get("use_cropped_for_dvh", True)
             cfg.ct_cropping_use_for_radiomics = ct_cropping.get("use_cropped_for_radiomics", False)
             cfg.ct_cropping_keep_original = ct_cropping.get("keep_original", True)
@@ -1062,10 +1075,7 @@ def main(argv: list[str] | None = None) -> int:
 
             # Load organize/dicom_copy settings
             organize_config = yaml_config.get("organize", {})
-            cfg.dicom_copy_dedup_by_sop_uid = organize_config.get("dedup_by_sop_uid", True)
-            cfg.dicom_copy_use_hardlinks = organize_config.get("use_hardlinks", True)
-            cfg.dicom_copy_verify_checksum = organize_config.get("verify_checksum", False)
-            cfg.dicom_copy_cache_headers = organize_config.get("cache_headers", True)
+            _apply_dicom_copy_yaml_config(cfg, organize_config)
             cfg.do_segment_all_series = bool(organize_config.get("do_segment_all_series", False))
             _seg_classes = organize_config.get("all_series_segment_classes", None)
             if isinstance(_seg_classes, str):

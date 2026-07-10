@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import shutil
 from pathlib import Path
 from typing import Dict, Iterable, Optional, Tuple
@@ -15,7 +16,49 @@ logger = logging.getLogger(__name__)
 from .layout import build_course_dirs
 from .utils import sanitize_rtstruct
 from .roi_fixer import fix_rtstruct_rois
-from .layout import build_course_dirs
+
+_RTSTRUCT_SOP_CLASS_UID = "1.2.840.10008.5.1.4.1.1.481.3"
+
+
+def _is_valid_rtstruct(path: Path) -> bool:
+    """Return True only if `path` parses as a DICOM RTSTRUCT with >=1 ROI.
+
+    A process killed mid-write leaves a truncated file: pydicom.dcmread either raises
+    on it, or parses a dataset missing SOPClassUID/StructureSetROISequence. Both must
+    be treated as incomplete so resume regenerates instead of accepting a truncated
+    file forever (the exact class of bug 3bd8c5d fixed for segmentation masks/manifests).
+    """
+    try:
+        ds = pydicom.dcmread(str(path), stop_before_pixels=True)
+    except Exception:
+        return False
+    if str(getattr(ds, "SOPClassUID", "")) != _RTSTRUCT_SOP_CLASS_UID:
+        return False
+    return bool(getattr(ds, "StructureSetROISequence", None))
+
+
+def _write_rtstruct_atomic(out_path: Path, write_fn) -> None:
+    """Write an RTSTRUCT by calling `write_fn(tmp_path_str)`, then atomically publish it
+    at `out_path` via os.replace().
+
+    rt_utils' RTStruct.save() (and a raw file copy) write straight to the destination
+    path; a process killed mid-write would leave a truncated RTSTRUCT that a
+    presence-only resume check accepts forever.
+
+    The temp path must end in `.dcm`: rt_utils' RTStruct.save() auto-appends `.dcm`
+    to any path that doesn't already end with it, which would silently redirect the
+    write to `tmp_path + ".dcm"` and make the subsequent os.replace(tmp_path, ...)
+    raise FileNotFoundError.
+    """
+    tmp_path = out_path.parent / f".{out_path.name}.{os.getpid()}.tmp.dcm"
+    try:
+        write_fn(str(tmp_path))
+        os.replace(tmp_path, out_path)
+    finally:
+        try:
+            tmp_path.unlink()
+        except OSError:
+            pass
 
 
 def _load_ct_image(ct_dir: Path) -> Optional[sitk.Image]:
@@ -214,11 +257,15 @@ def build_auto_rtstruct(course_dir: Path) -> Optional[Path]:
         logger.info("No CT DICOM for %s", course_dir)
         return None
 
-    # Resume-friendly: if already built, skip
+    # Resume-friendly: if already built, skip - but only if it parses as a valid RTSTRUCT.
+    # A process killed mid-write can leave a truncated file that existence-only checks
+    # would otherwise accept forever.
     out_path = course_dir / 'RS_auto.dcm'
     if out_path.exists():
-        logger.info("Auto RTSTRUCT already exists: %s", out_path)
-        return out_path
+        if _is_valid_rtstruct(out_path):
+            logger.info("Auto RTSTRUCT already exists: %s", out_path)
+            return out_path
+        logger.warning("Existing Auto RTSTRUCT %s failed to parse/validate; regenerating", out_path)
 
     ct_img = _load_ct_image(ct_dir)
     if ct_img is None:
@@ -256,9 +303,7 @@ def build_auto_rtstruct(course_dir: Path) -> Optional[Path]:
                 seg_img, label_map = _load_seg_dicom(dicom_seg_path)
             elif sop == '1.2.840.10008.5.1.4.1.1.481.3':
                 try:
-                    if out_path.exists():
-                        out_path.unlink()
-                    shutil.copy2(str(dicom_seg_path), str(out_path))
+                    _write_rtstruct_atomic(out_path, lambda tmp: shutil.copy2(str(dicom_seg_path), tmp))
                 except Exception as e:
                     logger.error('Failed to copy RTSTRUCT to RS_auto: %s', e)
                     return None
@@ -349,7 +394,7 @@ def build_auto_rtstruct(course_dir: Path) -> Optional[Path]:
         return None
 
     try:
-        rtstruct.save(str(out_path))
+        _write_rtstruct_atomic(out_path, rtstruct.save)
         sanitize_rtstruct(out_path)
         summary = fix_rtstruct_rois(ct_dir, out_path)
         if summary and summary.changed:

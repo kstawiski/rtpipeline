@@ -147,7 +147,7 @@ def test_resume_writes_complete_workbook(tmp_path, monkeypatch):
     monkeypatch.setattr(
         rc, "extract_radiomics_batch_with_conda",
         lambda tasks, params_file=None: [
-            {"__status__": "success", "original_firstorder_Mean": float(i + 100)}
+            {"__status__": "success", "__task_index__": i, "original_firstorder_Mean": float(i + 100)}
             for i, _t in enumerate(tasks)
         ],
     )
@@ -283,7 +283,7 @@ def test_ct_totalseg_nifti_fallback_writes_tagged_workbook(tmp_path, monkeypatch
     def fake_batch(tasks, params_file=None):
         seen["tasks"] = tasks
         return [
-            {"__status__": "success", "original_firstorder_Mean": float(i + 1)}
+            {"__status__": "success", "__task_index__": i, "original_firstorder_Mean": float(i + 1)}
             for i, _task in enumerate(tasks)
         ]
 
