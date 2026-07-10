@@ -1666,6 +1666,9 @@ def _clear_course_ct_outputs(course_dirs) -> None:
     NIfTI, and masks as valid. ``copy_ct_series`` already purges ``DICOM/CT`` on the success
     path, so this only matters for the no-CT branch.
     """
+    force = os.environ.get(
+        "RTPIPELINE_ALLOW_DESTRUCTIVE_CT_CLEAR", ""
+    ).strip().lower() in ("1", "true", "yes")
     for d in (
         getattr(course_dirs, "dicom_ct", None),
         getattr(course_dirs, "nifti", None),
@@ -1673,8 +1676,15 @@ def _clear_course_ct_outputs(course_dirs) -> None:
     ):
         if d is None:
             continue
+        p = Path(d)
         try:
-            _clear_dir(Path(d))
+            if p.is_dir() and any(p.iterdir()) and not force:
+                logger.warning(
+                    "_clear_course_ct_outputs: refusing to purge POPULATED %s for a "
+                    "no-CT course (fail-safe against source/config errors, not a real "
+                    "skip). Set RTPIPELINE_ALLOW_DESTRUCTIVE_CT_CLEAR=1 to override.", p)
+                continue
+            _clear_dir(p)
         except Exception as exc:
             logger.warning("Failed to clear stale per-course CT output %s: %s", d, exc)
 
