@@ -1805,6 +1805,16 @@ def _clear_course_ct_outputs(course_dirs) -> None:
     NIfTI, and masks as valid. ``copy_ct_series`` already purges ``DICOM/CT`` on the success
     path, so this only matters for the no-CT branch.
     """
+    # FAIL-SAFE: a course that previously produced valid CT-derived outputs but now
+    # resolves to "no CT" is far more often a source/config error (wrong --dicom-root,
+    # transient source outage) than a genuine skip. Emptying populated DICOM/CT, NIfTI,
+    # and TotalSegmentator folders in that case destroys good data irreversibly (only the
+    # raw source can rebuild it). By default we REFUSE to purge a populated dir here and
+    # warn loudly; set RTPIPELINE_ALLOW_DESTRUCTIVE_CT_CLEAR=1 to force the aggressive
+    # clear when a genuine wrong-CT must be scrubbed.
+    force = os.environ.get(
+        "RTPIPELINE_ALLOW_DESTRUCTIVE_CT_CLEAR", ""
+    ).strip().lower() in ("1", "true", "yes")
     for d in (
         getattr(course_dirs, "dicom_ct", None),
         getattr(course_dirs, "nifti", None),
@@ -1812,8 +1822,15 @@ def _clear_course_ct_outputs(course_dirs) -> None:
     ):
         if d is None:
             continue
+        p = Path(d)
         try:
-            _clear_dir(Path(d))
+            if p.is_dir() and any(p.iterdir()) and not force:
+                logger.warning(
+                    "_clear_course_ct_outputs: refusing to purge POPULATED %s for a "
+                    "no-CT course (fail-safe against source/config errors, not a real "
+                    "skip). Set RTPIPELINE_ALLOW_DESTRUCTIVE_CT_CLEAR=1 to override.", p)
+                continue
+            _clear_dir(p)
         except Exception as exc:
             logger.warning("Failed to clear stale per-course CT output %s: %s", d, exc)
 
