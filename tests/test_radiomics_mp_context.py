@@ -216,12 +216,14 @@ def test_terminate_executor_processes_kills_forkserver_workers():
 
 
 def test_adaptive_executor_terminates_before_shutdown():
-    """In run_tasks_with_adaptive_workers' timeout branch, the executor's _processes must be
-    read/terminated BEFORE shutdown(wait=False, cancel_futures=True) — shutdown() clears
-    _processes, and the child-diff fallback misses forkserver workers."""
+    """In run_tasks_with_adaptive_workers' timeout/broken-pool restart branch, the executor's
+    _processes must be read/terminated BEFORE shutdown(wait=False, cancel_futures=True) —
+    shutdown() clears _processes, and the child-diff fallback misses forkserver workers."""
     src = inspect.getsource(ru.run_tasks_with_adaptive_workers)
-    branch = src.find("if restart_due_to_timeout and effective_use_processes:")
-    assert branch != -1, "expected the timeout-cleanup branch"
+    # Also covers the CRITICAL backfill-regression restart path (restart_due_to_pool_failure):
+    # a broken pool must go through this same terminate-before-shutdown cleanup.
+    branch = src.find("if (restart_due_to_timeout or restart_due_to_pool_failure) and effective_use_processes:")
+    assert branch != -1, "expected the timeout/broken-pool-cleanup branch"
     seg = src[branch:]
     read_procs = seg.find('getattr(ex, "_processes", None)')
     cancel_shutdown = seg.find("ex.shutdown(wait=False, cancel_futures=True)")

@@ -134,6 +134,30 @@ def _structure_filename(name: str) -> str:
     return token or "structure"
 
 
+def _check_label_name_collisions(context: str, label_names: List[str]) -> None:
+    """Fail closed if two distinct label names collide once sanitized.
+
+    ``_structure_filename`` drives the on-disk mask filename (a collision means
+    the second structure's write silently overwrites the first); ``_norm_label_token``
+    drives the token used to match a label back up among on-disk files (a collision
+    means two different labels resolve to the same file). Catching this at
+    config/model load time is far safer than discovering it after a mask has
+    already been silently clobbered or misattributed.
+    """
+    for normalize, kind in ((_structure_filename, "output filename"), (_norm_label_token, "lookup token")):
+        seen: Dict[str, str] = {}
+        for name in label_names:
+            key = normalize(name)
+            prior = seen.get(key)
+            if prior is not None and prior != name:
+                raise ValueError(
+                    f"{context}: label names {prior!r} and {name!r} both normalize to the "
+                    f"same {kind} ({key!r}); rename one to avoid silently overwriting or "
+                    f"misattributing mask output"
+                )
+            seen[key] = name
+
+
 def _as_bool(value: object, default: bool = False) -> bool:
     if value is None:
         return default
@@ -315,6 +339,7 @@ def _parse_custom_model(model_dir: Path, data: dict, default_command: str) -> Cu
         if not isinstance(labels, list) or not labels:
             raise ValueError(f"Network {network_id}: missing label_order/structures")
         label_names = [str(label).strip() for label in labels]
+        _check_label_name_collisions(f"Network {network_id}", label_names)
 
         net_env_cfg = entry.get("env") or {}
         if not isinstance(net_env_cfg, dict):
@@ -478,11 +503,14 @@ def _parse_custom_model(model_dir: Path, data: dict, default_command: str) -> Cu
         label_order = ensemble_cfg.get("label_order") or ensemble_cfg.get("labels")
         if label_order is not None and (not isinstance(label_order, list) or not label_order):
             raise ValueError("ensemble.label_order must be a non-empty list when provided")
+        ensemble_label_names = [str(l).strip() for l in label_order] if label_order else None
+        if ensemble_label_names:
+            _check_label_name_collisions("Ensemble", ensemble_label_names)
         ensemble_def = EnsembleDefinition(
             command=ensemble_command,
             inputs=ensemble_inputs,
             postprocessing_json=str(post_json).strip() if post_json else None,
-            label_names=[str(l).strip() for l in label_order] if label_order else None,
+            label_names=ensemble_label_names,
         )
         known_ids.add("ensemble")
         if "ensemble" not in combine_order:
@@ -1065,7 +1093,15 @@ def _norm_label_token(name: str) -> str:
     return _sanitize_token(name).replace("-", "_").lower()
 
 
-def _load_named_binary_masks(output_dir: Path, label_names: List[str]) -> Dict[str, sitk.Image]:
+def _load_named_binary_masks(
+    output_dir: Path, label_names: List[str]
+) -> Tuple[Dict[str, sitk.Image], List[str]]:
+    """Load one binary mask per label name from ``output_dir``.
+
+    Returns ``(masks, missing_labels)``. ``missing_labels`` is non-empty only when
+    some (but not all) expected labels were found by filename — callers should
+    surface this to avoid silently treating a partial result as complete.
+    """
     files = [p for p in output_dir.glob("*.nii*") if p.name.endswith((".nii", ".nii.gz"))]
     by_token = {
         _norm_label_token(p.name.removesuffix(".nii.gz").removesuffix(".nii")): p
@@ -1088,9 +1124,16 @@ def _load_named_binary_masks(output_dir: Path, label_names: List[str]) -> Dict[s
         mask_img.CopyInformation(img)
         masks[structure_name] = mask_img
     if masks:
-        return masks
+        missing = [name for name in label_names if name not in masks]
+        if missing:
+            logger.warning(
+                "Partial label match loading binary masks from %s: found %d/%d expected "
+                "label(s); missing: %s",
+                output_dir, len(masks), len(label_names), missing,
+            )
+        return masks, missing
     seg_img = _load_segmentation_output(output_dir)
-    return _make_binary_masks(seg_img, label_names)
+    return _make_binary_masks(seg_img, label_names), []
 
 
 def _make_binary_masks(seg_img: sitk.Image, label_names: List[str]) -> Dict[str, sitk.Image]:
@@ -1294,7 +1337,9 @@ def _run_single_model(
                     env=network_env,
                     runner=_run_shell,
                 )
-                structures = _load_named_binary_masks(output_dir, network.label_names)
+                structures, missing_labels = _load_named_binary_masks(output_dir, network.label_names)
+                if missing_labels:
+                    anchor_diag["missing_labels"] = missing_labels
                 structures, anchor_diag = _postprocess_structures(
                     structures,
                     course.dirs.root,
@@ -1303,7 +1348,7 @@ def _run_single_model(
                     anchor_diag,
                 )
                 structures_by_network[network.alias] = structures
-                if network.anchor_source or network.confine_to_lung_mask:
+                if network.anchor_source or network.confine_to_lung_mask or missing_labels:
                     anchor_diagnostics[network.alias] = anchor_diag
             elif model.interface == "medsam_boxprompt":
                 from .segmenters.medsam_boxprompt import run_medsam_boxprompt_prediction
@@ -1331,7 +1376,9 @@ def _run_single_model(
                     device=cfg.totalseg_device,
                     bbox_margin_voxels=network.bbox_margin_voxels,
                 )
-                structures = _load_named_binary_masks(output_dir, network.label_names)
+                structures, missing_labels = _load_named_binary_masks(output_dir, network.label_names)
+                if missing_labels:
+                    anchor_diag["missing_labels"] = missing_labels
                 anchor_diag["medsam"] = medsam_metadata
                 structures, anchor_diag = _postprocess_structures(
                     structures,

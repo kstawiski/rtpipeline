@@ -76,7 +76,7 @@ ct_cropping:
   # Downstream integration
   use_cropped_for_dvh: true       # Calculate DVH on cropped volumes
   use_cropped_for_radiomics: true # Extract features from cropped volumes
-  keep_original: true             # Keep original uncropped files
+  keep_original: true             # Deprecated, ignored: uncropped files are always kept
 ```
 
 ---

@@ -195,7 +195,12 @@ class DicomCopyManager:
         return sop_uid
 
     def _try_hardlink(self, src: Path, dst: Path) -> bool:
-        """Try to create hardlink, return True if successful."""
+        """Try to create hardlink, return True if successful.
+
+        The link is created at a temp path in dst's directory and published via
+        os.replace(), so a process killed mid-operation never leaves dst unlinked
+        with no replacement (e.g. destroying an existing dose file).
+        """
         if not self.config.use_hardlinks:
             return False
 
@@ -206,11 +211,18 @@ class DicomCopyManager:
             if src_dev != dst_dev:
                 return False
 
-            # Remove existing destination if present
-            if dst.exists():
-                dst.unlink()
+            tmp_path = dst.parent / f".{dst.name}.{os.getpid()}.tmp"
+            try:
+                if tmp_path.exists():
+                    tmp_path.unlink()
+                os.link(src, tmp_path)
+                os.replace(tmp_path, dst)
+            finally:
+                try:
+                    tmp_path.unlink()
+                except OSError:
+                    pass
 
-            os.link(src, dst)
             with self._lock:
                 self.stats.hardlinked += 1
             return True

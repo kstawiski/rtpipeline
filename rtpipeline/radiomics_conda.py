@@ -252,7 +252,19 @@ class RadiomicsCheckpoint:
                 self.checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
                 combined_df = new_df
 
-            combined_df.to_parquet(self.checkpoint_path, index=False)
+            # Write to a temp file and atomically publish via os.replace(): writing
+            # the parquet file in place would leave it truncated (and silently
+            # discarded by _load_existing on the next run) if the process is
+            # killed mid-write.
+            tmp_path = self.checkpoint_path.parent / f".{self.checkpoint_path.name}.{os.getpid()}.tmp"
+            try:
+                combined_df.to_parquet(tmp_path, index=False)
+                os.replace(tmp_path, self.checkpoint_path)
+            finally:
+                try:
+                    tmp_path.unlink()
+                except OSError:
+                    pass
             self._buffer.clear()
             logger.debug("Checkpoint flushed: %d total ROIs", len(self._completed_keys))
         except Exception as exc:
@@ -758,6 +770,7 @@ for task in tasks:
     label = task.get('label')
     roi_name = task.get('roi_name', 'ROI')
     large_roi = bool(task.get('large_roi'))
+    task_index = task.get('__task_index__')
 
     try:
         current_extractor = extractor_large if large_roi else extractor
@@ -767,7 +780,7 @@ for task in tasks:
             features = current_extractor.execute(image_path, mask_path)
 
         # Convert to JSON-serializable format
-        output = {'__status__': 'success', '__roi_name__': roi_name}
+        output = {'__status__': 'success', '__roi_name__': roi_name, '__task_index__': task_index}
         for key, value in features.items():
             try:
                 if hasattr(value, 'item'):
@@ -783,9 +796,9 @@ for task in tasks:
     except Exception as e:
         error_msg = str(e).lower()
         if 'size of the roi is too small' in error_msg:
-            print(json.dumps({'__status__': 'skipped', '__roi_name__': roi_name, '__reason__': 'ROI too small'}), flush=True)
+            print(json.dumps({'__status__': 'skipped', '__roi_name__': roi_name, '__task_index__': task_index, '__reason__': 'ROI too small'}), flush=True)
         else:
-            print(json.dumps({'__status__': 'error', '__roi_name__': roi_name, '__error__': str(e)}), flush=True)
+            print(json.dumps({'__status__': 'error', '__roi_name__': roi_name, '__task_index__': task_index, '__error__': str(e)}), flush=True)
 '''
 
     try:
@@ -799,8 +812,12 @@ for task in tasks:
                         'label': t.get('label'),
                         'roi_name': t.get('roi_name', 'ROI'),
                         'large_roi': bool(t.get('large_roi', False)),
+                        # Unique per-task position, echoed back by the subprocess so the
+                        # caller can match results by index instead of roi_name (which is
+                        # not guaranteed unique within a batch) or a fragile positional zip.
+                        '__task_index__': i,
                     }
-                    for t in tasks
+                    for i, t in enumerate(tasks)
                 ],
                 'params_file': params_file,
             }, batch_file)
@@ -925,7 +942,29 @@ def _process_batch(batch: List[Dict[str, Any]]) -> List[Tuple[Dict[str, Any], Op
     """Process a batch of radiomics tasks in a subprocess and return (task, features) pairs."""
     params_file = batch[0].get('params_file') if batch else None
     batch_results = extract_radiomics_batch_with_conda(batch, params_file)
-    return list(zip(batch, batch_results))
+
+    # Match results back to tasks by the unique __task_index__ the subprocess echoes
+    # back (injected per-task in extract_radiomics_batch_with_conda), not by roi_name
+    # or a positional zip(batch, batch_results). roi_name is not guaranteed unique
+    # within a batch (this module documents that elsewhere), so name-based matching
+    # can still misattribute features between same-named ROIs when a subprocess
+    # output line is dropped/unparseable -- only the injected index is unambiguous.
+    results_by_index: Dict[int, Dict[str, Any]] = {}
+    for result in batch_results:
+        if not result:
+            continue
+        idx = result.get('__task_index__')
+        if isinstance(idx, int) and idx not in results_by_index:
+            results_by_index[idx] = result
+
+    pairs: List[Tuple[Dict[str, Any], Optional[Dict[str, Any]]]] = []
+    for i, task in enumerate(batch):
+        roi_name = task.get('roi_name', 'ROI')
+        result = results_by_index.get(i)
+        if result is None:
+            logger.warning("Batch radiomics: no matching result for ROI %s (task #%d); dropping", roi_name, i)
+        pairs.append((task, result))
+    return pairs
 
 
 def process_radiomics_batch(
@@ -1085,12 +1124,16 @@ def process_radiomics_batch(
     try:
         if sequential or len(tasks_list) == 1 or worker_limit == 1:
             if use_batch_processing:
-                # Even sequential mode benefits from batch processing
+                # Even sequential mode benefits from batch processing. Match results
+                # back to tasks via _process_batch's __task_index__-based pairing (not a
+                # positional zip(tasks_list, batch_results)): the same dropped/
+                # unparseable-subprocess-line hazard that motivated the fix in
+                # _process_batch applies here too, since this also runs the whole
+                # task list through a single extract_radiomics_batch_with_conda() call.
                 logger.info("Processing %d radiomics tasks in batch mode (sequential)", len(tasks_list))
-                params_file = tasks_list[0].get('params_file') if tasks_list else None
-                batch_results = extract_radiomics_batch_with_conda(tasks_list, params_file)
+                batch_pairs = _process_batch(tasks_list)
 
-                for task, features in zip(tasks_list, batch_results):
+                for task, features in batch_pairs:
                     roi_name = task.get('roi_name', 'ROI')
                     if features is None or features.get('__status__') != 'success':
                         status = features.get('__status__', 'failed') if features else 'failed'

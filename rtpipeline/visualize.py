@@ -5,6 +5,7 @@ import re
 from pathlib import Path
 from typing import List, Tuple, Dict, Optional
 
+import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -168,7 +169,7 @@ def _overlay_fig(ct_img, seg_img, title: str):
     sag_ct = ct[:, :, mx]
     sag_seg = seg[:, :, mx]
     fig, axes = plt.subplots(1, 3, figsize=(15, 5))
-    cmap = plt.cm.get_cmap("jet")
+    cmap = matplotlib.colormaps["jet"]
     axes[0].imshow(ax_ct, cmap="gray", vmin=-200, vmax=200)
     axes[0].imshow(np.ma.masked_where(ax_seg == 0, ax_seg), cmap=cmap, alpha=0.4)
     axes[0].set_title("Axial")
