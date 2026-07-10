@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import warnings
 from pathlib import Path
 from typing import Dict, Tuple, Optional
 
@@ -844,14 +845,17 @@ def apply_systematic_cropping(
     region: str = "pelvis",
     output_suffix: str = "_cropped",
     keep_original: bool = True,
-    inferior_margin_cm: float = 10.0,
-    superior_margin_cm: float = 2.0
+    inferior_margin_cm: Optional[float] = None,
+    superior_margin_cm: Optional[float] = None
 ) -> Dict[str, Path]:
     """
     Apply systematic anatomical cropping to CT and all segmentations.
 
     Creates cropped versions of CT NIfTI and all segmentation masks based on
     anatomical landmarks. Saves cropping metadata for downstream analysis.
+    The uncropped CT/mask NIfTI files are always kept: they are shared inputs
+    reused by other pipeline stages (radiomics fallback, QC, resumed
+    segmentation), so this function never deletes them.
 
     Args:
         course_dir: Course directory
@@ -862,9 +866,15 @@ def apply_systematic_cropping(
             - "head_neck": brain/skull apex to C7/clavicles
             - "brain": brain boundaries with minimal margins
         output_suffix: Suffix for cropped files (default: "_cropped")
-        keep_original: Whether to keep original files (default: True)
-        inferior_margin_cm: Margin below inferior landmark in cm (default: 10 cm for pelvis, 2 cm for others)
-        superior_margin_cm: Margin above superior landmark in cm (default: 2 cm, used for non-pelvic regions)
+        keep_original: Deprecated, ignored. Uncropped CT/mask NIfTI files are always
+            kept (see above); this flag never controlled that. Retained only for
+            backward compatibility with existing callers.
+        inferior_margin_cm: Margin below inferior landmark in cm. If None, uses the
+            region-specific default (10 cm for pelvis, 2 cm for thorax/abdomen/head_neck,
+            1 cm for brain).
+        superior_margin_cm: Margin above superior landmark in cm. If None, uses the
+            region-specific default (unused for pelvis, 2 cm for thorax/abdomen/head_neck,
+            1 cm for brain).
 
     Returns:
         Dictionary of cropped file paths: {'ct': Path, 'mask_name': Path, ...}
@@ -872,6 +882,14 @@ def apply_systematic_cropping(
     Raises:
         ValueError: If unsupported region or landmarks not found
     """
+    if keep_original is not True:
+        warnings.warn(
+            "apply_systematic_cropping(keep_original=...) is deprecated and ignored; "
+            "uncropped CT/mask NIfTI files are always kept.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+
     from .layout import build_course_dirs
 
     course_dirs = build_course_dirs(course_dir)
@@ -891,26 +909,34 @@ def apply_systematic_cropping(
             f"Supported regions: {', '.join(supported_regions.keys())}"
         )
 
-    # Call appropriate boundary function based on region
+    # Resolve None (caller omitted) to the region-specific margin default; an
+    # explicitly passed value (even one equal to a default) is used as-is.
     if region == "pelvis":
+        # Pelvis superior boundary comes from the L1 vertebra edge; no superior margin applies.
+        effective_superior_margin_cm = superior_margin_cm
+        effective_inferior_margin_cm = inferior_margin_cm if inferior_margin_cm is not None else 10.0
         superior_z, inferior_z = determine_pelvic_crop_boundaries(
             course_dir,
-            inferior_margin_cm=inferior_margin_cm
+            inferior_margin_cm=effective_inferior_margin_cm
         )
     elif region == "brain":
         # Brain uses minimal margins (defaults: 1 cm)
+        effective_superior_margin_cm = superior_margin_cm if superior_margin_cm is not None else 1.0
+        effective_inferior_margin_cm = inferior_margin_cm if inferior_margin_cm is not None else 1.0
         superior_z, inferior_z = determine_brain_crop_boundaries(
             course_dir,
-            superior_margin_cm=superior_margin_cm if superior_margin_cm != 2.0 else 1.0,
-            inferior_margin_cm=inferior_margin_cm if inferior_margin_cm != 10.0 else 1.0
+            superior_margin_cm=effective_superior_margin_cm,
+            inferior_margin_cm=effective_inferior_margin_cm
         )
     else:
         # Thorax, abdomen, head_neck use symmetric margins (default: 2 cm)
+        effective_superior_margin_cm = superior_margin_cm if superior_margin_cm is not None else 2.0
+        effective_inferior_margin_cm = inferior_margin_cm if inferior_margin_cm is not None else 2.0
         boundary_func = supported_regions[region]
         superior_z, inferior_z = boundary_func(
             course_dir,
-            superior_margin_cm=superior_margin_cm,
-            inferior_margin_cm=inferior_margin_cm if inferior_margin_cm != 10.0 else 2.0
+            superior_margin_cm=effective_superior_margin_cm,
+            inferior_margin_cm=effective_inferior_margin_cm
         )
 
     logger.info(
@@ -994,10 +1020,9 @@ def apply_systematic_cropping(
         'region': region,
         'superior_z_mm': superior_z,
         'inferior_z_mm': inferior_z,
-        'superior_margin_cm': superior_margin_cm,
-        'inferior_margin_cm': inferior_margin_cm,
+        'superior_margin_cm': effective_superior_margin_cm,
+        'inferior_margin_cm': effective_inferior_margin_cm,
         'cropped_files': {k: str(v) for k, v in cropped_files.items()},
-        'original_kept': keep_original,
         'crop_boundaries_mm': clamp_summary,
         'clamped_axes': [axis for axis in ("superior", "inferior") if clamp_summary.get(f"{axis}_clamped")],
     }

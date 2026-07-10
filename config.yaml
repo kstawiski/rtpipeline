@@ -103,7 +103,7 @@ ct_cropping:
   inferior_margin_cm: 2.0
   use_cropped_for_dvh: false
   use_cropped_for_radiomics: false
-  keep_original: true
+  keep_original: true  # deprecated, ignored: uncropped files are always kept
 
 environments:
   main: "rtpipeline"

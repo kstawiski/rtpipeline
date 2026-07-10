@@ -212,6 +212,27 @@ def _patched_trainer_lookup(extra_trainers: Sequence[str] | None) -> Iterator[No
         predict_from_raw_data.recursive_find_python_class = original
 
 
+@contextmanager
+def _temporary_env(overrides: Mapping[str, str]) -> Iterator[None]:
+    """Apply ``overrides`` to os.environ, restoring the prior values (or absence)
+    of each affected key on exit.
+
+    Without this, a reused pool worker process leaks environment mutations from
+    one call into the next (e.g. a stale ``nnUNet_results``/``nnUNet_def_n_proc``
+    from a previous model's config bleeding into a later prediction).
+    """
+    prior = {key: os.environ.get(key) for key in overrides}
+    os.environ.update(overrides)
+    try:
+        yield
+    finally:
+        for key, value in prior.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
 def run_modelfolder_prediction(
     *,
     model_folder: Path,
@@ -223,65 +244,66 @@ def run_modelfolder_prediction(
     trainer_shims: Sequence[str] | None = None,
 ) -> None:
     """Run nnU-Net v2 modelfolder inference with optional inference-only trainer shims."""
-    os.environ.setdefault("nnUNet_def_n_proc", "1")
+    overrides = {"nnUNet_def_n_proc": os.environ.get("nnUNet_def_n_proc", "1")}
     if env:
-        os.environ.update({str(key): str(value) for key, value in env.items()})
+        overrides.update({str(key): str(value) for key, value in env.items()})
 
-    args = _parse_predict_args(predict_args)
+    with _temporary_env(overrides):
+        args = _parse_predict_args(predict_args)
 
-    import torch
-    from batchgenerators.utilities.file_and_folder_operations import maybe_mkdir_p
-    from nnunetv2.inference.predict_from_raw_data import nnUNetPredictor
+        import torch
+        from batchgenerators.utilities.file_and_folder_operations import maybe_mkdir_p
+        from nnunetv2.inference.predict_from_raw_data import nnUNetPredictor
 
-    output_dir.mkdir(parents=True, exist_ok=True)
-    maybe_mkdir_p(str(output_dir))
+        output_dir.mkdir(parents=True, exist_ok=True)
+        maybe_mkdir_p(str(output_dir))
 
-    if args.device == "cpu":
-        import multiprocessing
+        if args.device == "cpu":
+            import multiprocessing
 
-        torch.set_num_threads(multiprocessing.cpu_count())
-        device = torch.device("cpu")
-    elif args.device == "cuda":
-        torch.set_num_threads(1)
-        try:
-            torch.set_num_interop_threads(1)
-        except RuntimeError:
-            pass
-        device = torch.device("cuda")
-    else:
-        device = torch.device("mps")
+            torch.set_num_threads(multiprocessing.cpu_count())
+            device = torch.device("cpu")
+        elif args.device == "cuda":
+            torch.set_num_threads(1)
+            try:
+                torch.set_num_interop_threads(1)
+            except RuntimeError:
+                pass
+            device = torch.device("cuda")
+        else:
+            device = torch.device("mps")
 
-    predictor = nnUNetPredictor(
-        tile_step_size=args.step_size,
-        use_gaussian=True,
-        use_mirroring=not args.disable_tta,
-        perform_everything_on_device=True,
-        device=device,
-        verbose=args.verbose,
-        allow_tqdm=not args.disable_progress_bar,
-        verbose_preprocessing=args.verbose,
-    )
-    with _patched_trainer_lookup(trainer_shims):
-        predictor.initialize_from_trained_model_folder(str(model_folder), _folds_as_list(folds), args.chk)
-    if args.npp <= 0 and args.nps <= 0:
-        print("Running nnUNet v2 modelfolder inference serially (pin_memory disabled).")
-        _predict_from_files_serial(
-            predictor,
-            str(input_dir),
-            str(output_dir),
-            save_probabilities=args.save_probabilities,
-            overwrite=not args.continue_prediction,
-            folder_with_segs_from_prev_stage=args.prev_stage_predictions,
+        predictor = nnUNetPredictor(
+            tile_step_size=args.step_size,
+            use_gaussian=True,
+            use_mirroring=not args.disable_tta,
+            perform_everything_on_device=True,
+            device=device,
+            verbose=args.verbose,
+            allow_tqdm=not args.disable_progress_bar,
+            verbose_preprocessing=args.verbose,
         )
-    else:
-        predictor.predict_from_files(
-            str(input_dir),
-            str(output_dir),
-            save_probabilities=args.save_probabilities,
-            overwrite=not args.continue_prediction,
-            num_processes_preprocessing=max(1, args.npp),
-            num_processes_segmentation_export=max(1, args.nps),
-            folder_with_segs_from_prev_stage=args.prev_stage_predictions,
-            num_parts=1,
-            part_id=0,
-        )
+        with _patched_trainer_lookup(trainer_shims):
+            predictor.initialize_from_trained_model_folder(str(model_folder), _folds_as_list(folds), args.chk)
+        if args.npp <= 0 and args.nps <= 0:
+            print("Running nnUNet v2 modelfolder inference serially (pin_memory disabled).")
+            _predict_from_files_serial(
+                predictor,
+                str(input_dir),
+                str(output_dir),
+                save_probabilities=args.save_probabilities,
+                overwrite=not args.continue_prediction,
+                folder_with_segs_from_prev_stage=args.prev_stage_predictions,
+            )
+        else:
+            predictor.predict_from_files(
+                str(input_dir),
+                str(output_dir),
+                save_probabilities=args.save_probabilities,
+                overwrite=not args.continue_prediction,
+                num_processes_preprocessing=max(1, args.npp),
+                num_processes_segmentation_export=max(1, args.nps),
+                folder_with_segs_from_prev_stage=args.prev_stage_predictions,
+                num_parts=1,
+                part_id=0,
+            )

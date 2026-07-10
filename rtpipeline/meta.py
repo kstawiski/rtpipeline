@@ -116,6 +116,31 @@ def _list_files(
     return out
 
 
+def _core_key_from_filename(fp: str) -> str | None:
+    """Extract the shared RP/RD core key (numeric ID + description) from a
+    plan/dose DICOM filename, or None if it doesn't match the expected
+    ``R[PD].<id>.<description>.dcm`` pattern."""
+    m = re.search(r"R[PD]\.(\d+)\.(.*?)\.dcm", os.path.basename(fp))
+    return f"{m.group(1)}.{m.group(2)}" if m else None
+
+
+def _merge_plans_doses(plans_df: pd.DataFrame, doses_df: pd.DataFrame) -> pd.DataFrame:
+    """Inner-merge plan and dose metadata rows on their shared filename core key.
+
+    Rows whose filename doesn't match the expected pattern get a null core_key
+    from `_core_key_from_filename`. Such rows are dropped from BOTH frames
+    before the merge: an inner merge on a shared null key would otherwise
+    cross-join every unmatched plan row against every unmatched dose row.
+    """
+    plans_df = plans_df.copy()
+    doses_df = doses_df.copy()
+    plans_df['core_key'] = plans_df['file_path'].map(_core_key_from_filename)
+    doses_df['core_key'] = doses_df['file_path'].map(_core_key_from_filename)
+    plans_df = plans_df.dropna(subset=['core_key'])
+    doses_df = doses_df.dropna(subset=['core_key'])
+    return plans_df.merge(doses_df, on='core_key', suffixes=("_plans", "_dosimetrics"), how='inner')
+
+
 def export_metadata(config: PipelineConfig) -> Dict[str, Path]:
     """Extract metadata for plans, doses, structures, fractions and write XLSX files."""
     paths = _export_dir(config.output_root)
@@ -292,15 +317,7 @@ def export_metadata(config: PipelineConfig) -> Dict[str, Path]:
     # Merge metadata: RP<->RD by core key from filename; RS by patient
     meta_df = pd.DataFrame()
     if not plans_df.empty and not doses_df.empty:
-        def core_key(fp: str) -> str | None:
-            m = re.search(r"R[PD]\.(\d+)\.(.*?)\.dcm", os.path.basename(fp))
-            return f"{m.group(1)}.{m.group(2)}" if m else None
-        plans_df = plans_df.copy()
-        doses_df = doses_df.copy()
-        plans_df['core_key'] = plans_df['file_path'].map(core_key)
-        doses_df['core_key'] = doses_df['file_path'].map(core_key)
-        merged = plans_df.merge(doses_df, on='core_key', suffixes=("_plans", "_dosimetrics"), how='inner')
-        meta_df = merged
+        meta_df = _merge_plans_doses(plans_df, doses_df)
         if not structs_df.empty:
             meta_df = meta_df.merge(structs_df, left_on='patient_id_plans', right_on='patient_id', how='left', suffixes=("", "_structures"))
         meta_df.to_excel(paths.metadata_xlsx, index=False)
