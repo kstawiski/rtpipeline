@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
@@ -168,8 +169,12 @@ class _ROIRebuilder:
         row_cos = geom["orientation"][0]
         col_cos = geom["orientation"][1]
         pixel_spacing = geom["pixel_spacing"]
-        x = np.dot(translated, col_cos) / (pixel_spacing[1] if pixel_spacing[1] else 1.0)
-        y = np.dot(translated, row_cos) / (pixel_spacing[0] if pixel_spacing[0] else 1.0)
+        # Per DICOM PS3.3 C.7.6.2.1.1: column index (x) is the projection onto
+        # the row direction cosine (IOP[0:3]) scaled by the column spacing, and
+        # row index (y) is the projection onto the column direction cosine
+        # (IOP[3:6]) scaled by the row spacing.
+        x = np.dot(translated, row_cos) / (pixel_spacing[1] if pixel_spacing[1] else 1.0)
+        y = np.dot(translated, col_cos) / (pixel_spacing[0] if pixel_spacing[0] else 1.0)
         coords = np.column_stack([x, y])
         return np.rint(coords).astype(np.int32)
 
@@ -312,11 +317,23 @@ def fix_rtstruct_rois(
             logger.debug("Failed adding ROI %s during rebuild: %s", roi_name, exc)
             failed.append(roi_name)
 
+    # Write to a temp file and replace atomically: `output_path` defaults to
+    # `rtstruct_path`, the already-published RTSTRUCT, so a kill mid-save must not
+    # truncate it in place. The temp path must end in ".dcm": rt_utils' RTStruct.save()
+    # auto-appends ".dcm" to any path that doesn't already end with it (see the F1
+    # regression this same pitfall caused in auto_rtstruct.py/custom_structures_rtstruct.py).
+    tmp_output_path = output_path.parent / f".{output_path.name}.{os.getpid()}.tmp.dcm"
     try:
-        new_rtstruct.save(str(output_path))
+        new_rtstruct.save(str(tmp_output_path))
+        os.replace(tmp_output_path, output_path)
     except Exception as exc:
         logger.error("Failed to save fixed RTSTRUCT to %s: %s", output_path, exc)
         return None
+    finally:
+        try:
+            tmp_output_path.unlink()
+        except OSError:
+            pass
 
     try:
         sanitize_rtstruct(output_path, minimum_points=minimum_points)

@@ -279,7 +279,7 @@ ct_cropping:
   inferior_margin_cm: 10.0
   use_cropped_for_dvh: true
   use_cropped_for_radiomics: true
-  keep_original: true
+  keep_original: true  # deprecated, ignored: uncropped files are always kept
 ```
 
 **Problem it solves:**
