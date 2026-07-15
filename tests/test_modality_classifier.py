@@ -221,7 +221,7 @@ def test_explicit_planning_flag_marks_planning_ct():
     assert reason is None
 
 
-# --- MR sequence-family regression cases (real MIEDNICE cohort descriptions) ---
+# --- MR sequence-family regression cases across representative vendor naming ---
 # Each was silently dropped by the original \b-anchored / too-narrow MR regexes.
 # These lock in vendor-robust normalized-token classification (Siemens/Philips/GE/UIH).
 
@@ -238,8 +238,8 @@ _MR_ANATOMIC_DESCS = [
     "t1_mpr_iso_1.5mm_cor",  # Siemens MPR isotropic
     "mDIXON XD",            # Philips modified Dixon (keyword embedded in token)
     "t1_tse_dixon_tra_largeFoV_W",  # Siemens Dixon water image
-    "Odbytnica STAGING przed leczeniem",  # Polish rectal MR-sim staging series
-    "Odbytnica plan bad bez kontrastu",   # Polish rectal MR-sim planning series
+    "Odbytnica staging",      # synthetic Polish rectal MR-sim staging example
+    "Odbytnica plan",         # synthetic Polish rectal MR-sim planning example
 ]
 
 _MR_FUNCTIONAL_DESCS = [
@@ -292,9 +292,8 @@ def test_mr_anatomic_does_not_swallow_functional_with_t2_token():
     assert image_class == "mr_functional"
 
 
-# --- P1fix-2 (Round-2 consensus): RTSTRUCT-bound recovery + projection/derived gates ---
-# Findings I/J/K/L. Each verified against actual DICOM ground truth (pixel reads / per-instance
-# image_type sweeps) and adjudicated unanimous-compatible. See consensus ADJUDICATION.md.
+# --- RTSTRUCT-bound recovery plus projection/derived gates ---
+# These cases exercise pixel reads and per-instance image-type sweeps.
 
 
 def test_acuity_cbct_with_stray_localizer_is_kept_as_cbct():
@@ -366,7 +365,7 @@ def test_non_rtlinked_unrecognized_ct_default_denied():
 
 
 def test_non_rtlinked_derived_secondary_ct_gets_specific_reason():
-    # P3-a terminal relabel: a non-RT-linked DERIVED\SECONDARY CT gets an auditable reason.
+    # A non-RT-linked DERIVED\SECONDARY CT gets an auditable reason.
     image_class, reason = classify_series(
         _meta(
             manufacturer="Plastimatch",
@@ -437,8 +436,8 @@ def test_real_pet_not_flagged_as_projection():
 
 
 def test_vitesse_derived_secondary_mr_gets_specific_reason():
-    # FIX L (P1): a DERIVED\SECONDARY MR with no anatomic/functional tokens (Varian Vitesse
-    # brachy re-export) is relabeled `mr_derived_secondary` (kept excluded; recovery is P3).
+    # A DERIVED\SECONDARY MR with no anatomic/functional tokens is relabeled
+    # `mr_derived_secondary` and remains excluded.
     image_class, reason = classify_series(
         _meta(
             modality="MR",
@@ -468,7 +467,7 @@ def test_ge_cal_mr_excluded_with_cal_token():
     assert reason == "mr_nonanatomic_cal"
 
 
-# --- P2-a: direct unit tests for _assign_planning_flags FoR-only branches (0/0 cohort-exercised) ---
+# --- Direct unit tests for _assign_planning_flags FoR-only branches ---
 
 from rtpipeline.inventory import InventorySeries, _assign_planning_flags  # noqa: E402
 

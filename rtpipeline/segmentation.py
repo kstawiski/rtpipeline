@@ -887,7 +887,7 @@ def _limit_fourdct_to_representative(rows: list) -> list:
 
 
 def _select_all_series_rows(config: PipelineConfig, rows: list) -> list:
-    """Apply the P5 all-series segmentation scope to ``rows``.
+    """Apply the configured all-series segmentation scope to ``rows``.
 
     Returns the subset of manifest rows that should be segmented, honoring the optional image_class
     allow-list (``config.all_series_segment_classes``) and the one-representative-4DCT reduction
@@ -909,7 +909,7 @@ def _select_all_series_rows(config: PipelineConfig, rows: list) -> list:
 
 
 def segment_all_series_for_patient(config: PipelineConfig, patient_id: str, *, force: bool = False) -> dict:
-    """Run TotalSegmentator for every eligible materialized series in a P1 patient manifest."""
+    """Run TotalSegmentator for every eligible materialized series in a patient manifest."""
 
     patient_series_root = Path(config.output_root) / str(patient_id) / "all_series"
     course_dirs = build_course_dirs(patient_series_root)
@@ -932,7 +932,7 @@ def segment_all_series_for_patient(config: PipelineConfig, patient_id: str, *, f
     summary: dict = {}
     segmentable_statuses = {"materialized", "segmented", "seg_failed", "seg_skipped_idempotent"}
 
-    # P5 scope: optionally restrict which image_classes are segmented and cap 4DCT to one representative.
+    # Optionally restrict segmented image classes and cap 4DCT to one representative.
     # Excluded rows stay in `manifest` (written back below) with their materialized status untouched.
     seg_rows = _select_all_series_rows(config, rows)
 

@@ -1,8 +1,7 @@
 # =================================================================================================
 # IBSI-Aligned PyRadiomics Configuration for CT Feature Extraction
 #
-# Grounded in the validated baseline defined in Knowledge/PyRadiomics CT Configuration Research.md,
-# reinforced by prior Claude and Gemini reviews:
+# Grounded in the validated baseline defined in Knowledge/PyRadiomics CT Configuration Research.md:
 # - Focus on Original image signal for maximum reproducibility.
 # - Standardized preprocessing (1 mm isotropic resampling, B-spline interpolation, 25 HU bin width).
 # - No global normalization or outlier clipping for CT to preserve HU fidelity.

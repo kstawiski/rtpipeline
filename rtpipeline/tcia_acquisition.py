@@ -407,7 +407,7 @@ def write_rider_report(
         f"- Organized courses: {n_courses}",
         f"- Total disk usage estimate: {_fmt_gib(estimated_unique)} unique bytes (TCIA source {_fmt_gib(input_source)} + derived output {_fmt_gib(derived_output)}; organized CT DICOM are hardlinks)",
         f"- TS lung mask success rate: {ts_success} / {n_courses}",
-        f"- Cases ready for Phase 2b: {ready} / {n_courses}",
+        f"- Cases ready for processing: {ready} / {n_courses}",
         "",
         "## Failures + Reasons",
     ]
@@ -473,7 +473,7 @@ def rider_acquisition_main(argv: list[str] | None = None) -> int:
 def rider_manifest_main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="rtpipeline rider-manifest",
-        description="Build RIDER Lung CT Phase 2b manifest and concise acquisition report.",
+        description="Build a RIDER Lung CT manifest and concise acquisition report.",
     )
     parser.add_argument("--input-dir", required=True)
     parser.add_argument("--output-dir", required=True)
