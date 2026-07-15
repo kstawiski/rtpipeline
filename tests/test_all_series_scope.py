@@ -1,4 +1,4 @@
-"""Regression tests for P5 all-series segmentation scope selection.
+"""Regression tests for all-series segmentation scope selection.
 
 Pins the contract of ``_select_all_series_rows`` / ``_limit_fourdct_to_representative``
 (rtpipeline/segmentation.py): an optional image_class allow-list plus a
@@ -114,20 +114,20 @@ def test_4dct_representative_keeps_first_phase_when_no_ave():
     assert _classes(sel) == ["planning_ct", "fourdct_phase"]
 
 
-def test_miednice_scope_478019_shape():
-    """The chosen P5 scope: planning_ct + petct_ct + one 4DCT (1 phase here, no ave); CBCT excluded."""
+def test_mixed_modality_scope_keeps_one_4dct_representative():
+    """Keep planning/PET CT and one 4DCT phase while excluding CBCT."""
     rows = (
-        [_row("planning_ct", f"pl{i}") for i in range(5)]
-        + [_row("petct_ct", f"pet{i}") for i in range(6)]
-        + [_row("fourdct_phase", f"ph{i}") for i in range(12)]
-        + [_row("cbct", f"cb{i}") for i in range(35)]
+        [_row("planning_ct", f"pl{i}") for i in range(2)]
+        + [_row("petct_ct", f"pet{i}") for i in range(3)]
+        + [_row("fourdct_phase", f"ph{i}") for i in range(4)]
+        + [_row("cbct", f"cb{i}") for i in range(5)]
     )
     cfg = _cfg(["planning_ct", "petct_ct", "fourdct_ave", "fourdct_phase"], single_4dct=True)
     sel = _select_all_series_rows(cfg, rows)
     counts = {c: _classes(sel).count(c) for c in set(_classes(sel))}
-    assert counts == {"planning_ct": 5, "petct_ct": 6, "fourdct_phase": 1}
+    assert counts == {"planning_ct": 2, "petct_ct": 3, "fourdct_phase": 1}
     assert "cbct" not in counts
-    assert len(sel) == 12
+    assert len(sel) == 6
 
 
 def test_rows_are_same_objects_not_copies():

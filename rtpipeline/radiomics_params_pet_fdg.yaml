@@ -1,8 +1,8 @@
 # =================================================================================================
 # IBSI-Compliant PyRadiomics Configuration for 18F-FDG PET Feature Extraction
 #
-# Based on Knowledge/Pyradiomics PET Configuration Research.md and cross-validated with
-# Gemini & Claude guidance. Designed for direct extractor-driven resampling/discretization.
+# Based on Knowledge/Pyradiomics PET Configuration Research.md and designed for
+# direct extractor-driven resampling/discretization.
 # =================================================================================================
 
 setting:

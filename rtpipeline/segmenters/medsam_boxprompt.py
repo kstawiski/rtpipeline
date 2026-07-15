@@ -32,8 +32,8 @@ def _resample_to_reference(img: sitk.Image, reference: sitk.Image) -> sitk.Image
 
 
 def _ct_slice_to_rgb(slice_arr: np.ndarray) -> np.ndarray:
-    # Phase 2 sensitivity question: this soft-tissue window may understate
-    # lung-parenchyma contrast for thoracic tumors, but Phase 1d keeps it fixed.
+    # The fixed soft-tissue window may understate lung-parenchyma contrast for
+    # thoracic tumors; callers should treat this comparator as experimental.
     windowed = np.clip(slice_arr.astype(np.float32), -160.0, 240.0)
     denom = float(windowed.max() - windowed.min())
     if denom <= 0:

@@ -7,7 +7,7 @@
 #
 # Goals:
 # - Preserve the validated MRI baseline from Knowledge/PyRadiomics MR Image Configuration.md.
-# - Incorporate limited LoG filtering (per Gemini & Claude consensus) for multi-scale texture cues.
+# - Incorporate limited LoG filtering for multi-scale texture cues.
 # - Maintain a compact, reproducible feature space ready for downstream robustness screening.
 # =================================================================================================
 

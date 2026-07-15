@@ -1,4 +1,4 @@
-"""Regression tests for two radiomics_conda reliability bugs surfaced by the P5 run.
+"""Regression tests for radiomics_conda reliability failures.
 
 Bug A — checkpoint flush crash:
     PyRadiomics emits diagnostics fields such as
