@@ -6,7 +6,7 @@ TotalSegmentator `lung_nodules` task integrated as an rtpipeline custom model.
 - Weights: downloaded by `totalseg_download_weights -t lung_nodules`
 - License: TotalSegmentator code is Apache-2.0; confirm the downloaded task weights metadata before external redistribution.
 - Structures: `lung_nodules`
-- Status: public deterministic command-line model; R8 dry-run comparator only, not a clinical GTV.
+- Status: public deterministic command-line model; experimental comparator only, not a clinical GTV.
 
 Download:
 
