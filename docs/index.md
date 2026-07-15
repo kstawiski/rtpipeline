@@ -16,8 +16,8 @@
     Comparable metrics across cohorts
 </div>
 
-!!! info "RTpipeline v2.1.0"
-    The current release centers on three manuscript-critical capabilities: a first-class radiomics robustness stage with per-course Parquet plus cohort-level Excel summaries, a dual-environment execution model that separates TotalSegmentator from PyRadiomics, and configurable NTCV perturbation chains for robustness screening.
+!!! info "RTpipeline v2.1.1"
+    This maintenance release adds pydicom 3.x-compatible DICOM-SEG decoding, accepts current Pingouin confidence-interval output, and prevents a transient no-CT result from deleting populated CT-derived outputs. See the [release notes](release_notes.md).
 
 ---
 
@@ -114,7 +114,7 @@ This makes cohort-level comparison statistically defensible.
 - **C**ontour: Boundary randomization simulating inter-observer variability
 - **V**olume: Erosion/dilation simulating segmentation uncertainty
 
-The quick-start container profile can run a conservative, volume-first robustness configuration, while manuscript-grade N/T/C/V chains are enabled explicitly in `config.yaml`.
+The quick-start container profile can run a conservative, volume-first robustness configuration, while full N/T/C/V chains are enabled explicitly in `config.yaml`.
 
 Features are classified by robustness:
 

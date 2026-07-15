@@ -136,22 +136,15 @@ def _load_dicom_rt_seg(seg_path: Path):
     if not seg_path.exists():
         return None
     try:
-        import pydicom_seg
+        from .dicom_seg import load_dicom_seg_multiclass
     except Exception as e:
-        logger.debug("pydicom-seg unavailable: %s", e)
+        logger.debug("DICOM-SEG decoder unavailable: %s", e)
         return None
-    ds = pydicom.dcmread(str(seg_path))
     try:
-        if str(ds.SOPClassUID) != "1.2.840.10008.5.1.4.1.1.66.4":
-            logger.debug("Not a DICOM-SEG storage: %s", getattr(ds, 'SOPClassUID', None))
-            return None
-    except Exception:
-        return None
-    reader = pydicom_seg.SegmentReader()
-    try:
-        return reader.read(ds)
+        image, _ = load_dicom_seg_multiclass(seg_path)
+        return image
     except Exception as e:
-        logger.debug("pydicom-seg failed: %s", e)
+        logger.debug("DICOM-SEG decode failed: %s", e)
         return None
 
 
