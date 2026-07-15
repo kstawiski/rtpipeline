@@ -19,8 +19,9 @@ Zwanenburg et al. 2019 (Sci Rep) for feature stability assessment:
 Note: The default NTCV chain omits **Rotation (R)** and uses **morphological**
 contour perturbation rather than supervoxel-based randomization. These
 differences from the original Zwanenburg 2019 N/T/R/V/C framework are
-intentional simplifications documented in the manuscript. Rotation sensitivity
-analysis is available via `generate_rotation_sensitivity_perturbations()`.
+intentional simplifications documented in the package guide. Rotation
+sensitivity analysis is available via
+`generate_rotation_sensitivity_perturbations()`.
 
 Based on 2023-2025 radiomics stability research:
 - Zwanenburg et al. 2019 (Sci Rep): NTCV perturbation chains with ICC >0.75

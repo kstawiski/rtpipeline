@@ -3,8 +3,8 @@ description: >
   RIDER scan-rescan variant of the MedSAM ViT-B foundation comparator. RIDER
   lacks specialist GTV contours; this variant uses the TS lung_nodules output
   as the exploratory anchor reference (and as the bbox-prompt source via the
-  shared anchor diagnostics), with the Dice gate disabled. Reported as
-  "TS lung_nodules-anchored test-retest reproducibility" in the manuscript.
+  shared anchor diagnostics), with the Dice gate disabled. It is intended only
+  for TS lung_nodules-anchored test-retest reproducibility evaluation.
 required_body_regions:
   - THORAX
 min_region_confidence: 0.5

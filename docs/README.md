@@ -51,7 +51,7 @@ This directory contains technical documentation, advanced guides, and developmen
 | Document | Description |
 |----------|-------------|
 | [**Guide to Results Interpretation.md**](Guide%20to%20Results%20Interpretation.md) | Interpreting pipeline results |
-| [**qc_cropping_audit.md**](qc_cropping_audit.md) | CT cropping quality control |
+| [**Quality Control**](features/qc_cropping.md) | Boundary-touch detection and interpretation |
 
 ---
 
@@ -110,7 +110,7 @@ rtpipeline/
 │   ├── RADIOMICS_ROBUSTNESS.md        ← Robustness analysis
 │   ├── SYSTEMATIC_CT_CROPPING.md      ← CT cropping guide
 │   ├── Guide to Results Interpretation.md
-│   └── qc_cropping_audit.md
+│   └── features/qc_cropping.md          ← Quality-control guide
 │
 ├── rtpipeline/                        ← Python package
 ├── envs/                              ← Conda environments
