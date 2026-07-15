@@ -240,7 +240,7 @@ radiomics_robustness:
    - Per course: `<course>/radiomics_robustness_ct.parquet`
    - Cohort aggregate: `_RESULTS/radiomics_robustness_summary.xlsx`
 
-**To enable the full manuscript-oriented NTCV chain**, explicitly add the missing perturbation axes:
+**To enable the full multi-axis NTCV chain**, explicitly add the missing perturbation axes:
 
 ```yaml
 radiomics_robustness:

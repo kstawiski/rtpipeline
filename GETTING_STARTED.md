@@ -336,7 +336,7 @@ Because the files are separate, you can import whichever flavor matches your dow
 
 - **GitHub Issues**: https://github.com/kstawiski/rtpipeline/issues
 - **Documentation**: See `docs/` directory
-- **Examples**: Check `Code/` directory for Jupyter notebooks
+- **Examples**: Start with the documented CLI workflow and the public configuration in `config.yaml`
 
 ## Tips for Success
 

@@ -140,7 +140,7 @@ fi
 
 if should_download "lung_tumor_totalseg_lung_nodules"; then
     echo ""
-    echo -e "${YELLOW}R8. Downloading TotalSegmentator lung_nodules weights${NC}"
+    echo -e "${YELLOW}Downloading TotalSegmentator lung_nodules weights${NC}"
     echo "   Source: TotalSegmentator task lung_nodules"
     echo "-----------------------------------------------------"
     TS_DIR="lung_tumor_totalseg_lung_nodules"
@@ -156,7 +156,7 @@ fi
 
 if should_download "lung_tumor_pancancer_lung"; then
     echo ""
-    echo -e "${YELLOW}R8. Downloading PanCancerSeg specialized lung weights${NC}"
+    echo -e "${YELLOW}Downloading PanCancerSeg specialized lung weights${NC}"
     echo "   Source: https://huggingface.co/KS987/PanCancerSeg-Specialized-weights"
     echo "-----------------------------------------------------------------------"
     download_hf_snapshot \
@@ -167,7 +167,7 @@ fi
 
 if should_download "lung_tumor_medsam_boxprompt"; then
     echo ""
-    echo -e "${YELLOW}R8. Downloading MedSAM box-prompt weights/source${NC}"
+    echo -e "${YELLOW}Downloading MedSAM box-prompt weights/source${NC}"
     echo "   Source: https://github.com/bowang-lab/MedSAM and Zenodo 10.5281/zenodo.10689643"
     echo "-----------------------------------------------------------------------"
     MEDSAM_DIR="lung_tumor_medsam_boxprompt"
@@ -182,7 +182,7 @@ fi
 
 if should_download "lung_tumor_aimi_nsclc_rg_disabled"; then
     echo ""
-    echo -e "${YELLOW}R8. Downloading disabled AIMI/BAMF NSCLC-RG nnU-Net v1 weights${NC}"
+    echo -e "${YELLOW}Downloading disabled AIMI/BAMF NSCLC-RG nnU-Net v1 weights${NC}"
     echo "   Source: https://zenodo.org/records/8290169"
     echo "-------------------------------------------------------"
     download_file \
