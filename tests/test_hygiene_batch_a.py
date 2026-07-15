@@ -346,8 +346,8 @@ def test_resolve_clinical_root_env_defaults_to_none_when_unset(monkeypatch):
 
 def test_clinical_root_module_default_has_no_hardcoded_institution_path():
     source = inspect.getsource(pet_suv)
-    assert "/umed-projekty" not in source
-    assert "KOPERNIK" not in source
+    assert "CLINICAL_ROOT = Path(" not in source
+    assert "RTPIPELINE_CLINICAL_ROOT" in source
 
 
 def test_clinical_measurement_degrades_when_clinical_root_unset(monkeypatch):
