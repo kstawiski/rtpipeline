@@ -826,7 +826,8 @@ def compute_icc_pingouin(
         }
 
         if icc_config.ci:
-            ci = row["CI95%"]
+            ci_column = "CI95%" if "CI95%" in row.index else "CI95"
+            ci = row[ci_column]
             result["icc_ci95_low"] = float(ci[0])
             result["icc_ci95_high"] = float(ci[1])
         else:

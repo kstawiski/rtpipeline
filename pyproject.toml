@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rtpipeline"
-version = "2.1.0"
+version = "2.1.1"
 description = "Open-source framework for standardized radiotherapy analytics with robustness-aware radiomics"
 authors = [{ name = "Konrad Stawiski", email = "konrad@konsta.com.pl" }]
 readme = "README.md"
@@ -20,7 +20,7 @@ dependencies = [
   "SimpleITK",
   "matplotlib",
   "openpyxl",
-  "TotalSegmentator==2.12.0",  # Pinned for manuscript reproducibility
+  "TotalSegmentator==2.12.0",  # Pinned for reproducible segmentation behavior
   "xgboost",  # Required for totalseg_get_phase and totalseg_get_modality
   "dicom2nifti>=2.4",
   "nested-lookup",

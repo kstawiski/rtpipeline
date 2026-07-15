@@ -77,26 +77,12 @@ def _load_ct_image(ct_dir: Path) -> Optional[sitk.Image]:
 
 def _load_seg_dicom(seg_path: Path) -> tuple[Optional[sitk.Image], Dict[int, str]]:
     try:
-        import pydicom_seg
+        from .dicom_seg import load_dicom_seg_multiclass
     except Exception as e:
-        logger.debug("pydicom-seg unavailable: %s", e)
+        logger.debug("DICOM-SEG decoder unavailable: %s", e)
         return None, {}
     try:
-        ds = pydicom.dcmread(str(seg_path))
-        # Validate SOP Class UID for DICOM-SEG
-        if str(getattr(ds, 'SOPClassUID', '')) != "1.2.840.10008.5.1.4.1.1.66.4":
-            logger.debug("Not a DICOM-SEG: %s", getattr(ds, 'SOPClassUID', None))
-            return None, {}
-        reader = pydicom_seg.SegmentReader()
-        seg_img = reader.read(ds)
-        # Build label map from SegmentSequence
-        label_map: Dict[int, str] = {}
-        for seg in getattr(ds, 'SegmentSequence', []):
-            num = int(getattr(seg, 'SegmentNumber', 0) or 0)
-            name = str(getattr(seg, 'SegmentLabel', f'Segment_{num}') or f'Segment_{num}')
-            if num:
-                label_map[num] = name
-        return seg_img, label_map
+        return load_dicom_seg_multiclass(seg_path)
     except Exception as e:
         logger.error("DICOM-SEG load failed: %s", e)
         return None, {}
