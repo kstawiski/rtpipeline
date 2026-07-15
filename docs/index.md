@@ -16,8 +16,8 @@
     Comparable metrics across cohorts
 </div>
 
-!!! info "RTpipeline v2.1.1"
-    This maintenance release adds pydicom 3.x-compatible DICOM-SEG decoding, accepts current Pingouin confidence-interval output, and prevents a transient no-CT result from deleting populated CT-derived outputs. See the [release notes](release_notes.md).
+!!! info "RTpipeline v2.1.2"
+    This maintenance release preserves scalar NumPy values returned by PyRadiomics and honors configured feature-class subsets exactly. See the [release notes](release_notes.md).
 
 ---
 

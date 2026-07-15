@@ -1,6 +1,6 @@
-# RTpipeline v2.1.1 Architecture
+# RTpipeline v2.1.2 Architecture
 
-RTpipeline is a radiotherapy ETL pipeline that turns raw DICOM exports into research-ready tables, derived RTSTRUCTs, QC artifacts, and robustness summaries. In `v2.1.1`, the architecture centers on three design choices:
+RTpipeline is a radiotherapy ETL pipeline that turns raw DICOM exports into research-ready tables, derived RTSTRUCTs, QC artifacts, and robustness summaries. In `v2.1.2`, the architecture centers on three design choices:
 
 - **Course-first orchestration:** organize DICOM into patient/course units, then run every downstream stage on those units.
 - **Dual-environment execution:** keep TotalSegmentator and the rest of the pipeline on a modern NumPy 2.x stack while routing PyRadiomics and robustness analysis through a compatible NumPy 1.26 environment.
@@ -36,7 +36,7 @@ graph LR
 
 ## Dual-Environment Design
 
-`v2.1.1` deliberately separates the pipeline into two conda environments:
+`v2.1.2` deliberately separates the pipeline into two conda environments:
 
 | Environment | Defined in | Main purpose | Key packages |
 |-------------|------------|--------------|--------------|
@@ -102,7 +102,7 @@ RTpipeline can be launched directly through `rtpipeline` CLI commands or via Sna
 
 ## Versioned Artifacts
 
-The architecture described here corresponds to `RTpipeline 2.1.1`, with the version declared in:
+The architecture described here corresponds to `RTpipeline 2.1.2`, with the version declared in:
 
 - `pyproject.toml`
 - `rtpipeline/__init__.py`
