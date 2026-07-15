@@ -144,6 +144,7 @@ archive/
 .claude/.cache/
 
 # Private manuscript evidence and workflow state (never publish from this repo)
+/CLAUDE.md
 references/
 revision/
 verification/
