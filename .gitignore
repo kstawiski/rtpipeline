@@ -140,3 +140,20 @@ archive/20260511_core_dumps/
 
 # Local environment-specific override config (not for public repo)
 config.custom.yaml
+archive/
+.claude/.cache/
+
+# Private manuscript evidence and workflow state (never publish from this repo)
+references/
+revision/
+verification/
+deposit/
+source_data/
+CURRENT_RESULTS.md
+submission_gaps.md
+AGENTS.md
+scripts/workflow_state.py
+scripts/verify_upstream_results.py
+scripts/make_deposit.sh
+/config.example.yaml
+/radiomics_params.yaml
