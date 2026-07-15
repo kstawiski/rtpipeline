@@ -86,7 +86,7 @@ def _model_yaml(interface: str, name: str, source_dir: str) -> str:
     )
     return f"""
 name: {name}
-description: R8 test model
+description: Thoracic custom-model test fixture
 nnunet:
   interface: {interface}
   command: {command}
