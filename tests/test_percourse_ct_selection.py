@@ -283,11 +283,23 @@ def test_clear_dir_removes_files_and_subdirs(tmp_path):
     assert (target / "keep.dcm").exists(), "must not delete through a symlinked directory"
 
 
-def test_fail_closed_clears_stale_percourse_ct_outputs(tmp_path):
-    """BLOCKER regression: a fail-closed course must not retain a prior run's wrong CT /
-    NIfTI / auto-OAR segmentation that a re-run could otherwise segment or hydrate."""
+def test_fail_closed_preserves_populated_percourse_ct_outputs_by_default(tmp_path, monkeypatch):
+    """A transient no-CT result must not destroy previously populated outputs."""
     cd = _FakeCourseDirs(tmp_path / "course")
-    # Pre-populate with stale artifacts from a previous (wrong) run.
+    monkeypatch.delenv("RTPIPELINE_ALLOW_DESTRUCTIVE_CT_CLEAR", raising=False)
+    (cd.dicom_ct / "CT_00001.dcm").write_bytes(b"stale wrong CT")
+    (cd.nifti / "ct.nii.gz").write_bytes(b"stale nifti")
+    (cd.segmentation_totalseg / "total--liver.nii.gz").write_bytes(b"stale mask")
+    org._clear_course_ct_outputs(cd)
+    assert (cd.dicom_ct / "CT_00001.dcm").exists()
+    assert (cd.nifti / "ct.nii.gz").exists()
+    assert (cd.segmentation_totalseg / "total--liver.nii.gz").exists()
+
+
+def test_fail_closed_can_clear_populated_outputs_with_explicit_override(tmp_path, monkeypatch):
+    """The documented override retains the deliberate wrong-CT scrub path."""
+    cd = _FakeCourseDirs(tmp_path / "course")
+    monkeypatch.setenv("RTPIPELINE_ALLOW_DESTRUCTIVE_CT_CLEAR", "1")
     (cd.dicom_ct / "CT_00001.dcm").write_bytes(b"stale wrong CT")
     (cd.nifti / "ct.nii.gz").write_bytes(b"stale nifti")
     (cd.segmentation_totalseg / "total--liver.nii.gz").write_bytes(b"stale mask")

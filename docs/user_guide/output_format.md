@@ -57,7 +57,7 @@ robustness = pd.read_excel(
     sheet_name="robust_features"
 )
 
-# Features that passed the default RTpipeline v2.1.0 thresholds
+# Features that passed the default RTpipeline v2.1.1 thresholds
 robust_feature_names = robustness["feature_name"].tolist()
 ```
 
@@ -298,5 +298,5 @@ print(f"Mean fractions: {metadata['NumberOfFractions'].mean():.1f}")
 ---
 
 **Document Version:** 1.0
-**Compatible with:** rtpipeline v2.1.0+
+**Compatible with:** rtpipeline v2.1.1+
 **Last Updated:** 2025-11-13
