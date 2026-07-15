@@ -2,8 +2,8 @@ name: lung_tumor_pancancer_lung_rider
 description: >
   RIDER scan-rescan variant of the PanCancerSeg lung comparator. RIDER lacks
   specialist GTV contours; this variant uses the TS lung_nodules output as the
-  exploratory anchor reference, with the Dice gate disabled. Reported as
-  "TS lung_nodules-anchored test-retest reproducibility" in the manuscript.
+  exploratory anchor reference, with the Dice gate disabled. It is intended
+  only for TS lung_nodules-anchored test-retest reproducibility evaluation.
 required_body_regions:
   - THORAX
 min_region_confidence: 0.5

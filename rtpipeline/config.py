@@ -117,7 +117,7 @@ class PipelineConfig:
     model_region_requirements: dict[str, dict] = field(default_factory=lambda: {
         # Custom models (cardiac)
         "cardiac_STOPSTORM": {"required_regions": ["THORAX"], "min_confidence": 0.6},
-        # R8 thoracic tumor comparator models
+        # Thoracic tumor comparator models
         "lung_tumor_totalseg_lung_nodules": {"required_regions": ["THORAX"], "min_confidence": 0.5},
         "lung_tumor_pancancer_lung": {"required_regions": ["THORAX"], "min_confidence": 0.5},
         "lung_tumor_medsam_boxprompt": {"required_regions": ["THORAX"], "min_confidence": 0.5},

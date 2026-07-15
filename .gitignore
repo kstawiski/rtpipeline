@@ -145,6 +145,16 @@ archive/
 
 # Private manuscript evidence and workflow state (never publish from this repo)
 /CLAUDE.md
+/Dockerfile.reviewer_minimal
+/config_prostata.yaml
+/Code/
+/scripts/test_hooks.sh
+/.auto-claude/
+/.auto-claude-status
+/docs/pipeline_report.md
+/docs/qc_cropping_audit.md
+/PROBLEMS.md
+/internal/PROBLEMS.md
 references/
 revision/
 verification/
