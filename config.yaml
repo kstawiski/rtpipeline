@@ -1,0 +1,106 @@
+# RTpipeline example configuration
+#
+# Paths are relative to the project directory so a fresh checkout does not
+# expose or depend on institution-specific storage. Adjust them for your data.
+
+container_mode: false
+
+dicom_root: "Input"
+output_dir: "Output"
+logs_dir: "Logs"
+
+max_workers: null
+
+scheduler:
+  reserved_cores: 1
+  parallel_courses: 2
+  dvh_threads_per_job: 4
+  radiomics_threads_per_job: 4
+  qc_threads_per_job: 2
+  prioritize_short_courses: true
+
+segmentation:
+  device: "cpu"
+  fast: false
+  force: false
+  roi_subset: null
+  extra_models: []
+  max_workers: 1
+  force_split: true
+  nr_threads_resample: 1
+  nr_threads_save: 1
+  num_proc_preprocessing: 1
+  num_proc_export: 1
+
+custom_models:
+  enabled: false
+  root: "custom_models"
+  models: []
+  max_workers: 1
+  force: false
+  retain_weights: true
+
+radiomics:
+  enabled: true
+  sequential: false
+  params_file: "rtpipeline/radiomics_params.yaml"
+  mr_params_file: "rtpipeline/radiomics_params_mr.yaml"
+  thread_limit: 4
+  skip_rois:
+    - body
+    - couchsurface
+    - couchinterior
+    - couchexterior
+    - bones
+    - m1
+    - m2
+  max_voxels: 1500000000
+  min_voxels: 64
+
+# Conservative default robustness profile. Enable translation, contour
+# randomization, and image noise explicitly for a full multi-axis NTCV study.
+radiomics_robustness:
+  enabled: true
+  modes:
+    - segmentation_perturbation
+  segmentation_perturbation:
+    intensity: "standard"
+    apply_to_structures:
+      - "GTV*"
+      - "CTV*"
+      - "PTV*"
+    small_volume_changes: [-0.15, 0.0, 0.15]
+    max_translation_mm: 0.0
+    n_random_contour_realizations: 0
+    noise_levels: [0.0]
+  metrics:
+    icc:
+      implementation: "pingouin"
+      icc_type: "ICC3"
+      ci: true
+    cov:
+      enabled: true
+    qcd:
+      enabled: true
+  thresholds:
+    icc:
+      robust: 0.90
+      acceptable: 0.75
+    cov:
+      robust_pct: 10.0
+      acceptable_pct: 20.0
+
+ct_cropping:
+  enabled: false
+  region: "pelvis"
+  superior_margin_cm: 2.0
+  inferior_margin_cm: 2.0
+  use_cropped_for_dvh: false
+  use_cropped_for_radiomics: false
+
+qc:
+  enabled: true
+
+environments:
+  main: "rtpipeline"
+  radiomics: "rtpipeline-radiomics"
