@@ -152,8 +152,7 @@ def _apply_params_to_extractor(ext: "radiomics.featureextractor.RadiomicsFeature
     else:
         ext.enabledImagetypes = {"Original": {}}
 
-    # Configure feature classes; ensure every known class has an entry to
-    # avoid KeyErrors downstream.
+    # Configure exactly the feature classes named by the parameter file.
     normalized_features: Dict[str, List[str]] = {}
     if isinstance(feature_classes, dict) and feature_classes:
         for name, values in feature_classes.items():
@@ -169,10 +168,11 @@ def _apply_params_to_extractor(ext: "radiomics.featureextractor.RadiomicsFeature
     if not normalized_features:
         normalized_features = {fc: [] for fc in ext.featureClassNames if fc != 'shape2D'}
     else:
-        for fc in ext.featureClassNames:
-            if fc == 'shape2D':
-                continue
-            normalized_features.setdefault(fc, [])
+        unknown_classes = set(normalized_features) - set(ext.featureClassNames)
+        if unknown_classes:
+            raise ValueError(
+                f"Unknown PyRadiomics feature classes: {sorted(unknown_classes)}"
+            )
     ext.enabledFeatures = normalized_features
 
     # Update SimpleITK tolerance in case geometryTolerance was provided.
