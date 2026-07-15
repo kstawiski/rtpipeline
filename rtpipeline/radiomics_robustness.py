@@ -587,6 +587,19 @@ def generate_ntcv_perturbations(
 # Radiomics Feature Extraction
 # ============================================================================
 
+def _coerce_scalar_feature_value(key: str, value: Any) -> Optional[float]:
+    """Convert scalar PyRadiomics values, including zero-dimensional arrays."""
+
+    if str(key).startswith("diagnostics_"):
+        return None
+    if isinstance(value, (int, float, np.floating, np.integer)):
+        return float(value)
+    if isinstance(value, np.ndarray) and value.size == 1 and np.issubdtype(
+        value.dtype, np.number
+    ):
+        return float(value.item())
+    return None
+
 def extract_features_for_masks(
     image: sitk.Image,
     masks: Dict[str, sitk.Image],
@@ -726,7 +739,8 @@ def extract_features_for_masks(
             result = ext.execute(current_image, mask)
 
             for key, value in result.items():
-                if isinstance(value, (int, float, np.floating, np.integer)):
+                scalar_value = _coerce_scalar_feature_value(str(key), value)
+                if scalar_value is not None:
                     rows.append({
                         "patient_id": patient_id,
                         "course_id": course_id,
@@ -734,7 +748,7 @@ def extract_features_for_masks(
                         "structure": structure_name,
                         "perturbation_id": pert_id,
                         "feature_name": str(key),
-                        "value": float(value),
+                        "value": scalar_value,
                     })
         except Exception as e:
             logger.debug("Feature extraction failed for %s/%s: %s", structure_name, pert_id, e)

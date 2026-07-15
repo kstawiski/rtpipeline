@@ -7,7 +7,9 @@ This document provides comprehensive guidance for running rtpipeline in Docker a
 
 All pipeline features work correctly in Docker and Singularity containers:
 
-### Latest Updates (v2.1.1)
+### Latest Updates (v2.1.2)
+- **Exact radiomics feature activation**: Configured `featureClass` subsets no longer enable omitted classes
+- **Scalar radiomics values**: Zero-dimensional and single-element numeric arrays are retained in robustness output
 - **DICOM-SEG compatibility**: Decoding works with pydicom 3.x through the optional `dcmseg` dependencies
 - **ICC compatibility**: Robustness summaries accept current and legacy Pingouin confidence-interval column names
 - **Safer no-CT behavior**: Populated CT-derived outputs are preserved unless destructive clearing is explicitly enabled
