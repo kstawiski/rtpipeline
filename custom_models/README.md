@@ -31,7 +31,7 @@ This directory contains configurations for custom nnUNet segmentation models. Mo
 **Status**: ⚠️ **Weights not included** - Download required
 
 ### 3. lung_tumor_totalseg_lung_nodules
-**Description**: TotalSegmentator `lung_nodules` task exposed through the custom-model stage for R8 thoracic tumor/nodule triangulation.
+**Description**: TotalSegmentator `lung_nodules` task exposed through the custom-model stage for thoracic tumor/nodule triangulation.
 
 **Structures**: `lung_nodules`
 
@@ -56,7 +56,7 @@ This directory contains configurations for custom nnUNet segmentation models. Mo
 
 **Structures**: `lung_tumor`
 
-**Status**: DISABLED for R8 Phase 1c. The model is explicitly trained on NSCLC-Radiomics/NSCLC-Radiogenomics, creating HIGH leakage risk for NSCLC analyses, and the current `rtpipeline` environment lacks the required nnU-Net v1 `nnUNet_predict` runtime. Weights remain extracted under the `_disabled_` directory for a future deliberately isolated runtime.
+**Status**: DISABLED. The model is explicitly trained on NSCLC-Radiomics/NSCLC-Radiogenomics, creating a high leakage risk for evaluations on those collections, and the current `rtpipeline` environment lacks the required nnU-Net v1 `nnUNet_predict` runtime. Weights remain under the `_disabled_` directory for a future deliberately isolated runtime.
 
 ## Installing Model Weights
 
@@ -81,7 +81,7 @@ tar -xzf hnln_weights.tar.gz -C custom_models/HN_lymph_nodes/
 cp *.zip custom_models/HN_lymph_nodes/
 ```
 
-For **R8 lung tumor comparators**:
+For **lung tumor comparators**:
 ```bash
 custom_models/download_weights.sh lung_tumor_totalseg_lung_nodules
 custom_models/download_weights.sh lung_tumor_pancancer_lung
