@@ -4,7 +4,7 @@
 
 This guide provides a comprehensive walkthrough for setting up and running **rtpipeline** using Docker. It covers everything from basic setup to advanced configuration, addressing common questions about configuration, default behavior, and real-world usage patterns.
 
-!!! info "RTpipeline v2.1.0 container runtime"
+!!! info "RTpipeline v2.1.1 container runtime"
     The Docker image builds two conda environments up front: `rtpipeline` for organization, TotalSegmentator, DVH, QC, and orchestration; and `rtpipeline-radiomics` for PyRadiomics and Pingouin. In normal use you do not activate them manually; the pipeline dispatches radiomics and robustness work to the compatible environment automatically.
 
 **Target Audience:**
@@ -243,7 +243,7 @@ radiomics_robustness:
    - Per course: `<course>/radiomics_robustness_ct.parquet`
    - Cohort aggregate: `_RESULTS/radiomics_robustness_summary.xlsx`
 
-**To enable the full manuscript-oriented NTCV chain**, explicitly add the missing perturbation axes:
+**To enable the full multi-axis NTCV chain**, explicitly add the missing perturbation axes:
 
 ```yaml
 radiomics_robustness:

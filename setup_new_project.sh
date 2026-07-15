@@ -38,7 +38,7 @@ ICON_GEAR="${MAGENTA}⚙${NC}"
 
 # Script variables
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-VERSION="2.1.0"
+VERSION="2.1.1"
 CONFIG_FILE=""
 PRESET=""
 QUICK_MODE=false
