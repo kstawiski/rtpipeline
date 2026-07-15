@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 # Body Region Detection Configuration
 # =============================================================================
-# Based on consensus from GPT-5.2 and Gemini-3-pro-preview:
+# Design rationale:
 # - Vertebrae as primary anchors (most deterministic)
 # - Multi-anchor combinations for robustness
 # - Low presence thresholds to detect partial coverage (not validate anatomy)

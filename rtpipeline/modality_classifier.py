@@ -49,10 +49,9 @@ _PT_REPORT_RE = re.compile(r"dose\s*report|statistic|screen\s*save|patient\s*pro
 # MR sequence classification operates on NORMALIZED tokens (lowercase alphanumeric
 # runs) rather than the raw description, so underscore/hyphen-delimited vendor names
 # are matched correctly. A literal trailing \b fails before '_' (an underscore is a
-# word character), which silently dropped real series (DWI_b1500, T2W_TSE_sag,
-# t2_blade_sag). Allow-lists are data-driven from the MIEDNICE cohort MR description
-# inventory and span Siemens (tse/spc/tirm/blade/me2d/mpr/vibe), Philips (T1W/T2W
-# _TSE, FFE), and GE (FSE/frFSE) naming conventions.
+# word character), which can drop series such as DWI_b1500, T2W_TSE_sag, or
+# t2_blade_sag. The allow-lists span common Siemens (tse/spc/tirm/blade/me2d/mpr/vibe),
+# Philips (T1W/T2W_TSE, FFE), and GE (FSE/frFSE) naming conventions.
 _MR_EXCLUDE_TOKENS = frozenset({
     "localizer", "localiser", "locator", "loc", "scout", "topogram",
     "surview", "survey", "calibration", "cal", "posdisp",
@@ -161,7 +160,7 @@ def _classify_pt(meta: Mapping[str, Any]) -> tuple[str, str | None]:
         or _image_type_contains(meta, "MINIP")
     ):
         # MIP/MaxIP/MinIP are non-anatomic rotating-cine projections, not SUV-quantifiable
-        # reconstructions; keep them out of PET SUV ingestion/radiomics (P3).
+        # reconstructions; keep them out of PET SUV ingestion and radiomics.
         return "exclude", "pt_projection_mip"
     return "pt", None
 
@@ -187,7 +186,7 @@ def _classify_mr(meta: Mapping[str, Any]) -> tuple[str, str | None]:
         return "mr_functional", None
 
     # Structural/anatomic: explicit sequence family, T1/T2/PD weighting, or the
-    # Polish planning/staging series naming used by the rectal MR-sim protocol.
+    # Polish planning/staging naming used by some rectal MR-simulation protocols.
     if (
         _MR_ANATOMIC_SEQ_RE.search(norm)
         or (tokset & _MR_WEIGHT_TOKENS)
@@ -195,10 +194,9 @@ def _classify_mr(meta: Mapping[str, Any]) -> tuple[str, str | None]:
     ):
         return "mr_anatomic", None
 
-    # Terminal relabel (P3-a): a DERIVED\SECONDARY MR with no anatomic/functional tokens
-    # (e.g. Varian Vitesse brachy re-exports) gets a specific, auditable reason instead of
-    # the generic default-deny. Kept excluded from total_mr in P1; recovery-as-mr_anatomic
-    # with mandatory mask-QC is a P3 decision (see consensus ADJUDICATION.md, finding L).
+    # A DERIVED\SECONDARY MR with no anatomic/functional tokens (for example a
+    # treatment-system re-export) receives a specific, auditable reason instead of the
+    # generic default-deny and remains excluded from total_mr.
     if _image_type_contains(meta, "SECONDARY") and not _image_type_contains(meta, "PRIMARY"):
         return "exclude", "mr_derived_secondary"
     return "exclude", "mr_unrecognized_default_deny"

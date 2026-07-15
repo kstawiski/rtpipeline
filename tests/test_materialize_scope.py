@@ -1,4 +1,4 @@
-"""Regression tests for the P5 all-series MATERIALIZATION allow-list.
+"""Regression tests for the all-series materialization allow-list.
 
 Pins the contract of ``materialize_patient_series_from_inventory`` (rtpipeline/inventory.py):
 an optional ``all_series_materialize_classes`` allow-list controls which classified series are

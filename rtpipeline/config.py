@@ -39,7 +39,7 @@ class PipelineConfig:
     totalseg_num_proc_export: int | None = 1   # Keep at 1 for Docker stability
     totalseg_allow_fallback: bool = False
     cbct_totalseg_extra_args: list[str] = field(default_factory=lambda: ["--body_seg"])
-    # All-series segmentation scope (P5). None => segment every eligible image_class (legacy behavior).
+    # All-series segmentation scope. None => segment every eligible image_class (legacy behavior).
     # When set, only series whose image_class is in this allow-list are segmented in the all-series stage;
     # excluded series stay materialized but unsegmented.
     all_series_segment_classes: list[str] | None = None
@@ -65,7 +65,7 @@ class PipelineConfig:
     segmentation_thread_limit: int | None = None
     segmentation_temp_root: Path | None = None
 
-    # PET SUV ingestion (P3 modality expansion). Disabled by default.
+    # PET SUV ingestion. Disabled by default.
     suv_decay_guard_tol: float = 0.02
     suv_zextent_primary_fraction: float = 0.90
     pet_clinical_weight_window_days: int = 30
@@ -147,7 +147,7 @@ class PipelineConfig:
     dicom_copy_verify_checksum: bool = False    # Verify MD5 after copy
     dicom_copy_cache_headers: bool = True       # Cache DICOM headers for re-runs
 
-    # Inventory-driven all-series discovery (P1 modality expansion)
+    # Inventory-driven all-series discovery.
     inventory_db_path: Path | None = None
     inventory_scan_run_id: int | None = None
     inventory_patient_ids: list[str] = field(default_factory=list)

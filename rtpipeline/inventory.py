@@ -512,11 +512,10 @@ def _copy_instances(
             continue
         if destination.exists():
             continue
-        # Prefer hardlinks when enabled: source and output share one NFS device in the
-        # MIEDNICE layout, so os.link avoids byte-copying ~all materialized DICOM (tens of
-        # TB / days of single-threaded NFS I/O at full-cohort scale). Materialized DICOMs are
-        # only ever read downstream (dcm2niix), never modified in place, so a shared inode is
-        # safe. Fall back to copy2 on any OSError (e.g. EXDEV cross-device, EMLINK).
+        # Prefer hardlinks when enabled and source/output share a filesystem. This avoids
+        # byte-copying large materialized DICOM collections. Materialized DICOMs are only
+        # read downstream (dcm2niix), never modified in place, so a shared inode is safe.
+        # Fall back to copy2 on any OSError (e.g. EXDEV cross-device, EMLINK).
         if use_hardlinks:
             try:
                 os.link(source, destination)
