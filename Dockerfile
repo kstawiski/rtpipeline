@@ -129,9 +129,8 @@ RUN mamba install -y -c conda-forge -c bioconda \
 COPY --from=builder /opt/conda/envs /opt/conda/envs
 
 # Copy TotalSegmentator weights for offline support
-# NOTE: Ensure the 'totalseg_weights/' directory exists in the build context before building.
-# The source directory should contain: nnunet/results/Dataset*/...
-# Omit this COPY if you do not need offline TotalSegmentator execution.
+# The repository tracks an empty placeholder so clean public builds remain valid.
+# For offline execution, populate this directory with nnunet/results/Dataset*/...
 COPY --chown=rtpipeline:rtpipeline totalseg_weights/ /home/rtpipeline/.totalsegmentator/
 
 # Copy custom models into the image
