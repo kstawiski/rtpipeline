@@ -306,6 +306,15 @@ def test_export_rejects_duplicate_feature_identity(tmp_path: Path) -> None:
         _export(frame, tmp_path / "packet")
 
 
+def test_export_rejects_identity_collision_after_whitespace_normalization(
+    tmp_path: Path,
+) -> None:
+    frame = pd.concat([_metrics(), _metrics().iloc[[0]]], ignore_index=True)
+    frame.loc[len(frame) - 1, "roi_name"] = " lung "
+    with pytest.raises(FederationPacketError, match="duplicate normalized"):
+        _export(frame, tmp_path / "packet")
+
+
 def test_float_columns_round_trip_bitwise(tmp_path: Path) -> None:
     frame = _metrics()
     frame.loc[0, "icc"] = float(pd.Series([0.91]).map(lambda x: x).iloc[0])
