@@ -16,8 +16,8 @@
     Comparable metrics across cohorts
 </div>
 
-!!! info "RTpipeline v2.1.3"
-    This release preserves the 2.1.2 radiomics correctness fixes and makes clean three-environment container builds reliable on storage-constrained CI runners. See the [release notes](release_notes.md).
+!!! info "RTpipeline v2.1.4"
+    This release preserves the 2.1.2 radiomics correctness fixes and prevents the final container install from resolving a duplicate Torch/CUDA stack. See the [release notes](release_notes.md).
 
 ---
 
