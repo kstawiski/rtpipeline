@@ -16,8 +16,8 @@
     Comparable metrics across cohorts
 </div>
 
-!!! info "RTpipeline v2.1.2"
-    This maintenance release preserves scalar NumPy values returned by PyRadiomics and honors configured feature-class subsets exactly. See the [release notes](release_notes.md).
+!!! info "RTpipeline v2.1.3"
+    This release preserves the 2.1.2 radiomics correctness fixes and makes clean three-environment container builds reliable on storage-constrained CI runners. See the [release notes](release_notes.md).
 
 ---
 
