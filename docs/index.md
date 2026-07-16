@@ -14,10 +14,12 @@
     Built-in TotalSegmentator & nnU-Net
 -   :material-chart-box: **Standardized Data**
     Comparable metrics across cohorts
+-   :material-share-variant: **Distributed Analysis**
+    Validated aggregate packets; imaging stays local
 </div>
 
 !!! info "RTpipeline v2.1.4"
-    This release preserves the 2.1.2 radiomics correctness fixes and prevents the final container install from resolving a duplicate Torch/CUDA stack. See the [release notes](release_notes.md).
+    This release adds fail-closed distributed aggregate packets, preserves the 2.1.2 radiomics correctness fixes, and prevents duplicate Torch/CUDA dependency resolution. See the [release notes](release_notes.md).
 
 ---
 
@@ -209,10 +211,11 @@ Try RTpipeline in the cloud with free GPU access:
 *"Same code and settings at every center."*
 
 - Shared configuration files ensure methodological consistency
-- Federated analysis—raw data never needs to leave the institution
+- Hash-bound cohort-level reliability packets let imaging and patient-level
+  feature rows remain at the institution
 - Publish config bundles as supplementary materials with DOI
 
-[**Multi-Center Case Study →**](case_studies/index.md#case-study-3-multi-center-data-harmonization)
+[**Distributed Analysis Guide →**](features/distributed_analysis.md)
 
 ---
 
@@ -244,7 +247,7 @@ Learn how RTpipeline is used in real research scenarios:
 |------------|-------------|
 | [NTCP Modeling](case_studies/index.md#case-study-1-ntcp-modeling-for-late-rectal-toxicity) | Build rectal toxicity models from DVH metrics |
 | [Radiomics Signatures](case_studies/index.md#case-study-2-radiomics-signature-for-treatment-response) | Develop robust imaging biomarkers with NTCV |
-| [Multi-Center AI](case_studies/index.md#case-study-3-multi-center-data-harmonization) | Federated learning with harmonized data |
+| [Distributed Reliability](case_studies/index.md#case-study-3-distributed-radiomics-reliability-analysis) | Combine validated cohort-level reliability packets |
 
 ---
 

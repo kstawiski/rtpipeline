@@ -109,6 +109,7 @@ nav:
   - Features:
     - Custom Models: features/custom_models.md
     - CT Cropping: features/ct_cropping.md
+    - Distributed Analysis: features/distributed_analysis.md
     - Dose Classification: features/dose_classification.md
     - Radiomics Robustness: features/radiomics_robustness.md
     - Quality Control: features/qc_cropping.md

@@ -3,7 +3,8 @@
 ## 2.1.4
 
 RTpipeline 2.1.4 fixes container installation after the three runtime
-environments have been built.
+environments have been built and adds a fail-closed distributed aggregate
+analysis contract.
 
 - Editable installation now reuses the dependencies already solved in the
   container environments instead of resolving and downloading a second
@@ -11,8 +12,13 @@ environments have been built.
 - Direct Python runtime dependencies are declared in the primary conda
   environment so the no-dependency package install remains complete.
 - Runtime pip caching is disabled to keep peak build-disk use bounded.
+- Sites can export deterministic cohort-level radiomics reliability packets and
+  coordinators can validate and combine them with `rtpipeline federation`.
+- The contract binds schema, thresholds, semantic rules, permitted files, and
+  content-audit behavior. Extra files, symlinks, forged metadata, unexpected
+  identifiers, and node-declared threshold downgrades are rejected.
 
-No analysis API or configuration migration is required from 2.1.3.
+Existing analysis APIs and configuration files require no migration from 2.1.3.
 
 ## 2.1.3
 

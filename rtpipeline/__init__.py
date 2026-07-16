@@ -17,4 +17,5 @@ __all__ = [
     "custom_structures",
     "radiomics",
     "radiomics_conda",  # New conda-based radiomics module
+    "federation",
 ]
