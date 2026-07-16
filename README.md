@@ -131,6 +131,7 @@ Full documentation at **[kstawiski.github.io/rtpipeline](https://kstawiski.githu
 | [Case Studies](https://kstawiski.github.io/rtpipeline/case_studies/) | Real-world research examples |
 | [Reproducibility](https://kstawiski.github.io/rtpipeline/user_guide/reproducibility/) | Methods templates for publications |
 | [Radiomics Robustness](https://kstawiski.github.io/rtpipeline/features/radiomics_robustness/) | NTCV perturbation methodology |
+| [Distributed Analysis](https://kstawiski.github.io/rtpipeline/features/distributed_analysis/) | Hash-bound cohort-level packet export and aggregation |
 
 ---
 
@@ -146,10 +147,10 @@ Build dose-response models from standardized DVH metrics.
 Create robust imaging biomarkers with NTCV perturbation assessment.
 [Learn more →](https://kstawiski.github.io/rtpipeline/case_studies/#case-study-2-radiomics-signature-for-treatment-response)
 
-### 3. Multi-Center Data Harmonization
+### 3. Distributed Multi-Center Reliability Analysis
 
-Federated learning with identical preprocessing at every institution.
-[Learn more →](https://kstawiski.github.io/rtpipeline/case_studies/#case-study-3-multi-center-data-harmonization)
+Run the same method locally and combine only validated cohort-level reliability packets.
+[Learn more →](https://kstawiski.github.io/rtpipeline/case_studies/#case-study-3-distributed-radiomics-reliability-analysis)
 
 ---
 

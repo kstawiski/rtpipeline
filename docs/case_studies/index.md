@@ -12,7 +12,7 @@ This section presents three detailed case studies demonstrating how RTpipeline a
 |------------|--------|-------------------|
 | [NTCP Modeling](#case-study-1-ntcp-modeling-for-late-rectal-toxicity) | Dosimetric modeling | DVH extraction, structure harmonization |
 | [Radiomics Signature](#case-study-2-radiomics-signature-for-treatment-response) | Imaging biomarkers | NTCV perturbations, robustness analysis |
-| [Multi-Center Harmonization](#case-study-3-multi-center-data-harmonization) | Federated AI | Structure mapping, standardized ETL |
+| [Distributed Reliability](#case-study-3-distributed-radiomics-reliability-analysis) | Aggregate radiomics validation | Standardized local ETL, hash-bound packets |
 
 ---
 
@@ -389,261 +389,130 @@ plt.savefig("robustness_analysis.png", dpi=150)
 
 ---
 
-## Case Study 3: Multi-Center Data Harmonization
+## Case Study 3: Distributed Radiomics Reliability Analysis
 
-*Harmonized Multi-Center RT Data for Federated AI: RTpipeline as a Local ETL Engine*
+*One local method, one aggregate contract, multiple independently processed cohorts*
 
 ### Summary
 
-This case study illustrates how RTpipeline can serve as a harmonized, locally deployed ETL engine in a federated learning setting involving multiple radiotherapy centers. Each center independently runs RTpipeline on its own data using a shared configuration bundle specifying canonical structure names, CT cropping rules, and feature definitions. Centers keep raw DICOM data on-site while only sharing harmonized feature tables or model updates with a central coordinating node.
+Each participating site can run RTpipeline behind its own institutional boundary
+using a shared software version and analysis configuration. For radiomics
+reliability studies, a site exports only a hash-bound cohort-level summary
+packet. A coordinator validates every packet against the same contract and
+combines accepted aggregate rows.
 
-### Scientific Background
+This is distributed aggregate analysis. RTpipeline does not currently train or
+aggregate models across sites, provide secure aggregation, or implement
+differential privacy. A packet may still require institutional approval before
+transfer.
 
-High-performance AI models in radiotherapy often require large, diverse datasets that exceed the scale of any single institution. However, regulatory, legal, and ethical constraints frequently preclude raw image or DICOM data sharing.
-
-**Federated Learning** has emerged as a promising paradigm where models are trained across multiple sites without centralizing data. For federated models to be scientifically meaningful, the input representations must be harmonized across centers.
-
-**Research Question:** *Can RTpipeline serve as a standardized ETL layer at each center, ensuring that each site contributes features and labels that are comparable and compatible for federated AI model training?*
-
-### The Harmonization Challenge
-
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                    Without RTpipeline                               │
-├─────────────────────────────────────────────────────────────────────┤
-│  Center A: "Rectum", V70Gy, 2mm dose grid, Eclipse exports          │
-│  Center B: "RECT_full", V70%, 3mm dose grid, RayStation exports     │
-│  Center C: "rectum_prv", V70Gy_rel, 2.5mm grid, Monaco exports      │
-│                                                                     │
-│  Result: Incompatible features, unreliable multi-site models        │
-└─────────────────────────────────────────────────────────────────────┘
-
-┌─────────────────────────────────────────────────────────────────────┐
-│                    With RTpipeline                                  │
-├─────────────────────────────────────────────────────────────────────┤
-│  All Centers: "RECTUM", V70Gy, standardized interpolation           │
-│  Shared config: prostate_multicenter_v1.yaml                        │
-│  Same code: RTpipeline v2.1.4                                       │
-│                                                                     │
-│  Result: Harmonized features, reliable cross-site validation        │
-└─────────────────────────────────────────────────────────────────────┘
-```
-
-### RTpipeline Workflow
+### Workflow
 
 ```mermaid
-graph TD
-    subgraph Coordinating Center
-        A[Define Protocol] --> B[Create Config Bundle]
-        B --> C[Distribute to Sites]
-        I[Receive Tables/Updates] --> J[Aggregate Models]
-        J --> K[Global Model]
+flowchart LR
+    C[Shared version, config, and contract] --> A1
+    C --> A2
+    C --> A3
+    subgraph Site A
+      D1[Local DICOM] --> A1[Local RTpipeline] --> P1[Validated aggregate packet]
     end
-
-    subgraph Center A
-        C --> D1[Local DICOM]
-        D1 --> E1[RTpipeline]
-        E1 --> F1[Harmonized Table]
-        F1 --> I
+    subgraph Site B
+      D2[Local DICOM] --> A2[Local RTpipeline] --> P2[Validated aggregate packet]
     end
-
-    subgraph Center B
-        C --> D2[Local DICOM]
-        D2 --> E2[RTpipeline]
-        E2 --> F2[Harmonized Table]
-        F2 --> I
+    subgraph Site C
+      D3[Local DICOM] --> A3[Local RTpipeline] --> P3[Validated aggregate packet]
     end
-
-    subgraph Center C
-        C --> D3[Local DICOM]
-        D3 --> E3[RTpipeline]
-        E3 --> F3[Harmonized Table]
-        F3 --> I
-    end
+    P1 --> V[Coordinator validation]
+    P2 --> V
+    P3 --> V
+    V --> R[Combined cohort-level table]
 ```
 
-#### Step 1: Consortium-Wide Protocol Definition
+Raw DICOM and patient-level radiomic values are not fields in this packet
+contract. Literal cohort names are replaced by coded node labels, but those
+labels and cohort signatures are not an anonymity mechanism.
 
-```yaml
-# prostate_multicenter_v1.yaml
-# Shared configuration for all participating centers
-
-version: "1.0"
-consortium: "ProstateFederated2025"
-
-# Canonical structure definitions
-structure_mapping:
-  RECTUM:
-    patterns: ["Rectum*", "RECT*", "rectum*", "Rektum*"]
-    required: true
-  BLADDER:
-    patterns: ["Bladder*", "BLAD*", "bladder*", "Vessie*"]
-    required: true
-  PTV:
-    patterns: ["PTV*", "ptv*"]
-    required: true
-
-# Standardized DVH computation
-dvh:
-  interpolation: "linear"
-  dose_units: "Gy"
-  volume_units: "cc"
-  metrics:
-    - Dmean
-    - Dmax
-    - D2cc
-    - V50Gy
-    - V60Gy
-    - V70Gy
-
-# CT preprocessing for radiomics (if used)
-ct_cropping:
-  enabled: true
-  region: "pelvis"
-
-# Radiomics configuration (IBSI-aligned)
-radiomics:
-  binWidth: 25  # Fixed bin width in HU
-  resampling_mm: [1.0, 1.0, 3.0]
-```
-
-#### Step 2: Local Environment Setup
-
-Each center installs the same RTpipeline version:
+### Step 1: Freeze the shared contract
 
 ```bash
-# Using Docker (recommended for consistency)
-docker pull kstawiski/rtpipeline:v2.1.4
+CONTRACT_ID=consortium-ntcv-icc-v1
+MINIMUM_SUBJECTS=5
 
-# Or local installation with the same dual-environment stack
-git clone https://github.com/kstawiski/rtpipeline.git
-cd rtpipeline
-mamba env create -f envs/rtpipeline.yaml
-mamba env create -f envs/rtpipeline-radiomics.yaml
+rtpipeline federation contract \
+  --contract-id "$CONTRACT_ID" \
+  --minimum-subjects "$MINIMUM_SUBJECTS" \
+  > contract.json
+
+CONTRACT_SHA256=$(jq -r .contract_sha256 contract.json)
 ```
 
-#### Step 3: Local Data Processing
+The digest covers the schema, semantic rules, permitted packet files, audit
+rules, and minimum cell size. All sites and the coordinator retain the same
+three values: contract ID, digest, and minimum-subject threshold.
 
-Each center runs RTpipeline locally:
+### Step 2: Process locally
+
+Every site uses the same released RTpipeline version and reviewed configuration
+for DICOM organization, contours, radiomics preprocessing, perturbation chains,
+and cohort-level reliability summaries. Site-specific acquisition and anatomy
+can still affect the measurements; identical code does not make cohorts
+exchangeable.
+
+### Step 3: Export one aggregate packet per site
 
 ```bash
-# At Center A
-docker run --rm \
-  -v /center_a/dicom:/data/input:ro \
-  -v /center_a/output:/data/output:rw \
-  -v /shared/prostate_multicenter_v1.yaml:/config.yaml:ro \
-  kstawiski/rtpipeline:v2.1.4 \
-  snakemake --cores 8 --configfile /config.yaml
+rtpipeline federation export \
+  --input cohort_icc.parquet \
+  --output packet-node-a13f \
+  --node-id node-a13f \
+  --contract-id "$CONTRACT_ID" \
+  --contract-sha256 "$CONTRACT_SHA256" \
+  --minimum-subjects "$MINIMUM_SUBJECTS"
 ```
 
-#### Step 4: Federated Data Interface
+The packet contains only `manifest.json` and deterministic `metrics.csv.gz`.
+Export fails if the table has an extra column, duplicate feature identity,
+invalid ICC interval, small cell, nonfinite value, path, URI, date, DICOM UID,
+hostname-like value, or direct identifier-like token.
 
-```python
-# Example: Local federated client (pseudo-code)
-import pandas as pd
-import torch
-from torch.utils.data import TensorDataset, DataLoader
+### Step 4: Validate and combine centrally
 
-# Load harmonized features produced by RTpipeline
-features = pd.read_excel("/center_a/output/_RESULTS/dvh_metrics.xlsx")
-labels = pd.read_csv("/center_a/clinical/outcomes.csv")
-
-data = features.merge(labels, on="patient_id", how="inner")
-
-# Standard feature columns (same across all centers due to shared config)
-feature_cols = [
-    "RECTUM_Dmean_Gy", "RECTUM_V50Gy", "RECTUM_V60Gy", "RECTUM_V70Gy",
-    "BLADDER_Dmean_Gy", "BLADDER_V50Gy", "BLADDER_V60Gy", "BLADDER_V70Gy"
-]
-
-X = torch.tensor(data[feature_cols].values, dtype=torch.float32)
-y = torch.tensor(data["toxicity_grade2plus"].values, dtype=torch.float32)
-
-# Local training (wrapped in federated framework)
-dataset = TensorDataset(X, y)
-loader = DataLoader(dataset, batch_size=32, shuffle=True)
-
-def train_local_model(model, optimizer, criterion, epochs=5):
-    model.train()
-    for _ in range(epochs):
-        for xb, yb in loader:
-            optimizer.zero_grad()
-            pred = model(xb).squeeze()
-            loss = criterion(pred, yb)
-            loss.backward()
-            optimizer.step()
-    return model.state_dict()  # Send to central aggregator
+```bash
+rtpipeline federation aggregate \
+  --packet packet-node-a13f \
+  --packet packet-node-b72c \
+  --packet packet-node-c94d \
+  --output aggregate \
+  --contract-id "$CONTRACT_ID" \
+  --contract-sha256 "$CONTRACT_SHA256" \
+  --minimum-subjects "$MINIMUM_SUBJECTS"
 ```
 
-#### Step 5: Central Aggregation
+The coordinator supplies its own contract values. It rejects a node that lowers
+the threshold, changes the schema, forges summary metadata, adds a file or
+symlink, or declares an audit result that cannot be reproduced. The aggregate
+manifest binds both files from every accepted packet by SHA-256.
 
-```python
-# At coordinating center: FedAvg aggregation
-def federated_average(state_dicts):
-    """Average model weights from all centers."""
-    averaged = {}
-    n_centers = len(state_dicts)
-    for key in state_dicts[0].keys():
-        averaged[key] = sum(sd[key] for sd in state_dicts) / n_centers
-    return averaged
+### What this design establishes
 
-# Receive state_dicts from each center
-center_weights = [...]  # Collected from centers A, B, C
-global_model_weights = federated_average(center_weights)
-```
+1. **Method identity:** sites can run the same released code and configuration.
+2. **Interface conformance:** accepted packets have one exact row and metadata
+   contract.
+3. **Data minimization:** the implemented packet schema has no raw DICOM,
+   patient/course ID, patient-level feature, local path, date, or outcome field.
+4. **Auditable aggregation:** coordinator outputs retain packet hashes and node
+   denominators.
 
-### Ensuring Reproducibility Across Sites
+It does not by itself establish cross-site biological transportability,
+clinical utility, site anonymity, legal permission to transfer aggregates, or
+federated learning performance. Those are separate scientific and governance
+questions.
 
-**Version Control Checklist:**
+### Relevant documentation
 
-| Item | Location | Purpose |
-|------|----------|---------|
-| RTpipeline version | Docker tag or `conda env export` | Exact software |
-| Config file | Git repository with DOI | Processing parameters |
-| Structure mapping | Within config YAML | Nomenclature harmonization |
-| Random seeds | Config + code | Deterministic results |
-
-**QC Verification:**
-
-```python
-# Each center can verify their outputs match expected schema
-def verify_harmonization(df, expected_columns):
-    """Check that RTpipeline output matches consortium schema."""
-    missing = set(expected_columns) - set(df.columns)
-    if missing:
-        raise ValueError(f"Missing columns: {missing}")
-
-    # Check for expected structure names
-    structures = df['structure_name'].unique()
-    canonical = {'RECTUM', 'BLADDER', 'PTV'}
-    if not canonical.issubset(set(structures)):
-        raise ValueError(f"Missing canonical structures")
-
-    return True
-
-# Run at each center before sharing data
-verify_harmonization(dvh_df, expected_columns)
-```
-
-### Expected Outcomes
-
-1. **Semantic consistency** - Same variable names and definitions across all sites
-2. **Computational reproducibility** - Identical DVH/radiomics computation
-3. **Data governance compliance** - Raw data never leaves the institution
-4. **Scalable model development** - Easy to add new centers with shared config
-
-### Impact on Multi-Center Research
-
-- **Lower barrier** for international collaboration
-- **Auditable preprocessing** published as supplementary material
-- **Improved generalization** of AI models trained on harmonized data
-- **Regulatory readiness** with clear data provenance
-
-### Relevant Documentation
-
-- [Docker Setup Guide](../getting_started/docker_setup.md)
-- [Configuration Reference](../technical/architecture.md)
-- [Security Considerations](../technical/security.md)
+- [Distributed aggregate analysis](../features/distributed_analysis.md)
+- [Radiomics robustness](../features/radiomics_robustness.md)
+- [Security considerations](../technical/security.md)
 
 ---
 

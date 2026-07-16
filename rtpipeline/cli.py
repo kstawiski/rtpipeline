@@ -863,6 +863,10 @@ def main(argv: list[str] | None = None) -> int:
         return _radiomics_robustness_course(argv[1:])
     if argv and argv[0] == "radiomics-robustness-aggregate":
         return _radiomics_robustness_aggregate(argv[1:])
+    if argv and argv[0] == "federation":
+        from .federation import main as federation_main
+
+        return federation_main(argv[1:])
     args = build_parser().parse_args(argv)
     level = logging.INFO if args.verbose == 0 else logging.DEBUG
     logging.basicConfig(level=level, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
