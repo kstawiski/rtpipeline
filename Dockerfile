@@ -58,12 +58,13 @@ FROM condaforge/mambaforge:24.3.0-0
 
 LABEL maintainer="kstawiski"
 LABEL description="DICOM-RT pipeline with TotalSegmentator, nnUNet, and Snakemake"
-LABEL version="2.1.3"
+LABEL version="2.1.4"
 
 ENV DEBIAN_FRONTEND=noninteractive \
     LANG=C.UTF-8 \
     LC_ALL=C.UTF-8 \
     PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
     CONDA_DIR=/opt/conda \
     PATH=/opt/conda/bin:$PATH \
     LD_LIBRARY_PATH=/opt/conda/lib
@@ -148,12 +149,12 @@ WORKDIR /app
 # Copy project files
 COPY --chown=rtpipeline:rtpipeline . /app/
 
-# Install rtpipeline package in base and rtpipeline environments
-# We use 'pip install -e .' to allow read-only mounting of code if needed,
-# but in this container image we copy the code, so we install it.
-RUN pip install -e . && \
-    /opt/conda/envs/rtpipeline/bin/pip install -e . && \
-    /opt/conda/envs/rtpipeline/bin/pip install psutil
+# Install only the local project into the already-solved environments. All
+# runtime dependencies are provided above or by envs/rtpipeline.yaml; allowing
+# pip to resolve them again would download a second Torch/CUDA stack.
+RUN pip install --no-deps -e . && \
+    /opt/conda/envs/rtpipeline/bin/pip install --no-deps -e . && \
+    /opt/conda/envs/rtpipeline/bin/pip install --no-cache-dir psutil
 
 
 

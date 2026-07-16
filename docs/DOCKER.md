@@ -7,7 +7,8 @@ This document provides comprehensive guidance for running rtpipeline in Docker a
 
 All pipeline features work correctly in Docker and Singularity containers:
 
-### Latest Updates (v2.1.3)
+### Latest Updates (v2.1.4)
+- **Bounded runtime installation**: The final editable install reuses the dependencies already solved in the three container environments
 - **Reliable clean container builds**: Environment caches are removed between solves to reduce peak disk use
 - **Exact radiomics feature activation**: Configured `featureClass` subsets no longer enable omitted classes
 - **Scalar radiomics values**: Zero-dimensional and single-element numeric arrays are retained in robustness output
