@@ -1,5 +1,22 @@
 # Release notes
 
+## 2.1.3
+
+RTpipeline 2.1.3 is the container-delivery follow-up to 2.1.2. It preserves the
+radiomics correctness fixes from 2.1.2 and makes clean Docker builds reliable
+on storage-constrained CI runners.
+
+- Conda and pip caches are cleared between creation of the three isolated
+  runtime environments, reducing peak build-disk use without changing their
+  dependency contracts.
+- GitHub Actions now frees unused preinstalled SDKs, loads the test image
+  directly, and uses the native BuildKit GitHub cache instead of keeping a
+  second full local image archive.
+- Package, container, documentation, and citation metadata now report the same
+  release version.
+
+No analysis API or configuration migration is required from 2.1.2.
+
 ## 2.1.2
 
 RTpipeline 2.1.2 fixes two correctness defects in direct PyRadiomics robustness

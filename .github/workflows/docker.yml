@@ -14,30 +14,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Free runner disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/share/boost
+          df -h /
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
-
-      - name: Cache Docker layers
-        uses: actions/cache@v4
-        with:
-          path: /tmp/.buildx-cache
-          key: ${{ runner.os }}-buildx-${{ github.sha }}
-          restore-keys: |
-            ${{ runner.os }}-buildx-
 
       - name: Build image
         uses: docker/build-push-action@v5
         with:
           context: .
           push: false
+          load: true
           tags: rtpipeline:test
-          cache-from: type=local,src=/tmp/.buildx-cache
-          cache-to: type=local,dest=/tmp/.buildx-cache-new,mode=max
-          outputs: type=docker,dest=/tmp/rtpipeline-test.tar
-
-      - name: Load image
-        run: |
-          docker load --input /tmp/rtpipeline-test.tar
+          cache-from: type=gha
+          cache-to: type=gha,mode=min
 
       - name: Test image (Unit Tests)
         run: |
@@ -48,11 +41,6 @@ jobs:
           docker run --rm rtpipeline:test \
             snakemake --cores 1 -n --configfile /app/config.container.yaml
 
-      - name: Move cache
-        run: |
-          rm -rf /tmp/.buildx-cache
-          mv /tmp/.buildx-cache-new /tmp/.buildx-cache
-
   push:
     needs: build
     runs-on: ubuntu-latest
@@ -60,6 +48,11 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Free runner disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/share/boost
+          df -h /
 
       - name: Login to Docker Hub
         uses: docker/login-action@v3
@@ -87,3 +80,5 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=min
