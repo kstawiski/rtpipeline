@@ -28,8 +28,13 @@ dependencies:
     - TotalSegmentator==2.12.0  # Pinned for reproducible pipeline builds
     - xgboost  # Required for totalseg_get_phase and totalseg_get_modality
     - dicompyler-core>=0.5.6
+    - dicom2nifti>=2.4
+    - nested-lookup
     - rt-utils
     - xlsxwriter
     - openpyxl
     - plotly
+    - nbformat
+    - ipython
+    - filelock
     - pingouin  # For ICC computation in robustness analysis
