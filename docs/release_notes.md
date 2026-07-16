@@ -1,5 +1,19 @@
 # Release notes
 
+## 2.1.4
+
+RTpipeline 2.1.4 fixes container installation after the three runtime
+environments have been built.
+
+- Editable installation now reuses the dependencies already solved in the
+  container environments instead of resolving and downloading a second
+  Torch/CUDA stack.
+- Direct Python runtime dependencies are declared in the primary conda
+  environment so the no-dependency package install remains complete.
+- Runtime pip caching is disabled to keep peak build-disk use bounded.
+
+No analysis API or configuration migration is required from 2.1.3.
+
 ## 2.1.3
 
 RTpipeline 2.1.3 is the container-delivery follow-up to 2.1.2. It preserves the
