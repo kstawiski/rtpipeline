@@ -57,7 +57,7 @@ robustness = pd.read_excel(
     sheet_name="robust_features"
 )
 
-# Features that passed the default RTpipeline v2.1.2 thresholds
+# Features that passed the default RTpipeline v2.1.3 thresholds
 robust_feature_names = robustness["feature_name"].tolist()
 ```
 

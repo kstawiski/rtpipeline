@@ -11,6 +11,8 @@
 # Stage 1: Builder
 FROM condaforge/mambaforge:24.3.0-0 AS builder
 
+ENV PIP_NO_CACHE_DIR=1
+
 # Install build dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
@@ -37,9 +39,13 @@ COPY third_party/ /app/third_party/
 # Provide stable absolute path expected by conda env specs
 RUN mkdir -p /projekty && ln -s /app /projekty/rtpipeline
 
-# Create conda environments with aggressive cleanup
+# Create conda environments with cleanup between solves. GitHub-hosted runners
+# otherwise retain multiple package caches at once and can exhaust the build
+# volume before the third environment is complete.
 RUN mamba env create -f /app/envs/rtpipeline.yaml && \
+    mamba clean -afy && rm -rf /root/.cache/pip /opt/conda/pkgs/* && \
     mamba env create -f /app/envs/rtpipeline-radiomics.yaml && \
+    mamba clean -afy && rm -rf /root/.cache/pip /opt/conda/pkgs/* && \
     mamba env create -f /app/envs/rtpipeline-custom-models.yaml && \
     mamba clean -afy && \
     find /opt/conda -follow -type f -name '*.a' -delete && \
@@ -52,7 +58,7 @@ FROM condaforge/mambaforge:24.3.0-0
 
 LABEL maintainer="kstawiski"
 LABEL description="DICOM-RT pipeline with TotalSegmentator, nnUNet, and Snakemake"
-LABEL version="2.1.1"
+LABEL version="2.1.3"
 
 ENV DEBIAN_FRONTEND=noninteractive \
     LANG=C.UTF-8 \
