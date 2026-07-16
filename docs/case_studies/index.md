@@ -423,7 +423,7 @@ High-performance AI models in radiotherapy often require large, diverse datasets
 ├─────────────────────────────────────────────────────────────────────┤
 │  All Centers: "RECTUM", V70Gy, standardized interpolation           │
 │  Shared config: prostate_multicenter_v1.yaml                        │
-│  Same code: RTpipeline v2.1.2                                       │
+│  Same code: RTpipeline v2.1.3                                       │
 │                                                                     │
 │  Result: Harmonized features, reliable cross-site validation        │
 └─────────────────────────────────────────────────────────────────────┘
@@ -513,7 +513,7 @@ Each center installs the same RTpipeline version:
 
 ```bash
 # Using Docker (recommended for consistency)
-docker pull kstawiski/rtpipeline:v2.1.2
+docker pull kstawiski/rtpipeline:v2.1.3
 
 # Or local installation with the same dual-environment stack
 git clone https://github.com/kstawiski/rtpipeline.git
@@ -532,7 +532,7 @@ docker run --rm \
   -v /center_a/dicom:/data/input:ro \
   -v /center_a/output:/data/output:rw \
   -v /shared/prostate_multicenter_v1.yaml:/config.yaml:ro \
-  kstawiski/rtpipeline:v2.1.2 \
+  kstawiski/rtpipeline:v2.1.3 \
   snakemake --cores 8 --configfile /config.yaml
 ```
 
@@ -676,10 +676,10 @@ These case studies provide templates that can be adapted to your specific resear
 The following text can be adapted for your Methods section:
 
 !!! note "DVH Extraction Methods"
-    Dose-volume histogram metrics were extracted using RTpipeline (version 2.1.2) [cite]. Structure sets were harmonized to canonical nomenclature via a mapping dictionary. DVH curves were computed using [interpolation method] with a dose resolution of [X Gy]. The following metrics were derived: mean dose (D~mean~), maximum dose (D~max~), dose to 2cc (D~2cc~), and volume receiving ≥[X] Gy (V~XGy~).
+    Dose-volume histogram metrics were extracted using RTpipeline (version 2.1.3) [cite]. Structure sets were harmonized to canonical nomenclature via a mapping dictionary. DVH curves were computed using [interpolation method] with a dose resolution of [X Gy]. The following metrics were derived: mean dose (D~mean~), maximum dose (D~max~), dose to 2cc (D~2cc~), and volume receiving ≥[X] Gy (V~XGy~).
 
 !!! note "Radiomics Extraction Methods"
-    Radiomic features were extracted using RTpipeline (version 2.1.2) [cite] with PyRadiomics 3.0.1 [cite] following Image Biomarker Standardisation Initiative (IBSI) recommendations [cite]. Images were resampled to [X×X×X mm] voxels using [interpolation method]. Feature stability was assessed using NTCV perturbation chains (Zwanenburg et al., 2019) [cite], comprising [N] perturbations per ROI including Gaussian noise injection (σ = 0, 10, 20 HU), rigid translations (±3 mm), contour randomization, and volume adaptation (±15%). Features with ICC ≥ 0.90 and coefficient of variation ≤ 10% were classified as robust and retained for modeling.
+    Radiomic features were extracted using RTpipeline (version 2.1.3) [cite] with PyRadiomics 3.0.1 [cite] following Image Biomarker Standardisation Initiative (IBSI) recommendations [cite]. Images were resampled to [X×X×X mm] voxels using [interpolation method]. Feature stability was assessed using NTCV perturbation chains (Zwanenburg et al., 2019) [cite], comprising [N] perturbations per ROI including Gaussian noise injection (σ = 0, 10, 20 HU), rigid translations (±3 mm), contour randomization, and volume adaptation (±15%). Features with ICC ≥ 0.90 and coefficient of variation ≤ 10% were classified as robust and retained for modeling.
 
 ---
 
