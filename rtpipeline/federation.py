@@ -365,11 +365,6 @@ def _validate_metrics(frame: pd.DataFrame, minimum_subjects: int) -> pd.DataFram
         )
     if frame.empty:
         raise FederationPacketError("Metrics table is empty")
-    if frame.duplicated(list(IDENTITY_COLUMNS)).any():
-        raise FederationPacketError(
-            "Metrics contain duplicate body_region/roi_name/feature_name identities"
-        )
-
     validated = frame.copy()
     for column in STRING_COLUMNS:
         if validated[column].isna().any():
@@ -377,6 +372,10 @@ def _validate_metrics(frame: pd.DataFrame, minimum_subjects: int) -> pd.DataFram
         validated[column] = validated[column].astype(str).str.strip()
         if validated[column].eq("").any():
             raise FederationPacketError(f"Column {column} contains empty values")
+    if validated.duplicated(list(IDENTITY_COLUMNS)).any():
+        raise FederationPacketError(
+            "Metrics contain duplicate normalized body_region/roi_name/feature_name identities"
+        )
 
     for column in INTEGER_COLUMNS:
         numeric = pd.to_numeric(validated[column], errors="coerce")
