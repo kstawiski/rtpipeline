@@ -11,6 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 import numpy as np
+import pandas as pd
 import SimpleITK as sitk
 import yaml
 
@@ -62,13 +63,173 @@ def test_ntcv_grid_has_documented_unique_count(intensity, expected, monkeypatch)
     mask = sitk.GetImageFromArray(np.ones((3, 3, 3), dtype=np.uint8))
     monkeypatch.setattr(robustness, "add_noise_to_image", lambda value, _std, rng=None: value)
     monkeypatch.setattr(robustness, "translate_mask", lambda value, _translation: value)
-    monkeypatch.setattr(robustness, "randomize_contour", lambda value, _mm, rng=None: value)
+
+    contour_counter = iter(range(10_000))
+
+    def unique_contour(value, _mm, rng=None):
+        array = sitk.GetArrayFromImage(value).copy()
+        array.ravel()[next(contour_counter) % array.size] = 0
+        result = sitk.GetImageFromArray(array)
+        result.CopyInformation(value)
+        return result
+
+    monkeypatch.setattr(robustness, "randomize_contour", unique_contour)
     monkeypatch.setattr(robustness, "volume_adapt_mask", lambda value, _tau: value)
 
     config = PerturbationConfig(intensity=intensity)
     masks, images = robustness.generate_ntcv_perturbations(mask, image, config, "ROI")
     assert len(masks) == expected
     assert set(masks) == set(images)
+    assert robustness.expected_ntcv_perturbation_count(config) == expected
+
+
+@pytest.mark.parametrize("tau", [-0.15, 0.15])
+def test_volume_adaptation_hits_exact_rounded_target_on_anisotropic_grid(tau):
+    array = np.zeros((9, 24, 24), dtype=np.uint8)
+    array[2:7, 5:19, 5:19] = 1
+    mask = sitk.GetImageFromArray(array)
+    mask.SetSpacing((1.0, 1.0, 4.0))
+
+    result = robustness.volume_adapt_mask(mask, tau)
+    repeated = robustness.volume_adapt_mask(mask, tau)
+    assert result is not None
+    assert repeated is not None
+    original_count = int(array.sum())
+    expected_count = round(original_count * (1.0 + tau))
+    assert int(sitk.GetArrayFromImage(result).sum()) == expected_count
+    assert np.array_equal(
+        sitk.GetArrayFromImage(result), sitk.GetArrayFromImage(repeated)
+    )
+    assert result.GetSpacing() == mask.GetSpacing()
+
+
+def test_contour_randomization_uses_physical_distance_and_is_reproducible():
+    array = np.zeros((7, 24, 24), dtype=np.uint8)
+    array[2:5, 6:18, 6:18] = 1
+    mask = sitk.GetImageFromArray(array)
+    mask.SetSpacing((1.0, 1.0, 5.0))
+
+    first = robustness.randomize_contour(
+        mask, 2.0, rng=np.random.Generator(np.random.PCG64(7))
+    )
+    second = robustness.randomize_contour(
+        mask, 2.0, rng=np.random.Generator(np.random.PCG64(7))
+    )
+    first_array = sitk.GetArrayFromImage(first)
+    assert np.array_equal(first_array, sitk.GetArrayFromImage(second))
+    assert not np.array_equal(first_array, array)
+    # A 2 mm offset must not jump through the 5 mm slice direction.
+    assert np.flatnonzero(first_array.any(axis=(1, 2))).tolist() == [2, 3, 4]
+
+
+def _stable_subject_frame() -> pd.DataFrame:
+    rows = []
+    for patient_id, value in (("P1", 1.0), ("P2", 100.0)):
+        for perturbation_id in ("a", "b", "c", "d"):
+            rows.append({
+                "patient_id": patient_id,
+                "course_id": "C1",
+                "structure": "ROI",
+                "segmentation_source": "manual",
+                "perturbation_id": perturbation_id,
+                "feature_name": "feature",
+                "value": value,
+            })
+    return pd.DataFrame(rows)
+
+
+def test_cov_is_computed_within_subject_not_across_subjects():
+    summary = robustness.summarize_feature_stability(
+        _stable_subject_frame(), RobustnessConfig(enabled=True)
+    )
+    assert len(summary) == 1
+    assert summary.loc[0, "cov_pct"] == pytest.approx(0.0)
+    assert summary.loc[0, "cov_pct_q1"] == pytest.approx(0.0)
+    assert summary.loc[0, "cov_pct_q3"] == pytest.approx(0.0)
+    assert summary.loc[0, "n_subjects_cov"] == 2
+    assert summary.loc[0, "n_subjects_dropped"] == 0
+
+
+def test_incomplete_subject_grid_fails_closed():
+    frame = _stable_subject_frame()
+    frame = frame[
+        ~((frame["patient_id"] == "P2") & (frame["perturbation_id"] == "d"))
+    ]
+    with pytest.raises(ValueError, match="incomplete perturbation grid"):
+        robustness.summarize_feature_stability(frame, RobustnessConfig(enabled=True))
+
+
+def test_aggregate_keeps_structure_source_rows_separate(tmp_path):
+    first = _stable_subject_frame()
+    second = first.copy()
+    second["structure"] = "OTHER_ROI"
+    second["value"] = second["value"] * 10
+    input_path = tmp_path / "course.parquet"
+    pd.concat([first, second], ignore_index=True).to_parquet(input_path, index=False)
+    output_path = tmp_path / "summary.xlsx"
+
+    robustness.aggregate_robustness_results(
+        [input_path], output_path, RobustnessConfig(enabled=True)
+    )
+
+    summary = pd.read_excel(output_path, sheet_name="global_summary")
+    assert set(summary["structure"]) == {"ROI", "OTHER_ROI"}
+    assert len(summary) == 2
+    assert (tmp_path / "summary_raw_values.parquet").exists()
+
+
+def test_aggregate_rejects_missing_course_input(tmp_path):
+    with pytest.raises(FileNotFoundError, match="does not exist"):
+        robustness.aggregate_robustness_results(
+            [tmp_path / "missing.parquet"],
+            tmp_path / "summary.xlsx",
+            RobustnessConfig(enabled=True),
+        )
+
+
+def test_incomplete_feature_extraction_fails_closed():
+    frame = _stable_subject_frame().query("patient_id == 'P1'")
+    with pytest.raises(RuntimeError, match="missing perturbations"):
+        robustness._validate_extracted_feature_frame(
+            frame,
+            {"a", "b", "c", "d", "missing"},
+            "manual/ROI",
+        )
+
+
+def test_supported_entrypoints_share_complete_standard_grid():
+    web_manager = (ROOT / "webui" / "job_manager.py").read_text(encoding="utf-8")
+    docker_setup = (ROOT / "setup_docker_project.sh").read_text(encoding="utf-8")
+    web_template = (ROOT / "webui" / "templates" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    for text in (web_manager, docker_setup):
+        assert "max_translation_mm': 4.0" in text or "max_translation_mm: 4.0" in text
+        assert "[0.0, 10.0, 20.0]" in text
+    assert 'id="robustness-intensity"' in web_template
+    assert "Standard (81 states)" in web_template
+
+
+def test_robustness_workflow_failure_is_not_converted_to_success():
+    snakefile = (ROOT / "Snakefile").read_text(encoding="utf-8")
+    assert "Don't fail the pipeline for robustness" not in snakefile
+    assert snakefile.count("Radiomics robustness failed; see") == 2
+    assert snakefile.count("upstream radiomics failed") == 2
+    assert "Non-success robustness sentinel encountered" in snakefile
+
+
+def test_dual_environment_contract_is_enforced_in_packaging_and_receipt():
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    assert "radiomics" not in project["project"]["optional-dependencies"]
+    assert "dcmseg" not in project["project"]["optional-dependencies"]
+    assert "numpy>=1.23,<3" in project["project"]["dependencies"]
+    main_env = yaml.safe_load(
+        (ROOT / "envs" / "rtpipeline-local.yaml").read_text(encoding="utf-8")
+    )
+    assert "numpy>=2.0,<3" in main_env["dependencies"]
+    installer = (ROOT / "scripts" / "install_local.sh").read_text(encoding="utf-8")
+    assert installer.count("python -m pip freeze --all") == 2
+    assert installer.count("python -m pip inspect --local") == 2
 
 
 def test_related_series_metadata_helper_is_available_from_organize(tmp_path, monkeypatch):

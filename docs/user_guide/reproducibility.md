@@ -100,7 +100,7 @@ dvh:
 
 # Radiomics extraction
 radiomics:
-  binWidth: 25              # Fixed bin width in HU (IBSI compliant)
+  binWidth: 25              # Fixed bin width in HU; report this project choice
   resampling_mm: [1, 1, 3]  # Isotropic x/y, 3mm z
   interpolator: "sitkBSpline"
 
@@ -213,14 +213,18 @@ A total of [N] features were extracted from [structure(s)], comprising:
 - [Filtered features if applicable]
 
 **Robustness Assessment:**
-Feature stability was assessed using NTCV perturbation chains following
-Zwanenburg et al. [4]. For each ROI, [N] perturbations were generated:
+Feature stability was assessed using an RTpipeline-adapted NTCV chain inspired
+by Zwanenburg et al. [4], not an exact reimplementation. For each ROI, [N]
+perturbations were required:
 - Gaussian noise injection (σ = 0, 10, 20 HU)
 - Rigid translations (up to +/-4 mm)
-- Contour randomization (2 realizations)
-- Volume adaptation (±15% erosion/dilation)
+- Reproducible random physical-space contour offsets (2 realizations)
+- Distance-ranked volume adaptation to the closest voxel counts representing ±15%
 
 Intraclass correlation coefficients ICC(3,1) were computed using Pingouin [5].
+CoV was computed separately within each patient/course/ROI/source across
+perturbations, then summarized by its cohort median; it was not computed from
+pooled between-patient values.
 Features were classified as:
 - **Robust:** ICC ≥ 0.90 and CoV ≤ 10%
 - **Acceptable:** ICC ≥ 0.75 and CoV ≤ 20%

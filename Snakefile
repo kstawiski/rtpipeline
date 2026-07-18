@@ -1214,8 +1214,9 @@ if config.get("container_mode", False):
             fi
 
             if [ -f "{input.radiomics}" ] && grep -qi "^failed" "{input.radiomics}"; then
-                echo "skipped: upstream radiomics failed" > {output.sentinel}
-                exit 0
+                rm -f {output.sentinel}
+                echo "Radiomics robustness cannot run because upstream radiomics failed" >&2
+                exit 1
             fi
 
             # Export worker budget for subprocess coordination
@@ -1233,9 +1234,9 @@ if config.get("container_mode", False):
                 --max-workers {threads} > {log} 2>&1; then
                 echo "ok" > {output.sentinel}
             else
-                echo "failed: see log" > {output.sentinel}
-                # Don't fail the pipeline for robustness
-                exit 0
+                rm -f {output.sentinel}
+                echo "Radiomics robustness failed; see {log}" >&2
+                exit 1
             fi
             """
 else:
@@ -1266,8 +1267,9 @@ else:
             fi
 
             if [ -f "{input.radiomics}" ] && grep -qi "^failed" "{input.radiomics}"; then
-                echo "skipped: upstream radiomics failed" > {output.sentinel}
-                exit 0
+                rm -f {output.sentinel}
+                echo "Radiomics robustness cannot run because upstream radiomics failed" >&2
+                exit 1
             fi
 
             # Export worker budget for subprocess coordination
@@ -1286,9 +1288,9 @@ else:
                 --max-workers {threads} > {log} 2>&1; then
                 echo "ok" > {output.sentinel}
             else
-                echo "failed: see log" > {output.sentinel}
-                # Don't fail the pipeline for robustness
-                exit 0
+                rm -f {output.sentinel}
+                echo "Radiomics robustness failed; see {log}" >&2
+                exit 1
             fi
             """
 
@@ -1325,28 +1327,32 @@ rule aggregate_radiomics_robustness:
             exit 0
         fi
 
-        # Find robustness parquets only where sentinel says "ok" (skip failed/partial)
-        PARQUET_FILES=""
-        for sentinel in $(find {params.output_dir} -name ".radiomics_robustness_done" -type f 2>/dev/null); do
+        # Every successful sentinel must bind to a readable course parquet.
+        PARQUET_FILES=()
+        while IFS= read -r -d '' sentinel; do
             if head -1 "$sentinel" 2>/dev/null | grep -q "^ok"; then
                 course_dir=$(dirname "$sentinel")
                 pf="$course_dir/radiomics_robustness_ct.parquet"
                 if [ -f "$pf" ]; then
-                    PARQUET_FILES="$PARQUET_FILES $pf"
+                    PARQUET_FILES+=("$pf")
+                else
+                    echo "Successful robustness sentinel has no parquet: $sentinel" > {log}
+                    exit 1
                 fi
+            else
+                echo "Non-success robustness sentinel encountered: $sentinel" > {log}
+                exit 1
             fi
-        done
+        done < <(find {params.output_dir} -name ".radiomics_robustness_done" -type f -print0 2>/dev/null)
 
-        if [ -z "$PARQUET_FILES" ]; then
-            # Create empty output if no parquet files found
-            {PYTHON_MAIN} -c "import pandas as pd; pd.DataFrame().to_excel('{output.summary}', index=False)"
-            echo "No robustness parquet files found" > {log}
-            exit 0
+        if [ "${{#PARQUET_FILES[@]}}" -eq 0 ]; then
+            echo "Robustness is enabled but no complete course parquets were found" > {log}
+            exit 1
         fi
 
         # Run the aggregation CLI command with the conda environment's Python
         PYTHONPATH="{params.root_dir}:${{PYTHONPATH:-}}" {PYTHON_MAIN} -m rtpipeline.cli radiomics-robustness-aggregate \
-            --inputs $PARQUET_FILES \
+            --inputs "${{PARQUET_FILES[@]}}" \
             --output {output.summary} \
             --config {params.configfile} \
             > {log} 2>&1

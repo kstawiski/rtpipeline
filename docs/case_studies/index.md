@@ -181,7 +181,7 @@ cph.print_summary()
 
 ### Summary
 
-This case study demonstrates the use of RTpipeline for developing a radiomics signature to predict treatment response in thoracic radiotherapy. RTpipeline handles CT preprocessing, systematic field-of-view cropping around the target volume, IBSI-aligned radiomics feature extraction, and built-in robustness assessment using NTCV perturbation chains. The result is a robust feature set that has been stress-tested against realistic imaging and contour variations.
+This case study demonstrates the use of RTpipeline for developing a radiomics signature to predict treatment response in thoracic radiotherapy. RTpipeline handles CT preprocessing, systematic field-of-view cropping around the target volume, PyRadiomics feature extraction using IBSI-defined feature families, and built-in robustness assessment with an adapted NTCV chain. The result is a feature set evaluated under the explicitly configured image and contour perturbations.
 
 ### Scientific Background
 
@@ -201,7 +201,7 @@ Without robustness assessment, radiomics models may rely on features that are:
 - Unstable under minor contour perturbations
 - Non-reproducible across different scanners
 
-RTpipeline addresses this through **NTCV perturbation chains** (Noise, Translation, Contour, Volume) following Zwanenburg et al. (2019).
+RTpipeline addresses this through an adapted **NTCV perturbation chain** (Noise, Translation, Contour, Volume) inspired by, but not identical to, Zwanenburg et al. (2019).
 
 ### RTpipeline Workflow
 
@@ -246,7 +246,7 @@ radiomics_robustness:
   enabled: true
   segmentation_perturbation:
     apply_to_structures: ["GTV*", "PTV*"]
-    intensity: "standard"  # 81 perturbations per ROI with shipped grids
+    intensity: "standard"  # 135 states here because this example overrides V with 5 values
 
     # Volume perturbations (V)
     small_volume_changes: [-0.15, -0.10, 0.0, 0.10, 0.15]
@@ -293,7 +293,12 @@ robustness = pd.read_excel(
     sheet_name="robust_features"
 )
 
-# Get robust feature names (ICC ≥ 0.90, CoV ≤ 10%)
+# Select the exact ROI/source used by this model. A feature may be robust for
+# one ROI/source and unstable for another.
+robustness = robustness[
+    (robustness["structure"] == "GTV_primary")
+    & (robustness["segmentation_source"] == "Custom")
+]
 robust_feature_names = robustness["feature_name"].tolist()
 
 # Filter to robust features only
@@ -367,7 +372,7 @@ axes[1].scatter(robustness_all["icc"], robustness_all["cov_pct"], alpha=0.5)
 axes[1].axvline(0.90, color='green', linestyle='--')
 axes[1].axhline(10, color='green', linestyle='--')
 axes[1].set_xlabel("ICC")
-axes[1].set_ylabel("CoV (%)")
+axes[1].set_ylabel("Median within-subject CoV (%)")
 axes[1].set_title("Robustness Quadrant Plot")
 
 plt.tight_layout()
@@ -377,7 +382,7 @@ plt.savefig("robustness_analysis.png", dpi=150)
 ### Expected Outcomes
 
 1. **Curated feature set** with quantified robustness under realistic perturbations
-2. **Transparent IBSI-aligned methodology** suitable for peer review
+2. **Transparent feature and perturbation definitions** suitable for peer review
 3. **Sparse, interpretable signature** for treatment response prediction
 4. **Reproducible analysis** with version-controlled configurations
 
@@ -548,7 +553,7 @@ The following text can be adapted for your Methods section:
     Dose-volume histogram metrics were extracted using RTpipeline (version 2.2.1) [cite]. Structure sets were harmonized to canonical nomenclature via a mapping dictionary. DVH curves were computed using [interpolation method] with a dose resolution of [X Gy]. The following metrics were derived: mean dose (D~mean~), maximum dose (D~max~), dose to 2cc (D~2cc~), and volume receiving ≥[X] Gy (V~XGy~).
 
 !!! note "Radiomics Extraction Methods"
-    Radiomic features were extracted using RTpipeline (version 2.2.1) [cite] with PyRadiomics 3.0.1 [cite] following Image Biomarker Standardisation Initiative (IBSI) recommendations [cite]. Images were resampled to [X×X×X mm] voxels using [interpolation method]. Feature stability was assessed using NTCV perturbation chains (Zwanenburg et al., 2019) [cite], comprising [N] perturbations per ROI including Gaussian noise injection (σ = 0, 10, 20 HU), rigid translations (up to +/-4 mm), two contour realizations, and volume adaptation (±15%). Features with ICC ≥ 0.90 and coefficient of variation ≤ 10% were classified as robust and retained for modeling.
+    Radiomic features were extracted using RTpipeline (version 2.2.1) [cite] with PyRadiomics 3.0.1 [cite] following Image Biomarker Standardisation Initiative (IBSI) feature definitions [cite]. Images were resampled to [X×X×X mm] voxels using [interpolation method]. Feature stability was assessed using an RTpipeline-adapted NTCV chain inspired by Zwanenburg et al. (2019) [cite], not an exact reimplementation. The configured [N] states per ROI combined Gaussian noise (σ = 0, 10, and 20 HU), superior-inferior translations (0 and +/-4 mm), two reproducible physical-space contour offsets, and distance-ranked volume adaptation to the closest voxel counts representing [LIST ACTUAL VOLUME TARGETS]. Every configured state was required to complete. CoV was computed within each patient/course/ROI/source and summarized by its cohort median. Structure/source/feature rows meeting ICC ≥ 0.90 and median within-subject CoV ≤ 10% were classified as robust.
 
 ---
 

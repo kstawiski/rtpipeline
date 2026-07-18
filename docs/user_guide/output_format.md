@@ -14,6 +14,7 @@ _RESULTS/
 ├── radiomics_ct.xlsx        ← All CT radiomic features
 ├── radiomics_mr.xlsx        ← All MR radiomic features
 ├── radiomics_robustness_summary.xlsx ← Cohort stability summary (if enabled)
+├── radiomics_robustness_summary_raw_values.parquet ← Raw perturbation rows
 ├── case_metadata.xlsx       ← Patient/treatment info
 └── qc_reports.xlsx          ← Quality control summary
 ```
@@ -57,8 +58,13 @@ robustness = pd.read_excel(
     sheet_name="robust_features"
 )
 
-# Features that passed the default RTpipeline v2.2.1 thresholds
-robust_feature_names = robustness["feature_name"].tolist()
+# Select the exact ROI/source used by the downstream model; classifications are
+# intentionally not pooled across heterogeneous structures or sources.
+selected = robustness[
+    (robustness["structure"] == "GTV_primary")
+    & (robustness["segmentation_source"] == "Custom")
+]
+robust_feature_names = selected["feature_name"].tolist()
 ```
 
 ### Compare Auto vs Manual Segmentation

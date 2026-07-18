@@ -16,13 +16,24 @@ and radiomics-robustness execution.
   environment-activation support.
 - The shipped robustness profile now runs the complete standard NTCV chain:
   Gaussian noise at 0, 10, and 20 HU; translations up to +/-4 mm; two contour
-  realizations; and -15%, 0%, and +15% volume adaptation (81 combinations per
-  ROI when all operations succeed).
+  realizations; and -15%, 0%, and +15% volume adaptation. All 81 combinations
+  per ROI are required; generation or extraction gaps fail the course.
+- CoV is computed within each patient/course/ROI/source and summarized across
+  subjects, so between-patient biology is not mislabeled as perturbation
+  instability. Structure and segmentation sources are not pooled for feature
+  classification.
+- Contour and volume perturbations use physical-space signed distance maps;
+  volume targets reach the exact rounded voxel count and duplicate contour
+  realizations fail closed.
 - Runtime dependency floors include patched `pydicom` and `filelock` releases;
   release CI verifies static analysis and wheel contents before container build.
 - A supported automatic local installer, runner, and self-contained tutorial
   cover macOS, Linux, and WSL2 while preserving the required dual environments
   and manuscript provenance.
+- Incompatible NumPy 1.x tooling (`PyRadiomics` and `pydicom-seg`) is not
+  exposed as a merged package extra. PyRadiomics uses the supported isolated
+  environment; optional DICOM-SEG conversion requires its own pinned NumPy 1.x
+  environment.
 
 Existing v2.2.0 configurations remain loadable. Runs that relied on the old
 volume-only implicit robustness defaults should set the three NTC axes to zero
@@ -100,8 +111,8 @@ names. Existing v2.1.x configuration files remain compatible.
 RTpipeline 2.1.1 is a maintenance release focused on correctness and safe
 recovery behavior.
 
-- DICOM Segmentation Storage can be decoded with pydicom 3.x when the optional
-  dependencies are installed with `pip install "rtpipeline[dcmseg]"`. The
+- In the v2.1.1 source checkout, DICOM Segmentation Storage could be decoded
+  with pydicom 3.x when the then-available optional `dcmseg` extra was used. The
   compatibility layer returns a real multilabel SimpleITK image and fails
   explicitly for unsupported overlapping or fractional representations.
 - ICC confidence intervals work with both the current `CI95` and legacy `CI95%`

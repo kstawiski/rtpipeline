@@ -15,7 +15,7 @@ dependencies:
   - nibabel
   - scikit-image
   - pandas
-  - pydicom
+  - pydicom>=3.0.2,<4
   - tqdm
   - nnunet=1.7.*
   - batchgenerators

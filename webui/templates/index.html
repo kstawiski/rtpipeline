@@ -750,7 +750,15 @@
                                     <input type="checkbox" id="robustness-enabled">
                                     <span>Radiomics Robustness Analysis</span>
                                 </label>
-                                <small>Tests feature stability under systematic perturbations (NTCV chain). Computes ICC(3,1) and CoV to identify reproducible features for modeling.</small>
+                                <small>Tests feature stability with the RTpipeline-adapted NTCV chain. Standard uses the complete shipped 81-state grid.</small>
+                                <div style="margin-top: 10px; margin-left: 28px;">
+                                    <label for="robustness-intensity">Perturbation intensity</label>
+                                    <select id="robustness-intensity">
+                                        <option value="standard" selected>Standard (81 states)</option>
+                                        <option value="mild">Mild (12 states)</option>
+                                        <option value="aggressive">Aggressive (315 states)</option>
+                                    </select>
+                                </div>
                             </div>
                             <div class="config-option">
                                 <label>
@@ -1420,7 +1428,8 @@
                     enabled: document.getElementById('radiomics-enabled').checked
                 },
                 radiomics_robustness: {
-                    enabled: document.getElementById('robustness-enabled').checked
+                    enabled: document.getElementById('robustness-enabled').checked,
+                    intensity: document.getElementById('robustness-intensity').value
                 },
                 custom_models: {
                     enabled: customEnabled,

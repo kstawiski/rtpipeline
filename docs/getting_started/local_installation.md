@@ -110,8 +110,10 @@ named environments directly. It writes an explicit package receipt to:
 ~/.local/state/rtpipeline/install-receipt-v2.2.1.txt
 ```
 
-The receipt includes platform, backend, git commit/dirty state, and explicit
-package URLs for both environments.
+The receipt includes platform, backend, git commit/dirty state, micromamba's
+explicit conda package URLs, `pip freeze`, and `pip inspect` inventories for
+both environments, plus the PyRadiomics source hash when a local artifact is
+used.
 
 ## 3. Create a local configuration
 
@@ -145,9 +147,9 @@ radiomics_robustness:
 
 This represents Gaussian noise at 0, 10, and 20 HU; rigid translations up to
 +/-4 mm; two contour realizations; and -15%, 0%, and +15% volume adaptation.
-The Cartesian standard grid contains 81 perturbations per ROI when every
-operation succeeds.
-Do not describe a run as complete NTCV unless all four axes actually ran for the
+The Cartesian standard grid requires 81 perturbations per ROI. RTpipeline fails
+the course if any configured state cannot be generated or extracted. Do not
+describe a run as complete NTCV unless all four axes actually ran for the
 reported cohort.
 
 Set the segmentation backend to match the installer:
@@ -197,9 +199,10 @@ Additional Snakemake flags belong after `--`:
 bash scripts/run_local.sh --config config.local.yaml --cores 4 -- --keep-going
 ```
 
-Do not close the terminal during processing. Review the configured logs
-directory and the per-course sentinel files if a stage reports failure. The
-final cohort tables are written under `<output_dir>/_RESULTS/`.
+Do not close the terminal during processing. Review the configured logs if a
+stage fails; an enabled robustness course receives a success sentinel only
+after its complete grid is written. Final cohort tables are written under
+`<output_dir>/_RESULTS/`.
 
 ## 6. Manuscript-ready provenance
 
@@ -220,20 +223,21 @@ cp ~/.local/state/rtpipeline/install-receipt-v2.2.1.txt \
 cp config.local.yaml /absolute/path/to/analysis-provenance/
 ```
 
-After processing, retain QC summaries, failed/skipped-course logs, and the
-complete robustness aggregate. Report the actual number of perturbations per
-ROI and any exclusions from robustness analysis; the configured axes alone do
-not prove that every ROI completed.
+After processing, retain QC summaries, failure logs, the per-course raw
+robustness parquet files, and the complete aggregate workbook/raw parquet pair.
+Report the actual number of perturbations per ROI. The robustness stage fails
+closed rather than silently excluding an incomplete perturbation or subject.
 
 A suitable methods statement is:
 
 > DICOM-RT preprocessing was performed with RTpipeline v2.2.1 (commit
 > [COMMIT]) using separate NumPy 2.x processing and NumPy 1.26 PyRadiomics
 > environments. Radiomics stability was assessed with the configured standard
-> NTCV chain comprising Gaussian noise (0, 10, and 20 HU), rigid translations
-> up to 4 mm, two contour realizations, and volume adaptation (-15%, 0%, and
-> +15%). Completed perturbations and exclusions were verified from the
-> per-course and cohort-level QC outputs.
+> RTpipeline-adapted NTCV chain comprising Gaussian noise (0, 10, and 20 HU),
+> superior-inferior rigid translations (0 and +/-4 mm), two reproducible random
+> physical-space contour offsets, and distance-ranked adaptation to the closest
+> voxel counts representing -15%, 0%, and +15% volume changes. All 81 configured
+> states per analyzed ROI were required to complete.
 
 Replace every bracketed field and adjust the text to the analysis that actually
 ran. See the [reproducibility guide](../user_guide/reproducibility.md) for the

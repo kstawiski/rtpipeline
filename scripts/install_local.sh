@@ -16,6 +16,7 @@ INSTALL_SYSTEM_PACKAGES=true
 PLAN_ONLY=false
 VERIFY_ONLY=false
 MAMBA_ROOT="${RTPIPELINE_MAMBA_ROOT:-${DEFAULT_MAMBA_ROOT}}"
+INSTALL_TEMP_DIR=""
 
 usage() {
     cat <<'EOF'
@@ -41,6 +42,22 @@ die() {
 
 log() {
     printf '[rtpipeline] %s\n' "$*"
+}
+
+sha256_file() {
+    local path="$1"
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$path" | awk '{print $1}'
+    else
+        shasum -a 256 "$path" | awk '{print $1}'
+    fi
+}
+
+ensure_install_temp_dir() {
+    if [[ -z "$INSTALL_TEMP_DIR" ]]; then
+        INSTALL_TEMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/rtpipeline-install.XXXXXX")"
+        trap '[[ -n "${INSTALL_TEMP_DIR:-}" && -d "$INSTALL_TEMP_DIR" ]] && rm -rf -- "$INSTALL_TEMP_DIR"' EXIT
+    fi
 }
 
 while (($#)); do
@@ -196,13 +213,12 @@ if [[ ! -x "$MAMBA_BIN" ]]; then
     esac
     log "installing micromamba from the official mamba-org endpoint"
     mkdir -p "$(dirname "$MAMBA_BIN")"
-    temp_dir="$(mktemp -d)"
-    trap 'rm -rf "${temp_dir:-}"' EXIT
+    ensure_install_temp_dir
     curl --fail --location --silent --show-error \
         "https://micro.mamba.pm/api/micromamba/${mamba_platform}/latest" \
-        --output "${temp_dir}/micromamba.tar.bz2"
-    tar -xjf "${temp_dir}/micromamba.tar.bz2" -C "$temp_dir" bin/micromamba
-    install -m 0755 "${temp_dir}/bin/micromamba" "$MAMBA_BIN"
+        --output "${INSTALL_TEMP_DIR}/micromamba.tar.bz2"
+    tar -xjf "${INSTALL_TEMP_DIR}/micromamba.tar.bz2" -C "$INSTALL_TEMP_DIR" bin/micromamba
+    install -m 0755 "${INSTALL_TEMP_DIR}/bin/micromamba" "$MAMBA_BIN"
 fi
 
 export MAMBA_ROOT_PREFIX="$MAMBA_ROOT"
@@ -257,7 +273,11 @@ if [[ "$VERIFY_ONLY" != true ]]; then
     if [[ "$OS_NAME" == "Linux" && "$ARCH_NAME" == "x86_64" ]]; then
         radiomics_source="${PROJECT_DIR}/third_party/wheels/pyradiomics-3.0.1-cp310-cp310-linux_x86_64.whl"
     else
-        radiomics_source="https://github.com/AIM-Harvard/pyradiomics/archive/refs/tags/v3.0.1.tar.gz"
+        ensure_install_temp_dir
+        radiomics_source="${INSTALL_TEMP_DIR}/pyradiomics-v3.0.1.tar.gz"
+        curl --fail --location --silent --show-error \
+            "https://github.com/AIM-Harvard/pyradiomics/archive/refs/tags/v3.0.1.tar.gz" \
+            --output "$radiomics_source"
     fi
     "$MAMBA_BIN" run --name "$RADIOMICS_ENV" python -m pip install \
         --no-deps --no-build-isolation "$radiomics_source"
@@ -271,6 +291,8 @@ log "verifying both environments"
 "$MAMBA_BIN" run --name "$RADIOMICS_ENV" python -c \
     "import numpy, radiomics; assert numpy.__version__.split('.')[0] == '1'; print('radiomics', radiomics.__version__, numpy.__version__)"
 "$MAMBA_BIN" run --name "$RADIOMICS_ENV" python -m rtpipeline.cli --help >/dev/null
+"$MAMBA_BIN" run --name "$MAIN_ENV" python -m pip check
+"$MAMBA_BIN" run --name "$RADIOMICS_ENV" python -m pip check
 "$MAMBA_BIN" run --name "$MAIN_ENV" snakemake --version
 
 case "$DEVICE" in
@@ -294,14 +316,27 @@ receipt_path="${receipt_dir}/install-receipt-v2.2.1.txt"
     printf 'wsl2=%s\n' "$IS_WSL"
     printf 'device=%s\n' "$DEVICE"
     printf 'project=%s\n' "$PROJECT_DIR"
+    printf 'micromamba_version=%s\n' "$("$MAMBA_BIN" --version)"
     if command -v git >/dev/null 2>&1 && git -C "$PROJECT_DIR" rev-parse HEAD >/dev/null 2>&1; then
         printf 'git_commit=%s\n' "$(git -C "$PROJECT_DIR" rev-parse HEAD)"
         printf 'git_dirty=%s\n' "$(if [[ -n "$(git -C "$PROJECT_DIR" status --porcelain)" ]]; then printf true; else printf false; fi)"
     fi
     printf '\n[rtpipeline explicit environment]\n'
     "$MAMBA_BIN" list --name "$MAIN_ENV" --explicit
+    printf '\n[rtpipeline pip freeze]\n'
+    "$MAMBA_BIN" run --name "$MAIN_ENV" python -m pip freeze --all
+    printf '\n[rtpipeline pip inspect]\n'
+    "$MAMBA_BIN" run --name "$MAIN_ENV" python -m pip inspect --local
     printf '\n[rtpipeline-radiomics explicit environment]\n'
     "$MAMBA_BIN" list --name "$RADIOMICS_ENV" --explicit
+    printf '\n[rtpipeline-radiomics pip freeze]\n'
+    "$MAMBA_BIN" run --name "$RADIOMICS_ENV" python -m pip freeze --all
+    printf '\n[rtpipeline-radiomics pip inspect]\n'
+    "$MAMBA_BIN" run --name "$RADIOMICS_ENV" python -m pip inspect --local
+    if [[ -f "${radiomics_source:-}" ]]; then
+        printf '\npyradiomics_source=%s\n' "$radiomics_source"
+        printf 'pyradiomics_source_sha256=%s\n' "$(sha256_file "$radiomics_source")"
+    fi
 } > "$receipt_path"
 
 log "installation verified"
