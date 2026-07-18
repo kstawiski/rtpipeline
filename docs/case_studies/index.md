@@ -278,7 +278,7 @@ thresholds:
 **Running Radiomics with Robustness Assessment:**
 
 ```bash
-snakemake --cores 8 radiomics_robustness_ct
+snakemake --cores 8 aggregate_radiomics_robustness
 ```
 
 **Feature Selection Based on Robustness:**
@@ -301,8 +301,16 @@ robustness = robustness[
 ]
 robust_feature_names = robustness["feature_name"].tolist()
 
-# Filter to robust features only
-X_robust = features[features.columns.intersection(robust_feature_names)]
+# Filter the radiomics rows to the same exact ROI/source before selecting
+# columns. `roi_original_name` avoids matching a cropped display suffix.
+features = features[
+    (features["roi_original_name"] == "GTV_primary")
+    & (features["segmentation_source"] == "Custom")
+].copy()
+missing_features = sorted(set(robust_feature_names) - set(features.columns))
+if missing_features:
+    raise ValueError(f"Selected robustness features are absent: {missing_features}")
+X_robust = features.loc[:, robust_feature_names]
 
 print(f"Total features extracted: {len(features.columns)}")
 print(f"Robust features retained: {len(X_robust.columns)}")
@@ -321,7 +329,7 @@ from sklearn.pipeline import Pipeline
 clinical = pd.read_csv("clinical/response.csv")
 data = features.merge(clinical[["patient_id", "response"]], on="patient_id")
 
-X = data[robust_feature_names]
+X = data.loc[:, robust_feature_names]
 y = data["response"]
 
 # LASSO-regularized logistic regression for sparse signature
