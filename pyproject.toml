@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rtpipeline"
-version = "2.2.0"
+version = "2.2.1"
 description = "Open-source framework for standardized radiotherapy analytics with robustness-aware radiomics"
 authors = [{ name = "Konrad Stawiski", email = "konrad@konsta.com.pl" }]
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-  "pydicom>=3.0,<4",
+  "pydicom>=3.0.2,<4",
   "dicompyler-core==0.5.6",
   # NumPy 2.x is used by the primary segmentation/runtime environment.
   # The radiomics stack remains isolated in envs/rtpipeline-radiomics.yaml.
@@ -28,7 +28,7 @@ dependencies = [
   "plotly",
   "nbformat",     # For notebook processing support
   "ipython",      # For notebook processing support
-  "filelock",     # For thread-safe file operations in parallel processing
+  "filelock>=3.20.3",  # For thread-safe file operations in parallel processing
 ]
 
 [project.optional-dependencies]
@@ -50,8 +50,10 @@ docs = [
 rtpipeline = "rtpipeline.cli:main"
 
 [tool.setuptools]
-packages = ["rtpipeline", "rtpipeline.ext"]
 include-package-data = true
+
+[tool.setuptools.packages.find]
+include = ["rtpipeline*"]
 
 [tool.setuptools.package-data]
 rtpipeline = [
@@ -62,3 +64,13 @@ rtpipeline = [
   "radiomics_params_pet_psma.yaml",
   "custom_structures_pelvic.yaml",
 ]
+
+[tool.ruff]
+target-version = "py310"
+extend-exclude = ["*.ipynb"]
+
+[tool.ruff.lint]
+select = ["E9", "F63", "F7", "F82", "PLE"]
+
+[tool.ruff.lint.per-file-ignores]
+"scripts/run_*.py" = ["F821"]  # Snakemake injects the global at runtime.

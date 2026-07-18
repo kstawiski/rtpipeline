@@ -1,5 +1,33 @@
 # Release notes
 
+## 2.2.1
+
+RTpipeline 2.2.1 is a release-hardening update for source, wheel, container,
+and radiomics-robustness execution.
+
+- Built wheels now include every `rtpipeline` subpackage, including the
+  `segmenters` and `eval` runtime modules.
+- Related-series organization now records metadata and performs cleanup through
+  the same validated helper used by primary series.
+- Downloaded custom-model archives are validated against path traversal and
+  link-based extraction before any member is written.
+- Subprocess launchers use argument arrays or an explicit shell boundary,
+  eliminating ambiguous nested shell execution while retaining documented
+  environment-activation support.
+- The shipped robustness profile now runs the complete standard NTCV chain:
+  Gaussian noise at 0, 10, and 20 HU; translations up to +/-4 mm; two contour
+  realizations; and -15%, 0%, and +15% volume adaptation (81 combinations per
+  ROI when all operations succeed).
+- Runtime dependency floors include patched `pydicom` and `filelock` releases;
+  release CI verifies static analysis and wheel contents before container build.
+- A supported automatic local installer, runner, and self-contained tutorial
+  cover macOS, Linux, and WSL2 while preserving the required dual environments
+  and manuscript provenance.
+
+Existing v2.2.0 configurations remain loadable. Runs that relied on the old
+volume-only implicit robustness defaults should set the three NTC axes to zero
+explicitly if that historical behavior is required.
+
 ## 2.2.0
 
 RTpipeline 2.2.0 adds a fail-closed contract for distributed aggregate

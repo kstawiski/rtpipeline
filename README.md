@@ -130,6 +130,7 @@ Full documentation at **[kstawiski.github.io/rtpipeline](https://kstawiski.githu
 | [Output Format](https://kstawiski.github.io/rtpipeline/user_guide/output_format/) | Data table schemas |
 | [Case Studies](https://kstawiski.github.io/rtpipeline/case_studies/) | Real-world research examples |
 | [Reproducibility](https://kstawiski.github.io/rtpipeline/user_guide/reproducibility/) | Methods templates for publications |
+| [Local installation](https://kstawiski.github.io/rtpipeline/getting_started/local_installation/) | Automatic macOS, Linux, and WSL2 setup |
 | [Radiomics Robustness](https://kstawiski.github.io/rtpipeline/features/radiomics_robustness/) | NTCV perturbation methodology |
 | [Distributed Analysis](https://kstawiski.github.io/rtpipeline/features/distributed_analysis/) | Hash-bound cohort-level packet export and aggregation |
 

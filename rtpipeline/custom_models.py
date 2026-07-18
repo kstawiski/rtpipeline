@@ -5,10 +5,11 @@ import json
 import logging
 import os
 import shutil
+import stat
 import tempfile
 import zipfile
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Dict, Iterable, List, Optional, Tuple, TYPE_CHECKING
 
 import numpy as np
@@ -913,6 +914,55 @@ def _postprocess_structures(
     return out, diagnostics
 
 
+def _safe_extract_network_archive(zf: zipfile.ZipFile, destination: Path) -> None:
+    """Extract model weights without allowing traversal, links, or collisions."""
+    destination.mkdir(parents=True, exist_ok=True)
+    destination_root = destination.resolve()
+    validated: list[tuple[zipfile.ZipInfo, Path]] = []
+    targets: set[Path] = set()
+    file_targets: set[Path] = set()
+
+    for member in zf.infolist():
+        normalized = (member.filename or "").replace("\\", "/")
+        archive_path = PurePosixPath(normalized)
+        if (
+            not archive_path.parts
+            or archive_path.is_absolute()
+            or ".." in archive_path.parts
+            or archive_path.parts[0].endswith(":")
+        ):
+            raise ValueError(f"Unsafe model archive entry: {member.filename!r}")
+        mode = (member.external_attr >> 16) & 0o177777
+        if stat.S_ISLNK(mode):
+            raise ValueError(f"Model archive contains a symbolic link: {member.filename!r}")
+        target = (destination_root / Path(*archive_path.parts)).resolve()
+        try:
+            target.relative_to(destination_root)
+        except ValueError as exc:
+            raise ValueError(f"Model archive entry escapes destination: {member.filename!r}") from exc
+        if target in targets:
+            raise ValueError(f"Model archive contains duplicate entry: {member.filename!r}")
+        targets.add(target)
+        if not (member.is_dir() or normalized.endswith("/")):
+            file_targets.add(target)
+        validated.append((member, target))
+
+    for target in targets:
+        for parent in target.parents:
+            if parent == destination_root:
+                break
+            if parent in file_targets:
+                raise ValueError(f"Model archive has a file/directory collision at: {parent.name!r}")
+
+    for member, target in validated:
+        if member.is_dir() or (member.filename or "").endswith("/"):
+            target.mkdir(parents=True, exist_ok=True)
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with zf.open(member, "r") as source, target.open("wb") as output:
+            shutil.copyfileobj(source, output)
+
+
 def _prepare_network_weights(model: CustomModelDefinition, network: NetworkDefinition) -> Path:
     results_root = model.results_root()
     dataset_dir = results_root / network.dataset_dir
@@ -924,7 +974,7 @@ def _prepare_network_weights(model: CustomModelDefinition, network: NetworkDefin
     if archive_path and archive_path.exists() and archive_path.is_file():
         logger.info("Extracting weights for model %s network %s", model.name, network.network_id)
         with zipfile.ZipFile(archive_path, "r") as zf:
-            zf.extractall(results_root)
+            _safe_extract_network_archive(zf, results_root)
         if model.interface == "nnunetv1" and not dataset_dir.exists():
             parts = Path(network.dataset_dir).parts
             if parts and parts[0] == "nnUNet":

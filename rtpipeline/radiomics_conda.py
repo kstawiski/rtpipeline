@@ -7,6 +7,7 @@ Runs PyRadiomics in a separate conda environment with NumPy 1.x for compatibilit
 import json
 import logging
 import os
+import shutil
 import subprocess
 import tempfile
 import time
@@ -28,6 +29,21 @@ from .utils import mask_is_cropped, radiomics_mp_context
 logger = logging.getLogger(__name__)
 
 RADIOMICS_ENV = os.environ.get("RTPIPELINE_RADIOMICS_ENV", "rtpipeline-radiomics")
+
+
+def _conda_executable() -> str:
+    """Resolve a conda-compatible executable for isolated radiomics calls."""
+    configured = os.environ.get("RTPIPELINE_CONDA_EXE")
+    if configured:
+        return configured
+    for candidate in ("conda", "micromamba", "mamba"):
+        resolved = shutil.which(candidate)
+        if resolved:
+            return resolved
+    return "conda"  # Preserve the historical error message when none is installed.
+
+
+CONDA_EXE = _conda_executable()
 
 # Heartbeat interval for progress logging (seconds)
 HEARTBEAT_INTERVAL = 60
@@ -457,7 +473,7 @@ def check_radiomics_env(timeout: int = 180, retries: int = 1) -> bool:
             try:
                 result = subprocess.run(
                     [
-                        "conda",
+                        CONDA_EXE,
                         "run",
                         "-n",
                         RADIOMICS_ENV,
@@ -642,7 +658,7 @@ print(json.dumps(output))
 
         # Run extraction in conda environment
         result = subprocess.run(
-            ["conda", "run", "-n", RADIOMICS_ENV, "python", "-c", extraction_script_with_file],
+            [CONDA_EXE, "run", "-n", RADIOMICS_ENV, "python", "-c", extraction_script_with_file],
             capture_output=True,
             text=True,
             timeout=900,  # allow up to 15 minutes for large ROIs
@@ -825,7 +841,7 @@ for task in tasks:
 
         # Run batch extraction in conda environment
         result = subprocess.run(
-            ["conda", "run", "-n", RADIOMICS_ENV, "python", "-c", batch_script, batch_file_path],
+            [CONDA_EXE, "run", "-n", RADIOMICS_ENV, "python", "-c", batch_script, batch_file_path],
             capture_output=True,
             text=True,
             timeout=total_timeout,

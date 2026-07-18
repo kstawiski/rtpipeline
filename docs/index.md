@@ -18,7 +18,7 @@
     Validated aggregate packets; imaging stays local
 </div>
 
-!!! info "RTpipeline v2.2.0"
+!!! info "RTpipeline v2.2.1"
     This release adds fail-closed distributed aggregate packets, preserves the 2.1.2 radiomics correctness fixes, and prevents duplicate Torch/CUDA dependency resolution. See the [release notes](release_notes.md).
 
 ---
@@ -116,7 +116,7 @@ This makes cohort-level comparison statistically defensible.
 - **C**ontour: Boundary randomization simulating inter-observer variability
 - **V**olume: Erosion/dilation simulating segmentation uncertainty
 
-The quick-start container profile can run a conservative, volume-first robustness configuration, while full N/T/C/V chains are enabled explicitly in `config.yaml`.
+The shipped profile runs the complete standard N/T/C/V chain; every axis and intensity remains explicit and configurable in `config.yaml`.
 
 Features are classified by robustness:
 

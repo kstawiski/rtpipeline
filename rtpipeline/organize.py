@@ -27,7 +27,13 @@ from .layout import CourseDirs, build_course_dirs, course_dir_name, find_dcm
 from .metadata import LinkedSet, group_by_course, link_rt_sets, parse_date
 from .rt_details import extract_rt, StructInfo
 from .utils import ensure_dir, run_tasks_with_adaptive_workers, read_dicom, get, _scoped_walk, parallel_map_files, DEFAULT_INDEX_WORKERS
-from .segmentation import _ensure_ct_nifti, _strip_nifti_base, run_dcm2niix, _derive_nifti_name
+from .segmentation import (
+    _collect_series_metadata,
+    _derive_nifti_name,
+    _ensure_ct_nifti,
+    _strip_nifti_base,
+    run_dcm2niix,
+)
 
 logger = logging.getLogger(__name__)
 

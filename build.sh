@@ -18,7 +18,7 @@ NC='\033[0m' # No Color
 
 # Default values
 PUSH=false
-NO_CACHE=""
+NO_CACHE=()
 TAG="latest"
 REGISTRY="docker.io"
 USERNAME="kstawiski"
@@ -34,7 +34,7 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --no-cache)
-            NO_CACHE="--no-cache"
+            NO_CACHE=(--no-cache)
             shift
             ;;
         --tag)
@@ -119,18 +119,18 @@ download_totalseg_weights() {
     local WEIGHTS_DIR="totalseg_weights"
 
     # Check if weights directory exists and has content
-    if [ -d "$WEIGHTS_DIR" ] && [ -n "$(ls -A $WEIGHTS_DIR 2>/dev/null)" ]; then
+    if [ -d "$WEIGHTS_DIR" ] && [ -n "$(ls -A "$WEIGHTS_DIR" 2>/dev/null)" ]; then
         echo -e "${GREEN}✓ TotalSegmentator weights already present in ${WEIGHTS_DIR}/${NC}"
         return 0
     fi
 
     # Check if weights exist in the default location first
     local DEFAULT_WEIGHTS="${HOME}/.totalsegmentator"
-    if [ -d "$DEFAULT_WEIGHTS/nnunet/results" ] && [ -n "$(ls -A $DEFAULT_WEIGHTS/nnunet/results 2>/dev/null)" ]; then
+    if [ -d "$DEFAULT_WEIGHTS/nnunet/results" ] && [ -n "$(ls -A "$DEFAULT_WEIGHTS/nnunet/results" 2>/dev/null)" ]; then
         echo -e "${YELLOW}Found existing TotalSegmentator weights in ${DEFAULT_WEIGHTS}${NC}"
         echo -e "${YELLOW}Copying to ${WEIGHTS_DIR}/...${NC}"
         mkdir -p "$WEIGHTS_DIR"
-        cp -r "$DEFAULT_WEIGHTS"/* "$WEIGHTS_DIR/"
+        cp -r "$DEFAULT_WEIGHTS"/. "$WEIGHTS_DIR/"
         echo -e "${GREEN}✓ TotalSegmentator weights copied successfully${NC}"
         return 0
     fi
@@ -144,19 +144,20 @@ download_totalseg_weights() {
 
     # Download weights using TotalSegmentator Python API
     # We use the rtpipeline conda environment if available, otherwise system Python
-    local PYTHON_CMD=""
+    local PYTHON_CMD=()
     if command -v conda &> /dev/null && conda env list | grep -q "^rtpipeline "; then
-        PYTHON_CMD="conda run -n rtpipeline python"
+        PYTHON_CMD=(conda run -n rtpipeline python)
     elif [ -f "/opt/conda/envs/rtpipeline/bin/python" ]; then
-        PYTHON_CMD="/opt/conda/envs/rtpipeline/bin/python"
+        PYTHON_CMD=(/opt/conda/envs/rtpipeline/bin/python)
     else
-        PYTHON_CMD="python"
+        PYTHON_CMD=(python)
     fi
 
-    echo -e "${YELLOW}Using Python: ${PYTHON_CMD}${NC}"
+    echo -e "${YELLOW}Using Python: ${PYTHON_CMD[*]}${NC}"
 
     # Download the weights using TotalSegmentator's download functionality
-    $PYTHON_CMD << 'PYTHON_SCRIPT'
+    local DOWNLOAD_STATUS
+    if "${PYTHON_CMD[@]}" << 'PYTHON_SCRIPT'
 import os
 import sys
 
@@ -190,10 +191,13 @@ except Exception as e:
     print(f"Error downloading weights: {e}")
     sys.exit(1)
 PYTHON_SCRIPT
+    then
+        DOWNLOAD_STATUS=0
+    else
+        DOWNLOAD_STATUS=$?
+    fi
 
-    local DOWNLOAD_STATUS=$?
-
-    if [ $DOWNLOAD_STATUS -ne 0 ]; then
+    if [ "$DOWNLOAD_STATUS" -ne 0 ]; then
         echo -e "${RED}✗ Failed to download TotalSegmentator weights${NC}"
         echo "You can manually download weights by running:"
         echo "  conda activate rtpipeline"
@@ -208,8 +212,8 @@ PYTHON_SCRIPT
     mkdir -p "$WEIGHTS_DIR"
 
     # Copy from the temp download location
-    if [ -d "$TEMP_WEIGHTS_DIR" ] && [ -n "$(ls -A $TEMP_WEIGHTS_DIR 2>/dev/null)" ]; then
-        cp -r "$TEMP_WEIGHTS_DIR"/* "$WEIGHTS_DIR/"
+    if [ -d "$TEMP_WEIGHTS_DIR" ] && [ -n "$(ls -A "$TEMP_WEIGHTS_DIR" 2>/dev/null)" ]; then
+        cp -r "$TEMP_WEIGHTS_DIR"/. "$WEIGHTS_DIR/"
         rm -rf "$TEMP_WEIGHTS_DIR"
         echo -e "${GREEN}✓ TotalSegmentator weights downloaded successfully${NC}"
     else
@@ -244,27 +248,28 @@ download_custom_model_weights() {
         local output="$2"
 
         if [ -f "$output" ]; then
-            echo -e "  ${GREEN}✓${NC} $(basename $output) already exists"
+            echo -e "  ${GREEN}✓${NC} $(basename "$output") already exists"
             return 0
         fi
 
-        echo -e "  ${YELLOW}Downloading $(basename $output)...${NC}"
-        local output_dir=$(dirname "$output")
+        echo -e "  ${YELLOW}Downloading $(basename "$output")...${NC}"
+        local output_dir
+        output_dir=$(dirname "$output")
         mkdir -p "$output_dir"
 
         if [ "$DOWNLOAD_CMD" = "wget" ]; then
             if wget -q --show-progress -O "$output" "$url"; then
-                echo -e "  ${GREEN}✓${NC} Downloaded $(basename $output)"
+                echo -e "  ${GREEN}✓${NC} Downloaded $(basename "$output")"
                 return 0
             fi
         else
             if curl -L -# -o "$output" "$url"; then
-                echo -e "  ${GREEN}✓${NC} Downloaded $(basename $output)"
+                echo -e "  ${GREEN}✓${NC} Downloaded $(basename "$output")"
                 return 0
             fi
         fi
 
-        echo -e "  ${RED}✗${NC} Failed to download $(basename $output)"
+        echo -e "  ${RED}✗${NC} Failed to download $(basename "$output")"
         rm -f "$output"
         return 1
     }
@@ -318,8 +323,7 @@ if [ "$SKIP_WEIGHTS" = true ]; then
     mkdir -p totalseg_weights
 else
     export TOTALSEG_TEMP_DIR="${HOME}/.totalsegmentator_temp_$$"
-    download_totalseg_weights
-    if [ $? -ne 0 ]; then
+    if ! download_totalseg_weights; then
         echo -e "${YELLOW}Warning: Continuing build without TotalSegmentator weights${NC}"
         echo -e "${YELLOW}The image will download weights on first run${NC}"
         # Create empty directory to prevent Docker COPY failure
@@ -331,8 +335,7 @@ fi
 if [ "$SKIP_CUSTOM_WEIGHTS" = true ]; then
     echo -e "${YELLOW}Skipping custom model weights download (--skip-custom-weights)${NC}"
 else
-    download_custom_model_weights
-    if [ $? -ne 0 ]; then
+    if ! download_custom_model_weights; then
         echo -e "${YELLOW}Warning: Some custom model weights are missing${NC}"
         echo -e "${YELLOW}Models with missing weights will be skipped${NC}"
     fi
@@ -340,15 +343,13 @@ fi
 
 # Build the image
 echo -e "${YELLOW}Building image...${NC}"
-docker build \
-    ${NO_CACHE} \
+if docker build \
+    "${NO_CACHE[@]}" \
     --build-arg BUILD_DATE="$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
     -t "${FULL_IMAGE_NAME}:${TAG}" \
     -t "${FULL_IMAGE_NAME}:latest" \
     -f Dockerfile \
-    .
-
-if [ $? -eq 0 ]; then
+    .; then
     echo -e "${GREEN}✓ Build completed successfully${NC}"
 else
     echo -e "${RED}✗ Build failed${NC}"
@@ -367,22 +368,26 @@ if [ "$PUSH" = true ]; then
 
     # Login to Docker Hub
     echo -e "${YELLOW}Please login to Docker Hub:${NC}"
-    docker login ${REGISTRY}
-
-    if [ $? -ne 0 ]; then
+    if ! docker login "${REGISTRY}"; then
         echo -e "${RED}✗ Docker login failed${NC}"
         exit 1
     fi
 
     # Push both tags
     echo -e "${YELLOW}Pushing ${FULL_IMAGE_NAME}:${TAG}...${NC}"
-    docker push "${FULL_IMAGE_NAME}:${TAG}"
-    PUSH_TAG_STATUS=$?
+    if docker push "${FULL_IMAGE_NAME}:${TAG}"; then
+        PUSH_TAG_STATUS=0
+    else
+        PUSH_TAG_STATUS=$?
+    fi
 
     if [ "$TAG" != "latest" ]; then
         echo -e "${YELLOW}Pushing ${FULL_IMAGE_NAME}:latest...${NC}"
-        docker push "${FULL_IMAGE_NAME}:latest"
-        PUSH_LATEST_STATUS=$?
+        if docker push "${FULL_IMAGE_NAME}:latest"; then
+            PUSH_LATEST_STATUS=0
+        else
+            PUSH_LATEST_STATUS=$?
+        fi
     else
         PUSH_LATEST_STATUS=0
     fi

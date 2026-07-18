@@ -96,6 +96,7 @@ nav:
   - Release Notes: release_notes.md
   - Getting Started:
     - Introduction: getting_started/index.md
+    - Local Mac/Linux/WSL2: getting_started/local_installation.md
     - Web UI: getting_started/webui.md
     - Docker Setup: getting_started/docker_setup.md
   - User Guide:

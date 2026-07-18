@@ -34,7 +34,12 @@ CORES=""
 DOCKER_IMAGE="${RTPIPELINE_IMAGE:-kstawiski/rtpipeline:latest}"
 CONTAINER_NAME="${RTPIPELINE_CONTAINER_NAME:-rtpipeline-run}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CONFIG_OVERRIDES="--config dicom_root=/data/input output_dir=/data/output logs_dir=/data/logs"
+CONFIG_OVERRIDES=(
+    --config
+    dicom_root=/data/input
+    output_dir=/data/output
+    logs_dir=/data/logs
+)
 
 # Color output
 RED='\033[0;31m'
@@ -47,6 +52,11 @@ log_info() { echo -e "${BLUE}[INFO]${NC} $1"; }
 log_success() { echo -e "${GREEN}[OK]${NC} $1"; }
 log_warning() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
+
+print_command() {
+    printf '%q ' "$@"
+    printf '\n'
+}
 
 show_help() {
     cat << 'EOF'
@@ -193,12 +203,12 @@ fi
 TIMEOUT_SECONDS=$((TIMEOUT_HOURS * 3600))
 
 # Build Docker command
-DOCKER_BASE="docker run --rm --name ${CONTAINER_NAME}"
+DOCKER_BASE=(docker run --rm --name "$CONTAINER_NAME")
 
 # Add GPU support if not CPU-only
 if [[ "$CPU_ONLY" == "false" ]]; then
     if command -v nvidia-smi &> /dev/null; then
-        DOCKER_BASE="$DOCKER_BASE --gpus all"
+        DOCKER_BASE+=(--gpus all)
         log_info "GPU detected, enabling CUDA support"
     else
         log_warning "No GPU detected, running in CPU mode (slower)"
@@ -207,21 +217,21 @@ if [[ "$CPU_ONLY" == "false" ]]; then
 fi
 
 # Add resource limits
-DOCKER_BASE="$DOCKER_BASE --cpus=$CORES"
-DOCKER_BASE="$DOCKER_BASE --memory=32g"
-DOCKER_BASE="$DOCKER_BASE --shm-size=8g"
+DOCKER_BASE+=("--cpus=$CORES" --memory=32g --shm-size=8g)
 
 # Add volumes
 INPUT_DIR_ABS=$(realpath "$INPUT_DIR")
 OUTPUT_DIR_ABS=$(realpath "$OUTPUT_DIR")
 LOG_DIR_ABS=$(realpath "$LOG_DIR")
 
-DOCKER_BASE="$DOCKER_BASE -v ${INPUT_DIR_ABS}:/data/input:ro"
-DOCKER_BASE="$DOCKER_BASE -v ${OUTPUT_DIR_ABS}:/data/output:rw"
-DOCKER_BASE="$DOCKER_BASE -v ${LOG_DIR_ABS}:/data/logs:rw"
-DOCKER_BASE="$DOCKER_BASE -v ${SCRIPT_DIR}/Snakefile:/app/Snakefile:ro"
-DOCKER_BASE="$DOCKER_BASE -v ${SCRIPT_DIR}/rtpipeline:/app/rtpipeline:ro"
-DOCKER_BASE="$DOCKER_BASE -v ${SCRIPT_DIR}/custom_structures_pelvic.yaml:/app/custom_structures_pelvic.yaml:ro"
+DOCKER_BASE+=(
+    -v "${INPUT_DIR_ABS}:/data/input:ro"
+    -v "${OUTPUT_DIR_ABS}:/data/output:rw"
+    -v "${LOG_DIR_ABS}:/data/logs:rw"
+    -v "${SCRIPT_DIR}/Snakefile:/app/Snakefile:ro"
+    -v "${SCRIPT_DIR}/rtpipeline:/app/rtpipeline:ro"
+    -v "${SCRIPT_DIR}/custom_structures_pelvic.yaml:/app/custom_structures_pelvic.yaml:ro"
+)
 
 # Add config file if specified
 if [[ -n "$CONFIG_FILE" ]]; then
@@ -230,32 +240,45 @@ if [[ -n "$CONFIG_FILE" ]]; then
         exit 1
     fi
     CONFIG_FILE_ABS=$(realpath "$CONFIG_FILE")
-    DOCKER_BASE="$DOCKER_BASE -v ${CONFIG_FILE_ABS}:/app/config_custom.yaml:ro"
-    CONFIG_ARG="--configfile /app/config_custom.yaml"
+    DOCKER_BASE+=(-v "${CONFIG_FILE_ABS}:/app/config_custom.yaml:ro")
+    CONFIG_ARGS=(--configfile /app/config_custom.yaml)
 else
-    CONFIG_ARG="--configfile /app/config.container.yaml"
+    CONFIG_ARGS=(--configfile /app/config.container.yaml)
 fi
 
 # Set environment variables for timeouts
-DOCKER_BASE="$DOCKER_BASE -e TOTALSEG_TIMEOUT=3600"
-DOCKER_BASE="$DOCKER_BASE -e DCM2NIIX_TIMEOUT=300"
-DOCKER_BASE="$DOCKER_BASE -e RTPIPELINE_RADIOMICS_TASK_TIMEOUT=600"
+DOCKER_BASE+=(
+    -e TOTALSEG_TIMEOUT=3600
+    -e DCM2NIIX_TIMEOUT=300
+    -e RTPIPELINE_RADIOMICS_TASK_TIMEOUT=600
+)
 
 # Add user mapping for proper file permissions
-DOCKER_BASE="$DOCKER_BASE --user $(id -u):$(id -g)"
+DOCKER_BASE+=(--user "$(id -u):$(id -g)")
 
 # Set device for segmentation
 if [[ "$CPU_ONLY" == "true" ]]; then
-    DEVICE_CONFIG="--config segmentation.device=cpu"
+    DEVICE_CONFIG=(--config segmentation.device=cpu)
 else
-    DEVICE_CONFIG=""
+    DEVICE_CONFIG=()
 fi
 
 # Add image and command
-DOCKER_BASE="$DOCKER_BASE $DOCKER_IMAGE"
-PIPELINE_CMD="snakemake --cores $CORES --rerun-incomplete $CONFIG_ARG $DEVICE_CONFIG $CONFIG_OVERRIDES"
-FULL_CMD="$DOCKER_BASE $PIPELINE_CMD"
-VALIDATION_CMD="$DOCKER_BASE snakemake --cores 1 -n $CONFIG_ARG $DEVICE_CONFIG --quiet"
+PIPELINE_CMD=(
+    snakemake --cores "$CORES" --rerun-incomplete
+    "${CONFIG_ARGS[@]}"
+    "${DEVICE_CONFIG[@]}"
+    "${CONFIG_OVERRIDES[@]}"
+)
+FULL_CMD=("${DOCKER_BASE[@]}" "$DOCKER_IMAGE" "${PIPELINE_CMD[@]}")
+VALIDATION_CMD=(
+    "${DOCKER_BASE[@]}" "$DOCKER_IMAGE"
+    snakemake --cores 1 -n
+    "${CONFIG_ARGS[@]}"
+    "${DEVICE_CONFIG[@]}"
+    "${CONFIG_OVERRIDES[@]}"
+    --quiet
+)
 
 # Print configuration
 echo ""
@@ -293,17 +316,17 @@ if [[ "$DRY_RUN" == "true" ]]; then
     log_warning "DRY RUN - Commands that would be executed:"
     echo ""
     if [[ "$VALIDATE" == "true" ]]; then
-        echo "timeout ${VALIDATION_TIMEOUT_SECONDS}s $VALIDATION_CMD"
+        print_command timeout "${VALIDATION_TIMEOUT_SECONDS}s" "${VALIDATION_CMD[@]}"
         echo ""
     fi
-    echo "timeout ${TIMEOUT_SECONDS}s $FULL_CMD"
+    print_command timeout "${TIMEOUT_SECONDS}s" "${FULL_CMD[@]}"
     echo ""
     exit 0
 fi
 
 if [[ "$VALIDATE" == "true" ]]; then
     log_info "Running dataset validation inside Docker for $INPUT_DIR_ABS (timeout: ${VALIDATION_TIMEOUT_SECONDS}s)..."
-    if timeout ${VALIDATION_TIMEOUT_SECONDS}s $VALIDATION_CMD; then
+    if timeout "${VALIDATION_TIMEOUT_SECONDS}s" "${VALIDATION_CMD[@]}"; then
         log_success "Validation completed successfully"
     else
         log_error "Validation failed. Fix issues before running the full pipeline."
@@ -329,7 +352,7 @@ cleanup() {
 trap cleanup INT TERM
 
 # Run the pipeline with timeout
-if timeout ${TIMEOUT_SECONDS}s $FULL_CMD; then
+if timeout "${TIMEOUT_SECONDS}s" "${FULL_CMD[@]}"; then
     END_TIME=$(date +%s)
     DURATION=$((END_TIME - START_TIME))
     DURATION_MIN=$((DURATION / 60))
