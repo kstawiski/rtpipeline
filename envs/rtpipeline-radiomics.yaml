@@ -8,7 +8,7 @@ dependencies:
   - scipy
   - pandas
   - SimpleITK
-  - pydicom>=3.0
+  - pydicom>=3.0.2
   - pyyaml
   - pip
   - pip:
@@ -21,5 +21,5 @@ dependencies:
     - pyarrow
     - rt-utils
     - openpyxl
-    - filelock
+    - filelock>=3.20.3
     - opencv-python-headless==4.8.1.78

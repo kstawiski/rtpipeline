@@ -4,7 +4,7 @@
 
 This guide provides a comprehensive walkthrough for setting up and running **rtpipeline** using Docker. It covers everything from basic setup to advanced configuration, addressing common questions about configuration, default behavior, and real-world usage patterns.
 
-!!! info "RTpipeline v2.2.0 container runtime"
+!!! info "RTpipeline v2.2.1 container runtime"
     The Docker image builds two conda environments up front: `rtpipeline` for organization, TotalSegmentator, DVH, QC, and orchestration; and `rtpipeline-radiomics` for PyRadiomics and Pingouin. In normal use you do not activate them manually; the pipeline dispatches radiomics and robustness work to the compatible environment automatically.
 
 **Target Audience:**
@@ -213,7 +213,7 @@ segmentation:
 radiomics_robustness:
   enabled: true  # ⚠️ Adds significant processing time!
   segmentation_perturbation:
-    intensity: "standard"  # 15-30 perturbations per ROI
+    intensity: "standard"  # 81 perturbations per ROI with shipped grids
     apply_to_structures:
       - "GTV*"  # Tumor volumes
       - "CTV*"  # Clinical targets
@@ -223,14 +223,14 @@ radiomics_robustness:
       - "prostate"
       - "rectum"
     small_volume_changes: [-0.15, 0.0, 0.15]  # ±15% erosion/dilation
-    max_translation_mm: 0.0
-    n_random_contour_realizations: 0
-    noise_levels: [0.0]
+    max_translation_mm: 4.0
+    n_random_contour_realizations: 2
+    noise_levels: [0.0, 10.0, 20.0]
 ```
 
 **What happens:**
 
-1. In the container default profile, each selected ROI is re-evaluated under **volume adaptation perturbations** (`V` in the NTCV chain). This is the conservative quick-start setting shipped in `/app/config.container.yaml`.
+1. In the container default profile, each selected ROI is re-evaluated under the complete **N/T/C/V perturbation chain** shipped in `/app/config.container.yaml`.
 
 2. Radiomics features are re-extracted for each perturbation in the dedicated `rtpipeline-radiomics` environment.
 
@@ -243,7 +243,7 @@ radiomics_robustness:
    - Per course: `<course>/radiomics_robustness_ct.parquet`
    - Cohort aggregate: `_RESULTS/radiomics_robustness_summary.xlsx`
 
-**To enable the full multi-axis NTCV chain**, explicitly add the missing perturbation axes:
+**The full multi-axis NTCV defaults are:**
 
 ```yaml
 radiomics_robustness:
@@ -251,14 +251,13 @@ radiomics_robustness:
   segmentation_perturbation:
     intensity: "standard"
     small_volume_changes: [-0.15, 0.0, 0.15]
-    max_translation_mm: 3.0
+    max_translation_mm: 4.0
     n_random_contour_realizations: 2
     noise_levels: [0.0, 10.0, 20.0]
 ```
 
 **Processing time impact:**
 
-- Volume-only default: modest overhead versus baseline radiomics
 - Full N/T/C/V configuration: typically several-fold slower than baseline radiomics, depending on ROI count and perturbation intensity
 
 **When to disable:**
@@ -636,7 +635,7 @@ max_workers: 30
 radiomics_robustness:
   enabled: true
   segmentation_perturbation:
-    intensity: "aggressive"  # 30-60 perturbations per ROI
+    intensity: "aggressive"  # 315 perturbations per ROI with shipped grids
     apply_to_structures:
       - "GTV*"
       - "CTV*"

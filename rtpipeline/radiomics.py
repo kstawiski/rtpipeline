@@ -8,7 +8,7 @@ import weakref
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import SimpleITK as sitk
@@ -22,6 +22,9 @@ import yaml
 from .utils import run_tasks_with_adaptive_workers, mask_is_cropped, _scoped_walk
 from .custom_models import list_custom_model_outputs
 from .custom_structures_rtstruct import _create_custom_structures_rtstruct, _is_rs_custom_stale
+
+if TYPE_CHECKING:
+    from radiomics import featureextractor
 
 # Image cache for avoiding repeated DICOM loading (significant I/O savings)
 # Configurable via environment variables: RTPIPELINE_IMAGE_CACHE_SIZE, RTPIPELINE_IMAGE_CACHE_AGE_SEC
@@ -119,7 +122,7 @@ def _load_radiomics_params_dict(pfile: Path) -> Optional[Dict[str, Any]]:
     return deepcopy(data)
 
 
-def _apply_params_to_extractor(ext: "radiomics.featureextractor.RadiomicsFeatureExtractor", params: Dict[str, Any]) -> None:
+def _apply_params_to_extractor(ext: "featureextractor.RadiomicsFeatureExtractor", params: Dict[str, Any]) -> None:
     """Apply cached YAML parameters to a freshly created extractor instance."""
 
     settings = params.get('setting') or {}
@@ -366,7 +369,7 @@ def _get_params_file(config: PipelineConfig | None, modality: str = 'CT') -> Opt
     return None
 
 
-def _extractor(config: PipelineConfig, modality: str = 'CT', normalize_override: Optional[bool] = None) -> Optional["radiomics.featureextractor.RadiomicsFeatureExtractor"]:
+def _extractor(config: PipelineConfig, modality: str = 'CT', normalize_override: Optional[bool] = None) -> Optional["featureextractor.RadiomicsFeatureExtractor"]:
     # Check NumPy version to decide which approach to use
     import numpy as np
     numpy_version = tuple(map(int, np.__version__.split('.')[:2]))
@@ -437,7 +440,7 @@ def _derive_voxel_limits(config: PipelineConfig) -> tuple[int, int]:
     return min_v, max_v
 
 
-def _extractor_large_roi(config: PipelineConfig, modality: str = "CT") -> Optional["radiomics.featureextractor.RadiomicsFeatureExtractor"]:
+def _extractor_large_roi(config: PipelineConfig, modality: str = "CT") -> Optional["featureextractor.RadiomicsFeatureExtractor"]:
     """Reduced extractor for very large ROIs (e.g., BODY).
 
     Uses:

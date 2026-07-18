@@ -12,7 +12,7 @@ The radiomics robustness module helps you identify stable, reproducible radiomic
    - Custom models (Segmentation_{model_name}/rtstruct.dcm)
 2. **Generating systematic perturbations** via the validated NTCV chain (Noise + Translation + Contour + Volume):[^zwanenburg2019]
    - **N**: Image noise injection (Gaussian noise in HU)
-   - **T**: Rigid translations (±3-5 mm geometric shifts)
+   - **T**: Rigid translations (shipped maximum +/-4 mm)
    - **C**: Contour randomization (morphological boundary randomization via erosion/dilation smoothing)
    - **V**: Volume adaptation (erosion/dilation ±15-30% volume change)
 3. **Re-extracting radiomics features** for each perturbation using PyRadiomics
@@ -63,9 +63,9 @@ A feature is classified as "robust" if it meets **both** ICC and CoV thresholds.
 
 The module supports three intensity levels to balance computational cost and thoroughness. Typical use cases are annotated with recommended metrics:
 
-- **mild**: ~10-15 perturbations (QA spot checks, contouring pilot studies)
-- **standard**: 15-30 perturbations (recommended for most pelvic CT applications)
-- **aggressive**: 30-60 perturbations (research-grade, adaptive RT / multi-centre validation)
+- **mild**: 12 perturbations with the shipped defaults (QA spot checks)
+- **standard**: 81 perturbations with the shipped defaults (complete standard NTCV chain)
+- **aggressive**: 315 perturbations with the shipped defaults (computational stress test)
 
 ### Perturbation Parameter Defaults
 
@@ -73,9 +73,9 @@ The following table summarizes the default perturbation parameters used by rtpip
 
 | Parameter | Default Value | Description |
 |-----------|---------------|-------------|
-| **N (Noise)** | `[0.0]` HU | Gaussian noise σ; set `noise_levels: [0.0, 10.0, 20.0]` to enable |
-| **T (Translation)** | `0.0` mm | Max shift; set `max_translation_mm: 3.0` for ±3mm |
-| **C (Contour)** | `0` realizations | Boundary randomizations; set `n_random_contour_realizations: 3` to enable |
+| **N (Noise)** | `[0.0, 10.0, 20.0]` HU | Gaussian noise standard deviations |
+| **T (Translation)** | `4.0` mm | Maximum rigid shift (up to +/-4 mm) |
+| **C (Contour)** | `2` realizations | Boundary randomizations |
 | **V (Volume)** | `[-0.15, 0.0, 0.15]` | Volume change ratios (±15% erosion/dilation) |
 | **Intensity** | `"standard"` | Controls perturbation count: mild/standard/aggressive |
 
@@ -99,7 +99,7 @@ This ensures that the same configuration produces identical perturbation sequenc
 
 ### 1. Enable in config.yaml
 
-**Basic configuration (volume-only perturbations):**
+**Standard configuration (complete NTCV chain):**
 ```yaml
 radiomics_robustness:
   enabled: true
@@ -113,6 +113,9 @@ radiomics_robustness:
       - "BLADDER"
       - "RECTUM"
     small_volume_changes: [-0.15, 0.0, 0.15]  # ±15% volume change
+    max_translation_mm: 4.0
+    n_random_contour_realizations: 2
+    noise_levels: [0.0, 10.0, 20.0]
     intensity: "standard"  # Options: mild, standard, aggressive
 ```
 
@@ -135,7 +138,7 @@ radiomics_robustness:
     large_volume_changes: [-0.30, -0.20, -0.10, 0.0, 0.10, 0.20, 0.30]
     
     # Translation perturbations (T in NTCV)
-    max_translation_mm: 3.0  # ±3mm rigid shifts
+    max_translation_mm: 4.0  # Up to +/-4 mm rigid shifts
     
     # Contour randomization (C in NTCV)
     n_random_contour_realizations: 3  # 3 boundary randomization variants
@@ -144,7 +147,7 @@ radiomics_robustness:
     noise_levels: [0.0, 10.0, 20.0]  # Gaussian noise std dev in HU
     
     # Perturbation intensity
-    intensity: "aggressive"  # Options: mild (10-15), standard (15-30), aggressive (30-60)
+    intensity: "aggressive"  # Shipped grids: mild 12, standard 81, aggressive 315
 ```
 
 ### 2. Install dependencies
@@ -242,20 +245,20 @@ radiomics_robustness:
 
     # T: Translation perturbations (mm)
     # Rigid shifts in x, y, z directions to simulate positioning uncertainty
-    max_translation_mm: 3.0  # Set to 0.0 to disable
+    max_translation_mm: 4.0  # Set to 0.0 to disable
 
     # C: Contour randomization
     # Simulates inter-observer variability in delineation
-    n_random_contour_realizations: 3  # Set to 0 to disable
+    n_random_contour_realizations: 2  # Set to 0 to disable
 
     # N: Noise injection (HU)
     # Gaussian noise to simulate scanner variability
     noise_levels: [0.0, 10.0, 20.0]  # Standard deviations in HU
 
     # Perturbation intensity (controls total perturbation count)
-    # - "mild": ~10-15 perturbations per ROI (quick testing)
-    # - "standard": 15-30 perturbations per ROI (recommended)
-    # - "aggressive": 30-60 perturbations per ROI (research-grade)
+    # - "mild": 12 perturbations per ROI with shipped grids
+    # - "standard": 81 perturbations per ROI with shipped grids
+    # - "aggressive": 315 perturbations per ROI with shipped grids
     intensity: "standard"
 
   metrics:
@@ -320,7 +323,8 @@ The NTCV chain follows the systematic perturbation methodology from Zwanenburg e
 2. **T (Translation)**: Applies rigid geometric shifts
    - Simulates positioning uncertainty and registration errors
    - Applied *before* contour randomization
-   - Typical values: ±3-5 mm in x, y, z directions
+   - The shipped standard grid uses 0 and +/-4 mm superior-inferior shifts;
+     aggressive intensity adds +/-4 mm shifts on each axis
 
 3. **C (Contour)**: Randomizes ROI boundaries
    - Simulates inter-observer delineation variability
@@ -334,9 +338,11 @@ The NTCV chain follows the systematic perturbation methodology from Zwanenburg e
 
 **Total perturbations** = N_noise × N_translation × N_contour × N_volume
 
-Example:
-- 3 noise levels × 3 translations × 2 contours × 5 volumes = 90 perturbations (too many)
-- With `intensity: "aggressive"`, the module intelligently selects subsets to reach 30-60 perturbations
+With the shipped grids, standard intensity produces 3 noise states × 3
+translation states × 3 contour states (original plus two realizations) × 3
+volume states = 81 perturbations. Aggressive intensity uses 7 translation
+states and 5 unique volume states, producing 315 perturbations. The module does
+not subsample these Cartesian grids.
 
 ## Output Format
 
@@ -385,15 +391,15 @@ Multiple sheets for easy filtering:
    - **standard**: Production use, clinical applications (recommended)
    - **aggressive**: Research-grade, publication-quality analysis, multi-center studies
 
-5. **Recommended NTCV configuration for clinical RT**:
+5. **Shipped standard NTCV configuration for manuscript analyses**:
    ```yaml
-   small_volume_changes: [-0.15, -0.10, -0.05, 0.0, 0.05, 0.10, 0.15]
-   max_translation_mm: 3.0
+   small_volume_changes: [-0.15, 0.0, 0.15]
+   max_translation_mm: 4.0
    n_random_contour_realizations: 2
-   noise_levels: [0.0, 10.0]
+   noise_levels: [0.0, 10.0, 20.0]
    intensity: "standard"
    ```
-   This generates ~25-30 perturbations per ROI - sufficient for robust stability assessment.
+   This generates 81 perturbations per ROI when every operation succeeds.
 
 ### Structure and Modality Considerations
 
@@ -423,7 +429,7 @@ When describing rtpipeline's robustness analysis in a manuscript, consider using
 
 > **Radiomics Feature Stability Assessment**
 >
-> Radiomics feature stability was assessed using rtpipeline's perturbation-based robustness module, which implements a perturbation chain methodology inspired by Zwanenburg et al.[1] For each ROI, [N] systematic perturbations were generated combining Gaussian noise injection (σ = 0, 10, 20 HU), rigid translations (±3 mm), contour randomization, and volume adaptation (±15% erosion/dilation). Features were re-extracted for each perturbation using PyRadiomics [version].
+> Radiomics feature stability was assessed using rtpipeline's perturbation-based robustness module, which implements a perturbation chain methodology inspired by Zwanenburg et al.[1] For each ROI, [N] systematic perturbations were generated combining Gaussian noise injection (σ = 0, 10, 20 HU), rigid translations (up to +/-4 mm), two contour realizations, and volume adaptation (±15% erosion/dilation). Features were re-extracted for each perturbation using PyRadiomics [version].
 >
 > Feature stability was quantified using the intraclass correlation coefficient ICC(3,1) computed via Pingouin[2], with each perturbation treated as a fixed rater measuring the same underlying subject (patient-course-structure combination). This interpretation follows the fixed-rater rationale described by Koo & Li[3] but represents an adaptation of ICC to perturbation-based analysis rather than a standard inter-rater scenario. Features with ICC ≥ 0.90 and coefficient of variation (CoV) ≤ 10% were classified as "robust" following commonly used thresholds in the radiomics literature.[3] Only robust features were retained for subsequent modeling.
 >
@@ -486,14 +492,14 @@ Based on 2023-2025 radiomics stability research:
 ✅ **Implemented:**
 - NTCV (Noise + Translation + Contour + Volume) perturbation chains
 - Image noise injection (Gaussian noise in HU)
-- Rigid translation perturbations (±3-5 mm shifts)
+- Rigid translation perturbations (configurable; shipped maximum +/-4 mm)
 - Contour randomization (boundary noise simulation)
 - Configurable perturbation intensity (mild/standard/aggressive)
-- Research-grade testing: 30-60 perturbations per ROI
+- Explicit Cartesian grids: 12 (mild), 81 (standard), or 315 (aggressive) with shipped defaults
 - Conservative clinical thresholds: ICC >0.90 and CoV <10%
 
 **Key improvements over basic volume-only perturbations:**
-- **Comprehensive stability testing** following Zwanenburg 2019 NTCV methodology
+- **Comprehensive stability testing** inspired by the Zwanenburg 2019 perturbation framework
 - **Literature-reported performance**: Zwanenburg et al. achieved ~98–99% sensitivity with <2% false positives on their specific test-retest datasets—these serve as benchmarks, not guarantees
 - **Cost-effective alternative** to expensive test-retest imaging
 - **Multi-axis perturbations** capture different sources of variability
@@ -503,7 +509,7 @@ Based on 2023-2025 radiomics stability research:
 The implementation is informed by radiomics reproducibility literature findings:
 1. ICC ≥0.75 and CoV ≤10% are commonly used thresholds (ICC ≥0.90 for conservative clinical use)[^koo2016]
 2. Systematic perturbation chains combining geometric and image-based variations improve robustness assessment
-3. 30-60 perturbed versions per ROI are often recommended for comprehensive assessment
+3. Perturbation count should follow the study design and be reported exactly; the shipped standard grid contains 81 states
 4. A substantial proportion of features (varies by study and structure) may meet stability thresholds
 5. Perturbation-based methods provide a practical alternative when test-retest data is unavailable
 

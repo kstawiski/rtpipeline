@@ -1,0 +1,29 @@
+name: rtpipeline
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python=3.11
+  - numpy>=2.0
+  - scipy>=1.11
+  - pandas>=2.0
+  - matplotlib>=3.8
+  - scikit-learn
+  - scikit-image
+  - pydicom>=3.0.2,<4
+  - simpleitk>=2.5.0
+  - nibabel
+  - dcm2niix
+  - nnunet=1.7.*
+  - batchgenerators
+  - future
+  - snakemake>=8.4
+  - click
+  - pyyaml
+  - xlsxwriter
+  - openpyxl
+  - pingouin>=0.5.3
+  - pyarrow
+  - psutil
+  - wheel
+  - pip

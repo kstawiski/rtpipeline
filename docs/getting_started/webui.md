@@ -131,9 +131,9 @@ The Web UI now provides comprehensive interactive configuration through collapsi
   - Generates ICC, CoV, and QCD metrics
   - **Warning**: Significantly increases processing time
 - **Perturbation Intensity**:
-  - **Mild**: ~10-15 perturbations per ROI (faster)
-  - **Standard** ✅: ~20-30 perturbations per ROI (balanced)
-  - **Aggressive**: ~40-60 perturbations per ROI (most robust, slowest)
+  - **Mild**: 12 perturbations per ROI with shipped grids (faster)
+  - **Standard** ✅: 81 perturbations per ROI with shipped grids (complete NTCV)
+  - **Aggressive**: 315 perturbations per ROI with shipped grids (stress test)
 
 #### ✂️ CT Anatomical Cropping
 - **Enable CT Cropping**: ❌ Disabled by default

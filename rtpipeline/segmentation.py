@@ -82,10 +82,11 @@ def _run_vec(cmd: List[str], env: Optional[dict] = None, timeout: Optional[int] 
 
 
 def _run(cmd: str, env: Optional[dict] = None, timeout: Optional[int] = None) -> bool:
-    """Execute a command using shell with timeout protection. Returns True on success.
+    """Execute a trusted shell command with timeout protection. Returns True on success.
 
-    WARNING: This function uses shell=True which has security implications.
-    Only use with fully trusted, internally-generated commands.
+    The command is passed as an explicit argument to the selected shell rather
+    than through ``subprocess``'s ``shell=True`` mode. Only use this helper with
+    fully trusted, internally-generated commands.
     For external tool invocation, prefer _run_vec() with argument lists.
 
     Args:
@@ -108,10 +109,7 @@ def _run(cmd: str, env: Optional[dict] = None, timeout: Optional[int] = None) ->
 
     try:
         logger.debug(f"Running command with timeout={timeout}s: {cmd[:100]}...")
-        result = subprocess.run(
-            cmd, check=True, shell=True,
-            executable=shell, env=env, timeout=timeout
-        )
+        subprocess.run([shell, "-lc", cmd], check=True, env=env, timeout=timeout)
         return True
     except subprocess.TimeoutExpired:
         logger.error(f"Command timed out after {timeout}s: {cmd[:100]}...")
@@ -123,7 +121,7 @@ def _run(cmd: str, env: Optional[dict] = None, timeout: Optional[int] = None) ->
 
 
 def _prefix(config: PipelineConfig) -> str:
-    return f"{shlex.quote(config.conda_activate)} && " if config.conda_activate else ""
+    return f"{config.conda_activate} && " if config.conda_activate else ""
 
 
 def _pkg_zip_bytes(name: str) -> Optional[bytes]:
@@ -337,11 +335,10 @@ def _totalseg_supported_output_types_cached(prefix: str, cmd: str) -> set[str]:
         shell = shutil.which('bash') or shutil.which('sh') or '/bin/sh'
     base_command = cmd.strip() or "TotalSegmentator"
     probe = f"{prefix}{base_command} --help"
+    command = [shell, "-lc", probe] if prefix else [*shlex.split(base_command), "--help"]
     try:
         result = subprocess.run(
-            probe,
-            shell=True,
-            executable=shell,
+            command,
             check=False,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -495,7 +492,7 @@ def run_totalsegmentator(
             _prefix(config),
             " ".join(shlex.quote(part) for part in cmd_parts),
         )
-        logger.info("Running TotalSegmentator (%s, shell=True): %s", output_type, cmd)
+        logger.info("Running TotalSegmentator (%s, activated shell): %s", output_type, cmd)
         try:
             ok = _run(cmd, env=env)
         except RuntimeError:

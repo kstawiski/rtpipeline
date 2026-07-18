@@ -29,7 +29,7 @@ Based on 2023-2025 radiomics stability research:
 - Poirot et al. 2022 (Sci Rep): multi-method ICC with Pingouin
 - Traverso et al. 2024: cross-extractor reproducibility
 - OPC RobustDB 2025 (PMID: 41367878): feature stability atlas with pruning
-- Modern best practice: 30-60 perturbations per ROI for comprehensive stability testing
+- Perturbation count must be reported explicitly for the configured Cartesian grid
 - Conservative clinical thresholds: ICC >0.90 and CoV <10%
 """
 
@@ -70,10 +70,10 @@ class PerturbationConfig:
     apply_to_structures: List[str] = field(default_factory=lambda: ["GTV", "CTV", "PTV", "BLADDER", "RECTUM"])
     small_volume_changes: List[float] = field(default_factory=lambda: [-0.15, 0.0, 0.15])
     large_volume_changes: List[float] = field(default_factory=lambda: [-0.30, 0.0, 0.30])
-    n_random_contour_realizations: int = 0
-    max_translation_mm: float = 0.0
+    n_random_contour_realizations: int = 2
+    max_translation_mm: float = 4.0
     contour_randomization_mm: float = 0.0  # C8 fix: independent contour noise (0 = auto from max_translation_mm/2 for backwards compat)
-    noise_levels: List[float] = field(default_factory=lambda: [0.0])  # Gaussian noise std dev in HU
+    noise_levels: List[float] = field(default_factory=lambda: [0.0, 10.0, 20.0])  # Gaussian noise std dev in HU
     intensity: str = "standard"  # "mild", "standard", "aggressive" - controls perturbation count
     rotation_angles: List[float] = field(default_factory=list)  # Rotation sensitivity: e.g., [1, -1, 3, -3] degrees
 
@@ -129,10 +129,10 @@ class RobustnessConfig:
             apply_to_structures=pert_data.get("apply_to_structures", ["GTV", "CTV", "PTV", "BLADDER", "RECTUM"]),
             small_volume_changes=pert_data.get("small_volume_changes", [-0.15, 0.0, 0.15]),
             large_volume_changes=pert_data.get("large_volume_changes", [-0.30, 0.0, 0.30]),
-            n_random_contour_realizations=pert_data.get("n_random_contour_realizations", 0),
-            max_translation_mm=pert_data.get("max_translation_mm", 0.0),
+            n_random_contour_realizations=pert_data.get("n_random_contour_realizations", 2),
+            max_translation_mm=pert_data.get("max_translation_mm", 4.0),
             contour_randomization_mm=pert_data.get("contour_randomization_mm", 0.0),
-            noise_levels=pert_data.get("noise_levels", [0.0]),
+            noise_levels=pert_data.get("noise_levels", [0.0, 10.0, 20.0]),
             intensity=pert_data.get("intensity", "standard"),
         )
 
@@ -170,7 +170,7 @@ class RobustnessConfig:
 
 def volume_adapt_mask(mask: sitk.Image, tau: float, max_iterations: int = 20) -> Optional[sitk.Image]:
     """
-    Apply IBSI-style volume adaptation to mask via iterative erosion/dilation.
+    Apply iterative erosion/dilation to approach a target mask-volume change.
 
     Uses spacing-aware structuring elements to ensure isotropic physical-space
     morphology on anisotropic voxel grids (e.g., 1x1x3 mm clinical CTs).
@@ -427,12 +427,13 @@ def generate_ntcv_perturbations(
     """
     Generate NTCV (Noise + Translation + Contour + Volume) perturbation chain.
 
-    This implements systematic perturbation chains following Zwanenburg et al. 2019
-    (Scientific Reports) and IBSI-2 guidelines for comprehensive feature stability
-    assessment. The NTCV order is standardized and should not be changed.
+    This is an RTpipeline-specific chain inspired by the perturbation framework
+    described by Zwanenburg et al. (2019). It is not an exact reimplementation:
+    rotation is separate and contour randomization is morphological. The fixed
+    order below defines RTpipeline's comparable perturbation grid.
 
-    Perturbation Order (IBSI-recommended):
-    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    Perturbation Order (implementation-defined):
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     1. **N (Noise)**: Image intensity noise (Gaussian) - applied first to simulate
        acquisition variability. Applied to the IMAGE, not the mask.
 
@@ -456,14 +457,13 @@ def generate_ntcv_perturbations(
     - Contour randomization adds edge uncertainty to translated position
     - Volume adaptation is the final morphological adjustment
 
-    Reversing or randomizing the order would produce non-comparable perturbation
-    sets and potentially invalid ICC estimates. For example, applying volume
-    adaptation before translation would create a different systematic bias.
+    Reversing or randomizing the order would produce a different perturbation
+    grid and prevent direct comparison with RTpipeline results generated under
+    this contract.
 
     References:
-        Zwanenburg et al. (2019). The Image Biomarker Standardization Initiative:
-        Standardized Quantitative Radiomics for High-Throughput Image-based
-        Phenotyping. Radiology, 295(2), 328-338.
+        Zwanenburg et al. (2019). Assessing robustness of radiomic features by
+        image perturbation. Scientific Reports, 9, 614.
 
     Args:
         original_mask: Original binary mask
@@ -481,19 +481,21 @@ def generate_ntcv_perturbations(
     
     # Determine perturbation count based on intensity level
     if config.intensity == "mild":
-        # Minimal testing: ~10-15 perturbations
+        # Minimal testing: 12 perturbations with the shipped NTCV defaults.
         volume_changes = config.small_volume_changes[:2] if len(config.small_volume_changes) > 2 else config.small_volume_changes
         translation_steps = 1 if config.max_translation_mm > 0 else 0
         contour_realizations = min(1, config.n_random_contour_realizations)
         noise_levels = config.noise_levels[:1] if len(config.noise_levels) > 1 else config.noise_levels
     elif config.intensity == "aggressive":
-        # Comprehensive testing: 30-60 perturbations (research-grade)
-        volume_changes = config.large_volume_changes + config.small_volume_changes
+        # Comprehensive stress test: 315 unique perturbations with shipped defaults.
+        # Preserve order while avoiding duplicate identifiers such as the zero
+        # volume state present in both the large and small grids.
+        volume_changes = list(dict.fromkeys(config.large_volume_changes + config.small_volume_changes))
         translation_steps = 2 if config.max_translation_mm > 0 else 0
         contour_realizations = config.n_random_contour_realizations
         noise_levels = config.noise_levels
     else:  # standard
-        # Balanced testing: 15-30 perturbations
+        # Full standard chain: 81 perturbations with the shipped defaults.
         volume_changes = config.small_volume_changes
         translation_steps = 1 if config.max_translation_mm > 0 else 0
         contour_realizations = config.n_random_contour_realizations
@@ -1145,7 +1147,7 @@ def prune_redundant_features(
         feature_values_df: Wide-format DataFrame with features as columns, patients as rows.
             Must contain 'structure' and 'patient_id' columns plus feature value columns.
         correlation_threshold: Spearman |r| above which features are considered redundant.
-            Default: 0.90 (conservative, per IBSI recommendations).
+            Default: 0.90 (a conservative project convention).
         robustness_label_col: Column name for robustness classification.
         icc_col: Column name for ICC values.
         feature_col: Column name for feature names.
