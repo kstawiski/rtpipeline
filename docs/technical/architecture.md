@@ -63,23 +63,27 @@ RTpipeline implements a configurable **NTCV-style perturbation chain**:
 
 - **N**: Gaussian noise injection
 - **T**: rigid translations
-- **C**: contour randomization
-- **V**: volume adaptation via erosion/dilation
+- **C**: reproducible random physical-space boundary offsets
+- **V**: physical-distance-ranked adaptation to the closest target voxel count
 
 The shipped container profile runs the complete standard NTCV chain: Gaussian noise at 0, 10, and 20 HU, translations up to +/-4 mm, two contour realizations, and -15%, 0%, and +15% volume adaptation. These axes remain configurable in `config.yaml`.
 
 ### Outputs
 
-- **Per course:** `radiomics_robustness_ct.parquet`
+- **Per course:** `radiomics_robustness_ct.parquet` (raw long-form values)
 - **Cohort aggregate:** `_RESULTS/radiomics_robustness_summary.xlsx`
-- **Typical aggregate sheets:** `global_summary`, `robust_features`, `acceptable_features`, and source-aware breakdowns when multiple segmentation sources are present
+- **Cohort raw values:** `_RESULTS/radiomics_robustness_summary_raw_values.parquet`
+- **Typical aggregate sheets:** structure/source-specific `global_summary`, `robust_features`, `acceptable_features`, and source-aware breakdowns
 
 ### Failure model
 
-Robustness is designed to be informative without making the entire ETL brittle:
+Robustness is fail-closed when enabled:
 
-- per-course sentinel files record success/failure
-- aggregation skips missing or failed course-level outputs
+- a course writes its success sentinel only after every configured perturbation and scalar feature completes;
+- generation, extraction, watchdog, non-finite-value, and feature-set mismatches fail the Snakemake job;
+- cohort aggregation rejects incomplete subject-by-perturbation grids instead of silently dropping them; and
+- disabled robustness remains explicitly marked; an upstream radiomics failure
+  is fatal when robustness was requested.
 - thread and worker limits mirror the same defensive scheduling used for radiomics
 
 ## Orchestration and Scheduling

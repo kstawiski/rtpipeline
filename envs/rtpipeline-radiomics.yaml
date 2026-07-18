@@ -8,7 +8,7 @@ dependencies:
   - scipy
   - pandas
   - SimpleITK
-  - pydicom>=3.0.2
+  - pydicom>=3.0.2,<4
   - pyyaml
   - pip
   - pip:

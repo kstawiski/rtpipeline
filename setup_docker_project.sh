@@ -613,9 +613,9 @@ radiomics_robustness:
       - "rectum"
       - "femur*"
     small_volume_changes: [-0.15, 0.0, 0.15]
-    max_translation_mm: 3.0
+    max_translation_mm: 4.0
     n_random_contour_realizations: 2
-    noise_levels: [0.0]
+    noise_levels: [0.0, 10.0, 20.0]
   metrics:
     icc:
       implementation: "pingouin"
