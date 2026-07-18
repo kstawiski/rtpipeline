@@ -57,8 +57,8 @@ radiomics:
   max_voxels: 1500000000
   min_voxels: 64
 
-    # Complete shipped standard grid: 3 noise x 3 translation x 3 contour x
-    # 3 volume states = 81 perturbations per ROI.
+# Complete shipped standard grid: 3 noise x 3 translation x 3 contour x
+# 3 volume states = 81 perturbations per ROI.
 radiomics_robustness:
   enabled: true
   modes:

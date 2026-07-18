@@ -17,7 +17,7 @@
 - **DICOM Organization** - Groups scattered files into patient courses
 - **AI Segmentation** - TotalSegmentator (~100 standardized structures) + custom nnU-Net models
 - **DVH Extraction** - Comprehensive dose-volume metrics
-- **Radiomics** - IBSI-compliant features with robustness assessment
+- **Radiomics** - IBSI-informed PyRadiomics features with robustness assessment
 - **Quality Control** - Automated checks and audit reports
 
 ### Who Is This For?
@@ -52,7 +52,8 @@ After:  V20Gy = 500cc / 12,000cc = 4.2% (standardized FOV)
 
 ### 3. Robustness-Aware Radiomics
 
-NTCV perturbation chains (Zwanenburg et al., 2019) identify stable features:
+An RTpipeline-adapted NTCV chain, inspired by but not identical to Zwanenburg
+et al. (2019), stress-tests feature stability under the configured perturbations:
 
 - **N**oise injection (scanner variability)
 - **T**ranslation (positioning uncertainty)
@@ -66,7 +67,7 @@ Features with ICC ≥ 0.90 and CoV ≤ 10% classified as **robust**.
 ```
 _RESULTS/
 ├── dvh_metrics.xlsx      # Dmean, D95%, V20Gy for every structure
-├── radiomics_ct.xlsx     # 1000+ IBSI-compliant features
+├── radiomics_ct.xlsx     # PyRadiomics features with IBSI-informed settings
 ├── case_metadata.xlsx    # Clinical tags, scanner info
 └── qc_reports.xlsx       # Quality control summary
 ```

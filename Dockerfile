@@ -118,7 +118,7 @@ RUN mamba install -y -c conda-forge -c bioconda \
     pandas \
     flask \
     psutil \
-    pydicom \
+    'pydicom>=3.0.2,<4' \
     pyyaml \
     werkzeug \
     openpyxl \

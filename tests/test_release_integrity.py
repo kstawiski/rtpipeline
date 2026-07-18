@@ -187,6 +187,28 @@ def test_aggregate_rejects_missing_course_input(tmp_path):
         )
 
 
+def test_aggregate_rejects_feature_missing_from_one_subject(tmp_path):
+    frame = _stable_subject_frame()
+    extra = frame.copy()
+    extra["feature_name"] = "second_feature"
+    combined = pd.concat([frame, extra], ignore_index=True)
+    combined = combined[
+        ~(
+            (combined["patient_id"] == "P2")
+            & (combined["feature_name"] == "second_feature")
+        )
+    ]
+    input_path = tmp_path / "course.parquet"
+    combined.to_parquet(input_path, index=False)
+
+    with pytest.raises(ValueError, match="inconsistent feature sets across subjects"):
+        robustness.aggregate_robustness_results(
+            [input_path],
+            tmp_path / "summary.xlsx",
+            RobustnessConfig(enabled=True),
+        )
+
+
 def test_incomplete_feature_extraction_fails_closed():
     frame = _stable_subject_frame().query("patient_id == 'P1'")
     with pytest.raises(RuntimeError, match="missing perturbations"):
@@ -230,6 +252,24 @@ def test_dual_environment_contract_is_enforced_in_packaging_and_receipt():
     installer = (ROOT / "scripts" / "install_local.sh").read_text(encoding="utf-8")
     assert installer.count("python -m pip freeze --all") == 2
     assert installer.count("python -m pip inspect --local") == 2
+    assert "python -m pip uninstall \\" in installer
+    assert "--yes rtpipeline" in installer
+    assert '--no-deps --editable "$PROJECT_DIR"' not in installer
+    assert installer.count('PYTHONPATH="${PROJECT_DIR}${PYTHONPATH:+:${PYTHONPATH}}"') == 2
+    assert "env update --yes" in installer
+    assert "--prune" in installer
+
+
+def test_public_docs_do_not_overclaim_or_mix_roi_sources():
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    case_study = (ROOT / "docs" / "case_studies" / "index.md").read_text(
+        encoding="utf-8"
+    )
+    assert "IBSI-compliant" not in readme
+    assert "inspired by but not identical" in readme
+    assert "radiomics_robustness_ct\n" not in case_study
+    assert 'features["roi_original_name"] == "GTV_primary"' in case_study
+    assert 'features["segmentation_source"] == "Custom"' in case_study
 
 
 def test_related_series_metadata_helper_is_available_from_organize(tmp_path, monkeypatch):

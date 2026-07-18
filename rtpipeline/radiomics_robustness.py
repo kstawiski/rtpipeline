@@ -1131,6 +1131,49 @@ def summarize_feature_stability(
     return pd.DataFrame(rows)
 
 
+def _validate_cohort_feature_sets(df_long: pd.DataFrame) -> None:
+    """Require a common feature inventory for comparable subjects in each ROI/source.
+
+    Per-course validation proves that a feature is present for every configured
+    perturbation *within* that course. Cohort aggregation must additionally prove
+    that the same feature inventory exists for every patient/course contributing
+    a given structure and segmentation source; otherwise an entirely absent
+    feature would disappear from that subject before feature-wise grouping and
+    silently bias the cohort summary.
+    """
+    required = {"patient_id", "structure", "feature_name"}
+    missing = sorted(required - set(df_long.columns))
+    if missing:
+        raise ValueError(
+            "robustness input is missing required cohort columns: " + ", ".join(missing)
+        )
+
+    subject_columns = ["patient_id"]
+    if "course_id" in df_long.columns:
+        subject_columns.append("course_id")
+    comparison_columns = ["structure"]
+    if "segmentation_source" in df_long.columns:
+        comparison_columns.append("segmentation_source")
+
+    for group_key, group in df_long.groupby(comparison_columns, dropna=False):
+        feature_sets = group.groupby(subject_columns, dropna=False)["feature_name"].agg(
+            lambda values: frozenset(values.astype(str))
+        )
+        if feature_sets.empty:
+            continue
+        union = frozenset().union(*feature_sets.tolist())
+        inconsistent = feature_sets[feature_sets != union]
+        if not inconsistent.empty:
+            group_values = group_key if isinstance(group_key, tuple) else (group_key,)
+            group_label = dict(zip(comparison_columns, group_values))
+            missing_counts = [len(union - features) for features in inconsistent.tolist()]
+            raise ValueError(
+                "inconsistent feature sets across subjects for "
+                f"{group_label}: {len(inconsistent)} subject(s) missing "
+                f"{sum(missing_counts)} feature assignment(s)"
+            )
+
+
 # ============================================================================
 # Rotation Perturbation (v1.2 — sensitivity analysis)
 # ============================================================================
@@ -2088,6 +2131,7 @@ def aggregate_robustness_results(
     if "roi_name" in combined_raw.columns and "structure" not in combined_raw.columns:
         combined_raw.rename(columns={"roi_name": "structure"}, inplace=True)
 
+    _validate_cohort_feature_sets(combined_raw)
     per_structure_summary = summarize_feature_stability(combined_raw, rob_config)
     # Keep the historical sheet name for compatibility, but never pool raw
     # values across heterogeneous structures or segmentation sources. Each row

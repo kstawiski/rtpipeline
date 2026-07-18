@@ -255,7 +255,8 @@ Learn how RTpipeline is used in real research scenarios:
 
 ### NTCV Perturbation Chains
 
-Implements the published methodology from Zwanenburg et al. (2019) for radiomics feature robustness assessment. [Learn more →](features/radiomics_robustness.md)
+Implements an adapted NTCV-style robustness assessment inspired by, but not
+identical to, Zwanenburg et al. (2019). [Learn more →](features/radiomics_robustness.md)
 
 ### Systematic CT Cropping
 

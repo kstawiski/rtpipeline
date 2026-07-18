@@ -42,8 +42,9 @@ def import_pydicom_seg():
         import pydicom_seg
     except ImportError as exc:
         raise RuntimeError(
-            "DICOM-SEG decoding requires the optional 'dcmseg' dependencies "
-            "(install rtpipeline[dcmseg])."
+            "DICOM-SEG decoding requires pydicom-seg in a separately pinned "
+            "NumPy 1.x conversion environment; it is intentionally not part of "
+            "the RTpipeline main environment. See docs/technical/docker.md."
         ) from exc
     return pydicom_seg
 

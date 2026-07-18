@@ -21,7 +21,8 @@ and radiomics-robustness execution.
 - CoV is computed within each patient/course/ROI/source and summarized across
   subjects, so between-patient biology is not mislabeled as perturbation
   instability. Structure and segmentation sources are not pooled for feature
-  classification.
+  classification. Aggregation also requires the same feature inventory for
+  every contributing subject within an ROI/source comparison.
 - Contour and volume perturbations use physical-space signed distance maps;
   volume targets reach the exact rounded voxel count and duplicate contour
   realizations fail closed.
@@ -29,7 +30,8 @@ and radiomics-robustness execution.
   release CI verifies static analysis and wheel contents before container build.
 - A supported automatic local installer, runner, and self-contained tutorial
   cover macOS, Linux, and WSL2 while preserving the required dual environments
-  and manuscript provenance.
+  and manuscript provenance. The NumPy 1.26 helper imports the checked-out
+  source without installing incompatible NumPy 2.x main-runtime metadata.
 - Incompatible NumPy 1.x tooling (`PyRadiomics` and `pydicom-seg`) is not
   exposed as a merged package extra. PyRadiomics uses the supported isolated
   environment; optional DICOM-SEG conversion requires its own pinned NumPy 1.x
