@@ -107,7 +107,7 @@ imageType:
 # filtering should prioritize Tier 1 features (ICC >0.9) for clinical models
 # ============================================================
 featureClass:
-  # Enable full IBSI-compliant feature families; prune during robustness analysis
+  # Enable PyRadiomics feature families with IBSI-informed settings; prune during robustness analysis
   shape: []
   firstorder: []
   glcm: []

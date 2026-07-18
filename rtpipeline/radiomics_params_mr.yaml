@@ -59,7 +59,7 @@ imageType:
     sigma: [2.0, 3.0, 4.0]
 
 featureClass:
-  # Enable full IBSI-compliant families; prune via stability analysis post-extraction.
+  # Enable PyRadiomics families with IBSI-informed settings; prune via stability analysis post-extraction.
   shape: []
   firstorder: []
   glcm: []

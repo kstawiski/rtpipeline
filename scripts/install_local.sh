@@ -233,7 +233,9 @@ sync_environment() {
     local env_name="$1"
     local env_file="$2"
     if env_exists "$env_name"; then
-        "$MAMBA_BIN" install --yes --name "$env_name" --file "$env_file"
+        # These are RTpipeline-managed environments. Pruning prevents stale pip/
+        # conda packages from an older release from contaminating verification.
+        "$MAMBA_BIN" env update --yes --name "$env_name" --file "$env_file" --prune
     else
         "$MAMBA_BIN" create --yes --name "$env_name" --file "$env_file"
     fi
@@ -281,16 +283,23 @@ if [[ "$VERIFY_ONLY" != true ]]; then
     fi
     "$MAMBA_BIN" run --name "$RADIOMICS_ENV" python -m pip install \
         --no-deps --no-build-isolation "$radiomics_source"
-    "$MAMBA_BIN" run --name "$RADIOMICS_ENV" python -m pip install \
-        --no-deps --editable "$PROJECT_DIR"
+    # The radiomics helper intentionally does not install RTpipeline as a Python
+    # distribution. Its package metadata declares the full NumPy 2.x/main
+    # runtime (including TotalSegmentator), which is incompatible with this
+    # isolated NumPy 1.26 environment and would make `pip check` fail. Local
+    # launchers execute the checked-out source with PROJECT_DIR on PYTHONPATH.
+    "$MAMBA_BIN" run --name "$RADIOMICS_ENV" python -m pip uninstall \
+        --yes rtpipeline
 fi
 
 log "verifying both environments"
 "$MAMBA_BIN" run --name "$MAIN_ENV" python -c \
     "import numpy, pydicom, SimpleITK, torch, rtpipeline; assert numpy.__version__.split('.')[0] == '2'; print('main', rtpipeline.__version__, numpy.__version__, torch.__version__)"
-"$MAMBA_BIN" run --name "$RADIOMICS_ENV" python -c \
+env PYTHONPATH="${PROJECT_DIR}${PYTHONPATH:+:${PYTHONPATH}}" \
+    "$MAMBA_BIN" run --name "$RADIOMICS_ENV" python -c \
     "import numpy, radiomics; assert numpy.__version__.split('.')[0] == '1'; print('radiomics', radiomics.__version__, numpy.__version__)"
-"$MAMBA_BIN" run --name "$RADIOMICS_ENV" python -m rtpipeline.cli --help >/dev/null
+env PYTHONPATH="${PROJECT_DIR}${PYTHONPATH:+:${PYTHONPATH}}" \
+    "$MAMBA_BIN" run --name "$RADIOMICS_ENV" python -m rtpipeline.cli --help >/dev/null
 "$MAMBA_BIN" run --name "$MAIN_ENV" python -m pip check
 "$MAMBA_BIN" run --name "$RADIOMICS_ENV" python -m pip check
 "$MAMBA_BIN" run --name "$MAIN_ENV" snakemake --version

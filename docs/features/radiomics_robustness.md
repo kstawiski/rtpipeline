@@ -486,8 +486,11 @@ Check `apply_to_structures` patterns in config. Verify structure names match you
 - `RS_custom.dcm` (Custom structures)
 - `Segmentation_{model_name}/rtstruct.dcm` (Custom models)
 
-### "Insufficient perturbations for X; skipping"
-Some small structures may fail erosion/dilation. This is expected; they'll be skipped automatically.
+### "Insufficient perturbations" or "incomplete perturbation grid"
+RTpipeline fails the robustness stage instead of silently skipping an ROI or
+subject. Inspect the log, correct the ROI/configuration or explicitly remove the
+ROI from `apply_to_structures`, then rerun the failed job. Do not aggregate a
+partial perturbation grid.
 
 ## Key References
 
@@ -511,7 +514,7 @@ Based on 2023-2025 radiomics stability research:
 - Contour randomization (boundary noise simulation)
 - Configurable perturbation intensity (mild/standard/aggressive)
 - Explicit Cartesian grids: 12 (mild), 81 (standard), or 315 (aggressive) with shipped defaults
-- Conservative clinical thresholds: ICC >0.90 and CoV <10%
+- Conservative configurable research thresholds: ICC ≥0.90 and CoV ≤10%
 
 **Key improvements over basic volume-only perturbations:**
 - **Comprehensive stability testing** inspired by the Zwanenburg 2019 perturbation framework
