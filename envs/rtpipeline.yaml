@@ -12,7 +12,7 @@ dependencies:
   - matplotlib>=3.8
   - scikit-learn
   - scikit-image
-  - pydicom>=3.0.0
+  - pydicom>=3.0.2
   - SimpleITK>=2.5.0
   - pytorch=2.3.*
   - torchvision=0.18.*
@@ -36,5 +36,5 @@ dependencies:
     - plotly
     - nbformat
     - ipython
-    - filelock
+    - filelock>=3.20.3
     - pingouin  # For ICC computation in robustness analysis

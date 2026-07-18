@@ -1,6 +1,6 @@
-# RTpipeline v2.2.0 Architecture
+# RTpipeline v2.2.1 Architecture
 
-RTpipeline is a radiotherapy ETL pipeline that turns raw DICOM exports into research-ready tables, derived RTSTRUCTs, QC artifacts, and robustness summaries. In `v2.2.0`, the architecture centers on three design choices:
+RTpipeline is a radiotherapy ETL pipeline that turns raw DICOM exports into research-ready tables, derived RTSTRUCTs, QC artifacts, and robustness summaries. In `v2.2.1`, the architecture centers on three design choices:
 
 - **Course-first orchestration:** organize DICOM into patient/course units, then run every downstream stage on those units.
 - **Dual-environment execution:** keep TotalSegmentator and the rest of the pipeline on a modern NumPy 2.x stack while routing PyRadiomics and robustness analysis through a compatible NumPy 1.26 environment.
@@ -36,7 +36,7 @@ graph LR
 
 ## Dual-Environment Design
 
-`v2.2.0` deliberately separates the pipeline into two conda environments:
+`v2.2.1` deliberately separates the pipeline into two conda environments:
 
 | Environment | Defined in | Main purpose | Key packages |
 |-------------|------------|--------------|--------------|
@@ -66,7 +66,7 @@ RTpipeline implements a configurable **NTCV-style perturbation chain**:
 - **C**: contour randomization
 - **V**: volume adaptation via erosion/dilation
 
-The shipped container profile keeps a conservative default with **volume perturbations enabled** and the other axes disabled unless explicitly configured. For full multi-axis robustness studies, `noise_levels`, `max_translation_mm`, and `n_random_contour_realizations` should be set in `config.yaml`.
+The shipped container profile runs the complete standard NTCV chain: Gaussian noise at 0, 10, and 20 HU, translations up to +/-4 mm, two contour realizations, and -15%, 0%, and +15% volume adaptation. These axes remain configurable in `config.yaml`.
 
 ### Outputs
 
@@ -102,7 +102,7 @@ RTpipeline can be launched directly through `rtpipeline` CLI commands or via Sna
 
 ## Versioned Artifacts
 
-The architecture described here corresponds to `RTpipeline 2.2.0`, with the version declared in:
+The architecture described here corresponds to `RTpipeline 2.2.1`, with the version declared in:
 
 - `pyproject.toml`
 - `rtpipeline/__init__.py`

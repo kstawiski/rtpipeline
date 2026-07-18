@@ -58,7 +58,7 @@ FROM condaforge/mambaforge:24.3.0-0
 
 LABEL maintainer="kstawiski"
 LABEL description="DICOM-RT pipeline with TotalSegmentator, nnUNet, and Snakemake"
-LABEL version="2.2.0"
+LABEL version="2.2.1"
 
 ENV DEBIAN_FRONTEND=noninteractive \
     LANG=C.UTF-8 \
@@ -236,9 +236,9 @@ radiomics_robustness:
       - "rectum"
     small_volume_changes: [-0.15, 0.0, 0.15]
     large_volume_changes: [-0.30, 0.0, 0.30]
-    max_translation_mm: 0.0
-    n_random_contour_realizations: 0
-    noise_levels: [0.0]
+    max_translation_mm: 4.0
+    n_random_contour_realizations: 2
+    noise_levels: [0.0, 10.0, 20.0]
     intensity: "standard"
   metrics:
     icc:

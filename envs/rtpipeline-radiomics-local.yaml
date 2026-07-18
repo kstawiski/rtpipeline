@@ -1,0 +1,30 @@
+name: rtpipeline-radiomics
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - numpy=1.26.*
+  - scipy
+  - pandas
+  - simpleitk
+  - pydicom>=3.0.2,<4
+  - pyyaml
+  - pywavelets
+  - pykwalify
+  - six
+  - scikit-image
+  - xlsxwriter
+  - pingouin>=0.5.3
+  - pyarrow
+  - openpyxl
+  - filelock>=3.20.3
+  - opencv=4.8.*
+  # Non-Linux platforms compile the pinned PyRadiomics source release.
+  - c-compiler
+  - cxx-compiler
+  - cmake
+  - ninja
+  - cython<3
+  - setuptools<70
+  - wheel
+  - pip

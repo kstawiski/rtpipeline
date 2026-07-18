@@ -649,17 +649,18 @@ def _run_totalseg_tool(
 
     # Build full command with optional conda activation
     if conda_activate:
-        cmd = f"{conda_activate} && {' '.join(shlex.quote(p) for p in cmd_parts)}"
-        shell = True
+        shell_path = os.environ.get("SHELL", "/bin/bash")
+        if not os.path.isfile(shell_path):
+            shell_path = shutil.which("bash") or shutil.which("sh") or "/bin/sh"
+        shell_command = f"{conda_activate} && {' '.join(shlex.quote(p) for p in cmd_parts)}"
+        cmd = [shell_path, "-lc", shell_command]
     else:
         cmd = cmd_parts
-        shell = False
 
     try:
-        logger.debug("Running %s: %s", tool_name, cmd if shell else " ".join(cmd_parts))
+        logger.debug("Running %s: %s", tool_name, " ".join(shlex.quote(str(part)) for part in cmd))
         result = subprocess.run(
             cmd,
-            shell=shell,
             capture_output=True,
             timeout=timeout,
             env=os.environ.copy(),

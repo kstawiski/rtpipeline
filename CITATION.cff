@@ -3,7 +3,7 @@ message: >-
   If you use RTpipeline, please cite the software metadata below.
 title: RTpipeline
 type: software
-version: 2.2.0
+version: 2.2.1
 license: MIT
 authors:
   - family-names: Stawiski
@@ -19,8 +19,8 @@ preferred-citation:
   authors:
     - family-names: Stawiski
       given-names: Konrad
-  title: RTpipeline: Automated Radiotherapy DICOM Processing Pipeline
-  version: 2.2.0
+  title: "RTpipeline: Automated Radiotherapy DICOM Processing Pipeline"
+  version: 2.2.1
   year: 2026
   repository-code: https://github.com/kstawiski/rtpipeline
   url: https://github.com/kstawiski/rtpipeline

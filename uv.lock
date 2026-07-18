@@ -3037,7 +3037,7 @@ wheels = [
 
 [[package]]
 name = "rtpipeline"
-version = "2.2.0"
+version = "2.2.1"
 source = { editable = "." }
 dependencies = [
     { name = "dicom2nifti" },
@@ -3080,7 +3080,7 @@ radiomics = [
 requires-dist = [
     { name = "dicom2nifti", specifier = ">=2.4" },
     { name = "dicompyler-core", specifier = "==0.5.6" },
-    { name = "filelock" },
+    { name = "filelock", specifier = ">=3.20.3" },
     { name = "ipython" },
     { name = "matplotlib" },
     { name = "mkdocs-material", marker = "extra == 'docs'" },
@@ -3092,7 +3092,7 @@ requires-dist = [
     { name = "pandas" },
     { name = "pingouin", marker = "extra == 'radiomics'", specifier = ">=0.5.3" },
     { name = "plotly" },
-    { name = "pydicom", specifier = ">=3.0,<4" },
+    { name = "pydicom", specifier = ">=3.0.2,<4" },
     { name = "pydicom-seg", marker = "extra == 'dcmseg'", specifier = "==0.4.1" },
     { name = "pyradiomics", marker = "extra == 'radiomics'" },
     { name = "rt-utils" },

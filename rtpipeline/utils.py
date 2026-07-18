@@ -340,7 +340,7 @@ def get(ds: FileDataset, tag: int | tuple[int, int] | str, default: Any = None) 
 
 def file_md5(path: str | Path, chunk: int = 1 << 20) -> str:
     """Compute MD5 checksum of a file. Use file_sha256 for security-sensitive operations."""
-    h = hashlib.md5()
+    h = hashlib.md5(usedforsecurity=False)
     with open(path, "rb") as f:
         while True:
             b = f.read(chunk)

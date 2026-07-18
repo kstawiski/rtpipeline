@@ -7,7 +7,10 @@ This document provides comprehensive guidance for running rtpipeline in Docker a
 
 All pipeline features work correctly in Docker and Singularity containers:
 
-### Latest Updates (v2.2.0)
+### Latest Updates (v2.2.1)
+- **Complete NTCV defaults**: Standard robustness runs noise at 0/10/20 HU, translations up to +/-4 mm, two contour realizations, and +/-15% volume adaptation
+- **Complete wheels**: All runtime subpackages are included and checked before the container build
+- **Safer launch/extraction paths**: Shell boundaries are explicit and downloaded model archives are validated before extraction
 - **Bounded runtime installation**: The final editable install reuses the dependencies already solved in the three container environments
 - **Reliable clean container builds**: Environment caches are removed between solves to reduce peak disk use
 - **Exact radiomics feature activation**: Configured `featureClass` subsets no longer enable omitted classes

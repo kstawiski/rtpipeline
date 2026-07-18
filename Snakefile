@@ -133,6 +133,9 @@ def _resolve_env_python(env_name: str) -> str:
         candidates.append(Path(conda_prefix).parent / env_name / "bin" / "python")
     # Try common micromamba/conda locations
     home = Path.home()
+    mamba_root = os.environ.get("MAMBA_ROOT_PREFIX")
+    if mamba_root:
+        candidates.append(Path(mamba_root) / "envs" / env_name / "bin" / "python")
     for base in [
         home / "micromamba" / "envs",
         home / "miniforge3" / "envs",

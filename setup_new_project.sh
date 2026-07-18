@@ -8,7 +8,6 @@
 # Usage:
 #   ./setup_new_project.sh                    # Interactive wizard
 #   ./setup_new_project.sh --quick /path      # Quick setup with defaults
-#   ./setup_new_project.sh --preset prostate  # Use preset configuration
 #
 
 set -euo pipefail
@@ -34,17 +33,11 @@ ICON_X="${RED}✗${NC}"
 ICON_WARN="${YELLOW}⚠${NC}"
 ICON_INFO="${BLUE}ℹ${NC}"
 ICON_Q="${CYAN}?${NC}"
-ICON_GEAR="${MAGENTA}⚙${NC}"
-
 # Script variables
-SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-VERSION="2.1.1"
-CONFIG_FILE=""
-PRESET=""
+VERSION="2.2.1"
 QUICK_MODE=false
 QUICK_DICOM_DIR=""
 DRY_RUN=false
-VERBOSE=0
 
 # Print banner
 print_banner() {
@@ -104,7 +97,7 @@ ask_question() {
     else
         echo ""
     fi
-    read -p "    > " response
+    read -r -p "    > " response
     echo "${response:-$default}"
 }
 
@@ -122,7 +115,7 @@ ask_yes_no() {
     fi
 
     echo -e "  ${ICON_Q} $question ${DIM}$prompt_suffix${NC}"
-    read -p "    > " response
+    read -r -p "    > " response
     
     # If empty, use default
     if [ -z "$response" ]; then
@@ -164,7 +157,8 @@ check_prerequisites() {
 
     # Python
     if command -v python3 &> /dev/null; then
-        local py_ver=$(python3 -V 2>&1 | awk '{print $2}')
+        local py_ver
+        py_ver=$(python3 -V 2>&1 | awk '{print $2}')
         print_success "Python $py_ver found"
     else
         print_error "Python 3 not found"
@@ -185,7 +179,8 @@ check_prerequisites() {
 
     # GPU
     if command -v nvidia-smi &> /dev/null; then
-        local gpu_name=$(nvidia-smi --query-gpu=name --format=csv,noheader | head -n1)
+        local gpu_name
+        gpu_name=$(nvidia-smi --query-gpu=name --format=csv,noheader | head -n1)
         print_success "GPU detected: $gpu_name"
     else
         print_warning "No NVIDIA GPU detected (pipeline will run in CPU mode)"
@@ -193,8 +188,10 @@ check_prerequisites() {
 
     # Memory
     if [ -f /proc/meminfo ]; then
-        local total_mem_kb=$(grep MemTotal /proc/meminfo | awk '{print $2}')
-        local total_mem_gb=$((total_mem_kb / 1024 / 1024))
+        local total_mem_kb
+        local total_mem_gb
+        total_mem_kb=$(grep MemTotal /proc/meminfo | awk '{print $2}')
+        total_mem_gb=$((total_mem_kb / 1024 / 1024))
         if [ "$total_mem_gb" -lt 16 ]; then
             print_warning "Low RAM detected (${total_mem_gb}GB). >16GB recommended."
         else
@@ -222,7 +219,7 @@ main() {
             --quick) QUICK_MODE=true; shift ;; 
             --quick=*) QUICK_MODE=true; QUICK_DICOM_DIR="${1#--quick=}"; shift ;; 
             --dry-run) DRY_RUN=true; shift ;; 
-            --preset) PRESET="$2"; shift 2 ;; 
+            --*) print_error "Unknown option: $1"; exit 1 ;;
             *) if [ -z "$QUICK_DICOM_DIR" ]; then QUICK_DICOM_DIR="$1"; fi; shift ;; 
         esac
     done
@@ -247,7 +244,8 @@ main() {
     # Resolve absolute path
     dicom_dir=$(cd "$(dirname "$dicom_dir")"; pwd)/$(basename "$dicom_dir")
     
-    local parent_dir=$(dirname "$dicom_dir")
+    local parent_dir
+    parent_dir=$(dirname "$dicom_dir")
     local default_out="$parent_dir/rtpipeline_output"
     local output_dir="$default_out"
     if [ "$QUICK_MODE" = "true" ]; then
@@ -291,11 +289,12 @@ main() {
         
         if [ "$robustness_enabled" = "yes" ]; then
             print_info "Select perturbation intensity:"
-            echo -e "    1) ${BOLD}mild${NC}      (10-15 perts/ROI) - Quick QA"
-            echo -e "    2) ${BOLD}standard${NC}  (15-30 perts/ROI) - Recommended for clinical use"
-            echo -e "    3) ${BOLD}aggressive${NC} (30-60 perts/ROI) - Research grade"
+            echo -e "    1) ${BOLD}mild${NC}      (12 perts/ROI) - Quick QA"
+            echo -e "    2) ${BOLD}standard${NC}  (81 perts/ROI) - Complete standard NTCV"
+            echo -e "    3) ${BOLD}aggressive${NC} (315 perts/ROI) - Research stress test"
             
-            local intensity_sel=$(ask_question "Select intensity [1-3]" "2")
+            local intensity_sel
+            intensity_sel=$(ask_question "Select intensity [1-3]" "2")
             case "$intensity_sel" in
                 1) robustness_intensity="mild" ;; 
                 3) robustness_intensity="aggressive" ;; 
@@ -368,8 +367,9 @@ radiomics_robustness:
       - "RECTUM"
       - "PROSTATE"
     small_volume_changes: [-0.15, 0.0, 0.15]
-    max_translation_mm: 3.0
+    max_translation_mm: 4.0
     n_random_contour_realizations: 2
+    noise_levels: [0.0, 10.0, 20.0]
 
 # Systematic CT Cropping
 ct_cropping:

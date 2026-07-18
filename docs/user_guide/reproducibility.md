@@ -146,16 +146,16 @@ For maximum reproducibility, use the Docker image with a specific tag:
 
 ```bash
 # Use a specific version, not :latest
-docker pull kstawiski/rtpipeline:v2.2.0
+docker pull kstawiski/rtpipeline:v2.2.1
 
 # Record the image digest
-docker inspect --format='{{.RepoDigests}}' kstawiski/rtpipeline:v2.2.0
+docker inspect --format='{{.RepoDigests}}' kstawiski/rtpipeline:v2.2.1
 ```
 
 Document in your methods:
-> "All preprocessing was performed using RTpipeline Docker image kstawiski/rtpipeline:v2.2.0 (SHA256: abc123...)."
+> "All preprocessing was performed using RTpipeline Docker image kstawiski/rtpipeline:v2.2.1 (SHA256: abc123...)."
 
-For `v2.2.0`, also record whether radiomics and robustness were executed through the default dual-environment setup (`rtpipeline` + `rtpipeline-radiomics`) or a custom local installation.
+For `v2.2.1`, also record whether radiomics and robustness were executed through the default dual-environment setup (`rtpipeline` + `rtpipeline-radiomics`) or a custom local installation.
 
 ---
 
@@ -166,7 +166,7 @@ For `v2.2.0`, also record whether radiomics and robustness were executed through
 ```markdown
 **Dose-Volume Histogram Analysis**
 
-DVH metrics were extracted using RTpipeline (version 2.2.0, git commit: XXXXXX; replace if using another tag) [1].
+DVH metrics were extracted using RTpipeline (version 2.2.1, git commit: XXXXXX; replace if using another tag) [1].
 DICOM RTSTRUCT, RTDOSE, and RTPLAN files were exported from [TPS name/version]
 and processed using the following standardized protocol:
 
@@ -195,7 +195,7 @@ The complete preprocessing configuration is available as Supplementary File S2.
 ```markdown
 **Radiomic Feature Extraction and Stability Assessment**
 
-CT radiomic features were extracted using RTpipeline (version 2.2.0; replace if using another tag) [1] with
+CT radiomic features were extracted using RTpipeline (version 2.2.1; replace if using another tag) [1] with
 PyRadiomics (version 3.0.1) [2] following Image Biomarker Standardisation
 Initiative (IBSI) recommendations [3].
 
@@ -216,8 +216,8 @@ A total of [N] features were extracted from [structure(s)], comprising:
 Feature stability was assessed using NTCV perturbation chains following
 Zwanenburg et al. [4]. For each ROI, [N] perturbations were generated:
 - Gaussian noise injection (σ = 0, 10, 20 HU)
-- Rigid translations (±3 mm in each axis)
-- Contour randomization (N = X realizations)
+- Rigid translations (up to +/-4 mm)
+- Contour randomization (2 realizations)
 - Volume adaptation (±15% erosion/dilation)
 
 Intraclass correlation coefficients ICC(3,1) were computed using Pingouin [5].
@@ -241,7 +241,7 @@ Features were classified as:
 ```markdown
 **Multi-Center Data Harmonization**
 
-Data from [N] centers were harmonized using RTpipeline (version 2.2.0; replace if using another tag) [1] as a
+Data from [N] centers were harmonized using RTpipeline (version 2.2.1; replace if using another tag) [1] as a
 standardized ETL framework. Each center independently processed local DICOM
 exports using an identical configuration bundle (Supplementary File S3).
 
@@ -392,7 +392,7 @@ Supplementary Data.
 ```markdown
 **Code Availability**
 
-All data preprocessing was performed using RTpipeline (version 2.2.0,
+All data preprocessing was performed using RTpipeline (version 2.2.1,
 https://github.com/kstawiski/rtpipeline, DOI: XXX). The complete
 configuration bundle, including structure mapping dictionaries and
 radiomics parameters, is available at [DOI]. Analysis scripts for

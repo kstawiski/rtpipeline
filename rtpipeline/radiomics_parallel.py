@@ -848,7 +848,9 @@ def _prepare_radiomics_task(
     # unrelated later image, which would silently return a stale on-disk
     # NRRD cache hit for different voxel data. Hash the actual voxel bytes
     # instead so the key tracks content, not object identity.
-    img_key = hashlib.sha1(sitk.GetArrayViewFromImage(image).tobytes()).hexdigest()
+    img_key = hashlib.sha1(
+        sitk.GetArrayViewFromImage(image).tobytes(), usedforsecurity=False
+    ).hexdigest()
     img_path = temp_dir / f"img_{img_key}.nrrd"
     if not img_path.exists():
         sitk.WriteImage(image, str(img_path))

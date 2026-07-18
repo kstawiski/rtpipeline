@@ -14,6 +14,45 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install source-quality tools
+        run: python -m pip install --disable-pip-version-check build ruff bandit pip-audit cffconvert
+
+      - name: Validate source and launchers
+        run: |
+          ruff check .
+          bandit -q -r rtpipeline -lll
+          shellcheck -S warning build.sh run_rtpipeline.sh setup_new_project.sh scripts/install_local.sh scripts/run_local.sh
+          bash -n build.sh run_rtpipeline.sh setup_new_project.sh scripts/install_local.sh scripts/run_local.sh
+          bash scripts/install_local.sh --plan --device cpu
+          python -m pip_audit .
+          cffconvert --validate --infile CITATION.cff
+
+      - name: Build and inspect wheel
+        run: |
+          python -m build --wheel
+          python - <<'PY'
+          from pathlib import Path
+          from zipfile import ZipFile
+
+          wheel = next(Path("dist").glob("rtpipeline-*.whl"))
+          with ZipFile(wheel) as archive:
+              names = set(archive.namelist())
+          required = {
+              "rtpipeline/segmenters/__init__.py",
+              "rtpipeline/eval/__init__.py",
+              "rtpipeline/radiomics_params.yaml",
+          }
+          missing = sorted(required - names)
+          if missing:
+              raise SystemExit(f"wheel is missing runtime files: {missing}")
+          print(f"verified {wheel}")
+          PY
+
       - name: Free runner disk space
         run: |
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/share/boost
@@ -41,8 +80,41 @@ jobs:
           docker run --rm rtpipeline:test \
             snakemake --cores 1 -n --configfile /app/config.container.yaml
 
+  local-installer-plan:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-14]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mamba-org/setup-micromamba@v3
+        with:
+          init-shell: none
+          post-cleanup: all
+      - name: Validate local installer detection
+        run: |
+          bash -n scripts/install_local.sh scripts/run_local.sh
+          bash scripts/install_local.sh --plan --device cpu
+          bash scripts/install_local.sh --help
+          bash scripts/run_local.sh --help
+      - name: Solve local environments
+        run: |
+          micromamba create --dry-run --yes --name rtpipeline-solve \
+            --file envs/rtpipeline-local.yaml
+          micromamba create --dry-run --yes --name rtpipeline-radiomics-solve \
+            --file envs/rtpipeline-radiomics-local.yaml
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            micromamba create --dry-run --yes --name rtpipeline-torch-solve \
+              --file envs/rtpipeline-local.yaml --channel pytorch --channel conda-forge \
+              'pytorch=2.3.*' 'torchvision=0.18.*' 'torchaudio=2.3.*'
+          else
+            micromamba create --dry-run --yes --name rtpipeline-torch-solve \
+              --file envs/rtpipeline-local.yaml --channel pytorch --channel conda-forge \
+              'pytorch=2.3.*' 'torchvision=0.18.*' 'torchaudio=2.3.*' cpuonly
+          fi
+
   push:
-    needs: build
+    needs: [build, local-installer-plan]
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
 
