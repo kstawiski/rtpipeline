@@ -646,7 +646,7 @@ radiomics_robustness:
     small_volume_changes: [-0.15, 0.0, 0.15]
     large_volume_changes: [-0.30, 0.0, 0.30]
     max_translation_mm: 5.0
-    n_random_contour_realizations: 3
+    n_random_contour_realizations: 2
     noise_levels: [0.0, 10.0, 20.0]
 
 ct_cropping:

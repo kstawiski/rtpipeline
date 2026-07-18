@@ -339,11 +339,12 @@ class JobManager:
                     'modes': ['segmentation_perturbation'],
                     'segmentation_perturbation': {
                         'intensity': robustness_config.get('intensity', 'standard'),
-                        # Defaults that match setup_new_project.sh logic
+                        # Full shipped NTCV grid (81 states at standard intensity)
                         'apply_to_structures': ["GTV*", "CTV*", "PTV*", "BLADDER", "RECTUM", "PROSTATE"],
                         'small_volume_changes': [-0.15, 0.0, 0.15],
-                        'max_translation_mm': 3.0,
-                        'n_random_contour_realizations': 2
+                        'max_translation_mm': 4.0,
+                        'n_random_contour_realizations': 2,
+                        'noise_levels': [0.0, 10.0, 20.0]
                     }
                 }
 

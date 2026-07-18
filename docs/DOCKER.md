@@ -15,7 +15,7 @@ All pipeline features work correctly in Docker and Singularity containers:
 - **Reliable clean container builds**: Environment caches are removed between solves to reduce peak disk use
 - **Exact radiomics feature activation**: Configured `featureClass` subsets no longer enable omitted classes
 - **Scalar radiomics values**: Zero-dimensional and single-element numeric arrays are retained in robustness output
-- **DICOM-SEG compatibility**: Decoding works with pydicom 3.x through the optional `dcmseg` dependencies
+- **DICOM-SEG boundary**: `pydicom-seg` stays outside the NumPy 2.x main runtime; use a separately pinned NumPy 1.x conversion environment when needed
 - **ICC compatibility**: Robustness summaries accept current and legacy Pingouin confidence-interval column names
 - **Safer no-CT behavior**: Populated CT-derived outputs are preserved unless destructive clearing is explicitly enabled
 - **Radiomics Robustness Module**: Comprehensive feature stability assessment with ICC, CoV, and QCD metrics

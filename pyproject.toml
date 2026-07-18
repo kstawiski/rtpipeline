@@ -14,7 +14,9 @@ dependencies = [
   "dicompyler-core==0.5.6",
   # NumPy 2.x is used by the primary segmentation/runtime environment.
   # The radiomics stack remains isolated in envs/rtpipeline-radiomics.yaml.
-  "numpy>=1.23",
+  # Package code is installed --no-deps into the isolated NumPy 1.26 helper;
+  # supported main environments still pin NumPy 2.x in envs/*rtpipeline*.yaml.
+  "numpy>=1.23,<3",
   "pandas",
   "scipy",
   "SimpleITK",
@@ -29,19 +31,10 @@ dependencies = [
   "nbformat",     # For notebook processing support
   "ipython",      # For notebook processing support
   "filelock>=3.20.3",  # For thread-safe file operations in parallel processing
+  "pingouin>=0.5.3",  # ICC computation; PyRadiomics itself stays isolated
 ]
 
 [project.optional-dependencies]
-dcmseg = [
-  # Optional because pydicom-seg currently requires NumPy <2.0, while the
-  # main RTpipeline runtime intentionally supports NumPy 2.x.
-  "pydicom-seg==0.4.1",
-  "numpy<2.0",
-]
-radiomics = [
-  "pyradiomics",  # Optional - may have compatibility issues with Python 3.12+
-  "pingouin>=0.5.3",  # For ICC computation in robustness analysis
-]
 docs = [
   "mkdocs-material",
 ]

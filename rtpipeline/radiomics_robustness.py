@@ -30,7 +30,7 @@ Based on 2023-2025 radiomics stability research:
 - Traverso et al. 2024: cross-extractor reproducibility
 - OPC RobustDB 2025 (PMID: 41367878): feature stability atlas with pruning
 - Perturbation count must be reported explicitly for the configured Cartesian grid
-- Conservative clinical thresholds: ICC >0.90 and CoV <10%
+- Configurable conservative research thresholds: ICC >0.90 and CoV <10%
 """
 
 from __future__ import annotations
@@ -168,129 +168,116 @@ class RobustnessConfig:
         )
 
 
-def volume_adapt_mask(mask: sitk.Image, tau: float, max_iterations: int = 20) -> Optional[sitk.Image]:
-    """
-    Apply iterative erosion/dilation to approach a target mask-volume change.
+def _select_largest_scores_deterministically(
+    candidates: np.ndarray,
+    scores: np.ndarray,
+    count: int,
+) -> np.ndarray:
+    """Select exact top-scoring indices with stable flat-index tie breaking."""
+    if count <= 0:
+        return np.empty(0, dtype=candidates.dtype)
+    if count >= scores.size:
+        return candidates.copy()
+    threshold_index = scores.size - count
+    threshold = np.partition(scores, threshold_index)[threshold_index]
+    strict = candidates[scores > threshold]
+    ties = np.sort(candidates[scores == threshold])
+    needed = count - strict.size
+    return np.concatenate((strict, ties[:needed]))
 
-    Uses spacing-aware structuring elements to ensure isotropic physical-space
-    morphology on anisotropic voxel grids (e.g., 1x1x3 mm clinical CTs).
+
+def volume_adapt_mask(mask: sitk.Image, tau: float, max_iterations: int = 20) -> Optional[sitk.Image]:
+    """Adapt a binary mask to the requested voxel-count volume change.
+
+    Voxels are ranked by a signed Maurer distance map computed in physical
+    space. Erosion retains the deepest interior voxels; dilation adds the
+    nearest exterior voxels. The returned mask therefore contains exactly the
+    rounded target voxel count (and hence the closest representable physical
+    volume) without forcing a one-voxel change through thick slices.
 
     Args:
         mask: Binary SimpleITK image
         tau: Target volume change ratio (e.g., 0.15 for +15%, -0.15 for -15%)
-        max_iterations: Maximum number of erosion/dilation iterations
+        max_iterations: Retained for API compatibility; no longer used
 
     Returns:
         Perturbed mask or None if unsuccessful
     """
+    _ = max_iterations
+    if tau <= -1.0:
+        raise ValueError("tau must be greater than -1.0")
     if abs(tau) < 1e-6:
-        return mask
+        return sitk.Image(mask)
 
     arr = sitk.GetArrayFromImage(mask).astype(bool)
-    original_volume = arr.sum()
-
-    # C2 fix: spacing-aware minimum volume threshold (at least 0.01 cm³ = 10 mm³)
-    spacing = mask.GetSpacing()  # (x, y, z) in mm
+    original_voxels = int(arr.sum())
+    spacing = mask.GetSpacing()
     voxel_vol_mm3 = float(np.prod(spacing))
-    min_voxels = max(10, int(np.ceil(10.0 / voxel_vol_mm3)))  # at least 10 mm³
-
-    if original_volume < min_voxels:
-        logger.debug("Mask too small for volume adaptation (volume=%d voxels, min=%d)", original_volume, min_voxels)
+    min_voxels = max(10, int(np.ceil(10.0 / voxel_vol_mm3)))
+    if original_voxels < min_voxels:
+        logger.debug(
+            "Mask too small for volume adaptation (volume=%d voxels, min=%d)",
+            original_voxels,
+            min_voxels,
+        )
         return None
 
-    target_volume = int(original_volume * (1.0 + tau))
-    # Determine operation (erosion or dilation)
-    is_erosion = tau < 0
-    operation = sitk.BinaryErode if is_erosion else sitk.BinaryDilate
-
-    # C2 fix: compute spacing-aware structuring element radii
-    # Target ~1mm physical radius per iteration; scale inversely by voxel spacing
-    target_radius_mm = 1.0
-    kernel_radius = [max(1, int(round(target_radius_mm / s))) for s in spacing]
-    # SimpleITK uses (x, y, z) ordering for kernel radius
-    logger.debug("Volume adaptation kernel radius (voxels): %s for spacing %s mm", kernel_radius, spacing)
-
-    # Iterative approach - track all candidates including overshoot
-    current_mask = mask
-    current_volume = original_volume
-    best_mask = None  # Start with None to ensure we return a perturbed mask
-    best_diff = float('inf')
-    last_valid_perturbed = None  # Track last valid perturbed mask even if it overshoots
-
-    for iteration in range(1, max_iterations + 1):
-        try:
-            perturbed = operation(current_mask, kernel_radius, sitk.sitkBall)
-            perturbed_arr = sitk.GetArrayFromImage(perturbed).astype(bool)
-            perturbed_volume = perturbed_arr.sum()
-
-            if perturbed_volume == current_volume:
-                logger.debug(
-                    "Iteration %d produced no volume change during volume adaptation",
-                    iteration,
-                )
-                break
-
-            # Always track the last valid perturbed mask (non-empty)
-            if perturbed_volume >= 5:
-                last_valid_perturbed = perturbed
-
-            diff = abs(perturbed_volume - target_volume)
-            if diff < best_diff:
-                best_diff = diff
-                best_mask = perturbed
-
-            current_mask = perturbed
-            current_volume = perturbed_volume
-
-            if perturbed_volume == 0 and is_erosion:
-                logger.debug("Mask fully eroded during volume adaptation")
-                break
-
-            # Stop if we reached target or overshot
-            if is_erosion and perturbed_volume <= target_volume:
-                # Even if we overshot, use this perturbed mask if it's closer to target
-                # than any previous candidate (or if we have no candidate yet)
-                if best_mask is None or diff <= best_diff:
-                    best_mask = perturbed
-                break
-            elif not is_erosion and perturbed_volume >= target_volume:
-                if best_mask is None or diff <= best_diff:
-                    best_mask = perturbed
-                break
-        except Exception as e:
-            logger.debug("Volume adaptation failed at iteration %d: %s", iteration, e)
-            break
-
-    # If we never found a best_mask (shouldn't happen), use last valid perturbed
-    if best_mask is None:
-        best_mask = last_valid_perturbed
-
-    # Final fallback: if still None, we couldn't create any perturbation
-    if best_mask is None:
-        logger.debug("Could not generate any valid perturbation for tau=%.3f", tau)
+    target_voxels = int(round(original_voxels * (1.0 + tau)))
+    if target_voxels < min_voxels or target_voxels > arr.size:
+        logger.debug(
+            "Target volume is outside the representable range (target=%d, range=%d..%d)",
+            target_voxels,
+            min_voxels,
+            arr.size,
+        )
+        return None
+    if target_voxels == original_voxels:
+        logger.debug("Requested tau=%.6f rounds to the original voxel count", tau)
         return None
 
-    # Check if result is reasonable
-    best_arr = sitk.GetArrayFromImage(best_mask).astype(bool)
-    best_volume = best_arr.sum()
+    signed_distance = sitk.SignedMaurerDistanceMap(
+        sitk.Cast(mask > 0, sitk.sitkUInt8),
+        insideIsPositive=True,
+        squaredDistance=False,
+        useImageSpacing=True,
+    )
+    distance_arr = sitk.GetArrayViewFromImage(signed_distance)
+    result_arr = np.zeros_like(arr, dtype=bool)
 
-    if best_volume < min_voxels:
-        logger.debug("Perturbed mask too small (volume=%d voxels, min=%d)", best_volume, min_voxels)
-        return None
+    if target_voxels < original_voxels:
+        candidates = np.flatnonzero(arr)
+        scores = distance_arr.ravel()[candidates]
+        selected = _select_largest_scores_deterministically(
+            candidates, scores, target_voxels
+        )
+        result_arr.ravel()[selected] = True
+    else:
+        result_arr[...] = arr
+        add_voxels = target_voxels - original_voxels
+        candidates = np.flatnonzero(~arr)
+        scores = distance_arr.ravel()[candidates]
+        selected = _select_largest_scores_deterministically(
+            candidates, scores, add_voxels
+        )
+        result_arr.ravel()[selected] = True
 
-    # Ensure we're returning a DIFFERENT mask from original
-    if best_volume == original_volume:
-        logger.debug("Perturbation produced no volume change, using last valid perturbed")
-        if last_valid_perturbed is not None:
-            best_mask = last_valid_perturbed
-            best_arr = sitk.GetArrayFromImage(best_mask).astype(bool)
-            best_volume = best_arr.sum()
+    achieved_voxels = int(result_arr.sum())
+    if achieved_voxels != target_voxels:
+        raise RuntimeError(
+            f"volume adaptation produced {achieved_voxels} voxels; expected {target_voxels}"
+        )
 
-    achieved_tau = (best_volume - original_volume) / original_volume
-    logger.debug("Volume adaptation: target τ=%.3f, achieved τ=%.3f (volume %d→%d)",
-                 tau, achieved_tau, original_volume, best_volume)
-
-    return best_mask
+    result = sitk.GetImageFromArray(result_arr.astype(np.uint8))
+    result.CopyInformation(mask)
+    achieved_tau = (achieved_voxels - original_voxels) / original_voxels
+    logger.debug(
+        "Volume adaptation: target tau=%.3f, achieved tau=%.6f (voxels %d->%d)",
+        tau,
+        achieved_tau,
+        original_voxels,
+        achieved_voxels,
+    )
+    return result
 
 
 def translate_mask(mask: sitk.Image, translation_mm: Tuple[float, float, float]) -> sitk.Image:
@@ -320,9 +307,12 @@ def randomize_contour(
     rng: Optional[np.random.Generator] = None,
 ) -> sitk.Image:
     """
-    Apply boundary randomization to simulate inter-observer variability.
+    Apply a reproducible random physical-space boundary offset.
 
-    Applies morphological opening or closing with spacing-aware structuring elements.
+    A signed distance map avoids the anisotropic-voxel error caused by forcing
+    a one-voxel kernel in every dimension. Each realization randomly chooses an
+    inward or outward displacement between 50% and 100% of the configured
+    maximum.
 
     Args:
         mask: Binary SimpleITK image
@@ -335,21 +325,22 @@ def randomize_contour(
     if rng is None:
         rng = np.random.default_rng()
 
-    spacing = mask.GetSpacing()
-    # C2 fix: spacing-aware kernel radii instead of isotropic voxel radius
-    kernel_radius = [max(1, int(round(randomization_mm / s))) for s in spacing]
+    if randomization_mm <= 0:
+        raise ValueError("randomization_mm must be positive")
 
-    # Randomly choose erosion or dilation
-    if rng.random() > 0.5:
-        # Slight erosion followed by dilation (morphological opening)
-        temp = sitk.BinaryErode(mask, kernel_radius, sitk.sitkBall)
-        result = sitk.BinaryDilate(temp, kernel_radius, sitk.sitkBall)
+    binary = sitk.Cast(mask > 0, sitk.sitkUInt8)
+    signed_distance = sitk.SignedMaurerDistanceMap(
+        binary,
+        insideIsPositive=True,
+        squaredDistance=False,
+        useImageSpacing=True,
+    )
+    magnitude_mm = float(rng.uniform(0.5 * randomization_mm, randomization_mm))
+    if rng.random() < 0.5:
+        result = signed_distance > magnitude_mm
     else:
-        # Slight dilation followed by erosion (morphological closing)
-        temp = sitk.BinaryDilate(mask, kernel_radius, sitk.sitkBall)
-        result = sitk.BinaryErode(temp, kernel_radius, sitk.sitkBall)
-
-    return result
+        result = signed_distance >= -magnitude_mm
+    return sitk.Cast(result, sitk.sitkUInt8)
 
 
 def add_noise_to_image(
@@ -416,6 +407,36 @@ def generate_perturbed_masks(
                 logger.warning("Failed to generate perturbation %s for %s", pert_id, structure_name)
 
     return perturbed
+
+
+def expected_ntcv_perturbation_count(config: PerturbationConfig) -> int:
+    """Return the exact Cartesian-grid size for an NTCV configuration."""
+    if config.intensity == "mild":
+        volume_count = len(
+            config.small_volume_changes[:2]
+            if len(config.small_volume_changes) > 2
+            else config.small_volume_changes
+        )
+        translation_count = 3 if config.max_translation_mm > 0 else 1
+        contour_count = 1 + min(1, config.n_random_contour_realizations)
+        noise_count = len(
+            config.noise_levels[:1]
+            if len(config.noise_levels) > 1
+            else config.noise_levels
+        )
+    elif config.intensity == "aggressive":
+        volume_count = len(
+            dict.fromkeys(config.large_volume_changes + config.small_volume_changes)
+        )
+        translation_count = 7 if config.max_translation_mm > 0 else 1
+        contour_count = 1 + config.n_random_contour_realizations
+        noise_count = len(config.noise_levels)
+    else:
+        volume_count = len(config.small_volume_changes)
+        translation_count = 3 if config.max_translation_mm > 0 else 1
+        contour_count = 1 + config.n_random_contour_realizations
+        noise_count = len(config.noise_levels)
+    return volume_count * translation_count * contour_count * noise_count
 
 
 def generate_ntcv_perturbations(
@@ -550,11 +571,32 @@ def generate_ntcv_perturbations(
                 # fall back to max_translation_mm/2 for backwards compatibility
                 contour_noise_mm = config.contour_randomization_mm if config.contour_randomization_mm > 0 else config.max_translation_mm / 2
                 for c_idx in range(contour_realizations):
-                    try:
-                        randomized = randomize_contour(translated_mask, contour_noise_mm, rng=rng)
-                        contour_variants.append(randomized)
-                    except Exception as e:
-                        logger.debug("Contour randomization failed for %s: %s", structure_name, e)
+                    randomized = None
+                    for _attempt in range(16):
+                        candidate = randomize_contour(
+                            translated_mask,
+                            contour_noise_mm,
+                            rng=rng,
+                        )
+                        candidate_arr = sitk.GetArrayViewFromImage(candidate)
+                        if int(np.count_nonzero(candidate_arr)) < 5:
+                            continue
+                        if any(
+                            np.array_equal(
+                                candidate_arr,
+                                sitk.GetArrayViewFromImage(existing),
+                            )
+                            for existing in contour_variants
+                        ):
+                            continue
+                        randomized = candidate
+                        break
+                    if randomized is None:
+                        raise RuntimeError(
+                            f"could not generate unique contour realization {c_idx + 1} "
+                            f"for {structure_name} after 16 attempts"
+                        )
+                    contour_variants.append(randomized)
             
             for c_idx, contour_mask in enumerate(contour_variants):
                 contour_suffix = f"_c{c_idx}" if c_idx > 0 else ""
@@ -581,7 +623,14 @@ def generate_ntcv_perturbations(
     
     logger.info("Generated %d NTCV perturbations for %s (intensity=%s)",
                 pert_count, structure_name, config.intensity)
-    
+
+    expected_count = expected_ntcv_perturbation_count(config)
+    if len(perturbed_masks) != expected_count or len(perturbed_images) != expected_count:
+        raise RuntimeError(
+            f"incomplete NTCV grid for {structure_name}: generated "
+            f"{len(perturbed_masks)} of {expected_count} perturbations"
+        )
+
     return perturbed_masks, perturbed_images
 
 
@@ -601,6 +650,44 @@ def _coerce_scalar_feature_value(key: str, value: Any) -> Optional[float]:
     ):
         return float(value.item())
     return None
+
+
+def _validate_extracted_feature_frame(
+    frame: pd.DataFrame,
+    expected_perturbation_ids: set[str],
+    context: str,
+) -> None:
+    """Fail closed when any perturbation or feature extraction is incomplete."""
+    if frame.empty:
+        raise RuntimeError(f"no radiomics features were extracted for {context}")
+    observed_ids = set(frame["perturbation_id"].astype(str))
+    missing_ids = sorted(expected_perturbation_ids - observed_ids)
+    unexpected_ids = sorted(observed_ids - expected_perturbation_ids)
+    if missing_ids or unexpected_ids:
+        raise RuntimeError(
+            f"incomplete radiomics extraction for {context}: "
+            f"missing perturbations={missing_ids}, unexpected perturbations={unexpected_ids}"
+        )
+    if not np.isfinite(frame["value"].to_numpy(dtype=float)).all():
+        raise RuntimeError(f"non-finite radiomics values were extracted for {context}")
+
+    feature_sets = {
+        perturbation_id: frozenset(group["feature_name"].astype(str))
+        for perturbation_id, group in frame.groupby("perturbation_id")
+    }
+    reference_features = next(iter(feature_sets.values()))
+    if not reference_features:
+        raise RuntimeError(f"no scalar radiomics features were extracted for {context}")
+    mismatched = sorted(
+        perturbation_id
+        for perturbation_id, features in feature_sets.items()
+        if features != reference_features
+    )
+    if mismatched:
+        raise RuntimeError(
+            f"feature columns differ across perturbations for {context}: {mismatched}"
+        )
+
 
 def extract_features_for_masks(
     image: sitk.Image,
@@ -639,11 +726,10 @@ def extract_features_for_masks(
     if use_conda:
         from .radiomics_conda import extract_radiomics_batch_with_conda, check_radiomics_env
         if not check_radiomics_env():
-            logger.warning(
-                "Radiomics conda environment not available; "
-                "cannot extract features for robustness analysis"
+            raise RuntimeError(
+                "radiomics conda environment is unavailable; "
+                "robustness extraction cannot continue"
             )
-            return pd.DataFrame(rows)
         params_file = _get_params_file(config, modality)
         params_file_str = str(params_file) if params_file else None
         logger.info(
@@ -727,13 +813,14 @@ def extract_features_for_masks(
         finally:
             shutil.rmtree(tmp_dir, ignore_errors=True)
 
-        return pd.DataFrame(rows)
+        frame = pd.DataFrame(rows)
+        _validate_extracted_feature_frame(frame, set(masks), structure_name)
+        return frame
 
     # Direct PyRadiomics path (NumPy 1.x) — reuse single extractor instance
     ext = _extractor(config, modality)
     if ext is None:
-        logger.warning("No radiomics extractor available for %s", structure_name)
-        return pd.DataFrame(rows)
+        raise RuntimeError(f"no radiomics extractor is available for {structure_name}")
 
     for pert_id, mask in masks.items():
         try:
@@ -753,9 +840,13 @@ def extract_features_for_masks(
                         "value": scalar_value,
                     })
         except Exception as e:
-            logger.debug("Feature extraction failed for %s/%s: %s", structure_name, pert_id, e)
+            raise RuntimeError(
+                f"feature extraction failed for {structure_name}/{pert_id}: {e}"
+            ) from e
 
-    return pd.DataFrame(rows)
+    frame = pd.DataFrame(rows)
+    _validate_extracted_feature_frame(frame, set(masks), structure_name)
+    return frame
 
 
 # ============================================================================
@@ -911,15 +1002,6 @@ def summarize_feature_stability(
         key_values = group_key if isinstance(group_key, tuple) else (group_key,)
         row_data = {col: val for col, val in zip(group_columns, key_values)}
 
-        values = group["value"].to_numpy(dtype=float)
-
-        if len(values) < 2:
-            cov = np.nan
-            qcd = np.nan
-        else:
-            cov = compute_cov(values) if config.metrics.cov_enabled else np.nan
-            qcd = compute_qcd(values) if config.metrics.qcd_enabled else np.nan
-
         # Build unique subject identifier including course_id to avoid collapsing
         # different courses of the same patient into one subject for ICC computation.
         # Subject = patient_id + course_id + structure + segmentation_source
@@ -942,10 +1024,59 @@ def summarize_feature_stability(
         if "segmentation_source" in df_long.columns:
             subject_parts.append(group.get("segmentation_source", "unknown").astype(str))
 
-        # Combine all parts with underscore separator
-        icc_df["subject"] = subject_parts[0]
-        for part in subject_parts[1:]:
-            icc_df["subject"] = icc_df["subject"] + "_" + part
+        # Tuples preserve field boundaries (unlike underscore concatenation,
+        # which can collide for legitimate identifiers containing underscores).
+        icc_df["subject"] = list(zip(*(part.tolist() for part in subject_parts)))
+
+        if icc_df.duplicated(["subject", "rater"]).any():
+            raise ValueError(
+                f"duplicate subject/perturbation values in robustness group {row_data}"
+            )
+
+        rater_sets = icc_df.groupby("subject")["rater"].agg(
+            lambda values: frozenset(values.astype(str))
+        )
+        all_raters = frozenset().union(*rater_sets.tolist()) if len(rater_sets) else frozenset()
+        incomplete_subjects = int((rater_sets != all_raters).sum())
+        if incomplete_subjects:
+            raise ValueError(
+                f"incomplete perturbation grid for {incomplete_subjects} subject(s) "
+                f"in robustness group {row_data}"
+            )
+
+        # CoV and QCD quantify within-subject perturbation dispersion. Computing
+        # them over pooled raw values would confound perturbation instability
+        # with between-patient anatomy/biology. Report the cohort median and IQR
+        # of the subject-level metrics.
+        subject_metric_frame = icc_df[["subject", "value"]]
+        subject_cov = subject_metric_frame.groupby("subject")["value"].apply(
+            lambda values: compute_cov(values.to_numpy(dtype=float))
+        )
+        subject_qcd = subject_metric_frame.groupby("subject")["value"].apply(
+            lambda values: compute_qcd(values.to_numpy(dtype=float))
+        )
+        finite_cov = subject_cov[np.isfinite(subject_cov.to_numpy(dtype=float))]
+        finite_qcd = subject_qcd[np.isfinite(subject_qcd.to_numpy(dtype=float))]
+        cov = (
+            float(np.median(finite_cov))
+            if config.metrics.cov_enabled and not finite_cov.empty
+            else np.nan
+        )
+        qcd = (
+            float(np.median(finite_qcd))
+            if config.metrics.qcd_enabled and not finite_qcd.empty
+            else np.nan
+        )
+        cov_q1, cov_q3 = (
+            tuple(float(value) for value in np.percentile(finite_cov, [25, 75]))
+            if not finite_cov.empty
+            else (np.nan, np.nan)
+        )
+        qcd_q1, qcd_q3 = (
+            tuple(float(value) for value in np.percentile(finite_qcd, [25, 75]))
+            if not finite_qcd.empty
+            else (np.nan, np.nan)
+        )
 
         n_subjects = icc_df["subject"].nunique()
         n_raters = icc_df["rater"].nunique()
@@ -977,13 +1108,20 @@ def summarize_feature_stability(
         row_data.update({
             "feature_name": row_data.get("feature_name", group["feature_name"].iloc[0]),
             "n_subjects": n_subjects,
+            "n_subjects_complete": n_subjects,
+            "n_subjects_dropped": 0,
             "n_courses": group["course_id"].nunique() if "course_id" in group.columns else np.nan,
             "n_perturbations": n_raters,
             "icc": icc,
             "icc_ci95_low": icc_ci_low,
             "icc_ci95_high": icc_ci_high,
             "cov_pct": cov,
+            "cov_pct_q1": cov_q1,
+            "cov_pct_q3": cov_q3,
+            "n_subjects_cov": int(len(finite_cov)),
             "qcd": qcd,
+            "qcd_q1": qcd_q1,
+            "qcd_q3": qcd_q3,
             "robustness_label": robustness_label,
             "pass_seg_perturb": robustness_label in ["robust", "acceptable"],
         })
@@ -1428,6 +1566,8 @@ def robustness_for_course(
     course_dirs = build_course_dirs(course_dir)
     if output_path is None:
         output_path = course_dir / "radiomics_robustness_ct.parquet"
+    # Never allow a stale successful parquet to survive a failed rerun.
+    output_path.unlink(missing_ok=True)
 
     # Load CT image
     from .radiomics import _load_series_image
@@ -1635,6 +1775,7 @@ def robustness_for_course(
         logger.info("Parallel radiomics disabled via RTPIPELINE_DISABLE_PARALLEL_RADIOMICS=%s", disable_parallel)
         has_parallel = False
     all_features = []
+    expected_perturbations: Dict[Tuple[str, str], set[str]] = {}
     
     # Prepare tasks for parallel execution
     tasks = []
@@ -1681,8 +1822,11 @@ def robustness_for_course(
                 perturbed_images = None
 
             if len(perturbed_masks) < 2:
-                logger.warning("Insufficient perturbations for %s (%s); skipping", roi_name, source)
-                continue
+                raise RuntimeError(
+                    f"insufficient perturbations for {roi_name} ({source}): "
+                    f"generated {len(perturbed_masks)}"
+                )
+            expected_perturbations[(roi_name, source)] = set(perturbed_masks)
 
             if has_parallel:
                 # Prepare parallel tasks
@@ -1699,7 +1843,10 @@ def robustness_for_course(
                         task_params['extra_metadata'] = {'perturbation_id': pert_id}
                         tasks.append((task_file, task_params))
                     except Exception as e:
-                        logger.warning("Failed to prepare task for %s/%s/%s: %s", source, roi_name, pert_id, e)
+                        raise RuntimeError(
+                            f"failed to prepare robustness task for "
+                            f"{source}/{roi_name}/{pert_id}: {e}"
+                        ) from e
             else:
                 # Sequential fallback
                 features_df = extract_features_for_masks(
@@ -1738,6 +1885,7 @@ def robustness_for_course(
             with ctx.Pool(max_workers) as pool:
                 completed_count = 0
                 total_count = len(tasks)
+                successful_task_keys: set[Tuple[str, str, str]] = set()
                 start_time = time.time()
                 last_progress_time = time.time()
                 timed_out = False
@@ -1822,18 +1970,46 @@ def robustness_for_course(
                         
                         if rows:
                             all_features.append(pd.DataFrame(rows))
+                            successful_task_keys.add((
+                                str(metadata.get('roi_name', '')),
+                                str(metadata.get('segmentation_source', '')),
+                                str(metadata.get('perturbation_id', '')),
+                            ))
                         else:
-                            logger.debug(
-                                "Robustness worker returned metadata-only result for %s/%s (perturbation %s)",
+                            logger.error(
+                                "Robustness worker returned no scalar features for %s/%s "
+                                "(perturbation %s)",
                                 metadata.get('segmentation_source'),
                                 metadata.get('roi_name'),
                                 metadata.get('perturbation_id'),
                             )
 
+                expected_task_keys = {
+                    (roi_name, source, perturbation_id)
+                    for (roi_name, source), perturbation_ids in expected_perturbations.items()
+                    for perturbation_id in perturbation_ids
+                }
+                missing_task_keys = sorted(expected_task_keys - successful_task_keys)
+                unexpected_task_keys = sorted(successful_task_keys - expected_task_keys)
+                if (
+                    timed_out
+                    or completed_count != total_count
+                    or missing_task_keys
+                    or unexpected_task_keys
+                ):
+                    raise RuntimeError(
+                        "incomplete robustness extraction: "
+                        f"completed={completed_count}/{total_count}, "
+                        f"successful={len(successful_task_keys)}, "
+                        f"missing={missing_task_keys}, unexpected={unexpected_task_keys}, "
+                        f"timed_out={timed_out}"
+                    )
+
     except Exception as e:
         logger.error("Robustness analysis failed: %s", e)
         import traceback
         logger.error(traceback.format_exc())
+        raise
     finally:
         if temp_dir and temp_dir.exists():
             try:
@@ -1847,6 +2023,18 @@ def robustness_for_course(
 
     # Combine all features
     combined_df = pd.concat(all_features, ignore_index=True)
+    if "roi_name" in combined_df.columns and "structure" not in combined_df.columns:
+        combined_df.rename(columns={"roi_name": "structure"}, inplace=True)
+    for (roi_name, source), expected_ids in expected_perturbations.items():
+        group = combined_df[
+            (combined_df["structure"].astype(str) == str(roi_name))
+            & (combined_df["segmentation_source"].astype(str) == str(source))
+        ]
+        _validate_extracted_feature_frame(
+            group,
+            expected_ids,
+            f"{source}/{roi_name}",
+        )
 
     # Save raw feature values for aggregation stage
     try:
@@ -1860,8 +2048,7 @@ def robustness_for_course(
         )
         return output_path
     except Exception as e:
-        logger.warning("Failed to save robustness results: %s", e)
-        return None
+        raise RuntimeError(f"failed to save robustness results to {output_path}: {e}") from e
 
 
 def aggregate_robustness_results(
@@ -1878,23 +2065,22 @@ def aggregate_robustness_results(
         rob_config: Robustness configuration
     """
     logger.info("Aggregating robustness results from %d courses", len(input_parquets))
+    output_excel.unlink(missing_ok=True)
+    raw_parquet_path = output_excel.parent / (output_excel.stem + "_raw_values.parquet")
+    raw_parquet_path.unlink(missing_ok=True)
 
     all_dfs = []
     for parquet_path in input_parquets:
         if not parquet_path.exists():
-            continue
+            raise FileNotFoundError(f"robustness input parquet does not exist: {parquet_path}")
         try:
             df = pd.read_parquet(parquet_path)
             all_dfs.append(df)
         except Exception as e:
-            logger.warning("Failed to read %s: %s", parquet_path, e)
+            raise RuntimeError(f"failed to read robustness input {parquet_path}: {e}") from e
 
     if not all_dfs:
-        logger.warning("No robustness results to aggregate")
-        # Create empty Excel
-        output_excel.parent.mkdir(parents=True, exist_ok=True)
-        pd.DataFrame().to_excel(output_excel, index=False)
-        return
+        raise RuntimeError("no robustness results were supplied for aggregation")
 
     combined_raw = pd.concat(all_dfs, ignore_index=True)
 
@@ -1903,14 +2089,17 @@ def aggregate_robustness_results(
         combined_raw.rename(columns={"roi_name": "structure"}, inplace=True)
 
     per_structure_summary = summarize_feature_stability(combined_raw, rob_config)
-    global_summary = summarize_feature_stability(combined_raw, rob_config, group_columns=["feature_name"])
+    # Keep the historical sheet name for compatibility, but never pool raw
+    # values across heterogeneous structures or segmentation sources. Each row
+    # remains a structure/source/feature estimate.
+    global_summary = per_structure_summary.copy()
 
     per_source_summary: Optional[pd.DataFrame] = None
     if "segmentation_source" in combined_raw.columns:
         per_source_summary = summarize_feature_stability(
             combined_raw,
             rob_config,
-            group_columns=["segmentation_source", "feature_name"],
+            group_columns=["segmentation_source", "structure", "feature_name"],
         )
 
     if global_summary.empty:
@@ -1928,7 +2117,6 @@ def aggregate_robustness_results(
     output_excel.parent.mkdir(parents=True, exist_ok=True)
 
     # Save raw values to parquet (no row limit, unlike Excel's 1,048,576)
-    raw_parquet_path = output_excel.parent / (output_excel.stem + "_raw_values.parquet")
     try:
         combined_raw.to_parquet(raw_parquet_path, index=False)
         logger.info(
