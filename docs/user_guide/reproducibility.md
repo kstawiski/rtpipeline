@@ -146,16 +146,16 @@ For maximum reproducibility, use the Docker image with a specific tag:
 
 ```bash
 # Use a specific version, not :latest
-docker pull kstawiski/rtpipeline:v2.2.1
+docker pull kstawiski/rtpipeline:v2.2.2
 
 # Record the image digest
-docker inspect --format='{{.RepoDigests}}' kstawiski/rtpipeline:v2.2.1
+docker inspect --format='{{.RepoDigests}}' kstawiski/rtpipeline:v2.2.2
 ```
 
 Document in your methods:
-> "All preprocessing was performed using RTpipeline Docker image kstawiski/rtpipeline:v2.2.1 (SHA256: abc123...)."
+> "All preprocessing was performed using RTpipeline Docker image kstawiski/rtpipeline:v2.2.2 (SHA256: abc123...)."
 
-For `v2.2.1`, also record whether radiomics and robustness were executed through the default dual-environment setup (`rtpipeline` + `rtpipeline-radiomics`) or a custom local installation.
+For `v2.2.2`, also record whether radiomics and robustness were executed through the default dual-environment setup (`rtpipeline` + `rtpipeline-radiomics`) or a custom local installation.
 
 ---
 
@@ -166,7 +166,7 @@ For `v2.2.1`, also record whether radiomics and robustness were executed through
 ```markdown
 **Dose-Volume Histogram Analysis**
 
-DVH metrics were extracted using RTpipeline (version 2.2.1, git commit: XXXXXX; replace if using another tag) [1].
+DVH metrics were extracted using RTpipeline (version 2.2.2, git commit: XXXXXX; replace if using another tag) [1].
 DICOM RTSTRUCT, RTDOSE, and RTPLAN files were exported from [TPS name/version]
 and processed using the following standardized protocol:
 
@@ -195,7 +195,7 @@ The complete preprocessing configuration is available as Supplementary File S2.
 ```markdown
 **Radiomic Feature Extraction and Stability Assessment**
 
-CT radiomic features were extracted using RTpipeline (version 2.2.1; replace if using another tag) [1] with
+CT radiomic features were extracted using RTpipeline (version 2.2.2; replace if using another tag) [1] with
 PyRadiomics (version 3.0.1) [2] following Image Biomarker Standardisation
 Initiative (IBSI) recommendations [3].
 
@@ -245,7 +245,7 @@ Features were classified as:
 ```markdown
 **Multi-Center Data Harmonization**
 
-Data from [N] centers were harmonized using RTpipeline (version 2.2.1; replace if using another tag) [1] as a
+Data from [N] centers were harmonized using RTpipeline (version 2.2.2; replace if using another tag) [1] as a
 standardized ETL framework. Each center independently processed local DICOM
 exports using an identical configuration bundle (Supplementary File S3).
 
@@ -396,7 +396,7 @@ Supplementary Data.
 ```markdown
 **Code Availability**
 
-All data preprocessing was performed using RTpipeline (version 2.2.1,
+All data preprocessing was performed using RTpipeline (version 2.2.2,
 https://github.com/kstawiski/rtpipeline, DOI: XXX). The complete
 configuration bundle, including structure mapping dictionaries and
 radiomics parameters, is available at [DOI]. Analysis scripts for

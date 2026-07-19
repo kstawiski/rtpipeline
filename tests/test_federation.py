@@ -11,6 +11,7 @@ from rtpipeline.federation import (
     aggregate_site_packets,
     export_site_packet,
     main,
+    packet_contract_document,
     packet_contract_sha256,
     validate_site_packet,
 )
@@ -59,12 +60,14 @@ def _metrics(offset: float = 0.0) -> pd.DataFrame:
             "body_region": "Thorax",
             "n_subjects": 12,
             "n_raters": 81,
-            "icc": 0.91 + offset,
-            "icc_ci_low": 0.88 + offset,
-            "icc_ci_high": 0.94 + offset,
+            "n_subjects_cov": 12,
+            "n_subjects_qcd": 12,
+            "icc": 0.93 + offset,
+            "icc_ci_low": 0.91 + offset,
+            "icc_ci_high": 0.95 + offset,
             "cov_percent": 4.1,
             "qcd": 0.03,
-            "classification": "Robust",
+            "classification": "Robust" if offset >= -0.01 else "Acceptable",
             "feature_family": "firstorder",
             "image_type": "original",
         },
@@ -74,6 +77,8 @@ def _metrics(offset: float = 0.0) -> pd.DataFrame:
             "body_region": "Thorax",
             "n_subjects": 12,
             "n_raters": 81,
+            "n_subjects_cov": 12,
+            "n_subjects_qcd": 12,
             "icc": 0.82 + offset,
             "icc_ci_low": 0.78 + offset,
             "icc_ci_high": 0.86 + offset,
@@ -109,6 +114,17 @@ def test_export_and_validate_round_trip_is_deterministic(tmp_path: Path) -> None
         "date_values": 0,
         "direct_identifier_values": 0,
         "hostname_values": 0,
+    }
+
+
+def test_contract_hash_binds_classification_thresholds_and_statistic() -> None:
+    contract = packet_contract_document(CONTRACT_ID, MINIMUM_SUBJECTS)
+
+    assert contract["classification_rule"] == {
+        "icc_statistic": "icc_ci_low_if_finite_else_icc",
+        "robust": {"minimum_icc": 0.90, "maximum_cov_percent": 10.0},
+        "acceptable": {"minimum_icc": 0.75, "maximum_cov_percent": 20.0},
+        "not_evaluable_when": "n_subjects_cov_less_than_n_subjects",
     }
 
 
@@ -264,6 +280,8 @@ def test_validator_recomputes_manifest_summaries(tmp_path: Path) -> None:
 def test_coordinator_enforces_contract_hash_and_minimum_subject_floor(tmp_path: Path) -> None:
     low_count = _metrics()
     low_count["n_subjects"] = 2
+    low_count["n_subjects_cov"] = 2
+    low_count["n_subjects_qcd"] = 2
     low_contract_sha = packet_contract_sha256(CONTRACT_ID, 2)
     packets = []
     for node_id in ("node-a01", "node-b02"):
@@ -297,6 +315,68 @@ def test_export_rejects_semantically_invalid_metrics(
     frame = _metrics()
     frame.loc[0, column] = value
     with pytest.raises(FederationPacketError, match=message):
+        _export(frame, tmp_path / "packet")
+
+
+def test_export_round_trips_not_evaluable_relative_dispersion(tmp_path: Path) -> None:
+    frame = _metrics()
+    frame.loc[0, ["n_subjects_cov", "n_subjects_qcd"]] = 0
+    frame.loc[0, ["cov_percent", "qcd"]] = float("nan")
+    frame.loc[0, "classification"] = "Not Evaluable"
+
+    packet = tmp_path / "packet"
+    _export(frame, packet)
+    _, validated = _validate(packet)
+
+    row = validated.loc[validated["feature_name"] == "original_firstorder_Mean"].iloc[0]
+    assert row["n_subjects_cov"] == 0
+    assert row["n_subjects_qcd"] == 0
+    assert pd.isna(row["cov_percent"])
+    assert pd.isna(row["qcd"])
+    assert row["classification"] == "Not Evaluable"
+
+
+def test_export_rejects_hidden_partial_cov_denominator(tmp_path: Path) -> None:
+    frame = _metrics()
+    frame.loc[0, "n_subjects_cov"] = 11
+    with pytest.raises(FederationPacketError, match="Not Evaluable"):
+        _export(frame, tmp_path / "packet")
+
+
+@pytest.mark.parametrize(
+    ("icc_ci_low", "cov_percent", "classification", "expected"),
+    [
+        (0.88, 4.1, "Robust", "Acceptable"),
+        (0.74, 4.1, "Acceptable", "Poor"),
+        (0.91, 4.1, "Poor", "Robust"),
+        (0.91, 4.1, "Not Evaluable", "Robust"),
+        (0.91, 10.1, "Robust", "Acceptable"),
+        (0.76, 20.1, "Acceptable", "Poor"),
+    ],
+)
+def test_export_rejects_threshold_inconsistent_classification(
+    tmp_path: Path,
+    icc_ci_low: float,
+    cov_percent: float,
+    classification: str,
+    expected: str,
+) -> None:
+    frame = _metrics()
+    frame.loc[0, "icc_ci_low"] = icc_ci_low
+    frame.loc[0, "classification"] = classification
+    frame.loc[0, "cov_percent"] = cov_percent
+
+    with pytest.raises(
+        FederationPacketError,
+        match=rf"expected={expected}, actual={classification}",
+    ):
+        _export(frame, tmp_path / "packet")
+
+
+def test_export_rejects_metric_denominator_mismatch(tmp_path: Path) -> None:
+    frame = _metrics()
+    frame.loc[0, "n_subjects_qcd"] = 0
+    with pytest.raises(FederationPacketError, match="if and only if"):
         _export(frame, tmp_path / "packet")
 
 

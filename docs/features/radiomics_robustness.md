@@ -89,13 +89,18 @@ The following table summarizes the default perturbation parameters used by rtpip
 
 ### Reproducibility: Random Seed
 
-For deterministic, reproducible perturbations, rtpipeline uses a fixed random seed:
+For deterministic, reproducible perturbations, rtpipeline uses independent
+fixed seed keys for the noise and contour factors:
 
 ```python
-np.random.Generator(np.random.PCG64(42 + perturbation_count))
+noise_seed = SeedSequence([42, 0, noise_level_milli_hu])
+contour_seed = SeedSequence([42, 1, translation_index, contour_index])
 ```
 
-This ensures that the same configuration produces identical perturbation sequences across runs. The seed is incremented per perturbation to ensure variation while maintaining reproducibility. Currently, this seed is not user-configurable; for different seed values, modify the source code directly.
+This makes each noise draw depend only on its noise level and each contour draw
+depend only on its translation and contour indices. The same sampled factor is
+therefore reused across the other Cartesian axes. The base seed is fixed and is
+not currently user-configurable.
 
 ## Quick Start
 
@@ -277,7 +282,7 @@ radiomics_robustness:
     cov:
       enabled: true
     qcd:
-      enabled: true    # QCD = (Q3 - Q1) / (Q3 + Q1), a robust dispersion measure
+      enabled: true    # QCD requires prespecified relative-scale suitability
 
   thresholds:
     icc:
@@ -350,7 +355,12 @@ With the shipped grids, standard intensity produces 3 noise states × 3
 translation states × 3 contour states (original plus two realizations) × 3
 volume states = 81 perturbations. Aggressive intensity uses 7 translation
 states and 5 unique volume states, producing 315 perturbations. The module does
-not subsample these Cartesian grids.
+not subsample these Cartesian grids. Noise images and contour realizations are
+created once for their own factor levels and reused across the other factors;
+therefore the grid is factorial rather than a sequence of differently seeded
+contours. Translation also fails closed if boundary clipping changes voxel
+count or topology, or if the requested physical displacement is not realized
+within half a voxel diagonal.
 
 ## Output Format
 
@@ -380,9 +390,15 @@ Multiple sheets for easy filtering:
 
 Summary columns include `n_subjects_complete`, `n_subjects_dropped`,
 `n_perturbations`, ICC and its 95% CI, median within-subject `cov_pct` and
-`qcd`, their Q1/Q3 columns, and the classification. Raw values are stored next
-to the workbook as `radiomics_robustness_summary_raw_values.parquet`; they are
-not copied into an Excel sheet.
+`qcd`, their Q1/Q3 columns, `n_subjects_cov`, `n_subjects_qcd`, metric status,
+and the classification. CoV and QCD are used only when the feature has been
+prespecified as suitable for relative dispersion and the values are finite and
+strictly positive; numeric checks alone cannot establish measurement-scale
+semantics. A signed, zero-crossing, or otherwise undefined feature is retained
+with its ICC, but is marked `not_evaluable` instead of being classified from a
+partial denominator. Raw values are stored next to the workbook as
+`radiomics_robustness_summary_raw_values.parquet`; they are not copied into an
+Excel sheet.
 
 ## Best Practices
 
@@ -446,7 +462,7 @@ When describing rtpipeline's robustness analysis in a manuscript, consider using
 >
 > Radiomics feature stability was assessed using RTpipeline's adapted NTCV chain, inspired by but not identical to Zwanenburg et al.[1] For each ROI, all [N] configured states were required, combining Gaussian noise (σ = 0, 10, and 20 HU), superior-inferior translations (0 and +/-4 mm), two reproducible random physical-space contour offsets, and distance-ranked adaptation to the closest voxel counts representing -15%, 0%, and +15% volume changes. Features were re-extracted for every state using PyRadiomics [version]. ICC(3,1) was estimated across complete subject grids; CoV was calculated within each patient/course/ROI/source and summarized by its cohort median.
 >
-> Feature stability was quantified using the intraclass correlation coefficient ICC(3,1) computed via Pingouin[2], with each perturbation treated as a fixed rater measuring the same underlying subject (patient-course-structure combination). This interpretation follows the fixed-rater rationale described by Koo & Li[3] but represents an adaptation of ICC to perturbation-based analysis rather than a standard inter-rater scenario. Features with ICC ≥ 0.90 and coefficient of variation (CoV) ≤ 10% were classified as "robust" following commonly used thresholds in the radiomics literature.[3] Only robust features were retained for subsequent modeling.
+> Feature stability was quantified using the intraclass correlation coefficient ICC(3,1) computed via Pingouin[2], with each perturbation treated as a fixed rater measuring the same underlying subject (patient-course-structure combination). This interpretation follows the fixed-rater rationale described by Koo & Li[3] but represents an adaptation of ICC to perturbation-based analysis rather than a standard inter-rater scenario. Features with an ICC 95% confidence-interval lower bound ≥ 0.90 and coefficient of variation (CoV) ≤ 10% were classified as "robust"; the ICC point estimate was used only when its confidence interval was unavailable. Only robust features were retained for subsequent modeling.
 >
 > [1] Zwanenburg A, et al. Assessing robustness of radiomic features by image perturbation. Sci Rep. 2019;9:614. DOI: 10.1038/s41598-018-36938-4
 > [2] Vallat R. Pingouin: statistics in Python. JOSS. 2018;3(31):1026. DOI: 10.21105/joss.01026
