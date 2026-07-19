@@ -63,6 +63,7 @@ def test_ntcv_grid_has_documented_unique_count(intensity, expected, monkeypatch)
     mask = sitk.GetImageFromArray(np.ones((3, 3, 3), dtype=np.uint8))
     monkeypatch.setattr(robustness, "add_noise_to_image", lambda value, _std, rng=None: value)
     monkeypatch.setattr(robustness, "translate_mask", lambda value, _translation: value)
+    monkeypatch.setattr(robustness, "_validate_translated_mask", lambda *_args: None)
 
     contour_counter = iter(range(10_000))
 
@@ -81,6 +82,85 @@ def test_ntcv_grid_has_documented_unique_count(intensity, expected, monkeypatch)
     assert len(masks) == expected
     assert set(masks) == set(images)
     assert robustness.expected_ntcv_perturbation_count(config) == expected
+
+
+def test_standard_ntcv_is_an_unmocked_81_state_grid():
+    image = sitk.GetImageFromArray(np.ones((19, 31, 31), dtype=np.float32))
+    mask_array = np.zeros((19, 31, 31), dtype=np.uint8)
+    mask_array[5:14, 8:23, 8:23] = 1
+    mask = sitk.GetImageFromArray(mask_array)
+
+    masks, images = robustness.generate_ntcv_perturbations(
+        mask, image, PerturbationConfig(), "ROI"
+    )
+
+    assert len(masks) == 81
+    assert set(masks) == set(images)
+
+
+def test_ntcv_contour_and_noise_draws_are_factor_independent(monkeypatch):
+    image = sitk.GetImageFromArray(np.ones((7, 9, 9), dtype=np.float32))
+    mask = sitk.GetImageFromArray(np.ones((7, 9, 9), dtype=np.uint8))
+    monkeypatch.setattr(robustness, "translate_mask", lambda value, _translation: value)
+    monkeypatch.setattr(robustness, "_validate_translated_mask", lambda *_args: None)
+    monkeypatch.setattr(robustness, "volume_adapt_mask", lambda value, _tau: value)
+
+    contour_draws = []
+
+    def tagged_contour(value, _mm, rng=None):
+        tag = int(rng.integers(1, 2**31))
+        contour_draws.append(tag)
+        array = sitk.GetArrayFromImage(value).copy()
+        array.ravel()[tag % array.size] = 0
+        result = sitk.GetImageFromArray(array)
+        result.CopyInformation(value)
+        return result
+
+    def tagged_noise(value, noise_std, rng=None):
+        array = np.full(sitk.GetArrayFromImage(value).shape, noise_std, dtype=np.float32)
+        result = sitk.GetImageFromArray(array)
+        result.CopyInformation(value)
+        return result
+
+    monkeypatch.setattr(robustness, "randomize_contour", tagged_contour)
+    monkeypatch.setattr(robustness, "add_noise_to_image", tagged_noise)
+
+    masks, images = robustness.generate_ntcv_perturbations(
+        mask, image, PerturbationConfig(), "ROI"
+    )
+
+    assert len(contour_draws) == 3 * 2
+    for noise_suffix in ("", "_n10", "_n20"):
+        key = f"ntcv{noise_suffix}_t0_0_4_c1_v0"
+        assert np.array_equal(
+            sitk.GetArrayFromImage(masks[key]),
+            sitk.GetArrayFromImage(masks["ntcv_t0_0_4_c1_v0"]),
+        )
+    assert np.all(sitk.GetArrayFromImage(images["ntcv_n10_v0"]) == 10.0)
+    assert np.all(sitk.GetArrayFromImage(images["ntcv_n20_t0_0_4_c1_v0"]) == 20.0)
+
+
+def test_translation_realises_requested_physical_direction():
+    array = np.zeros((17, 17, 17), dtype=np.uint8)
+    array[6:11, 6:11, 6:11] = 1
+    mask = sitk.GetImageFromArray(array)
+
+    translated = robustness.translate_mask(mask, (0.0, 0.0, 4.0))
+    robustness._validate_translated_mask(mask, translated, (0.0, 0.0, 4.0))
+
+    before = np.argwhere(array > 0).mean(axis=0)
+    after = np.argwhere(sitk.GetArrayFromImage(translated) > 0).mean(axis=0)
+    assert after[0] - before[0] == pytest.approx(4.0)
+
+
+def test_translation_fails_closed_on_boundary_clipping():
+    array = np.zeros((17, 17, 17), dtype=np.uint8)
+    array[0:5, 6:11, 6:11] = 1
+    mask = sitk.GetImageFromArray(array)
+    translated = robustness.translate_mask(mask, (0.0, 0.0, -4.0))
+
+    with pytest.raises(RuntimeError, match="clipped"):
+        robustness._validate_translated_mask(mask, translated, (0.0, 0.0, -4.0))
 
 
 @pytest.mark.parametrize("tau", [-0.15, 0.15])
@@ -147,7 +227,31 @@ def test_cov_is_computed_within_subject_not_across_subjects():
     assert summary.loc[0, "cov_pct_q1"] == pytest.approx(0.0)
     assert summary.loc[0, "cov_pct_q3"] == pytest.approx(0.0)
     assert summary.loc[0, "n_subjects_cov"] == 2
+    assert summary.loc[0, "n_subjects_qcd"] == 2
+    assert summary.loc[0, "cov_status"] == "complete"
+    assert summary.loc[0, "qcd_status"] == "complete"
     assert summary.loc[0, "n_subjects_dropped"] == 0
+
+
+@pytest.mark.parametrize("values", [[-4.0, -3.0, -2.0, -1.0], [-1.0, 1.0, 2.0, 3.0]])
+def test_relative_dispersion_rejects_non_ratio_scale_values(values):
+    array = np.asarray(values, dtype=float)
+    assert np.isnan(robustness.compute_cov(array))
+    assert np.isnan(robustness.compute_qcd(array))
+
+
+def test_ineligible_relative_dispersion_is_not_misclassified_as_poor():
+    frame = _stable_subject_frame()
+    frame["value"] = -frame["value"]
+    summary = robustness.summarize_feature_stability(
+        frame, RobustnessConfig(enabled=True)
+    )
+    assert summary.loc[0, "n_subjects_cov"] == 0
+    assert summary.loc[0, "n_subjects_qcd"] == 0
+    assert summary.loc[0, "cov_status"] == "not_evaluable"
+    assert summary.loc[0, "qcd_status"] == "not_evaluable"
+    assert summary.loc[0, "robustness_label"] == "not_evaluable"
+    assert not bool(summary.loc[0, "pass_seg_perturb"])
 
 
 def test_incomplete_subject_grid_fails_closed():

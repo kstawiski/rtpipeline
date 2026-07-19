@@ -291,7 +291,10 @@ def translate_mask(mask: sitk.Image, translation_mm: Tuple[float, float, float])
     Returns:
         Translated mask
     """
-    transform = sitk.TranslationTransform(3, translation_mm)
+    # SimpleITK resampling transforms map output points back into the input
+    # image. Negating the requested object displacement therefore moves the
+    # foreground in the documented physical-space direction.
+    transform = sitk.TranslationTransform(3, tuple(-float(v) for v in translation_mm))
     resampler = sitk.ResampleImageFilter()
     resampler.SetTransform(transform)
     resampler.SetReferenceImage(mask)
@@ -299,6 +302,70 @@ def translate_mask(mask: sitk.Image, translation_mm: Tuple[float, float, float])
     resampler.SetDefaultPixelValue(0)
     
     return resampler.Execute(mask)
+
+
+def _validate_translated_mask(
+    original: sitk.Image,
+    translated: sitk.Image,
+    translation_mm: Tuple[float, float, float],
+) -> None:
+    """Fail closed when a requested translation is clipped or not realised."""
+
+    geometry_fields = (
+        ("size", original.GetSize(), translated.GetSize()),
+        ("spacing", original.GetSpacing(), translated.GetSpacing()),
+        ("origin", original.GetOrigin(), translated.GetOrigin()),
+        ("direction", original.GetDirection(), translated.GetDirection()),
+    )
+    for field, expected, observed in geometry_fields:
+        if tuple(observed) != tuple(expected):
+            raise RuntimeError(
+                f"translated mask changed {field}: expected={expected}, observed={observed}"
+            )
+
+    original_binary = sitk.Cast(original > 0, sitk.sitkUInt8)
+    translated_binary = sitk.Cast(translated > 0, sitk.sitkUInt8)
+    original_voxels = int(np.count_nonzero(sitk.GetArrayViewFromImage(original_binary)))
+    translated_voxels = int(np.count_nonzero(sitk.GetArrayViewFromImage(translated_binary)))
+    if original_voxels == 0:
+        raise RuntimeError("cannot translate an empty mask")
+    if translated_voxels != original_voxels:
+        raise RuntimeError(
+            "translation clipped or duplicated foreground voxels at the image boundary: "
+            f"{original_voxels}->{translated_voxels}"
+        )
+
+    component_filter = sitk.ConnectedComponentImageFilter()
+    component_filter.Execute(original_binary)
+    original_components = int(component_filter.GetObjectCount())
+    component_filter.Execute(translated_binary)
+    translated_components = int(component_filter.GetObjectCount())
+    if translated_components != original_components:
+        raise RuntimeError(
+            "translation changed mask topology: "
+            f"components {original_components}->{translated_components}"
+        )
+
+    shape = sitk.LabelShapeStatisticsImageFilter()
+    shape.Execute(original_binary)
+    original_centroid = np.asarray(shape.GetCentroid(1), dtype=float)
+    shape.Execute(translated_binary)
+    translated_centroid = np.asarray(shape.GetCentroid(1), dtype=float)
+    requested = np.asarray(translation_mm, dtype=float)
+    displacement_error = np.linalg.norm(
+        (translated_centroid - original_centroid) - requested
+    )
+    # Nearest-neighbour resampling can quantise a physical shift by at most
+    # half of one voxel diagonal. Anything larger indicates a sign, geometry,
+    # or boundary failure rather than ordinary discretisation.
+    tolerance_mm = 0.5 * np.linalg.norm(np.asarray(original.GetSpacing(), dtype=float))
+    if displacement_error > tolerance_mm + 1e-6:
+        raise RuntimeError(
+            "requested mask translation was not realised within grid resolution: "
+            f"requested={tuple(float(v) for v in requested)}, "
+            f"observed={tuple(float(v) for v in translated_centroid - original_centroid)}, "
+            f"tolerance_mm={tolerance_mm:.6g}"
+        )
 
 
 def randomize_contour(
@@ -522,104 +589,112 @@ def generate_ntcv_perturbations(
         contour_realizations = config.n_random_contour_realizations
         noise_levels = config.noise_levels
     
-    pert_count = 0
-    # C9 fix: master RNG for reproducible but isolated random state
-    master_rng = np.random.Generator(np.random.PCG64(42))
-
-    # Generate perturbations using combinatorial approach
+    # Construct each factor once and then take the strict Cartesian product.
+    # In particular, contour draws are keyed only by translation and contour
+    # realization, so changing the noise or volume factor cannot silently
+    # change the sampled boundary.
+    noise_images: List[Tuple[str, sitk.Image]] = []
     for noise_std in noise_levels:
-        # N: Noise perturbation (image-based)
         if noise_std > 0:
-            noise_rng = np.random.Generator(np.random.PCG64(master_rng.integers(2**63)))
+            noise_seed = np.random.SeedSequence(
+                [42, 0, int(round(float(noise_std) * 1000.0))]
+            )
+            noise_rng = np.random.Generator(np.random.PCG64(noise_seed))
             noisy_image = add_noise_to_image(original_image, noise_std, rng=noise_rng)
             noise_suffix = f"_n{int(noise_std)}"
         else:
             noisy_image = original_image
             noise_suffix = ""
-        
-        # T: Translation perturbations (geometric)
-        translation_vectors = [(0, 0, 0)]  # Always include no-translation
-        if config.max_translation_mm > 0 and translation_steps > 0:
-            # Generate translations in different directions
-            max_t = config.max_translation_mm
-            if translation_steps == 1:
-                # Single direction (superior-inferior)
-                translation_vectors.extend([(0, 0, max_t), (0, 0, -max_t)])
-            else:
-                # Multiple directions (x, y, z)
-                translation_vectors.extend([
-                    (max_t, 0, 0), (-max_t, 0, 0),
-                    (0, max_t, 0), (0, -max_t, 0),
-                    (0, 0, max_t), (0, 0, -max_t),
-                ])
-        
-        for trans_vec in translation_vectors:
-            # Apply translation
-            if any(abs(t) > 1e-3 for t in trans_vec):
-                translated_mask = translate_mask(original_mask, trans_vec)
-                trans_suffix = f"_t{int(trans_vec[0])}_{int(trans_vec[1])}_{int(trans_vec[2])}"
-            else:
-                translated_mask = original_mask
-                trans_suffix = ""
-            
-            # C: Contour randomization (boundary noise)
-            contour_variants = [translated_mask]  # Always include original contour
-            if config.n_random_contour_realizations > 0 and contour_realizations > 0:
-                # C9 fix: use isolated RNG instead of polluting global np.random state
-                rng = np.random.Generator(np.random.PCG64(42 + pert_count))
-                # C8 fix: use independent contour_randomization_mm config;
-                # fall back to max_translation_mm/2 for backwards compatibility
-                contour_noise_mm = config.contour_randomization_mm if config.contour_randomization_mm > 0 else config.max_translation_mm / 2
-                for c_idx in range(contour_realizations):
-                    randomized = None
-                    for _attempt in range(16):
-                        candidate = randomize_contour(
-                            translated_mask,
-                            contour_noise_mm,
-                            rng=rng,
-                        )
-                        candidate_arr = sitk.GetArrayViewFromImage(candidate)
-                        if int(np.count_nonzero(candidate_arr)) < 5:
-                            continue
-                        if any(
-                            np.array_equal(
-                                candidate_arr,
-                                sitk.GetArrayViewFromImage(existing),
-                            )
-                            for existing in contour_variants
-                        ):
-                            continue
-                        randomized = candidate
-                        break
-                    if randomized is None:
+        noise_images.append((noise_suffix, noisy_image))
+
+    translation_vectors = [(0.0, 0.0, 0.0)]
+    if config.max_translation_mm > 0 and translation_steps > 0:
+        max_t = float(config.max_translation_mm)
+        if translation_steps == 1:
+            translation_vectors.extend([(0.0, 0.0, max_t), (0.0, 0.0, -max_t)])
+        else:
+            translation_vectors.extend([
+                (max_t, 0.0, 0.0), (-max_t, 0.0, 0.0),
+                (0.0, max_t, 0.0), (0.0, -max_t, 0.0),
+                (0.0, 0.0, max_t), (0.0, 0.0, -max_t),
+            ])
+
+    geometry_states: List[Tuple[str, sitk.Image]] = []
+    contour_noise_mm = (
+        config.contour_randomization_mm
+        if config.contour_randomization_mm > 0
+        else config.max_translation_mm / 2
+    )
+    for translation_index, trans_vec in enumerate(translation_vectors):
+        if any(abs(t) > 1e-3 for t in trans_vec):
+            translated_mask = translate_mask(original_mask, trans_vec)
+            _validate_translated_mask(original_mask, translated_mask, trans_vec)
+            trans_suffix = (
+                f"_t{int(trans_vec[0])}_{int(trans_vec[1])}_{int(trans_vec[2])}"
+            )
+        else:
+            translated_mask = original_mask
+            trans_suffix = ""
+
+        contour_variants = [translated_mask]
+        for contour_index in range(1, contour_realizations + 1):
+            contour_seed = np.random.SeedSequence(
+                [42, 1, translation_index, contour_index]
+            )
+            contour_rng = np.random.Generator(np.random.PCG64(contour_seed))
+            randomized = None
+            for _attempt in range(16):
+                candidate = randomize_contour(
+                    translated_mask,
+                    contour_noise_mm,
+                    rng=contour_rng,
+                )
+                candidate_arr = sitk.GetArrayViewFromImage(candidate)
+                if int(np.count_nonzero(candidate_arr)) < 5:
+                    continue
+                if any(
+                    np.array_equal(
+                        candidate_arr,
+                        sitk.GetArrayViewFromImage(existing),
+                    )
+                    for existing in contour_variants
+                ):
+                    continue
+                randomized = candidate
+                break
+            if randomized is None:
+                raise RuntimeError(
+                    f"could not generate unique contour realization {contour_index} "
+                    f"for {structure_name} after 16 attempts"
+                )
+            contour_variants.append(randomized)
+
+        for contour_index, contour_mask in enumerate(contour_variants):
+            contour_suffix = f"_c{contour_index}" if contour_index > 0 else ""
+            for tau in volume_changes:
+                if abs(tau) < 1e-6:
+                    final_mask = contour_mask
+                    vol_suffix = "_v0"
+                else:
+                    final_mask = volume_adapt_mask(contour_mask, tau)
+                    if final_mask is None:
                         raise RuntimeError(
-                            f"could not generate unique contour realization {c_idx + 1} "
-                            f"for {structure_name} after 16 attempts"
+                            f"volume adaptation failed for {structure_name} (tau={tau:.2f})"
                         )
-                    contour_variants.append(randomized)
-            
-            for c_idx, contour_mask in enumerate(contour_variants):
-                contour_suffix = f"_c{c_idx}" if c_idx > 0 else ""
-                
-                # V: Volume adaptation (erosion/dilation)
-                for tau in volume_changes:
-                    if abs(tau) < 1e-6:
-                        final_mask = contour_mask
-                        vol_suffix = "_v0"
-                    else:
-                        final_mask = volume_adapt_mask(contour_mask, tau)
-                        if final_mask is None:
-                            logger.debug("Volume adaptation failed for %s (tau=%.2f)", structure_name, tau)
-                            continue
-                        vol_suffix = f"_v{int(tau*100):+03d}"
-                    
-                    # Create unique perturbation ID
-                    pert_id = f"ntcv{noise_suffix}{trans_suffix}{contour_suffix}{vol_suffix}"
-                    
-                    # Store results
-                    perturbed_masks[pert_id] = final_mask
-                    perturbed_images[pert_id] = noisy_image
-                    pert_count += 1
+                    vol_suffix = f"_v{int(tau * 100):+03d}"
+                geometry_states.append(
+                    (f"{trans_suffix}{contour_suffix}{vol_suffix}", final_mask)
+                )
+
+    for noise_suffix, noisy_image in noise_images:
+        for geometry_suffix, final_mask in geometry_states:
+            pert_id = f"ntcv{noise_suffix}{geometry_suffix}"
+            if pert_id in perturbed_masks:
+                raise RuntimeError(f"duplicate NTCV perturbation identifier: {pert_id}")
+            perturbed_masks[pert_id] = final_mask
+            perturbed_images[pert_id] = noisy_image
+
+    pert_count = len(perturbed_masks)
     
     logger.info("Generated %d NTCV perturbations for %s (intensity=%s)",
                 pert_count, structure_name, config.intensity)
@@ -949,8 +1024,18 @@ def compute_icc_pingouin(
 
 
 def compute_cov(values: np.ndarray) -> float:
-    """Compute Coefficient of Variation (CoV) in percent."""
+    """Compute CoV after the caller establishes relative-scale suitability.
+
+    The numeric guard cannot establish measurement-scale semantics. It rejects
+    nonfinite, zero, or negative perturbation values, which cannot support the
+    implemented relative-dispersion calculation, instead of converting them
+    into a deceptively finite absolute-mean CoV.
+    """
     if len(values) < 2:
+        return np.nan
+
+    values = np.asarray(values, dtype=float)
+    if not np.isfinite(values).all() or np.any(values <= 0.0):
         return np.nan
 
     mean_val = np.mean(values)
@@ -962,8 +1047,12 @@ def compute_cov(values: np.ndarray) -> float:
 
 
 def compute_qcd(values: np.ndarray) -> float:
-    """Compute Quartile Coefficient of Dispersion (QCD)."""
+    """Compute QCD after the caller establishes relative-scale suitability."""
     if len(values) < 4:
+        return np.nan
+
+    values = np.asarray(values, dtype=float)
+    if not np.isfinite(values).all() or np.any(values <= 0.0):
         return np.nan
 
     q1, q3 = np.percentile(values, [25, 75])
@@ -1097,8 +1186,13 @@ def summarize_feature_stability(
 
         robust_cov = cov <= config.thresholds.cov_robust_pct if not np.isnan(cov) else False
         acceptable_cov = cov <= config.thresholds.cov_acceptable_pct if not np.isnan(cov) else False
+        cov_complete = bool(
+            config.metrics.cov_enabled and len(finite_cov) == n_subjects
+        )
 
-        if robust_icc and robust_cov:
+        if not cov_complete:
+            robustness_label = "not_evaluable"
+        elif robust_icc and robust_cov:
             robustness_label = "robust"
         elif acceptable_icc and acceptable_cov:
             robustness_label = "acceptable"
@@ -1119,9 +1213,24 @@ def summarize_feature_stability(
             "cov_pct_q1": cov_q1,
             "cov_pct_q3": cov_q3,
             "n_subjects_cov": int(len(finite_cov)),
+            "cov_status": (
+                "complete"
+                if len(finite_cov) == n_subjects
+                else "not_evaluable"
+                if finite_cov.empty
+                else "partial"
+            ),
             "qcd": qcd,
             "qcd_q1": qcd_q1,
             "qcd_q3": qcd_q3,
+            "n_subjects_qcd": int(len(finite_qcd)),
+            "qcd_status": (
+                "complete"
+                if len(finite_qcd) == n_subjects
+                else "not_evaluable"
+                if finite_qcd.empty
+                else "partial"
+            ),
             "robustness_label": robustness_label,
             "pass_seg_perturb": robustness_label in ["robust", "acceptable"],
         })
