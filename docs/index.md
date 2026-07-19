@@ -18,7 +18,7 @@
     Validated aggregate packets; imaging stays local
 </div>
 
-!!! info "RTpipeline v2.2.1"
+!!! info "RTpipeline v2.2.2"
     This release adds fail-closed distributed aggregate packets, preserves the 2.1.2 radiomics correctness fixes, and prevents duplicate Torch/CUDA dependency resolution. See the [release notes](release_notes.md).
 
 ---

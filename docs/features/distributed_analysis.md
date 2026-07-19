@@ -17,9 +17,26 @@ feature. Its exact columns are:
 
 ```text
 feature_name, roi_name, body_region, n_subjects, n_raters,
+n_subjects_cov, n_subjects_qcd,
 icc, icc_ci_low, icc_ci_high, cov_percent, qcd,
 classification, feature_family, image_type
 ```
+
+`n_subjects_cov` and `n_subjects_qcd` make relative-dispersion eligibility
+explicit. CoV and QCD are computed only for finite, strictly positive values
+when the feature has been prespecified as suitable for relative dispersion; the
+software cannot infer measurement-scale semantics from numeric values alone.
+If no subject is eligible, the corresponding metric is empty and its
+denominator is zero. If CoV is unavailable for any contributing subject, the
+row must be classified `Not Evaluable`; it cannot be silently promoted to
+`Robust`, `Acceptable`, or `Poor`. This schema is packet version 2 and is not
+interchangeable with the older denominator-free packet schema.
+
+The contract also binds and centrally validates the classification rule. It
+uses the ICC 95% confidence-interval lower bound (falling back to the point ICC
+only when a confidence interval is unavailable): `Robust` requires ICC ≥ 0.90
+and CoV ≤ 10%; `Acceptable` requires ICC ≥ 0.75 and CoV ≤ 20%; all other
+complete rows are `Poor`.
 
 The contract digest binds the column schema, exact manifest and audit fields,
 permitted packet filenames, minimum subject and rater counts, allowed robustness
@@ -39,7 +56,8 @@ rtpipeline federation contract \
 CONTRACT_SHA256=$(jq -r .contract_sha256 contract.json)
 ```
 
-Distribute the unchanged contract ID, digest, and threshold to every site.
+Distribute the unchanged contract ID and digest to every site; the digest binds
+the thresholds and lower-bound rule.
 
 ## Export at each site
 
@@ -66,8 +84,8 @@ packet-node-a13f/
 The exporter uses deterministic gzip and 17-significant-digit float formatting,
 so IEEE-754 float64 values round-trip without parser drift. It fails on extra
 columns, duplicate feature identities, nonfinite or semantically invalid
-metrics, small cells, identifier-like content, paths, URIs, dates, DICOM UIDs,
-or unsupported robustness classes.
+metrics, inconsistent metric denominators, small cells, identifier-like
+content, paths, URIs, dates, DICOM UIDs, or unsupported robustness classes.
 
 ## Validate and aggregate centrally
 

@@ -21,7 +21,7 @@ import pandas as pd
 from . import __version__
 
 
-PACKET_SCHEMA_VERSION = 1
+PACKET_SCHEMA_VERSION = 2
 METRICS_FILENAME = "metrics.csv.gz"
 MANIFEST_FILENAME = "manifest.json"
 PRIVACY_SCOPE = (
@@ -35,6 +35,8 @@ PACKET_COLUMNS: tuple[str, ...] = (
     "body_region",
     "n_subjects",
     "n_raters",
+    "n_subjects_cov",
+    "n_subjects_qcd",
     "icc",
     "icc_ci_low",
     "icc_ci_high",
@@ -54,17 +56,38 @@ STRING_COLUMNS: tuple[str, ...] = (
     "image_type",
 )
 
-INTEGER_COLUMNS: tuple[str, ...] = ("n_subjects", "n_raters")
+INTEGER_COLUMNS: tuple[str, ...] = (
+    "n_subjects",
+    "n_raters",
+    "n_subjects_cov",
+    "n_subjects_qcd",
+)
 FLOAT_COLUMNS: tuple[str, ...] = (
     "icc",
     "icc_ci_low",
     "icc_ci_high",
+)
+NULLABLE_FLOAT_COLUMNS: tuple[str, ...] = (
     "cov_percent",
     "qcd",
 )
 
 IDENTITY_COLUMNS: tuple[str, ...] = ("body_region", "roi_name", "feature_name")
-ALLOWED_CLASSIFICATIONS = frozenset({"Robust", "Acceptable", "Poor"})
+ALLOWED_CLASSIFICATIONS = frozenset(
+    {"Robust", "Acceptable", "Poor", "Not Evaluable"}
+)
+PACKET_CLASSIFICATION_RULE = {
+    "icc_statistic": "icc_ci_low_if_finite_else_icc",
+    "robust": {
+        "minimum_icc": 0.90,
+        "maximum_cov_percent": 10.0,
+    },
+    "acceptable": {
+        "minimum_icc": 0.75,
+        "maximum_cov_percent": 20.0,
+    },
+    "not_evaluable_when": "n_subjects_cov_less_than_n_subjects",
+}
 AUDIT_KEYS: tuple[str, ...] = (
     "forbidden_columns",
     "absolute_path_values",
@@ -180,6 +203,7 @@ def packet_schema_sha256() -> str:
         "string_columns": list(STRING_COLUMNS),
         "integer_columns": list(INTEGER_COLUMNS),
         "float_columns": list(FLOAT_COLUMNS),
+        "nullable_float_columns": list(NULLABLE_FLOAT_COLUMNS),
         "identity_columns": list(IDENTITY_COLUMNS),
     }
     return _sha256_bytes(_canonical_json_bytes(schema))
@@ -204,10 +228,15 @@ def packet_contract_document(contract_id: str, minimum_subjects: int) -> dict[st
         "minimum_subjects": int(minimum_subjects),
         "minimum_raters": 2,
         "allowed_classifications": sorted(ALLOWED_CLASSIFICATIONS),
+        "classification_rule": PACKET_CLASSIFICATION_RULE,
         "semantic_rules": [
             "icc_and_confidence_limits_in_closed_interval_-1_1",
             "icc_ci_low_le_icc_le_icc_ci_high",
-            "cov_percent_and_qcd_nonnegative",
+            "cov_percent_and_qcd_nonnegative_when_evaluable",
+            "relative_dispersion_denominators_between_zero_and_n_subjects",
+            "relative_dispersion_null_if_and_only_if_denominator_zero",
+            "incomplete_cov_denominator_requires_not_evaluable_classification",
+            "classification_must_match_hash_bound_icc_lower_ci_and_cov_thresholds",
             "unique_body_region_roi_name_feature_name_identity",
             "finite_required_numeric_values",
         ],
@@ -391,12 +420,43 @@ def _validate_metrics(frame: pd.DataFrame, minimum_subjects: int) -> pd.DataFram
             raise FederationPacketError(f"Column {column} must contain finite numbers")
         validated[column] = numeric.astype("float64")
 
+    for column in NULLABLE_FLOAT_COLUMNS:
+        raw = validated[column]
+        numeric = pd.to_numeric(raw, errors="coerce")
+        invalid = numeric.isna() & raw.notna()
+        if invalid.any():
+            raise FederationPacketError(
+                f"Column {column} must contain finite numbers or missing values"
+            )
+        finite = numeric.dropna().to_numpy(dtype=float)
+        if not np.isfinite(finite).all():
+            raise FederationPacketError(
+                f"Column {column} must contain finite numbers or missing values"
+            )
+        validated[column] = numeric.astype("float64")
+
     if int(validated["n_subjects"].min()) < int(minimum_subjects):
         raise FederationPacketError(
             f"Packet contains n_subjects below minimum_subjects={minimum_subjects}"
         )
     if (validated["n_raters"] < 2).any():
         raise FederationPacketError("Packet contains n_raters below 2")
+    for metric, denominator in (
+        ("cov_percent", "n_subjects_cov"),
+        ("qcd", "n_subjects_qcd"),
+    ):
+        if (
+            (validated[denominator] < 0)
+            | (validated[denominator] > validated["n_subjects"])
+        ).any():
+            raise FederationPacketError(
+                f"Column {denominator} must be between zero and n_subjects"
+            )
+        metric_missing = validated[metric].isna()
+        if (metric_missing != validated[denominator].eq(0)).any():
+            raise FederationPacketError(
+                f"Column {metric} must be missing if and only if {denominator} is zero"
+            )
     invalid_classes = sorted(set(validated["classification"]) - ALLOWED_CLASSIFICATIONS)
     if invalid_classes:
         raise FederationPacketError(
@@ -412,6 +472,49 @@ def _validate_metrics(frame: pd.DataFrame, minimum_subjects: int) -> pd.DataFram
         raise FederationPacketError("ICC confidence limits must satisfy low <= ICC <= high")
     if (validated[["cov_percent", "qcd"]] < 0).any().any():
         raise FederationPacketError("cov_percent and qcd must be nonnegative")
+    incomplete_cov = validated["n_subjects_cov"] < validated["n_subjects"]
+    if (
+        incomplete_cov
+        & validated["classification"].ne("Not Evaluable")
+    ).any():
+        raise FederationPacketError(
+            "Incomplete CoV denominators require classification='Not Evaluable'"
+        )
+
+    icc_for_threshold = validated["icc_ci_low"].where(
+        np.isfinite(validated["icc_ci_low"]), validated["icc"]
+    )
+    expected_classification = pd.Series("Poor", index=validated.index, dtype="object")
+    acceptable = (
+        (icc_for_threshold >= PACKET_CLASSIFICATION_RULE["acceptable"]["minimum_icc"])
+        & (
+            validated["cov_percent"]
+            <= PACKET_CLASSIFICATION_RULE["acceptable"]["maximum_cov_percent"]
+        )
+    )
+    robust = (
+        (icc_for_threshold >= PACKET_CLASSIFICATION_RULE["robust"]["minimum_icc"])
+        & (
+            validated["cov_percent"]
+            <= PACKET_CLASSIFICATION_RULE["robust"]["maximum_cov_percent"]
+        )
+    )
+    expected_classification.loc[acceptable] = "Acceptable"
+    expected_classification.loc[robust] = "Robust"
+    expected_classification.loc[incomplete_cov] = "Not Evaluable"
+    classification_mismatch = validated["classification"].ne(expected_classification)
+    if classification_mismatch.any():
+        first = validated.loc[
+            classification_mismatch,
+            [*IDENTITY_COLUMNS, "classification"],
+        ].iloc[0]
+        expected = expected_classification.loc[first.name]
+        identity = "/".join(str(first[column]) for column in IDENTITY_COLUMNS)
+        raise FederationPacketError(
+            "Robustness classification does not match the hash-bound ICC lower-CI "
+            f"and CoV thresholds for {identity}: "
+            f"expected={expected}, actual={first['classification']}"
+        )
 
     audit = _audit_forbidden_content(validated)
     if any(audit.values()):

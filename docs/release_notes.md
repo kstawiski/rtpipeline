@@ -1,5 +1,31 @@
 # Release notes
 
+## 2.2.2
+
+RTpipeline 2.2.2 corrects the scientific implementation contract for NTCV
+robustness and distributed reliability packets.
+
+- NTCV now constructs a strict Cartesian product. Each seeded contour
+  realization is determined only by translation and contour level and is
+  reused across noise and volume levels; noise draws are likewise reused
+  across all geometric states.
+- Physical translations now follow the documented object-displacement
+  direction and fail closed on boundary clipping, topology changes, or a
+  displacement that is not realized within grid resolution.
+- CoV and QCD are evaluated only for features prespecified as suitable for
+  relative dispersion and for finite, strictly positive observations. Signed
+  or zero-crossing features retain their ICC but are reported as
+  `not_evaluable` instead of being classified from silently reduced subject
+  denominators.
+- Federation packet schema 2 carries explicit CoV and QCD subject denominators,
+  supports validated missing relative-dispersion values, and prevents an
+  incomplete CoV denominator from receiving a robustness classification. Its
+  contract digest also binds the ICC lower-confidence-bound and CoV thresholds,
+  and every packet label is recomputed and validated at export and receipt.
+- Regression coverage includes an unmocked 81-state run, factor independence,
+  physical translation and clipping, signed metrics, and schema-2 packet
+  interoperability.
+
 ## 2.2.1
 
 RTpipeline 2.2.1 is a release-hardening update for source, wheel, container,
