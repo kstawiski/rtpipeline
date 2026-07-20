@@ -24,6 +24,7 @@ jobs:
 
       - name: Validate source and launchers
         run: |
+          python scripts/check_public_boundary.py
           ruff check .
           bandit -q -r rtpipeline -lll
           shellcheck -S warning build.sh run_rtpipeline.sh setup_new_project.sh scripts/install_local.sh scripts/run_local.sh
