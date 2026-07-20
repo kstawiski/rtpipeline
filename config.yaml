@@ -4,6 +4,8 @@
 # expose or depend on institution-specific storage. Adjust them for your data.
 
 container_mode: false
+# Prefix containing named environments when running the container-mode rules.
+container_env_prefix: "/opt/conda/envs"
 
 dicom_root: "Input"
 output_dir: "Output"
