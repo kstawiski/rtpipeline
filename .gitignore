@@ -117,36 +117,21 @@ containers/
 config.container.local.yaml
 container_id.txt
 
-# Local conversation drafts and triple-consensus ledgers (not for public repo)
+# Local agent/runtime artifacts
 conversations/
-triple_consensus_logs/
-
-# Manuscript directory and v3 manuscript-workflow scaffolding (not part of the rtpipeline package; share via Nextcloud only)
-manuscript/
 session_logs/
-step_prompts/
-plan/
-submission/
-supplement/
-figures/
-tables/
-compliance/
-Logs/
-cache/
+triple_consensus_logs/
 
 # Local dependency/cache artifacts
 micromamba/
-archive/20260511_core_dumps/
 
 # Local environment-specific override config (not for public repo)
 config.custom.yaml
-archive/
 .claude/.cache/
 
-# Private manuscript evidence and workflow state (never publish from this repo)
+# Local assistant instructions and review-only development files
 /CLAUDE.md
 /Dockerfile.reviewer_minimal
-/config_prostata.yaml
 /Code/
 /scripts/test_hooks.sh
 /.auto-claude/
@@ -156,16 +141,42 @@ archive/
 /PROBLEMS.md
 /internal/PROBLEMS.md
 /pipeline_review.md
-references/
-revision/
-verification/
-deposit/
-source_data/
-CURRENT_RESULTS.md
-submission_gaps.md
 AGENTS.md
-scripts/workflow_state.py
-scripts/verify_upstream_results.py
-scripts/make_deposit.sh
-/config.example.yaml
-/radiomics_params.yaml
+
+# Manuscript and analysis workspaces belong outside this public checkout. Keep
+# these paths visible even though broad generated-data patterns above ignore CSV
+# and JSON files; a future accidental workspace must appear in `git status`.
+!/manuscript/
+!/manuscript/**
+!/plan/
+!/plan/**
+!/submission/
+!/submission/**
+!/supplement/
+!/supplement/**
+!/figures/
+!/figures/**
+!/tables/
+!/tables/**
+!/compliance/
+!/compliance/**
+!/references/
+!/references/**
+!/revision/
+!/revision/**
+!/verification/
+!/verification/**
+!/deposit/
+!/deposit/**
+!/source_data/
+!/source_data/**
+!/step_prompts/
+!/step_prompts/**
+!/archive/
+!/archive/**
+!/CURRENT_RESULTS.md
+!/submission_gaps.md
+!/.manuscript-workflow-managed.json
+!/config_prostata.yaml
+!/config.example.yaml
+!/radiomics_params.yaml
