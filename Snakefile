@@ -92,29 +92,7 @@ def _materialize_effective_config() -> Path:
 
 
 EFFECTIVE_CONFIGFILE = _materialize_effective_config()
-os.environ["RTPIPELINE_CONFIGFILE"] = str(EFFECTIVE_CONFIGFILE)
-
-
-def _rt_env(python_bin_dir: str | None = None):
-    env = os.environ.copy()
-    repo_path = str(ROOT_DIR)
-    existing_py_path = env.get("PYTHONPATH")
-    if existing_py_path:
-        if repo_path not in existing_py_path.split(os.pathsep):
-            env["PYTHONPATH"] = os.pathsep.join([repo_path, existing_py_path])
-    else:
-        env["PYTHONPATH"] = repo_path
-
-    # Ensure subprocess stages (python -m rtpipeline.cli) see the same merged
-    # config Snakemake used after applying workflow configfiles and CLI overrides.
-    env["RTPIPELINE_CONFIGFILE"] = str(EFFECTIVE_CONFIGFILE)
-
-    # Ensure the conda env's bin directory is on PATH so dcm2niix, python, etc. resolve
-    if python_bin_dir:
-        current_path = env.get("PATH", "")
-        if python_bin_dir not in current_path.split(os.pathsep):
-            env["PATH"] = os.pathsep.join([python_bin_dir, current_path])
-    return env
+os.environ.update(RTPIPELINE_CONFIGFILE=str(EFFECTIVE_CONFIGFILE))
 
 # Ensure pip build isolation is disabled so packages like pyradiomics can reuse the conda-provided numpy.
 os.environ.setdefault("PIP_NO_BUILD_ISOLATION", "1")
@@ -123,8 +101,8 @@ os.environ.setdefault("PIP_NO_BUILD_ISOLATION", "1")
 def _resolve_env_python(env_name: str) -> str:
     """Resolve the full path to python for a named conda/micromamba environment.
 
-    Searches common prefixes (CONDA_PREFIX parent, ~/micromamba/envs, ~/miniforge3/envs,
-    /opt/conda/envs). Falls back to sys.executable if not found.
+    Searches configured and common user-level prefixes. Falls back to
+    sys.executable if not found.
     """
     candidates = []
     # Try CONDA_PREFIX-based sibling envs
@@ -136,11 +114,13 @@ def _resolve_env_python(env_name: str) -> str:
     mamba_root = os.environ.get("MAMBA_ROOT_PREFIX")
     if mamba_root:
         candidates.append(Path(mamba_root) / "envs" / env_name / "bin" / "python")
+    configured_prefix = config.get("container_env_prefix")
+    if configured_prefix:
+        candidates.append(Path(configured_prefix) / env_name / "bin" / "python")
     for base in [
         home / "micromamba" / "envs",
         home / "miniforge3" / "envs",
         home / "miniconda3" / "envs",
-        Path("/opt/conda/envs"),
     ]:
         candidates.append(base / env_name / "bin" / "python")
     for c in candidates:
@@ -153,12 +133,21 @@ def _resolve_env_python(env_name: str) -> str:
 _envs_cfg = config.get("environments", {})
 _ENV_MAIN = _envs_cfg.get("main", "rtpipeline")
 _ENV_RADIOMICS = _envs_cfg.get("radiomics", "rtpipeline-radiomics")
-os.environ["RTPIPELINE_RADIOMICS_ENV"] = _ENV_RADIOMICS
+os.environ.update(RTPIPELINE_RADIOMICS_ENV=_ENV_RADIOMICS)
 PYTHON_MAIN = _resolve_env_python(_ENV_MAIN)
 PYTHON_RADIOMICS = _resolve_env_python(_ENV_RADIOMICS)
 # Derive bin dirs for PATH export in shell rules
 PYTHON_MAIN_BIN = str(Path(PYTHON_MAIN).parent)
 PYTHON_RADIOMICS_BIN = str(Path(PYTHON_RADIOMICS).parent)
+CONTAINER_ENV_PREFIX = Path(
+    config.get("container_env_prefix")
+    or (Path(os.sep) / "opt" / "conda" / "envs")
+)
+CONTAINER_MAIN_PYTHON = str(CONTAINER_ENV_PREFIX / _ENV_MAIN / "bin" / "python")
+CONTAINER_RADIOMICS_PYTHON = str(
+    CONTAINER_ENV_PREFIX / _ENV_RADIOMICS / "bin" / "python"
+)
+CONTAINER_MAIN_BIN = str(Path(CONTAINER_MAIN_PYTHON).parent)
 
 
 def _coerce_int(value, default=None):
@@ -222,10 +211,15 @@ if _parallel_courses_raw is None:
     TARGET_THREADS_PER_JOB = 5
     max_courses_by_min = max(1, SNAKEMAKE_THREADS // MIN_THREADS_PER_JOB)
     target_courses = max(1, SNAKEMAKE_THREADS // TARGET_THREADS_PER_JOB + 1)
-    DEFAULT_PARALLEL_COURSES = max(2, min(max_courses_by_min, target_courses))
+    DEFAULT_PARALLEL_COURSES = max(
+        1, min(SNAKEMAKE_THREADS, max_courses_by_min, target_courses)
+    )
 else:
-    # User override - but enforce minimum of 2 for parallelism
-    DEFAULT_PARALLEL_COURSES = max(2, _parallel_courses_raw)
+    # Honor the override without declaring more concurrent courses than the
+    # workflow can schedule with at least one thread apiece.
+    DEFAULT_PARALLEL_COURSES = max(
+        1, min(SNAKEMAKE_THREADS, _parallel_courses_raw)
+    )
 
 # Log the parallelization settings for debugging
 _threads_per_course = SNAKEMAKE_THREADS // DEFAULT_PARALLEL_COURSES
@@ -251,10 +245,6 @@ def _stage_thread_target(key: str, fallback: int | None) -> int:
     else:
         target = _auto_stage_threads()
     return max(1, min(SNAKEMAKE_THREADS, target))
-
-
-def _max_worker_args(count: int) -> list[str]:
-    return ["--max-workers", str(max(1, count))]
 
 
 # Stage-level thread budgets default to a shared pool (≈ cores / DEFAULT_PARALLEL_COURSES)
@@ -581,20 +571,6 @@ def _manifest_input(wildcards):
     return str(_manifest_path())
 
 
-def _estimate_course_complexity(course_path: Path) -> int:
-    dicom_root = course_path / "DICOM"
-    search_root = dicom_root if dicom_root.exists() else course_path
-    count = 0
-    for root, _, files in os.walk(search_root):
-        for name in files:
-            suffix = name.lower()
-            if suffix.endswith(".dcm") or suffix.endswith(".ima"):
-                count += 1
-    if count == 0:
-        for root, _, files in os.walk(course_path):
-            count += len(files)
-    return max(1, count)
-
 ORGANIZED_SENTINEL_PATTERN = str(OUTPUT_DIR / "{patient}" / "{course}" / ".organized")
 SEGMENTATION_SENTINEL_PATTERN = str(OUTPUT_DIR / "{patient}" / "{course}" / ".segmentation_done")
 CUSTOM_SEG_SENTINEL_PATTERN = str(OUTPUT_DIR / "{patient}" / "{course}" / ".custom_models_done")
@@ -637,75 +613,21 @@ checkpoint organize_courses:
         str(LOGS_DIR / "stage_organize.log")
     threads:
         SNAKEMAKE_THREADS
-    run:
-        import subprocess
-
-        job_threads = max(1, threads)
-        manifest_path = Path(output.manifest)
-        manifest_path.parent.mkdir(parents=True, exist_ok=True)
-        LOGS_DIR.mkdir(parents=True, exist_ok=True)
-
-        skip_existing = False
-        if manifest_path.exists():
-            try:
-                manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
-                course_entries = manifest_data.get("courses", [])
-            except Exception:
-                course_entries = []
-            if course_entries:
-                missing_flags = []
-                for entry in course_entries:
-                    try:
-                        course_dir = Path(entry.get("path", ""))
-                    except Exception:
-                        missing_flags.append(entry)
-                        continue
-                    flag = course_dir / ".organized"
-                    if not flag.exists():
-                        missing_flags.append(entry)
-                skip_existing = not missing_flags
-        if skip_existing:
-            log_path = Path(log[0])
-            log_path.parent.mkdir(parents=True, exist_ok=True)
-            log_path.write_text("Organize stage skipped (manifest already present).\n", encoding="utf-8")
-            return
-
-        env = _rt_env(PYTHON_MAIN_BIN)
-        cmd = [
-            sys.executable,
-            "-m",
-            "rtpipeline.cli",
-            "--dicom-root", str(DICOM_ROOT),
-            "--outdir", str(OUTPUT_DIR),
-            "--logs", str(LOGS_DIR),
-            "--stage", "organize",
-        ]
-        cmd.extend(_max_worker_args(job_threads))
-        if CUSTOM_STRUCTURES_CONFIG:
-            cmd.extend(["--custom-structures", CUSTOM_STRUCTURES_CONFIG])
-        LOGS_DIR.mkdir(parents=True, exist_ok=True) # Ensure logs dir exists before writing to logfile
-        with open(log[0], "w") as logf:
-            logf.write("DEBUG: Starting rtpipeline.cli organize stage...\n")
-            logf.flush()
-            subprocess.run(cmd, check=True, stdout=logf, stderr=subprocess.STDOUT, env=env)
-        courses = []
-        for patient_id, course_id, course_path in _iter_course_dirs():
-            flag = course_sentinel_path(patient_id, course_id, ".organized")
-            flag.parent.mkdir(parents=True, exist_ok=True)
-            flag.write_text("ok\n", encoding="utf-8")
-            complexity = _estimate_course_complexity(course_path)
-            courses.append(
-                {
-                    "patient": patient_id,
-                    "course": course_id,
-                    "path": str(course_path),
-                    "complexity": complexity,
-                }
-            )
-        if PRIORITIZE_SHORT_COURSES:
-            courses.sort(key=lambda entry: (entry.get("complexity", 0), entry["patient"], entry["course"]))
-        COURSE_META_DIR.mkdir(parents=True, exist_ok=True)
-        manifest_path.write_text(json.dumps({"courses": courses}, indent=2), encoding="utf-8")
+    conda:
+        "envs/rtpipeline.yaml"
+    params:
+        python=PYTHON_MAIN,
+        python_bin=PYTHON_MAIN_BIN,
+        root_dir=lambda w: str(ROOT_DIR),
+        configfile=str(EFFECTIVE_CONFIGFILE),
+        radiomics_env=_ENV_RADIOMICS,
+        dicom_root=str(DICOM_ROOT),
+        output_dir=lambda w, output: str(Path(output.manifest).parents[1]),
+        logs_dir=str(LOGS_DIR),
+        custom_structures=CUSTOM_STRUCTURES_CONFIG,
+        prioritize_short_courses=PRIORITIZE_SHORT_COURSES
+    script:
+        "workflow/scripts/organize_courses.py"
 
 
 _seg_params_lambda = lambda w: (
@@ -736,19 +658,26 @@ if config.get("container_mode", False):
             4
         resources:
             seg_workers=1
+        conda:
+            "envs/rtpipeline.yaml"
         params:
-            extra_args=_seg_params_lambda
+            extra_args=_seg_params_lambda,
+            python=CONTAINER_MAIN_PYTHON,
+            python_bin=CONTAINER_MAIN_BIN,
+            dicom_root=str(DICOM_ROOT),
+            output_dir=lambda w, output: str(Path(output.sentinel).parents[2]),
+            logs_dir=str(LOGS_DIR)
         shell:
             """
             set -e
-            export PATH="/opt/conda/envs/rtpipeline/bin:$PATH"
+            export PATH="{params.python_bin}:$PATH"
             mkdir -p $(dirname {output.sentinel})
             mkdir -p $(dirname {log})
             
-            if /opt/conda/envs/rtpipeline/bin/python -m rtpipeline.cli \
-                --dicom-root "{DICOM_ROOT}" \
-                --outdir "{OUTPUT_DIR}" \
-                --logs "{LOGS_DIR}" \
+            if "{params.python}" -m rtpipeline.cli \
+                --dicom-root "{params.dicom_root}" \
+                --outdir "{params.output_dir}" \
+                --logs "{params.logs_dir}" \
                 --stage segmentation \
                 --course-filter "{wildcards.patient}/{wildcards.course}" \
                 --max-workers {threads} \
@@ -775,18 +704,23 @@ else:
         conda:
             "envs/rtpipeline.yaml"
         params:
-            extra_args=_seg_params_lambda
+            extra_args=_seg_params_lambda,
+            python=PYTHON_MAIN,
+            python_bin=PYTHON_MAIN_BIN,
+            dicom_root=str(DICOM_ROOT),
+            output_dir=lambda w, output: str(Path(output.sentinel).parents[2]),
+            logs_dir=str(LOGS_DIR)
         shell:
             """
             set -e
-            export PATH="{PYTHON_MAIN_BIN}:$PATH"
+            export PATH="{params.python_bin}:$PATH"
             mkdir -p $(dirname {output.sentinel})
             mkdir -p $(dirname {log})
 
-            if {PYTHON_MAIN} -m rtpipeline.cli \
-                --dicom-root "{DICOM_ROOT}" \
-                --outdir "{OUTPUT_DIR}" \
-                --logs "{LOGS_DIR}" \
+            if "{params.python}" -m rtpipeline.cli \
+                --dicom-root "{params.dicom_root}" \
+                --outdir "{params.output_dir}" \
+                --logs "{params.logs_dir}" \
                 --stage segmentation \
                 --course-filter "{wildcards.patient}/{wildcards.course}" \
                 --max-workers {threads} \
@@ -822,9 +756,16 @@ if config.get("container_mode", False):
             4
         resources:
             custom_seg_workers=1
+        conda:
+            "envs/rtpipeline.yaml"
         params:
             enabled=str(CUSTOM_MODELS_ENABLED),
-            extra_args=_custom_params_lambda
+            extra_args=_custom_params_lambda,
+            python=CONTAINER_MAIN_PYTHON,
+            python_bin=CONTAINER_MAIN_BIN,
+            dicom_root=str(DICOM_ROOT),
+            output_dir=lambda w, output: str(Path(output.sentinel).parents[2]),
+            logs_dir=str(LOGS_DIR)
         shell:
             """
             set -e
@@ -841,12 +782,12 @@ if config.get("container_mode", False):
                 exit 0
             fi
             
-            export PATH="/opt/conda/envs/rtpipeline/bin:$PATH"
+            export PATH="{params.python_bin}:$PATH"
             
-            if /opt/conda/envs/rtpipeline/bin/python -m rtpipeline.cli \
-                --dicom-root "{DICOM_ROOT}" \
-                --outdir "{OUTPUT_DIR}" \
-                --logs "{LOGS_DIR}" \
+            if "{params.python}" -m rtpipeline.cli \
+                --dicom-root "{params.dicom_root}" \
+                --outdir "{params.output_dir}" \
+                --logs "{params.logs_dir}" \
                 --stage segmentation_custom \
                 --course-filter "{wildcards.patient}/{wildcards.course}" \
                 --max-workers {threads} \
@@ -874,7 +815,12 @@ else:
             "envs/rtpipeline.yaml"
         params:
             enabled=str(CUSTOM_MODELS_ENABLED),
-            extra_args=_custom_params_lambda
+            extra_args=_custom_params_lambda,
+            python=PYTHON_MAIN,
+            python_bin=PYTHON_MAIN_BIN,
+            dicom_root=str(DICOM_ROOT),
+            output_dir=lambda w, output: str(Path(output.sentinel).parents[2]),
+            logs_dir=str(LOGS_DIR)
         shell:
             """
             set -e
@@ -891,11 +837,11 @@ else:
                 exit 0
             fi
             
-            export PATH="{PYTHON_MAIN_BIN}:$PATH"
-            if {PYTHON_MAIN} -m rtpipeline.cli \
-                --dicom-root "{DICOM_ROOT}" \
-                --outdir "{OUTPUT_DIR}" \
-                --logs "{LOGS_DIR}" \
+            export PATH="{params.python_bin}:$PATH"
+            if "{params.python}" -m rtpipeline.cli \
+                --dicom-root "{params.dicom_root}" \
+                --outdir "{params.output_dir}" \
+                --logs "{params.logs_dir}" \
                 --stage segmentation_custom \
                 --course-filter "{wildcards.patient}/{wildcards.course}" \
                 --max-workers {threads} \
@@ -921,43 +867,19 @@ rule crop_ct_course:
         CROP_CT_RULE_THREADS
     conda:
         "envs/rtpipeline.yaml"
-    run:
-        import subprocess
-        job_threads = max(1, threads)
-        sentinel_path = Path(output.sentinel)
-        sentinel_path.parent.mkdir(parents=True, exist_ok=True)
-        log_path = Path(log[0])
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-
-        seg_status = ""
-        try:
-            seg_status = Path(input.segmentation).read_text(encoding="utf-8").strip().lower()
-        except Exception:
-            seg_status = ""
-        if seg_status.startswith("failed"):
-            sentinel_path.write_text("skipped: upstream segmentation failed\n", encoding="utf-8")
-            return
-
-        env = _rt_env(PYTHON_MAIN_BIN)
-        cmd = [
-            sys.executable,
-            "-m",
-            "rtpipeline.cli",
-            "--dicom-root", str(DICOM_ROOT),
-            "--outdir", str(OUTPUT_DIR),
-            "--logs", str(LOGS_DIR),
-            "--stage", "crop_ct",
-            "--course-filter", f"{wildcards.patient}/{wildcards.course}",
-            "--manifest", str(input.manifest),
-        ]
-        cmd.extend(_max_worker_args(job_threads))
-
-        with log_path.open("w") as logf:
-            result = subprocess.run(cmd, check=False, stdout=logf, stderr=subprocess.STDOUT, env=env)
-        if result.returncode == 0:
-            sentinel_path.write_text("ok\n", encoding="utf-8")
-        else:
-            sentinel_path.write_text("failed: see log\n", encoding="utf-8")
+    params:
+        stage="crop_ct",
+        python=PYTHON_MAIN,
+        python_bin=PYTHON_MAIN_BIN,
+        root_dir=lambda w: str(ROOT_DIR),
+        configfile=str(EFFECTIVE_CONFIGFILE),
+        radiomics_env=_ENV_RADIOMICS,
+        dicom_root=str(DICOM_ROOT),
+        output_dir=lambda w, output: str(Path(output.sentinel).parents[2]),
+        logs_dir=str(LOGS_DIR),
+        custom_structures=""
+    script:
+        "workflow/scripts/run_course_stage.py"
 
 
 
@@ -975,44 +897,21 @@ rule dvh_course:
         str(LOGS_DIR / "dvh" / "{patient}_{course}.log")
     threads:
         DVH_RULE_THREADS
-    run:
-        import subprocess
-        job_threads = max(1, threads)
-        sentinel_path = Path(output.sentinel)
-        sentinel_path.parent.mkdir(parents=True, exist_ok=True)
-        log_path = Path(log[0])
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-
-        seg_status = ""
-        try:
-            seg_status = Path(input.segmentation).read_text(encoding="utf-8").strip().lower()
-        except Exception:
-            seg_status = ""
-        if seg_status.startswith("failed"):
-            sentinel_path.write_text("skipped: upstream segmentation failed\n", encoding="utf-8")
-            return
-
-        env = _rt_env(PYTHON_MAIN_BIN)
-        cmd = [
-            sys.executable,
-            "-m",
-            "rtpipeline.cli",
-            "--dicom-root", str(DICOM_ROOT),
-            "--outdir", str(OUTPUT_DIR),
-            "--logs", str(LOGS_DIR),
-            "--stage", "dvh",
-            "--course-filter", f"{wildcards.patient}/{wildcards.course}",
-            "--manifest", str(input.manifest),
-        ]
-        cmd.extend(_max_worker_args(job_threads))
-        if CUSTOM_STRUCTURES_CONFIG:
-            cmd.extend(["--custom-structures", CUSTOM_STRUCTURES_CONFIG])
-        with log_path.open("w") as logf:
-            result = subprocess.run(cmd, check=False, stdout=logf, stderr=subprocess.STDOUT, env=env)
-        if result.returncode == 0:
-            sentinel_path.write_text("ok\n", encoding="utf-8")
-        else:
-            sentinel_path.write_text("failed: see log\n", encoding="utf-8")
+    conda:
+        "envs/rtpipeline.yaml"
+    params:
+        stage="dvh",
+        python=PYTHON_MAIN,
+        python_bin=PYTHON_MAIN_BIN,
+        root_dir=lambda w: str(ROOT_DIR),
+        configfile=str(EFFECTIVE_CONFIGFILE),
+        radiomics_env=_ENV_RADIOMICS,
+        dicom_root=str(DICOM_ROOT),
+        output_dir=lambda w, output: str(Path(output.sentinel).parents[2]),
+        logs_dir=str(LOGS_DIR),
+        custom_structures=CUSTOM_STRUCTURES_CONFIG
+    script:
+        "workflow/scripts/run_course_stage.py"
 
 
 _radiomics_input_dict = {
@@ -1044,8 +943,15 @@ if config.get("container_mode", False):
             RAD_RULE_THREADS
         resources:
             radiomics_workers=1  # Serialize radiomics jobs to avoid nested parallelization
+        conda:
+            "envs/rtpipeline-radiomics.yaml"
         params:
-            extra_args=_radiomics_params_lambda
+            extra_args=_radiomics_params_lambda,
+            python=CONTAINER_RADIOMICS_PYTHON,
+            dicom_root=str(DICOM_ROOT),
+            output_dir=lambda w, output: str(Path(output.sentinel).parents[2]),
+            logs_dir=str(LOGS_DIR),
+            workflow_threads=SNAKEMAKE_THREADS
         shell:
             """
             set -e
@@ -1057,7 +963,7 @@ if config.get("container_mode", False):
             export OPENBLAS_NUM_THREADS=1
             export MKL_NUM_THREADS=1
             mkdir -p $(dirname {log})
-            echo "DEBUG: threads={threads} SNAKEMAKE_THREADS={SNAKEMAKE_THREADS}" >> {log}
+            echo "DEBUG: threads={threads} SNAKEMAKE_THREADS={params.workflow_threads}" >> {log}
             mkdir -p $(dirname {output.sentinel})
 
             if [ -f "{input.segmentation}" ] && grep -qi "^failed" "{input.segmentation}"; then
@@ -1065,10 +971,10 @@ if config.get("container_mode", False):
                 exit 0
             fi
             
-            if /opt/conda/envs/rtpipeline-radiomics/bin/python -m rtpipeline.cli \
-                --dicom-root "{DICOM_ROOT}" \
-                --outdir "{OUTPUT_DIR}" \
-                --logs "{LOGS_DIR}" \
+            if "{params.python}" -m rtpipeline.cli \
+                --dicom-root "{params.dicom_root}" \
+                --outdir "{params.output_dir}" \
+                --logs "{params.logs_dir}" \
                 --stage radiomics \
                 --course-filter "{wildcards.patient}/{wildcards.course}" \
                 --max-workers {threads} \
@@ -1094,7 +1000,13 @@ else:
         conda:
             "envs/rtpipeline-radiomics.yaml"
         params:
-            extra_args=_radiomics_params_lambda
+            extra_args=_radiomics_params_lambda,
+            python=PYTHON_RADIOMICS,
+            python_bin=PYTHON_RADIOMICS_BIN,
+            dicom_root=str(DICOM_ROOT),
+            output_dir=lambda w, output: str(Path(output.sentinel).parents[2]),
+            logs_dir=str(LOGS_DIR),
+            workflow_threads=SNAKEMAKE_THREADS
         shell:
             """
             set -e
@@ -1106,7 +1018,7 @@ else:
             export OPENBLAS_NUM_THREADS=1
             export MKL_NUM_THREADS=1
             mkdir -p $(dirname {log})
-            echo "DEBUG: threads={threads} SNAKEMAKE_THREADS={SNAKEMAKE_THREADS}" >> {log}
+            echo "DEBUG: threads={threads} SNAKEMAKE_THREADS={params.workflow_threads}" >> {log}
             mkdir -p $(dirname {output.sentinel})
 
             if [ -f "{input.segmentation}" ] && grep -qi "^failed" "{input.segmentation}"; then
@@ -1114,11 +1026,11 @@ else:
                 exit 0
             fi
             
-            export PATH="{PYTHON_RADIOMICS_BIN}:$PATH"
-            if {PYTHON_RADIOMICS} -m rtpipeline.cli \
-                --dicom-root "{DICOM_ROOT}" \
-                --outdir "{OUTPUT_DIR}" \
-                --logs "{LOGS_DIR}" \
+            export PATH="{params.python_bin}:$PATH"
+            if "{params.python}" -m rtpipeline.cli \
+                --dicom-root "{params.dicom_root}" \
+                --outdir "{params.output_dir}" \
+                --logs "{params.logs_dir}" \
                 --stage radiomics \
                 --course-filter "{wildcards.patient}/{wildcards.course}" \
                 --max-workers {threads} \
@@ -1144,42 +1056,19 @@ rule qc_course:
         1
     conda:
         "envs/rtpipeline.yaml"
-    run:
-        import subprocess
-        job_threads = max(1, threads)
-        sentinel_path = Path(output.sentinel)
-        sentinel_path.parent.mkdir(parents=True, exist_ok=True)
-        log_path = Path(log[0])
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-
-        seg_status = ""
-        try:
-            seg_status = Path(input.segmentation).read_text(encoding="utf-8").strip().lower()
-        except Exception:
-            seg_status = ""
-        if seg_status.startswith("failed"):
-            sentinel_path.write_text("skipped: upstream segmentation failed\n", encoding="utf-8")
-            return
-
-        env = _rt_env(PYTHON_MAIN_BIN)
-        cmd = [
-            sys.executable,
-            "-m",
-            "rtpipeline.cli",
-            "--dicom-root", str(DICOM_ROOT),
-            "--outdir", str(OUTPUT_DIR),
-            "--logs", str(LOGS_DIR),
-            "--stage", "qc",
-            "--course-filter", f"{wildcards.patient}/{wildcards.course}",
-            "--manifest", str(input.manifest),
-        ]
-        cmd.extend(_max_worker_args(job_threads))
-        with log_path.open("w") as logf:
-            result = subprocess.run(cmd, check=False, stdout=logf, stderr=subprocess.STDOUT, env=env)
-        if result.returncode == 0:
-            sentinel_path.write_text("ok\n", encoding="utf-8")
-        else:
-            sentinel_path.write_text("failed: see log\n", encoding="utf-8")
+    params:
+        stage="qc",
+        python=PYTHON_MAIN,
+        python_bin=PYTHON_MAIN_BIN,
+        root_dir=lambda w: str(ROOT_DIR),
+        configfile=str(EFFECTIVE_CONFIGFILE),
+        radiomics_env=_ENV_RADIOMICS,
+        dicom_root=str(DICOM_ROOT),
+        output_dir=lambda w, output: str(Path(output.sentinel).parents[2]),
+        logs_dir=str(LOGS_DIR),
+        custom_structures=""
+    script:
+        "workflow/scripts/run_course_stage.py"
 
 
 
@@ -1200,9 +1089,16 @@ if config.get("container_mode", False):
             ROBUSTNESS_RULE_THREADS
         resources:
             robustness_workers=1  # Serialize robustness jobs like radiomics
+        conda:
+            "envs/rtpipeline-radiomics.yaml"
         params:
             enabled=str(ROBUSTNESS_ENABLED),
-            config=str(EFFECTIVE_CONFIGFILE)
+            config=str(EFFECTIVE_CONFIGFILE),
+            python=CONTAINER_RADIOMICS_PYTHON,
+            course_dir=lambda w, output: str(Path(output.sentinel).parent),
+            parquet=lambda w, output: str(
+                Path(output.sentinel).parent / "radiomics_robustness_ct.parquet"
+            )
         shell:
             """
             mkdir -p $(dirname {output.sentinel})
@@ -1227,10 +1123,10 @@ if config.get("container_mode", False):
             export MKL_NUM_THREADS=1
             export OPENBLAS_NUM_THREADS=1
 
-            if /opt/conda/envs/rtpipeline-radiomics/bin/python -m rtpipeline.cli radiomics-robustness \
-                --course-dir "{OUTPUT_DIR}/{wildcards.patient}/{wildcards.course}" \
+            if "{params.python}" -m rtpipeline.cli radiomics-robustness \
+                --course-dir "{params.course_dir}" \
                 --config "{params.config}" \
-                --output "{OUTPUT_DIR}/{wildcards.patient}/{wildcards.course}/radiomics_robustness_ct.parquet" \
+                --output "{params.parquet}" \
                 --max-workers {threads} > {log} 2>&1; then
                 echo "ok" > {output.sentinel}
             else
@@ -1255,7 +1151,13 @@ else:
             "envs/rtpipeline-radiomics.yaml"
         params:
             enabled=str(ROBUSTNESS_ENABLED),
-            config=str(EFFECTIVE_CONFIGFILE)
+            config=str(EFFECTIVE_CONFIGFILE),
+            python=PYTHON_RADIOMICS,
+            python_bin=PYTHON_RADIOMICS_BIN,
+            course_dir=lambda w, output: str(Path(output.sentinel).parent),
+            parquet=lambda w, output: str(
+                Path(output.sentinel).parent / "radiomics_robustness_ct.parquet"
+            )
         shell:
             """
             mkdir -p $(dirname {output.sentinel})
@@ -1280,11 +1182,11 @@ else:
             export MKL_NUM_THREADS=1
             export OPENBLAS_NUM_THREADS=1
 
-            export PATH="{PYTHON_RADIOMICS_BIN}:$PATH"
-            if {PYTHON_RADIOMICS} -m rtpipeline.cli radiomics-robustness \
-                --course-dir "{OUTPUT_DIR}/{wildcards.patient}/{wildcards.course}" \
+            export PATH="{params.python_bin}:$PATH"
+            if "{params.python}" -m rtpipeline.cli radiomics-robustness \
+                --course-dir "{params.course_dir}" \
                 --config "{params.config}" \
-                --output "{OUTPUT_DIR}/{wildcards.patient}/{wildcards.course}/radiomics_robustness_ct.parquet" \
+                --output "{params.parquet}" \
                 --max-workers {threads} > {log} 2>&1; then
                 echo "ok" > {output.sentinel}
             else
@@ -1307,10 +1209,12 @@ rule aggregate_radiomics_robustness:
     threads:
         AGG_THREADS_RESERVED
     params:
-        output_dir=str(OUTPUT_DIR),
-        root_dir=str(ROOT_DIR),
+        output_dir=lambda w, output: str(Path(output.summary).parent.parent),
+        root_dir=lambda w, input: str(ROOT_DIR),
         configfile=str(EFFECTIVE_CONFIGFILE),
-        robustness_enabled=ROBUSTNESS_ENABLED
+        robustness_enabled=ROBUSTNESS_ENABLED,
+        python=PYTHON_MAIN,
+        python_bin=PYTHON_MAIN_BIN
     conda:
         "envs/rtpipeline.yaml"
     shell:
@@ -1319,10 +1223,10 @@ rule aggregate_radiomics_robustness:
         mkdir -p $(dirname {log})
         mkdir -p $(dirname {output.summary})
 
-        export PATH="{PYTHON_MAIN_BIN}:$PATH"
+        export PATH="{params.python_bin}:$PATH"
         if [ "{params.robustness_enabled}" != "True" ]; then
             # Create empty output if robustness is disabled
-            {PYTHON_MAIN} -c "import pandas as pd; pd.DataFrame().to_excel('{output.summary}', index=False)"
+            "{params.python}" -c "import pandas as pd; pd.DataFrame().to_excel('{output.summary}', index=False)"
             echo "Robustness disabled - empty output created" > {log}
             exit 0
         fi
@@ -1351,7 +1255,7 @@ rule aggregate_radiomics_robustness:
         fi
 
         # Run the aggregation CLI command with the conda environment's Python
-        PYTHONPATH="{params.root_dir}:${{PYTHONPATH:-}}" {PYTHON_MAIN} -m rtpipeline.cli radiomics-robustness-aggregate \
+        PYTHONPATH="{params.root_dir}:${{PYTHONPATH:-}}" "{params.python}" -m rtpipeline.cli radiomics-robustness-aggregate \
             --inputs "${{PARQUET_FILES[@]}}" \
             --output {output.summary} \
             --config {params.configfile} \
@@ -1365,343 +1269,21 @@ rule aggregate_results:
         **AGGREGATE_RESULTS_INPUTS
     output:
         **AGGREGATE_RESULTS_OUTPUTS
+    log:
+        str(LOGS_DIR / "aggregate_results.log")
     threads:
         AGG_THREADS_RESERVED
-    run:
-        import json
-        import os
-        import shutil
-        from concurrent.futures import ThreadPoolExecutor
-        import pandas as pd  # type: ignore
-
-        RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-
-        courses = list(_iter_course_dirs())
-
-        def _max_workers(default: int) -> int:
-            if not courses:
-                return 1
-            effective_cap = min(len(courses), max(1, WORKER_BUDGET))
-            if AGGREGATION_THREADS is not None:
-                return min(effective_cap, max(1, AGGREGATION_THREADS))
-            return min(effective_cap, max(1, default))
-
-        worker_count = _max_workers(AUTO_WORKER_BUDGET)
-
-        # Optimized: use single thread pool for all I/O operations
-        def _collect_all_frames():
-            """Collect all file types in parallel using single thread pool."""
-            import pandas as pd
-            from collections import defaultdict
-
-            results = defaultdict(list)
-            errors = []
-
-            def _load_all(course):
-                """Load all file types for a single course.
-
-                Prefers Parquet format when available for 10-50x faster I/O.
-                Falls back to Excel for compatibility.
-                """
-                pid, cid, cdir = course
-                course_results = {}
-
-                # Load body region QC data (phase/modality) for this course
-                body_region_data = {}
-                body_region_path = cdir / "qc_reports" / "body_regions.json"
-                if body_region_path.exists():
-                    try:
-                        with open(body_region_path) as f:
-                            body_region_data = json.load(f)
-                    except (OSError, json.JSONDecodeError) as e:
-                        errors.append(f"Body region QC read error {pid}/{cid}: {e}")
-
-                # Extract phase and modality from QC data
-                contrast_phase = body_region_data.get("contrast_phase", {}).get("phase", "unknown")
-                image_modality = body_region_data.get("image_modality", {}).get("modality", "unknown")
-                # Also extract body regions for context
-                body_regions_present = []
-                for region in ["HEAD_NECK", "THORAX", "ABDOMEN", "PELVIS"]:
-                    if body_region_data.get("body_regions", {}).get(f"CONTAINS_{region}", False):
-                        body_regions_present.append(region)
-                body_regions_str = ",".join(body_regions_present) if body_regions_present else "unknown"
-
-                def _read_prefer_parquet(xlsx_path: Path, name: str) -> pd.DataFrame | None:
-                    """Try Parquet first (if up-to-date), fall back to Excel.
-
-                    Important: per-course Parquet sidecars are best-effort and can be stale
-                    if a rerun updates only the XLSX. Never prefer an older Parquet over a
-                    newer XLSX, otherwise aggregate outputs may silently miss updated rows
-                    (e.g., newly added Custom ROIs).
-                    """
-                    parquet_path = xlsx_path.with_suffix('.parquet')
-                    use_parquet = parquet_path.exists()
-                    if use_parquet and xlsx_path.exists():
-                        try:
-                            if parquet_path.stat().st_mtime < xlsx_path.stat().st_mtime:
-                                use_parquet = False
-                        except Exception:
-                            pass
-
-                    if use_parquet:
-                        try:
-                            return pd.read_parquet(parquet_path)
-                        except Exception:
-                            pass  # Fall through to Excel
-                    if xlsx_path.exists():
-                        return pd.read_excel(xlsx_path)
-                    return None
-
-                # DVH
-                dvh_path = cdir / "dvh_metrics.xlsx"
-                try:
-                    df = _read_prefer_parquet(dvh_path, "DVH")
-                    if df is not None:
-                        if "patient_id" in df.columns:
-                            df["patient_id"] = df["patient_id"].fillna(pid)
-                        else:
-                            df.insert(0, "patient_id", pid)
-                        if "course_id" in df.columns:
-                            df["course_id"] = df["course_id"].fillna(cid)
-                        else:
-                            df.insert(1, "course_id", cid)
-                        if "structure_cropped" not in df.columns:
-                            df["structure_cropped"] = False
-                        # Add phase, modality, and body regions from QC
-                        df["contrast_phase"] = contrast_phase
-                        df["image_modality"] = image_modality
-                        df["body_regions"] = body_regions_str
-                        course_results['dvh'] = df
-                except Exception as e:
-                    errors.append(f"DVH error {pid}/{cid}: {e}")
-
-                if RADIOMICS_ENABLED:
-                    # Skip radiomics I/O entirely when the stage is disabled.
-                    rad_path = cdir / "radiomics_ct.xlsx"
-                    try:
-                        df = _read_prefer_parquet(rad_path, "Radiomics CT")
-                        if df is not None:
-                            if "patient_id" not in df.columns:
-                                df.insert(0, "patient_id", pid)
-                            else:
-                                df["patient_id"] = df["patient_id"].fillna(pid)
-                            if "course_id" not in df.columns:
-                                df.insert(1, "course_id", cid)
-                            else:
-                                df["course_id"] = df["course_id"].fillna(cid)
-                            if "structure_cropped" not in df.columns:
-                                df["structure_cropped"] = False
-                            # Add phase, modality, and body regions from QC
-                            df["contrast_phase"] = contrast_phase
-                            df["image_modality"] = image_modality
-                            df["body_regions"] = body_regions_str
-                            course_results['radiomics'] = df
-                    except Exception as e:
-                        errors.append(f"Radiomics error {pid}/{cid}: {e}")
-
-                    rad_mr_path = cdir / "MR" / "radiomics_mr.xlsx"
-                    try:
-                        df = _read_prefer_parquet(rad_mr_path, "Radiomics MR")
-                        if df is not None:
-                            if "patient_id" not in df.columns:
-                                df.insert(0, "patient_id", pid)
-                            else:
-                                df["patient_id"] = df["patient_id"].fillna(pid)
-                            if "course_id" not in df.columns:
-                                df.insert(1, "course_id", cid)
-                            else:
-                                df["course_id"] = df["course_id"].fillna(cid)
-                            # For MR, don't apply CT-derived phase/regions (semantically incorrect)
-                            df["contrast_phase"] = "unknown"
-                            df["image_modality"] = "MR"
-                            df["body_regions"] = "unknown"
-                            course_results['radiomics_mr'] = df
-                    except Exception as e:
-                        errors.append(f"Radiomics MR error {pid}/{cid}: {e}")
-
-                # Fractions
-                frac_path = cdir / "fractions.xlsx"
-                if frac_path.exists():
-                    try:
-                        df = pd.read_excel(frac_path)
-                        if "patient_id" in df.columns:
-                            df["patient_id"] = df["patient_id"].fillna(pid)
-                        else:
-                            df.insert(0, "patient_id", pid)
-                        if "course_id" in df.columns:
-                            df["course_id"] = df["course_id"].fillna(cid)
-                        else:
-                            df.insert(1, "course_id", cid)
-                        course_results['fractions'] = df
-                    except Exception as e:
-                        errors.append(f"Fractions error {pid}/{cid}: {e}")
-
-                # Metadata
-                meta_path = cdir / "metadata" / "case_metadata.xlsx"
-                if meta_path.exists():
-                    try:
-                        df = pd.read_excel(meta_path)
-                        if "patient_id" in df.columns:
-                            df["patient_id"] = df["patient_id"].fillna(pid)
-                        else:
-                            df.insert(0, "patient_id", pid)
-                        if "course_id" in df.columns:
-                            df["course_id"] = df["course_id"].fillna(cid)
-                        else:
-                            df.insert(1, "course_id", cid)
-                        course_results['metadata'] = df
-                    except Exception as e:
-                        errors.append(f"Metadata error {pid}/{cid}: {e}")
-
-                return course_results
-
-            if not courses:
-                return results, []
-
-            # Load all files in parallel
-            with ThreadPoolExecutor(max_workers=max(1, worker_count)) as pool:
-                for course_data in pool.map(_load_all, courses):
-                    for key, df in course_data.items():
-                        if df is not None and not df.empty:
-                            results[key].append(df)
-
-            return results, errors
-
-        # Collect all frames at once
-        all_frames, agg_errors = _collect_all_frames()
-        
-        if agg_errors:
-            print(f"Aggregation warnings ({len(agg_errors)}):")
-            for err in agg_errors[:20]:
-                 print(f" - {err}")
-            if len(agg_errors) > 20:
-                print(f" ... and {len(agg_errors)-20} more.")
-            
-            try:
-                error_log_path = RESULTS_DIR / "aggregation_errors.log"
-                with open(error_log_path, "w") as f:
-                    for err in agg_errors:
-                        f.write(f"{err}\n")
-                print(f"Full error log written to {error_log_path}")
-            except Exception:
-                pass
-
-        dvh_frames = all_frames.get('dvh', [])
-        rad_frames = all_frames.get('radiomics', [])
-        rad_mr_frames = all_frames.get('radiomics_mr', [])
-        frac_frames = all_frames.get('fractions', [])
-        meta_frames = all_frames.get('metadata', [])
-
-        # DVH frames already collected above
-        if dvh_frames:
-            dvh_all = pd.concat(dvh_frames, ignore_index=True)
-            if "Segmentation_Source" not in dvh_all.columns:
-                dvh_all["Segmentation_Source"] = "Unknown"
-            if "ROI_Name" in dvh_all.columns:
-                roi_series = dvh_all["ROI_Name"].astype(str)
-            else:
-                roi_series = pd.Series(["" for _ in range(len(dvh_all))], index=dvh_all.index)
-                dvh_all.insert(len(dvh_all.columns), "ROI_Name", roi_series)
-            dvh_all["_roi_key"] = roi_series.str.strip().str.lower()
-            manual_keys = set(
-                dvh_all.loc[
-                    dvh_all["Segmentation_Source"].astype(str).str.lower() == "manual",
-                    "_roi_key",
-                ].dropna()
-            )
-            drop_mask = (
-                dvh_all["Segmentation_Source"].astype(str).str.lower().isin({"custom", "merged"})
-                & dvh_all["_roi_key"].isin(manual_keys)
-            )
-            if drop_mask.any():
-                dvh_all = dvh_all.loc[~drop_mask].copy()
-            dvh_all.drop(columns=["_roi_key"], errors="ignore", inplace=True)
-            dvh_all.to_excel(output.dvh, index=False)
-        else:
-            pd.DataFrame(columns=["patient_id", "course_id", "ROI_Name", "structure_cropped"]).to_excel(output.dvh, index=False)
-
-        if RADIOMICS_ENABLED:
-            if rad_frames:
-                pd.concat(rad_frames, ignore_index=True).to_excel(output.radiomics, index=False)
-            else:
-                pd.DataFrame(columns=["patient_id", "course_id", "roi_name", "structure_cropped"]).to_excel(output.radiomics, index=False)
-
-            if rad_mr_frames:
-                pd.concat(rad_mr_frames, ignore_index=True).to_excel(output.radiomics_mr, index=False)
-            else:
-                pd.DataFrame(columns=["patient_id", "course_id", "roi_name"]).to_excel(output.radiomics_mr, index=False)
-
-        # Fraction frames already collected above
-        if frac_frames:
-            pd.concat(frac_frames, ignore_index=True).to_excel(output.fractions, index=False)
-        else:
-            pd.DataFrame(columns=["patient_id", "course_id", "treatment_date", "source_path"]).to_excel(output.fractions, index=False)
-
-        # Metadata frames already collected above
-        if meta_frames:
-            pd.concat(meta_frames, ignore_index=True).to_excel(output.metadata, index=False)
-        else:
-            pd.DataFrame(columns=["patient_id", "course_id"]).to_excel(output.metadata, index=False)
-
-        supplemental_sources = {
-            "plans.xlsx": OUTPUT_DIR / "Data" / "plans.xlsx",
-            "structure_sets.xlsx": OUTPUT_DIR / "Data" / "structure_sets.xlsx",
-            "dosimetrics.xlsx": OUTPUT_DIR / "Data" / "dosimetrics.xlsx",
-            "fractions.xlsx": OUTPUT_DIR / "Data" / "fractions.xlsx",
-            "metadata.xlsx": OUTPUT_DIR / "Data" / "metadata.xlsx",
-            "CT_images.xlsx": OUTPUT_DIR / "Data" / "CT_images.xlsx",
-        }
-        for fname, src_path in supplemental_sources.items():
-            if src_path.exists():
-                dst_path = RESULTS_DIR / fname
-                try:
-                    shutil.copy2(src_path, dst_path)
-                except Exception as exc:
-                    print(f"[aggregate_results] Warning: failed to copy {src_path} -> {dst_path}: {exc}")
-
-        qc_rows = []
-        for pid, cid, cdir in courses:
-            qc_dir = cdir / "qc_reports"
-            if not qc_dir.exists():
-                continue
-            for report_path in qc_dir.glob("*.json"):
-                try:
-                    data = json.loads(report_path.read_text(encoding="utf-8"))
-                except Exception:
-                    continue
-
-                row = {
-                    "patient_id": pid,
-                    "course_id": cid,
-                    "report_name": report_path.name,
-                    "overall_status": data.get("overall_status") or data.get("status"),
-                    "structure_cropping": json.dumps(data.get("checks", {}).get("structure_cropping", {})),
-                    "checks": json.dumps(data.get("checks", {})),
-                }
-
-                # Extract phase, modality, and body regions from body_regions.json
-                if report_path.name == "body_regions.json":
-                    row["contrast_phase"] = data.get("contrast_phase", {}).get("phase", "unknown")
-                    row["image_modality"] = data.get("image_modality", {}).get("modality", "unknown")
-                    # Extract body regions presence
-                    body_regs = data.get("body_regions", {})
-                    row["contains_head_neck"] = body_regs.get("CONTAINS_HEAD_NECK", False)
-                    row["contains_thorax"] = body_regs.get("CONTAINS_THORAX", False)
-                    row["contains_abdomen"] = body_regs.get("CONTAINS_ABDOMEN", False)
-                    row["contains_pelvis"] = body_regs.get("CONTAINS_PELVIS", False)
-                    # Confidence scores
-                    conf = data.get("confidence", {})
-                    row["head_neck_confidence"] = conf.get("HEAD_NECK", 0.0)
-                    row["thorax_confidence"] = conf.get("THORAX", 0.0)
-                    row["abdomen_confidence"] = conf.get("ABDOMEN", 0.0)
-                    row["pelvis_confidence"] = conf.get("PELVIS", 0.0)
-
-                qc_rows.append(row)
-
-        if qc_rows:
-            pd.DataFrame(qc_rows).to_excel(output.qc, index=False)
-        else:
-            pd.DataFrame(columns=["patient_id", "course_id", "report_name", "overall_status"]).to_excel(output.qc, index=False)
+    conda:
+        "envs/rtpipeline.yaml"
+    params:
+        output_dir=lambda w, input: str(Path(input.manifest).parents[1]),
+        results_dir=lambda w, output: str(Path(output.dvh).parent),
+        radiomics_enabled=RADIOMICS_ENABLED,
+        worker_budget=WORKER_BUDGET,
+        auto_worker_budget=AUTO_WORKER_BUDGET,
+        aggregation_threads=AGGREGATION_THREADS or 0
+    script:
+        "workflow/scripts/aggregate_results.py"
 
 
 rule generate_report:
