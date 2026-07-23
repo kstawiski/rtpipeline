@@ -36,7 +36,7 @@ Install Git if it is not already present, then clone the exact release rather
 than a moving branch:
 
 ```bash
-git clone --branch v2.2.2 --depth 1 https://github.com/kstawiski/rtpipeline.git
+git clone --branch v2.2.3 --depth 1 https://github.com/kstawiski/rtpipeline.git
 cd rtpipeline
 ```
 
@@ -107,7 +107,7 @@ The installer does not need shell activation. Both provided scripts call the
 named environments directly. It writes an explicit package receipt to:
 
 ```text
-~/.local/state/rtpipeline/install-receipt-v2.2.2.txt
+~/.local/state/rtpipeline/install-receipt-v2.2.3.txt
 ```
 
 The receipt includes platform, backend, git commit/dirty state, micromamba's
@@ -218,7 +218,7 @@ Copy the receipt into the analysis provenance directory without editing it:
 
 ```bash
 mkdir -p /absolute/path/to/analysis-provenance
-cp ~/.local/state/rtpipeline/install-receipt-v2.2.2.txt \
+cp ~/.local/state/rtpipeline/install-receipt-v2.2.3.txt \
   /absolute/path/to/analysis-provenance/
 cp config.local.yaml /absolute/path/to/analysis-provenance/
 ```
@@ -230,7 +230,7 @@ closed rather than silently excluding an incomplete perturbation or subject.
 
 A suitable methods statement is:
 
-> DICOM-RT preprocessing was performed with RTpipeline v2.2.2 (commit
+> DICOM-RT preprocessing was performed with RTpipeline v2.2.3 (commit
 > [COMMIT]) using separate NumPy 2.x processing and NumPy 1.26 PyRadiomics
 > environments. Radiomics stability was assessed with the configured standard
 > RTpipeline-adapted NTCV chain comprising Gaussian noise (0, 10, and 20 HU),

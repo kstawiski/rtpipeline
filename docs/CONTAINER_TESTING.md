@@ -229,17 +229,19 @@ singularity pull rtpipeline.sif docker://kstawiski/rtpipeline:latest
 singularity build rtpipeline.sif docker-daemon://kstawiski/rtpipeline:latest
 ```
 
-#### Option C: From Definition File
+#### Option C: Convert the Versioned Docker Image with `rtpipeline.def`
 
 ```bash
-# Build from rtpipeline.def
-# Note: This requires repository files in build context
-singularity build --fakeroot rtpipeline.sif rtpipeline.def
+# rtpipeline.def is a thin conversion of the canonical 2.2.3 Docker image.
+apptainer build rtpipeline-2.2.3.sif rtpipeline.def
 ```
+
+This does not build a separate software stack or consume repository files as a
+build context. It converts the published `kstawiski/rtpipeline:2.2.3` image.
 
 **Expected:**
 - Build completes successfully
-- Creates rtpipeline.sif file (~4-7 GB)
+- Creates `rtpipeline-2.2.3.sif` (~4-7 GB)
 - No errors about missing files
 
 ### 2. Test Singularity Image

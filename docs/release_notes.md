@@ -1,5 +1,41 @@
 # Release notes
 
+## 2.2.3
+
+RTpipeline 2.2.3 is a maintenance and release-integrity update. It preserves
+the complete NTCV scientific contract introduced in 2.2.2.
+
+- The top-level Snakemake workflow now delegates organization, course-stage,
+  and aggregation bodies to focused scripts under `workflow/scripts/`, making
+  the DAG easier to lint and maintain without changing its stage contract.
+- Ruff is configured for Snakemake's runtime-injected `snakemake` global while
+  retaining the existing undefined-name checks elsewhere.
+- The public-repository boundary check fails when manuscript, submission,
+  source-data, or private workflow artifacts are present in the checkout,
+  including when `.gitignore` would conceal them.
+- Release CI now runs the complete pytest suite inside the production
+  `rtpipeline` environment before the container smoke test and Snakemake
+  dry-run.
+- Container entrypoints now default to the complete `rtpipeline` environment,
+  container-mode routing is explicit, and the required PyArrow Parquet engine
+  is a declared dependency rather than an incidental transitive install.
+- DVH imports now preserve dicompyler-core 0.5.6 compatibility with pydicom
+  3.0.2, including the current pixel utility namespace.
+- Robustness ICC extraction accepts both the historical Pingouin ICC labels and
+  the equivalent labels introduced in Pingouin 0.6.
+- Packaged radiomics parameter defaults no longer create an untracked copy in
+  the caller's current directory when no log directory is configured.
+- `rtpipeline.def` is now a thin, version-pinned Apptainer conversion of the
+  canonical Docker image, preventing the Docker and Apptainer recipes from
+  drifting into different software stacks.
+- The reproducibility lock was refreshed to compatible dependency releases
+  without known vulnerabilities in the current advisory audit.
+- The source distribution now includes the advertised MIT license and the
+  source/configuration files required by its shipped tests, while package,
+  container, citation, installer, and documentation versions are synchronized.
+- Reproducibility examples use the Docker tags actually emitted by release CI
+  (for example, `kstawiski/rtpipeline:2.2.3`).
+
 ## 2.2.2
 
 RTpipeline 2.2.2 corrects the scientific implementation contract for NTCV

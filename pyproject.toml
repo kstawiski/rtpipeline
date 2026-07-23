@@ -1,13 +1,15 @@
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = ["setuptools>=77.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "rtpipeline"
-version = "2.2.2"
+version = "2.2.3"
 description = "Open-source framework for standardized radiotherapy analytics with robustness-aware radiomics"
 authors = [{ name = "Konrad Stawiski", email = "konrad@konsta.com.pl" }]
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.10"
 dependencies = [
   "pydicom>=3.0.2,<4",
@@ -18,6 +20,7 @@ dependencies = [
   # supported main environments still pin NumPy 2.x in envs/*rtpipeline*.yaml.
   "numpy>=1.23,<3",
   "pandas",
+  "pyarrow",
   "scipy",
   "SimpleITK",
   "matplotlib",
@@ -41,6 +44,12 @@ docs = [
 
 [project.scripts]
 rtpipeline = "rtpipeline.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/kstawiski/rtpipeline"
+Documentation = "https://kstawiski.github.io/rtpipeline/"
+Repository = "https://github.com/kstawiski/rtpipeline"
+Issues = "https://github.com/kstawiski/rtpipeline/issues"
 
 [tool.setuptools]
 include-package-data = true
@@ -67,3 +76,4 @@ select = ["E9", "F63", "F7", "F82", "PLE"]
 
 [tool.ruff.lint.per-file-ignores]
 "scripts/run_*.py" = ["F821"]  # Snakemake injects the global at runtime.
+"workflow/scripts/*.py" = ["F821"]  # Snakemake injects the global at runtime.

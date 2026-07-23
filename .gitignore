@@ -131,7 +131,6 @@ config.custom.yaml
 
 # Local assistant instructions and review-only development files
 /CLAUDE.md
-/Dockerfile.reviewer_minimal
 /Code/
 /scripts/test_hooks.sh
 /.auto-claude/

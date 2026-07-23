@@ -18,8 +18,8 @@
     Validated aggregate packets; imaging stays local
 </div>
 
-!!! info "RTpipeline v2.2.2"
-    This release adds fail-closed distributed aggregate packets, preserves the 2.1.2 radiomics correctness fixes, and prevents duplicate Torch/CUDA dependency resolution. See the [release notes](release_notes.md).
+!!! info "RTpipeline v2.2.3"
+    This maintenance release preserves the 2.2.2 NTCV contract, separates Snakemake stage implementations into focused scripts, strengthens the public/private repository boundary, and runs the complete test suite in release CI. See the [release notes](release_notes.md).
 
 ---
 

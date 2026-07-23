@@ -995,8 +995,20 @@ def compute_icc_pingouin(
             nan_policy="raise"  # Fail loudly if data is still unbalanced
         )
 
-        # Select appropriate ICC type
-        filtered = icc_res.loc[icc_res["Type"] == icc_config.icc_type]
+        # Pingouin 0.6 renamed the historical ICC1/2/3 labels while retaining
+        # the same Shrout-Fleiss/McGraw-Wong estimands.
+        type_aliases = {
+            "ICC1": "ICC(1,1)",
+            "ICC2": "ICC(A,1)",
+            "ICC3": "ICC(C,1)",
+            "ICC1k": "ICC(1,k)",
+            "ICC2k": "ICC(A,k)",
+            "ICC3k": "ICC(C,k)",
+        }
+        requested_types = [icc_config.icc_type]
+        if icc_config.icc_type in type_aliases:
+            requested_types.append(type_aliases[icc_config.icc_type])
+        filtered = icc_res.loc[icc_res["Type"].isin(requested_types)]
         if filtered.empty:
             logger.debug("ICC type %s not found in results", icc_config.icc_type)
             return {"icc": np.nan, "icc_ci95_low": np.nan, "icc_ci95_high": np.nan}

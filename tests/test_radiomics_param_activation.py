@@ -1,6 +1,6 @@
 import pytest
 
-from rtpipeline.radiomics import _apply_params_to_extractor
+from rtpipeline.radiomics import _apply_params_to_extractor, _get_params_file
 
 
 class _FakeExtractor:
@@ -12,6 +12,17 @@ class _FakeExtractor:
 
     def _setTolerance(self):
         return None
+
+
+def test_default_params_do_not_write_to_current_directory(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    params_path = _get_params_file(None)
+
+    assert params_path is not None
+    assert params_path.is_file()
+    assert params_path.name == "radiomics_params.yaml"
+    assert not (tmp_path / "radiomics_params.yaml").exists()
 
 
 def test_parameter_loader_does_not_enable_omitted_feature_classes():
