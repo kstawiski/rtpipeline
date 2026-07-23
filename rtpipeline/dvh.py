@@ -31,7 +31,7 @@ from .custom_models import list_custom_model_outputs
 # Compatibility shim for dicompyler-core with pydicom>=3
 # Only apply when dicompyler-core cannot work natively with current pydicom
 try:
-    from dicompylercore import dvhcalc as _dvhcalc_test  # noqa: F401
+    import dicompylercore.dicomparser as _dicomparser_test  # noqa: F401
     _NEEDS_SHIM = False
 except (ImportError, AttributeError):
     _NEEDS_SHIM = True
@@ -39,7 +39,10 @@ except (ImportError, AttributeError):
 if _NEEDS_SHIM:
     try:
         import sys as _sys, types as _types, pydicom as _pyd
-        from pydicom.pixel_data_handlers.util import pixel_dtype as _pixel_dtype
+        try:
+            from pydicom.pixels.utils import pixel_dtype as _pixel_dtype
+        except ImportError:  # pydicom < 3
+            from pydicom.pixel_data_handlers.util import pixel_dtype as _pixel_dtype
         _m = _sys.modules.get('dicom') or _types.ModuleType('dicom')
         _m.read_file = getattr(_pyd, 'dcmread', None)
         _sys.modules['dicom'] = _m
@@ -75,7 +78,10 @@ try:
     # Only patch the specific dicompylercore modules that need it
     try:
         import sys as _sys2
-        from pydicom.pixel_data_handlers.util import pixel_dtype as _pixel_dtype2
+        try:
+            from pydicom.pixels.utils import pixel_dtype as _pixel_dtype2
+        except ImportError:  # pydicom < 3
+            from pydicom.pixel_data_handlers.util import pixel_dtype as _pixel_dtype2
         def _validate_file_meta(*args, **kwargs):  # type: ignore
             return True
         # Patch only dicompylercore modules (scoped, not global)

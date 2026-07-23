@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import tempfile
 import threading
 import weakref
 from copy import deepcopy
@@ -333,7 +334,8 @@ def _mask_from_array_like(ct_img: sitk.Image, mask3d: np.ndarray) -> sitk.Image:
 
 def _get_params_file(config: PipelineConfig | None, modality: str = 'CT') -> Optional[Path]:
     """Return a filesystem path to a radiomics params YAML.
-    Prefers user-provided file; else copies packaged defaults into logs_root for reuse.
+    Prefer a user file, then a packaged filesystem resource. Copy only when a
+    configured logs directory or a non-filesystem package resource requires it.
     """
     try:
         modality_upper = (modality or 'CT').upper()
@@ -349,7 +351,18 @@ def _get_params_file(config: PipelineConfig | None, modality: str = 'CT') -> Opt
         # Copy packaged file to logs_root for stable path
         packaged = importlib_resources.files('rtpipeline').joinpath(packaged_name)
         if packaged.is_file():
-            target_root = Path(config.logs_root) if (config and config.logs_root) else Path('.')
+            if not (config and config.logs_root):
+                try:
+                    packaged_path = Path(packaged)
+                except TypeError:
+                    packaged_path = None
+                if packaged_path is not None and packaged_path.is_file():
+                    return packaged_path
+            target_root = (
+                Path(config.logs_root)
+                if (config and config.logs_root)
+                else Path(tempfile.gettempdir()) / "rtpipeline-resources"
+            )
             target_root.mkdir(parents=True, exist_ok=True)
             out = Path(target_root) / packaged_name
             try:

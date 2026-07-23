@@ -7,7 +7,7 @@ This document provides comprehensive guidance for running rtpipeline in Docker a
 
 All pipeline features work correctly in Docker and Singularity containers:
 
-### Latest Updates (v2.2.2)
+### Latest Updates (v2.2.3)
 - **Complete NTCV defaults**: Standard robustness runs noise at 0/10/20 HU, translations up to +/-4 mm, two contour realizations, and +/-15% volume adaptation
 - **Complete wheels**: All runtime subpackages are included and checked before the container build
 - **Safer launch/extraction paths**: Shell boundaries are explicit and downloaded model archives are validated before extraction
@@ -435,12 +435,14 @@ singularity pull rtpipeline.sif docker://kstawiski/rtpipeline:latest
 singularity build rtpipeline.sif docker-daemon://kstawiski/rtpipeline:latest
 ```
 
-#### Option 3: From Definition File (Advanced)
+#### Option 3: Convert the Versioned Docker Image with `rtpipeline.def`
 ```bash
-# Build from rtpipeline.def
-# Note: Requires repository files in build context
-singularity build --fakeroot rtpipeline.sif rtpipeline.def
+# rtpipeline.def is a thin conversion of the canonical 2.2.3 Docker image.
+apptainer build rtpipeline-2.2.3.sif rtpipeline.def
 ```
+
+This path does not build or maintain a second dependency stack. The published
+`kstawiski/rtpipeline:2.2.3` image is the software source for the resulting SIF.
 
 ### Running with Singularity
 

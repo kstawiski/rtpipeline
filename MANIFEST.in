@@ -1,0 +1,61 @@
+include .condarc
+include .dockerignore
+include CITATION.cff
+include DOCKER_COMPATIBILITY.md
+include Dockerfile
+include GETTING_STARTED.md
+include PARALLELIZATION_QUICK_REFERENCE.md
+include PIPELINE_ARCHITECTURE.md
+include README.md
+include Snakefile
+include WEBUI.md
+include build.sh
+include clean.sh
+include config.yaml
+include config_test.yaml
+include custom_structures_example.yaml
+include custom_structures_pelvic.yaml
+include custom_structures_stopstorm.yaml
+include custom_structures_thorax.yaml
+include docker-compose.yml
+include docker_test.py
+include mkdocs.yml
+include output_format.md
+include output_format_quick_ref.md
+include pytest.ini
+include rtpipeline.def
+include run_rtpipeline.sh
+include setup_docker_project.sh
+include setup_new_project.sh
+include test.sh
+include uv.lock
+include validate_pipeline.sh
+include totalseg_weights/.gitkeep
+recursive-include .github *.yml
+include custom_models/README.md
+include custom_models/download_weights.sh
+include custom_models/HN_lymph_nodes/custom_model.yaml
+include custom_models/_disabled_lung_tumor_aimi_nsclc_rg/README.md
+include custom_models/_disabled_lung_tumor_aimi_nsclc_rg/custom_model.yaml
+include custom_models/cardiac_STOPSTORM/custom_model.yaml
+include custom_models/cardiac_STOPSTORM/script.py
+include custom_models/lung_tumor_medsam_boxprompt/README.md
+include custom_models/lung_tumor_medsam_boxprompt/custom_model.yaml
+include custom_models/lung_tumor_medsam_boxprompt_rider/custom_model.yaml
+include custom_models/lung_tumor_pancancer_lung/README.md
+include custom_models/lung_tumor_pancancer_lung/custom_model.yaml
+include custom_models/lung_tumor_pancancer_lung_rider/custom_model.yaml
+include custom_models/lung_tumor_totalseg_lung_nodules/README.md
+include custom_models/lung_tumor_totalseg_lung_nodules/custom_model.yaml
+include custom_models/lung_tumor_totalseg_lung_nodules_rider/custom_model.yaml
+recursive-include docs *.md
+recursive-include envs *.yaml
+recursive-include scripts *.py *.sh
+recursive-include third_party/wheels *.whl
+recursive-include webui *.html *.md *.py *.txt
+recursive-include workflow *.py
+prune custom_models/lung_tumor_medsam_boxprompt/weights
+prune custom_models/lung_tumor_medsam_boxprompt_rider/weights
+prune custom_models/lung_tumor_pancancer_lung/weights
+prune custom_models/lung_tumor_pancancer_lung_rider/weights
+global-exclude __pycache__ *.py[cod] .DS_Store
