@@ -2,11 +2,10 @@
 # Compatible with Docker and Singularity
 # Supports both CPU and GPU execution
 #
-# Reviewer-package note: this is the full production/offline image definition.
-# It expects optional build-context directories such as envs/, third_party/,
-# totalseg_weights/, and custom_models/ that are intentionally not bundled in
-# the blinded reviewer archive. Use Dockerfile.reviewer_minimal from the
-# reviewer code/config bundle for a buildable source-tree smoke-test container.
+# This production/offline image is built from the complete source tree. The
+# repository supplies the environment definitions, vendored radiomics wheels,
+# an empty TotalSegmentator-weight placeholder, and custom-model descriptors.
+# Optional model weights can be populated before the build for offline use.
 
 # Stage 1: Builder
 FROM condaforge/mambaforge:24.3.0-0 AS builder
@@ -58,7 +57,7 @@ FROM condaforge/mambaforge:24.3.0-0
 
 LABEL maintainer="kstawiski"
 LABEL description="DICOM-RT pipeline with TotalSegmentator, nnUNet, and Snakemake"
-LABEL version="2.2.2"
+LABEL version="2.2.3"
 
 ENV DEBIAN_FRONTEND=noninteractive \
     LANG=C.UTF-8 \
@@ -66,7 +65,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     CONDA_DIR=/opt/conda \
-    PATH=/opt/conda/bin:$PATH \
+    PATH=/opt/conda/envs/rtpipeline/bin:/opt/conda/bin:$PATH \
     LD_LIBRARY_PATH=/opt/conda/lib
 
 # Install runtime dependencies, create user, and setup directories in one layer
@@ -154,7 +153,7 @@ COPY --chown=rtpipeline:rtpipeline . /app/
 # pip to resolve them again would download a second Torch/CUDA stack.
 RUN pip install --no-deps -e . && \
     /opt/conda/envs/rtpipeline/bin/pip install --no-deps -e . && \
-    /opt/conda/envs/rtpipeline/bin/pip install --no-cache-dir psutil
+    /opt/conda/envs/rtpipeline/bin/pip install --no-cache-dir psutil pytest
 
 
 
@@ -162,6 +161,9 @@ RUN pip install --no-deps -e . && \
 RUN cat > /app/config.container.yaml << 'EOF'
 # Container-optimized configuration for rtpipeline
 # This config uses professional container paths
+
+container_mode: true
+container_env_prefix: "/opt/conda/envs"
 
 # Input/Output directories (container paths)
 dicom_root: "/data/input"

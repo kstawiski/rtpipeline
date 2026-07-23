@@ -39,6 +39,19 @@ def test_release_version_is_synchronized():
     assert f'LABEL version="{version}"' in dockerfile
 
 
+def test_release_docker_tag_is_synchronized_with_ci():
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    version = project["project"]["version"]
+    reproducibility = (ROOT / "docs" / "user_guide" / "reproducibility.md").read_text(
+        encoding="utf-8"
+    )
+    definition = (ROOT / "rtpipeline.def").read_text(encoding="utf-8")
+
+    assert f"kstawiski/rtpipeline:{version}" in reproducibility
+    assert f"kstawiski/rtpipeline:v{version}" not in reproducibility
+    assert f"From: kstawiski/rtpipeline:{version}" in definition
+
+
 def test_default_robustness_profile_is_complete_ntcv():
     direct = PerturbationConfig()
     parsed = RobustnessConfig.from_dict({"enabled": True}).perturbation

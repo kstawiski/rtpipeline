@@ -27,10 +27,16 @@ FORBIDDEN_ROOTS = (
 FORBIDDEN_FILES = (
     ".manuscript-workflow-managed.json",
     "CURRENT_RESULTS.md",
+    "Dockerfile." + "reviewer_minimal",
     "config.example.yaml",
     "config_prostata.yaml",
     "radiomics_params.yaml",
     "submission_gaps.md",
+)
+FORBIDDEN_RELEASE_MARKERS = (
+    "blinded " + "reviewer archive",
+    "DICOMRT-" + "datasets/rtpipeline_" + "manuscript_",
+    "Dockerfile." + "reviewer_minimal",
 )
 
 
@@ -50,6 +56,12 @@ def main() -> int:
     if tracked_result.returncode != 0:
         raise RuntimeError(tracked_result.stderr.strip() or "git ls-files failed")
     tracked = set(tracked_result.stdout.splitlines())
+    candidate_result = _git("ls-files", "--cached", "--others", "--exclude-standard")
+    if candidate_result.returncode != 0:
+        raise RuntimeError(
+            candidate_result.stderr.strip() or "git candidate enumeration failed"
+        )
+    candidates = set(candidate_result.stdout.splitlines())
 
     for relative in FORBIDDEN_ROOTS:
         path = ROOT / relative
@@ -81,6 +93,20 @@ def main() -> int:
             raise RuntimeError(
                 ignored.stderr.strip() or f"git check-ignore failed for {relative}"
             )
+
+    for relative in sorted(candidates):
+        path = ROOT / relative
+        if not path.is_file() or path.is_symlink():
+            continue
+        try:
+            content = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        for marker in FORBIDDEN_RELEASE_MARKERS:
+            if marker in content:
+                failures.append(
+                    f"private/reviewer marker {marker!r} appears in tracked file: {relative}"
+                )
 
     if failures:
         print("Public repository boundary check failed:")

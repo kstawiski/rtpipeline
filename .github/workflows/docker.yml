@@ -33,11 +33,12 @@ jobs:
           python -m pip_audit .
           cffconvert --validate --infile CITATION.cff
 
-      - name: Build and inspect wheel
+      - name: Build and inspect distributions
         run: |
-          python -m build --wheel
+          python -m build
           python - <<'PY'
           from pathlib import Path
+          from tarfile import open as open_tar
           from zipfile import ZipFile
 
           wheel = next(Path("dist").glob("rtpipeline-*.whl"))
@@ -51,7 +52,42 @@ jobs:
           missing = sorted(required - names)
           if missing:
               raise SystemExit(f"wheel is missing runtime files: {missing}")
+          if not any(name.endswith(".dist-info/licenses/LICENSE") for name in names):
+              raise SystemExit("wheel is missing the MIT license")
           print(f"verified {wheel}")
+
+          sdist = next(Path("dist").glob("rtpipeline-*.tar.gz"))
+          with open_tar(sdist, "r:gz") as archive:
+              archived = set(archive.getnames())
+          roots = {name.split("/", 1)[0] for name in archived if "/" in name}
+          if len(roots) != 1:
+              raise SystemExit(f"sdist has an unexpected root layout: {sorted(roots)}")
+          root = roots.pop()
+          required_source = {
+              "CITATION.cff",
+              "Dockerfile",
+              "Snakefile",
+              "config.yaml",
+              "docker_test.py",
+              "docs/case_studies/index.md",
+              "envs/rtpipeline-local.yaml",
+              "run_rtpipeline.sh",
+              "scripts/install_local.sh",
+              "scripts/run_local.sh",
+              "setup_docker_project.sh",
+              "tests/test_release_integrity.py",
+              "third_party/wheels/pyradiomics-3.0.1-cp310-cp310-linux_x86_64.whl",
+              "totalseg_weights/.gitkeep",
+              "webui/job_manager.py",
+              "webui/templates/index.html",
+          }
+          missing_source = sorted(
+              relative for relative in required_source
+              if f"{root}/{relative}" not in archived
+          )
+          if missing_source:
+              raise SystemExit(f"sdist is missing release/test inputs: {missing_source}")
+          print(f"verified {sdist}")
           PY
 
       - name: Free runner disk space
@@ -72,8 +108,12 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=min
 
-      - name: Test image (Unit Tests)
+      - name: Test image (full suite and container smoke)
         run: |
+          docker run --rm rtpipeline:test \
+            python -c 'import pathlib, pyarrow, rtpipeline, sys; assert pathlib.Path(sys.executable).as_posix().startswith("/opt/conda/envs/rtpipeline/"); assert rtpipeline.__version__ == "2.2.3"'
+          docker run --rm rtpipeline:test \
+            /opt/conda/envs/rtpipeline/bin/python -m pytest -q
           docker run --rm rtpipeline:test python docker_test.py
 
       - name: Test Snakemake dry-run
