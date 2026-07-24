@@ -23,6 +23,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # NOTE: Pin dcm2niix version and verify checksum for supply-chain integrity
 RUN wget -q https://github.com/rordenlab/dcm2niix/releases/download/v1.0.20230411/dcm2niix_lnx.zip \
+    && echo "cb59f0096bf9cd58d69e4a0d0ebae2b295be3d05a70021f99947b090898d9245  dcm2niix_lnx.zip" | sha256sum -c - \
     && unzip dcm2niix_lnx.zip -d /usr/local/bin/ \
     && chmod +x /usr/local/bin/dcm2niix \
     && dcm2niix -v 2>&1 | grep -q "v1.0.20230411" \
