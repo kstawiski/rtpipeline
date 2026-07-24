@@ -53,6 +53,15 @@ def test_dcm2niix_download_is_pinned_and_checksum_verified():
     assert "sha256sum -c -" in dockerfile
 
 
+def test_container_context_keeps_files_required_by_its_full_test_suite():
+    ignored = {
+        line.strip()
+        for line in (ROOT / ".dockerignore").read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    }
+    assert "docs/" not in ignored
+
+
 def test_release_docker_tag_is_synchronized_with_ci():
     project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     version = project["project"]["version"]
