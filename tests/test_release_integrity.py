@@ -43,6 +43,16 @@ def test_release_version_is_synchronized():
     assert f'LABEL version="{version}"' in dockerfile
 
 
+def test_dcm2niix_download_is_pinned_and_checksum_verified():
+    dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+    assert "releases/download/v1.0.20230411/dcm2niix_lnx.zip" in dockerfile
+    assert (
+        "cb59f0096bf9cd58d69e4a0d0ebae2b295be3d05a70021f99947b090898d9245"
+        in dockerfile
+    )
+    assert "sha256sum -c -" in dockerfile
+
+
 def test_release_docker_tag_is_synchronized_with_ci():
     project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     version = project["project"]["version"]
