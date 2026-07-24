@@ -33,6 +33,9 @@ the complete NTCV scientific contract introduced in 2.2.2.
 - The source distribution now includes the advertised MIT license and the
   source/configuration files required by its shipped tests, while package,
   container, citation, installer, and documentation versions are synchronized.
+- The pinned dcm2niix release archive is now verified by SHA-256 before
+  extraction, and the locked test dependency group runs the suite on the
+  minimum supported Python 3.10 interpreter.
 - Reproducibility examples use the Docker tags actually emitted by release CI
   (for example, `kstawiski/rtpipeline:2.2.3`).
 
