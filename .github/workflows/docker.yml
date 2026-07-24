@@ -92,7 +92,14 @@ jobs:
 
       - name: Free runner disk space
         run: |
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/share/boost
+          sudo rm -rf \
+            /usr/local/lib/android \
+            /usr/local/share/boost \
+            /opt/ghc \
+            /opt/hostedtoolcache \
+            /usr/share/dotnet
+          sudo apt-get clean
+          docker system prune --all --force --volumes
           df -h /
 
       - name: Set up Docker Buildx
@@ -164,7 +171,14 @@ jobs:
 
       - name: Free runner disk space
         run: |
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/share/boost
+          sudo rm -rf \
+            /usr/local/lib/android \
+            /usr/local/share/boost \
+            /opt/ghc \
+            /opt/hostedtoolcache \
+            /usr/share/dotnet
+          sudo apt-get clean
+          docker system prune --all --force --volumes
           df -h /
 
       - name: Login to Docker Hub
