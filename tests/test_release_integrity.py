@@ -4,10 +4,14 @@ import hashlib
 import io
 import os
 import subprocess
-import tomllib
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
+
+try:
+    import tomllib  # type: ignore[import-not-found]
+except ModuleNotFoundError:  # pragma: no cover - Python 3.10 compatibility
+    import tomli as tomllib  # type: ignore[import-not-found]
 
 import pytest
 import numpy as np
