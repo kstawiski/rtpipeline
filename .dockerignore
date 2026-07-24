@@ -39,9 +39,6 @@ custom_models/*/nnUNet_results/
 *.swp
 *~
 
-# Documentation (already in image)
-docs/
-
 # Test data (mount at runtime)
 Example_data/
 Input/
