@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import io
 import os
 import subprocess
@@ -538,3 +539,76 @@ def test_docker_runner_preserves_paths_with_spaces(tmp_path):
     assert f"{input_dir!s}".replace(" ", "\\ ") + ":/data/input:ro" in result.stdout
     assert f"{output_dir!s}".replace(" ", "\\ ") + ":/data/output:rw" in result.stdout
     assert f"{log_dir!s}".replace(" ", "\\ ") + ":/data/logs:rw" in result.stdout
+
+
+def _init_boundary_fixture_repo(root: Path) -> None:
+    """Create a minimal git repo that the public-boundary guard can inspect."""
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+    subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=root, check=True)
+    subprocess.run(["git", "config", "user.name", "test"], cwd=root, check=True)
+    (root / "README.md").write_text("public\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=root, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=root, check=True)
+
+
+def _load_boundary_checker():
+    spec = importlib.util.spec_from_file_location(
+        "_check_public_boundary", ROOT / "scripts" / "check_public_boundary.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_boundary_guard_detects_private_file_hidden_by_exclude(tmp_path):
+    """A private manuscript file hidden by .gitignore/.git/info/exclude must fail.
+
+    Regression: the guard only scanned `git ls-files --exclude-standard` output,
+    so an ignored VERSION.md carrying manuscript identity and a private
+    DICOMRT-datasets path passed the check while sitting in the public checkout.
+    """
+    checker = _load_boundary_checker()
+    repo = tmp_path / "public"
+    repo.mkdir()
+    _init_boundary_fixture_repo(repo)
+
+    assert checker.check(repo) == [], "clean fixture must pass"
+
+    # Build the markers by concatenation so this test file does not itself trip
+    # the very scan it exercises (the guard uses the same technique).
+    heading = "Manuscript " + "Workspace Identity"
+    private_path = "/umed-projekty/DICOMRT-" + "datasets/rtpipeline_" + "manuscript_x/y.md"
+    private = repo / "VERSION.md"
+    private.write_text(
+        f"# {heading}\n\n- Source: {private_path}\n",
+        encoding="utf-8",
+    )
+    (repo / ".git" / "info").mkdir(parents=True, exist_ok=True)
+    (repo / ".git" / "info" / "exclude").write_text("VERSION.md\n", encoding="utf-8")
+
+    # The file is invisible to the ignore-aware enumeration the guard used to rely on.
+    listed = subprocess.run(
+        ["git", "ls-files", "--cached", "--others", "--exclude-standard"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.split()
+    assert "VERSION.md" not in listed
+
+    failures = checker.check(repo)
+    assert any("VERSION.md" in failure for failure in failures), failures
+
+
+def test_boundary_guard_ignores_large_binary_blobs(tmp_path):
+    """Negative control: the ignored-file sweep must not choke on big binaries."""
+    checker = _load_boundary_checker()
+    repo = tmp_path / "public"
+    repo.mkdir()
+    _init_boundary_fixture_repo(repo)
+
+    (repo / "core").write_bytes(b"\x00\xff" * (3 * 1024 * 1024))
+    (repo / ".gitignore").write_text("core\n", encoding="utf-8")
+
+    assert checker.check(repo) == []

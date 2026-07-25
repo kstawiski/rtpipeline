@@ -131,7 +131,7 @@ detect_compose() {
 # Step 0: preflight
 # ---------------------------
 
-echo "RTpipeline Docker Project Setup (v${VERSION})"
+echo "RTpipeline Docker Project Setup (wizard v${VERSION})"
 echo "This wizard will:"
 echo "  - Check Docker + Compose"
 echo "  - Ask for your DICOM folder and a project folder"

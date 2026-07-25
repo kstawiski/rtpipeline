@@ -70,6 +70,8 @@ jobs:
               "config.yaml",
               "docker_test.py",
               "docs/case_studies/index.md",
+              "docs/javascripts/hero-animation.js",
+              "docs/stylesheets/extra.css",
               "envs/rtpipeline-local.yaml",
               "run_rtpipeline.sh",
               "scripts/install_local.sh",
@@ -127,6 +129,19 @@ jobs:
         run: |
           docker run --rm rtpipeline:test \
             snakemake --cores 1 -n --configfile /app/config.container.yaml
+
+  minimum-python-suite:
+    # docs/release_notes.md states that the locked test dependency group runs the
+    # suite on the minimum supported Python. The container job above runs 3.11,
+    # so without this job that claim is unverified.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Run the locked suite on the minimum supported Python
+        run: |
+          uv sync --locked --group test --python 3.10
+          uv run --no-sync --python 3.10 python -m pytest -q
 
   local-installer-plan:
     strategy:
