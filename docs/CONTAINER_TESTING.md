@@ -120,7 +120,7 @@ Starting rtpipeline Web UI on port 8080
 # Test health endpoint
 curl http://localhost:8080/health
 
-# Expected output: {"status":"healthy","timestamp":"...","version":"1.0.0"}
+# Expected output: {"status":"healthy","timestamp":"...","version":"<rtpipeline version>"}
 
 # Test main page
 curl -I http://localhost:8080/

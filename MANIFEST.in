@@ -48,7 +48,7 @@ include custom_models/lung_tumor_pancancer_lung_rider/custom_model.yaml
 include custom_models/lung_tumor_totalseg_lung_nodules/README.md
 include custom_models/lung_tumor_totalseg_lung_nodules/custom_model.yaml
 include custom_models/lung_tumor_totalseg_lung_nodules_rider/custom_model.yaml
-recursive-include docs *.md
+recursive-include docs *.md *.css *.js
 recursive-include envs *.yaml
 recursive-include scripts *.py *.sh
 recursive-include third_party/wheels *.whl
