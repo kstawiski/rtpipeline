@@ -1112,6 +1112,36 @@ def main(argv: list[str] | None = None) -> int:
                 # Store the raw allow-list. The all-series materialization stage (inventory.py) unions
                 # in the effective segmentation scope so a segmented class is never skip-materialized.
                 cfg.all_series_materialize_classes = _mat_list
+            _bc_classes = organize_config.get(
+                "body_composition_classes",
+                yaml_config.get("body_composition_classes", None),
+            )
+            if isinstance(_bc_classes, str):
+                _bc_list = [s.strip() for s in _bc_classes.replace(";", ",").split(",") if s.strip()]
+            elif isinstance(_bc_classes, (list, tuple, set)):
+                _bc_list = [str(c).strip() for c in _bc_classes if str(c).strip()]
+            elif _bc_classes is None:
+                _bc_list = None
+            else:
+                raise ValueError(
+                    "organize.body_composition_classes must be a YAML list (or comma-separated string) of "
+                    f"image_class names, got {type(_bc_classes).__name__}"
+                )
+            if _bc_list is not None:
+                allowed_body_classes = {"planning_ct", "diagnostic_ct", "petct_ct"}
+                invalid = sorted(set(_bc_list) - allowed_body_classes)
+                if invalid:
+                    raise ValueError(
+                        "organize.body_composition_classes supports only planning_ct, diagnostic_ct, "
+                        f"petct_ct; got {invalid}"
+                    )
+                cfg.body_composition_classes = _bc_list
+            cfg.mr_functional_sampling = bool(
+                organize_config.get(
+                    "mr_functional_sampling",
+                    yaml_config.get("mr_functional_sampling", False),
+                )
+            )
             pet_config = yaml_config.get("pet", {}) or {}
             cfg.do_ingest_pet_suv = bool(
                 pet_config.get("do_ingest_pet_suv", organize_config.get("do_ingest_pet_suv", False))
@@ -1329,6 +1359,60 @@ def main(argv: list[str] | None = None) -> int:
                 if any(r is None for r in all_series_results):
                     had_failures = True
 
+                # Aggregate the per-series body-composition JSONs into the global
+                # Data/body_composition.csv ONCE, serially, now that all parallel
+                # all-series workers have joined. Doing it here (rather than per
+                # series inside each worker) avoids a cross-process write race and
+                # an O(N^2) full-tree rescan. Aggregation failure is non-fatal.
+                if getattr(cfg, "body_composition_classes", None):
+                    try:
+                        from .body_composition import write_body_composition_csv
+
+                        bc_csv = write_body_composition_csv(Path(cfg.output_root))
+                        if bc_csv is not None:
+                            logging.getLogger(__name__).info("Body-composition CSV written: %s", bc_csv)
+                    except Exception as exc:
+                        logging.getLogger(__name__).warning("Body-composition CSV aggregation failed: %s", exc)
+
+                # B3: functional-MR sampling under anatomic total_mr masks (opt-in, default
+                # off). Runs post-segmentation so masks exist; per-patient (rigid-MI is heavy),
+                # then a serial CSV aggregation. Never flips a series to seg_failed. Failure is
+                # non-fatal (logged). Precondition warn-loud: mr_anatomic must be in the
+                # effective segmentation scope, else every functional series -> anatomic_out_of_scope.
+                if getattr(cfg, "mr_functional_sampling", False):
+                    _log = logging.getLogger(__name__)
+                    _eff_scope = cfg.all_series_segment_classes
+                    _anat_in_scope = (_eff_scope is None) or ("mr_anatomic" in set(_eff_scope))
+                    if not _anat_in_scope:
+                        _log.warning(
+                            "mr_functional_sampling=True but mr_anatomic is NOT in "
+                            "all_series_segment_classes (%s) — no total_mr masks will exist; "
+                            "every functional series will be flagged anatomic_out_of_scope.",
+                            _eff_scope,
+                        )
+                    try:
+                        from .mr_functional import (
+                            sample_patient_mr_functional,
+                            write_mr_functional_structures_csv,
+                        )
+
+                        _ver = getattr(cfg, "rtpipeline_version", "") or ""
+                        for _pid in patient_ids:
+                            try:
+                                sample_patient_mr_functional(
+                                    Path(cfg.output_root), _pid,
+                                    rtpipeline_version=_ver,
+                                    anatomic_in_scope=_anat_in_scope,
+                                    force=args.force_segmentation,
+                                )
+                            except Exception as exc:
+                                _log.warning("B3 functional-MR sampling failed for %s: %s", _pid, exc)
+                        mrf_csv = write_mr_functional_structures_csv(Path(cfg.output_root))
+                        if mrf_csv is not None:
+                            _log.info("Functional-MR structures CSV written: %s", mrf_csv)
+                    except Exception as exc:
+                        _log.warning("B3 functional-MR stage failed: %s", exc)
+
             if getattr(cfg, "do_ingest_pet_suv", False):
                 patient_ids = sorted({str(course.patient_id) for course in selected_courses if course.patient_id})
                 pet_suv_tasks = [
@@ -1350,6 +1434,42 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 if any(r is None for r in pet_suv_results):
                     had_failures = True
+
+                # B2: per-structure PET SUV under the paired PET-CT CT-component's `total`
+                # masks (opt-in, default off). Runs after PET-SUV ingestion (SUVbw NIfTI) and
+                # all-series segmentation (petct_ct total masks). Per-patient serial + serial
+                # CSV aggregation; failure is non-fatal. MTV/TLG excluded (PI-gated).
+                if getattr(cfg, "pet_suv_structures", False):
+                    _log2 = logging.getLogger(__name__)
+                    _seg_scope = cfg.all_series_segment_classes
+                    _petct_in_scope = (_seg_scope is None) or ("petct_ct" in set(_seg_scope))
+                    if not _petct_in_scope:
+                        _log2.warning(
+                            "pet_suv_structures=True but petct_ct is NOT in "
+                            "all_series_segment_classes (%s) — no `total` masks will exist; "
+                            "every PET series will be flagged petct_ct_masks_missing.",
+                            _seg_scope,
+                        )
+                    try:
+                        from .pet_structures import (
+                            sample_patient_pet_suv,
+                            write_pet_suv_structures_csv,
+                        )
+
+                        _ver2 = getattr(cfg, "rtpipeline_version", "") or ""
+                        for _pid2 in patient_ids:
+                            try:
+                                sample_patient_pet_suv(
+                                    Path(cfg.output_root), _pid2,
+                                    rtpipeline_version=_ver2, force=args.force_redo,
+                                )
+                            except Exception as exc:
+                                _log2.warning("B2 PET-SUV structures failed for %s: %s", _pid2, exc)
+                        b2_csv = write_pet_suv_structures_csv(Path(cfg.output_root))
+                        if b2_csv is not None:
+                            _log2.info("PET-SUV structures CSV written: %s", b2_csv)
+                    except Exception as exc:
+                        _log2.warning("B2 PET-SUV structures stage failed: %s", exc)
 
     if "segmentation_custom" in stages:
         from .custom_models import discover_custom_models  # lazy import

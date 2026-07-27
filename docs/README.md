@@ -135,5 +135,5 @@ For development and contribution guidelines, see the main [README](../README.md#
 
 ---
 
-**Last Updated:** 2026-07-15
-**Pipeline Version:** v2.2.3+
+**Last Updated:** 2026-07-27
+**Pipeline Version:** v2.3.0+
