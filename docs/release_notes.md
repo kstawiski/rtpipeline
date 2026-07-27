@@ -1,5 +1,32 @@
 # Release notes
 
+## 2.3.0
+
+RTpipeline 2.3.0 expands the opt-in all-series workflow while preserving the
+default single-series path and the complete NTCV contract introduced in 2.2.2.
+
+### Multimodal acquisition scope
+
+- Classifies and materializes 4D CT, contrast-enhanced CT, PET/CT, anatomical
+  MR, and functional-MR series with explicit original-series provenance.
+- Adds opt-in per-structure PET SUV summaries, functional-MR map sampling, and
+  CT body-composition measurements.
+- Adds all-series radiomics and configurable materialization/segmentation
+  scope, including a single representative 4D-CT option.
+- Pins automatic RTSTRUCT generation to the planning CT rather than an
+  arbitrary discovered CT series.
+
+### Reliability and release safety
+
+- Preserves resumability by validating segmentation completeness before a
+  series is treated as finished.
+- Retains parallel DICOM discovery equivalence checks and raises the default
+  PyRadiomics batch allowance to 15 minutes per ROI for large masks.
+- Keeps the new PET, MR, and body-composition paths disabled by default and
+  fail-closed when quantitative prerequisites are absent.
+- Documents that the optional TotalSegmentator `tissue_types` task uses an
+  upstream non-commercial model license.
+
 ## 2.2.3
 
 RTpipeline 2.2.3 is a maintenance and release-integrity update. It preserves

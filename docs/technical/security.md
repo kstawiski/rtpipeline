@@ -238,7 +238,8 @@ python3 -c "import secrets; print(secrets.token_urlsafe(32))"
 **Client usage:**
 
 ```bash
-curl -H "Authorization: Bearer your-secure-random-token-here" \
+export RTPIPELINE_API_TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
+curl -H "Authorization: Bearer ${RTPIPELINE_API_TOKEN}" \
      -F "files[]=@data.zip" \
      https://rtpipeline.yourdomain.com/api/upload
 ```

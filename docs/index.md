@@ -18,8 +18,8 @@
     Validated aggregate packets; imaging stays local
 </div>
 
-!!! info "RTpipeline v2.2.3"
-    This maintenance release preserves the 2.2.2 NTCV contract, separates Snakemake stage implementations into focused scripts, strengthens the public/private repository boundary, and runs the complete test suite in release CI. See the [release notes](release_notes.md).
+!!! info "RTpipeline v2.3.0"
+    This release preserves the 2.2.2 NTCV contract while adding opt-in multimodal all-series biomarkers and reliability hardening. See the [release notes](release_notes.md).
 
 ---
 

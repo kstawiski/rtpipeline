@@ -1049,14 +1049,19 @@ def _mask_array_to_image(ct_img: sitk.Image, mask: np.ndarray) -> Optional[sitk.
     return img
 
 
-def _export_original_segmentation(
-    course: CourseOutput,
+def _export_original_segmentation_from_paths(
+    *,
+    rs_path: Optional[Path],
+    primary_nifti: Optional[Path],
+    dicom_ct_dir: Path,
+    segmentation_original_dir: Path,
+    log_root: Path,
     overwrite: bool,
 ) -> Optional[dict]:
-    if not course.rs_path or not course.rs_path.exists() or not course.primary_nifti or not course.primary_nifti.exists():
+    if not rs_path or not rs_path.exists() or not primary_nifti or not primary_nifti.exists():
         return None
-    seg_root = course.dirs.segmentation_original
-    base_name = _strip_nifti_base(course.primary_nifti)
+    seg_root = segmentation_original_dir
+    base_name = _strip_nifti_base(primary_nifti)
     target_root = seg_root / base_name
     ensure_dir(target_root)
     manifest_path = target_root / "metadata.json"
@@ -1072,25 +1077,25 @@ def _export_original_segmentation(
         return None
 
     try:
-        ct_img = sitk.ReadImage(str(course.primary_nifti))
+        ct_img = sitk.ReadImage(str(primary_nifti))
     except Exception as exc:
-        logger.warning("Failed to load primary NIfTI for %s: %s", course.dirs.root, exc)
+        logger.warning("Failed to load primary NIfTI for %s: %s", log_root, exc)
         return None
 
     try:
         builder = RTStructBuilder.create_from(
-            dicom_series_path=str(course.dirs.dicom_ct),
-            rt_struct_path=str(course.rs_path),
+            dicom_series_path=str(dicom_ct_dir),
+            rt_struct_path=str(rs_path),
         )
     except Exception as exc:
-        logger.warning("Failed to load RTSTRUCT for segmentation export (%s): %s", course.rs_path, exc)
+        logger.warning("Failed to load RTSTRUCT for segmentation export (%s): %s", rs_path, exc)
         return None
 
     used_names: dict[str, int] = {}
     manifest = {
         "model": "manual",
-        "source_rtstruct": str(course.rs_path),
-        "source_nifti": str(course.primary_nifti),
+        "source_rtstruct": str(rs_path),
+        "source_nifti": str(primary_nifti),
         "structures": [],
     }
 
@@ -1129,9 +1134,23 @@ def _export_original_segmentation(
         try:
             manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
         except Exception as exc:
-            logger.warning("Failed to write segmentation manifest for %s: %s", course.dirs.root, exc)
+            logger.warning("Failed to write segmentation manifest for %s: %s", log_root, exc)
         return manifest
     return None
+
+
+def _export_original_segmentation(
+    course: CourseOutput,
+    overwrite: bool,
+) -> Optional[dict]:
+    return _export_original_segmentation_from_paths(
+        rs_path=course.rs_path,
+        primary_nifti=course.primary_nifti,
+        dicom_ct_dir=course.dirs.dicom_ct,
+        segmentation_original_dir=course.dirs.segmentation_original,
+        log_root=course.dirs.root,
+        overwrite=overwrite,
+    )
 
 
 def _index_series_and_registrations(

@@ -18,6 +18,7 @@
 - **AI Segmentation** - TotalSegmentator (~100 standardized structures) + custom nnU-Net models
 - **DVH Extraction** - Comprehensive dose-volume metrics
 - **Radiomics** - IBSI-informed PyRadiomics features with robustness assessment
+- **Multimodal Biomarkers** - Opt-in PET structure metrics, functional-MR sampling, and CT body composition
 - **Quality Control** - Automated checks and audit reports
 
 ### Who Is This For?
@@ -62,7 +63,23 @@ et al. (2019), stress-tests feature stability under the configured perturbations
 
 Features with ICC ≥ 0.90 and CoV ≤ 10% classified as **robust**.
 
-### 4. Analysis-Ready Outputs
+### 4. Multimodal and Derived Biomarkers
+
+The all-series workflow can retain and classify 4D CT, contrast-enhanced CT,
+PET/CT, anatomical MR, and functional MR without changing the default
+single-series workflow. Optional modules provide:
+
+- per-structure PET SUV summaries on paired PET/CT examinations;
+- ADC, perfusion, and subtraction-map sampling under anatomical MR masks;
+- CT body-composition measurements from TotalSegmentator tissue masks; and
+- all-series radiomics with provenance for the original image series.
+
+These modules are disabled by default and require explicit configuration. PET
+quantitation is accepted only when SUV conversion is valid, and the optional
+TotalSegmentator `tissue_types` task has an upstream non-commercial model
+license.
+
+### 5. Analysis-Ready Outputs
 
 ```
 _RESULTS/
@@ -72,7 +89,7 @@ _RESULTS/
 └── qc_reports.xlsx       # Quality control summary
 ```
 
-### 5. High-Performance Computing
+### 6. High-Performance Computing
 
 Designed for modern hardware with automatic optimization:
 
@@ -196,7 +213,7 @@ Also cite the underlying tools:
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) for details.
+MIT License - see [LICENSE](LICENSE) for details. TotalSegmentator model/task licensing is upstream-specific; the optional `tissue_types` task used for body-composition extraction is under the TotalSegmentator non-commercial license.
 
 ---
 
