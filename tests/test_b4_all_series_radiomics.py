@@ -10,10 +10,13 @@ serial==parallel dispatch parity, and course-path isolation (radiomics_all.xlsx 
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any, cast
 
 import pandas as pd
 import pytest
 
+import rtpipeline.cli as cli
 import rtpipeline.radiomics as rad
 import rtpipeline.radiomics_parallel as radpar
 from rtpipeline.inventory import TS_TASK_BY_CLASS, output_dir_for_image_class
@@ -417,3 +420,63 @@ def test_no_backend_short_circuits(tmp_path, monkeypatch, fake_dispatch):
     assert rad.run_radiomics_all_series(_Cfg(out_root), ["P9"]) is None
     assert len(calls) == 0
     assert not (out_root / ".all_series_radiomics").exists()
+
+
+def test_subset_rerun_preserves_other_patients(tmp_path, monkeypatch, fake_dispatch):
+    calls, fake = fake_dispatch
+    out_root = tmp_path / "out"
+    for patient_id in ("P1", "P2"):
+        _build_patient_tree(
+            out_root,
+            patient_id,
+            [{"image_class": "planning_ct", "series_uid": f"u_{patient_id}", "study_uid": "S"}],
+        )
+    _install(monkeypatch, fake, "serial")
+
+    output = rad.run_radiomics_all_series(cast(Any, _Cfg(out_root)), ["P1", "P2"])
+    assert output is not None
+    assert set(pd.read_csv(output)["patient_id"]) == {"P1", "P2"}
+
+    output = rad.run_radiomics_all_series(cast(Any, _Cfg(out_root)), ["P1"])
+    assert output is not None
+    assert set(pd.read_csv(output)["patient_id"]) == {"P1", "P2"}
+
+
+def test_cli_radiomics_stage_runs_all_series_adapter(tmp_path, monkeypatch):
+    dicom_root = tmp_path / "dicom"
+    dicom_root.mkdir()
+    (tmp_path / "config.yaml").write_text(
+        "organize:\n  do_segment_all_series: true\n",
+        encoding="utf-8",
+    )
+    output_root = tmp_path / "out"
+    course_dirs = build_course_dirs(output_root / "P1" / "course")
+    course_dirs.ensure()
+    course = SimpleNamespace(patient_id="P1", course_id="course", dirs=course_dirs)
+    seen: dict[str, object] = {}
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli, "organize_and_merge", lambda cfg: [course])
+    monkeypatch.setattr(cli, "_detect_gpu_count", lambda: 0)
+    monkeypatch.setattr(rad, "_have_pyradiomics", lambda: True)
+    monkeypatch.setattr(rad, "run_radiomics", lambda cfg, courses, custom: seen.setdefault("course", True))
+    monkeypatch.setattr(
+        rad,
+        "run_radiomics_all_series",
+        lambda cfg, patient_ids: seen.setdefault("patient_ids", list(patient_ids)),
+    )
+
+    assert cli.main(
+        [
+            "--dicom-root",
+            str(dicom_root),
+            "--outdir",
+            str(output_root),
+            "--logs",
+            str(tmp_path / "logs"),
+            "--stage",
+            "radiomics",
+            "--no-metadata",
+        ]
+    ) == 0
+    assert seen == {"course": True, "patient_ids": ["P1"]}

@@ -6,6 +6,7 @@ import logging
 import os
 import shutil
 import sqlite3
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
@@ -699,20 +700,43 @@ def _copy_instances(
         source = instance.path
         if not source.exists():
             missing = True
-            continue
-        if destination.exists():
+            destination.unlink(missing_ok=True)
             continue
         # Prefer hardlinks when enabled and source/output share a filesystem. This avoids
         # byte-copying large materialized DICOM collections. Materialized DICOMs are only
         # read downstream (dcm2niix), never modified in place, so a shared inode is safe.
         # Fall back to copy2 on any OSError (e.g. EXDEV cross-device, EMLINK).
         if use_hardlinks:
+            if destination.exists():
+                try:
+                    if os.path.samefile(source, destination):
+                        continue
+                except OSError:
+                    pass
+                destination.unlink()
             try:
                 os.link(source, destination)
                 continue
             except OSError:
                 pass
-        shutil.copy2(source, destination)
+        elif destination.exists():
+            try:
+                source_stat = source.stat()
+                destination_stat = destination.stat()
+                if (
+                    source_stat.st_size == destination_stat.st_size
+                    and source_stat.st_mtime_ns == destination_stat.st_mtime_ns
+                ):
+                    continue
+            except OSError:
+                pass
+
+        temporary = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            shutil.copy2(source, temporary)
+            os.replace(temporary, destination)
+        finally:
+            temporary.unlink(missing_ok=True)
     return missing
 
 

@@ -1146,6 +1146,15 @@ def main(argv: list[str] | None = None) -> int:
             cfg.do_ingest_pet_suv = bool(
                 pet_config.get("do_ingest_pet_suv", organize_config.get("do_ingest_pet_suv", False))
             )
+            cfg.pet_suv_structures = bool(
+                pet_config.get(
+                    "pet_suv_structures",
+                    organize_config.get(
+                        "pet_suv_structures",
+                        yaml_config.get("pet_suv_structures", False),
+                    ),
+                )
+            )
             cfg.suv_decay_guard_tol = float(
                 pet_config.get("suv_decay_guard_tol", organize_config.get("suv_decay_guard_tol", cfg.suv_decay_guard_tol))
             )
@@ -1677,12 +1686,21 @@ def main(argv: list[str] | None = None) -> int:
             if not selected_courses:
                 _log_skip("Radiomics")
             else:
-                from .radiomics import run_radiomics
+                from .radiomics import run_radiomics, run_radiomics_all_series
                 try:
                     run_radiomics(cfg, selected_courses, cfg.custom_structures_config)
                 except Exception as exc:  # noqa: BLE001 - report and continue to other stages
                     had_failures = True
                     logger.error("Radiomics stage failed: %s", exc, exc_info=True)
+                if getattr(cfg, "do_segment_all_series", False):
+                    patient_ids = sorted(
+                        {str(course.patient_id) for course in selected_courses if course.patient_id}
+                    )
+                    try:
+                        run_radiomics_all_series(cfg, patient_ids)
+                    except Exception as exc:  # noqa: BLE001 - keep course radiomics independently usable
+                        had_failures = True
+                        logger.error("All-series radiomics stage failed: %s", exc, exc_info=True)
 
     if "qc" in stages:
         courses = ensure_courses()
