@@ -655,3 +655,43 @@ def test_cli_pet_suv_force_uses_force_redo_not_segmentation_force(tmp_path, monk
     ) == 0
     assert seen["segmentation"] == [False]
     assert seen["pet_suv"] == [True]
+
+
+def test_cli_loads_pet_suv_structures_from_pet_config(tmp_path, monkeypatch):
+    dicom_root = tmp_path / "dicom"
+    dicom_root.mkdir()
+    (tmp_path / "config.yaml").write_text(
+        "pet:\n  do_ingest_pet_suv: true\n  pet_suv_structures: true\n",
+        encoding="utf-8",
+    )
+    output_root = tmp_path / "out"
+    course_dirs = build_course_dirs(output_root / "P1" / "course")
+    course_dirs.ensure()
+    course = SimpleNamespace(patient_id="P1", course_id="course", dirs=course_dirs)
+    seen: dict[str, bool] = {}
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli, "organize_and_merge", lambda cfg: [course])
+    monkeypatch.setattr(cli, "_detect_gpu_count", lambda: 0)
+
+    def fake_runner(name, tasks, fn, **kwargs):
+        if name == "PET SUV ingestion":
+            seen["configured"] = all(task.cfg.pet_suv_structures for task in tasks)
+        return [True for _ in tasks]
+
+    monkeypatch.setattr(cli, "run_tasks_with_adaptive_workers", fake_runner)
+
+    assert cli.main(
+        [
+            "--dicom-root",
+            str(dicom_root),
+            "--outdir",
+            str(output_root),
+            "--logs",
+            str(tmp_path / "logs"),
+            "--stage",
+            "segmentation",
+            "--no-metadata",
+        ]
+    ) == 0
+    assert seen == {"configured": True}

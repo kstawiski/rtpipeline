@@ -81,3 +81,36 @@ def test_missing_source_reported(tmp_path: Path) -> None:
     missing = _copy_instances(instances, out_dir, "CT", use_hardlinks=True)
     assert missing is True
     assert list(out_dir.glob("*.dcm")) == []
+
+
+def test_existing_copy_is_refreshed_when_source_changes(tmp_path: Path) -> None:
+    src_dir = tmp_path / "src"
+    src_dir.mkdir()
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    src = src_dir / "a.dcm"
+    src.write_bytes(b"old")
+    instance = _mk_instance(src, 1)
+
+    assert _copy_instances([instance], out_dir, "CT", use_hardlinks=False) is False
+    destination = out_dir / "CT_00001.dcm"
+    assert destination.read_bytes() == b"old"
+
+    src.write_bytes(b"new-content")
+    assert _copy_instances([instance], out_dir, "CT", use_hardlinks=False) is False
+    assert destination.read_bytes() == b"new-content"
+
+
+def test_existing_stale_hardlink_is_rebound_to_current_source(tmp_path: Path) -> None:
+    old_source = tmp_path / "old.dcm"
+    new_source = tmp_path / "new.dcm"
+    old_source.write_bytes(b"old")
+    new_source.write_bytes(b"new")
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    destination = out_dir / "CT_00001.dcm"
+    os.link(old_source, destination)
+
+    assert _copy_instances([_mk_instance(new_source, 1)], out_dir, "CT", use_hardlinks=True) is False
+    assert destination.read_bytes() == b"new"
+    assert os.path.samefile(new_source, destination)

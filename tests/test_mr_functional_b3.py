@@ -18,7 +18,9 @@ from rtpipeline.mr_functional import (
     QC_MIP,
     QC_NO_ANATOMIC,
     QC_RAW_SOURCE,
+    QC_UNKNOWN_UNITS,
     QC_UNSUPPORTED,
+    _units_provenance,
     coverage_fraction,
     per_structure_stats,
     read_total_mr_label_image,
@@ -315,11 +317,18 @@ def test_orchestrator_ok_path_writes_sidecar(tmp_path):
     sidecar = func_dir.parent / "mr_functional.json"
     assert sidecar.exists()
     payload = json.loads(sidecar.read_text())
-    assert payload["series_qc"] == "ok"
+    assert payload["series_qc"] == QC_UNKNOWN_UNITS
     assert payload["registration"]["tier"] == "direct"
     assert payload["rows"][0]["functional_subtype"] == "adc"
-    assert payload["rows"][0]["qc_flag"] == "ok"
-    assert payload["rows"][0]["raw_unit"] and payload["rows"][0]["unit_source"]  # provenance recorded
+    assert payload["rows"][0]["qc_flag"] == QC_UNKNOWN_UNITS
+    assert payload["rows"][0]["raw_unit"] == "unknown"
+    assert payload["rows"][0]["unit_source"] == "none"
+    assert payload["rows"][0]["rescale_applied"] is False
+
+
+def test_adc_without_explicit_dicom_units_is_not_assumed_calibrated(tmp_path):
+    raw_unit, unit_source, rescale_applied = _units_provenance("adc", tmp_path)
+    assert (raw_unit, unit_source, rescale_applied) == ("unknown", "none", False)
 
 
 def test_orchestrator_raw_dynamic_excluded(tmp_path):
@@ -496,8 +505,8 @@ def test_load_functional_volume_not_materialized(tmp_path):
 
 def test_units_provenance_convention_fallback(tmp_path):
     import rtpipeline.mr_functional as mrf
-    raw_unit, src, applied = mrf._units_provenance("adc", tmp_path)  # no DICOM tags -> convention
-    assert src == "convention" and raw_unit and applied is True
+    raw_unit, src, applied = mrf._units_provenance("adc", tmp_path)
+    assert (raw_unit, src, applied) == ("unknown", "none", False)
 
 
 def test_csv_unreadable_sidecar_logged(tmp_path, caplog):

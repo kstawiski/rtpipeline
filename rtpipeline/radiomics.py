@@ -1546,6 +1546,22 @@ def run_radiomics_all_series(config: PipelineConfig, patient_ids: List[str]) -> 
         return None
 
     output_root = Path(config.output_root)
+    requested_patient_ids = sorted({str(patient_id) for patient_id in patient_ids})
+    if not requested_patient_ids:
+        return None
+    data_dir = output_root / "Data"
+    out_csv = data_dir / "radiomics_all_series.csv"
+    preserved_df = None
+    if out_csv.exists():
+        try:
+            existing_df = pd.read_csv(out_csv)
+            if "patient_id" not in existing_df.columns:
+                raise ValueError("existing CSV lacks required patient_id column")
+            preserved_df = existing_df[
+                ~existing_df["patient_id"].astype(str).isin(requested_patient_ids)
+            ].copy()
+        except Exception as exc:
+            raise RuntimeError(f"Cannot safely merge existing all-series radiomics CSV: {exc}") from exc
     temp_base = output_root / ".all_series_radiomics"
     all_dfs = []
 
@@ -1556,7 +1572,7 @@ def run_radiomics_all_series(config: PipelineConfig, patient_ids: List[str]) -> 
             return False
         return _find_all_series_auto_rtstruct(Path(od), str(row.get("ts_task") or "total")) is not None
 
-    for patient_id in patient_ids:
+    for patient_id in requested_patient_ids:
         course_dirs = build_course_dirs(output_root / str(patient_id) / "all_series")
         manifest_path = course_dirs.metadata / "series_manifest.json"
         if not manifest_path.exists():
@@ -1637,13 +1653,27 @@ def run_radiomics_all_series(config: PipelineConfig, patient_ids: List[str]) -> 
     except OSError:
         pass
 
-    if not all_dfs:
-        logger.info("No all-series CT radiomics produced for %d patient(s)", len(patient_ids))
+    frames = []
+    if preserved_df is not None and not preserved_df.empty:
+        frames.append(preserved_df)
+    frames.extend(all_dfs)
+    if not frames:
+        out_csv.unlink(missing_ok=True)
+        logger.info(
+            "No all-series CT radiomics remain after refreshing %d patient(s)",
+            len(requested_patient_ids),
+        )
         return None
-    out_df = pd.concat(all_dfs, ignore_index=True)
-    data_dir = output_root / "Data"
+    out_df = pd.concat(frames, ignore_index=True)
     data_dir.mkdir(parents=True, exist_ok=True)
-    out_csv = data_dir / "radiomics_all_series.csv"
-    out_df.to_csv(out_csv, index=False)
+    with tempfile.NamedTemporaryFile(
+        prefix=f".{out_csv.name}.", suffix=".tmp", dir=data_dir, delete=False
+    ) as handle:
+        tmp_csv = Path(handle.name)
+    try:
+        out_df.to_csv(tmp_csv, index=False)
+        tmp_csv.replace(out_csv)
+    finally:
+        tmp_csv.unlink(missing_ok=True)
     logger.info("Wrote all-series CT radiomics: %s (%d rows)", out_csv, len(out_df))
     return out_csv
