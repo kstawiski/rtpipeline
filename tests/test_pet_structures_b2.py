@@ -44,7 +44,8 @@ def test_suvmax_mean_exact():
     assert r["suvmean"] == pytest.approx(np.mean([0, 1, 2, 3, 4, 5]))
     assert r["n_suv_voxels"] == 6
     assert r["volume_ml"] == pytest.approx(6 * 0.008)
-    assert r["qc_flag"] == "ok"
+    assert r["qc_flag"] == "suvpeak_sphere_truncated"
+    assert r["suvpeak"] is None
 
 
 def test_suvpeak_uniform_field_equals_value():
@@ -111,12 +112,12 @@ def test_pair_ambiguous_tie():
     assert chosen is None and qc == QC_AMBIGUOUS_PETCT  # tied → never silently pick
 
 
-def test_pair_distinguishable_picks_larger():
+def test_pair_multiple_candidates_are_ambiguous_even_when_slice_counts_differ():
     pt = {"study_uid": "S", "frame_of_reference_uid": "F"}
     cands = [{"series_uid": "A", "study_uid": "S", "frame_of_reference_uid": "F", "n_slices": 100},
              {"series_uid": "B", "study_uid": "S", "frame_of_reference_uid": "F", "n_slices": 300}]
     chosen, basis, qc = pair_petct_ct(pt, cands)
-    assert chosen["series_uid"] == "B" and qc is None
+    assert chosen is None and basis == "multiple_study_for" and qc == QC_AMBIGUOUS_PETCT
 
 
 def test_pair_empty_for():
@@ -220,13 +221,13 @@ def test_orchestrator_completeness_and_csv(tmp_path):
     assert uids == {"uidPT"}  # every manifest PET series present in CSV (no silent drop)
 
 
-def test_orchestrator_idempotent(tmp_path):
+def test_orchestrator_existing_sidecar_is_refreshed(tmp_path):
     out = tmp_path / "out"
     _build_pet_patient(out)
     suv_fn, mask_fn = _synth_suv_mask()
     sample_patient_pet_suv(out, "PT1", _suv_fn=suv_fn, _mask_fn=mask_fn)
     s2 = sample_patient_pet_suv(out, "PT1", _suv_fn=suv_fn, _mask_fn=mask_fn)
-    assert s2["n_sampled"] == 0  # sidecar exists → skipped
+    assert s2["n_sampled"] == 1
 
 
 def test_csv_unreadable_logged(tmp_path, caplog):
@@ -255,7 +256,7 @@ def test_suvpeak_sphere_asymmetric_exact():
     arr[3, 4, 7] = 42.0  # numpy (z=3,y=4,x=7)
     suv = _img(arr, spacing=(3.0, 2.0, 1.0))  # sitk (sx=3,sy=2,sz=1)
     assert suvpeak_sphere(arr, suv, (7, 4, 3), radius_mm=0.4) == pytest.approx(42.0)  # exact center
-    assert 0.0 < suvpeak_sphere(arr, suv, (7, 4, 3)) < 42.0  # default radius averages in zeros
+    assert suvpeak_sphere(arr, suv, (7, 4, 3)) is None  # default 1-cm3 sphere crosses image boundary
 
 
 def test_per_structure_suv_hottest_voxel_index_ordering():
@@ -267,7 +268,8 @@ def test_per_structure_suv_hottest_voxel_index_ordering():
     mask = np.ones((4, 6, 8), dtype=np.int16)
     rows = per_structure_suv(suv, mask, mask, {1: "roi"}, ct_voxel_vol_ml=0.001)
     assert rows[0]["suvmax"] == pytest.approx(100.0)
-    assert rows[0]["suvpeak"] > 1.0  # sphere centered on the true hot voxel includes the 100
+    assert rows[0]["suvpeak"] is None
+    assert rows[0]["qc_flag"] == "suvpeak_sphere_truncated"
 
 
 def test_resample_mask_label_placement():

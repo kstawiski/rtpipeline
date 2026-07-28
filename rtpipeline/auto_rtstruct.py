@@ -377,12 +377,16 @@ def _select_seg_dir_for_ct(
             )
             return (None, None, None)
 
-    # 2. FrameOfReferenceUID — coarser fallback when no source-series link is readable.
+    # 2. FrameOfReferenceUID — coarser fallback only when a candidate has no readable
+    # source-series link. A readable link to another series is contradictory provenance,
+    # even when that series shares the planning CT's frame (for example 4DCT phases).
     if ct_for_uid:
         for_matches = [
             (d, seg, d.name)
             for d, seg in segs
-            if seg is not None and _read_for_uid(seg) == ct_for_uid
+            if seg is not None
+            and not _seg_source_series_uids(seg)
+            and _read_for_uid(seg) == ct_for_uid
         ]
         if len(for_matches) == 1:
             return for_matches[0]
@@ -429,12 +433,19 @@ def _geometry_compatible(
     """True iff ``seg_img`` occupies the same physical space as ``ct_img``.
 
     The pre-resample safety net behind :func:`_select_seg_dir_for_ct`: requires
-    aligned axes (matching direction cosines) and overlapping physical extent, so a
+    aligned axes and a near-identical voxel grid, so a
     segmentation from a different series/frame (CBCT, diagnostic CT, off-isocenter
     scan) can never be silently resampled onto the planning CT.
     """
     try:
         if not np.allclose(seg_img.GetDirection(), ct_img.GetDirection(), atol=1e-3):
+            return False
+
+        if seg_img.GetSize() != ct_img.GetSize():
+            return False
+        if not np.allclose(seg_img.GetSpacing(), ct_img.GetSpacing(), atol=1e-3):
+            return False
+        if not np.allclose(seg_img.GetOrigin(), ct_img.GetOrigin(), atol=tol_mm):
             return False
 
         def _extent(img: sitk.Image):
@@ -452,10 +463,7 @@ def _geometry_compatible(
 
         seg_lo, seg_hi = _extent(seg_img)
         ct_lo, ct_hi = _extent(ct_img)
-        # Bounding boxes must overlap (within tol_mm) on every axis.
-        return bool(
-            np.all(seg_lo <= ct_hi + tol_mm) and np.all(ct_lo <= seg_hi + tol_mm)
-        )
+        return bool(np.allclose(seg_lo, ct_lo, atol=tol_mm) and np.allclose(seg_hi, ct_hi, atol=tol_mm))
     except Exception as e:
         logger.debug("Geometry compatibility check failed: %s", e)
         return False

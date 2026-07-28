@@ -72,6 +72,7 @@ def test_route_raw_perf_defers_before_dwi(desc):
     "t1_twist_tra_dyn_TT=7.0s",   # TWIST raw — MUST NOT route to perfusion via wi⊂twist (Claude-r3)
     "t1_vibe_tra_dynamic",        # dyn-prefix raw dynamic
     "t1_vibe-grasp_fs_tra",       # grasp raw (no sub)
+    "DCE T1 dynamic",              # classifier and subtype router must agree on raw DCE
 ])
 def test_route_raw_dynamics_defer(desc):
     r = route_functional_subtype(desc)
@@ -231,6 +232,14 @@ def test_select_same_study_tiebreak_n_slices():
     assert chosen["series_uid"] == "B" and "study" in basis and qc is None  # larger n_slices
 
 
+def test_select_refuses_unrelated_anatomic_fallback():
+    cands = [
+        {"series_uid": "A", "frame_of_reference_uid": "FOR-A", "study_uid": "STUDY-A", "n_slices": 60},
+    ]
+    chosen, basis, qc = select_anatomic_for_functional("FOR-F", "STUDY-F", cands)
+    assert chosen is None and basis == "no_shared_identity" and qc == QC_NO_ANATOMIC
+
+
 # ----------------------------------------------------- mask reader + CSV
 
 def test_read_total_mr_label_image(tmp_path):
@@ -378,14 +387,14 @@ def test_orchestrator_completeness_every_series_in_csv(tmp_path):
     assert uids == manifest_func_uids, "series-UID set-equality (no silent drop) violated"
 
 
-def test_orchestrator_idempotent_skip(tmp_path):
+def test_orchestrator_existing_sidecar_is_refreshed(tmp_path):
     out = tmp_path / "out"
     func_dir, _ = _build_patient(out, "IsoADC")
     load_fn, mask_fn, int_fn = _synthetic_io()
     sample_patient_mr_functional(out, "PT1", _load_fn=load_fn, _mask_fn=mask_fn, _intensity_fn=int_fn)
-    # second call without force must skip (sidecar exists) -> n_sampled 0
+    # Existing sidecars are refreshed because upstream images/masks may have changed.
     s2 = sample_patient_mr_functional(out, "PT1", _load_fn=load_fn, _mask_fn=mask_fn, _intensity_fn=int_fn)
-    assert s2["n_sampled"] == 0
+    assert s2["n_sampled"] == 1
 
 
 def test_config_default_off():
@@ -507,6 +516,11 @@ def test_units_provenance_convention_fallback(tmp_path):
     import rtpipeline.mr_functional as mrf
     raw_unit, src, applied = mrf._units_provenance("adc", tmp_path)
     assert (raw_unit, src, applied) == ("unknown", "none", False)
+
+
+@pytest.mark.parametrize("subtype", ["adc", "dwi", "perfusion", "subtraction"])
+def test_missing_units_are_never_assumed(subtype, tmp_path):
+    assert _units_provenance(subtype, tmp_path) == ("unknown", "none", False)
 
 
 def test_csv_unreadable_sidecar_logged(tmp_path, caplog):

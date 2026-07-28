@@ -249,9 +249,11 @@ def test_lone_nifti_only_fallback(tmp_path: Path) -> None:
 def test_lone_candidate_contradicting_series_fail_closed(tmp_path: Path) -> None:
     """The only seg dir references a DIFFERENT series than the planning CT."""
     only = tmp_path / "diagnostic"
-    _write_total_rtstruct(only, generate_uid(), ref_series_uid=generate_uid())
+    shared_for = generate_uid()
+    planning_series = generate_uid()
+    _write_total_rtstruct(only, shared_for, ref_series_uid=generate_uid())
     selected_dir, seg_path, base_name = _select_seg_dir_for_ct(
-        [only], generate_uid(), generate_uid()
+        [only], planning_series, shared_for
     )
     assert (selected_dir, seg_path, base_name) == (None, None, None)
 

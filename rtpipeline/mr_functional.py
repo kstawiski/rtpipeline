@@ -43,7 +43,7 @@ except Exception:  # pragma: no cover - environment guard
 _DERIVED_MAP_TOKENS = frozenset(
     {"ttp", "pei", "relcbf", "relcbv", "relccbv", "relmtt", "pbp", "wo", "wi"}
 )
-_RAW_DYNAMIC_TOKENS = frozenset({"twist", "grasp"})  # standalone; "dyn" handled as \b-prefix
+_RAW_DYNAMIC_TOKENS = frozenset({"twist", "grasp", "dce"})  # standalone; "dyn" handled as \b-prefix
 _MIP_TOKENS = frozenset({"mip", "maxip", "minip", "mipt"})
 # \b-prefix, open-suffix tokens (token.startswith) — match _MR_FUNCTIONAL_RE.
 _PREFIX_TOKENS_PERF = ("perf",)
@@ -367,7 +367,7 @@ def select_anatomic_for_functional(
         if study_match:
             return _pick_or_ambiguous(study_match, "same_study")
 
-    return _pick_or_ambiguous(cands, "fallback")
+    return None, "no_shared_identity", QC_NO_ANATOMIC
 
 
 # --- I/O: load functional volume + read total_mr masks ------------------------------
@@ -460,19 +460,19 @@ def read_total_mr_label_image(
 
 _SUBTYPE_UNIT_CONVENTION = {
     "adc": ("unknown", "none"),
-    "dwi": ("arbitrary", "convention"),
-    "perfusion": ("map-specific (convention)", "convention"),
-    "subtraction": ("arbitrary", "convention"),
+    "dwi": ("unknown", "none"),
+    "perfusion": ("unknown", "none"),
+    "subtraction": ("unknown", "none"),
 }
 
 
 def _units_provenance(subtype: str, dicom_dir: Path | None) -> tuple[str, str, bool]:
     """Return (raw_unit, unit_source, rescale_applied).
 
-    Prefer DICOM RealWorldValueMapping / RescaleType when present. Missing ADC unit metadata
-    is not sufficient to infer scale from the series description, so ADC remains explicitly
-    unknown and is excluded from calibrated interpretation. dcm2niix bakes a documented
-    RescaleSlope/Intercept into the NIfTI, so rescale_applied is True only for documented units.
+    Prefer DICOM RealWorldValueMapping / RescaleType when present. A missing unit tag
+    is not sufficient to infer scale from the series description. Unit tags document
+    semantics but do not by themselves prove that an intensity rescale was applied to
+    the emitted NIfTI, so `rescale_applied` remains false.
     """
     raw_unit, unit_source = _SUBTYPE_UNIT_CONVENTION.get(subtype, ("raw", "none"))
     if dicom_dir is not None:
@@ -488,10 +488,10 @@ def _units_provenance(subtype: str, dicom_dir: Path | None) -> tuple[str, str, b
                     if units_seq:
                         cm = getattr(units_seq[0], "CodeMeaning", None)
                         if cm:
-                            return str(cm), "rwvm", True
+                            return str(cm), "rwvm", False
                 rtype = getattr(ds, "RescaleType", None) or getattr(ds, "Units", None)
                 if rtype:
-                    return str(rtype), "rescale_type", True
+                    return str(rtype), "rescale_type", False
         except Exception:
             pass
     return raw_unit, unit_source, unit_source != "none"
@@ -631,16 +631,12 @@ def sample_patient_mr_functional(
         sidecar_dir = Path(frow.get("output_dir") or (output_root / patient_id))
         sidecar_dir = sidecar_dir if sidecar_dir.is_absolute() else (Path(output_root) / sidecar_dir)
         sidecar = sidecar_dir.parent / "mr_functional.json" if sidecar_dir.name == "DICOM" else sidecar_dir / "mr_functional.json"
-        if sidecar.exists() and not force:
-            summary["sidecars"].append(str(sidecar))
-            continue
-
-        def _emit(row_list: list[dict[str, Any]], series_qc: str, reg: dict | None = None):
+        def _emit(row_list: list[dict[str, Any]], terminal_qc: str, *, reg: dict | None = None):
             for r in row_list:
                 r.setdefault("rtpipeline_version", rtpipeline_version)
             payload = {
                 "patient_id": patient_id, "functional_series_uid": frow.get("series_uid"),
-                "series_qc": series_qc, "registration": reg or {}, "rows": row_list,
+                "series_qc": terminal_qc, "registration": reg or {}, "rows": row_list,
             }
             sidecar.parent.mkdir(parents=True, exist_ok=True)
             tmp = sidecar.parent / f".mr_functional.{os.getpid()}.{uuid.uuid4().hex}.json.tmp"
@@ -654,7 +650,8 @@ def sample_patient_mr_functional(
 
         route = route_functional_subtype(frow.get("series_description", ""), frow.get("image_types"))
         if not route.sampled:
-            _emit([_excluded_row(patient_id, frow, route.qc_reason, subtype=route.subtype)], route.qc_reason)
+            route_qc = route.qc_reason or QC_UNSUPPORTED
+            _emit([_excluded_row(patient_id, frow, route_qc, subtype=route.subtype)], route_qc)
             continue
 
         f_img, n_vol, load_qc = load_fn(sidecar_dir)

@@ -48,6 +48,7 @@ QC_MASKS_MISSING = "petct_ct_masks_missing"
 QC_SUV_MISSING = "suv_nifti_missing"
 QC_EMPTY_MASK = "empty_mask"
 QC_LOAD_FAILED = "load_failed"
+QC_SUVPEAK_TRUNCATED = "suvpeak_sphere_truncated"
 
 
 def read_total_ct_label_image(
@@ -98,8 +99,8 @@ def pair_petct_ct(
     pt_row: Mapping[str, Any], petct_rows: Sequence[Mapping[str, Any]]
 ) -> tuple[Mapping[str, Any] | None, str, str | None]:
     """Pair a PET series to its PET-CT CT-component by (study_uid, FoR). Returns
-    (chosen|None, basis, qc_reason|None). 0 → no_petct_ct; 1 → use; ≥2 distinguishable →
-    pick larger n_slices; ≥2 tied → ambiguous_petct_ct (never silently pick — B3 lesson)."""
+    (chosen|None, basis, qc_reason|None). 0 → no_petct_ct; 1 → use; ≥2 →
+    ambiguous_petct_ct unless an explicit source-series identity is added in a future contract."""
     study = str(pt_row.get("study_uid") or "").strip()
     for_uid = str(pt_row.get("frame_of_reference_uid") or "").strip()
     if not study or not for_uid:
@@ -111,10 +112,7 @@ def pair_petct_ct(
         return None, "none", QC_NO_PETCT
     if len(cands) == 1:
         return cands[0], "study_for", None
-    ranked = sorted(cands, key=lambda r: (-(int(r.get("n_slices") or 0)), str(r.get("series_uid") or "")))
-    if int(ranked[0].get("n_slices") or 0) == int(ranked[1].get("n_slices") or 0):
-        return None, "tied", QC_AMBIGUOUS_PETCT
-    return ranked[0], "study_for_ranked", None
+    return None, "multiple_study_for", QC_AMBIGUOUS_PETCT
 
 
 def resample_mask_to_suv_grid(mask_img: "sitk.Image", suv_img: "sitk.Image") -> "sitk.Image":
@@ -124,14 +122,30 @@ def resample_mask_to_suv_grid(mask_img: "sitk.Image", suv_img: "sitk.Image") -> 
                          sitk.sitkNearestNeighbor, 0, mask_img.GetPixelID())
 
 
+def _sphere_boundary_clearance_mm(
+    image: Any, center_index_xyz: tuple[int, int, int]
+) -> float:
+    spacing = image.GetSpacing()
+    size = image.GetSize()
+    return min(
+        min((center + 0.5) * step, (extent - 0.5 - center) * step)
+        for center, step, extent in zip(center_index_xyz, spacing, size)
+    )
+
+
 def suvpeak_sphere(suv_arr: np.ndarray, suv_img: "sitk.Image", center_index_xyz: tuple[int, int, int],
-                   radius_mm: float = SPHERE_RADIUS_MM) -> float:
+                   radius_mm: float = SPHERE_RADIUS_MM) -> float | None:
     """PERCIST SUVpeak: mean SUV in a 1 cm^3 sphere centered on the hottest in-structure voxel,
-    in PET physical space. The sphere is the VOI (NOT clipped to the structure); clamped to the
-    image. ``suv_arr`` is the numpy (z,y,x) array; ``center_index_xyz`` is a sitk (x,y,z) index."""
+    in PET physical space. The sphere is the VOI (NOT clipped to the structure); if it is not
+    fully contained by the image, SUVpeak is invalidated. ``suv_arr`` is the numpy (z,y,x) array;
+    ``center_index_xyz`` is a sitk (x,y,z) index."""
     sx, sy, sz = suv_img.GetSpacing()
     size_x, size_y, size_z = suv_img.GetSize()
     cx, cy, cz = center_index_xyz
+    # A 1-cm3 VOI must be complete. Clipping it at the reconstructed PET boundary
+    # changes its physical volume and biases the mean upward or downward.
+    if _sphere_boundary_clearance_mm(suv_img, center_index_xyz) < radius_mm:
+        return None
     center_phys = np.array(suv_img.TransformIndexToPhysicalPoint((int(cx), int(cy), int(cz))), dtype=float)
     # bounding box of the sphere in voxels (per-axis), clamped to image. Per-axis spacing is a
     # safe BB for axis-aligned grids (PET in RAS is axis-aligned); the membership test below uses
@@ -176,9 +190,26 @@ def per_structure_suv(
         row["suvmean"] = float(np.mean(vals))
         # hottest in-structure voxel (numpy z,y,x) -> sitk (x,y,z) index for the sphere center
         zyx = np.argwhere(sel)
-        hottest = zyx[int(np.argmax(suv_arr[sel]))]
+        selected_values = suv_arr[sel]
+        max_value = float(np.max(selected_values))
+        hottest_candidates = zyx[np.isclose(selected_values, max_value)]
+        # A plateau has no unique hottest voxel. Prefer the tied voxel with the
+        # greatest image-boundary clearance so a complete 1-cm3 VOI is used when possible.
+        hottest = max(
+            hottest_candidates,
+            key=lambda idx: (
+                _sphere_boundary_clearance_mm(
+                    suv_img, (int(idx[2]), int(idx[1]), int(idx[0]))
+                ),
+                -int(idx[0]),
+                -int(idx[1]),
+                -int(idx[2]),
+            ),
+        )
         center_xyz = (int(hottest[2]), int(hottest[1]), int(hottest[0]))
         row["suvpeak"] = suvpeak_sphere(suv_arr, suv_img, center_xyz)
+        if row["suvpeak"] is None:
+            row["qc_flag"] = QC_SUVPEAK_TRUNCATED
         rows.append(row)
     return rows
 
@@ -250,9 +281,6 @@ def sample_patient_pet_suv(
         suv_dir = all_series_root / "NIFTI" / "SUV" / safe
         suv_path = suv_dir / f"{safe}_SUVbw.nii.gz"
         sidecar = suv_dir / "pet_suv_structures.json"
-        if sidecar.exists() and not force:
-            summary["sidecars"].append(str(sidecar)); continue
-
         def _emit(row_list: list[dict[str, Any]], series_qc: str, meta: dict | None = None):
             for r in row_list:
                 r.setdefault("rtpipeline_version", rtpipeline_version)
