@@ -459,7 +459,7 @@ def read_total_mr_label_image(
 # --- units provenance ---------------------------------------------------------------
 
 _SUBTYPE_UNIT_CONVENTION = {
-    "adc": ("10^-6 mm2/s (convention)", "convention"),
+    "adc": ("unknown", "none"),
     "dwi": ("arbitrary", "convention"),
     "perfusion": ("map-specific (convention)", "convention"),
     "subtraction": ("arbitrary", "convention"),
@@ -469,10 +469,10 @@ _SUBTYPE_UNIT_CONVENTION = {
 def _units_provenance(subtype: str, dicom_dir: Path | None) -> tuple[str, str, bool]:
     """Return (raw_unit, unit_source, rescale_applied).
 
-    Prefer DICOM RealWorldValueMapping / RescaleType when present; else fall back to the
-    subtype convention (every sampled subtype HAS a conventional unit, so we never lose the
-    headline product to ``unknown_units`` for a missing tag — maximize data utilization).
-    dcm2niix bakes RescaleSlope/Intercept into the NIfTI, so rescale_applied is True.
+    Prefer DICOM RealWorldValueMapping / RescaleType when present. Missing ADC unit metadata
+    is not sufficient to infer scale from the series description, so ADC remains explicitly
+    unknown and is excluded from calibrated interpretation. dcm2niix bakes a documented
+    RescaleSlope/Intercept into the NIfTI, so rescale_applied is True only for documented units.
     """
     raw_unit, unit_source = _SUBTYPE_UNIT_CONVENTION.get(subtype, ("raw", "none"))
     if dicom_dir is not None:
@@ -494,7 +494,7 @@ def _units_provenance(subtype: str, dicom_dir: Path | None) -> tuple[str, str, b
                     return str(rtype), "rescale_type", True
         except Exception:
             pass
-    return raw_unit, unit_source, True
+    return raw_unit, unit_source, unit_source != "none"
 
 
 def _native_voxel_counts(
@@ -751,7 +751,11 @@ def sample_patient_mr_functional(
             "rescale_applied": rescale_applied, "normalized_unit": None,
             **sr,
         } for sr in stats_rows]
-        _emit(out_rows, QC_OK, reg={"tier": res.tier, "converged": res.reg_converged,
+        unit_qc = QC_UNKNOWN_UNITS if unit_source == "none" else QC_OK
+        if unit_qc != QC_OK:
+            for row in out_rows:
+                row["qc_flag"] = unit_qc
+        _emit(out_rows, unit_qc, reg={"tier": res.tier, "converged": res.reg_converged,
                                     "coverage_frac": union_cov, "anatomic_series_uid": chosen.get("series_uid"),
                                     "basis": basis})
         summary["n_sampled"] += 1
