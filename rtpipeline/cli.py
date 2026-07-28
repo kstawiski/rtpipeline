@@ -1296,7 +1296,20 @@ def main(argv: list[str] | None = None) -> int:
     if "segmentation" in stages:
         courses = ensure_courses()
         selected_courses = _filter_courses(courses)
-        if not selected_courses:
+        inventory_patient_ids = {
+            str(patient_id)
+            for patient_id in (getattr(cfg, "inventory_patient_ids", []) or [])
+            if str(patient_id)
+        }
+        all_series_patient_ids = sorted(
+            inventory_patient_ids
+            | {str(course.patient_id) for course in selected_courses if course.patient_id}
+        )
+        has_patient_level_work = bool(all_series_patient_ids) and bool(
+            getattr(cfg, "do_segment_all_series", False)
+            or getattr(cfg, "do_ingest_pet_suv", False)
+        )
+        if not selected_courses and not has_patient_level_work:
             _log_skip("Segmentation")
         else:
             # Segmentation workers: sequential on GPU, fan out on CPU
@@ -1334,27 +1347,30 @@ def main(argv: list[str] | None = None) -> int:
                 for course in selected_courses
             ]
 
-            seg_results = run_tasks_with_adaptive_workers(
-                "Segmentation",
-                segment_tasks,
-                _execute_segment_task,
-                max_workers=seg_worker_limit,
-                logger=logging.getLogger(__name__),
-                show_progress=True,
-                task_timeout=args.task_timeout,
+            seg_results = (
+                run_tasks_with_adaptive_workers(
+                    "Segmentation",
+                    segment_tasks,
+                    _execute_segment_task,
+                    max_workers=seg_worker_limit,
+                    logger=logging.getLogger(__name__),
+                    show_progress=True,
+                    task_timeout=args.task_timeout,
+                )
+                if segment_tasks
+                else []
             )
             if any(r is None for r in seg_results):
                 had_failures = True
 
             if getattr(cfg, "do_segment_all_series", False):
-                patient_ids = sorted({str(course.patient_id) for course in selected_courses if course.patient_id})
                 all_series_tasks = [
                     _AllSeriesSegmentTask(
                         cfg=cfg,
                         patient_id=patient_id,
                         force_segmentation=args.force_segmentation,
                     )
-                    for patient_id in patient_ids
+                    for patient_id in all_series_patient_ids
                 ]
                 all_series_results = run_tasks_with_adaptive_workers(
                     "All-series segmentation",
@@ -1406,7 +1422,7 @@ def main(argv: list[str] | None = None) -> int:
                         )
 
                         _ver = getattr(cfg, "rtpipeline_version", "") or ""
-                        for _pid in patient_ids:
+                        for _pid in all_series_patient_ids:
                             try:
                                 sample_patient_mr_functional(
                                     Path(cfg.output_root), _pid,
@@ -1423,14 +1439,13 @@ def main(argv: list[str] | None = None) -> int:
                         _log.warning("B3 functional-MR stage failed: %s", exc)
 
             if getattr(cfg, "do_ingest_pet_suv", False):
-                patient_ids = sorted({str(course.patient_id) for course in selected_courses if course.patient_id})
                 pet_suv_tasks = [
                     _PetSuvTask(
                         cfg=cfg,
                         patient_id=patient_id,
                         force=args.force_redo,
                     )
-                    for patient_id in patient_ids
+                    for patient_id in all_series_patient_ids
                 ]
                 pet_suv_results = run_tasks_with_adaptive_workers(
                     "PET SUV ingestion",
@@ -1466,7 +1481,7 @@ def main(argv: list[str] | None = None) -> int:
                         )
 
                         _ver2 = getattr(cfg, "rtpipeline_version", "") or ""
-                        for _pid2 in patient_ids:
+                        for _pid2 in all_series_patient_ids:
                             try:
                                 sample_patient_pet_suv(
                                     Path(cfg.output_root), _pid2,
@@ -1683,21 +1698,30 @@ def main(argv: list[str] | None = None) -> int:
         if not can_use_radiomics:
             logger.warning("Radiomics dependencies unavailable; skipping radiomics stage")
         else:
-            if not selected_courses:
+            radiomics_patient_ids = sorted(
+                {
+                    str(patient_id)
+                    for patient_id in (getattr(cfg, "inventory_patient_ids", []) or [])
+                    if str(patient_id)
+                }
+                | {str(course.patient_id) for course in selected_courses if course.patient_id}
+            )
+            has_all_series_radiomics = bool(
+                getattr(cfg, "do_segment_all_series", False) and radiomics_patient_ids
+            )
+            if not selected_courses and not has_all_series_radiomics:
                 _log_skip("Radiomics")
             else:
                 from .radiomics import run_radiomics, run_radiomics_all_series
-                try:
-                    run_radiomics(cfg, selected_courses, cfg.custom_structures_config)
-                except Exception as exc:  # noqa: BLE001 - report and continue to other stages
-                    had_failures = True
-                    logger.error("Radiomics stage failed: %s", exc, exc_info=True)
-                if getattr(cfg, "do_segment_all_series", False):
-                    patient_ids = sorted(
-                        {str(course.patient_id) for course in selected_courses if course.patient_id}
-                    )
+                if selected_courses:
                     try:
-                        run_radiomics_all_series(cfg, patient_ids)
+                        run_radiomics(cfg, selected_courses, cfg.custom_structures_config)
+                    except Exception as exc:  # noqa: BLE001 - report and continue to other stages
+                        had_failures = True
+                        logger.error("Radiomics stage failed: %s", exc, exc_info=True)
+                if has_all_series_radiomics:
+                    try:
+                        run_radiomics_all_series(cfg, radiomics_patient_ids)
                     except Exception as exc:  # noqa: BLE001 - keep course radiomics independently usable
                         had_failures = True
                         logger.error("All-series radiomics stage failed: %s", exc, exc_info=True)

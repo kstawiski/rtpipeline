@@ -345,6 +345,24 @@ def test_b1_smi_null_when_patient_size_absent(tmp_path):
     assert payload["metrics"]["smi_missing_reason"] == "DICOM PatientSize absent"
 
 
+def test_b1_rejects_same_shape_mask_on_different_physical_grid(tmp_path):
+    ct_path, seg_dir, dicom_dir = _write_body_comp_inputs(tmp_path, patient_size=2.0)
+    mask_path = seg_dir / "tissue_types--skeletal_muscle.nii.gz"
+    image = sitk.ReadImage(str(mask_path))
+    image.SetOrigin((5.0, 0.0, 0.0))
+    sitk.WriteImage(image, str(mask_path))
+
+    with pytest.raises(ValueError, match="physical geometry"):
+        body_composition.compute_body_composition(
+            ct_nifti=ct_path,
+            segmentation_dir=seg_dir,
+            dicom_dir=dicom_dir,
+            patient_id="P1",
+            series_uid="S1",
+            image_class="planning_ct",
+        )
+
+
 def test_b1_hu_windows_exclude_out_of_window_voxels(tmp_path):
     # Single axial slice. Muscle label has one in-window voxel (42 HU) and one
     # air voxel (-1000 HU). The air voxel must be excluded from BOTH the area

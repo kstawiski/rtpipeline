@@ -40,15 +40,14 @@ def _find_mask(segmentation_dir: Path, model: str, name: str) -> Path | None:
     return None
 
 
-def _read_image_array(path: Path) -> tuple[np.ndarray, tuple[float, ...]]:
-    img = sitk.ReadImage(str(path))
-    return sitk.GetArrayFromImage(img), tuple(float(x) for x in img.GetSpacing())
-
-
-def _read_mask(path: Path, expected_shape: tuple[int, ...]) -> np.ndarray:
-    arr, _spacing = _read_image_array(path)
-    if arr.shape != expected_shape:
-        raise ValueError(f"Mask geometry mismatch for {path}: {arr.shape} != {expected_shape}")
+def _read_mask(path: Path, reference: sitk.Image) -> np.ndarray:
+    image = sitk.ReadImage(str(path))
+    if image.GetSize() != reference.GetSize() or not all(
+        np.allclose(getter(image), getter(reference), atol=1e-3)
+        for getter in (sitk.Image.GetSpacing, sitk.Image.GetOrigin, sitk.Image.GetDirection)
+    ):
+        raise ValueError(f"Mask physical geometry does not match CT for {path}")
+    arr = sitk.GetArrayFromImage(image)
     return arr > 0
 
 
@@ -109,7 +108,9 @@ def compute_body_composition(
     series_uid: str,
     image_class: str,
 ) -> dict[str, Any]:
-    ct_array, spacing = _read_image_array(Path(ct_nifti))
+    ct_image = sitk.ReadImage(str(ct_nifti))
+    ct_array = sitk.GetArrayFromImage(ct_image)
+    spacing = tuple(float(x) for x in ct_image.GetSpacing())
     if len(spacing) < 2:
         raise ValueError(f"CT spacing has fewer than 2 dimensions: {spacing}")
     pixel_area_cm2 = (spacing[0] * spacing[1]) / 100.0
@@ -156,7 +157,7 @@ def compute_body_composition(
         base["metrics"]["smi_missing_reason"] = height_missing_reason or "L3 vertebrae mask missing"
         return base
 
-    l3_mask = _read_mask(l3_path, ct_array.shape)
+    l3_mask = _read_mask(l3_path, ct_image)
     z_index, occupied_slices = _middle_occupied_slice(l3_mask)
     base["l3_selection"]["occupied_slices"] = occupied_slices
     if z_index is None:
@@ -176,7 +177,7 @@ def compute_body_composition(
         base["missing_masks"].extend(missing)
 
     if tissue_masks["skeletal_muscle"] is not None:
-        muscle = _read_mask(tissue_masks["skeletal_muscle"], ct_array.shape)
+        muscle = _read_mask(tissue_masks["skeletal_muscle"], ct_image)
         muscle_sel = _windowed_slice(ct_array, muscle, z_index, MUSCLE_HU_RANGE)
         muscle_area = _area_cm2(muscle_sel, pixel_area_cm2)
         base["metrics"]["skeletal_muscle_area_cm2"] = muscle_area
@@ -185,12 +186,12 @@ def compute_body_composition(
             base["metrics"]["smi_cm2_m2"] = muscle_area / (height_m * height_m)
 
     if tissue_masks["torso_fat"] is not None:
-        torso_fat = _read_mask(tissue_masks["torso_fat"], ct_array.shape)
+        torso_fat = _read_mask(tissue_masks["torso_fat"], ct_image)
         torso_sel = _windowed_slice(ct_array, torso_fat, z_index, VISCERAL_FAT_HU_RANGE)
         base["metrics"]["visceral_fat_area_cm2"] = _area_cm2(torso_sel, pixel_area_cm2)
 
     if tissue_masks["subcutaneous_fat"] is not None:
-        subq = _read_mask(tissue_masks["subcutaneous_fat"], ct_array.shape)
+        subq = _read_mask(tissue_masks["subcutaneous_fat"], ct_image)
         subq_sel = _windowed_slice(ct_array, subq, z_index, SUBCUTANEOUS_FAT_HU_RANGE)
         base["metrics"]["subcutaneous_fat_area_cm2"] = _area_cm2(subq_sel, pixel_area_cm2)
 
@@ -220,7 +221,12 @@ def write_series_body_composition(
         image_class=image_class,
     )
     out_path = Path(segmentation_dir) / "body_composition.json"
-    out_path.write_text(json.dumps(result, indent=2, sort_keys=True), encoding="utf-8")
+    tmp_path = out_path.parent / f".body_composition.{os.getpid()}.{uuid.uuid4().hex}.json.tmp"
+    try:
+        tmp_path.write_text(json.dumps(result, indent=2, sort_keys=True), encoding="utf-8")
+        tmp_path.replace(out_path)
+    finally:
+        tmp_path.unlink(missing_ok=True)
     return out_path
 
 
