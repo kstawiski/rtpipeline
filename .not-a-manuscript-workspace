@@ -1,0 +1,11 @@
+This is the public RTpipeline software repository. It is never a manuscript
+workspace.
+
+The manuscript workflow's A2 entry check recognizes a workspace by CLAUDE.md
+plus manuscript/, plan/ and step_prompts/, and then materializes a full private
+scaffold. This checkout has repeatedly acquired that directory shape and been
+scaffolded as a result. This marker makes the entry check skip it.
+
+Manuscript text, figures, tables, source data, analysis code, review evidence,
+and workflow files must never enter this repository. scripts/check_public_boundary.py
+enforces that; run it before any release.
