@@ -33,6 +33,19 @@ FORBIDDEN_FILES = (
     "radiomics_params.yaml",
     "submission_gaps.md",
 )
+# The manuscript workflow's entry check also installs its own helper scripts into
+# `scripts/`, alongside this repository's legitimate ones. Those never tripped the
+# top-level root/file checks, so the guard printed "passed" while seven private
+# workflow scripts sat in the public checkout, one `git add -A` from publication.
+FORBIDDEN_SCRIPTS = (
+    "emit_submission_receipt.py",
+    "make_deposit.sh",
+    "reproduction_sandbox.py",
+    "review_data_policy.py",
+    "sealed_runtime_catalog.py",
+    "verify_upstream_results.py",
+    "workflow_state.py",
+)
 FORBIDDEN_RELEASE_MARKERS = (
     "blinded " + "reviewer archive",
     "DICOMRT-" + "datasets/rtpipeline_" + "manuscript_",
@@ -99,6 +112,23 @@ def check(root: Path | None = None) -> list[str]:
         ignored = _run("check-ignore", "--quiet", "--no-index", "--", relative)
         if ignored.returncode == 0:
             failures.append(f".gitignore hides private-file probe: {relative}")
+        elif ignored.returncode != 1:
+            raise RuntimeError(
+                ignored.stderr.strip() or f"git check-ignore failed for {relative}"
+            )
+
+    for name in FORBIDDEN_SCRIPTS:
+        relative = f"scripts/{name}"
+        path = root / relative
+        if path.exists() or path.is_symlink():
+            failures.append(
+                f"manuscript-workflow script exists in public checkout: {relative}"
+            )
+        if relative in tracked:
+            failures.append(f"manuscript-workflow script is tracked: {relative}")
+        ignored = _run("check-ignore", "--quiet", "--no-index", "--", relative)
+        if ignored.returncode == 0:
+            failures.append(f".gitignore hides workflow-script probe: {relative}")
         elif ignored.returncode != 1:
             raise RuntimeError(
                 ignored.stderr.strip() or f"git check-ignore failed for {relative}"
