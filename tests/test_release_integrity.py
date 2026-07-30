@@ -601,6 +601,35 @@ def test_boundary_guard_detects_private_file_hidden_by_exclude(tmp_path):
     assert any("VERSION.md" in failure for failure in failures), failures
 
 
+def test_boundary_guard_detects_manuscript_workflow_scripts(tmp_path):
+    """Scaffold scripts installed into scripts/ must fail the boundary check.
+
+    Regression: the guard only inspected forbidden top-level roots and files, so
+    the manuscript workflow's own helpers (workflow_state.py, make_deposit.sh and
+    five others) sat in the public checkout while the check printed "passed".
+    They carry no manuscript prose, which is why the content-marker sweep missed
+    them too.
+    """
+    checker = _load_boundary_checker()
+    repo = tmp_path / "public"
+    repo.mkdir()
+    _init_boundary_fixture_repo(repo)
+
+    scripts = repo / "scripts"
+    scripts.mkdir()
+    # A legitimate repository script in the same directory must not be flagged.
+    (scripts / "run_radiomics.py").write_text("# public\n", encoding="utf-8")
+    assert checker.check(repo) == [], "clean fixture with public script must pass"
+
+    (scripts / "workflow_state.py").write_text("# private workflow\n", encoding="utf-8")
+    (scripts / "make_deposit.sh").write_text("# private workflow\n", encoding="utf-8")
+
+    failures = checker.check(repo)
+    assert any("scripts/workflow_state.py" in f for f in failures), failures
+    assert any("scripts/make_deposit.sh" in f for f in failures), failures
+    assert not any("run_radiomics.py" in f for f in failures), failures
+
+
 def test_boundary_guard_ignores_large_binary_blobs(tmp_path):
     """Negative control: the ignored-file sweep must not choke on big binaries."""
     checker = _load_boundary_checker()
