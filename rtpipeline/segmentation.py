@@ -863,6 +863,26 @@ def _log_no_all_series_original(patient_id: str, row: dict) -> None:
     )
 
 
+MANIFEST_ERROR_KEY = "__manifest_error__"
+
+
+def _manifest_error_summary(reason: str) -> dict:
+    """Summary marking a present-but-unusable manifest as a failure.
+
+    Distinct from ``{}``, which means no manifest exists for this patient and is
+    a legitimate skip rather than an error.
+    """
+    return {
+        MANIFEST_ERROR_KEY: {
+            "attempted": 0,
+            "segmented": 0,
+            "failed": 1,
+            "skipped": 0,
+            "reason": reason,
+        }
+    }
+
+
 def _summary_bucket(summary: dict, image_class: str) -> dict:
     return summary.setdefault(
         image_class,
@@ -938,12 +958,12 @@ def segment_all_series_for_patient(config: PipelineConfig, patient_id: str, *, f
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except Exception as exc:
         logger.warning("Unable to read all-series manifest for patient %s: %s", patient_id, exc)
-        return {}
+        return _manifest_error_summary("unreadable manifest")
 
     rows = manifest.get("series", [])
     if not isinstance(rows, list):
         logger.warning("All-series manifest for patient %s has no series list; skipping", patient_id)
-        return {}
+        return _manifest_error_summary("manifest has no series list")
 
     summary: dict = {}
     segmentable_statuses = {"materialized", "segmented", "seg_failed", "seg_skipped_idempotent"}

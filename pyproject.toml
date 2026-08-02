@@ -49,7 +49,7 @@ test = [
 ]
 
 [project.scripts]
-rtpipeline = "rtpipeline.cli:main"
+rtpipeline = "rtpipeline.cli:console_main"
 
 [project.urls]
 Homepage = "https://github.com/kstawiski/rtpipeline"
