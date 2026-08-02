@@ -1214,6 +1214,9 @@ def ingest_pet_suv_for_patient(config: PipelineConfig, patient_id: str, *, force
     rows = manifest.get("series", [])
     if not isinstance(rows, list):
         logger.warning("All-series manifest for patient %s has no series list; skipping PET SUV", patient_id)
+        # Consistent with the unreadable-manifest path above: a manifest that is
+        # present but structurally invalid is a failure, not an intentional skip.
+        summary["failed"] += 1
         summary["per_compound"] = {}
         summary["per_exclusion_reason"] = {}
         return summary

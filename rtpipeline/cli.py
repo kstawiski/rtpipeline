@@ -17,6 +17,34 @@ from .utils import run_tasks_with_adaptive_workers
 logger = logging.getLogger(__name__)
 
 
+class ConfigValidationError(ValueError):
+    """A project config file asked for something invalid.
+
+    Kept distinct from the errors raised when the config file is merely absent,
+    unreadable, or malformed YAML. Those are tolerable and fall back to defaults;
+    an invalid user-supplied setting must stop the run instead of silently
+    disabling the analysis that was requested.
+    """
+
+
+def _config_number(value, converter, key: str):
+    """Convert a user-supplied config value, naming the key when it is invalid.
+
+    A bare ``float()``/``int()`` here would raise ``ValueError``, which the broad
+    handler around the config block absorbs -- leaving the run on defaults with
+    no indication the requested setting was rejected.
+    """
+    expected = "an integer" if converter is int else "a number"
+    # YAML ``true``/``false`` would otherwise coerce to 1/0 -- a silent, wrong
+    # value rather than the rejection the user needs to see.
+    if isinstance(value, bool):
+        raise ConfigValidationError(f"{key} must be {expected}, got {value!r}")
+    try:
+        return converter(value)
+    except (TypeError, ValueError):
+        raise ConfigValidationError(f"{key} must be {expected}, got {value!r}") from None
+
+
 @dataclass(slots=True)
 class _SegmentTask:
     cfg: PipelineConfig
@@ -117,15 +145,37 @@ def _execute_segment_task(task: _SegmentTask) -> bool:
 def _execute_all_series_segment_task(task: _AllSeriesSegmentTask) -> bool:
     from .segmentation import segment_all_series_for_patient
 
-    segment_all_series_for_patient(task.cfg, task.patient_id, force=task.force_segmentation)
-    return True
+    summary = segment_all_series_for_patient(
+        task.cfg, task.patient_id, force=task.force_segmentation
+    )
+    # A per-series failure is recorded in the summary and processing continues, so
+    # the worker must report it. Returning True unconditionally let a run whose
+    # eligible series failed exit 0 and look complete to downstream automation.
+    return not _all_series_segment_summary_has_failure(summary)
+
+
+def _all_series_segment_summary_has_failure(summary: object) -> bool:
+    """True when any image-class bucket recorded a real segmentation failure.
+
+    ``segment_all_series_for_patient`` returns ``{image_class: {"attempted": int,
+    "segmented": int, "failed": int, "skipped": int}}``. Only ``failed`` marks
+    something that went wrong; ``skipped`` is idempotent reuse, not an error.
+    """
+    if not isinstance(summary, dict):
+        return False
+    for bucket in summary.values():
+        if isinstance(bucket, dict) and int(bucket.get("failed", 0) or 0) > 0:
+            return True
+    return False
 
 
 def _execute_pet_suv_task(task: _PetSuvTask) -> bool:
     from .pet_suv import ingest_pet_suv_for_patient
 
-    ingest_pet_suv_for_patient(task.cfg, task.patient_id, force=task.force)
-    return True
+    summary = ingest_pet_suv_for_patient(task.cfg, task.patient_id, force=task.force)
+    # ``excluded`` counts series that eligibility rules intentionally leave out and
+    # must not fail the run; only ``failed`` marks an actual processing error.
+    return not (isinstance(summary, dict) and int(summary.get("failed", 0) or 0) > 0)
 
 
 def _execute_custom_segmentation_task(task: _CustomSegmentationTask) -> bool:
@@ -1089,7 +1139,7 @@ def main(argv: list[str] | None = None) -> int:
             elif isinstance(_seg_classes, (list, tuple, set)):
                 cfg.all_series_segment_classes = [str(c).strip() for c in _seg_classes if str(c).strip()]
             elif _seg_classes is not None:
-                raise ValueError(
+                raise ConfigValidationError(
                     "organize.all_series_segment_classes must be a YAML list (or comma-separated string) of "
                     f"image_class names, got {type(_seg_classes).__name__}"
                 )
@@ -1104,7 +1154,7 @@ def main(argv: list[str] | None = None) -> int:
             elif _mat_classes is None:
                 _mat_list = None
             else:
-                raise ValueError(
+                raise ConfigValidationError(
                     "organize.all_series_materialize_classes must be a YAML list (or comma-separated string) of "
                     f"image_class names, got {type(_mat_classes).__name__}"
                 )
@@ -1123,7 +1173,7 @@ def main(argv: list[str] | None = None) -> int:
             elif _bc_classes is None:
                 _bc_list = None
             else:
-                raise ValueError(
+                raise ConfigValidationError(
                     "organize.body_composition_classes must be a YAML list (or comma-separated string) of "
                     f"image_class names, got {type(_bc_classes).__name__}"
                 )
@@ -1131,7 +1181,7 @@ def main(argv: list[str] | None = None) -> int:
                 allowed_body_classes = {"planning_ct", "diagnostic_ct", "petct_ct"}
                 invalid = sorted(set(_bc_list) - allowed_body_classes)
                 if invalid:
-                    raise ValueError(
+                    raise ConfigValidationError(
                         "organize.body_composition_classes supports only planning_ct, diagnostic_ct, "
                         f"petct_ct; got {invalid}"
                     )
@@ -1155,32 +1205,46 @@ def main(argv: list[str] | None = None) -> int:
                     ),
                 )
             )
-            cfg.suv_decay_guard_tol = float(
-                pet_config.get("suv_decay_guard_tol", organize_config.get("suv_decay_guard_tol", cfg.suv_decay_guard_tol))
+            cfg.suv_decay_guard_tol = _config_number(
+                pet_config.get("suv_decay_guard_tol", organize_config.get("suv_decay_guard_tol", cfg.suv_decay_guard_tol)),
+                float,
+                "pet.suv_decay_guard_tol",
             )
-            cfg.suv_zextent_primary_fraction = float(
+            cfg.suv_zextent_primary_fraction = _config_number(
                 pet_config.get(
                     "suv_zextent_primary_fraction",
                     organize_config.get("suv_zextent_primary_fraction", cfg.suv_zextent_primary_fraction),
-                )
+                ),
+                float,
+                "pet.suv_zextent_primary_fraction",
             )
-            cfg.pet_clinical_weight_window_days = int(
+            cfg.pet_clinical_weight_window_days = _config_number(
                 pet_config.get(
                     "pet_clinical_weight_window_days",
                     organize_config.get("pet_clinical_weight_window_days", cfg.pet_clinical_weight_window_days),
-                )
+                ),
+                int,
+                "pet.pet_clinical_weight_window_days",
             )
             inventory_db = organize_config.get("inventory_db_path")
             if inventory_db:
                 cfg.inventory_db_path = Path(inventory_db).expanduser().resolve()
             scan_run_id = organize_config.get("inventory_scan_run_id")
             if scan_run_id not in (None, ""):
-                cfg.inventory_scan_run_id = int(scan_run_id)
+                cfg.inventory_scan_run_id = _config_number(
+                    scan_run_id, int, "organize.inventory_scan_run_id"
+                )
             patient_ids = organize_config.get("inventory_patient_ids") or []
             if isinstance(patient_ids, str):
                 patient_ids = [item.strip() for item in patient_ids.split(",") if item.strip()]
             cfg.inventory_patient_ids = [str(item) for item in patient_ids]
+    except ConfigValidationError:
+        # The user asked for something invalid. Never fall back to defaults here:
+        # doing so silently disables the analysis they requested and still exits 0.
+        raise
     except Exception as e:
+        # Tolerated: no usable config file (absent, unreadable, or malformed YAML).
+        # The pipeline has working defaults for that case.
         logger.debug("Could not load project YAML config overrides: %s", e)
 
     # Scope organize-stage discovery walks to the requested cohort when explicit
@@ -1381,7 +1445,10 @@ def main(argv: list[str] | None = None) -> int:
                     show_progress=True,
                     task_timeout=args.task_timeout,
                 )
-                if any(r is None for r in all_series_results):
+                # ``None`` means the worker crashed or timed out; ``False`` means it
+                # ran but recorded a per-series failure. Both leave the cohort
+                # incomplete and must be reported.
+                if any(not r for r in all_series_results):
                     had_failures = True
 
                 # Aggregate the per-series body-composition JSONs into the global
@@ -1456,7 +1523,10 @@ def main(argv: list[str] | None = None) -> int:
                     show_progress=True,
                     task_timeout=args.task_timeout,
                 )
-                if any(r is None for r in pet_suv_results):
+                # ``None`` means the worker crashed or timed out; ``False`` means it
+                # ran but recorded a real ingestion failure. Intentional eligibility
+                # exclusions are not counted here.
+                if any(not r for r in pet_suv_results):
                     had_failures = True
 
                 # B2: per-structure PET SUV under the paired PET-CT CT-component's `total`
@@ -1753,5 +1823,21 @@ def main(argv: list[str] | None = None) -> int:
     return 1 if had_failures else 0
 
 
+def console_main(argv: list[str] | None = None) -> int:
+    """Entry point for the installed ``rtpipeline`` command.
+
+    ``project.scripts`` calls this rather than ``main`` so that an invalid
+    configuration is reported as a readable message and a non-zero exit status
+    instead of an uncaught traceback. Putting the handling only under
+    ``if __name__ == "__main__"`` would leave the installed command uncovered,
+    which is how most users invoke the pipeline.
+    """
+    try:
+        return main(argv)
+    except ConfigValidationError as exc:
+        print(f"Configuration error: {exc}", file=sys.stderr)
+        return 2
+
+
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(console_main())
