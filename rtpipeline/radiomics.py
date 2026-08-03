@@ -3,13 +3,14 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
 import tempfile
 import threading
 import weakref
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 import SimpleITK as sitk
@@ -18,6 +19,7 @@ import pydicom
 
 from .config import PipelineConfig
 from .layout import build_course_dirs, find_dcm
+from .modality_classifier import is_quantitative_image_class
 from importlib import resources as importlib_resources
 import yaml
 from .utils import run_tasks_with_adaptive_workers, mask_is_cropped, _scoped_walk
@@ -1383,3 +1385,295 @@ def run_radiomics(config: PipelineConfig, courses: List["object"], custom_struct
             all_df.to_excel(data_dir / 'radiomics_all.xlsx', index=False)
     except Exception as e:
         logger.warning("Failed to write cohort radiomics: %s", e)
+
+
+# ---------------------------------------------------------------------------
+# B4 + C4 — all-series (non-course) CT radiomics
+#
+# Course radiomics (run_radiomics / radiomics_for_course / parallel_radiomics_for_course)
+# is left byte-identical. This block adds a SEPARATE entry point that radiomics the
+# materialized all-series CT series (planning/diagnostic/PET-CT/4DCT-averaged), one
+# representative volume per 4DCT study (C4), and writes its own Data/radiomics_all_series.csv.
+# It NEVER calls run_radiomics (which runs the per-course MR loop and rewrites the cohort
+# merge Data/radiomics_all.xlsx via rglob).
+# ---------------------------------------------------------------------------
+
+# Base CT classes radiomic'd as-is. 4DCT (fourdct_ave / fourdct_phase) is handled separately
+# by the C4 per-study dedup below.
+_ALL_SERIES_RADIOMICS_BASE_CLASSES = frozenset({"planning_ct", "diagnostic_ct", "petct_ct"})
+_FOURDCT_RADIOMICS_CLASSES = frozenset({"fourdct_ave", "fourdct_phase"})
+
+
+def _link_or_copy(src: Path, dst: Path) -> None:
+    """Symlink ``src`` -> ``dst`` (absolute target, for inode/disk safety at scale); copy on failure."""
+    try:
+        if dst.is_symlink() or dst.exists():
+            dst.unlink()
+    except OSError:
+        pass
+    try:
+        os.symlink(os.path.abspath(src), dst)
+    except OSError:
+        shutil.copy2(src, dst)
+
+
+def _find_all_series_auto_rtstruct(input_dir: Path, model: str) -> Optional[Path]:
+    """Locate the per-series TotalSegmentator auto-RTSTRUCT written by the all-series stage.
+
+    The all-series segmenter writes it at
+    ``<input_dir.parent>/Segmentation_TotalSegmentator/<input_dir.name>/<base>/<base>--<model>.dcm``
+    (segmentation._series_artifact_dirs + the ``rt_out`` naming, segmentation.py:919/965). CT radiomics
+    binds masks via this RTSTRUCT (radiomics.py:640), so a series without one is skipped, not failed.
+    """
+    from .segmentation import _series_artifact_dirs  # lazy: avoid any import cycle
+    _, seg_root = _series_artifact_dirs(Path(input_dir))
+    if not seg_root.exists():
+        return None
+    for rt in sorted(seg_root.glob(f"*/*--{model}.dcm")):
+        if rt.is_file():
+            return rt
+    return None
+
+
+def _materialize_temp_course_tree(course_dir: Path, ct_slices_dir: Path, rtstruct_path: Path) -> bool:
+    """Build the minimal real on-disk course tree B4 radiomics needs: ``DICOM/CT/`` slices + root
+    ``RS_auto.dcm``. Symlinks where possible. Returns False (caller skips the series) if no CT slices."""
+    course_dirs = build_course_dirs(course_dir)
+    course_dirs.dicom_ct.mkdir(parents=True, exist_ok=True)
+    n_slices = 0
+    for slice_path in sorted(Path(ct_slices_dir).glob("*.dcm")):
+        if slice_path.is_file():
+            _link_or_copy(slice_path, course_dirs.dicom_ct / slice_path.name)
+            n_slices += 1
+    if n_slices == 0:
+        return False
+    _link_or_copy(Path(rtstruct_path), course_dir / "RS_auto.dcm")
+    return True
+
+
+def _pick_representative_4dct_phase(phase_rows: List[dict]) -> dict:
+    """C4 fallback when a 4DCT study has no averaged reconstruction: prefer the 50% phase (end-exhale,
+    conventionally the most stable) identifiable from the series description, else the first phase in
+    manifest order (mirrors segmentation._limit_fourdct_to_representative)."""
+    for row in phase_rows:
+        desc = str(row.get("series_description") or "").lower().replace(" ", "")
+        if "50%" in desc:
+            return row
+    return phase_rows[0]
+
+
+def _select_all_series_radiomics_rows(
+    rows: List[dict],
+    has_rtstruct: Optional[Callable[[dict], bool]] = None,
+) -> List[Tuple[dict, bool]]:
+    """B4 selection + C4 dedup. Returns ``(row, is_4d_phase)`` pairs to radiomic.
+
+    Base CT classes (planning_ct/diagnostic_ct/petct_ct) are taken as-is (``is_4d_phase=False``).
+    For 4DCT, only one volume per ``study_uid`` is radiomic'd: the averaged reconstruction if present
+    (``is_4d_phase=False``), else one representative phase (``is_4d_phase=True``, excluded from pooling).
+
+    The 4DCT representative is chosen ONLY among volumes that were actually segmented: ``has_rtstruct``
+    (default: every row) gates 4DCT eligibility. This matters when segmentation keeps a single 4DCT
+    representative (``all_series_fourdct_single_representative``, patient-level, first-ave-else-first-phase):
+    without the gate B4's per-study 50%-preference could pick a phase that was never segmented, find no
+    RTSTRUCT, and silently drop the whole study. With the gate, B4 picks the segmented volume.
+
+    ``is_quantitative_image_class`` (C3) is enforced as a denylist guard so CBCT can never be radiomic'd
+    even if a future edit adds it to the class sets. A missing/empty ``study_uid`` is keyed per-series
+    (not collapsed into one bucket) so distinct acquisitions with absent UIDs are not silently lost."""
+    if has_rtstruct is None:
+        has_rtstruct = lambda _row: True
+    selected: List[Tuple[dict, bool]] = []
+    fourdct_by_study: Dict[str, Dict[str, List[dict]]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        cls = str(row.get("image_class") or "")
+        if not is_quantitative_image_class(cls):  # C3 denylist guard
+            continue
+        if cls in _ALL_SERIES_RADIOMICS_BASE_CLASSES:
+            selected.append((row, False))
+        elif cls in _FOURDCT_RADIOMICS_CLASSES:
+            study = str(row.get("study_uid") or "").strip() or f"__nostudy__:{row.get('series_uid') or ''}"
+            bucket = fourdct_by_study.setdefault(study, {"ave": [], "phase": []})
+            bucket["ave" if cls == "fourdct_ave" else "phase"].append(row)
+    for bucket in fourdct_by_study.values():
+        aves = [r for r in bucket["ave"] if has_rtstruct(r)]
+        if aves:
+            selected.append((aves[0], False))   # representative = first segmented ave; all phases dropped
+            continue
+        phases = [r for r in bucket["phase"] if has_rtstruct(r)]
+        if phases:
+            selected.append((_pick_representative_4dct_phase(phases), True))  # excluded from pooling
+    return selected
+
+
+def _dispatch_radiomics_for_course(config: PipelineConfig, course_dir: Path) -> Optional[Path]:
+    """Mirror the per-course CT dispatch (radiomics.py:1244-1274) on one temp course dir.
+    NEVER calls run_radiomics (which runs the MR loop + rewrites the cohort merge radiomics_all.xlsx)."""
+    try:
+        from .radiomics_parallel import is_parallel_radiomics_enabled, parallel_radiomics_for_course
+        use_parallel = is_parallel_radiomics_enabled()
+    except ImportError:
+        use_parallel = False
+    if use_parallel:
+        max_workers = max(1, config.effective_workers())
+        return parallel_radiomics_for_course(config, course_dir, None, max_workers=max_workers, use_cropped=False)
+    return radiomics_for_course(config, course_dir, None, use_cropped=False)
+
+
+def run_radiomics_all_series(config: PipelineConfig, patient_ids: List[str]) -> Optional[Path]:
+    """B4+C4: CT radiomics for the all-series (non-course) imaging.
+
+    For every eligible CT-class series in each patient's all_series manifest, a real temporary
+    course-shaped tree is materialized (``DICOM/CT/`` slices + ``RS_auto.dcm`` <- the per-series
+    TotalSegmentator ``{base}--{task}.dcm``), the per-course CT radiomics worker is run on it, and
+    ``radiomics_ct.xlsx`` is read back and tagged with provenance. The temp tree is deleted on series
+    completion. Output is aggregated to ``Data/radiomics_all_series.csv`` with columns
+    patient_id / series_uid / study_uid / image_class / is_4d_phase / series_dir.
+
+    Course-path artifacts (per-course ``radiomics_ct.xlsx`` and ``Data/radiomics_all.xlsx``) are NOT
+    touched — this function never calls run_radiomics and only writes the new CSV.
+    """
+    import pandas as pd
+
+    # Parity with run_radiomics: honor a configured radiomics thread limit (BLAS oversubscription
+    # control) and skip cleanly if no extraction backend (native OR conda) is available, so we don't
+    # materialize temp trees only to no-op per series.
+    _apply_radiomics_thread_limit(_resolve_thread_limit(getattr(config, 'radiomics_thread_limit', None)))
+    if not _have_pyradiomics():
+        logger.warning("PyRadiomics unavailable (native + conda) - skipping all-series radiomics")
+        return None
+
+    output_root = Path(config.output_root)
+    requested_patient_ids = sorted({str(patient_id) for patient_id in patient_ids})
+    if not requested_patient_ids:
+        return None
+    data_dir = output_root / "Data"
+    out_csv = data_dir / "radiomics_all_series.csv"
+    preserved_df = None
+    if out_csv.exists():
+        try:
+            existing_df = pd.read_csv(out_csv)
+            if "patient_id" not in existing_df.columns:
+                raise ValueError("existing CSV lacks required patient_id column")
+            preserved_df = existing_df[
+                ~existing_df["patient_id"].astype(str).isin(requested_patient_ids)
+            ].copy()
+        except Exception as exc:
+            raise RuntimeError(f"Cannot safely merge existing all-series radiomics CSV: {exc}") from exc
+    temp_base = output_root / ".all_series_radiomics"
+    all_dfs = []
+
+    def _row_has_rtstruct(row: dict) -> bool:
+        """A 4DCT volume is eligible as the per-study representative only if it was actually segmented."""
+        od = str(row.get("output_dir") or "")
+        if not od:
+            return False
+        return _find_all_series_auto_rtstruct(Path(od), str(row.get("ts_task") or "total")) is not None
+
+    for patient_id in requested_patient_ids:
+        course_dirs = build_course_dirs(output_root / str(patient_id) / "all_series")
+        manifest_path = course_dirs.metadata / "series_manifest.json"
+        if not manifest_path.exists():
+            logger.info("All-series manifest not found for patient %s; skipping radiomics", patient_id)
+            continue
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            logger.warning("Unable to read all-series manifest for patient %s: %s", patient_id, exc)
+            continue
+        rows = manifest.get("series", [])
+        if not isinstance(rows, list):
+            continue
+
+        for row, is_4d_phase in _select_all_series_radiomics_rows(rows, has_rtstruct=_row_has_rtstruct):
+            series_uid = str(row.get("series_uid") or "")
+            image_class = str(row.get("image_class") or "")
+            study_uid = str(row.get("study_uid") or "")
+            model = str(row.get("ts_task") or "total")
+            output_dir_text = str(row.get("output_dir") or "")
+            if not output_dir_text:
+                continue
+            input_dir = Path(output_dir_text)
+            if not input_dir.exists():
+                logger.info("All-series CT dir missing for patient %s series %s; skipping", patient_id, series_uid)
+                continue
+            rtstruct_path = _find_all_series_auto_rtstruct(input_dir, model)
+            if rtstruct_path is None:
+                logger.info(
+                    "No auto-RTSTRUCT for patient %s series %s (%s); skipping radiomics",
+                    patient_id, series_uid, image_class,
+                )
+                continue
+
+            course_dir = temp_base / str(patient_id) / (series_uid or "series")
+            if course_dir.exists():
+                shutil.rmtree(course_dir, ignore_errors=True)
+            course_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                if not _materialize_temp_course_tree(course_dir, input_dir, rtstruct_path):
+                    logger.info("No CT slices to radiomic for patient %s series %s; skipping", patient_id, series_uid)
+                    continue
+                out_path = _dispatch_radiomics_for_course(config, course_dir)
+                if not out_path or not Path(out_path).exists():
+                    continue
+                try:
+                    df = pd.read_excel(Path(out_path), engine="openpyxl")
+                except Exception as exc:
+                    logger.warning(
+                        "Failed reading all-series radiomics for patient %s series %s: %s",
+                        patient_id, series_uid, exc,
+                    )
+                    continue
+                if df.empty:
+                    continue
+                df["patient_id"] = str(patient_id)
+                df["series_uid"] = series_uid
+                df["study_uid"] = study_uid
+                df["image_class"] = image_class
+                df["is_4d_phase"] = bool(is_4d_phase)
+                df["series_dir"] = str(input_dir)
+                # the temp course dir is deleted; repoint course_dir at the persistent series dir and
+                # drop the course-shaped course_id (meaningless in an all-series artifact — series_uid
+                # is the identifier; both CT workers emit it as the temp course basename).
+                if "course_dir" in df.columns:
+                    df["course_dir"] = str(input_dir)
+                df = df.drop(columns=[c for c in ("course_id",) if c in df.columns])
+                all_dfs.append(df)
+            finally:
+                shutil.rmtree(course_dir, ignore_errors=True)
+        try:
+            (temp_base / str(patient_id)).rmdir()  # tidy per-patient parent if now empty
+        except OSError:
+            pass
+
+    try:
+        temp_base.rmdir()
+    except OSError:
+        pass
+
+    frames = []
+    if preserved_df is not None and not preserved_df.empty:
+        frames.append(preserved_df)
+    frames.extend(all_dfs)
+    if not frames:
+        out_csv.unlink(missing_ok=True)
+        logger.info(
+            "No all-series CT radiomics remain after refreshing %d patient(s)",
+            len(requested_patient_ids),
+        )
+        return None
+    out_df = pd.concat(frames, ignore_index=True)
+    data_dir.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        prefix=f".{out_csv.name}.", suffix=".tmp", dir=data_dir, delete=False
+    ) as handle:
+        tmp_csv = Path(handle.name)
+    try:
+        out_df.to_csv(tmp_csv, index=False)
+        tmp_csv.replace(out_csv)
+    finally:
+        tmp_csv.unlink(missing_ok=True)
+    logger.info("Wrote all-series CT radiomics: %s (%d rows)", out_csv, len(out_df))
+    return out_csv

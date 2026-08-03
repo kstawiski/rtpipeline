@@ -251,6 +251,9 @@ _MR_FUNCTIONAL_DESCS = [
     "ep2d_diff_tra_0-800_ADC",  # Siemens ADC map
     "t1_twist_tra_dyn_TT=7.0s",  # Siemens TWIST DCE-perfusion
     "t1_vibe_tra_perf_CM_SUB",   # Siemens perfusion subtraction
+    "t1_vibe_fs_tra_SUB",         # standalone subtraction token
+    "t1_fl3d_vibe_SUB_4mm",
+    "t1_vibe_SUB_MIP",
 ]
 
 _MR_EXCLUDE_DESCS = [
@@ -290,6 +293,24 @@ def test_mr_anatomic_does_not_swallow_functional_with_t2_token():
         _meta(modality="MR", series_description="ep2d_diff_tra t2 trace")
     )
     assert image_class == "mr_functional"
+
+
+@pytest.mark.parametrize(
+    "desc",
+    [
+        "AX subclavian T1 FSE",
+        "subcutaneous fat T2 TSE",
+        "submandibular gland T2W",
+        "subcarinal node T1 TSE",
+    ],
+)
+def test_mr_standalone_subtraction_token_does_not_capture_anatomic_prefixes(desc):
+    image_class, reason = classify_series(
+        _meta(modality="MR", series_description=desc)
+    )
+
+    assert image_class == "mr_anatomic"
+    assert reason is None
 
 
 # --- RTSTRUCT-bound recovery plus projection/derived gates ---

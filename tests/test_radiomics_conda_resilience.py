@@ -18,6 +18,7 @@ Bug B — per-course conda env probe times out under load and silently skips cou
     the probe a generous timeout + one retry.
 """
 
+import inspect
 import json
 import subprocess
 import sys
@@ -37,6 +38,13 @@ from rtpipeline.radiomics_conda import (
     check_radiomics_env,
     process_radiomics_batch,
 )
+
+
+def test_batch_extraction_default_allows_large_roi_runtime():
+    default = inspect.signature(rc.extract_radiomics_batch_with_conda).parameters[
+        "timeout_per_roi"
+    ].default
+    assert default == 900
 
 
 # The exact PyRadiomics diagnostics value that broke Parquet serialization.

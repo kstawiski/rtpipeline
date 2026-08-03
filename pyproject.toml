@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rtpipeline"
-version = "2.2.3"
+version = "2.3.0"
 description = "Open-source framework for standardized radiotherapy analytics with robustness-aware radiomics"
 authors = [{ name = "Konrad Stawiski", email = "konrad@konsta.com.pl" }]
 readme = "README.md"
@@ -49,7 +49,7 @@ test = [
 ]
 
 [project.scripts]
-rtpipeline = "rtpipeline.cli:main"
+rtpipeline = "rtpipeline.cli:console_main"
 
 [project.urls]
 Homepage = "https://github.com/kstawiski/rtpipeline"
