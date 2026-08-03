@@ -17,6 +17,34 @@ from .utils import run_tasks_with_adaptive_workers
 logger = logging.getLogger(__name__)
 
 
+class ConfigValidationError(ValueError):
+    """A project config file asked for something invalid.
+
+    Kept distinct from the errors raised when the config file is merely absent,
+    unreadable, or malformed YAML. Those are tolerable and fall back to defaults;
+    an invalid user-supplied setting must stop the run instead of silently
+    disabling the analysis that was requested.
+    """
+
+
+def _config_number(value, converter, key: str):
+    """Convert a user-supplied config value, naming the key when it is invalid.
+
+    A bare ``float()``/``int()`` here would raise ``ValueError``, which the broad
+    handler around the config block absorbs -- leaving the run on defaults with
+    no indication the requested setting was rejected.
+    """
+    expected = "an integer" if converter is int else "a number"
+    # YAML ``true``/``false`` would otherwise coerce to 1/0 -- a silent, wrong
+    # value rather than the rejection the user needs to see.
+    if isinstance(value, bool):
+        raise ConfigValidationError(f"{key} must be {expected}, got {value!r}")
+    try:
+        return converter(value)
+    except (TypeError, ValueError):
+        raise ConfigValidationError(f"{key} must be {expected}, got {value!r}") from None
+
+
 @dataclass(slots=True)
 class _SegmentTask:
     cfg: PipelineConfig
@@ -117,15 +145,37 @@ def _execute_segment_task(task: _SegmentTask) -> bool:
 def _execute_all_series_segment_task(task: _AllSeriesSegmentTask) -> bool:
     from .segmentation import segment_all_series_for_patient
 
-    segment_all_series_for_patient(task.cfg, task.patient_id, force=task.force_segmentation)
-    return True
+    summary = segment_all_series_for_patient(
+        task.cfg, task.patient_id, force=task.force_segmentation
+    )
+    # A per-series failure is recorded in the summary and processing continues, so
+    # the worker must report it. Returning True unconditionally let a run whose
+    # eligible series failed exit 0 and look complete to downstream automation.
+    return not _all_series_segment_summary_has_failure(summary)
+
+
+def _all_series_segment_summary_has_failure(summary: object) -> bool:
+    """True when any image-class bucket recorded a real segmentation failure.
+
+    ``segment_all_series_for_patient`` returns ``{image_class: {"attempted": int,
+    "segmented": int, "failed": int, "skipped": int}}``. Only ``failed`` marks
+    something that went wrong; ``skipped`` is idempotent reuse, not an error.
+    """
+    if not isinstance(summary, dict):
+        return False
+    for bucket in summary.values():
+        if isinstance(bucket, dict) and int(bucket.get("failed", 0) or 0) > 0:
+            return True
+    return False
 
 
 def _execute_pet_suv_task(task: _PetSuvTask) -> bool:
     from .pet_suv import ingest_pet_suv_for_patient
 
-    ingest_pet_suv_for_patient(task.cfg, task.patient_id, force=task.force)
-    return True
+    summary = ingest_pet_suv_for_patient(task.cfg, task.patient_id, force=task.force)
+    # ``excluded`` counts series that eligibility rules intentionally leave out and
+    # must not fail the run; only ``failed`` marks an actual processing error.
+    return not (isinstance(summary, dict) and int(summary.get("failed", 0) or 0) > 0)
 
 
 def _execute_custom_segmentation_task(task: _CustomSegmentationTask) -> bool:
@@ -1089,7 +1139,7 @@ def main(argv: list[str] | None = None) -> int:
             elif isinstance(_seg_classes, (list, tuple, set)):
                 cfg.all_series_segment_classes = [str(c).strip() for c in _seg_classes if str(c).strip()]
             elif _seg_classes is not None:
-                raise ValueError(
+                raise ConfigValidationError(
                     "organize.all_series_segment_classes must be a YAML list (or comma-separated string) of "
                     f"image_class names, got {type(_seg_classes).__name__}"
                 )
@@ -1104,7 +1154,7 @@ def main(argv: list[str] | None = None) -> int:
             elif _mat_classes is None:
                 _mat_list = None
             else:
-                raise ValueError(
+                raise ConfigValidationError(
                     "organize.all_series_materialize_classes must be a YAML list (or comma-separated string) of "
                     f"image_class names, got {type(_mat_classes).__name__}"
                 )
@@ -1112,36 +1162,89 @@ def main(argv: list[str] | None = None) -> int:
                 # Store the raw allow-list. The all-series materialization stage (inventory.py) unions
                 # in the effective segmentation scope so a segmented class is never skip-materialized.
                 cfg.all_series_materialize_classes = _mat_list
+            _bc_classes = organize_config.get(
+                "body_composition_classes",
+                yaml_config.get("body_composition_classes", None),
+            )
+            if isinstance(_bc_classes, str):
+                _bc_list = [s.strip() for s in _bc_classes.replace(";", ",").split(",") if s.strip()]
+            elif isinstance(_bc_classes, (list, tuple, set)):
+                _bc_list = [str(c).strip() for c in _bc_classes if str(c).strip()]
+            elif _bc_classes is None:
+                _bc_list = None
+            else:
+                raise ConfigValidationError(
+                    "organize.body_composition_classes must be a YAML list (or comma-separated string) of "
+                    f"image_class names, got {type(_bc_classes).__name__}"
+                )
+            if _bc_list is not None:
+                allowed_body_classes = {"planning_ct", "diagnostic_ct", "petct_ct"}
+                invalid = sorted(set(_bc_list) - allowed_body_classes)
+                if invalid:
+                    raise ConfigValidationError(
+                        "organize.body_composition_classes supports only planning_ct, diagnostic_ct, "
+                        f"petct_ct; got {invalid}"
+                    )
+                cfg.body_composition_classes = _bc_list
+            cfg.mr_functional_sampling = bool(
+                organize_config.get(
+                    "mr_functional_sampling",
+                    yaml_config.get("mr_functional_sampling", False),
+                )
+            )
             pet_config = yaml_config.get("pet", {}) or {}
             cfg.do_ingest_pet_suv = bool(
                 pet_config.get("do_ingest_pet_suv", organize_config.get("do_ingest_pet_suv", False))
             )
-            cfg.suv_decay_guard_tol = float(
-                pet_config.get("suv_decay_guard_tol", organize_config.get("suv_decay_guard_tol", cfg.suv_decay_guard_tol))
+            cfg.pet_suv_structures = bool(
+                pet_config.get(
+                    "pet_suv_structures",
+                    organize_config.get(
+                        "pet_suv_structures",
+                        yaml_config.get("pet_suv_structures", False),
+                    ),
+                )
             )
-            cfg.suv_zextent_primary_fraction = float(
+            cfg.suv_decay_guard_tol = _config_number(
+                pet_config.get("suv_decay_guard_tol", organize_config.get("suv_decay_guard_tol", cfg.suv_decay_guard_tol)),
+                float,
+                "pet.suv_decay_guard_tol",
+            )
+            cfg.suv_zextent_primary_fraction = _config_number(
                 pet_config.get(
                     "suv_zextent_primary_fraction",
                     organize_config.get("suv_zextent_primary_fraction", cfg.suv_zextent_primary_fraction),
-                )
+                ),
+                float,
+                "pet.suv_zextent_primary_fraction",
             )
-            cfg.pet_clinical_weight_window_days = int(
+            cfg.pet_clinical_weight_window_days = _config_number(
                 pet_config.get(
                     "pet_clinical_weight_window_days",
                     organize_config.get("pet_clinical_weight_window_days", cfg.pet_clinical_weight_window_days),
-                )
+                ),
+                int,
+                "pet.pet_clinical_weight_window_days",
             )
             inventory_db = organize_config.get("inventory_db_path")
             if inventory_db:
                 cfg.inventory_db_path = Path(inventory_db).expanduser().resolve()
             scan_run_id = organize_config.get("inventory_scan_run_id")
             if scan_run_id not in (None, ""):
-                cfg.inventory_scan_run_id = int(scan_run_id)
+                cfg.inventory_scan_run_id = _config_number(
+                    scan_run_id, int, "organize.inventory_scan_run_id"
+                )
             patient_ids = organize_config.get("inventory_patient_ids") or []
             if isinstance(patient_ids, str):
                 patient_ids = [item.strip() for item in patient_ids.split(",") if item.strip()]
             cfg.inventory_patient_ids = [str(item) for item in patient_ids]
+    except ConfigValidationError:
+        # The user asked for something invalid. Never fall back to defaults here:
+        # doing so silently disables the analysis they requested and still exits 0.
+        raise
     except Exception as e:
+        # Tolerated: no usable config file (absent, unreadable, or malformed YAML).
+        # The pipeline has working defaults for that case.
         logger.debug("Could not load project YAML config overrides: %s", e)
 
     # Scope organize-stage discovery walks to the requested cohort when explicit
@@ -1257,7 +1360,20 @@ def main(argv: list[str] | None = None) -> int:
     if "segmentation" in stages:
         courses = ensure_courses()
         selected_courses = _filter_courses(courses)
-        if not selected_courses:
+        inventory_patient_ids = {
+            str(patient_id)
+            for patient_id in (getattr(cfg, "inventory_patient_ids", []) or [])
+            if str(patient_id)
+        }
+        all_series_patient_ids = sorted(
+            inventory_patient_ids
+            | {str(course.patient_id) for course in selected_courses if course.patient_id}
+        )
+        has_patient_level_work = bool(all_series_patient_ids) and bool(
+            getattr(cfg, "do_segment_all_series", False)
+            or getattr(cfg, "do_ingest_pet_suv", False)
+        )
+        if not selected_courses and not has_patient_level_work:
             _log_skip("Segmentation")
         else:
             # Segmentation workers: sequential on GPU, fan out on CPU
@@ -1295,27 +1411,30 @@ def main(argv: list[str] | None = None) -> int:
                 for course in selected_courses
             ]
 
-            seg_results = run_tasks_with_adaptive_workers(
-                "Segmentation",
-                segment_tasks,
-                _execute_segment_task,
-                max_workers=seg_worker_limit,
-                logger=logging.getLogger(__name__),
-                show_progress=True,
-                task_timeout=args.task_timeout,
+            seg_results = (
+                run_tasks_with_adaptive_workers(
+                    "Segmentation",
+                    segment_tasks,
+                    _execute_segment_task,
+                    max_workers=seg_worker_limit,
+                    logger=logging.getLogger(__name__),
+                    show_progress=True,
+                    task_timeout=args.task_timeout,
+                )
+                if segment_tasks
+                else []
             )
             if any(r is None for r in seg_results):
                 had_failures = True
 
             if getattr(cfg, "do_segment_all_series", False):
-                patient_ids = sorted({str(course.patient_id) for course in selected_courses if course.patient_id})
                 all_series_tasks = [
                     _AllSeriesSegmentTask(
                         cfg=cfg,
                         patient_id=patient_id,
                         force_segmentation=args.force_segmentation,
                     )
-                    for patient_id in patient_ids
+                    for patient_id in all_series_patient_ids
                 ]
                 all_series_results = run_tasks_with_adaptive_workers(
                     "All-series segmentation",
@@ -1326,18 +1445,74 @@ def main(argv: list[str] | None = None) -> int:
                     show_progress=True,
                     task_timeout=args.task_timeout,
                 )
-                if any(r is None for r in all_series_results):
+                # ``None`` means the worker crashed or timed out; ``False`` means it
+                # ran but recorded a per-series failure. Both leave the cohort
+                # incomplete and must be reported.
+                if any(not r for r in all_series_results):
                     had_failures = True
 
+                # Aggregate the per-series body-composition JSONs into the global
+                # Data/body_composition.csv ONCE, serially, now that all parallel
+                # all-series workers have joined. Doing it here (rather than per
+                # series inside each worker) avoids a cross-process write race and
+                # an O(N^2) full-tree rescan. Aggregation failure is non-fatal.
+                if getattr(cfg, "body_composition_classes", None):
+                    try:
+                        from .body_composition import write_body_composition_csv
+
+                        bc_csv = write_body_composition_csv(Path(cfg.output_root))
+                        if bc_csv is not None:
+                            logging.getLogger(__name__).info("Body-composition CSV written: %s", bc_csv)
+                    except Exception as exc:
+                        logging.getLogger(__name__).warning("Body-composition CSV aggregation failed: %s", exc)
+
+                # B3: functional-MR sampling under anatomic total_mr masks (opt-in, default
+                # off). Runs post-segmentation so masks exist; per-patient (rigid-MI is heavy),
+                # then a serial CSV aggregation. Never flips a series to seg_failed. Failure is
+                # non-fatal (logged). Precondition warn-loud: mr_anatomic must be in the
+                # effective segmentation scope, else every functional series -> anatomic_out_of_scope.
+                if getattr(cfg, "mr_functional_sampling", False):
+                    _log = logging.getLogger(__name__)
+                    _eff_scope = cfg.all_series_segment_classes
+                    _anat_in_scope = (_eff_scope is None) or ("mr_anatomic" in set(_eff_scope))
+                    if not _anat_in_scope:
+                        _log.warning(
+                            "mr_functional_sampling=True but mr_anatomic is NOT in "
+                            "all_series_segment_classes (%s) — no total_mr masks will exist; "
+                            "every functional series will be flagged anatomic_out_of_scope.",
+                            _eff_scope,
+                        )
+                    try:
+                        from .mr_functional import (
+                            sample_patient_mr_functional,
+                            write_mr_functional_structures_csv,
+                        )
+
+                        _ver = getattr(cfg, "rtpipeline_version", "") or ""
+                        for _pid in all_series_patient_ids:
+                            try:
+                                sample_patient_mr_functional(
+                                    Path(cfg.output_root), _pid,
+                                    rtpipeline_version=_ver,
+                                    anatomic_in_scope=_anat_in_scope,
+                                    force=args.force_segmentation,
+                                )
+                            except Exception as exc:
+                                _log.warning("B3 functional-MR sampling failed for %s: %s", _pid, exc)
+                        mrf_csv = write_mr_functional_structures_csv(Path(cfg.output_root))
+                        if mrf_csv is not None:
+                            _log.info("Functional-MR structures CSV written: %s", mrf_csv)
+                    except Exception as exc:
+                        _log.warning("B3 functional-MR stage failed: %s", exc)
+
             if getattr(cfg, "do_ingest_pet_suv", False):
-                patient_ids = sorted({str(course.patient_id) for course in selected_courses if course.patient_id})
                 pet_suv_tasks = [
                     _PetSuvTask(
                         cfg=cfg,
                         patient_id=patient_id,
                         force=args.force_redo,
                     )
-                    for patient_id in patient_ids
+                    for patient_id in all_series_patient_ids
                 ]
                 pet_suv_results = run_tasks_with_adaptive_workers(
                     "PET SUV ingestion",
@@ -1348,8 +1523,47 @@ def main(argv: list[str] | None = None) -> int:
                     show_progress=True,
                     task_timeout=args.task_timeout,
                 )
-                if any(r is None for r in pet_suv_results):
+                # ``None`` means the worker crashed or timed out; ``False`` means it
+                # ran but recorded a real ingestion failure. Intentional eligibility
+                # exclusions are not counted here.
+                if any(not r for r in pet_suv_results):
                     had_failures = True
+
+                # B2: per-structure PET SUV under the paired PET-CT CT-component's `total`
+                # masks (opt-in, default off). Runs after PET-SUV ingestion (SUVbw NIfTI) and
+                # all-series segmentation (petct_ct total masks). Per-patient serial + serial
+                # CSV aggregation; failure is non-fatal. MTV/TLG excluded (PI-gated).
+                if getattr(cfg, "pet_suv_structures", False):
+                    _log2 = logging.getLogger(__name__)
+                    _seg_scope = cfg.all_series_segment_classes
+                    _petct_in_scope = (_seg_scope is None) or ("petct_ct" in set(_seg_scope))
+                    if not _petct_in_scope:
+                        _log2.warning(
+                            "pet_suv_structures=True but petct_ct is NOT in "
+                            "all_series_segment_classes (%s) — no `total` masks will exist; "
+                            "every PET series will be flagged petct_ct_masks_missing.",
+                            _seg_scope,
+                        )
+                    try:
+                        from .pet_structures import (
+                            sample_patient_pet_suv,
+                            write_pet_suv_structures_csv,
+                        )
+
+                        _ver2 = getattr(cfg, "rtpipeline_version", "") or ""
+                        for _pid2 in all_series_patient_ids:
+                            try:
+                                sample_patient_pet_suv(
+                                    Path(cfg.output_root), _pid2,
+                                    rtpipeline_version=_ver2, force=args.force_redo,
+                                )
+                            except Exception as exc:
+                                _log2.warning("B2 PET-SUV structures failed for %s: %s", _pid2, exc)
+                        b2_csv = write_pet_suv_structures_csv(Path(cfg.output_root))
+                        if b2_csv is not None:
+                            _log2.info("PET-SUV structures CSV written: %s", b2_csv)
+                    except Exception as exc:
+                        _log2.warning("B2 PET-SUV structures stage failed: %s", exc)
 
     if "segmentation_custom" in stages:
         from .custom_models import discover_custom_models  # lazy import
@@ -1554,15 +1768,33 @@ def main(argv: list[str] | None = None) -> int:
         if not can_use_radiomics:
             logger.warning("Radiomics dependencies unavailable; skipping radiomics stage")
         else:
-            if not selected_courses:
+            radiomics_patient_ids = sorted(
+                {
+                    str(patient_id)
+                    for patient_id in (getattr(cfg, "inventory_patient_ids", []) or [])
+                    if str(patient_id)
+                }
+                | {str(course.patient_id) for course in selected_courses if course.patient_id}
+            )
+            has_all_series_radiomics = bool(
+                getattr(cfg, "do_segment_all_series", False) and radiomics_patient_ids
+            )
+            if not selected_courses and not has_all_series_radiomics:
                 _log_skip("Radiomics")
             else:
-                from .radiomics import run_radiomics
-                try:
-                    run_radiomics(cfg, selected_courses, cfg.custom_structures_config)
-                except Exception as exc:  # noqa: BLE001 - report and continue to other stages
-                    had_failures = True
-                    logger.error("Radiomics stage failed: %s", exc, exc_info=True)
+                from .radiomics import run_radiomics, run_radiomics_all_series
+                if selected_courses:
+                    try:
+                        run_radiomics(cfg, selected_courses, cfg.custom_structures_config)
+                    except Exception as exc:  # noqa: BLE001 - report and continue to other stages
+                        had_failures = True
+                        logger.error("Radiomics stage failed: %s", exc, exc_info=True)
+                if has_all_series_radiomics:
+                    try:
+                        run_radiomics_all_series(cfg, radiomics_patient_ids)
+                    except Exception as exc:  # noqa: BLE001 - keep course radiomics independently usable
+                        had_failures = True
+                        logger.error("All-series radiomics stage failed: %s", exc, exc_info=True)
 
     if "qc" in stages:
         courses = ensure_courses()
@@ -1591,5 +1823,21 @@ def main(argv: list[str] | None = None) -> int:
     return 1 if had_failures else 0
 
 
+def console_main(argv: list[str] | None = None) -> int:
+    """Entry point for the installed ``rtpipeline`` command.
+
+    ``project.scripts`` calls this rather than ``main`` so that an invalid
+    configuration is reported as a readable message and a non-zero exit status
+    instead of an uncaught traceback. Putting the handling only under
+    ``if __name__ == "__main__"`` would leave the installed command uncovered,
+    which is how most users invoke the pipeline.
+    """
+    try:
+        return main(argv)
+    except ConfigValidationError as exc:
+        print(f"Configuration error: {exc}", file=sys.stderr)
+        return 2
+
+
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(console_main())

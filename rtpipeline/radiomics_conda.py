@@ -711,7 +711,7 @@ print(json.dumps(output))
 def extract_radiomics_batch_with_conda(
     tasks: List[Dict[str, Any]],
     params_file: Optional[str] = None,
-    timeout_per_roi: int = 120,
+    timeout_per_roi: int = 900,
 ) -> List[Dict[str, Any]]:
     """
     Extract radiomics features for multiple ROIs in a SINGLE subprocess.
@@ -722,7 +722,7 @@ def extract_radiomics_batch_with_conda(
     Args:
         tasks: List of dicts with 'image_path', 'mask_path', optional 'label', 'roi_name'
         params_file: Optional path to radiomics parameters YAML file
-        timeout_per_roi: Timeout per ROI in seconds (default 120s = 2 min)
+        timeout_per_roi: Timeout per ROI in seconds (default 900s = 15 min)
 
     Returns:
         List of feature dictionaries (one per task), None entries for failed ROIs
