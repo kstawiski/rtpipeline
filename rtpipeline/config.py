@@ -58,6 +58,19 @@ class PipelineConfig:
     # TotalSegmentator-eligible class when segmentation runs over all classes) so a class that will be
     # segmented is never skip-materialized.
     all_series_materialize_classes: list[str] | None = None
+    # Body-composition extraction is opt-in. None => OFF and no all-series routing changes.
+    # When set, eligible calibrated CT classes receive additional TotalSegmentator tissue/body tasks.
+    body_composition_classes: list[str] | None = None
+    # B3 functional-MR sampling is opt-in. False => OFF, no all-series behavior change. When
+    # True (and do_segment_all_series), samples mr_functional maps (ADC/perfusion/subtraction)
+    # under anatomic total_mr masks at stage end. Requires mr_anatomic in the effective
+    # segmentation scope + mr_functional materialized (warned at stage entry if unmet).
+    mr_functional_sampling: bool = False
+    # B2 per-structure PET SUV is opt-in. False => OFF, no behavior change. When True (and
+    # do_ingest_pet_suv), samples per-structure SUVmax/peak/mean/volume under the paired
+    # PET-CT CT-component's `total` masks at stage end. Requires petct_ct in the effective
+    # segmentation scope + do_ingest_pet_suv (SUVbw NIfTI). MTV/TLG is NOT included (PI-gated).
+    pet_suv_structures: bool = False
 
     # Additional segmentation models (in addition to default 'total')
     extra_seg_models: list[str] = field(default_factory=list)

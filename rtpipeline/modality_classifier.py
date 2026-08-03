@@ -29,6 +29,23 @@ CBCT_MANUFACTURER_MODELS = frozenset(
 )
 FOURDCT_MODELS = frozenset({"advanced reconstruction", "aria rtm"})
 
+# C3 [SAFE-1]: image classes whose TotalSegmentator masks must NEVER reach a
+# quantitative endpoint (CT/MR radiomics, DVH, PBM, RIL). CBCT is uncalibrated
+# (scatter/cupping/truncated-FOV), so its masks are reference/QC-only. This is a
+# machine-enforced default-deny: the all-series radiomics/DVH paths call
+# is_quantitative_image_class() and refuse any class listed here.
+NON_QUANTITATIVE_IMAGE_CLASSES = frozenset({"cbct"})
+
+
+def is_quantitative_image_class(image_class: str) -> bool:
+    """C3 CBCT-denylist guard. Return False ONLY for classes in
+    NON_QUANTITATIVE_IMAGE_CLASSES (currently CBCT — uncalibrated, reference/QC-only);
+    every other class, including unknown ones, returns True. Case-insensitive. The
+    all-series radiomics/DVH path (B4) additionally constrains its FEEDING classes by an
+    explicit allow-list, so this denylist is the belt-and-suspenders CBCT block."""
+    return (image_class or "").strip().lower() not in NON_QUANTITATIVE_IMAGE_CLASSES
+
+
 _DESC_EXCLUDE_PATTERNS = (
     ("description_topogram", re.compile(r"\btopogram\b", re.I)),
     ("description_scout", re.compile(r"\bscout\b", re.I)),
@@ -59,9 +76,16 @@ _MR_EXCLUDE_TOKENS = frozenset({
 # dwi/adc/dixon are matched as substrings (not \b-anchored) because vendors embed
 # them inside single tokens with no separator (IsoDWI, cDWI, mDIXON) — anchoring would
 # silently drop them. They are unambiguous in MR naming, so substring matching is safe.
+# B3 (functional-MR sampling) adds DCE wash-out/wash-in/subtraction maps. These use the
+# OPPOSITE rationale: wo/wi/sub are short and ambiguous, so they are \b-bounded (standalone
+# tokens) to avoid over-match — e.g. an unanchored "wi" would hit "twist"/"width", and an
+# open "sub" would hit cross-cohort anatomy (subclavian, subcutaneous). Validated against
+# the P0 MR inventory (2,696 descriptions): \bsub\b|\bsubtract newly captures exactly the 3
+# in-cohort DCE-subtraction series (currently misrouted to mr_anatomic via "vibe"); \bwo\b
+# /\bwi\b capture nothing new (no bare WO/WI maps in-cohort) and never collide with T1WI/T2WI.
 _MR_FUNCTIONAL_RE = re.compile(
     r"dwi|\bdiff|\bep2d|adc|\bperf|\btwist\b|\bdyn|\bdce\b|"
-    r"\bttp\b|\bpei\b|\bmipt\b",
+    r"\bttp\b|\bpei\b|\bmipt\b|\bwo\b|\bwi\b|\bsub\b|\bsubtract",
     re.I,
 )
 _MR_ANATOMIC_SEQ_RE = re.compile(
@@ -322,4 +346,9 @@ def _machine_token(value: str) -> str:
     return token or "unknown"
 
 
-__all__ = ["IMAGE_CLASSES", "classify_series"]
+__all__ = [
+    "IMAGE_CLASSES",
+    "classify_series",
+    "NON_QUANTITATIVE_IMAGE_CLASSES",
+    "is_quantitative_image_class",
+]
