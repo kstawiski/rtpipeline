@@ -33,6 +33,21 @@ FORBIDDEN_FILES = (
     "radiomics_params.yaml",
     "submission_gaps.md",
 )
+# Directories that local agent tooling writes into this checkout. They are
+# legitimate working output, so their presence is not itself a failure, but they
+# routinely contain whole copies of the private manuscript and review packages.
+# The content scan below cannot catch those: manuscript prose carries none of the
+# marker strings, so a full manuscript sat here untracked, unignored and squarely
+# in the path of `git add -A` while this check reported success. The rule is
+# therefore structural rather than textual — if one of these directories exists,
+# nothing inside it may be committable.
+REVIEW_ARTIFACT_ROOTS = (
+    "conversations",
+    "delegated_tasks",
+    "independent_reviews",
+    "session_logs",
+    "triple_consensus_logs",
+)
 FORBIDDEN_RELEASE_MARKERS = (
     "blinded " + "reviewer archive",
     "DICOMRT-" + "datasets/rtpipeline_" + "manuscript_",
@@ -102,6 +117,22 @@ def check(root: Path | None = None) -> list[str]:
         elif ignored.returncode != 1:
             raise RuntimeError(
                 ignored.stderr.strip() or f"git check-ignore failed for {relative}"
+            )
+
+    for relative in REVIEW_ARTIFACT_ROOTS:
+        path = root / relative
+        if not path.is_dir() or path.is_symlink():
+            continue
+        prefix = f"{relative}/"
+        committable = sorted(
+            item for item in candidates if item == relative or item.startswith(prefix)
+        )
+        if committable:
+            shown = ", ".join(committable[:3])
+            if len(committable) > 3:
+                shown += f", … ({len(committable)} paths)"
+            failures.append(
+                f"agent review artifacts are committable, add {relative}/ to .gitignore: {shown}"
             )
 
     # `git ls-files --exclude-standard` honours .gitignore, .git/info/exclude and
