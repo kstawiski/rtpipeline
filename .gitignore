@@ -121,6 +121,7 @@ container_id.txt
 conversations/
 session_logs/
 triple_consensus_logs/
+independent_reviews/
 
 # Local dependency/cache artifacts
 micromamba/

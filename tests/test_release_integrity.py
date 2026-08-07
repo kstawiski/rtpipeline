@@ -601,6 +601,34 @@ def test_boundary_guard_detects_private_file_hidden_by_exclude(tmp_path):
     assert any("VERSION.md" in failure for failure in failures), failures
 
 
+def test_boundary_guard_detects_committable_review_artifacts(tmp_path):
+    """An agent review directory holding manuscript prose must not be committable.
+
+    Regression: `independent_reviews/` sat untracked and unignored in the public
+    checkout with an 80 KB copy of the private manuscript inside it, squarely in
+    the path of `git add -A`, and the guard reported success. The content scan
+    could not catch it because manuscript prose carries none of the marker
+    strings, so the rule has to be structural.
+    """
+    checker = _load_boundary_checker()
+    repo = tmp_path / "public"
+    repo.mkdir()
+    _init_boundary_fixture_repo(repo)
+
+    reviews = repo / "independent_reviews" / "20260806T153114Z_run"
+    reviews.mkdir(parents=True)
+    (reviews / "journal_submission_package.md").write_text(
+        "# Abstract\n\nTo test whether CT radiomics added discrimination.\n",
+        encoding="utf-8",
+    )
+
+    failures = checker.check(repo)
+    assert any("independent_reviews" in failure for failure in failures), failures
+
+    (repo / ".gitignore").write_text("independent_reviews/\n", encoding="utf-8")
+    assert checker.check(repo) == [], "ignoring the directory must clear the finding"
+
+
 def test_boundary_guard_ignores_large_binary_blobs(tmp_path):
     """Negative control: the ignored-file sweep must not choke on big binaries."""
     checker = _load_boundary_checker()
