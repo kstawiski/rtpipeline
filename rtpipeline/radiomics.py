@@ -25,6 +25,7 @@ import yaml
 from .utils import run_tasks_with_adaptive_workers, mask_is_cropped, _scoped_walk
 from .custom_models import list_custom_model_outputs
 from .custom_structures_rtstruct import _create_custom_structures_rtstruct, _is_rs_custom_stale
+from .radiomics_outcomes import RadiomicsCourseExtractionError, RadiomicsCourseOutcome
 
 if TYPE_CHECKING:
     from radiomics import featureextractor
@@ -558,7 +559,7 @@ def _rtstruct_masks(dicom_series_path: Path, rs_path: Path) -> Dict[str, np.ndar
         return {}
 
 
-def radiomics_for_course(config: PipelineConfig, course_dir: Path, custom_structures_config: Optional[Path] = None, use_cropped: bool = False) -> Optional[Path]:
+def radiomics_for_course(config: PipelineConfig, course_dir: Path, custom_structures_config: Optional[Path] = None, use_cropped: bool = False) -> RadiomicsCourseOutcome:
     """Run pyradiomics on CT course with manual RS, RS_auto, and custom structures if present."""
 
     course_dirs = build_course_dirs(course_dir)
@@ -571,6 +572,10 @@ def radiomics_for_course(config: PipelineConfig, course_dir: Path, custom_struct
             import pandas as pd
 
             existing_df = pd.read_excel(out_path, engine="openpyxl")
+            existing_df = existing_df.drop(
+                columns=["extraction_status", "extraction_status_detail", "voxel_count"],
+                errors="ignore",
+            )
         except Exception as exc:
             logger.debug("Failed reading existing radiomics_ct.xlsx for %s: %s", course_dir, exc)
             existing_df = None
@@ -587,19 +592,30 @@ def radiomics_for_course(config: PipelineConfig, course_dir: Path, custom_struct
             course_dir,
         )
 
+    ct_files_present = course_dirs.dicom_ct.exists() and any(
+        path.is_file() for path in course_dirs.dicom_ct.rglob('*')
+    )
+    img = _load_series_image(course_dirs.dicom_ct)
+    if img is None:
+        if not ct_files_present:
+            logger.info("No CT image for radiomics in %s", course_dir)
+            return RadiomicsCourseOutcome.nothing_to_do("CT image is absent")
+        raise RadiomicsCourseExtractionError(
+            f"CT series is present but unreadable for radiomics in {course_dir}"
+        )
+
     extractor = _extractor(config, 'CT')
     if extractor is None:
         try:
             from .radiomics_conda import radiomics_for_course as conda_radiomics_for_course
         except ImportError as exc:
-            logger.warning("Conda-based radiomics helper unavailable: %s", exc)
-            return None
+            raise RadiomicsCourseExtractionError(
+                f"Conda-based radiomics helper unavailable for {course_dir}: {exc}"
+            ) from exc
         logger.info("Delegating CT radiomics for %s to conda environment", course_dir)
-        return conda_radiomics_for_course(course_dir, config, custom_structures_config)
-    img = _load_series_image(course_dirs.dicom_ct)
-    if img is None:
-        logger.info("No CT image for radiomics in %s", course_dir)
-        return None
+        conda_out = conda_radiomics_for_course(course_dir, config, custom_structures_config)
+        return (RadiomicsCourseOutcome.extracted(conda_out) if conda_out is not None
+                else RadiomicsCourseOutcome.nothing_to_do("conda backend found no eligible ROIs"))
     rows: List[Dict] = []
     tasks: List[tuple[str, str, np.ndarray, bool]] = []
 
@@ -647,7 +663,7 @@ def radiomics_for_course(config: PipelineConfig, course_dir: Path, custom_struct
         and not missing_custom_bases
         and not body_missing
     ):
-        return out_path
+        return RadiomicsCourseOutcome.extracted(out_path)
 
     # Process standard RTSTRUCTs
     rs_manual_path = find_dcm(course_dirs.dicom_rtstruct, "RS.dcm", course_dir)
@@ -755,7 +771,8 @@ def radiomics_for_course(config: PipelineConfig, course_dir: Path, custom_struct
             min_voxels, max_voxels_full = _derive_voxel_limits(config)
             voxel_count = int(np.asarray(mask).astype(bool).sum())
             if voxel_count < min_voxels:
-                return None
+                return {"__status__": "below_min_voxels", "segmentation_source": source,
+                        "roi_original_name": roi}
 
             # Large-ROI detection should reflect the *effective* workload after resampling.
             # CT radiomics typically resamples to ~1mm isotropic, so thick-slice CT can
@@ -771,8 +788,7 @@ def radiomics_for_course(config: PipelineConfig, course_dir: Path, custom_struct
             use_large = is_body or (estimated_voxels > float(max_voxels_full))
             ext = _extractor_large_roi(config, "CT") if use_large else _extractor(config, 'CT')
             if ext is None:
-                logger.debug("No radiomics extractor available for %s/%s", source, roi)
-                return None
+                raise RuntimeError(f"No radiomics extractor available for {source}/{roi}")
             m_img = _mask_from_array_like(img, mask)
             res = ext.execute(img, m_img)
             rec = {k: (float(v) if isinstance(v, (int, float, np.floating)) else str(v)) for k, v in res.items()}
@@ -789,8 +805,7 @@ def radiomics_for_course(config: PipelineConfig, course_dir: Path, custom_struct
             })
             return rec
         except Exception as e:
-            logger.debug("Radiomics failed for %s/%s: %s", source, roi, e)
-            return None
+            raise RuntimeError(f"Radiomics failed for {source}/{roi}: {e}") from e
     if tasks:
         sequential_env = os.environ.get('RTPIPELINE_RADIOMICS_SEQUENTIAL', '').lower() in ('1', 'true', 'yes')
         if sequential_env:
@@ -810,8 +825,14 @@ def radiomics_for_course(config: PipelineConfig, course_dir: Path, custom_struct
             max_workers=max_workers,
             logger=logger,
         )
+        if any(rec is None for rec in results):
+            for candidate in (out_path, out_path.with_suffix('.parquet')):
+                candidate.unlink(missing_ok=True)
+            raise RadiomicsCourseExtractionError(
+                f"Radiomics course {course_dir} is incomplete: one or more ROI tasks failed"
+            )
         for rec in results:
-            if rec:
+            if rec and "__status__" not in rec:
                 rows.append(rec)
     if not rows:
         try:
@@ -825,10 +846,12 @@ def radiomics_for_course(config: PipelineConfig, course_dir: Path, custom_struct
                     "No usable RS_custom.dcm/RS_auto.dcm rows for %s; trying CT TotalSegmentator NIfTI fallback",
                     course_dir,
                 )
-                return radiomics_for_course_ct_nifti_fallback(course_dir, config)
+                fallback_out = radiomics_for_course_ct_nifti_fallback(course_dir, config)
+                if fallback_out is not None:
+                    return RadiomicsCourseOutcome.extracted(fallback_out)
         except Exception as exc:
             logger.debug("CT TotalSegmentator NIfTI fallback unavailable for %s: %s", course_dir, exc)
-        return None
+        return RadiomicsCourseOutcome.nothing_to_do("no eligible radiomics regions")
     try:
         import pandas as pd
         df_new = pd.DataFrame(rows)
@@ -875,10 +898,11 @@ def radiomics_for_course(config: PipelineConfig, course_dir: Path, custom_struct
                 except Exception:
                     pass
                 logger.debug("Parquet save failed (non-critical): %s (retry: %s)", parquet_err, parquet_err2)
-        return out
+        return RadiomicsCourseOutcome.extracted(out)
     except Exception as e:
-        logger.warning("Failed to write CT radiomics: %s", e)
-        return None
+        raise RadiomicsCourseExtractionError(
+            f"Failed to write CT radiomics for {course_dir}: {e}"
+        ) from e
 
 
 @dataclass
@@ -1318,7 +1342,7 @@ def run_radiomics(config: PipelineConfig, courses: List["object"], custom_struct
     max_course_workers = max(1, max_course_workers)
     logger.info("Processing radiomics with up to %d course workers", max_course_workers)
 
-    run_tasks_with_adaptive_workers(
+    ct_results = run_tasks_with_adaptive_workers(
         "Radiomics (CT courses)",
         courses,
         radiomics_func,
@@ -1326,6 +1350,16 @@ def run_radiomics(config: PipelineConfig, courses: List["object"], custom_struct
         logger=logger,
         show_progress=True,
     )
+    failed_courses = [
+        str(getattr(getattr(course, "dirs", None), "root", course))
+        for course, result in zip(courses, ct_results)
+        if result is None
+    ]
+    if failed_courses:
+        raise RuntimeError(
+            "CT radiomics failed for course(s); cohort aggregation was not written: "
+            + ", ".join(failed_courses)
+        )
     for course in courses:
         try:
             radiomics_for_course_mr(config, course)
@@ -1518,8 +1552,10 @@ def _dispatch_radiomics_for_course(config: PipelineConfig, course_dir: Path) -> 
         use_parallel = False
     if use_parallel:
         max_workers = max(1, config.effective_workers())
-        return parallel_radiomics_for_course(config, course_dir, None, max_workers=max_workers, use_cropped=False)
-    return radiomics_for_course(config, course_dir, None, use_cropped=False)
+        result = parallel_radiomics_for_course(config, course_dir, None, max_workers=max_workers, use_cropped=False)
+    else:
+        result = radiomics_for_course(config, course_dir, None, use_cropped=False)
+    return getattr(result, "output_path", result)
 
 
 def run_radiomics_all_series(config: PipelineConfig, patient_ids: List[str]) -> Optional[Path]:

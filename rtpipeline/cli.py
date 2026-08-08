@@ -458,6 +458,16 @@ def build_parser() -> argparse.ArgumentParser:
         default=600,
         help="Timeout for individual radiomics ROI extractions in seconds (default: 600 = 10 minutes)",
     )
+    p.add_argument(
+        "--radiomics-env-probe-timeout",
+        dest="radiomics_env_probe_timeout",
+        type=int,
+        default=None,
+        help=(
+            "Seconds allowed for each dedicated radiomics environment import probe "
+            "(default: RTPIPELINE_RADIOMICS_ENV_PROBE_TIMEOUT or 180)"
+        ),
+    )
     p.add_argument("--force-redo", action="store_true", help="Force redo all steps, even if outputs exist (resume is default)")
     p.add_argument("-v", "--verbose", action="count", default=0, help="Increase verbosity")
     p.add_argument(
@@ -730,6 +740,12 @@ def _radiomics_robustness_course(argv: list[str]) -> int:
     p.add_argument("--config", default="config.yaml", help="Path to config YAML")
     p.add_argument("--output", required=True, help="Output parquet file path")
     p.add_argument("--max-workers", type=int, default=None, help="Override automatic worker budget (cores-1)")
+    p.add_argument(
+        "--radiomics-env-probe-timeout",
+        type=int,
+        default=None,
+        help="Seconds allowed for each dedicated radiomics environment import probe",
+    )
     p.add_argument("-v", "--verbose", action="store_true", help="Verbose logging")
     args = p.parse_args(argv)
 
@@ -782,6 +798,10 @@ def _radiomics_robustness_course(argv: list[str]) -> int:
         except (TypeError, ValueError):
             return None
 
+    env_probe_timeout = args.radiomics_env_probe_timeout
+    if env_probe_timeout is None:
+        env_probe_timeout = _coerce_int(radiomics_cfg.get("env_probe_timeout"))
+
     params_file = radiomics_cfg.get("params_file")
     if params_file:
         params_path = Path(params_file)
@@ -817,6 +837,7 @@ def _radiomics_robustness_course(argv: list[str]) -> int:
         radiomics_skip_rois=skip_rois,
         radiomics_max_voxels=_coerce_int(radiomics_cfg.get("max_voxels")),
         radiomics_min_voxels=_coerce_int(radiomics_cfg.get("min_voxels")),
+        radiomics_env_probe_timeout=env_probe_timeout,
         radiomics_robustness_enabled=rob_config.enabled,
         radiomics_robustness_config=rob_config_data,
     )
@@ -833,6 +854,8 @@ def _radiomics_robustness_course(argv: list[str]) -> int:
         logger.info("Robustness analysis complete: %s", result)
         return 0
     except Exception as e:
+        if getattr(e, "code", None) == "RADIOMICS_ENV_PROBE_TIMEOUT":
+            raise
         logger.error("Robustness analysis failed: %s", e, exc_info=True)
         return 1
 
@@ -1003,6 +1026,8 @@ def main(argv: list[str] | None = None) -> int:
     os.environ['DCM2NIIX_TIMEOUT'] = str(args.dcm2niix_timeout)
     if args.radiomics_task_timeout:
         os.environ['RTPIPELINE_RADIOMICS_TASK_TIMEOUT'] = str(args.radiomics_task_timeout)
+    if args.radiomics_env_probe_timeout:
+        os.environ['RTPIPELINE_RADIOMICS_ENV_PROBE_TIMEOUT'] = str(args.radiomics_env_probe_timeout)
 
     # Log parallelization settings
     logger.info("=== Parallelization Configuration ===")
@@ -1012,9 +1037,10 @@ def main(argv: list[str] | None = None) -> int:
     logger.info("TotalSegmentator: resampling threads=%d, saving threads=%d",
                 totalseg_nr_thr_resamp, totalseg_nr_thr_saving)
     logger.info("GPU device: %s (force_split=%s)", args.totalseg_device, totalseg_force_split)
-    logger.info("Timeouts: TotalSegmentator=%ds, dcm2niix=%ds, task=%s, radiomics=%ds",
+    logger.info("Timeouts: TotalSegmentator=%ds, dcm2niix=%ds, task=%s, radiomics=%ds, radiomics-env-probe=%s",
                 args.totalseg_timeout, args.dcm2niix_timeout,
-                args.task_timeout or "None", args.radiomics_task_timeout)
+                args.task_timeout or "None", args.radiomics_task_timeout,
+                args.radiomics_env_probe_timeout or "environment/default (180)")
 
     cfg = PipelineConfig(
         dicom_root=Path(args.dicom_root).resolve(),
@@ -1050,6 +1076,7 @@ def main(argv: list[str] | None = None) -> int:
         radiomics_skip_rois=skip_rois,
         radiomics_max_voxels=args.radiomics_max_voxels,
         radiomics_min_voxels=args.radiomics_min_voxels,
+        radiomics_env_probe_timeout=args.radiomics_env_probe_timeout,
         custom_structures_config=None,  # Will be set below
         task_timeout=args.task_timeout,
     )
@@ -1759,14 +1786,17 @@ def main(argv: list[str] | None = None) -> int:
         if not can_use_radiomics:
             try:
                 from .radiomics_conda import check_radiomics_env
-                can_use_radiomics = check_radiomics_env()
+                can_use_radiomics = check_radiomics_env(
+                    timeout=cfg.radiomics_env_probe_timeout,
+                )
                 if can_use_radiomics:
                     logger.info("PyRadiomics will run via dedicated conda environment")
             except ImportError:
                 can_use_radiomics = False
 
         if not can_use_radiomics:
-            logger.warning("Radiomics dependencies unavailable; skipping radiomics stage")
+            had_failures = True
+            logger.error("Radiomics dependencies unavailable; radiomics stage failed")
         else:
             radiomics_patient_ids = sorted(
                 {
@@ -1837,6 +1867,15 @@ def console_main(argv: list[str] | None = None) -> int:
     except ConfigValidationError as exc:
         print(f"Configuration error: {exc}", file=sys.stderr)
         return 2
+    except Exception as exc:
+        code = getattr(exc, "code", None)
+        if code != "RADIOMICS_ENV_PROBE_TIMEOUT":
+            raise
+        print(
+            json.dumps({"code": code, "message": str(exc)}),
+            file=sys.stderr,
+        )
+        return 3
 
 
 if __name__ == "__main__":
