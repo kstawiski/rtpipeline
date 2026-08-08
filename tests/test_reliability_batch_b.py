@@ -51,6 +51,7 @@ from concurrent.futures import Future
 from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
 
+import pytest
 from pydicom.dataset import Dataset, FileDataset, FileMetaDataset
 from pydicom.sequence import Sequence
 from pydicom.uid import ExplicitVRLittleEndian, generate_uid
@@ -62,8 +63,18 @@ import rtpipeline.utils as ru
 from rtpipeline.config import PipelineConfig
 from rtpipeline.layout import build_course_dirs
 from rtpipeline.radiomics_conda import RadiomicsCheckpoint
+from rtpipeline.radiomics_outcomes import RadiomicsCourseStatus
 
 _RTSTRUCT_SOP_CLASS_UID = "1.2.840.10008.5.1.4.1.1.481.3"
+
+
+def test_radiomics_roi_timeout_scales_with_estimated_resampled_voxels():
+    """Large masks receive more time, while floor and ceiling remain bounded."""
+    base = 600
+    assert rp._scaled_roi_timeout(base, 1_000) == base
+    assert rp._scaled_roi_timeout(base, 100_000) == base
+    assert rp._scaled_roi_timeout(base, 300_000) == 1_800
+    assert rp._scaled_roi_timeout(base, 10_000_000) == 3_600
 
 
 # ---- Bug 1: run_tasks_with_adaptive_workers lazy-submit timing ----------------------------
@@ -291,10 +302,8 @@ def test_process_radiomics_batch_sequential_uses_process_batch_source_guard():
     assert "_process_batch(tasks_list)" in src
 
 
-def test_process_radiomics_batch_sequential_dropped_middle_result_attributes_correctly(tmp_path, monkeypatch):
-    """H TEST: end-to-end through the sequential/one-worker path (sequential=True) with
-    a dropped middle result -- the surviving ROIs must attribute correctly and the
-    missing one must be absent from the output workbook, not misattributed."""
+def test_process_radiomics_batch_sequential_dropped_result_fails_closed(tmp_path, monkeypatch):
+    """A dropped required ROI result invalidates the course table."""
     monkeypatch.setattr(rc, "check_radiomics_env", lambda *a, **k: True)
     monkeypatch.setattr(
         rc, "extract_radiomics_batch_with_conda",
@@ -312,18 +321,12 @@ def test_process_radiomics_batch_sequential_dropped_middle_result_attributes_cor
     ]
     output_path = tmp_path / "radiomics_ct.xlsx"
 
-    result = rc.process_radiomics_batch(
-        tasks, str(output_path), sequential=True, max_workers=1, enable_heartbeat=False,
-    )
-
-    assert result is not None
-    import pandas as pd  # type: ignore
-
-    df = pd.read_excel(output_path)
-    written = {row["roi_original_name"]: row["original_firstorder_Mean"] for _, row in df.iterrows()}
-    assert written == {"CTV": 1.0, "RECTUM": 3.0}, (
-        f"BLADDER's dropped result must be absent, CTV/RECTUM must keep their own values; got {written}"
-    )
+    output_path.write_text("stale", encoding="utf-8")
+    with pytest.raises(radiomics_mod.RadiomicsCourseExtractionError, match="BLADDER"):
+        rc.process_radiomics_batch(
+            tasks, output_path, sequential=True, max_workers=1, enable_heartbeat=False,
+        )
+    assert not output_path.exists()
 
 
 # ---- Bug 4: RadiomicsCheckpoint atomic flush ----------------------------------------------
@@ -491,6 +494,7 @@ def test_parallel_radiomics_recovers_from_broken_pool_during_backfill(tmp_path, 
     course_dir = tmp_path / "course"
     course_dirs = build_course_dirs(course_dir)
     course_dirs.dicom_ct.mkdir(parents=True, exist_ok=True)
+    (course_dirs.dicom_ct / "image.dcm").write_bytes(b"test fixture")
     roi_names = ["PTV", "BLADDER", "RECTUM", "FEMUR_L"]
     _write_rtstruct_with_rois(course_dir / "RS_auto.dcm", roi_names)
 
@@ -499,6 +503,7 @@ def test_parallel_radiomics_recovers_from_broken_pool_during_backfill(tmp_path, 
     # Bypass the real PyRadiomics extractor construction / NumPy-version routing -- this
     # test targets the submit/recovery control flow, not feature extraction itself.
     monkeypatch.setattr(radiomics_mod, "_extractor", lambda *a, **kw: object())
+    monkeypatch.setattr(radiomics_mod, "_load_series_image", lambda *_a, **_k: object())
 
     # result_fn stands in for the real _extract_one (which only works inside a worker
     # process initialized via initializer=); it just echoes back a minimal, valid row.
@@ -512,17 +517,314 @@ def test_parallel_radiomics_recovers_from_broken_pool_during_backfill(tmp_path, 
     )
     monkeypatch.setattr(rp, "ProcessPoolExecutor", factory)
 
-    result_path = rp.parallel_radiomics_for_course(config, course_dir, max_workers=2)
+    outcome = rp.parallel_radiomics_for_course(config, course_dir, max_workers=2)
 
     assert factory.created == 2, "must have restarted with a fresh pool after the break"
-    assert result_path is not None and result_path.exists()
+    assert outcome.status is RadiomicsCourseStatus.EXTRACTED
+    assert outcome.output_path is not None and outcome.output_path.exists()
 
     import pandas as pd  # type: ignore
 
-    df = pd.read_excel(result_path, engine="openpyxl")
+    df = pd.read_excel(outcome.output_path, engine="openpyxl")
     assert sorted(df["roi_original_name"].tolist()) == sorted(roi_names), (
         "every ROI task must be recovered after the broken pool -- none silently lost"
     )
+
+
+def test_parallel_worker_mask_read_exception_raises_region_failure(monkeypatch, tmp_path):
+    class Builder:
+        def get_roi_mask_by_name(self, _roi_name):
+            raise ValueError("corrupt contour data")
+
+    rp._WORKER_STATE.clear()
+    rp._WORKER_STATE.update({"img": object(), "extractor": object(), "skip_rois": set()})
+    monkeypatch.setattr(rp, "_get_builder", lambda _path: Builder())
+    task = rp._RoiTask("Manual", str(tmp_path / "RS.dcm"), "PTV", str(tmp_path))
+
+    with pytest.raises(rp.RadiomicsRegionExtractionError, match="could not be read.*corrupt contour data"):
+        rp._extract_one(task)
+
+
+def test_parallel_worker_missing_mask_raises_region_failure(monkeypatch, tmp_path):
+    class Builder:
+        def get_roi_mask_by_name(self, _roi_name):
+            return None
+
+    rp._WORKER_STATE.clear()
+    rp._WORKER_STATE.update({"img": object(), "extractor": object(), "skip_rois": set()})
+    monkeypatch.setattr(rp, "_get_builder", lambda _path: Builder())
+    task = rp._RoiTask("Manual", str(tmp_path / "RS.dcm"), "PTV", str(tmp_path))
+
+    with pytest.raises(rp.RadiomicsRegionExtractionError, match="did not provide a mask"):
+        rp._extract_one(task)
+
+
+def test_parallel_worker_missing_builder_raises_region_failure(monkeypatch, tmp_path):
+    rp._WORKER_STATE.clear()
+    rp._WORKER_STATE.update({"img": object(), "extractor": object(), "skip_rois": set()})
+    monkeypatch.setattr(rp, "_get_builder", lambda _path: None)
+    task = rp._RoiTask("Manual", str(tmp_path / "RS.dcm"), "PTV", str(tmp_path))
+
+    with pytest.raises(rp.RadiomicsRegionExtractionError, match="structure builder is unavailable"):
+        rp._extract_one(task)
+
+
+def test_parallel_worker_empty_mask_returns_observed_status(monkeypatch, tmp_path):
+    import numpy as np
+
+    class Builder:
+        def get_roi_mask_by_name(self, _roi_name):
+            return np.zeros((2, 2, 2), dtype=bool)
+
+    rp._WORKER_STATE.clear()
+    rp._WORKER_STATE.update({"img": object(), "extractor": object(), "skip_rois": set()})
+    monkeypatch.setattr(rp, "_get_builder", lambda _path: Builder())
+    task = rp._RoiTask("Manual", str(tmp_path / "RS.dcm"), "PTV", str(tmp_path))
+
+    assert rp._extract_one(task)["extraction_status"] == "empty_mask"
+
+
+def test_parallel_worker_declared_skip_returns_status(monkeypatch, tmp_path):
+    rp._WORKER_STATE.clear()
+    rp._WORKER_STATE.update({"img": object(), "extractor": object(), "skip_rois": {"ptv"}})
+    monkeypatch.setattr(rp, "_get_builder", lambda _path: object())
+    task = rp._RoiTask("Manual", str(tmp_path / "RS.dcm"), "PTV", str(tmp_path))
+
+    record = rp._extract_one(task)
+
+    assert record["extraction_status"] == "declared_skip"
+    assert record["roi_original_name"] == "PTV"
+
+
+def test_parallel_success_record_uses_public_feature_schema_only(monkeypatch, tmp_path):
+    import numpy as np
+
+    class Image:
+        def GetSpacing(self):
+            return (1.0, 1.0, 1.0)
+
+    class Extractor:
+        settings = {"resampledPixelSpacing": (1.0, 1.0, 1.0)}
+
+        def execute(self, _image, _mask):
+            return {"original_firstorder_Mean": 42.0}
+
+    class Builder:
+        def get_roi_mask_by_name(self, _roi_name):
+            return np.ones((5, 5, 5), dtype=bool)
+
+    rp._WORKER_STATE.clear()
+    rp._WORKER_STATE.update(
+        {
+            "img": Image(),
+            "extractor": Extractor(),
+            "skip_rois": set(),
+            "min_voxels": 1,
+            "max_voxels": 1000,
+            "base_timeout": 600,
+        }
+    )
+    monkeypatch.setattr(rp, "_get_builder", lambda _path: Builder())
+    monkeypatch.setattr(radiomics_mod, "_mask_from_array_like", lambda *_a: object())
+    monkeypatch.setattr(rp, "mask_is_cropped", lambda _mask: False)
+    task = rp._RoiTask("Manual", str(tmp_path / "RS.dcm"), "PTV", str(tmp_path / "patient" / "course"))
+
+    record = rp._extract_one(task)
+
+    assert set(record) == {
+        "original_firstorder_Mean",
+        "modality",
+        "segmentation_source",
+        "roi_name",
+        "roi_original_name",
+        "course_dir",
+        "patient_id",
+        "course_id",
+        "structure_cropped",
+    }
+    assert not {"extraction_status", "extraction_status_detail", "voxel_count"} & set(record)
+
+
+def test_parallel_radiomics_region_failure_aborts_course_and_invalidates_table(tmp_path, monkeypatch):
+    """A timed-out/failed ROI must not be omitted from an apparently complete table."""
+    course_dir = tmp_path / "course"
+    course_dirs = build_course_dirs(course_dir)
+    course_dirs.dicom_ct.mkdir(parents=True, exist_ok=True)
+    (course_dirs.dicom_ct / "image.dcm").write_bytes(b"test fixture")
+    _write_rtstruct_with_rois(course_dir / "RS_auto.dcm", ["PTV"])
+    output_path = course_dir / "radiomics_ct.xlsx"
+    output_path.write_text("stale partial result", encoding="utf-8")
+
+    config = PipelineConfig(
+        dicom_root=tmp_path / "dicom",
+        output_root=tmp_path / "out",
+        logs_root=tmp_path / "logs",
+    )
+    monkeypatch.setattr(radiomics_mod, "_extractor", lambda *a, **kw: object())
+    monkeypatch.setattr(radiomics_mod, "_load_series_image", lambda *_a, **_k: object())
+
+    def fail_region(task):
+        raise rp.RadiomicsRegionExtractionError(
+            f"ROI {task.roi_name} exceeded its radiomics budget"
+        )
+
+    monkeypatch.setattr(
+        rp,
+        "ProcessPoolExecutor",
+        lambda **_kwargs: _SyncExecutor(result_fn=fail_region),
+    )
+
+    with pytest.raises(rp.RadiomicsCourseExtractionError, match="PTV"):
+        rp.parallel_radiomics_for_course(config, course_dir, max_workers=1)
+
+    assert not output_path.exists(), "failed course must not retain a table presented as complete"
+
+
+def test_parallel_radiomics_none_result_aborts_course_and_invalidates_table(tmp_path, monkeypatch):
+    course_dir = tmp_path / "course"
+    course_dirs = build_course_dirs(course_dir)
+    course_dirs.dicom_ct.mkdir(parents=True, exist_ok=True)
+    (course_dirs.dicom_ct / "image.dcm").write_bytes(b"test fixture")
+    _write_rtstruct_with_rois(course_dir / "RS_auto.dcm", ["PTV"])
+    output_path = course_dir / "radiomics_ct.xlsx"
+    output_path.write_text("stale partial result", encoding="utf-8")
+
+    config = PipelineConfig(
+        dicom_root=tmp_path / "dicom",
+        output_root=tmp_path / "out",
+        logs_root=tmp_path / "logs",
+    )
+    monkeypatch.setattr(radiomics_mod, "_extractor", lambda *a, **kw: object())
+    monkeypatch.setattr(radiomics_mod, "_load_series_image", lambda *_a, **_k: object())
+    monkeypatch.setattr(
+        rp,
+        "ProcessPoolExecutor",
+        lambda **_kwargs: _SyncExecutor(result_fn=lambda _task: None),
+    )
+
+    with pytest.raises(rp.RadiomicsCourseExtractionError, match="returned no outcome record"):
+        rp.parallel_radiomics_for_course(config, course_dir, max_workers=1)
+
+    assert not output_path.exists(), "missing outcome must not retain a table presented as complete"
+
+
+def test_run_radiomics_propagates_failed_course_before_cohort_aggregation(tmp_path, monkeypatch):
+    course_root = tmp_path / "patient" / "course"
+    course = type("Course", (), {"dirs": type("Dirs", (), {"root": course_root})()})()
+    config = PipelineConfig(
+        dicom_root=tmp_path / "dicom",
+        output_root=tmp_path / "out",
+        logs_root=tmp_path / "logs",
+    )
+
+    monkeypatch.setattr(radiomics_mod, "_have_pyradiomics", lambda: True)
+    monkeypatch.setattr(rp, "is_parallel_radiomics_enabled", lambda: True)
+    monkeypatch.setattr(radiomics_mod, "run_tasks_with_adaptive_workers", lambda *_a, **_k: [None])
+
+    with pytest.raises(RuntimeError, match="cohort aggregation was not written"):
+        radiomics_mod.run_radiomics(config, [course])
+
+    assert not (config.output_root / "Data" / "radiomics_all.xlsx").exists()
+
+
+@pytest.mark.parametrize("parallel", [False, True])
+def test_course_with_no_ct_is_explicit_noop_and_does_not_abort_cohort(
+    tmp_path, monkeypatch, parallel
+):
+    course_root = tmp_path / "patient" / "course"
+    course = type("Course", (), {"dirs": type("Dirs", (), {"root": course_root})()})()
+    config = PipelineConfig(
+        dicom_root=tmp_path / "dicom",
+        output_root=tmp_path / "out",
+        logs_root=tmp_path / "logs",
+    )
+
+    monkeypatch.setattr(radiomics_mod, "_have_pyradiomics", lambda: True)
+    monkeypatch.setattr(rp, "is_parallel_radiomics_enabled", lambda: parallel)
+
+    if parallel:
+        outcome = rp.parallel_radiomics_for_course(config, course_root, max_workers=1)
+    else:
+        outcome = radiomics_mod.radiomics_for_course(config, course_root)
+
+    assert outcome.status is RadiomicsCourseStatus.NOTHING_TO_DO
+    assert outcome.output_path is None
+
+    radiomics_mod.run_radiomics(config, [course])
+    assert not (config.output_root / "Data" / "radiomics_all.xlsx").exists()
+
+
+@pytest.mark.parametrize("parallel", [False, True])
+def test_course_with_present_unreadable_ct_is_failure(tmp_path, monkeypatch, parallel):
+    course_root = tmp_path / "patient" / "course"
+    course_dirs = build_course_dirs(course_root)
+    course_dirs.dicom_ct.mkdir(parents=True)
+    (course_dirs.dicom_ct / "corrupt.dcm").write_bytes(b"not dicom")
+    _write_rtstruct_with_rois(course_root / "RS_auto.dcm", ["PTV"])
+    config = PipelineConfig(
+        dicom_root=tmp_path / "dicom",
+        output_root=tmp_path / "out",
+        logs_root=tmp_path / "logs",
+    )
+    monkeypatch.setattr(radiomics_mod, "_extractor", lambda *_a, **_k: object())
+
+    function = rp.parallel_radiomics_for_course if parallel else radiomics_mod.radiomics_for_course
+    with pytest.raises(radiomics_mod.RadiomicsCourseExtractionError, match="CT.*unreadable"):
+        function(config, course_root)
+
+
+@pytest.mark.parametrize("parallel", [False, True])
+def test_conda_delegation_failure_is_not_converted_to_nothing_to_do(tmp_path, monkeypatch, parallel):
+    course_root = tmp_path / "patient" / "course"
+    course_dirs = build_course_dirs(course_root)
+    course_dirs.dicom_ct.mkdir(parents=True)
+    (course_dirs.dicom_ct / "image.dcm").write_bytes(b"present")
+    config = PipelineConfig(
+        dicom_root=tmp_path / "dicom",
+        output_root=tmp_path / "out",
+        logs_root=tmp_path / "logs",
+    )
+    monkeypatch.setattr(radiomics_mod, "_load_series_image", lambda *_a, **_k: object())
+    monkeypatch.setattr(radiomics_mod, "_extractor", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        rc,
+        "radiomics_for_course",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            radiomics_mod.RadiomicsCourseExtractionError("conda extraction failed")
+        ),
+    )
+
+    function = rp.parallel_radiomics_for_course if parallel else radiomics_mod.radiomics_for_course
+    with pytest.raises(radiomics_mod.RadiomicsCourseExtractionError, match="conda extraction failed"):
+        function(config, course_root)
+
+
+def test_parallel_status_rows_are_not_written_as_feature_rows(tmp_path, monkeypatch):
+    course_dir = tmp_path / "course"
+    course_dirs = build_course_dirs(course_dir)
+    course_dirs.dicom_ct.mkdir(parents=True, exist_ok=True)
+    (course_dirs.dicom_ct / "image.dcm").write_bytes(b"test fixture")
+    _write_rtstruct_with_rois(course_dir / "RS_auto.dcm", ["PTV"])
+    config = PipelineConfig(
+        dicom_root=tmp_path / "dicom",
+        output_root=tmp_path / "out",
+        logs_root=tmp_path / "logs",
+        radiomics_skip_rois=["PTV"],
+    )
+    monkeypatch.setattr(radiomics_mod, "_extractor", lambda *a, **kw: object())
+    monkeypatch.setattr(radiomics_mod, "_load_series_image", lambda *_a, **_k: object())
+    monkeypatch.setattr(
+        rp,
+        "ProcessPoolExecutor",
+        lambda **_kwargs: _SyncExecutor(
+            result_fn=lambda task: rp._status_record(task, "declared_skip", "configured")
+        ),
+    )
+
+    outcome = rp.parallel_radiomics_for_course(config, course_dir, max_workers=1)
+
+    assert outcome.status is RadiomicsCourseStatus.NOTHING_TO_DO
+    assert not (course_dir / "radiomics_ct.xlsx").exists()
 
 
 def test_parallel_radiomics_backfill_submit_guarded_source_guard():
