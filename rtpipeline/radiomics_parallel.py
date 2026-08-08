@@ -21,9 +21,13 @@ High-level design
 from __future__ import annotations
 
 import logging
+import math
 import os
+import signal
+import threading
 import time
 from concurrent.futures import ProcessPoolExecutor, wait, FIRST_COMPLETED
+from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Sequence, Set, Tuple
@@ -34,8 +38,14 @@ from .layout import build_course_dirs, find_dcm
 from .utils import mask_is_cropped, radiomics_mp_context
 from .custom_models import list_custom_model_outputs
 from .custom_structures_rtstruct import _create_custom_structures_rtstruct, _is_rs_custom_stale
+from .radiomics_outcomes import RadiomicsCourseExtractionError, RadiomicsCourseOutcome
 
 logger = logging.getLogger(__name__)
+
+
+class RadiomicsRegionExtractionError(RuntimeError):
+    """A required ROI could not be extracted, so the course is incomplete."""
+
 
 _THREAD_VARS = (
     "OMP_NUM_THREADS",
@@ -46,6 +56,8 @@ _THREAD_VARS = (
 )
 _THREAD_LIMIT_ENV = "RTPIPELINE_RADIOMICS_THREAD_LIMIT"
 _TASK_TIMEOUT_ENV = "RTPIPELINE_RADIOMICS_TASK_TIMEOUT"
+_ROI_TIMEOUT_REFERENCE_VOXELS = 100_000
+_ROI_TIMEOUT_MAX_MULTIPLIER = 6
 
 
 def _coerce_positive_int(value: Any) -> Optional[int]:
@@ -56,6 +68,18 @@ def _coerce_positive_int(value: Any) -> Optional[int]:
     except (TypeError, ValueError):
         return None
     return ivalue if ivalue > 0 else None
+
+
+def _scaled_roi_timeout(base_timeout: int, estimated_voxels: float) -> int:
+    """Scale an ROI budget by estimated post-resampling foreground work.
+
+    ``base_timeout`` remains the floor used by small ROIs. Above 100k estimated
+    voxels the budget grows linearly, capped at six times the floor.
+    """
+    floor = max(1, int(base_timeout))
+    work = max(0.0, float(estimated_voxels))
+    scaled = math.ceil(floor * max(1.0, work / _ROI_TIMEOUT_REFERENCE_VOXELS))
+    return min(floor * _ROI_TIMEOUT_MAX_MULTIPLIER, scaled)
 
 
 def _resolve_thread_limit(explicit: Optional[int] = None) -> Optional[int]:
@@ -192,6 +216,7 @@ def _worker_init(
     skip_rois: Set[str],
     min_voxels: int,
     max_voxels: int,
+    base_timeout: int,
 ) -> None:
     # Apply OpenMP/BLAS thread limits inside each worker.
     _apply_thread_limit(_resolve_thread_limit(thread_limit) or 1)
@@ -214,6 +239,7 @@ def _worker_init(
             "skip_rois": set(skip_rois),
             "min_voxels": int(min_voxels),
             "max_voxels": int(max_voxels),
+            "base_timeout": int(base_timeout),
         }
     )
 
@@ -245,39 +271,75 @@ def _get_builder(rs_path: Path):
     return builder
 
 
-def _extract_one(task: _RoiTask) -> Optional[Dict[str, Any]]:
+def _status_record(
+    task: _RoiTask,
+    status: str,
+    detail: str,
+    *,
+    voxel_count: Optional[int] = None,
+) -> Dict[str, Any]:
+    course_dir = Path(task.course_dir)
+    return {
+        "modality": "CT",
+        "segmentation_source": task.source,
+        "roi_name": task.roi_name,
+        "roi_original_name": task.roi_name,
+        "course_dir": str(course_dir),
+        "patient_id": course_dir.parent.name,
+        "course_id": course_dir.name,
+        "structure_cropped": False,
+        "extraction_status": status,
+        "extraction_status_detail": detail,
+        "voxel_count": voxel_count,
+    }
+
+
+def _extract_one(task: _RoiTask) -> Dict[str, Any]:
+    skip_rois: Set[str] = _WORKER_STATE.get("skip_rois", set())
+    if _norm(task.roi_name) in skip_rois:
+        return _status_record(task, "declared_skip", "ROI is listed in radiomics_skip_rois")
+
     img = _WORKER_STATE.get("img")
     ext = _WORKER_STATE.get("extractor")
     if img is None or ext is None:
-        return None
+        raise RadiomicsRegionExtractionError(
+            f"ROI {task.roi_name} cannot be extracted because the image or radiomics extractor is unavailable"
+        )
 
     from .radiomics import _mask_from_array_like
 
     rs_path = Path(task.rs_path)
     builder = _get_builder(rs_path)
     if builder is None:
-        return None
-
-    skip_rois: Set[str] = _WORKER_STATE.get("skip_rois", set())
-    if _norm(task.roi_name) in skip_rois:
-        return None
+        raise RadiomicsRegionExtractionError(
+            f"ROI {task.roi_name} cannot be read because the structure builder is unavailable for {rs_path}"
+        )
 
     try:
         mask = builder.get_roi_mask_by_name(task.roi_name)
-    except Exception:
-        return None
+    except Exception as exc:
+        raise RadiomicsRegionExtractionError(
+            f"ROI {task.roi_name} mask could not be read from {rs_path}: {exc}"
+        ) from exc
     if mask is None:
-        return None
+        raise RadiomicsRegionExtractionError(
+            f"ROI {task.roi_name} structure builder did not provide a mask from {rs_path}"
+        )
 
     mask_bool = mask.astype(bool)
     if not mask_bool.any():
-        return None
+        return _status_record(task, "empty_mask", "ROI mask contains no foreground voxels", voxel_count=0)
 
     voxel_count = int(mask_bool.sum())
     min_voxels = int(_WORKER_STATE.get("min_voxels", 120))
     max_voxels = int(_WORKER_STATE.get("max_voxels", 15_000_000))
     if voxel_count < min_voxels:
-        return None
+        return _status_record(
+            task,
+            "below_minimum_voxels",
+            f"ROI contains {voxel_count} voxels; configured minimum is {min_voxels}",
+            voxel_count=voxel_count,
+        )
     # Decide "large ROI" using an estimate at the extractor resampled spacing.
     #
     # Rationale: voxel_count is measured at native CT spacing (often 1×1×3mm). The
@@ -301,17 +363,45 @@ def _extract_one(task: _RoiTask) -> Optional[Dict[str, Any]]:
     if is_body or estimated_voxels > float(max_voxels):
         ext_large = _WORKER_STATE.get("extractor_large")
         if ext_large is None:
-            return None
+            raise RadiomicsRegionExtractionError(
+                f"ROI {task.roi_name} requires the large-ROI extractor, but it is unavailable"
+            )
         ext = ext_large
 
     cropped = mask_is_cropped(mask_bool)
     display_roi = task.roi_name if (not cropped or task.roi_name.endswith("__partial")) else f"{task.roi_name}__partial"
 
+    roi_timeout = _scaled_roi_timeout(
+        int(_WORKER_STATE.get("base_timeout", 600)),
+        estimated_voxels,
+    )
+
+    def _timeout_handler(_signum, _frame):
+        raise TimeoutError(
+            f"ROI {task.roi_name} exceeded its {roi_timeout}s radiomics budget "
+            f"({estimated_voxels:.0f} estimated resampled voxels)"
+        )
+
+    use_alarm = (
+        hasattr(signal, "SIGALRM")
+        and threading.current_thread() is threading.main_thread()
+    )
+    previous_handler = signal.signal(signal.SIGALRM, _timeout_handler) if use_alarm else None
+    if use_alarm:
+        signal.alarm(roi_timeout)
     try:
         mask_img = _mask_from_array_like(img, mask_bool)
         res = ext.execute(img, mask_img)
-    except Exception:
-        return None
+    except TimeoutError as exc:
+        raise RadiomicsRegionExtractionError(str(exc)) from exc
+    except Exception as exc:
+        raise RadiomicsRegionExtractionError(
+            f"ROI {task.roi_name} radiomics extraction failed: {exc}"
+        ) from exc
+    finally:
+        if use_alarm:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, previous_handler)
 
     rec: Dict[str, Any] = {}
     for k, v in res.items():
@@ -470,39 +560,52 @@ def parallel_radiomics_for_course(
     custom_structures_config: Optional[Path] = None,
     max_workers: Optional[int] = None,
     use_cropped: bool = False,
-) -> Optional[Path]:
+) -> RadiomicsCourseOutcome:
     """Parallel CT radiomics for one course (process isolation)."""
     course_dir = Path(course_dir)
     out_path = course_dir / "radiomics_ct.xlsx"
+    course_dirs = build_course_dirs(course_dir)
+    ct_dir = course_dirs.dicom_ct
+    ct_files_present = ct_dir.exists() and any(path.is_file() for path in ct_dir.rglob('*'))
+    if not ct_files_present:
+        logger.info("No CT image for radiomics in %s", course_dir)
+        return RadiomicsCourseOutcome.nothing_to_do("CT series is absent")
     existing_df = None
     if getattr(config, "resume", False) and out_path.exists():
         try:
             import pandas as pd  # type: ignore
 
             existing_df = pd.read_excel(out_path, engine="openpyxl")
+            existing_df = existing_df.drop(
+                columns=["extraction_status", "extraction_status_detail", "voxel_count"],
+                errors="ignore",
+            )
         except Exception:
             existing_df = None
 
     try:
-        from .radiomics import _extractor
+        from .radiomics import _extractor, _load_series_image
     except Exception as exc:
-        logger.error("Failed importing radiomics extractor: %s", exc)
-        return None
+        raise RadiomicsCourseExtractionError(
+            f"Failed importing radiomics extractor for {course_dir}: {exc}"
+        ) from exc
+
+    if _load_series_image(ct_dir) is None:
+        raise RadiomicsCourseExtractionError(
+            f"CT series is present but unreadable for radiomics in {course_dir}"
+        )
 
     # If we can't build a native extractor, delegate to conda backend.
     if _extractor(config, "CT") is None:
         try:
             from .radiomics_conda import radiomics_for_course as conda_radiomics_for_course
         except Exception as exc:
-            logger.warning("Conda-based radiomics helper unavailable: %s", exc)
-            return None
-        return conda_radiomics_for_course(course_dir, config, custom_structures_config)
-
-    course_dirs = build_course_dirs(course_dir)
-    ct_dir = course_dirs.dicom_ct
-    if not ct_dir.exists():
-        logger.info("No CT image for radiomics in %s", course_dir)
-        return None
+            raise RadiomicsCourseExtractionError(
+                f"Conda-based radiomics helper unavailable for {course_dir}: {exc}"
+            ) from exc
+        conda_out = conda_radiomics_for_course(course_dir, config, custom_structures_config)
+        return (RadiomicsCourseOutcome.extracted(conda_out) if conda_out is not None
+                else RadiomicsCourseOutcome.nothing_to_do("conda backend found no eligible ROIs"))
 
     # Choose RS_auto vs RS_auto_cropped
     rs_auto_name = "RS_auto.dcm"
@@ -578,8 +681,6 @@ def parallel_radiomics_for_course(
     if full_run:
         for source, rs_path in sources:
             for roi_name in _list_roi_names(rs_path):
-                if _norm(roi_name) in skip_rois:
-                    continue
                 tasks.append(_RoiTask(source=source, rs_path=str(rs_path), roi_name=roi_name, course_dir=str(course_dir)))
     else:
         # Resume top-up: only compute ROIs that were previously missing.
@@ -605,8 +706,6 @@ def parallel_radiomics_for_course(
                 elif f"{base}__partial" in avail:
                     wanted.append(f"{base}__partial")
             for roi_name in wanted:
-                if _norm(roi_name) in skip_rois:
-                    continue
                 if ("Custom", roi_name) in existing_pairs:
                     continue
                 tasks.append(_RoiTask(source="Custom", rs_path=str(rs_custom), roi_name=roi_name, course_dir=str(course_dir)))
@@ -616,9 +715,9 @@ def parallel_radiomics_for_course(
     if not tasks:
         if existing_df is not None and out_path.exists():
             logger.debug("Radiomics up-to-date for %s; no missing ROI tasks", course_dir)
-            return out_path
+            return RadiomicsCourseOutcome.extracted(out_path)
         logger.info("No radiomics tasks for %s", course_dir)
-        return None
+        return RadiomicsCourseOutcome.nothing_to_do("no RTSTRUCT ROIs were enumerated")
 
     if max_workers is None:
         worker_count = _calculate_optimal_workers()
@@ -627,20 +726,32 @@ def parallel_radiomics_for_course(
     worker_count = max(1, min(worker_count, len(tasks)))
 
     thread_limit = _resolve_thread_limit(getattr(config, "radiomics_thread_limit", None))
-    task_timeout = _coerce_positive_int(os.environ.get(_TASK_TIMEOUT_ENV)) or 600
+    base_task_timeout = _coerce_positive_int(os.environ.get(_TASK_TIMEOUT_ENV)) or 600
+    task_timeout = base_task_timeout * _ROI_TIMEOUT_MAX_MULTIPLIER
 
     logger.info(
-        "Parallel radiomics for %s: %d ROI task(s), %d worker(s), thread_limit=%s, timeout=%ss",
+        "Parallel radiomics for %s: %d ROI task(s), %d worker(s), thread_limit=%s, "
+        "ROI timeout=%d-%ds (linear above %d estimated resampled voxels)",
         course_dir.name,
         len(tasks),
         worker_count,
         thread_limit if thread_limit is not None else "env/default",
+        base_task_timeout,
         task_timeout,
+        _ROI_TIMEOUT_REFERENCE_VOXELS,
     )
 
     total = len(tasks)
     completed: Set[_RoiTask] = set()
     rows: List[Dict[str, Any]] = []
+
+    def _invalidate_incomplete_output() -> None:
+        """Remove stale tables that would otherwise look complete after failure."""
+        for candidate in (out_path, out_path.with_suffix(".parquet")):
+            try:
+                candidate.unlink(missing_ok=True)
+            except OSError as exc:
+                logger.error("Could not invalidate incomplete radiomics output %s: %s", candidate, exc)
 
     pending_tasks: List[_RoiTask] = list(tasks)
     start_time = time.monotonic()
@@ -662,10 +773,14 @@ def parallel_radiomics_for_course(
             max_workers=pool_size,
             mp_context=radiomics_mp_context(),
             initializer=_worker_init,
-            initargs=(str(ct_dir), config, thread_limit, skip_rois, min_voxels, max_voxels),
+            initargs=(
+                str(ct_dir), config, thread_limit, skip_rois, min_voxels,
+                max_voxels, base_task_timeout,
+            ),
         )
         futures: Dict[Any, _RoiTask] = {}
         task_start: Dict[Any, float] = {}
+        fatal_error: Optional[RadiomicsCourseExtractionError] = None
         try:
             # Submit lazily (at most `pool_size` in flight) so task_start reflects
             # actual execution start, not queue-wait time behind busy workers.
@@ -679,13 +794,34 @@ def parallel_radiomics_for_course(
 
                 for fut in done:
                     task = futures[fut]
-                    completed.add(task)
                     try:
                         rec = fut.result(timeout=0)
-                    except Exception:
-                        rec = None
-                    if rec:
-                        rows.append(rec)
+                    except BrokenProcessPool as exc:
+                        logger.error(
+                            "Radiomics worker pool broke while extracting %s/%s (%s); restarting",
+                            task.source,
+                            task.roi_name,
+                            exc,
+                        )
+                        restart = True
+                        break
+                    except Exception as exc:
+                        fatal_error = RadiomicsCourseExtractionError(
+                            f"Radiomics course {course_dir} is incomplete: "
+                            f"required ROI {task.source}/{task.roi_name} failed: {exc}"
+                        )
+                        break
+                    if rec is None:
+                        fatal_error = RadiomicsCourseExtractionError(
+                            f"Radiomics course {course_dir} is incomplete: required ROI "
+                            f"{task.source}/{task.roi_name} returned no outcome record"
+                        )
+                        break
+                    completed.add(task)
+                    rows.append(rec)
+
+                if fatal_error is not None or restart:
+                    break
 
                 # Backfill: submit the next pending task(s) into the slot(s) just freed.
                 #
@@ -716,19 +852,22 @@ def parallel_radiomics_for_course(
                         completed.add(task)
                         remaining.remove(fut)
                 if timed_out_tasks:
-                    logger.warning(
-                        "Radiomics: %d ROI task(s) timed out for %s; restarting worker pool",
-                        len(timed_out_tasks),
-                        course_dir.name,
+                    failed_names = ", ".join(
+                        f"{task.source}/{task.roi_name}" for task in timed_out_tasks
                     )
-                    restart = True
+                    fatal_error = RadiomicsCourseExtractionError(
+                        f"Radiomics course {course_dir} is incomplete: required ROI task(s) "
+                        f"timed out after {task_timeout}s: {failed_names}"
+                    )
                     break
 
                 if now - last_log > 30:
                     logger.info("Radiomics progress for %s: %d/%d", course_dir.name, len(completed), total)
                     last_log = now
 
-            if restart:
+            if fatal_error is not None:
+                pending_tasks = []
+            elif restart:
                 # Everything in this round not yet finalized (success, failure, or
                 # timeout): still-in-flight futures, tasks never submitted because
                 # they were still in task_iter, AND a task lost mid-submit if the
@@ -738,7 +877,7 @@ def parallel_radiomics_for_course(
                 pending_tasks = []
 
         finally:
-            if pending_tasks:
+            if pending_tasks or fatal_error is not None:
                 # Terminate workers BEFORE shutdown(): CPython 3.11 sets executor._processes=None
                 # inside shutdown(), so _terminate_executor_processes must read it while still
                 # populated. Otherwise it falls back to diffing the MAIN process's direct children,
@@ -749,23 +888,39 @@ def parallel_radiomics_for_course(
             else:
                 executor.shutdown(wait=True)
 
-    if not rows:
+        if fatal_error is not None:
+            _invalidate_incomplete_output()
+            logger.error("%s", fatal_error)
+            raise fatal_error
+
+    feature_rows = [
+        row for row in rows
+        if row.get("extraction_status") in (None, "success")
+    ]
+    if not feature_rows:
         if existing_df is not None and out_path.exists():
             logger.debug("No new radiomics rows for %s (resume top-up)", course_dir)
-            return out_path
-        logger.warning("No successful radiomics extractions for %s", course_dir)
-        return None
+            return RadiomicsCourseOutcome.extracted(out_path)
+        logger.info("No eligible radiomics regions for %s", course_dir)
+        return RadiomicsCourseOutcome.nothing_to_do("all enumerated ROIs were explicitly skipped")
 
     try:
         import pandas as pd  # type: ignore
 
-        df_new = pd.DataFrame(rows)
+        df_new = pd.DataFrame(feature_rows).drop(
+            columns=["extraction_status", "extraction_status_detail", "voxel_count"],
+            errors="ignore",
+        )
         if existing_df is not None and out_path.exists():
-            template_cols = list(existing_df.columns)
-            for col in template_cols:
+            output_cols = list(existing_df.columns)
+            output_cols.extend(col for col in df_new.columns if col not in existing_df.columns)
+            for col in output_cols:
+                if col not in existing_df.columns:
+                    existing_df[col] = None
                 if col not in df_new.columns:
                     df_new[col] = None
-            df_new = df_new.loc[:, template_cols]
+            existing_df = existing_df.loc[:, output_cols]
+            df_new = df_new.loc[:, output_cols]
             df = pd.concat([existing_df, df_new], ignore_index=True)
             df = df.drop_duplicates(
                 subset=["segmentation_source", "roi_original_name", "patient_id", "course_id"],
@@ -803,10 +958,11 @@ def parallel_radiomics_for_course(
                 except Exception:
                     pass
                 logger.debug("Parquet sidecar write failed for %s: %s (retry: %s)", out_path, exc, exc2)
-        return out_path
+        return RadiomicsCourseOutcome.extracted(out_path)
     except Exception as exc:
-        logger.error("Failed to write radiomics output for %s: %s", course_dir, exc)
-        return None
+        raise RadiomicsCourseExtractionError(
+            f"Failed to write radiomics output for {course_dir}: {exc}"
+        ) from exc
 
 
 # ---------------------------------------------------------------------------

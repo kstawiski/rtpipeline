@@ -94,6 +94,7 @@ class PipelineConfig:
     radiomics_max_voxels: int | None = None
     radiomics_min_voxels: int | None = None
     radiomics_thread_limit: int | None = None
+    radiomics_env_probe_timeout: int | None = None
     radiomics_params_file_mr: Path | None = None
 
     # Custom structures

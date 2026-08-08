@@ -31,6 +31,7 @@ import pytest
 import SimpleITK as sitk
 
 import rtpipeline.radiomics_conda as rc
+import rtpipeline.cli as cli
 from rtpipeline.radiomics_conda import (
     RadiomicsCheckpoint,
     _jsonify_nested_columns,
@@ -407,8 +408,179 @@ def test_env_check_does_not_cache_failure_then_recovers(monkeypatch):
     assert rc._ENV_CHECK_OK is True
 
 
-def test_env_check_uses_generous_default_timeout():
-    """The default timeout must be well above the 60 s that timed out under load."""
-    import inspect
-    sig = inspect.signature(check_radiomics_env)
-    assert sig.parameters["timeout"].default >= 120
+def test_env_check_timeout_is_configurable_and_classified(monkeypatch):
+    """An exhausted probe timeout must remain distinct from extraction failure."""
+    seen = []
+
+    def fake_run(command, **kwargs):
+        seen.append((command, kwargs["timeout"]))
+        raise subprocess.TimeoutExpired(cmd=command, timeout=kwargs["timeout"])
+
+    monkeypatch.setenv("RTPIPELINE_RADIOMICS_ENV_PROBE_TIMEOUT", "321")
+    monkeypatch.setattr(rc.subprocess, "run", fake_run)
+
+    with pytest.raises(rc.RadiomicsEnvironmentProbeTimeout) as caught:
+        check_radiomics_env(retries=1)
+
+    error = caught.value
+    assert error.code == "RADIOMICS_ENV_PROBE_TIMEOUT"
+    assert error.timeout == 321
+    assert error.attempts == 2
+    assert len(seen) == 2
+    assert all(timeout == 321 for _command, timeout in seen)
+    assert "conda" in str(error) or "micromamba" in str(error) or "mamba" in str(error)
+    assert "timeout=321s" in str(error)
+    assert "attempts=2" in str(error)
+
+
+def test_env_check_default_probe_budget_reaches_subprocess(monkeypatch):
+    seen = []
+
+    def fake_run(command, **kwargs):
+        seen.append(kwargs["timeout"])
+        return _FakeProc()
+
+    monkeypatch.delenv("RTPIPELINE_RADIOMICS_ENV_PROBE_TIMEOUT", raising=False)
+    monkeypatch.setattr(rc.subprocess, "run", fake_run)
+
+    assert check_radiomics_env(retries=0) is True
+    assert seen == [180]
+
+
+def test_batch_environment_unavailable_fails_and_invalidates_output(monkeypatch, tmp_path):
+    output_path = tmp_path / "radiomics_ct.xlsx"
+    output_path.write_text("stale", encoding="utf-8")
+    monkeypatch.setattr(rc, "check_radiomics_env", lambda **_kwargs: False)
+
+    with pytest.raises(rc.RadiomicsCourseExtractionError, match="environment.*unavailable"):
+        rc.process_radiomics_batch(
+            [
+                {
+                    "image_path": str(tmp_path / "image.nrrd"),
+                    "mask_path": str(tmp_path / "mask.nrrd"),
+                    "roi_name": "PTV",
+                    "metadata": {"roi_original_name": "PTV"},
+                }
+            ],
+            output_path,
+            enable_heartbeat=False,
+        )
+
+    assert not output_path.exists()
+
+
+def test_radiomics_cli_probe_timeout_reaches_checker_and_unavailable_env_fails(
+    monkeypatch, tmp_path
+):
+    from rtpipeline import radiomics
+
+    seen = []
+    monkeypatch.setattr(radiomics, "_have_pyradiomics", lambda: False)
+    monkeypatch.setattr(
+        rc,
+        "check_radiomics_env",
+        lambda *, timeout=None, **_kwargs: seen.append(timeout) or False,
+    )
+
+    result = cli.main(
+        [
+            "--dicom-root", str(tmp_path / "dicom"),
+            "--outdir", str(tmp_path / "out"),
+            "--logs", str(tmp_path / "logs"),
+            "--stage", "radiomics",
+            "--radiomics-env-probe-timeout", "321",
+            "--no-metadata",
+        ]
+    )
+
+    assert result == 1
+    assert seen == [321]
+
+
+def test_timeout_then_distinct_probe_failure_is_not_relabelled(monkeypatch, tmp_path):
+    from rtpipeline import radiomics
+
+    calls = {"count": 0}
+
+    def fake_run(command, **kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise subprocess.TimeoutExpired(cmd=command, timeout=kwargs["timeout"])
+        return _FakeProc(returncode=1, stdout="", stderr="missing radiomics")
+
+    monkeypatch.setattr(radiomics, "_have_pyradiomics", lambda: False)
+    monkeypatch.setattr(rc.subprocess, "run", fake_run)
+
+    result = cli.main(
+        [
+            "--dicom-root", str(tmp_path / "dicom"),
+            "--outdir", str(tmp_path / "out"),
+            "--logs", str(tmp_path / "logs"),
+            "--stage", "radiomics",
+            "--no-metadata",
+        ]
+    )
+
+    assert result == 1
+    assert calls["count"] == 2
+
+
+def test_env_probe_timeout_code_survives_cli_boundary(monkeypatch, capsys):
+    error = rc.RadiomicsEnvironmentProbeTimeout(["conda", "run", "probe"], 321, 2)
+    monkeypatch.setattr(cli, "main", lambda _argv=None: (_ for _ in ()).throw(error))
+
+    assert cli.console_main([]) == 3
+    emitted = json.loads(capsys.readouterr().err)
+    assert emitted == {"code": error.code, "message": str(error)}
+
+
+def test_env_probe_timeout_survives_robustness_subcommand(monkeypatch, tmp_path, capsys):
+    from rtpipeline import radiomics_robustness
+
+    error = rc.RadiomicsEnvironmentProbeTimeout(["conda", "run", "probe"], 321, 2)
+    monkeypatch.setattr(
+        radiomics_robustness,
+        "robustness_for_course",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(error),
+    )
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("radiomics_robustness:\n  enabled: true\n", encoding="utf-8")
+
+    assert cli.console_main(
+        [
+            "radiomics-robustness",
+            "--course-dir",
+            str(tmp_path / "course"),
+            "--config",
+            str(config_path),
+            "--output",
+            str(tmp_path / "result.parquet"),
+        ]
+    ) == 3
+    emitted = json.loads(capsys.readouterr().err)
+    assert emitted == {"code": error.code, "message": str(error)}
+
+
+def test_robustness_subcommand_accepts_env_probe_timeout(monkeypatch, tmp_path):
+    from rtpipeline import radiomics_robustness
+
+    seen = []
+
+    def fake_robustness(config, _rob_config, _course_dir, *, output_path):
+        seen.append(config.radiomics_env_probe_timeout)
+        return output_path
+
+    monkeypatch.setattr(radiomics_robustness, "robustness_for_course", fake_robustness)
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("radiomics_robustness:\n  enabled: true\n", encoding="utf-8")
+
+    assert cli.console_main(
+        [
+            "radiomics-robustness",
+            "--course-dir", str(tmp_path / "course"),
+            "--config", str(config_path),
+            "--output", str(tmp_path / "result.parquet"),
+            "--radiomics-env-probe-timeout", "654",
+        ]
+    ) == 0
+    assert seen == [654]

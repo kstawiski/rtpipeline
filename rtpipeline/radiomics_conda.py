@@ -7,6 +7,7 @@ Runs PyRadiomics in a separate conda environment with NumPy 1.x for compatibilit
 import json
 import logging
 import os
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -24,11 +25,32 @@ import SimpleITK as sitk
 import pydicom
 
 from .layout import build_course_dirs, find_dcm
+from .radiomics_outcomes import RadiomicsCourseExtractionError
 from .utils import mask_is_cropped, radiomics_mp_context
 
 logger = logging.getLogger(__name__)
 
 RADIOMICS_ENV = os.environ.get("RTPIPELINE_RADIOMICS_ENV", "rtpipeline-radiomics")
+_ENV_PROBE_TIMEOUT_ENV = "RTPIPELINE_RADIOMICS_ENV_PROBE_TIMEOUT"
+_DEFAULT_ENV_PROBE_TIMEOUT = 180
+
+
+class RadiomicsEnvironmentProbeTimeout(RuntimeError):
+    """The isolated radiomics import probe exhausted its time budget."""
+
+    code = "RADIOMICS_ENV_PROBE_TIMEOUT"
+
+    def __init__(self, command: List[str], timeout: int, attempts: int) -> None:
+        self.command = tuple(command)
+        self.timeout = int(timeout)
+        self.attempts = int(attempts)
+        super().__init__(
+            "radiomics environment probe timed out: "
+            f"command={shlex.join(command)!r}, timeout={timeout}s, attempts={attempts}"
+        )
+
+    def __reduce__(self):
+        return (type(self), (list(self.command), self.timeout, self.attempts))
 
 
 def _conda_executable() -> str:
@@ -452,7 +474,7 @@ def _conda_subprocess_env() -> Dict[str, str]:
     return env
 
 
-def check_radiomics_env(timeout: int = 180, retries: int = 1) -> bool:
+def check_radiomics_env(timeout: Optional[int] = None, retries: int = 1) -> bool:
     """Check if the radiomics conda environment exists and is functional.
 
     A successful result is cached process-wide: the env cannot disappear
@@ -460,7 +482,10 @@ def check_radiomics_env(timeout: int = 180, retries: int = 1) -> bool:
     cold-start under heavy worker load timed out spuriously, silently skipping
     healthy courses. The first check uses a generous timeout and one retry so a
     transient cold-start stall does not produce a false negative; only a True
-    result is cached, so a genuinely-unready env can still recover later.
+    result is cached, so a genuinely-unready env can still recover later. The
+    timeout can be set with ``RTPIPELINE_RADIOMICS_ENV_PROBE_TIMEOUT`` (or explicitly)
+    and an exhausted timeout raises a typed error instead of masquerading as a
+    feature-extraction failure.
     """
     global _ENV_CHECK_OK
     if _ENV_CHECK_OK:
@@ -468,37 +493,60 @@ def check_radiomics_env(timeout: int = 180, retries: int = 1) -> bool:
     with _ENV_CHECK_LOCK:
         if _ENV_CHECK_OK:
             return True
+        configured_timeout = timeout
+        if configured_timeout is None:
+            try:
+                configured_timeout = int(os.environ.get(_ENV_PROBE_TIMEOUT_ENV, _DEFAULT_ENV_PROBE_TIMEOUT))
+            except (TypeError, ValueError):
+                configured_timeout = _DEFAULT_ENV_PROBE_TIMEOUT
+        if configured_timeout <= 0:
+            configured_timeout = _DEFAULT_ENV_PROBE_TIMEOUT
+
+        command = [
+            CONDA_EXE,
+            "run",
+            "-n",
+            RADIOMICS_ENV,
+            "python",
+            "-c",
+            "import radiomics; import numpy; print('OK')",
+        ]
+        attempts = max(1, int(retries) + 1)
+        timeout_failures = 0
         last_err: Optional[str] = None
-        for attempt in range(retries + 1):
+        for attempt in range(attempts):
             try:
                 result = subprocess.run(
-                    [
-                        CONDA_EXE,
-                        "run",
-                        "-n",
-                        RADIOMICS_ENV,
-                        "python",
-                        "-c",
-                        "import radiomics; import numpy; print('OK')",
-                    ],
+                    command,
                     capture_output=True,
                     text=True,
-                    timeout=timeout,
+                    timeout=configured_timeout,
                     env=_conda_subprocess_env(),
                 )
                 if result.returncode == 0 and "OK" in result.stdout:
                     _ENV_CHECK_OK = True
                     return True
                 last_err = (result.stderr or "").strip() or f"returncode={result.returncode}"
+            except subprocess.TimeoutExpired as e:
+                timeout_failures += 1
+                last_err = str(e)
+                logger.warning(
+                    "Radiomics env check attempt %d/%d timed out after %ds",
+                    attempt + 1,
+                    attempts,
+                    configured_timeout,
+                )
             except Exception as e:
                 last_err = str(e)
                 logger.warning(
                     "Radiomics env check attempt %d/%d failed: %s",
                     attempt + 1,
-                    retries + 1,
+                    attempts,
                     e,
                 )
-        logger.error("Failed to verify radiomics environment after %d attempts: %s", retries + 1, last_err)
+        if timeout_failures == attempts:
+            raise RadiomicsEnvironmentProbeTimeout(command, configured_timeout, attempts)
+        logger.error("Failed to verify radiomics environment after %d attempts: %s", attempts, last_err)
         return False
 
 
@@ -990,6 +1038,7 @@ def process_radiomics_batch(
     max_workers: Optional[int] = None,
     checkpoint_path: Optional[Path] = None,
     enable_heartbeat: bool = True,
+    env_probe_timeout: Optional[int] = None,
 ) -> Optional[Path]:
     """Process radiomics extraction tasks and persist them as an Excel sheet.
 
@@ -1000,6 +1049,7 @@ def process_radiomics_batch(
         max_workers: Maximum parallel workers
         checkpoint_path: Optional path for checkpoint file (enables resume)
         enable_heartbeat: Whether to enable progress heartbeat logging
+        env_probe_timeout: Seconds allowed for each environment import probe
 
     Returns:
         Path to output file if successful, None otherwise
@@ -1035,7 +1085,7 @@ def process_radiomics_batch(
     # completed in a prior run (tasks is now empty after checkpoint filtering), skip
     # the probe entirely and fall through to rebuild the workbook from the checkpoint
     # below. Otherwise the env must be functional before we try to extract anything.
-    if tasks and not check_radiomics_env():
+    if tasks and not check_radiomics_env(timeout=env_probe_timeout):
         logger.error(
             "Radiomics conda environment '%s' not found or not functional",
             RADIOMICS_ENV,
@@ -1044,7 +1094,11 @@ def process_radiomics_batch(
             "Please run: conda create -n %s python=3.11 numpy=1.26.* pyradiomics SimpleITK -c conda-forge",
             RADIOMICS_ENV,
         )
-        return None
+        for candidate in (Path(output_path), Path(output_path).with_suffix('.parquet')):
+            candidate.unlink(missing_ok=True)
+        raise RadiomicsCourseExtractionError(
+            f"Radiomics conda environment '{RADIOMICS_ENV}' is unavailable"
+        )
 
     def _execute(task: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         roi_name = task.get('roi_name', 'ROI')
@@ -1058,7 +1112,7 @@ def process_radiomics_batch(
 
         if not image_path or not mask_path:
             logger.error("Radiomics task is missing required paths for %s", roi_name)
-            return None
+            return {'__status__': 'error', '__error__': 'missing required image or mask path'}
 
         try:
             features = extract_radiomics_with_conda(
@@ -1076,7 +1130,7 @@ def process_radiomics_batch(
                     roi_name,
                     str(exc).strip(),
                 )
-                return None
+                return {'__status__': 'skipped', '__reason__': str(exc).strip()}
             if 'mask has too few dimensions' in msg and task.get('ct_info'):
                 repaired = _ensure_mask_has_three_dimensions(mask_path, task['ct_info'])
                 if repaired:
@@ -1091,26 +1145,36 @@ def process_radiomics_batch(
                         )
                     except Exception as inner_exc:
                         logger.error("Radiomics retry failed for %s: %s", roi_name, inner_exc)
-                        return None
+                        return {'__status__': 'error', '__error__': str(inner_exc)}
                 else:
                     logger.error("Unable to repair mask dimensionality for %s", roi_name)
-                    return None
+                    return {
+                        '__status__': 'error',
+                        '__error__': 'mask dimensionality could not be repaired',
+                    }
             else:
                 logger.error("Failed to extract features for %s: %s", roi_name, exc)
-                return None
+                return {'__status__': 'error', '__error__': str(exc)}
 
         metadata.setdefault('modality', 'CT')
         return _combine_feature_record(features, metadata)
 
     results: List[Dict[str, Any]] = []
+    failures: List[str] = []
 
     def _run_sequential(seq: List[Dict[str, Any]]) -> None:
         for idx, task in enumerate(seq, 1):
             roi_name = task.get('roi_name', 'ROI')
             logger.info("Processing %d/%d: %s", idx, len(seq), roi_name)
             rec = _execute(task)
-            if rec:
+            if rec and rec.get('__status__') == 'skipped':
+                continue
+            if rec and rec.get('__status__') == 'error':
+                failures.append(f"{roi_name}: {rec.get('__error__', 'unknown error')}")
+            elif rec:
                 results.append(rec)
+            else:
+                failures.append(f"{roi_name}: returned no outcome record")
 
     tasks_list = list(tasks)
     if max_workers and max_workers > 0:
@@ -1157,8 +1221,13 @@ def process_radiomics_batch(
                             logger.info("Skipped radiomics for %s: %s", roi_name, features.get('__reason__', 'unknown'))
                             if heartbeat:
                                 heartbeat.update(skipped=1)
-                        elif status == 'error':
-                            logger.error("Radiomics failed for %s: %s", roi_name, features.get('__error__', 'unknown'))
+                        else:
+                            detail = (
+                                features.get('__error__', 'unknown error')
+                                if features else 'returned no outcome record'
+                            )
+                            logger.error("Radiomics failed for %s: %s", roi_name, detail)
+                            failures.append(f"{roi_name}: {detail}")
                             if heartbeat:
                                 heartbeat.update(failed=1)
                         continue
@@ -1219,8 +1288,13 @@ def process_radiomics_batch(
                                     logger.debug("Skipped radiomics for %s: %s", roi_name, features.get('__reason__', 'unknown'))
                                     if heartbeat:
                                         heartbeat.update(skipped=1)
-                                elif status == 'error':
-                                    logger.warning("Radiomics failed for %s: %s", roi_name, features.get('__error__', 'unknown'))
+                                else:
+                                    detail = (
+                                        features.get('__error__', 'unknown error')
+                                        if features else 'returned no outcome record'
+                                    )
+                                    logger.warning("Radiomics failed for %s: %s", roi_name, detail)
+                                    failures.append(f"{roi_name}: {detail}")
                                     if heartbeat:
                                         heartbeat.update(failed=1)
                                 continue
@@ -1243,6 +1317,9 @@ def process_radiomics_batch(
                             logger.debug("Completed radiomics for %s", roi_name)
                     except Exception as exc:
                         logger.error("Batch processing failed: %s", exc)
+                        failures.extend(
+                            f"{task.get('roi_name', 'ROI')}: batch crashed: {exc}" for task in batch
+                        )
                         if heartbeat:
                             heartbeat.update(failed=len(batch))
         else:
@@ -1261,7 +1338,14 @@ def process_radiomics_batch(
                     roi_name = task.get('roi_name', 'ROI')
                     try:
                         rec = future.result()
-                        if rec:
+                        if rec and rec.get('__status__') == 'skipped':
+                            if heartbeat:
+                                heartbeat.update(skipped=1)
+                        elif rec and rec.get('__status__') == 'error':
+                            failures.append(f"{roi_name}: {rec.get('__error__', 'unknown error')}")
+                            if heartbeat:
+                                heartbeat.update(failed=1)
+                        elif rec:
                             results.append(rec)
                             if checkpoint:
                                 checkpoint.add_result(rec)
@@ -1269,10 +1353,12 @@ def process_radiomics_batch(
                                 heartbeat.update(completed=1)
                             logger.debug("Completed radiomics for %s", roi_name)
                         else:
+                            failures.append(f"{roi_name}: returned no successful feature record")
                             if heartbeat:
                                 heartbeat.update(failed=1)
                     except Exception as exc:  # pragma: no cover - defensive
                         logger.error("Radiomics task crashed for %s: %s", roi_name, exc)
+                        failures.append(f"{roi_name}: task crashed: {exc}")
                         if heartbeat:
                             heartbeat.update(failed=1)
 
@@ -1282,6 +1368,13 @@ def process_radiomics_batch(
             heartbeat.stop()
         if checkpoint:
             checkpoint.flush()
+
+    if failures:
+        for candidate in (Path(output_path), Path(output_path).with_suffix('.parquet')):
+            candidate.unlink(missing_ok=True)
+        raise RadiomicsCourseExtractionError(
+            "Radiomics course extraction is incomplete: " + "; ".join(failures)
+        )
 
     # Build the complete row set for the workbook: ROIs computed this run UNION any
     # ROIs completed in a prior run, recorded in the checkpoint, and skipped this run.
@@ -1539,6 +1632,7 @@ def radiomics_for_course_ct_nifti_fallback(
         max_workers=max_workers,
         checkpoint_path=checkpoint_path,
         enable_heartbeat=True,
+        env_probe_timeout=getattr(config, "radiomics_env_probe_timeout", None),
     )
 
     for tf in temp_files:
@@ -1570,7 +1664,7 @@ def radiomics_for_course(
 
     # Check for CT DICOM files
     ct_dir = course_dirs.dicom_ct
-    has_ct_dicom = ct_dir.exists()
+    has_ct_dicom = ct_dir.exists() and any(path.is_file() for path in ct_dir.rglob('*'))
     has_ct_nifti = bool(_ct_nifti_candidates(course_dir))
     if not has_ct_dicom and not has_ct_nifti:
         logger.warning(f"No CT image found in {course_dir}")
@@ -1602,8 +1696,8 @@ def radiomics_for_course(
         )
         return radiomics_for_course_ct_nifti_fallback(course_dir, config)
 
-    if not ct_dir.exists():
-        logger.warning("No CT_DICOM directory found for RTSTRUCT radiomics in %s", course_dir)
+    if not has_ct_dicom:
+        logger.warning("No CT DICOM series found for RTSTRUCT radiomics in %s", course_dir)
         return None
 
     # Load CT image
@@ -1614,7 +1708,9 @@ def radiomics_for_course(
         ct_image = reader.Execute()
     except Exception as e:
         logger.error(f"Failed to load CT image: {e}")
-        return None
+        raise RadiomicsCourseExtractionError(
+            f"CT series is present but unreadable for radiomics in {course_dir}: {e}"
+        ) from e
 
     ct_info = {
         'spacing': tuple(ct_image.GetSpacing()),
@@ -1862,6 +1958,7 @@ def radiomics_for_course(
         max_workers=max_workers,
         checkpoint_path=checkpoint_path,
         enable_heartbeat=True,
+        env_probe_timeout=getattr(config, "radiomics_env_probe_timeout", None),
     )
 
     try:
@@ -2040,6 +2137,7 @@ def radiomics_for_course_mr(
         max_workers=max_workers,
         checkpoint_path=checkpoint_path,
         enable_heartbeat=True,
+        env_probe_timeout=getattr(config, "radiomics_env_probe_timeout", None),
     )
 
     # Cleanup temp files
