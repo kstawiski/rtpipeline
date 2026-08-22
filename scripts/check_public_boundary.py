@@ -33,19 +33,16 @@ FORBIDDEN_FILES = (
     "radiomics_params.yaml",
     "submission_gaps.md",
 )
-# Directories that local agent tooling writes into this checkout. They are
-# legitimate working output, so their presence is not itself a failure, but they
-# routinely contain whole copies of the private manuscript and review packages.
-# The content scan below cannot catch those: manuscript prose carries none of the
-# marker strings, so a full manuscript sat here untracked, unignored and squarely
-# in the path of `git add -A` while this check reported success. The rule is
-# therefore structural rather than textual — if one of these directories exists,
-# nothing inside it may be committable.
+# Directories that local agent tooling may write into this checkout. Review or
+# manuscript bytes do not belong in the public working tree even when ignored:
+# any regular file or symlink below one of these protected roots is a structural
+# boundary failure. Empty directories alone carry no content and are tolerated.
 REVIEW_ARTIFACT_ROOTS = (
     "conversations",
     "delegated_tasks",
     "independent_reviews",
     "session_logs",
+    "tmp",
     "triple_consensus_logs",
 )
 FORBIDDEN_RELEASE_MARKERS = (
@@ -121,18 +118,31 @@ def check(root: Path | None = None) -> list[str]:
 
     for relative in REVIEW_ARTIFACT_ROOTS:
         path = root / relative
-        if not path.is_dir() or path.is_symlink():
-            continue
-        prefix = f"{relative}/"
-        committable = sorted(
-            item for item in candidates if item == relative or item.startswith(prefix)
-        )
-        if committable:
-            shown = ", ".join(committable[:3])
-            if len(committable) > 3:
-                shown += f", … ({len(committable)} paths)"
+        protected_entry: Path | None = None
+        if path.is_symlink() or path.is_file():
+            protected_entry = path
+        elif path.is_dir():
+            try:
+                protected_entry = next(
+                    (
+                        item
+                        for item in path.rglob("*")
+                        if item.is_file() or item.is_symlink()
+                    ),
+                    None,
+                )
+            except OSError as exc:
+                failures.append(
+                    f"cannot inspect protected review root {relative}: {exc}"
+                )
+                continue
+        if protected_entry is not None:
+            try:
+                shown = protected_entry.relative_to(root).as_posix()
+            except ValueError:
+                shown = str(protected_entry)
             failures.append(
-                f"agent review artifacts are committable, add {relative}/ to .gitignore: {shown}"
+                f"agent review artifact exists in public checkout regardless of ignore state: {shown}"
             )
 
     # `git ls-files --exclude-standard` honours .gitignore, .git/info/exclude and
