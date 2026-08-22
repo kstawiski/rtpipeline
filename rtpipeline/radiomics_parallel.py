@@ -646,13 +646,13 @@ def parallel_radiomics_for_course(
                 course_dir,
             )
 
-    sources: List[Tuple[str, Path]] = []
+    sources: List[Tuple[str, Path, Optional[List[str]]]] = []
     rs_manual = find_dcm(course_dirs.dicom_rtstruct, "RS.dcm", course_dir)
     if rs_manual.exists():
-        sources.append(("Manual", rs_manual))
+        sources.append(("Manual", rs_manual, None))
     rs_auto = course_dir / rs_auto_name
     if rs_auto.exists():
-        sources.append(("AutoRTS_total", rs_auto))
+        sources.append(("AutoRTS_total", rs_auto, None))
 
     # Custom structures (optional): prepare RS_custom but extract only custom ROIs (no duplication)
     rs_custom = course_dir / "RS_custom.dcm"
@@ -703,14 +703,21 @@ def parallel_radiomics_for_course(
     # Custom model RTSTRUCTs: explicit selections and current per-course output
     # directories are required; dormant definitions under custom_models_root are not.
     try:
-        validate_custom_model_output_inventory(
+        custom_model_expected_rois = validate_custom_model_output_inventory(
             course_dir,
             getattr(config, "custom_model_names", None),
+            getattr(config, "custom_models_root", None),
         )
         for model_name, model_course_dir in list_custom_model_outputs(course_dir):
             rs_model = Path(model_course_dir) / "rtstruct.dcm"
             if rs_model.exists():
-                sources.append((f"CustomModel:{model_name}", rs_model))
+                sources.append(
+                    (
+                        f"CustomModel:{model_name}",
+                        rs_model,
+                        custom_model_expected_rois[model_name],
+                    )
+                )
     except Exception as exc:
         _invalidate_radiomics_outputs(out_path)
         raise RadiomicsCourseExtractionError(
@@ -729,8 +736,9 @@ def parallel_radiomics_for_course(
     # workbook. BODY-only top-ups can miss ordinary Manual/AutoRTS/model ROIs.
     tasks: List[_RoiTask] = []
     try:
-        for source, rs_path in sources:
-            for roi_name in _list_roi_names(rs_path):
+        for source, rs_path, expected_rois in sources:
+            roi_names = expected_rois or _list_roi_names(rs_path)
+            for roi_name in roi_names:
                 if _norm(roi_name) in skip_rois:
                     continue
                 tasks.append(
@@ -755,7 +763,7 @@ def parallel_radiomics_for_course(
     if rs_custom.exists():
         try:
             avail = set(_list_roi_names(rs_custom))
-            if not desired_custom:
+            if configured_custom_path is None and not desired_custom:
                 manual_names = set(_list_roi_names(rs_manual)) if rs_manual.exists() else set()
                 auto_names = set(_list_roi_names(rs_auto)) if rs_auto.exists() else set()
                 inferred = {n for n in (avail - (manual_names | auto_names)) if n}

@@ -13,6 +13,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Dict, Iterable, List, Optional, Tuple, TYPE_CHECKING
 
 import numpy as np
+import pydicom
 import SimpleITK as sitk
 import yaml
 
@@ -1617,16 +1618,133 @@ def _cleanup_model_cache(model: CustomModelDefinition) -> None:
             logger.warning("Failed to remove cached %s for model %s: %s", key, model.name, exc)
 
 
+def _strict_structure_inventory(
+    value: object,
+    *,
+    field_name: str,
+    context: Path,
+    allow_empty: bool = False,
+) -> List[str]:
+    if not isinstance(value, list) or (not value and not allow_empty):
+        requirement = "a list" if allow_empty else "a non-empty list"
+        raise RuntimeError(
+            f"{field_name} in {context} must be {requirement} of non-empty strings"
+        )
+    names: List[str] = []
+    for index, raw_name in enumerate(value, start=1):
+        if not isinstance(raw_name, str) or not raw_name.strip():
+            raise RuntimeError(
+                f"{field_name} entry {index} in {context} must be a non-empty string"
+            )
+        name = raw_name.strip()
+        if name in names:
+            raise RuntimeError(
+                f"{field_name} in {context} contains duplicate structure {name!r}"
+            )
+        names.append(name)
+    return names
+
+
+def _definition_expected_structures(
+    root: Optional[Path],
+    required_names: set[str],
+) -> Dict[str, List[str]]:
+    """Load relevant model definitions without requiring weights to remain present."""
+    if root is None:
+        return {}
+    root = Path(root)
+    if not root.exists():
+        return {}
+    if not root.is_dir():
+        raise RuntimeError(f"Custom models root is not a directory: {root}")
+
+    definitions: Dict[str, List[str]] = {}
+    try:
+        model_dirs = sorted(path for path in root.iterdir() if path.is_dir())
+    except OSError as exc:
+        raise RuntimeError(f"Could not enumerate custom model definitions under {root}: {exc}") from exc
+
+    for model_dir in model_dirs:
+        config_path = model_dir / "custom_model.yaml"
+        if not config_path.is_file():
+            continue
+        try:
+            data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            if model_dir.name in required_names:
+                raise RuntimeError(
+                    f"Could not read required custom model definition {config_path}: {exc}"
+                ) from exc
+            continue
+        configured_name = (
+            str(data.get("name") or model_dir.name).strip()
+            if isinstance(data, dict)
+            else model_dir.name
+        )
+        if model_dir.name not in required_names and configured_name not in required_names:
+            continue
+        try:
+            definition = _parse_custom_model(model_dir, data, "nnUNetv2_predict")
+        except Exception as exc:
+            raise RuntimeError(
+                f"Invalid required custom model definition {config_path}: {exc}"
+            ) from exc
+        expected = definition.expected_structures()
+        if not expected:
+            raise RuntimeError(
+                f"Required custom model definition has no expected structures: {config_path}"
+            )
+        if definition.name in definitions:
+            raise RuntimeError(
+                f"Duplicate custom model definition name {definition.name!r} under {root}"
+            )
+        definitions[definition.name] = expected
+    return definitions
+
+
+def _rtstruct_structure_inventory(rtstruct_path: Path) -> List[str]:
+    try:
+        dataset = pydicom.dcmread(
+            str(rtstruct_path), stop_before_pixels=True, force=True
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            f"Could not read required custom model RTSTRUCT {rtstruct_path}: {exc}"
+        ) from exc
+    sequence = getattr(dataset, "StructureSetROISequence", None) or []
+    names: List[str] = []
+    for index, roi in enumerate(sequence, start=1):
+        raw_name = getattr(roi, "ROIName", None)
+        if not isinstance(raw_name, str) or not raw_name.strip():
+            raise RuntimeError(
+                f"Required custom model RTSTRUCT {rtstruct_path} has an invalid ROI "
+                f"name at position {index}"
+            )
+        name = raw_name.strip()
+        if name in names:
+            raise RuntimeError(
+                f"Required custom model RTSTRUCT {rtstruct_path} has duplicate ROI "
+                f"identity {name!r}"
+            )
+        names.append(name)
+    if not names:
+        raise RuntimeError(
+            f"Required custom model RTSTRUCT contains no named ROIs: {rtstruct_path}"
+        )
+    return names
+
+
 def validate_custom_model_output_inventory(
     course_dir: Path,
     configured_names: Optional[Iterable[str]] = None,
-) -> None:
-    """Require RTSTRUCTs for explicitly selected and current course model outputs.
+    custom_models_root: Optional[Path] = None,
+) -> Dict[str, List[str]]:
+    """Validate and return the exact expected ROI inventory for each required model.
 
-    ``custom_model_names`` is the explicit CLI selection and therefore required.
-    Existing per-course model directories are also part of the current segmentation
-    inventory. Definitions that merely exist under ``custom_models_root`` are not
-    enforced here because they may be disabled, invalid, or body-region-ineligible.
+    Explicitly selected models and every current per-course model output are required.
+    Their expected structures must be prespecified by a generation manifest, a current
+    model definition, or both. The RTSTRUCT must exactly match that expectation before
+    any radiomics backend may enumerate extraction tasks.
     """
     custom_root = Path(course_dir) / "Segmentation_CustomModels"
     required = {
@@ -1648,16 +1766,106 @@ def validate_custom_model_output_inventory(
                 f"Could not enumerate custom model outputs under {custom_root}: {exc}"
             ) from exc
 
-    missing = [
-        name
-        for name in sorted(required)
-        if not (custom_root / name / "rtstruct.dcm").is_file()
-    ]
-    if missing:
-        raise RuntimeError(
-            "Required custom model RTSTRUCT output is missing for: "
-            + ", ".join(missing)
-        )
+    definitions = _definition_expected_structures(custom_models_root, required)
+    validated: Dict[str, List[str]] = {}
+    for name in sorted(required):
+        model_output = custom_root / name
+        rtstruct_path = model_output / "rtstruct.dcm"
+        if not rtstruct_path.is_file():
+            raise RuntimeError(
+                f"Required custom model RTSTRUCT output is missing for: {name}"
+            )
+
+        definition_expected = definitions.get(name)
+        manifest_expected: Optional[List[str]] = None
+        manifest_path = model_output / "manifest.json"
+        if manifest_path.exists():
+            if not manifest_path.is_file():
+                raise RuntimeError(
+                    f"Custom model manifest is not a file: {manifest_path}"
+                )
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Could not read custom model manifest {manifest_path}: {exc}"
+                ) from exc
+            if not isinstance(manifest, dict):
+                raise RuntimeError(
+                    f"Custom model manifest top level must be a mapping: {manifest_path}"
+                )
+            manifest_model = manifest.get("model")
+            if manifest_model is not None and str(manifest_model).strip() != name:
+                raise RuntimeError(
+                    f"Custom model manifest identity {manifest_model!r} does not match "
+                    f"output directory {name!r}: {manifest_path}"
+                )
+            if "expected_structures" in manifest:
+                manifest_expected = _strict_structure_inventory(
+                    manifest["expected_structures"],
+                    field_name="expected_structures",
+                    context=manifest_path,
+                )
+            if "missing_structures" in manifest:
+                manifest_missing = _strict_structure_inventory(
+                    manifest["missing_structures"],
+                    field_name="missing_structures",
+                    context=manifest_path,
+                    allow_empty=True,
+                )
+                if manifest_missing:
+                    raise RuntimeError(
+                        f"Custom model {name!r} is missing expected structure(s): "
+                        + ", ".join(manifest_missing)
+                    )
+            if "produced_structures" in manifest:
+                manifest_produced = _strict_structure_inventory(
+                    manifest["produced_structures"],
+                    field_name="produced_structures",
+                    context=manifest_path,
+                )
+                expected_for_manifest = manifest_expected or definition_expected
+                if expected_for_manifest is not None and set(manifest_produced) != set(expected_for_manifest):
+                    missing = sorted(set(expected_for_manifest) - set(manifest_produced))
+                    unexpected = sorted(set(manifest_produced) - set(expected_for_manifest))
+                    details: List[str] = []
+                    if missing:
+                        details.append("missing " + ", ".join(missing))
+                    if unexpected:
+                        details.append("unexpected " + ", ".join(unexpected))
+                    raise RuntimeError(
+                        f"Custom model {name!r} produced inventory does not match its "
+                        f"expected inventory ({'; '.join(details)}): {manifest_path}"
+                    )
+
+        if manifest_expected is not None and definition_expected is not None:
+            if set(manifest_expected) != set(definition_expected):
+                raise RuntimeError(
+                    f"Custom model {name!r} manifest expectation is stale relative to "
+                    f"its current model definition"
+                )
+        expected = manifest_expected or definition_expected
+        if expected is None:
+            raise RuntimeError(
+                f"Custom model {name!r} has no prespecified expected structure "
+                f"inventory in {manifest_path} or custom_models_root"
+            )
+
+        actual = _rtstruct_structure_inventory(rtstruct_path)
+        missing = sorted(set(expected) - set(actual))
+        unexpected = sorted(set(actual) - set(expected))
+        if missing or unexpected:
+            details = []
+            if missing:
+                details.append("missing " + ", ".join(missing))
+            if unexpected:
+                details.append("unexpected " + ", ".join(unexpected))
+            raise RuntimeError(
+                f"Custom model {name!r} RTSTRUCT inventory does not exactly match "
+                f"the prespecified expectation ({'; '.join(details)}): {rtstruct_path}"
+            )
+        validated[name] = list(expected)
+    return validated
 
 
 def list_custom_model_outputs(course_dir: Path) -> List[Tuple[str, Path]]:

@@ -7,7 +7,10 @@ This document provides comprehensive guidance for running rtpipeline in Docker a
 
 All pipeline features work correctly in Docker and Singularity containers:
 
-### Latest Updates (v2.3.0)
+### Checked-out candidate updates (unreleased 2.4.0)
+
+The repository currently contains the unreleased 2.4.0 candidate. The latest published release remains 2.3.0.
+
 - **Complete NTCV defaults**: Standard robustness runs noise at 0/10/20 HU, translations up to +/-4 mm, two contour realizations, and +/-15% volume adaptation
 - **Complete wheels**: All runtime subpackages are included and checked before the container build
 - **Safer launch/extraction paths**: Shell boundaries are explicit and downloaded model archives are validated before extraction
@@ -435,14 +438,17 @@ singularity pull rtpipeline.sif docker://kstawiski/rtpipeline:latest
 singularity build rtpipeline.sif docker-daemon://kstawiski/rtpipeline:latest
 ```
 
-#### Option 3: Convert the Versioned Docker Image with `rtpipeline.def`
+#### Option 3: convert the unreleased 2.4.0 candidate with `rtpipeline.def`
+
+The checked-out `rtpipeline.def` references `kstawiski/rtpipeline:2.4.0`. That image is an unreleased candidate and is not expected to exist in the public registry until 2.4.0 is published.
+
+After the versioned Docker image is published:
+
 ```bash
-# rtpipeline.def is a thin conversion of the canonical 2.3.0 Docker image.
-apptainer build rtpipeline-2.3.0.sif rtpipeline.def
+apptainer build rtpipeline-2.4.0.sif rtpipeline.def
 ```
 
-This path does not build or maintain a second dependency stack. The published
-`kstawiski/rtpipeline:2.3.0` image is the software source for the resulting SIF.
+This path does not build or maintain a second dependency stack. The version-matched `kstawiski/rtpipeline:2.4.0` image will be the software source for the resulting SIF. Use the 2.3.0 release tag and its matching definition when building the current released version.
 
 ### Running with Singularity
 
