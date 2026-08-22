@@ -1875,7 +1875,7 @@ def radiomics_for_course(
     try:
         from .radiomics import _list_roi_names_dicom
 
-        if not desired_custom and rs_custom.exists():
+        if custom_cfg is None and not desired_custom and rs_custom.exists():
             manual_names = set(_list_roi_names_dicom(rs_manual))
             auto_names = set(_list_roi_names_dicom(rs_auto))
             custom_names = set(_list_roi_names_dicom(rs_custom))
@@ -1907,9 +1907,10 @@ def radiomics_for_course(
                     + ", ".join(missing_custom)
                 )
 
-        validate_custom_model_output_inventory(
+        custom_model_expected_rois = validate_custom_model_output_inventory(
             course_dir,
             getattr(config, "custom_model_names", None),
+            getattr(config, "custom_models_root", None),
         )
         custom_model_outputs = list_custom_model_outputs(course_dir)
     except Exception as exc:
@@ -1931,7 +1932,11 @@ def radiomics_for_course(
         source_specs.append(("Custom", rs_custom, custom_wanted))
     for model_name, model_course_dir in custom_model_outputs:
         source_specs.append(
-            (f"CustomModel:{model_name}", Path(model_course_dir) / "rtstruct.dcm", None)
+            (
+                f"CustomModel:{model_name}",
+                Path(model_course_dir) / "rtstruct.dcm",
+                custom_model_expected_rois[model_name],
+            )
         )
 
     if not source_specs:

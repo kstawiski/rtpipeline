@@ -229,20 +229,24 @@ singularity pull rtpipeline.sif docker://kstawiski/rtpipeline:latest
 singularity build rtpipeline.sif docker-daemon://kstawiski/rtpipeline:latest
 ```
 
-#### Option C: Convert the Versioned Docker Image with `rtpipeline.def`
+#### Option C: convert the unreleased 2.4.0 candidate with `rtpipeline.def`
+
+The checked-out definition references `kstawiski/rtpipeline:2.4.0`. Do not expect this registry-backed build to work before the 2.4.0 image is published.
+
+After publication:
 
 ```bash
-# rtpipeline.def is a thin conversion of the canonical 2.3.0 Docker image.
-apptainer build rtpipeline-2.3.0.sif rtpipeline.def
+apptainer build rtpipeline-2.4.0.sif rtpipeline.def
 ```
 
-This does not build a separate software stack or consume repository files as a
-build context. It converts the published `kstawiski/rtpipeline:2.3.0` image.
+This does not build a separate software stack or consume repository files as a build context. It converts the version-matched `kstawiski/rtpipeline:2.4.0` image.
 
-**Expected:**
+**Expected after publication:**
 - Build completes successfully
-- Creates `rtpipeline-2.3.0.sif` (~4-7 GB)
+- Creates `rtpipeline-2.4.0.sif` (~4-7 GB)
 - No errors about missing files
+
+The current released version remains 2.3.0. Test it from the 2.3.0 release tag with that tag's matching definition.
 
 ### 2. Test Singularity Image
 

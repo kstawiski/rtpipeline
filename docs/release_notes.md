@@ -6,6 +6,12 @@ The next version is 2.4.0. It remains unreleased and has no release tag or publi
 
 Work after the 2.3.0 tag tightens fail-closed radiomics and public-repository boundary checks and adds the backward-incompatible federation packet schema v3. Schema v3 binds normalized configuration, immutable source/container identity, runtime RTpipeline version, and an exact feature/ROI inventory that includes `segmentation_source`. Manual, automated, and custom contour sources therefore remain distinct compatibility identities. For distributed aggregate radiomics reliability analysis, central aggregation performs node-tagged concatenation of validated cohort-level rows and computes no pooled cross-site estimator or meta-analysis. These packets do not themselves establish federated model training, secure aggregation, differential privacy, privacy guarantees, or outcome federation. External federated learning remains a separately implemented downstream setting.
 
+### Radiomics source and ROI inventory safety
+
+- CustomModel radiomics now requires an exact expected structure inventory from the model definition, output manifest, or both. A missing or unexpected RTSTRUCT ROI fails the course and invalidates stale radiomics outputs.
+- A configured custom-structure file now fails on read, parse, schema, entry, or duplicate-name errors. Native, parallel, and conda backends no longer replace an invalid configured inventory with names inferred from the RTSTRUCT.
+- Matching ROI names from Manual, AutoRTS_total, Custom, and CustomModel inputs remain separate source-sensitive identities.
+
 Cite RTpipeline 2.3.0 for the currently released software. Add an immutable git commit or container digest when a manuscript uses the unreleased 2.4.0 bytes.
 
 ## 2.3.0

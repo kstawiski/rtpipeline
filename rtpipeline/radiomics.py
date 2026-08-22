@@ -503,30 +503,125 @@ def _extractor_large_roi(config: PipelineConfig, modality: str = "CT") -> Option
 
 
 def _custom_roi_names_from_config(path: Path) -> set[str]:
-    """Parse a custom-structures YAML/JSON file and return ROI base names."""
+    """Return the exact declared custom-ROI inventory or fail closed."""
+    path = Path(path)
     try:
         raw = path.read_text(encoding="utf-8")
-    except Exception:
-        return set()
-    data: Any
+    except Exception as exc:
+        raise RadiomicsCourseExtractionError(
+            f"Configured custom structure file could not be read: {path}: {exc}"
+        ) from exc
+
     try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        try:
-            data = yaml.safe_load(raw)
-        except Exception:
-            return set()
+        data: Any = yaml.safe_load(raw)
+    except yaml.YAMLError as exc:
+        raise RadiomicsCourseExtractionError(
+            f"Configured custom structure file could not be parsed as YAML/JSON: "
+            f"{path}: {exc}"
+        ) from exc
+
     if not isinstance(data, dict):
-        return set()
-    items = data.get("custom_structures") or data.get("custom_structures_config") or []
-    if not isinstance(items, list):
-        return set()
+        raise RadiomicsCourseExtractionError(
+            f"Configured custom structure file top level must be a mapping: {path}"
+        )
+    if "custom_structures" not in data:
+        raise RadiomicsCourseExtractionError(
+            f"Configured custom structure file is missing required "
+            f"'custom_structures' section: {path}"
+        )
+
+    items = data["custom_structures"]
+    if not isinstance(items, list) or not items:
+        raise RadiomicsCourseExtractionError(
+            f"Configured 'custom_structures' section must be a non-empty list: {path}"
+        )
+
     out: set[str] = set()
-    for item in items:
-        if isinstance(item, dict):
-            name = str(item.get("name") or "").strip()
-            if name:
-                out.add(name)
+    for index, item in enumerate(items, start=1):
+        if not isinstance(item, dict):
+            raise RadiomicsCourseExtractionError(
+                f"Configured custom structure entry {index} must be a mapping: {path}"
+            )
+        raw_name = item.get("name")
+        if not isinstance(raw_name, str) or not raw_name.strip():
+            raise RadiomicsCourseExtractionError(
+                f"Configured custom structure entry {index} has an invalid 'name': {path}"
+            )
+        name = raw_name.strip()
+        if name in out:
+            raise RadiomicsCourseExtractionError(
+                f"Configured custom structure file has duplicate ROI name "
+                f"{name!r}: {path}"
+            )
+
+        operation = item.get("operation", "union")
+        if not isinstance(operation, str) or operation not in {
+            "union",
+            "intersection",
+            "subtract",
+            "xor",
+        }:
+            raise RadiomicsCourseExtractionError(
+                f"Configured custom structure entry {index} has an invalid "
+                f"'operation': {path}"
+            )
+        sources = item.get("source_structures")
+        if (
+            not isinstance(sources, list)
+            or not sources
+            or any(
+                not isinstance(source, str) or not source.strip()
+                for source in sources
+            )
+        ):
+            raise RadiomicsCourseExtractionError(
+                f"Configured custom structure entry {index} has invalid "
+                f"'source_structures'; expected a non-empty list of names: {path}"
+            )
+        if operation == "subtract" and len(sources) < 2:
+            raise RadiomicsCourseExtractionError(
+                f"Configured custom structure entry {index} uses 'subtract' but "
+                f"declares fewer than two source structures: {path}"
+            )
+
+        margin = item.get("margin")
+        if margin is not None:
+            if isinstance(margin, bool):
+                valid_margin = False
+            elif isinstance(margin, (int, float)):
+                valid_margin = bool(np.isfinite(float(margin)))
+            elif isinstance(margin, dict):
+                allowed_margin_fields = {
+                    "anterior_mm",
+                    "posterior_mm",
+                    "left_mm",
+                    "right_mm",
+                    "superior_mm",
+                    "inferior_mm",
+                    "uniform_mm",
+                }
+                valid_margin = bool(margin) and set(margin) <= allowed_margin_fields
+                valid_margin = valid_margin and all(
+                    not isinstance(value, bool)
+                    and isinstance(value, (int, float))
+                    and np.isfinite(float(value))
+                    for value in margin.values()
+                )
+            else:
+                valid_margin = False
+            if not valid_margin:
+                raise RadiomicsCourseExtractionError(
+                    f"Configured custom structure entry {index} has an invalid "
+                    f"'margin': {path}"
+                )
+
+        description = item.get("description")
+        if description is not None and not isinstance(description, str):
+            raise RadiomicsCourseExtractionError(
+                f"Configured custom structure entry {index} has an invalid "
+                f"'description': {path}"
+            )
+        out.add(name)
     return out
 
 
@@ -557,6 +652,7 @@ def _rtstruct_masks(
     rs_path: Path,
     *,
     skip_rois: Optional[set[str]] = None,
+    expected_rois: Optional[List[str]] = None,
 ) -> Dict[str, np.ndarray]:
     """Convert every expected RTSTRUCT ROI to a non-empty boolean mask.
 
@@ -585,11 +681,31 @@ def _rtstruct_masks(
         ) from exc
 
     try:
-        roi_names = list(rt.get_roi_names())
+        available_roi_names = list(rt.get_roi_names())
     except Exception as exc:
         raise RadiomicsCourseExtractionError(
             f"Failed to read expected ROI names from {rs_path}: {exc}"
         ) from exc
+
+    roi_names = available_roi_names
+    if expected_rois is not None:
+        if len(available_roi_names) != len(set(available_roi_names)):
+            raise RadiomicsCourseExtractionError(
+                f"Required RTSTRUCT has duplicate ROI identities: {rs_path}"
+            )
+        missing = sorted(set(expected_rois) - set(available_roi_names))
+        unexpected = sorted(set(available_roi_names) - set(expected_rois))
+        if missing or unexpected:
+            details: list[str] = []
+            if missing:
+                details.append("missing " + ", ".join(missing))
+            if unexpected:
+                details.append("unexpected " + ", ".join(unexpected))
+            raise RadiomicsCourseExtractionError(
+                f"Required RTSTRUCT inventory does not exactly match the "
+                f"prespecified expectation ({'; '.join(details)}): {rs_path}"
+            )
+        roi_names = list(expected_rois)
 
     out: Dict[str, np.ndarray] = {}
     for name in roi_names:
@@ -719,10 +835,15 @@ def radiomics_for_course(config: PipelineConfig, course_dir: Path, custom_struct
             raise RadiomicsCourseExtractionError(
                 f"Configured required custom structure file is missing: {configured_custom_path}"
             )
-        desired_custom_bases = {
-            name for name in _custom_roi_names_from_config(configured_custom_path)
-            if ''.join(ch for ch in name.lower() if ch.isalnum()) not in normalized_skip_rois
-        }
+        try:
+            desired_custom_bases = {
+                name for name in _custom_roi_names_from_config(configured_custom_path)
+                if ''.join(ch for ch in name.lower() if ch.isalnum())
+                not in normalized_skip_rois
+            }
+        except RadiomicsCourseExtractionError:
+            _invalidate_radiomics_outputs(out_path)
+            raise
 
     # Process every current non-skipped identity before deciding whether a resume
     # workbook is complete. Partial top-ups can silently miss newly added sources.
@@ -750,8 +871,8 @@ def radiomics_for_course(config: PipelineConfig, course_dir: Path, custom_struct
     # Process custom structures (extract only custom ROIs; avoid duplicating base ROIs in RS_custom)
     rs_custom = course_dir / "RS_custom.dcm"
     want_custom = bool(desired_custom_bases)
-    if not want_custom and rs_custom.exists():
-        # Fallback: infer custom-only ROIs as those present in RS_custom but absent in RS and RS_auto.
+    if configured_custom_path is None and not want_custom and rs_custom.exists():
+        # Unconfigured legacy fallback only. A configured file defines the exact inventory.
         try:
             base_names = set(_list_roi_names_dicom(rs_custom))
             manual_names = set(_list_roi_names_dicom(find_dcm(course_dirs.dicom_rtstruct, "RS.dcm", course_dir)))
@@ -839,9 +960,10 @@ def radiomics_for_course(config: PipelineConfig, course_dir: Path, custom_struct
     # Include current course outputs and explicitly selected custom models. Model
     # definitions present only under custom_models_root are dormant, not required.
     try:
-        validate_custom_model_output_inventory(
+        custom_model_expected_rois = validate_custom_model_output_inventory(
             course_dir,
             getattr(config, "custom_model_names", None),
+            getattr(config, "custom_models_root", None),
         )
         custom_model_outputs = list_custom_model_outputs(course_dir)
     except Exception as exc:
@@ -855,7 +977,10 @@ def radiomics_for_course(config: PipelineConfig, course_dir: Path, custom_struct
             continue
         try:
             masks = _rtstruct_masks(
-                course_dirs.dicom_ct, rs_path, skip_rois=configured_skip_rois
+                course_dirs.dicom_ct,
+                rs_path,
+                skip_rois=configured_skip_rois,
+                expected_rois=custom_model_expected_rois[model_name],
             )
         except RadiomicsCourseExtractionError:
             _invalidate_radiomics_outputs(out_path)
