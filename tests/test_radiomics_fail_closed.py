@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+import rtpipeline.custom_models as custom_models
 import rtpipeline.radiomics as radiomics
 import rtpipeline.radiomics_conda as conda
 from rtpipeline.config import PipelineConfig
@@ -39,6 +40,270 @@ def _install_rt_utils(monkeypatch, builder) -> None:
         RTStructBuilder=types.SimpleNamespace(create_from=builder)
     )
     monkeypatch.setitem(sys.modules, "rt_utils", module)
+
+
+@pytest.mark.parametrize(
+    ("content", "message"),
+    [
+        ("custom_structures: [\n", "could not be parsed"),
+        ("- name: SharedROI\n", "top level must be a mapping"),
+        ("other: []\n", "missing required 'custom_structures' section"),
+        ("custom_structures: {}\n", "must be a non-empty list"),
+        ("custom_structures: []\n", "must be a non-empty list"),
+        ("custom_structures:\n  - SharedROI\n", "entry 1 must be a mapping"),
+        ("custom_structures:\n  - operation: union\n", "entry 1 has an invalid 'name'"),
+        ("custom_structures:\n  - name: 17\n", "entry 1 has an invalid 'name'"),
+        (
+            "custom_structures:\n"
+            "  - name: SharedROI\n"
+            "    source_structures: [PTV]\n"
+            "  - name: SharedROI\n"
+            "    source_structures: [GTV]\n",
+            "duplicate ROI name",
+        ),
+        (
+            "custom_structures:\n  - name: SharedROI\n",
+            "invalid 'source_structures'",
+        ),
+        (
+            "custom_structures:\n"
+            "  - name: SharedROI\n"
+            "    operation: invalid\n"
+            "    source_structures: [PTV]\n",
+            "invalid 'operation'",
+        ),
+        (
+            "custom_structures:\n"
+            "  - name: SharedROI\n"
+            "    source_structures: [PTV]\n"
+            "    margin: [5]\n",
+            "invalid 'margin'",
+        ),
+    ],
+)
+def test_custom_roi_config_parser_rejects_malformed_inventory(
+    tmp_path, content, message
+):
+    config_path = tmp_path / "custom.yaml"
+    config_path.write_text(content, encoding="utf-8")
+
+    with pytest.raises(RadiomicsCourseExtractionError, match=message):
+        radiomics._custom_roi_names_from_config(config_path)
+
+
+def test_custom_roi_config_read_error_is_fatal(tmp_path):
+    missing = tmp_path / "missing-custom.yaml"
+
+    with pytest.raises(RadiomicsCourseExtractionError, match="could not be read"):
+        radiomics._custom_roi_names_from_config(missing)
+
+
+@pytest.mark.parametrize("backend", ["native", "parallel", "conda"])
+def test_malformed_custom_roi_config_fails_closed_in_every_backend(
+    tmp_path, monkeypatch, backend
+):
+    course = tmp_path / backend / "P1" / "C1"
+    dirs = build_course_dirs(course)
+    dirs.dicom_ct.mkdir(parents=True)
+    (dirs.dicom_ct / "slice.dcm").write_bytes(b"present")
+    stale = course / "radiomics_ct.xlsx"
+    stale.write_bytes(b"stale")
+    stale.with_suffix(".parquet").write_bytes(b"stale")
+    custom_config = tmp_path / backend / "malformed-custom.yaml"
+    custom_config.write_text("custom_structures: [\n", encoding="utf-8")
+    config = _config(tmp_path, custom_structures_config=custom_config)
+
+    monkeypatch.setattr(radiomics, "_load_series_image", lambda *_a, **_k: _Image())
+    monkeypatch.setattr(radiomics, "_extractor", lambda *_a, **_k: _FakeExtractor())
+
+    if backend == "native":
+        call = lambda: radiomics.radiomics_for_course(config, course)
+    elif backend == "parallel":
+        import rtpipeline.radiomics_parallel as parallel
+
+        call = lambda: parallel.parallel_radiomics_for_course(config, course)
+    else:
+        call = lambda: conda.radiomics_for_course(course, config)
+
+    with pytest.raises(RadiomicsCourseExtractionError, match="could not be parsed"):
+        call()
+
+    assert not stale.exists()
+    assert not stale.with_suffix(".parquet").exists()
+
+
+@pytest.mark.parametrize("backend", ["native", "parallel", "conda"])
+def test_missing_expected_custom_model_structure_fails_course_in_every_backend(
+    tmp_path, monkeypatch, backend
+):
+    course = tmp_path / backend / "P1" / "C1"
+    dirs = build_course_dirs(course)
+    dirs.dicom_ct.mkdir(parents=True)
+    (dirs.dicom_ct / "slice.dcm").write_bytes(b"present")
+    model_dir = course / "Segmentation_CustomModels" / "TumorModel"
+    model_dir.mkdir(parents=True)
+    (model_dir / "rtstruct.dcm").write_bytes(b"partial")
+    (model_dir / "manifest.json").write_text(
+        "{\n"
+        '  "model": "TumorModel",\n'
+        '  "expected_structures": ["SharedROI", "MissingROI"],\n'
+        '  "produced_structures": ["SharedROI", "MissingROI"],\n'
+        '  "missing_structures": []\n'
+        "}\n",
+        encoding="utf-8",
+    )
+    stale = course / "radiomics_ct.xlsx"
+    stale.write_bytes(b"stale")
+    stale.with_suffix(".parquet").write_bytes(b"stale")
+    config = _config(tmp_path, custom_model_names=["TumorModel"])
+
+    monkeypatch.setattr(radiomics, "_load_series_image", lambda *_a, **_k: _Image())
+    monkeypatch.setattr(radiomics, "_extractor", lambda *_a, **_k: _FakeExtractor())
+    monkeypatch.setattr(
+        custom_models.pydicom,
+        "dcmread",
+        lambda *_a, **_k: SimpleNamespace(
+            StructureSetROISequence=[SimpleNamespace(ROIName="SharedROI")]
+        ),
+    )
+
+    if backend == "native":
+        call = lambda: radiomics.radiomics_for_course(config, course)
+    elif backend == "parallel":
+        import rtpipeline.radiomics_parallel as parallel
+
+        call = lambda: parallel.parallel_radiomics_for_course(config, course)
+    else:
+        call = lambda: conda.radiomics_for_course(course, config)
+
+    with pytest.raises(RadiomicsCourseExtractionError, match="MissingROI"):
+        call()
+
+    assert not stale.exists()
+    assert not stale.with_suffix(".parquet").exists()
+
+
+def test_custom_model_definition_supplies_expected_inventory_without_manifest(
+    tmp_path, monkeypatch
+):
+    course = tmp_path / "P1" / "C1"
+    model_output = course / "Segmentation_CustomModels" / "TumorModel"
+    model_output.mkdir(parents=True)
+    (model_output / "rtstruct.dcm").write_bytes(b"present")
+
+    models_root = tmp_path / "models"
+    definition_dir = models_root / "TumorModel"
+    definition_dir.mkdir(parents=True)
+    (definition_dir / "custom_model.yaml").write_text(
+        "name: TumorModel\n"
+        "nnunet:\n"
+        "  networks:\n"
+        "    - id: tumor\n"
+        "      structures: [SharedROI, SecondROI]\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        custom_models.pydicom,
+        "dcmread",
+        lambda *_a, **_k: SimpleNamespace(
+            StructureSetROISequence=[
+                SimpleNamespace(ROIName="SharedROI"),
+                SimpleNamespace(ROIName="SecondROI"),
+            ]
+        ),
+    )
+
+    assert custom_models.validate_custom_model_output_inventory(
+        course,
+        ["TumorModel"],
+        models_root,
+    ) == {"TumorModel": ["SharedROI", "SecondROI"]}
+
+
+def test_same_named_roi_remains_distinct_across_all_ct_sources(
+    tmp_path, monkeypatch
+):
+    course = tmp_path / "P1" / "C1"
+    dirs = build_course_dirs(course)
+    dirs.dicom_ct.mkdir(parents=True)
+    dirs.dicom_rtstruct.mkdir(parents=True)
+    (dirs.dicom_ct / "slice.dcm").write_bytes(b"present")
+    manual_rs = dirs.dicom_rtstruct / "RS.dcm"
+    auto_rs = course / "RS_auto.dcm"
+    custom_rs = course / "RS_custom.dcm"
+    for path in (manual_rs, auto_rs, custom_rs):
+        path.write_bytes(b"present")
+
+    custom_config = tmp_path / "custom.yaml"
+    custom_config.write_text(
+        "custom_structures:\n"
+        "  - name: SharedROI\n"
+        "    operation: union\n"
+        "    source_structures: [PTV]\n",
+        encoding="utf-8",
+    )
+    model_dir = course / "Segmentation_CustomModels" / "TumorModel"
+    model_dir.mkdir(parents=True)
+    model_rs = model_dir / "rtstruct.dcm"
+    model_rs.write_bytes(b"present")
+    (model_dir / "manifest.json").write_text(
+        "{\n"
+        '  "model": "TumorModel",\n'
+        '  "expected_structures": ["SharedROI"],\n'
+        '  "produced_structures": ["SharedROI"],\n'
+        '  "missing_structures": []\n'
+        "}\n",
+        encoding="utf-8",
+    )
+
+    mask = np.ones((2, 2, 2), dtype=bool)
+
+    class CustomRTStruct:
+        def get_roi_mask_by_name(self, roi_name):
+            assert roi_name == "SharedROI"
+            return mask
+
+    _install_rt_utils(monkeypatch, lambda **_kwargs: CustomRTStruct())
+    monkeypatch.setattr(
+        custom_models.pydicom,
+        "dcmread",
+        lambda *_a, **_k: SimpleNamespace(
+            StructureSetROISequence=[SimpleNamespace(ROIName="SharedROI")]
+        ),
+    )
+    monkeypatch.setattr(radiomics, "_load_series_image", lambda *_a, **_k: _Image())
+    monkeypatch.setattr(radiomics, "_extractor", lambda *_a, **_k: _FakeExtractor())
+    monkeypatch.setattr(radiomics, "_mask_from_array_like", lambda *_a, **_k: object())
+    monkeypatch.setattr(radiomics, "_is_rs_custom_stale", lambda *_a, **_k: False)
+    monkeypatch.setattr(radiomics, "_list_roi_names_dicom", lambda _path: ["SharedROI"])
+    monkeypatch.setattr(
+        radiomics,
+        "_rtstruct_masks",
+        lambda _ct, _path, **_kwargs: {"SharedROI": mask},
+    )
+    monkeypatch.setattr(
+        radiomics,
+        "run_tasks_with_adaptive_workers",
+        lambda _label, tasks, function, **_kwargs: [function(task) for task in tasks],
+    )
+
+    outcome = radiomics.radiomics_for_course(
+        _config(
+            tmp_path,
+            custom_structures_config=custom_config,
+            custom_model_names=["TumorModel"],
+        ),
+        course,
+    )
+
+    assert outcome.status is RadiomicsCourseStatus.EXTRACTED
+    result = pd.read_excel(course / "radiomics_ct.xlsx", engine="openpyxl")
+    assert set(zip(result["segmentation_source"], result["roi_original_name"])) == {
+        ("Manual", "SharedROI"),
+        ("AutoRTS_total", "SharedROI"),
+        ("Custom", "SharedROI"),
+        ("CustomModel:TumorModel", "SharedROI"),
+    }
 
 
 @pytest.mark.parametrize(
