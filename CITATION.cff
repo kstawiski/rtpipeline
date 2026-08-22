@@ -1,26 +1,22 @@
 cff-version: 1.2.0
-message: >-
-  If you use RTpipeline, please cite the software metadata below.
+message: RTpipeline 2.4.0 is an unreleased release candidate. Cite an immutable git commit or container digest when using these bytes; do not describe them as a tagged release.
 title: RTpipeline
 type: software
-version: 2.3.0
+version: 2.4.0
 license: MIT
 authors:
-  - family-names: Stawiski
-    given-names: Konrad
+- family-names: Stawiski
+  given-names: Konrad
 repository-code: https://github.com/kstawiski/rtpipeline
 url: https://github.com/kstawiski/rtpipeline
-abstract: >-
-  Research-grade radiotherapy DICOM processing workflow for cohort
-  organization, AI delineation, radiomics extraction, quality control, and
-  robustness analysis.
+abstract: Research-grade radiotherapy DICOM processing workflow for cohort organization, AI delineation, radiomics extraction, quality control, and robustness analysis.
 preferred-citation:
   type: software
   authors:
-    - family-names: Stawiski
-      given-names: Konrad
-  title: "RTpipeline: Automated Radiotherapy DICOM Processing Pipeline"
-  version: 2.3.0
+  - family-names: Stawiski
+    given-names: Konrad
+  title: 'RTpipeline: Automated Radiotherapy DICOM Processing Pipeline'
+  version: 2.4.0
   year: 2026
   repository-code: https://github.com/kstawiski/rtpipeline
   url: https://github.com/kstawiski/rtpipeline

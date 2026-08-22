@@ -122,6 +122,7 @@ conversations/
 session_logs/
 triple_consensus_logs/
 independent_reviews/
+/tmp/
 
 # Local dependency/cache artifacts
 micromamba/

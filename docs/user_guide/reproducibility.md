@@ -42,7 +42,7 @@ Use this checklist before submitting a manuscript or thesis:
 ### For Multi-Center Studies
 
 - [ ] Shared configuration bundle created and versioned
-- [ ] All centers using identical RTpipeline version
+- [ ] All centers record the same released version or immutable commit
 - [ ] Structure mapping harmonized across sites
 - [ ] QC criteria applied consistently
 
@@ -142,20 +142,20 @@ conda env export --no-builds > rtpipeline-radiomics-environment.yml
 
 ### Docker for Complete Reproducibility
 
-For maximum reproducibility, use the Docker image with a specific tag:
+For maximum reproducibility, use the Docker image with a specific tag. Version 2.4.0 is unreleased, so the commands below apply only after that image tag is published. Until then, build from an immutable commit and record the resulting image digest.
 
 ```bash
 # Use a specific version, not :latest
-docker pull kstawiski/rtpipeline:2.3.0
+docker pull kstawiski/rtpipeline:2.4.0
 
 # Record the image digest
-docker inspect --format='{{.RepoDigests}}' kstawiski/rtpipeline:2.3.0
+docker inspect --format='{{.RepoDigests}}' kstawiski/rtpipeline:2.4.0
 ```
 
 Document in your methods:
-> "All preprocessing was performed using RTpipeline Docker image kstawiski/rtpipeline:2.3.0 (SHA256: abc123...)."
+> "All preprocessing was performed using RTpipeline Docker image kstawiski/rtpipeline:2.4.0 (SHA256: abc123...)."
 
-For `2.3.0`, also record whether radiomics and robustness were executed through the default dual-environment setup (`rtpipeline` + `rtpipeline-radiomics`) or a custom local installation.
+For `2.4.0`, also record whether radiomics and robustness were executed through the default dual-environment setup (`rtpipeline` + `rtpipeline-radiomics`) or a custom local installation. Manuscripts using the unreleased 2.4.0 bytes must cite an immutable git commit or container digest and must not describe 2.4.0 as a tagged release.
 
 ---
 
@@ -166,7 +166,7 @@ For `2.3.0`, also record whether radiomics and robustness were executed through 
 ```markdown
 **Dose-Volume Histogram Analysis**
 
-DVH metrics were extracted using RTpipeline (version 2.3.0, git commit: XXXXXX; replace if using another tag) [1].
+DVH metrics were extracted using RTpipeline (version 2.4.0, git commit: XXXXXX; replace if using another tag) [1].
 DICOM RTSTRUCT, RTDOSE, and RTPLAN files were exported from [TPS name/version]
 and processed using the following standardized protocol:
 
@@ -195,7 +195,7 @@ The complete preprocessing configuration is available as Supplementary File S2.
 ```markdown
 **Radiomic Feature Extraction and Stability Assessment**
 
-CT radiomic features were extracted using RTpipeline (version 2.3.0; replace if using another tag) [1] with
+CT radiomic features were extracted using RTpipeline (version 2.4.0; replace if using another tag) [1] with
 PyRadiomics (version 3.0.1) [2] following Image Biomarker Standardisation
 Initiative (IBSI) recommendations [3].
 
@@ -245,9 +245,7 @@ Features were classified as:
 ```markdown
 **Multi-Center Data Harmonization**
 
-Data from [N] centers were harmonized using RTpipeline (version 2.3.0; replace if using another tag) [1] as a
-standardized ETL framework. Each center independently processed local DICOM
-exports using an identical configuration bundle (Supplementary File S3).
+Data from [N] centers were processed using RTpipeline ([released version and tag, or immutable post-tag commit/container digest]) [1]. Each center processed local DICOM exports using shared configs and versioned artifacts (Supplementary File S3). These inputs make consistent local processing operationally possible, but do not prove identical processing unless a bound contract verifies it.
 
 **Harmonization Protocol:**
 1. **Structure Mapping:** A consortium-wide structure dictionary was defined
@@ -260,7 +258,7 @@ exports using an identical configuration bundle (Supplementary File S3).
    - Field-of-view cropping: [region]-based using TotalSegmentator landmarks
 
 3. **Quality Control:**
-   - All centers applied identical QC criteria (Supplementary Table S2)
+   - All centers declared the same QC criteria; bound packet checks and site receipts verified the criteria actually used (Supplementary Table S2)
    - [N] cases across all sites were excluded due to [reasons]
 
 4. **Feature Extraction:**
@@ -268,11 +266,9 @@ exports using an identical configuration bundle (Supplementary File S3).
    - Radiomics features: [list or reference to table]
 
 **Data Governance:**
-Raw DICOM data remained at each institution. Only [harmonized feature
-tables / model weights / aggregated statistics] were shared with the
-coordinating center.
+Raw DICOM data remained at each institution. RTpipeline's current packet workflow supports distributed aggregate radiomics reliability analysis. The packets contain cohort-level reliability statistics, not outcomes or model updates. They do not themselves establish federated model training, secure aggregation, differential privacy, privacy guarantees, or outcome federation. External federated learning requires a separately implemented downstream system.
 
-The RTpipeline configuration bundle is available at [DOI/URL].
+The RTpipeline configuration bundle is available at [repository or archive URL].
 
 [1] RTpipeline software citation (see repository `CITATION.cff`).
 ```
@@ -396,11 +392,12 @@ Supplementary Data.
 ```markdown
 **Code Availability**
 
-All data preprocessing was performed using RTpipeline (version 2.3.0,
-https://github.com/kstawiski/rtpipeline, DOI: XXX). The complete
-configuration bundle, including structure mapping dictionaries and
-radiomics parameters, is available at [DOI]. Analysis scripts for
-statistical modeling are available at [GitHub URL].
+All data preprocessing was performed using RTpipeline version 2.4.0
+(https://github.com/kstawiski/rtpipeline). The complete configuration bundle,
+including structure mapping dictionaries and radiomics parameters, is available
+at [repository or archive URL]. Analysis scripts for statistical modeling are
+available at [repository URL]. If unreleased RTpipeline bytes were used, report
+an immutable git commit or container digest in addition to version 2.4.0.
 ```
 
 ### Supplementary Materials to Include

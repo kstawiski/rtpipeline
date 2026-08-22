@@ -60,6 +60,7 @@ def _feature_record(roi_name):
         "original_shape_VoxelVolume": 1234.5,
         "diagnostics_Configuration_EnabledImageTypes": _NESTED_DIAGNOSTIC,
         "diagnostics_Versions_PyRadiomics": "3.1.0",
+        "segmentation_source": "Manual",
         "roi_name": roi_name,
         "roi_original_name": roi_name,
         "modality": "CT",
@@ -129,9 +130,9 @@ def test_checkpoint_flush_survives_and_preserves_resume(tmp_path):
     assert cp_path.exists(), "checkpoint parquet should have been written"
 
     resumed = RadiomicsCheckpoint(cp_path)
-    assert resumed.is_completed(_roi_instance_key({"roi_name": "CTV"}))
-    assert resumed.is_completed(_roi_instance_key({"roi_name": "BODY"}))
-    assert resumed.is_completed(_roi_instance_key({"roi_name": "BLADDER"}))
+    assert resumed.is_completed(_roi_instance_key(_feature_record("CTV")))
+    assert resumed.is_completed(_roi_instance_key(_feature_record("BODY")))
+    assert resumed.is_completed(_roi_instance_key(_feature_record("BLADDER")))
     assert resumed.get_completed_count() == 3
 
 
@@ -146,20 +147,26 @@ def test_checkpoint_source_uses_sanitizer():
 
 
 def test_resume_writes_complete_workbook(tmp_path, monkeypatch):
-    """REGRESSION (the blocking issue): a course that resumes with a pre-seeded
-    checkpoint must write EVERY completed ROI to radiomics_ct.xlsx — not just the
-    ROIs processed in the resumed run. Under the pre-fix code the workbook contained
+    """REGRESSION (the blocking issue): a course whose checkpoint covers only PART of
+    the current task inventory must still write EVERY ROI to radiomics_ct.xlsx — never
+    just the ROIs processed in this run. Under the pre-fix code the workbook contained
     only the newly-processed subset (silent partial-data-loss feeding the cohort).
+
+    The checkpoint is now all-or-nothing: a partial one is rejected outright rather
+    than resumed, so every ROI is recomputed and no stale checkpoint row can reach the
+    published workbook either.
     """
     monkeypatch.setattr(rc, "check_radiomics_env", lambda *a, **k: True)
-    # Stub the extractor so only the NOT-yet-completed ROI is "computed" this run.
-    monkeypatch.setattr(
-        rc, "extract_radiomics_batch_with_conda",
-        lambda tasks, params_file=None: [
+    extracted = []
+
+    def fake_batch(tasks, params_file=None):
+        extracted.extend(task["roi_name"] for task in tasks)
+        return [
             {"__status__": "success", "__task_index__": i, "original_firstorder_Mean": float(i + 100)}
             for i, _t in enumerate(tasks)
-        ],
-    )
+        ]
+
+    monkeypatch.setattr(rc, "extract_radiomics_batch_with_conda", fake_batch)
 
     checkpoint_path = tmp_path / "metadata" / "radiomics_ct_checkpoint.parquet"
     output_path = tmp_path / "radiomics_ct.xlsx"
@@ -170,20 +177,28 @@ def test_resume_writes_complete_workbook(tmp_path, monkeypatch):
     cp.add_result(_feature_record("BODY"))
     cp.flush()
 
-    # Run 2 resumes: the task set lists all three; CTV/BODY are already done.
+    # Run 2: the task set lists all three, so the two-ROI checkpoint is partial.
     tasks = [
-        {"image_path": "i", "mask_path": "m", "roi_name": "CTV", "cleanup": False, "metadata": {}},
-        {"image_path": "i", "mask_path": "m", "roi_name": "BODY", "cleanup": False, "metadata": {}},
-        {"image_path": "i", "mask_path": "m", "roi_name": "BLADDER", "cleanup": False, "metadata": {}},
+        {"image_path": "i", "mask_path": "m", "roi_name": name, "cleanup": False,
+         "metadata": {"segmentation_source": "Manual", "roi_original_name": name}}
+        for name in ("CTV", "BODY", "BLADDER")
     ]
     result = process_radiomics_batch(
         tasks, str(output_path), sequential=True, max_workers=1,
         checkpoint_path=checkpoint_path, enable_heartbeat=False,
     )
     assert result is not None
-    written = set(pd.read_excel(output_path)["roi_name"].tolist())
+    assert sorted(extracted) == ["BLADDER", "BODY", "CTV"], (
+        f"a partial checkpoint must be rejected, not resumed; extracted {extracted}"
+    )
+    published = pd.read_excel(output_path)
+    written = set(published["roi_name"].tolist())
     assert written == {"CTV", "BODY", "BLADDER"}, (
         f"resumed workbook must contain all completed ROIs; got {written}"
+    )
+    means = set(published["original_firstorder_Mean"].tolist())
+    assert means == {100.0, 101.0, 102.0}, (
+        f"every published row must be recomputed, not a stale checkpoint row; got {means}"
     )
 
 
@@ -205,8 +220,9 @@ def test_fully_checkpointed_course_regenerates_even_if_env_probe_fails(tmp_path,
     cp.flush()
 
     tasks = [
-        {"image_path": "i", "mask_path": "m", "roi_name": "CTV", "cleanup": False, "metadata": {}},
-        {"image_path": "i", "mask_path": "m", "roi_name": "BODY", "cleanup": False, "metadata": {}},
+        {"image_path": "i", "mask_path": "m", "roi_name": name, "cleanup": False,
+         "metadata": {"segmentation_source": "Manual", "roi_original_name": name}}
+        for name in ("CTV", "BODY")
     ]
     result = process_radiomics_batch(
         tasks, str(output_path), sequential=True, max_workers=1,
@@ -245,8 +261,10 @@ def test_mr_duplicate_roi_name_across_series_not_collapsed(tmp_path, monkeypatch
     out = tmp_path / "radiomics_mr.xlsx"
 
     cp = RadiomicsCheckpoint(cp_path, buffer_size=1)
-    cp.add_result({"roi_name": "liver", "series_uid": "1.2.A", "modality": "MR", "original_firstorder_Mean": 1.0})
-    cp.add_result({"roi_name": "liver", "series_uid": "1.2.B", "modality": "MR", "original_firstorder_Mean": 2.0})
+    cp.add_result({"roi_name": "liver", "series_uid": "1.2.A", "modality": "MR",
+                   "segmentation_source": "AutoTS_total_mr", "original_firstorder_Mean": 1.0})
+    cp.add_result({"roi_name": "liver", "series_uid": "1.2.B", "modality": "MR",
+                   "segmentation_source": "AutoTS_total_mr", "original_firstorder_Mean": 2.0})
     cp.flush()
     assert len(cp.load_records()) == 2, "distinct (roi_name, series_uid) must not be deduped to one"
 
@@ -254,9 +272,11 @@ def test_mr_duplicate_roi_name_across_series_not_collapsed(tmp_path, monkeypatch
     # from the checkpoint must contain BOTH series.
     tasks = [
         {"image_path": "i", "mask_path": "m", "roi_name": "liver", "cleanup": False,
-         "metadata": {"modality": "MR", "series_uid": "1.2.A"}},
+         "metadata": {"modality": "MR", "series_uid": "1.2.A",
+                      "segmentation_source": "AutoTS_total_mr"}},
         {"image_path": "i", "mask_path": "m", "roi_name": "liver", "cleanup": False,
-         "metadata": {"modality": "MR", "series_uid": "1.2.B"}},
+         "metadata": {"modality": "MR", "series_uid": "1.2.B",
+                      "segmentation_source": "AutoTS_total_mr"}},
     ]
     result = process_radiomics_batch(
         tasks, str(out), sequential=True, max_workers=1,
@@ -459,7 +479,10 @@ def test_batch_environment_unavailable_fails_and_invalidates_output(monkeypatch,
                     "image_path": str(tmp_path / "image.nrrd"),
                     "mask_path": str(tmp_path / "mask.nrrd"),
                     "roi_name": "PTV",
-                    "metadata": {"roi_original_name": "PTV"},
+                    "metadata": {
+                        "segmentation_source": "Manual",
+                        "roi_original_name": "PTV",
+                    },
                 }
             ],
             output_path,

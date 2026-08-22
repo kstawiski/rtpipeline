@@ -36,9 +36,19 @@ import pydicom
 
 from .layout import build_course_dirs, find_dcm
 from .utils import mask_is_cropped, radiomics_mp_context
-from .custom_models import list_custom_model_outputs
+from .custom_models import (
+    list_custom_model_outputs,
+    validate_custom_model_output_inventory,
+)
 from .custom_structures_rtstruct import _create_custom_structures_rtstruct, _is_rs_custom_stale
-from .radiomics_outcomes import RadiomicsCourseExtractionError, RadiomicsCourseOutcome
+from .radiomics_outcomes import (
+    RadiomicsCourseExtractionError,
+    RadiomicsCourseOutcome,
+    invalidate_radiomics_outputs as _invalidate_radiomics_outputs,
+    remove_artifact_strict as _remove_artifact_strict,
+    resume_identity_pairs as _resume_identity_pairs,
+    write_excel_atomic as _write_excel_atomic,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -328,7 +338,9 @@ def _extract_one(task: _RoiTask) -> Dict[str, Any]:
 
     mask_bool = mask.astype(bool)
     if not mask_bool.any():
-        return _status_record(task, "empty_mask", "ROI mask contains no foreground voxels", voxel_count=0)
+        raise RadiomicsRegionExtractionError(
+            f"ROI {task.roi_name} from {task.source} produced an empty required mask"
+        )
 
     voxel_count = int(mask_bool.sum())
     min_voxels = int(_WORKER_STATE.get("min_voxels", 120))
@@ -429,13 +441,15 @@ def _extract_one(task: _RoiTask) -> Dict[str, Any]:
 def _list_roi_names(rs_path: Path) -> List[str]:
     try:
         ds = pydicom.dcmread(str(rs_path), stop_before_pixels=True, force=True)
-    except Exception:
-        return []
+    except Exception as exc:
+        raise RadiomicsCourseExtractionError(f"Failed to read RTSTRUCT {rs_path}: {exc}") from exc
     out: List[str] = []
     for roi in getattr(ds, "StructureSetROISequence", []) or []:
         name = str(getattr(roi, "ROIName", "") or "").strip()
         if name:
             out.append(name)
+    if not out:
+        raise RadiomicsCourseExtractionError(f"RTSTRUCT contains no named ROIs: {rs_path}")
     return out
 
 
@@ -569,6 +583,7 @@ def parallel_radiomics_for_course(
     ct_files_present = ct_dir.exists() and any(path.is_file() for path in ct_dir.rglob('*'))
     if not ct_files_present:
         logger.info("No CT image for radiomics in %s", course_dir)
+        _invalidate_radiomics_outputs(out_path)
         return RadiomicsCourseOutcome.nothing_to_do("CT series is absent")
     existing_df = None
     if getattr(config, "resume", False) and out_path.exists():
@@ -580,17 +595,26 @@ def parallel_radiomics_for_course(
                 columns=["extraction_status", "extraction_status_detail", "voxel_count"],
                 errors="ignore",
             )
-        except Exception:
+            _resume_identity_pairs(existing_df)
+        except Exception as exc:
+            logger.warning(
+                "Invalidating unusable parallel resume workbook for %s: %s",
+                course_dir,
+                exc,
+            )
+            _invalidate_radiomics_outputs(out_path)
             existing_df = None
 
     try:
         from .radiomics import _extractor, _load_series_image
     except Exception as exc:
+        _invalidate_radiomics_outputs(out_path)
         raise RadiomicsCourseExtractionError(
             f"Failed importing radiomics extractor for {course_dir}: {exc}"
         ) from exc
 
     if _load_series_image(ct_dir) is None:
+        _invalidate_radiomics_outputs(out_path)
         raise RadiomicsCourseExtractionError(
             f"CT series is present but unreadable for radiomics in {course_dir}"
         )
@@ -600,12 +624,15 @@ def parallel_radiomics_for_course(
         try:
             from .radiomics_conda import radiomics_for_course as conda_radiomics_for_course
         except Exception as exc:
+            _invalidate_radiomics_outputs(out_path)
             raise RadiomicsCourseExtractionError(
                 f"Conda-based radiomics helper unavailable for {course_dir}: {exc}"
             ) from exc
         conda_out = conda_radiomics_for_course(course_dir, config, custom_structures_config)
-        return (RadiomicsCourseOutcome.extracted(conda_out) if conda_out is not None
-                else RadiomicsCourseOutcome.nothing_to_do("conda backend found no eligible ROIs"))
+        if conda_out is None:
+            _invalidate_radiomics_outputs(out_path)
+            return RadiomicsCourseOutcome.nothing_to_do("conda backend found no eligible ROIs")
+        return RadiomicsCourseOutcome.extracted(conda_out)
 
     # Choose RS_auto vs RS_auto_cropped
     rs_auto_name = "RS_auto.dcm"
@@ -630,30 +657,65 @@ def parallel_radiomics_for_course(
     # Custom structures (optional): prepare RS_custom but extract only custom ROIs (no duplication)
     rs_custom = course_dir / "RS_custom.dcm"
     desired_custom: set[str] = set()
-    if custom_structures_config and Path(custom_structures_config).exists():
+    configured_custom_value = (
+        custom_structures_config
+        or getattr(config, "custom_structures_config", None)
+    )
+    configured_custom_path: Optional[Path] = None
+    if configured_custom_value:
+        configured_custom_path = Path(configured_custom_value)
+        if not configured_custom_path.is_file():
+            _invalidate_radiomics_outputs(out_path)
+            raise RadiomicsCourseExtractionError(
+                f"Configured required custom structure file is missing: {configured_custom_path}"
+            )
         try:
             from .radiomics import _custom_roi_names_from_config
 
-            desired_custom = _custom_roi_names_from_config(Path(custom_structures_config))
-        except Exception:
-            desired_custom = set()
+            desired_custom = _custom_roi_names_from_config(configured_custom_path)
+        except Exception as exc:
+            _invalidate_radiomics_outputs(out_path)
+            raise RadiomicsCourseExtractionError(
+                f"Failed to read custom ROI configuration for {course_dir}: {exc}"
+            ) from exc
+        desired_custom = {
+            name for name in desired_custom
+            if _norm(name) not in {
+                _norm(item)
+                for item in getattr(config, "radiomics_skip_rois", []) or []
+                if isinstance(item, str) and item.strip()
+            }
+        }
         try:
             rs_auto_for_custom = course_dir / "RS_auto.dcm"
-            if _is_rs_custom_stale(rs_custom, custom_structures_config, rs_manual, rs_auto_for_custom):
+            if _is_rs_custom_stale(
+                rs_custom, configured_custom_path, rs_manual, rs_auto_for_custom
+            ):
                 rs_custom = _create_custom_structures_rtstruct(
-                    course_dir, custom_structures_config, rs_manual, rs_auto_for_custom
+                    course_dir, configured_custom_path, rs_manual, rs_auto_for_custom
                 ) or rs_custom
         except Exception as exc:
-            logger.warning("Failed to prepare RS_custom for radiomics in %s: %s", course_dir, exc)
+            _invalidate_radiomics_outputs(out_path)
+            raise RadiomicsCourseExtractionError(
+                f"Failed to prepare RS_custom for radiomics in {course_dir}: {exc}"
+            ) from exc
 
-    # Custom model RTSTRUCTs
+    # Custom model RTSTRUCTs: explicit selections and current per-course output
+    # directories are required; dormant definitions under custom_models_root are not.
     try:
+        validate_custom_model_output_inventory(
+            course_dir,
+            getattr(config, "custom_model_names", None),
+        )
         for model_name, model_course_dir in list_custom_model_outputs(course_dir):
             rs_model = Path(model_course_dir) / "rtstruct.dcm"
             if rs_model.exists():
                 sources.append((f"CustomModel:{model_name}", rs_model))
     except Exception as exc:
-        logger.debug("Custom model outputs scan failed for %s: %s", course_dir, exc)
+        _invalidate_radiomics_outputs(out_path)
+        raise RadiomicsCourseExtractionError(
+            f"Custom model output scan failed for {course_dir}: {exc}"
+        ) from exc
 
     skip_rois = _default_skip_rois() | {
         _norm(item)
@@ -663,60 +725,104 @@ def parallel_radiomics_for_course(
 
     min_voxels, max_voxels = _derive_voxel_limits(config)
 
-    # Enumerate tasks
+    # Enumerate every current non-skipped identity before accepting a resume
+    # workbook. BODY-only top-ups can miss ordinary Manual/AutoRTS/model ROIs.
     tasks: List[_RoiTask] = []
-    existing_pairs: set[tuple[str, str]] = set()
-    if existing_df is not None and "segmentation_source" in existing_df.columns and "roi_original_name" in existing_df.columns:
-        try:
-            existing_pairs = set(
-                zip(
-                    existing_df["segmentation_source"].astype(str).tolist(),
-                    existing_df["roi_original_name"].astype(str).tolist(),
-                )
-            )
-        except Exception:
-            existing_pairs = set()
-
-    full_run = not (getattr(config, "resume", False) and out_path.exists() and existing_df is not None)
-    if full_run:
+    try:
         for source, rs_path in sources:
             for roi_name in _list_roi_names(rs_path):
-                tasks.append(_RoiTask(source=source, rs_path=str(rs_path), roi_name=roi_name, course_dir=str(course_dir)))
-    else:
-        # Resume top-up: only compute ROIs that were previously missing.
-        if rs_manual.exists() and ("Manual", "BODY") not in existing_pairs and _norm("BODY") not in skip_rois:
-            tasks.append(_RoiTask(source="Manual", rs_path=str(rs_manual), roi_name="BODY", course_dir=str(course_dir)))
+                if _norm(roi_name) in skip_rois:
+                    continue
+                tasks.append(
+                    _RoiTask(
+                        source=source,
+                        rs_path=str(rs_path),
+                        roi_name=roi_name,
+                        course_dir=str(course_dir),
+                    )
+                )
+    except Exception:
+        _invalidate_radiomics_outputs(out_path)
+        raise
 
-    # Custom structures: extract only ROIs declared in config (or inferred from RS_custom diffs)
+    # Custom structures: extract every non-skipped configured ROI, or infer
+    # custom-only identities from an unconfigured RS_custom.
+    if desired_custom and not rs_custom.is_file():
+        _invalidate_radiomics_outputs(out_path)
+        raise RadiomicsCourseExtractionError(
+            f"Required custom RTSTRUCT is missing for configured ROIs in {course_dir}"
+        )
     if rs_custom.exists():
         try:
-            from .radiomics import _list_roi_names_dicom
-
-            avail = set(_list_roi_names_dicom(rs_custom))
+            avail = set(_list_roi_names(rs_custom))
             if not desired_custom:
-                manual_names = set(_list_roi_names_dicom(find_dcm(course_dirs.dicom_rtstruct, "RS.dcm", course_dir)))
-                auto_names = set(_list_roi_names_dicom(course_dir / "RS_auto.dcm"))
+                manual_names = set(_list_roi_names(rs_manual)) if rs_manual.exists() else set()
+                auto_names = set(_list_roi_names(rs_auto)) if rs_auto.exists() else set()
                 inferred = {n for n in (avail - (manual_names | auto_names)) if n}
                 desired_custom = {n[:-9] if n.endswith("__partial") else n for n in inferred}
 
             wanted: list[str] = []
+            missing_custom: list[str] = []
             for base in sorted(desired_custom):
                 if base in avail:
                     wanted.append(base)
                 elif f"{base}__partial" in avail:
                     wanted.append(f"{base}__partial")
+                else:
+                    missing_custom.append(base)
+            if missing_custom:
+                raise RadiomicsCourseExtractionError(
+                    f"Required configured custom ROI(s) missing from {rs_custom}: "
+                    + ", ".join(missing_custom)
+                )
             for roi_name in wanted:
-                if ("Custom", roi_name) in existing_pairs:
+                if _norm(roi_name) in skip_rois:
                     continue
-                tasks.append(_RoiTask(source="Custom", rs_path=str(rs_custom), roi_name=roi_name, course_dir=str(course_dir)))
+                tasks.append(
+                    _RoiTask(
+                        source="Custom",
+                        rs_path=str(rs_custom),
+                        roi_name=roi_name,
+                        course_dir=str(course_dir),
+                    )
+                )
         except Exception as exc:
-            logger.warning("Failed to enumerate custom radiomics tasks for %s: %s", course_dir, exc)
+            _invalidate_radiomics_outputs(out_path)
+            if isinstance(exc, RadiomicsCourseExtractionError):
+                raise
+            raise RadiomicsCourseExtractionError(
+                f"Failed to enumerate custom radiomics tasks for {course_dir}: {exc}"
+            ) from exc
+
+    if existing_df is not None:
+        expected_pairs = {(task.source, task.roi_name) for task in tasks}
+        try:
+            existing_pairs = _resume_identity_pairs(existing_df)
+        except ValueError as exc:
+            logger.warning(
+                "Invalidating unusable parallel resume workbook for %s: %s",
+                course_dir,
+                exc,
+            )
+            existing_pairs = set()
+        if expected_pairs and existing_pairs == expected_pairs:
+            logger.debug(
+                "Parallel radiomics resume workbook is complete for %s", course_dir
+            )
+            return RadiomicsCourseOutcome.extracted(out_path)
+        logger.warning(
+            "Invalidating incomplete parallel resume workbook for %s: expected %d "
+            "source/ROI identities, found %d",
+            course_dir,
+            len(expected_pairs),
+            len(existing_pairs),
+        )
+        _invalidate_radiomics_outputs(out_path)
+        existing_df = None
 
     if not tasks:
-        if existing_df is not None and out_path.exists():
-            logger.debug("Radiomics up-to-date for %s; no missing ROI tasks", course_dir)
-            return RadiomicsCourseOutcome.extracted(out_path)
         logger.info("No radiomics tasks for %s", course_dir)
+        _invalidate_radiomics_outputs(out_path)
         return RadiomicsCourseOutcome.nothing_to_do("no RTSTRUCT ROIs were enumerated")
 
     if max_workers is None:
@@ -747,11 +853,7 @@ def parallel_radiomics_for_course(
 
     def _invalidate_incomplete_output() -> None:
         """Remove stale tables that would otherwise look complete after failure."""
-        for candidate in (out_path, out_path.with_suffix(".parquet")):
-            try:
-                candidate.unlink(missing_ok=True)
-            except OSError as exc:
-                logger.error("Could not invalidate incomplete radiomics output %s: %s", candidate, exc)
+        _invalidate_radiomics_outputs(out_path)
 
     pending_tasks: List[_RoiTask] = list(tasks)
     start_time = time.monotonic()
@@ -902,6 +1004,7 @@ def parallel_radiomics_for_course(
             logger.debug("No new radiomics rows for %s (resume top-up)", course_dir)
             return RadiomicsCourseOutcome.extracted(out_path)
         logger.info("No eligible radiomics regions for %s", course_dir)
+        _invalidate_radiomics_outputs(out_path)
         return RadiomicsCourseOutcome.nothing_to_do("all enumerated ROIs were explicitly skipped")
 
     try:
@@ -928,7 +1031,7 @@ def parallel_radiomics_for_course(
             )
         else:
             df = df_new
-        df.to_excel(out_path, index=False, engine="openpyxl")
+        _write_excel_atomic(df, out_path)
         # Optional: Parquet sidecar for fast aggregation (best-effort).
         parquet_path = out_path.with_suffix(".parquet")
         tmp_parquet = parquet_path.with_suffix(".parquet.tmp")
@@ -946,20 +1049,12 @@ def parallel_radiomics_for_course(
                 df_roundtrip.to_parquet(tmp_parquet, index=False, engine="pyarrow")
                 tmp_parquet.replace(parquet_path)
             except Exception as exc2:
-                try:
-                    if tmp_parquet.exists():
-                        tmp_parquet.unlink()
-                except Exception:
-                    pass
-                # Avoid leaving a stale sidecar if we failed to update it.
-                try:
-                    if parquet_path.exists():
-                        parquet_path.unlink()
-                except Exception:
-                    pass
+                _remove_artifact_strict(tmp_parquet, context="cleaning failed Parquet publication")
+                _remove_artifact_strict(parquet_path, context="invalidating stale Parquet sidecar")
                 logger.debug("Parquet sidecar write failed for %s: %s (retry: %s)", out_path, exc, exc2)
         return RadiomicsCourseOutcome.extracted(out_path)
     except Exception as exc:
+        _invalidate_radiomics_outputs(out_path)
         raise RadiomicsCourseExtractionError(
             f"Failed to write radiomics output for {course_dir}: {exc}"
         ) from exc

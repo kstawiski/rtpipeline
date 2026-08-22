@@ -12,7 +12,7 @@ This section presents three detailed case studies demonstrating how RTpipeline a
 |------------|--------|-------------------|
 | [NTCP Modeling](#case-study-1-ntcp-modeling-for-late-rectal-toxicity) | Dosimetric modeling | DVH extraction, structure harmonization |
 | [Radiomics Signature](#case-study-2-radiomics-signature-for-treatment-response) | Imaging biomarkers | NTCV perturbations, robustness analysis |
-| [Distributed Reliability](#case-study-3-distributed-radiomics-reliability-analysis) | Aggregate radiomics validation | Standardized local ETL, hash-bound packets |
+| [Distributed Reliability](#case-study-3-distributed-aggregate-radiomics-reliability-analysis) | Distributed aggregate radiomics reliability analysis | Versioned local processing, hash-bound packets |
 
 ---
 
@@ -402,22 +402,15 @@ plt.savefig("robustness_analysis.png", dpi=150)
 
 ---
 
-## Case Study 3: Distributed Radiomics Reliability Analysis
+## Case Study 3: Distributed Aggregate Radiomics Reliability Analysis
 
-*One local method, one aggregate contract, multiple independently processed cohorts*
+*Versioned local processing with aggregate reliability packets*
 
 ### Summary
 
-Each participating site can run RTpipeline behind its own institutional boundary
-using a shared software version and analysis configuration. For radiomics
-reliability studies, a site exports only a hash-bound cohort-level summary
-packet. A coordinator validates every packet against the same contract and
-combines accepted aggregate rows.
+Each participating site can run RTpipeline behind its own institutional boundary using shared configs and versioned artifacts. These inputs make consistent local processing operationally possible, but they do not verify identical processing unless a bound contract establishes it. For distributed aggregate radiomics reliability analysis, a site exports a hash-bound cohort-level summary packet. A coordinator validates packets against the same contract and combines accepted aggregate rows.
 
-This is distributed aggregate analysis. RTpipeline does not currently train or
-aggregate models across sites, provide secure aggregation, or implement
-differential privacy. A packet may still require institutional approval before
-transfer.
+Current packets do not themselves establish federated model training, secure aggregation, differential privacy, privacy guarantees, or outcome federation. External federated learning is only a separately implemented downstream setting. Aggregate transfer may still require institutional approval.
 
 ### Workflow
 
@@ -448,20 +441,37 @@ labels and cohort signatures are not an anonymity mechanism.
 ### Step 1: Freeze the shared contract
 
 ```bash
-CONTRACT_ID=consortium-ntcv-icc-v1
+CONTRACT_ID=consortium-ntcv-icc-v3
 MINIMUM_SUBJECTS=5
+RTPIPELINE_VERSION=$(python -c 'import rtpipeline; print(rtpipeline.__version__)')
+SOURCE_ARTIFACT_KIND=container_image
+SOURCE_ARTIFACT_SHA256=<64-lowercase-hex-digest>
+
+rtpipeline federation config-digest --input processing-config.json \
+  > processing-config-digest.json
+PROCESSING_CONFIG_SHA256=$(jq -r .processing_config_sha256 processing-config-digest.json)
+
+rtpipeline federation inventory-digest --input expected-inventory.csv \
+  > inventory-digest.json
+EXPECTED_INVENTORY_SHA256=$(jq -r .expected_feature_roi_inventory_sha256 inventory-digest.json)
 
 rtpipeline federation contract \
   --contract-id "$CONTRACT_ID" \
   --minimum-subjects "$MINIMUM_SUBJECTS" \
+  --processing-config-sha256 "$PROCESSING_CONFIG_SHA256" \
+  --source-artifact-kind "$SOURCE_ARTIFACT_KIND" \
+  --source-artifact-sha256 "$SOURCE_ARTIFACT_SHA256" \
+  --rtpipeline-version "$RTPIPELINE_VERSION" \
+  --expected-inventory-sha256 "$EXPECTED_INVENTORY_SHA256" \
   > contract.json
 
 CONTRACT_SHA256=$(jq -r .contract_sha256 contract.json)
 ```
 
-The digest covers the schema, semantic rules, permitted packet files, audit
-rules, and minimum cell size. All sites and the coordinator retain the same
-three values: contract ID, digest, and minimum-subject threshold.
+The schema-v3 digest covers the schema, semantic rules, permitted packet files,
+audit rules, minimum cell size, normalized processing configuration, immutable
+artifact identity, runtime version, and exact feature/ROI inventory. All sites
+and the coordinator retain the unchanged contract and inventory files.
 
 ### Step 2: Process locally
 
@@ -480,7 +490,12 @@ rtpipeline federation export \
   --node-id node-a13f \
   --contract-id "$CONTRACT_ID" \
   --contract-sha256 "$CONTRACT_SHA256" \
-  --minimum-subjects "$MINIMUM_SUBJECTS"
+  --minimum-subjects "$MINIMUM_SUBJECTS" \
+  --processing-config-sha256 "$PROCESSING_CONFIG_SHA256" \
+  --source-artifact-kind "$SOURCE_ARTIFACT_KIND" \
+  --source-artifact-sha256 "$SOURCE_ARTIFACT_SHA256" \
+  --rtpipeline-version "$RTPIPELINE_VERSION" \
+  --expected-inventory-sha256 "$EXPECTED_INVENTORY_SHA256"
 ```
 
 The packet contains only `manifest.json` and deterministic `metrics.csv.gz`.
@@ -498,7 +513,12 @@ rtpipeline federation aggregate \
   --output aggregate \
   --contract-id "$CONTRACT_ID" \
   --contract-sha256 "$CONTRACT_SHA256" \
-  --minimum-subjects "$MINIMUM_SUBJECTS"
+  --minimum-subjects "$MINIMUM_SUBJECTS" \
+  --processing-config-sha256 "$PROCESSING_CONFIG_SHA256" \
+  --source-artifact-kind "$SOURCE_ARTIFACT_KIND" \
+  --source-artifact-sha256 "$SOURCE_ARTIFACT_SHA256" \
+  --rtpipeline-version "$RTPIPELINE_VERSION" \
+  --expected-inventory-sha256 "$EXPECTED_INVENTORY_SHA256"
 ```
 
 The coordinator supplies its own contract values. It rejects a node that lowers
@@ -508,7 +528,7 @@ manifest binds both files from every accepted packet by SHA-256.
 
 ### What this design establishes
 
-1. **Method identity:** sites can run the same released code and configuration.
+1. **Bound inputs:** manifests bind the declared immutable source/container artifact, runtime version, normalized configuration, expected inventory, and packet contract used at each site.
 2. **Interface conformance:** accepted packets have one exact row and metadata
    contract.
 3. **Data minimization:** the implemented packet schema has no raw DICOM,
@@ -516,10 +536,7 @@ manifest binds both files from every accepted packet by SHA-256.
 4. **Auditable aggregation:** coordinator outputs retain packet hashes and node
    denominators.
 
-It does not by itself establish cross-site biological transportability,
-clinical utility, site anonymity, legal permission to transfer aggregates, or
-federated learning performance. Those are separate scientific and governance
-questions.
+It does not by itself establish cross-site biological transportability, clinical utility, site anonymity, legal permission to transfer aggregates, privacy guarantees, outcome federation, or federated learning performance. Those are separate scientific, technical, and governance questions.
 
 ### Relevant documentation
 
@@ -555,22 +572,26 @@ These case studies provide templates that can be adapted to your specific resear
 
 ## Methods Boilerplate
 
-The following text can be adapted for your Methods section:
+The following text can be adapted for your Methods section. Version 2.4.0 is unreleased, so current users must replace the version-only citation with an immutable git commit or container digest and must not describe it as a tagged release.
 
-!!! note "DVH Extraction Methods"
-    Dose-volume histogram metrics were extracted using RTpipeline (version 2.3.0) [cite]. Structure sets were harmonized to canonical nomenclature via a mapping dictionary. DVH curves were computed using [interpolation method] with a dose resolution of [X Gy]. The following metrics were derived: mean dose (D~mean~), maximum dose (D~max~), dose to 2cc (D~2cc~), and volume receiving ≥[X Gy] (V~XGy~).
+!!! note "DVH extraction methods"
+    Dose-volume histogram metrics were extracted using RTpipeline version 2.4.0 [1]. Structure sets were harmonized to canonical nomenclature via a mapping dictionary. DVH curves were computed using [interpolation method] with a dose resolution of [X Gy]. The following metrics were derived: mean dose (D~mean~), maximum dose (D~max~), dose to 2cc (D~2cc~), and volume receiving ≥[X Gy] (V~XGy~).
 
-!!! note "Radiomics Extraction Methods"
-    Radiomic features were extracted using RTpipeline (version 2.3.0) [cite] with PyRadiomics 3.0.1 [cite] following Image Biomarker Standardisation Initiative (IBSI) feature definitions [cite]. Images were resampled to [X×X×X mm] voxels using [interpolation method]. Feature stability was assessed using an RTpipeline-adapted NTCV chain inspired by Zwanenburg et al. (2019) [cite], not an exact reimplementation. The configured [N] states per ROI combined Gaussian noise (σ = 0, 10, and 20 HU), superior-inferior translations (0 and +/-4 mm), two reproducible physical-space contour offsets, and distance-ranked volume adaptation to the closest voxel counts representing [LIST ACTUAL VOLUME TARGETS]. Every configured state was required to complete. CoV was computed within each patient/course/ROI/source and summarized by its cohort median. Structure/source/feature rows meeting ICC ≥ 0.90 and median within-subject CoV ≤ 10% were classified as robust.
+!!! note "Radiomics extraction methods"
+    Radiomic features were extracted using RTpipeline version 2.4.0 [1] with PyRadiomics 3.0.1 [2] following Image Biomarker Standardisation Initiative feature definitions [4]. Images were resampled to [X×X×X mm] voxels using [interpolation method]. Feature stability was assessed using an RTpipeline-adapted NTCV chain inspired by Zwanenburg et al. (2019) [3], not an exact reimplementation. The configured [N] states per ROI combined Gaussian noise (σ = 0, 10, and 20 HU), superior-inferior translations (0 and +/-4 mm), two reproducible physical-space contour offsets, and distance-ranked volume adaptation to the closest voxel counts representing [LIST ACTUAL VOLUME TARGETS]. Every configured state was required to complete. CoV was computed within each patient/course/ROI/source and summarized by its cohort median. Structure/source/feature rows meeting ICC ≥ 0.90 and median within-subject CoV ≤ 10% were classified as robust.
 
 ---
 
 ## References
 
-1. Zwanenburg A, et al. (2019). Assessing robustness of radiomic features by image perturbation. *Scientific Reports* 9:614. [DOI: 10.1038/s41598-018-36938-4](https://doi.org/10.1038/s41598-018-36938-4)
+1. Stawiski K. (2026). *RTpipeline: Automated Radiotherapy DICOM Processing Pipeline*, version 2.4.0. [Software repository](https://github.com/kstawiski/rtpipeline)
 
-2. Zwanenburg A, et al. (2020). The Image Biomarker Standardization Initiative. *Radiology* 295(2):328-338. [DOI: 10.1148/radiol.2020191145](https://doi.org/10.1148/radiol.2020191145)
+2. van Griethuysen JJM, et al. (2017). Computational radiomics system to decode the radiographic phenotype. *Cancer Research* 77(21):e104-e107. [DOI: 10.1158/0008-5472.CAN-17-0339](https://doi.org/10.1158/0008-5472.CAN-17-0339)
 
-3. Koo TK, Li MY. (2016). A guideline of selecting and reporting ICC for reliability research. *J Chiropr Med* 15(2):155-163. [DOI: 10.1016/j.jcm.2016.02.012](https://doi.org/10.1016/j.jcm.2016.02.012)
+3. Zwanenburg A, et al. (2019). Assessing robustness of radiomic features by image perturbation. *Scientific Reports* 9:614. [DOI: 10.1038/s41598-018-36938-4](https://doi.org/10.1038/s41598-018-36938-4)
 
-4. Bentzen SM, et al. (2010). QUANTEC: Organ-specific papers. *Int J Radiat Oncol Biol Phys* 76(3):S1-S160.
+4. Zwanenburg A, et al. (2020). The Image Biomarker Standardization Initiative. *Radiology* 295(2):328-338. [DOI: 10.1148/radiol.2020191145](https://doi.org/10.1148/radiol.2020191145)
+
+5. Koo TK, Li MY. (2016). A guideline of selecting and reporting ICC for reliability research. *J Chiropr Med* 15(2):155-163. [DOI: 10.1016/j.jcm.2016.02.012](https://doi.org/10.1016/j.jcm.2016.02.012)
+
+6. Bentzen SM, et al. (2010). QUANTEC: Organ-specific papers. *Int J Radiat Oncol Biol Phys* 76(3):S1-S160.
