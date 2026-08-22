@@ -403,14 +403,41 @@ def test_dual_environment_contract_is_enforced_in_packaging_and_receipt():
 
 def test_public_docs_do_not_overclaim_or_mix_roi_sources():
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    docs_index = (ROOT / "docs" / "index.md").read_text(encoding="utf-8")
     case_study = (ROOT / "docs" / "case_studies" / "index.md").read_text(
         encoding="utf-8"
     )
+    reproducibility = (ROOT / "docs" / "user_guide" / "reproducibility.md").read_text(
+        encoding="utf-8"
+    )
+    release_notes = (ROOT / "docs" / "release_notes.md").read_text(encoding="utf-8")
+    public_federation_docs = (
+        readme,
+        docs_index,
+        case_study,
+        reproducibility,
+        release_notes,
+    )
+
     assert "IBSI-compliant" not in readme
     assert "inspired by but not identical" in readme
     assert "radiomics_robustness_ct\n" not in case_study
     assert 'features["roi_original_name"] == "GTV_primary"' in case_study
     assert 'features["segmentation_source"] == "Custom"' in case_study
+    assert "[cite]" not in case_study
+    for document in public_federation_docs:
+        assert "distributed aggregate radiomics reliability analysis" in document.lower()
+        assert "secure aggregation" in document
+        assert "outcome federation" in document
+    assert release_notes.startswith("# Release notes\n\n## Unreleased\n")
+
+
+def test_citation_marks_version_2_4_0_as_unreleased():
+    citation = yaml.safe_load((ROOT / "CITATION.cff").read_text(encoding="utf-8"))
+    assert citation["version"] == "2.4.0"
+    assert citation["preferred-citation"]["version"] == "2.4.0"
+    assert "unreleased release candidate" in citation["message"]
+    assert "immutable git commit or container digest" in citation["message"]
 
 
 def test_related_series_metadata_helper_is_available_from_organize(tmp_path, monkeypatch):
@@ -551,6 +578,28 @@ def _init_boundary_fixture_repo(root: Path) -> None:
     subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=root, check=True)
 
 
+def _assert_git_hides(root: Path, relative: str) -> None:
+    """Prove the .gitignore entry really blinds git to ``relative``.
+
+    Without this the "finding persists" assertions below would be vacuous: they
+    only mean something once git itself has stopped reporting the private file.
+    """
+    ignored = subprocess.run(
+        ["git", "check-ignore", "--quiet", "--", relative], cwd=root, check=False
+    )
+    assert ignored.returncode == 0, f"{relative} should now be ignored by git"
+    listed = subprocess.run(
+        ["git", "ls-files", "--others", "--exclude-standard"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert relative not in listed.stdout.splitlines(), (
+        "git's ignore-aware enumeration should no longer see the private file"
+    )
+
+
 def _load_boundary_checker():
     spec = importlib.util.spec_from_file_location(
         "_check_public_boundary", ROOT / "scripts" / "check_public_boundary.py"
@@ -609,6 +658,11 @@ def test_boundary_guard_detects_committable_review_artifacts(tmp_path):
     the path of `git add -A`, and the guard reported success. The content scan
     could not catch it because manuscript prose carries none of the marker
     strings, so the rule has to be structural.
+
+    .gitignore must NOT silence the finding. Ignoring the directory removes none
+    of the private bytes from the public checkout; it only hides them from every
+    ignore-aware enumeration, which is precisely the failure mode this guard
+    exists to defeat.
     """
     checker = _load_boundary_checker()
     repo = tmp_path / "public"
@@ -617,16 +671,60 @@ def test_boundary_guard_detects_committable_review_artifacts(tmp_path):
 
     reviews = repo / "independent_reviews" / "20260806T153114Z_run"
     reviews.mkdir(parents=True)
-    (reviews / "journal_submission_package.md").write_text(
+    artifact = reviews / "journal_submission_package.md"
+    artifact.write_text(
         "# Abstract\n\nTo test whether CT radiomics added discrimination.\n",
         encoding="utf-8",
     )
+    relative = artifact.relative_to(repo).as_posix()
 
     failures = checker.check(repo)
     assert any("independent_reviews" in failure for failure in failures), failures
+    assert any(relative in failure for failure in failures), failures
 
     (repo / ".gitignore").write_text("independent_reviews/\n", encoding="utf-8")
-    assert checker.check(repo) == [], "ignoring the directory must clear the finding"
+    _assert_git_hides(repo, relative)
+
+    ignored_failures = checker.check(repo)
+    assert any(
+        "regardless of ignore state" in failure and relative in failure
+        for failure in ignored_failures
+    ), f"ignoring the directory must NOT clear the finding: {ignored_failures}"
+    assert artifact.is_file(), "the private bytes are still in the public checkout"
+
+
+def test_boundary_guard_detects_committable_tmp_review_scratch(tmp_path):
+    """Marker-free review prose under top-level tmp must not be committable.
+
+    As above, ignoring the scratch root must not clear the finding: `/tmp/` in
+    .gitignore hides the prose from git without deleting it from the checkout.
+    """
+    checker = _load_boundary_checker()
+    repo = tmp_path / "public"
+    repo.mkdir()
+    _init_boundary_fixture_repo(repo)
+
+    manuscript = repo / "tmp" / "review" / "manuscript.md"
+    manuscript.parent.mkdir(parents=True)
+    manuscript.write_text(
+        "# Methods\n\nCohort-level reliability estimates were combined.\n",
+        encoding="utf-8",
+    )
+    relative = manuscript.relative_to(repo).as_posix()
+
+    failures = checker.check(repo)
+    assert any("tmp" in failure for failure in failures), failures
+    assert any(relative in failure for failure in failures), failures
+
+    (repo / ".gitignore").write_text("/tmp/\n", encoding="utf-8")
+    _assert_git_hides(repo, relative)
+
+    ignored_failures = checker.check(repo)
+    assert any(
+        "regardless of ignore state" in failure and relative in failure
+        for failure in ignored_failures
+    ), f"ignoring the scratch root must NOT clear the finding: {ignored_failures}"
+    assert manuscript.is_file(), "the private bytes are still in the public checkout"
 
 
 def test_boundary_guard_ignores_large_binary_blobs(tmp_path):

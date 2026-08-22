@@ -14,12 +14,12 @@
     Built-in TotalSegmentator & nnU-Net
 -   :material-chart-box: **Standardized Data**
     Comparable metrics across cohorts
--   :material-share-variant: **Distributed Analysis**
-    Validated aggregate packets; imaging stays local
+-   :material-share-variant: **Distributed Aggregate Analysis**
+    Validated radiomics reliability packets; imaging stays local
 </div>
 
-!!! info "RTpipeline v2.3.0"
-    This release preserves the 2.2.2 NTCV contract while adding opt-in multimodal all-series biomarkers and reliability hardening. See the [release notes](release_notes.md).
+!!! info "RTpipeline v2.4.0 release candidate"
+    Version 2.4.0 is unreleased. These bytes add fail-closed radiomics extraction and source-bound distributed aggregate reliability packets. Cite an immutable commit or container digest until a 2.4.0 tag exists. See the [release notes](release_notes.md).
 
 ---
 
@@ -208,12 +208,12 @@ Try RTpipeline in the cloud with free GPU access:
 
 ### Multi-Center Consortia
 
-*"Same code and settings at every center."*
+Shared configs and versioned artifacts make consistent local processing operationally possible.
 
-- Shared configuration files ensure methodological consistency
-- Hash-bound cohort-level reliability packets let imaging and patient-level
-  feature rows remain at the institution
-- Publish config bundles as supplementary materials with DOI
+- Hash-bound cohort-level packets support distributed aggregate radiomics reliability analysis.
+- Current packets do not themselves establish federated model training, secure aggregation, differential privacy, privacy guarantees, or outcome federation.
+- External federated learning is a separately implemented downstream setting.
+- Publish config bundles as supplementary materials when an appropriate archive is available.
 
 [**Distributed Analysis Guide →**](features/distributed_analysis.md)
 
@@ -247,7 +247,7 @@ Learn how RTpipeline is used in real research scenarios:
 |------------|-------------|
 | [NTCP Modeling](case_studies/index.md#case-study-1-ntcp-modeling-for-late-rectal-toxicity) | Build rectal toxicity models from DVH metrics |
 | [Radiomics Signatures](case_studies/index.md#case-study-2-radiomics-signature-for-treatment-response) | Develop robust imaging biomarkers with NTCV |
-| [Distributed Reliability](case_studies/index.md#case-study-3-distributed-radiomics-reliability-analysis) | Combine validated cohort-level reliability packets |
+| [Distributed Reliability](case_studies/index.md#case-study-3-distributed-aggregate-radiomics-reliability-analysis) | Distributed aggregate radiomics reliability analysis from validated cohort-level packets |
 
 ---
 
@@ -339,15 +339,16 @@ Plug-and-play support for institution-specific segmentation models. [Learn more 
 If you use RTpipeline for research, cite the software itself and the underlying tools:
 
 ```bibtex
-@software{rtpipeline,
+@software{rtpipeline_2_4_0,
   title = {RTpipeline: Automated Radiotherapy DICOM Processing Pipeline},
   author = {Stawiski, Konrad},
+  version = {2.4.0},
   url = {https://github.com/kstawiski/rtpipeline},
   year = {2026}
 }
 ```
 
-The repository also includes `CITATION.cff` for machine-readable citation metadata.
+The repository also includes `CITATION.cff` for machine-readable citation metadata. Manuscripts using unreleased repository bytes must also cite an immutable git commit or container digest.
 
 Additionally, please cite:
 

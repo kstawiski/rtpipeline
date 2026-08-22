@@ -1617,6 +1617,49 @@ def _cleanup_model_cache(model: CustomModelDefinition) -> None:
             logger.warning("Failed to remove cached %s for model %s: %s", key, model.name, exc)
 
 
+def validate_custom_model_output_inventory(
+    course_dir: Path,
+    configured_names: Optional[Iterable[str]] = None,
+) -> None:
+    """Require RTSTRUCTs for explicitly selected and current course model outputs.
+
+    ``custom_model_names`` is the explicit CLI selection and therefore required.
+    Existing per-course model directories are also part of the current segmentation
+    inventory. Definitions that merely exist under ``custom_models_root`` are not
+    enforced here because they may be disabled, invalid, or body-region-ineligible.
+    """
+    custom_root = Path(course_dir) / "Segmentation_CustomModels"
+    required = {
+        str(name).strip()
+        for name in (configured_names or [])
+        if str(name).strip()
+    }
+    if custom_root.exists():
+        if not custom_root.is_dir():
+            raise RuntimeError(
+                f"Custom model output root is not a directory: {custom_root}"
+            )
+        try:
+            required.update(
+                path.name for path in custom_root.iterdir() if path.is_dir()
+            )
+        except OSError as exc:
+            raise RuntimeError(
+                f"Could not enumerate custom model outputs under {custom_root}: {exc}"
+            ) from exc
+
+    missing = [
+        name
+        for name in sorted(required)
+        if not (custom_root / name / "rtstruct.dcm").is_file()
+    ]
+    if missing:
+        raise RuntimeError(
+            "Required custom model RTSTRUCT output is missing for: "
+            + ", ".join(missing)
+        )
+
+
 def list_custom_model_outputs(course_dir: Path) -> List[Tuple[str, Path]]:
     """Return (model_name, model_course_dir) for all custom model outputs available for a course."""
     outputs: List[Tuple[str, Path]] = []

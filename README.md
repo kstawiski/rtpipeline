@@ -27,7 +27,7 @@
 |----------|-------------------|
 | **PhD Students** | Spend your PhD on science, not reinventing DICOM parsing |
 | **Clinical Researchers** | Minimal coding—drag & drop in Web UI, get Excel tables |
-| **Multi-Center Consortia** | Shared configs ensure identical preprocessing at every site |
+| **Multi-Center Consortia** | Shared configs and versioned artifacts support consistent local processing |
 
 ---
 
@@ -166,10 +166,10 @@ Build dose-response models from standardized DVH metrics.
 Create robust imaging biomarkers with NTCV perturbation assessment.
 [Learn more →](https://kstawiski.github.io/rtpipeline/case_studies/#case-study-2-radiomics-signature-for-treatment-response)
 
-### 3. Distributed Multi-Center Reliability Analysis
+### 3. Distributed Aggregate Radiomics Reliability Analysis
 
-Run the same method locally and combine only validated cohort-level reliability packets.
-[Learn more →](https://kstawiski.github.io/rtpipeline/case_studies/#case-study-3-distributed-radiomics-reliability-analysis)
+Shared configs and versioned artifacts make consistent local processing operationally possible. RTpipeline combines validated cohort-level reliability packets, but current packets do not themselves establish federated model training, secure aggregation, differential privacy, privacy guarantees, or outcome federation. Federated learning requires a separately implemented downstream system.
+[Learn more →](https://kstawiski.github.io/rtpipeline/case_studies/#case-study-3-distributed-aggregate-radiomics-reliability-analysis)
 
 ---
 
@@ -194,15 +194,16 @@ Run the same method locally and combine only validated cohort-level reliability 
 If you use RTpipeline in your research, cite the software itself:
 
 ```bibtex
-@software{rtpipeline,
+@software{rtpipeline_2_4_0,
   title = {RTpipeline: Automated Radiotherapy DICOM Processing Pipeline},
   author = {Stawiski, Konrad},
+  version = {2.4.0},
   url = {https://github.com/kstawiski/rtpipeline},
   year = {2026}
 }
 ```
 
-The repository also includes `CITATION.cff` for machine-readable citation metadata.
+The repository also includes `CITATION.cff` for machine-readable citation metadata. Version 2.4.0 remains unreleased. Manuscripts using these bytes must cite an immutable git commit or container digest and must not describe 2.4.0 as a tagged release.
 
 Also cite the underlying tools:
 - **TotalSegmentator:** Wasserthal et al., *Radiology: AI* (2023)

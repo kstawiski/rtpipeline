@@ -24,11 +24,21 @@ import pandas as pd
 import SimpleITK as sitk
 import pydicom
 
+from .custom_models import (
+    list_custom_model_outputs,
+    validate_custom_model_output_inventory,
+)
 from .layout import build_course_dirs, find_dcm
-from .radiomics_outcomes import RadiomicsCourseExtractionError
+from .radiomics_outcomes import (
+    RadiomicsCourseExtractionError,
+    invalidate_radiomics_outputs as _invalidate_radiomics_outputs,
+    remove_artifact_strict as _remove_artifact_strict,
+    write_excel_atomic as _write_excel_atomic,
+)
 from .utils import mask_is_cropped, radiomics_mp_context
 
 logger = logging.getLogger(__name__)
+
 
 RADIOMICS_ENV = os.environ.get("RTPIPELINE_RADIOMICS_ENV", "rtpipeline-radiomics")
 _ENV_PROBE_TIMEOUT_ENV = "RTPIPELINE_RADIOMICS_ENV_PROBE_TIMEOUT"
@@ -114,25 +124,62 @@ def _jsonify_nested_columns(df: "pd.DataFrame") -> "pd.DataFrame":
     return out
 
 
-def _roi_instance_key(obj: Dict[str, Any]) -> str:
-    """Stable per-ROI-instance checkpoint key.
+def _identity_value(obj: Dict[str, Any], name: str, fallback: str = "") -> str:
+    metadata = obj.get("metadata") or obj.get("extra_metadata") or {}
+    value = obj.get(name)
+    try:
+        missing = value is None or bool(pd.isna(value))
+    except (TypeError, ValueError):
+        missing = value is None
+    if missing:
+        value = metadata.get(name)
+    try:
+        missing = value is None or bool(pd.isna(value))
+    except (TypeError, ValueError):
+        missing = value is None
+    if missing and fallback:
+        value = obj.get(fallback)
+        try:
+            fallback_missing = value is None or bool(pd.isna(value))
+        except (TypeError, ValueError):
+            fallback_missing = value is None
+        if fallback_missing:
+            value = metadata.get(fallback)
+    try:
+        if value is None or bool(pd.isna(value)):
+            return ""
+    except (TypeError, ValueError):
+        if value is None:
+            return ""
+    return str(value).strip()
 
-    ``roi_name`` alone is NOT unique: the MR path derives roi_name from the mask
-    filename and reuses it across MR series, disambiguating only via ``series_uid``
-    in the task metadata (radiomics_conda.py MR task build). Keying resume-skip,
-    checkpoint dedup, and the workbook union on ``roi_name`` alone collapses distinct
-    ROI instances (the same ``liver`` in two MR series), silently dropping rows on
-    resume. Combine roi_name with series_uid. Accepts a task (series_uid under
-    ``metadata``) or a flattened record (series_uid at top level, possibly NaN when
-    read back from Parquet).
+
+def _roi_instance_key(obj: Dict[str, Any]) -> str:
+    """Stable source/ROI/series checkpoint identity.
+
+    Source is required because Manual, AutoRTS, Custom, and custom-model
+    RTSTRUCTs can legitimately contain the same ROI name. Series remains part of
+    the identity for MR, where the same source/ROI recurs across acquisitions.
     """
-    roi = str(obj.get('roi_name', '') or '')
-    series = obj.get('series_uid')
-    if series is None or (isinstance(series, float) and series != series):  # None / NaN
-        series = (obj.get('metadata') or {}).get('series_uid')
-    if series is None or (isinstance(series, float) and series != series):
-        series = ''
-    return f"{roi}\x1f{series}"
+    source = _identity_value(obj, "segmentation_source")
+    roi = _identity_value(obj, "roi_original_name", fallback="roi_name")
+    series = _identity_value(obj, "series_uid")
+    return f"{source}\x1f{roi}\x1f{series}"
+
+
+def _validated_identity_keys(records: List[Dict[str, Any]], *, context: str) -> Set[str]:
+    keys: List[str] = []
+    for record in records:
+        source = _identity_value(record, "segmentation_source")
+        roi = _identity_value(record, "roi_original_name", fallback="roi_name")
+        if not source or not roi:
+            raise ValueError(
+                f"{context} has blank segmentation_source/roi_original_name identity"
+            )
+        keys.append(_roi_instance_key(record))
+    if len(keys) != len(set(keys)):
+        raise ValueError(f"{context} has duplicate source/ROI/series identities")
+    return set(keys)
 
 
 def _strip_nii_suffix(path: Path) -> str:
@@ -195,7 +242,9 @@ def _select_usable_rtstruct(*paths: Path) -> Optional[Path]:
                 return path
             logger.warning("Ignoring RTSTRUCT with no ROIs for CT radiomics: %s", path)
         except Exception as exc:
-            logger.warning("Ignoring unreadable RTSTRUCT for CT radiomics %s: %s", path, exc)
+            raise RadiomicsCourseExtractionError(
+                f"Required RTSTRUCT is unreadable for CT radiomics: {path}: {exc}"
+            ) from exc
     return None
 
 
@@ -241,25 +290,56 @@ class RadiomicsCheckpoint:
     can take hours.
     """
 
-    def __init__(self, checkpoint_path: Path, buffer_size: int = 50):
+    def __init__(
+        self,
+        checkpoint_path: Path,
+        buffer_size: int = 50,
+        expected_keys: Optional[Set[str]] = None,
+    ):
         self.checkpoint_path = Path(checkpoint_path)
         self.buffer_size = buffer_size
         self._buffer: List[Dict[str, Any]] = []
         self._completed_keys: Set[str] = set()
         self._lock = threading.Lock()
-        self._load_existing()
+        self._load_existing(expected_keys)
 
-    def _load_existing(self) -> None:
-        """Load previously completed ROI instances from checkpoint file."""
+    def _load_existing(self, expected_keys: Optional[Set[str]]) -> None:
+        """Reuse only a structurally valid, exact current-identity checkpoint."""
         if not self.checkpoint_path.exists():
             return
         try:
             df = pd.read_parquet(self.checkpoint_path)
-            if 'roi_name' in df.columns:
-                self._completed_keys = {_roi_instance_key(rec) for rec in df.to_dict('records')}
-            logger.info("Checkpoint loaded: %d ROIs already completed", len(self._completed_keys))
+            if df.empty:
+                raise ValueError("checkpoint is empty")
+            feature_markers = (
+                "_firstorder_", "_shape_", "_shape2D_", "_glcm_",
+                "_glrlm_", "_glszm_", "_gldm_", "_ngtdm_",
+            )
+            if not any(
+                any(marker in str(column) for marker in feature_markers)
+                for column in df.columns
+            ):
+                raise ValueError("checkpoint has no PyRadiomics feature column")
+            records = df.to_dict("records")
+            keys = _validated_identity_keys(records, context="checkpoint")
+            if expected_keys is not None and keys != expected_keys:
+                raise ValueError(
+                    "checkpoint identity set does not exactly match current tasks "
+                    f"(expected {len(expected_keys)}, found {len(keys)})"
+                )
+            self._completed_keys = keys
+            logger.info("Checkpoint loaded: %d ROIs already completed", len(keys))
         except Exception as exc:
-            logger.warning("Failed to load checkpoint %s: %s", self.checkpoint_path, exc)
+            logger.warning(
+                "Rejecting stale or invalid checkpoint %s: %s",
+                self.checkpoint_path,
+                exc,
+            )
+            _remove_artifact_strict(
+                self.checkpoint_path,
+                context="rejecting invalid radiomics checkpoint",
+            )
+            self._completed_keys.clear()
 
     def is_completed(self, key: str) -> bool:
         """Check if a ROI instance (see ``_roi_instance_key``) has been processed."""
@@ -317,13 +397,18 @@ class RadiomicsCheckpoint:
         """Return number of completed ROI instances."""
         return len(self._completed_keys)
 
-    def load_records(self) -> List[Dict[str, Any]]:
-        """Return all checkpointed ROI records (deduped by ROI instance key, last wins).
+    def discard(self) -> None:
+        """Delete a checkpoint that cannot represent a complete publication."""
+        with self._lock:
+            self._buffer.clear()
+            self._completed_keys.clear()
+            _remove_artifact_strict(
+                self.checkpoint_path,
+                context="discarding incomplete radiomics checkpoint",
+            )
 
-        Used to rebuild the per-course workbook on resume: a course that skips
-        already-completed ROIs must still write EVERY completed ROI to its
-        ``radiomics_ct.xlsx``, not just the subset processed in the current run.
-        """
+    def load_records(self) -> List[Dict[str, Any]]:
+        """Return structurally valid checkpoint records without silent deduplication."""
         with self._lock:
             self._flush_buffer()  # make sure buffered rows are on disk first
             if not self.checkpoint_path.exists():
@@ -331,14 +416,11 @@ class RadiomicsCheckpoint:
             try:
                 df = pd.read_parquet(self.checkpoint_path)
             except Exception as exc:
-                logger.warning("Failed to read checkpoint records %s: %s", self.checkpoint_path, exc)
-                return []
-        records = df.to_dict('records')
-        if 'roi_name' in df.columns:
-            deduped: Dict[str, Dict[str, Any]] = {}
-            for rec in records:
-                deduped[_roi_instance_key(rec)] = rec  # last write wins
-            records = list(deduped.values())
+                raise RadiomicsCourseExtractionError(
+                    f"Failed to read checkpoint records {self.checkpoint_path}: {exc}"
+                ) from exc
+        records = df.to_dict("records")
+        _validated_identity_keys(records, context="checkpoint")
         return records
 
 
@@ -1057,13 +1139,28 @@ def process_radiomics_batch(
 
     if not tasks:
         logger.warning("No radiomics tasks to process")
+        _invalidate_radiomics_outputs(Path(output_path))
         return None
 
-    # Initialize checkpoint manager if path provided
+    try:
+        expected_keys = _validated_identity_keys(tasks, context="radiomics task inventory")
+    except ValueError as exc:
+        _invalidate_radiomics_outputs(Path(output_path))
+        raise RadiomicsCourseExtractionError(str(exc)) from exc
+
+    # A checkpoint is reusable only when it already represents this exact task
+    # inventory. Partial, stale, blank, duplicate, missing, or extra identities are
+    # deleted and the full current inventory is recomputed.
     checkpoint: Optional[RadiomicsCheckpoint] = None
     if checkpoint_path:
-        checkpoint = RadiomicsCheckpoint(checkpoint_path)
+        checkpoint_file_existed = Path(checkpoint_path).exists()
+        checkpoint = RadiomicsCheckpoint(
+            checkpoint_path,
+            expected_keys=expected_keys,
+        )
         already_completed = checkpoint.get_completed_count()
+        if checkpoint_file_existed and already_completed == 0:
+            _invalidate_radiomics_outputs(Path(output_path))
         if already_completed > 0:
             logger.info("Resume mode: %d ROIs already completed, filtering tasks", already_completed)
 
@@ -1094,8 +1191,7 @@ def process_radiomics_batch(
             "Please run: conda create -n %s python=3.11 numpy=1.26.* pyradiomics SimpleITK -c conda-forge",
             RADIOMICS_ENV,
         )
-        for candidate in (Path(output_path), Path(output_path).with_suffix('.parquet')):
-            candidate.unlink(missing_ok=True)
+        _invalidate_radiomics_outputs(Path(output_path))
         raise RadiomicsCourseExtractionError(
             f"Radiomics conda environment '{RADIOMICS_ENV}' is unavailable"
         )
@@ -1161,6 +1257,7 @@ def process_radiomics_batch(
 
     results: List[Dict[str, Any]] = []
     failures: List[str] = []
+    ineligible_keys: Set[str] = set()
 
     def _run_sequential(seq: List[Dict[str, Any]]) -> None:
         for idx, task in enumerate(seq, 1):
@@ -1168,6 +1265,7 @@ def process_radiomics_batch(
             logger.info("Processing %d/%d: %s", idx, len(seq), roi_name)
             rec = _execute(task)
             if rec and rec.get('__status__') == 'skipped':
+                ineligible_keys.add(_roi_instance_key(task))
                 continue
             if rec and rec.get('__status__') == 'error':
                 failures.append(f"{roi_name}: {rec.get('__error__', 'unknown error')}")
@@ -1218,6 +1316,7 @@ def process_radiomics_batch(
                     if features is None or features.get('__status__') != 'success':
                         status = features.get('__status__', 'failed') if features else 'failed'
                         if status == 'skipped':
+                            ineligible_keys.add(_roi_instance_key(task))
                             logger.info("Skipped radiomics for %s: %s", roi_name, features.get('__reason__', 'unknown'))
                             if heartbeat:
                                 heartbeat.update(skipped=1)
@@ -1285,6 +1384,7 @@ def process_radiomics_batch(
                             if features is None or features.get('__status__') != 'success':
                                 status = features.get('__status__', 'failed') if features else 'failed'
                                 if status == 'skipped':
+                                    ineligible_keys.add(_roi_instance_key(task))
                                     logger.debug("Skipped radiomics for %s: %s", roi_name, features.get('__reason__', 'unknown'))
                                     if heartbeat:
                                         heartbeat.update(skipped=1)
@@ -1339,6 +1439,7 @@ def process_radiomics_batch(
                     try:
                         rec = future.result()
                         if rec and rec.get('__status__') == 'skipped':
+                            ineligible_keys.add(_roi_instance_key(task))
                             if heartbeat:
                                 heartbeat.update(skipped=1)
                         elif rec and rec.get('__status__') == 'error':
@@ -1370,27 +1471,53 @@ def process_radiomics_batch(
             checkpoint.flush()
 
     if failures:
-        for candidate in (Path(output_path), Path(output_path).with_suffix('.parquet')):
-            candidate.unlink(missing_ok=True)
+        _invalidate_radiomics_outputs(Path(output_path))
+        if checkpoint is not None:
+            checkpoint.discard()
         raise RadiomicsCourseExtractionError(
             "Radiomics course extraction is incomplete: " + "; ".join(failures)
         )
 
-    # Build the complete row set for the workbook: ROIs computed this run UNION any
-    # ROIs completed in a prior run, recorded in the checkpoint, and skipped this run.
-    # Without this, a resumed course (or one whose ROI set grew) would overwrite
-    # radiomics_ct.xlsx with only the newly-processed subset, silently dropping
-    # already-completed ROIs from the per-course table and the downstream cohort merge.
+    # Publish only an exact identity set. A valid checkpoint is all-or-nothing;
+    # partial or stale rows are never unioned into current results.
     rows: List[Dict[str, Any]] = list(results)
     if checkpoint is not None:
-        done_now = {_roi_instance_key(r) for r in results}
-        prior = [rec for rec in checkpoint.load_records() if _roi_instance_key(rec) not in done_now]
+        try:
+            done_now = {_roi_instance_key(record) for record in results}
+            prior = [
+                record for record in checkpoint.load_records()
+                if _roi_instance_key(record) not in done_now
+            ]
+        except Exception:
+            _invalidate_radiomics_outputs(Path(output_path))
+            checkpoint.discard()
+            raise
         if prior:
             logger.info(
-                "Resume: merging %d previously-completed ROI(s) from checkpoint into %s",
+                "Resume: reusing %d exact-current checkpoint ROI(s) for %s",
                 len(prior), output_path,
             )
             rows.extend(prior)
+
+    required_publication_keys = expected_keys - ineligible_keys
+    try:
+        publication_keys = _validated_identity_keys(
+            rows,
+            context="radiomics publication",
+        )
+    except ValueError as exc:
+        _invalidate_radiomics_outputs(Path(output_path))
+        if checkpoint is not None:
+            checkpoint.discard()
+        raise RadiomicsCourseExtractionError(str(exc)) from exc
+    if publication_keys != required_publication_keys:
+        _invalidate_radiomics_outputs(Path(output_path))
+        if checkpoint is not None:
+            checkpoint.discard()
+        raise RadiomicsCourseExtractionError(
+            "Radiomics publication identity set is incomplete or stale "
+            f"(expected {len(required_publication_keys)}, found {len(publication_keys)})"
+        )
 
     if not rows:
         logger.warning("No radiomics features extracted")
@@ -1402,15 +1529,22 @@ def process_radiomics_batch(
                 pass
             except Exception as exc:
                 logger.debug("Cleanup failed for %s: %s", mask_path, exc)
+        _invalidate_radiomics_outputs(Path(output_path))
+        if checkpoint is not None:
+            checkpoint.discard()
         return None
 
     try:
         df = pd.DataFrame(rows)
-        df.to_excel(output_path, index=False)
+        _write_excel_atomic(df, Path(output_path))
         logger.info("Saved %d radiomics rows to %s", len(df), output_path)
     except Exception as exc:
-        logger.error("Failed to save radiomics results: %s", exc)
-        return None
+        _invalidate_radiomics_outputs(Path(output_path))
+        if checkpoint is not None:
+            checkpoint.discard()
+        raise RadiomicsCourseExtractionError(
+            f"Failed to save radiomics workbook {output_path}: {exc}"
+        ) from exc
     finally:
         for mask_path in cleanup_paths:
             try:
@@ -1436,6 +1570,7 @@ def radiomics_for_course_ct_nifti_fallback(
 
     if not seg_dir.exists():
         logger.debug("No TotalSegmentator NIfTI mask directory for CT fallback in %s", course_dir)
+        _invalidate_radiomics_outputs(output_path)
         return None
 
     params_file = str(config.radiomics_params_file) if getattr(config, "radiomics_params_file", None) else None
@@ -1452,6 +1587,21 @@ def radiomics_for_course_ct_nifti_fallback(
     image_cache: Dict[Path, Tuple[str, Tuple[float, float, float]]] = {}
     dicom_image_path: Optional[str] = None
     dicom_spacing: Optional[Tuple[float, float, float]] = None
+
+    def _cleanup_temp_files() -> None:
+        for temp_file in temp_files:
+            try:
+                temp_file.unlink(missing_ok=True)
+            except OSError as exc:
+                logger.debug("Failed to remove temporary CT fallback file %s: %s", temp_file, exc)
+
+    def _fail_fallback(detail: str, exc: Optional[BaseException] = None) -> None:
+        _cleanup_temp_files()
+        _invalidate_radiomics_outputs(output_path)
+        error = RadiomicsCourseExtractionError(detail)
+        if exc is not None:
+            raise error from exc
+        raise error
 
     def _dicom_image() -> Optional[Tuple[str, Tuple[float, float, float]]]:
         nonlocal dicom_image_path, dicom_spacing
@@ -1475,8 +1625,10 @@ def radiomics_for_course_ct_nifti_fallback(
             dicom_spacing = tuple(float(x) for x in img.GetSpacing())
             return dicom_image_path, dicom_spacing
         except Exception as exc:
-            logger.warning("Failed to load DICOM CT for NIfTI-mask fallback in %s: %s", course_dir, exc)
-            return None
+            _fail_fallback(
+                f"Failed to load DICOM CT for NIfTI-mask fallback in {course_dir}: {exc}",
+                exc,
+            )
 
     def _image_for_series(series_name: str) -> Optional[Tuple[str, str, Tuple[float, float, float], str]]:
         nifti_path = nifti_by_stem.get(series_name)
@@ -1495,8 +1647,10 @@ def radiomics_for_course_ct_nifti_fallback(
                     image_cache[nifti_path] = cached
                     temp_files.append(Path(tmp.name))
                 except Exception as exc:
-                    logger.warning("Failed to convert CT NIfTI %s for radiomics fallback: %s", nifti_path, exc)
-                    return None
+                    _fail_fallback(
+                        f"Failed to convert CT NIfTI {nifti_path} for radiomics fallback: {exc}",
+                        exc,
+                    )
             image_path, spacing = cached
             return image_path, str(nifti_path), spacing, _series_uid_from_nifti(nifti_path, series_name)
 
@@ -1510,8 +1664,9 @@ def radiomics_for_course_ct_nifti_fallback(
         series_name = series_root.name if series_root != seg_dir else "CT"
         image_info = _image_for_series(series_name)
         if image_info is None:
-            logger.warning("No CT image matched TotalSegmentator mask series %s in %s", series_name, course_dir)
-            continue
+            _fail_fallback(
+                f"No CT image matched TotalSegmentator mask series {series_name} in {course_dir}"
+            )
         image_path, nifti_path_str, image_spacing, series_uid = image_info
 
         for mask_path in sorted(series_root.glob("*.nii*")):
@@ -1527,13 +1682,11 @@ def radiomics_for_course_ct_nifti_fallback(
                 mask_img = sitk.ReadImage(str(mask_path))
                 mask_arr = sitk.GetArrayFromImage(mask_img)
             except Exception as exc:
-                logger.debug("Failed to read CT fallback mask %s: %s", mask_path, exc)
-                continue
+                _fail_fallback(f"Failed to read CT fallback mask {mask_path}: {exc}", exc)
 
             mask_bool = mask_arr > 0
             if not mask_bool.any():
-                logger.debug("Skipping CT fallback ROI %s: empty mask", roi_name)
-                continue
+                _fail_fallback(f"CT fallback ROI {roi_name} has an empty mask: {mask_path}")
 
             voxel_count = int(mask_bool.sum())
             if voxel_count < min_voxels_limit:
@@ -1571,8 +1724,7 @@ def radiomics_for_course_ct_nifti_fallback(
                 sitk.WriteImage(mask_img, mask_nrrd.name, useCompression=True)
                 temp_files.append(Path(mask_nrrd.name))
             except Exception as exc:
-                logger.debug("Failed to convert CT fallback mask %s: %s", mask_path, exc)
-                continue
+                _fail_fallback(f"Failed to convert CT fallback mask {mask_path}: {exc}", exc)
 
             cropped_flag = mask_is_cropped(mask_bool)
             display_roi = roi_name if (not cropped_flag or roi_name.endswith("__partial")) else f"{roi_name}__partial"
@@ -1601,11 +1753,8 @@ def radiomics_for_course_ct_nifti_fallback(
 
     if not tasks:
         logger.warning("No valid TotalSegmentator NIfTI ROIs found for CT fallback in %s", course_dir)
-        for tf in temp_files:
-            try:
-                tf.unlink()
-            except Exception:
-                pass
+        _cleanup_temp_files()
+        _invalidate_radiomics_outputs(output_path)
         return None
 
     logger.info("Processing %d CT radiomics fallback tasks for %s", len(tasks), course_dir.name)
@@ -1625,22 +1774,21 @@ def radiomics_for_course_ct_nifti_fallback(
     sequential = os.environ.get("RTPIPELINE_RADIOMICS_SEQUENTIAL", "").lower() in ("1", "true", "yes")
     checkpoint_path = course_dir / "metadata" / "radiomics_ct_checkpoint.parquet"
 
-    result = process_radiomics_batch(
-        tasks,
-        output_path,
-        sequential=sequential,
-        max_workers=max_workers,
-        checkpoint_path=checkpoint_path,
-        enable_heartbeat=True,
-        env_probe_timeout=getattr(config, "radiomics_env_probe_timeout", None),
-    )
+    try:
+        result = process_radiomics_batch(
+            tasks,
+            output_path,
+            sequential=sequential,
+            max_workers=max_workers,
+            checkpoint_path=checkpoint_path,
+            enable_heartbeat=True,
+            env_probe_timeout=getattr(config, "radiomics_env_probe_timeout", None),
+        )
+    finally:
+        _cleanup_temp_files()
 
-    for tf in temp_files:
-        try:
-            tf.unlink()
-        except Exception:
-            pass
-
+    if result is None:
+        _invalidate_radiomics_outputs(output_path)
     return result
 
 
@@ -1660,7 +1808,9 @@ def radiomics_for_course(
     Returns:
         Path to the radiomics Excel file if successful, None otherwise
     """
+    course_dir = Path(course_dir)
     course_dirs = build_course_dirs(course_dir)
+    output_path = course_dir / "radiomics_ct.xlsx"
 
     # Check for CT DICOM files
     ct_dir = course_dirs.dicom_ct
@@ -1668,37 +1818,134 @@ def radiomics_for_course(
     has_ct_nifti = bool(_ct_nifti_candidates(course_dir))
     if not has_ct_dicom and not has_ct_nifti:
         logger.warning(f"No CT image found in {course_dir}")
+        _invalidate_radiomics_outputs(output_path)
         return None
 
-    # Check for segmentation files
     rs_manual = find_dcm(course_dirs.dicom_rtstruct, "RS.dcm", course_dir)
     rs_auto = course_dir / "RS_auto.dcm"
     rs_custom = course_dir / "RS_custom.dcm"
 
-    # Ensure RS_custom exists when a custom structures config is available.
-    custom_cfg = custom_structures_config or getattr(config, "custom_structures_config", None)
+    def _norm(name: str) -> str:
+        return "".join(ch for ch in str(name).lower() if ch.isalnum())
+
+    skip_rois = _ct_skip_rois(config)
+    custom_cfg_value = (
+        custom_structures_config
+        or getattr(config, "custom_structures_config", None)
+    )
+    custom_cfg: Optional[Path] = None
+    desired_custom: Set[str] = set()
+    if custom_cfg_value:
+        custom_cfg = Path(custom_cfg_value)
+        if not custom_cfg.is_file():
+            _invalidate_radiomics_outputs(output_path)
+            raise RadiomicsCourseExtractionError(
+                f"Configured required custom structure file is missing: {custom_cfg}"
+            )
+        try:
+            from .radiomics import _custom_roi_names_from_config
+
+            desired_custom = {
+                name for name in _custom_roi_names_from_config(custom_cfg)
+                if _norm(name) not in skip_rois
+            }
+        except Exception as exc:
+            _invalidate_radiomics_outputs(output_path)
+            raise RadiomicsCourseExtractionError(
+                f"Failed to read configured custom ROI identities for {course_dir}: {exc}"
+            ) from exc
+        try:
+            from .custom_structures_rtstruct import (
+                _create_custom_structures_rtstruct,
+                _is_rs_custom_stale,
+            )
+
+            if desired_custom and _is_rs_custom_stale(
+                rs_custom, custom_cfg, rs_manual, rs_auto
+            ):
+                rs_custom = _create_custom_structures_rtstruct(
+                    course_dir, custom_cfg, rs_manual, rs_auto
+                ) or rs_custom
+        except Exception as exc:
+            _invalidate_radiomics_outputs(output_path)
+            raise RadiomicsCourseExtractionError(
+                f"Failed to prepare configured custom RTSTRUCT for {course_dir}: {exc}"
+            ) from exc
+
     try:
-        if custom_cfg and Path(custom_cfg).exists():
-            from .custom_structures_rtstruct import _create_custom_structures_rtstruct, _is_rs_custom_stale
+        from .radiomics import _list_roi_names_dicom
 
-            if _is_rs_custom_stale(rs_custom, custom_cfg, rs_manual, rs_auto):
-                rs_custom = _create_custom_structures_rtstruct(course_dir, custom_cfg, rs_manual, rs_auto) or rs_custom
+        if not desired_custom and rs_custom.exists():
+            manual_names = set(_list_roi_names_dicom(rs_manual))
+            auto_names = set(_list_roi_names_dicom(rs_auto))
+            custom_names = set(_list_roi_names_dicom(rs_custom))
+            inferred = custom_names - (manual_names | auto_names)
+            desired_custom = {
+                name[:-9] if name.endswith("__partial") else name
+                for name in inferred
+                if _norm(name) not in skip_rois
+            }
+
+        custom_wanted: List[str] = []
+        if desired_custom:
+            if not rs_custom.is_file():
+                raise RadiomicsCourseExtractionError(
+                    f"Required custom RTSTRUCT is missing for configured ROIs in {course_dir}"
+                )
+            available_custom = set(_list_roi_names_dicom(rs_custom))
+            missing_custom: List[str] = []
+            for base in sorted(desired_custom):
+                if base in available_custom:
+                    custom_wanted.append(base)
+                elif f"{base}__partial" in available_custom:
+                    custom_wanted.append(f"{base}__partial")
+                else:
+                    missing_custom.append(base)
+            if missing_custom:
+                raise RadiomicsCourseExtractionError(
+                    f"Required configured custom ROI(s) missing from {rs_custom}: "
+                    + ", ".join(missing_custom)
+                )
+
+        validate_custom_model_output_inventory(
+            course_dir,
+            getattr(config, "custom_model_names", None),
+        )
+        custom_model_outputs = list_custom_model_outputs(course_dir)
     except Exception as exc:
-        logger.debug("RS_custom preparation failed for %s: %s", course_dir, exc)
+        _invalidate_radiomics_outputs(output_path)
+        if isinstance(exc, RadiomicsCourseExtractionError):
+            raise
+        raise RadiomicsCourseExtractionError(
+            f"Failed to enumerate required segmentation inventory for {course_dir}: {exc}"
+        ) from exc
 
-    # Use the available RTSTRUCT segmentation. If neither generated RTSTRUCT is
-    # present/readable, recover directly from the TotalSegmentator NIfTI masks.
-    rs_file = _select_usable_rtstruct(rs_custom, rs_auto)
-    if rs_file is None:
+    # Each source is extracted independently. Never collapse colliding ROI names
+    # from Manual, AutoRTS, Custom, or a custom model into one merged identity.
+    source_specs: List[Tuple[str, Path, Optional[List[str]]]] = []
+    if rs_manual.exists():
+        source_specs.append(("Manual", rs_manual, None))
+    if rs_auto.exists():
+        source_specs.append(("AutoRTS_total", rs_auto, None))
+    if custom_wanted:
+        source_specs.append(("Custom", rs_custom, custom_wanted))
+    for model_name, model_course_dir in custom_model_outputs:
+        source_specs.append(
+            (f"CustomModel:{model_name}", Path(model_course_dir) / "rtstruct.dcm", None)
+        )
+
+    if not source_specs:
         logger.info(
-            "No usable RS_custom.dcm/RS_auto.dcm for %s; trying CT TotalSegmentator NIfTI fallback",
+            "No current RTSTRUCT source for %s; trying CT TotalSegmentator NIfTI fallback",
             course_dir,
         )
         return radiomics_for_course_ct_nifti_fallback(course_dir, config)
 
     if not has_ct_dicom:
-        logger.warning("No CT DICOM series found for RTSTRUCT radiomics in %s", course_dir)
-        return None
+        _invalidate_radiomics_outputs(output_path)
+        raise RadiomicsCourseExtractionError(
+            f"RTSTRUCT radiomics requires a CT DICOM series in {course_dir}"
+        )
 
     # Load CT image
     try:
@@ -1708,6 +1955,7 @@ def radiomics_for_course(
         ct_image = reader.Execute()
     except Exception as e:
         logger.error(f"Failed to load CT image: {e}")
+        _invalidate_radiomics_outputs(output_path)
         raise RadiomicsCourseExtractionError(
             f"CT series is present but unreadable for radiomics in {course_dir}: {e}"
         ) from e
@@ -1718,202 +1966,176 @@ def radiomics_for_course(
         'direction': tuple(ct_image.GetDirection()),
     }
 
-    # Map ROI names to their originating source if structure mapping is available
-    source_map: Dict[str, str] = {}
-    mapping_path = course_dir / "metadata" / "structure_mapping.json"
-    if mapping_path.exists():
+    params_file = (
+        str(config.radiomics_params_file)
+        if getattr(config, "radiomics_params_file", None)
+        else None
+    )
+
+    # Save CT image to a temporary NRRD. Serialization is required acquisition
+    # preparation and must not be reclassified as an empty course.
+    try:
+        with tempfile.NamedTemporaryFile(suffix='.nrrd', delete=False) as ct_file:
+            ct_image_path = ct_file.name
+        sitk.WriteImage(ct_image, ct_image_path, useCompression=True)
+    except Exception as exc:
         try:
-            mapping_data = json.loads(mapping_path.read_text(encoding='utf-8'))
-            source_config = mapping_data.get('sources', {}) or {}
-            source_labels = {
-                'manual': 'Manual',
-                'auto': 'AutoTS',
-                'custom_config': 'Custom',
-            }
-            for key, names in source_config.items():
-                label = source_labels.get(key, str(key).title())
-                for name in names or []:
-                    source_map[str(name)] = label
-        except Exception as exc:
-            logger.debug("Failed to parse structure_mapping.json for %s: %s", course_dir, exc)
-
-    def _norm(name: str) -> str:
-        return ''.join(ch for ch in name.lower() if ch.isalnum())
-
-    manual_rs = find_dcm(course_dirs.dicom_rtstruct, "RS.dcm", course_dir)
-    auto_rs = course_dir / "RS_auto.dcm"
-    manual_names: set[str] = set()
-    auto_names: set[str] = set()
-
-    def _load_roi_names(rs_path: Path) -> set[str]:
-        if not rs_path.exists():
-            return set()
-        try:
-            ds = pydicom.dcmread(str(rs_path), stop_before_pixels=True)
-            names = {
-                str(getattr(roi, "ROIName", ""))
-                for roi in getattr(ds, "StructureSetROISequence", []) or []
-            }
-            return {name for name in names if name}
-        except Exception as exc:
-            logger.debug("Failed to read ROI names from %s: %s", rs_path, exc)
-            return set()
-
-    manual_names = _load_roi_names(manual_rs)
-    auto_names = _load_roi_names(auto_rs)
-    manual_norm = {_norm(name): "Manual" for name in manual_names}
-    auto_norm = {_norm(name): "AutoTS" for name in auto_names}
-
-    custom_config = config.custom_structures_config if getattr(config, "custom_structures_config", None) else None
-    custom_norm: set[str] = set()
-    if custom_config and Path(custom_config).exists():
-        try:
-            custom_data = json.loads(Path(custom_config).read_text())
-        except json.JSONDecodeError:
-            try:
-                import yaml
-                custom_yaml = yaml.safe_load(Path(custom_config).read_text())  # type: ignore
-            except Exception:
-                custom_yaml = None
-            if custom_yaml and isinstance(custom_yaml, dict):
-                for item in custom_yaml.get("custom_structures", []) or []:
-                    name = str(item.get("name", ""))
-                    if name:
-                        custom_norm.add(_norm(name))
-        except Exception:
+            Path(ct_image_path).unlink(missing_ok=True)
+        except UnboundLocalError:
             pass
-
-    default_source = 'Merged' if rs_file == rs_custom else ('AutoTS' if rs_file == rs_auto else 'Manual')
-    params_file = str(config.radiomics_params_file) if config.radiomics_params_file else None
-
-    # Save CT image to temporary NRRD file
-    with tempfile.NamedTemporaryFile(suffix='.nrrd', delete=False) as ct_file:
-        sitk.WriteImage(ct_image, ct_file.name, useCompression=True)
-        ct_image_path = ct_file.name
+        _invalidate_radiomics_outputs(output_path)
+        raise RadiomicsCourseExtractionError(
+            f"Failed to serialize CT image for radiomics in {course_dir}: {exc}"
+        ) from exc
 
     tasks: List[Dict[str, Any]] = []
     try:
         from rt_utils import RTStructBuilder
 
-        rtstruct = RTStructBuilder.create_from(
-            dicom_series_path=str(ct_dir),
-            rt_struct_path=str(rs_file)
-        )
-
-        skip_rois = _ct_skip_rois(config)
         min_voxels_limit, max_voxels_limit = _ct_voxel_limits(config)
 
-        for roi_name in rtstruct.get_roi_names():
-            norm_key = _norm(roi_name)
-            if norm_key in skip_rois:
-                logger.debug("Skipping radiomics for ROI %s (skip list)", roi_name)
-                continue
+        for segmentation_source, rs_file, selected_rois in source_specs:
             try:
-                mask = rtstruct.get_roi_mask_by_name(roi_name)
-            except Exception as exc:
-                logger.debug("Failed to obtain mask for %s: %s", roi_name, exc)
-                continue
-            if mask is None:
-                continue
-            mask_bool = mask.astype(bool)
-            if not mask_bool.any():
-                logger.debug("Skipping radiomics for ROI %s: empty mask", roi_name)
-                continue
-
-            voxel_count = int(mask_bool.sum())
-            if voxel_count < min_voxels_limit:
-                logger.info(
-                    "Skipping radiomics for ROI %s: %d voxels below minimum %d",
-                    roi_name,
-                    voxel_count,
-                    min_voxels_limit,
+                rtstruct = RTStructBuilder.create_from(
+                    dicom_series_path=str(ct_dir),
+                    rt_struct_path=str(rs_file),
                 )
-                continue
-            # Large-ROI detection should be based on *physical volume* rather than
-            # native voxel count, because CT radiomics typically resamples to ~1mm
-            # isotropic (increasing effective voxel counts for thick-slice CT).
-            #
-            # Treat BODY as large unconditionally to avoid pathological runtimes.
-            spacing = tuple(ct_info.get('spacing', (1.0, 1.0, 1.0)))
-            try:
-                native_voxel_mm3 = float(spacing[0]) * float(spacing[1]) * float(spacing[2])
-            except Exception:
-                native_voxel_mm3 = 1.0
-            physical_volume_mm3 = float(voxel_count) * max(1e-9, native_voxel_mm3)
-            estimated_voxels = physical_volume_mm3  # ~ voxels at 1mm isotropic
-
-            large_roi = norm_key.startswith("body") or (estimated_voxels > float(max_voxels_limit))
-            if large_roi:
-                logger.info(
-                    "ROI %s is large (native=%d voxels, est@1mm=%.0f voxels, cap=%d); using reduced radiomics settings",
-                    roi_name,
-                    voxel_count,
-                    estimated_voxels,
-                    int(max_voxels_limit),
+                roi_names = (
+                    list(selected_rois)
+                    if selected_rois is not None
+                    else list(rtstruct.get_roi_names())
+                )
+            except Exception as exc:
+                raise RadiomicsCourseExtractionError(
+                    f"Failed to construct RTSTRUCT reader for {segmentation_source} at {rs_file}: {exc}"
+                ) from exc
+            if not roi_names:
+                raise RadiomicsCourseExtractionError(
+                    f"Required RTSTRUCT contains no named ROIs: {segmentation_source} at {rs_file}"
+                )
+            if len(roi_names) != len(set(roi_names)):
+                raise RadiomicsCourseExtractionError(
+                    f"Required RTSTRUCT has duplicate ROI identities: {segmentation_source} at {rs_file}"
                 )
 
-            try:
-                with tempfile.NamedTemporaryFile(suffix='.nrrd', delete=False) as mask_file:
-                    _write_mask_to_file(mask_bool, mask_file.name, ct_info)
-                    mask_path = mask_file.name
-            except Exception as exc:
-                logger.debug("Failed to serialise mask for %s: %s", roi_name, exc)
-                continue
+            for roi_name in roi_names:
+                norm_key = _norm(roi_name)
+                if norm_key in skip_rois:
+                    logger.debug(
+                        "Skipping radiomics for %s/%s (skip list)",
+                        segmentation_source,
+                        roi_name,
+                    )
+                    continue
+                try:
+                    mask = rtstruct.get_roi_mask_by_name(roi_name)
+                except Exception as exc:
+                    raise RadiomicsCourseExtractionError(
+                        f"Expected ROI {roi_name!r} in {segmentation_source} {rs_file} "
+                        f"could not be read: {exc}"
+                    ) from exc
+                if mask is None:
+                    raise RadiomicsCourseExtractionError(
+                        f"Expected ROI {roi_name!r} in {segmentation_source} {rs_file} "
+                        "did not provide a mask"
+                    )
+                mask_bool = np.asarray(mask).astype(bool)
+                if not mask_bool.any():
+                    raise RadiomicsCourseExtractionError(
+                        f"Expected ROI {roi_name!r} in {segmentation_source} {rs_file} "
+                        "produced an empty required mask"
+                    )
 
-            seg_source = source_map.get(roi_name)
-            if not seg_source:
-                norm = norm_key
-                seg_source = manual_norm.get(norm)
-                if not seg_source:
-                    seg_source = auto_norm.get(norm)
-                if not seg_source:
-                    seg_source = 'Custom' if norm in custom_norm else default_source
+                voxel_count = int(mask_bool.sum())
+                if voxel_count < min_voxels_limit:
+                    logger.info(
+                        "Skipping radiomics for %s/%s: %d voxels below minimum %d",
+                        segmentation_source,
+                        roi_name,
+                        voxel_count,
+                        min_voxels_limit,
+                    )
+                    continue
+                spacing = tuple(ct_info.get("spacing", (1.0, 1.0, 1.0)))
+                try:
+                    native_voxel_mm3 = (
+                        float(spacing[0]) * float(spacing[1]) * float(spacing[2])
+                    )
+                except Exception:
+                    native_voxel_mm3 = 1.0
+                physical_volume_mm3 = float(voxel_count) * max(1e-9, native_voxel_mm3)
+                estimated_voxels = physical_volume_mm3
+                large_roi = norm_key.startswith("body") or (
+                    estimated_voxels > float(max_voxels_limit)
+                )
+                if large_roi:
+                    logger.info(
+                        "ROI %s/%s is large (native=%d voxels, est@1mm=%.0f voxels, "
+                        "cap=%d); using reduced radiomics settings",
+                        segmentation_source,
+                        roi_name,
+                        voxel_count,
+                        estimated_voxels,
+                        int(max_voxels_limit),
+                    )
 
-            cropped_flag = mask_is_cropped(mask_bool)
-            display_roi = roi_name if (not cropped_flag or roi_name.endswith("__partial")) else f"{roi_name}__partial"
+                try:
+                    with tempfile.NamedTemporaryFile(
+                        suffix=".nrrd", delete=False
+                    ) as mask_file:
+                        _write_mask_to_file(mask_bool, mask_file.name, ct_info)
+                        mask_path = mask_file.name
+                except Exception as exc:
+                    raise RadiomicsCourseExtractionError(
+                        f"Failed to serialize required mask {segmentation_source}/{roi_name} "
+                        f"from {rs_file}: {exc}"
+                    ) from exc
 
-            metadata = {
-                'segmentation_source': seg_source,
-                'course_dir': str(course_dir),
-                'patient_id': course_dir.parent.name,
-                'course_id': course_dir.name,
-                'structure_cropped': cropped_flag,
-                'roi_original_name': roi_name,
-            }
-
-            tasks.append({
-                'image_path': ct_image_path,
-                'mask_path': mask_path,
-                'roi_name': display_roi,
-                'params_file': params_file,
-                'label': None,
-                'large_roi': bool(large_roi),
-                'metadata': metadata,
-                'cleanup': True,
-                'ct_info': ct_info,
-            })
+                cropped_flag = mask_is_cropped(mask_bool)
+                display_roi = (
+                    roi_name
+                    if (not cropped_flag or roi_name.endswith("__partial"))
+                    else f"{roi_name}__partial"
+                )
+                tasks.append({
+                    "image_path": ct_image_path,
+                    "mask_path": mask_path,
+                    "roi_name": display_roi,
+                    "params_file": params_file,
+                    "label": None,
+                    "large_roi": bool(large_roi),
+                    "metadata": {
+                        "segmentation_source": segmentation_source,
+                        "course_dir": str(course_dir),
+                        "patient_id": course_dir.parent.name,
+                        "course_id": course_dir.name,
+                        "structure_cropped": cropped_flag,
+                        "roi_original_name": roi_name,
+                    },
+                    "cleanup": True,
+                    "ct_info": ct_info,
+                })
 
     except Exception as exc:
         logger.error("Failed to prepare radiomics masks for %s: %s", course_dir, exc)
-        try:
-            os.unlink(ct_image_path)
-        except Exception:
-            pass
-        logger.info(
-            "RTSTRUCT radiomics preparation failed for %s; trying CT TotalSegmentator NIfTI fallback",
-            course_dir,
-        )
-        return radiomics_for_course_ct_nifti_fallback(course_dir, config)
+        Path(ct_image_path).unlink(missing_ok=True)
+        for task in tasks:
+            mask_path = task.get('mask_path')
+            if mask_path:
+                Path(mask_path).unlink(missing_ok=True)
+        _invalidate_radiomics_outputs(output_path)
+        if isinstance(exc, RadiomicsCourseExtractionError):
+            raise
+        raise RadiomicsCourseExtractionError(
+            f"RTSTRUCT radiomics preparation failed for {course_dir}: {exc}"
+        ) from exc
 
     if not tasks:
-        logger.warning("No valid ROIs found in %s", rs_file)
-        try:
-            os.unlink(ct_image_path)
-        except Exception:
-            pass
+        logger.warning("No eligible ROIs found in current RTSTRUCT inventory for %s", course_dir)
+        Path(ct_image_path).unlink(missing_ok=True)
+        _invalidate_radiomics_outputs(output_path)
         return None
 
-    output_path = course_dir / "radiomics_ct.xlsx"
     sequential = os.environ.get('RTPIPELINE_RADIOMICS_SEQUENTIAL', '').lower() in ('1', 'true', 'yes')
 
     # Determine worker count - respect Snakemake thread budget via env var or config
@@ -1951,22 +2173,18 @@ def radiomics_for_course(
     # Enable checkpointing for resumable extraction
     checkpoint_path = course_dir / "metadata" / "radiomics_ct_checkpoint.parquet"
 
-    result = process_radiomics_batch(
-        tasks,
-        output_path,
-        sequential=sequential,
-        max_workers=max_workers,
-        checkpoint_path=checkpoint_path,
-        enable_heartbeat=True,
-        env_probe_timeout=getattr(config, "radiomics_env_probe_timeout", None),
-    )
-
     try:
-        os.unlink(ct_image_path)
-    except Exception:
-        pass
-
-    return result
+        return process_radiomics_batch(
+            tasks,
+            output_path,
+            sequential=sequential,
+            max_workers=max_workers,
+            checkpoint_path=checkpoint_path,
+            enable_heartbeat=True,
+            env_probe_timeout=getattr(config, "radiomics_env_probe_timeout", None),
+        )
+    finally:
+        Path(ct_image_path).unlink(missing_ok=True)
 
 
 def radiomics_for_course_mr(
@@ -1992,26 +2210,29 @@ def radiomics_for_course_mr(
     course_dir = Path(course_dir)
     mr_root = course_dir / "MR"
     out_path = mr_root / "radiomics_mr.xlsx"
+    configured_mr_params = getattr(config, 'radiomics_params_file_mr', None) if config is not None else None
+    mr_required = configured_mr_params is not None or params_file is not None
+
+    if params_file is None and configured_mr_params is not None:
+        params_file = Path(configured_mr_params)
+    if params_file is not None and not Path(params_file).exists():
+        _invalidate_radiomics_outputs(out_path)
+        raise RadiomicsCourseExtractionError(
+            f"Configured required MR radiomics parameter path is missing: {params_file}"
+        )
 
     if not mr_root.exists():
         logger.debug("No MR directory in %s", course_dir)
+        _invalidate_radiomics_outputs(out_path)
+        if mr_required:
+            raise RadiomicsCourseExtractionError(
+                f"MR radiomics is required but no MR directory exists for {course_dir}"
+            )
         return None
-
-    # Get MR params file from config if not provided
-    if params_file is None and config is not None:
-        mr_params = getattr(config, 'mr_params_file', None)
-        if mr_params:
-            params_file = Path(mr_params)
-            if not params_file.exists():
-                # Try relative to course dir or config dir
-                for base in [course_dir, Path.cwd()]:
-                    candidate = base / mr_params
-                    if candidate.exists():
-                        params_file = candidate
-                        break
 
     tasks: List[Dict[str, Any]] = []
     temp_files: List[Path] = []
+    min_voxels_limit, _ = _ct_voxel_limits(config)
 
     for series_root in sorted(p for p in mr_root.iterdir() if p.is_dir()):
         nifti_dir = series_root / "NIFTI"
@@ -2049,8 +2270,10 @@ def radiomics_for_course_mr(
             temp_files.append(Path(mr_nrrd.name))
             mr_image_path = mr_nrrd.name
         except Exception as exc:
-            logger.warning("Failed to convert MR NIfTI %s: %s", mr_nifti, exc)
-            continue
+            _invalidate_radiomics_outputs(out_path)
+            raise RadiomicsCourseExtractionError(
+                f"Failed to acquire/serialize required MR image {mr_nifti}: {exc}"
+            ) from exc
 
         series_uid = series_root.name
 
@@ -2059,54 +2282,75 @@ def radiomics_for_course_mr(
             try:
                 mask_img = sitk.ReadImage(str(mask_path))
                 mask_arr = sitk.GetArrayFromImage(mask_img)
+            except Exception as exc:
+                _invalidate_radiomics_outputs(out_path)
+                raise RadiomicsCourseExtractionError(
+                    f"Required MR mask is unreadable: {mask_path}: {exc}"
+                ) from exc
 
-                # Skip empty masks
-                if not (mask_arr > 0).any():
-                    continue
+            mask_bool = mask_arr > 0
+            if not mask_bool.any():
+                _invalidate_radiomics_outputs(out_path)
+                raise RadiomicsCourseExtractionError(
+                    f"Required MR mask is empty: {mask_path}"
+                )
+            if int(mask_bool.sum()) < min_voxels_limit:
+                logger.info(
+                    "Skipping MR mask %s: %d voxels below minimum %d",
+                    mask_path,
+                    int(mask_bool.sum()),
+                    min_voxels_limit,
+                )
+                continue
 
-                # Extract ROI name from mask filename
-                mask_name = mask_path.name
-                if mask_name.startswith("total_mr--"):
-                    roi_name = mask_name[10:]  # Remove "total_mr--"
-                else:
-                    roi_name = mask_name
-                if roi_name.endswith(".nii.gz"):
-                    roi_name = roi_name[:-7]
+            mask_name = mask_path.name
+            if mask_name.startswith("total_mr--"):
+                roi_name = mask_name[10:]
+            else:
+                roi_name = mask_name
+            if roi_name.endswith(".nii.gz"):
+                roi_name = roi_name[:-7]
 
-                # Convert mask to NRRD
+            try:
                 mask_nrrd = tempfile.NamedTemporaryFile(
                     suffix=".nrrd", delete=False, prefix=f"mr_mask_{roi_name}_"
                 )
                 mask_nrrd.close()
                 sitk.WriteImage(mask_img, mask_nrrd.name)
                 temp_files.append(Path(mask_nrrd.name))
-
-                tasks.append({
-                    'image_path': mr_image_path,
-                    'mask_path': mask_nrrd.name,
-                    'roi_name': roi_name,
-                    'params_file': str(params_file) if params_file and params_file.exists() else None,
-                    'cleanup': False,  # We'll clean up temp files ourselves
-                    'metadata': {  # Use 'metadata' not 'extra_metadata' for correct handling
-                        'modality': 'MR',
-                        'series_uid': series_uid,
-                        'segmentation_source': 'AutoTS_total_mr',
-                        'patient_id': course_dir.parent.name,
-                        'course_id': course_dir.name,
-                    }
-                })
             except Exception as exc:
-                logger.debug("Failed to process MR mask %s: %s", mask_path, exc)
-                continue
+                _invalidate_radiomics_outputs(out_path)
+                raise RadiomicsCourseExtractionError(
+                    f"Failed to serialize required MR mask {mask_path}: {exc}"
+                ) from exc
+
+            tasks.append({
+                'image_path': mr_image_path,
+                'mask_path': mask_nrrd.name,
+                'roi_name': roi_name,
+                'params_file': str(params_file) if params_file else None,
+                'cleanup': False,
+                'metadata': {
+                    'modality': 'MR',
+                    'series_uid': series_uid,
+                    'segmentation_source': 'AutoTS_total_mr',
+                    'patient_id': course_dir.parent.name,
+                    'course_id': course_dir.name,
+                }
+            })
 
     if not tasks:
-        logger.debug("No valid MR radiomics tasks for %s", course_dir)
-        # Cleanup temp files
+        logger.debug("No eligible MR radiomics tasks for %s", course_dir)
         for tf in temp_files:
             try:
                 tf.unlink()
-            except Exception:
-                pass
+            except OSError as exc:
+                logger.debug("Failed to clean MR temporary file %s: %s", tf, exc)
+        _invalidate_radiomics_outputs(out_path)
+        if mr_required:
+            raise RadiomicsCourseExtractionError(
+                f"MR radiomics is required but produced no eligible tasks for {course_dir}"
+            )
         return None
 
     logger.info("Processing %d MR radiomics tasks for %s", len(tasks), course_dir.name)
@@ -2130,21 +2374,25 @@ def radiomics_for_course_mr(
     # Enable checkpointing for resumable extraction
     checkpoint_path = mr_root / "radiomics_mr_checkpoint.parquet"
 
-    result = process_radiomics_batch(
-        tasks,
-        out_path,
-        sequential=False,
-        max_workers=max_workers,
-        checkpoint_path=checkpoint_path,
-        enable_heartbeat=True,
-        env_probe_timeout=getattr(config, "radiomics_env_probe_timeout", None),
-    )
-
-    # Cleanup temp files
-    for tf in temp_files:
-        try:
-            tf.unlink()
-        except Exception:
-            pass
-
-    return result
+    try:
+        result = process_radiomics_batch(
+            tasks,
+            out_path,
+            sequential=False,
+            max_workers=max_workers,
+            checkpoint_path=checkpoint_path,
+            enable_heartbeat=True,
+            env_probe_timeout=getattr(config, "radiomics_env_probe_timeout", None),
+        )
+        if result is None and mr_required:
+            _invalidate_radiomics_outputs(out_path)
+            raise RadiomicsCourseExtractionError(
+                f"MR radiomics is required but produced no workbook for {course_dir}"
+            )
+        return result
+    finally:
+        for tf in temp_files:
+            try:
+                tf.unlink()
+            except OSError as exc:
+                logger.debug("Failed to clean MR temporary file %s: %s", tf, exc)

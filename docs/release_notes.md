@@ -1,5 +1,13 @@
 # Release notes
 
+## Unreleased
+
+The next version is 2.4.0. It remains unreleased and has no release tag or published versioned container image. Cite an immutable git commit or container digest when using these bytes, and do not describe 2.4.0 as a tagged release.
+
+Work after the 2.3.0 tag tightens fail-closed radiomics and public-repository boundary checks and adds the backward-incompatible federation packet schema v3. Schema v3 binds normalized configuration, immutable source/container identity, runtime RTpipeline version, and an exact feature/ROI inventory that includes `segmentation_source`. Manual, automated, and custom contour sources therefore remain distinct compatibility identities. For distributed aggregate radiomics reliability analysis, central aggregation performs node-tagged concatenation of validated cohort-level rows and computes no pooled cross-site estimator or meta-analysis. These packets do not themselves establish federated model training, secure aggregation, differential privacy, privacy guarantees, or outcome federation. External federated learning remains a separately implemented downstream setting.
+
+Cite RTpipeline 2.3.0 for the currently released software. Add an immutable git commit or container digest when a manuscript uses the unreleased 2.4.0 bytes.
+
 ## 2.3.0
 
 RTpipeline 2.3.0 expands the opt-in all-series workflow while preserving the
@@ -136,9 +144,10 @@ explicitly if that historical behavior is required.
 ## 2.2.0
 
 RTpipeline 2.2.0 adds a fail-closed contract for distributed aggregate
-radiomics reliability analysis. It is designed for identical local execution
-across cohorts and deterministic central reconstruction without transferring
-raw images or patient-level feature rows.
+radiomics reliability analysis. Shared versioned inputs support consistent local
+processing, and deterministic central reconstruction does not transfer raw
+images or patient-level feature rows. Identical processing requires verification
+against a bound contract.
 
 - Sites can export deterministic cohort-level reliability packets and
   coordinators can validate and combine them with `rtpipeline federation`.

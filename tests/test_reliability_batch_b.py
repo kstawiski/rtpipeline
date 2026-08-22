@@ -315,9 +315,9 @@ def test_process_radiomics_batch_sequential_dropped_result_fails_closed(tmp_path
     )
 
     tasks = [
-        {"image_path": "i", "mask_path": "m", "roi_name": "CTV", "cleanup": False, "metadata": {}},
-        {"image_path": "i", "mask_path": "m", "roi_name": "BLADDER", "cleanup": False, "metadata": {}},
-        {"image_path": "i", "mask_path": "m", "roi_name": "RECTUM", "cleanup": False, "metadata": {}},
+        {"image_path": "i", "mask_path": "m", "roi_name": name, "cleanup": False,
+         "metadata": {"segmentation_source": "Manual", "roi_original_name": name}}
+        for name in ("CTV", "BLADDER", "RECTUM")
     ]
     output_path = tmp_path / "radiomics_ct.xlsx"
 
@@ -569,7 +569,13 @@ def test_parallel_worker_missing_builder_raises_region_failure(monkeypatch, tmp_
         rp._extract_one(task)
 
 
-def test_parallel_worker_empty_mask_returns_observed_status(monkeypatch, tmp_path):
+def test_parallel_worker_empty_mask_raises_region_failure(monkeypatch, tmp_path):
+    """Every enumerated ROI task is required: an empty mask is a course-level failure.
+
+    _RoiTask carries no required/optional flag, and enumeration only ever emits ROIs
+    that must be extracted, so an empty mask can never be downgraded to an observed
+    status row — that would publish a course silently missing a structure.
+    """
     import numpy as np
 
     class Builder:
@@ -581,7 +587,37 @@ def test_parallel_worker_empty_mask_returns_observed_status(monkeypatch, tmp_pat
     monkeypatch.setattr(rp, "_get_builder", lambda _path: Builder())
     task = rp._RoiTask("Manual", str(tmp_path / "RS.dcm"), "PTV", str(tmp_path))
 
-    assert rp._extract_one(task)["extraction_status"] == "empty_mask"
+    with pytest.raises(rp.RadiomicsRegionExtractionError, match="empty required mask"):
+        rp._extract_one(task)
+
+
+def test_parallel_worker_undersized_mask_returns_observed_status(monkeypatch, tmp_path):
+    """Companion to the empty-mask contract: the fail-closed rule is scoped to masks
+    that are genuinely EMPTY. A present-but-undersized ROI is still a real observation
+    and must be reported as a status row, not raised, so a legitimately tiny structure
+    cannot fail an otherwise complete course."""
+    import numpy as np
+
+    mask = np.zeros((4, 4, 4), dtype=bool)
+    mask[0, 0, :3] = True  # 3 voxels: non-empty but below the configured minimum
+
+    class Builder:
+        def get_roi_mask_by_name(self, _roi_name):
+            return mask
+
+    rp._WORKER_STATE.clear()
+    rp._WORKER_STATE.update(
+        {"img": object(), "extractor": object(), "skip_rois": set(), "min_voxels": 120}
+    )
+    monkeypatch.setattr(rp, "_get_builder", lambda _path: Builder())
+    task = rp._RoiTask("Manual", str(tmp_path / "RS.dcm"), "PTV", str(tmp_path))
+
+    record = rp._extract_one(task)
+
+    assert record["extraction_status"] == "below_minimum_voxels"
+    assert record["voxel_count"] == 3
+    assert record["segmentation_source"] == "Manual"
+    assert record["roi_original_name"] == "PTV"
 
 
 def test_parallel_worker_declared_skip_returns_status(monkeypatch, tmp_path):
