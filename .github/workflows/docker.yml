@@ -120,7 +120,7 @@ jobs:
       - name: Test image (full suite and container smoke)
         run: |
           docker run --rm rtpipeline:test \
-            python -c 'import pathlib, pyarrow, rtpipeline, sys; assert pathlib.Path(sys.executable).as_posix().startswith("/opt/conda/envs/rtpipeline/"); assert rtpipeline.__version__ == "2.3.0"'
+            python -c 'import importlib.metadata, pathlib, pyarrow, rtpipeline, sys; assert pathlib.Path(sys.executable).as_posix().startswith("/opt/conda/envs/rtpipeline/"); assert rtpipeline.__version__ == importlib.metadata.version("rtpipeline")'
           docker run --rm rtpipeline:test \
             /opt/conda/envs/rtpipeline/bin/python -m pytest -q
           docker run --rm rtpipeline:test python docker_test.py
