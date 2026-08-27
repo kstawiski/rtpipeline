@@ -1,8 +1,8 @@
 cff-version: 1.2.0
-message: RTpipeline 2.4.0 is an unreleased release candidate. Cite an immutable git commit or container digest when using these bytes; do not describe them as a tagged release.
+message: RTpipeline 3.0.0 is the frozen version for the multicohort measurement campaign. Until a public tag and archived DOI exist, cite the immutable git commit or container digest rather than describing these bytes as a published release.
 title: RTpipeline
 type: software
-version: 2.4.0
+version: 3.0.0
 license: MIT
 authors:
 - family-names: Stawiski
@@ -16,7 +16,7 @@ preferred-citation:
   - family-names: Stawiski
     given-names: Konrad
   title: 'RTpipeline: Automated Radiotherapy DICOM Processing Pipeline'
-  version: 2.4.0
+  version: 3.0.0
   year: 2026
   repository-code: https://github.com/kstawiski/rtpipeline
   url: https://github.com/kstawiski/rtpipeline
