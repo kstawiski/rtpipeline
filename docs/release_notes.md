@@ -2,39 +2,17 @@
 
 ## Unreleased
 
-No changes since 3.0.1.
+Version 2.3.99 is a development placeholder. The final release of this line will
+be 3.0.0, cut once the multicohort measurement campaign has run against these
+bytes. Cite the immutable git commit or container digest until then.
 
-## 3.0.1
+Everything below in this section is destined for that release.
 
-Found by running 3.0.0 against real cohort data. A curated cohort subset, which
-is a directory of symlinks to the selected patients, was silently discovered as
-zero files.
+### Campaign release contents
 
-### Symlinked cohort subsets
-
-Scoping a run to a cohort is routinely done by linking the selected patient
-directories rather than duplicating terabytes of DICOM. Two independent causes
-made that tree yield nothing. `os.walk` does not descend symlinked directories,
-and the scoped-directory resolver required a candidate's RESOLVED target to stay
-inside the DICOM root, which a curated link never does. CT indexing meanwhile
-followed the same links through `iterdir`, so the two discovery paths disagreed
-and the run completed with an empty manifest rather than failing. Measured on a
-92-patient cohort: zero files walked against 340,607 present.
-
-The default is unchanged and still contains the escape, because a symlink
-pointing out of the DICOM root cannot be distinguished on the filesystem from a
-stray or hostile one. Following it is an operator decision, so the operator
-declares it by setting `RTPIPELINE_FOLLOW_INPUT_SYMLINKS`. Under that flag,
-containment is judged on the unresolved path and walks follow links with
-realpath cycle detection. Patient ids remain validated single path components,
-so no candidate can climb out of the root on its own.
-
-## 3.0.0
-
-RTpipeline 3.0.0 is the release prepared for multicohort measurement campaigns
-across thousands of courses. It supersedes the unreleased 2.4.0 development
-line, whose federation packet schema v3 and fail-closed radiomics work is
-included here.
+Prepared for multicohort measurement campaigns across thousands of courses.
+Supersedes the unreleased 2.4.0 development line, whose federation packet schema
+v3 and fail-closed radiomics work is included here.
 
 Schema v3 binds normalized configuration, immutable source and container
 identity, runtime RTpipeline version, and an exact feature/ROI inventory that
@@ -85,11 +63,28 @@ course and still surfaces the original upstream error rather than an exit code.
   nvidia-smi fallbacks, which count physical cards without knowing whether they
   are runnable.
 
-### Citation
+### Symlinked cohort subsets
 
-Cite RTpipeline 3.0.0 with its tag. Until an archived DOI exists, add the
-immutable git commit or container digest when a manuscript depends on these
-bytes.
+Found by running these bytes against real cohort data. A curated cohort subset,
+which is a directory of symlinks to the selected patients, was silently
+discovered as zero files.
+
+Scoping a run to a cohort is routinely done by linking the selected patient
+directories rather than duplicating terabytes of DICOM. Two independent causes
+made that tree yield nothing. `os.walk` does not descend symlinked directories,
+and the scoped-directory resolver required a candidate's RESOLVED target to stay
+inside the DICOM root, which a curated link never does. CT indexing meanwhile
+followed the same links through `iterdir`, so the two discovery paths disagreed
+and the run completed with an empty manifest rather than failing. Measured on a
+92-patient cohort: zero files walked against 340,607 present.
+
+The default is unchanged and still contains the escape, because a symlink
+pointing out of the DICOM root cannot be distinguished on the filesystem from a
+stray or hostile one. Following it is an operator decision, so the operator
+declares it by setting `RTPIPELINE_FOLLOW_INPUT_SYMLINKS`. Under that flag,
+containment is judged on the unresolved path and walks follow links with
+realpath cycle detection. Patient ids remain validated single path components,
+so no candidate can climb out of the root on its own.
 
 ## 2.3.0
 
