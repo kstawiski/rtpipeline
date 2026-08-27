@@ -2,17 +2,69 @@
 
 ## Unreleased
 
-The next version is 2.4.0. It remains unreleased and has no release tag or published versioned container image. Cite an immutable git commit or container digest when using these bytes, and do not describe 2.4.0 as a tagged release.
+No changes since 3.0.0.
 
-Work after the 2.3.0 tag tightens fail-closed radiomics and public-repository boundary checks and adds the backward-incompatible federation packet schema v3. Schema v3 binds normalized configuration, immutable source/container identity, runtime RTpipeline version, and an exact feature/ROI inventory that includes `segmentation_source`. Manual, automated, and custom contour sources therefore remain distinct compatibility identities. For distributed aggregate radiomics reliability analysis, central aggregation performs node-tagged concatenation of validated cohort-level rows and computes no pooled cross-site estimator or meta-analysis. These packets do not themselves establish federated model training, secure aggregation, differential privacy, privacy guarantees, or outcome federation. External federated learning remains a separately implemented downstream setting.
+## 3.0.0
 
-### Radiomics source and ROI inventory safety
+RTpipeline 3.0.0 is the release prepared for multicohort measurement campaigns
+across thousands of courses. It supersedes the unreleased 2.4.0 development
+line, whose federation packet schema v3 and fail-closed radiomics work is
+included here.
 
-- CustomModel radiomics now requires an exact expected structure inventory from the model definition, output manifest, or both. A missing or unexpected RTSTRUCT ROI fails the course and invalidates stale radiomics outputs.
-- A configured custom-structure file now fails on read, parse, schema, entry, or duplicate-name errors. Native, parallel, and conda backends no longer replace an invalid configured inventory with names inferred from the RTSTRUCT.
-- Matching ROI names from Manual, AutoRTS_total, Custom, and CustomModel inputs remain separate source-sensitive identities.
+Schema v3 binds normalized configuration, immutable source and container
+identity, runtime RTpipeline version, and an exact feature/ROI inventory that
+includes `segmentation_source`, so manual, automated, and custom contour sources
+remain distinct compatibility identities. For distributed aggregate radiomics reliability analysis, central aggregation performs node-tagged concatenation of validated cohort-level rows and computes no pooled cross-site estimator or meta-analysis. These packets do not themselves establish federated model training, secure aggregation, differential privacy, privacy guarantees, or outcome federation. External federated learning remains a separately implemented downstream setting.
 
-Cite RTpipeline 2.3.0 for the currently released software. Add an immutable git commit or container digest when a manuscript uses the unreleased 2.4.0 bytes.
+### Campaign-scale execution
+
+- Adds `campaign_mode`. A failing course now records `failed` in its own
+  sentinel and exits zero so the workflow completes across the remaining
+  courses, instead of one malformed series halting every remaining patient and
+  blocking aggregation. The course itself stays closed: dependent stages still
+  refuse a non-`ok` upstream sentinel, and aggregation counts only completed
+  courses.
+- Aggregation in campaign mode writes `campaign_attrition.csv` recording every
+  excluded course with its reason, and still fails closed when no course
+  completed or when completion falls below `campaign_min_completion_fraction`.
+- Adds a per-course campaign ledger. Each course/stage outcome is published
+  atomically as one record per unit, so parallel jobs never contend and a crash
+  cannot leave a torn write. The rollup cross-checks every record against the
+  sentinel on disk, so a unit that died between the two is reported as failed
+  rather than appearing complete.
+- Passes `--keep-going` so independent courses proceed past a failure.
+- Contains launch failures. A missing or unexecutable interpreter previously
+  raised instead of returning an exit code, which would have aborted an entire
+  campaign on an environment problem.
+
+The default is unchanged. A single-cohort run still aborts on the first failing
+course and still surfaces the original upstream error rather than an exit code.
+
+### Measurement safety
+
+- QA phantoms are never classified as patient CT. Delta4 and similar dosimetry
+  volumes are exported with `Modality=CT` and carry an RTSTRUCT, because the QA
+  plan is computed on the phantom, so the RTSTRUCT-bound recovery previously
+  promoted them to `planning_ct`. One export carried 169 ScandiDos VirtualCT
+  series across 99 of 154 patients.
+- CT geometry that cannot be an acquisition is rejected, which excludes scanned
+  films and documentation images exported with `Modality=CT`.
+
+### Hardware safety
+
+- Segmentation is no longer dispatched to a CUDA device that cannot execute the
+  installed build. `torch.cuda.is_available()` returns True on a Pascal card
+  whose architecture the wheel does not compile, and every course then failed at
+  the first convolution. Device capability is now compared against the compiled
+  architecture list, and the torch verdict outranks the environment and
+  nvidia-smi fallbacks, which count physical cards without knowing whether they
+  are runnable.
+
+### Citation
+
+Cite RTpipeline 3.0.0 with its tag. Until an archived DOI exists, add the
+immutable git commit or container digest when a manuscript depends on these
+bytes.
 
 ## 2.3.0
 
