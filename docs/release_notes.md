@@ -2,7 +2,32 @@
 
 ## Unreleased
 
-No changes since 3.0.0.
+No changes since 3.0.1.
+
+## 3.0.1
+
+Found by running 3.0.0 against real cohort data. A curated cohort subset, which
+is a directory of symlinks to the selected patients, was silently discovered as
+zero files.
+
+### Symlinked cohort subsets
+
+Scoping a run to a cohort is routinely done by linking the selected patient
+directories rather than duplicating terabytes of DICOM. Two independent causes
+made that tree yield nothing. `os.walk` does not descend symlinked directories,
+and the scoped-directory resolver required a candidate's RESOLVED target to stay
+inside the DICOM root, which a curated link never does. CT indexing meanwhile
+followed the same links through `iterdir`, so the two discovery paths disagreed
+and the run completed with an empty manifest rather than failing. Measured on a
+92-patient cohort: zero files walked against 340,607 present.
+
+The default is unchanged and still contains the escape, because a symlink
+pointing out of the DICOM root cannot be distinguished on the filesystem from a
+stray or hostile one. Following it is an operator decision, so the operator
+declares it by setting `RTPIPELINE_FOLLOW_INPUT_SYMLINKS`. Under that flag,
+containment is judged on the unresolved path and walks follow links with
+realpath cycle detection. Patient ids remain validated single path components,
+so no candidate can climb out of the root on its own.
 
 ## 3.0.0
 
