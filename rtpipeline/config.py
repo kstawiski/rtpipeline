@@ -25,6 +25,23 @@ class PipelineConfig:
     # Resume mode
     resume: bool = False
 
+    # Campaign mode. In a single-cohort run a failing course aborts the workflow,
+    # which is the right default: the operator sees the failure immediately and
+    # nothing downstream consumes a partial result. Across thousands of courses
+    # that behaviour makes the run unfinishable, because one malformed series
+    # stops every remaining patient and blocks aggregation entirely.
+    #
+    # In campaign mode a failing course records "failed" in its own sentinel and
+    # exits zero, so the DAG completes. The course itself stays closed: the
+    # existing upstream-status check refuses to run any dependent stage for it,
+    # and aggregation counts only courses whose sentinels say "ok". Failure
+    # therefore propagates as recorded status rather than as a halted workflow,
+    # and the attrition is a reported denominator instead of a missing file.
+    campaign_mode: bool = False
+    # Aggregation still fails closed when too little of the campaign completed.
+    # A run that lost most of its courses is a broken run, not a small cohort.
+    campaign_min_completion_fraction: float = 0.5
+
     # External tools (segmentation)
     conda_activate: str | None = None  # e.g. "source ~/miniconda3/etc/profile.d/conda.sh && conda activate rt"
     dcm2niix_cmd: str = "dcm2niix"

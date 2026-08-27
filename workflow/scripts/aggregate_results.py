@@ -12,6 +12,10 @@ import pandas as pd  # type: ignore
 OUTPUT_DIR = Path(snakemake.params.output_dir)  # type: ignore[name-defined]
 RESULTS_DIR = Path(snakemake.params.results_dir)  # type: ignore[name-defined]
 RADIOMICS_ENABLED = bool(snakemake.params.radiomics_enabled)  # type: ignore[name-defined]
+CAMPAIGN_MODE = bool(getattr(snakemake.params, "campaign_mode", False))  # type: ignore[name-defined]
+CAMPAIGN_MIN_COMPLETION_FRACTION = float(
+    getattr(snakemake.params, "campaign_min_completion_fraction", 0.5)  # type: ignore[name-defined]
+)
 WORKER_BUDGET = max(1, int(snakemake.params.worker_budget))  # type: ignore[name-defined]
 AUTO_WORKER_BUDGET = max(1, int(snakemake.params.auto_worker_budget))  # type: ignore[name-defined]
 aggregation_threads_value = int(snakemake.params.aggregation_threads)  # type: ignore[name-defined]
@@ -20,23 +24,42 @@ AGGREGATION_THREADS = (
 )
 
 
-def _iter_course_dirs():
-    for patient_dir in sorted(OUTPUT_DIR.iterdir()):
-        if not patient_dir.is_dir():
-            continue
-        if patient_dir.name.startswith(("_", ".")):
-            continue
-        if patient_dir.name in {
-            "Data",
-            "Data_Snakemake_fallback",
-            "Logs_Snakemake_fallback",
-            "_RESULTS",
-        }:
-            continue
-        for course_dir in sorted(patient_dir.iterdir()):
-            if not course_dir.is_dir() or course_dir.name.startswith("_"):
-                continue
-            yield patient_dir.name, course_dir.name, course_dir
+def _manifest_courses():
+    manifest_path = Path(snakemake.input.manifest)  # type: ignore[name-defined]
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise RuntimeError(f"Course manifest is unreadable: {manifest_path}: {exc}") from exc
+    if not isinstance(payload, dict) or not isinstance(payload.get("courses"), list):
+        raise RuntimeError(
+            f"Course manifest is malformed: {manifest_path} must contain a courses list"
+        )
+
+    courses = []
+    seen = set()
+    for index, entry in enumerate(payload["courses"], start=1):
+        if not isinstance(entry, dict):
+            raise RuntimeError(
+                f"Course manifest is malformed: entry {index} is not a mapping"
+            )
+        patient_id = entry.get("patient")
+        course_id = entry.get("course")
+        if not isinstance(patient_id, str) or not patient_id.strip():
+            raise RuntimeError(
+                f"Course manifest is malformed: entry {index} has no patient identifier"
+            )
+        if not isinstance(course_id, str) or not course_id.strip():
+            raise RuntimeError(
+                f"Course manifest is malformed: entry {index} has no course identifier"
+            )
+        key = (patient_id, course_id)
+        if key in seen:
+            raise RuntimeError(
+                f"Course manifest is malformed: duplicate course {patient_id}/{course_id}"
+            )
+        seen.add(key)
+        courses.append((patient_id, course_id, OUTPUT_DIR / patient_id / course_id))
+    return courses
 
 
 def _read_prefer_parquet(xlsx_path: Path) -> pd.DataFrame | None:
@@ -49,14 +72,162 @@ def _read_prefer_parquet(xlsx_path: Path) -> pd.DataFrame | None:
                 use_parquet = False
         except OSError:
             pass
+    parquet_error = None
     if use_parquet:
         try:
             return pd.read_parquet(parquet_path)
-        except Exception:
-            pass
+        except Exception as exc:
+            parquet_error = exc
     if xlsx_path.exists():
         return pd.read_excel(xlsx_path)
+    if parquet_error is not None:
+        raise RuntimeError(f"{parquet_path.name} is unreadable: {parquet_error}")
     return None
+
+
+def _read_sentinel(
+    path: Path, patient_id: str, course_id: str, allowed_statuses: set[str]
+) -> str | None:
+    if not path.is_file():
+        return f"{patient_id}/{course_id}: required sentinel is missing: {path.name}"
+    try:
+        status = path.read_text(encoding="utf-8").strip().lower()
+    except Exception as exc:
+        return (
+            f"{patient_id}/{course_id}: required sentinel is unreadable: "
+            f"{path.name}: {exc}"
+        )
+    if status not in allowed_statuses:
+        allowed = ", ".join(sorted(allowed_statuses))
+        return (
+            f"{patient_id}/{course_id}: required sentinel is failed or malformed: "
+            f"{path.name} has status {status!r}; expected {allowed}"
+        )
+    return None
+
+
+def _validate_required_frame(
+    frame: pd.DataFrame | None,
+    path: Path,
+    patient_id: str,
+    course_id: str,
+    identity_columns: set[str],
+) -> str | None:
+    if frame is None:
+        return f"{patient_id}/{course_id}: required output {path.name} is missing"
+    if frame.empty:
+        return f"{patient_id}/{course_id}: required output {path.name} is malformed (no rows)"
+    if not identity_columns.intersection(frame.columns):
+        expected = " or ".join(sorted(identity_columns))
+        return (
+            f"{patient_id}/{course_id}: required output {path.name} is malformed "
+            f"(missing {expected})"
+        )
+    return None
+
+
+def _validate_required_inputs(courses):
+    errors: list[str] = []
+    incomplete: dict[tuple[str, str], list[str]] = {}
+    required_frames: dict[tuple[Path, str], pd.DataFrame] = {}
+    sentinel_contract = [
+        (".dvh_done", {"ok"}),
+        (".qc_done", {"ok"}),
+        (".custom_models_done", {"disabled", "ok"}),
+    ]
+    if RADIOMICS_ENABLED:
+        sentinel_contract.append((".radiomics_done", {"ok"}))
+
+    for patient_id, course_id, course_dir in courses:
+        course_errors: list[str] = []
+        if not course_dir.is_dir():
+            message = (
+                f"{patient_id}/{course_id}: required course directory is missing: {course_dir}"
+            )
+            errors.append(message)
+            incomplete[(patient_id, course_id)] = [message]
+            continue
+        for sentinel_name, allowed_statuses in sentinel_contract:
+            error = _read_sentinel(
+                course_dir / sentinel_name,
+                patient_id,
+                course_id,
+                allowed_statuses,
+            )
+            if error:
+                errors.append(error)
+                course_errors.append(error)
+
+        required_outputs = [
+            ("dvh", course_dir / "dvh_metrics.xlsx", {"ROI_Name"}),
+        ]
+        if RADIOMICS_ENABLED:
+            required_outputs.append(
+                (
+                    "radiomics",
+                    course_dir / "radiomics_ct.xlsx",
+                    {"roi_name", "roi_original_name"},
+                )
+            )
+        for key, output_path, identity_columns in required_outputs:
+            try:
+                frame = _read_prefer_parquet(output_path)
+            except Exception as exc:
+                message = (
+                    f"{patient_id}/{course_id}: required output {output_path.name} "
+                    f"is unreadable: {exc}"
+                )
+                errors.append(message)
+                course_errors.append(message)
+                continue
+            error = _validate_required_frame(
+                frame,
+                output_path,
+                patient_id,
+                course_id,
+                identity_columns,
+            )
+            if error:
+                errors.append(error)
+                course_errors.append(error)
+            elif frame is not None:
+                required_frames[(course_dir, key)] = frame
+        if course_errors:
+            incomplete[(patient_id, course_id)] = course_errors
+    return required_frames, errors, incomplete
+
+
+def _write_campaign_attrition(courses, incomplete) -> None:
+    """Record why each course was excluded, so the denominator is defensible."""
+    rows = [
+        {
+            "patient_id": patient_id,
+            "course_id": course_id,
+            "status": "excluded" if (patient_id, course_id) in incomplete else "aggregated",
+            "reason_count": len(incomplete.get((patient_id, course_id), [])),
+            "reasons": " | ".join(incomplete.get((patient_id, course_id), [])),
+        }
+        for patient_id, course_id, _ in courses
+    ]
+    pd.DataFrame(rows).to_csv(RESULTS_DIR / "campaign_attrition.csv", index=False)
+
+
+def _declared_output_paths() -> list[Path]:
+    names = ["dvh", "fractions", "metadata", "qc"]
+    if RADIOMICS_ENABLED:
+        names.extend(["radiomics", "radiomics_mr"])
+    return [
+        Path(str(getattr(snakemake.output, name)))  # type: ignore[name-defined]
+        for name in names
+    ]
+
+
+def _invalidate_declared_outputs() -> None:
+    for path in _declared_output_paths():
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as exc:
+            raise RuntimeError(f"Unable to invalidate stale aggregate output {path}: {exc}") from exc
 
 
 def _add_course_ids(frame: pd.DataFrame, patient_id: str, course_id: str) -> None:
@@ -80,7 +251,7 @@ def _load_body_region_data(course_dir: Path, patient_id: str, course_id: str):
         return {}, f"Body region QC read error {patient_id}/{course_id}: {exc}"
 
 
-def _load_course(course):
+def _load_course(course, required_frames):
     patient_id, course_id, course_dir = course
     course_results: dict[str, pd.DataFrame] = {}
     errors: list[str] = []
@@ -104,32 +275,24 @@ def _load_course(course):
     ]
     body_regions = ",".join(body_regions_present) or "unknown"
 
-    try:
-        frame = _read_prefer_parquet(course_dir / "dvh_metrics.xlsx")
-        if frame is not None:
-            _add_course_ids(frame, patient_id, course_id)
-            if "structure_cropped" not in frame.columns:
-                frame["structure_cropped"] = False
-            frame["contrast_phase"] = contrast_phase
-            frame["image_modality"] = image_modality
-            frame["body_regions"] = body_regions
-            course_results["dvh"] = frame
-    except Exception as exc:
-        errors.append(f"DVH error {patient_id}/{course_id}: {exc}")
+    frame = required_frames[(course_dir, "dvh")].copy()
+    _add_course_ids(frame, patient_id, course_id)
+    if "structure_cropped" not in frame.columns:
+        frame["structure_cropped"] = False
+    frame["contrast_phase"] = contrast_phase
+    frame["image_modality"] = image_modality
+    frame["body_regions"] = body_regions
+    course_results["dvh"] = frame
 
     if RADIOMICS_ENABLED:
-        try:
-            frame = _read_prefer_parquet(course_dir / "radiomics_ct.xlsx")
-            if frame is not None:
-                _add_course_ids(frame, patient_id, course_id)
-                if "structure_cropped" not in frame.columns:
-                    frame["structure_cropped"] = False
-                frame["contrast_phase"] = contrast_phase
-                frame["image_modality"] = image_modality
-                frame["body_regions"] = body_regions
-                course_results["radiomics"] = frame
-        except Exception as exc:
-            errors.append(f"Radiomics error {patient_id}/{course_id}: {exc}")
+        frame = required_frames[(course_dir, "radiomics")].copy()
+        _add_course_ids(frame, patient_id, course_id)
+        if "structure_cropped" not in frame.columns:
+            frame["structure_cropped"] = False
+        frame["contrast_phase"] = contrast_phase
+        frame["image_modality"] = image_modality
+        frame["body_regions"] = body_regions
+        course_results["radiomics"] = frame
 
         try:
             frame = _read_prefer_parquet(
@@ -173,13 +336,17 @@ def _worker_count(courses) -> int:
     return min(effective_cap, AUTO_WORKER_BUDGET)
 
 
-def _collect_all_frames(courses):
+def _collect_all_frames(courses, required_frames):
     results: dict[str, list[pd.DataFrame]] = defaultdict(list)
     errors: list[str] = []
     if not courses:
         return results, errors
+
+    def load(course):
+        return _load_course(course, required_frames)
+
     with ThreadPoolExecutor(max_workers=_worker_count(courses)) as pool:
-        for course_results, course_errors in pool.map(_load_course, courses):
+        for course_results, course_errors in pool.map(load, courses):
             errors.extend(course_errors)
             for key, frame in course_results.items():
                 if frame is not None and not frame.empty:
@@ -187,10 +354,12 @@ def _collect_all_frames(courses):
     return results, errors
 
 
-def _report_aggregation_errors(errors: list[str]) -> None:
+def _report_aggregation_errors(
+    errors: list[str], heading: str = "warnings"
+) -> None:
     if not errors:
         return
-    print(f"Aggregation warnings ({len(errors)}):")
+    print(f"Aggregation {heading} ({len(errors)}):")
     for error in errors[:20]:
         print(f" - {error}")
     if len(errors) > 20:
@@ -358,13 +527,73 @@ def _write_qc(courses) -> None:
         ).to_excel(snakemake.output.qc, index=False)  # type: ignore[name-defined]
 
 
+log_path = Path(snakemake.log[0])  # type: ignore[name-defined]
+_invalidate_declared_outputs()
+log_path.parent.mkdir(parents=True, exist_ok=True)
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-courses = list(_iter_course_dirs())
-all_frames, aggregation_errors = _collect_all_frames(courses)
+(RESULTS_DIR / "aggregation_errors.log").unlink(missing_ok=True)
+
+try:
+    courses = _manifest_courses()
+except RuntimeError as exc:
+    log_path.write_text(f"Aggregation blocked: {exc}\n", encoding="utf-8")
+    raise
+
+required_frames, required_errors, incomplete_courses = _validate_required_inputs(courses)
+
+if not CAMPAIGN_MODE:
+    if required_errors:
+        _report_aggregation_errors(required_errors, "required input failures")
+        message = "Required aggregation inputs are incomplete:\n" + "".join(
+            f" - {error}\n" for error in required_errors
+        )
+        log_path.write_text(message, encoding="utf-8")
+        raise RuntimeError(message.rstrip())
+    aggregated_courses = courses
+    summary = f"Aggregated {len(courses)} course(s).\n"
+else:
+    # Campaign mode aggregates the courses that completed and reports the rest as
+    # declared attrition. Every exclusion keeps its reason in campaign_attrition.csv,
+    # so the denominator is auditable rather than silently smaller.
+    _write_campaign_attrition(courses, incomplete_courses)
+    aggregated_courses = [
+        course for course in courses if (course[0], course[1]) not in incomplete_courses
+    ]
+    total = len(courses)
+    completed = len(aggregated_courses)
+    fraction = (completed / total) if total else 0.0
+
+    if required_errors:
+        _report_aggregation_errors(required_errors, "excluded course failures")
+
+    # A campaign that lost most of its courses is a broken campaign, not a small
+    # cohort, so aggregation still fails closed below the declared floor.
+    if completed == 0:
+        message = (
+            f"Campaign aggregation blocked: no course completed out of {total}. "
+            f"See {RESULTS_DIR / 'campaign_attrition.csv'}."
+        )
+        log_path.write_text(message + "\n", encoding="utf-8")
+        raise RuntimeError(message)
+    if fraction < CAMPAIGN_MIN_COMPLETION_FRACTION:
+        message = (
+            f"Campaign aggregation blocked: only {completed} of {total} courses "
+            f"completed ({fraction:.1%}), below the declared floor of "
+            f"{CAMPAIGN_MIN_COMPLETION_FRACTION:.1%}. "
+            f"See {RESULTS_DIR / 'campaign_attrition.csv'}."
+        )
+        log_path.write_text(message + "\n", encoding="utf-8")
+        raise RuntimeError(message)
+
+    summary = (
+        f"Aggregated {completed} of {total} course(s) "
+        f"({fraction:.1%}); {total - completed} excluded with recorded reasons "
+        f"in campaign_attrition.csv.\n"
+    )
+
+all_frames, aggregation_errors = _collect_all_frames(aggregated_courses, required_frames)
 _report_aggregation_errors(aggregation_errors)
 _write_tabular_outputs(all_frames)
 _copy_supplemental_sources()
-_write_qc(courses)
-Path(snakemake.log[0]).write_text(  # type: ignore[name-defined]
-    f"Aggregated {len(courses)} course(s).\n", encoding="utf-8"
-)
+_write_qc(aggregated_courses)
+log_path.write_text(summary, encoding="utf-8")
