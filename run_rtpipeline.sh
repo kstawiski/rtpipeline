@@ -265,7 +265,7 @@ fi
 
 # Add image and command
 PIPELINE_CMD=(
-    snakemake --cores "$CORES" --rerun-incomplete
+    snakemake --cores "$CORES" --rerun-incomplete --keep-going
     "${CONFIG_ARGS[@]}"
     "${DEVICE_CONFIG[@]}"
     "${CONFIG_OVERRIDES[@]}"
