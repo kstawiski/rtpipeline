@@ -5,6 +5,8 @@ import datetime
 import json
 import logging
 import os
+import tempfile
+import re
 import shutil
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -1723,6 +1725,79 @@ def _clear_course_ct_outputs(course_dirs) -> None:
             logger.warning("Failed to clear stale per-course CT output %s: %s", d, exc)
 
 
+
+def _organize_checkpoint_dir(config: PipelineConfig) -> Path:
+    return config.output_root / "_COURSES" / "patients"
+
+
+def _write_json_atomic(path: Path, payload: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=".", suffix=".tmp")
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as stream:
+            json.dump(payload, stream, indent=2, sort_keys=True)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(tmp_path, path)
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise
+
+
+def _record_expected_courses(config: PipelineConfig, patient_id: str, course_keys: List[str]) -> None:
+    try:
+        _write_json_atomic(
+            _organize_checkpoint_dir(config) / f"{patient_id}.expected.json",
+            {"patient": patient_id, "courses": sorted(set(course_keys))},
+        )
+    except Exception as exc:
+        logger.debug("Could not record expected courses for %s: %s", patient_id, exc)
+
+
+def _record_course_done(config: PipelineConfig, patient_id: str, course_key: str, course_dir: Path) -> None:
+    try:
+        safe = re.sub(r"[^A-Za-z0-9_.-]", "_", str(course_key))
+        _write_json_atomic(
+            _organize_checkpoint_dir(config) / patient_id / f"{safe}.done.json",
+            {"patient": patient_id, "course_key": str(course_key), "course_dir": str(course_dir)},
+        )
+    except Exception as exc:
+        logger.debug("Could not record completed course %s/%s: %s", patient_id, course_key, exc)
+
+
+def _completed_patients(config: PipelineConfig) -> Dict[str, List[dict]]:
+    """Patients whose every discovered course already has a completion record."""
+    root = _organize_checkpoint_dir(config)
+    if not root.is_dir():
+        return {}
+    complete: Dict[str, List[dict]] = {}
+    for expected_file in sorted(root.glob("*.expected.json")):
+        try:
+            expected = json.loads(expected_file.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        patient_id = str(expected.get("patient") or "")
+        wanted = [str(c) for c in (expected.get("courses") or [])]
+        if not patient_id or not wanted:
+            continue
+        done_dir = root / patient_id
+        if not done_dir.is_dir():
+            continue
+        done: Dict[str, dict] = {}
+        for done_file in done_dir.glob("*.done.json"):
+            try:
+                entry = json.loads(done_file.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            key = str(entry.get("course_key") or "")
+            if key:
+                done[key] = entry
+        if all(key in done for key in wanted):
+            complete[patient_id] = [done[key] for key in wanted]
+    return complete
+
+
 def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
     """End-to-end RT organization and course merging according to config."""
     config.ensure_dirs()
@@ -1746,6 +1821,26 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
     scope_ids = list(getattr(config, "discover_patient_ids", []) or []) or None
     if scope_ids:
         logger.info("Organize discovery scoped to %d cohort patient(s)", len(scope_ids))
+
+    resumed_patients: Dict[str, List[dict]] = {}
+    if getattr(config, "resume", False):
+        resumed_patients = _completed_patients(config)
+        if resumed_patients:
+            if scope_ids is None:
+                try:
+                    all_ids = [d.name for d in config.dicom_root.iterdir() if d.is_dir()]
+                except OSError:
+                    all_ids = []
+                scope_ids = all_ids or None
+            if scope_ids is not None:
+                remaining = [pid for pid in scope_ids if pid not in resumed_patients]
+                logger.info(
+                    "Organize resume: %d patient(s) already complete, %d remaining; "
+                    "their DICOM headers will not be re-read.",
+                    len(resumed_patients),
+                    len(remaining),
+                )
+                scope_ids = remaining
 
     index_workers = config.effective_workers()
     ct_index = index_ct_series(config.dicom_root, scope_ids, max_workers=index_workers)
@@ -1789,6 +1884,12 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
             entry[1],
         )
     )
+
+    _expected_by_patient: Dict[str, List[str]] = defaultdict(list)
+    for _pid, _raw_key, _items, _start in raw_entries:
+        _expected_by_patient[_pid].append(_raw_key)
+    for _pid, _keys in _expected_by_patient.items():
+        _record_expected_courses(config, _pid, _keys)
 
     course_tasks: List[Tuple[str, str, List[LinkedSet], Dict[str, Optional[str] | Optional[datetime.datetime]]]] = []
     for pid, raw_key, items, start_dt in raw_entries:
@@ -2469,6 +2570,25 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
         for res in results:
             if res:
                 outputs.append(res)
+
+    for _co in outputs:
+        try:
+            _record_course_done(config, _co.patient_id, _co.course_key, _co.dirs.root)
+        except Exception:
+            pass
+
+    if resumed_patients:
+        _rehydrated = 0
+        for _pid, _entries in resumed_patients.items():
+            for _entry in _entries:
+                _cdir = Path(str(_entry.get("course_dir") or ""))
+                if not _cdir.is_dir():
+                    continue
+                _co = _hydrate_existing_course(_pid, str(_entry.get("course_key") or _cdir.name), _cdir)
+                if _co is not None:
+                    outputs.append(_co)
+                    _rehydrated += 1
+        logger.info("Organize resume: re-admitted %d course(s) from complete patients", _rehydrated)
 
     if getattr(config, "do_segment_all_series", False):
         if not getattr(config, "inventory_db_path", None):
