@@ -58,7 +58,7 @@ FROM condaforge/mambaforge:24.3.0-0
 
 LABEL maintainer="kstawiski"
 LABEL description="DICOM-RT pipeline with TotalSegmentator, nnUNet, and Snakemake"
-LABEL version="3.0.1"
+LABEL version="2.3.99"
 
 ENV DEBIAN_FRONTEND=noninteractive \
     LANG=C.UTF-8 \
