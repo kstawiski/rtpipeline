@@ -432,12 +432,21 @@ def test_public_docs_do_not_overclaim_or_mix_roi_sources():
     assert release_notes.startswith("# Release notes\n\n## Unreleased\n")
 
 
-def test_citation_marks_version_2_4_0_as_unreleased():
+def test_citation_version_tracks_pyproject_and_does_not_overclaim_a_release():
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    version = project["project"]["version"]
     citation = yaml.safe_load((ROOT / "CITATION.cff").read_text(encoding="utf-8"))
-    assert citation["version"] == "2.4.0"
-    assert citation["preferred-citation"]["version"] == "2.4.0"
-    assert "unreleased release candidate" in citation["message"]
-    assert "immutable git commit or container digest" in citation["message"]
+
+    assert citation["version"] == version
+    assert citation["preferred-citation"]["version"] == version
+
+    # The citation must never imply a published release while none exists.
+    # Until a public tag and archived DOI are in place, it must send the reader
+    # to an immutable commit or container digest instead.
+    message = citation["message"]
+    assert version in message
+    assert "immutable git commit or container digest" in message
+    assert "published release" in message or "unreleased release candidate" in message
 
 
 def test_related_series_metadata_helper_is_available_from_organize(tmp_path, monkeypatch):
