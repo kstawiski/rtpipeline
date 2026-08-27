@@ -302,17 +302,83 @@ def _load_courses_from_manifest(
     return results
 
 
-def _detect_gpu_count() -> int:
-    """Best-effort GPU counter used to fan out segmentation on multi-GPU hosts."""
+def _cuda_capability_is_executable(capability: tuple[int, int], arch_list: list[str]) -> bool:
+    """Return True when a CUDA device can actually execute this build's kernels.
+
+    ``torch.cuda.is_available()`` reports driver and device presence, not whether
+    the installed wheel carries code the device can run. A PyTorch build whose
+    architectures start at ``sm_70`` loads happily on a Pascal card and then
+    raises "no kernel image is available for execution on the device" at the
+    first convolution. Compare the device capability against the compiled
+    architecture list instead, accepting an exact SASS match, a lower minor
+    revision inside the same major generation, or forward-JIT from embedded PTX.
+    """
+    major, minor = capability
+    device_sm = major * 10 + minor
+    for arch in arch_list:
+        try:
+            if arch.startswith("sm_"):
+                arch_sm = int(arch[3:])
+                if arch_sm == device_sm:
+                    return True
+                if arch_sm // 10 == major and arch_sm % 10 <= minor:
+                    return True
+            elif arch.startswith("compute_"):
+                if int(arch[8:]) <= device_sm:
+                    return True
+        except ValueError:  # pragma: no cover - unexpected arch spelling
+            continue
+    return False
+
+
+def _usable_cuda_device_count() -> int | None:
+    """Count CUDA devices this build can target, or None if undeterminable.
+
+    A definitive ``0`` means torch saw CUDA devices and none can execute its
+    kernels. That verdict must outrank the nvidia-smi fallback below, which
+    counts physical cards without knowing whether they are runnable.
+    """
     try:
         import torch
 
-        if torch.cuda.is_available():
-            count = torch.cuda.device_count()
-            if count:
-                return count
+        if not torch.cuda.is_available():
+            return None
+        arch_list = list(torch.cuda.get_arch_list())
+        total = torch.cuda.device_count()
+        if not arch_list:
+            return total
+        usable = 0
+        unusable: list[str] = []
+        for index in range(total):
+            capability = torch.cuda.get_device_capability(index)
+            if _cuda_capability_is_executable(capability, arch_list):
+                usable += 1
+            else:
+                name = torch.cuda.get_device_name(index)
+                unusable.append(f"{name} (sm_{capability[0]}{capability[1]})")
+        if unusable:
+            logger.error(
+                "CUDA reports %d device(s) but %d cannot execute this PyTorch build: %s. "
+                "Compiled architectures are %s. torch.cuda.is_available() is True even so, "
+                "and running on these devices fails at the first kernel launch. "
+                "Install a PyTorch build covering this architecture or pass --totalseg-device cpu.",
+                total,
+                len(unusable),
+                ", ".join(unusable),
+                ", ".join(arch_list),
+            )
+        return usable
     except Exception:  # pragma: no cover - optional dependency
-        pass
+        return None
+
+
+def _detect_gpu_count() -> int:
+    """Best-effort GPU counter used to fan out segmentation on multi-GPU hosts."""
+    usable = _usable_cuda_device_count()
+    if usable is not None:
+        # torch inspected the devices directly; its verdict is authoritative,
+        # including a verdict of zero usable devices.
+        return usable
 
     cuda_devices = os.environ.get("CUDA_VISIBLE_DEVICES", "").strip()
     if cuda_devices and cuda_devices.lower() != "all":
