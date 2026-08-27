@@ -341,6 +341,8 @@ CUSTOM_MODELS_CONDA = CUSTOM_MODELS_CONFIG.get("conda_activate")
 CUSTOM_MODELS_RETAIN = bool(CUSTOM_MODELS_CONFIG.get("retain_weights", True))
 
 RADIOMICS_CONFIG = config.get("radiomics", {})
+CAMPAIGN_MODE = bool(config.get("campaign_mode", False))
+CAMPAIGN_MIN_COMPLETION_FRACTION = float(config.get("campaign_min_completion_fraction", 0.5))
 RADIOMICS_ENABLED = bool(RADIOMICS_CONFIG.get("enabled", False))
 RADIOMICS_SEQUENTIAL = bool(RADIOMICS_CONFIG.get("sequential", False))
 _radiomics_params = RADIOMICS_CONFIG.get("params_file")
@@ -672,6 +674,7 @@ if config.get("container_mode", False):
             set -e
             export PATH="{params.python_bin}:$PATH"
             mkdir -p $(dirname {output.sentinel})
+            rm -f {output.sentinel}
             mkdir -p $(dirname {log})
             
             if "{params.python}" -m rtpipeline.cli \
@@ -685,7 +688,9 @@ if config.get("container_mode", False):
                 {params.extra_args} > {log} 2>&1; then
                 echo "ok" > {output.sentinel}
             else
-                echo "failed: see log" > {output.sentinel}
+                rm -f {output.sentinel}
+                echo "Required course stage failed; see {log}" >&2
+                exit 1
             fi
             """
 else:
@@ -715,6 +720,7 @@ else:
             set -e
             export PATH="{params.python_bin}:$PATH"
             mkdir -p $(dirname {output.sentinel})
+            rm -f {output.sentinel}
             mkdir -p $(dirname {log})
 
             if "{params.python}" -m rtpipeline.cli \
@@ -728,7 +734,9 @@ else:
                 {params.extra_args} > {log} 2>&1; then
                 echo "ok" > {output.sentinel}
             else
-                echo "failed: see log" > {output.sentinel}
+                rm -f {output.sentinel}
+                echo "Required course stage failed; see {log}" >&2
+                exit 1
             fi
             """
 
@@ -770,11 +778,13 @@ if config.get("container_mode", False):
             """
             set -e
             mkdir -p $(dirname {output.sentinel})
+            rm -f {output.sentinel}
             mkdir -p $(dirname {log})
 
-            if [ -f "{input.segmentation}" ] && grep -qi "^failed" "{input.segmentation}"; then
-                echo "skipped: upstream segmentation failed" > {output.sentinel}
-                exit 0
+            if [ ! -f "{input.segmentation}" ] || ! grep -qx "ok" "{input.segmentation}"; then
+                rm -f {output.sentinel}
+                echo "Custom segmentation requires a successful segmentation sentinel: {input.segmentation}" >&2
+                exit 1
             fi
             
             if [ "{params.enabled}" = "False" ]; then
@@ -795,7 +805,9 @@ if config.get("container_mode", False):
                 {params.extra_args} > {log} 2>&1; then
                 echo "ok" > {output.sentinel}
             else
-                echo "failed: see log" > {output.sentinel}
+                rm -f {output.sentinel}
+                echo "Required course stage failed; see {log}" >&2
+                exit 1
             fi
             """
 else:
@@ -825,11 +837,13 @@ else:
             """
             set -e
             mkdir -p $(dirname {output.sentinel})
+            rm -f {output.sentinel}
             mkdir -p $(dirname {log})
 
-            if [ -f "{input.segmentation}" ] && grep -qi "^failed" "{input.segmentation}"; then
-                echo "skipped: upstream segmentation failed" > {output.sentinel}
-                exit 0
+            if [ ! -f "{input.segmentation}" ] || ! grep -qx "ok" "{input.segmentation}"; then
+                rm -f {output.sentinel}
+                echo "Custom segmentation requires a successful segmentation sentinel: {input.segmentation}" >&2
+                exit 1
             fi
             
             if [ "{params.enabled}" = "False" ]; then
@@ -849,7 +863,9 @@ else:
                 {params.extra_args} > {log} 2>&1; then
                 echo "ok" > {output.sentinel}
             else
-                echo "failed: see log" > {output.sentinel}
+                rm -f {output.sentinel}
+                echo "Required course stage failed; see {log}" >&2
+                exit 1
             fi
             """
 
@@ -868,6 +884,7 @@ rule crop_ct_course:
     conda:
         "envs/rtpipeline.yaml"
     params:
+        campaign_mode=CAMPAIGN_MODE,
         stage="crop_ct",
         python=PYTHON_MAIN,
         python_bin=PYTHON_MAIN_BIN,
@@ -900,6 +917,7 @@ rule dvh_course:
     conda:
         "envs/rtpipeline.yaml"
     params:
+        campaign_mode=CAMPAIGN_MODE,
         stage="dvh",
         python=PYTHON_MAIN,
         python_bin=PYTHON_MAIN_BIN,
@@ -965,10 +983,22 @@ if config.get("container_mode", False):
             mkdir -p $(dirname {log})
             echo "DEBUG: threads={threads} SNAKEMAKE_THREADS={params.workflow_threads}" >> {log}
             mkdir -p $(dirname {output.sentinel})
+            rm -f {output.sentinel}
 
-            if [ -f "{input.segmentation}" ] && grep -qi "^failed" "{input.segmentation}"; then
-                echo "skipped: upstream segmentation failed" > {output.sentinel}
-                exit 0
+            if [ ! -f "{input.segmentation}" ] || ! grep -qx "ok" "{input.segmentation}"; then
+                rm -f {output.sentinel}
+                echo "Radiomics requires a successful segmentation sentinel: {input.segmentation}" >&2
+                exit 1
+            fi
+            if [ ! -f "{input.custom}" ] || ! grep -Eqx "ok|disabled" "{input.custom}"; then
+                rm -f {output.sentinel}
+                echo "Radiomics requires a successful or disabled custom-stage sentinel: {input.custom}" >&2
+                exit 1
+            fi
+            if [ ! -f "{input.crop}" ] || ! grep -qx "ok" "{input.crop}"; then
+                rm -f {output.sentinel}
+                echo "Radiomics requires a successful crop-stage sentinel: {input.crop}" >&2
+                exit 1
             fi
             
             if "{params.python}" -m rtpipeline.cli \
@@ -982,7 +1012,9 @@ if config.get("container_mode", False):
                 {params.extra_args} >> {log} 2>&1; then
                 echo "ok" > {output.sentinel}
             else
-                echo "failed: see log" > {output.sentinel}
+                rm -f {output.sentinel}
+                echo "Required course stage failed; see {log}" >&2
+                exit 1
             fi
             """
 else:
@@ -1020,10 +1052,22 @@ else:
             mkdir -p $(dirname {log})
             echo "DEBUG: threads={threads} SNAKEMAKE_THREADS={params.workflow_threads}" >> {log}
             mkdir -p $(dirname {output.sentinel})
+            rm -f {output.sentinel}
 
-            if [ -f "{input.segmentation}" ] && grep -qi "^failed" "{input.segmentation}"; then
-                echo "skipped: upstream segmentation failed" > {output.sentinel}
-                exit 0
+            if [ ! -f "{input.segmentation}" ] || ! grep -qx "ok" "{input.segmentation}"; then
+                rm -f {output.sentinel}
+                echo "Radiomics requires a successful segmentation sentinel: {input.segmentation}" >&2
+                exit 1
+            fi
+            if [ ! -f "{input.custom}" ] || ! grep -Eqx "ok|disabled" "{input.custom}"; then
+                rm -f {output.sentinel}
+                echo "Radiomics requires a successful or disabled custom-stage sentinel: {input.custom}" >&2
+                exit 1
+            fi
+            if [ ! -f "{input.crop}" ] || ! grep -qx "ok" "{input.crop}"; then
+                rm -f {output.sentinel}
+                echo "Radiomics requires a successful crop-stage sentinel: {input.crop}" >&2
+                exit 1
             fi
             
             export PATH="{params.python_bin}:$PATH"
@@ -1038,7 +1082,9 @@ else:
                 {params.extra_args} >> {log} 2>&1; then
                 echo "ok" > {output.sentinel}
             else
-                echo "failed: see log" > {output.sentinel}
+                rm -f {output.sentinel}
+                echo "Required course stage failed; see {log}" >&2
+                exit 1
             fi
             """
 
@@ -1057,6 +1103,7 @@ rule qc_course:
     conda:
         "envs/rtpipeline.yaml"
     params:
+        campaign_mode=CAMPAIGN_MODE,
         stage="qc",
         python=PYTHON_MAIN,
         python_bin=PYTHON_MAIN_BIN,
@@ -1102,6 +1149,7 @@ if config.get("container_mode", False):
         shell:
             """
             mkdir -p $(dirname {output.sentinel})
+            rm -f {output.sentinel}
             mkdir -p $(dirname {log})
 
             if [ "{params.enabled}" = "False" ]; then
@@ -1109,9 +1157,9 @@ if config.get("container_mode", False):
                 exit 0
             fi
 
-            if [ -f "{input.radiomics}" ] && grep -qi "^failed" "{input.radiomics}"; then
+            if [ ! -f "{input.radiomics}" ] || ! grep -qx "ok" "{input.radiomics}"; then
                 rm -f {output.sentinel}
-                echo "Radiomics robustness cannot run because upstream radiomics failed" >&2
+                echo "Radiomics robustness cannot run because upstream radiomics failed or is malformed: {input.radiomics}" >&2
                 exit 1
             fi
 
@@ -1161,6 +1209,7 @@ else:
         shell:
             """
             mkdir -p $(dirname {output.sentinel})
+            rm -f {output.sentinel}
             mkdir -p $(dirname {log})
 
             if [ "{params.enabled}" = "False" ]; then
@@ -1168,9 +1217,9 @@ else:
                 exit 0
             fi
 
-            if [ -f "{input.radiomics}" ] && grep -qi "^failed" "{input.radiomics}"; then
+            if [ ! -f "{input.radiomics}" ] || ! grep -qx "ok" "{input.radiomics}"; then
                 rm -f {output.sentinel}
-                echo "Radiomics robustness cannot run because upstream radiomics failed" >&2
+                echo "Radiomics robustness cannot run because upstream radiomics failed or is malformed: {input.radiomics}" >&2
                 exit 1
             fi
 
@@ -1279,6 +1328,8 @@ rule aggregate_results:
         output_dir=lambda w, input: str(Path(input.manifest).parents[1]),
         results_dir=lambda w, output: str(Path(output.dvh).parent),
         radiomics_enabled=RADIOMICS_ENABLED,
+        campaign_mode=CAMPAIGN_MODE,
+        campaign_min_completion_fraction=CAMPAIGN_MIN_COMPLETION_FRACTION,
         worker_budget=WORKER_BUDGET,
         auto_worker_budget=AUTO_WORKER_BUDGET,
         aggregation_threads=AGGREGATION_THREADS or 0
