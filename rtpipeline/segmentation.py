@@ -208,9 +208,60 @@ def _ensure_local_dcm2niix(config: PipelineConfig) -> Optional[Path]:
             logger.debug("No ext zip %s found (package or FS)", zip_name)
             return None
     dest = config.logs_root / "bin"
+
+    def _existing_binary() -> Path | None:
+        """Return an already-prepared, executable binary if one is present."""
+        for base, dirs, files in os.walk(dest):
+            dirs[:] = [d for d in dirs if d != "__MACOSX"]
+            for fn in files:
+                if fn.startswith("._"):
+                    continue
+                if fn.lower() == bin_name.lower():
+                    candidate = Path(base) / fn
+                    if os.access(candidate, os.X_OK):
+                        return candidate
+        return None
+
+    # Every parallel worker calls this. Extracting straight onto the target path
+    # meant one worker rewrote the binary while another was executing it, which
+    # POSIX refuses with ETXTBSY ("Text file busy"), and CT conversion then failed
+    # for that course. Observed 2,567 times in one 154-patient cohort run.
+    #
+    # Fast path first, so the common case never writes at all; then a lock so only
+    # one worker extracts; then re-check inside the lock, because another worker
+    # may have finished while this one waited.
+    ready = _existing_binary()
+    if ready is not None:
+        logger.debug("Using already-prepared bundled dcm2niix at %s", ready)
+        return ready
+
     try:
         dest.mkdir(parents=True, exist_ok=True)
         dest_resolved = dest.resolve()
+    except Exception as e:
+        logger.error("Failed to prepare bundled dcm2niix: %s", e)
+        return None
+
+    lock_path = dest / f".{bin_name}.prepare.lock"
+    try:
+        from filelock import FileLock, Timeout as _LockTimeout
+    except Exception:  # pragma: no cover - filelock is a declared dependency
+        FileLock = None
+        _LockTimeout = ()
+
+    lock_ctx = FileLock(str(lock_path), timeout=300) if FileLock is not None else None
+
+    try:
+        if lock_ctx is not None:
+            lock_ctx.acquire()
+    except Exception as e:
+        logger.warning("Could not lock bundled dcm2niix preparation (%s); proceeding unlocked", e)
+        lock_ctx = None
+
+    try:
+        ready = _existing_binary()
+        if ready is not None:
+            return ready
 
         def _safe_extract_bundled_zip(zf: zipfile.ZipFile, dest_root: Path) -> None:
             """Extract bundled zip with path traversal protection."""
@@ -244,12 +295,36 @@ def _ensure_local_dcm2niix(config: PipelineConfig) -> Optional[Path]:
                         import shutil as _shutil
                         _shutil.copyfileobj(src, dst)
 
-        if data is not None:
-            with zipfile.ZipFile(io.BytesIO(data), "r") as zf:
-                _safe_extract_bundled_zip(zf, dest_resolved)
-        else:
-            with zipfile.ZipFile(zpath, "r") as zf:
-                _safe_extract_bundled_zip(zf, dest_resolved)
+        # Extract into a private staging directory and publish by rename, so a
+        # concurrent reader never observes a half-written binary and never has
+        # its running executable rewritten underneath it.
+        staging = Path(tempfile.mkdtemp(prefix=".stage-", dir=str(dest_resolved)))
+        staging_resolved = staging.resolve()
+        try:
+            if data is not None:
+                with zipfile.ZipFile(io.BytesIO(data), "r") as zf:
+                    _safe_extract_bundled_zip(zf, staging_resolved)
+            else:
+                with zipfile.ZipFile(zpath, "r") as zf:
+                    _safe_extract_bundled_zip(zf, staging_resolved)
+
+            for base, dirs, files in os.walk(staging_resolved):
+                dirs[:] = [d for d in dirs if d != "__MACOSX"]
+                for fn in files:
+                    if fn.startswith("._") or fn.lower() != bin_name.lower():
+                        continue
+                    staged = Path(base) / fn
+                    try:
+                        mode = os.stat(staged).st_mode
+                        os.chmod(staged, mode | stat.S_IEXEC)
+                    except Exception:
+                        pass
+                    published = dest_resolved / bin_name
+                    os.replace(staged, published)
+                    logger.info("Using bundled dcm2niix at %s", published)
+                    return published
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
         # Search for binary inside extracted tree
         candidates = []
         for base, dirs, files in os.walk(dest):
@@ -279,6 +354,12 @@ def _ensure_local_dcm2niix(config: PipelineConfig) -> Optional[Path]:
     except Exception as e:
         logger.error("Failed to prepare bundled dcm2niix: %s", e)
         return None
+    finally:
+        if lock_ctx is not None:
+            try:
+                lock_ctx.release()
+            except Exception:
+                pass
 
 
 def run_dcm2niix(
