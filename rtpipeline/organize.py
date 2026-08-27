@@ -278,6 +278,15 @@ def _hydrate_existing_course(
                 primary_nifti = cand
                 break
 
+    if has_ct and primary_nifti is None:
+        logger.info(
+            "Not hydrating %s/%s: CT is present but no NIfTI was produced; "
+            "the course will be reprocessed.",
+            patient_id,
+            course_key,
+        )
+        return None
+
     related_files: List[Path] = []
     related_list = data.get("dicom_related_files") if data else None
     if isinstance(related_list, list):
