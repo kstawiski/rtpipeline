@@ -56,6 +56,26 @@ def radiomics_mp_context(method: Optional[str] = None):
     return mp.get_context()
 
 
+FOLLOW_INPUT_SYMLINKS_ENV = "RTPIPELINE_FOLLOW_INPUT_SYMLINKS"
+
+
+def follow_input_symlinks() -> bool:
+    """Whether input discovery may descend symlinks that leave the DICOM root.
+
+    Off by default. A symlink inside the DICOM root that points outside it is
+    indistinguishable, on the filesystem, from a stray or hostile link, so the
+    default refuses to follow one and keeps discovery inside the root the
+    operator named.
+
+    A curated cohort subset is the legitimate opposite case: a directory of
+    symlinks to the selected patients, which exists precisely so that scoping a
+    run does not require duplicating terabytes of DICOM. That is an operator
+    decision, so the operator states it by setting this variable rather than the
+    pipeline inferring it from a link it cannot interpret.
+    """
+    return os.environ.get(FOLLOW_INPUT_SYMLINKS_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _resolve_scoped_dirs(root: Path, patient_ids: Iterable[str]) -> tuple[List[Path], List[str]]:
     """Locate the directories for ``patient_ids`` under ``root``.
 
@@ -85,6 +105,21 @@ def _resolve_scoped_dirs(root: Path, patient_ids: Iterable[str]) -> tuple[List[P
     centers: Optional[List[Path]] = None
 
     def _dir_inside_root(candidate: Path) -> Optional[Path]:
+        """Accept a candidate that is LEXICALLY inside ``root``.
+
+        Containment is judged on the unresolved path, not the resolved target.
+        A curated cohort subset is a tree of symlinks pointing AT the real
+        patient directories elsewhere, so every target legitimately resolves
+        outside ``root``; requiring the target to stay inside rejected the whole
+        cohort and silently degraded the scoped walk to a full-root walk. The
+        same applies one level down, where an operator may link a whole centre.
+
+        Traversal is still blocked, by construction rather than by resolution:
+        every id is validated above as a single path component, and the centre
+        names come from ``root.iterdir()``, so no candidate can climb out of
+        ``root`` on its own. Anything inside an operator-supplied DICOM root is
+        operator-controlled.
+        """
         try:
             if not candidate.is_dir():
                 return None
@@ -92,6 +127,16 @@ def _resolve_scoped_dirs(root: Path, patient_ids: Iterable[str]) -> tuple[List[P
         except OSError:
             return None
         if real == root_real or root_real in real.parents:
+            return candidate
+        if follow_input_symlinks():
+            # Operator-declared curated cohort: containment is judged on the
+            # unresolved path instead. Ids are validated single components and
+            # centre names come from root.iterdir(), so nothing can climb out on
+            # its own even here.
+            try:
+                candidate.relative_to(root)
+            except ValueError:
+                return None
             return candidate
         return None
 
@@ -142,6 +187,36 @@ def _resolve_scoped_dirs(root: Path, patient_ids: Iterable[str]) -> tuple[List[P
     return dirs, missing
 
 
+def _walk_following_symlinks(root):
+    """``os.walk`` that descends into symlinked directories, without cycling.
+
+    A cohort subset is routinely expressed as a directory of symlinks to the
+    selected patients, so that scoping a run does not require duplicating
+    terabytes of DICOM. ``os.walk`` does not follow symlinked directories by
+    default, so such a tree yielded ZERO files while ``iterdir``-based discovery
+    in ct.py followed the same links happily. The two discovery paths therefore
+    disagreed, and a symlinked cohort silently produced no data instead of
+    failing. Silent-zero is the failure mode this pipeline exists to prevent.
+
+    ``followlinks=True`` alone can loop forever on a cyclic symlink, so every
+    directory is recorded by its resolved real path and visited at most once.
+    """
+    if not follow_input_symlinks():
+        yield from os.walk(root)
+        return
+    seen: set[str] = set()
+    for base, dirs, files in os.walk(root, followlinks=True):
+        try:
+            real = os.path.realpath(base)
+        except OSError:
+            real = base
+        if real in seen:
+            dirs[:] = []
+            continue
+        seen.add(real)
+        yield base, dirs, files
+
+
 def _scoped_walk(root: Path, patient_ids: Optional[Iterable[str]] = None):
     """``os.walk`` over ``root``, optionally restricted to the cohort's subtrees.
 
@@ -156,7 +231,7 @@ def _scoped_walk(root: Path, patient_ids: Optional[Iterable[str]] = None):
     nothing (walks no files).
     """
     if patient_ids is None:
-        yield from os.walk(root)
+        yield from _walk_following_symlinks(root)
         return
     patient_ids = list(patient_ids)
     dirs, missing = _resolve_scoped_dirs(root, patient_ids)
@@ -166,10 +241,10 @@ def _scoped_walk(root: Path, patient_ids: Optional[Iterable[str]] = None):
             "(e.g. %s); falling back to a full-root walk to avoid dropping data.",
             len(missing), len(patient_ids), root, ", ".join(missing[:5]),
         )
-        yield from os.walk(root)
+        yield from _walk_following_symlinks(root)
         return
     for d in dirs:
-        yield from os.walk(d)
+        yield from _walk_following_symlinks(d)
 
 
 def _scoped_patient_dirs(root: Path, patient_ids: Optional[Iterable[str]] = None) -> List[Path]:
@@ -367,7 +442,7 @@ def list_files(root: Path, patterns: Iterable[str] | None = None) -> list[Path]:
     if patterns is None:
         patterns = ["*.dcm", "*"]
     out: list[Path] = []
-    for base, _, files in os.walk(root):
+    for base, _, files in _walk_following_symlinks(root):
         for name in files:
             path = Path(base) / name
             if any(path.match(pat) for pat in patterns):
