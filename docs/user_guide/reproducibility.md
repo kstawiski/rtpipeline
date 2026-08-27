@@ -146,14 +146,14 @@ For maximum reproducibility, use the Docker image with a specific tag. Version 2
 
 ```bash
 # Use a specific version, not :latest
-docker pull kstawiski/rtpipeline:3.0.1
+docker pull kstawiski/rtpipeline:2.3.99
 
 # Record the image digest
-docker inspect --format='{{.RepoDigests}}' kstawiski/rtpipeline:3.0.1
+docker inspect --format='{{.RepoDigests}}' kstawiski/rtpipeline:2.3.99
 ```
 
 Document in your methods:
-> "All preprocessing was performed using RTpipeline Docker image kstawiski/rtpipeline:3.0.1 (SHA256: abc123...)."
+> "All preprocessing was performed using RTpipeline Docker image kstawiski/rtpipeline:2.3.99 (SHA256: abc123...)."
 
 For `2.4.0`, also record whether radiomics and robustness were executed through the default dual-environment setup (`rtpipeline` + `rtpipeline-radiomics`) or a custom local installation. Manuscripts using the unreleased 2.4.0 bytes must cite an immutable git commit or container digest and must not describe 2.4.0 as a tagged release.
 
