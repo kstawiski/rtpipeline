@@ -29,6 +29,34 @@ CBCT_MANUFACTURER_MODELS = frozenset(
 )
 FOURDCT_MODELS = frozenset({"advanced reconstruction", "aria rtm"})
 
+# QA phantoms and synthetic dosimetry volumes are imaged objects, not patients.
+# They matter because they are NOT caught by the calibrated-vendor test and DO
+# carry an RTSTRUCT (the QA plan is computed on the phantom), so the
+# RTSTRUCT-bound recovery below would otherwise promote them to planning_ct and
+# feed a Delta4 phantom straight into patient radiomics. Observed in a DFCI
+# trimodality export: 169 ScandiDos VirtualCT series across 99 of 154 patients,
+# all carrying Modality=CT.
+QA_PHANTOM_MANUFACTURER_RE = re.compile(
+    r"scandidos|sun\s*nuclear|standard\s*imaging|modus\s*medical|"
+    r"\bptw\b|iba\s*dosimetry|\bcirs\b",
+    re.I,
+)
+QA_PHANTOM_MODEL_RE = re.compile(
+    r"virtual\s*ct|delta\s*4|delta4|octavius|arccheck|arc\s*check|"
+    r"matrixx|catphan|cheese\s*phantom",
+    re.I,
+)
+QA_PHANTOM_DESC_RE = re.compile(
+    r"\bphantom\b|\bdelta\s*4\b|\bdelta4\b|virtual\s*ct|\barccheck\b|"
+    r"\bcatphan\b|\bqa\b|quality\s+assurance",
+    re.I,
+)
+
+# A CT slice thicker than this is not an acquisition. Scanned films and
+# documentation images are exported with Modality=CT and absurd geometry; one
+# DFCI cohort carried ~21 such series at Rows=1504, SliceThickness=820.
+MAX_PLAUSIBLE_CT_SLICE_THICKNESS_MM = 10.0
+
 # C3 [SAFE-1]: image classes whose TotalSegmentator masks must NEVER reach a
 # quantitative endpoint (CT/MR radiomics, DVH, PBM, RIL). CBCT is uncalibrated
 # (scatter/cupping/truncated-FOV), so its masks are reference/QC-only. This is a
@@ -126,6 +154,17 @@ def classify_series(meta: Mapping[str, Any]) -> tuple[str, str | None]:
 
 def _classify_ct(meta: Mapping[str, Any]) -> tuple[str, str | None]:
     exclusion = _common_image_exclusion(meta, include_mip=True)
+    if exclusion:
+        return "exclude", exclusion
+
+    # Phantom and geometry gates run before every classification and recovery
+    # path below, including the RTSTRUCT-bound recovery, which would otherwise
+    # promote a contoured QA phantom to planning_ct.
+    exclusion = _qa_phantom_exclusion(meta)
+    if exclusion:
+        return "exclude", exclusion
+
+    exclusion = _implausible_ct_geometry(meta)
     if exclusion:
         return "exclude", exclusion
 
@@ -287,6 +326,31 @@ def _is_4dct_image_type(meta: Mapping[str, Any]) -> bool:
     return any(_image_type_contains(meta, t) for t in ("AVE", "MIP", "MAXIP", "MINIP"))
 
 
+def _qa_phantom_exclusion(meta: Mapping[str, Any]) -> str | None:
+    """Return an exclusion reason when a series images a QA phantom, not a patient."""
+    manufacturer = _text(meta, "manufacturer")
+    model = _text(meta, "manufacturer_model")
+    description = _text(meta, "series_description")
+    if QA_PHANTOM_MANUFACTURER_RE.search(manufacturer):
+        return f"qa_phantom_manufacturer_{_machine_token(manufacturer)}"
+    if QA_PHANTOM_MODEL_RE.search(model):
+        return f"qa_phantom_model_{_machine_token(model)}"
+    if QA_PHANTOM_DESC_RE.search(description):
+        return "qa_phantom_description"
+    return None
+
+
+def _implausible_ct_geometry(meta: Mapping[str, Any]) -> str | None:
+    """Reject non-acquisition series masquerading as CT via absurd geometry."""
+    thickness = meta.get("slice_thickness")
+    try:
+        if thickness not in (None, "") and float(thickness) > MAX_PLAUSIBLE_CT_SLICE_THICKNESS_MM:
+            return "ct_implausible_slice_thickness"
+    except (TypeError, ValueError):
+        pass
+    return None
+
+
 def _is_calibrated_ct(manufacturer: str, model: str) -> bool:
     return bool(
         _CALIBRATED_CT_MANUFACTURER_RE.search(manufacturer)
@@ -348,6 +412,7 @@ def _machine_token(value: str) -> str:
 
 __all__ = [
     "IMAGE_CLASSES",
+    "MAX_PLAUSIBLE_CT_SLICE_THICKNESS_MM",
     "classify_series",
     "NON_QUANTITATIVE_IMAGE_CLASSES",
     "is_quantitative_image_class",
