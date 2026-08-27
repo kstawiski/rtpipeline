@@ -285,6 +285,24 @@ def _hydrate_existing_course(
                 primary_nifti = cand
                 break
 
+    # A course whose CT was copied but never converted is INCOMPLETE, not done.
+    # Hydrating it would mark it processed and leave it without a NIfTI for the
+    # rest of the run, so segmentation and radiomics would have nothing to read
+    # and the gap would never be repaired by a later resume. Returning None sends
+    # it back through conversion instead, which is what resume is for.
+    #
+    # This is not hypothetical: a dcm2niix race left one 154-patient cohort with
+    # 352,707 copied DICOM instances and only 441 NIfTI files. Every affected
+    # course would have been skipped on resume.
+    if has_ct and primary_nifti is None:
+        logger.info(
+            "Not hydrating %s/%s: CT is present but no NIfTI was produced; "
+            "the course will be reprocessed.",
+            patient_id,
+            course_key,
+        )
+        return None
+
     related_files: List[Path] = []
     related_list = data.get("dicom_related_files") if data else None
     if isinstance(related_list, list):
