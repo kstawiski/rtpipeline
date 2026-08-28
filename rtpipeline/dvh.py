@@ -326,7 +326,12 @@ def _skip_dose_resolution(reason: str, classification: str = "unresolved") -> DV
     )
 
 
-def _resolve_dvh_dose(course_dir: Path, course_dirs, rs_manual: Path) -> DVHDoseResolution:
+def _resolve_dvh_dose(
+    course_dir: Path,
+    course_dirs,
+    rs_manual: Path,
+    max_total_dose_gy: float = 100.0,
+) -> DVHDoseResolution:
     """Resolve the clinically valid plan-level RTDOSE used for DVH.
 
     The generic layout helper intentionally returns the first DICOM file in a
@@ -426,7 +431,7 @@ def _resolve_dvh_dose(course_dir: Path, course_dirs, rs_manual: Path) -> DVHDose
         dose_classification = _classify_doses(
             plan_paths=plan_paths,
             dose_paths=candidate_doses,
-            max_total_dose_gy=100.0,
+            max_total_dose_gy=max_total_dose_gy,
         )
         for warn in dose_classification.warnings:
             logger.warning("DVH dose classification warning: %s", warn)
@@ -1917,6 +1922,7 @@ def dvh_for_course(
     use_cropped: bool = True,
     estimate_rx_from_ctv1: bool = False,
     rx_dose_gy: Optional[float] = None,
+    max_total_dose_gy: float = 100.0,
 ) -> Optional[Path]:
     """
     Compute DVH metrics for a treatment course.
@@ -1964,7 +1970,12 @@ def dvh_for_course(
         except Exception as e:
             logger.warning(f"Failed to load cropping metadata from {cropping_metadata_path}: {e}")
 
-    dose_resolution = _resolve_dvh_dose(course_dir, course_dirs, rs_manual)
+    dose_resolution = _resolve_dvh_dose(
+        course_dir,
+        course_dirs,
+        rs_manual,
+        max_total_dose_gy=max_total_dose_gy,
+    )
     if not dose_resolution.ok:
         logger.warning(
             "Skipping DVH for %s: %s",

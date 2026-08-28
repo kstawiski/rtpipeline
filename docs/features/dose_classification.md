@@ -1,234 +1,58 @@
-# Intelligent Dose Classification
+# Dose classification and delivery accounting
 
-## Overview
+## Purpose
 
-Radiotherapy patients often have multiple dose files associated with a single treatment course. These may represent:
-- **Primary + Boost treatments** - Sequential treatment phases targeting the same region at different dose levels
-- **Replanning** - Same treatment re-planned due to anatomical changes (weight loss, tumor shrinkage)
-- **Different anatomical regions** - Separate RT courses to different sites (e.g., prostate + brain met)
-- **TPS-provided summation** - Treatment Planning System already exported a summed dose
+The pipeline separates treatment intent from delivered treatment. Dose selection determines which referenced dose and plan objects belong to a course. Delivery accounting then uses treatment records to estimate what the patient received.
 
-The pipeline uses a **6-phase classification algorithm** to intelligently handle these scenarios and avoid incorrect dose summation (which could produce clinically impossible values like 180 Gy).
+Free-text plan labels are not classification evidence. Dose-response analyses should use `delivered_dose_gy`. Treatment-intent analyses should use `total_prescription_gy`.
 
----
+## Course dose selection
 
-## Classification Algorithm
+The classifier links radiation therapy dose (RTDOSE) objects to radiation therapy plan (RTPLAN) objects through `ReferencedRTPlanSequence`. It uses DICOM reference chains, prescription and fraction signatures, treatment-record support, dose summation type, frame of reference, and dose-grid geometry.
 
-### Phase 1: TPS PLAN_SUM Detection
+A `PLAN_SUM` object may represent a treatment planning system sum. Equivalent plan revisions are deduplicated by reference and prescription evidence. Distinct sequential phases remain separate and may be summed when the reference chain supports that interpretation.
 
-**Goal:** Detect if the Treatment Planning System already exported a summed dose.
+Doses in incompatible frames or nonoverlapping grids are not silently combined. Ambiguous linkage fails closed or emits a warning for clinical review.
 
-**Logic:**
-- Scan all dose files for `DoseSummationType == "PLAN_SUM"`
-- If found, use this pre-computed sum directly
-- Individual component doses are excluded to avoid double-counting
+## Delivered dose
 
-**Result:** `PLAN_SUM_used` - No further summation needed
+Treatment records are linked only to their referenced plan unique identifiers (UIDs). A record referencing a plan absent from the export is counted and logged but is not assigned elsewhere.
 
-### Phase 2: FrameOfReference Separation
+Distinct fractions are counted by fraction number and treatment date when available. Treatment date is used when a fraction number is absent. This prevents several beam records from one treatment session being counted as several fractions.
 
-**Goal:** Identify doses in different coordinate systems (cannot be summed).
+The estimator first uses the latest target-bound cumulative dose-to-reference value when a treatment summary record provides one. Otherwise, it de-duplicates repeated beam or application components within each treatment session and uses target-bound calculated dose-reference values. A per-session value must agree with the prescribed dose per fraction within the larger of 0.1 Gy and 5 percent. Otherwise, the fallback multiplies the prescription by the smaller of 1.0 and delivered fractions divided by planned fractions.
 
-**Logic:**
-- Extract `FrameOfReferenceUID` from each dose file
-- If multiple unique UIDs exist, doses are on different imaging grids
-- These represent separate RT courses that should not be combined
+`delivered_dose_gy` is null when the records cannot support an estimate. Unknown delivery is never converted to 0.0 Gy or to the prescription.
 
-**Result:** `separate_courses_no_sum` - Use first dose only
+## Output fields
 
-### Phase 2.5: Geometric Overlap Detection
+| Field | Meaning |
+|---|---|
+| `total_prescription_gy` | Selected treatment intent in Gy |
+| `delivered_dose_gy` | Treatment-record estimate of delivered dose in Gy |
+| `delivery_status` | `fully_delivered`, `partially_delivered`, `delivered_but_records_absent`, or `no_records_at_all` |
+| `delivery_method` | `cumulative_dose_reference`, `calculated_dose_reference`, `record_fraction_weighted_prescription`, mixed method, or unknown |
+| `delivered_record_count` | Unique linked RTRECORD instances |
+| `delivered_fraction_count` | Distinct treatment sessions inferred from the records |
+| `planned_fraction_count` | Planned fractions across selected plans |
+| `delivery_plan_details` | Plan-level prescription, delivery, method, and status |
+| `delivery_warnings` | Plan-level dose mismatch or delivered-above-prescription warnings |
+| `unresolved_record_plan_uids` | Referenced plan UIDs absent from the indexed export |
 
-**Goal:** Identify doses targeting different anatomical regions even within the same coordinate system.
+## Plausibility warning
 
-**Logic:**
-- Extract 3D bounding box from each dose grid:
-  - `ImagePositionPatient` (origin)
-  - `PixelSpacing`, `Rows`, `Columns` (XY extent)
-  - `GridFrameOffsetVector`, `NumberOfFrames` (Z extent)
-- Calculate pairwise intersection volume
-- Require at least 30% overlap of the smaller volume to consider doses as overlapping
+`max_total_dose_gy` configures the clinical plausibility threshold and defaults to 100.0 Gy. The same validated value is available through the project YAML key and the `--max-total-dose-gy` CLI option. Separate warnings identify prescribed and delivered values above the threshold.
 
-**Result:** `separate_regions_no_sum` - Use first dose only (different anatomical sites)
+The warning does not replace reference-chain or delivery checks. It identifies a course for clinical review while preserving the value and the evidence behind it.
 
-### Phase 3: Replan Detection (Intention-to-Treat)
+## Planning CT status
 
-**Goal:** Identify replanning scenarios and apply ITT principle (use first plan only).
+Radiation therapy (RT) courses require a referenced planning CT. Course metadata records `planning_ct_status` and the RTSTRUCT-referenced CT series UIDs.
 
-**Logic:**
-- Link doses to their referenced RT plans via `ReferencedRTPlanSequence`
-- Sort by plan date (earliest first)
-- Detect replans by:
-  - **Text patterns:** "replan", "re-plan", "adaptive", "v2", "copy", "resim", etc.
-  - **Prescription similarity:** >90% similar Rx suggests same treatment intent
-- Exclude later plans that appear to be replans of the first
+An absent referenced series is reported as `unresolved_reference`. A referenced series that resolves only to an excluded acquisition, such as a localizer, is reported as `classifier_excluded`. These courses are not emitted as complete planning-CT cases.
 
-**Result:** `replan_itt_first` - Use first plan only (ITT approach)
+## Limits
 
-### Phase 4: Primary + Boost Identification
+Record-level dose values remain dependent on the exporting treatment system's DICOM semantics. The pipeline records the method and plan-level calculation so discordant values can be clinically adjudicated.
 
-**Goal:** Identify genuine multi-stage treatments that should be summed.
-
-**Logic:**
-- Detect boost by text patterns: "boost", "cone", "conedown", "phase 2", "sib", etc.
-- Detect by prescription pattern: significantly different Rx values (>10% difference)
-- If primary and boost are identified, sum them
-
-**Result:** `primary_boost_summed` - Sum the doses
-
-### Phase 5: Plausibility Safeguards
-
-**Goal:** Flag clinically implausible total doses.
-
-**Logic:**
-- After classification, calculate expected total dose from prescriptions
-- If total > 100 Gy, add warning (possible classification error)
-- Proceed with summation but log warning for review
-
-**Result:** Warning added to classification result
-
-### Fallback: Ambiguous Cases
-
-**Goal:** Conservative handling when classification is uncertain.
-
-**Logic:**
-- If none of the above phases definitively classify the doses
-- Use only the first dose (conservative approach)
-- Log warning for manual review
-
-**Result:** `ambiguous_no_sum` - Use first dose only
-
----
-
-## Classification Results
-
-The algorithm returns a `DoseClassification` object containing:
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `classification` | str | Classification label (see below) |
-| `selected_doses` | List[Path] | Doses to use for DVH/analysis |
-| `selected_plans` | List[Path] | Plans associated with selected doses |
-| `excluded_doses` | List[Path] | Doses excluded from analysis |
-| `should_sum` | bool | Whether selected doses should be summed |
-| `warnings` | List[str] | Any warnings generated |
-| `reason` | str | Human-readable explanation |
-
-### Classification Labels
-
-| Label | Meaning | Action |
-|-------|---------|--------|
-| `PLAN_SUM_used` | TPS-provided sum detected | Use PLAN_SUM directly |
-| `separate_courses_no_sum` | Different FrameOfReference | Use first dose |
-| `separate_regions_no_sum` | Non-overlapping dose grids | Use first dose |
-| `replan_itt_first` | Replan detected | Use first plan (ITT) |
-| `primary_boost_summed` | Primary + boost identified | Sum doses |
-| `ambiguous_no_sum` | Cannot classify | Use first dose |
-| `single_dose` | Only one dose file | Use it directly |
-| `no_doses` | No dose files found | No DVH analysis |
-
----
-
-## Technical Implementation
-
-### Replan Detection Keywords
-
-```python
-replan_keywords = [
-    "replan", "re-plan", "adapt", "adaptive", "revision", "rev",
-    "v2", "v3", "v4", "v5", "copy", "fx change", "new ct", "resim",
-    "replanning", "modified", "adjusted", "corrected",
-]
-```
-
-### Boost Detection Keywords
-
-```python
-boost_keywords = [
-    "boost", "cone", "conedown", "cone down", "cd", "phase 2",
-    "phase2", "ph2", "reduced", "sib", "sequential",
-]
-```
-
-### Bounding Box Overlap Calculation
-
-```python
-def _bboxes_overlap(bbox1, bbox2, min_overlap_fraction=0.3):
-    """
-    Check if two 3D dose grids have significant spatial overlap.
-
-    Requires at least 30% of the smaller volume to overlap.
-    Returns True if geometry is unavailable (conservative).
-    """
-```
-
----
-
-## Configuration
-
-The maximum plausible dose threshold can be configured:
-
-```python
-max_total_dose_gy: float = 100.0  # Default threshold for plausibility warning
-```
-
----
-
-## Logging
-
-The classification process logs detailed information:
-
-```
-Phase 1: Found TPS PLAN_SUM covering 6 plans, excluding 6 individual doses
-Phase 2: Multiple FrameOfReference detected - using first dose only (conservative)
-Phase 2.5: Non-overlapping dose grids detected: RD_pelvis.dcm vs RD_brain.dcm
-Phase 3: Detected replan by text: 'v2_adaptive_ct2'
-Phase 4: Detected primary+boost by Rx pattern: 50.0 Gy (primary) + 16.0 Gy (boost)
-Phase 5: Implausible total dose 180.6 Gy > 100.0 Gy threshold - flagging but proceeding
-```
-
----
-
-## Example Scenarios
-
-### Scenario 1: Prostate with Boost
-- **Input:** RD_primary.dcm (50 Gy), RD_boost.dcm (16 Gy)
-- **Classification:** `primary_boost_summed`
-- **Output:** Summed dose (66 Gy)
-
-### Scenario 2: Adaptive Replanning
-- **Input:** RD_plan1.dcm (60 Gy), RD_plan1_v2.dcm (60 Gy)
-- **Classification:** `replan_itt_first`
-- **Output:** First plan only (60 Gy)
-
-### Scenario 3: TPS Export with PLAN_SUM
-- **Input:** RD_sum.dcm (PLAN_SUM, 66 Gy), RD_primary.dcm, RD_boost.dcm
-- **Classification:** `PLAN_SUM_used`
-- **Output:** RD_sum.dcm only
-
-### Scenario 4: Brain Met + Prostate (different regions)
-- **Input:** RD_prostate.dcm (78 Gy), RD_brain.dcm (30 Gy, non-overlapping)
-- **Classification:** `separate_regions_no_sum`
-- **Output:** First dose only (requires manual review for multi-site analysis)
-
----
-
-## Limitations
-
-1. **Text pattern matching:** Relies on common naming conventions. Unusual naming may miss patterns.
-2. **Prescription extraction:** Requires DoseReferenceSequence in RT plan. May be missing in some TPS exports.
-3. **Geometric overlap:** Uses bounding box approximation. Actual dose overlap may differ.
-4. **Multi-site treatment:** Currently uses first dose only. Future enhancement may support separate analysis per site.
-
----
-
-## Related Documentation
-
-- [Output Format](../user_guide/output_format.md) - How DVH metrics are exported
-- [QC Reports](qc_cropping.md) - Quality control for dose and structure alignment
-- [Architecture](../technical/architecture.md) - Pipeline processing flow
-
----
-
-**Document Version:** 1.0
-**Compatible with:** rtpipeline v2.1+
-**Last Updated:** 2025-12-17
+A null delivered dose must remain null in downstream analysis. Replacing it with prescription or 0.0 Gy would conflate unknown delivery with complete or absent treatment.

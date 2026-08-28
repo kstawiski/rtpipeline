@@ -277,6 +277,8 @@ def _merge_plans_doses(plans_df: pd.DataFrame, doses_df: pd.DataFrame) -> pd.Dat
 
     pairs: List[tuple[int, int]] = []
     seen_pairs: set[tuple[int, int]] = set()
+    unresolved_reference_count = 0
+    unresolved_dose_count = 0
     for dose_index, dose in doses.iterrows():
         references = _reference_uids(
             dose.get("_referenced_plan_sop_uids")
@@ -284,6 +286,19 @@ def _merge_plans_doses(plans_df: pd.DataFrame, doses_df: pd.DataFrame) -> pd.Dat
             else None
         )
         if references:
+            resolved_uids = {uid for uid in references if plan_uid_rows.get(uid)}
+            unresolved_uids = [uid for uid in references if uid not in resolved_uids]
+            if unresolved_uids:
+                unresolved_reference_count += len(unresolved_uids)
+                if not resolved_uids:
+                    unresolved_dose_count += 1
+                for uid in unresolved_uids:
+                    logger.warning(
+                        "RTDOSE %s references RTPLAN UID %s, but that plan is absent from the indexed plan table; "
+                        "filename core-key fallback is refused",
+                        dose.get("file_path", "<unknown dose>"),
+                        uid,
+                    )
             for uid in references:
                 for plan_index in plan_uid_rows.get(uid, []):
                     pair = (plan_index, int(dose_index))
@@ -299,6 +314,13 @@ def _merge_plans_doses(plans_df: pd.DataFrame, doses_df: pd.DataFrame) -> pd.Dat
             if pair not in seen_pairs:
                 seen_pairs.add(pair)
                 pairs.append(pair)
+    if unresolved_reference_count:
+        logger.warning(
+            "RTDOSE reference audit: %d unresolved RTPLAN UID reference(s) across %d dose object(s); "
+            "explicit references remained authoritative and no filename fallback was used",
+            unresolved_reference_count,
+            unresolved_dose_count,
+        )
 
     if not pairs:
         return pd.DataFrame(columns=output_columns)
@@ -441,6 +463,11 @@ def export_metadata(config: PipelineConfig) -> Dict[str, Path]:
         if r
     ]
     doses_df = pd.DataFrame(rd_rows)
+    if rd_files and doses_df.empty:
+        raise MetadataExportError(
+            f"Discovered {len(rd_files)} RTDOSE object(s) by DICOM Modality but extracted zero dose rows; "
+            "refusing to omit dosimetrics.xlsx"
+        )
     if not doses_df.empty:
         _public_metadata_frame(doses_df).to_excel(paths.doses_xlsx, index=False)
 
@@ -477,6 +504,11 @@ def export_metadata(config: PipelineConfig) -> Dict[str, Path]:
         if r
     ]
     structs_df = pd.DataFrame(rs_rows)
+    if rs_files and structs_df.empty:
+        raise MetadataExportError(
+            f"Discovered {len(rs_files)} RTSTRUCT object(s) by DICOM Modality but extracted zero structure rows; "
+            "refusing to omit structure_sets.xlsx"
+        )
     if not structs_df.empty:
         structs_df.to_excel(paths.structures_xlsx, index=False)
 
@@ -487,19 +519,30 @@ def export_metadata(config: PipelineConfig) -> Dict[str, Path]:
             ds = pydicom.dcmread(str(p), stop_before_pixels=True)
         except Exception:
             return None
+        plan_ids = [
+            str(getattr(ref, "ReferencedSOPInstanceUID", "") or "")
+            for ref in getattr(ds, "ReferencedRTPlanSequence", []) or []
+            if str(getattr(ref, "ReferencedSOPInstanceUID", "") or "")
+        ]
+        fraction_number = (
+            getattr(ds, "CurrentFractionNumber", None)
+            or getattr(ds, "ReferencedFractionNumber", None)
+            or _nested_get(ds, '30080022')
+        )
         return {
             'file_path': str(p),
-            'fraction_id': _nested_get(ds, '00080018'),
-            'date': _nested_get(ds, '30080024'),
-            'time': _nested_get(ds, '30080025'),
-            'fraction_number': _nested_get(ds, '30080022'),
+            'fraction_id': str(getattr(ds, "SOPInstanceUID", "") or _nested_get(ds, '00080018')),
+            'date': getattr(ds, "TreatmentDate", None) or _nested_get(ds, '30080024'),
+            'time': getattr(ds, "TreatmentTime", None) or _nested_get(ds, '30080025'),
+            'fraction_number': fraction_number,
             'verification_status': _nested_get(ds, '3008002C'),
             'termination_status': _nested_get(ds, '3008002A'),
             'delivery_time': _nested_get(ds, '3008003B'),
             'fluence_mode': _nested_get(ds, '30020052'),
-            'plan_id': _nested_get(ds, '00081155'),
+            'plan_id': plan_ids[0] if len(plan_ids) == 1 else None,
+            'referenced_plan_ids': ";".join(plan_ids),
             'machine': _nested_get(ds, '300A00B2'),
-            'patient_id': _nested_get(ds, '00100020'),
+            'patient_id': str(getattr(ds, "PatientID", "") or _nested_get(ds, '00100020')),
         }
     rt_rows = [
         r
@@ -513,6 +556,11 @@ def export_metadata(config: PipelineConfig) -> Dict[str, Path]:
         if r
     ]
     fractions_df = pd.DataFrame(rt_rows)
+    if rt_files and fractions_df.empty:
+        raise MetadataExportError(
+            f"Discovered {len(rt_files)} RTRECORD object(s) by DICOM Modality but extracted zero fraction rows; "
+            "refusing to omit fractions.xlsx"
+        )
     if not fractions_df.empty:
         fractions_df.to_excel(paths.fractions_xlsx, index=False)
 
@@ -543,6 +591,11 @@ def export_metadata(config: PipelineConfig) -> Dict[str, Path]:
         if r
     ]
     ct_df = pd.DataFrame(ct_rows)
+    if ct_files and ct_df.empty:
+        raise MetadataExportError(
+            f"Discovered {len(ct_files)} CT object(s) by DICOM Modality but extracted zero CT rows; "
+            "refusing to omit CT_images.xlsx"
+        )
     if not ct_df.empty:
         ct_df.to_excel(paths.ct_images_xlsx, index=False)
 
