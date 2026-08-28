@@ -418,6 +418,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Course grouping criterion. Default: same_ct_study",
     )
     p.add_argument("--max-days", type=int, default=None, help="Optional max days within a course")
+    p.add_argument(
+        "--allow-ct-only-courses",
+        action="store_true",
+        help="Permit intentional diagnostic CT-only cohorts; default fails loudly when no RT course is found",
+    )
     p.add_argument("--no-segmentation", action="store_true", help="Skip TotalSegmentator")
     p.add_argument("--force-segmentation", action="store_true", help="Re-run TotalSegmentator even if outputs exist")
     p.add_argument("--no-dvh", action="store_true", help="Skip DVH computation")
@@ -980,6 +985,8 @@ def _apply_dicom_copy_yaml_config(cfg: PipelineConfig, organize_config: dict) ->
     cfg.dicom_copy_use_hardlinks = organize_config.get("use_hardlinks", False)
     cfg.dicom_copy_verify_checksum = organize_config.get("verify_checksum", False)
     cfg.dicom_copy_cache_headers = organize_config.get("cache_headers", True)
+    if "allow_ct_only_courses" in organize_config:
+        cfg.allow_ct_only_courses = bool(organize_config["allow_ct_only_courses"])
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1115,6 +1122,7 @@ def main(argv: list[str] | None = None) -> int:
         max_workers_override=args.max_workers,
         merge_criteria=args.merge_criteria,
         max_days_between_plans=args.max_days,
+        allow_ct_only_courses=args.allow_ct_only_courses,
         do_segmentation=not args.no_segmentation,
         do_dvh=not args.no_dvh,
         do_visualize=not args.no_visualize,

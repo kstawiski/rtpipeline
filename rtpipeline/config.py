@@ -14,6 +14,9 @@ class PipelineConfig:
     # Course merge policy
     merge_criteria: str = "same_ct_study"  # one of: same_ct_study, frame_of_reference
     max_days_between_plans: int | None = None  # optional time window filter (days)
+    # Diagnostic CT-only cohorts require an explicit opt-in. The default prevents
+    # an RT linkage failure from being misrepresented as a valid CT-only export.
+    allow_ct_only_courses: bool = False
 
     # Steps
     do_segmentation: bool = True
