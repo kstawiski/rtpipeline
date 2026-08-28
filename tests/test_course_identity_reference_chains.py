@@ -1,0 +1,1092 @@
+"""Regression tests for reference-driven radiotherapy course construction.
+
+Each test uses synthetic DICOM. No production patient data is embedded here.
+"""
+from __future__ import annotations
+
+from datetime import date, timedelta
+from pathlib import Path
+
+import pydicom
+import pytest
+from pydicom.dataset import Dataset, FileDataset, FileMetaDataset
+from pydicom.sequence import Sequence
+from pydicom.uid import (
+    CTImageStorage,
+    ExplicitVRLittleEndian,
+    RTBeamsTreatmentRecordStorage,
+    RTDoseStorage,
+    RTPlanStorage,
+    RTStructureSetStorage,
+    UID,
+    generate_uid,
+)
+
+from rtpipeline import organize as org
+from rtpipeline.config import PipelineConfig
+from rtpipeline.ct import CTInstance
+from rtpipeline.metadata import LinkedSet, group_by_course, link_rt_sets
+from rtpipeline.rt_details import extract_rt
+
+
+def _file_dataset(path: Path, sop_class_uid: str, sop_instance_uid: str) -> FileDataset:
+    meta = FileMetaDataset()
+    meta.MediaStorageSOPClassUID = UID(sop_class_uid)
+    meta.MediaStorageSOPInstanceUID = UID(sop_instance_uid)
+    meta.TransferSyntaxUID = ExplicitVRLittleEndian
+    meta.ImplementationClassUID = generate_uid()
+    ds = FileDataset(str(path), {}, file_meta=meta, preamble=b"\0" * 128)
+    ds.SOPClassUID = sop_class_uid
+    ds.SOPInstanceUID = sop_instance_uid
+    ds.PatientID = "P1"
+    ds.SeriesInstanceUID = generate_uid()
+    return ds
+
+
+def _write(ds: FileDataset, path: Path) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    ds.save_as(str(path), write_like_original=False)
+    return path
+
+
+def _mk_struct(
+    path: Path,
+    sop_uid: str,
+    *,
+    study_uid: str,
+    frame_uid: str,
+    roi_names: list[str],
+    ct_series_uid: str | None = None,
+) -> Path:
+    ds = _file_dataset(path, RTStructureSetStorage, sop_uid)
+    ds.Modality = "RTSTRUCT"
+    ds.StudyInstanceUID = study_uid
+    ds.FrameOfReferenceUID = frame_uid
+    ds.add_new((0x3006, 0x0024), "UI", frame_uid)
+    rois = []
+    for number, name in enumerate(roi_names, start=1):
+        roi = Dataset()
+        roi.ROINumber = number
+        roi.ReferencedFrameOfReferenceUID = frame_uid
+        roi.ROIName = name
+        roi.ROIGenerationAlgorithm = "MANUAL"
+        rois.append(roi)
+    ds.StructureSetROISequence = Sequence(rois)
+    ref_for = Dataset()
+    ref_for.FrameOfReferenceUID = frame_uid
+    if ct_series_uid:
+        ref_series = Dataset()
+        ref_series.SeriesInstanceUID = ct_series_uid
+        ref_study = Dataset()
+        ref_study.RTReferencedSeriesSequence = Sequence([ref_series])
+        ref_for.RTReferencedStudySequence = Sequence([ref_study])
+    ds.ReferencedFrameOfReferenceSequence = Sequence([ref_for])
+    return _write(ds, path)
+
+
+def _mk_plan(
+    path: Path,
+    sop_uid: str,
+    *,
+    struct_uid: str,
+    study_uid: str,
+    frame_uid: str,
+    date: str,
+    rx_gy: float,
+    fractions: int,
+    label: str,
+) -> Path:
+    ds = _file_dataset(path, RTPlanStorage, sop_uid)
+    ds.Modality = "RTPLAN"
+    ds.StudyInstanceUID = study_uid
+    ds.FrameOfReferenceUID = frame_uid
+    ds.add_new((0x3006, 0x0024), "UI", frame_uid)
+    ds.RTPlanDate = date
+    ds.RTPlanTime = "120000"
+    ds.RTPlanLabel = label
+    ds.RTPlanName = label
+    ref_struct = Dataset()
+    ref_struct.ReferencedSOPClassUID = RTStructureSetStorage
+    ref_struct.ReferencedSOPInstanceUID = struct_uid
+    ds.ReferencedStructureSetSequence = Sequence([ref_struct])
+    dose_ref = Dataset()
+    dose_ref.DoseReferenceType = "TARGET"
+    dose_ref.TargetPrescriptionDose = float(rx_gy)
+    ds.DoseReferenceSequence = Sequence([dose_ref])
+    fraction_group = Dataset()
+    fraction_group.FractionGroupNumber = 1
+    fraction_group.NumberOfFractionsPlanned = fractions
+    ds.FractionGroupSequence = Sequence([fraction_group])
+    return _write(ds, path)
+
+
+def _mk_dose(
+    path: Path,
+    sop_uid: str,
+    *,
+    plan_uid: str,
+    study_uid: str,
+    frame_uid: str,
+) -> Path:
+    ds = _file_dataset(path, RTDoseStorage, sop_uid)
+    ds.Modality = "RTDOSE"
+    ds.StudyInstanceUID = study_uid
+    ds.FrameOfReferenceUID = frame_uid
+    ds.add_new((0x3006, 0x0024), "UI", frame_uid)
+    ds.DoseSummationType = "PLAN"
+    ds.Rows = 2
+    ds.Columns = 2
+    ds.NumberOfFrames = 2
+    ds.PixelSpacing = [1.0, 1.0]
+    ds.ImagePositionPatient = [0.0, 0.0, 0.0]
+    ds.GridFrameOffsetVector = [0.0, 1.0]
+    ref_plan = Dataset()
+    ref_plan.ReferencedSOPClassUID = RTPlanStorage
+    ref_plan.ReferencedSOPInstanceUID = plan_uid
+    ds.ReferencedRTPlanSequence = Sequence([ref_plan])
+    return _write(ds, path)
+
+
+def _mk_multi_plan_dose(
+    path: Path,
+    sop_uid: str,
+    *,
+    plan_uids: list[str],
+    study_uid: str,
+    frame_uid: str,
+) -> Path:
+    ds = _file_dataset(path, RTDoseStorage, sop_uid)
+    ds.Modality = "RTDOSE"
+    ds.StudyInstanceUID = study_uid
+    ds.FrameOfReferenceUID = frame_uid
+    ds.add_new((0x3006, 0x0024), "UI", frame_uid)
+    ds.DoseSummationType = "PLAN"
+    refs = []
+    for plan_uid in plan_uids:
+        ref_plan = Dataset()
+        ref_plan.ReferencedSOPClassUID = RTPlanStorage
+        ref_plan.ReferencedSOPInstanceUID = plan_uid
+        refs.append(ref_plan)
+    ds.ReferencedRTPlanSequence = Sequence(refs)
+    return _write(ds, path)
+
+
+def _mk_record(path: Path, plan_uid: str, *, date: str = "20240102") -> Path:
+    ds = _file_dataset(path, RTBeamsTreatmentRecordStorage, generate_uid())
+    ds.Modality = "RTRECORD"
+    ds.StudyInstanceUID = generate_uid()
+    ds.TreatmentDate = date
+    ref_plan = Dataset()
+    ref_plan.ReferencedSOPClassUID = RTPlanStorage
+    ref_plan.ReferencedSOPInstanceUID = plan_uid
+    ds.ReferencedRTPlanSequence = Sequence([ref_plan])
+    return _write(ds, path)
+
+
+def _mk_ct(
+    path: Path,
+    *,
+    study_uid: str,
+    series_uid: str,
+    frame_uid: str,
+    description: str,
+    manufacturer: str = "Siemens",
+    model: str = "SOMATOM",
+) -> CTInstance:
+    ds = _file_dataset(path, CTImageStorage, generate_uid())
+    ds.Modality = "CT"
+    ds.StudyInstanceUID = study_uid
+    ds.SeriesInstanceUID = series_uid
+    ds.FrameOfReferenceUID = frame_uid
+    ds.SeriesDescription = description
+    ds.Manufacturer = manufacturer
+    ds.ManufacturerModelName = model
+    ds.ImageType = ["ORIGINAL", "PRIMARY", "AXIAL"]
+    ds.SliceThickness = 2.0
+    ds.Rows = 512
+    ds.Columns = 512
+    ds.InstanceNumber = 1
+    _write(ds, path)
+    return CTInstance(
+        path=path,
+        patient_id="P1",
+        study_uid=study_uid,
+        series_uid=series_uid,
+        series_number=1,
+        instance_number=1,
+    )
+
+
+def _extract_linked(root: Path):
+    plans, doses, structs = extract_rt(root, max_workers=1)
+    return link_rt_sets(plans, doses, structs)
+
+
+def test_plan_referenced_structure_set_is_selected_among_setup_sets(tmp_path):
+    """Patient 292929 must receive the 36-ROI target set, not InitLaserIso setup contours."""
+    study_uid, frame_uid = generate_uid(), generate_uid()
+    setup_uid, rich_uid, plan_uid = generate_uid(), generate_uid(), generate_uid()
+    _mk_struct(
+        tmp_path / "00_setup.dcm",
+        setup_uid,
+        study_uid=study_uid,
+        frame_uid=frame_uid,
+        roi_names=["InitLaserIso", "AcqIsocenter"],
+    )
+    _mk_struct(
+        tmp_path / "99_rich.dcm",
+        rich_uid,
+        study_uid=study_uid,
+        frame_uid=frame_uid,
+        roi_names=["BODY", "CTV1", "PTV1", "PTV2"],
+    )
+    _mk_plan(
+        tmp_path / "plan.dcm",
+        plan_uid,
+        struct_uid=rich_uid,
+        study_uid=study_uid,
+        frame_uid=frame_uid,
+        date="20240416",
+        rx_gy=64.0,
+        fractions=32,
+        label="plan",
+    )
+    _mk_dose(tmp_path / "dose.dcm", generate_uid(), plan_uid=plan_uid, study_uid=study_uid, frame_uid=frame_uid)
+
+    linked = _extract_linked(tmp_path)
+
+    assert len(linked) == 1
+    assert linked[0].struct is not None
+    assert linked[0].struct.sop_instance_uid == rich_uid
+    assert "PTV1" in linked[0].struct.roi_names
+
+
+def test_plan_reference_beats_a_larger_zero_target_structure_set(tmp_path):
+    """Patient 481077 must not receive the 115-ROI auto-OAR set with zero targets."""
+    study_uid, frame_uid = generate_uid(), generate_uid()
+    auto_uid, target_uid, plan_uid = generate_uid(), generate_uid(), generate_uid()
+    _mk_struct(
+        tmp_path / "00_auto_oar.dcm",
+        auto_uid,
+        study_uid=study_uid,
+        frame_uid=frame_uid,
+        roi_names=[f"OAR_{index}" for index in range(115)],
+    )
+    _mk_struct(
+        tmp_path / "99_target.dcm",
+        target_uid,
+        study_uid=study_uid,
+        frame_uid=frame_uid,
+        roi_names=["BODY", "CTV", "PTV"],
+    )
+    _mk_plan(
+        tmp_path / "plan.dcm",
+        plan_uid,
+        struct_uid=target_uid,
+        study_uid=study_uid,
+        frame_uid=frame_uid,
+        date="20250314",
+        rx_gy=45.0,
+        fractions=5,
+        label="plan",
+    )
+    _mk_dose(tmp_path / "dose.dcm", generate_uid(), plan_uid=plan_uid, study_uid=study_uid, frame_uid=frame_uid)
+
+    linked = _extract_linked(tmp_path)
+
+    assert linked[0].struct is not None
+    assert linked[0].struct.sop_instance_uid == target_uid
+    assert len(linked[0].struct.roi_names) == 3
+
+
+@pytest.mark.parametrize("shared_study", [False, True], ids=["dfci_cross_study", "kopernik_shared_study"])
+def test_referenced_planning_ct_links_with_or_without_a_shared_study(tmp_path, shared_study):
+    """DFCI cross-study references and the existing Kopernik shared-study shape must both resolve."""
+    rt_study = generate_uid()
+    ct_study = rt_study if shared_study else generate_uid()
+    frame_uid, series_uid, struct_uid = generate_uid(), generate_uid(), generate_uid()
+    ct = _mk_ct(
+        tmp_path / "ct.dcm",
+        study_uid=ct_study,
+        series_uid=series_uid,
+        frame_uid=frame_uid,
+        description="Planning CT",
+    )
+    struct_path = _mk_struct(
+        tmp_path / "struct.dcm",
+        struct_uid,
+        study_uid=rt_study,
+        frame_uid=frame_uid,
+        roi_names=["CTV", "PTV"],
+        ct_series_uid=series_uid,
+    )
+    ct_index = {"P1": {ct_study: {series_uid: [ct]}}}
+
+    selected, status = org.select_course_ct_series(ct_index, "P1", struct_path, rt_study)
+
+    assert status == "referenced"
+    assert selected == [ct]
+
+
+def test_multi_plan_dose_links_every_referenced_plan_in_one_structure_course(tmp_path):
+    """A PLAN_SUM dose tied to two phases on one planning structure set must retain both phases."""
+    study_uid = generate_uid()
+    frame_uid = generate_uid()
+    struct_uid = generate_uid()
+    struct = _mk_struct(
+        tmp_path / "struct.dcm", struct_uid,
+        study_uid=study_uid,
+        frame_uid=frame_uid, roi_names=["CTV", "PTV"],
+    )
+    plan_uids = [str(generate_uid()), str(generate_uid())]
+    plans = [
+        _mk_plan(
+            tmp_path / f"plan_{index}.dcm", plan_uid,
+            struct_uid=struct_uid, study_uid=study_uid, frame_uid=frame_uid,
+            date="20240101", rx_gy=50.0 if index == 0 else 10.0,
+            fractions=25 if index == 0 else 5, label=f"phase-{index}",
+        )
+        for index, plan_uid in enumerate(plan_uids)
+    ]
+    dose = _mk_multi_plan_dose(
+        tmp_path / "plan_sum.dcm", generate_uid(),
+        plan_uids=plan_uids, study_uid=study_uid, frame_uid=frame_uid,
+    )
+
+    plan_info, dose_info, struct_info = extract_rt(tmp_path)
+    linked = link_rt_sets(plan_info, dose_info, struct_info)
+    grouped = group_by_course(linked)
+
+    assert len(plans) == 2 and struct.exists() and dose.exists()
+    assert len(linked) == 2
+    assert len(grouped) == 1
+    assert {item.plan.sop_instance_uid for item in linked} == set(plan_uids)
+    assert {item.struct.sop_instance_uid for item in linked if item.struct} == {struct_uid}
+
+
+def test_unresolved_dose_reference_is_not_attached_to_the_only_plan(tmp_path):
+    """An explicit dose reference to a missing plan must not be guessed onto another plan."""
+    study_uid = generate_uid()
+    frame_uid = generate_uid()
+    struct_uid = generate_uid()
+    plan_uid = generate_uid()
+    plan = _mk_plan(
+        tmp_path / "plan.dcm",
+        plan_uid,
+        struct_uid=struct_uid,
+        study_uid=study_uid,
+        frame_uid=frame_uid,
+        label="clinical",
+        date="20241001",
+        rx_gy=55.0,
+        fractions=20,
+    )
+    dose = _mk_dose(
+        tmp_path / "dose.dcm",
+        generate_uid(),
+        plan_uid=generate_uid(),
+        study_uid=study_uid,
+        frame_uid=frame_uid,
+    )
+
+    classified = getattr(org, "_classify_doses")([plan], [dose])
+
+    assert classified.selected_doses == []
+    assert classified.selected_plans == []
+    assert classified.classification == "unresolved_reference_excluded"
+
+
+def test_target_bearing_referenced_structure_without_dose_remains_a_plan_only_course(tmp_path):
+    """Patient 351107 had a target-bearing planning structure set with plans but no RTDOSE."""
+    study_uid = generate_uid()
+    frame_uid = generate_uid()
+    struct_uid = generate_uid()
+    _mk_struct(
+        tmp_path / "struct.dcm", struct_uid,
+        study_uid=study_uid, frame_uid=frame_uid,
+        roi_names=["CTV", "PTV"],
+    )
+    plan_uid = generate_uid()
+    _mk_plan(
+        tmp_path / "plan.dcm", plan_uid,
+        struct_uid=struct_uid, study_uid=study_uid, frame_uid=frame_uid,
+        date="20211122", rx_gy=45.0, fractions=25, label="course",
+    )
+
+    plans, doses, structs = extract_rt(tmp_path)
+    linked = link_rt_sets(plans, doses, structs)
+    grouped = group_by_course(linked)
+
+    assert len(linked) == 1
+    assert linked[0].dose is None
+    assert linked[0].struct is not None
+    assert linked[0].struct.sop_instance_uid == struct_uid
+    assert list(grouped) == [("P1", struct_uid)]
+
+
+def test_four_target_bearing_references_produce_four_courses(tmp_path):
+    """Patient 481077 must retain all 4 target-bearing planning structure sets as courses."""
+    study_uid, frame_uid = generate_uid(), generate_uid()
+    for index in range(4):
+        struct_uid, plan_uid = generate_uid(), generate_uid()
+        _mk_struct(
+            tmp_path / f"struct_{index}.dcm",
+            struct_uid,
+            study_uid=study_uid,
+            frame_uid=frame_uid,
+            roi_names=[f"CTV{index + 1}", f"PTV{index + 1}"],
+        )
+        _mk_plan(
+            tmp_path / f"plan_{index}.dcm",
+            plan_uid,
+            struct_uid=struct_uid,
+            study_uid=study_uid,
+            frame_uid=frame_uid,
+            date=f"20240{index + 1}01",
+            rx_gy=8.0 + index,
+            fractions=1,
+            label=f"course {index + 1}",
+        )
+        _mk_dose(
+            tmp_path / f"dose_{index}.dcm",
+            generate_uid(),
+            plan_uid=plan_uid,
+            study_uid=study_uid,
+            frame_uid=frame_uid,
+        )
+
+    grouped = group_by_course(_extract_linked(tmp_path))
+
+    assert len(grouped) == 4
+    assert all(len(items) == 1 for items in grouped.values())
+
+
+def test_identical_prescription_revisions_contribute_once(tmp_path):
+    """Patient 353398 must remain 70 Gy in 33 fractions rather than summing 6 revisions."""
+    study_uid, frame_uid, struct_uid = generate_uid(), generate_uid(), generate_uid()
+    plans: list[Path] = []
+    doses: list[Path] = []
+    plan_uids: list[str] = []
+    for index in range(6):
+        plan_uid = generate_uid()
+        plan_uids.append(plan_uid)
+        plans.append(
+            _mk_plan(
+                tmp_path / f"plan_{index}.dcm",
+                plan_uid,
+                struct_uid=struct_uid,
+                study_uid=study_uid,
+                frame_uid=frame_uid,
+                date="20180518",
+                rx_gy=70.0,
+                fractions=33,
+                label=f"sib{index}",
+            )
+        )
+        doses.append(
+            _mk_dose(
+                tmp_path / f"dose_{index}.dcm",
+                generate_uid(),
+                plan_uid=plan_uid,
+                study_uid=study_uid,
+                frame_uid=frame_uid,
+            )
+        )
+    delivered = _mk_record(tmp_path / "record.dcm", plan_uids[-1])
+
+    classified = getattr(org, "_classify_doses")(plans, doses, treatment_record_paths=[delivered])
+    selected_rx = sum(org.infer_plan_rx_gy(pydicom.dcmread(path, stop_before_pixels=True)) or 0 for path in classified.selected_plans)
+
+    assert classified.classification == "plan_revisions_deduplicated"
+    assert classified.selected_plans == [plans[-1]]
+    assert len(classified.selected_doses) == 1
+    assert selected_rx == pytest.approx(70.0)
+    assert not classified.should_sum
+
+
+def test_sequential_phases_sum_after_revision_deduplication(tmp_path):
+    """Patient 351107 must retain 50 Gy plus 10 Gy while excluding the duplicate 50 Gy revision."""
+    study_uid, frame_uid, struct_uid = generate_uid(), generate_uid(), generate_uid()
+    specs = [(50.0, 25), (10.0, 5), (50.0, 25)]
+    plans: list[Path] = []
+    doses: list[Path] = []
+    plan_uids: list[str] = []
+    for index, (rx_gy, fractions) in enumerate(specs):
+        plan_uid = generate_uid()
+        plan_uids.append(plan_uid)
+        plans.append(
+            _mk_plan(
+                tmp_path / f"plan_{index}.dcm",
+                plan_uid,
+                struct_uid=struct_uid,
+                study_uid=study_uid,
+                frame_uid=frame_uid,
+                date="20180518",
+                rx_gy=rx_gy,
+                fractions=fractions,
+                label=f"phase {index + 1}",
+            )
+        )
+        doses.append(
+            _mk_dose(
+                tmp_path / f"dose_{index}.dcm",
+                generate_uid(),
+                plan_uid=plan_uid,
+                study_uid=study_uid,
+                frame_uid=frame_uid,
+            )
+        )
+    delivered = [
+        _mk_record(tmp_path / f"record_{index}.dcm", plan_uids[-1], date=f"201801{index + 1:02d}")
+        for index in range(25)
+    ]
+
+    classified = getattr(org, "_classify_doses")(plans, doses, treatment_record_paths=delivered)
+    selected_rx = sum(org.infer_plan_rx_gy(pydicom.dcmread(path, stop_before_pixels=True)) or 0 for path in classified.selected_plans)
+
+    assert classified.classification == "sequential_phases_summed"
+    assert classified.selected_plans == [plans[-1], plans[1]]
+    assert selected_rx == pytest.approx(60.0)
+    assert classified.should_sum
+
+
+def test_replacement_plans_within_one_structure_course_do_not_double_count(tmp_path):
+    """A 20-fraction plan and its 17 plus 3 fraction replacements must remain 55 Gy within one course."""
+    study_uid, frame_uid, struct_uid = generate_uid(), generate_uid(), generate_uid()
+    specs = [(55.0, 20), (46.75, 17), (8.25, 3)]
+    plans: list[Path] = []
+    doses: list[Path] = []
+    for index, (rx_gy, fractions) in enumerate(specs):
+        plan_uid = generate_uid()
+        plans.append(
+            _mk_plan(
+                tmp_path / f"plan_{index}.dcm",
+                plan_uid,
+                struct_uid=struct_uid,
+                study_uid=study_uid,
+                frame_uid=frame_uid,
+                date=f"2024120{index + 1}",
+                rx_gy=rx_gy,
+                fractions=fractions,
+                label=f"plan {index + 1}",
+            )
+        )
+        doses.append(
+            _mk_dose(
+                tmp_path / f"dose_{index}.dcm",
+                generate_uid(),
+                plan_uid=plan_uid,
+                study_uid=study_uid,
+                frame_uid=frame_uid,
+            )
+        )
+
+    classified = org._classify_doses(plans, doses)
+    selected_rx = sum(org.infer_plan_rx_gy(pydicom.dcmread(path, stop_before_pixels=True)) or 0 for path in classified.selected_plans)
+
+    assert classified.classification == "replacement_course_total"
+    assert selected_rx == pytest.approx(55.0)
+    assert len(classified.selected_plans) in {1, 2}
+
+
+def test_replans_on_three_structure_sets_emit_three_course_totals(tmp_path):
+    """Patient 482203 must expose 3 structure-defined 55 Gy entries, not claim one de-duplicated course."""
+    frame_uid = generate_uid()
+    course_specs = [
+        [(55.0, 20), (55.0, 20)],
+        [(55.0, 20), (8.25, 3)],
+        [(55.0, 20), (46.75, 17)],
+    ]
+    record_plan_uid = ""
+    for course_index, plan_specs in enumerate(course_specs):
+        study_uid = generate_uid()
+        struct_uid = generate_uid()
+        _mk_struct(
+            tmp_path / f"struct_{course_index}.dcm",
+            struct_uid,
+            study_uid=study_uid,
+            frame_uid=frame_uid,
+            roi_names=[f"CTV{course_index + 1}", f"PTV{course_index + 1}"],
+        )
+        for plan_index, (rx_gy, fractions) in enumerate(plan_specs):
+            plan_uid = generate_uid()
+            _mk_plan(
+                tmp_path / f"plan_{course_index}_{plan_index}.dcm",
+                plan_uid,
+                struct_uid=struct_uid,
+                study_uid=study_uid,
+                frame_uid=frame_uid,
+                date=f"2024120{course_index + 1}",
+                rx_gy=rx_gy,
+                fractions=fractions,
+                label=f"course {course_index + 1} plan {plan_index + 1}",
+            )
+            _mk_dose(
+                tmp_path / f"dose_{course_index}_{plan_index}.dcm",
+                generate_uid(),
+                plan_uid=plan_uid,
+                study_uid=study_uid,
+                frame_uid=frame_uid,
+            )
+            if course_index == 1 and plan_index == 0:
+                record_plan_uid = plan_uid
+
+    records = [
+        _mk_record(
+            tmp_path / f"record_{index}.dcm",
+            record_plan_uid,
+            date=f"202412{index + 1:02d}",
+        )
+        for index in range(6)
+    ]
+    grouped = group_by_course(_extract_linked(tmp_path))
+    totals: list[float] = []
+    classifications: list[str] = []
+    for items in grouped.values():
+        plans = list(dict.fromkeys(item.plan.path for item in items))
+        doses = list(dict.fromkeys(item.dose.path for item in items if item.dose is not None))
+        classified = org._classify_doses(plans, doses, treatment_record_paths=records)
+        totals.append(
+            sum(
+                org.infer_plan_rx_gy(pydicom.dcmread(path, stop_before_pixels=True)) or 0
+                for path in classified.selected_plans
+            )
+        )
+        classifications.append(classified.classification)
+
+    assert len(grouped) == 3
+    assert sorted(totals) == pytest.approx([55.0, 55.0, 55.0])
+    assert sorted(classifications) == [
+        "delivered_plan_selected",
+        "plan_revisions_deduplicated",
+        "replacement_course_total",
+    ]
+
+
+def test_target_bearing_courses_a_year_apart_are_not_merged(tmp_path):
+    """Patient 440657 bladder treatment and lung SBRT 1 year later must remain 2 courses."""
+    study_uid, frame_uid = generate_uid(), generate_uid()
+    for index, date in enumerate(("20241001", "20251001")):
+        struct_uid, plan_uid = generate_uid(), generate_uid()
+        _mk_struct(
+            tmp_path / f"struct_{index}.dcm",
+            struct_uid,
+            study_uid=study_uid,
+            frame_uid=frame_uid,
+            roi_names=["CTV", "PTV"],
+        )
+        _mk_plan(
+            tmp_path / f"plan_{index}.dcm",
+            plan_uid,
+            struct_uid=struct_uid,
+            study_uid=study_uid,
+            frame_uid=frame_uid,
+            date=date,
+            rx_gy=55.0 if index == 0 else 50.0,
+            fractions=20 if index == 0 else 5,
+            label=f"course {index + 1}",
+        )
+        _mk_dose(
+            tmp_path / f"dose_{index}.dcm",
+            generate_uid(),
+            plan_uid=plan_uid,
+            study_uid=study_uid,
+            frame_uid=frame_uid,
+        )
+
+    grouped = group_by_course(_extract_linked(tmp_path))
+
+    assert len(grouped) == 2
+
+
+def _treatment_records(
+    tmp_path: Path,
+    prefix: str,
+    plan_uid: str,
+    count: int,
+    *,
+    start: date = date(2024, 1, 1),
+) -> list[Path]:
+    return [
+        _mk_record(
+            tmp_path / f"{prefix}_{index:02d}.dcm",
+            plan_uid,
+            date=(start + timedelta(days=index)).strftime("%Y%m%d"),
+        )
+        for index in range(count)
+    ]
+
+
+def test_records_on_subset_of_treatment_dates_do_not_add_verification_dose(tmp_path: Path) -> None:
+    """The 353398 failure added a low-dose verification plan to a delivered 70 Gy course."""
+    struct_uid = generate_uid()
+    study_uid = generate_uid()
+    frame_uid = generate_uid()
+    full_uid = generate_uid()
+    verification_uid = generate_uid()
+    full = _mk_plan(
+        tmp_path / "full.dcm", full_uid, struct_uid=struct_uid,
+        study_uid=study_uid, frame_uid=frame_uid,
+        date="20180518", rx_gy=70.0, fractions=33, label="course",
+    )
+    verification = _mk_plan(
+        tmp_path / "verification.dcm", verification_uid, struct_uid=struct_uid,
+        study_uid=study_uid, frame_uid=frame_uid,
+        date="20180518", rx_gy=1.0, fractions=10, label="verification",
+    )
+    doses = [
+        _mk_dose(
+            tmp_path / "full_dose.dcm", generate_uid(),
+            plan_uid=full_uid, study_uid=study_uid, frame_uid=frame_uid,
+        ),
+        _mk_dose(
+            tmp_path / "verification_dose.dcm", generate_uid(),
+            plan_uid=verification_uid, study_uid=study_uid, frame_uid=frame_uid,
+        ),
+    ]
+    full_records = _treatment_records(tmp_path, "full_record", full_uid, 33)
+    verification_records = _treatment_records(tmp_path, "verification_record", verification_uid, 6)
+
+    classified = getattr(org, "_classify_doses")(
+        [full, verification], doses,
+        treatment_record_paths=full_records + verification_records,
+    )
+
+    assert classified.selected_plans == [full]
+    assert sum(
+        org.infer_plan_rx_gy(pydicom.dcmread(path, stop_before_pixels=True)) or 0
+        for path in classified.selected_plans
+    ) == pytest.approx(70.0)
+    assert classified.should_sum is False
+
+
+def test_delivered_partial_replan_does_not_add_to_encompassing_prescription(tmp_path: Path) -> None:
+    """The 440657 and 482203 failures added a delivered partial replan to the course total."""
+    struct_uid = generate_uid()
+    study_uid = generate_uid()
+    frame_uid = generate_uid()
+    total_uid = generate_uid()
+    partial_uid = generate_uid()
+    total = _mk_plan(
+        tmp_path / "total.dcm", total_uid, struct_uid=struct_uid,
+        study_uid=study_uid, frame_uid=frame_uid,
+        date="20241001", rx_gy=55.0, fractions=20, label="course",
+    )
+    partial = _mk_plan(
+        tmp_path / "partial.dcm", partial_uid, struct_uid=struct_uid,
+        study_uid=study_uid, frame_uid=frame_uid,
+        date="20241024", rx_gy=36.0, fractions=12, label="replan",
+    )
+    doses = [
+        _mk_dose(
+            tmp_path / "total_dose.dcm", generate_uid(),
+            plan_uid=total_uid, study_uid=study_uid, frame_uid=frame_uid,
+        ),
+        _mk_dose(
+            tmp_path / "partial_dose.dcm", generate_uid(),
+            plan_uid=partial_uid, study_uid=study_uid, frame_uid=frame_uid,
+        ),
+    ]
+    partial_records = _treatment_records(tmp_path, "partial_record", partial_uid, 12)
+
+    classified = getattr(org, "_classify_doses")(
+        [total, partial], doses,
+        treatment_record_paths=partial_records,
+    )
+
+    assert classified.selected_plans == [total]
+    assert sum(
+        org.infer_plan_rx_gy(pydicom.dcmread(path, stop_before_pixels=True)) or 0
+        for path in classified.selected_plans
+    ) == pytest.approx(55.0)
+    assert classified.should_sum is False
+
+
+def test_qa_phantom_and_topogram_series_are_ineligible_for_courses(tmp_path):
+    """DFCI ScandiDos VirtualCT and scanner topograms must not become patient courses."""
+    frame_uid = generate_uid()
+    phantom_series = generate_uid()
+    phantom = [
+        _mk_ct(
+            tmp_path / "phantom.dcm",
+            study_uid=generate_uid(),
+            series_uid=phantom_series,
+            frame_uid=frame_uid,
+            description="ARIA RadOnc Images - Verification Plan Phantom",
+            manufacturer="ScandiDos AB",
+            model="VirtualCT",
+        )
+    ] * 20
+    topogram_series = generate_uid()
+    topogram = [
+        _mk_ct(
+            tmp_path / "topogram.dcm",
+            study_uid=generate_uid(),
+            series_uid=topogram_series,
+            frame_uid=frame_uid,
+            description="Topogram",
+        )
+    ] * 20
+
+    classify = getattr(org, "_classify_organize_ct_series")
+    phantom_ok, _, phantom_reason = classify(phantom, is_planning_ct=True)
+    topogram_ok, _, topogram_reason = classify(topogram, is_planning_ct=True)
+
+    assert not phantom_ok
+    assert phantom_reason and "qa_phantom" in phantom_reason
+    assert not topogram_ok
+    assert topogram_reason and ("topogram" in topogram_reason or "localizer" in topogram_reason)
+
+
+def test_plan_and_dose_without_targets_fail_the_course_qc_gate(tmp_path):
+    """Kopernik zero-target courses must fail loudly instead of passing every existing gate."""
+    study_uid, frame_uid, struct_uid, plan_uid = generate_uid(), generate_uid(), generate_uid(), generate_uid()
+    struct = _mk_struct(
+        tmp_path / "struct.dcm",
+        struct_uid,
+        study_uid=study_uid,
+        frame_uid=frame_uid,
+        roi_names=["BODY", "InitLaserIso", "AcqIsocenter"],
+    )
+    plan = _mk_plan(
+        tmp_path / "plan.dcm",
+        plan_uid,
+        struct_uid=struct_uid,
+        study_uid=study_uid,
+        frame_uid=frame_uid,
+        date="20240101",
+        rx_gy=55.0,
+        fractions=20,
+        label="plan",
+    )
+    dose = _mk_dose(tmp_path / "dose.dcm", generate_uid(), plan_uid=plan_uid, study_uid=study_uid, frame_uid=frame_uid)
+
+    qc_error = getattr(org, "CourseTargetQCError")
+    validate = getattr(org, "validate_course_target_qc")
+    with pytest.raises(qc_error, match="zero target volumes"):
+        validate("P1", "2024-01", [plan], [dose], struct)
+
+
+def test_compact_target_suffix_remains_a_target_name():
+    """DFCI compact target names such as PTVbt must retain target status."""
+    assert org.target_volume_names(["PTVbt", "CTVn", "notPTV"]) == ["PTVbt", "CTVn"]
+
+
+def test_boolean_crop_name_does_not_satisfy_course_target_qc(tmp_path):
+    """Kopernik Pecherz - PTV alone is a boolean crop, not a target volume."""
+    study_uid, frame_uid, struct_uid, plan_uid = generate_uid(), generate_uid(), generate_uid(), generate_uid()
+    struct = _mk_struct(
+        tmp_path / "crop_only.dcm",
+        struct_uid,
+        study_uid=study_uid,
+        frame_uid=frame_uid,
+        roi_names=["BODY", "Pecherz - PTV"],
+    )
+    plan = _mk_plan(
+        tmp_path / "plan.dcm",
+        plan_uid,
+        struct_uid=struct_uid,
+        study_uid=study_uid,
+        frame_uid=frame_uid,
+        date="20240101",
+        rx_gy=55.0,
+        fractions=20,
+        label="plan",
+    )
+    dose = _mk_dose(tmp_path / "dose.dcm", generate_uid(), plan_uid=plan_uid, study_uid=study_uid, frame_uid=frame_uid)
+
+    with pytest.raises(org.CourseTargetQCError, match="zero target volumes"):
+        org.validate_course_target_qc("P1", "2024-01", [plan], [dose], struct)
+
+
+def test_optimization_helper_name_does_not_satisfy_course_target_qc(tmp_path):
+    """DFCI zPtvOpt alone is an optimization helper, not a target volume."""
+    study_uid, frame_uid, struct_uid, plan_uid = generate_uid(), generate_uid(), generate_uid(), generate_uid()
+    struct = _mk_struct(
+        tmp_path / "optimization_only.dcm",
+        struct_uid,
+        study_uid=study_uid,
+        frame_uid=frame_uid,
+        roi_names=["BODY", "zPtvOpt"],
+    )
+    plan = _mk_plan(
+        tmp_path / "plan.dcm",
+        plan_uid,
+        struct_uid=struct_uid,
+        study_uid=study_uid,
+        frame_uid=frame_uid,
+        date="20240101",
+        rx_gy=55.0,
+        fractions=20,
+        label="plan",
+    )
+    dose = _mk_dose(tmp_path / "dose.dcm", generate_uid(), plan_uid=plan_uid, study_uid=study_uid, frame_uid=frame_uid)
+
+    with pytest.raises(org.CourseTargetQCError, match="zero target volumes"):
+        org.validate_course_target_qc("P1", "2024-01", [plan], [dose], struct)
+
+
+def test_duplicate_paths_for_one_structure_uid_keep_rs_and_referenced_ct(tmp_path, monkeypatch, caplog):
+    """Duplicate DFCI copies of one RTSTRUCT must not bypass reference-based CT selection."""
+    dicom_root = tmp_path / "dicom"
+    rt_study, frame_uid = generate_uid(), generate_uid()
+    small_series, large_series = generate_uid(), generate_uid()
+    struct_uid, plan_uid = generate_uid(), generate_uid()
+    struct_a = _mk_struct(
+        dicom_root / "a" / "struct.dcm",
+        struct_uid,
+        study_uid=rt_study,
+        frame_uid=frame_uid,
+        roi_names=["BODY", "PTV1"],
+        ct_series_uid=small_series,
+    )
+    struct_b = _mk_struct(
+        dicom_root / "b" / "duplicate.dcm",
+        struct_uid,
+        study_uid=rt_study,
+        frame_uid=frame_uid,
+        roi_names=["BODY", "PTV1"],
+        ct_series_uid=small_series,
+    )
+    plan = _mk_plan(
+        dicom_root / "plan.dcm",
+        plan_uid,
+        struct_uid=struct_uid,
+        study_uid=rt_study,
+        frame_uid=frame_uid,
+        date="20240101",
+        rx_gy=55.0,
+        fractions=20,
+        label="plan",
+    )
+    dose = _mk_dose(
+        dicom_root / "dose.dcm",
+        generate_uid(),
+        plan_uid=plan_uid,
+        study_uid=rt_study,
+        frame_uid=frame_uid,
+    )
+    small_ct = [
+        _mk_ct(
+            dicom_root / f"small_{index}.dcm",
+            study_uid=rt_study,
+            series_uid=small_series,
+            frame_uid=frame_uid,
+            description="Referenced planning CT",
+        )
+        for index in range(10)
+    ]
+    large_ct = [
+        _mk_ct(
+            dicom_root / f"large_{index}.dcm",
+            study_uid=rt_study,
+            series_uid=large_series,
+            frame_uid=frame_uid,
+            description="Larger unreferenced CT",
+        )
+        for index in range(11)
+    ]
+
+    plan_infos, dose_infos, struct_infos = extract_rt(dicom_root, max_workers=1)
+    struct_by_path = {info.path: info for info in struct_infos}
+    linked = [
+        LinkedSet(
+            patient_id="P1",
+            plan=plan_infos[0],
+            dose=dose_infos[0],
+            struct=struct_by_path[path],
+            ct_study_uid=rt_study,
+            frame_of_reference_uid=frame_uid,
+        )
+        for path in (struct_a, struct_b)
+    ]
+    ct_index = {
+        "P1": {
+            rt_study: {
+                small_series: small_ct,
+                large_series: large_ct,
+            }
+        }
+    }
+
+    monkeypatch.setattr(org, "index_ct_series", lambda *args, **kwargs: ct_index)
+    monkeypatch.setattr(org, "extract_rt", lambda *args, **kwargs: (plan_infos, dose_infos, struct_infos))
+    monkeypatch.setattr(org, "link_rt_sets", lambda *args, **kwargs: linked)
+    monkeypatch.setattr(org, "group_by_course", lambda *args, **kwargs: {("P1", struct_uid): linked})
+    monkeypatch.setattr(org, "_index_series_and_registrations", lambda *args, **kwargs: ({}, {}, {}))
+    monkeypatch.setattr(org, "_index_rt_files", lambda *args, **kwargs: {})
+    monkeypatch.setattr(org, "_looks_like_patient_series_layout", lambda *args, **kwargs: False)
+    monkeypatch.setattr(org, "_ensure_ct_nifti", lambda *args, **kwargs: None)
+
+    cfg = PipelineConfig(
+        dicom_root=dicom_root,
+        output_root=tmp_path / "output",
+        logs_root=tmp_path / "logs",
+        max_workers_override=1,
+        dicom_copy_dedup_by_sop_uid=False,
+    )
+    caplog.set_level("INFO")
+
+    outputs = org.organize_and_merge(cfg)
+
+    assert len(outputs) == 1
+    assert outputs[0].rs_path is not None and outputs[0].rs_path.exists()
+    copied_ct = sorted(outputs[0].dirs.dicom_ct.glob("*.dcm"))
+    assert copied_ct
+    copied_series = {
+        str(pydicom.dcmread(path, stop_before_pixels=True).SeriesInstanceUID)
+        for path in copied_ct
+    }
+    assert copied_series == {small_series}
+    assert any("referenced" in record.getMessage() for record in caplog.records)
+    assert plan.exists() and dose.exists()
+
+
+def test_plan_label_text_classifier_cannot_be_called():
+    """Course dose selection must expose no path that keys decisions to plan labels."""
+    assert not hasattr(org, "_classify_doses_legacy")
+    assert not hasattr(org, "_is_replan_text")
+    assert not hasattr(org, "_is_boost_text")
+
+
+def _ct_only_config(tmp_path: Path, *, allow: bool) -> PipelineConfig:
+    return PipelineConfig(
+        dicom_root=tmp_path / "dicom",
+        output_root=tmp_path / "output",
+        logs_root=tmp_path / "logs",
+        max_workers_override=1,
+        allow_ct_only_courses=allow,
+    )
+
+
+def _write_ct_only_series(root: Path) -> None:
+    study_uid, series_uid, frame_uid = generate_uid(), generate_uid(), generate_uid()
+    for index in range(10):
+        _mk_ct(
+            root / "P1" / f"CT_{index}.dcm",
+            study_uid=study_uid,
+            series_uid=series_uid,
+            frame_uid=frame_uid,
+            description="Diagnostic CT",
+        )
+
+
+def test_ct_only_input_fails_loudly_when_support_is_not_enabled(tmp_path):
+    """A diagnostic CT-only cohort must not silently produce zero courses by default."""
+    cfg = _ct_only_config(tmp_path, allow=False)
+    _write_ct_only_series(cfg.dicom_root)
+
+    with pytest.raises(org.CTOnlyCohortError, match="allow_ct_only_courses"):
+        org.organize_and_merge(cfg)
+
+
+def test_ct_only_input_produces_a_course_when_explicitly_enabled(tmp_path, monkeypatch):
+    """The explicit CT-only option must restore diagnostic radiomics course output."""
+    cfg = _ct_only_config(tmp_path, allow=True)
+    _write_ct_only_series(cfg.dicom_root)
+    monkeypatch.setattr(org, "_ensure_ct_nifti", lambda *args, **kwargs: None)
+
+    outputs = org.organize_and_merge(cfg)
+
+    assert len(outputs) == 1
+    assert len(list(outputs[0].dirs.dicom_ct.glob("*.dcm"))) == 10

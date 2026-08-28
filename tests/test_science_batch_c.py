@@ -36,7 +36,7 @@ from rtpipeline.config import PipelineConfig
 from rtpipeline.layout import build_course_dirs
 from rtpipeline.metadata import LinkedSet
 from rtpipeline.organize import DoseClassification
-from rtpipeline.rt_details import DoseInfo, PlanInfo
+from rtpipeline.rt_details import DoseInfo, PlanInfo, StructInfo
 
 _RTSTRUCT_SOP_CLASS_UID = "1.2.840.10008.5.1.4.1.1.481.3"
 
@@ -301,10 +301,20 @@ def _run_organize_with_fake_classification(tmp_path, monkeypatch, *, plan1, plan
         path=dose, patient_id="P1", sop_instance_uid="unused", study_uid=None,
         frame_of_reference_uid="FOR1", referenced_plan_sop=None,
     )
+    struct_path = _write_valid_rtstruct(tmp_path / "src" / "RS_target.dcm", ["CTV", "PTV"])
+    struct_ds = pydicom.dcmread(str(struct_path), stop_before_pixels=True)
+    struct_info = StructInfo(
+        path=struct_path,
+        patient_id="P1",
+        sop_instance_uid=str(struct_ds.SOPInstanceUID),
+        study_uid=str(struct_ds.StudyInstanceUID),
+        frame_of_reference_uid="FOR1",
+        roi_names=["CTV", "PTV"],
+    )
     items = [
-        LinkedSet(patient_id="P1", plan=plan_info_1, dose=dose_info, struct=None,
+        LinkedSet(patient_id="P1", plan=plan_info_1, dose=dose_info, struct=struct_info,
                    ct_study_uid=None, frame_of_reference_uid="FOR1"),
-        LinkedSet(patient_id="P1", plan=plan_info_2, dose=dose_info, struct=None,
+        LinkedSet(patient_id="P1", plan=plan_info_2, dose=dose_info, struct=struct_info,
                    ct_study_uid=None, frame_of_reference_uid="FOR1"),
     ]
     fixed_courses = {("P1", "course1"): items}

@@ -9,6 +9,7 @@ import tempfile
 import re
 import shutil
 from collections import defaultdict
+from itertools import combinations
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple, cast
@@ -16,18 +17,20 @@ from typing import Dict, Iterable, List, Optional, Tuple, cast
 import numpy as np
 import pydicom
 from pydicom.dataset import Dataset
+from pydicom.multival import MultiValue
 from pydicom.sequence import Sequence
 import SimpleITK as sitk
 from pydicom.uid import generate_uid
 from scipy.ndimage import map_coordinates
 
 from .config import PipelineConfig
-from .ct import index_ct_series, pick_primary_series, copy_ct_series, _clear_dir
+from .ct import CTInstance, index_ct_series, pick_primary_series, copy_ct_series, _clear_dir
 from .dicom_copy import DicomCopyConfig, DicomCopyManager, get_copy_manager, reset_copy_manager
 from .inventory import materialize_patient_series_from_inventory
 from .layout import CourseDirs, build_course_dirs, course_dir_name, find_dcm
 from .metadata import LinkedSet, group_by_course, link_rt_sets, parse_date
-from .rt_details import extract_rt, StructInfo
+from .modality_classifier import classify_series
+from .rt_details import extract_rt, StructInfo, has_target_volumes, target_volume_names
 from .utils import ensure_dir, run_tasks_with_adaptive_workers, read_dicom, get, _scoped_walk, parallel_map_files, DEFAULT_INDEX_WORKERS
 from .segmentation import (
     _collect_series_metadata,
@@ -418,6 +421,127 @@ def _looks_like_patient_series_layout(dicom_root: Path) -> bool:
     return True
 
 
+class CourseTargetQCError(RuntimeError):
+    """Raised when a plan-and-dose course has no target volume."""
+
+
+class CTOnlyCohortError(RuntimeError):
+    """Raised when CT-only input is supplied without explicit configuration."""
+
+
+def validate_course_target_qc(
+    patient_id: str,
+    course_key: str,
+    plan_paths: List[Path],
+    dose_paths: List[Path],
+    struct_path: Optional[Path],
+) -> List[str]:
+    """Require GTV, CTV, or PTV for every course carrying plan and dose."""
+    if not plan_paths or not dose_paths:
+        return []
+    if struct_path is None:
+        raise CourseTargetQCError(
+            f"Course target QC failed for patient {patient_id}, course {course_key}: "
+            "plan and dose are present but the authoritative structure set is unresolved"
+        )
+    try:
+        ds = pydicom.dcmread(str(struct_path), stop_before_pixels=True, force=True)
+    except Exception as exc:
+        raise CourseTargetQCError(
+            f"Course target QC failed for patient {patient_id}, course {course_key}: "
+            f"could not read authoritative structure set {struct_path}: {exc}"
+        ) from exc
+    roi_names = [
+        str(getattr(roi, "ROIName", "") or "")
+        for roi in getattr(ds, "StructureSetROISequence", []) or []
+    ]
+    targets = target_volume_names(roi_names)
+    if not targets:
+        raise CourseTargetQCError(
+            f"Course target QC failed for patient {patient_id}, course {course_key}: "
+            f"{len(plan_paths)} plan(s) and {len(dose_paths)} dose(s) but zero target volumes "
+            f"in RTSTRUCT {getattr(ds, 'SOPInstanceUID', '<missing>')}"
+        )
+    return targets
+
+
+def _authoritative_structure_source(items: Iterable[LinkedSet]) -> Path | None:
+    """Resolve duplicate RTSTRUCT paths by SOP UID and reject distinct sets."""
+    paths_by_identity: Dict[str, set[Path]] = defaultdict(set)
+    for item in items:
+        struct = item.struct
+        if struct is None:
+            continue
+        uid = str(struct.sop_instance_uid or "").strip()
+        identity = f"SOP:{uid}" if uid else f"PATH:{struct.path.resolve()}"
+        paths_by_identity[identity].add(struct.path)
+    if not paths_by_identity:
+        return None
+    if len(paths_by_identity) != 1:
+        identities = ", ".join(sorted(paths_by_identity))
+        raise CourseTargetQCError(
+            "course resolves to multiple distinct RTSTRUCT objects "
+            f"({identities}); refusing reference-free CT fallback"
+        )
+    candidates = next(iter(paths_by_identity.values()))
+    return min(candidates, key=lambda path: str(path))
+
+
+def _classify_organize_ct_series(
+    series: List[CTInstance],
+    *,
+    is_planning_ct: bool,
+    allow_ct_only: bool = False,
+) -> tuple[bool, str, Optional[str]]:
+    """Apply the shared series classifier before organize constructs a course."""
+    if not series:
+        return False, "exclude", "empty_ct_series"
+    datasets: List[Dataset] = []
+    for instance in series:
+        try:
+            datasets.append(
+                pydicom.dcmread(str(instance.path), stop_before_pixels=True, force=True)
+            )
+        except Exception as exc:
+            logger.warning("Could not read CT header for organize classification %s: %s", instance.path, exc)
+    if not datasets:
+        return False, "exclude", "unreadable_ct_series"
+    first = datasets[0]
+    image_types: List[str] = []
+    thicknesses: List[float] = []
+    for ds in datasets:
+        raw_image_type = getattr(ds, "ImageType", []) or []
+        values = raw_image_type if isinstance(raw_image_type, (list, tuple, MultiValue)) else [raw_image_type]
+        for value in values:
+            text = str(value)
+            if text and text not in image_types:
+                image_types.append(text)
+        try:
+            thicknesses.append(float(getattr(ds, "SliceThickness", 0.0) or 0.0))
+        except (TypeError, ValueError):
+            pass
+    meta = {
+        "modality": "CT",
+        "series_description": str(getattr(first, "SeriesDescription", "") or ""),
+        "manufacturer": str(getattr(first, "Manufacturer", "") or ""),
+        "manufacturer_model": str(getattr(first, "ManufacturerModelName", "") or ""),
+        "image_type": image_types,
+        "n_instances": len(series),
+        "rows": int(getattr(first, "Rows", 0) or 0),
+        "columns": int(getattr(first, "Columns", 0) or 0),
+        "slice_thickness": max(thicknesses) if thicknesses else None,
+        "is_planning_ct": is_planning_ct,
+        "rt_linked": is_planning_ct,
+        "rtstruct_linked": is_planning_ct,
+    }
+    image_class, exclusion_reason = classify_series(meta)
+    if image_class == "exclude":
+        return False, image_class, exclusion_reason
+    if not is_planning_ct and not allow_ct_only:
+        return False, image_class, "non_planning_ct_without_rt_reference"
+    return True, image_class, None
+
+
 # =============================================================================
 # DOSE CLASSIFICATION SYSTEM (5-Phase Algorithm)
 # =============================================================================
@@ -599,99 +723,112 @@ def _plan_paths_for_doses(plan_paths: List[Path], dose_paths: List[Path]) -> Lis
     return selected
 
 
-def _is_replan_text(plan_text: str) -> bool:
-    """Check if plan text indicates a replan/adaptation."""
-    replan_keywords = [
-        "replan", "re-plan", "adapt", "adaptive", "revision", "rev",
-        "v2", "v3", "v4", "v5", "copy", "fx change", "new ct", "resim",
-        "replanning", "modified", "adjusted", "corrected",
-    ]
-    text_lower = plan_text.lower()
-    return any(kw in text_lower for kw in replan_keywords)
+def _record_delivery_evidence(record_paths: Iterable[Path]) -> Dict[str, dict]:
+    """Count treatment dates and record instances tied to each referenced plan."""
+    evidence: Dict[str, dict] = defaultdict(lambda: {"dates": set(), "instances": set()})
+    for path in dict.fromkeys(Path(p) for p in record_paths):
+        try:
+            ds = pydicom.dcmread(str(path), stop_before_pixels=True, force=True)
+        except Exception as exc:
+            logger.warning("Could not read RT treatment record %s: %s", path, exc)
+            continue
+        record_uid = str(getattr(ds, "SOPInstanceUID", "") or path)
+        treatment_date = str(getattr(ds, "TreatmentDate", "") or "")
+        for ref in getattr(ds, "ReferencedRTPlanSequence", []) or []:
+            plan_uid = str(getattr(ref, "ReferencedSOPInstanceUID", "") or "")
+            if not plan_uid:
+                continue
+            evidence[plan_uid]["instances"].add(record_uid)
+            if treatment_date:
+                evidence[plan_uid]["dates"].add(treatment_date)
+    return dict(evidence)
 
 
-def _is_boost_text(plan_text: str) -> bool:
-    """Check if plan text indicates a boost phase."""
-    boost_keywords = [
-        "boost", "cone", "conedown", "cone down", "cd", "phase 2",
-        "phase2", "ph2", "reduced", "sib", "sequential",
-    ]
-    text_lower = plan_text.lower()
-    return any(kw in text_lower for kw in boost_keywords)
+def _plan_evidence(path: Path) -> dict:
+    """Read plan identity, prescription, fractions, and deterministic chronology."""
+    meta = _extract_plan_metadata(path)
+    try:
+        ds = pydicom.dcmread(str(path), stop_before_pixels=True, force=True)
+    except Exception:
+        meta["fractions_planned"] = 0
+        return meta
+    fractions = 0
+    for group in getattr(ds, "FractionGroupSequence", []) or []:
+        value = getattr(group, "NumberOfFractionsPlanned", None)
+        try:
+            fractions += int(value or 0)
+        except (TypeError, ValueError):
+            continue
+    meta["fractions_planned"] = fractions
+    inferred_rx = infer_plan_rx_gy(ds)
+    if inferred_rx is not None:
+        meta["total_rx_gy"] = float(inferred_rx)
+    return meta
 
 
-def _bboxes_overlap(bbox1: tuple, bbox2: tuple, min_overlap_fraction: float = 0.3) -> bool:
-    """
-    Check if two 3D bounding boxes have significant spatial overlap.
-
-    Args:
-        bbox1: (x_min, y_min, z_min, x_max, y_max, z_max) for dose 1
-        bbox2: (x_min, y_min, z_min, x_max, y_max, z_max) for dose 2
-        min_overlap_fraction: Minimum fraction of smaller volume that must overlap (0-1)
-
-    Returns:
-        True if bboxes overlap significantly, False otherwise
-    """
-    if bbox1 is None or bbox2 is None:
-        # If geometry unavailable, assume overlap (conservative)
-        return True
-
-    x1_min, y1_min, z1_min, x1_max, y1_max, z1_max = bbox1
-    x2_min, y2_min, z2_min, x2_max, y2_max, z2_max = bbox2
-
-    # Calculate intersection
-    x_overlap = max(0, min(x1_max, x2_max) - max(x1_min, x2_min))
-    y_overlap = max(0, min(y1_max, y2_max) - max(y1_min, y2_min))
-    z_overlap = max(0, min(z1_max, z2_max) - max(z1_min, z2_min))
-
-    intersection_vol = x_overlap * y_overlap * z_overlap
-
-    # If no intersection at all, definitely no overlap
-    if intersection_vol <= 0:
+def _prescriptions_match(left: dict, right: dict) -> bool:
+    """Identify revision-equivalent prescriptions without plan-label text."""
+    left_rx = float(left.get("total_rx_gy") or 0.0)
+    right_rx = float(right.get("total_rx_gy") or 0.0)
+    left_fx = int(left.get("fractions_planned") or 0)
+    right_fx = int(right.get("fractions_planned") or 0)
+    if left_rx <= 0 or right_rx <= 0 or left_fx <= 0 or right_fx <= 0:
         return False
-
-    # Calculate volumes
-    vol1 = (x1_max - x1_min) * (y1_max - y1_min) * (z1_max - z1_min)
-    vol2 = (x2_max - x2_min) * (y2_max - y2_min) * (z2_max - z2_min)
-
-    # Avoid division by zero
-    if vol1 <= 0 or vol2 <= 0:
-        return True  # Conservative: assume overlap if volumes invalid
-
-    # Fraction of smaller volume that overlaps
-    smaller_vol = min(vol1, vol2)
-    overlap_fraction = intersection_vol / smaller_vol
-
-    return overlap_fraction >= min_overlap_fraction
+    tolerance = max(0.25, 0.005 * max(left_rx, right_rx))
+    return left_fx == right_fx and abs(left_rx - right_rx) <= tolerance
 
 
-def _prescription_similarity(rx1: float, rx2: float) -> float:
-    """Calculate similarity between two prescription doses (0-1)."""
-    if rx1 == 0 and rx2 == 0:
-        return 1.0
-    if rx1 == 0 or rx2 == 0:
-        return 0.0
-    diff = abs(rx1 - rx2)
-    avg = (rx1 + rx2) / 2
-    return max(0.0, 1.0 - (diff / avg))
+def _same_fraction_dose(left: dict, right: dict) -> bool:
+    left_fx = int(left.get("fractions_planned") or 0)
+    right_fx = int(right.get("fractions_planned") or 0)
+    if left_fx <= 0 or right_fx <= 0:
+        return False
+    left_dpf = float(left.get("total_rx_gy") or 0.0) / left_fx
+    right_dpf = float(right.get("total_rx_gy") or 0.0) / right_fx
+    return left_dpf > 0 and abs(left_dpf - right_dpf) <= max(0.05, 0.02 * max(left_dpf, right_dpf))
+
+
+def _replacement_partition(plans: List[dict]) -> tuple[int, tuple[int, ...]] | None:
+    """Find one course-total plan that equals a set of partial replacement plans."""
+    if len(plans) < 3:
+        return None
+    for total_index, total in enumerate(plans):
+        total_rx = float(total.get("total_rx_gy") or 0.0)
+        total_fx = int(total.get("fractions_planned") or 0)
+        if total_rx <= 0:
+            continue
+        other_indices = [index for index in range(len(plans)) if index != total_index]
+        for size in range(2, min(4, len(other_indices)) + 1):
+            for parts in combinations(other_indices, size):
+                part_rx = sum(float(plans[index].get("total_rx_gy") or 0.0) for index in parts)
+                part_fx = sum(int(plans[index].get("fractions_planned") or 0) for index in parts)
+                tolerance = max(0.25, 0.005 * total_rx)
+                fractions_match = total_fx <= 0 or part_fx <= 0 or part_fx == total_fx
+                if abs(part_rx - total_rx) <= tolerance and fractions_match:
+                    return total_index, parts
+    return None
 
 
 def _classify_doses(
     plan_paths: List[Path],
     dose_paths: List[Path],
     max_total_dose_gy: float = 100.0,
+    treatment_record_paths: Optional[Iterable[Path]] = None,
 ) -> DoseClassification:
-    """
-    Classify doses using 5-phase algorithm to determine correct summation strategy.
+    """Select dose evidence without using free-text plan labels.
 
-    Phase 1: Detect TPS-provided PLAN_SUM (use directly)
-    Phase 2: Separate courses by FrameOfReference
-    Phase 3: Detect replans (keep first plan only - ITT)
-    Phase 4: Identify primary+boost (should sum)
-    Phase 5: Apply plausibility safeguards
+    Explicit dose-to-plan references establish membership. Equal prescription
+    and fraction signatures are revisions and contribute once. A complete plan
+    whose prescription equals partial plans is a replacement course total and
+    is not added to those parts. Distinct phases are summed only after those two
+    de-duplication steps. RT treatment records choose among revisions and can
+    distinguish a completed sequential phase from an incompletely delivered
+    course-total plan.
     """
     warnings: List[str] = []
-
+    plan_paths = list(dict.fromkeys(Path(path) for path in plan_paths))
+    dose_paths = list(dict.fromkeys(Path(path) for path in dose_paths))
+    record_paths = list(dict.fromkeys(Path(path) for path in (treatment_record_paths or [])))
     if not dose_paths:
         return DoseClassification(
             classification="no_doses",
@@ -703,343 +840,316 @@ def _classify_doses(
             reason="No dose files available",
         )
 
-    # Extract metadata for all doses and plans
-    dose_meta = [_extract_dose_metadata(p) for p in dose_paths]
-    plan_meta = [_extract_plan_metadata(p) for p in plan_paths] if plan_paths else []
+    dose_meta = [_extract_dose_metadata(path) for path in dose_paths]
+    plan_meta = [_plan_evidence(path) for path in plan_paths]
+    plan_by_uid = {meta["sop_uid"]: meta for meta in plan_meta if meta.get("sop_uid")}
+    delivery = _record_delivery_evidence(record_paths)
 
-    # Build plan UID to metadata mapping
-    plan_by_uid = {pm["sop_uid"]: pm for pm in plan_meta if pm["sop_uid"]}
-
-    # ==========================================================================
-    # PHASE 1: Detect TPS-provided PLAN_SUM
-    # ==========================================================================
-    plan_sum_doses = [d for d in dose_meta if d["summation_type"] == "PLAN_SUM"]
-    individual_doses = [d for d in dose_meta if d["summation_type"] != "PLAN_SUM"]
-
+    plan_sum_doses = [meta for meta in dose_meta if meta["summation_type"] == "PLAN_SUM"]
     if plan_sum_doses:
-        # Prefer PLAN_SUM with most plan references
-        best_sum = max(plan_sum_doses, key=lambda d: len(d["referenced_plan_uids"]))
-
-        # Check if this PLAN_SUM covers the individual doses
-        covered_plan_uids = set(best_sum["referenced_plan_uids"])
-        selected_plan_paths = [
-            pm["path"] for pm in plan_meta
-            if pm["sop_uid"] and pm["sop_uid"] in covered_plan_uids
-        ]
-
-        # Exclude individual doses that are covered by this PLAN_SUM
-        excluded_dose_paths = []
-        for ind_dose in individual_doses:
-            ind_refs = set(ind_dose["referenced_plan_uids"])
-            if ind_refs and ind_refs.issubset(covered_plan_uids):
-                excluded_dose_paths.append(ind_dose["path"])
-
-        logger.info(
-            "Phase 1: Found TPS PLAN_SUM covering %d plans, excluding %d individual doses",
-            len(covered_plan_uids), len(excluded_dose_paths)
+        best_sum = max(
+            plan_sum_doses,
+            key=lambda meta: (len(meta["referenced_plan_uids"]), str(meta["path"])),
         )
-
+        covered = set(best_sum["referenced_plan_uids"])
+        selected_plans = [
+            meta["path"] for meta in plan_meta if meta.get("sop_uid") in covered
+        ]
+        excluded = [
+            meta["path"]
+            for meta in dose_meta
+            if meta is not best_sum
+            and set(meta["referenced_plan_uids"])
+            and set(meta["referenced_plan_uids"]).issubset(covered)
+        ]
         return DoseClassification(
             classification="PLAN_SUM_used",
             selected_doses=[best_sum["path"]],
-            selected_plans=selected_plan_paths,
-            excluded_doses=excluded_dose_paths,
-            should_sum=False,  # Already summed by TPS
+            selected_plans=selected_plans,
+            excluded_doses=excluded,
+            should_sum=False,
             warnings=warnings,
-            reason=f"TPS-provided PLAN_SUM found (references {len(covered_plan_uids)} plans)",
+            reason=f"TPS-provided PLAN_SUM references {len(covered)} plan(s)",
         )
 
-    # ==========================================================================
-    # PHASE 1.5: Prefer plan-level doses over component beam doses
-    # ==========================================================================
-    plan_doses = [d for d in dose_meta if d["summation_type"] == "PLAN"]
-    if plan_doses:
-        covered_plan_uids: set[str] = set()
-        for plan_dose in plan_doses:
-            covered_plan_uids.update(plan_dose["referenced_plan_uids"])
-        covered_beam_doses = [
-            d for d in dose_meta
-            if d["summation_type"] == "BEAM"
-            and set(d["referenced_plan_uids"])
-            and set(d["referenced_plan_uids"]).issubset(covered_plan_uids)
-        ]
-        if covered_beam_doses:
-            logger.info(
-                "Phase 1.5: Using %d PLAN dose(s), excluding %d component BEAM dose(s)",
-                len(plan_doses), len(covered_beam_doses)
-            )
-            dose_meta = [
-                d for d in dose_meta
-                if d["summation_type"] != "BEAM"
-                or not set(d["referenced_plan_uids"]).issubset(covered_plan_uids)
-            ]
-            warnings.append(
-                f"Excluded {len(covered_beam_doses)} BEAM dose(s) because matching PLAN dose(s) exist"
-            )
-
-    beam_only_doses = [d for d in dose_meta if d["summation_type"] == "BEAM"]
-    if beam_only_doses and len(beam_only_doses) == len(dose_meta):
-        beam_plan_uids = {
-            uid
-            for d in beam_only_doses
-            for uid in d["referenced_plan_uids"]
-            if uid
+    plan_level = [meta for meta in dose_meta if meta["summation_type"] != "BEAM"]
+    beam_doses = [meta for meta in dose_meta if meta["summation_type"] == "BEAM"]
+    if plan_level and beam_doses:
+        covered = {
+            uid for meta in plan_level for uid in meta["referenced_plan_uids"] if uid
         }
-        if len(beam_plan_uids) == 1:
-            selected_plan_paths = [
-                pm["path"] for pm in plan_meta
-                if pm["sop_uid"] and pm["sop_uid"] in beam_plan_uids
-            ]
-            if selected_plan_paths:
-                logger.info(
-                    "Phase 1.6: Summing %d BEAM dose(s) for a single RTPLAN",
-                    len(beam_only_doses)
-                )
-                return DoseClassification(
-                    classification="beam_doses_summed_to_plan",
-                    selected_doses=[d["path"] for d in beam_only_doses],
-                    selected_plans=selected_plan_paths,
-                    excluded_doses=[],
-                    should_sum=len(beam_only_doses) > 1,
-                    warnings=warnings,
-                    reason=f"Summing {len(beam_only_doses)} BEAM dose(s) for one RTPLAN",
-                )
-
-    # ==========================================================================
-    # PHASE 2: Separate courses by FrameOfReference
-    # ==========================================================================
-    frame_of_refs = set(d["frame_of_reference"] for d in dose_meta if d["frame_of_reference"])
-    if len(frame_of_refs) > 1:
-        warnings.append(f"Multiple FrameOfReferenceUIDs found: {len(frame_of_refs)} - treating as separate courses")
-        logger.warning("Phase 2: Multiple FrameOfReference detected - using first dose only (conservative)")
-        # Conservative: use only the first dose, don't sum across FOR
-        return DoseClassification(
-            classification="separate_courses_no_sum",
-            selected_doses=[dose_meta[0]["path"]],
-            selected_plans=plan_paths[:1] if plan_paths else [],
-            excluded_doses=[d["path"] for d in dose_meta[1:]],
-            should_sum=False,
-            warnings=warnings,
-            reason="Multiple FrameOfReferenceUIDs - cannot sum across different coordinate systems",
-        )
-
-    # ==========================================================================
-    # PHASE 2.5: Geometric overlap check (same FOR but different anatomical regions)
-    # ==========================================================================
-    if len(dose_meta) >= 2:
-        # Check pairwise overlap between all doses
-        all_overlap = True
-        for i in range(len(dose_meta)):
-            for j in range(i + 1, len(dose_meta)):
-                bbox1 = dose_meta[i].get("bbox")
-                bbox2 = dose_meta[j].get("bbox")
-                if not _bboxes_overlap(bbox1, bbox2, min_overlap_fraction=0.3):
-                    all_overlap = False
-                    logger.info(
-                        "Phase 2.5: Non-overlapping dose grids detected: %s vs %s",
-                        dose_meta[i]["path"].name, dose_meta[j]["path"].name
-                    )
-                    break
-            if not all_overlap:
-                break
-
-        if not all_overlap:
-            warnings.append("Dose grids do not spatially overlap - likely treating different anatomical regions")
-            logger.warning("Phase 2.5: Non-overlapping dose grids - using first dose only (different regions)")
-            return DoseClassification(
-                classification="separate_regions_no_sum",
-                selected_doses=[dose_meta[0]["path"]],
-                selected_plans=plan_paths[:1] if plan_paths else [],
-                excluded_doses=[d["path"] for d in dose_meta[1:]],
-                should_sum=False,
-                warnings=warnings,
-                reason="Dose grids do not spatially overlap - cannot sum different anatomical regions",
-            )
-
-    # Single dose case - no classification needed
-    if len(dose_meta) == 1:
-        ref_uids = set(dose_meta[0].get("referenced_plan_uids") or [])
-        selected_plan_paths = [
-            pm["path"] for pm in plan_meta
-            if pm["sop_uid"] and pm["sop_uid"] in ref_uids
+        covered_beams = [
+            meta
+            for meta in beam_doses
+            if set(meta["referenced_plan_uids"])
+            and set(meta["referenced_plan_uids"]).issubset(covered)
         ]
-        if not selected_plan_paths and len(plan_paths) == 1:
-            selected_plan_paths = plan_paths[:1]
-        return DoseClassification(
-            classification="single_dose",
-            selected_doses=[dose_meta[0]["path"]],
-            selected_plans=selected_plan_paths,
-            excluded_doses=[],
-            should_sum=False,
-            warnings=warnings,
-            reason="Single dose file - no summation needed",
-        )
-
-    # ==========================================================================
-    # PHASE 3: Detect replans (Intention-to-Treat = keep first plan only)
-    # ==========================================================================
-    # Link doses to plans
-    doses_with_plans = []
-    for dm in dose_meta:
-        linked_plans = []
-        for ref_uid in dm["referenced_plan_uids"]:
-            if ref_uid in plan_by_uid:
-                linked_plans.append(plan_by_uid[ref_uid])
-        doses_with_plans.append({
-            "dose": dm,
-            "plans": linked_plans,
-        })
-
-    # Sort by plan date (earliest first)
-    def get_earliest_plan_date(dwp: dict) -> str:
-        dates = [p["plan_date"] for p in dwp["plans"] if p["plan_date"]]
-        return min(dates) if dates else "99999999"
-
-    doses_with_plans.sort(key=get_earliest_plan_date)
-
-    # Check for replan patterns
-    replan_detected = False
-    first_dose = doses_with_plans[0] if doses_with_plans else None
-    excluded_replans = []
-
-    for i, dwp in enumerate(doses_with_plans[1:], 1):
-        later_plans = dwp["plans"]
-        first_plans = first_dose["plans"] if first_dose else []
-
-        # Check if this is a replan of the first plan
-        is_replan = False
-
-        # Check text evidence
-        for lp in later_plans:
-            if _is_replan_text(lp["plan_text"]):
-                is_replan = True
-                logger.info("Phase 3: Detected replan by text: '%s'", lp["plan_text"][:50])
-                break
-
-        # Check prescription similarity (same Rx = likely replan, not boost)
-        if not is_replan and first_plans and later_plans:
-            first_rx = first_plans[0]["total_rx_gy"]
-            later_rx = later_plans[0]["total_rx_gy"]
-            if first_rx > 0 and later_rx > 0:
-                similarity = _prescription_similarity(first_rx, later_rx)
-                if similarity > 0.9:  # >90% similar prescription = likely replan
-                    # But check if it's a boost
-                    is_boost = any(_is_boost_text(p["plan_text"]) for p in later_plans)
-                    if not is_boost:
-                        is_replan = True
-                        logger.info(
-                            "Phase 3: Detected replan by similar Rx: %.1f Gy vs %.1f Gy (similarity=%.2f)",
-                            first_rx, later_rx, similarity
-                        )
-
-        if is_replan:
-            replan_detected = True
-            excluded_replans.append(dwp["dose"]["path"])
-
-    if replan_detected:
-        warnings.append(f"Replan detected - using first plan only (ITT), excluding {len(excluded_replans)} later dose(s)")
-        return DoseClassification(
-            classification="replan_itt_first",
-            selected_doses=[first_dose["dose"]["path"]] if first_dose else [],
-            selected_plans=[p["path"] for p in (first_dose["plans"] if first_dose else [])],
-            excluded_doses=excluded_replans,
-            should_sum=False,
-            warnings=warnings,
-            reason="Replan detected - intention-to-treat uses first plan only",
-        )
-
-    # ==========================================================================
-    # PHASE 4: Identify primary+boost (should sum)
-    # ==========================================================================
-    boost_detected = False
-    primary_doses = []
-    boost_doses = []
-
-    for dwp in doses_with_plans:
-        is_boost = any(_is_boost_text(p["plan_text"]) for p in dwp["plans"])
-        if is_boost:
-            boost_detected = True
-            boost_doses.append(dwp["dose"]["path"])
-        else:
-            primary_doses.append(dwp["dose"]["path"])
-
-    # Also check prescription patterns: higher dose to smaller volume = boost
-    if not boost_detected and len(doses_with_plans) >= 2:
-        # Filter to only doses with linked plans that have prescription info
-        doses_with_rx = [
-            dwp for dwp in doses_with_plans
-            if dwp["plans"] and dwp["plans"][0]["total_rx_gy"] > 0
-        ]
-
-        if len(doses_with_rx) >= 2:
-            # C11 fix: sort by total prescription dose descending — the HIGHEST dose
-            # is typically the primary plan (e.g., 50 Gy primary, not 10 Gy boost top-up).
-            # The previous ascending sort misclassified fractional boost top-ups as primary.
-            rx_sorted = sorted(doses_with_rx, key=lambda d: d["plans"][0]["total_rx_gy"], reverse=True)
-
-            higher_rx = rx_sorted[0]["plans"][0]["total_rx_gy"]
-            lower_rx = rx_sorted[-1]["plans"][0]["total_rx_gy"]
-
-            # If significantly different prescriptions, likely primary+boost
-            if higher_rx > lower_rx * 1.1:
-                boost_detected = True
-                primary_doses = [rx_sorted[0]["dose"]["path"]]  # Highest Rx = primary
-                boost_doses = [d["dose"]["path"] for d in rx_sorted[1:]]
-                logger.info(
-                    "Phase 4: Detected primary+boost by Rx pattern: %.1f Gy (primary, highest Rx) + %.1f Gy (boost)",
-                    higher_rx, lower_rx
-                )
-
-    if boost_detected and primary_doses and boost_doses:
-        all_doses = primary_doses + boost_doses
-
-        # Calculate total dose for plausibility check
-        total_rx = sum(
-            dwp["plans"][0]["total_rx_gy"]
-            for dwp in doses_with_plans
-            if dwp["plans"]
-        )
-
-        # ==========================================================================
-        # PHASE 5: Plausibility safeguards
-        # ==========================================================================
-        if total_rx > max_total_dose_gy:
+        if covered_beams:
             warnings.append(
-                f"PLAUSIBILITY WARNING: Total Rx {total_rx:.1f} Gy exceeds threshold {max_total_dose_gy:.1f} Gy - "
-                "possible summation error, verify data integrity"
+                f"Excluded {len(covered_beams)} BEAM dose(s) because matching PLAN dose(s) exist"
             )
-            logger.warning(
-                "Phase 5: Implausible total dose %.1f Gy > %.1f Gy threshold - flagging but proceeding",
-                total_rx, max_total_dose_gy
+        dose_meta = plan_level + [meta for meta in beam_doses if meta not in covered_beams]
+
+    if dose_meta and all(meta["summation_type"] == "BEAM" for meta in dose_meta):
+        referenced = {
+            uid for meta in dose_meta for uid in meta["referenced_plan_uids"] if uid
+        }
+        selected_plans = [
+            meta["path"] for meta in plan_meta if meta.get("sop_uid") in referenced
+        ]
+        if len(referenced) == 1 and selected_plans:
+            return DoseClassification(
+                classification="beam_doses_summed_to_plan",
+                selected_doses=[meta["path"] for meta in dose_meta],
+                selected_plans=selected_plans,
+                excluded_doses=[],
+                should_sum=len(dose_meta) > 1,
+                warnings=warnings,
+                reason=f"Summing {len(dose_meta)} BEAM dose(s) for one RTPLAN",
             )
 
+    candidates_by_plan: Dict[str, List[dict]] = defaultdict(list)
+    unmatched_doses: List[dict] = []
+    for dose in dose_meta:
+        matched = False
+        for uid in dose["referenced_plan_uids"]:
+            if uid in plan_by_uid:
+                candidates_by_plan[uid].append(dose)
+                matched = True
+        if not matched:
+            unmatched_doses.append(dose)
+
+    dose_for_plan: Dict[str, dict] = {}
+    for uid, candidates in candidates_by_plan.items():
+        ordered = sorted(
+            candidates,
+            key=lambda meta: (
+                0 if meta["summation_type"] == "PLAN" else 1,
+                str(meta["path"]),
+            ),
+        )
+        dose_for_plan[uid] = ordered[0]
+        if len(ordered) > 1:
+            warnings.append(
+                f"Plan {uid} had {len(ordered)} candidate non-PLAN_SUM doses; selected {ordered[0]['path'].name} deterministically"
+            )
+
+    paired_plans = [meta for meta in plan_meta if meta.get("sop_uid") in dose_for_plan]
+    if not paired_plans:
+        warnings.append(
+            "No RTDOSE reference resolved to a course RTPLAN; excluded every unresolved dose"
+        )
         return DoseClassification(
-            classification="primary_boost_summed",
-            selected_doses=all_doses,
-            selected_plans=plan_paths,
-            excluded_doses=[],
-            should_sum=True,
+            classification="unresolved_reference_excluded",
+            selected_doses=[],
+            selected_plans=[],
+            excluded_doses=[meta["path"] for meta in dose_meta],
+            should_sum=False,
             warnings=warnings,
-            reason=f"Primary + boost detected ({len(primary_doses)} primary + {len(boost_doses)} boost)",
+            reason="Dose-to-plan references did not resolve; no attachment was guessed",
         )
 
-    # ==========================================================================
-    # FALLBACK: Ambiguous case - conservative (no sum)
-    # ==========================================================================
-    warnings.append("Ambiguous case - cannot confidently classify as primary+boost, using first dose only")
-    logger.warning(
-        "Phase 4: Ambiguous case with %d doses - conservative: using first only",
-        len(dose_meta)
-    )
+    signature_groups: List[List[dict]] = []
+    for plan in paired_plans:
+        for group in signature_groups:
+            if _prescriptions_match(plan, group[0]):
+                group.append(plan)
+                break
+        else:
+            signature_groups.append([plan])
 
+    def representative(group: List[dict]) -> dict:
+        def rank(plan: dict) -> tuple:
+            evidence = delivery.get(str(plan.get("sop_uid") or ""), {})
+            return (
+                len(evidence.get("dates", set())),
+                str(plan.get("plan_date") or ""),
+                str(plan.get("plan_time") or ""),
+                str(plan.get("sop_uid") or ""),
+            )
+        return max(group, key=rank)
+
+    representatives = [representative(group) for group in signature_groups]
+    duplicate_count = sum(len(group) - 1 for group in signature_groups)
+    if duplicate_count:
+        warnings.append(
+            f"De-duplicated {duplicate_count} revision plan(s) with equivalent prescription and fraction signatures"
+        )
+
+    if len(representatives) == 1:
+        selected = representatives[0]
+        selected_dose = dose_for_plan[str(selected["sop_uid"])]
+        classification = "plan_revisions_deduplicated" if duplicate_count else "single_dose"
+        return DoseClassification(
+            classification=classification,
+            selected_doses=[selected_dose["path"]],
+            selected_plans=[selected["path"]],
+            excluded_doses=[
+                dose_for_plan[str(plan["sop_uid"])]["path"]
+                for plan in paired_plans
+                if plan is not selected
+            ],
+            should_sum=False,
+            warnings=warnings,
+            reason=(
+                "Equivalent prescription revisions contribute once"
+                if duplicate_count
+                else "Single referenced plan-level dose"
+            ),
+        )
+
+    replacement = _replacement_partition(representatives)
+    selected_representatives: List[dict]
+    classification: str
+    should_sum: bool
+    if replacement is not None:
+        total_index, part_indices = replacement
+        total = representatives[total_index]
+        parts = [representatives[index] for index in part_indices]
+        total_support = len(delivery.get(str(total.get("sop_uid") or ""), {}).get("dates", set()))
+        part_support = sum(
+            len(delivery.get(str(part.get("sop_uid") or ""), {}).get("dates", set()))
+            for part in parts
+        )
+        selected_representatives = parts if part_support > total_support else [total]
+        classification = "replacement_course_total"
+        should_sum = len(selected_representatives) > 1
+        warnings.append(
+            "A course-total prescription equalled the component replan prescriptions; selected one side of the equality"
+        )
+    else:
+        def plan_dates(plan: dict) -> set[str]:
+            return set(delivery.get(str(plan.get("sop_uid") or ""), {}).get("dates", set()))
+
+        supported_candidates = [plan for plan in representatives if plan_dates(plan)]
+        supported: List[dict] = []
+        for plan in supported_candidates:
+            dates = plan_dates(plan)
+            covering = next(
+                (
+                    other
+                    for other in supported_candidates
+                    if other is not plan and dates < plan_dates(other)
+                ),
+                None,
+            )
+            if covering is not None:
+                warnings.append(
+                    f"Excluded plan {plan.get('sop_uid')} because its treatment dates are a strict subset of plan {covering.get('sop_uid')}"
+                )
+            else:
+                supported.append(plan)
+
+        largest = max(
+            representatives,
+            key=lambda plan: (
+                int(plan.get("fractions_planned") or 0),
+                float(plan.get("total_rx_gy") or 0.0),
+                str(plan.get("sop_uid") or ""),
+            ),
+        )
+        encompassing_undelivered = (
+            bool(supported)
+            and largest not in supported
+            and all(
+                int(largest.get("fractions_planned") or 0)
+                > int(plan.get("fractions_planned") or 0)
+                and float(largest.get("total_rx_gy") or 0.0)
+                >= float(plan.get("total_rx_gy") or 0.0)
+                for plan in supported
+            )
+        )
+        if encompassing_undelivered:
+            selected_representatives = [largest]
+            classification = "replacement_course_total"
+            should_sum = False
+            warnings.append(
+                "Treatment records identify a shorter replacement plan; retained the encompassing course prescription rather than adding the partial plan"
+            )
+        elif supported:
+            selected_representatives = list(supported)
+            for plan in representatives:
+                if plan in supported or plan in supported_candidates:
+                    continue
+                completed_matching_phase = any(
+                    _same_fraction_dose(plan, delivered)
+                    and len(plan_dates(delivered))
+                    >= int(delivered.get("fractions_planned") or 0) > 0
+                    for delivered in supported
+                )
+                if completed_matching_phase:
+                    selected_representatives.append(plan)
+                else:
+                    warnings.append(
+                        f"Excluded plan {plan.get('sop_uid')} because treatment dates support another prescription and do not support this phase"
+                    )
+            classification = (
+                "sequential_phases_summed"
+                if len(selected_representatives) > 1
+                else "delivered_plan_selected"
+            )
+            should_sum = len(selected_representatives) > 1
+        elif record_paths:
+            largest = max(
+                representatives,
+                key=lambda plan: (
+                    int(plan.get("fractions_planned") or 0),
+                    float(plan.get("total_rx_gy") or 0.0),
+                    str(plan.get("sop_uid") or ""),
+                ),
+            )
+            contained = any(
+                plan is not largest
+                and _same_fraction_dose(plan, largest)
+                and int(plan.get("fractions_planned") or 0) < int(largest.get("fractions_planned") or 0)
+                for plan in representatives
+            )
+            if contained:
+                selected_representatives = [largest]
+                classification = "replacement_course_total"
+                should_sum = False
+                warnings.append(
+                    "Patient treatment records did not reference these plan revisions; retained the encompassing prescription rather than adding a partial plan"
+                )
+            else:
+                selected_representatives = representatives
+                classification = "sequential_phases_summed"
+                should_sum = True
+        else:
+            selected_representatives = representatives
+            classification = "sequential_phases_summed"
+            should_sum = True
+
+    selected_plans = [plan["path"] for plan in selected_representatives]
+    selected_doses = [dose_for_plan[str(plan["sop_uid"])]["path"] for plan in selected_representatives]
+    selected_dose_set = set(selected_doses)
+    excluded_doses = [
+        dose_for_plan[str(plan["sop_uid"])]["path"]
+        for plan in paired_plans
+        if dose_for_plan[str(plan["sop_uid"])]["path"] not in selected_dose_set
+    ]
+    selected_total_rx = sum(float(plan.get("total_rx_gy") or 0.0) for plan in selected_representatives)
+    if should_sum and selected_total_rx > max_total_dose_gy:
+        warnings.append(
+            f"PLAUSIBILITY WARNING: selected prescription total {selected_total_rx:.1f} Gy exceeds {max_total_dose_gy:.1f} Gy"
+        )
+        logger.error(
+            "Dose QC: selected prescription total %.1f Gy exceeds %.1f Gy after evidence-based de-duplication",
+            selected_total_rx,
+            max_total_dose_gy,
+        )
     return DoseClassification(
-        classification="ambiguous_no_sum",
-        selected_doses=[dose_meta[0]["path"]],
-        selected_plans=plan_paths[:1] if plan_paths else [],
-        excluded_doses=[d["path"] for d in dose_meta[1:]],
-        should_sum=False,
+        classification=classification,
+        selected_doses=selected_doses,
+        selected_plans=selected_plans,
+        excluded_doses=excluded_doses,
+        should_sum=should_sum,
         warnings=warnings,
-        reason="Ambiguous case - cannot confidently identify primary+boost relationship",
+        reason=(
+            "Distinct prescription phases remain after revision and replacement-plan de-duplication"
+            if should_sum
+            else "One delivered course-total prescription selected"
+        ),
     )
 
 
@@ -1790,6 +1900,8 @@ def select_course_ct_series(
     patient_id: str,
     struct_source_path: "Path | str | None",
     course_study: Optional[str],
+    *,
+    require_reference: bool = False,
 ) -> Tuple[Optional[list], str]:
     """Select the planning CT series for a course and report how it was chosen.
 
@@ -1815,6 +1927,8 @@ def select_course_ct_series(
     refs: set = set()
     if struct_source_path:
         refs = referenced_ct_series_uids(struct_source_path)
+    elif require_reference:
+        return None, "missing_reference"
 
     if refs:
         resolved: list = []
@@ -1832,7 +1946,10 @@ def select_course_ct_series(
         # References exist but none are indexed -> fail closed (no silent wrong-CT selection).
         return None, "unresolved_reference"
 
-    # No structure-set references available -> legacy largest-in-study heuristic (CT-only cohorts).
+    if struct_source_path and require_reference:
+        return None, "missing_reference"
+
+    # No structure-set references available -> legacy largest-in-study heuristic for direct callers.
     if course_study and course_study in patient_studies:
         series = pick_primary_series(patient_studies[course_study])
         if series:
@@ -2031,18 +2148,95 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
     ct_index = index_ct_series(config.dicom_root, scope_ids, max_workers=index_workers)
     patient_series_layout = _looks_like_patient_series_layout(config.dicom_root)
     if patient_series_layout:
-        logger.info("Detected patient/series CT-only layout; skipping RT and registration scans")
-        rt_file_index = {}
-        plans, doses, structs = [], [], []
-        linked_sets = []
-        courses = {}
-        series_index, registrations_index, series_meta = {}, {}, {}
-    else:
-        rt_file_index = _index_rt_files(config.dicom_root, scope_ids)
-        plans, doses, structs = extract_rt(config.dicom_root, scope_ids, max_workers=index_workers)
-        linked_sets = link_rt_sets(plans, doses, structs)
-        courses = group_by_course(linked_sets, config.merge_criteria, config.max_days_between_plans)
-        series_index, registrations_index, series_meta = _index_series_and_registrations(config.dicom_root, scope_ids, max_workers=index_workers)
+        logger.info(
+            "Detected a patient/series directory shape; scanning RT and registration objects because "
+            "directory shape alone does not establish a CT-only cohort"
+        )
+    rt_file_index = _index_rt_files(config.dicom_root, scope_ids)
+    plans, doses, structs = extract_rt(config.dicom_root, scope_ids, max_workers=index_workers)
+    linked_sets = link_rt_sets(plans, doses, structs)
+    courses = group_by_course(linked_sets, config.merge_criteria, config.max_days_between_plans)
+    series_index, registrations_index, series_meta = _index_series_and_registrations(
+        config.dicom_root,
+        scope_ids,
+        max_workers=index_workers,
+    )
+
+    planned_struct_uids = {
+        plan.referenced_struct_sop for plan in plans if plan.referenced_struct_sop
+    }
+    linked_struct_uids = {
+        item.struct.sop_instance_uid for item in linked_sets if item.struct is not None
+    }
+    unsupported_target_structs = sorted(
+        struct.sop_instance_uid
+        for struct in structs
+        if struct.sop_instance_uid in planned_struct_uids
+        and has_target_volumes(struct.roi_names)
+        and struct.sop_instance_uid not in linked_struct_uids
+    )
+    if unsupported_target_structs:
+        logger.error(
+            "Course inclusion QC: %d target-bearing plan-referenced RTSTRUCT(s) had no resolvable "
+            "RTDOSE→RTPLAN link and cannot be fabricated as courses. Examples: %s",
+            len(unsupported_target_structs),
+            ", ".join(unsupported_target_structs[:10]),
+        )
+
+    target_valid_courses: Dict[Tuple[str, str], List[LinkedSet]] = {}
+    for course_identity, items in courses.items():
+        patient_id, course_key = course_identity
+        plan_paths = list(dict.fromkeys(item.plan.path for item in items))
+        dose_paths = list(
+            dict.fromkeys(item.dose.path for item in items if item.dose is not None)
+        )
+        try:
+            struct_path = _authoritative_structure_source(items)
+        except CourseTargetQCError as exc:
+            logger.error("COURSE TARGET QC GATE: %s. Excluding this invalid course.", exc)
+            continue
+        exact_struct = next(
+            (
+                item.struct
+                for item in items
+                if item.struct is not None and item.struct.path == struct_path
+            ),
+            items[0].struct if items and items[0].struct is not None else None,
+        )
+        targets = target_volume_names(exact_struct.roi_names if exact_struct is not None else [])
+        if not targets:
+            if dose_paths:
+                try:
+                    validate_course_target_qc(
+                        str(patient_id),
+                        str(course_key),
+                        plan_paths,
+                        dose_paths,
+                        struct_path,
+                    )
+                except CourseTargetQCError as exc:
+                    logger.error("COURSE TARGET QC GATE: %s. Excluding this invalid course.", exc)
+            else:
+                logger.error(
+                    "Course inclusion QC: excluding plan-only course %s/%s because its authoritative structure set has no target volumes",
+                    patient_id,
+                    course_key,
+                )
+            continue
+        if not dose_paths:
+            logger.warning(
+                "Course inclusion QC: retaining target-bearing plan-only course %s/%s because no RTDOSE resolves to its plan(s)",
+                patient_id,
+                course_key,
+            )
+        logger.info(
+            "Course target QC passed for %s/%s with %d target volume(s)",
+            patient_id,
+            course_key,
+            len(targets),
+        )
+        target_valid_courses[course_identity] = items
+    courses = target_valid_courses
 
     outputs: List[CourseOutput] = []
 
@@ -2098,6 +2292,7 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
     ) -> CourseOutput:
         course_key = "".join(ch if ch.isalnum() else "_" for ch in str(course_key_raw))[:64]
         items_sorted = sorted(items, key=lambda it: it.plan.plan_date or "")
+        authoritative_struct_path = _authoritative_structure_source(items_sorted)
         course_for_uids = {it.frame_of_reference_uid for it in items_sorted if it.frame_of_reference_uid}
 
         patient_root = config.output_root / patient_id
@@ -2128,7 +2323,7 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
         for it in items_sorted:
             if it.plan.path not in plan_paths:
                 plan_paths.append(it.plan.path)
-            if it.dose.path not in dose_paths:
+            if it.dose is not None and it.dose.path not in dose_paths:
                 dose_paths.append(it.dose.path)
             if it.struct and it.struct.path not in struct_candidates:
                 struct_candidates.append(it.struct.path)
@@ -2147,16 +2342,24 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
         source_dose_uids: list[str] = []
         dose_classification_info: dict = {}
 
-        # =======================================================================
-        # Use 5-Phase Dose Classification Algorithm
-        # =======================================================================
+        # Classify doses from explicit plan references and available delivery records.
         if plan_paths and dose_paths:
-            # Classify doses to determine correct summation strategy
-            dose_classification = _classify_doses(
-                plan_paths=plan_paths,
-                dose_paths=dose_paths,
-                max_total_dose_gy=100.0,  # Flag if total > 100 Gy
-            )
+            treatment_record_paths = rt_file_index.get(patient_id, [])
+            if treatment_record_paths:
+                dose_classification = _classify_doses(
+                    plan_paths=plan_paths,
+                    dose_paths=dose_paths,
+                    max_total_dose_gy=100.0,
+                    treatment_record_paths=treatment_record_paths,
+                )
+            else:
+                # Preserve the three-argument call for integrations that replace
+                # the classifier and for cohorts with no treatment records.
+                dose_classification = _classify_doses(
+                    plan_paths=plan_paths,
+                    dose_paths=dose_paths,
+                    max_total_dose_gy=100.0,
+                )
 
             logger.info(
                 "Dose classification for %s/%s: %s (%s)",
@@ -2302,17 +2505,39 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
                 total_rx = None
 
         course_study = items_sorted[0].ct_study_uid if items_sorted else None
-        struct_path = struct_candidates[0] if struct_candidates else None
-        if struct_path is None and course_study:
-            for s in structs:
-                if str(s.patient_id) == patient_id and (s.study_uid == course_study or not course_study):
-                    struct_path = s.path
-                    _copy_into(s.path, course_dirs.dicom_rtstruct, copy_manager=copy_manager)
-                    break
+        struct_path: Optional[Path] = authoritative_struct_path
+        if struct_path is None and struct_candidates:
+            logger.error(
+                "Authoritative RTSTRUCT could not be resolved for %s/%s; refusing reference-free CT fallback",
+                patient_id,
+                course_id,
+            )
         if struct_path:
             _safe_copy(struct_path, rs_dst, copy_manager=copy_manager)
 
-        series, ct_select_status = select_course_ct_series(ct_index, patient_id, struct_path, course_study)
+        series, ct_select_status = select_course_ct_series(
+            ct_index,
+            patient_id,
+            struct_path,
+            course_study,
+            require_reference=True,
+        )
+        if series:
+            eligible, image_class, exclusion_reason = _classify_organize_ct_series(
+                list(series),
+                is_planning_ct=True,
+            )
+            if not eligible:
+                logger.error(
+                    "Planning CT classifier excluded %s/%s series %s: class=%s reason=%s",
+                    patient_id,
+                    course_id,
+                    getattr(series[0], "series_uid", "<missing>"),
+                    image_class,
+                    exclusion_reason,
+                )
+                series = None
+                ct_select_status = f"classifier_excluded:{exclusion_reason or image_class}"
         if series:
             first_inst = series[0] if series else None
             if first_inst is not None and getattr(first_inst, 'series_uid', None):
@@ -2505,7 +2730,29 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
                 _copy_into(s.path, course_dirs.dicom_rtstruct, copy_manager=copy_manager)
 
             course_study = s_list[0].study_uid
-            series, ct_select_status = select_course_ct_series(ct_index, patient_id, primary_struct, course_study)
+            series, ct_select_status = select_course_ct_series(
+                ct_index,
+                patient_id,
+                primary_struct,
+                course_study,
+                require_reference=True,
+            )
+            if series:
+                eligible, image_class, exclusion_reason = _classify_organize_ct_series(
+                    list(series),
+                    is_planning_ct=True,
+                )
+                if not eligible:
+                    logger.error(
+                        "Planning CT classifier excluded RS-only %s/%s series %s: class=%s reason=%s",
+                        patient_id,
+                        course_id,
+                        getattr(series[0], "series_uid", "<missing>"),
+                        image_class,
+                        exclusion_reason,
+                    )
+                    series = None
+                    ct_select_status = f"classifier_excluded:{exclusion_reason or image_class}"
             if series:
                 first_inst = series[0] if series else None
                 if first_inst is not None and getattr(first_inst, 'series_uid', None):
@@ -2688,13 +2935,45 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
             if res:
                 outputs.append(res)
     elif ct_index:
-        ct_entries: List[Tuple[str, str, List[object], Dict[str, Optional[str] | Optional[datetime.datetime]]]] = []
+        if not config.allow_ct_only_courses:
+            ct_series_count = sum(
+                len(series_map)
+                for studies in ct_index.values()
+                for series_map in studies.values()
+            )
+            ct_instance_count = sum(
+                len(series)
+                for studies in ct_index.values()
+                for series_map in studies.values()
+                for series in series_map.values()
+            )
+            raise CTOnlyCohortError(
+                "Input contains CT objects but no linked RTPLAN or RTSTRUCT courses "
+                f"({ct_series_count} series, {ct_instance_count} instances). "
+                "Set organize.allow_ct_only_courses: true only for an intentional diagnostic CT-only cohort."
+            )
+        ct_entries: List[Tuple[str, str, List[CTInstance], Dict[str, Optional[str] | Optional[datetime.datetime]]]] = []
         for pid, studies in sorted(ct_index.items(), key=lambda item: str(item[0])):
             for study_uid, series_map in sorted(studies.items(), key=lambda item: str(item[0])):
                 for series_uid, series in sorted(series_map.items(), key=lambda item: str(item[0])):
                     if not series:
                         continue
-                    first_inst = series[0]
+                    series_instances = cast(List[CTInstance], list(series))
+                    eligible, image_class, exclusion_reason = _classify_organize_ct_series(
+                        series_instances,
+                        is_planning_ct=False,
+                        allow_ct_only=True,
+                    )
+                    if not eligible:
+                        logger.info(
+                            "Skipping CT-only series %s/%s as a course: class=%s reason=%s",
+                            pid,
+                            series_uid,
+                            image_class,
+                            exclusion_reason,
+                        )
+                        continue
+                    first_inst = series_instances[0]
                     start_dt: Optional[datetime.datetime] = None
                     series_number = getattr(first_inst, "series_number", None)
                     try:
@@ -2718,7 +2997,7 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
                         "start_iso": start_dt.strftime("%Y-%m-%d") if start_dt else None,
                         "start_dt": start_dt,
                     }
-                    ct_entries.append((str(pid), str(series_uid), list(series), meta))
+                    ct_entries.append((str(pid), str(series_uid), series_instances, meta))
 
         ct_entries.sort(
             key=lambda entry: (
