@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import math
 import os
 import sys
 from dataclasses import dataclass
@@ -27,6 +28,10 @@ class ConfigValidationError(ValueError):
     """
 
 
+class ManifestReprocessingRequiredError(RuntimeError):
+    """A rejected manifest needs organize, but the stage is unavailable."""
+
+
 def _config_number(value, converter, key: str):
     """Convert a user-supplied config value, naming the key when it is invalid.
 
@@ -43,6 +48,28 @@ def _config_number(value, converter, key: str):
         return converter(value)
     except (TypeError, ValueError):
         raise ConfigValidationError(f"{key} must be {expected}, got {value!r}") from None
+
+
+def _apply_dose_yaml_config(cfg: PipelineConfig, yaml_config: dict[str, Any]) -> None:
+    """Apply the authoritative top-level dose plausibility setting."""
+    if "max_total_dose_gy" not in yaml_config:
+        return
+    value = _config_number(yaml_config["max_total_dose_gy"], float, "max_total_dose_gy")
+    if not math.isfinite(value) or value <= 0:
+        raise ConfigValidationError(
+            f"max_total_dose_gy must be a finite number greater than zero, got {yaml_config['max_total_dose_gy']!r}"
+        )
+    cfg.max_total_dose_gy = value
+
+
+def _positive_dose_threshold(value: str) -> float:
+    try:
+        parsed = float(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("must be a number") from None
+    if not math.isfinite(parsed) or parsed <= 0:
+        raise argparse.ArgumentTypeError("must be a finite number greater than zero")
+    return parsed
 
 
 @dataclass(slots=True)
@@ -109,6 +136,7 @@ class _DVHTask:
     custom_structures: Path | None
     use_cropped: bool
     parallel_workers: int
+    max_total_dose_gy: float
 
     @property
     def dir(self) -> Path:
@@ -207,6 +235,7 @@ def _execute_dvh_task(task: _DVHTask) -> bool:
         parallel_workers=task.parallel_workers,
         use_cropped=task.use_cropped,
         rx_dose_gy=task.course.total_prescription_gy,
+        max_total_dose_gy=task.max_total_dose_gy,
     )
     return True
 
@@ -269,11 +298,21 @@ def _load_courses_from_manifest(
 
     filters_active = bool(patient_filter_ids or course_filter_pairs)
     results: list[CourseOutput] = []
+    rejected: list[str] = []
 
-    for entry in data.get("courses", []):
+    entries = data.get("courses", [])
+    if not isinstance(entries, list):
+        logger.warning("Manifest %s has no valid courses list; falling back to full organize stage", path)
+        return []
+
+    for index, entry in enumerate(entries):
+        if not isinstance(entry, dict):
+            rejected.append(f"entry {index}: not an object")
+            continue
         patient = str(entry.get("patient") or "").strip()
         course = str(entry.get("course") or "").strip()
         if not patient or not course:
+            rejected.append(f"entry {index}: missing patient or course")
             continue
         if filters_active and (patient, course) not in course_filter_pairs and patient not in patient_filter_ids:
             continue
@@ -286,20 +325,42 @@ def _load_courses_from_manifest(
             course_dir = cfg.output_root / patient / course
         if not course_dir.exists():
             logger.debug("Manifest course missing directory %s/%s at %s", patient, course, course_dir)
+            rejected.append(f"{patient}/{course}: missing course directory")
             continue
 
         hydrated = _hydrate_existing_course(patient, course, course_dir, {"dir_name": course_dir.name})
         if hydrated is None:
             logger.debug("Manifest course hydration failed for %s/%s", patient, course)
+            rejected.append(f"{patient}/{course}: reprocessing required")
             continue
         results.append(hydrated)
 
+    if rejected:
+        logger.warning(
+            "Manifest %s is incomplete for %d selected course(s); rejecting all %d hydrated course(s) "
+            "and falling back to full organize stage (%s)",
+            path,
+            len(rejected),
+            len(results),
+            "; ".join(rejected[:5]),
+        )
+        return []
     if results:
         logger.info("Loaded %d course(s) from manifest %s", len(results), path)
     else:
         logger.warning("Manifest %s did not yield any usable courses", path)
 
     return results
+
+
+def _organize_after_manifest_rejection(cfg: PipelineConfig) -> list[CourseOutput]:
+    """Rediscover rejected manifest entries or fail with an actionable error."""
+    if not callable(organize_and_merge):
+        raise ManifestReprocessingRequiredError(
+            "Manifest resume found a course requiring reprocessing, but the organize stage "
+            "is unavailable. Reprocessing is required before downstream stages can run."
+        )
+    return organize_and_merge(cfg)
 
 
 def _cuda_capability_is_executable(capability: tuple[int, int], arch_list: list[str]) -> bool:
@@ -418,6 +479,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Course grouping criterion. Default: same_ct_study",
     )
     p.add_argument("--max-days", type=int, default=None, help="Optional max days within a course")
+    p.add_argument(
+        "--max-total-dose-gy",
+        type=_positive_dose_threshold,
+        default=None,
+        help="Warn when prescribed or delivered course dose exceeds this value in Gy (default: 100)",
+    )
     p.add_argument(
         "--allow-ct-only-courses",
         action="store_true",
@@ -1122,6 +1189,7 @@ def main(argv: list[str] | None = None) -> int:
         max_workers_override=args.max_workers,
         merge_criteria=args.merge_criteria,
         max_days_between_plans=args.max_days,
+        max_total_dose_gy=args.max_total_dose_gy if args.max_total_dose_gy is not None else 100.0,
         allow_ct_only_courses=args.allow_ct_only_courses,
         do_segmentation=not args.no_segmentation,
         do_dvh=not args.no_dvh,
@@ -1212,6 +1280,8 @@ def main(argv: list[str] | None = None) -> int:
             with open(config_file_path) as f:
                 yaml_config = yaml.safe_load(f) or {}
             logger.info("Loaded pipeline YAML settings from %s", config_file_path)
+            if args.max_total_dose_gy is None:
+                _apply_dose_yaml_config(cfg, yaml_config)
 
             ct_cropping = yaml_config.get("ct_cropping", {})
             cfg.ct_cropping_enabled = ct_cropping.get("enabled", False)
@@ -1447,7 +1517,11 @@ def main(argv: list[str] | None = None) -> int:
                 if manifest_courses:
                     courses = manifest_courses
             if courses is None:
-                courses = organize_and_merge(cfg)
+                courses = (
+                    _organize_after_manifest_rejection(cfg)
+                    if manifest_attempted
+                    else organize_and_merge(cfg)
+                )
         return courses
 
     if "organize" in stages:
@@ -1789,6 +1863,7 @@ def main(argv: list[str] | None = None) -> int:
                     custom_structures=cfg.custom_structures_config,
                     use_cropped=cfg.ct_cropping_use_for_dvh,
                     parallel_workers=effective_workers,
+                    max_total_dose_gy=cfg.max_total_dose_gy,
                 )
                 for course in selected_courses
             ]

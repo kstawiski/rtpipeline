@@ -8,7 +8,7 @@ Free-text plan labels are not classification evidence. Dose-response analyses sh
 
 ## Course dose selection
 
-The classifier links radiation therapy dose (RTDOSE) objects to radiation therapy plan (RTPLAN) objects through `ReferencedRTPlanSequence`. It uses DICOM reference chains, prescription and fraction signatures, treatment-record support, dose summation type, frame of reference, and dose-grid geometry.
+The classifier links RTDOSE to RTPLAN through `ReferencedRTPlanSequence`. It uses DICOM reference chains, prescription and fraction signatures, treatment-record support, dose summation type, frame of reference, and dose-grid geometry.
 
 A `PLAN_SUM` object may represent a treatment planning system sum. Equivalent plan revisions are deduplicated by reference and prescription evidence. Distinct sequential phases remain separate and may be summed when the reference chain supports that interpretation.
 
@@ -16,11 +16,11 @@ Doses in incompatible frames or nonoverlapping grids are not silently combined. 
 
 ## Delivered dose
 
-Treatment records are linked only to their referenced plan unique identifiers (UIDs). A record referencing a plan absent from the export is counted and logged but is not assigned elsewhere.
+Treatment records are linked only to their referenced plan UIDs. A record referencing a plan absent from the export is counted and logged but is not assigned elsewhere.
 
 Distinct fractions are counted by fraction number and treatment date when available. Treatment date is used when a fraction number is absent. This prevents several beam records from one treatment session being counted as several fractions.
 
-The estimator first uses the latest target-bound cumulative dose-to-reference value when a treatment summary record provides one. Otherwise, it de-duplicates repeated beam or application components within each treatment session and uses target-bound calculated dose-reference values. A per-session value must agree with the prescribed dose per fraction within the larger of 0.1 Gy and 5 percent. Otherwise, the fallback multiplies the prescription by the smaller of 1.0 and delivered fractions divided by planned fractions.
+Complete record-level delivered or calculated dose-reference values are preferred. When these are unavailable, the fallback multiplies the prescription by the smaller of 1.0 and delivered fractions divided by planned fractions.
 
 `delivered_dose_gy` is null when the records cannot support an estimate. Unknown delivery is never converted to 0.0 Gy or to the prescription.
 
@@ -31,23 +31,22 @@ The estimator first uses the latest target-bound cumulative dose-to-reference va
 | `total_prescription_gy` | Selected treatment intent in Gy |
 | `delivered_dose_gy` | Treatment-record estimate of delivered dose in Gy |
 | `delivery_status` | `fully_delivered`, `partially_delivered`, `delivered_but_records_absent`, or `no_records_at_all` |
-| `delivery_method` | `cumulative_dose_reference`, `calculated_dose_reference`, `record_fraction_weighted_prescription`, mixed method, or unknown |
+| `delivery_method` | Record dose-reference method, fraction-weighted fallback, mixed method, or unknown |
 | `delivered_record_count` | Unique linked RTRECORD instances |
 | `delivered_fraction_count` | Distinct treatment sessions inferred from the records |
 | `planned_fraction_count` | Planned fractions across selected plans |
 | `delivery_plan_details` | Plan-level prescription, delivery, method, and status |
-| `delivery_warnings` | Plan-level dose mismatch or delivered-above-prescription warnings |
 | `unresolved_record_plan_uids` | Referenced plan UIDs absent from the indexed export |
 
 ## Plausibility warning
 
-`max_total_dose_gy` configures the clinical plausibility threshold and defaults to 100.0 Gy. The same validated value is available through the project YAML key and the `--max-total-dose-gy` CLI option. Separate warnings identify prescribed and delivered values above the threshold.
+`max_total_dose_gy` configures the clinical plausibility threshold and defaults to 100.0 Gy. Separate warnings identify prescribed and delivered values above the threshold.
 
 The warning does not replace reference-chain or delivery checks. It identifies a course for clinical review while preserving the value and the evidence behind it.
 
 ## Planning CT status
 
-Radiation therapy (RT) courses require a referenced planning CT. Course metadata records `planning_ct_status` and the RTSTRUCT-referenced CT series UIDs.
+RT courses require a referenced planning CT. Course metadata records `planning_ct_status` and the RTSTRUCT-referenced CT series UIDs.
 
 An absent referenced series is reported as `unresolved_reference`. A referenced series that resolves only to an excluded acquisition, such as a localizer, is reported as `classifier_excluded`. These courses are not emitted as complete planning-CT cases.
 
