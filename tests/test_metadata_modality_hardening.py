@@ -249,3 +249,30 @@ def test_detected_plans_that_yield_no_rows_fail_loudly(tmp_path, monkeypatch):
 
     with pytest.raises(meta.MetadataExportError, match="RTPLAN"):
         meta.export_metadata(cfg)
+
+
+@pytest.mark.parametrize(
+    ("modality", "writer"),
+    [
+        ("RTDOSE", lambda path: _write_dose(path, generate_uid(), generate_uid())),
+        ("RTSTRUCT", lambda path: _write_struct(path, generate_uid())),
+        ("RTRECORD", lambda path: _write_record(path, generate_uid())),
+        ("CT", _write_ct),
+    ],
+)
+def test_each_detected_modality_that_yields_no_rows_fails_loudly(
+    tmp_path, monkeypatch, modality, writer
+):
+    cfg = _config(tmp_path)
+    source = writer(cfg.dicom_root / f"{modality}.dcm")
+    original = pydicom.dcmread
+
+    def fail_after_modality_detection(path, *args, **kwargs):
+        if Path(path) == source and kwargs.get("specific_tags") is None:
+            raise InvalidDicomError("synthetic detailed-header failure")
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(meta.pydicom, "dcmread", fail_after_modality_detection)
+
+    with pytest.raises(meta.MetadataExportError, match=modality):
+        meta.export_metadata(cfg)
