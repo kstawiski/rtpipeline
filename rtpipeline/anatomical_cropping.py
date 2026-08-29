@@ -18,6 +18,7 @@ from typing import Dict, Tuple, Optional
 
 import SimpleITK as sitk
 import numpy as np
+from .course_contract import load_course_contract
 
 logger = logging.getLogger(__name__)
 
@@ -29,15 +30,10 @@ def _ct_z_extent_mm(course_dir: Path) -> Optional[Tuple[float, float]]:
     because the scan does not cover them. Coordinates are in patient space (mm).
     """
 
-    from .layout import build_course_dirs
-
-    course_dirs = build_course_dirs(course_dir)
-    ct_nifti = course_dirs.nifti / "ct.nii.gz"
-    if not ct_nifti.exists():
-        candidates = sorted(course_dirs.nifti.glob("*.nii.gz"))
-        if not candidates:
-            return None
-        ct_nifti = candidates[0]
+    contract = load_course_contract(course_dir)
+    ct_nifti = contract.planning_ct_nifti
+    if ct_nifti is None:
+        return None
 
     try:
         img = sitk.ReadImage(str(ct_nifti))
@@ -882,6 +878,8 @@ def apply_systematic_cropping(
     Raises:
         ValueError: If unsupported region or landmarks not found
     """
+    contract = load_course_contract(course_dir)
+
     if keep_original is not True:
         warnings.warn(
             "apply_systematic_cropping(keep_original=...) is deprecated and ignored; "
@@ -956,18 +954,10 @@ def apply_systematic_cropping(
         'ct_extent_mm': None,
     }
 
-    # Crop CT NIfTI
-    ct_nifti = course_dirs.nifti / "ct.nii.gz"
-    if not ct_nifti.exists():
-        # Try to find any CT NIfTI file
-        ct_candidates = list(course_dirs.nifti.glob("*.nii.gz"))
-        if ct_candidates:
-            ct_nifti = ct_candidates[0]
-        else:
-            logger.warning(f"No CT NIfTI found in {course_dirs.nifti}")
-            ct_nifti = None
+    # Crop the planning CT selected by organize.
+    ct_nifti = contract.planning_ct_nifti
 
-    if ct_nifti and ct_nifti.exists():
+    if ct_nifti is not None:
         try:
             ct_img = sitk.ReadImage(str(ct_nifti))
             ct_cropped, clamp_info = crop_image_to_boundaries(
@@ -1075,6 +1065,8 @@ def _create_rtstruct_from_cropped_masks(
     Returns:
         Path to created RTSTRUCT or None
     """
+    contract = load_course_contract(course_dir)
+    ct_dir = contract.planning_ct_dir
     try:
         from rt_utils import RTStructBuilder
     except ImportError:
@@ -1082,8 +1074,8 @@ def _create_rtstruct_from_cropped_masks(
         return None
 
     # Check if CT DICOM exists
-    if not course_dirs.dicom_ct.exists():
-        logger.warning("CT DICOM not found; cannot create cropped RTSTRUCT")
+    if ct_dir is None:
+        logger.warning("Course contract has no planning CT; cannot create cropped RTSTRUCT")
         return None
 
     # Find cropped masks directory
@@ -1108,11 +1100,11 @@ def _create_rtstruct_from_cropped_masks(
     # Load CT image for geometry reference
     try:
         reader = sitk.ImageSeriesReader()
-        series_ids = reader.GetGDCMSeriesIDs(str(course_dirs.dicom_ct))
+        series_ids = reader.GetGDCMSeriesIDs(str(ct_dir))
         if not series_ids:
             logger.warning("No DICOM series found in CT directory")
             return None
-        files = reader.GetGDCMSeriesFileNames(str(course_dirs.dicom_ct), series_ids[0])
+        files = reader.GetGDCMSeriesFileNames(str(ct_dir), series_ids[0])
         reader.SetFileNames(files)
         ct_img = reader.Execute()
         ct_size = ct_img.GetSize()  # (x, y, z)
@@ -1125,7 +1117,7 @@ def _create_rtstruct_from_cropped_masks(
 
     # Create new RTSTRUCT
     try:
-        rtstruct = RTStructBuilder.create_new(dicom_series_path=str(course_dirs.dicom_ct))
+        rtstruct = RTStructBuilder.create_new(dicom_series_path=str(ct_dir))
         rtstruct.ds.SeriesDescription = "Auto-segmented (Systematically Cropped)"
     except Exception as e:
         logger.error(f"Failed to create RTStructBuilder: {e}")

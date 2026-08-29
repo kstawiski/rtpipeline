@@ -22,6 +22,29 @@ from rtpipeline.radiomics_outcomes import (
     RadiomicsCourseStatus,
     outcome_from_output,
 )
+from course_contract_test_utils import (
+    write_minimal_course_contract,
+    write_synthetic_planning_ct,
+    write_synthetic_rtstruct,
+)
+
+
+def _write_contract(
+    course: Path,
+    *,
+    rtstruct: Path | None = None,
+    no_ct: bool = False,
+    planning_nifti: Path | None = None,
+) -> None:
+    if rtstruct is not None:
+        write_synthetic_rtstruct(rtstruct)
+    ct_dir = None if no_ct else write_synthetic_planning_ct(course)
+    write_minimal_course_contract(
+        course,
+        authoritative_rtstruct=rtstruct,
+        planning_ct_dir=ct_dir,
+        planning_ct_nifti=planning_nifti,
+    )
 
 
 def _config(tmp_path: Path, **overrides) -> PipelineConfig:
@@ -108,6 +131,7 @@ def test_malformed_custom_roi_config_fails_closed_in_every_backend(
     dirs = build_course_dirs(course)
     dirs.dicom_ct.mkdir(parents=True)
     (dirs.dicom_ct / "slice.dcm").write_bytes(b"present")
+    _write_contract(course)
     stale = course / "radiomics_ct.xlsx"
     stale.write_bytes(b"stale")
     stale.with_suffix(".parquet").write_bytes(b"stale")
@@ -142,6 +166,7 @@ def test_missing_expected_custom_model_structure_fails_course_in_every_backend(
     dirs = build_course_dirs(course)
     dirs.dicom_ct.mkdir(parents=True)
     (dirs.dicom_ct / "slice.dcm").write_bytes(b"present")
+    _write_contract(course)
     model_dir = course / "Segmentation_CustomModels" / "TumorModel"
     model_dir.mkdir(parents=True)
     (model_dir / "rtstruct.dcm").write_bytes(b"partial")
@@ -162,11 +187,9 @@ def test_missing_expected_custom_model_structure_fails_course_in_every_backend(
     monkeypatch.setattr(radiomics, "_load_series_image", lambda *_a, **_k: _Image())
     monkeypatch.setattr(radiomics, "_extractor", lambda *_a, **_k: _FakeExtractor())
     monkeypatch.setattr(
-        custom_models.pydicom,
-        "dcmread",
-        lambda *_a, **_k: SimpleNamespace(
-            StructureSetROISequence=[SimpleNamespace(ROIName="SharedROI")]
-        ),
+        custom_models,
+        "_rtstruct_structure_inventory",
+        lambda _path: ["SharedROI"],
     )
 
     if backend == "native":
@@ -235,6 +258,7 @@ def test_same_named_roi_remains_distinct_across_all_ct_sources(
     custom_rs = course / "RS_custom.dcm"
     for path in (manual_rs, auto_rs, custom_rs):
         path.write_bytes(b"present")
+    _write_contract(course, rtstruct=manual_rs)
 
     custom_config = tmp_path / "custom.yaml"
     custom_config.write_text(
@@ -267,11 +291,9 @@ def test_same_named_roi_remains_distinct_across_all_ct_sources(
 
     _install_rt_utils(monkeypatch, lambda **_kwargs: CustomRTStruct())
     monkeypatch.setattr(
-        custom_models.pydicom,
-        "dcmread",
-        lambda *_a, **_k: SimpleNamespace(
-            StructureSetROISequence=[SimpleNamespace(ROIName="SharedROI")]
-        ),
+        custom_models,
+        "_rtstruct_structure_inventory",
+        lambda _path: ["SharedROI"],
     )
     monkeypatch.setattr(radiomics, "_load_series_image", lambda *_a, **_k: _Image())
     monkeypatch.setattr(radiomics, "_extractor", lambda *_a, **_k: _FakeExtractor())
@@ -402,6 +424,7 @@ def test_direct_rtstruct_construction_failure_invalidates_stale_course_output(
     dirs.dicom_ct.mkdir(parents=True)
     (dirs.dicom_ct / "image.dcm").write_bytes(b"present")
     (course / "RS_auto.dcm").write_bytes(b"present")
+    _write_contract(course)
     stale = course / "radiomics_ct.xlsx"
     stale.write_bytes(b"stale")
     (course / "radiomics_ct.parquet").write_bytes(b"stale")
@@ -452,6 +475,7 @@ def _prepare_conda_rtstruct_course(tmp_path, monkeypatch):
     (dirs.dicom_ct / "slice.dcm").write_bytes(b"present")
     rs_path = course / "RS_auto.dcm"
     rs_path.write_bytes(b"present")
+    _write_contract(course)
     stale = course / "radiomics_ct.xlsx"
     stale.write_bytes(b"stale")
     monkeypatch.setattr(conda, "_select_usable_rtstruct", lambda *_paths: rs_path)
@@ -736,6 +760,7 @@ def test_direct_no_ct_invalidates_stale_course_outputs(tmp_path, monkeypatch):
     stale.parent.mkdir(parents=True)
     stale.write_bytes(b"stale")
     stale.with_suffix(".parquet").write_bytes(b"stale")
+    _write_contract(course, no_ct=True)
     monkeypatch.setattr(radiomics, "_load_series_image", lambda *_a, **_k: None)
 
     outcome = radiomics.radiomics_for_course(_config(tmp_path), course)
@@ -753,6 +778,7 @@ def test_direct_unreadable_ct_invalidates_stale_course_outputs(tmp_path, monkeyp
     stale = course / "radiomics_ct.xlsx"
     stale.write_bytes(b"stale")
     stale.with_suffix(".parquet").write_bytes(b"stale")
+    _write_contract(course)
     monkeypatch.setattr(radiomics, "_load_series_image", lambda *_a, **_k: None)
 
     with pytest.raises(RadiomicsCourseExtractionError, match="present but unreadable"):
@@ -768,6 +794,7 @@ def test_conda_nifti_fallback_no_masks_invalidates_stale_outputs(tmp_path):
     stale.parent.mkdir(parents=True)
     stale.write_bytes(b"stale")
     stale.with_suffix(".parquet").write_bytes(b"stale")
+    _write_contract(course, no_ct=True)
 
     assert conda.radiomics_for_course_ct_nifti_fallback(course, _config(tmp_path)) is None
     assert not stale.exists()
@@ -782,6 +809,7 @@ def _prepare_conda_nifti_fallback(tmp_path, monkeypatch):
     mask_path.write_bytes(b"mask")
     image_path = course / "ct.nii.gz"
     image_path.write_bytes(b"image")
+    _write_contract(course, planning_nifti=image_path)
     stale = course / "radiomics_ct.xlsx"
     stale.write_bytes(b"stale")
     stale.with_suffix(".parquet").write_bytes(b"stale")
@@ -884,6 +912,7 @@ def test_parallel_backend_no_ct_invalidates_stale_course_outputs(tmp_path):
     stale.parent.mkdir(parents=True)
     stale.write_bytes(b"stale")
     stale.with_suffix(".parquet").write_bytes(b"stale")
+    _write_contract(course, no_ct=True)
 
     outcome = parallel.parallel_radiomics_for_course(_config(tmp_path), course)
 
@@ -904,6 +933,7 @@ def test_parallel_backend_unreadable_ct_invalidates_stale_course_outputs(
     stale = course / "radiomics_ct.xlsx"
     stale.write_bytes(b"stale")
     stale.with_suffix(".parquet").write_bytes(b"stale")
+    _write_contract(course)
     monkeypatch.setattr(radiomics, "_load_series_image", lambda *_a, **_k: None)
 
     with pytest.raises(RadiomicsCourseExtractionError, match="present but unreadable"):
@@ -924,6 +954,7 @@ def test_parallel_backend_publication_failure_invalidates_stale_outputs(
     dirs.dicom_rtstruct.mkdir(parents=True)
     (dirs.dicom_ct / "slice.dcm").write_bytes(b"present")
     (dirs.dicom_rtstruct / "RS.dcm").write_bytes(b"present")
+    _write_contract(course, rtstruct=dirs.dicom_rtstruct / "RS.dcm")
     stale = course / "radiomics_ct.xlsx"
     stale.write_bytes(b"stale")
     stale.with_suffix(".parquet").write_bytes(b"stale")
@@ -1002,6 +1033,7 @@ def test_direct_resume_readable_empty_workbook_is_not_accepted(tmp_path, monkeyp
         ]
     ).to_excel(output, index=False)
     output.with_suffix(".parquet").write_bytes(b"stale")
+    _write_contract(course)
     monkeypatch.setattr(radiomics, "_load_series_image", lambda *_a, **_k: None)
 
     with pytest.raises(RadiomicsCourseExtractionError, match="present but unreadable"):
@@ -1025,6 +1057,7 @@ def test_parallel_resume_structurally_invalid_workbook_is_not_accepted(
         [{"segmentation_source": "Manual", "roi_original_name": "BODY"}]
     ).to_excel(output, index=False)
     output.with_suffix(".parquet").write_bytes(b"stale")
+    _write_contract(course)
     monkeypatch.setattr(radiomics, "_load_series_image", lambda *_a, **_k: None)
 
     with pytest.raises(RadiomicsCourseExtractionError, match="present but unreadable"):
@@ -1053,6 +1086,7 @@ def test_direct_resume_missing_non_body_manual_roi_fails_and_invalidates(
     manual_rs.write_bytes(b"present")
     auto_rs = course / "RS_auto.dcm"
     auto_rs.write_bytes(b"present")
+    _write_contract(course, rtstruct=manual_rs)
     output = course / "radiomics_ct.xlsx"
     pd.DataFrame(
         [
@@ -1106,6 +1140,7 @@ def test_parallel_resume_missing_autorts_roi_forces_full_rerun(tmp_path, monkeyp
     manual_rs.write_bytes(b"present")
     auto_rs = course / "RS_auto.dcm"
     auto_rs.write_bytes(b"present")
+    _write_contract(course, rtstruct=manual_rs)
     output = course / "radiomics_ct.xlsx"
     pd.DataFrame(
         [
@@ -1166,9 +1201,9 @@ def test_direct_resume_rejects_failed_manual_row(tmp_path, monkeypatch):
     dirs = build_course_dirs(course)
     dirs.dicom_ct.mkdir(parents=True)
     dirs.dicom_rtstruct.mkdir(parents=True)
-    (dirs.dicom_ct / "slice.dcm").write_bytes(b"present")
     manual_rs = dirs.dicom_rtstruct / "RS.dcm"
-    manual_rs.write_bytes(b"present")
+    # The resume path loads the authoritative contract, so the fixture writes one.
+    _write_contract(course, rtstruct=manual_rs)
     output = course / "radiomics_ct.xlsx"
     pd.DataFrame(
         [
@@ -1210,9 +1245,10 @@ def test_parallel_resume_rejects_failed_configured_custom_row(tmp_path, monkeypa
     course = tmp_path / "P1" / "C1"
     dirs = build_course_dirs(course)
     dirs.dicom_ct.mkdir(parents=True)
-    (dirs.dicom_ct / "slice.dcm").write_bytes(b"present")
     custom_rs = course / "RS_custom.dcm"
     custom_rs.write_bytes(b"present")
+    # The resume path loads the authoritative contract, so the fixture writes one.
+    _write_contract(course)
     custom_config = tmp_path / "custom.yaml"
     custom_config.write_text(
         "custom_structures:\n"
@@ -1392,9 +1428,12 @@ def _parallel_course_with_fake_roi_results(tmp_path, monkeypatch, results_by_sou
     dirs = build_course_dirs(course)
     dirs.dicom_ct.mkdir(parents=True)
     dirs.dicom_rtstruct.mkdir(parents=True)
-    (dirs.dicom_ct / "slice.dcm").write_bytes(b"present")
-    (dirs.dicom_rtstruct / "RS.dcm").write_bytes(b"present")
     (course / "RS_auto.dcm").write_bytes(b"present")
+    # The course contract is now the authority every stage consumes, so a course
+    # fixture must carry one, built from synthetic DICOM exactly as a real course
+    # is. The Manual source is only reached when the contract names an
+    # authoritative RTSTRUCT, so pass it rather than leaving it unset.
+    _write_contract(course, rtstruct=dirs.dicom_rtstruct / "RS.dcm")
 
     monkeypatch.setattr(radiomics, "_load_series_image", lambda *_a, **_k: object())
     monkeypatch.setattr(radiomics, "_extractor", lambda *_a, **_k: object())
@@ -1472,11 +1511,11 @@ def test_parallel_required_roi_failure_still_fails_course(tmp_path, monkeypatch,
     course = tmp_path / source / "P1" / "C1"
     dirs = build_course_dirs(course)
     dirs.dicom_ct.mkdir(parents=True)
-    (dirs.dicom_ct / "slice.dcm").write_bytes(b"present")
     custom_config = None
+    rtstruct_for_contract = None
     if source == "Manual":
         dirs.dicom_rtstruct.mkdir(parents=True)
-        (dirs.dicom_rtstruct / "RS.dcm").write_bytes(b"present")
+        rtstruct_for_contract = dirs.dicom_rtstruct / "RS.dcm"
     else:
         (course / "RS_custom.dcm").write_bytes(b"present")
         custom_config = tmp_path / "custom.yaml"
@@ -1488,6 +1527,9 @@ def test_parallel_required_roi_failure_still_fails_course(tmp_path, monkeypatch,
             encoding="utf-8",
         )
     (course / "RS_auto.dcm").write_bytes(b"present")
+    # Every course now needs the authoritative contract; it also supplies the
+    # planning CT series, so the placeholder slice above is no longer written.
+    _write_contract(course, rtstruct=rtstruct_for_contract)
     monkeypatch.setattr(radiomics, "_load_series_image", lambda *_a, **_k: object())
     monkeypatch.setattr(radiomics, "_extractor", lambda *_a, **_k: object())
     monkeypatch.setattr(parallel, "_calculate_optimal_workers", lambda: 1)

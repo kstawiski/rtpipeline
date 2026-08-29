@@ -322,12 +322,13 @@ def test_configurable_plausibility_warning_distinguishes_prescribed_and_delivere
     delivered_only = organize._dose_plausibility(95.0, 105.0, 100.0)
     neither = organize._dose_plausibility(100.0, None, 100.0)
 
-    assert prescribed_only == {
-        "dose_plausibility_threshold_gy": 100.0,
-        "prescribed_dose_plausibility_warning": True,
-        "delivered_dose_plausibility_warning": False,
-        "dose_plausibility_warning": True,
-    }
+    assert prescribed_only["dose_plausibility_threshold_gy"] == 100.0
+    assert prescribed_only["prescribed_dose_plausibility_warning"] is True
+    assert prescribed_only["delivered_dose_plausibility_warning"] is False
+    assert prescribed_only["dose_plausibility_warning"] is True
+    assert prescribed_only["dose_qc_pass"] is False
+    assert prescribed_only["dose_qc_status"] == "fail"
+    assert "prescribed dose 105 Gy" in prescribed_only["dose_qc_reasons"][0]
     assert delivered_only["prescribed_dose_plausibility_warning"] is False
     assert delivered_only["delivered_dose_plausibility_warning"] is True
     assert delivered_only["dose_plausibility_warning"] is True

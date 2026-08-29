@@ -14,8 +14,10 @@ from .utils import read_dicom, get, _scoped_walk, parallel_map_files, DEFAULT_IN
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_ROI_FAMILY_NAMES = ("GTV", "CTV", "PTV", "BLADDER", "RECTUM")
+
 _TARGET_VOLUME_TOKEN = re.compile(
-    r"(?<![A-Z0-9])(?:GTV|CTV|PTV)",
+    r"(?<![A-Z0-9])(?:" + "|".join(DEFAULT_ROI_FAMILY_NAMES[:3]) + r")",
     re.IGNORECASE,
 )
 _LEADING_MARGIN_HELPER = re.compile(r"^\s*MARG(?:\b|[\s_.-])", re.IGNORECASE)

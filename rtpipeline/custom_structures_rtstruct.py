@@ -21,6 +21,7 @@ import pydicom
 import SimpleITK as sitk
 
 from .layout import build_course_dirs
+from .course_contract import CourseContractError, load_course_contract
 from .utils import mask_is_cropped, sanitize_rtstruct
 
 logger = logging.getLogger(__name__)
@@ -176,6 +177,14 @@ def _create_custom_structures_rtstruct(
     rs_auto: Optional[Path] = None,
 ) -> Optional[Path]:
     """Create a new RTSTRUCT with custom structures from boolean operations."""
+    contract = load_course_contract(course_dir)
+    contracted_manual = contract.authoritative_rtstruct_path
+    if rs_manual is not None and contracted_manual is not None:
+        if Path(rs_manual).resolve(strict=False) != contracted_manual.resolve(strict=False):
+            raise CourseContractError(
+                "custom-structure caller RTSTRUCT disagrees with the authoritative course contract"
+            )
+    rs_manual = contracted_manual
     try:
         from .custom_structures import CustomStructureProcessor
         from rt_utils import RTStructBuilder
@@ -197,9 +206,9 @@ def _create_custom_structures_rtstruct(
         return None
 
     course_dirs = build_course_dirs(course_dir)
-    ct_dir = course_dirs.dicom_ct
-    if not ct_dir.exists():
-        logger.warning("CT_DICOM not found for custom structures")
+    ct_dir = contract.planning_ct_dir
+    if ct_dir is None:
+        logger.warning("Course contract has no planning CT for custom structures")
         return None
 
     try:

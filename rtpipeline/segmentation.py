@@ -24,6 +24,7 @@ import pydicom
 # Modern NumPy/SciPy work fine with TotalSegmentator - no compatibility shims needed
 
 from .config import PipelineConfig
+from .course_contract import load_course_contract
 from .inventory import TS_TASK_BY_CLASS, manual_rtstruct_bindings_from_inventory, ts_tasks_for_image_class
 from .layout import build_course_dirs
 
@@ -729,6 +730,7 @@ def _collect_series_metadata(ct_dir: Path) -> dict:
         "series_instance_uid": "",
         "instances": [],
         "modality": "",
+        "geometry": {},
     }
     for dcm_path in sorted(p for p in ct_dir.iterdir() if p.is_file()):
         try:
@@ -741,6 +743,27 @@ def _collect_series_metadata(ct_dir: Path) -> dict:
             metadata["series_instance_uid"] = str(getattr(ds, "SeriesInstanceUID", ""))
         if not metadata["modality"]:
             metadata["modality"] = str(getattr(ds, "Modality", ""))
+        if not metadata["geometry"]:
+            def _numbers(value):
+                if value in (None, "") or not isinstance(value, (list, tuple)):
+                    return None
+                try:
+                    return [float(item) for item in value]
+                except (TypeError, ValueError):
+                    return None
+            metadata["geometry"] = {
+                "rows": int(getattr(ds, "Rows", 0) or 0),
+                "columns": int(getattr(ds, "Columns", 0) or 0),
+                "pixel_spacing": _numbers(getattr(ds, "PixelSpacing", None)),
+                "image_orientation_patient": _numbers(
+                    getattr(ds, "ImageOrientationPatient", None)
+                ),
+                "slice_thickness": (
+                    float(getattr(ds, "SliceThickness"))
+                    if getattr(ds, "SliceThickness", None) not in (None, "")
+                    else None
+                ),
+            }
         sop = getattr(ds, "SOPInstanceUID", None)
         if sop:
             metadata["instances"].append(str(sop))
@@ -801,8 +824,22 @@ def _ensure_ct_nifti(
             "source_directory": str(ct_dir),
             "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "modality": metadata.get("modality") or "CT",
+            "nifti_sha256": hashlib.sha256(target.read_bytes()).hexdigest(),
         }
     )
+    try:
+        import SimpleITK as sitk
+
+        image = sitk.ReadImage(str(target))
+        metadata["nifti_geometry"] = {
+            "size": [int(value) for value in image.GetSize()],
+            "spacing": [float(value) for value in image.GetSpacing()],
+            "origin": [float(value) for value in image.GetOrigin()],
+            "direction": [float(value) for value in image.GetDirection()],
+        }
+    except Exception as exc:
+        logger.warning("Could not record NIfTI geometry for %s: %s", target, exc)
+        metadata["nifti_geometry"] = {}
     meta_path = nifti_dir / f"{base}.metadata.json"
     meta_path.write_text(json.dumps(metadata, indent=2), encoding='utf-8')
     return target
@@ -1341,18 +1378,15 @@ def segment_all_series_for_patient(config: PipelineConfig, patient_id: str, *, f
 def segment_course(config: PipelineConfig, course_dir: Path, force: bool = False) -> dict:
     """Run TotalSegmentator for a course organised under the new directory layout."""
 
+    contract = load_course_contract(course_dir)
     course_dirs = build_course_dirs(course_dir)
     course_dirs.ensure()
 
     results = {"nifti": None, "dicom_seg": None, "nifti_seg_dir": None}
-    ct_dir = course_dirs.dicom_ct
-    if not ct_dir.exists():
-        logger.warning("CT DICOM not found for %s; skipping CT segmentation", course_dir)
-        _segment_mr_series_for_course(config, course_dirs, course_dir, force=force)
-        return results
-
-    nifti_path = _ensure_ct_nifti(config, ct_dir, course_dirs.nifti, force=force)
-    if nifti_path is None:
+    ct_dir = contract.planning_ct_dir
+    nifti_path = contract.planning_ct_nifti
+    if ct_dir is None or nifti_path is None:
+        logger.warning("Course contract has no planning CT for %s; skipping CT segmentation", course_dir)
         _segment_mr_series_for_course(config, course_dirs, course_dir, force=force)
         return results
 
@@ -1405,6 +1439,7 @@ def segment_course(config: PipelineConfig, course_dir: Path, force: bool = False
                     qc.save_body_region_qc(
                         course_dir,
                         model_region_requirements=model_requirements,
+                        nifti_path=nifti_path,
                         conda_activate=config.conda_activate,
                     )
                     logger.info("Body region QC completed for %s", course_dir)

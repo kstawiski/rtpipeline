@@ -5,8 +5,11 @@ Each test uses synthetic DICOM. No production patient data is embedded here.
 from __future__ import annotations
 
 from datetime import date, timedelta
+import json
 from pathlib import Path
 
+import numpy as np
+import pandas as pd
 import pydicom
 import pytest
 from pydicom.dataset import Dataset, FileDataset, FileMetaDataset
@@ -22,11 +25,22 @@ from pydicom.uid import (
     generate_uid,
 )
 
+from rtpipeline import cli as cli_module
 from rtpipeline import organize as org
 from rtpipeline.config import PipelineConfig
 from rtpipeline.ct import CTInstance
+from rtpipeline.course_contract import load_course_contract
 from rtpipeline.metadata import LinkedSet, group_by_course, link_rt_sets
 from rtpipeline.rt_details import extract_rt
+from rtpipeline.dvh import dvh_for_course
+
+
+def _write_placeholder_ct_nifti(_config, _ct_dir, nifti_dir, **_kwargs):
+    nifti_dir = Path(nifti_dir)
+    nifti_dir.mkdir(parents=True, exist_ok=True)
+    path = nifti_dir / "ct.nii.gz"
+    path.write_bytes(b"synthetic planning CT NIfTI placeholder")
+    return path
 
 
 def _file_dataset(path: Path, sop_class_uid: str, sop_instance_uid: str) -> FileDataset:
@@ -57,6 +71,7 @@ def _mk_struct(
     frame_uid: str,
     roi_names: list[str],
     ct_series_uid: str | None = None,
+    with_contours: bool = False,
 ) -> Path:
     ds = _file_dataset(path, RTStructureSetStorage, sop_uid)
     ds.Modality = "RTSTRUCT"
@@ -72,6 +87,27 @@ def _mk_struct(
         roi.ROIGenerationAlgorithm = "MANUAL"
         rois.append(roi)
     ds.StructureSetROISequence = Sequence(rois)
+    if with_contours:
+        contour_rois = []
+        for number in range(1, len(roi_names) + 1):
+            roi_contour = Dataset()
+            roi_contour.ReferencedROINumber = number
+            roi_contour.ROIDisplayColor = [255, 0, 0]
+            contours = []
+            for z in (0.0, 1.0):
+                contour = Dataset()
+                contour.ContourGeometricType = "CLOSED_PLANAR"
+                contour.NumberOfContourPoints = 4
+                contour.ContourData = [
+                    0.1, 0.1, z,
+                    1.9, 0.1, z,
+                    1.9, 1.9, z,
+                    0.1, 1.9, z,
+                ]
+                contours.append(contour)
+            roi_contour.ContourSequence = Sequence(contours)
+            contour_rois.append(roi_contour)
+        ds.ROIContourSequence = Sequence(contour_rois)
     ref_for = Dataset()
     ref_for.FrameOfReferenceUID = frame_uid
     if ct_series_uid:
@@ -127,6 +163,7 @@ def _mk_dose(
     plan_uid: str,
     study_uid: str,
     frame_uid: str,
+    with_pixels: bool = False,
 ) -> Path:
     ds = _file_dataset(path, RTDoseStorage, sop_uid)
     ds.Modality = "RTDOSE"
@@ -140,6 +177,17 @@ def _mk_dose(
     ds.PixelSpacing = [1.0, 1.0]
     ds.ImagePositionPatient = [0.0, 0.0, 0.0]
     ds.GridFrameOffsetVector = [0.0, 1.0]
+    ds.ImageOrientationPatient = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0]
+    if with_pixels:
+        ds.SamplesPerPixel = 1
+        ds.PhotometricInterpretation = "MONOCHROME2"
+        ds.BitsAllocated = 16
+        ds.BitsStored = 16
+        ds.HighBit = 15
+        ds.PixelRepresentation = 0
+        ds.DoseUnits = "GY"
+        ds.DoseGridScaling = 0.1
+        ds.PixelData = np.full((2, 2, 2), 10, dtype=np.uint16).tobytes()
     ref_plan = Dataset()
     ref_plan.ReferencedSOPClassUID = RTPlanStorage
     ref_plan.ReferencedSOPInstanceUID = plan_uid
@@ -504,8 +552,8 @@ def test_identical_prescription_revisions_contribute_once(tmp_path):
     assert not classified.should_sum
 
 
-def test_sequential_phases_sum_after_revision_deduplication(tmp_path):
-    """Patient 351107 must retain 50 Gy plus 10 Gy while excluding the duplicate 50 Gy revision."""
+def test_sequential_phase_without_delivery_records_is_excluded_after_revision_deduplication(tmp_path):
+    """Only the delivered 50 Gy revision contributes when the 10 Gy phase has no RTRECORD."""
     study_uid, frame_uid, struct_uid = generate_uid(), generate_uid(), generate_uid()
     specs = [(50.0, 25), (10.0, 5), (50.0, 25)]
     plans: list[Path] = []
@@ -544,10 +592,10 @@ def test_sequential_phases_sum_after_revision_deduplication(tmp_path):
     classified = getattr(org, "_classify_doses")(plans, doses, treatment_record_paths=delivered)
     selected_rx = sum(org.infer_plan_rx_gy(pydicom.dcmread(path, stop_before_pixels=True)) or 0 for path in classified.selected_plans)
 
-    assert classified.classification == "sequential_phases_summed"
-    assert classified.selected_plans == [plans[-1], plans[1]]
-    assert selected_rx == pytest.approx(60.0)
-    assert classified.should_sum
+    assert classified.classification == "delivered_plan_selected"
+    assert classified.selected_plans == [plans[-1]]
+    assert selected_rx == pytest.approx(50.0)
+    assert not classified.should_sum
 
 
 def test_replacement_plans_within_one_structure_course_do_not_double_count(tmp_path):
@@ -589,8 +637,8 @@ def test_replacement_plans_within_one_structure_course_do_not_double_count(tmp_p
     assert len(classified.selected_plans) in {1, 2}
 
 
-def test_replans_on_three_structure_sets_emit_three_course_totals(tmp_path):
-    """Patient 482203 must expose 3 structure-defined 55 Gy entries, not claim one de-duplicated course."""
+def test_replans_on_three_structure_sets_keep_undelivered_courses_out_of_grid(tmp_path):
+    """Only the structure-defined course linked to RTRECORD contributes a treatment grid."""
     frame_uid = generate_uid()
     course_specs = [
         [(55.0, 20), (55.0, 20)],
@@ -655,11 +703,11 @@ def test_replans_on_three_structure_sets_emit_three_course_totals(tmp_path):
         classifications.append(classified.classification)
 
     assert len(grouped) == 3
-    assert sorted(totals) == pytest.approx([55.0, 55.0, 55.0])
+    assert sorted(totals) == pytest.approx([0.0, 0.0, 55.0])
     assert sorted(classifications) == [
         "delivered_plan_selected",
-        "plan_revisions_deduplicated",
-        "replacement_course_total",
+        "no_delivered_plan_dose",
+        "no_delivered_plan_dose",
     ]
 
 
@@ -717,6 +765,146 @@ def _treatment_records(
     ]
 
 
+def test_genuine_sequential_boost_with_records_on_both_phases_sums(tmp_path: Path) -> None:
+    struct_uid = generate_uid()
+    study_uid = generate_uid()
+    frame_uid = generate_uid()
+    phase_uids = [generate_uid(), generate_uid()]
+    plans = [
+        _mk_plan(
+            tmp_path / "phase1.dcm",
+            phase_uids[0],
+            struct_uid=struct_uid,
+            study_uid=study_uid,
+            frame_uid=frame_uid,
+            date="20240101",
+            rx_gy=50.0,
+            fractions=25,
+            label="phase 1",
+        ),
+        _mk_plan(
+            tmp_path / "phase2.dcm",
+            phase_uids[1],
+            struct_uid=struct_uid,
+            study_uid=study_uid,
+            frame_uid=frame_uid,
+            date="20240205",
+            rx_gy=10.0,
+            fractions=5,
+            label="phase 2",
+        ),
+    ]
+    doses = [
+        _mk_dose(
+            tmp_path / f"phase{index + 1}_dose.dcm",
+            generate_uid(),
+            plan_uid=uid,
+            study_uid=study_uid,
+            frame_uid=frame_uid,
+        )
+        for index, uid in enumerate(phase_uids)
+    ]
+    records = _treatment_records(tmp_path, "phase1_record", phase_uids[0], 25)
+    records += _treatment_records(
+        tmp_path,
+        "phase2_record",
+        phase_uids[1],
+        5,
+        start=date(2024, 2, 5),
+    )
+
+    classified = org._classify_doses(plans, doses, treatment_record_paths=records)
+
+    assert classified.classification == "sequential_phases_summed"
+    assert classified.selected_plans == plans
+    assert classified.selected_doses == doses
+    assert classified.should_sum
+
+
+def test_plan_sum_containing_an_undelivered_phase_is_rejected(tmp_path: Path) -> None:
+    struct_uid = generate_uid()
+    study_uid = generate_uid()
+    frame_uid = generate_uid()
+    plan_uids = [str(generate_uid()), str(generate_uid())]
+    plans = [
+        _mk_plan(
+            tmp_path / f"phase_{index}.dcm",
+            uid,
+            struct_uid=struct_uid,
+            study_uid=study_uid,
+            frame_uid=frame_uid,
+            date=f"2024010{index + 1}",
+            rx_gy=50.0 if index == 0 else 10.0,
+            fractions=25 if index == 0 else 5,
+            label=f"phase {index + 1}",
+        )
+        for index, uid in enumerate(plan_uids)
+    ]
+    plan_sum = _mk_multi_plan_dose(
+        tmp_path / "plan_sum.dcm",
+        generate_uid(),
+        plan_uids=plan_uids,
+        study_uid=study_uid,
+        frame_uid=frame_uid,
+    )
+    plan_sum_dataset = pydicom.dcmread(str(plan_sum))
+    plan_sum_dataset.DoseSummationType = "PLAN_SUM"
+    plan_sum_dataset.save_as(str(plan_sum), write_like_original=False)
+    records = _treatment_records(tmp_path, "phase1_record", plan_uids[0], 25)
+
+    classified = org._classify_doses(
+        plans,
+        [plan_sum],
+        treatment_record_paths=records,
+    )
+
+    assert classified.classification == "no_delivered_plan_dose"
+    assert classified.selected_plans == []
+    assert classified.selected_doses == []
+    assert classified.excluded_doses == [plan_sum]
+
+
+def test_single_plan_with_zero_linked_records_is_not_a_treatment_grid(tmp_path: Path) -> None:
+    struct_uid = generate_uid()
+    study_uid = generate_uid()
+    frame_uid = generate_uid()
+    plan_uid = generate_uid()
+    plan = _mk_plan(
+        tmp_path / "planned_only.dcm",
+        plan_uid,
+        struct_uid=struct_uid,
+        study_uid=study_uid,
+        frame_uid=frame_uid,
+        date="20240101",
+        rx_gy=50.0,
+        fractions=20,
+        label="planned only",
+    )
+    dose = _mk_dose(
+        tmp_path / "planned_only_dose.dcm",
+        generate_uid(),
+        plan_uid=plan_uid,
+        study_uid=study_uid,
+        frame_uid=frame_uid,
+    )
+    unrelated_record = _mk_record(
+        tmp_path / "unrelated_record.dcm",
+        generate_uid(),
+    )
+
+    classified = org._classify_doses(
+        [plan],
+        [dose],
+        treatment_record_paths=[unrelated_record],
+    )
+
+    assert classified.classification == "no_delivered_plan_dose"
+    assert classified.selected_plans == []
+    assert classified.selected_doses == []
+    assert classified.excluded_doses == [dose]
+    assert classified.should_sum is False
+
+
 def test_records_on_subset_of_treatment_dates_do_not_add_verification_dose(tmp_path: Path) -> None:
     """The 353398 failure added a low-dose verification plan to a delivered 70 Gy course."""
     struct_uid = generate_uid()
@@ -760,8 +948,8 @@ def test_records_on_subset_of_treatment_dates_do_not_add_verification_dose(tmp_p
     assert classified.should_sum is False
 
 
-def test_delivered_partial_replan_does_not_add_to_encompassing_prescription(tmp_path: Path) -> None:
-    """The 440657 and 482203 failures added a delivered partial replan to the course total."""
+def test_zero_record_course_total_does_not_replace_delivered_partial_replan(tmp_path: Path) -> None:
+    """A recordless course-total plan cannot replace a delivered partial replan grid."""
     struct_uid = generate_uid()
     study_uid = generate_uid()
     frame_uid = generate_uid()
@@ -794,11 +982,11 @@ def test_delivered_partial_replan_does_not_add_to_encompassing_prescription(tmp_
         treatment_record_paths=partial_records,
     )
 
-    assert classified.selected_plans == [total]
+    assert classified.selected_plans == [partial]
     assert sum(
         org.infer_plan_rx_gy(pydicom.dcmread(path, stop_before_pixels=True)) or 0
         for path in classified.selected_plans
-    ) == pytest.approx(55.0)
+    ) == pytest.approx(36.0)
     assert classified.should_sum is False
 
 
@@ -1016,7 +1204,7 @@ def test_duplicate_paths_for_one_structure_uid_keep_rs_and_referenced_ct(tmp_pat
     monkeypatch.setattr(org, "_index_series_and_registrations", lambda *args, **kwargs: ({}, {}, {}))
     monkeypatch.setattr(org, "_index_rt_files", lambda *args, **kwargs: {})
     monkeypatch.setattr(org, "_looks_like_patient_series_layout", lambda *args, **kwargs: False)
-    monkeypatch.setattr(org, "_ensure_ct_nifti", lambda *args, **kwargs: None)
+    monkeypatch.setattr(org, "_ensure_ct_nifti", _write_placeholder_ct_nifti)
 
     cfg = PipelineConfig(
         dicom_root=dicom_root,
@@ -1040,6 +1228,230 @@ def test_duplicate_paths_for_one_structure_uid_keep_rs_and_referenced_ct(tmp_pat
     assert copied_series == {small_series}
     assert any("referenced" in record.getMessage() for record in caplog.records)
     assert plan.exists() and dose.exists()
+
+
+def test_organize_contract_round_trips_to_dvh_for_plan_only_course(tmp_path, monkeypatch):
+    """The real organizer serializer and DVH must preserve plan-only membership."""
+    dicom_root = tmp_path / "dicom"
+    study_uid, frame_uid = generate_uid(), generate_uid()
+    struct_uid, plan_uid = generate_uid(), generate_uid()
+    struct = _mk_struct(
+        dicom_root / "struct.dcm",
+        struct_uid,
+        study_uid=study_uid,
+        frame_uid=frame_uid,
+        roi_names=["BODY", "PTV1"],
+    )
+    plan = _mk_plan(
+        dicom_root / "plan.dcm",
+        plan_uid,
+        struct_uid=struct_uid,
+        study_uid=study_uid,
+        frame_uid=frame_uid,
+        date="20240101",
+        rx_gy=55.0,
+        fractions=20,
+        label="plan-only",
+    )
+    ct_series_uid = generate_uid()
+    ct = [
+        _mk_ct(
+            dicom_root / f"ct_{index}.dcm",
+            study_uid=study_uid,
+            series_uid=ct_series_uid,
+            frame_uid=frame_uid,
+            description="Referenced planning CT",
+        )
+        for index in range(3)
+    ]
+
+    ct_index = {"P1": {study_uid: {ct_series_uid: ct}}}
+    monkeypatch.setattr(org, "index_ct_series", lambda *args, **kwargs: ct_index)
+    monkeypatch.setattr(org, "_index_series_and_registrations", lambda *args, **kwargs: ({}, {}, {}))
+    monkeypatch.setattr(org, "_index_rt_files", lambda *args, **kwargs: {})
+    monkeypatch.setattr(org, "_looks_like_patient_series_layout", lambda *args, **kwargs: False)
+    monkeypatch.setattr(org, "_ensure_ct_nifti", _write_placeholder_ct_nifti)
+
+    cfg = PipelineConfig(
+        dicom_root=dicom_root,
+        output_root=tmp_path / "output",
+        logs_root=tmp_path / "logs",
+        max_workers_override=1,
+        dicom_copy_dedup_by_sop_uid=False,
+    )
+    outputs = org.organize_and_merge(cfg)
+
+    assert len(outputs) == 1
+    course_dir = outputs[0].dirs.root
+    contract = load_course_contract(course_dir)
+    contract_path = course_dir / "metadata" / "case_metadata.json"
+    contract_bytes_before_dvh = contract_path.read_bytes()
+    selected_plan_uids = [item["sop_instance_uid"] for item in contract.selected_plans]
+    assert selected_plan_uids == [plan_uid]
+    assert contract.selected_doses == []
+    assert contract.data["dvh"]["reason_code"] == "plan_only_no_authoritative_dose_grid"
+
+    monkeypatch.setattr(cli_module, "organize_and_merge", lambda _cfg: outputs)
+    monkeypatch.setattr(
+        cli_module,
+        "run_tasks_with_adaptive_workers",
+        lambda _label, tasks, function, **_kwargs: [function(task) for task in tasks],
+    )
+    exit_status = cli_module.main(
+        [
+            "--dicom-root",
+            str(dicom_root),
+            "--outdir",
+            str(cfg.output_root),
+            "--logs",
+            str(cfg.logs_root),
+            "--stage",
+            "dvh",
+            "--no-metadata",
+        ]
+    )
+    assert exit_status == 0
+    assert not (course_dir / "dvh_metrics.xlsx").exists()
+    assert contract_path.read_bytes() == contract_bytes_before_dvh
+    qc = json.loads((course_dir / "metadata" / "dvh_qc.json").read_text(encoding="utf-8"))
+    resolution = qc["dose_resolution"]
+    assert resolution["source_plan_sop_instance_uids"] == selected_plan_uids
+    assert resolution["selected_plan_paths"] == [
+        str(contract.resolve_path(contract.selected_plans[0]["path"], "selected_plan.path"))
+    ]
+    assert resolution["selected_dose_paths"] == []
+    assert resolution["dvh"] == contract.data["dvh"]
+
+
+def test_organize_contract_round_trips_dose_membership_to_dvh(
+    tmp_path, monkeypatch
+):
+    """The organizer's dose-bearing serializer is consumed unchanged by DVH."""
+    dicom_root = tmp_path / "dicom"
+    study_uid, frame_uid = generate_uid(), generate_uid()
+    ct_series_uid = generate_uid()
+    struct_uid, plan_uid, dose_uid = generate_uid(), generate_uid(), generate_uid()
+    _mk_struct(
+        dicom_root / "struct.dcm",
+        struct_uid,
+        study_uid=study_uid,
+        frame_uid=frame_uid,
+        roi_names=["BODY", "PTV1"],
+        ct_series_uid=ct_series_uid,
+        with_contours=True,
+    )
+    _mk_plan(
+        dicom_root / "plan.dcm",
+        plan_uid,
+        struct_uid=struct_uid,
+        study_uid=study_uid,
+        frame_uid=frame_uid,
+        date="20240101",
+        rx_gy=55.0,
+        fractions=20,
+        label="dose-bearing",
+    )
+    _mk_dose(
+        dicom_root / "dose.dcm",
+        dose_uid,
+        plan_uid=plan_uid,
+        study_uid=study_uid,
+        frame_uid=frame_uid,
+        with_pixels=True,
+    )
+    _mk_record(dicom_root / "record.dcm", plan_uid)
+    ct = [
+        _mk_ct(
+            dicom_root / f"ct_{index}.dcm",
+            study_uid=study_uid,
+            series_uid=ct_series_uid,
+            frame_uid=frame_uid,
+            description="Referenced planning CT",
+        )
+        for index in range(3)
+    ]
+
+    ct_index = {"P1": {study_uid: {ct_series_uid: ct}}}
+    monkeypatch.setattr(org, "index_ct_series", lambda *args, **kwargs: ct_index)
+    monkeypatch.setattr(org, "_index_series_and_registrations", lambda *args, **kwargs: ({}, {}, {}))
+    monkeypatch.setattr(org, "_looks_like_patient_series_layout", lambda *args, **kwargs: False)
+    monkeypatch.setattr(org, "_ensure_ct_nifti", _write_placeholder_ct_nifti)
+
+    cfg = PipelineConfig(
+        dicom_root=dicom_root,
+        output_root=tmp_path / "output",
+        logs_root=tmp_path / "logs",
+        max_workers_override=1,
+        dicom_copy_dedup_by_sop_uid=False,
+    )
+    outputs = org.organize_and_merge(cfg)
+
+    assert len(outputs) == 1
+    course_dir = outputs[0].dirs.root
+    contract = load_course_contract(course_dir)
+    contract_path = course_dir / "metadata" / "case_metadata.json"
+    contract_bytes_before_dvh = contract_path.read_bytes()
+    selected_plan_uids = [item["sop_instance_uid"] for item in contract.selected_plans]
+    selected_dose_uids = [item["sop_instance_uid"] for item in contract.selected_doses]
+    assert selected_plan_uids
+    assert selected_dose_uids
+    assert selected_plan_uids == outputs[0].source_plan_uids
+    assert selected_plan_uids == [plan_uid]
+    assert selected_dose_uids == [dose_uid]
+    assert contract.data["dose_grid"] is not None
+    delivery = contract.delivery
+    assert delivery["status"] == "partially_delivered"
+    assert delivery["delivered_dose_gy"] == pytest.approx(2.75)
+    assert delivery["method"] == "record_fraction_weighted_prescription"
+    assert len(delivery["per_plan"]) == 1
+    plan_delivery = delivery["per_plan"][0]
+    assert plan_delivery["plan_sop_uid"] == plan_uid
+    assert plan_delivery["delivered_record_count"] == 1
+    assert plan_delivery["delivered_fraction_count"] == 1
+    assert plan_delivery["treatment_dates"] == ["20240102"]
+    assert plan_delivery["zero_delivery_records"] is False
+    assert plan_delivery["record_paths"]
+    record_path = contract.resolve_path(
+        plan_delivery["record_paths"][0],
+        "delivery.per_plan[0].record_paths[0]",
+    )
+    assert record_path is not None
+    assert record_path.is_file()
+    dose_grid_before = dict(contract.data["dose_grid"])
+    dose_qc_before = dict(contract.dose_qc)
+
+    output = dvh_for_course(course_dir, parallel_workers=1)
+
+    assert output == course_dir / "dvh_metrics.xlsx"
+    assert output is not None
+    assert output.is_file()
+    assert contract_path.read_bytes() == contract_bytes_before_dvh
+    workbook = pd.read_excel(output)
+    assert not workbook.empty
+    assert set(workbook["source_plan_sop_instance_uids"]) == set(selected_plan_uids)
+    assert set(workbook["source_dose_sop_instance_uids"]) == set(selected_dose_uids)
+    assert set(workbook["Dose_Grid_Semantics"]) == {dose_grid_before["semantics"]}
+    assert set(workbook["Delivery_Status"]) == {delivery["status"]}
+    assert bool(workbook["Delivered_Dose_Gy"].notna().all())
+    assert workbook["Delivered_Dose_Gy"].tolist() == pytest.approx(
+        [delivery["delivered_dose_gy"]] * len(workbook)
+    )
+    assert "DmeanGy" in workbook
+    assert workbook["DmeanGy"].count() == len(workbook)
+    qc = json.loads((course_dir / "metadata" / "dvh_qc.json").read_text(encoding="utf-8"))
+    emitted_dvh = qc["dose_resolution"]["dvh"]
+    assert emitted_dvh["metrics_status"] == "computed"
+    assert emitted_dvh["output"] == "dvh_metrics.xlsx"
+    assert (course_dir / emitted_dvh["output"]).is_file()
+    assert emitted_dvh == contract.data["dvh"]
+    assert qc["dose_resolution"]["source_plan_sop_instance_uids"] == selected_plan_uids
+    assert qc["dose_resolution"]["delivery_status"] == delivery["status"]
+    assert qc["dose_resolution"]["delivered_dose_gy"] == pytest.approx(
+        delivery["delivered_dose_gy"]
+    )
+    contract_after = load_course_contract(course_dir)
+    assert contract_after.data["dose_grid"] == dose_grid_before
+    assert contract_after.dose_qc == dose_qc_before
 
 
 def test_plan_label_text_classifier_cannot_be_called():
@@ -1084,7 +1496,7 @@ def test_ct_only_input_produces_a_course_when_explicitly_enabled(tmp_path, monke
     """The explicit CT-only option must restore diagnostic radiomics course output."""
     cfg = _ct_only_config(tmp_path, allow=True)
     _write_ct_only_series(cfg.dicom_root)
-    monkeypatch.setattr(org, "_ensure_ct_nifti", lambda *args, **kwargs: None)
+    monkeypatch.setattr(org, "_ensure_ct_nifti", _write_placeholder_ct_nifti)
 
     outputs = org.organize_and_merge(cfg)
 
