@@ -1,6 +1,7 @@
 """Fail-closed regression tests for course radiomics preparation and publication."""
 
 from concurrent.futures import Future
+import json
 from pathlib import Path
 from types import SimpleNamespace
 import sys
@@ -19,6 +20,7 @@ from rtpipeline.radiomics_outcomes import (
     RadiomicsCourseExtractionError,
     RadiomicsCourseOutcome,
     RadiomicsCourseStatus,
+    outcome_from_output,
 )
 
 
@@ -360,6 +362,38 @@ def test_direct_rtstruct_configured_skip_is_explicit_ineligibility(tmp_path, mon
     ) == {}
 
 
+def test_direct_auto_rtstruct_empty_mask_is_recorded_as_degenerate(tmp_path, monkeypatch):
+    class RTStruct:
+        def get_roi_names(self):
+            return ["vertebrae_T8", "lung_left"]
+
+        def get_roi_mask_by_name(self, name):
+            if name == "vertebrae_T8":
+                return np.zeros((2, 2, 2), dtype=bool)
+            return np.ones((2, 2, 2), dtype=bool)
+
+    failures = []
+    _install_rt_utils(monkeypatch, lambda **_kwargs: RTStruct())
+
+    masks = radiomics._rtstruct_masks(
+        tmp_path / "CT",
+        tmp_path / "RS_auto.dcm",
+        best_effort=True,
+        failure_outcomes=failures,
+    )
+
+    assert set(masks) == {"lung_left"}
+    assert failures == [
+        {
+            "roi_name": "vertebrae_T8",
+            "status": "failed",
+            "failure_kind": "degenerate_mask",
+            "reason": "Expected ROI 'vertebrae_T8' in "
+            f"{tmp_path / 'RS_auto.dcm'} produced an empty mask",
+        }
+    ]
+
+
 def test_direct_rtstruct_construction_failure_invalidates_stale_course_output(
     tmp_path, monkeypatch
 ):
@@ -448,7 +482,7 @@ def test_conda_rtstruct_builder_failure_does_not_fall_back_to_nothing_to_do(
     assert not stale.exists()
 
 
-def test_conda_rtstruct_mask_serialization_failure_fails_course(tmp_path, monkeypatch):
+def test_conda_best_effort_mask_serialization_failure_is_recorded(tmp_path, monkeypatch):
     course, stale = _prepare_conda_rtstruct_course(tmp_path, monkeypatch)
 
     class RTStruct:
@@ -465,10 +499,13 @@ def test_conda_rtstruct_mask_serialization_failure_fails_course(tmp_path, monkey
         lambda *_a, **_k: (_ for _ in ()).throw(OSError("disk full")),
     )
 
-    with pytest.raises(RadiomicsCourseExtractionError, match="serialize required mask.*disk full"):
-        conda.radiomics_for_course(course, _config(tmp_path))
+    output = conda.radiomics_for_course(course, _config(tmp_path))
 
-    assert not stale.exists()
+    assert output == course / "radiomics_ct.xlsx"
+    result = pd.read_excel(output, engine="openpyxl")
+    assert result.loc[0, "extraction_status"] == "failed"
+    assert result.loc[0, "extraction_failure_kind"] == "extraction_error"
+    assert "disk full" in result.loc[0, "extraction_status_detail"]
 
 
 def test_conda_workbook_write_failure_raises_and_invalidates_stale_output(
@@ -551,6 +588,74 @@ def test_unreadable_expected_course_workbook_blocks_and_invalidates_aggregate(
         radiomics.run_radiomics(config, [course])
 
     assert not aggregate.exists()
+
+
+def test_cohort_aggregate_carries_course_source_counts(tmp_path, monkeypatch):
+    course_root = tmp_path / "P1" / "C1"
+    course_root.mkdir(parents=True)
+    workbook = course_root / "radiomics_ct.xlsx"
+    pd.DataFrame(
+        [
+            {
+                "segmentation_source": "Manual",
+                "roi_original_name": "PTV",
+                "original_firstorder_Mean": 1.0,
+            },
+            {
+                "segmentation_source": "AutoRTS_total",
+                "roi_original_name": "vertebrae_T8",
+                "extraction_status": "failed",
+                "extraction_status_detail": "empty mask",
+                "extraction_failure_kind": "degenerate_mask",
+            },
+        ]
+    ).to_excel(workbook, index=False)
+    course = SimpleNamespace(
+        patient_id="P1",
+        course_key="C1",
+        dirs=SimpleNamespace(root=course_root),
+    )
+    config = _config(tmp_path)
+    outcome = RadiomicsCourseOutcome.extracted(
+        workbook,
+        roi_counts={
+            "Manual": {"attempted": 1, "extracted": 1, "failed": 0},
+            "AutoRTS_total": {"attempted": 1, "extracted": 0, "failed": 1},
+        },
+        roi_failures=[
+            {
+                "source": "AutoRTS_total",
+                "roi_name": "vertebrae_T8",
+                "status": "failed",
+                "failure_kind": "degenerate_mask",
+                "reason": "empty mask",
+            }
+        ],
+    )
+
+    monkeypatch.setattr(radiomics, "_have_pyradiomics", lambda: True)
+    import rtpipeline.radiomics_parallel as parallel
+
+    monkeypatch.setattr(parallel, "is_parallel_radiomics_enabled", lambda: False)
+    monkeypatch.setattr(
+        radiomics,
+        "run_tasks_with_adaptive_workers",
+        lambda *_a, **_k: [outcome],
+    )
+    monkeypatch.setattr(radiomics, "radiomics_for_course_mr", lambda *_a, **_k: None)
+
+    radiomics.run_radiomics(config, [course])
+
+    aggregate = pd.read_excel(
+        config.output_root / "Data" / "radiomics_all.xlsx",
+        engine="openpyxl",
+    )
+    assert set(aggregate["radiomics_course_status"]) == {"extracted_with_failures"}
+    assert set(aggregate["radiomics_roi_attempted"]) == {2}
+    assert set(aggregate["radiomics_roi_extracted"]) == {1}
+    assert set(aggregate["radiomics_roi_failed"]) == {1}
+    counts = json.loads(aggregate.loc[0, "radiomics_roi_counts_by_source"])
+    assert counts["AutoRTS_total"] == {"attempted": 1, "extracted": 0, "failed": 1}
 
 
 def test_missing_configured_mr_parameter_path_is_required_failure(tmp_path):
@@ -685,7 +790,7 @@ def _prepare_conda_nifti_fallback(tmp_path, monkeypatch):
     return course, mask_path, stale
 
 
-def test_conda_nifti_fallback_empty_mask_fails_and_invalidates_stale_output(
+def test_conda_nifti_fallback_empty_mask_is_recorded_as_degenerate(
     tmp_path, monkeypatch
 ):
     course, _mask_path, stale = _prepare_conda_nifti_fallback(tmp_path, monkeypatch)
@@ -696,14 +801,17 @@ def test_conda_nifti_fallback_empty_mask_fails_and_invalidates_stale_output(
     )
     monkeypatch.setattr(conda.sitk, "WriteImage", lambda *_a, **_k: None)
 
-    with pytest.raises(RadiomicsCourseExtractionError, match="empty mask"):
-        conda.radiomics_for_course_ct_nifti_fallback(course, _config(tmp_path))
+    output = conda.radiomics_for_course_ct_nifti_fallback(course, _config(tmp_path))
 
-    assert not stale.exists()
+    assert output == stale
+    result = pd.read_excel(output, engine="openpyxl")
+    assert result.loc[0, "extraction_status"] == "failed"
+    assert result.loc[0, "extraction_failure_kind"] == "degenerate_mask"
+    assert "empty mask" in result.loc[0, "extraction_status_detail"]
     assert not stale.with_suffix(".parquet").exists()
 
 
-def test_conda_nifti_fallback_serialization_failure_invalidates_stale_output(
+def test_conda_nifti_fallback_serialization_failure_is_recorded(
     tmp_path, monkeypatch
 ):
     course, _mask_path, stale = _prepare_conda_nifti_fallback(tmp_path, monkeypatch)
@@ -719,10 +827,13 @@ def test_conda_nifti_fallback_serialization_failure_invalidates_stale_output(
 
     monkeypatch.setattr(conda.sitk, "WriteImage", fail_mask_write)
 
-    with pytest.raises(RadiomicsCourseExtractionError, match="mask serialization failed"):
-        conda.radiomics_for_course_ct_nifti_fallback(course, _config(tmp_path))
+    output = conda.radiomics_for_course_ct_nifti_fallback(course, _config(tmp_path))
 
-    assert not stale.exists()
+    assert output == stale
+    result = pd.read_excel(output, engine="openpyxl")
+    assert result.loc[0, "extraction_status"] == "failed"
+    assert result.loc[0, "extraction_failure_kind"] == "extraction_error"
+    assert "mask serialization failed" in result.loc[0, "extraction_status_detail"]
     assert not stale.with_suffix(".parquet").exists()
 
 
@@ -930,7 +1041,7 @@ class _FakeExtractor:
         return {"original_firstorder_Mean": 1.0}
 
 
-def test_direct_resume_missing_non_body_manual_roi_forces_full_rerun(
+def test_direct_resume_missing_non_body_manual_roi_fails_and_invalidates(
     tmp_path, monkeypatch
 ):
     course = tmp_path / "P1" / "C1"
@@ -976,13 +1087,11 @@ def test_direct_resume_missing_non_body_manual_roi_forces_full_rerun(
         lambda _label, tasks, function, **_kwargs: [function(task) for task in tasks],
     )
 
-    outcome = radiomics.radiomics_for_course(_config(tmp_path, resume=True), course)
+    with pytest.raises(RadiomicsCourseExtractionError, match="missing required ROI.*Manual/GTV"):
+        radiomics.radiomics_for_course(_config(tmp_path, resume=True), course)
 
-    assert outcome.status is RadiomicsCourseStatus.EXTRACTED
-    refreshed = pd.read_excel(output, engine="openpyxl")
-    assert set(
-        zip(refreshed["segmentation_source"], refreshed["roi_original_name"])
-    ) == {("Manual", "BODY"), ("Manual", "GTV"), ("AutoRTS_total", "LUNG")}
+    assert not output.exists()
+    assert not output.with_suffix(".parquet").exists()
 
 
 def test_parallel_resume_missing_autorts_roi_forces_full_rerun(tmp_path, monkeypatch):
@@ -1052,6 +1161,459 @@ def test_parallel_resume_missing_autorts_roi_forces_full_rerun(tmp_path, monkeyp
     ) == {("Manual", "BODY"), ("AutoRTS_total", "LUNG")}
 
 
+def test_direct_resume_rejects_failed_manual_row(tmp_path, monkeypatch):
+    course = tmp_path / "P1" / "C1"
+    dirs = build_course_dirs(course)
+    dirs.dicom_ct.mkdir(parents=True)
+    dirs.dicom_rtstruct.mkdir(parents=True)
+    (dirs.dicom_ct / "slice.dcm").write_bytes(b"present")
+    manual_rs = dirs.dicom_rtstruct / "RS.dcm"
+    manual_rs.write_bytes(b"present")
+    output = course / "radiomics_ct.xlsx"
+    pd.DataFrame(
+        [
+            {
+                "segmentation_source": "Manual",
+                "roi_original_name": "PTV",
+                "extraction_status": "failed",
+                "extraction_status_detail": "clinical contour could not be read",
+                "extraction_failure_kind": "extraction_error",
+                "original_firstorder_Mean": 1.0,
+            }
+        ]
+    ).to_excel(output, index=False)
+    output.with_suffix(".parquet").write_bytes(b"stale")
+
+    monkeypatch.setattr(radiomics, "_load_series_image", lambda *_a, **_k: _Image())
+    monkeypatch.setattr(radiomics, "_extractor", lambda *_a, **_k: _FakeExtractor())
+    monkeypatch.setattr(
+        radiomics,
+        "_rtstruct_masks",
+        lambda _ct, path, **_kwargs: (
+            {"PTV": np.ones((2, 2, 2), dtype=bool)}
+            if Path(path) == manual_rs
+            else {}
+        ),
+    )
+    monkeypatch.setattr(radiomics, "list_custom_model_outputs", lambda _course: [])
+
+    with pytest.raises(RadiomicsCourseExtractionError, match="required ROI Manual/PTV"):
+        radiomics.radiomics_for_course(_config(tmp_path, resume=True), course)
+
+    assert not output.exists()
+    assert not output.with_suffix(".parquet").exists()
+
+
+def test_parallel_resume_rejects_failed_configured_custom_row(tmp_path, monkeypatch):
+    import rtpipeline.radiomics_parallel as parallel
+
+    course = tmp_path / "P1" / "C1"
+    dirs = build_course_dirs(course)
+    dirs.dicom_ct.mkdir(parents=True)
+    (dirs.dicom_ct / "slice.dcm").write_bytes(b"present")
+    custom_rs = course / "RS_custom.dcm"
+    custom_rs.write_bytes(b"present")
+    custom_config = tmp_path / "custom.yaml"
+    custom_config.write_text(
+        "custom_structures:\n"
+        "  - name: bowel_bag\n"
+        "    operation: union\n"
+        "    source_structures: [PTV]\n",
+        encoding="utf-8",
+    )
+    output = course / "radiomics_ct.xlsx"
+    pd.DataFrame(
+        [
+            {
+                "segmentation_source": "Custom",
+                "roi_original_name": "bowel_bag",
+                "extraction_status": "failed",
+                "extraction_status_detail": "configured mask could not be read",
+                "extraction_failure_kind": "extraction_error",
+                "original_firstorder_Mean": 1.0,
+            }
+        ]
+    ).to_excel(output, index=False)
+    output.with_suffix(".parquet").write_bytes(b"stale")
+
+    monkeypatch.setattr(radiomics, "_load_series_image", lambda *_a, **_k: _Image())
+    monkeypatch.setattr(radiomics, "_extractor", lambda *_a, **_k: _FakeExtractor())
+    monkeypatch.setattr(parallel, "_is_rs_custom_stale", lambda *_a, **_k: False)
+    monkeypatch.setattr(parallel, "_list_roi_names", lambda _path: ["bowel_bag"])
+    monkeypatch.setattr(parallel, "list_custom_model_outputs", lambda _course: [])
+
+    with pytest.raises(RadiomicsCourseExtractionError, match="required ROI Custom/bowel_bag"):
+        parallel.parallel_radiomics_for_course(
+            _config(
+                tmp_path,
+                resume=True,
+                custom_structures_config=custom_config,
+            ),
+            course,
+            max_workers=1,
+        )
+
+    assert not output.exists()
+    assert not output.with_suffix(".parquet").exists()
+
+
 def test_radiomics_status_contract_still_exposes_explicit_nothing_to_do():
     outcome = RadiomicsCourseOutcome.nothing_to_do("configured skip")
     assert outcome.status is RadiomicsCourseStatus.NOTHING_TO_DO
+
+
+@pytest.mark.parametrize(
+    ("source", "roi_name"),
+    [("Manual", "PTV"), ("Custom", "bowel_bag")],
+)
+def test_persisted_required_failure_is_rejected_and_invalidated(
+    tmp_path, source, roi_name
+):
+    output = tmp_path / "radiomics_ct.xlsx"
+    pd.DataFrame(
+        [
+            {
+                "segmentation_source": source,
+                "roi_original_name": roi_name,
+                "extraction_status": "failed",
+                "extraction_status_detail": "mask could not be read",
+                "extraction_failure_kind": "extraction_error",
+                "original_firstorder_Mean": 1.0,
+            }
+        ]
+    ).to_excel(output, index=False)
+    output.with_suffix(".parquet").write_bytes(b"stale")
+
+    with pytest.raises(RadiomicsCourseExtractionError, match=f"required ROI {source}/{roi_name}"):
+        outcome_from_output(output)
+
+    assert not output.exists()
+    assert not output.with_suffix(".parquet").exists()
+
+
+def test_persisted_missing_required_outcome_is_rejected_and_invalidated(tmp_path):
+    output = tmp_path / "radiomics_ct.xlsx"
+    pd.DataFrame(
+        [
+            {
+                "segmentation_source": "AutoRTS_total",
+                "roi_original_name": "vertebrae_T8",
+                "extraction_status": "failed",
+                "extraction_status_detail": "empty mask",
+                "extraction_failure_kind": "degenerate_mask",
+                "original_firstorder_Mean": 1.0,
+            }
+        ]
+    ).to_excel(output, index=False)
+    output.with_suffix(".parquet").write_bytes(b"stale")
+
+    with pytest.raises(RadiomicsCourseExtractionError, match="Manual/PTV.*no persisted outcome"):
+        outcome_from_output(
+            output,
+            required_by_identity={
+                ("Manual", "PTV"): True,
+                ("AutoRTS_total", "vertebrae_T8"): False,
+            },
+        )
+
+    assert not output.exists()
+    assert not output.with_suffix(".parquet").exists()
+
+
+def test_persisted_required_below_minimum_status_remains_nonfatal(tmp_path):
+    output = tmp_path / "radiomics_ct.xlsx"
+    pd.DataFrame(
+        [
+            {
+                "segmentation_source": "Manual",
+                "roi_original_name": "znacznikAg",
+                "extraction_status": "below_minimum_voxels",
+                "extraction_status_detail": "ROI contains 3 voxels; configured minimum is 64",
+                "extraction_failure_kind": "degenerate_mask",
+                "voxel_count": 3,
+            }
+        ]
+    ).to_excel(output, index=False)
+
+    outcome = outcome_from_output(
+        output,
+        required_by_identity={("Manual", "znacznikAg"): True},
+    )
+
+    assert outcome.status is RadiomicsCourseStatus.EXTRACTED_WITH_FAILURES
+    assert outcome.roi_counts == {
+        "Manual": {"attempted": 1, "extracted": 0, "failed": 1}
+    }
+    assert output.exists()
+
+
+def test_persisted_outcome_treats_blank_excel_status_as_success(tmp_path):
+    output = tmp_path / "radiomics_ct.xlsx"
+    pd.DataFrame(
+        [
+            {
+                "segmentation_source": "Manual",
+                "roi_original_name": "PTV",
+                "extraction_status": None,
+                "original_firstorder_Mean": 1.0,
+            },
+            {
+                "segmentation_source": "AutoRTS_total",
+                "roi_original_name": "vertebrae_T8",
+                "extraction_status": "failed",
+                "extraction_status_detail": "empty mask",
+                "extraction_failure_kind": "degenerate_mask",
+            },
+        ]
+    ).to_excel(output, index=False)
+
+    outcome = outcome_from_output(output)
+
+    assert outcome.status is RadiomicsCourseStatus.EXTRACTED_WITH_FAILURES
+    assert outcome.roi_counts == {
+        "Manual": {"attempted": 1, "extracted": 1, "failed": 0},
+        "AutoRTS_total": {"attempted": 1, "extracted": 0, "failed": 1},
+    }
+    assert outcome.roi_failures == (
+        {
+            "roi_name": "vertebrae_T8",
+            "source": "AutoRTS_total",
+            "status": "failed",
+            "failure_kind": "degenerate_mask",
+            "reason": "empty mask",
+        },
+    )
+
+
+def _parallel_course_with_fake_roi_results(tmp_path, monkeypatch, results_by_source):
+    import rtpipeline.radiomics_parallel as parallel
+
+    course = tmp_path / "P1" / "C1"
+    dirs = build_course_dirs(course)
+    dirs.dicom_ct.mkdir(parents=True)
+    dirs.dicom_rtstruct.mkdir(parents=True)
+    (dirs.dicom_ct / "slice.dcm").write_bytes(b"present")
+    (dirs.dicom_rtstruct / "RS.dcm").write_bytes(b"present")
+    (course / "RS_auto.dcm").write_bytes(b"present")
+
+    monkeypatch.setattr(radiomics, "_load_series_image", lambda *_a, **_k: object())
+    monkeypatch.setattr(radiomics, "_extractor", lambda *_a, **_k: object())
+    monkeypatch.setattr(
+        parallel,
+        "_list_roi_names",
+        lambda path: ["PTV"] if Path(path).name == "RS.dcm" else ["vertebrae_T8", "lung_left"],
+    )
+    monkeypatch.setattr(parallel, "list_custom_model_outputs", lambda _course: [])
+    monkeypatch.setattr(parallel, "_calculate_optimal_workers", lambda: 1)
+
+    class FakeExecutor:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def submit(self, _function, task):
+            future = Future()
+            action = results_by_source[task.source].pop(0)
+            if isinstance(action, BaseException):
+                future.set_exception(action)
+            else:
+                future.set_result(action(task))
+            return future
+
+        def shutdown(self, *_args, **_kwargs):
+            pass
+
+    monkeypatch.setattr(parallel, "ProcessPoolExecutor", FakeExecutor)
+    return course, parallel
+
+
+def _success_record(task):
+    return {
+        "segmentation_source": task.source,
+        "roi_original_name": task.roi_name,
+        "patient_id": "P1",
+        "course_id": "C1",
+        "original_firstorder_Mean": 1.0,
+    }
+
+
+def test_parallel_auto_roi_failure_is_recorded_without_failing_course(tmp_path, monkeypatch):
+    course, parallel = _parallel_course_with_fake_roi_results(
+        tmp_path,
+        monkeypatch,
+        {
+            "Manual": [_success_record],
+            "AutoRTS_total": [RuntimeError("mask outside field of view"), _success_record],
+        },
+    )
+
+    outcome = parallel.parallel_radiomics_for_course(
+        _config(tmp_path), course, max_workers=1
+    )
+
+    assert outcome.status is RadiomicsCourseStatus.EXTRACTED_WITH_FAILURES
+    assert outcome.roi_counts == {
+        "Manual": {"attempted": 1, "extracted": 1, "failed": 0},
+        "AutoRTS_total": {"attempted": 2, "extracted": 1, "failed": 1},
+    }
+    assert outcome.roi_failures[0]["roi_name"] == "vertebrae_T8"
+    assert outcome.roi_failures[0]["source"] == "AutoRTS_total"
+    assert "outside field of view" in outcome.roi_failures[0]["reason"]
+    result = pd.read_excel(course / "radiomics_ct.xlsx", engine="openpyxl")
+    failed = result[result["roi_original_name"] == "vertebrae_T8"].iloc[0]
+    assert failed["extraction_status"] == "failed"
+    assert failed["radiomics_course_status"] == "extracted_with_failures"
+    assert int(failed["radiomics_roi_failed"]) == 1
+
+
+@pytest.mark.parametrize("source", ["Manual", "Custom"])
+def test_parallel_required_roi_failure_still_fails_course(tmp_path, monkeypatch, source):
+    import rtpipeline.radiomics_parallel as parallel
+
+    course = tmp_path / source / "P1" / "C1"
+    dirs = build_course_dirs(course)
+    dirs.dicom_ct.mkdir(parents=True)
+    (dirs.dicom_ct / "slice.dcm").write_bytes(b"present")
+    custom_config = None
+    if source == "Manual":
+        dirs.dicom_rtstruct.mkdir(parents=True)
+        (dirs.dicom_rtstruct / "RS.dcm").write_bytes(b"present")
+    else:
+        (course / "RS_custom.dcm").write_bytes(b"present")
+        custom_config = tmp_path / "custom.yaml"
+        custom_config.write_text(
+            "custom_structures:\n"
+            "  - name: bowel_bag\n"
+            "    operation: union\n"
+            "    source_structures: [PTV]\n",
+            encoding="utf-8",
+        )
+    (course / "RS_auto.dcm").write_bytes(b"present")
+    monkeypatch.setattr(radiomics, "_load_series_image", lambda *_a, **_k: object())
+    monkeypatch.setattr(radiomics, "_extractor", lambda *_a, **_k: object())
+    monkeypatch.setattr(parallel, "_calculate_optimal_workers", lambda: 1)
+    monkeypatch.setattr(parallel, "list_custom_model_outputs", lambda _course: [])
+    monkeypatch.setattr(
+        parallel,
+        "_list_roi_names",
+        lambda path: ["PTV"] if Path(path).name == "RS.dcm" else ["bowel_bag"],
+    )
+    monkeypatch.setattr(parallel, "_is_rs_custom_stale", lambda *_a, **_k: False)
+
+    class FailingExecutor:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def submit(self, _function, task):
+            future = Future()
+            future.set_exception(RuntimeError("configured ROI extraction failed"))
+            return future
+
+        def shutdown(self, *_args, **_kwargs):
+            pass
+
+    monkeypatch.setattr(parallel, "ProcessPoolExecutor", FailingExecutor)
+    config = _config(tmp_path)
+    if source == "Custom":
+        config.custom_structures_config = custom_config
+
+    with pytest.raises(RadiomicsCourseExtractionError, match="required ROI"):
+        parallel.parallel_radiomics_for_course(config, course, max_workers=1)
+
+
+def test_all_best_effort_failures_are_degraded_and_not_empty_success(tmp_path, monkeypatch):
+    course, parallel = _parallel_course_with_fake_roi_results(
+        tmp_path,
+        monkeypatch,
+        {
+            "Manual": [_success_record],
+            "AutoRTS_total": [RuntimeError("outside field of view"), RuntimeError("empty mask")],
+        },
+    )
+    outcome = parallel.parallel_radiomics_for_course(
+        _config(tmp_path), course, max_workers=1
+    )
+
+    assert outcome.status is RadiomicsCourseStatus.EXTRACTED_WITH_FAILURES
+    assert outcome.attempted == 3
+    assert outcome.extracted_count == 1
+    assert outcome.failed_count == 2
+    result = pd.read_excel(course / "radiomics_ct.xlsx", engine="openpyxl")
+    assert len(result) == 3
+    assert set(result["extraction_status"].fillna("success")) == {"success", "failed"}
+
+
+def test_parallel_required_below_minimum_status_is_recorded_without_course_failure(
+    tmp_path, monkeypatch
+):
+    def below_minimum(task):
+        return {
+            "modality": "CT",
+            "segmentation_source": task.source,
+            "roi_name": task.roi_name,
+            "roi_original_name": task.roi_name,
+            "patient_id": "P1",
+            "course_id": "C1",
+            "extraction_status": "below_minimum_voxels",
+            "extraction_status_detail": "ROI contains 3 voxels; configured minimum is 64",
+            "extraction_failure_kind": "degenerate_mask",
+            "voxel_count": 3,
+        }
+
+    course, parallel = _parallel_course_with_fake_roi_results(
+        tmp_path,
+        monkeypatch,
+        {
+            "Manual": [below_minimum],
+            "AutoRTS_total": [_success_record, _success_record],
+        },
+    )
+
+    outcome = parallel.parallel_radiomics_for_course(
+        _config(tmp_path), course, max_workers=1
+    )
+
+    assert outcome.status is RadiomicsCourseStatus.EXTRACTED_WITH_FAILURES
+    assert outcome.roi_counts["Manual"] == {
+        "attempted": 1,
+        "extracted": 0,
+        "failed": 1,
+    }
+    result = pd.read_excel(course / "radiomics_ct.xlsx", engine="openpyxl")
+    manual = result[result["segmentation_source"] == "Manual"].iloc[0]
+    assert manual["extraction_status"] == "below_minimum_voxels"
+    assert int(manual["voxel_count"]) == 3
+
+
+def test_conda_required_below_minimum_status_is_nonfatal_and_published(
+    tmp_path, monkeypatch
+):
+    output = tmp_path / "radiomics_ct.xlsx"
+    monkeypatch.setattr(conda, "check_radiomics_env", lambda **_kwargs: True)
+    task = {
+        "image_path": "image.nrrd",
+        "mask_path": None,
+        "roi_name": "znacznikAg",
+        "cleanup": False,
+        "metadata": {
+            "segmentation_source": "Manual",
+            "roi_original_name": "znacznikAg",
+        },
+        "precomputed_failure": {
+            "status": "below_minimum_voxels",
+            "reason": "ROI contains 3 voxels; configured minimum is 64",
+            "failure_kind": "degenerate_mask",
+        },
+    }
+
+    result_path = conda.process_radiomics_batch(
+        [task],
+        output,
+        sequential=True,
+        max_workers=1,
+        enable_heartbeat=False,
+    )
+
+    assert result_path == output
+    result = pd.read_excel(output, engine="openpyxl")
+    assert result.loc[0, "extraction_status"] == "below_minimum_voxels"
+    assert result.loc[0, "radiomics_course_status"] == "extracted_with_failures"

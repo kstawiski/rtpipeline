@@ -687,7 +687,7 @@ def test_parallel_radiomics_region_failure_aborts_course_and_invalidates_table(t
     course_dirs = build_course_dirs(course_dir)
     course_dirs.dicom_ct.mkdir(parents=True, exist_ok=True)
     (course_dirs.dicom_ct / "image.dcm").write_bytes(b"test fixture")
-    _write_rtstruct_with_rois(course_dir / "RS_auto.dcm", ["PTV"])
+    _write_rtstruct_with_rois(course_dir / "RS.dcm", ["PTV"])
     output_path = course_dir / "radiomics_ct.xlsx"
     output_path.write_text("stale partial result", encoding="utf-8")
 
@@ -721,7 +721,7 @@ def test_parallel_radiomics_none_result_aborts_course_and_invalidates_table(tmp_
     course_dirs = build_course_dirs(course_dir)
     course_dirs.dicom_ct.mkdir(parents=True, exist_ok=True)
     (course_dirs.dicom_ct / "image.dcm").write_bytes(b"test fixture")
-    _write_rtstruct_with_rois(course_dir / "RS_auto.dcm", ["PTV"])
+    _write_rtstruct_with_rois(course_dir / "RS.dcm", ["PTV"])
     output_path = course_dir / "radiomics_ct.xlsx"
     output_path.write_text("stale partial result", encoding="utf-8")
 
@@ -840,7 +840,7 @@ def test_parallel_status_rows_are_not_written_as_feature_rows(tmp_path, monkeypa
     course_dirs = build_course_dirs(course_dir)
     course_dirs.dicom_ct.mkdir(parents=True, exist_ok=True)
     (course_dirs.dicom_ct / "image.dcm").write_bytes(b"test fixture")
-    _write_rtstruct_with_rois(course_dir / "RS_auto.dcm", ["PTV"])
+    _write_rtstruct_with_rois(course_dir / "RS.dcm", ["PTV"])
     config = PipelineConfig(
         dicom_root=tmp_path / "dicom",
         output_root=tmp_path / "out",

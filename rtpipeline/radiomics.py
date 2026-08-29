@@ -31,8 +31,12 @@ from .custom_structures_rtstruct import _create_custom_structures_rtstruct, _is_
 from .radiomics_outcomes import (
     RadiomicsCourseExtractionError,
     RadiomicsCourseOutcome,
+    course_diagnostic_columns,
+    extraction_status_is_nonfatal_for_required,
     invalidate_radiomics_outputs as _invalidate_radiomics_outputs,
+    outcome_from_output,
     remove_artifact_strict as _remove_artifact_strict,
+    roi_source_is_required,
     resume_identity_pairs as _resume_identity_pairs,
     write_excel_atomic as _write_excel_atomic,
 )
@@ -653,17 +657,35 @@ def _rtstruct_masks(
     *,
     skip_rois: Optional[set[str]] = None,
     expected_rois: Optional[List[str]] = None,
+    best_effort: bool = False,
+    failure_outcomes: Optional[List[Dict[str, str]]] = None,
 ) -> Dict[str, np.ndarray]:
-    """Convert every expected RTSTRUCT ROI to a non-empty boolean mask.
+    """Convert RTSTRUCT ROIs to boolean masks under an explicit source policy.
 
-    Configured skips are the only silent omission here.  Once an RTSTRUCT
-    advertises an ROI, construction/read/missing/empty-mask failures are course
-    failures rather than evidence that the course had nothing to process.
+    Required sources fail closed when an advertised ROI cannot be read or has a
+    degenerate mask. For best-effort TotalSegmentator sources, the same failure
+    is returned in ``failure_outcomes`` and extraction continues for other ROIs.
     """
     normalized_skips = {
         ''.join(ch for ch in str(name).lower() if ch.isalnum())
         for name in (skip_rois or set())
     }
+
+    def _record_or_raise(name: str, detail: str, *, failure_kind: str = "extraction_error") -> None:
+        if not best_effort:
+            raise RadiomicsCourseExtractionError(detail)
+        if failure_outcomes is not None:
+            failure_outcomes.append(
+                {
+                    "roi_name": str(name),
+                    "status": "failed",
+                    "failure_kind": failure_kind,
+                    "reason": detail,
+                }
+            )
+        logger.warning("Best-effort radiomics ROI %s was not extracted: %s", name, detail)
+    if best_effort and failure_outcomes is None:
+        raise ValueError("best-effort RTSTRUCT extraction requires a failure_outcomes sink")
     try:
         from rt_utils import RTStructBuilder
     except Exception as exc:
@@ -676,6 +698,18 @@ def _rtstruct_masks(
             dicom_series_path=str(dicom_series_path), rt_struct_path=str(rs_path)
         )
     except Exception as exc:
+        if best_effort:
+            try:
+                advertised_rois = list(_list_roi_names_dicom(rs_path))
+            except Exception:
+                advertised_rois = []
+            if advertised_rois:
+                for advertised_roi in advertised_rois:
+                    _record_or_raise(
+                        advertised_roi,
+                        f"Failed to construct RTSTRUCT reader for {rs_path}: {exc}",
+                    )
+                return {}
         raise RadiomicsCourseExtractionError(
             f"Failed to construct RTSTRUCT reader for {rs_path}: {exc}"
         ) from exc
@@ -723,23 +757,33 @@ def _rtstruct_masks(
             else:
                 raise AttributeError("RTSTRUCT reader exposes no ROI mask method")
         except Exception as exc:
-            raise RadiomicsCourseExtractionError(
-                f"Expected ROI {name!r} in {rs_path} could not be read: {exc}"
-            ) from exc
-        if mask is None:
-            raise RadiomicsCourseExtractionError(
-                f"Expected ROI {name!r} in {rs_path} did not provide a mask"
+            _record_or_raise(
+                name,
+                f"Expected ROI {name!r} in {rs_path} could not be read: {exc}",
             )
+            continue
+        if mask is None:
+            _record_or_raise(
+                name,
+                f"Expected ROI {name!r} in {rs_path} did not provide a mask",
+            )
+            continue
         try:
             mask_bool = np.asarray(mask).astype(bool)
         except Exception as exc:
-            raise RadiomicsCourseExtractionError(
-                f"Expected ROI {name!r} in {rs_path} could not be converted to a mask: {exc}"
-            ) from exc
-        if not mask_bool.any():
-            raise RadiomicsCourseExtractionError(
-                f"Expected ROI {name!r} in {rs_path} produced an empty required mask"
+            _record_or_raise(
+                name,
+                f"Expected ROI {name!r} in {rs_path} could not be converted to a mask: {exc}",
             )
+            continue
+        if not mask_bool.any():
+            _record_or_raise(
+                name,
+                f"Expected ROI {name!r} in {rs_path} produced an "
+                f"{'empty mask' if best_effort else 'empty required mask'}",
+                failure_kind="degenerate_mask",
+            )
+            continue
         out[str(name)] = mask_bool
     return out
 
@@ -757,10 +801,6 @@ def radiomics_for_course(config: PipelineConfig, course_dir: Path, custom_struct
             import pandas as pd
 
             existing_df = pd.read_excel(out_path, engine="openpyxl")
-            existing_df = existing_df.drop(
-                columns=["extraction_status", "extraction_status_detail", "voxel_count"],
-                errors="ignore",
-            )
             _resume_identity_pairs(existing_df)
         except Exception as exc:
             logger.warning(
@@ -809,9 +849,12 @@ def radiomics_for_course(config: PipelineConfig, course_dir: Path, custom_struct
         if conda_out is None:
             _invalidate_radiomics_outputs(out_path)
             return RadiomicsCourseOutcome.nothing_to_do("conda backend found no eligible ROIs")
-        return RadiomicsCourseOutcome.extracted(conda_out)
+        return outcome_from_output(conda_out)
     rows: List[Dict] = []
     tasks: List[tuple[str, str, np.ndarray, bool]] = []
+    roi_failures: List[Dict[str, str]] = []
+    source_counts: Dict[str, Dict[str, int]] = {}
+    prepared_failure_pairs: set[tuple[str, str]] = set()
 
     # Determine which custom ROIs belong to the current source/ROI identity set.
     # A configured skip is an explicit ineligibility decision, not a failed mask.
@@ -859,9 +902,38 @@ def radiomics_for_course(config: PipelineConfig, course_dir: Path, custom_struct
         if not rs_path.exists():
             continue
         try:
+            source_failures: List[Dict[str, str]] = []
+            is_best_effort = not roi_source_is_required(source)
             masks = _rtstruct_masks(
-                course_dirs.dicom_ct, rs_path, skip_rois=configured_skip_rois
+                course_dirs.dicom_ct,
+                rs_path,
+                skip_rois=configured_skip_rois,
+                best_effort=is_best_effort,
+                failure_outcomes=source_failures if is_best_effort else None,
             )
+            for failure in source_failures:
+                failure["source"] = source
+                failure_record = {
+                    "modality": "CT",
+                    "segmentation_source": source,
+                    "roi_name": failure["roi_name"],
+                    "roi_original_name": failure["roi_name"],
+                    "course_dir": str(course_dir),
+                    "patient_id": course_dir.parent.name,
+                    "course_id": course_dir.name,
+                    "structure_cropped": False,
+                    "extraction_status": failure["status"],
+                    "extraction_status_detail": failure["reason"],
+                    "extraction_failure_kind": failure["failure_kind"],
+                }
+                rows.append(failure_record)
+                prepared_failure_pairs.add((source, failure["roi_name"]))
+            roi_failures.extend(source_failures)
+            source_counts.setdefault(
+                source,
+                {"attempted": 0, "extracted": 0, "failed": 0},
+            )["failed"] += len(source_failures)
+            source_counts[source]["attempted"] += len(source_failures)
         except RadiomicsCourseExtractionError:
             _invalidate_radiomics_outputs(out_path)
             raise
@@ -990,13 +1062,33 @@ def radiomics_for_course(config: PipelineConfig, course_dir: Path, custom_struct
 
     if existing_df is not None:
         expected_pairs = {(source, roi) for source, roi, _mask, _cropped in tasks}
+        expected_pairs |= prepared_failure_pairs
         try:
             existing_pairs = _resume_identity_pairs(existing_df)
         except ValueError as exc:
             logger.warning("Invalidating unusable resume workbook for %s: %s", course_dir, exc)
             existing_pairs = set()
+        missing_required = sorted(
+            (source, roi)
+            for source, roi in (expected_pairs - existing_pairs)
+            if roi_source_is_required(source)
+        )
+        if missing_required:
+            _invalidate_radiomics_outputs(out_path)
+            missing_text = ", ".join(
+                f"{source}/{roi}" for source, roi in missing_required
+            )
+            raise RadiomicsCourseExtractionError(
+                f"Persisted radiomics output is missing required ROI outcome(s): {missing_text}"
+            )
         if expected_pairs and existing_pairs == expected_pairs:
-            return RadiomicsCourseOutcome.extracted(out_path)
+            return outcome_from_output(
+                out_path,
+                required_by_identity={
+                    (source, roi): roi_source_is_required(source)
+                    for source, roi in expected_pairs
+                },
+            )
         logger.warning(
             "Invalidating incomplete resume workbook for %s: expected %d source/ROI "
             "identities, found %d",
@@ -1013,8 +1105,23 @@ def radiomics_for_course(config: PipelineConfig, course_dir: Path, custom_struct
             min_voxels, max_voxels_full = _derive_voxel_limits(config)
             voxel_count = int(np.asarray(mask).astype(bool).sum())
             if voxel_count < min_voxels:
-                return {"__status__": "below_min_voxels", "segmentation_source": source,
-                        "roi_original_name": roi}
+                return {
+                    "__status__": "below_min_voxels",
+                    "extraction_status": "below_minimum_voxels",
+                    "extraction_status_detail": (
+                        f"ROI contains {voxel_count} voxels; configured minimum is {min_voxels}"
+                    ),
+                    "extraction_failure_kind": "degenerate_mask",
+                    "segmentation_source": source,
+                    "roi_name": roi,
+                    "roi_original_name": roi,
+                    "modality": "CT",
+                    "course_dir": str(course_dir),
+                    "patient_id": course_dir.parent.name,
+                    "course_id": course_dir.name,
+                    "structure_cropped": bool(cropped),
+                    "voxel_count": voxel_count,
+                }
 
             # Large-ROI detection should reflect the *effective* workload after resampling.
             # CT radiomics typically resamples to ~1mm isotropic, so thick-slice CT can
@@ -1047,7 +1154,22 @@ def radiomics_for_course(config: PipelineConfig, course_dir: Path, custom_struct
             })
             return rec
         except Exception as e:
-            raise RuntimeError(f"Radiomics failed for {source}/{roi}: {e}") from e
+            detail = f"Radiomics failed for {source}/{roi}: {e}"
+            if not roi_source_is_required(source):
+                return {
+                    "__status__": "failed",
+                    "extraction_status": "failed",
+                    "extraction_status_detail": detail,
+                    "extraction_failure_kind": "extraction_error",
+                    "segmentation_source": source,
+                    "roi_name": roi,
+                    "roi_original_name": roi,
+                    "course_dir": str(course_dir),
+                    "patient_id": course_dir.parent.name,
+                    "course_id": course_dir.name,
+                    "structure_cropped": bool(cropped),
+                }
+            raise RuntimeError(detail) from e
     if tasks:
         sequential_env = os.environ.get('RTPIPELINE_RADIOMICS_SEQUENTIAL', '').lower() in ('1', 'true', 'yes')
         if sequential_env:
@@ -1067,14 +1189,69 @@ def radiomics_for_course(config: PipelineConfig, course_dir: Path, custom_struct
             max_workers=max_workers,
             logger=logger,
         )
-        if any(rec is None for rec in results):
+        if len(results) != len(tasks):
             _invalidate_radiomics_outputs(out_path)
             raise RadiomicsCourseExtractionError(
-                f"Radiomics course {course_dir} is incomplete: one or more ROI tasks failed"
+                f"Radiomics course {course_dir} returned {len(results)} ROI outcomes for "
+                f"{len(tasks)} attempted tasks"
             )
-        for rec in results:
-            if rec and "__status__" not in rec:
-                rows.append(rec)
+        for task, rec in zip(tasks, results):
+            source, roi, _mask, cropped = task
+            status = (rec or {}).get("extraction_status")
+            internal_status = (rec or {}).get("__status__")
+            if internal_status == "skipped" or status == "declared_skip":
+                continue
+            counts = source_counts.setdefault(
+                source,
+                {"attempted": 0, "extracted": 0, "failed": 0},
+            )
+            counts["attempted"] += 1
+            if not rec:
+                if roi_source_is_required(source):
+                    _invalidate_radiomics_outputs(out_path)
+                    raise RadiomicsCourseExtractionError(
+                        f"Radiomics course {course_dir} is incomplete: required ROI "
+                        f"{source}/{roi} returned no outcome record"
+                    )
+                rec = {
+                    "modality": "CT",
+                    "segmentation_source": source,
+                    "roi_name": roi,
+                    "roi_original_name": roi,
+                    "course_dir": str(course_dir),
+                    "patient_id": course_dir.parent.name,
+                    "course_id": course_dir.name,
+                    "structure_cropped": bool(cropped),
+                    "extraction_status": "failed",
+                    "extraction_status_detail": "worker returned no outcome record",
+                    "extraction_failure_kind": "extraction_error",
+                }
+                status = "failed"
+            if status not in (None, "success"):
+                counts["failed"] += 1
+                detail = str(rec.get("extraction_status_detail", "unknown error"))
+                if (
+                    roi_source_is_required(source)
+                    and not extraction_status_is_nonfatal_for_required(status)
+                ):
+                    _invalidate_radiomics_outputs(out_path)
+                    raise RadiomicsCourseExtractionError(
+                        f"Radiomics course {course_dir} is incomplete: required ROI "
+                        f"{source}/{roi} failed: {detail}"
+                    )
+                roi_failures.append(
+                    {
+                        "roi_name": roi,
+                        "source": source,
+                        "status": str(status),
+                        "failure_kind": str(rec.get("extraction_failure_kind", "extraction_error")),
+                        "reason": detail,
+                    }
+                )
+                rows.append({k: v for k, v in rec.items() if not k.startswith("__")})
+                continue
+            counts["extracted"] += 1
+            rows.append(rec)
     if not rows:
         try:
             from .radiomics_conda import (
@@ -1089,7 +1266,7 @@ def radiomics_for_course(config: PipelineConfig, course_dir: Path, custom_struct
                 )
                 fallback_out = radiomics_for_course_ct_nifti_fallback(course_dir, config)
                 if fallback_out is not None:
-                    return RadiomicsCourseOutcome.extracted(fallback_out)
+                    return outcome_from_output(fallback_out)
         except Exception as exc:
             _invalidate_radiomics_outputs(out_path)
             if isinstance(exc, RadiomicsCourseExtractionError):
@@ -1098,7 +1275,23 @@ def radiomics_for_course(config: PipelineConfig, course_dir: Path, custom_struct
                 f"CT TotalSegmentator NIfTI fallback failed for {course_dir}: {exc}"
             ) from exc
         _invalidate_radiomics_outputs(out_path)
-        return RadiomicsCourseOutcome.nothing_to_do("no eligible radiomics regions")
+        return RadiomicsCourseOutcome.nothing_to_do(
+            "no eligible radiomics regions",
+            roi_counts=source_counts,
+        )
+    outcome = RadiomicsCourseOutcome.extracted(
+        out_path,
+        roi_counts=source_counts,
+        roi_failures=roi_failures,
+        detail=(
+            f"extracted {sum(values['extracted'] for values in source_counts.values())} "
+            f"of {sum(values['attempted'] for values in source_counts.values())} "
+            "attempted ROIs"
+        ),
+    )
+    diagnostics = course_diagnostic_columns(outcome)
+    for row in rows:
+        row.update(diagnostics)
     try:
         import pandas as pd
         df_new = pd.DataFrame(rows)
@@ -1111,7 +1304,7 @@ def radiomics_for_course(config: PipelineConfig, course_dir: Path, custom_struct
                         df_new[col] = np.nan
                 df_new = df_new.loc[:, template_cols]
                 df = pd.concat([existing_df, df_new], ignore_index=True)
-                df = df.drop_duplicates(subset=["segmentation_source", "roi_original_name", "patient_id", "course_id"], keep="first")
+                df = df.drop_duplicates(subset=["segmentation_source", "roi_original_name", "patient_id", "course_id"], keep="last")
             except Exception:
                 df = pd.concat([existing_df, df_new], ignore_index=True)
         else:
@@ -1141,7 +1334,7 @@ def radiomics_for_course(config: PipelineConfig, course_dir: Path, custom_struct
                     parquet_path, context="invalidating a failed Parquet refresh"
                 )
                 logger.debug("Parquet save failed (non-critical): %s (retry: %s)", parquet_err, parquet_err2)
-        return RadiomicsCourseOutcome.extracted(out)
+        return outcome
     except Exception as e:
         _invalidate_radiomics_outputs(out_path)
         raise RadiomicsCourseExtractionError(
@@ -1696,6 +1889,9 @@ def run_radiomics(config: PipelineConfig, courses: List["object"], custom_struct
                 raise RadiomicsCourseExtractionError(
                     f"Expected course radiomics workbook is unreadable: {p}: {exc}"
                 ) from exc
+            if isinstance(outcome, RadiomicsCourseOutcome):
+                for column, value in course_diagnostic_columns(outcome).items():
+                    df[column] = value
             for position, (column, value) in enumerate((
                 ('patient_id', getattr(course, 'patient_id', Path(course.dirs.root).parts[-2])),
                 ('course_key', getattr(course, 'course_key', Path(course.dirs.root).name)),
