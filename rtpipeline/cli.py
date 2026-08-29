@@ -143,6 +143,15 @@ class _DVHTask:
         return self.course.dirs.root
 
 
+@dataclass(frozen=True, slots=True)
+class _DVHStageOutcome:
+    """A successful computed or contract-declared no-metrics DVH outcome."""
+
+    status: str
+    output_path: Path | None
+    reason_code: str | None = None
+
+
 @dataclass(slots=True)
 class _VisualizationTask:
     course: CourseOutput
@@ -226,10 +235,11 @@ def _execute_crop_task(task: _CropTask) -> bool:
     return True
 
 
-def _execute_dvh_task(task: _DVHTask) -> bool:
+def _execute_dvh_task(task: _DVHTask) -> _DVHStageOutcome | None:
+    from .course_contract import load_course_contract
     from .dvh import dvh_for_course
 
-    dvh_for_course(
+    output = dvh_for_course(
         task.course.dirs.root,
         task.custom_structures,
         parallel_workers=task.parallel_workers,
@@ -237,7 +247,33 @@ def _execute_dvh_task(task: _DVHTask) -> bool:
         rx_dose_gy=task.course.total_prescription_gy,
         max_total_dose_gy=task.max_total_dose_gy,
     )
-    return True
+    contract = load_course_contract(task.course.dirs.root)
+    decision = contract.data["dvh"]
+    if output is not None:
+        output_path = Path(output)
+        if not output_path.is_file() or decision.get("metrics_status") != "computed":
+            return None
+        return _DVHStageOutcome(status="computed", output_path=output_path)
+
+    if (
+        contract.dose_qc.get("pass") is not True
+        or decision.get("metrics_status") != "not_computed"
+        or decision.get("output") is not None
+    ):
+        return None
+    qc_path = task.course.dirs.root / "metadata" / "dvh_qc.json"
+    try:
+        qc = json.loads(qc_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    recorded = (qc.get("dose_resolution") or {}).get("dvh")
+    if qc.get("status") != "skipped" or recorded != decision:
+        return None
+    return _DVHStageOutcome(
+        status="not_computed",
+        output_path=None,
+        reason_code=str(decision.get("reason_code") or "") or None,
+    )
 
 
 def _execute_visualization_task(task: _VisualizationTask) -> bool:

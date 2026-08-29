@@ -1,5 +1,8 @@
 import os
 from dataclasses import dataclass, field
+
+
+DEFAULT_MAX_TOTAL_DOSE_GY = 100.0
 from pathlib import Path
 
 
@@ -15,7 +18,7 @@ class PipelineConfig:
     merge_criteria: str = "same_ct_study"  # one of: same_ct_study, frame_of_reference
     max_days_between_plans: int | None = None  # optional time window filter (days)
     # Dose values above this threshold are reported for clinical-plausibility review.
-    max_total_dose_gy: float = 100.0
+    max_total_dose_gy: float = DEFAULT_MAX_TOTAL_DOSE_GY
     # Diagnostic CT-only cohorts require an explicit opt-in. The default prevents
     # an RT linkage failure from being misrepresented as a valid CT-only export.
     allow_ct_only_courses: bool = False

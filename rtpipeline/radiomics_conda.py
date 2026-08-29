@@ -28,7 +28,8 @@ from .custom_models import (
     list_custom_model_outputs,
     validate_custom_model_output_inventory,
 )
-from .layout import build_course_dirs, find_dcm
+from .layout import build_course_dirs
+from .course_contract import ALL_SERIES_RADIOMICS_TEMP_SCOPE, load_course_contract
 from .radiomics_outcomes import (
     RadiomicsCourseExtractionError,
     RadiomicsCourseOutcome,
@@ -1703,9 +1704,23 @@ def process_radiomics_batch(
 def radiomics_for_course_ct_nifti_fallback(
     course_dir: Path,
     config: Any,
+    *,
+    allow_all_series_temp: bool = False,
 ) -> Optional[Path]:
     """Extract CT radiomics from TotalSegmentator NIfTI masks when no RS is usable."""
     course_dir = Path(course_dir)
+    contract = load_course_contract(course_dir)
+    is_temp = contract.data.get("scope") == ALL_SERIES_RADIOMICS_TEMP_SCOPE
+    if is_temp and (
+        not allow_all_series_temp or ".all_series_radiomics" not in course_dir.parts
+    ):
+        raise RadiomicsCourseExtractionError(
+            "all-series temporary contract is restricted to the all-series dispatcher"
+        )
+    if allow_all_series_temp and not is_temp:
+        raise RadiomicsCourseExtractionError(
+            "all-series dispatcher requires an all-series temporary contract"
+        )
     course_dirs = build_course_dirs(course_dir)
     seg_dir = course_dirs.segmentation_totalseg
     output_path = course_dir / "radiomics_ct.xlsx"
@@ -1718,7 +1733,12 @@ def radiomics_for_course_ct_nifti_fallback(
     params_file = str(config.radiomics_params_file) if getattr(config, "radiomics_params_file", None) else None
     skip_rois = _ct_skip_rois(config)
     min_voxels_limit, max_voxels_limit = _ct_voxel_limits(config)
-    nifti_by_stem = _ct_nifti_candidates(course_dir)
+    planning_nifti = contract.planning_ct_nifti
+    nifti_by_stem = (
+        {_strip_nii_suffix(planning_nifti): planning_nifti}
+        if planning_nifti is not None
+        else {}
+    )
 
     series_dirs = [p for p in sorted(seg_dir.iterdir()) if p.is_dir()]
     if any(seg_dir.glob("*.nii*")):
@@ -1771,8 +1791,8 @@ def radiomics_for_course_ct_nifti_fallback(
         nonlocal dicom_image_path, dicom_spacing
         if dicom_image_path is not None and dicom_spacing is not None:
             return dicom_image_path, dicom_spacing
-        ct_dir = course_dirs.dicom_ct
-        if not ct_dir.exists():
+        ct_dir = contract.planning_ct_dir
+        if ct_dir is None:
             return None
         try:
             reader = sitk.ImageSeriesReader()
@@ -1996,7 +2016,9 @@ def radiomics_for_course_ct_nifti_fallback(
 def radiomics_for_course(
     course_dir: Path,
     config: Any,
-    custom_structures_config: Optional[str] = None
+    custom_structures_config: Optional[str] = None,
+    *,
+    allow_all_series_temp: bool = False,
 ) -> Optional[Path]:
     """
     Extract radiomics features for a course using conda environment.
@@ -2010,19 +2032,38 @@ def radiomics_for_course(
         Path to the radiomics Excel file if successful, None otherwise
     """
     course_dir = Path(course_dir)
+    contract = load_course_contract(course_dir)
+    is_temp = contract.data.get("scope") == ALL_SERIES_RADIOMICS_TEMP_SCOPE
+    if is_temp and (
+        not allow_all_series_temp or ".all_series_radiomics" not in course_dir.parts
+    ):
+        raise RadiomicsCourseExtractionError(
+            "all-series temporary contract is restricted to the all-series dispatcher"
+        )
+    if allow_all_series_temp and not is_temp:
+        raise RadiomicsCourseExtractionError(
+            "all-series dispatcher requires an all-series temporary contract"
+        )
     course_dirs = build_course_dirs(course_dir)
     output_path = course_dir / "radiomics_ct.xlsx"
 
     # Check for CT DICOM files
-    ct_dir = course_dirs.dicom_ct
-    has_ct_dicom = ct_dir.exists() and any(path.is_file() for path in ct_dir.rglob('*'))
-    has_ct_nifti = bool(_ct_nifti_candidates(course_dir))
+    ct_dir = contract.planning_ct_dir
+    has_ct_dicom = ct_dir is not None
+    has_ct_nifti = contract.planning_ct_nifti is not None
     if not has_ct_dicom and not has_ct_nifti:
         logger.warning(f"No CT image found in {course_dir}")
         _invalidate_radiomics_outputs(output_path)
         return None
+    if ct_dir is None:
+        raise RadiomicsCourseExtractionError(
+            f"Course contract has a CT NIfTI but no planning CT DICOM directory: {course_dir}"
+        )
 
-    rs_manual = find_dcm(course_dirs.dicom_rtstruct, "RS.dcm", course_dir)
+    rs_manual = (
+        contract.authoritative_rtstruct_path
+        or course_dir / "metadata" / ".contract-rtstruct-absent"
+    )
     rs_auto = course_dir / "RS_auto.dcm"
     rs_custom = course_dir / "RS_custom.dcm"
 
@@ -2124,11 +2165,9 @@ def radiomics_for_course(
 
     # Each source is extracted independently. Never collapse colliding ROI names
     # from Manual, AutoRTS, Custom, or a custom model into one merged identity.
-    source_specs: List[Tuple[str, Path, Optional[List[str]]]] = []
-    if rs_manual.exists():
-        source_specs.append(("Manual", rs_manual, None))
-    if rs_auto.exists():
-        source_specs.append(("AutoRTS_total", rs_auto, None))
+    from .radiomics import _deduplicate_rtstruct_sources, _standard_rtstruct_sources
+
+    source_specs = _standard_rtstruct_sources(contract, course_dir)
     if custom_wanted:
         source_specs.append(("Custom", rs_custom, custom_wanted))
     for model_name, model_course_dir in custom_model_outputs:
@@ -2139,6 +2178,7 @@ def radiomics_for_course(
                 custom_model_expected_rois[model_name],
             )
         )
+    source_specs = _deduplicate_rtstruct_sources(source_specs)
 
     if not source_specs:
         logger.info(

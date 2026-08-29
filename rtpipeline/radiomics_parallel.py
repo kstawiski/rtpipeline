@@ -34,7 +34,8 @@ from typing import Any, Dict, Iterable, Iterator, List, Optional, Sequence, Set,
 
 import pydicom
 
-from .layout import build_course_dirs, find_dcm
+from .layout import build_course_dirs
+from .course_contract import ALL_SERIES_RADIOMICS_TEMP_SCOPE, load_course_contract
 from .utils import mask_is_cropped, radiomics_mp_context
 from .custom_models import (
     list_custom_model_outputs,
@@ -662,17 +663,32 @@ def parallel_radiomics_for_course(
     custom_structures_config: Optional[Path] = None,
     max_workers: Optional[int] = None,
     use_cropped: bool = False,
+    *,
+    allow_all_series_temp: bool = False,
 ) -> RadiomicsCourseOutcome:
     """Parallel CT radiomics for one course (process isolation)."""
     course_dir = Path(course_dir)
+    contract = load_course_contract(course_dir)
+    is_temp = contract.data.get("scope") == ALL_SERIES_RADIOMICS_TEMP_SCOPE
+    if is_temp and (
+        not allow_all_series_temp or ".all_series_radiomics" not in course_dir.parts
+    ):
+        raise RadiomicsCourseExtractionError(
+            "all-series temporary contract is restricted to the all-series dispatcher"
+        )
+    if allow_all_series_temp and not is_temp:
+        raise RadiomicsCourseExtractionError(
+            "all-series dispatcher requires an all-series temporary contract"
+        )
     out_path = course_dir / "radiomics_ct.xlsx"
     course_dirs = build_course_dirs(course_dir)
-    ct_dir = course_dirs.dicom_ct
-    ct_files_present = ct_dir.exists() and any(path.is_file() for path in ct_dir.rglob('*'))
+    ct_dir = contract.planning_ct_dir
+    ct_files_present = ct_dir is not None
     if not ct_files_present:
         logger.info("No CT image for radiomics in %s", course_dir)
         _invalidate_radiomics_outputs(out_path)
         return RadiomicsCourseOutcome.nothing_to_do("CT series is absent")
+    assert ct_dir is not None
     existing_df = None
     if getattr(config, "resume", False) and out_path.exists():
         try:
@@ -712,7 +728,12 @@ def parallel_radiomics_for_course(
             raise RadiomicsCourseExtractionError(
                 f"Conda-based radiomics helper unavailable for {course_dir}: {exc}"
             ) from exc
-        conda_out = conda_radiomics_for_course(course_dir, config, custom_structures_config)
+        conda_out = conda_radiomics_for_course(
+            course_dir,
+            config,
+            str(custom_structures_config) if custom_structures_config else None,
+            allow_all_series_temp=allow_all_series_temp,
+        )
         if conda_out is None:
             _invalidate_radiomics_outputs(out_path)
             return RadiomicsCourseOutcome.nothing_to_do("conda backend found no eligible ROIs")
@@ -730,13 +751,15 @@ def parallel_radiomics_for_course(
                 course_dir,
             )
 
+    from .radiomics import _standard_rtstruct_sources
+
     sources: List[Tuple[str, Path, Optional[List[str]]]] = []
-    rs_manual = find_dcm(course_dirs.dicom_rtstruct, "RS.dcm", course_dir)
-    if rs_manual.exists():
-        sources.append(("Manual", rs_manual, None))
+    rs_manual = (
+        contract.authoritative_rtstruct_path
+        or course_dir / "metadata" / ".contract-rtstruct-absent"
+    )
     rs_auto = course_dir / rs_auto_name
-    if rs_auto.exists():
-        sources.append(("AutoRTS_total", rs_auto, None))
+    sources.extend(_standard_rtstruct_sources(contract, course_dir))
 
     # Custom structures (optional): prepare RS_custom but extract only custom ROIs (no duplication)
     rs_custom = course_dir / "RS_custom.dcm"

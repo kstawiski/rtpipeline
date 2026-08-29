@@ -31,6 +31,10 @@ import pytest
 import SimpleITK as sitk
 
 import rtpipeline.radiomics_conda as rc
+from course_contract_test_utils import (
+    write_minimal_course_contract,
+    write_synthetic_planning_ct,
+)
 import rtpipeline.cli as cli
 from rtpipeline.radiomics_conda import (
     RadiomicsCheckpoint,
@@ -297,10 +301,15 @@ def test_ct_totalseg_nifti_fallback_writes_tagged_workbook(tmp_path, monkeypatch
     (course / "metadata").mkdir(parents=True)
 
     _write_nifti(nifti_dir / "CT_SERIES.nii.gz", np.ones((5, 5, 5), dtype=np.int16))
-    (nifti_dir / "CT_SERIES.metadata.json").write_text(
-        json.dumps({"series_instance_uid": "1.2.3.CT"}),
-        encoding="utf-8",
+    ct_dir = write_synthetic_planning_ct(course)
+    write_minimal_course_contract(
+        course,
+        planning_ct_dir=ct_dir,
+        planning_ct_nifti=nifti_dir / "CT_SERIES.nii.gz",
     )
+    series_uid = json.loads(
+        (course / "metadata" / "case_metadata.json").read_text(encoding="utf-8")
+    )["course_contract"]["planning_ct"]["series_instance_uid"]
     mask = np.zeros((5, 5, 5), dtype=np.uint8)
     mask[1:4, 1:4, 1:4] = 1
     _write_nifti(seg_dir / "total--liver.nii.gz", mask)
@@ -326,13 +335,13 @@ def test_ct_totalseg_nifti_fallback_writes_tagged_workbook(tmp_path, monkeypatch
     tasks = seen["tasks"]
     assert len(tasks) == 1
     assert tasks[0]["roi_name"] == "liver"
-    assert tasks[0]["metadata"]["series_uid"] == "1.2.3.CT"
+    assert tasks[0]["metadata"]["series_uid"] == series_uid
     assert tasks[0]["metadata"]["segmentation_source"] == "AutoTS_total_nifti_fallback"
     assert tasks[0]["metadata"]["roi_original_name"] == "liver"
 
     df = pd.read_excel(out)
     assert df["segmentation_source"].tolist() == ["AutoTS_total_nifti_fallback"]
-    assert df["series_uid"].tolist() == ["1.2.3.CT"]
+    assert df["series_uid"].tolist() == [series_uid]
     assert df["roi_name"].tolist() == ["liver"]
     assert df["original_firstorder_Mean"].tolist() == [1]
 
@@ -342,6 +351,7 @@ def test_ct_totalseg_nifti_fallback_not_used_when_rs_selected(tmp_path, monkeypa
     course = tmp_path / "P1" / "2024-12"
     (course / "DICOM" / "CT").mkdir(parents=True)
     (course / "RS_auto.dcm").write_bytes(b"not read by this test")
+    write_minimal_course_contract(course)
 
     monkeypatch.setattr(rc, "_select_usable_rtstruct", lambda *paths: course / "RS_auto.dcm")
 
@@ -355,6 +365,18 @@ def test_ct_totalseg_nifti_fallback_not_used_when_rs_selected(tmp_path, monkeypa
         )
     )
     monkeypatch.setitem(sys.modules, "rt_utils", fake_rt_utils)
+
+    class _FakeReader:
+        def GetGDCMSeriesFileNames(self, _path):
+            return ["ct_000.dcm"]
+
+        def SetFileNames(self, _paths):
+            return None
+
+        def Execute(self):
+            return sitk.Image([2, 2, 2], sitk.sitkInt16)
+
+    monkeypatch.setattr(rc.sitk, "ImageSeriesReader", _FakeReader)
 
     def fail_fallback(*args, **kwargs):
         raise AssertionError("NIfTI fallback must not run when an RS is selected")
