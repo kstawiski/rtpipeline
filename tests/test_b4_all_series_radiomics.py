@@ -206,7 +206,11 @@ def test_materialize_temp_course_tree(tmp_path):
         _write_valid_ct(src / f"s{i}.dcm", series_uid=series_uid, study_uid=study_uid)
     (src / "notdicom.txt").write_text("nope")
     rs = tmp_path / "rtstruct.dcm"
-    write_synthetic_rtstruct(rs)
+    write_synthetic_rtstruct(
+        rs,
+        referenced_series_uid=series_uid,
+        roi_names=("PTV1",),
+    )
     course = tmp_path / "course"
     assert rad._materialize_temp_course_tree(course, src, rs) is True
     ct = course / "DICOM" / "CT"
@@ -240,8 +244,13 @@ def test_materialize_returns_false_when_no_slices(tmp_path):
 def test_all_series_temp_contract_is_consumed_only_by_all_series_dispatch(tmp_path, monkeypatch):
     src = tmp_path / "series"
     src.mkdir()
-    _write_valid_ct(src / "slice.dcm", series_uid=generate_uid(), study_uid=generate_uid())
-    rs = write_synthetic_rtstruct(tmp_path / "rs.dcm")
+    series_uid = generate_uid()
+    _write_valid_ct(src / "slice.dcm", series_uid=series_uid, study_uid=generate_uid())
+    rs = write_synthetic_rtstruct(
+        tmp_path / "rs.dcm",
+        referenced_series_uid=series_uid,
+        roi_names=("PTV1",),
+    )
     course = tmp_path / ".all_series_radiomics" / "P1" / "series"
     assert rad._materialize_temp_course_tree(course, src, rs) is True
 
@@ -283,10 +292,15 @@ def test_parallel_all_series_conda_fallback_preserves_scope_opt_in(
 ):
     src = tmp_path / "series"
     src.mkdir()
+    series_uid = generate_uid()
     _write_valid_ct(
-        src / "slice.dcm", series_uid=generate_uid(), study_uid=generate_uid()
+        src / "slice.dcm", series_uid=series_uid, study_uid=generate_uid()
     )
-    rs = write_synthetic_rtstruct(tmp_path / "rs.dcm")
+    rs = write_synthetic_rtstruct(
+        tmp_path / "rs.dcm",
+        referenced_series_uid=series_uid,
+        roi_names=("PTV1",),
+    )
     course = tmp_path / ".all_series_radiomics" / "P1" / "series"
     assert rad._materialize_temp_course_tree(course, src, rs) is True
 
@@ -321,10 +335,15 @@ def test_parallel_all_series_conda_fallback_preserves_scope_opt_in(
 def test_all_series_parallel_and_conda_emit_one_auto_source(tmp_path, monkeypatch):
     src = tmp_path / "series"
     src.mkdir()
+    series_uid = generate_uid()
     _write_valid_ct(
-        src / "slice.dcm", series_uid=generate_uid(), study_uid=generate_uid()
+        src / "slice.dcm", series_uid=series_uid, study_uid=generate_uid()
     )
-    rs = write_synthetic_rtstruct(tmp_path / "rs.dcm")
+    rs = write_synthetic_rtstruct(
+        tmp_path / "rs.dcm",
+        referenced_series_uid=series_uid,
+        roi_names=("PTV1",),
+    )
     course = tmp_path / ".all_series_radiomics" / "P1" / "series"
     assert rad._materialize_temp_course_tree(course, src, rs) is True
     config = cast(Any, _Cfg(tmp_path))

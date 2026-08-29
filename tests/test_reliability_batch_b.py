@@ -61,6 +61,7 @@ import rtpipeline.radiomics_conda as rc
 import rtpipeline.radiomics_parallel as rp
 import rtpipeline.utils as ru
 from rtpipeline.config import PipelineConfig
+from rtpipeline.course_contract import load_course_contract
 from rtpipeline.layout import build_course_dirs
 from rtpipeline.radiomics_conda import RadiomicsCheckpoint
 from rtpipeline.radiomics_outcomes import RadiomicsCourseStatus
@@ -477,7 +478,9 @@ def test_adaptive_workers_backfill_submit_guarded_source_guard():
     assert "restart_due_to_pool_failure" in src
 
 
-def _write_rtstruct_with_rois(path: Path, roi_names: list[str]) -> Path:
+def _write_rtstruct_with_rois(
+    path: Path, roi_names: list[str], source_series_uid: str | None = None
+) -> Path:
     meta = FileMetaDataset()
     sop_uid = generate_uid()
     meta.MediaStorageSOPClassUID = _RTSTRUCT_SOP_CLASS_UID
@@ -495,6 +498,14 @@ def _write_rtstruct_with_rois(path: Path, roi_names: list[str]) -> Path:
         roi.ROIName = name
         rois.append(roi)
     ds.StructureSetROISequence = rois
+    if source_series_uid:
+        series = Dataset()
+        series.SeriesInstanceUID = source_series_uid
+        study = Dataset()
+        study.RTReferencedSeriesSequence = Sequence([series])
+        reference = Dataset()
+        reference.RTReferencedStudySequence = Sequence([study])
+        ds.ReferencedFrameOfReferenceSequence = Sequence([reference])
     path.parent.mkdir(parents=True, exist_ok=True)
     ds.save_as(str(path), write_like_original=False)
     return path
@@ -509,8 +520,10 @@ def test_parallel_radiomics_recovers_from_broken_pool_during_backfill(tmp_path, 
     course_dirs.dicom_ct.mkdir(parents=True, exist_ok=True)
     (course_dirs.dicom_ct / "image.dcm").write_bytes(b"test fixture")
     roi_names = ["PTV", "BLADDER", "RECTUM", "FEMUR_L"]
-    _write_rtstruct_with_rois(course_dir / "RS_auto.dcm", roi_names)
     _write_contract(course_dir)
+    contract = load_course_contract(course_dir)
+    planning_uid = str(contract.planning_ct["series_instance_uid"])
+    _write_rtstruct_with_rois(course_dir / "RS_auto.dcm", roi_names, planning_uid)
 
     config = PipelineConfig(dicom_root=tmp_path / "dicom", output_root=tmp_path / "out", logs_root=tmp_path / "logs")
 

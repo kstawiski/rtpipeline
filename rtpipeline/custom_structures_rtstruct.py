@@ -71,6 +71,59 @@ def _write_rtstruct_atomic(out_path: Path, write_fn) -> None:
             pass
 
 
+def _quarantine_rejected_rtstruct(path: Path, reason: str) -> Optional[Path]:
+    """Revoke a rejected RS_custom before attempting its replacement."""
+    if not path.exists():
+        return None
+    counter = 0
+    while True:
+        suffix = f".{os.getpid()}" if counter == 0 else f".{os.getpid()}.{counter}"
+        quarantine = path.parent / f".{path.name}.rejected{suffix}"
+        if not quarantine.exists():
+            break
+        counter += 1
+    try:
+        os.replace(path, quarantine)
+    except OSError:
+        try:
+            if path.is_dir():
+                import shutil
+                shutil.rmtree(path)
+            else:
+                path.unlink()
+        except OSError as exc:
+            raise OSError(f"could not revoke rejected RTSTRUCT {path}") from exc
+        quarantine = None
+    logger.info("Revoked rejected RTSTRUCT %s (%s)", path, reason)
+    return quarantine
+
+
+def record_rs_custom_resume_decision(course_dir: Path, action: str, reason: str) -> None:
+    """Persist the RS_custom decision without making auditing a rebuild dependency."""
+    try:
+        from .course_contract import load_course_contract
+        from .segmentation import record_segmentation_resume_decision
+
+        contract = load_course_contract(course_dir)
+        record_segmentation_resume_decision(
+            course_dir,
+            {
+                "RS_custom": {
+                    "action": action,
+                    "model_run": False,
+                    "artefact": "RS_custom.dcm",
+                    "reason": reason,
+                }
+            },
+            source={
+                "planning_ct_series_instance_uid": str(
+                    contract.planning_ct.get("series_instance_uid") or ""
+                )
+            },
+        )
+    except Exception as exc:
+        logger.warning("Could not record RS_custom resume decision for %s: %s", course_dir, exc)
+
 def _roi_numbers(rtstruct_ds) -> list[int]:
     numbers: list[int] = []
     for roi in getattr(rtstruct_ds, "StructureSetROISequence", []) or []:
@@ -105,8 +158,15 @@ def _is_rs_custom_stale(
     config_path: Optional[Union[str, Path]],
     rs_manual: Optional[Path],
     rs_auto: Optional[Path],
+    *,
+    allow_contractless: bool = False,
 ) -> bool:
-    """Return True when RS_custom.dcm should be regenerated."""
+    """Return True when RS_custom.dcm should be regenerated.
+
+    Production callers require the authoritative course contract.  The explicit
+    ``allow_contractless`` mode is retained only for small utility callers that
+    intentionally use the historical mtime-only behavior.
+    """
     if not rs_custom_path.exists():
         return True
 
@@ -119,6 +179,37 @@ def _is_rs_custom_stale(
 
     try:
         course_dir = rs_custom_path.parent
+        contract = None
+        if not allow_contractless:
+            try:
+                contract = load_course_contract(course_dir)
+            except Exception as exc:
+                logger.warning(
+                    "Cannot establish the authoritative course contract for %s; "
+                    "rejecting RS_custom.dcm: %s",
+                    course_dir,
+                    exc,
+                )
+                return True
+        if contract is not None:
+            planning_ct = contract.planning_ct
+            planning_series_uid = str(planning_ct.get("series_instance_uid") or "").strip()
+            if not planning_series_uid:
+                logger.warning("Planning CT series identity is absent for %s; regenerating RS_custom.dcm", course_dir)
+                return True
+            try:
+                from .auto_rtstruct import _seg_source_series_uids
+
+                source_series_uids = _seg_source_series_uids(rs_custom_path)
+            except Exception:
+                source_series_uids = set()
+            if source_series_uids != {planning_series_uid}:
+                logger.warning(
+                    "RS_custom.dcm at %s does not reference planning CT series %s; regenerating",
+                    rs_custom_path,
+                    planning_series_uid,
+                )
+                return True
         # RS_auto_cropped.dcm has been observed to be geometrically misregistered
         # when paired with the original CT series. Many existing RS_custom.dcm
         # files were generated in workflows that preferred RS_auto_cropped, so we
@@ -136,6 +227,18 @@ def _is_rs_custom_stale(
                 return True
 
         rs_custom_mtime = rs_custom_path.stat().st_mtime
+
+        if contract is not None:
+            dependency_paths: list[Path] = []
+            planning_ct_dir = contract.planning_ct_dir
+            if planning_ct_dir is not None:
+                dependency_paths.extend(item for item in planning_ct_dir.rglob("*") if item.is_file())
+            planning_ct_nifti = contract.planning_ct_nifti
+            if planning_ct_nifti is not None and planning_ct_nifti.is_file():
+                dependency_paths.append(planning_ct_nifti)
+            if any(item.stat().st_mtime > rs_custom_mtime for item in dependency_paths):
+                logger.info("Contracted planning CT input is newer than RS_custom.dcm, regenerating")
+                return True
 
         if config_path:
             config_path = Path(config_path)
@@ -164,6 +267,29 @@ def _is_rs_custom_stale(
                     return True
 
         logger.debug("RS_custom.dcm is up-to-date, reusing existing file")
+        if contract is not None:
+            try:
+                from .segmentation import record_segmentation_resume_decision
+
+                record_segmentation_resume_decision(
+                    course_dir,
+                    {
+                        "RS_custom": {
+                            "action": "reused",
+                            "model_run": False,
+                            "artefact": "RS_custom.dcm",
+                            "reason": "valid RTSTRUCT references the contracted planning CT series and inputs are current",
+                        }
+                    },
+                    source={
+                        "planning_ct_series_instance_uid": str(
+                            contract.planning_ct.get("series_instance_uid") or ""
+                        ),
+                        "artifact": "RS_custom.dcm",
+                    },
+                )
+            except Exception as exc:
+                logger.warning("Could not record RS_custom reuse for %s: %s", course_dir, exc)
         return False
     except Exception as exc:  # pragma: no cover - defensive
         logger.warning("Failed to check RS_custom.dcm staleness (%s); regenerating", exc)
@@ -533,6 +659,28 @@ def _create_custom_structures_rtstruct(
             (meta_dir / "rs_custom_meta.json").write_text(json.dumps(meta_payload, indent=2), encoding="utf-8")
         except Exception as exc:
             logger.debug("Failed writing rs_custom_meta.json for %s: %s", course_dir, exc)
+        try:
+            from .segmentation import record_segmentation_resume_decision
+
+            record_segmentation_resume_decision(
+                course_dir,
+                {
+                    "RS_custom": {
+                        "action": "rebuilt",
+                        "model_run": False,
+                        "artefact": "RS_custom.dcm",
+                        "reason": "rebuilt from current contracted RTSTRUCT and source masks",
+                    }
+                },
+                source={
+                    "planning_ct_series_instance_uid": str(
+                        contract.planning_ct.get("series_instance_uid") or ""
+                    ),
+                    "artifact": "RS_custom.dcm",
+                },
+            )
+        except Exception as exc:
+            logger.warning("Could not record RS_custom rebuild for %s: %s", course_dir, exc)
         return out_path
 
     except Exception as exc:  # pragma: no cover - defensive
