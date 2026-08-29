@@ -29,9 +29,10 @@ not exercise the production code path.
 
 ``_geometry_compatible`` is the universal pre-resample safety net (applied to both
 the combined-segmentation path and the per-ROI binary-mask fallback): if the
-selected segmentation does not share the CT's physical space (origin / spacing /
-direction within tolerance), the build aborts instead of emitting a wrong RTSTRUCT.
-"""
+selected segmentation does not share the CT's physical voxel grid, the build
+aborts instead of emitting a wrong RTSTRUCT. The grid comparison accepts signed
+axis permutations used by NIfTI/DICOM conversion but rejects altered spacing,
+voxel counts, physical extents, and non-corresponding oblique directions."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -301,13 +302,58 @@ def test_geometry_small_origin_shift_within_tolerance() -> None:
     assert _geometry_compatible(_img(origin=(0.5, 0.0, 0.0)), _img()) is True
 
 
+def test_geometry_nifti_y_axis_convention_is_compatible() -> None:
+    """A dcm2niix Y flip with the matching origin covers the same CT volume."""
+    ct = _img(origin=(0.0, 0.0, 0.0), spacing=(1.0, 1.0, 3.0), size=(8, 8, 8))
+    nifti = _img(
+        origin=(0.0, 7.0, 0.0),
+        spacing=(1.0, 1.0, 3.0),
+        direction=(1, 0, 0, 0, -1, 0, 0, 0, 1),
+        size=(8, 8, 8),
+    )
+    assert _geometry_compatible(nifti, ct) is True
+
+
+def test_geometry_signed_axis_permutation_is_compatible() -> None:
+    """A pure index-axis reorder with its paired grid metadata is compatible."""
+    ct = _img(origin=(0.0, 0.0, 0.0), spacing=(1.0, 2.0, 3.0), size=(20, 4, 6))
+    reordered = _img(
+        origin=(0.0, 0.0, 0.0),
+        spacing=(2.0, 1.0, 3.0),
+        direction=(0, 1, 0, 1, 0, 0, 0, 0, 1),
+        size=(4, 20, 6),
+    )
+    assert _geometry_compatible(reordered, ct) is True
+
+
+def test_geometry_translated_by_fifty_mm_is_incompatible() -> None:
+    translated = _img(origin=(50.0, 0.0, 0.0))
+    assert _geometry_compatible(translated, _img()) is False
+
+
+def test_geometry_different_spacing_is_incompatible() -> None:
+    different_spacing = _img(spacing=(1.1, 1.0, 3.0))
+    assert _geometry_compatible(different_spacing, _img()) is False
+
+
+def test_geometry_different_voxel_count_is_incompatible() -> None:
+    different_count = _img(size=(8, 8, 7))
+    assert _geometry_compatible(different_count, _img()) is False
+
+
+def test_geometry_oblique_direction_is_incompatible() -> None:
+    oblique = _img(
+        direction=(
+            0.98480775, -0.17364818, 0,
+            0.17364818, 0.98480775, 0,
+            0, 0, 1,
+        )
+    )
+    assert _geometry_compatible(oblique, _img()) is False
+
+
 def test_geometry_large_origin_shift_incompatible() -> None:
     assert _geometry_compatible(_img(origin=(250.0, 120.0, -400.0)), _img()) is False
-
-
-def test_geometry_different_direction_incompatible() -> None:
-    rotated = _img(direction=(0, 1, 0, 1, 0, 0, 0, 0, 1))
-    assert _geometry_compatible(rotated, _img()) is False
 
 
 def test_geometry_nonidentity_direction_self_compatible() -> None:
@@ -497,14 +543,17 @@ def test_build_geometry_net_skips_mismatched_nifti(tmp_path, monkeypatch) -> Non
     assert not (course / "RS_auto.dcm").exists()
 
 
-def test_build_geometry_net_accepts_matching_nifti(tmp_path, monkeypatch) -> None:
-    """seg_img path: matching geometry passes the net and ROIs are added."""
+def test_build_geometry_net_accepts_nifti_axis_convention(tmp_path, monkeypatch) -> None:
+    """seg_img path: the NIfTI/DICOM convention difference passes the net."""
     from rtpipeline import auto_rtstruct as ar
 
     course = tmp_path / "course"
     dirs = ar.build_course_dirs(course)
     _write_ct_slice(dirs.dicom_ct, generate_uid(), generate_uid())
-    ref = _img(origin=(0.0, 0.0, 0.0))
+    ref = _img(
+        origin=(0.0, 7.0, 0.0),
+        direction=(1, 0, 0, 0, -1, 0, 0, 0, 1),
+    )
     _write_multilabel(dirs.segmentation_totalseg / "planning", "planning", ref)
     _patch_build_env(ar, monkeypatch, _img(origin=(0.0, 0.0, 0.0)))
     out = ar.build_auto_rtstruct(course)
@@ -546,8 +595,12 @@ def test_build_binary_fallback_succeeds_when_all_compatible(tmp_path, monkeypatc
     dirs = ar.build_course_dirs(course)
     _write_ct_slice(dirs.dicom_ct, generate_uid(), generate_uid())
     seg_dir = dirs.segmentation_totalseg / "planning"
-    _write_binary_mask(seg_dir, "planning--total--liver", _img(origin=(0.0, 0.0, 0.0)))
-    _write_binary_mask(seg_dir, "planning--total--bone", _img(origin=(0.0, 0.0, 0.0)))
+    nifti_ref = _img(
+        origin=(0.0, 7.0, 0.0),
+        direction=(1, 0, 0, 0, -1, 0, 0, 0, 1),
+    )
+    _write_binary_mask(seg_dir, "planning--total--liver", nifti_ref)
+    _write_binary_mask(seg_dir, "planning--total--bone", nifti_ref)
     _patch_build_env(ar, monkeypatch, _img(origin=(0.0, 0.0, 0.0)))
     out = ar.build_auto_rtstruct(course)
     assert out is not None and out.exists()
