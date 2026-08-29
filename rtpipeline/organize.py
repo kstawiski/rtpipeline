@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import datetime
+import hashlib
 import json
 import logging
 import os
@@ -23,11 +24,22 @@ import SimpleITK as sitk
 from pydicom.uid import generate_uid
 from scipy.ndimage import map_coordinates
 
-from .config import PipelineConfig
+from .config import DEFAULT_MAX_TOTAL_DOSE_GY, PipelineConfig
+from .course_contract import (
+    COURSE_CONTRACT_VERSION,
+    DOSE_GRID_SEMANTICS,
+    UNKNOWN_DELIVERY_DOSE_GRID_SEMANTICS,
+    DOSE_RESPONSE_FIELD,
+    CourseContractError,
+    _ct_provenance,
+    build_dvh_decision,
+    load_course_contract,
+    relative_contract_path,
+)
 from .ct import CTInstance, index_ct_series, pick_primary_series, copy_ct_series, _clear_dir
 from .dicom_copy import DicomCopyConfig, DicomCopyManager, get_copy_manager, reset_copy_manager
 from .inventory import materialize_patient_series_from_inventory
-from .layout import CourseDirs, build_course_dirs, course_dir_name, find_dcm
+from .layout import CourseDirs, build_course_dirs, course_dir_name
 from .metadata import LinkedSet, group_by_course, link_rt_sets, parse_date
 from .modality_classifier import classify_series
 from .rt_details import extract_rt, StructInfo, has_target_volumes, target_volume_names
@@ -81,6 +93,14 @@ class CourseOutput:
     unresolved_record_plan_uids: list[str] = field(default_factory=list)
     planning_ct_status: str = "unknown"
     planning_ct_referenced_series_uids: list[str] = field(default_factory=list)
+    planning_ct_series_uid: str | None = None
+    selected_plan_contract: list[dict[str, object]] = field(default_factory=list)
+    selected_dose_contract: list[dict[str, object]] = field(default_factory=list)
+    per_plan_delivery_contract: list[dict[str, object]] = field(default_factory=list)
+    authoritative_rtstruct_uid: str | None = None
+    dose_classification: dict[str, object] = field(default_factory=dict)
+    dose_qc: dict[str, object] = field(default_factory=dict)
+    course_contract: dict[str, object] = field(default_factory=dict)
 
 
 class OrganizeDiscoveryError(RuntimeError):
@@ -311,34 +331,30 @@ def _hydrate_existing_course(
     if not data and not has_rs and not has_ct:
         return None
 
-    course_id = str(data.get("course_id") or (meta_hint.get("dir_name") if meta_hint else course_dir.name))
+    try:
+        contract = load_course_contract(course_dir)
+    except CourseContractError as exc:
+        logger.info(
+            "Not hydrating %s/%s: authoritative course contract is missing or stale: %s",
+            patient_id,
+            course_key,
+            exc,
+        )
+        return None
+
+    course_id = str(contract.data.get("course_id") or course_dir.name)
     course_start = data.get("course_start_date") or data.get("course_start") or (meta_hint.get("start_iso") if meta_hint else None)
     if isinstance(course_start, str) and not course_start:
         course_start = None
 
-    # Search for RTPLAN/RTDOSE/RTSTRUCT in subdirectory layout or legacy root
-    rp_path = find_dcm(course_dirs.dicom_rtplan, "RP.dcm", course_dir)
-    rd_path = find_dcm(course_dirs.dicom_rtdose, "RD.dcm", course_dir)
-    rs_path = find_dcm(course_dirs.dicom_rtstruct, "RS.dcm", course_dir)
+    # Contract paths are authoritative. A missing artifact was rejected above.
+    absent = course_dir / "metadata" / ".contract-artifact-absent"
+    rp_path = contract.plan_artifact_path or absent
+    rd_path = contract.dose_grid_path or absent
+    rs_path = contract.authoritative_rtstruct_path or absent
 
     # C4 fix: validate all paths loaded from JSON metadata to prevent path traversal
-    primary_nifti: Optional[Path] = None
-    primary_str = data.get("primary_nifti") if data else None
-    if isinstance(primary_str, str) and primary_str:
-        cand = Path(primary_str)
-        try:
-            from .utils import validate_path
-            cand = validate_path(cand, course_dir, allow_absolute=True)
-            if cand.exists():
-                primary_nifti = cand
-        except ValueError:
-            logger.warning("Path traversal blocked for primary_nifti: %s", primary_str)
-    if primary_nifti is None and course_dirs.nifti.exists():
-        candidates = sorted(course_dirs.nifti.glob("*.nii*"))
-        for cand in candidates:
-            if cand.is_file():
-                primary_nifti = cand
-                break
+    primary_nifti: Optional[Path] = contract.planning_ct_nifti
 
     # A course whose CT was copied but never converted is INCOMPLETE, not done.
     # Hydrating it would mark it processed and leave it without a NIfTI for the
@@ -353,19 +369,6 @@ def _hydrate_existing_course(
         logger.info(
             "Not hydrating %s/%s: CT is present but no NIfTI was produced; "
             "the course will be reprocessed.",
-            patient_id,
-            course_key,
-        )
-        return None
-    # ``find_dcm`` has already resolved the current nested layout and the
-    # legacy root layout. Use the discovered path, together with a nonempty
-    # historical metadata pointer, as the course inventory. This keeps resume
-    # validation tied to what is present on disk rather than one key's shape.
-    has_discovered_plan = rp_path.is_file() or bool(data.get("rp_path"))
-    if not _plan_checkpoint_is_complete(data, has_discovered_plan):
-        logger.info(
-            "Not hydrating %s/%s: plan-bearing checkpoint lacks valid delivery or planning-CT "
-            "adjudication; the course will be reprocessed.",
             patient_id,
             course_key,
         )
@@ -388,67 +391,68 @@ def _hydrate_existing_course(
     if not related_files and course_dirs.dicom_related.exists():
         related_files = [p for p in course_dirs.dicom_related.rglob("*.dcm") if p.is_file()]
 
-    total_rx = data.get("total_prescription_gy") if data else None
-    try:
-        total_rx_val = float(total_rx) if total_rx not in (None, "") else None
-    except (TypeError, ValueError):
-        total_rx_val = None
-    delivered_value = data.get("delivered_dose_gy") if data else None
-    try:
-        delivered_value = float(delivered_value) if delivered_value not in (None, "") else None
-    except (TypeError, ValueError):
-        delivered_value = None
-    delivery_status = str(data.get("delivery_status") or "no_records_at_all")
-    delivery_method = data.get("delivery_method")
-    delivered_record_count = int(data.get("delivered_record_count") or 0)
-    delivered_fraction_count = int(data.get("delivered_fraction_count") or 0)
-    planned_fraction_count = data.get("planned_fraction_count")
-    try:
-        planned_fraction_count = int(planned_fraction_count) if planned_fraction_count not in (None, "") else None
-    except (TypeError, ValueError):
-        planned_fraction_count = None
-    delivery_plan_details = data.get("delivery_plan_details")
-    if not isinstance(delivery_plan_details, list):
-        delivery_plan_details = []
-    unresolved_record_plan_uids = data.get("unresolved_record_plan_uids")
-    if not isinstance(unresolved_record_plan_uids, list):
-        unresolved_record_plan_uids = []
-    delivery_warnings = data.get("delivery_warnings")
-    if not isinstance(delivery_warnings, list):
-        delivery_warnings = []
-    planning_ct_status = str(data.get("planning_ct_status") or "unknown")
-    planning_ct_referenced_series_uids = data.get("planning_ct_referenced_series_uids")
-    if not isinstance(planning_ct_referenced_series_uids, list):
-        planning_ct_referenced_series_uids = []
+    total_rx_val = contract.prescribed_dose_gy
+    delivered_value = contract.delivered_dose_gy
+    delivery_contract = contract.delivery
+    delivery_status = str(delivery_contract.get("status") or "")
+    delivery_method = delivery_contract.get("method")
+    delivery_plan_details = list(delivery_contract.get("per_plan") or [])
+    selected_delivery = [
+        item for item in delivery_plan_details if item.get("selected_for_dose_grid") is True
+    ]
+    delivered_record_count = sum(
+        int(item.get("delivered_record_count") or 0) for item in selected_delivery
+    )
+    delivered_fraction_count = sum(
+        int(item.get("delivered_fraction_count") or 0) for item in selected_delivery
+    )
+    planned_total = sum(
+        int(item.get("planned_fraction_count") or 0) for item in selected_delivery
+    )
+    planned_fraction_count = planned_total or None
+    unresolved_record_plan_uids = list(
+        delivery_contract.get("unresolved_record_plan_uids") or []
+    )
+    delivery_warnings = list(delivery_contract.get("warnings") or [])
+    planning_ct_status = str(contract.planning_ct.get("status") or "")
+    planning_ct_referenced_series_uids = list(
+        contract.planning_ct.get("referenced_series_uids") or []
+    )
+    planning_ct_series_uid = str(contract.planning_ct.get("series_instance_uid") or "") or None
+    contract_selected_plans: list[dict[str, object]] = []
+    for index, item in enumerate(contract.selected_plans):
+        hydrated_item = dict(item)
+        hydrated_item["path"] = str(
+            contract.resolve_path(item.get("path"), f"selected_plans[{index}].path")
+        )
+        contract_selected_plans.append(hydrated_item)
+    contract_selected_doses: list[dict[str, object]] = []
+    for index, item in enumerate(contract.selected_doses):
+        hydrated_item = dict(item)
+        hydrated_item["path"] = str(
+            contract.resolve_path(item.get("path"), f"selected_doses[{index}].path")
+        )
+        contract_selected_doses.append(hydrated_item)
+    contract_per_plan: list[dict[str, object]] = []
+    for index, item in enumerate(contract.delivery.get("per_plan") or []):
+        hydrated_item = dict(item)
+        hydrated_item["plan_path"] = str(
+            contract.resolve_path(
+                item.get("plan_path"), f"delivery.per_plan[{index}].plan_path"
+            )
+        )
+        contract_per_plan.append(hydrated_item)
 
-    plan_uid: Optional[str] = None
-    dose_uid: Optional[str] = None
-    source_plan_uids: set[str] = set()
-    source_dose_uids: set[str] = set()
-
-    try:
-        ds_plan = pydicom.dcmread(str(rp_path), stop_before_pixels=True)
-        plan_uid = str(getattr(ds_plan, "SOPInstanceUID", "") or None)
-        for ref in getattr(ds_plan, "ReferencedRTPlanSequence", []) or []:
-            uid = getattr(ref, "ReferencedSOPInstanceUID", None)
-            if uid:
-                source_plan_uids.add(str(uid))
-    except Exception:
-        plan_uid = None
-
-    try:
-        ds_dose = pydicom.dcmread(str(rd_path), stop_before_pixels=True)
-        dose_uid = str(getattr(ds_dose, "SOPInstanceUID", "") or None)
-        for ref in getattr(ds_dose, "ReferencedRTPlanSequence", []) or []:
-            uid = getattr(ref, "ReferencedSOPInstanceUID", None)
-            if uid:
-                source_plan_uids.add(str(uid))
-        for ref in getattr(ds_dose, "ReferencedInstanceSequence", []) or []:
-            uid = getattr(ref, "ReferencedSOPInstanceUID", None)
-            if uid:
-                source_dose_uids.add(str(uid))
-    except Exception:
-        dose_uid = None
+    plan_artifact = contract.data.get("plan_artifact") or {}
+    dose_grid = contract.data.get("dose_grid") or {}
+    plan_uid = str(plan_artifact.get("sop_instance_uid") or "") or None
+    dose_uid = str(dose_grid.get("sop_instance_uid") or "") or None
+    source_plan_uids = {
+        str(item.get("sop_instance_uid") or "") for item in contract.selected_plans
+    }
+    source_dose_uids = {
+        str(item.get("sop_instance_uid") or "") for item in contract.selected_doses
+    }
 
     return CourseOutput(
         patient_id=patient_id,
@@ -472,11 +476,22 @@ def _hydrate_existing_course(
         delivered_record_count=delivered_record_count,
         delivered_fraction_count=delivered_fraction_count,
         planned_fraction_count=planned_fraction_count,
-        delivery_plan_details=delivery_plan_details,
+        delivery_plan_details=contract_per_plan,
         delivery_warnings=[str(item) for item in delivery_warnings],
         unresolved_record_plan_uids=unresolved_record_plan_uids,
         planning_ct_status=planning_ct_status,
         planning_ct_referenced_series_uids=planning_ct_referenced_series_uids,
+        planning_ct_series_uid=planning_ct_series_uid,
+        selected_plan_contract=contract_selected_plans,
+        selected_dose_contract=contract_selected_doses,
+        per_plan_delivery_contract=contract_per_plan,
+        authoritative_rtstruct_uid=(
+            str((contract.data.get("authoritative_rtstruct") or {}).get("sop_instance_uid") or "")
+            or None
+        ),
+        dose_classification=dict(contract.data.get("dose_classification") or {}),
+        dose_qc=dict(contract.dose_qc),
+        course_contract=dict(contract.data),
     )
 
 
@@ -1285,23 +1300,94 @@ def _calculate_delivery_summary(
     }
 
 
+def _per_plan_delivery_contract(
+    plan_paths: Iterable[Path],
+    record_paths: Iterable[Path],
+    selected_plan_paths: Iterable[Path],
+    copied_plan_paths: dict[Path, Path],
+    copied_record_paths: dict[Path, Path],
+) -> list[dict[str, object]]:
+    """Serialize RTRECORD evidence for every candidate plan in one course.
+
+    Selected membership and zero-record plans remain visible together. This is
+    intentionally separate from the course delivered-dose calculation, which
+    operates only on selected plans.
+    """
+    plans = list(dict.fromkeys(Path(path) for path in plan_paths))
+    selected = set(Path(path) for path in selected_plan_paths)
+    evidence = _record_delivery_evidence(record_paths)
+    details: list[dict[str, object]] = []
+    for path in plans:
+        meta = _plan_evidence(path)
+        uid = str(meta.get("sop_uid") or "")
+        plan_evidence = evidence.get(
+            uid,
+            {"instances": set(), "sessions": set(), "dates": set(), "records": []},
+        )
+        records = list(plan_evidence.get("records", []))
+        record_count = len(plan_evidence.get("instances", set()))
+        fraction_count = len(plan_evidence.get("sessions", set()))
+        copied = copied_plan_paths.get(path)
+        details.append(
+            {
+                "plan_path": str(copied or ""),
+                "plan_sop_uid": uid,
+                "prescribed_dose_gy": meta.get("total_rx_gy"),
+                "planned_fraction_count": int(meta.get("fractions_planned") or 0) or None,
+                "delivered_record_count": int(record_count),
+                "delivered_fraction_count": int(fraction_count),
+                "treatment_dates": sorted(str(value) for value in plan_evidence.get("dates", set())),
+                "record_paths": [
+                    str(copied_record_paths.get(Path(str(row.get("path") or "")), ""))
+                    for row in records
+                ],
+                "zero_delivery_records": record_count == 0,
+                "selected_for_dose_grid": path in selected,
+                "status": (
+                    "no_records"
+                    if record_count == 0
+                    else (
+                        "fully_delivered"
+                        if int(meta.get("fractions_planned") or 0) > 0
+                        and fraction_count >= int(meta.get("fractions_planned") or 0)
+                        else "partially_delivered"
+                    )
+                ),
+            }
+        )
+    return details
+
+
 def _dose_plausibility(
     prescribed_dose_gy: float | None,
     delivered_dose_gy: float | None,
     threshold_gy: float,
-) -> dict[str, bool | float]:
-    """Return field-specific and combined configurable dose warnings."""
+) -> dict[str, object]:
+    """Return a binding course dose-QC verdict at the configured threshold."""
     prescribed_warning = bool(
         prescribed_dose_gy is not None and prescribed_dose_gy > threshold_gy
     )
     delivered_warning = bool(
         delivered_dose_gy is not None and delivered_dose_gy > threshold_gy
     )
+    reasons: list[str] = []
+    if prescribed_warning and prescribed_dose_gy is not None:
+        reasons.append(
+            f"prescribed dose {prescribed_dose_gy:.6g} Gy exceeds configured maximum {float(threshold_gy):.6g} Gy"
+        )
+    if delivered_warning and delivered_dose_gy is not None:
+        reasons.append(
+            f"delivered dose {delivered_dose_gy:.6g} Gy exceeds configured maximum {float(threshold_gy):.6g} Gy"
+        )
+    passed = not (prescribed_warning or delivered_warning)
     return {
         "dose_plausibility_threshold_gy": float(threshold_gy),
         "prescribed_dose_plausibility_warning": prescribed_warning,
         "delivered_dose_plausibility_warning": delivered_warning,
         "dose_plausibility_warning": prescribed_warning or delivered_warning,
+        "dose_qc_status": "pass" if passed else "fail",
+        "dose_qc_pass": passed,
+        "dose_qc_reasons": reasons,
     }
 
 
@@ -1391,7 +1477,7 @@ def _replacement_partition(plans: List[dict]) -> tuple[int, tuple[int, ...]] | N
 def _classify_doses(
     plan_paths: List[Path],
     dose_paths: List[Path],
-    max_total_dose_gy: float = 100.0,
+    max_total_dose_gy: float = DEFAULT_MAX_TOTAL_DOSE_GY,
     treatment_record_paths: Optional[Iterable[Path]] = None,
 ) -> DoseClassification:
     """Select dose evidence without using free-text plan labels.
@@ -1434,25 +1520,54 @@ def _classify_doses(
         selected_plans = [
             meta["path"] for meta in plan_meta if meta.get("sop_uid") in covered
         ]
-        excluded = [
-            meta["path"]
-            for meta in dose_meta
-            if meta is not best_sum
-            and set(meta["referenced_plan_uids"])
-            and set(meta["referenced_plan_uids"]).issubset(covered)
-        ]
-        return DoseClassification(
-            classification="PLAN_SUM_used",
-            selected_doses=[best_sum["path"]],
-            selected_plans=selected_plans,
-            excluded_doses=excluded,
-            should_sum=False,
-            warnings=warnings,
-            reason=f"TPS-provided PLAN_SUM references {len(covered)} plan(s)",
+        delivered_uids = {
+            uid
+            for uid in covered
+            if delivery.get(uid, {}).get("instances", set())
+        }
+        if not record_paths or delivered_uids == covered:
+            excluded = [
+                meta["path"]
+                for meta in dose_meta
+                if meta is not best_sum
+                and set(meta["referenced_plan_uids"])
+                and set(meta["referenced_plan_uids"]).issubset(covered)
+            ]
+            return DoseClassification(
+                classification="PLAN_SUM_used",
+                selected_doses=[best_sum["path"]],
+                selected_plans=selected_plans,
+                excluded_doses=excluded,
+                should_sum=False,
+                warnings=warnings,
+                reason=f"TPS-provided PLAN_SUM references {len(covered)} plan(s)",
+            )
+        warnings.append(
+            "Excluded TPS PLAN_SUM because it contains at least one plan with zero delivery records"
         )
+        dose_meta = [meta for meta in dose_meta if meta is not best_sum]
+        if not delivered_uids or not dose_meta:
+            return DoseClassification(
+                classification="no_delivered_plan_dose",
+                selected_doses=[],
+                selected_plans=[],
+                excluded_doses=[meta["path"] for meta in plan_sum_doses],
+                should_sum=False,
+                warnings=warnings,
+                reason="No separable RTDOSE remains for a plan supported by RTRECORD",
+            )
 
-    plan_level = [meta for meta in dose_meta if meta["summation_type"] != "BEAM"]
+    plan_level = [meta for meta in dose_meta if meta["summation_type"] == "PLAN"]
     beam_doses = [meta for meta in dose_meta if meta["summation_type"] == "BEAM"]
+    unsupported_doses = [
+        meta for meta in dose_meta if meta["summation_type"] not in {"PLAN", "BEAM"}
+    ]
+    if unsupported_doses:
+        warnings.append(
+            "Excluded unsupported RTDOSE summation types: "
+            + ", ".join(sorted({str(meta["summation_type"]) for meta in unsupported_doses}))
+        )
+    dose_meta = plan_level + beam_doses
     if plan_level and beam_doses:
         covered = {
             uid for meta in plan_level for uid in meta["referenced_plan_uids"] if uid
@@ -1476,15 +1591,38 @@ def _classify_doses(
         selected_plans = [
             meta["path"] for meta in plan_meta if meta.get("sop_uid") in referenced
         ]
-        if len(referenced) == 1 and selected_plans:
+        delivered_references = {
+            uid for uid in referenced if delivery.get(uid, {}).get("instances", set())
+        }
+        if record_paths and delivered_references != referenced:
+            return DoseClassification(
+                classification="no_delivered_plan_dose",
+                selected_doses=[],
+                selected_plans=[],
+                excluded_doses=[meta["path"] for meta in dose_meta],
+                should_sum=False,
+                warnings=warnings + ["Excluded BEAM doses for a plan with zero delivery records"],
+                reason="RTRECORD does not support delivery of the BEAM-dose plan",
+            )
+        if len(referenced) == 1 and selected_plans and len(dose_meta) > 1:
             return DoseClassification(
                 classification="beam_doses_summed_to_plan",
                 selected_doses=[meta["path"] for meta in dose_meta],
                 selected_plans=selected_plans,
                 excluded_doses=[],
-                should_sum=len(dose_meta) > 1,
+                should_sum=True,
                 warnings=warnings,
                 reason=f"Summing {len(dose_meta)} BEAM dose(s) for one RTPLAN",
+            )
+        if len(referenced) == 1 and selected_plans:
+            return DoseClassification(
+                classification="single_beam_dose_rejected",
+                selected_doses=[],
+                selected_plans=[],
+                excluded_doses=[meta["path"] for meta in dose_meta],
+                should_sum=False,
+                warnings=warnings + ["A single BEAM RTDOSE is not a plan-level treatment dose grid"],
+                reason="Single BEAM RTDOSE cannot represent the complete plan dose",
             )
 
     candidates_by_plan: Dict[str, List[dict]] = defaultdict(list)
@@ -1541,7 +1679,7 @@ def _classify_doses(
         def rank(plan: dict) -> tuple:
             evidence = delivery.get(str(plan.get("sop_uid") or ""), {})
             return (
-                len(evidence.get("dates", set())),
+                len(evidence.get("instances", set())),
                 str(plan.get("plan_date") or ""),
                 str(plan.get("plan_time") or ""),
                 str(plan.get("sop_uid") or ""),
@@ -1553,6 +1691,23 @@ def _classify_doses(
     if duplicate_count:
         warnings.append(
             f"De-duplicated {duplicate_count} revision plan(s) with equivalent prescription and fraction signatures"
+        )
+
+    if record_paths and not any(
+        delivery.get(str(plan.get("sop_uid") or ""), {}).get("instances", set())
+        for plan in representatives
+    ):
+        warnings.append(
+            "Excluded every plan because RTRECORD objects exist but none references a course plan"
+        )
+        return DoseClassification(
+            classification="no_delivered_plan_dose",
+            selected_doses=[],
+            selected_plans=[],
+            excluded_doses=[dose_for_plan[str(plan["sop_uid"])]["path"] for plan in paired_plans],
+            should_sum=False,
+            warnings=warnings,
+            reason="No course RTPLAN has linked delivery evidence",
         )
 
     if len(representatives) == 1:
@@ -1585,22 +1740,35 @@ def _classify_doses(
         total_index, part_indices = replacement
         total = representatives[total_index]
         parts = [representatives[index] for index in part_indices]
-        total_support = len(delivery.get(str(total.get("sop_uid") or ""), {}).get("dates", set()))
+        total_support = len(delivery.get(str(total.get("sop_uid") or ""), {}).get("instances", set()))
         part_support = sum(
-            len(delivery.get(str(part.get("sop_uid") or ""), {}).get("dates", set()))
+            len(delivery.get(str(part.get("sop_uid") or ""), {}).get("instances", set()))
             for part in parts
         )
-        selected_representatives = parts if part_support > total_support else [total]
+        if total_support or part_support:
+            if total_support >= part_support and total_support > 0:
+                selected_representatives = [total]
+            else:
+                selected_representatives = [
+                    plan
+                    for plan in parts
+                    if delivery.get(str(plan.get("sop_uid") or ""), {}).get("instances", set())
+                ]
+        else:
+            selected_representatives = parts if part_support > total_support else [total]
         classification = "replacement_course_total"
         should_sum = len(selected_representatives) > 1
         warnings.append(
-            "A course-total prescription equalled the component replan prescriptions; selected one side of the equality"
+            "A course-total prescription equalled component prescriptions; RTRECORD-selected plans define dose-grid membership"
         )
     else:
         def plan_dates(plan: dict) -> set[str]:
             return set(delivery.get(str(plan.get("sop_uid") or ""), {}).get("dates", set()))
 
-        supported_candidates = [plan for plan in representatives if plan_dates(plan)]
+        def plan_records(plan: dict) -> set[str]:
+            return set(delivery.get(str(plan.get("sop_uid") or ""), {}).get("instances", set()))
+
+        supported_candidates = [plan for plan in representatives if plan_records(plan)]
         supported: List[dict] = []
         for plan in supported_candidates:
             dates = plan_dates(plan)
@@ -1608,7 +1776,7 @@ def _classify_doses(
                 (
                     other
                     for other in supported_candidates
-                    if other is not plan and dates < plan_dates(other)
+                    if other is not plan and dates and dates < plan_dates(other)
                 ),
                 None,
             )
@@ -1627,41 +1795,14 @@ def _classify_doses(
                 str(plan.get("sop_uid") or ""),
             ),
         )
-        encompassing_undelivered = (
-            bool(supported)
-            and largest not in supported
-            and all(
-                int(largest.get("fractions_planned") or 0)
-                > int(plan.get("fractions_planned") or 0)
-                and float(largest.get("total_rx_gy") or 0.0)
-                >= float(plan.get("total_rx_gy") or 0.0)
-                for plan in supported
-            )
-        )
-        if encompassing_undelivered:
-            selected_representatives = [largest]
-            classification = "replacement_course_total"
-            should_sum = False
-            warnings.append(
-                "Treatment records identify a shorter replacement plan; retained the encompassing course prescription rather than adding the partial plan"
-            )
-        elif supported:
+        if supported:
             selected_representatives = list(supported)
             for plan in representatives:
                 if plan in supported or plan in supported_candidates:
                     continue
-                completed_matching_phase = any(
-                    _same_fraction_dose(plan, delivered)
-                    and len(plan_dates(delivered))
-                    >= int(delivered.get("fractions_planned") or 0) > 0
-                    for delivered in supported
+                warnings.append(
+                    f"Excluded plan {plan.get('sop_uid')} because it has zero delivery records"
                 )
-                if completed_matching_phase:
-                    selected_representatives.append(plan)
-                else:
-                    warnings.append(
-                        f"Excluded plan {plan.get('sop_uid')} because treatment dates support another prescription and do not support this phase"
-                    )
             classification = (
                 "sequential_phases_summed"
                 if len(selected_representatives) > 1
@@ -1669,18 +1810,11 @@ def _classify_doses(
             )
             should_sum = len(selected_representatives) > 1
         elif record_paths:
-            largest = max(
-                representatives,
-                key=lambda plan: (
-                    int(plan.get("fractions_planned") or 0),
-                    float(plan.get("total_rx_gy") or 0.0),
-                    str(plan.get("sop_uid") or ""),
-                ),
-            )
             contained = any(
                 plan is not largest
                 and _same_fraction_dose(plan, largest)
-                and int(plan.get("fractions_planned") or 0) < int(largest.get("fractions_planned") or 0)
+                and int(plan.get("fractions_planned") or 0)
+                < int(largest.get("fractions_planned") or 0)
                 for plan in representatives
             )
             if contained:
@@ -1688,7 +1822,7 @@ def _classify_doses(
                 classification = "replacement_course_total"
                 should_sum = False
                 warnings.append(
-                    "Patient treatment records did not reference these plan revisions; retained the encompassing prescription rather than adding a partial plan"
+                    "No RTRECORD referenced this course; retained the encompassing planned prescription with delivery unknown"
                 )
             else:
                 selected_representatives = representatives
@@ -2987,6 +3121,7 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
         related_outputs: List[Path] = []
         seen_related: set[Path] = set()
         course_ct_series_uids: set[str] = set()
+        planning_ct_series_uid: str | None = None
 
         rp_dst = course_dir / "RP.dcm"
         rd_dst = course_dir / "RD.dcm"
@@ -3004,12 +3139,26 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
             if it.struct and it.struct.path not in struct_candidates:
                 struct_candidates.append(it.struct.path)
 
+        copied_plan_paths: dict[Path, Path] = {}
+        copied_dose_paths: dict[Path, Path] = {}
+        copied_struct_paths: dict[Path, Path] = {}
+        copied_record_paths: dict[Path, Path] = {}
         for src in plan_paths:
-            _copy_into(src, course_dirs.dicom_rtplan, copy_manager=copy_manager)
+            copied_plan_paths[src] = _copy_into(
+                src, course_dirs.dicom_rtplan, copy_manager=copy_manager
+            )
         for src in dose_paths:
-            _copy_into(src, course_dirs.dicom_rtdose, copy_manager=copy_manager)
+            copied_dose_paths[src] = _copy_into(
+                src, course_dirs.dicom_rtdose, copy_manager=copy_manager
+            )
         for src in struct_candidates:
-            _copy_into(src, course_dirs.dicom_rtstruct, copy_manager=copy_manager)
+            copied_struct_paths[src] = _copy_into(
+                src, course_dirs.dicom_rtstruct, copy_manager=copy_manager
+            )
+        for src in rt_file_index.get(patient_id, []):
+            copied_record_paths[src] = _copy_into(
+                src, course_dirs.dicom_related / "RTRECORD", copy_manager=copy_manager
+            )
 
         total_rx: float | None = None
         plan_sop_uid: Optional[str] = None
@@ -3019,6 +3168,8 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
         delivery_plan_paths: list[Path] = list(plan_paths)
         delivery_dose_paths: list[Path] = list(dose_paths)
         dose_classification_info: dict = {}
+        selected_plans: list[Path] = []
+        selected_doses: list[Path] = []
 
         # Classify doses from explicit plan references and available delivery records.
         if plan_paths and dose_paths:
@@ -3027,7 +3178,7 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
                 dose_classification = _classify_doses(
                     plan_paths=plan_paths,
                     dose_paths=dose_paths,
-                    max_total_dose_gy=float(getattr(config, "max_total_dose_gy", 100.0)),
+                    max_total_dose_gy=float(config.max_total_dose_gy),
                     treatment_record_paths=treatment_record_paths,
                 )
             else:
@@ -3036,7 +3187,7 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
                 dose_classification = _classify_doses(
                     plan_paths=plan_paths,
                     dose_paths=dose_paths,
-                    max_total_dose_gy=float(getattr(config, "max_total_dose_gy", 100.0)),
+                    max_total_dose_gy=float(config.max_total_dose_gy),
                 )
 
             logger.info(
@@ -3058,24 +3209,18 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
                 "warnings": dose_classification.warnings,
             }
 
-            selected_doses = dose_classification.selected_doses
-            selected_plans = dose_classification.selected_plans or _plan_paths_for_doses(plan_paths, selected_doses)
+            selected_doses = list(dose_classification.selected_doses)
+            selected_plans = list(
+                dose_classification.selected_plans
+                or _plan_paths_for_doses(plan_paths, selected_doses)
+            )
             if not selected_plans:
-                # Fail closed: the classifier legitimately selected no plans (e.g. a
-                # replan/PLAN_SUM whose referenced plan UID could not be resolved).
-                # Substituting every course plan here would reintroduce ITT-excluded
-                # replans into a summed plan. Fall back to the single earliest
-                # (first/ITT) course plan instead. dvh.py handles the equivalent
-                # case by SKIPPING dose resolution; organize must emit a course
-                # output, so it degrades to the single ITT plan rather than skipping
-                # (both share the _plan_paths_for_doses dose-reference primitive).
                 logger.warning(
-                    "Dose classification for %s/%s (%s) selected no plans matching the "
-                    "selected dose(s); falling back to the first course plan instead of "
-                    "summing all %d course plan(s)",
+                    "Dose classification for %s/%s (%s) selected no delivered plan; "
+                    "no treatment dose grid will be emitted from %d candidate plan(s)",
                     patient_id, course_id, dose_classification.classification, len(plan_paths),
                 )
-                selected_plans = [_earliest_dated_plan_path(items_sorted, plan_paths)]
+                selected_doses = []
             # Recompute total_rx from the FINAL resolved selected_plans (whichever of
             # the three sources above populated it) rather than only
             # dose_classification.selected_plans: a resolved-multi-plan sum via
@@ -3145,12 +3290,19 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
                     plan_sop_uid = str(plan_sum_ds.SOPInstanceUID)
 
             else:
-                # No doses selected (shouldn't happen, but handle gracefully)
-                logger.warning("No doses selected after classification for %s/%s", patient_id, course_id)
+                # Keep one plan artifact for treatment intent, but do not call it
+                # delivered membership and do not emit an RTDOSE grid.
+                logger.warning("No delivered doses selected after classification for %s/%s", patient_id, course_id)
+                if rd_dst.exists():
+                    rd_dst.unlink()
                 if plan_paths:
-                    _safe_copy(plan_paths[0], rp_dst, copy_manager=copy_manager)
+                    intent_plan = _earliest_dated_plan_path(items_sorted, plan_paths)
+                    selected_plans = [intent_plan]
+                    delivery_plan_paths = [intent_plan]
+                    delivery_dose_paths = []
+                    _safe_copy(intent_plan, rp_dst, copy_manager=copy_manager)
                     try:
-                        ds_plan_single = pydicom.dcmread(str(plan_paths[0]), stop_before_pixels=True)
+                        ds_plan_single = pydicom.dcmread(str(intent_plan), stop_before_pixels=True)
                         plan_sop_uid = str(getattr(ds_plan_single, "SOPInstanceUID", "") or None)
                     except Exception:
                         plan_sop_uid = None
@@ -3160,6 +3312,12 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
         else:
             # Fallback: missing plans or doses
             if plan_paths:
+                # A plan without a resolvable RTDOSE remains an explicit
+                # plan-only course. Preserve its membership for downstream
+                # consumers while leaving the dose grid absent.
+                selected_plans = [plan_paths[0]]
+                delivery_plan_paths = [plan_paths[0]]
+                delivery_dose_paths = []
                 _safe_copy(plan_paths[0], rp_dst, copy_manager=copy_manager)
                 try:
                     ds_plan_single = pydicom.dcmread(str(plan_paths[0]), stop_before_pixels=True)
@@ -3169,10 +3327,22 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
                 if plan_sop_uid:
                     source_plan_uids.append(plan_sop_uid)
             if dose_paths:
-                _safe_copy(dose_paths[0], rd_dst, copy_manager=copy_manager)
+                first_dose_meta = _extract_dose_metadata(dose_paths[0])
+                if (
+                    selected_plans
+                    and str(first_dose_meta.get("summation_type") or "").upper() in {"PLAN", "PLAN_SUM"}
+                ):
+                    selected_doses = [dose_paths[0]]
+                    _safe_copy(dose_paths[0], rd_dst, copy_manager=copy_manager)
+                elif rd_dst.exists():
+                    rd_dst.unlink()
                 try:
                     ds_dose_single = pydicom.dcmread(str(dose_paths[0]), stop_before_pixels=True)
-                    dose_sop_uid = str(getattr(ds_dose_single, "SOPInstanceUID", "") or None)
+                    dose_sop_uid = (
+                        str(getattr(ds_dose_single, "SOPInstanceUID", "") or None)
+                        if selected_doses
+                        else None
+                    )
                 except Exception:
                     dose_sop_uid = None
                 if dose_sop_uid:
@@ -3184,6 +3354,21 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
             except Exception:
                 total_rx = None
 
+        # A synthesized artifact must retain explicit source membership even when
+        # an integration replacement returns no provenance list.
+        if selected_plans and not source_plan_uids:
+            source_plan_uids = [
+                str(getattr(pydicom.dcmread(str(path), stop_before_pixels=True), "SOPInstanceUID", ""))
+                for path in selected_plans
+            ]
+            source_plan_uids = [uid for uid in source_plan_uids if uid]
+        if selected_doses and not source_dose_uids:
+            source_dose_uids = [
+                str(getattr(pydicom.dcmread(str(path), stop_before_pixels=True), "SOPInstanceUID", ""))
+                for path in selected_doses
+            ]
+            source_dose_uids = [uid for uid in source_dose_uids if uid]
+
         course_study = items_sorted[0].ct_study_uid if items_sorted else None
         struct_path: Optional[Path] = authoritative_struct_path
         if struct_path is None and struct_candidates:
@@ -3194,6 +3379,15 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
             )
         if struct_path:
             _safe_copy(struct_path, rs_dst, copy_manager=copy_manager)
+        authoritative_rtstruct_uid: str | None = None
+        if rs_dst.exists():
+            try:
+                ds_struct = pydicom.dcmread(str(rs_dst), stop_before_pixels=True, force=True)
+                authoritative_rtstruct_uid = str(
+                    getattr(ds_struct, "SOPInstanceUID", "") or ""
+                ) or None
+            except Exception:
+                authoritative_rtstruct_uid = None
         planning_ct_referenced_series_uids = sorted(
             referenced_ct_series_uids(struct_path) if struct_path else set()
         )
@@ -3224,7 +3418,8 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
         if series:
             first_inst = series[0] if series else None
             if first_inst is not None and getattr(first_inst, 'series_uid', None):
-                course_ct_series_uids.add(str(first_inst.series_uid))
+                planning_ct_series_uid = str(first_inst.series_uid)
+                course_ct_series_uids.add(planning_ct_series_uid)
             logger.info(
                 "Per-course planning CT for %s (%s): %s -> series ...%s (%d slices)",
                 patient_id, course_id, ct_select_status,
@@ -3317,7 +3512,45 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
             selected_dose_paths=delivery_dose_paths,
             reference_audit=delivery_reference_audit_by_patient.get(patient_id),
         )
-        dose_threshold_gy = float(getattr(config, "max_total_dose_gy", 100.0))
+        per_plan_delivery = _per_plan_delivery_contract(
+            plan_paths,
+            rt_file_index.get(patient_id, []),
+            selected_plans,
+            copied_plan_paths,
+            copied_record_paths,
+        )
+        delivery_by_uid = {
+            str(item.get("plan_sop_uid") or ""): item
+            for item in per_plan_delivery
+        }
+        selected_plan_contract: list[dict[str, object]] = []
+        for selected_path in selected_plans:
+            meta_plan = _plan_evidence(selected_path)
+            uid = str(meta_plan.get("sop_uid") or "")
+            delivery_item = delivery_by_uid.get(uid, {})
+            selected_plan_contract.append(
+                {
+                    "path": str(copied_plan_paths[selected_path]),
+                    "sop_instance_uid": uid,
+                    "prescribed_dose_gy": meta_plan.get("total_rx_gy"),
+                    "planned_fraction_count": int(meta_plan.get("fractions_planned") or 0) or None,
+                    "delivered_record_count": int(delivery_item.get("delivered_record_count") or 0),
+                    "delivered_fraction_count": int(delivery_item.get("delivered_fraction_count") or 0),
+                    "treatment_dates": list(delivery_item.get("treatment_dates") or []),
+                }
+            )
+        selected_dose_contract: list[dict[str, object]] = []
+        for selected_path in selected_doses:
+            meta_dose = _extract_dose_metadata(selected_path)
+            selected_dose_contract.append(
+                {
+                    "path": str(copied_dose_paths[selected_path]),
+                    "sop_instance_uid": str(meta_dose.get("sop_uid") or ""),
+                    "dose_summation_type": str(meta_dose.get("summation_type") or "").upper(),
+                    "referenced_plan_uids": list(meta_dose.get("referenced_plan_uids") or []),
+                }
+            )
+        dose_threshold_gy = float(config.max_total_dose_gy)
         dose_plausibility = _dose_plausibility(
             float(total_rx) if total_rx is not None else None,
             delivery_summary["delivered_dose_gy"],
@@ -3360,6 +3593,18 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
             unresolved_record_plan_uids=delivery_summary["unresolved_record_plan_uids"],
             planning_ct_status=ct_select_status,
             planning_ct_referenced_series_uids=planning_ct_referenced_series_uids,
+            planning_ct_series_uid=planning_ct_series_uid,
+            selected_plan_contract=selected_plan_contract,
+            selected_dose_contract=selected_dose_contract,
+            per_plan_delivery_contract=per_plan_delivery,
+            authoritative_rtstruct_uid=authoritative_rtstruct_uid,
+            dose_classification=dose_classification_info,
+            dose_qc={
+                "status": dose_plausibility["dose_qc_status"],
+                "pass": dose_plausibility["dose_qc_pass"],
+                "threshold_gy": dose_plausibility["dose_plausibility_threshold_gy"],
+                "reasons": dose_plausibility["dose_qc_reasons"],
+            },
         )
 
     if course_tasks:
@@ -3439,10 +3684,21 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
             seen_related: set[Path] = set()
             course_for_uids = {s.frame_of_reference_uid for s in s_list if s.frame_of_reference_uid}
             course_ct_series_uids: set[str] = set()
+            planning_ct_series_uid: str | None = None
 
             rs_dst = course_dir / "RS.dcm"
             primary_struct = s_list[0].path
             _safe_copy(primary_struct, rs_dst, copy_manager=copy_manager)
+            authoritative_rtstruct_uid: str | None = None
+            try:
+                ds_primary_struct = pydicom.dcmread(
+                    str(rs_dst), stop_before_pixels=True, force=True
+                )
+                authoritative_rtstruct_uid = str(
+                    getattr(ds_primary_struct, "SOPInstanceUID", "") or ""
+                ) or None
+            except Exception:
+                authoritative_rtstruct_uid = None
             for s in s_list:
                 _copy_into(s.path, course_dirs.dicom_rtstruct, copy_manager=copy_manager)
 
@@ -3473,7 +3729,8 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
             if series:
                 first_inst = series[0] if series else None
                 if first_inst is not None and getattr(first_inst, 'series_uid', None):
-                    course_ct_series_uids.add(str(first_inst.series_uid))
+                    planning_ct_series_uid = str(first_inst.series_uid)
+                    course_ct_series_uids.add(planning_ct_series_uid)
                 logger.info(
                     "Per-course planning CT (RS) for %s (%s): %s -> series ...%s (%d slices)",
                     patient_id, course_dir, ct_select_status,
@@ -3637,6 +3894,12 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
                 primary_nifti=Path(primary_nifti) if primary_nifti else None,
                 related_dicom=related_outputs,
                 total_prescription_gy=None,
+                planning_ct_status=ct_select_status,
+                planning_ct_referenced_series_uids=sorted(
+                    referenced_ct_series_uids(primary_struct)
+                ),
+                planning_ct_series_uid=planning_ct_series_uid,
+                authoritative_rtstruct_uid=authoritative_rtstruct_uid,
             )
 
         results = run_tasks_with_adaptive_workers(
@@ -3768,6 +4031,8 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
                 primary_nifti=Path(primary_nifti) if primary_nifti else None,
                 related_dicom=[],
                 total_prescription_gy=None,
+                planning_ct_status="ct_only",
+                planning_ct_series_uid=str(series_uid),
             )
 
         results = run_tasks_with_adaptive_workers(
@@ -4327,7 +4592,7 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
                 if co.total_prescription_gy is not None
                 else (plan_total_rx if plan_total_rx > 0 else None)
             )
-            dose_threshold_gy = float(getattr(config, "max_total_dose_gy", 100.0))
+            dose_threshold_gy = float(config.max_total_dose_gy)
             dose_plausibility = _dose_plausibility(
                 prescribed_dose_gy,
                 co.delivered_dose_gy,
@@ -4343,6 +4608,179 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
                     prescribed_dose_gy,
                     co.delivered_dose_gy,
                 )
+            selected_plan_contract: list[dict[str, object]] = []
+            for item in co.selected_plan_contract:
+                serialized = dict(item)
+                serialized["path"] = relative_contract_path(
+                    patient_dir, Path(str(item.get("path") or ""))
+                )
+                selected_plan_contract.append(serialized)
+            selected_dose_contract: list[dict[str, object]] = []
+            for item in co.selected_dose_contract:
+                serialized = dict(item)
+                serialized["path"] = relative_contract_path(
+                    patient_dir, Path(str(item.get("path") or ""))
+                )
+                selected_dose_contract.append(serialized)
+            per_plan_delivery_contract: list[dict[str, object]] = []
+            for item in co.per_plan_delivery_contract:
+                serialized = dict(item)
+                plan_path = str(item.get("plan_path") or "")
+                serialized["plan_path"] = (
+                    relative_contract_path(patient_dir, Path(plan_path))
+                    if plan_path
+                    else ""
+                )
+                per_plan_delivery_contract.append(serialized)
+
+            dose_qc_contract = {
+                "status": dose_plausibility["dose_qc_status"],
+                "pass": dose_plausibility["dose_qc_pass"],
+                "threshold_gy": dose_plausibility["dose_plausibility_threshold_gy"],
+                "reasons": dose_plausibility["dose_qc_reasons"],
+            }
+            authoritative_rtstruct = None
+            if co.rs_path and co.rs_path.exists() and co.authoritative_rtstruct_uid:
+                authoritative_rtstruct = {
+                    "sop_instance_uid": co.authoritative_rtstruct_uid,
+                    "path": relative_contract_path(patient_dir, co.rs_path),
+                }
+            plan_artifact = None
+            if co.rp_path.exists() and co.plan_sop_uid:
+                plan_artifact = {
+                    "sop_instance_uid": str(co.plan_sop_uid),
+                    "path": relative_contract_path(patient_dir, co.rp_path),
+                    "source_plan_uids": list(co.source_plan_uids),
+                }
+            selected_plan_uids = [
+                str(item.get("sop_instance_uid") or "")
+                for item in selected_plan_contract
+            ]
+            selected_dose_uids = [
+                str(item.get("sop_instance_uid") or "")
+                for item in selected_dose_contract
+            ]
+            selected_dose_types = [
+                str(item.get("dose_summation_type") or "").upper()
+                for item in selected_dose_contract
+            ]
+            dose_grid_contract = None
+            if co.rd_path.exists() and co.dose_sop_uid and selected_plan_uids and selected_dose_uids:
+                dose_grid_contract = {
+                    "sop_instance_uid": str(co.dose_sop_uid),
+                    "path": relative_contract_path(patient_dir, co.rd_path),
+                    "dose_summation_type": str(dose_grid.get("DoseSummationType") or "").upper(),
+                    "semantics": (
+                        UNKNOWN_DELIVERY_DOSE_GRID_SEMANTICS
+                        if co.delivery_status in {"delivered_but_records_absent", "no_records_at_all"}
+                        else DOSE_GRID_SEMANTICS
+                    ),
+                    "source_plan_uids": selected_plan_uids,
+                    "source_dose_uids": selected_dose_uids,
+                    "source_dose_summation_types": selected_dose_types,
+                }
+            nifti_provenance = None
+            if co.primary_nifti and Path(co.primary_nifti).is_file():
+                nifti_path = Path(co.primary_nifti)
+                nifti_base = nifti_path.name[:-7] if nifti_path.name.endswith(".nii.gz") else nifti_path.stem
+                nifti_sidecar = nifti_path.parent / f"{nifti_base}.metadata.json"
+                if not nifti_sidecar.exists():
+                    try:
+                        ct_provenance = _ct_provenance(co.dirs.dicom_ct)
+                        try:
+                            nifti_geometry = {
+                                "size": [int(value) for value in sitk.ReadImage(str(nifti_path)).GetSize()],
+                                "spacing": [float(value) for value in sitk.ReadImage(str(nifti_path)).GetSpacing()],
+                                "origin": [float(value) for value in sitk.ReadImage(str(nifti_path)).GetOrigin()],
+                                "direction": [float(value) for value in sitk.ReadImage(str(nifti_path)).GetDirection()],
+                            }
+                        except Exception:
+                            nifti_geometry = {}
+                        fallback_meta = {
+                            **ct_provenance,
+                            "nifti_geometry": nifti_geometry,
+                            "nifti_sha256": hashlib.sha256(nifti_path.read_bytes()).hexdigest(),
+                        }
+                        nifti_sidecar.write_text(json.dumps(fallback_meta, indent=2, sort_keys=True), encoding="utf-8")
+                    except Exception as exc:
+                        raise CourseContractError(
+                            f"planning CT NIfTI provenance sidecar is missing or cannot be created: {nifti_sidecar}"
+                        ) from exc
+                try:
+                    nifti_meta = json.loads(nifti_sidecar.read_text(encoding="utf-8"))
+                except Exception as exc:
+                    raise CourseContractError(
+                        f"planning CT NIfTI provenance sidecar is missing or unreadable: {nifti_sidecar}"
+                    ) from exc
+                if not isinstance(nifti_meta, dict):
+                    raise CourseContractError(
+                        f"planning CT NIfTI provenance sidecar is not an object: {nifti_sidecar}"
+                    )
+                required_nifti_keys = (
+                    "series_instance_uid",
+                    "sop_hash",
+                    "geometry",
+                    "nifti_geometry",
+                    "nifti_sha256",
+                )
+                if any(key not in nifti_meta for key in required_nifti_keys):
+                    raise CourseContractError(
+                        f"planning CT NIfTI provenance sidecar is incomplete: {nifti_sidecar}"
+                    )
+                nifti_provenance = {
+                    "sidecar_path": relative_contract_path(patient_dir, nifti_sidecar),
+                    "series_instance_uid": nifti_meta["series_instance_uid"],
+                    "sop_hash": nifti_meta["sop_hash"],
+                    "geometry": nifti_meta["geometry"],
+                    "nifti_geometry": nifti_meta["nifti_geometry"],
+                    "nifti_sha256": hashlib.sha256(nifti_path.read_bytes()).hexdigest(),
+                }
+            course_contract = {
+                "version": COURSE_CONTRACT_VERSION,
+                "authority": "organize",
+                "patient_id": str(co.patient_id),
+                "course_id": co.course_id,
+                "course_key": co.course_key,
+                "selected_plans": selected_plan_contract,
+                "selected_doses": selected_dose_contract,
+                "dose_classification": co.dose_classification,
+                "authoritative_rtstruct": authoritative_rtstruct,
+                "planning_ct": {
+                    "status": co.planning_ct_status,
+                    "series_instance_uid": str(co.planning_ct_series_uid or ""),
+                    "referenced_series_uids": co.planning_ct_referenced_series_uids,
+                    "nifti_provenance": nifti_provenance,
+                    "dicom_dir": (
+                        relative_contract_path(patient_dir, co.dirs.dicom_ct)
+                        if co.dirs.dicom_ct.is_dir() and any(co.dirs.dicom_ct.iterdir())
+                        else ""
+                    ),
+                    "nifti_path": (
+                        relative_contract_path(patient_dir, co.primary_nifti)
+                        if co.primary_nifti and Path(co.primary_nifti).is_file()
+                        else ""
+                    ),
+                },
+                "plan_artifact": plan_artifact,
+                "dose_grid": dose_grid_contract,
+                "dvh": build_dvh_decision(
+                    len(selected_plan_contract),
+                    len(selected_dose_contract),
+                    str(co.delivery_status),
+                ),
+                "delivery": {
+                    "prescribed_dose_gy": prescribed_dose_gy,
+                    "delivered_dose_gy": co.delivered_dose_gy,
+                    "status": co.delivery_status,
+                    "method": co.delivery_method,
+                    "dose_response_field": DOSE_RESPONSE_FIELD,
+                    "per_plan": per_plan_delivery_contract,
+                    "warnings": co.delivery_warnings,
+                    "unresolved_record_plan_uids": co.unresolved_record_plan_uids,
+                },
+                "dose_qc": dose_qc_contract,
+            }
+            co.course_contract = course_contract
             case_meta = {
                 "patient_id": str(co.patient_id),
                 "course_key": co.course_key,
@@ -4387,6 +4825,11 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
                 "fractions_count": fractions_count,
                 "fractions_file": str(fractions_path) if fractions_details else "",
                 "dose_grid": dose_grid,
+                "dose_grid_semantics": (
+                    dose_grid_contract.get("semantics") if dose_grid_contract is not None else None
+                ),
+                "dose_response_dose_field": DOSE_RESPONSE_FIELD,
+                "course_contract": course_contract,
             }
             case_meta.update(ct_summary)
             if manual_manifest:
@@ -4689,17 +5132,25 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
                     pass
 
             # Write JSON + XLSX (one-row sheet)
+            metadata_path = meta_dir / "case_metadata.json"
             try:
-                with open(meta_dir / "case_metadata.json", "w", encoding="utf-8") as f:
+                with open(metadata_path, "w", encoding="utf-8") as f:
                     json.dump(case_meta, f, ensure_ascii=False, indent=2)
             except Exception as exc:
-                logger.warning("Failed to write case metadata JSON for %s: %s", patient_dir, exc)
+                raise CourseContractError(
+                    f"failed to write authoritative course contract for {patient_dir}: {exc}"
+                ) from exc
+            # Producer-side validation closes the same path, UID, delivery,
+            # summation-type, and dose-QC checks enforced downstream.
+            load_course_contract(patient_dir)
             try:
                 import pandas as _pd
 
                 _pd.DataFrame([case_meta]).to_excel(meta_dir / "case_metadata.xlsx", index=False)
             except Exception as exc:
                 logger.debug("Failed to write case metadata XLSX for %s: %s", patient_dir, exc)
+        except CourseContractError:
+            raise
         except Exception as e:
             logger.debug("Failed to write per-case metadata for %s: %s", patient_dir, e)
 

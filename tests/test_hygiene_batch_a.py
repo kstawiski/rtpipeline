@@ -28,6 +28,7 @@ import json
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 import rtpipeline.anatomical_cropping as anatomical_cropping
 import rtpipeline.cli as cli
@@ -36,6 +37,18 @@ import rtpipeline.pet_suv as pet_suv
 import rtpipeline.segmentation as segmentation
 from rtpipeline.config import PipelineConfig
 from rtpipeline.layout import build_course_dirs
+from course_contract_test_utils import (
+    write_minimal_course_contract,
+    write_synthetic_planning_ct,
+)
+
+
+@pytest.fixture(autouse=True)
+def _authoritative_contract_fixture(tmp_path: Path) -> None:
+    write_minimal_course_contract(tmp_path)
+    course_dir = tmp_path / "course"
+    planning_ct_dir = write_synthetic_planning_ct(course_dir)
+    write_minimal_course_contract(course_dir, planning_ct_dir=planning_ct_dir)
 
 
 def _cfg(tmp_path: Path) -> PipelineConfig:
@@ -292,6 +305,11 @@ def _prepare_resumed_course(tmp_path, monkeypatch, *, dicom_name: str) -> tuple[
 
     nifti_path = course_dirs.nifti / "series1.nii.gz"
     nifti_path.write_bytes(b"fake nifti")
+    write_minimal_course_contract(
+        course_dir,
+        planning_ct_dir=course_dirs.dicom_ct,
+        planning_ct_nifti=nifti_path,
+    )
     monkeypatch.setattr(segmentation, "_ensure_ct_nifti", lambda *a, **k: nifti_path)
 
     base_name = "series1"

@@ -16,12 +16,19 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pydicom
 import pytest
 
 from rtpipeline import cli
 from rtpipeline.organize import _hydrate_existing_course
 from rtpipeline.layout import build_course_dirs
 from rtpipeline.config import PipelineConfig
+from course_contract_test_utils import (
+    write_minimal_course_contract,
+    write_synthetic_plan_and_dose,
+    write_synthetic_planning_ct,
+    write_synthetic_rtstruct,
+)
 
 
 def _course(tmp_path: Path, *, with_ct: bool, with_nifti: bool, with_meta: bool = True):
@@ -30,16 +37,22 @@ def _course(tmp_path: Path, *, with_ct: bool, with_nifti: bool, with_meta: bool 
     dirs.ensure()
 
     if with_ct:
-        dirs.dicom_ct.mkdir(parents=True, exist_ok=True)
-        (dirs.dicom_ct / "CT_1.dcm").write_bytes(b"x")
+        write_synthetic_planning_ct(course_dir)
     if with_nifti:
         dirs.nifti.mkdir(parents=True, exist_ok=True)
         (dirs.nifti / "image.nii.gz").write_bytes(b"x")
     if with_meta:
-        dirs.metadata.mkdir(parents=True, exist_ok=True)
-        (dirs.metadata / "case_metadata.json").write_text(
-            json.dumps({"course_id": "COURSE_A"}), encoding="utf-8"
-        )
+        if with_ct and with_nifti:
+            write_minimal_course_contract(
+                course_dir,
+                planning_ct_dir=dirs.dicom_ct,
+                planning_ct_nifti=dirs.nifti / "image.nii.gz",
+            )
+        else:
+            dirs.metadata.mkdir(parents=True, exist_ok=True)
+            (dirs.metadata / "case_metadata.json").write_text(
+                json.dumps({"course_id": "COURSE_A"}), encoding="utf-8"
+            )
     return course_dir
 
 
@@ -80,10 +93,29 @@ def test_a_course_without_ct_is_unaffected(tmp_path):
     course_dir = tmp_path / "PT001" / "COURSE_A"
     dirs = build_course_dirs(course_dir)
     dirs.ensure()
-    (course_dir / "RS.dcm").write_bytes(b"x")
+    rs_path = write_synthetic_rtstruct(course_dir / "RS.dcm")
+    write_minimal_course_contract(course_dir, authoritative_rtstruct=rs_path)
 
     result = _hydrate_existing_course("PT001", "COURSE_A", course_dir)
     assert result is not None, "an RTSTRUCT-only course owes no NIfTI"
+
+
+def test_fully_contracted_plan_checkpoint_is_resumable(tmp_path):
+    course_dir = tmp_path / "PT001" / "COURSE_A"
+    plan, dose = write_synthetic_plan_and_dose(course_dir)
+    write_minimal_course_contract(
+        course_dir,
+        selected_plans=[plan],
+        selected_doses=[dose],
+    )
+
+    result = _hydrate_existing_course("PT001", "COURSE_A", course_dir)
+
+    assert result is not None
+    assert result.rp_path == plan
+    assert result.rd_path == dose
+    assert result.delivery_status == "no_records_at_all"
+    assert result.source_plan_uids == [str(pydicom.dcmread(plan, stop_before_pixels=True).SOPInstanceUID)]
 
 
 @pytest.mark.parametrize("suffix", [".nii", ".nii.gz"])
@@ -91,10 +123,14 @@ def test_either_nifti_suffix_counts_as_converted(tmp_path, suffix):
     course_dir = tmp_path / "PT001" / "COURSE_A"
     dirs = build_course_dirs(course_dir)
     dirs.ensure()
-    dirs.dicom_ct.mkdir(parents=True, exist_ok=True)
-    (dirs.dicom_ct / "CT_1.dcm").write_bytes(b"x")
+    write_synthetic_planning_ct(course_dir)
     dirs.nifti.mkdir(parents=True, exist_ok=True)
     (dirs.nifti / f"image{suffix}").write_bytes(b"x")
+    write_minimal_course_contract(
+        course_dir,
+        planning_ct_dir=dirs.dicom_ct,
+        planning_ct_nifti=dirs.nifti / f"image{suffix}",
+    )
 
     assert _hydrate_existing_course("PT001", "COURSE_A", course_dir) is not None
 
@@ -163,7 +199,7 @@ def test_truthy_metadata_plan_checkpoint_without_adjudication_is_reprocessed(tmp
     assert _hydrate_existing_course("PT001", "COURSE_A", course_dir) is None
 
 
-def test_fully_adjudicated_nested_plan_checkpoint_is_resumable(tmp_path):
+def test_legacy_adjudication_without_course_contract_is_reprocessed(tmp_path):
     course_dir = _plan_checkpoint(
         tmp_path,
         metadata={
@@ -174,12 +210,7 @@ def test_fully_adjudicated_nested_plan_checkpoint_is_resumable(tmp_path):
         plan_layout="nested",
     )
 
-    result = _hydrate_existing_course("PT001", "COURSE_A", course_dir)
-
-    assert result is not None
-    assert result.rp_path == course_dir / "DICOM" / "RTPLAN" / "RP.1.dcm"
-    assert result.delivery_status == "no_records_at_all"
-    assert result.planning_ct_status == "unresolved_reference"
+    assert _hydrate_existing_course("PT001", "COURSE_A", course_dir) is None
 
 
 @pytest.mark.parametrize("plan_layout", ["nested", "legacy", "metadata"])
@@ -221,7 +252,7 @@ def test_plan_checkpoint_rejects_semantically_missing_adjudication(
         "no_records_at_all",
     ],
 )
-def test_all_documented_delivery_statuses_are_valid_checkpoint_values(tmp_path, delivery_status):
+def test_legacy_delivery_status_does_not_replace_course_contract(tmp_path, delivery_status):
     course_dir = _plan_checkpoint(
         tmp_path,
         metadata={
@@ -232,20 +263,13 @@ def test_all_documented_delivery_statuses_are_valid_checkpoint_values(tmp_path, 
         plan_layout="nested",
     )
 
-    result = _hydrate_existing_course("PT001", "COURSE_A", course_dir)
-
-    assert result is not None
-    assert result.delivery_status == delivery_status
+    assert _hydrate_existing_course("PT001", "COURSE_A", course_dir) is None
 
 
-def test_plan_free_checkpoint_may_still_use_legacy_defaults(tmp_path):
+def test_plan_free_legacy_checkpoint_without_contract_is_reprocessed(tmp_path):
     course_dir = _plan_checkpoint(tmp_path, metadata={"rp_path": ""}, plan_layout=None)
 
-    result = _hydrate_existing_course("PT001", "COURSE_A", course_dir)
-
-    assert result is not None
-    assert result.delivery_status == "no_records_at_all"
-    assert result.planning_ct_status == "unknown"
+    assert _hydrate_existing_course("PT001", "COURSE_A", course_dir) is None
 
 
 def test_mixed_manifest_rejects_valid_subset_when_one_course_requires_reprocessing(tmp_path, caplog):
@@ -266,6 +290,11 @@ def test_mixed_manifest_rejects_valid_subset_when_one_course_requires_reprocessi
         plan_layout="nested",
         patient_id="INCOMPLETE",
         course_id="COURSE_B",
+    )
+    write_minimal_course_contract(
+        good_dir,
+        selected_plans=[],
+        selected_doses=[],
     )
     manifest_path = tmp_path / "courses.json"
     manifest_path.write_text(
