@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import shutil
+from itertools import permutations
 from pathlib import Path
 from typing import Dict, Iterable, Optional, Tuple
 
@@ -430,28 +431,74 @@ def _select_seg_dir_for_ct(
 def _geometry_compatible(
     seg_img: sitk.Image, ct_img: sitk.Image, tol_mm: float = 2.0
 ) -> bool:
-    """True iff ``seg_img`` occupies the same physical space as ``ct_img``.
+    """Return whether two 3-D images cover the same physical voxel grid.
 
-    The pre-resample safety net behind :func:`_select_seg_dir_for_ct`: requires
-    aligned axes and a near-identical voxel grid, so a
-    segmentation from a different series/frame (CBCT, diagnostic CT, off-isocenter
-    scan) can never be silently resampled onto the planning CT.
+    The comparison is invariant to a signed permutation of the image axes. This
+    handles the normal NIfTI/DICOM convention change without treating a different
+    scan as compatible. It requires matching voxel counts, per-axis spacing and
+    physical step vectors under one signed axis mapping, then checks both physical
+    bounding-box corners within ``tol_mm``. Any unreadable or unsupported geometry
+    fails closed.
     """
     try:
-        if not np.allclose(seg_img.GetDirection(), ct_img.GetDirection(), atol=1e-3):
+        if seg_img.GetDimension() != 3 or ct_img.GetDimension() != 3:
             return False
 
-        if seg_img.GetSize() != ct_img.GetSize():
+        seg_size = np.asarray(seg_img.GetSize(), dtype=int)
+        ct_size = np.asarray(ct_img.GetSize(), dtype=int)
+        if seg_size.shape != (3,) or ct_size.shape != (3,):
             return False
-        if not np.allclose(seg_img.GetSpacing(), ct_img.GetSpacing(), atol=1e-3):
+        if int(np.prod(seg_size)) != int(np.prod(ct_size)):
             return False
-        if not np.allclose(seg_img.GetOrigin(), ct_img.GetOrigin(), atol=tol_mm):
+
+        seg_spacing = np.asarray(seg_img.GetSpacing(), dtype=float)
+        ct_spacing = np.asarray(ct_img.GetSpacing(), dtype=float)
+        if seg_spacing.shape != (3,) or ct_spacing.shape != (3,):
+            return False
+        if not np.all(np.isfinite(seg_spacing)) or not np.all(np.isfinite(ct_spacing)):
+            return False
+        if np.any(seg_spacing <= 0) or np.any(ct_spacing <= 0):
+            return False
+
+        seg_direction = np.asarray(seg_img.GetDirection(), dtype=float).reshape(3, 3)
+        ct_direction = np.asarray(ct_img.GetDirection(), dtype=float).reshape(3, 3)
+        if not np.all(np.isfinite(seg_direction)) or not np.all(np.isfinite(ct_direction)):
+            return False
+
+        # Columns of D @ diag(spacing) are the physical displacement vectors
+        # between adjacent voxels along each image-index axis. A signed permutation
+        # is the exact class of axis-order/sign changes that preserves the grid.
+        seg_steps = seg_direction @ np.diag(seg_spacing)
+        ct_steps = ct_direction @ np.diag(ct_spacing)
+        grid_match = False
+        for permutation in permutations(range(3)):
+            if not np.array_equal(seg_size, ct_size[list(permutation)]):
+                continue
+            if not np.allclose(
+                seg_spacing, ct_spacing[list(permutation)], atol=1e-3, rtol=0
+            ):
+                continue
+            if all(
+                any(
+                    np.allclose(
+                        seg_steps[:, seg_axis],
+                        sign * ct_steps[:, ref_axis],
+                        atol=1e-3,
+                        rtol=0,
+                    )
+                    for sign in (1.0, -1.0)
+                )
+                for seg_axis, ref_axis in enumerate(permutation)
+            ):
+                grid_match = True
+                break
+        if not grid_match:
             return False
 
         def _extent(img: sitk.Image):
-            # Physical bounding box over the 8 grid corners — orientation-safe for
-            # flipped/oblique direction cosines (a plain origin + size*spacing only
-            # holds for the identity direction matrix).
+            # Physical bounding box over the 8 grid corners. Unlike origin plus
+            # size*spacing, this remains valid for flipped, reordered, and oblique
+            # direction cosines.
             sx, sy, sz = img.GetSize()
             corners = np.array([
                 img.TransformIndexToPhysicalPoint((int(x), int(y), int(z)))
@@ -463,7 +510,10 @@ def _geometry_compatible(
 
         seg_lo, seg_hi = _extent(seg_img)
         ct_lo, ct_hi = _extent(ct_img)
-        return bool(np.allclose(seg_lo, ct_lo, atol=tol_mm) and np.allclose(seg_hi, ct_hi, atol=tol_mm))
+        return bool(
+            np.allclose(seg_lo, ct_lo, atol=tol_mm, rtol=0)
+            and np.allclose(seg_hi, ct_hi, atol=tol_mm, rtol=0)
+        )
     except Exception as e:
         logger.debug("Geometry compatibility check failed: %s", e)
         return False
