@@ -116,7 +116,11 @@ def _mk_dose_multi_plan(path: Path, dose_uid: str, plan_uids: list[str], summati
     return _write(ds, path)
 
 
-def _write_valid_rtstruct(path: Path, roi_names: list[str]) -> Path:
+def _write_valid_rtstruct(
+    path: Path,
+    roi_names: list[str],
+    referenced_series_uid: str | None = None,
+) -> Path:
     """Write a minimal, real, parseable RTSTRUCT DICOM file (>=0 ROIs)."""
     sop_uid = generate_uid()
     ds = _file_dataset(path, _RTSTRUCT_SOP_CLASS_UID, sop_uid)
@@ -128,6 +132,14 @@ def _write_valid_rtstruct(path: Path, roi_names: list[str]) -> Path:
         roi.ROIName = name
         rois.append(roi)
     ds.StructureSetROISequence = rois
+    if referenced_series_uid:
+        series = Dataset()
+        series.SeriesInstanceUID = referenced_series_uid
+        study = Dataset()
+        study.RTReferencedSeriesSequence = Sequence([series])
+        ref_for = Dataset()
+        ref_for.RTReferencedStudySequence = Sequence([study])
+        ds.ReferencedFrameOfReferenceSequence = Sequence([ref_for])
     return _write(ds, path)
 
 
@@ -645,7 +657,10 @@ def test_build_auto_rtstruct_resume_accepts_valid_file_without_regenerating(tmp_
     write_synthetic_planning_ct(course_dir)
     write_minimal_course_contract(course_dir, planning_ct_dir=course_dirs.dicom_ct)
     out_path = course_dir / "RS_auto.dcm"
-    _write_valid_rtstruct(out_path, roi_names=["PTV"])
+    ct_series_uid = str(
+        pydicom.dcmread(str(course_dirs.dicom_ct / "ct_000.dcm"), stop_before_pixels=True).SeriesInstanceUID
+    )
+    _write_valid_rtstruct(out_path, roi_names=["PTV"], referenced_series_uid=ct_series_uid)
 
     def _fail_if_called(_ct_dir):
         raise AssertionError("must not attempt regeneration for a valid existing RS_auto.dcm")
@@ -674,7 +689,9 @@ def test_is_rs_custom_stale_accepts_valid_up_to_date_file(tmp_path):
     rs_custom_path = course_dir / "RS_custom.dcm"
     _write_valid_rtstruct(rs_custom_path, roi_names=["pelvic_bones"])
 
-    assert custom_structures_rtstruct._is_rs_custom_stale(rs_custom_path, None, None, None) is False
+    assert custom_structures_rtstruct._is_rs_custom_stale(
+        rs_custom_path, None, None, None, allow_contractless=True
+    ) is False
 
 
 # ===========================================================================

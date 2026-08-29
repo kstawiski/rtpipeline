@@ -322,6 +322,7 @@ def _prepare_resumed_course(tmp_path, monkeypatch, *, dicom_name: str) -> tuple[
     (base_dir / "total--liver.nii.gz").write_text("fake mask", encoding="utf-8")
     manifest = {"models": [{"model": "total", "masks": ["total--liver.nii.gz"]}]}
     (base_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    monkeypatch.setattr(segmentation, "_series_masks_current", lambda *args, **kwargs: (True, "named-DICOM resume fixture"))
 
     return course_dir, dicom_path
 

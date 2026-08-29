@@ -71,7 +71,12 @@ def write_synthetic_planning_ct(course_dir: Path) -> Path:
     return ct_dir
 
 
-def write_synthetic_rtstruct(path: Path) -> Path:
+def write_synthetic_rtstruct(
+    path: Path,
+    *,
+    referenced_series_uid: str | None = None,
+    roi_names: Iterable[str] | None = None,
+) -> Path:
     """Create a readable RTSTRUCT header at a test-owned path."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -84,6 +89,23 @@ def write_synthetic_rtstruct(path: Path) -> Path:
     dataset.SOPInstanceUID = file_meta.MediaStorageSOPInstanceUID
     dataset.Modality = "RTSTRUCT"
     dataset.StructureSetLabel = "TEST"
+    names = list(roi_names or [])
+    if names:
+        rois = []
+        for number, name in enumerate(names, start=1):
+            roi = Dataset()
+            roi.ROINumber = number
+            roi.ROIName = str(name)
+            rois.append(roi)
+        dataset.StructureSetROISequence = Sequence(rois)
+    if referenced_series_uid:
+        series = Dataset()
+        series.SeriesInstanceUID = str(referenced_series_uid)
+        study = Dataset()
+        study.RTReferencedSeriesSequence = Sequence([series])
+        referenced_frame = Dataset()
+        referenced_frame.RTReferencedStudySequence = Sequence([study])
+        dataset.ReferencedFrameOfReferenceSequence = Sequence([referenced_frame])
     dataset.save_as(path, enforce_file_format=True)
     return path
 

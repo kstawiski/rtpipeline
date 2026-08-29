@@ -47,6 +47,17 @@ def _write_contract(
     )
 
 
+def _write_current_auto_rtstruct(course: Path) -> Path:
+    contract = radiomics.load_course_contract(course)
+    planning_series_uid = str(contract.planning_ct.get("series_instance_uid") or "")
+    assert planning_series_uid
+    return write_synthetic_rtstruct(
+        course / "RS_auto.dcm",
+        referenced_series_uid=planning_series_uid,
+        roi_names=("PTV",),
+    )
+
+
 def _config(tmp_path: Path, **overrides) -> PipelineConfig:
     config = PipelineConfig(
         dicom_root=tmp_path / "dicom",
@@ -256,9 +267,10 @@ def test_same_named_roi_remains_distinct_across_all_ct_sources(
     manual_rs = dirs.dicom_rtstruct / "RS.dcm"
     auto_rs = course / "RS_auto.dcm"
     custom_rs = course / "RS_custom.dcm"
-    for path in (manual_rs, auto_rs, custom_rs):
+    for path in (manual_rs, custom_rs):
         path.write_bytes(b"present")
     _write_contract(course, rtstruct=manual_rs)
+    _write_current_auto_rtstruct(course)
 
     custom_config = tmp_path / "custom.yaml"
     custom_config.write_text(
@@ -423,8 +435,8 @@ def test_direct_rtstruct_construction_failure_invalidates_stale_course_output(
     dirs = build_course_dirs(course)
     dirs.dicom_ct.mkdir(parents=True)
     (dirs.dicom_ct / "image.dcm").write_bytes(b"present")
-    (course / "RS_auto.dcm").write_bytes(b"present")
     _write_contract(course)
+    _write_current_auto_rtstruct(course)
     stale = course / "radiomics_ct.xlsx"
     stale.write_bytes(b"stale")
     (course / "radiomics_ct.parquet").write_bytes(b"stale")
@@ -473,9 +485,8 @@ def _prepare_conda_rtstruct_course(tmp_path, monkeypatch):
     dirs = build_course_dirs(course)
     dirs.dicom_ct.mkdir(parents=True)
     (dirs.dicom_ct / "slice.dcm").write_bytes(b"present")
-    rs_path = course / "RS_auto.dcm"
-    rs_path.write_bytes(b"present")
     _write_contract(course)
+    rs_path = _write_current_auto_rtstruct(course)
     stale = course / "radiomics_ct.xlsx"
     stale.write_bytes(b"stale")
     monkeypatch.setattr(conda, "_select_usable_rtstruct", lambda *_paths: rs_path)
@@ -484,7 +495,7 @@ def _prepare_conda_rtstruct_course(tmp_path, monkeypatch):
     return course, stale
 
 
-def test_conda_rtstruct_builder_failure_does_not_fall_back_to_nothing_to_do(
+def test_conda_rtstruct_builder_failure_is_recorded_without_absence_fallback(
     tmp_path, monkeypatch
 ):
     course, stale = _prepare_conda_rtstruct_course(tmp_path, monkeypatch)
@@ -500,10 +511,13 @@ def test_conda_rtstruct_builder_failure_does_not_fall_back_to_nothing_to_do(
         ),
     )
 
-    with pytest.raises(RadiomicsCourseExtractionError, match="broken RTSTRUCT"):
-        conda.radiomics_for_course(course, _config(tmp_path))
+    output = conda.radiomics_for_course(course, _config(tmp_path))
 
-    assert not stale.exists()
+    assert output == stale
+    result = pd.read_excel(output, engine="openpyxl")
+    assert result.loc[0, "extraction_status"] == "failed"
+    assert result.loc[0, "extraction_failure_kind"] == "extraction_error"
+    assert "broken RTSTRUCT" in result.loc[0, "extraction_status_detail"]
 
 
 def test_conda_best_effort_mask_serialization_failure_is_recorded(tmp_path, monkeypatch):
@@ -1085,8 +1099,8 @@ def test_direct_resume_missing_non_body_manual_roi_fails_and_invalidates(
     manual_rs = dirs.dicom_rtstruct / "RS.dcm"
     manual_rs.write_bytes(b"present")
     auto_rs = course / "RS_auto.dcm"
-    auto_rs.write_bytes(b"present")
     _write_contract(course, rtstruct=manual_rs)
+    _write_current_auto_rtstruct(course)
     output = course / "radiomics_ct.xlsx"
     pd.DataFrame(
         [
@@ -1139,8 +1153,8 @@ def test_parallel_resume_missing_autorts_roi_forces_full_rerun(tmp_path, monkeyp
     manual_rs = dirs.dicom_rtstruct / "RS.dcm"
     manual_rs.write_bytes(b"present")
     auto_rs = course / "RS_auto.dcm"
-    auto_rs.write_bytes(b"present")
     _write_contract(course, rtstruct=manual_rs)
+    _write_current_auto_rtstruct(course)
     output = course / "radiomics_ct.xlsx"
     pd.DataFrame(
         [
@@ -1428,12 +1442,12 @@ def _parallel_course_with_fake_roi_results(tmp_path, monkeypatch, results_by_sou
     dirs = build_course_dirs(course)
     dirs.dicom_ct.mkdir(parents=True)
     dirs.dicom_rtstruct.mkdir(parents=True)
-    (course / "RS_auto.dcm").write_bytes(b"present")
     # The course contract is now the authority every stage consumes, so a course
     # fixture must carry one, built from synthetic DICOM exactly as a real course
     # is. The Manual source is only reached when the contract names an
     # authoritative RTSTRUCT, so pass it rather than leaving it unset.
     _write_contract(course, rtstruct=dirs.dicom_rtstruct / "RS.dcm")
+    _write_current_auto_rtstruct(course)
 
     monkeypatch.setattr(radiomics, "_load_series_image", lambda *_a, **_k: object())
     monkeypatch.setattr(radiomics, "_extractor", lambda *_a, **_k: object())
@@ -1526,10 +1540,10 @@ def test_parallel_required_roi_failure_still_fails_course(tmp_path, monkeypatch,
             "    source_structures: [PTV]\n",
             encoding="utf-8",
         )
-    (course / "RS_auto.dcm").write_bytes(b"present")
     # Every course now needs the authoritative contract; it also supplies the
     # planning CT series, so the placeholder slice above is no longer written.
     _write_contract(course, rtstruct=rtstruct_for_contract)
+    _write_current_auto_rtstruct(course)
     monkeypatch.setattr(radiomics, "_load_series_image", lambda *_a, **_k: object())
     monkeypatch.setattr(radiomics, "_extractor", lambda *_a, **_k: object())
     monkeypatch.setattr(parallel, "_calculate_optimal_workers", lambda: 1)

@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import SimpleITK as sitk
+
 from rtpipeline.config import PipelineConfig
 from rtpipeline.inventory import InventoryInstance, _copy_instances
 from rtpipeline.layout import build_course_dirs
@@ -69,7 +71,7 @@ def test_segment_all_series_dispatch_status_and_idempotency(tmp_path, monkeypatc
         assert dcm2niix_depth == 0
         nifti_dir.mkdir(parents=True, exist_ok=True)
         path = nifti_dir / f"{Path(input_dir).parent.name if Path(input_dir).name == 'DICOM' else Path(input_dir).name}.nii.gz"
-        path.write_text("fake nifti", encoding="utf-8")
+        sitk.WriteImage(sitk.Image([2, 2, 2], sitk.sitkInt16), str(path))
         return path
 
     calls: list[dict] = []
@@ -90,7 +92,7 @@ def test_segment_all_series_dispatch_status_and_idempotency(tmp_path, monkeypatc
         else:
             masks = output_path / "segmentations"
             masks.mkdir(parents=True, exist_ok=True)
-            (masks / "liver.nii.gz").write_text("fake mask", encoding="utf-8")
+            sitk.WriteImage(sitk.Image([2, 2, 2], sitk.sitkUInt8), str(masks / "liver.nii.gz"))
         return True
 
     monkeypatch.setattr(segmentation, "_ensure_ct_nifti", fake_ensure_nifti)
@@ -332,7 +334,7 @@ def test_segment_all_series_nifti_failure_isolates_row(tmp_path, monkeypatch):
             output_path.mkdir(parents=True, exist_ok=True)
             masks = output_path / "segmentations"
             masks.mkdir(parents=True, exist_ok=True)
-            (masks / "liver.nii.gz").write_text("fake mask", encoding="utf-8")
+            sitk.WriteImage(sitk.Image([2, 2, 2], sitk.sitkUInt8), str(masks / "liver.nii.gz"))
         elif output_type == "dicom_rtstruct":
             output_path.parent.mkdir(parents=True, exist_ok=True)
             output_path.write_text("fake rtstruct", encoding="utf-8")
@@ -423,7 +425,7 @@ def test_segment_all_series_force_uses_sibling_outputs_and_depth_zero(tmp_path, 
             output_path.mkdir(parents=True, exist_ok=True)
             masks = output_path / "segmentations"
             masks.mkdir(parents=True, exist_ok=True)
-            (masks / "liver.nii.gz").write_text("fake mask", encoding="utf-8")
+            sitk.WriteImage(sitk.Image([2, 2, 2], sitk.sitkUInt8), str(masks / "liver.nii.gz"))
         return True
 
     monkeypatch.setattr(segmentation, "_ensure_ct_nifti", fake_ensure_nifti)

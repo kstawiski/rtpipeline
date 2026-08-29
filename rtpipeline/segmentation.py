@@ -17,9 +17,10 @@ import tempfile
 import zipfile
 from importlib import resources as importlib_resources
 from pathlib import Path
-from typing import Optional, Dict, List, Sequence
+from typing import Any, Optional, Dict, List, Sequence
 
 import pydicom
+import numpy as np
 
 # Modern NumPy/SciPy work fine with TotalSegmentator - no compatibility shims needed
 
@@ -803,7 +804,18 @@ def _ensure_ct_nifti(
         candidate = f"{base}_{suffix_counter}"
 
     target = nifti_dir / f"{base}.nii.gz"
-    if not target.exists() or force:
+    existing_sidecar: dict[str, Any] = {}
+    meta_path = nifti_dir / f"{base}.metadata.json"
+    if meta_path.exists():
+        try:
+            parsed_sidecar = json.loads(meta_path.read_text(encoding="utf-8"))
+            if isinstance(parsed_sidecar, dict):
+                existing_sidecar = parsed_sidecar
+        except Exception:
+            existing_sidecar = {}
+
+    regenerated = not target.exists() or force
+    if regenerated:
         tmp_dir = nifti_dir / ".tmp_dcm2niix"
         if tmp_dir.exists():
             shutil.rmtree(tmp_dir)
@@ -822,11 +834,20 @@ def _ensure_ct_nifti(
         {
             "nifti_path": str(target),
             "source_directory": str(ct_dir),
-            "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "modality": metadata.get("modality") or "CT",
             "nifti_sha256": hashlib.sha256(target.read_bytes()).hexdigest(),
         }
     )
+    if regenerated:
+        generated_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        metadata["generated_at"] = generated_at
+        # This timestamp describes NIfTI content, unlike generated_at on a sidecar,
+        # which must remain stable when only metadata is refreshed.
+        metadata["nifti_generated_at"] = generated_at
+    else:
+        for key in ("generated_at", "nifti_generated_at"):
+            if key in existing_sidecar:
+                metadata[key] = existing_sidecar[key]
     try:
         import SimpleITK as sitk
 
@@ -855,12 +876,13 @@ def _strip_nifti_base(nifti_path: Path) -> str:
 
 
 def _clear_previous_masks(seg_dir: Path, base_name: str, model: str) -> None:
-    prefix = f"{model}--"
-    for existing in list(seg_dir.glob(f"{prefix}*")):
-        try:
-            existing.unlink()
-        except Exception:
-            pass
+    prefixes = (f"{model}--", f"{base_name}--{model}--")
+    for prefix in prefixes:
+        for existing in list(seg_dir.glob(f"{prefix}*")):
+            try:
+                existing.unlink()
+            except Exception:
+                pass
 
 
 @functools.lru_cache(maxsize=1)
@@ -924,6 +946,78 @@ def _materialize_masks(source: Path, dest: Path, base_name: str, model: str) -> 
     _write_ts_version_sidecar(dest, model)
 
 
+def _ensure_model_rtstruct_from_masks(
+    ct_dir: Path,
+    seg_dir: Path,
+    base_name: str,
+    model: str,
+) -> Optional[Path]:
+    """Materialize a missing model RTSTRUCT from validated masks only."""
+    target = seg_dir / f"{base_name}--{model}.dcm"
+    if target.is_file():
+        return target
+    try:
+        from rt_utils import RTStructBuilder
+        from .auto_rtstruct import (
+            _geometry_compatible,
+            _iter_binary_masks,
+            _load_ct_image,
+            _pretty_roi_name,
+            _resample_to_reference,
+            _unique_roi_name,
+            _write_rtstruct_atomic,
+        )
+        import SimpleITK as sitk
+    except Exception as exc:
+        logger.warning("Cannot build derived RTSTRUCT from masks: %s", exc)
+        return None
+
+    try:
+        ct_img = _load_ct_image(ct_dir)
+        if ct_img is None:
+            return None
+
+        selected: dict[str, tuple[int, sitk.Image]] = {}
+        current_prefix = f"{model}--"
+        legacy_prefix = f"{base_name}--{model}--"
+        for raw_name, mask_img in _iter_binary_masks(seg_dir):
+            if raw_name.startswith(current_prefix):
+                rank = 0
+                roi = raw_name[len(current_prefix):]
+            elif raw_name.startswith(legacy_prefix):
+                rank = 1
+                roi = raw_name[len(legacy_prefix):]
+            else:
+                continue
+            if roi and (roi not in selected or rank < selected[roi][0]):
+                selected[roi] = (rank, mask_img)
+        if not selected:
+            return None
+        selected_images = {roi: item[1] for roi, item in selected.items()}
+        if any(not _geometry_compatible(image, ct_img) for image in selected_images.values()):
+            logger.warning("Cannot derive %s from masks with incompatible geometry", target)
+            return None
+
+        rtstruct = RTStructBuilder.create_new(dicom_series_path=str(ct_dir))
+        used_names: set[str] = set()
+        for raw_name, (_rank, mask_img) in sorted(selected.items()):
+            image = _resample_to_reference(mask_img, ct_img)
+            array = np.moveaxis(sitk.GetArrayFromImage(image), 0, -1)
+            mask = array > 0
+            if not np.any(mask):
+                continue
+            roi_name = _unique_roi_name(_pretty_roi_name(raw_name), used_names)
+            rtstruct.add_roi(mask=mask, name=roi_name)
+            used_names.add(roi_name)
+        if not used_names:
+            return None
+        _write_rtstruct_atomic(target, rtstruct.save)
+        return target if target.is_file() else None
+    except Exception as exc:
+        logger.warning("Failed to derive %s from masks: %s", target, exc)
+        return None
+
+
 def _write_manifest_atomic(path: Path, data: dict) -> None:
     """Write ``manifest.json`` atomically (unique temp file + ``os.replace``) so a process killed
     mid-write can never leave `_series_segmentation_ready` looking at a truncated/partial file.
@@ -973,8 +1067,278 @@ def _series_segmentation_ready(base_dir: Path, base_name: str, model: str) -> bo
         masks = entry.get("masks") or []
         # Require a NON-EMPTY mask list: a failed run records rtstruct-only (masks==[]),
         # and an empty list would otherwise vacuously satisfy `all(...)` and forge readiness.
-        return bool(masks) and all((base_dir / str(m)).exists() for m in masks)
+        if not isinstance(masks, list) or any(not isinstance(mask, str) or not mask.strip() for mask in masks):
+            return False
+        root = base_dir.resolve(strict=False)
+        for mask in masks:
+            path = (base_dir / mask).resolve(strict=False)
+            try:
+                path.relative_to(root)
+            except ValueError:
+                return False
+            if not path.is_file():
+                return False
+        return bool(masks)
     return False
+
+
+def _segmentation_resume_record_path(course_dir: Path) -> Path:
+    return Path(course_dir) / "metadata" / "segmentation_resume.json"
+
+
+def record_segmentation_resume_decision(
+    course_dir: Path,
+    decisions: dict[str, Any],
+    *,
+    source: Optional[dict[str, Any]] = None,
+    record_path: Optional[Path] = None,
+) -> Path:
+    """Persist the content-based resume decision for later audit.
+
+    The record is deliberately separate from the completion sentinel. A sentinel
+    answers whether a stage published success. This record answers which outputs
+    were reused or rebuilt, and which input identity supported that choice.
+    """
+    path = Path(record_path) if record_path is not None else _segmentation_resume_record_path(Path(course_dir))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    existing: dict[str, Any] = {}
+    if path.exists():
+        try:
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                existing = loaded
+        except Exception:
+            existing = {}
+    existing.setdefault("version", 1)
+    existing.setdefault("course_dir", str(Path(course_dir)))
+    if source:
+        recorded_source = existing.get("source")
+        if not isinstance(recorded_source, dict):
+            recorded_source = {}
+        recorded_source.update(source)
+        existing["source"] = recorded_source
+    stored = existing.setdefault("decisions", {})
+    if not isinstance(stored, dict):
+        stored = {}
+        existing["decisions"] = stored
+    stored.update(decisions)
+    existing["updated_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    _write_manifest_atomic(path, existing)
+    return path
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _image_geometry(image: Any) -> dict[str, tuple[float, ...] | tuple[int, ...]]:
+    return {
+        "size": tuple(int(value) for value in image.GetSize()),
+        "spacing": tuple(float(value) for value in image.GetSpacing()),
+        "origin": tuple(float(value) for value in image.GetOrigin()),
+        "direction": tuple(float(value) for value in image.GetDirection()),
+    }
+
+
+def _same_image_geometry(first: Any, second: Any, tolerance: float = 1e-4) -> bool:
+    try:
+        left = _image_geometry(first)
+        right = _image_geometry(second)
+        if left["size"] != right["size"]:
+            return False
+        for key in ("spacing", "origin", "direction"):
+            a = left[key]
+            b = right[key]
+            if len(a) != len(b) or any(abs(float(x) - float(y)) > tolerance for x, y in zip(a, b)):
+                return False
+        return True
+    except Exception:
+        return False
+
+
+def _parse_timestamp(value: object) -> Optional[datetime.datetime]:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+    return parsed
+
+
+def _legacy_segmentation_provenance_is_safe(
+    base_dir: Path,
+    manifest: dict[str, Any],
+    source_nifti: Path,
+    planning_ct_series_uid: str,
+    source_nifti_sha256: str,
+    source_ct_sop_hash: Optional[str],
+) -> bool:
+    """Admit pre-contract manifests only when their identity chain is explicit.
+
+    Existing cohort masks predate the course contract. Their old manifest did not
+    store the CT UID, so it can be upgraded only when its source NIfTI name and
+    generation order agree with the current contract and its sidecar identifies
+    the same CT series. Otherwise the safe action is model recomputation.
+    """
+    recorded_source = manifest.get("source_nifti")
+    if not isinstance(recorded_source, str) or not recorded_source.strip():
+        return False
+    recorded_source = recorded_source.strip()
+    allowed_source_names = {
+        source_nifti.name,
+        str(source_nifti),
+        str(source_nifti.resolve(strict=False)),
+    }
+    if recorded_source not in allowed_source_names and Path(recorded_source).name != source_nifti.name:
+        return False
+
+    sidecar_base = _strip_nifti_base(source_nifti)
+    sidecar = source_nifti.parent / f"{sidecar_base}.metadata.json"
+    try:
+        sidecar_data = json.loads(sidecar.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    if not isinstance(sidecar_data, dict):
+        return False
+    if str(sidecar_data.get("series_instance_uid") or "").strip() != planning_ct_series_uid:
+        return False
+    sidecar_hash = str(sidecar_data.get("nifti_sha256") or "").strip()
+    if sidecar_hash and sidecar_hash != source_nifti_sha256:
+        return False
+    if source_ct_sop_hash:
+        sidecar_ct_hash = str(sidecar_data.get("sop_hash") or "").strip()
+        if sidecar_ct_hash and sidecar_ct_hash != source_ct_sop_hash:
+            return False
+
+    # ``generated_at`` on the metadata sidecar is the write time of the sidecar,
+    # not the generation time of the NIfTI content.  It may therefore be newer
+    # after organize refreshes metadata and must not revoke valid legacy masks.
+    # New conversions carry ``nifti_generated_at``.  Older sidecars have no such
+    # field, so their only admissible ordering evidence is the manifest mtime
+    # after the current NIfTI mtime.  An uncheckable ordering fails closed.
+    manifest_time = _parse_timestamp(manifest.get("generated_at"))
+    nifti_generated_time = _parse_timestamp(sidecar_data.get("nifti_generated_at"))
+    try:
+        manifest_path = base_dir / "manifest.json"
+        if nifti_generated_time is not None and manifest_time is not None:
+            if manifest_time <= nifti_generated_time:
+                return False
+        elif nifti_generated_time is not None:
+            manifest_mtime = manifest_path.stat().st_mtime
+            if manifest_mtime <= nifti_generated_time.timestamp():
+                return False
+        else:
+            if manifest_path.stat().st_mtime <= source_nifti.stat().st_mtime:
+                return False
+    except (OSError, ValueError, OverflowError):
+        return False
+    return True
+
+
+def _series_masks_current(
+    base_dir: Path,
+    base_name: str,
+    model: str,
+    *,
+    source_nifti: Path,
+    planning_ct_series_uid: str,
+    source_ct_sop_hash: Optional[str] = None,
+) -> tuple[bool, str]:
+    """Check completeness, source identity, and readability of a mask set.
+
+    A complete manifest is not enough for reuse. The mask set must identify the
+    contracted planning CT and every recorded NIfTI mask must be readable and
+    share the current planning-NIfTI geometry. Missing provenance fails closed,
+    except for the narrowly checked legacy upgrade path above.
+    """
+    if not _series_segmentation_ready(base_dir, base_name, model):
+        return False, "mask manifest is missing, incomplete, or inconsistent"
+    manifest_path = base_dir / "manifest.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if not isinstance(manifest, dict):
+            return False, "mask manifest is not an object"
+        entries = manifest.get("models")
+        entry = next(
+            item for item in entries
+            if isinstance(item, dict) and item.get("model") == model
+        )
+        masks = entry.get("masks")
+        if not isinstance(masks, list) or not masks:
+            return False, "mask manifest has no mask inventory"
+        source_nifti_sha256 = _file_sha256(source_nifti)
+    except (OSError, StopIteration, TypeError, ValueError, json.JSONDecodeError) as exc:
+        return False, f"mask provenance could not be read: {exc}"
+
+    recorded_uids = {
+        str(manifest.get(key) or "").strip()
+        for key in ("source_series_instance_uid", "planning_ct_series_instance_uid")
+        if str(manifest.get(key) or "").strip()
+    }
+    if recorded_uids and recorded_uids != {planning_ct_series_uid}:
+        return False, "mask provenance names a different planning CT series"
+    recorded_nifti_hash = str(manifest.get("source_nifti_sha256") or "").strip()
+    if recorded_nifti_hash and recorded_nifti_hash != source_nifti_sha256:
+        return False, "mask provenance names a different planning CT NIfTI"
+    recorded_ct_hash = str(manifest.get("source_ct_sop_hash") or "").strip()
+    if recorded_ct_hash and source_ct_sop_hash and recorded_ct_hash != source_ct_sop_hash:
+        return False, "mask provenance names a different CT instance set"
+    if not recorded_uids or not recorded_nifti_hash:
+        if not _legacy_segmentation_provenance_is_safe(
+            base_dir,
+            manifest,
+            source_nifti,
+            planning_ct_series_uid,
+            source_nifti_sha256,
+            source_ct_sop_hash,
+        ):
+            return False, "legacy mask provenance cannot establish correspondence to the planning CT"
+
+    try:
+        import SimpleITK as sitk
+
+        reference = sitk.ReadImage(str(source_nifti))
+        if reference.GetDimension() != 3:
+            return False, "planning CT NIfTI is not three-dimensional"
+        root = base_dir.resolve(strict=False)
+        for mask_name in masks:
+            if not isinstance(mask_name, str) or not mask_name.strip():
+                return False, "mask manifest contains an invalid path"
+            mask_path = (base_dir / mask_name).resolve(strict=False)
+            try:
+                mask_path.relative_to(root)
+            except ValueError:
+                return False, "mask manifest contains a path outside its segmentation directory"
+            mask = sitk.ReadImage(str(mask_path))
+            if mask.GetDimension() != 3 or not _same_image_geometry(mask, reference):
+                return False, f"mask {mask_name} is unreadable or mismatched to the planning CT geometry"
+    except Exception as exc:
+        return False, f"mask geometry validation failed: {exc}"
+    return True, "complete masks match the contracted planning CT"
+
+
+def _segmentation_source_provenance(
+    nifti_path: Path,
+    planning_ct_series_uid: str,
+    source_ct_sop_hash: Optional[str] = None,
+) -> dict[str, Any]:
+    """Build the provenance fields written into a completed mask manifest."""
+    return {
+        "source_nifti": str(Path(nifti_path).name),
+        "source_nifti_path": str(Path(nifti_path).resolve(strict=False)),
+        "source_nifti_sha256": _file_sha256(Path(nifti_path)),
+        "source_series_instance_uid": str(planning_ct_series_uid or ""),
+        "planning_ct_series_instance_uid": str(planning_ct_series_uid or ""),
+        "source_ct_sop_hash": str(source_ct_sop_hash or ""),
+    }
 
 
 def _series_model_manifest_entry(base_dir: Path, base_name: str, model: str) -> dict[str, object] | None:
@@ -1231,13 +1595,59 @@ def segment_all_series_for_patient(config: PipelineConfig, patient_id: str, *, f
             attempted_any = False
             failed_models: list[str] = []
             manifest_entries: list[dict[str, object]] = []
+            resume_decisions: dict[str, Any] = {}
+            try:
+                series_metadata = _collect_series_metadata(input_dir)
+            except Exception:
+                series_metadata = {}
+            source_provenance = _segmentation_source_provenance(
+                nifti_path,
+                series_uid,
+                str(row.get("sop_hash") or series_metadata.get("sop_hash") or ""),
+            )
 
             for model in models:
-                if not force and _series_segmentation_ready(base_dir, base_name, model):
-                    ready_entry = _series_model_manifest_entry(base_dir, base_name, model)
-                    if ready_entry:
-                        manifest_entries.append(ready_entry)
-                    continue
+                if not force:
+                    current, reason = _series_masks_current(
+                        base_dir,
+                        base_name,
+                        model,
+                        source_nifti=nifti_path,
+                        planning_ct_series_uid=series_uid,
+                        source_ct_sop_hash=source_provenance["source_ct_sop_hash"],
+                    )
+                    if current:
+                        ready_entry = _series_model_manifest_entry(base_dir, base_name, model)
+                        if ready_entry:
+                            manifest_entries.append(ready_entry)
+                        resume_decisions[model] = {
+                            "action": "reused",
+                            "model_run": False,
+                            "artefact": "TotalSegmentator masks",
+                            "reason": reason,
+                        }
+                        logger.info(
+                            "Segmentation resume patient=%s series=%s model=%s action=reused "
+                            "model_run=false reason=%s",
+                            patient_id,
+                            series_uid,
+                            model,
+                            reason,
+                        )
+                        continue
+                    resume_decisions[model] = {
+                        "action": "pending",
+                        "model_run": False,
+                        "artefact": "TotalSegmentator masks",
+                        "reason": reason,
+                    }
+                else:
+                    resume_decisions[model] = {
+                        "action": "pending",
+                        "model_run": False,
+                        "artefact": "TotalSegmentator masks",
+                        "reason": "forced segmentation",
+                    }
 
                 attempted_any = True
                 model_extra_args = (
@@ -1308,20 +1718,63 @@ def segment_all_series_for_patient(config: PipelineConfig, patient_id: str, *, f
                     current_run_ready = bool(current_masks) and all(
                         (base_dir / str(mask)).exists() for mask in current_masks
                     )
-                    if not (ok_nifti and current_run_ready):
+                    run_succeeded = bool(ok_nifti and current_run_ready)
+                    decision_reason = str(resume_decisions[model].get("reason") or "")
+                    resume_decisions[model] = {
+                        "action": "rebuilt" if run_succeeded else "failed",
+                        "model_run": True,
+                        "run_succeeded": run_succeeded,
+                        "artefact": "TotalSegmentator masks",
+                        "reason": (
+                            f"{decision_reason}; TotalSegmentator completed and published the mask inventory"
+                            if run_succeeded
+                            else f"{decision_reason}; TotalSegmentator was invoked but did not publish a complete mask inventory"
+                        ),
+                    }
+                    if not run_succeeded:
                         failed_models.append(model)
 
             if attempted_any:
                 bucket["attempted"] += 1
 
             if attempted_any and manifest_entries:
+                series_manifest_path = base_dir / "manifest.json"
+                previous_manifest: dict[str, Any] = {}
+                if series_manifest_path.exists():
+                    try:
+                        parsed_manifest = json.loads(series_manifest_path.read_text(encoding="utf-8"))
+                        if isinstance(parsed_manifest, dict):
+                            previous_manifest = parsed_manifest
+                    except Exception:
+                        previous_manifest = {}
+                previous_skipped = previous_manifest.get("skipped_models")
+                merged_skipped = dict(previous_skipped) if isinstance(previous_skipped, dict) else {}
+                # All-series runs do not currently add QC skips, but retain any
+                # prior skips rather than erasing their audit trail.
                 series_manifest = {
-                    "source_nifti": str(nifti_path.name),
+                    **source_provenance,
                     "source_dicom": str(input_dir),
                     "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
                     "models": manifest_entries,
                 }
-                _write_manifest_atomic(base_dir / "manifest.json", series_manifest)
+                if merged_skipped:
+                    series_manifest["skipped_models"] = merged_skipped
+                _write_manifest_atomic(series_manifest_path, series_manifest)
+
+            if resume_decisions:
+                try:
+                    record_segmentation_resume_decision(
+                        patient_series_root,
+                        {series_uid: resume_decisions},
+                        source=source_provenance,
+                        record_path=base_dir / "resume_decision.json",
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Could not record all-series segmentation resume decision for %s: %s",
+                        input_dir,
+                        exc,
+                    )
 
             if not failed_models and len(models) > 1:
                 # Per-series body-composition JSON is the collision-free source of
@@ -1382,7 +1835,7 @@ def segment_course(config: PipelineConfig, course_dir: Path, force: bool = False
     course_dirs = build_course_dirs(course_dir)
     course_dirs.ensure()
 
-    results = {"nifti": None, "dicom_seg": None, "nifti_seg_dir": None}
+    results: dict[str, Any] = {"nifti": None, "dicom_seg": None, "nifti_seg_dir": None}
     ct_dir = contract.planning_ct_dir
     nifti_path = contract.planning_ct_nifti
     if ct_dir is None or nifti_path is None:
@@ -1399,21 +1852,20 @@ def segment_course(config: PipelineConfig, course_dir: Path, force: bool = False
 
     results["nifti"] = str(nifti_path)
 
-    def _model_ready(model: str) -> bool:
-        legacy_dicom = base_dir / f"{model}.dcm"
-        named_dicom = base_dir / f"{base_name}--{model}.dcm"
-        dicom_file = named_dicom if named_dicom.exists() else legacy_dicom
-        return dicom_file.exists() and _series_segmentation_ready(base_dir, base_name, model)
-
     models = ["total"] + [m for m in (config.extra_seg_models or []) if not m.endswith("_mr")]
-
-    if not force and all(_model_ready(model) for model in models):
-        default_named_dicom = base_dir / f"{base_name}--total.dcm"
-        default_dicom = default_named_dicom if default_named_dicom.exists() else base_dir / "total.dcm"
-        if default_dicom.exists():
-            results["dicom_seg"] = str(default_dicom)
-        results["nifti_seg_dir"] = str(base_dir)
-        return results
+    planning_ct = contract.data.get("planning_ct", {})
+    nifti_provenance = planning_ct.get("nifti_provenance") if isinstance(planning_ct, dict) else None
+    source_series_uid = str(planning_ct.get("series_instance_uid") or "")
+    source_ct_sop_hash = (
+        str(nifti_provenance.get("sop_hash") or "")
+        if isinstance(nifti_provenance, dict)
+        else ""
+    )
+    source_provenance = _segmentation_source_provenance(
+        nifti_path,
+        source_series_uid,
+        source_ct_sop_hash,
+    )
 
     tmp_parent = Path(config.segmentation_temp_root) if getattr(config, "segmentation_temp_root", None) else course_dir
     try:
@@ -1423,11 +1875,87 @@ def segment_course(config: PipelineConfig, course_dir: Path, force: bool = False
 
     # Track skipped models due to body region QC
     skipped_models: Dict[str, str] = {}
+    resume_decisions: dict[str, Any] = {}
     body_region_qc_done = False
+    attempted_any = False
 
     with tempfile.TemporaryDirectory(prefix="seg_", dir=str(tmp_parent)) as tmp_root_str:
         tmp_root = Path(tmp_root_str)
         for model in models:
+            if not force:
+                current, reason = _series_masks_current(
+                    base_dir,
+                    base_name,
+                    model,
+                    source_nifti=nifti_path,
+                    planning_ct_series_uid=source_series_uid,
+                    source_ct_sop_hash=source_ct_sop_hash,
+                )
+                if current:
+                    ready_entry = _series_model_manifest_entry(base_dir, base_name, model)
+                    if ready_entry is not None:
+                        manifest_entries.append(ready_entry)
+                    resume_decisions[model] = {
+                        "action": "reused",
+                        "model_run": False,
+                        "artefact": "TotalSegmentator masks",
+                        "reason": reason,
+                    }
+                    logger.info(
+                        "Segmentation resume course=%s model=%s action=reused model_run=false reason=%s",
+                        course_dir,
+                        model,
+                        reason,
+                    )
+                    if model == "total":
+                        default_named_dicom = base_dir / f"{base_name}--total.dcm"
+                        default_dicom = default_named_dicom if default_named_dicom.exists() else base_dir / "total.dcm"
+                        if default_dicom.exists():
+                            results["dicom_seg"] = str(default_dicom)
+                        else:
+                            derived_dicom = _ensure_model_rtstruct_from_masks(
+                                ct_dir, base_dir, base_name, model
+                            )
+                            decision_key = "RS_auto" if model == "total" else f"{model}_rtstruct"
+                            if derived_dicom is not None:
+                                results["dicom_seg"] = str(derived_dicom)
+                                for entry in manifest_entries:
+                                    if entry.get("model") == model:
+                                        entry["rtstruct_ok"] = True
+                                        entry["rtstruct"] = str(derived_dicom.relative_to(base_dir))
+                                resume_decisions[decision_key] = {
+                                    "action": "rebuilt",
+                                    "model_run": False,
+                                    "artefact": str(derived_dicom.name),
+                                    "reason": "derived from current reusable masks without rerunning the model",
+                                }
+                            else:
+                                resume_decisions[decision_key] = {
+                                    "action": "failed",
+                                    "model_run": False,
+                                    "artefact": str(default_named_dicom.name),
+                                    "reason": "current masks were reusable but the derived RTSTRUCT could not be rebuilt",
+                                }
+                    continue
+                logger.info(
+                    "Segmentation resume course=%s model=%s action=pending model_run=false reason=%s",
+                    course_dir,
+                    model,
+                    reason,
+                )
+                resume_decisions[model] = {
+                    "action": "pending",
+                    "model_run": False,
+                    "artefact": "TotalSegmentator masks",
+                    "reason": reason,
+                }
+            else:
+                resume_decisions[model] = {
+                    "action": "pending",
+                    "model_run": False,
+                    "artefact": "TotalSegmentator masks",
+                    "reason": "forced segmentation",
+                }
             task_name = None if model == "total" else model
 
             # After "total" completes, run body region QC before extra models
@@ -1462,6 +1990,19 @@ def segment_course(config: PipelineConfig, course_dir: Path, force: bool = False
                                 model, course_dir, reason
                             )
                             skipped_models[model] = reason
+                            resume_decisions[model] = {
+                                "action": "skipped",
+                                "model_run": False,
+                                "artefact": "TotalSegmentator masks",
+                                "reason": reason,
+                            }
+                            logger.info(
+                                "Segmentation resume course=%s model=%s action=skipped "
+                                "model_run=false reason=%s",
+                                course_dir,
+                                model,
+                                reason,
+                            )
                             continue
                         else:
                             logger.warning(
@@ -1474,6 +2015,7 @@ def segment_course(config: PipelineConfig, course_dir: Path, force: bool = False
             model_tmp = tmp_root / model
             dicom_tmp = model_tmp / "dicom"
             nifti_tmp = model_tmp / "nifti"
+            attempted_any = True
             dicom_tmp.mkdir(parents=True, exist_ok=True)
             nifti_tmp.mkdir(parents=True, exist_ok=True)
 
@@ -1520,26 +2062,76 @@ def segment_course(config: PipelineConfig, course_dir: Path, force: bool = False
             if model_entry["rtstruct"] or model_entry["masks"]:
                 manifest_entries.append(model_entry)
 
+            run_succeeded = bool(ok_nifti and model_entry["masks"])
+            decision_reason = str(resume_decisions[model].get("reason") or "")
+            resume_decisions[model] = {
+                "action": "rebuilt" if run_succeeded else "failed",
+                "model_run": True,
+                "run_succeeded": run_succeeded,
+                "artefact": "TotalSegmentator masks",
+                "reason": (
+                    f"{decision_reason}; TotalSegmentator completed and published the mask inventory"
+                    if run_succeeded
+                    else f"{decision_reason}; TotalSegmentator was invoked but did not publish a complete mask inventory"
+                ),
+            }
+            logger.info(
+                "Segmentation resume course=%s model=%s action=%s model_run=true "
+                "run_succeeded=%s",
+                course_dir,
+                model,
+                resume_decisions[model]["action"],
+                run_succeeded,
+            )
+
     default_dicom = base_dir / "total.dcm"
     if default_dicom.exists():
         results["dicom_seg"] = str(default_dicom)
 
-    if manifest_entries or skipped_models:
+    manifest_path = base_dir / "manifest.json"
+    manifest_needs_update = any(
+        isinstance(decision, dict) and decision.get("action") != "reused"
+        for decision in resume_decisions.values()
+    )
+    if manifest_entries and (attempted_any or manifest_needs_update or not manifest_path.exists()):
         try:
+            previous_manifest: dict[str, Any] = {}
+            if manifest_path.exists():
+                parsed_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                if isinstance(parsed_manifest, dict):
+                    previous_manifest = parsed_manifest
+            previous_skipped = previous_manifest.get("skipped_models")
+            merged_skipped = dict(previous_skipped) if isinstance(previous_skipped, dict) else {}
+            merged_skipped.update(skipped_models)
             manifest = {
                 "source_nifti": f"{base_name}.nii.gz",
-                "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                **source_provenance,
+                "generated_at": (
+                    datetime.datetime.now(datetime.timezone.utc).isoformat()
+                    if attempted_any
+                    else previous_manifest.get("generated_at")
+                    or datetime.datetime.now(datetime.timezone.utc).isoformat()
+                ),
                 "models": manifest_entries,
             }
-            if skipped_models:
-                manifest["skipped_models"] = skipped_models
-            _write_manifest_atomic(base_dir / "manifest.json", manifest)
+            if merged_skipped:
+                manifest["skipped_models"] = merged_skipped
+            _write_manifest_atomic(manifest_path, manifest)
         except Exception as exc:
             logger.debug("Failed to persist segmentation manifest for %s: %s", course_dir, exc)
 
     results["nifti_seg_dir"] = str(base_dir)
     if skipped_models:
         results["skipped_models"] = skipped_models
+    if resume_decisions:
+        try:
+            record_segmentation_resume_decision(
+                course_dir,
+                resume_decisions,
+                source=source_provenance,
+            )
+        except Exception as exc:
+            logger.warning("Could not record segmentation resume decision for %s: %s", course_dir, exc)
 
     # ------------------------------------------------------------------
     # MR segmentation for auxiliary series in DICOM_related/

@@ -41,7 +41,11 @@ from .custom_models import (
     list_custom_model_outputs,
     validate_custom_model_output_inventory,
 )
-from .custom_structures_rtstruct import _create_custom_structures_rtstruct, _is_rs_custom_stale
+from .custom_structures_rtstruct import (
+    _create_custom_structures_rtstruct,
+    _is_rs_custom_stale,
+    record_rs_custom_resume_decision,
+)
 from .radiomics_outcomes import (
     RadiomicsCourseExtractionError,
     RadiomicsCourseOutcome,
@@ -793,15 +797,53 @@ def parallel_radiomics_for_course(
                 if isinstance(item, str) and item.strip()
             }
         }
+        custom_rebuild_attempted = False
+        custom_rebuild_published = False
         try:
             rs_auto_for_custom = course_dir / "RS_auto.dcm"
-            if _is_rs_custom_stale(
+            custom_is_stale = _is_rs_custom_stale(
                 rs_custom, configured_custom_path, rs_manual, rs_auto_for_custom
-            ):
-                rs_custom = _create_custom_structures_rtstruct(
+            )
+            if custom_is_stale:
+                custom_rebuild_attempted = True
+                from .custom_structures_rtstruct import _quarantine_rejected_rtstruct
+
+                _quarantine_rejected_rtstruct(
+                    rs_custom,
+                    "RS_custom failed the authoritative currentness check",
+                )
+                rebuilt = _create_custom_structures_rtstruct(
                     course_dir, configured_custom_path, rs_manual, rs_auto_for_custom
-                ) or rs_custom
+                )
+                if rebuilt is None or not Path(rebuilt).is_file():
+                    record_rs_custom_resume_decision(
+                        course_dir,
+                        "failed",
+                        "RS_custom replacement could not be published",
+                    )
+                    raise RadiomicsCourseExtractionError(
+                        f"RS_custom rebuild failed for configured ROIs in {course_dir}"
+                    )
+                rs_custom = Path(rebuilt)
+                custom_rebuild_published = True
+                record_rs_custom_resume_decision(
+                    course_dir,
+                    "rebuilt",
+                    "rebuilt after the previous RS_custom failed the authoritative currentness check",
+                )
+            else:
+                record_rs_custom_resume_decision(
+                    course_dir,
+                    "reused",
+                    "existing RS_custom passed the authoritative currentness check",
+                )
         except Exception as exc:
+            if custom_rebuild_attempted and not custom_rebuild_published:
+                record_rs_custom_resume_decision(
+                    course_dir,
+                    "failed",
+                    f"RS_custom rebuild raised {type(exc).__name__}: {exc}",
+                )
             _invalidate_radiomics_outputs(out_path)
             raise RadiomicsCourseExtractionError(
                 f"Failed to prepare RS_custom for radiomics in {course_dir}: {exc}"

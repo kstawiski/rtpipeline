@@ -35,7 +35,11 @@ from .custom_models import (
     list_custom_model_outputs,
     validate_custom_model_output_inventory,
 )
-from .custom_structures_rtstruct import _create_custom_structures_rtstruct, _is_rs_custom_stale
+from .custom_structures_rtstruct import (
+    _create_custom_structures_rtstruct,
+    _is_rs_custom_stale,
+    record_rs_custom_resume_decision,
+)
 from .radiomics_outcomes import (
     RadiomicsCourseExtractionError,
     RadiomicsCourseOutcome,
@@ -119,11 +123,40 @@ def _standard_rtstruct_sources(
 ) -> List[Tuple[str, Path, Optional[List[str]]]]:
     """Resolve standard manual/auto sources with contracted provenance."""
     sources: List[Tuple[str, Path, Optional[List[str]]]] = []
+    auto = Path(course_dir) / "RS_auto.dcm"
+    auto_is_current = False
+    if auto.exists():
+        planning_ct = contract.planning_ct
+        planning_series_uid = str(planning_ct.get("series_instance_uid") or "").strip()
+        try:
+            from .auto_rtstruct import (
+                _derived_rtstruct_dependencies_are_current,
+                _rtstruct_matches_planning_ct,
+            )
+
+            auto_is_current = _rtstruct_matches_planning_ct(auto, planning_series_uid)
+            if auto_is_current:
+                auto_is_current = _derived_rtstruct_dependencies_are_current(
+                    auto,
+                    ct_dir=contract.planning_ct_dir,
+                    nifti_path=contract.planning_ct_nifti,
+                    segmentation_root=build_course_dirs(course_dir).segmentation_totalseg,
+                )
+        except Exception as exc:
+            logger.warning("Could not validate RS_auto provenance for %s: %s", course_dir, exc)
+            auto_is_current = False
+        if not auto_is_current:
+            logger.warning(
+                "Excluding rejected RS_auto.dcm from radiomics sources for %s",
+                course_dir,
+            )
+
     authoritative = contract.authoritative_rtstruct_path
     if authoritative is not None and authoritative.exists():
-        sources.append((contract.authoritative_rtstruct_source, authoritative, None))
-    auto = Path(course_dir) / "RS_auto.dcm"
-    if auto.exists():
+        authoritative_is_auto = authoritative.resolve() == auto.resolve()
+        if not authoritative_is_auto or auto_is_current:
+            sources.append((contract.authoritative_rtstruct_source, authoritative, None))
+    if auto.exists() and auto_is_current:
         sources.append((AUTO_RTSTRUCT_SOURCE, auto, None))
     return _deduplicate_rtstruct_sources(sources)
 
@@ -1036,22 +1069,56 @@ def radiomics_for_course(
             ) from exc
 
     if want_custom:
+        custom_rebuild_attempted = False
+        custom_rebuild_published = False
         try:
             from rt_utils import RTStructBuilder
 
             rs_manual_path = contracted_rs_manual
             rs_auto_path = course_dir / "RS_auto.dcm"
 
-            # Ensure RS_custom exists and is current when a config is available.
-            if configured_custom_path and _is_rs_custom_stale(
-                rs_custom, configured_custom_path, rs_manual_path, rs_auto_path
-            ):
+            custom_is_stale = bool(
+                configured_custom_path
+                and _is_rs_custom_stale(
+                    rs_custom, configured_custom_path, rs_manual_path, rs_auto_path
+                )
+            )
+            if custom_is_stale:
+                custom_rebuild_attempted = True
                 logger.info("Regenerating RS_custom.dcm for radiomics in %s", course_dir.name)
-                rs_custom = _create_custom_structures_rtstruct(
+                from .custom_structures_rtstruct import _quarantine_rejected_rtstruct
+
+                _quarantine_rejected_rtstruct(
+                    rs_custom,
+                    "RS_custom failed the authoritative currentness check",
+                )
+                rebuilt = _create_custom_structures_rtstruct(
                     course_dir,
                     configured_custom_path,
                     rs_manual_path,
                     rs_auto_path,
+                )
+                if rebuilt is None or not Path(rebuilt).is_file():
+                    record_rs_custom_resume_decision(
+                        course_dir,
+                        "failed",
+                        "RS_custom replacement could not be published",
+                    )
+                    raise RadiomicsCourseExtractionError(
+                        f"RS_custom rebuild failed for configured ROIs in {course_dir}"
+                    )
+                rs_custom = Path(rebuilt)
+                custom_rebuild_published = True
+                record_rs_custom_resume_decision(
+                    course_dir,
+                    "rebuilt",
+                    "rebuilt after the previous RS_custom failed the authoritative currentness check",
+                )
+            elif configured_custom_path:
+                record_rs_custom_resume_decision(
+                    course_dir,
+                    "reused",
+                    "existing RS_custom passed the authoritative currentness check",
                 )
 
             if not rs_custom or not rs_custom.is_file():
@@ -1098,6 +1165,12 @@ def radiomics_for_course(
                     )
                 tasks.append(("Custom", roi_name, mask_bool, mask_is_cropped(mask_bool)))
         except Exception as exc:
+            if custom_rebuild_attempted and not custom_rebuild_published:
+                record_rs_custom_resume_decision(
+                    course_dir,
+                    "failed",
+                    f"RS_custom rebuild raised {type(exc).__name__}: {exc}",
+                )
             _invalidate_radiomics_outputs(out_path)
             if isinstance(exc, RadiomicsCourseExtractionError):
                 raise
