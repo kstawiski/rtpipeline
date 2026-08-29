@@ -1,0 +1,1036 @@
+from __future__ import annotations
+
+"""Authoritative per-course decisions emitted by :mod:`rtpipeline.organize`.
+
+Downstream course stages load this contract and validate its declared artifacts.
+They must not recover a missing or invalid decision by scanning the course tree.
+"""
+
+from dataclasses import dataclass
+import hashlib
+import json
+import math
+from pathlib import Path
+from typing import Any, Iterable
+
+import pydicom
+
+
+COURSE_CONTRACT_VERSION = 1
+PLAN_LEVEL_DOSE_SUMMATION_TYPES = frozenset({"PLAN", "PLAN_SUM"})
+BEAM_LEVEL_DOSE_SUMMATION_TYPES = frozenset({"BEAM"})
+DOSE_GRID_SEMANTICS = "planned_dose_for_delivered_plan_set"
+UNKNOWN_DELIVERY_DOSE_GRID_SEMANTICS = "planned_dose_for_selected_plan_set_delivery_unknown"
+DOSE_RESPONSE_FIELD = "delivered_dose_gy"
+ALL_SERIES_RADIOMICS_TEMP_SCOPE = "all_series_radiomics_temp"
+ALL_SERIES_RADIOMICS_TEMP_AUTHORITY = "all_series_radiomics_materializer"
+MANUAL_RTSTRUCT_SOURCE = "Manual"
+AUTO_RTSTRUCT_SOURCE = "AutoRTS_total"
+
+_ROLE_EXPECTATIONS = {
+    "RTPLAN": ({"RTPLAN"}, {"1.2.840.10008.5.1.4.1.1.481.5"}),
+    "RTDOSE": ({"RTDOSE"}, {"1.2.840.10008.5.1.4.1.1.481.2"}),
+    "RTSTRUCT": ({"RTSTRUCT"}, {"1.2.840.10008.5.1.4.1.1.481.3"}),
+    "CT": (
+        {"CT"},
+        {
+            "1.2.840.10008.5.1.4.1.1.2",  # CT Image Storage
+            "1.2.840.10008.5.1.4.1.1.2.1",  # Enhanced CT Image Storage
+        },
+    ),
+}
+
+
+class CourseContractError(RuntimeError):
+    """The organize-stage course contract is missing, malformed, or stale."""
+
+
+def build_dvh_decision(
+    selected_plan_count: int,
+    selected_dose_count: int,
+    delivery_status: str,
+) -> dict[str, Any]:
+    """Describe whether DVH can compute metrics from the contracted dose sources."""
+    if selected_dose_count:
+        return {
+            "status": "ready",
+            "metrics_status": "computed",
+            "reason_code": "authoritative_dose_grid",
+            "dose_record_status": "authoritative_rtdose_selected",
+            "output": "dvh_metrics.xlsx",
+            "delivery_status": delivery_status,
+            "reason": "The contract contains an authoritative RTDOSE grid for DVH.",
+        }
+    if selected_plan_count:
+        reason_code = "plan_only_no_authoritative_dose_grid"
+    else:
+        reason_code = "no_selected_plan_or_dose_grid"
+    dose_record_status = (
+        "delivery_unknown_no_rtrecord"
+        if delivery_status == "no_records_at_all"
+        else "no_authoritative_rtdose_selected"
+    )
+    return {
+        "status": "not_computed",
+        "metrics_status": "not_computed",
+        "reason_code": reason_code,
+        "dose_record_status": dose_record_status,
+        "output": None,
+        "delivery_status": delivery_status,
+        "reason": (
+            "Organize retained the contracted plan membership but selected no RTDOSE. "
+            "DVH emits no dose metrics and records this reason in metadata."
+            if selected_plan_count
+            else "Organize selected no plan or RTDOSE sources. DVH emits no dose metrics and records this reason in metadata."
+        ),
+    }
+
+
+def _nonempty_text(value: object, field: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        raise CourseContractError(f"course contract field {field} is empty")
+    return text
+
+
+def _optional_nonnegative_number(value: object, field: str) -> float | None:
+    if value in (None, ""):
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        raise CourseContractError(f"course contract field {field} must be numeric or null")
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as exc:
+        raise CourseContractError(
+            f"course contract field {field} must be numeric or null"
+        ) from exc
+    if not math.isfinite(number) or number < 0:
+        raise CourseContractError(
+            f"course contract field {field} must be finite and nonnegative"
+        )
+    return number
+
+
+def _list_of_dicts(value: object, field: str) -> list[dict[str, Any]]:
+    if not isinstance(value, list) or any(not isinstance(item, dict) for item in value):
+        raise CourseContractError(f"course contract field {field} must be a list of objects")
+    return list(value)
+
+
+def _read_header(path: Path, field: str):
+    try:
+        return pydicom.dcmread(str(path), stop_before_pixels=True, force=True)
+    except Exception as exc:
+        raise CourseContractError(
+            f"course contract field {field} points to unreadable DICOM: {path}: {exc}"
+        ) from exc
+
+
+def _unique(values: Iterable[str]) -> list[str]:
+    return list(dict.fromkeys(value for value in values if value))
+
+
+def _referenced_sop_uids(dataset: object, sequence_name: str) -> list[str]:
+    return _unique(
+        str(getattr(item, "ReferencedSOPInstanceUID", "") or "").strip()
+        for item in getattr(dataset, sequence_name, []) or []
+    )
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    try:
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+    except OSError as exc:
+        raise CourseContractError(f"cannot hash contracted artifact {path}: {exc}") from exc
+    return digest.hexdigest()
+
+
+def _number_list(value: object) -> list[float] | None:
+    if value in (None, ""):
+        return None
+    if not isinstance(value, (list, tuple)):
+        return None
+    try:
+        return [float(item) for item in value]
+    except (TypeError, ValueError):
+        return None
+
+
+def _ct_provenance(ct_dir: Path) -> dict[str, Any]:
+    """Read the identity and geometry used to create a planning-CT NIfTI."""
+    instances: list[str] = []
+    series_uids: set[str] = set()
+    geometry: dict[str, Any] = {}
+    for path in sorted(item for item in ct_dir.iterdir() if item.is_file()):
+        try:
+            dataset = pydicom.dcmread(str(path), stop_before_pixels=True, force=True)
+        except Exception:
+            continue
+        modality = str(getattr(dataset, "Modality", "") or "").strip().upper()
+        if not modality:
+            continue
+        if modality != "CT":
+            raise CourseContractError(
+                f"planning CT directory contains a non-CT DICOM object: {path} ({modality or 'missing modality'})"
+            )
+        sop_class = str(getattr(dataset, "SOPClassUID", "") or "").strip()
+        if sop_class not in _ROLE_EXPECTATIONS["CT"][1]:
+            raise CourseContractError(
+                f"planning CT directory contains an unsupported CT SOP Class UID {sop_class!r}: {path}"
+            )
+        series_uid = str(getattr(dataset, "SeriesInstanceUID", "") or "").strip()
+        if series_uid:
+            series_uids.add(series_uid)
+        sop_uid = str(getattr(dataset, "SOPInstanceUID", "") or "").strip()
+        if sop_uid:
+            instances.append(sop_uid)
+        if not geometry:
+            geometry = {
+                "rows": int(getattr(dataset, "Rows", 0) or 0),
+                "columns": int(getattr(dataset, "Columns", 0) or 0),
+                "pixel_spacing": _number_list(getattr(dataset, "PixelSpacing", None)),
+                "image_orientation_patient": _number_list(
+                    getattr(dataset, "ImageOrientationPatient", None)
+                ),
+                "slice_thickness": (
+                    float(getattr(dataset, "SliceThickness"))
+                    if getattr(dataset, "SliceThickness", None) not in (None, "")
+                    else None
+                ),
+            }
+    if not instances or not series_uids:
+        raise CourseContractError(f"planning CT contract directory contains no readable CT objects: {ct_dir}")
+    if len(series_uids) != 1:
+        raise CourseContractError(
+            f"planning CT contract directory contains multiple SeriesInstanceUID values: {sorted(series_uids)!r}"
+        )
+    return {
+        "series_instance_uid": next(iter(series_uids)),
+        "sop_hash": hashlib.sha256("".join(instances).encode("utf-8")).hexdigest(),
+        "geometry": geometry,
+    }
+
+
+def _read_json(path: Path, field: str) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise CourseContractError(f"course contract field {field} sidecar is unreadable: {path}: {exc}") from exc
+    if not isinstance(value, dict):
+        raise CourseContractError(f"course contract field {field} sidecar must be a JSON object: {path}")
+    return value
+
+
+def _validate_nifti_provenance(
+    contract: "CourseContract",
+    planning_ct: dict[str, Any],
+    ct_dir: Path,
+    nifti: Path,
+    series_uid: str,
+) -> None:
+    provenance = planning_ct.get("nifti_provenance")
+    if not isinstance(provenance, dict):
+        raise CourseContractError(
+            "planning_ct.nifti_provenance is required to validate NIfTI identity"
+        )
+    sidecar = contract.resolve_path(
+        provenance.get("sidecar_path"),
+        "planning_ct.nifti_provenance.sidecar_path",
+    )
+    assert sidecar is not None
+    sidecar_data = _read_json(sidecar, "planning_ct.nifti_provenance")
+    expected_ct = _ct_provenance(ct_dir)
+    for key in ("series_instance_uid", "sop_hash", "geometry", "nifti_geometry", "nifti_sha256"):
+        if key not in provenance or key not in sidecar_data:
+            raise CourseContractError(
+                f"planning CT NIfTI provenance is incomplete for {key}: {nifti}"
+            )
+        if sidecar_data.get(key) != provenance.get(key):
+            raise CourseContractError(
+                f"stale planning CT NIfTI provenance: sidecar {key} does not match the course contract"
+            )
+    if provenance.get("series_instance_uid") != series_uid:
+        raise CourseContractError(
+            "stale planning CT NIfTI provenance: SeriesInstanceUID does not match the contract"
+        )
+    if provenance.get("series_instance_uid") != expected_ct["series_instance_uid"]:
+        raise CourseContractError(
+            "stale planning CT NIfTI provenance: SeriesInstanceUID does not match the selected DICOM series"
+        )
+    if provenance.get("sop_hash") != expected_ct["sop_hash"]:
+        raise CourseContractError(
+            "stale planning CT NIfTI provenance: source CT instance hash does not match the selected series"
+        )
+    if provenance.get("geometry") != expected_ct["geometry"]:
+        raise CourseContractError(
+            "stale planning CT NIfTI provenance: source CT geometry does not match the selected series"
+        )
+    # Geometry and orientation are validated from the conversion sidecar and
+    # source-series provenance above. Downstream image readers remain responsible
+    # for rejecting an unreadable NIfTI before it is used.
+    if provenance.get("nifti_sha256") != _sha256(nifti):
+        raise CourseContractError(
+            "stale planning CT NIfTI provenance: content hash does not match the NIfTI on disk"
+        )
+
+
+@dataclass(frozen=True)
+class CourseContract:
+    course_dir: Path
+    metadata_path: Path
+    data: dict[str, Any]
+
+    def resolve_path(
+        self,
+        value: object,
+        field: str,
+        *,
+        required: bool = True,
+        directory: bool = False,
+    ) -> Path | None:
+        text = str(value or "").strip()
+        if not text:
+            if required:
+                raise CourseContractError(f"course contract field {field} is empty")
+            return None
+        candidate = Path(text)
+        if not candidate.is_absolute():
+            candidate = self.course_dir / candidate
+        resolved = candidate.resolve(strict=False)
+        root = self.course_dir.resolve(strict=False)
+        try:
+            resolved.relative_to(root)
+        except ValueError as exc:
+            raise CourseContractError(
+                f"course contract field {field} escapes the course directory: {text}"
+            ) from exc
+        exists = resolved.is_dir() if directory else resolved.is_file()
+        if not exists:
+            expected = "directory" if directory else "file"
+            raise CourseContractError(
+                f"course contract field {field} points to a missing {expected}: {resolved}"
+            )
+        return resolved
+
+    @property
+    def selected_plans(self) -> list[dict[str, Any]]:
+        return _list_of_dicts(self.data.get("selected_plans"), "selected_plans")
+
+    @property
+    def selected_doses(self) -> list[dict[str, Any]]:
+        return _list_of_dicts(self.data.get("selected_doses"), "selected_doses")
+
+    @property
+    def delivery(self) -> dict[str, Any]:
+        value = self.data.get("delivery")
+        if not isinstance(value, dict):
+            raise CourseContractError("course contract field delivery must be an object")
+        return value
+
+    @property
+    def dose_qc(self) -> dict[str, Any]:
+        value = self.data.get("dose_qc")
+        if not isinstance(value, dict):
+            raise CourseContractError("course contract field dose_qc must be an object")
+        return value
+
+    @property
+    def planning_ct(self) -> dict[str, Any]:
+        value = self.data.get("planning_ct")
+        if not isinstance(value, dict):
+            raise CourseContractError("course contract field planning_ct must be an object")
+        return value
+
+    @property
+    def prescribed_dose_gy(self) -> float | None:
+        value = self.delivery.get("prescribed_dose_gy")
+        if value in (None, ""):
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError) as exc:
+            raise CourseContractError("course contract prescribed_dose_gy is not numeric") from exc
+
+    @property
+    def delivered_dose_gy(self) -> float | None:
+        value = self.delivery.get("delivered_dose_gy")
+        if value in (None, ""):
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError) as exc:
+            raise CourseContractError("course contract delivered_dose_gy is not numeric") from exc
+
+    @property
+    def authoritative_rtstruct_path(self) -> Path | None:
+        value = self.data.get("authoritative_rtstruct")
+        if value is None:
+            return None
+        if not isinstance(value, dict):
+            raise CourseContractError("course contract field authoritative_rtstruct must be an object or null")
+        return self.resolve_path(value.get("path"), "authoritative_rtstruct.path")
+
+    @property
+    def authoritative_rtstruct_source(self) -> str:
+        """Return the provenance label attached to the contracted RTSTRUCT.
+
+        Organizer contracts predate an explicit source field and represent the
+        selected clinical structure set, so their compatible default is
+        ``Manual``. Scoped all-series contracts must declare their generated
+        source explicitly and are validated below.
+        """
+        value = self.data.get("authoritative_rtstruct")
+        if value is None:
+            return MANUAL_RTSTRUCT_SOURCE
+        if not isinstance(value, dict):
+            raise CourseContractError(
+                "course contract field authoritative_rtstruct must be an object or null"
+            )
+        source = str(value.get("segmentation_source") or "").strip()
+        return source or MANUAL_RTSTRUCT_SOURCE
+
+    @property
+    def planning_ct_dir(self) -> Path | None:
+        return self.resolve_path(
+            self.planning_ct.get("dicom_dir"),
+            "planning_ct.dicom_dir",
+            required=False,
+            directory=True,
+        )
+
+    @property
+    def planning_ct_nifti(self) -> Path | None:
+        return self.resolve_path(
+            self.planning_ct.get("nifti_path"),
+            "planning_ct.nifti_path",
+            required=False,
+        )
+
+    @property
+    def plan_artifact_path(self) -> Path | None:
+        value = self.data.get("plan_artifact")
+        if value is None:
+            return None
+        if not isinstance(value, dict):
+            raise CourseContractError("course contract field plan_artifact must be an object or null")
+        return self.resolve_path(value.get("path"), "plan_artifact.path")
+
+    @property
+    def dose_grid_path(self) -> Path | None:
+        value = self.data.get("dose_grid")
+        if value is None:
+            return None
+        if not isinstance(value, dict):
+            raise CourseContractError("course contract field dose_grid must be an object or null")
+        return self.resolve_path(value.get("path"), "dose_grid.path")
+
+    def require_planning_ct(self) -> tuple[Path, Path]:
+        ct_dir = self.planning_ct_dir
+        nifti = self.planning_ct_nifti
+        if ct_dir is None or nifti is None:
+            raise CourseContractError(
+                "course contract has no complete planning CT decision (DICOM directory and NIfTI are required)"
+            )
+        return ct_dir, nifti
+
+    def require_dvh_artifacts(self) -> tuple[Path, Path | None]:
+        plan = self.plan_artifact_path
+        dose = self.dose_grid_path
+        if plan is None:
+            raise CourseContractError(
+                "course contract has no authoritative plan artifact for DVH"
+            )
+        return plan, dose
+
+    def require_computable_dvh_artifacts(self) -> tuple[Path, Path]:
+        """Return the RP/RD pair required for dose-based DVH computation.
+
+        A valid plan-only contract has a plan artifact but no dose grid. That
+        state is handled by DVH as an explicit no-metrics outcome rather than
+        being treated as a malformed contract.
+        """
+        plan, dose = self.require_dvh_artifacts()
+        if dose is None:
+            raise CourseContractError(
+                "course contract has no authoritative dose grid for DVH"
+            )
+        return plan, dose
+
+
+def _validate_dicom_identity(
+    contract: CourseContract,
+    item: dict[str, Any],
+    field: str,
+    *,
+    summation_type: bool = False,
+    role: str | None = None,
+) -> Path:
+    path = contract.resolve_path(item.get("path"), f"{field}.path")
+    assert path is not None
+    dataset = _read_header(path, f"{field}.path")
+    expected_uid = _nonempty_text(item.get("sop_instance_uid"), f"{field}.sop_instance_uid")
+    actual_uid = str(getattr(dataset, "SOPInstanceUID", "") or "").strip()
+    if actual_uid != expected_uid:
+        raise CourseContractError(
+            f"stale course contract at {field}: SOPInstanceUID {actual_uid!r} on disk does not match {expected_uid!r}"
+        )
+    if role is not None:
+        try:
+            modalities, sop_classes = _ROLE_EXPECTATIONS[role]
+        except KeyError as exc:
+            raise ValueError(f"unknown course-contract DICOM role {role!r}") from exc
+        actual_modality = str(getattr(dataset, "Modality", "") or "").strip().upper()
+        actual_sop_class = str(getattr(dataset, "SOPClassUID", "") or "").strip()
+        if actual_modality not in modalities or actual_sop_class not in sop_classes:
+            raise CourseContractError(
+                f"stale course contract at {field}: expected {role} DICOM "
+                f"(Modality={sorted(modalities)!r}, SOPClassUID={sorted(sop_classes)!r}), "
+                f"found (Modality={actual_modality!r}, SOPClassUID={actual_sop_class!r})"
+            )
+    if summation_type:
+        expected_type = _nonempty_text(
+            item.get("dose_summation_type"), f"{field}.dose_summation_type"
+        ).upper()
+        actual_type = str(getattr(dataset, "DoseSummationType", "") or "").strip().upper()
+        if actual_type != expected_type:
+            raise CourseContractError(
+                f"stale course contract at {field}: DoseSummationType {actual_type!r} on disk does not match {expected_type!r}"
+            )
+    return path
+
+
+def validate_course_contract(contract: CourseContract) -> CourseContract:
+    data = contract.data
+    if data.get("version") != COURSE_CONTRACT_VERSION:
+        raise CourseContractError(
+            f"unsupported course contract version {data.get('version')!r}; expected {COURSE_CONTRACT_VERSION}"
+        )
+    scope = data.get("scope")
+    authority = data.get("authority")
+    if scope == ALL_SERIES_RADIOMICS_TEMP_SCOPE:
+        if authority != ALL_SERIES_RADIOMICS_TEMP_AUTHORITY:
+            raise CourseContractError(
+                "all-series radiomics temporary contract has an invalid authority"
+            )
+        if not str(data.get("scope_reason") or "").strip():
+            raise CourseContractError(
+                "all-series radiomics temporary contract must document its scope reason"
+            )
+    elif authority != "organize":
+        raise CourseContractError("course contract authority must be 'organize'")
+
+    expected_patient = _nonempty_text(data.get("patient_id"), "patient_id")
+    expected_course = _nonempty_text(data.get("course_id"), "course_id")
+    if contract.course_dir.parent.name != expected_patient or contract.course_dir.name != expected_course:
+        raise CourseContractError(
+            "stale course contract identity: "
+            f"contract={expected_patient}/{expected_course}, disk={contract.course_dir.parent.name}/{contract.course_dir.name}"
+        )
+
+    selected_plans = contract.selected_plans
+    selected_doses = contract.selected_doses
+    if not isinstance(data.get("dose_classification"), dict):
+        raise CourseContractError("course contract field dose_classification must be an object")
+    plan_uids: list[str] = []
+    for index, item in enumerate(selected_plans):
+        field = f"selected_plans[{index}]"
+        _validate_dicom_identity(contract, item, field, role="RTPLAN")
+        uid = _nonempty_text(item.get("sop_instance_uid"), f"{field}.sop_instance_uid")
+        if uid in plan_uids:
+            raise CourseContractError(f"duplicate selected RTPLAN SOPInstanceUID {uid}")
+        plan_uids.append(uid)
+        try:
+            records = int(item.get("delivered_record_count") or 0)
+            fractions = int(item.get("delivered_fraction_count") or 0)
+        except (TypeError, ValueError) as exc:
+            raise CourseContractError(f"{field} delivery counts must be integers") from exc
+        if records < 0 or fractions < 0:
+            raise CourseContractError(f"{field} delivery counts must be nonnegative")
+
+    dose_uids: list[str] = []
+    selected_types: list[str] = []
+    for index, item in enumerate(selected_doses):
+        field = f"selected_doses[{index}]"
+        dose_path = _validate_dicom_identity(
+            contract, item, field, summation_type=True, role="RTDOSE"
+        )
+        uid = _nonempty_text(item.get("sop_instance_uid"), f"{field}.sop_instance_uid")
+        if uid in dose_uids:
+            raise CourseContractError(f"duplicate selected RTDOSE SOPInstanceUID {uid}")
+        dose_uids.append(uid)
+        selected_types.append(
+            _nonempty_text(item.get("dose_summation_type"), f"{field}.dose_summation_type").upper()
+        )
+        expected_references = item.get("referenced_plan_uids")
+        if not isinstance(expected_references, list) or any(
+            not isinstance(value, str) or not value.strip() for value in expected_references
+        ):
+            raise CourseContractError(f"{field}.referenced_plan_uids must be a list of nonempty strings")
+        actual_references = _referenced_sop_uids(
+            _read_header(dose_path, f"{field}.path"),
+            "ReferencedRTPlanSequence",
+        )
+        if set(actual_references) != set(expected_references):
+            raise CourseContractError(
+                f"stale course contract at {field}: referenced RTPLAN UIDs "
+                f"{actual_references!r} on disk do not match {expected_references!r}"
+            )
+
+    type_set = set(selected_types)
+    if type_set & PLAN_LEVEL_DOSE_SUMMATION_TYPES and type_set & BEAM_LEVEL_DOSE_SUMMATION_TYPES:
+        raise CourseContractError("course contract mixes PLAN/PLAN_SUM and BEAM RTDOSE objects")
+    unknown_types = type_set - PLAN_LEVEL_DOSE_SUMMATION_TYPES - BEAM_LEVEL_DOSE_SUMMATION_TYPES
+    if unknown_types:
+        raise CourseContractError(
+            f"course contract selects unsupported DoseSummationType values: {sorted(unknown_types)}"
+        )
+    for index, item in enumerate(selected_doses):
+        outside = set(item.get("referenced_plan_uids") or []) - set(plan_uids)
+        if outside:
+            raise CourseContractError(
+                f"selected_doses[{index}] references RTPLAN UIDs outside selected membership: "
+                + ", ".join(sorted(outside))
+            )
+    referenced_selected_plans = {
+        str(uid)
+        for item in selected_doses
+        for uid in item.get("referenced_plan_uids") or []
+    }
+    if selected_doses and referenced_selected_plans != set(plan_uids):
+        raise CourseContractError(
+            "selected RTDOSE references do not cover exactly the selected RTPLAN membership"
+        )
+    if type_set and type_set <= BEAM_LEVEL_DOSE_SUMMATION_TYPES:
+        if len(plan_uids) != 1 or len(selected_doses) < 2:
+            raise CourseContractError(
+                "BEAM RTDOSE sources require at least two components for exactly one selected RTPLAN"
+            )
+
+    delivery = contract.delivery
+    status = _nonempty_text(delivery.get("status"), "delivery.status")
+    prescribed = _optional_nonnegative_number(
+        delivery.get("prescribed_dose_gy"),
+        "delivery.prescribed_dose_gy",
+    )
+    delivered = _optional_nonnegative_number(
+        delivery.get("delivered_dose_gy"),
+        "delivery.delivered_dose_gy",
+    )
+    if status not in {
+        "fully_delivered",
+        "partially_delivered",
+        "delivered_but_records_absent",
+        "no_records_at_all",
+    }:
+        raise CourseContractError(f"unknown delivery.status {status!r}")
+    if status in {"fully_delivered", "partially_delivered"} and delivered is None:
+        raise CourseContractError(f"delivery.status {status!r} requires delivered_dose_gy")
+    if status in {"delivered_but_records_absent", "no_records_at_all"} and delivered is not None:
+        raise CourseContractError(
+            f"delivery.status {status!r} requires delivered_dose_gy to be null"
+        )
+    if delivery.get("dose_response_field") != DOSE_RESPONSE_FIELD:
+        raise CourseContractError(
+            f"delivery.dose_response_field must be {DOSE_RESPONSE_FIELD!r}"
+        )
+    per_plan = _list_of_dicts(delivery.get("per_plan"), "delivery.per_plan")
+    per_plan_uids = [
+        _nonempty_text(item.get("plan_sop_uid"), f"delivery.per_plan[{index}].plan_sop_uid")
+        for index, item in enumerate(per_plan)
+    ]
+    if len(per_plan_uids) != len(set(per_plan_uids)):
+        raise CourseContractError("delivery.per_plan contains duplicate RTPLAN SOPInstanceUIDs")
+    for index, (uid, item) in enumerate(zip(per_plan_uids, per_plan)):
+        field = f"delivery.per_plan[{index}]"
+        plan_path = contract.resolve_path(item.get("plan_path"), f"{field}.plan_path")
+        assert plan_path is not None
+        dataset = _read_header(plan_path, f"{field}.plan_path")
+        actual_modality = str(getattr(dataset, "Modality", "") or "").strip().upper()
+        actual_sop_class = str(getattr(dataset, "SOPClassUID", "") or "").strip()
+        if (actual_modality, actual_sop_class) not in {
+            (modality, sop_class)
+            for modality in _ROLE_EXPECTATIONS["RTPLAN"][0]
+            for sop_class in _ROLE_EXPECTATIONS["RTPLAN"][1]
+        }:
+            raise CourseContractError(
+                f"stale course contract at {field}: delivery evidence plan is not an RTPLAN "
+                f"(Modality={actual_modality!r}, SOPClassUID={actual_sop_class!r})"
+            )
+        actual_uid = str(getattr(dataset, "SOPInstanceUID", "") or "").strip()
+        if actual_uid != uid:
+            raise CourseContractError(
+                f"stale course contract at {field}: plan SOPInstanceUID {actual_uid!r} on disk does not match {uid!r}"
+            )
+        try:
+            record_count = int(item.get("delivered_record_count") or 0)
+            fraction_count = int(item.get("delivered_fraction_count") or 0)
+        except (TypeError, ValueError) as exc:
+            raise CourseContractError(f"{field} delivery counts must be integers") from exc
+        if record_count < 0 or fraction_count < 0:
+            raise CourseContractError(f"{field} delivery counts must be nonnegative")
+        if item.get("zero_delivery_records") is not (record_count == 0):
+            raise CourseContractError(
+                f"{field}.zero_delivery_records disagrees with delivered_record_count"
+            )
+        dates = item.get("treatment_dates")
+        if not isinstance(dates, list) or any(
+            not isinstance(value, str) or not value.strip() for value in dates
+        ):
+            raise CourseContractError(f"{field}.treatment_dates must be a list")
+        record_paths = item.get("record_paths")
+        if not isinstance(record_paths, list) or any(
+            not isinstance(value, str) or not value.strip() for value in record_paths
+        ):
+            raise CourseContractError(f"{field}.record_paths must be a list of paths")
+        record_uids: set[str] = set()
+        fraction_sessions: set[tuple[str, str, str]] = set()
+        observed_dates: set[str] = set()
+        for record_index, record_value in enumerate(record_paths):
+            record_path = contract.resolve_path(
+                record_value,
+                f"{field}.record_paths[{record_index}]",
+            )
+            assert record_path is not None
+            record = _read_header(record_path, f"{field}.record_paths[{record_index}]")
+            modality = str(getattr(record, "Modality", "") or "").strip().upper()
+            if modality != "RTRECORD":
+                raise CourseContractError(
+                    f"{field}.record_paths[{record_index}] is not an RTRECORD: {record_path}"
+                )
+            referenced_plans = _referenced_sop_uids(record, "ReferencedRTPlanSequence")
+            if uid not in referenced_plans:
+                raise CourseContractError(
+                    f"{field}.record_paths[{record_index}] does not reference plan {uid}"
+                )
+            record_uid = str(getattr(record, "SOPInstanceUID", "") or "").strip()
+            if not record_uid:
+                raise CourseContractError(
+                    f"{field}.record_paths[{record_index}] has no SOPInstanceUID"
+                )
+            record_uids.add(record_uid)
+            treatment_date = str(getattr(record, "TreatmentDate", "") or "").strip()
+            if treatment_date:
+                observed_dates.add(treatment_date)
+            fraction_value = getattr(record, "CurrentFractionNumber", None)
+            fraction_value = fraction_value or getattr(record, "ReferencedFractionNumber", None)
+            if fraction_value not in (None, "") and str(fraction_value).isdigit():
+                fraction_sessions.add(("fraction", treatment_date, str(int(fraction_value))))
+            elif treatment_date:
+                fraction_sessions.add(("date", treatment_date, ""))
+            else:
+                fraction_sessions.add(("record", record_uid, ""))
+            is_summary = bool(
+                getattr(record, "TreatmentSummaryCalculatedDoseReferenceSequence", None)
+                or str(getattr(record, "SOPClassUID", "") or "")
+                == "1.2.840.10008.5.1.4.1.1.481.7"
+            )
+            if is_summary:
+                fraction_sessions.discard(("fraction", treatment_date, str(int(fraction_value)))) if (
+                    fraction_value not in (None, "") and str(fraction_value).isdigit()
+                ) else fraction_sessions.discard(("date", treatment_date, "")) if treatment_date else fraction_sessions.discard(("record", record_uid, ""))
+        if len(record_uids) != record_count:
+            raise CourseContractError(
+                f"{field}.delivered_record_count does not match the RTRECORD evidence"
+            )
+        if len(fraction_sessions) != fraction_count:
+            raise CourseContractError(
+                f"{field}.delivered_fraction_count does not match the RTRECORD evidence"
+            )
+        if sorted(observed_dates) != sorted(set(dates)):
+            raise CourseContractError(
+                f"{field}.treatment_dates does not match the RTRECORD evidence"
+            )
+        if (record_count or fraction_count) and not record_paths:
+            raise CourseContractError(
+                f"{field} claims delivery but has no auditable RTRECORD paths"
+            )
+    selected_from_delivery = {
+        uid
+        for uid, item in zip(per_plan_uids, per_plan)
+        if item.get("selected_for_dose_grid") is True
+    }
+    if selected_from_delivery != set(plan_uids):
+        raise CourseContractError(
+            "selected RTPLAN membership disagrees between selected_plans and delivery.per_plan"
+        )
+    if status in {"fully_delivered", "partially_delivered"}:
+        zero_record_selected = [
+            uid
+            for uid, item in zip(per_plan_uids, per_plan)
+            if item.get("selected_for_dose_grid") is True
+            and int(item.get("delivered_record_count") or 0) == 0
+        ]
+        if zero_record_selected:
+            raise CourseContractError(
+                "a plan with zero delivery records is selected for the treatment dose grid: "
+                + ", ".join(zero_record_selected)
+            )
+
+    rtstruct = data.get("authoritative_rtstruct")
+    if rtstruct is not None:
+        if not isinstance(rtstruct, dict):
+            raise CourseContractError("authoritative_rtstruct must be an object or null")
+        _validate_dicom_identity(
+            contract, rtstruct, "authoritative_rtstruct", role="RTSTRUCT"
+        )
+        source = contract.authoritative_rtstruct_source
+        if not source:
+            raise CourseContractError(
+                "authoritative_rtstruct.segmentation_source must be nonempty when declared"
+            )
+        if scope == ALL_SERIES_RADIOMICS_TEMP_SCOPE and source != AUTO_RTSTRUCT_SOURCE:
+            raise CourseContractError(
+                "all-series temporary authoritative RTSTRUCT must declare "
+                f"segmentation_source {AUTO_RTSTRUCT_SOURCE!r}"
+            )
+
+    planning_ct = contract.planning_ct
+    planning_status = _nonempty_text(planning_ct.get("status"), "planning_ct.status")
+    ct_dir = contract.planning_ct_dir
+    nifti = contract.planning_ct_nifti
+    series_uid = str(planning_ct.get("series_instance_uid") or "").strip()
+    if ct_dir is not None:
+        if not series_uid:
+            raise CourseContractError("planning_ct.series_instance_uid is empty for a declared CT directory")
+        readable_series: set[str] = set()
+        for path in sorted(item for item in ct_dir.iterdir() if item.is_file()):
+            try:
+                dataset = pydicom.dcmread(
+                    str(path),
+                    stop_before_pixels=True,
+                    force=True,
+                )
+            except Exception:
+                continue
+            modality = str(getattr(dataset, "Modality", "") or "").strip().upper()
+            sop_class = str(getattr(dataset, "SOPClassUID", "") or "").strip()
+            if not modality and not sop_class:
+                # Preserve the course-level unreadable-CT check. A malformed
+                # bystander is not itself a contract identity mismatch.
+                continue
+            if modality != "CT" or sop_class not in _ROLE_EXPECTATIONS["CT"][1]:
+                raise CourseContractError(
+                    f"stale planning CT contract: {path} is not a supported CT object "
+                    f"(Modality={modality!r}, SOPClassUID={sop_class!r})"
+                )
+            value = str(getattr(dataset, "SeriesInstanceUID", "") or "").strip()
+            if value:
+                readable_series.add(value)
+        if not readable_series:
+            raise CourseContractError(
+                f"planning CT contract directory contains no readable SeriesInstanceUID: {ct_dir}"
+            )
+        if readable_series != {series_uid}:
+            raise CourseContractError(
+                "stale planning CT contract: declared SeriesInstanceUID "
+                f"{series_uid!r}, found {sorted(readable_series)!r}"
+            )
+        allow_dicom_only = (
+            data.get("scope") == "all_series_radiomics_temp"
+            and planning_ct.get("dicom_only") is True
+        )
+        if nifti is None and not allow_dicom_only:
+            raise CourseContractError("planning CT contract has DICOM data but no NIfTI path")
+        if nifti is not None:
+            _validate_nifti_provenance(contract, planning_ct, ct_dir, nifti, series_uid)
+    elif nifti is not None or series_uid:
+        raise CourseContractError(
+            "planning CT contract must declare DICOM directory, series UID, and NIfTI together"
+        )
+    elif planning_status in {"referenced", "fallback_largest"}:
+        raise CourseContractError(
+            f"planning CT status {planning_status!r} requires a resolved CT series"
+        )
+
+    plan_artifact = data.get("plan_artifact")
+    if selected_plans and plan_artifact is None:
+        raise CourseContractError("selected RTPLAN membership has no plan_artifact")
+    if plan_artifact is not None:
+        if not isinstance(plan_artifact, dict):
+            raise CourseContractError("plan_artifact must be an object or null")
+        _validate_dicom_identity(
+            contract, plan_artifact, "plan_artifact", role="RTPLAN"
+        )
+        artifact_uid = _nonempty_text(
+            plan_artifact.get("sop_instance_uid"), "plan_artifact.sop_instance_uid"
+        )
+        artifact_sources = plan_artifact.get("source_plan_uids")
+        if not isinstance(artifact_sources, list) or any(
+            not isinstance(value, str) or not value.strip() for value in artifact_sources
+        ):
+            raise CourseContractError(
+                "plan_artifact.source_plan_uids must be a list of nonempty strings"
+            )
+        expected_sources = plan_uids if plan_uids else [artifact_uid]
+        if set(artifact_sources) != set(expected_sources):
+            raise CourseContractError(
+                "plan_artifact.source_plan_uids disagrees with selected RTPLAN membership"
+            )
+        artifact_path = contract.resolve_path(plan_artifact.get("path"), "plan_artifact.path")
+        assert artifact_path is not None
+        artifact_refs = set(
+            _referenced_sop_uids(
+                _read_header(artifact_path, "plan_artifact.path"),
+                "ReferencedRTPlanSequence",
+            )
+        )
+        if artifact_uid in set(artifact_sources):
+            if len(artifact_sources) != 1 or artifact_uid != artifact_sources[0]:
+                raise CourseContractError(
+                    "plan_artifact points to one selected plan but declares multiple source plans"
+                )
+        elif artifact_refs != set(artifact_sources):
+            raise CourseContractError(
+                "derived plan_artifact references do not match its source_plan_uids"
+            )
+
+    dose_grid = data.get("dose_grid")
+    if dose_grid is not None:
+        if not isinstance(dose_grid, dict):
+            raise CourseContractError("dose_grid must be an object or null")
+        _validate_dicom_identity(
+            contract, dose_grid, "dose_grid", summation_type=True, role="RTDOSE"
+        )
+        grid_type = _nonempty_text(
+            dose_grid.get("dose_summation_type"), "dose_grid.dose_summation_type"
+        ).upper()
+        if grid_type not in PLAN_LEVEL_DOSE_SUMMATION_TYPES:
+            raise CourseContractError(
+                f"authoritative dose grid must be PLAN or PLAN_SUM, not {grid_type!r}"
+            )
+        expected_semantics = (
+            UNKNOWN_DELIVERY_DOSE_GRID_SEMANTICS
+            if status in {"delivered_but_records_absent", "no_records_at_all"}
+            else DOSE_GRID_SEMANTICS
+        )
+        if dose_grid.get("semantics") != expected_semantics:
+            raise CourseContractError(
+                f"dose_grid.semantics must be {expected_semantics!r} for delivery status {status!r}"
+            )
+        grid_plan_uids = list(dose_grid.get("source_plan_uids") or [])
+        grid_dose_uids = list(dose_grid.get("source_dose_uids") or [])
+        grid_dose_types = list(dose_grid.get("source_dose_summation_types") or [])
+        if grid_plan_uids != plan_uids:
+            raise CourseContractError(
+                "dose_grid.source_plan_uids disagrees with selected RTPLAN membership"
+            )
+        if grid_dose_uids != dose_uids:
+            raise CourseContractError(
+                "dose_grid.source_dose_uids disagrees with selected RTDOSE membership"
+            )
+        if grid_dose_types != selected_types:
+            raise CourseContractError(
+                "dose_grid.source_dose_summation_types disagrees with selected RTDOSE types"
+            )
+        if not plan_uids or not dose_uids:
+            raise CourseContractError("dose grid exists without selected RTPLAN and RTDOSE sources")
+        grid_uid = _nonempty_text(dose_grid.get("sop_instance_uid"), "dose_grid.sop_instance_uid")
+        if grid_uid not in set(dose_uids):
+            grid_path = contract.resolve_path(dose_grid.get("path"), "dose_grid.path")
+            assert grid_path is not None
+            grid_dataset = _read_header(grid_path, "dose_grid.path")
+            grid_plan_refs = set(
+                _referenced_sop_uids(
+                    grid_dataset,
+                    "ReferencedRTPlanSequence",
+                )
+            )
+            grid_dose_refs = set(
+                _referenced_sop_uids(
+                    grid_dataset,
+                    "ReferencedInstanceSequence",
+                )
+            )
+            expected_plan_refs = set(plan_uids)
+            if plan_artifact is not None:
+                expected_plan_refs.add(str(plan_artifact.get("sop_instance_uid") or ""))
+            if grid_plan_refs != expected_plan_refs or grid_dose_refs != set(dose_uids):
+                raise CourseContractError(
+                    "derived dose_grid references do not match its contracted source membership"
+                )
+    elif selected_doses:
+        raise CourseContractError("selected RTDOSE objects exist but dose_grid is null")
+
+    dvh = data.get("dvh")
+    if not isinstance(dvh, dict):
+        raise CourseContractError("course contract field dvh must be an object")
+    expected_dvh = build_dvh_decision(len(plan_uids), len(dose_uids), status)
+    if dvh != expected_dvh:
+        raise CourseContractError(
+            "course contract field dvh disagrees with selected plan membership, "
+            "selected dose membership, dose-grid availability, or delivery status"
+        )
+
+    dose_qc = contract.dose_qc
+    qc_status = _nonempty_text(dose_qc.get("status"), "dose_qc.status")
+    qc_pass = dose_qc.get("pass")
+    if qc_status not in {"pass", "fail"} or not isinstance(qc_pass, bool):
+        raise CourseContractError("dose_qc must carry status pass/fail and a boolean pass field")
+    if (qc_status == "pass") != qc_pass:
+        raise CourseContractError("dose_qc status and pass fields disagree")
+    reasons = dose_qc.get("reasons")
+    if not isinstance(reasons, list):
+        raise CourseContractError("dose_qc.reasons must be a list")
+    threshold = _optional_nonnegative_number(
+        dose_qc.get("threshold_gy"),
+        "dose_qc.threshold_gy",
+    )
+    if threshold is None or threshold <= 0:
+        raise CourseContractError("dose_qc.threshold_gy must be positive")
+    expected_qc_failure = any(
+        value is not None and value > threshold
+        for value in (prescribed, delivered)
+    )
+    if (not qc_pass) != expected_qc_failure:
+        raise CourseContractError(
+            "dose_qc verdict disagrees with prescribed or delivered dose and threshold"
+        )
+    if qc_status != ("fail" if expected_qc_failure else "pass"):
+        raise CourseContractError(
+            "dose_qc.status disagrees with prescribed or delivered dose and threshold"
+        )
+    if expected_qc_failure and not reasons:
+        raise CourseContractError("failing dose_qc requires at least one reason")
+
+    return contract
+
+
+def load_course_contract(course_dir: Path | str) -> CourseContract:
+    root = Path(course_dir).resolve(strict=False)
+    metadata_path = root / "metadata" / "case_metadata.json"
+    if not metadata_path.is_file():
+        raise CourseContractError(
+            f"authoritative course contract is missing: {metadata_path}"
+        )
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise CourseContractError(
+            f"authoritative course metadata is unreadable: {metadata_path}: {exc}"
+        ) from exc
+    if not isinstance(metadata, dict):
+        raise CourseContractError(f"course metadata must be a JSON object: {metadata_path}")
+    data = metadata.get("course_contract")
+    if not isinstance(data, dict):
+        raise CourseContractError(
+            f"authoritative course contract is missing from {metadata_path}"
+        )
+    return validate_course_contract(
+        CourseContract(course_dir=root, metadata_path=metadata_path, data=data)
+    )
+
+
+def relative_contract_path(course_dir: Path, path: Path | str | None) -> str:
+    if path in (None, ""):
+        return ""
+    root = Path(course_dir).resolve(strict=False)
+    resolved = Path(path).resolve(strict=False)
+    try:
+        return resolved.relative_to(root).as_posix()
+    except ValueError as exc:
+        raise CourseContractError(
+            f"contract artifact must be inside the course directory: {resolved}"
+        ) from exc

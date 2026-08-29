@@ -9,19 +9,48 @@ serial==parallel dispatch parity, and course-path isolation (radiomics_all.xlsx 
 """
 import json
 import os
+import sys
+from concurrent.futures import Future
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
+import numpy as np
 import pandas as pd
+import pydicom
 import pytest
+from pydicom.dataset import FileDataset, FileMetaDataset
+from pydicom.uid import CTImageStorage, ExplicitVRLittleEndian, generate_uid
 
 import rtpipeline.cli as cli
 import rtpipeline.radiomics as rad
+import rtpipeline.radiomics_conda as radconda
 import rtpipeline.radiomics_parallel as radpar
 from rtpipeline.inventory import TS_TASK_BY_CLASS, output_dir_for_image_class
 from rtpipeline.layout import build_course_dirs
 from rtpipeline.segmentation import _series_artifact_dirs
+from course_contract_test_utils import write_synthetic_rtstruct
+
+
+def _write_valid_ct(path: Path, *, series_uid: str, study_uid: str) -> None:
+    file_meta = FileMetaDataset()
+    file_meta.MediaStorageSOPClassUID = CTImageStorage
+    file_meta.MediaStorageSOPInstanceUID = generate_uid()
+    file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
+    dataset = FileDataset(str(path), {}, file_meta=file_meta, preamble=b"\0" * 128)
+    dataset.SOPClassUID = CTImageStorage
+    dataset.SOPInstanceUID = file_meta.MediaStorageSOPInstanceUID
+    dataset.Modality = "CT"
+    dataset.PatientID = "P1"
+    dataset.StudyInstanceUID = study_uid
+    dataset.SeriesInstanceUID = series_uid
+    dataset.FrameOfReferenceUID = generate_uid()
+    dataset.Rows = 2
+    dataset.Columns = 2
+    dataset.PixelSpacing = [1.0, 1.0]
+    dataset.ImageOrientationPatient = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0]
+    dataset.SliceThickness = 1.0
+    dataset.save_as(str(path), enforce_file_format=True)
 
 
 class _Cfg:
@@ -171,18 +200,31 @@ def test_empty_study_uid_not_collapsed():
 def test_materialize_temp_course_tree(tmp_path):
     src = tmp_path / "series"
     src.mkdir()
+    series_uid = generate_uid()
+    study_uid = generate_uid()
     for i in range(3):
-        (src / f"s{i}.dcm").write_bytes(b"x")
+        _write_valid_ct(src / f"s{i}.dcm", series_uid=series_uid, study_uid=study_uid)
     (src / "notdicom.txt").write_text("nope")
     rs = tmp_path / "rtstruct.dcm"
-    rs.write_bytes(b"rs")
+    write_synthetic_rtstruct(rs)
     course = tmp_path / "course"
     assert rad._materialize_temp_course_tree(course, src, rs) is True
     ct = course / "DICOM" / "CT"
     assert sorted(p.name for p in ct.glob("*.dcm")) == ["s0.dcm", "s1.dcm", "s2.dcm"]
     rs_auto = course / "RS_auto.dcm"
     assert rs_auto.exists()
-    assert os.path.realpath(rs_auto) == os.path.realpath(rs)
+    assert pydicom.dcmread(str(rs_auto), stop_before_pixels=True).SOPInstanceUID == pydicom.dcmread(
+        str(rs), stop_before_pixels=True
+    ).SOPInstanceUID
+    contract = json.loads((course / "metadata" / "case_metadata.json").read_text())[
+        "course_contract"
+    ]
+    assert contract["scope"] == "all_series_radiomics_temp"
+    assert contract["authority"] == "all_series_radiomics_materializer"
+    assert contract["planning_ct"]["series_instance_uid"] == series_uid
+    assert contract["authoritative_rtstruct"]["segmentation_source"] == "AutoRTS_total"
+    assert contract["dvh"]["metrics_status"] == "not_computed"
+    assert rad.load_course_contract(course).authoritative_rtstruct_source == "AutoRTS_total"
     # only DICOM slices are linked
     assert not (ct / "notdicom.txt").exists()
 
@@ -193,6 +235,201 @@ def test_materialize_returns_false_when_no_slices(tmp_path):
     rs = tmp_path / "rs.dcm"
     rs.write_bytes(b"r")
     assert rad._materialize_temp_course_tree(tmp_path / "c", src, rs) is False
+
+
+def test_all_series_temp_contract_is_consumed_only_by_all_series_dispatch(tmp_path, monkeypatch):
+    src = tmp_path / "series"
+    src.mkdir()
+    _write_valid_ct(src / "slice.dcm", series_uid=generate_uid(), study_uid=generate_uid())
+    rs = write_synthetic_rtstruct(tmp_path / "rs.dcm")
+    course = tmp_path / ".all_series_radiomics" / "P1" / "series"
+    assert rad._materialize_temp_course_tree(course, src, rs) is True
+
+    class _Image:
+        def GetSpacing(self):
+            return (1.0, 1.0, 1.0)
+
+    class _Extractor:
+        def execute(self, _image, _mask):
+            return {"original_firstorder_Mean": 1.0}
+
+    monkeypatch.setattr(rad, "_load_series_image", lambda *_args, **_kwargs: _Image())
+    monkeypatch.setattr(rad, "_extractor", lambda *_args, **_kwargs: _Extractor())
+    monkeypatch.setattr(rad, "_extractor_large_roi", lambda *_args, **_kwargs: _Extractor())
+    monkeypatch.setattr(
+        rad,
+        "_rtstruct_masks",
+        lambda *_args, **_kwargs: {"PTV1": np.ones((16, 16, 16), dtype=bool)},
+    )
+    monkeypatch.setattr(rad, "_mask_from_array_like", lambda _image, mask: mask)
+    monkeypatch.setattr(rad, "validate_custom_model_output_inventory", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(rad, "list_custom_model_outputs", lambda *_args, **_kwargs: [])
+
+    result = rad.radiomics_for_course(cast(Any, _Cfg(tmp_path)), course, allow_all_series_temp=True)
+    assert result.output_path == course / "radiomics_ct.xlsx"
+    contract = rad.load_course_contract(course)
+    sources = rad._standard_rtstruct_sources(contract, course)
+    assert [(source, path.resolve()) for source, path, _ in sources] == [
+        ("AutoRTS_total", (course / "RS_auto.dcm").resolve())
+    ]
+    extracted = pd.read_excel(result.output_path)
+    assert set(extracted["segmentation_source"]) == {"AutoRTS_total"}
+    with pytest.raises(rad.RadiomicsCourseExtractionError, match="temporary contract"):
+        rad.radiomics_for_course(cast(Any, _Cfg(tmp_path)), course)
+
+
+def test_parallel_all_series_conda_fallback_preserves_scope_opt_in(
+    tmp_path, monkeypatch
+):
+    src = tmp_path / "series"
+    src.mkdir()
+    _write_valid_ct(
+        src / "slice.dcm", series_uid=generate_uid(), study_uid=generate_uid()
+    )
+    rs = write_synthetic_rtstruct(tmp_path / "rs.dcm")
+    course = tmp_path / ".all_series_radiomics" / "P1" / "series"
+    assert rad._materialize_temp_course_tree(course, src, rs) is True
+
+    monkeypatch.setattr(rad, "_load_series_image", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(rad, "_extractor", lambda *_args, **_kwargs: None)
+    seen = {}
+
+    def fake_conda(
+        course_dir,
+        _config,
+        _custom=None,
+        *,
+        allow_all_series_temp=False,
+    ):
+        seen["allow_all_series_temp"] = allow_all_series_temp
+        output = Path(course_dir) / "radiomics_ct.xlsx"
+        pd.DataFrame([{"roi_name": "PTV1"}]).to_excel(output, index=False)
+        return output
+
+    monkeypatch.setattr(radconda, "radiomics_for_course", fake_conda)
+
+    outcome = radpar.parallel_radiomics_for_course(
+        cast(Any, _Cfg(tmp_path)), course, allow_all_series_temp=True
+    )
+    assert outcome.output_path == course / "radiomics_ct.xlsx"
+    assert seen["allow_all_series_temp"] is True
+
+    with pytest.raises(rad.RadiomicsCourseExtractionError, match="temporary contract"):
+        radpar.parallel_radiomics_for_course(cast(Any, _Cfg(tmp_path)), course)
+
+
+def test_all_series_parallel_and_conda_emit_one_auto_source(tmp_path, monkeypatch):
+    src = tmp_path / "series"
+    src.mkdir()
+    _write_valid_ct(
+        src / "slice.dcm", series_uid=generate_uid(), study_uid=generate_uid()
+    )
+    rs = write_synthetic_rtstruct(tmp_path / "rs.dcm")
+    course = tmp_path / ".all_series_radiomics" / "P1" / "series"
+    assert rad._materialize_temp_course_tree(course, src, rs) is True
+    config = cast(Any, _Cfg(tmp_path))
+
+    monkeypatch.setattr(rad, "_load_series_image", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(rad, "_extractor", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(radpar, "validate_custom_model_output_inventory", lambda *_a, **_k: {})
+    monkeypatch.setattr(radpar, "list_custom_model_outputs", lambda *_a, **_k: [])
+    monkeypatch.setattr(radpar, "_list_roi_names", lambda *_args: ["PTV"])
+
+    class _SyncExecutor:
+        def submit(self, _function, task):
+            future = Future()
+            future.set_result(
+                {
+                    "segmentation_source": task.source,
+                    "roi_original_name": task.roi_name,
+                    "roi_name": task.roi_name,
+                    "feature": 1.0,
+                }
+            )
+            return future
+
+        def shutdown(self, wait=True, cancel_futures=False):
+            return None
+
+    monkeypatch.setattr(radpar, "ProcessPoolExecutor", lambda **_kwargs: _SyncExecutor())
+    parallel = radpar.parallel_radiomics_for_course(
+        config, course, max_workers=1, allow_all_series_temp=True
+    )
+    assert parallel.output_path is not None
+    parallel_frame = pd.read_excel(parallel.output_path)
+    assert list(
+        parallel_frame[["segmentation_source", "roi_original_name"]].itertuples(
+            index=False, name=None
+        )
+    ) == [("AutoRTS_total", "PTV")]
+
+    parallel.output_path.unlink()
+    monkeypatch.setattr(radconda, "validate_custom_model_output_inventory", lambda *_a, **_k: {})
+    monkeypatch.setattr(radconda, "list_custom_model_outputs", lambda *_a, **_k: [])
+
+    class _Image:
+        def GetSpacing(self):
+            return (1.0, 1.0, 1.0)
+
+        def GetOrigin(self):
+            return (0.0, 0.0, 0.0)
+
+        def GetDirection(self):
+            return (1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
+
+    class _Reader:
+        def GetGDCMSeriesFileNames(self, path):
+            return [str(next(Path(path).glob("*.dcm")))]
+
+        def SetFileNames(self, _files):
+            return None
+
+        def Execute(self):
+            return _Image()
+
+    class _RTStruct:
+        def get_roi_names(self):
+            return ["PTV"]
+
+        def get_roi_mask_by_name(self, _name):
+            return np.ones((16, 16, 16), dtype=bool)
+
+    fake_rt_utils = SimpleNamespace(
+        RTStructBuilder=SimpleNamespace(
+            create_from=lambda **_kwargs: _RTStruct()
+        )
+    )
+    monkeypatch.setitem(sys.modules, "rt_utils", fake_rt_utils)
+    monkeypatch.setattr(radconda.sitk, "ImageSeriesReader", _Reader)
+    monkeypatch.setattr(radconda.sitk, "WriteImage", lambda *_a, **_k: None)
+    monkeypatch.setattr(radconda, "_write_mask_to_file", lambda *_a, **_k: None)
+    captured = {}
+
+    def fake_batch(tasks, output_path, **_kwargs):
+        captured["tasks"] = tasks
+        rows = []
+        for task in tasks:
+            rows.append(
+                {
+                    "roi_name": task["roi_name"],
+                    **task["metadata"],
+                    "feature": 1.0,
+                }
+            )
+        pd.DataFrame(rows).to_excel(output_path, index=False)
+        return output_path
+
+    monkeypatch.setattr(radconda, "process_radiomics_batch", fake_batch)
+    conda = radconda.radiomics_for_course(
+        course, config, allow_all_series_temp=True
+    )
+    conda_frame = pd.read_excel(conda)
+    assert len(captured["tasks"]) == 1
+    assert list(
+        conda_frame[["segmentation_source", "roi_original_name"]].itertuples(
+            index=False, name=None
+        )
+    ) == [("AutoRTS_total", "PTV")]
 
 
 def test_find_auto_rtstruct_matches_real_layout(tmp_path):
@@ -233,14 +470,20 @@ def _build_patient_tree(out_root, pid, specs):
             continue
         outdir = output_dir_for_image_class(cdirs, ic, uid)
         outdir.mkdir(parents=True, exist_ok=True)
+        actual_series_uid = generate_uid()
+        actual_study_uid = generate_uid()
         for i in range(spec.get("n_slices", 2)):
-            (outdir / f"img{i}.dcm").write_bytes(b"d")
+            _write_valid_ct(
+                outdir / f"img{i}.dcm",
+                series_uid=actual_series_uid,
+                study_uid=actual_study_uid,
+            )
         task = TS_TASK_BY_CLASS.get(ic, "none")
         if spec.get("with_rtstruct", True) and task != "none":
             _, seg_root = _series_artifact_dirs(outdir)
             base_dir = seg_root / f"{uid}_base"
             base_dir.mkdir(parents=True, exist_ok=True)
-            (base_dir / f"{uid}_base--{task}.dcm").write_bytes(b"rt")
+            write_synthetic_rtstruct(base_dir / f"{uid}_base--{task}.dcm")
         rows.append({
             "image_class": ic, "series_uid": uid, "study_uid": spec.get("study_uid", "S"),
             "series_description": spec.get("series_description", ""), "ts_task": task,
@@ -258,6 +501,11 @@ def fake_dispatch():
 
     def fake(config, course_dir, custom=None, *args, **kwargs):
         course_dir = Path(course_dir)
+        contract = rad.load_course_contract(course_dir)
+        assert contract.data["scope"] == "all_series_radiomics_temp"
+        assert contract.data["planning_ct"]["dicom_only"] is True
+        assert contract.selected_plans == []
+        assert contract.selected_doses == []
         ct = course_dir / "DICOM" / "CT"
         rs = course_dir / "RS_auto.dcm"
         calls.append({
@@ -267,6 +515,8 @@ def fake_dispatch():
             "rs_target": os.path.realpath(rs) if rs.exists() else None,
             "custom": custom,
             "use_cropped": kwargs.get("use_cropped"),
+            "allow_all_series_temp": kwargs.get("allow_all_series_temp"),
+            "contract_scope": contract.data["scope"],
         })
         df = pd.DataFrame([
             {"feature": 1.0, "roi_name": "liver", "modality": "CT",
@@ -353,6 +603,7 @@ def test_run_radiomics_all_series_e2e(tmp_path, monkeypatch, fake_dispatch, mode
         assert c["rs_auto"] is True
         assert c["custom"] is None
         assert c["use_cropped"] in (False, None)  # parallel passes False; serial defaults False
+        assert c["allow_all_series_temp"] is True
 
 
 def test_missing_manifest_returns_none(tmp_path, monkeypatch, fake_dispatch):

@@ -40,6 +40,7 @@ from pathlib import Path
 import numpy as np
 import pydicom
 import SimpleITK as sitk
+from course_contract_test_utils import write_minimal_course_contract
 from pydicom.dataset import Dataset, FileDataset, FileMetaDataset
 from pydicom.sequence import Sequence
 from pydicom.uid import ExplicitVRLittleEndian, generate_uid
@@ -383,6 +384,10 @@ def _write_ct_slice(ct_dir: Path, series_uid: str, for_uid: str) -> None:
     ds.SeriesInstanceUID = series_uid
     ds.FrameOfReferenceUID = for_uid
     ds.save_as(ct_dir / "ct_000.dcm", enforce_file_format=True)
+    write_minimal_course_contract(
+        ct_dir.parent.parent,
+        planning_ct_dir=ct_dir,
+    )
 
 
 def test_build_auto_rtstruct_selects_planning_among_same_for(tmp_path, monkeypatch) -> None:

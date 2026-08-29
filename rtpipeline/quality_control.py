@@ -12,7 +12,8 @@ import numpy as np
 import pandas as pd
 from datetime import datetime
 
-from .layout import build_course_dirs, find_dcm
+from .layout import build_course_dirs
+from .course_contract import load_course_contract
 from .utils import mask_is_cropped
 
 try:
@@ -93,12 +94,14 @@ class DICOMValidator:
                                      (significantly faster but won't detect boundary issues)
         """
         self.course_dir = course_dir
+        self.course_contract = load_course_contract(course_dir)
         self.dirs = build_course_dirs(course_dir)
-        self.ct_dir = self.dirs.dicom_ct
+        absent = course_dir / "metadata" / ".contract-artifact-absent"
+        self.ct_dir = self.course_contract.planning_ct_dir or absent
 
-        self.rp_path = find_dcm(self.dirs.dicom_rtplan, "RP.dcm", course_dir)
-        self.rd_path = find_dcm(self.dirs.dicom_rtdose, "RD.dcm", course_dir)
-        self.rs_path = find_dcm(self.dirs.dicom_rtstruct, "RS.dcm", course_dir)
+        self.rp_path = self.course_contract.plan_artifact_path or absent
+        self.rd_path = self.course_contract.dose_grid_path or absent
+        self.rs_path = self.course_contract.authoritative_rtstruct_path or absent
         self.rs_auto_path = course_dir / "RS_auto.dcm"
         self.skip_structure_cropping = skip_structure_cropping
 
@@ -1065,51 +1068,8 @@ def detect_body_regions(
 
 
 def _find_ct_nifti(course_dir: Path) -> Optional[Path]:
-    """Find the CT NIfTI file for a course.
-
-    Looks in standard locations (in priority order):
-    1. NIFTI directory (primary location for dcm2niix output)
-    2. Segmentation_TotalSegmentator subdirectories
-    """
-    dirs = build_course_dirs(course_dir)
-
-    # Primary location: NIFTI directory (where dcm2niix outputs CT)
-    nifti_dir = dirs.nifti
-    if nifti_dir.exists():
-        # Look for any .nii.gz file that's not a mask/segmentation
-        candidates = []
-        for nii in sorted(nifti_dir.glob("*.nii.gz")):
-            # Skip obvious segmentation outputs
-            if any(skip in nii.name.lower() for skip in ["mask", "seg", "label", "cropped"]):
-                continue
-            candidates.append(nii)
-
-        if candidates:
-            if len(candidates) > 1:
-                logger.warning(
-                    "Multiple CT NIfTI candidates found in %s: %s. Using first: %s",
-                    nifti_dir, [c.name for c in candidates], candidates[0].name
-                )
-            return candidates[0]
-
-    # Fallback: Segmentation_TotalSegmentator directory
-    totalseg_dir = dirs.segmentation_totalseg
-    if totalseg_dir.exists():
-        # Check common locations
-        candidates = [
-            totalseg_dir / "ct.nii.gz",
-            totalseg_dir / "total" / "ct.nii.gz",
-        ]
-        for candidate in candidates:
-            if candidate.exists():
-                return candidate
-
-        # Fall back to searching for ct*.nii.gz
-        for nii in totalseg_dir.glob("**/ct*.nii.gz"):
-            if "cropped" not in nii.name.lower():
-                return nii
-
-    return None
+    """Return the NIfTI explicitly selected by the authoritative contract."""
+    return load_course_contract(course_dir).planning_ct_nifti
 
 
 def save_body_region_qc(
@@ -1134,15 +1094,29 @@ def save_body_region_qc(
     Returns:
         Path to saved QC file
     """
+    from .course_contract import CourseContractError, load_course_contract
+
+    contract = load_course_contract(course_dir)
+    contracted_nifti = contract.planning_ct_nifti
+    if nifti_path is None:
+        nifti_path = contracted_nifti
+    elif contracted_nifti is None or Path(nifti_path).resolve() != contracted_nifti.resolve():
+        raise CourseContractError(
+            "body-region QC NIfTI path does not match the authoritative planning CT contract"
+        )
+
     dirs = build_course_dirs(course_dir)
     qc_dir = dirs.qc_reports
     qc_dir.mkdir(parents=True, exist_ok=True)
 
     results = detect_body_regions(course_dir, model_region_requirements)
 
-    # Find CT NIfTI for phase/modality detection
+    # The contract loader has already validated this required input. A contract
+    # with no planning NIfTI is a deliberate non-CT path, not a scan invitation.
     if nifti_path is None:
-        nifti_path = _find_ct_nifti(course_dir)
+        raise CourseContractError(
+            "authoritative course contract has no planning CT NIfTI for body-region QC"
+        )
 
     if nifti_path and nifti_path.exists():
         # Run contrast phase detection

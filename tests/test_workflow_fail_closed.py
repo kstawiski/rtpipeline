@@ -12,6 +12,12 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 
+from course_contract_test_utils import (
+    write_minimal_course_contract,
+    write_synthetic_plan_and_dose,
+)
+from rtpipeline.dvh import dvh_for_course
+
 
 ROOT = Path(__file__).resolve().parents[1]
 RUN_COURSE_STAGE = ROOT / "workflow" / "scripts" / "run_course_stage.py"
@@ -66,6 +72,20 @@ def test_required_course_stage_failure_returns_nonzero_without_sentinel(
     assert not sentinel.exists()
 
 
+def test_required_course_stage_success_publishes_ok_sentinel(tmp_path, monkeypatch):
+    workflow = _course_stage_snakemake(tmp_path)
+    sentinel = Path(workflow.output.sentinel)
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=0),
+    )
+
+    runpy.run_path(str(RUN_COURSE_STAGE), init_globals={"snakemake": workflow})
+
+    assert sentinel.read_text(encoding="utf-8") == "ok\n"
+
+
 def test_required_course_stage_rejects_failed_upstream_without_sentinel(tmp_path):
     workflow = _course_stage_snakemake(tmp_path)
     sentinel = Path(workflow.output.sentinel)
@@ -95,8 +115,16 @@ def _write_course_inputs(
     radiomics_sentinel: str | None = None,
     malformed_dvh: bool = False,
     unreadable_dvh: bool = False,
+    plan_only: bool = False,
 ) -> None:
     course_dir.mkdir(parents=True, exist_ok=True)
+    plan, dose = write_synthetic_plan_and_dose(course_dir)
+    selected_doses = [] if plan_only else [dose]
+    if plan_only:
+        dose.unlink()
+    write_minimal_course_contract(
+        course_dir, selected_plans=[plan], selected_doses=selected_doses
+    )
     if dvh_sentinel is not None:
         (course_dir / ".dvh_done").write_text(dvh_sentinel, encoding="utf-8")
     (course_dir / ".qc_done").write_text("ok\n", encoding="utf-8")
@@ -105,7 +133,13 @@ def _write_course_inputs(
         (course_dir / ".radiomics_done").write_text(
             radiomics_sentinel, encoding="utf-8"
         )
-    if unreadable_dvh:
+    if plan_only:
+        assert dvh_for_course(course_dir) is None
+        if dvh_sentinel is not None:
+            (course_dir / ".dvh_done").write_text(
+                dvh_sentinel, encoding="utf-8"
+            )
+    elif unreadable_dvh:
         (course_dir / "dvh_metrics.xlsx").write_bytes(b"not an Excel workbook")
     elif malformed_dvh:
         pd.DataFrame([{"unexpected": 1}]).to_excel(
@@ -202,6 +236,21 @@ def test_required_aggregation_rejects_incomplete_course_before_publication(
         runpy.run_path(str(AGGREGATE_RESULTS), init_globals={"snakemake": workflow})
 
     assert not any(path.exists() for path in outputs.values())
+
+
+def test_noncampaign_aggregation_accepts_plan_only_course_without_workbook(tmp_path):
+    workflow, outputs = _aggregate_snakemake(tmp_path)
+    output_dir = Path(workflow.params.output_dir)
+    _write_course_inputs(output_dir / "P1" / "C1")
+    _write_course_inputs(output_dir / "P2" / "C1", plan_only=True)
+
+    runpy.run_path(str(AGGREGATE_RESULTS), init_globals={"snakemake": workflow})
+
+    aggregate = pd.read_excel(outputs["dvh"])
+    assert aggregate[["patient_id", "course_id"]].drop_duplicates().to_dict("records") == [
+        {"patient_id": "P1", "course_id": "C1"}
+    ]
+    assert not (output_dir / "P2" / "C1" / "dvh_metrics.xlsx").exists()
 
 
 def test_enabled_radiomics_output_is_required_but_mr_remains_optional(tmp_path):

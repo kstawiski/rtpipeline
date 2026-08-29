@@ -51,7 +51,9 @@ import pandas as pd
 import SimpleITK as sitk
 
 from .config import PipelineConfig
+from .course_contract import load_course_contract
 from .layout import build_course_dirs
+from .rt_details import DEFAULT_ROI_FAMILY_NAMES
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +69,9 @@ class PerturbationConfig:
     Note: The original Zwanenburg 2019 framework uses N/T/R/V/C including Rotation.
     Rotation is available as a separate sensitivity analysis via rotation_angles.
     """
-    apply_to_structures: List[str] = field(default_factory=lambda: ["GTV", "CTV", "PTV", "BLADDER", "RECTUM"])
+    apply_to_structures: List[str] = field(
+        default_factory=lambda: list(DEFAULT_ROI_FAMILY_NAMES)
+    )
     small_volume_changes: List[float] = field(default_factory=lambda: [-0.15, 0.0, 0.15])
     large_volume_changes: List[float] = field(default_factory=lambda: [-0.30, 0.0, 0.30])
     n_random_contour_realizations: int = 2
@@ -126,7 +130,9 @@ class RobustnessConfig:
         # Perturbation config
         pert_data = data.get("segmentation_perturbation", {})
         perturbation = PerturbationConfig(
-            apply_to_structures=pert_data.get("apply_to_structures", ["GTV", "CTV", "PTV", "BLADDER", "RECTUM"]),
+            apply_to_structures=pert_data.get(
+                "apply_to_structures", list(DEFAULT_ROI_FAMILY_NAMES)
+            ),
             small_volume_changes=pert_data.get("small_volume_changes", [-0.15, 0.0, 0.15]),
             large_volume_changes=pert_data.get("large_volume_changes", [-0.30, 0.0, 0.30]),
             n_random_contour_realizations=pert_data.get("n_random_contour_realizations", 2),
@@ -1727,6 +1733,7 @@ def robustness_for_course(
 
     logger.info("Running radiomics robustness analysis for %s", course_dir.name)
 
+    contract = load_course_contract(course_dir)
     course_dirs = build_course_dirs(course_dir)
     if output_path is None:
         output_path = course_dir / "radiomics_robustness_ct.parquet"
@@ -1735,23 +1742,20 @@ def robustness_for_course(
 
     # Load CT image
     from .radiomics import _load_series_image
-    ct_image = _load_series_image(course_dirs.dicom_ct)
+    ct_dir = contract.planning_ct_dir
+    ct_image = _load_series_image(ct_dir) if ct_dir is not None else None
 
     # NIfTI fallback when DICOM/CT is not available (e.g. remote staging)
     _use_nifti_masks = False
     if ct_image is None:
-        nifti_dir = course_dir / "NIFTI"
-        if nifti_dir.exists():
-            nifti_files = [f for f in nifti_dir.glob("*.nii.gz")
-                           if not f.name.endswith(".metadata.nii.gz")]
-            if nifti_files:
-                ct_nifti = max(nifti_files, key=lambda f: f.stat().st_size)
-                try:
-                    ct_image = sitk.ReadImage(str(ct_nifti))
-                    _use_nifti_masks = True
-                    logger.info("Loaded CT from NIfTI fallback: %s", ct_nifti.name)
-                except Exception as e:
-                    logger.warning("Failed to load CT from NIfTI: %s", e)
+        ct_nifti = contract.planning_ct_nifti
+        if ct_nifti is not None:
+            try:
+                ct_image = sitk.ReadImage(str(ct_nifti))
+                _use_nifti_masks = True
+                logger.info("Loaded contracted planning CT NIfTI: %s", ct_nifti.name)
+            except Exception as e:
+                logger.warning("Failed to load contracted CT NIfTI: %s", e)
 
     if ct_image is None:
         logger.warning("No CT image found for robustness analysis in %s", course_dir)
@@ -1826,7 +1830,8 @@ def robustness_for_course(
         # 1. TotalSegmentator (RS_auto.dcm)
         rs_auto = course_dir / "RS_auto.dcm"
         if rs_auto.exists():
-            ts_masks = _rtstruct_masks(course_dirs.dicom_ct, rs_auto)
+            assert ct_dir is not None
+            ts_masks = _rtstruct_masks(ct_dir, rs_auto)
             for roi_name, mask_array in ts_masks.items():
                 all_masks[(roi_name, "AutoRTS_total")] = mask_array
             logger.info("Loaded %d structures from TotalSegmentator", len(ts_masks))
@@ -1836,7 +1841,8 @@ def robustness_for_course(
         # 2. Custom structures (RS_custom.dcm)
         rs_custom = course_dir / "RS_custom.dcm"
         if rs_custom.exists():
-            custom_masks = _rtstruct_masks(course_dirs.dicom_ct, rs_custom)
+            assert ct_dir is not None
+            custom_masks = _rtstruct_masks(ct_dir, rs_custom)
             for roi_name, mask_array in custom_masks.items():
                 all_masks[(roi_name, "Custom")] = mask_array
             logger.info("Loaded %d structures from custom structures", len(custom_masks))
@@ -1849,7 +1855,8 @@ def robustness_for_course(
         for model_name, model_dir in list_custom_model_outputs(course_dir):
             rs_model = model_dir / "rtstruct.dcm"
             if rs_model.exists():
-                model_masks = _rtstruct_masks(course_dirs.dicom_ct, rs_model)
+                assert ct_dir is not None
+                model_masks = _rtstruct_masks(ct_dir, rs_model)
                 source_label = f"CustomModel:{model_name}"
                 for roi_name, mask_array in model_masks.items():
                     all_masks[(roi_name, source_label)] = mask_array

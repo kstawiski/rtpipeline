@@ -18,7 +18,8 @@ import SimpleITK as sitk
 import yaml
 
 from .config import PipelineConfig
-from .segmentation import _ensure_ct_nifti, _run as _run_shell, _sanitize_token
+from .course_contract import load_course_contract
+from .segmentation import _run as _run_shell, _sanitize_token
 from .auto_rtstruct import _load_ct_image, _resample_to_reference
 from .utils import sanitize_rtstruct
 from .roi_fixer import fix_rtstruct_rois
@@ -610,9 +611,10 @@ def run_custom_models_for_course(
         logger.info("No custom segmentation models supplied; nothing to run")
         return
 
-    ct_dir = course.dirs.dicom_ct
-    if not ct_dir.exists():
-        logger.warning("Custom segmentation skipped for %s/%s: no CT DICOM found", course.patient_id, course.course_id)
+    contract = load_course_contract(course.dirs.root)
+    ct_dir = contract.planning_ct_dir
+    if ct_dir is None:
+        logger.warning("Custom segmentation skipped for %s/%s: contract has no planning CT", course.patient_id, course.course_id)
         return
 
     course.dirs.ensure()
@@ -660,7 +662,7 @@ def run_custom_models_for_course(
             )
         return
 
-    nifti_path = _ensure_ct_nifti(cfg, ct_dir, course.dirs.nifti, force=False)
+    nifti_path = contract.planning_ct_nifti
     if nifti_path is None:
         raise RuntimeError(f"Unable to obtain NIfTI for course {course.patient_id}/{course.course_id}")
 
