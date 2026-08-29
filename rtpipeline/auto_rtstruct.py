@@ -108,9 +108,14 @@ def _load_seg_nifti(seg_dir: Path, base_name: Optional[str]) -> tuple[Optional[s
 
     candidates: list[Path] = []
     if base_name:
-        specific = seg_dir / f"{base_name}_total_multilabel.nii.gz"
-        if specific.exists():
-            candidates.append(specific)
+        for specific_name in (
+            f"{base_name}_total_multilabel.nii.gz",
+            f"{base_name}--total--multilabel.nii.gz",
+            "total--multilabel.nii.gz",
+        ):
+            specific = seg_dir / specific_name
+            if specific.exists():
+                candidates.append(specific)
     if not candidates:
         candidates = sorted(seg_dir.glob("*_total_multilabel.nii.gz"))
 
@@ -129,6 +134,7 @@ def _load_seg_nifti(seg_dir: Path, base_name: Optional[str]) -> tuple[Optional[s
             json_candidates.append(json_specific)
     if not json_candidates:
         json_candidates = sorted(seg_dir.glob("*_total_segmentations.json"))
+        json_candidates.extend(sorted(seg_dir.glob("total--segmentations.json")))
 
     for json_path in json_candidates:
         try:
@@ -168,20 +174,23 @@ def _iter_binary_masks(nifti_dir: Path, prefix: Optional[str] = None) -> Iterabl
         if name_lower in {"segmentations.nii", "segmentations.nii.gz", "segmentation.nii", "segmentation.nii.gz"}:
             # Skip potential multi-label files handled separately
             continue
-        try:
-            img = sitk.ReadImage(str(mask_path))
-        except Exception as e:
-            logger.debug("Skipping mask %s: %s", mask_path.name, e)
-            continue
         # Clean name: remove .nii and .nii.gz suffixes
         name = mask_path.name
         if name.endswith('.nii.gz'):
             name = name[:-7]  # Remove .nii.gz
         elif name.endswith('.nii'):
             name = name[:-4]  # Remove .nii
-        if prefix and name.startswith(prefix):
-            stripped = name[len(prefix):]
-            name = stripped or name
+        if prefix and not name.startswith(prefix):
+            continue
+        if name.lower().endswith(("--segmentations", "--multilabel")):
+            continue
+        try:
+            img = sitk.ReadImage(str(mask_path))
+        except Exception as e:
+            logger.debug("Skipping mask %s: %s", mask_path.name, e)
+            continue
+        if prefix:
+            name = name[len(prefix):] or name
         masks.append((name, img))
     return masks
 
@@ -217,6 +226,18 @@ def _pretty_roi_name(name: str) -> str:
 
     cleaned = candidate or working
     return cleaned + suffix
+
+
+def _unique_roi_name(base_name: str, used_names: set[str]) -> str:
+    """Return a deterministic ROI name that cannot loop on an existing suffix."""
+    if base_name not in used_names:
+        return base_name
+    candidate = f"{base_name}_dup"
+    suffix = 2
+    while candidate in used_names:
+        candidate = f"{base_name}_dup{suffix}"
+        suffix += 1
+    return candidate
 
 
 def _resample_to_reference(seg_img: sitk.Image, ref_img: sitk.Image) -> sitk.Image:
@@ -279,6 +300,88 @@ def _seg_source_series_uids(dcm_path: Path) -> set[str]:
         except Exception as e:
             logger.debug("SEG source-series read failed for %s: %s", dcm_path, e)
     return uids
+
+
+def _rtstruct_matches_planning_ct(path: Path, planning_ct_series_uid: str) -> bool:
+    """Require an existing derived RTSTRUCT to reference exactly the current CT series."""
+    expected = str(planning_ct_series_uid or "").strip()
+    if not expected or not _is_valid_rtstruct(path):
+        return False
+    return _seg_source_series_uids(path) == {expected}
+
+
+def _derived_rtstruct_dependencies_are_current(
+    output_path: Path,
+    *,
+    ct_dir: Path,
+    nifti_path: Optional[Path],
+    segmentation_root: Path,
+) -> bool:
+    """Reject an otherwise valid RTSTRUCT when a source artifact is newer."""
+    try:
+        output_mtime = output_path.stat().st_mtime
+        dependencies: list[Path] = [
+            item for item in ct_dir.rglob("*") if item.is_file()
+        ]
+        if nifti_path is not None and nifti_path.is_file():
+            dependencies.append(nifti_path)
+        if segmentation_root.exists():
+            dependencies.extend(
+                item
+                for item in segmentation_root.rglob("*")
+                if item.is_file() and item.suffix in {".gz", ".nii", ".dcm"}
+            )
+        return not any(item.stat().st_mtime > output_mtime for item in dependencies)
+    except Exception:
+        return False
+
+
+def _record_auto_resume_decision(
+    course_dir: Path,
+    action: str,
+    reason: str,
+    *,
+    rejected_artifact: Optional[dict[str, str]] = None,
+) -> None:
+    """Append the RS_auto reuse/rebuild decision without coupling imports at module load."""
+    try:
+        from .segmentation import record_segmentation_resume_decision
+
+        contract = load_course_contract(course_dir)
+        planning_ct = contract.planning_ct
+        source = {
+            "planning_ct_series_instance_uid": str(planning_ct.get("series_instance_uid") or ""),
+            "artifact": "RS_auto.dcm",
+        }
+        decision: dict[str, object] = {
+            "action": action,
+            "model_run": False,
+            "artefact": "RS_auto.dcm",
+            "reason": reason,
+        }
+        if rejected_artifact is not None:
+            decision["rejected_artifact"] = dict(rejected_artifact)
+        record_segmentation_resume_decision(
+            course_dir,
+            {"RS_auto": decision},
+            source=source,
+        )
+    except Exception as exc:
+        logger.warning("Could not record RS_auto resume decision for %s: %s", course_dir, exc)
+
+
+def _remove_rejected_rtstruct(path: Path, reason: str) -> None:
+    """Remove a rejected RTSTRUCT before any replacement work begins."""
+    if not path.exists():
+        return
+    try:
+        if path.is_dir():
+            shutil.rmtree(path)
+        else:
+            path.unlink()
+    except OSError as exc:
+        raise OSError(f"could not remove rejected RTSTRUCT {path}") from exc
+    logger.warning("Removed rejected RTSTRUCT %s before rebuild because %s", path, reason)
 
 
 def _read_ct_for_uid(ct_dir: Path) -> str:
@@ -531,31 +634,121 @@ def build_auto_rtstruct(course_dir: Path) -> Optional[Path]:
     Returns path to RTSTRUCT or None.
     """
     contract = load_course_contract(course_dir)
+    course_dirs = build_course_dirs(course_dir)
+    out_path = course_dir / "RS_auto.dcm"
+    ct_dir = contract.planning_ct_dir
+    ct_series_uid = str(contract.planning_ct.get("series_instance_uid") or "").strip()
+    rejected_artifact: Optional[dict[str, str]] = None
+
+    def _failed(reason: str) -> Optional[Path]:
+        logger.error("Auto RTSTRUCT rebuild failed for %s: %s", course_dir, reason)
+        if out_path.exists():
+            cleanup_reason = "the attempted replacement was not successfully completed"
+            try:
+                _remove_rejected_rtstruct(out_path, cleanup_reason)
+            except OSError as exc:
+                fatal_reason = f"{reason}; failed output could not be removed: {exc}"
+                _record_auto_resume_decision(
+                    course_dir,
+                    "failed",
+                    fatal_reason,
+                    rejected_artifact=rejected_artifact,
+                )
+                raise RuntimeError(fatal_reason) from exc
+        _record_auto_resume_decision(
+            course_dir,
+            "failed",
+            reason,
+            rejected_artifact=rejected_artifact,
+        )
+        return None
+
+    def _reject_existing(reason: str) -> None:
+        nonlocal rejected_artifact
+        logger.warning("Existing Auto RTSTRUCT %s was rejected because %s", out_path, reason)
+        try:
+            _remove_rejected_rtstruct(out_path, reason)
+        except OSError as exc:
+            fatal_reason = f"could not remove rejected RS_auto.dcm: {exc}"
+            _record_auto_resume_decision(course_dir, "failed", fatal_reason)
+            raise RuntimeError(fatal_reason) from exc
+        rejected_artifact = {
+            "action": "removed",
+            "path": out_path.name,
+            "reason": reason,
+        }
+        # Persist the revocation before any rebuild work can raise. The terminal
+        # rebuilt/failed decision below updates this same per-artifact record.
+        _record_auto_resume_decision(
+            course_dir,
+            "rejected",
+            f"removed before rebuild: {reason}",
+            rejected_artifact=rejected_artifact,
+        )
+
+    if out_path.exists():
+        current = False
+        if ct_dir is None:
+            rejection_reason = "the course contract has no planning CT DICOM directory"
+        elif not ct_series_uid:
+            rejection_reason = "the course contract has no planning CT series identity"
+        elif not _is_valid_rtstruct(out_path):
+            rejection_reason = "it is not a readable, non-empty DICOM RTSTRUCT"
+        else:
+            source_uids = _seg_source_series_uids(out_path)
+            if source_uids != {ct_series_uid}:
+                if not source_uids:
+                    rejection_reason = "it does not record verifiable planning CT series provenance"
+                elif len(source_uids) == 1:
+                    rejection_reason = (
+                        f"referenced planning CT series {next(iter(source_uids))}, not the "
+                        f"current planning CT series {ct_series_uid}"
+                    )
+                else:
+                    rejection_reason = (
+                        f"referenced planning CT series set {sorted(source_uids)}, not only the "
+                        f"current planning CT series {ct_series_uid}"
+                    )
+            elif not _derived_rtstruct_dependencies_are_current(
+                out_path,
+                ct_dir=ct_dir,
+                nifti_path=contract.planning_ct_nifti,
+                segmentation_root=course_dirs.segmentation_totalseg,
+            ):
+                rejection_reason = "a contracted CT or segmentation dependency is newer or unreadable"
+            else:
+                current = True
+                rejection_reason = ""
+
+        if current:
+            logger.info(
+                "Segmentation resume course=%s artefact=RS_auto.dcm action=reused "
+                "reason=valid RTSTRUCT references planning CT series %s",
+                course_dir,
+                ct_series_uid,
+            )
+            _record_auto_resume_decision(
+                course_dir,
+                "reused",
+                f"valid RTSTRUCT references planning CT series {ct_series_uid}",
+            )
+            return out_path
+        _reject_existing(rejection_reason)
+
+    if ct_dir is None:
+        return _failed("course contract has no planning CT DICOM directory")
+    if not ct_series_uid:
+        return _failed("course contract has no planning CT series identity")
+
     try:
         from rt_utils import RTStructBuilder
     except Exception as e:
         logger.error("rt-utils not available: %s", e)
-        return None
-
-    course_dirs = build_course_dirs(course_dir)
-    ct_dir = contract.planning_ct_dir
-    if ct_dir is None:
-        logger.info("Course contract has no planning CT DICOM for %s", course_dir)
-        return None
-
-    # Resume-friendly: if already built, skip - but only if it parses as a valid RTSTRUCT.
-    # A process killed mid-write can leave a truncated file that existence-only checks
-    # would otherwise accept forever.
-    out_path = course_dir / 'RS_auto.dcm'
-    if out_path.exists():
-        if _is_valid_rtstruct(out_path):
-            logger.info("Auto RTSTRUCT already exists: %s", out_path)
-            return out_path
-        logger.warning("Existing Auto RTSTRUCT %s failed to parse/validate; regenerating", out_path)
+        return _failed(f"rt-utils is unavailable: {e}")
 
     ct_img = _load_ct_image(ct_dir)
     if ct_img is None:
-        return None
+        return _failed("planning CT could not be loaded")
 
     # Prefer DICOM-SEG, detect if RTSTRUCT already produced, fallback to NIfTI
     seg_img: Optional[sitk.Image] = None
@@ -570,7 +763,6 @@ def build_auto_rtstruct(course_dir: Path) -> Optional[Path]:
         # Bind masks to the planning CT by FrameOfReferenceUID, never candidate_dirs[0]:
         # in all-series mode several series (CBCT, 4DCT phases, diagnostic CT) are
         # segmented and an alpha-first pick can map the wrong series onto this CT.
-        ct_series_uid = str(contract.planning_ct.get("series_instance_uid") or "")
         ct_for_uid = _read_ct_for_uid(ct_dir)
         selected_dir, dicom_seg_path, base_name = _select_seg_dir_for_ct(
             candidate_dirs, ct_series_uid, ct_for_uid
@@ -586,7 +778,9 @@ def build_auto_rtstruct(course_dir: Path) -> Optional[Path]:
                 seg_root,
                 course_dir,
             )
-            return None
+            return _failed(
+                "no TotalSegmentator output matches the contracted planning CT series"
+            )
 
     if dicom_seg_path and dicom_seg_path.exists():
         try:
@@ -599,7 +793,7 @@ def build_auto_rtstruct(course_dir: Path) -> Optional[Path]:
                     _write_rtstruct_atomic(out_path, lambda tmp: shutil.copy2(str(dicom_seg_path), tmp))
                 except Exception as e:
                     logger.error('Failed to copy RTSTRUCT to RS_auto: %s', e)
-                    return None
+                    return _failed(f"copying the matched RTSTRUCT failed: {e}")
                 # Keep behavior consistent with NIfTI-derived RTSTRUCTs.
                 try:
                     sanitize_rtstruct(out_path)
@@ -613,7 +807,15 @@ def build_auto_rtstruct(course_dir: Path) -> Optional[Path]:
                 except Exception as e:
                     logger.debug("Post-processing copied RTSTRUCT failed: %s", e)
                 logger.info("Wrote auto RTSTRUCT (from RTSTRUCT): %s", out_path)
+                _record_auto_resume_decision(
+                    course_dir,
+                    "rebuilt",
+                    "rebuilt from a TotalSegmentator RTSTRUCT referencing the planning CT series",
+                    rejected_artifact=rejected_artifact,
+                )
                 return out_path
+        except RuntimeError:
+            raise
         except Exception as e:
             logger.debug('Inspecting DICOM output failed: %s', e)
 
@@ -627,13 +829,15 @@ def build_auto_rtstruct(course_dir: Path) -> Optional[Path]:
             selected_dir or seg_root,
             course_dir,
         )
-        return None
+        return _failed(
+            "selected TotalSegmentator output does not share the planning CT physical space"
+        )
 
     try:
         rtstruct = RTStructBuilder.create_new(dicom_series_path=str(ct_dir))
     except Exception as e:
         logger.error("Failed to create RTSTRUCT: %s", e)
-        return None
+        return _failed(f"creating the RTSTRUCT builder failed: {e}")
 
     added_any = False
     added_names: set[str] = set()
@@ -654,9 +858,7 @@ def build_auto_rtstruct(course_dir: Path) -> Optional[Path]:
                 if not np.any(mask):
                     continue
                 try:
-                    roi_name = name
-                    while roi_name in added_names:
-                        roi_name = f"{roi_name}_dup"
+                    roi_name = _unique_roi_name(_pretty_roi_name(name), added_names)
                     rtstruct.add_roi(mask=mask, name=roi_name)
                     added_names.add(roi_name)
                     added_any = True
@@ -665,13 +867,41 @@ def build_auto_rtstruct(course_dir: Path) -> Optional[Path]:
 
     fallback_dir = selected_dir or seg_root
     if not added_any and fallback_dir.exists():
-        # Fall back to per-ROI binary masks produced by TotalSegmentator
-        mask_prefix = f"{base_name}--total--" if base_name else None
-        binary_masks = list(_iter_binary_masks(fallback_dir, prefix=mask_prefix))
+        # Fall back to per-ROI binary masks produced by TotalSegmentator.  The
+        # two historical naming conventions are normalized in one pass.  Prefer
+        # current ``total--ROI`` files over legacy ``<base>--total--ROI`` files
+        # when both represent the same ROI, so a stale duplicate cannot win by
+        # directory sort order.
+        binary_by_roi: dict[str, tuple[int, str, sitk.Image]] = {}
+        for raw_name, mask_img in _iter_binary_masks(fallback_dir):
+            if base_name and raw_name.startswith(f"{base_name}--total--"):
+                rank = 1
+                roi_key = raw_name[len(base_name) + len("--total--"):]
+            elif raw_name.startswith("total--"):
+                rank = 0
+                roi_key = raw_name[len("total--"):]
+            else:
+                continue
+            if not roi_key:
+                continue
+            previous = binary_by_roi.get(roi_key)
+            if previous is None or rank < previous[0]:
+                binary_by_roi[roi_key] = (rank, raw_name, mask_img)
+        binary_masks = []
+        for _rank, raw_name, mask_img in sorted(
+            binary_by_roi.values(), key=lambda item: item[1]
+        ):
+            if raw_name.startswith("total--"):
+                roi_name = raw_name[len("total--"):]
+            elif base_name and raw_name.startswith(f"{base_name}--total--"):
+                roi_name = raw_name[len(base_name) + len("--total--"):]
+            else:
+                continue
+            binary_masks.append((roi_name, mask_img))
         # Universal geometry net: EVERY per-ROI mask must share the planning CT's
         # physical space before any is resampled. Checking only one would let a
-        # mixed/stale dir (a compatible mask plus an incompatible later one) bind a
-        # cross-frame ROI, so a single incompatible mask fail-closes the whole
+        # mixed/stale dir (a compatible mask plus an incompatible later one) bind
+        # a cross-frame ROI, so a single incompatible mask fail-closes the whole
         # fallback (matching the seg_img path's whole-build fail-closed).
         incompatible = [n for n, m in binary_masks if not _geometry_compatible(m, ct_img)]
         if incompatible:
@@ -695,10 +925,7 @@ def build_auto_rtstruct(course_dir: Path) -> Optional[Path]:
             if not np.any(mask_bin):
                 continue
 
-            roi_name = _pretty_roi_name(name)
-            base_roi = roi_name
-            while roi_name in added_names:
-                roi_name = f"{base_roi}_dup"
+            roi_name = _unique_roi_name(_pretty_roi_name(name), added_names)
             try:
                 rtstruct.add_roi(mask=mask_bin, name=roi_name)
                 added_names.add(roi_name)
@@ -707,8 +934,7 @@ def build_auto_rtstruct(course_dir: Path) -> Optional[Path]:
                 logger.debug("Failed to add ROI %s: %s", roi_name, e)
 
     if not added_any:
-        logger.info("No RTSTRUCT ROIs added for %s", course_dir)
-        return None
+        return _failed("no readable non-empty segmentation ROI could be added")
 
     try:
         _write_rtstruct_atomic(out_path, rtstruct.save)
@@ -721,7 +947,13 @@ def build_auto_rtstruct(course_dir: Path) -> Optional[Path]:
                 len(summary.failed),
             )
         logger.info("Wrote auto RTSTRUCT: %s", out_path)
+        _record_auto_resume_decision(
+            course_dir,
+            "rebuilt",
+            "rebuilt from TotalSegmentator masks matched to the planning CT",
+            rejected_artifact=rejected_artifact,
+        )
         return out_path
     except Exception as e:
         logger.error("Saving auto RTSTRUCT failed: %s", e)
-        return None
+        return _failed(f"publishing the rebuilt RTSTRUCT failed: {e}")
