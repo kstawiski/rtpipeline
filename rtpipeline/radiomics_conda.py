@@ -31,8 +31,12 @@ from .custom_models import (
 from .layout import build_course_dirs, find_dcm
 from .radiomics_outcomes import (
     RadiomicsCourseExtractionError,
+    RadiomicsCourseOutcome,
+    course_diagnostic_columns,
+    extraction_status_is_nonfatal_for_required,
     invalidate_radiomics_outputs as _invalidate_radiomics_outputs,
     remove_artifact_strict as _remove_artifact_strict,
+    roi_source_is_required,
     write_excel_atomic as _write_excel_atomic,
 )
 from .utils import mask_is_cropped, radiomics_mp_context
@@ -1206,6 +1210,18 @@ def process_radiomics_batch(
         metadata.setdefault('roi_name', roi_name)
         metadata.setdefault('roi_original_name', roi_name)
 
+        if task.get("precomputed_failure"):
+            return {
+                "__status__": "error",
+                "__error__": str(task["precomputed_failure"].get("reason", "unknown error")),
+                "__extraction_status__": str(
+                    task["precomputed_failure"].get("status", "failed")
+                ),
+                "__failure_kind__": str(
+                    task["precomputed_failure"].get("failure_kind", "extraction_error")
+                ),
+            }
+
         if not image_path or not mask_path:
             logger.error("Radiomics task is missing required paths for %s", roi_name)
             return {'__status__': 'error', '__error__': 'missing required image or mask path'}
@@ -1257,7 +1273,35 @@ def process_radiomics_batch(
 
     results: List[Dict[str, Any]] = []
     failures: List[str] = []
-    ineligible_keys: Set[str] = set()
+    failure_rows: List[Dict[str, Any]] = []
+
+    def _record_failure(
+        task: Dict[str, Any],
+        detail: str,
+        *,
+        status: str = "failed",
+        failure_kind: str = "extraction_error",
+    ) -> None:
+        roi_name = str(task.get("roi_name", "ROI"))
+        metadata = dict(task.get("metadata") or task.get("extra_metadata") or {})
+        source = str(metadata.get("segmentation_source", "unknown"))
+        if (
+            roi_source_is_required(source)
+            and not extraction_status_is_nonfatal_for_required(status)
+        ):
+            failures.append(f"{source}/{roi_name}: {detail}")
+            return
+        metadata.setdefault("modality", "CT")
+        metadata.setdefault("roi_name", roi_name)
+        metadata.setdefault("roi_original_name", roi_name)
+        metadata.update(
+            {
+                "extraction_status": status,
+                "extraction_status_detail": detail,
+                "extraction_failure_kind": failure_kind,
+            }
+        )
+        failure_rows.append(metadata)
 
     def _run_sequential(seq: List[Dict[str, Any]]) -> None:
         for idx, task in enumerate(seq, 1):
@@ -1265,14 +1309,24 @@ def process_radiomics_batch(
             logger.info("Processing %d/%d: %s", idx, len(seq), roi_name)
             rec = _execute(task)
             if rec and rec.get('__status__') == 'skipped':
-                ineligible_keys.add(_roi_instance_key(task))
+                _record_failure(
+                    task,
+                    str(rec.get('__reason__', 'mask was too small for radiomics')),
+                    status="below_minimum_voxels",
+                    failure_kind="degenerate_mask",
+                )
                 continue
             if rec and rec.get('__status__') == 'error':
-                failures.append(f"{roi_name}: {rec.get('__error__', 'unknown error')}")
+                _record_failure(
+                    task,
+                    str(rec.get('__error__', 'unknown error')),
+                    status=str(rec.get('__extraction_status__', 'failed')),
+                    failure_kind=str(rec.get('__failure_kind__', 'extraction_error')),
+                )
             elif rec:
                 results.append(rec)
             else:
-                failures.append(f"{roi_name}: returned no outcome record")
+                _record_failure(task, "returned no outcome record")
 
     tasks_list = list(tasks)
     if max_workers and max_workers > 0:
@@ -1286,6 +1340,10 @@ def process_radiomics_batch(
     # Instead of N subprocesses (each loading radiomics library),
     # we use N/batch_size subprocesses, dramatically reducing startup overhead
     use_batch_processing = os.environ.get('RTPIPELINE_RADIOMICS_BATCH', '1').lower() in ('1', 'true', 'yes')
+    if any(task.get("precomputed_failure") for task in tasks_list):
+        # Synthetic failure records have no mask file and must be handled by the
+        # metadata-aware executor rather than passed to the external batch CLI.
+        use_batch_processing = False
 
     # Initialize heartbeat logger if enabled
     heartbeat: Optional[HeartbeatLogger] = None
@@ -1316,17 +1374,33 @@ def process_radiomics_batch(
                     if features is None or features.get('__status__') != 'success':
                         status = features.get('__status__', 'failed') if features else 'failed'
                         if status == 'skipped':
-                            ineligible_keys.add(_roi_instance_key(task))
-                            logger.info("Skipped radiomics for %s: %s", roi_name, features.get('__reason__', 'unknown'))
+                            _record_failure(
+                                task,
+                                str((features or {}).get('__reason__', 'mask was too small for radiomics')),
+                                status="below_minimum_voxels",
+                                failure_kind="degenerate_mask",
+                            )
+                            logger.info("Recorded best-effort/required degenerate ROI %s", roi_name)
                             if heartbeat:
-                                heartbeat.update(skipped=1)
+                                heartbeat.update(failed=1)
                         else:
                             detail = (
                                 features.get('__error__', 'unknown error')
                                 if features else 'returned no outcome record'
                             )
                             logger.error("Radiomics failed for %s: %s", roi_name, detail)
-                            failures.append(f"{roi_name}: {detail}")
+                            _record_failure(
+                                task,
+                                str(detail),
+                                status=(
+                                    str(features.get('__extraction_status__', 'failed'))
+                                    if features else 'failed'
+                                ),
+                                failure_kind=(
+                                    str(features.get('__failure_kind__', 'extraction_error'))
+                                    if features else 'extraction_error'
+                                ),
+                            )
                             if heartbeat:
                                 heartbeat.update(failed=1)
                         continue
@@ -1384,17 +1458,33 @@ def process_radiomics_batch(
                             if features is None or features.get('__status__') != 'success':
                                 status = features.get('__status__', 'failed') if features else 'failed'
                                 if status == 'skipped':
-                                    ineligible_keys.add(_roi_instance_key(task))
-                                    logger.debug("Skipped radiomics for %s: %s", roi_name, features.get('__reason__', 'unknown'))
+                                    _record_failure(
+                                        task,
+                                        str((features or {}).get('__reason__', 'mask was too small for radiomics')),
+                                        status="below_minimum_voxels",
+                                        failure_kind="degenerate_mask",
+                                    )
+                                    logger.debug("Recorded best-effort/required degenerate ROI %s", roi_name)
                                     if heartbeat:
-                                        heartbeat.update(skipped=1)
+                                        heartbeat.update(failed=1)
                                 else:
                                     detail = (
                                         features.get('__error__', 'unknown error')
                                         if features else 'returned no outcome record'
                                     )
                                     logger.warning("Radiomics failed for %s: %s", roi_name, detail)
-                                    failures.append(f"{roi_name}: {detail}")
+                                    _record_failure(
+                                        task,
+                                        str(detail),
+                                        status=(
+                                            str(features.get('__extraction_status__', 'failed'))
+                                            if features else 'failed'
+                                        ),
+                                        failure_kind=(
+                                            str(features.get('__failure_kind__', 'extraction_error'))
+                                            if features else 'extraction_error'
+                                        ),
+                                    )
                                     if heartbeat:
                                         heartbeat.update(failed=1)
                                 continue
@@ -1417,9 +1507,8 @@ def process_radiomics_batch(
                             logger.debug("Completed radiomics for %s", roi_name)
                     except Exception as exc:
                         logger.error("Batch processing failed: %s", exc)
-                        failures.extend(
-                            f"{task.get('roi_name', 'ROI')}: batch crashed: {exc}" for task in batch
-                        )
+                        for task in batch:
+                            _record_failure(task, f"batch crashed: {exc}")
                         if heartbeat:
                             heartbeat.update(failed=len(batch))
         else:
@@ -1439,11 +1528,21 @@ def process_radiomics_batch(
                     try:
                         rec = future.result()
                         if rec and rec.get('__status__') == 'skipped':
-                            ineligible_keys.add(_roi_instance_key(task))
+                            _record_failure(
+                                task,
+                                str(rec.get('__reason__', 'mask was too small for radiomics')),
+                                status="below_minimum_voxels",
+                                failure_kind="degenerate_mask",
+                            )
                             if heartbeat:
-                                heartbeat.update(skipped=1)
+                                heartbeat.update(failed=1)
                         elif rec and rec.get('__status__') == 'error':
-                            failures.append(f"{roi_name}: {rec.get('__error__', 'unknown error')}")
+                            _record_failure(
+                                task,
+                                str(rec.get('__error__', 'unknown error')),
+                                status=str(rec.get('__extraction_status__', 'failed')),
+                                failure_kind=str(rec.get('__failure_kind__', 'extraction_error')),
+                            )
                             if heartbeat:
                                 heartbeat.update(failed=1)
                         elif rec:
@@ -1454,12 +1553,12 @@ def process_radiomics_batch(
                                 heartbeat.update(completed=1)
                             logger.debug("Completed radiomics for %s", roi_name)
                         else:
-                            failures.append(f"{roi_name}: returned no successful feature record")
+                            _record_failure(task, "returned no successful feature record")
                             if heartbeat:
                                 heartbeat.update(failed=1)
                     except Exception as exc:  # pragma: no cover - defensive
                         logger.error("Radiomics task crashed for %s: %s", roi_name, exc)
-                        failures.append(f"{roi_name}: task crashed: {exc}")
+                        _record_failure(task, f"task crashed: {exc}")
                         if heartbeat:
                             heartbeat.update(failed=1)
 
@@ -1498,8 +1597,9 @@ def process_radiomics_batch(
                 len(prior), output_path,
             )
             rows.extend(prior)
+    rows.extend(failure_rows)
 
-    required_publication_keys = expected_keys - ineligible_keys
+    required_publication_keys = expected_keys
     try:
         publication_keys = _validated_identity_keys(
             rows,
@@ -1535,8 +1635,50 @@ def process_radiomics_batch(
         return None
 
     try:
+        source_counts: Dict[str, Dict[str, int]] = {}
+        roi_failures: List[Dict[str, str]] = []
+        for row in rows:
+            source = str(row.get("segmentation_source", "unknown"))
+            status = row.get("extraction_status")
+            try:
+                if status != status:
+                    status = None
+            except (TypeError, ValueError):
+                pass
+            counts = source_counts.setdefault(source, {"attempted": 0, "extracted": 0, "failed": 0})
+            counts["attempted"] += 1
+            if status in (None, "success"):
+                counts["extracted"] += 1
+            else:
+                counts["failed"] += 1
+                roi_failures.append(
+                    {
+                        "roi_name": str(row.get("roi_original_name", row.get("roi_name", "unknown"))),
+                        "source": source,
+                        "status": str(status),
+                        "failure_kind": str(row.get("extraction_failure_kind", "extraction_error")),
+                        "reason": str(row.get("extraction_status_detail", "unknown error")),
+                    }
+                )
+        outcome = RadiomicsCourseOutcome.extracted(
+            Path(output_path),
+            roi_counts=source_counts,
+            roi_failures=roi_failures,
+            detail=(
+                f"extracted {sum(values['extracted'] for values in source_counts.values())} "
+                f"of {sum(values['attempted'] for values in source_counts.values())} "
+                "attempted ROIs"
+            ),
+        )
+        diagnostics = course_diagnostic_columns(outcome)
+        for row in rows:
+            row.update(diagnostics)
         df = pd.DataFrame(rows)
         _write_excel_atomic(df, Path(output_path))
+        _remove_artifact_strict(
+            Path(output_path).with_suffix(".parquet"),
+            context="invalidating stale Parquet sidecar after conda workbook publication",
+        )
         logger.info("Saved %d radiomics rows to %s", len(df), output_path)
     except Exception as exc:
         _invalidate_radiomics_outputs(Path(output_path))
@@ -1583,6 +1725,7 @@ def radiomics_for_course_ct_nifti_fallback(
         series_dirs.insert(0, seg_dir)
 
     tasks: List[Dict[str, Any]] = []
+    preparation_failures: List[Dict[str, str]] = []
     temp_files: List[Path] = []
     image_cache: Dict[Path, Tuple[str, Tuple[float, float, float]]] = {}
     dicom_image_path: Optional[str] = None
@@ -1602,6 +1745,27 @@ def radiomics_for_course_ct_nifti_fallback(
         if exc is not None:
             raise error from exc
         raise error
+
+    def _record_preparation_failure(
+        roi_name: str,
+        detail: str,
+        *,
+        status: str = "failed",
+        failure_kind: str = "extraction_error",
+    ) -> None:
+        preparation_failures.append(
+            {
+                "roi_name": str(roi_name),
+                "reason": detail,
+                "status": status,
+                "failure_kind": failure_kind,
+            }
+        )
+        logger.warning(
+            "Best-effort radiomics ROI AutoTS_total_nifti_fallback/%s was not prepared: %s",
+            roi_name,
+            detail,
+        )
 
     def _dicom_image() -> Optional[Tuple[str, Tuple[float, float, float]]]:
         nonlocal dicom_image_path, dicom_spacing
@@ -1682,19 +1846,29 @@ def radiomics_for_course_ct_nifti_fallback(
                 mask_img = sitk.ReadImage(str(mask_path))
                 mask_arr = sitk.GetArrayFromImage(mask_img)
             except Exception as exc:
-                _fail_fallback(f"Failed to read CT fallback mask {mask_path}: {exc}", exc)
+                _record_preparation_failure(
+                    roi_name,
+                    f"Failed to read CT fallback mask {mask_path}: {exc}",
+                )
+                continue
 
             mask_bool = mask_arr > 0
             if not mask_bool.any():
-                _fail_fallback(f"CT fallback ROI {roi_name} has an empty mask: {mask_path}")
+                _record_preparation_failure(
+                    roi_name,
+                    f"CT fallback ROI {roi_name} has an empty mask: {mask_path}",
+                    failure_kind="degenerate_mask",
+                )
+                continue
 
             voxel_count = int(mask_bool.sum())
             if voxel_count < min_voxels_limit:
-                logger.info(
-                    "Skipping CT fallback ROI %s: %d voxels below minimum %d",
+                _record_preparation_failure(
                     roi_name,
-                    voxel_count,
-                    min_voxels_limit,
+                    f"ROI contains {voxel_count} voxels; configured minimum is "
+                    f"{min_voxels_limit}",
+                    status="below_minimum_voxels",
+                    failure_kind="degenerate_mask",
                 )
                 continue
 
@@ -1724,7 +1898,11 @@ def radiomics_for_course_ct_nifti_fallback(
                 sitk.WriteImage(mask_img, mask_nrrd.name, useCompression=True)
                 temp_files.append(Path(mask_nrrd.name))
             except Exception as exc:
-                _fail_fallback(f"Failed to convert CT fallback mask {mask_path}: {exc}", exc)
+                _record_preparation_failure(
+                    roi_name,
+                    f"Failed to convert CT fallback mask {mask_path}: {exc}",
+                )
+                continue
 
             cropped_flag = mask_is_cropped(mask_bool)
             display_roi = roi_name if (not cropped_flag or roi_name.endswith("__partial")) else f"{roi_name}__partial"
@@ -1750,6 +1928,29 @@ def radiomics_for_course_ct_nifti_fallback(
                     "mask_path_source": str(mask_path),
                 },
             })
+
+    for failure in preparation_failures:
+        tasks.append(
+            {
+                "image_path": dicom_image_path or "best-effort-preparation-failure",
+                "mask_path": None,
+                "roi_name": failure["roi_name"],
+                "params_file": params_file,
+                "label": None,
+                "large_roi": False,
+                "cleanup": False,
+                "metadata": {
+                    "modality": "CT",
+                    "segmentation_source": "AutoTS_total_nifti_fallback",
+                    "course_dir": str(course_dir),
+                    "patient_id": course_dir.parent.name,
+                    "course_id": course_dir.name,
+                    "structure_cropped": False,
+                    "roi_original_name": failure["roi_name"],
+                },
+                "precomputed_failure": failure,
+            }
+        )
 
     if not tasks:
         logger.warning("No valid TotalSegmentator NIfTI ROIs found for CT fallback in %s", course_dir)
@@ -1994,12 +2195,43 @@ def radiomics_for_course(
         ) from exc
 
     tasks: List[Dict[str, Any]] = []
+    preparation_failures: List[Dict[str, Any]] = []
     try:
         from rt_utils import RTStructBuilder
 
         min_voxels_limit, max_voxels_limit = _ct_voxel_limits(config)
 
         for segmentation_source, rs_file, selected_rois in source_specs:
+            best_effort = not roi_source_is_required(segmentation_source)
+
+            def _record_preparation_failure(
+                roi_name: str,
+                reason: str,
+                *,
+                status: str = "failed",
+                failure_kind: str = "extraction_error",
+            ) -> None:
+                if (
+                    not best_effort
+                    and not extraction_status_is_nonfatal_for_required(status)
+                ):
+                    raise RadiomicsCourseExtractionError(reason)
+                preparation_failures.append(
+                    {
+                        "source": segmentation_source,
+                        "roi_name": str(roi_name),
+                        "status": status,
+                        "failure_kind": failure_kind,
+                        "reason": reason,
+                    }
+                )
+                logger.warning(
+                    "Best-effort radiomics ROI %s/%s was not prepared: %s",
+                    segmentation_source,
+                    roi_name,
+                    reason,
+                )
+
             try:
                 rtstruct = RTStructBuilder.create_from(
                     dicom_series_path=str(ct_dir),
@@ -2011,6 +2243,21 @@ def radiomics_for_course(
                     else list(rtstruct.get_roi_names())
                 )
             except Exception as exc:
+                if best_effort:
+                    try:
+                        from .radiomics import _list_roi_names_dicom
+
+                        advertised_rois = list(_list_roi_names_dicom(rs_file))
+                    except Exception:
+                        advertised_rois = []
+                    if advertised_rois:
+                        for advertised_roi in advertised_rois:
+                            _record_preparation_failure(
+                                advertised_roi,
+                                f"Failed to construct RTSTRUCT reader for {segmentation_source} "
+                                f"at {rs_file}: {exc}",
+                            )
+                        continue
                 raise RadiomicsCourseExtractionError(
                     f"Failed to construct RTSTRUCT reader for {segmentation_source} at {rs_file}: {exc}"
                 ) from exc
@@ -2035,30 +2282,45 @@ def radiomics_for_course(
                 try:
                     mask = rtstruct.get_roi_mask_by_name(roi_name)
                 except Exception as exc:
-                    raise RadiomicsCourseExtractionError(
+                    _record_preparation_failure(
+                        roi_name,
                         f"Expected ROI {roi_name!r} in {segmentation_source} {rs_file} "
-                        f"could not be read: {exc}"
-                    ) from exc
+                        f"could not be read: {exc}",
+                    )
+                    continue
                 if mask is None:
-                    raise RadiomicsCourseExtractionError(
+                    _record_preparation_failure(
+                        roi_name,
                         f"Expected ROI {roi_name!r} in {segmentation_source} {rs_file} "
-                        "did not provide a mask"
+                        "did not provide a mask",
                     )
-                mask_bool = np.asarray(mask).astype(bool)
+                    continue
+                try:
+                    mask_bool = np.asarray(mask).astype(bool)
+                except Exception as exc:
+                    _record_preparation_failure(
+                        roi_name,
+                        f"Expected ROI {roi_name!r} in {segmentation_source} {rs_file} "
+                        f"could not be converted to a mask: {exc}",
+                    )
+                    continue
                 if not mask_bool.any():
-                    raise RadiomicsCourseExtractionError(
+                    _record_preparation_failure(
+                        roi_name,
                         f"Expected ROI {roi_name!r} in {segmentation_source} {rs_file} "
-                        "produced an empty required mask"
+                        "produced an empty mask",
+                        failure_kind="degenerate_mask",
                     )
+                    continue
 
                 voxel_count = int(mask_bool.sum())
                 if voxel_count < min_voxels_limit:
-                    logger.info(
-                        "Skipping radiomics for %s/%s: %d voxels below minimum %d",
-                        segmentation_source,
+                    _record_preparation_failure(
                         roi_name,
-                        voxel_count,
-                        min_voxels_limit,
+                        f"ROI contains {voxel_count} voxels; configured minimum is "
+                        f"{min_voxels_limit}",
+                        status="below_minimum_voxels",
+                        failure_kind="degenerate_mask",
                     )
                     continue
                 spacing = tuple(ct_info.get("spacing", (1.0, 1.0, 1.0)))
@@ -2091,10 +2353,12 @@ def radiomics_for_course(
                         _write_mask_to_file(mask_bool, mask_file.name, ct_info)
                         mask_path = mask_file.name
                 except Exception as exc:
-                    raise RadiomicsCourseExtractionError(
-                        f"Failed to serialize required mask {segmentation_source}/{roi_name} "
-                        f"from {rs_file}: {exc}"
-                    ) from exc
+                    _record_preparation_failure(
+                        roi_name,
+                        f"Failed to serialize mask {segmentation_source}/{roi_name} "
+                        f"from {rs_file}: {exc}",
+                    )
+                    continue
 
                 cropped_flag = mask_is_cropped(mask_bool)
                 display_roi = (
@@ -2120,6 +2384,28 @@ def radiomics_for_course(
                     "cleanup": True,
                     "ct_info": ct_info,
                 })
+
+        for failure in preparation_failures:
+            tasks.append(
+                {
+                    "image_path": ct_image_path,
+                    "mask_path": None,
+                    "roi_name": failure["roi_name"],
+                    "params_file": params_file,
+                    "label": None,
+                    "metadata": {
+                        "segmentation_source": failure["source"],
+                        "course_dir": str(course_dir),
+                        "patient_id": course_dir.parent.name,
+                        "course_id": course_dir.name,
+                        "structure_cropped": False,
+                        "roi_original_name": failure["roi_name"],
+                    },
+                    "precomputed_failure": failure,
+                    "cleanup": False,
+                    "ct_info": ct_info,
+                }
+            )
 
     except Exception as exc:
         logger.error("Failed to prepare radiomics masks for %s: %s", course_dir, exc)
