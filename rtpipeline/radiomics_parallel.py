@@ -44,8 +44,12 @@ from .custom_structures_rtstruct import _create_custom_structures_rtstruct, _is_
 from .radiomics_outcomes import (
     RadiomicsCourseExtractionError,
     RadiomicsCourseOutcome,
+    course_diagnostic_columns,
+    extraction_status_is_nonfatal_for_required,
     invalidate_radiomics_outputs as _invalidate_radiomics_outputs,
+    outcome_from_output,
     remove_artifact_strict as _remove_artifact_strict,
+    roi_source_is_required,
     resume_identity_pairs as _resume_identity_pairs,
     write_excel_atomic as _write_excel_atomic,
 )
@@ -55,6 +59,10 @@ logger = logging.getLogger(__name__)
 
 class RadiomicsRegionExtractionError(RuntimeError):
     """A required ROI could not be extracted, so the course is incomplete."""
+
+    def __init__(self, detail: str, *, failure_kind: str = "extraction_error") -> None:
+        self.failure_kind = failure_kind
+        super().__init__(detail)
 
 
 _THREAD_VARS = (
@@ -214,6 +222,7 @@ class _RoiTask:
     rs_path: str
     roi_name: str
     course_dir: str
+    required: Optional[bool] = None
 
 
 _WORKER_STATE: Dict[str, Any] = {}
@@ -287,9 +296,10 @@ def _status_record(
     detail: str,
     *,
     voxel_count: Optional[int] = None,
+    failure_kind: Optional[str] = None,
 ) -> Dict[str, Any]:
     course_dir = Path(task.course_dir)
-    return {
+    record = {
         "modality": "CT",
         "segmentation_source": task.source,
         "roi_name": task.roi_name,
@@ -302,6 +312,81 @@ def _status_record(
         "extraction_status_detail": detail,
         "voxel_count": voxel_count,
     }
+    if failure_kind:
+        record["extraction_failure_kind"] = failure_kind
+    return record
+
+
+def _task_is_required(task: _RoiTask) -> bool:
+    if task.required is not None:
+        return bool(task.required)
+    return roi_source_is_required(task.source)
+
+
+def _failure_record(
+    task: _RoiTask,
+    detail: str,
+    *,
+    status: str = "failed",
+    failure_kind: str = "extraction_error",
+) -> Dict[str, Any]:
+    return _status_record(
+        task,
+        status,
+        detail,
+        failure_kind=failure_kind,
+    )
+
+
+def _record_roi_outcome(
+    task: _RoiTask,
+    record: Optional[Dict[str, Any]],
+    source_counts: Dict[str, Dict[str, int]],
+    roi_failures: List[Dict[str, str]],
+) -> None:
+    """Accumulate one task outcome without treating a best-effort miss as success."""
+    status = (record or {}).get("extraction_status")
+    try:
+        if status != status:
+            status = None
+    except (TypeError, ValueError):
+        pass
+    if status == "declared_skip":
+        return
+    counts = source_counts.setdefault(
+        task.source,
+        {"attempted": 0, "extracted": 0, "failed": 0},
+    )
+    counts["attempted"] += 1
+    if status in (None, "success"):
+        counts["extracted"] += 1
+        return
+    counts["failed"] += 1
+    failure_record = record or {}
+    roi_failures.append(
+        {
+            "roi_name": task.roi_name,
+            "source": task.source,
+            "status": str(status),
+            "failure_kind": str(failure_record.get("extraction_failure_kind", "extraction_error")),
+            "reason": str(failure_record.get("extraction_status_detail", "unknown error")),
+        }
+    )
+
+
+def _resume_outcome(
+    output_path: Path,
+    tasks: Sequence[_RoiTask],
+    dataframe: Any,
+) -> RadiomicsCourseOutcome:
+    """Reconstruct resume status while preserving the required-ROI gate."""
+    return outcome_from_output(
+        output_path,
+        required_by_identity={
+            (task.source, task.roi_name): _task_is_required(task)
+            for task in tasks
+        },
+    )
 
 
 def _extract_one(task: _RoiTask) -> Dict[str, Any]:
@@ -339,7 +424,8 @@ def _extract_one(task: _RoiTask) -> Dict[str, Any]:
     mask_bool = mask.astype(bool)
     if not mask_bool.any():
         raise RadiomicsRegionExtractionError(
-            f"ROI {task.roi_name} from {task.source} produced an empty required mask"
+            f"ROI {task.roi_name} from {task.source} produced an empty required mask",
+            failure_kind="degenerate_mask",
         )
 
     voxel_count = int(mask_bool.sum())
@@ -351,6 +437,7 @@ def _extract_one(task: _RoiTask) -> Dict[str, Any]:
             "below_minimum_voxels",
             f"ROI contains {voxel_count} voxels; configured minimum is {min_voxels}",
             voxel_count=voxel_count,
+            failure_kind="degenerate_mask",
         )
     # Decide "large ROI" using an estimate at the extractor resampled spacing.
     #
@@ -405,10 +492,11 @@ def _extract_one(task: _RoiTask) -> Dict[str, Any]:
         mask_img = _mask_from_array_like(img, mask_bool)
         res = ext.execute(img, mask_img)
     except TimeoutError as exc:
-        raise RadiomicsRegionExtractionError(str(exc)) from exc
+        raise RadiomicsRegionExtractionError(str(exc), failure_kind="timeout") from exc
     except Exception as exc:
         raise RadiomicsRegionExtractionError(
-            f"ROI {task.roi_name} radiomics extraction failed: {exc}"
+            f"ROI {task.roi_name} radiomics extraction failed: {exc}",
+            failure_kind="extraction_error",
         ) from exc
     finally:
         if use_alarm:
@@ -591,10 +679,6 @@ def parallel_radiomics_for_course(
             import pandas as pd  # type: ignore
 
             existing_df = pd.read_excel(out_path, engine="openpyxl")
-            existing_df = existing_df.drop(
-                columns=["extraction_status", "extraction_status_detail", "voxel_count"],
-                errors="ignore",
-            )
             _resume_identity_pairs(existing_df)
         except Exception as exc:
             logger.warning(
@@ -632,7 +716,7 @@ def parallel_radiomics_for_course(
         if conda_out is None:
             _invalidate_radiomics_outputs(out_path)
             return RadiomicsCourseOutcome.nothing_to_do("conda backend found no eligible ROIs")
-        return RadiomicsCourseOutcome.extracted(conda_out)
+        return outcome_from_output(conda_out)
 
     # Choose RS_auto vs RS_auto_cropped
     rs_auto_name = "RS_auto.dcm"
@@ -747,6 +831,10 @@ def parallel_radiomics_for_course(
                         rs_path=str(rs_path),
                         roi_name=roi_name,
                         course_dir=str(course_dir),
+                        required=roi_source_is_required(
+                            source,
+                            operator_configured=source == "Custom",
+                        ),
                     )
                 )
     except Exception:
@@ -792,6 +880,7 @@ def parallel_radiomics_for_course(
                         rs_path=str(rs_custom),
                         roi_name=roi_name,
                         course_dir=str(course_dir),
+                        required=True,
                     )
                 )
         except Exception as exc:
@@ -813,11 +902,27 @@ def parallel_radiomics_for_course(
                 exc,
             )
             existing_pairs = set()
+        task_by_identity = {
+            (task.source, task.roi_name): task for task in tasks
+        }
+        missing_required = sorted(
+            identity
+            for identity in (expected_pairs - existing_pairs)
+            if _task_is_required(task_by_identity[identity])
+        )
+        if missing_required:
+            _invalidate_radiomics_outputs(out_path)
+            missing_text = ", ".join(
+                f"{source}/{roi}" for source, roi in missing_required
+            )
+            raise RadiomicsCourseExtractionError(
+                f"Persisted radiomics output is missing required ROI outcome(s): {missing_text}"
+            )
         if expected_pairs and existing_pairs == expected_pairs:
             logger.debug(
                 "Parallel radiomics resume workbook is complete for %s", course_dir
             )
-            return RadiomicsCourseOutcome.extracted(out_path)
+            return _resume_outcome(out_path, tasks, existing_df)
         logger.warning(
             "Invalidating incomplete parallel resume workbook for %s: expected %d "
             "source/ROI identities, found %d",
@@ -858,6 +963,8 @@ def parallel_radiomics_for_course(
     total = len(tasks)
     completed: Set[_RoiTask] = set()
     rows: List[Dict[str, Any]] = []
+    source_counts: Dict[str, Dict[str, int]] = {}
+    roi_failures: List[Dict[str, str]] = []
 
     def _invalidate_incomplete_output() -> None:
         """Remove stale tables that would otherwise look complete after failure."""
@@ -916,19 +1023,49 @@ def parallel_radiomics_for_course(
                         restart = True
                         break
                     except Exception as exc:
-                        fatal_error = RadiomicsCourseExtractionError(
-                            f"Radiomics course {course_dir} is incomplete: "
-                            f"required ROI {task.source}/{task.roi_name} failed: {exc}"
+                        if _task_is_required(task):
+                            fatal_error = RadiomicsCourseExtractionError(
+                                f"Radiomics course {course_dir} is incomplete: "
+                                f"required ROI {task.source}/{task.roi_name} failed: {exc}"
+                            )
+                            break
+                        rec = _failure_record(
+                            task,
+                            str(exc),
+                            failure_kind=getattr(exc, "failure_kind", "extraction_error"),
                         )
-                        break
-                    if rec is None:
-                        fatal_error = RadiomicsCourseExtractionError(
-                            f"Radiomics course {course_dir} is incomplete: required ROI "
-                            f"{task.source}/{task.roi_name} returned no outcome record"
+                        _record_roi_outcome(task, rec, source_counts, roi_failures)
+                        completed.add(task)
+                        rows.append(rec)
+                        continue
+                    if not rec:
+                        if _task_is_required(task):
+                            fatal_error = RadiomicsCourseExtractionError(
+                                f"Radiomics course {course_dir} is incomplete: required ROI "
+                                f"{task.source}/{task.roi_name} returned no outcome record"
+                            )
+                            break
+                        rec = _failure_record(
+                            task,
+                            "worker returned no outcome record",
                         )
-                        break
+                    elif rec.get("extraction_status") not in (None, "success", "declared_skip"):
+                        if (
+                            _task_is_required(task)
+                            and not extraction_status_is_nonfatal_for_required(
+                                rec.get("extraction_status")
+                            )
+                        ):
+                            fatal_error = RadiomicsCourseExtractionError(
+                                f"Radiomics course {course_dir} is incomplete: "
+                                f"required ROI {task.source}/{task.roi_name} failed: "
+                                f"{rec.get('extraction_status_detail', 'unknown error')}"
+                            )
+                            break
                     completed.add(task)
-                    rows.append(rec)
+                    _record_roi_outcome(task, rec, source_counts, roi_failures)
+                    if rec.get("extraction_status") != "declared_skip":
+                        rows.append(rec)
 
                 if fatal_error is not None or restart:
                     break
@@ -953,7 +1090,8 @@ def parallel_radiomics_for_course(
                     restart = True
                     break
 
-                # Timeouts: mark tasks as skipped and restart the pool so we don't block on shutdown.
+                # Timeouts are fatal for required ROIs but are recorded and
+                # tolerated for best-effort TotalSegmentator organ ROIs.
                 timed_out_tasks: List[_RoiTask] = []
                 for fut in list(remaining):
                     if now - task_start[fut] > task_timeout:
@@ -962,13 +1100,27 @@ def parallel_radiomics_for_course(
                         completed.add(task)
                         remaining.remove(fut)
                 if timed_out_tasks:
-                    failed_names = ", ".join(
-                        f"{task.source}/{task.roi_name}" for task in timed_out_tasks
-                    )
-                    fatal_error = RadiomicsCourseExtractionError(
-                        f"Radiomics course {course_dir} is incomplete: required ROI task(s) "
-                        f"timed out after {task_timeout}s: {failed_names}"
-                    )
+                    required_timeouts = [task for task in timed_out_tasks if _task_is_required(task)]
+                    for task in timed_out_tasks:
+                        if task in required_timeouts:
+                            continue
+                        rec = _failure_record(
+                            task,
+                            f"ROI task timed out after {task_timeout}s",
+                            failure_kind="timeout",
+                        )
+                        rows.append(rec)
+                        _record_roi_outcome(task, rec, source_counts, roi_failures)
+                    if required_timeouts:
+                        failed_names = ", ".join(
+                            f"{task.source}/{task.roi_name}" for task in required_timeouts
+                        )
+                        fatal_error = RadiomicsCourseExtractionError(
+                            f"Radiomics course {course_dir} is incomplete: required ROI task(s) "
+                            f"timed out after {task_timeout}s: {failed_names}"
+                        )
+                        break
+                    restart = True
                     break
 
                 if now - last_log > 30:
@@ -1003,25 +1155,39 @@ def parallel_radiomics_for_course(
             logger.error("%s", fatal_error)
             raise fatal_error
 
-    feature_rows = [
+    records_to_write = [
         row for row in rows
-        if row.get("extraction_status") in (None, "success")
+        if row.get("extraction_status") != "declared_skip"
     ]
-    if not feature_rows:
+    if not records_to_write:
         if existing_df is not None and out_path.exists():
             logger.debug("No new radiomics rows for %s (resume top-up)", course_dir)
-            return RadiomicsCourseOutcome.extracted(out_path)
+            return _resume_outcome(out_path, tasks, existing_df)
         logger.info("No eligible radiomics regions for %s", course_dir)
         _invalidate_radiomics_outputs(out_path)
-        return RadiomicsCourseOutcome.nothing_to_do("all enumerated ROIs were explicitly skipped")
+        return RadiomicsCourseOutcome.nothing_to_do(
+            "all enumerated ROIs were explicitly skipped",
+            roi_counts=source_counts,
+        )
+
+    outcome = RadiomicsCourseOutcome.extracted(
+        out_path,
+        roi_counts=source_counts,
+        roi_failures=roi_failures,
+        detail=(
+            f"extracted {sum(values['extracted'] for values in source_counts.values())} "
+            f"of {sum(values['attempted'] for values in source_counts.values())} "
+            "attempted ROIs"
+        ),
+    )
+    diagnostics = course_diagnostic_columns(outcome)
+    for row in records_to_write:
+        row.update(diagnostics)
 
     try:
         import pandas as pd  # type: ignore
 
-        df_new = pd.DataFrame(feature_rows).drop(
-            columns=["extraction_status", "extraction_status_detail", "voxel_count"],
-            errors="ignore",
-        )
+        df_new = pd.DataFrame(records_to_write)
         if existing_df is not None and out_path.exists():
             output_cols = list(existing_df.columns)
             output_cols.extend(col for col in df_new.columns if col not in existing_df.columns)
@@ -1035,7 +1201,7 @@ def parallel_radiomics_for_course(
             df = pd.concat([existing_df, df_new], ignore_index=True)
             df = df.drop_duplicates(
                 subset=["segmentation_source", "roi_original_name", "patient_id", "course_id"],
-                keep="first",
+                keep="last",
             )
         else:
             df = df_new
@@ -1060,7 +1226,7 @@ def parallel_radiomics_for_course(
                 _remove_artifact_strict(tmp_parquet, context="cleaning failed Parquet publication")
                 _remove_artifact_strict(parquet_path, context="invalidating stale Parquet sidecar")
                 logger.debug("Parquet sidecar write failed for %s: %s (retry: %s)", out_path, exc, exc2)
-        return RadiomicsCourseOutcome.extracted(out_path)
+        return outcome
     except Exception as exc:
         _invalidate_radiomics_outputs(out_path)
         raise RadiomicsCourseExtractionError(

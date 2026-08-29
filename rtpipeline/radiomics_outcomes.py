@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import os
+import json
 import tempfile
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Dict, Iterable, Mapping, Optional, Sequence, Tuple
 
 
 def remove_artifact_strict(candidate: Path, *, context: str) -> None:
@@ -103,6 +104,8 @@ def write_excel_atomic(df: Any, output_path: Path) -> Path:
 
 class RadiomicsCourseStatus(str, Enum):
     EXTRACTED = "extracted"
+    EXTRACTED_WITH_FAILURES = "extracted_with_failures"
+    DEGRADED = "extracted_with_failures"
     NOTHING_TO_DO = "nothing_to_do"
     FAILED = "failed"
 
@@ -112,14 +115,182 @@ class RadiomicsCourseOutcome:
     status: RadiomicsCourseStatus
     output_path: Optional[Path] = None
     detail: str = ""
+    roi_counts: Dict[str, Dict[str, int]] | None = None
+    roi_failures: Tuple[Dict[str, str], ...] = ()
 
     @classmethod
-    def extracted(cls, output_path: Path) -> "RadiomicsCourseOutcome":
-        return cls(RadiomicsCourseStatus.EXTRACTED, Path(output_path))
+    def extracted(
+        cls,
+        output_path: Path,
+        *,
+        roi_counts: Optional[Mapping[str, Mapping[str, int]]] = None,
+        roi_failures: Sequence[Mapping[str, str]] = (),
+        detail: str = "",
+    ) -> "RadiomicsCourseOutcome":
+        counts = {
+            str(source): {
+                "attempted": int(values.get("attempted", 0)),
+                "extracted": int(values.get("extracted", 0)),
+                "failed": int(values.get("failed", 0)),
+            }
+            for source, values in (roi_counts or {}).items()
+        }
+        failures = tuple(dict(failure) for failure in roi_failures)
+        has_failures = any(values["failed"] for values in counts.values()) or bool(failures)
+        status = (
+            RadiomicsCourseStatus.EXTRACTED_WITH_FAILURES
+            if has_failures
+            else RadiomicsCourseStatus.EXTRACTED
+        )
+        return cls(status, Path(output_path), detail, counts, failures)
 
     @classmethod
-    def nothing_to_do(cls, detail: str) -> "RadiomicsCourseOutcome":
-        return cls(RadiomicsCourseStatus.NOTHING_TO_DO, detail=detail)
+    def nothing_to_do(
+        cls,
+        detail: str,
+        *,
+        roi_counts: Optional[Mapping[str, Mapping[str, int]]] = None,
+    ) -> "RadiomicsCourseOutcome":
+        counts = {
+            str(source): {
+                "attempted": int(values.get("attempted", 0)),
+                "extracted": int(values.get("extracted", 0)),
+                "failed": int(values.get("failed", 0)),
+            }
+            for source, values in (roi_counts or {}).items()
+        }
+        return cls(RadiomicsCourseStatus.NOTHING_TO_DO, detail=detail, roi_counts=counts)
+
+    @property
+    def counts_by_source(self) -> Dict[str, Dict[str, int]]:
+        """Compatibility name for consumers that describe the field by its role."""
+        return dict(self.roi_counts or {})
+
+    @property
+    def attempted(self) -> int:
+        return sum(values.get("attempted", 0) for values in (self.roi_counts or {}).values())
+
+    @property
+    def extracted_count(self) -> int:
+        return sum(values.get("extracted", 0) for values in (self.roi_counts or {}).values())
+
+    @property
+    def failed_count(self) -> int:
+        return sum(values.get("failed", 0) for values in (self.roi_counts or {}).values())
+
+
+def roi_source_is_required(source: str, *, operator_configured: bool = False) -> bool:
+    """Return the fail-closed policy for a source, never for an anatomy name.
+
+    Operator-configured structures are required even if a caller gives them a
+    source label that resembles an automatically generated one. TotalSegmentator
+    organ outputs are best-effort because their inventory is region-independent.
+    All other RTSTRUCT sources remain required by default.
+    """
+    if operator_configured:
+        return True
+    normalized = str(source).strip().casefold()
+    return not normalized.startswith(("autorts_total", "autots_total"))
+
+
+def extraction_status_is_nonfatal_for_required(status: Any) -> bool:
+    """Return whether a required ROI status preserves the historical course gate.
+
+    A present, non-empty mask below ``min_voxels`` was historically reported as
+    an observed status rather than treated as a course-failing extraction error.
+    Empty masks, unreadable contours, timeouts, and extractor errors remain fatal
+    for required sources.
+    """
+    return str(status).strip().casefold() == "below_minimum_voxels"
+
+
+def course_diagnostic_columns(outcome: RadiomicsCourseOutcome) -> Dict[str, Any]:
+    """Return scalar workbook columns that make partial extraction explicit."""
+    counts = outcome.roi_counts or {}
+    return {
+        "radiomics_course_status": outcome.status.value,
+        "radiomics_roi_attempted": outcome.attempted,
+        "radiomics_roi_extracted": outcome.extracted_count,
+        "radiomics_roi_failed": outcome.failed_count,
+        "radiomics_roi_counts_by_source": json.dumps(
+            {source: counts[source] for source in sorted(counts)},
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+    }
+
+
+def outcome_from_output(
+    output_path: Path,
+    *,
+    required_by_identity: Optional[Mapping[Tuple[str, str], bool]] = None,
+) -> RadiomicsCourseOutcome:
+    """Read persisted outcomes and reject failed or missing required ROIs.
+
+    ``required_by_identity`` supplies the current task inventory during resume.
+    Source policy remains the fallback for generic backend reconstruction.
+    """
+    import pandas as pd
+
+    output_path = Path(output_path)
+    dataframe = pd.read_excel(output_path, engine="openpyxl")
+    required_map = {
+        (str(source), str(roi_name)): bool(required)
+        for (source, roi_name), required in (required_by_identity or {}).items()
+    }
+    counts: Dict[str, Dict[str, int]] = {}
+    failures: list[Dict[str, str]] = []
+    fatal_failures: list[str] = []
+    observed_identities: set[Tuple[str, str]] = set()
+    for row in dataframe.to_dict("records"):
+        source_value = row.get("segmentation_source", "unknown")
+        source = "unknown" if bool(pd.isna(source_value)) else str(source_value)
+        roi_value = row.get("roi_original_name", row.get("roi_name", "unknown"))
+        roi_name = "unknown" if bool(pd.isna(roi_value)) else str(roi_value)
+        identity = (source, roi_name)
+        observed_identities.add(identity)
+        status = row.get("extraction_status")
+        if bool(pd.isna(status)):
+            status = None
+        if status == "declared_skip":
+            continue
+        source_counts = counts.setdefault(source, {"attempted": 0, "extracted": 0, "failed": 0})
+        source_counts["attempted"] += 1
+        if status in (None, "success"):
+            source_counts["extracted"] += 1
+        else:
+            source_counts["failed"] += 1
+            failures.append(
+                {
+                    "roi_name": roi_name,
+                    "source": source,
+                    "status": str(status),
+                    "failure_kind": str(row.get("extraction_failure_kind", "extraction_error")),
+                    "reason": str(row.get("extraction_status_detail", "unknown error")),
+                }
+            )
+            required = required_map.get(identity, roi_source_is_required(source))
+            if required and not extraction_status_is_nonfatal_for_required(status):
+                fatal_failures.append(
+                    f"required ROI {source}/{roi_name} has persisted status {status}: "
+                    f"{row.get('extraction_status_detail', 'unknown error')}"
+                )
+    for identity, required in required_map.items():
+        if required and identity not in observed_identities:
+            fatal_failures.append(
+                f"required ROI {identity[0]}/{identity[1]} has no persisted outcome"
+            )
+    if fatal_failures:
+        invalidate_radiomics_outputs(output_path)
+        raise RadiomicsCourseExtractionError(
+            "Persisted radiomics output is not resumable: " + "; ".join(fatal_failures)
+        )
+    return RadiomicsCourseOutcome.extracted(
+        output_path,
+        roi_counts=counts,
+        roi_failures=failures,
+        detail="reconstructed from persisted per-ROI outcomes",
+    )
 
 
 class RadiomicsCourseExtractionError(RuntimeError):
