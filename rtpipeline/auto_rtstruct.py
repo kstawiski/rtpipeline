@@ -15,6 +15,7 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 from .layout import build_course_dirs
+from .course_contract import load_course_contract
 from .utils import sanitize_rtstruct
 from .roi_fixer import fix_rtstruct_rois
 
@@ -280,25 +281,6 @@ def _seg_source_series_uids(dcm_path: Path) -> set[str]:
     return uids
 
 
-def _read_ct_series_uid(ct_dir: Path) -> str:
-    """SeriesInstanceUID of the planning-CT series (first readable slice); '' if unknown."""
-    try:
-        for slice_path in sorted(ct_dir.glob("*.dcm")):
-            try:
-                ds = pydicom.dcmread(
-                    str(slice_path), stop_before_pixels=True, force=True,
-                    specific_tags=["SeriesInstanceUID"],
-                )
-            except Exception:
-                continue
-            uid = str(getattr(ds, "SeriesInstanceUID", "") or "").strip()
-            if uid:
-                return uid
-    except Exception as e:
-        logger.debug("Could not determine CT SeriesInstanceUID for %s: %s", ct_dir, e)
-    return ""
-
-
 def _read_ct_for_uid(ct_dir: Path) -> str:
     """FrameOfReferenceUID of the planning-CT series (first readable slice); '' if unknown."""
     try:
@@ -308,6 +290,31 @@ def _read_ct_for_uid(ct_dir: Path) -> str:
                 return uid
     except Exception as e:
         logger.debug("Could not determine CT FrameOfReferenceUID for %s: %s", ct_dir, e)
+    return ""
+
+
+def _read_ct_series_uid(ct_dir: Path) -> str:
+    """Read identity within an already selected CT directory.
+
+    This helper does not choose a planning series. Course callers must obtain
+    ``ct_dir`` from the authoritative course contract before calling it.
+    """
+    try:
+        for slice_path in sorted(ct_dir.glob("*.dcm")):
+            try:
+                dataset = pydicom.dcmread(
+                    str(slice_path),
+                    stop_before_pixels=True,
+                    force=True,
+                    specific_tags=["SeriesInstanceUID"],
+                )
+            except Exception:
+                continue
+            uid = str(getattr(dataset, "SeriesInstanceUID", "") or "").strip()
+            if uid:
+                return uid
+    except Exception:
+        pass
     return ""
 
 
@@ -523,6 +530,7 @@ def build_auto_rtstruct(course_dir: Path) -> Optional[Path]:
     """Create an RTSTRUCT (RS_auto.dcm) from TotalSegmentator output if present.
     Returns path to RTSTRUCT or None.
     """
+    contract = load_course_contract(course_dir)
     try:
         from rt_utils import RTStructBuilder
     except Exception as e:
@@ -530,9 +538,9 @@ def build_auto_rtstruct(course_dir: Path) -> Optional[Path]:
         return None
 
     course_dirs = build_course_dirs(course_dir)
-    ct_dir = course_dirs.dicom_ct
-    if not ct_dir.exists():
-        logger.info("No CT DICOM for %s", course_dir)
+    ct_dir = contract.planning_ct_dir
+    if ct_dir is None:
+        logger.info("Course contract has no planning CT DICOM for %s", course_dir)
         return None
 
     # Resume-friendly: if already built, skip - but only if it parses as a valid RTSTRUCT.
@@ -562,7 +570,7 @@ def build_auto_rtstruct(course_dir: Path) -> Optional[Path]:
         # Bind masks to the planning CT by FrameOfReferenceUID, never candidate_dirs[0]:
         # in all-series mode several series (CBCT, 4DCT phases, diagnostic CT) are
         # segmented and an alpha-first pick can map the wrong series onto this CT.
-        ct_series_uid = _read_ct_series_uid(ct_dir)
+        ct_series_uid = str(contract.planning_ct.get("series_instance_uid") or "")
         ct_for_uid = _read_ct_for_uid(ct_dir)
         selected_dir, dicom_seg_path, base_name = _select_seg_dir_for_ct(
             candidate_dirs, ct_series_uid, ct_for_uid

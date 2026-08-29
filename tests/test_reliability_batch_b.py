@@ -64,6 +64,19 @@ from rtpipeline.config import PipelineConfig
 from rtpipeline.layout import build_course_dirs
 from rtpipeline.radiomics_conda import RadiomicsCheckpoint
 from rtpipeline.radiomics_outcomes import RadiomicsCourseStatus
+from course_contract_test_utils import (
+    write_minimal_course_contract,
+    write_synthetic_planning_ct,
+)
+
+
+def _write_contract(
+    course_dir: Path, *, no_ct: bool = False, rtstruct: Path | None = None
+) -> None:
+    ct_dir = None if no_ct else write_synthetic_planning_ct(course_dir)
+    write_minimal_course_contract(
+        course_dir, planning_ct_dir=ct_dir, authoritative_rtstruct=rtstruct
+    )
 
 _RTSTRUCT_SOP_CLASS_UID = "1.2.840.10008.5.1.4.1.1.481.3"
 
@@ -497,6 +510,7 @@ def test_parallel_radiomics_recovers_from_broken_pool_during_backfill(tmp_path, 
     (course_dirs.dicom_ct / "image.dcm").write_bytes(b"test fixture")
     roi_names = ["PTV", "BLADDER", "RECTUM", "FEMUR_L"]
     _write_rtstruct_with_rois(course_dir / "RS_auto.dcm", roi_names)
+    _write_contract(course_dir)
 
     config = PipelineConfig(dicom_root=tmp_path / "dicom", output_root=tmp_path / "out", logs_root=tmp_path / "logs")
 
@@ -687,7 +701,10 @@ def test_parallel_radiomics_region_failure_aborts_course_and_invalidates_table(t
     course_dirs = build_course_dirs(course_dir)
     course_dirs.dicom_ct.mkdir(parents=True, exist_ok=True)
     (course_dirs.dicom_ct / "image.dcm").write_bytes(b"test fixture")
-    _write_rtstruct_with_rois(course_dir / "RS.dcm", ["PTV"])
+    course_dirs.dicom_rtstruct.mkdir(parents=True, exist_ok=True)
+    manual_rs = course_dirs.dicom_rtstruct / "RS.dcm"
+    _write_rtstruct_with_rois(manual_rs, ["PTV"])
+    _write_contract(course_dir, rtstruct=manual_rs)
     output_path = course_dir / "radiomics_ct.xlsx"
     output_path.write_text("stale partial result", encoding="utf-8")
 
@@ -721,7 +738,10 @@ def test_parallel_radiomics_none_result_aborts_course_and_invalidates_table(tmp_
     course_dirs = build_course_dirs(course_dir)
     course_dirs.dicom_ct.mkdir(parents=True, exist_ok=True)
     (course_dirs.dicom_ct / "image.dcm").write_bytes(b"test fixture")
-    _write_rtstruct_with_rois(course_dir / "RS.dcm", ["PTV"])
+    course_dirs.dicom_rtstruct.mkdir(parents=True, exist_ok=True)
+    manual_rs = course_dirs.dicom_rtstruct / "RS.dcm"
+    _write_rtstruct_with_rois(manual_rs, ["PTV"])
+    _write_contract(course_dir, rtstruct=manual_rs)
     output_path = course_dir / "radiomics_ct.xlsx"
     output_path.write_text("stale partial result", encoding="utf-8")
 
@@ -769,6 +789,7 @@ def test_course_with_no_ct_is_explicit_noop_and_does_not_abort_cohort(
 ):
     course_root = tmp_path / "patient" / "course"
     course = type("Course", (), {"dirs": type("Dirs", (), {"root": course_root})()})()
+    _write_contract(course_root, no_ct=True)
     config = PipelineConfig(
         dicom_root=tmp_path / "dicom",
         output_root=tmp_path / "out",
@@ -797,6 +818,7 @@ def test_course_with_present_unreadable_ct_is_failure(tmp_path, monkeypatch, par
     course_dirs.dicom_ct.mkdir(parents=True)
     (course_dirs.dicom_ct / "corrupt.dcm").write_bytes(b"not dicom")
     _write_rtstruct_with_rois(course_root / "RS_auto.dcm", ["PTV"])
+    _write_contract(course_root)
     config = PipelineConfig(
         dicom_root=tmp_path / "dicom",
         output_root=tmp_path / "out",
@@ -815,6 +837,7 @@ def test_conda_delegation_failure_is_not_converted_to_nothing_to_do(tmp_path, mo
     course_dirs = build_course_dirs(course_root)
     course_dirs.dicom_ct.mkdir(parents=True)
     (course_dirs.dicom_ct / "image.dcm").write_bytes(b"present")
+    _write_contract(course_root)
     config = PipelineConfig(
         dicom_root=tmp_path / "dicom",
         output_root=tmp_path / "out",
@@ -840,7 +863,10 @@ def test_parallel_status_rows_are_not_written_as_feature_rows(tmp_path, monkeypa
     course_dirs = build_course_dirs(course_dir)
     course_dirs.dicom_ct.mkdir(parents=True, exist_ok=True)
     (course_dirs.dicom_ct / "image.dcm").write_bytes(b"test fixture")
-    _write_rtstruct_with_rois(course_dir / "RS.dcm", ["PTV"])
+    course_dirs.dicom_rtstruct.mkdir(parents=True, exist_ok=True)
+    manual_rs = course_dirs.dicom_rtstruct / "RS.dcm"
+    _write_rtstruct_with_rois(manual_rs, ["PTV"])
+    _write_contract(course_dir, rtstruct=manual_rs)
     config = PipelineConfig(
         dicom_root=tmp_path / "dicom",
         output_root=tmp_path / "out",

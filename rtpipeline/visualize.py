@@ -18,6 +18,7 @@ import base64 as _b64
 import io as _io
 
 from .layout import build_course_dirs
+from .course_contract import load_course_contract
 
 logger = logging.getLogger(__name__)
 
@@ -205,13 +206,14 @@ def visualize_course(course_dir: Path) -> Optional[Path]:
 
 # New Axial review generator
 def generate_axial_review(course_dir: Path) -> Optional[Path]:
+    contract = load_course_contract(course_dir)
     try:
         from rt_utils import RTStructBuilder
     except Exception:
         RTStructBuilder = None
     course_dirs = build_course_dirs(course_dir)
-    ct_dir = course_dirs.dicom_ct
-    if not ct_dir.exists():
+    ct_dir = contract.planning_ct_dir
+    if ct_dir is None:
         return None
     ct_img = _load_ct_sitk(ct_dir)
     if ct_img is None:
@@ -225,7 +227,10 @@ def generate_axial_review(course_dir: Path) -> Optional[Path]:
         ct_png.append(_png_b64(sl))
     # Manual overlays
     overlays_manual = {}
-    rs_manual = course_dir / 'RS.dcm'
+    rs_manual = (
+        contract.authoritative_rtstruct_path
+        or course_dir / "metadata" / ".contract-rtstruct-absent"
+    )
     if RTStructBuilder is not None and rs_manual.exists():
         try:
             rt = RTStructBuilder.create_from(dicom_series_path=str(ct_dir), rt_struct_path=str(rs_manual))

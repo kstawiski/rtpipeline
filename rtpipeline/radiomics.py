@@ -10,15 +10,23 @@ import weakref
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
 import SimpleITK as sitk
 import pydicom
 
 
-from .config import PipelineConfig
-from .layout import build_course_dirs, find_dcm
+from .config import DEFAULT_MAX_TOTAL_DOSE_GY, PipelineConfig
+from .course_contract import (
+    ALL_SERIES_RADIOMICS_TEMP_AUTHORITY,
+    ALL_SERIES_RADIOMICS_TEMP_SCOPE,
+    AUTO_RTSTRUCT_SOURCE,
+    COURSE_CONTRACT_VERSION,
+    build_dvh_decision,
+    load_course_contract,
+)
+from .layout import build_course_dirs
 from .modality_classifier import is_quantitative_image_class
 from importlib import resources as importlib_resources
 import yaml
@@ -89,6 +97,35 @@ def _apply_radiomics_thread_limit(limit: Optional[int]) -> None:
         os.environ[var] = value
 
 logger = logging.getLogger(__name__)
+
+
+def _deduplicate_rtstruct_sources(
+    sources: Iterable[Tuple[str, Path, Optional[List[str]]]],
+) -> List[Tuple[str, Path, Optional[List[str]]]]:
+    """Keep one source identity per resolved RTSTRUCT path, preserving order."""
+    unique: List[Tuple[str, Path, Optional[List[str]]]] = []
+    seen: set[Path] = set()
+    for source, path, roi_names in sources:
+        resolved = Path(path).resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        unique.append((source, Path(path), roi_names))
+    return unique
+
+
+def _standard_rtstruct_sources(
+    contract, course_dir: Path
+) -> List[Tuple[str, Path, Optional[List[str]]]]:
+    """Resolve standard manual/auto sources with contracted provenance."""
+    sources: List[Tuple[str, Path, Optional[List[str]]]] = []
+    authoritative = contract.authoritative_rtstruct_path
+    if authoritative is not None and authoritative.exists():
+        sources.append((contract.authoritative_rtstruct_source, authoritative, None))
+    auto = Path(course_dir) / "RS_auto.dcm"
+    if auto.exists():
+        sources.append((AUTO_RTSTRUCT_SOURCE, auto, None))
+    return _deduplicate_rtstruct_sources(sources)
 
 
 def _mr_radiomics_required(config: PipelineConfig) -> bool:
@@ -788,10 +825,47 @@ def _rtstruct_masks(
     return out
 
 
-def radiomics_for_course(config: PipelineConfig, course_dir: Path, custom_structures_config: Optional[Path] = None, use_cropped: bool = False) -> RadiomicsCourseOutcome:
+def _check_radiomics_contract_scope(
+    contract,
+    course_dir: Path,
+    *,
+    allow_all_series_temp: bool,
+) -> None:
+    """Keep the all-series contract exception out of course-level radiomics."""
+    is_temp = contract.data.get("scope") == ALL_SERIES_RADIOMICS_TEMP_SCOPE
+    if is_temp:
+        if not allow_all_series_temp or ".all_series_radiomics" not in course_dir.parts:
+            raise RadiomicsCourseExtractionError(
+                "all-series temporary contract is restricted to the all-series dispatcher"
+            )
+    elif allow_all_series_temp:
+        raise RadiomicsCourseExtractionError(
+            "all-series dispatcher requires an all-series temporary contract"
+        )
+
+
+def radiomics_for_course(
+    config: PipelineConfig,
+    course_dir: Path,
+    custom_structures_config: Optional[Path] = None,
+    use_cropped: bool = False,
+    *,
+    allow_all_series_temp: bool = False,
+) -> RadiomicsCourseOutcome:
     """Run pyradiomics on CT course with manual RS, RS_auto, and custom structures if present."""
 
+    contract = load_course_contract(course_dir)
+    _check_radiomics_contract_scope(
+        contract,
+        Path(course_dir),
+        allow_all_series_temp=allow_all_series_temp,
+    )
     course_dirs = build_course_dirs(course_dir)
+    contracted_ct_dir = contract.planning_ct_dir
+    contracted_rs_manual = (
+        contract.authoritative_rtstruct_path
+        or course_dir / "metadata" / ".contract-rtstruct-absent"
+    )
     out_path = course_dir / 'radiomics_ct.xlsx'
 
     # Resume-friendly: if output exists, only recompute when required ROIs are missing
@@ -821,10 +895,8 @@ def radiomics_for_course(config: PipelineConfig, course_dir: Path, custom_struct
             course_dir,
         )
 
-    ct_files_present = course_dirs.dicom_ct.exists() and any(
-        path.is_file() for path in course_dirs.dicom_ct.rglob('*')
-    )
-    img = _load_series_image(course_dirs.dicom_ct)
+    ct_files_present = contracted_ct_dir is not None
+    img = _load_series_image(contracted_ct_dir) if contracted_ct_dir is not None else None
     if img is None:
         if not ct_files_present:
             logger.info("No CT image for radiomics in %s", course_dir)
@@ -834,6 +906,7 @@ def radiomics_for_course(config: PipelineConfig, course_dir: Path, custom_struct
         raise RadiomicsCourseExtractionError(
             f"CT series is present but unreadable for radiomics in {course_dir}"
         )
+    assert contracted_ct_dir is not None
 
     extractor = _extractor(config, 'CT')
     if extractor is None:
@@ -845,7 +918,12 @@ def radiomics_for_course(config: PipelineConfig, course_dir: Path, custom_struct
                 f"Conda-based radiomics helper unavailable for {course_dir}: {exc}"
             ) from exc
         logger.info("Delegating CT radiomics for %s to conda environment", course_dir)
-        conda_out = conda_radiomics_for_course(course_dir, config, custom_structures_config)
+        conda_out = conda_radiomics_for_course(
+            course_dir,
+            config,
+            custom_structures_config,
+            allow_all_series_temp=allow_all_series_temp,
+        )
         if conda_out is None:
             _invalidate_radiomics_outputs(out_path)
             return RadiomicsCourseOutcome.nothing_to_do("conda backend found no eligible ROIs")
@@ -892,20 +970,18 @@ def radiomics_for_course(config: PipelineConfig, course_dir: Path, custom_struct
     # workbook is complete. Partial top-ups can silently miss newly added sources.
 
     # Process standard RTSTRUCTs
-    rs_manual_path = find_dcm(course_dirs.dicom_rtstruct, "RS.dcm", course_dir)
+    rs_manual_path = contracted_rs_manual
     rs_auto_path_name = "RS_auto.dcm"
 
-    for source, rs_path in (
-        ("Manual", rs_manual_path),
-        ("AutoRTS_total", course_dir / rs_auto_path_name),
-    ):
+    sources = _standard_rtstruct_sources(contract, course_dir)
+    for source, rs_path, _roi_names in sources:
         if not rs_path.exists():
             continue
         try:
             source_failures: List[Dict[str, str]] = []
             is_best_effort = not roi_source_is_required(source)
             masks = _rtstruct_masks(
-                course_dirs.dicom_ct,
+                contracted_ct_dir,
                 rs_path,
                 skip_rois=configured_skip_rois,
                 best_effort=is_best_effort,
@@ -947,7 +1023,7 @@ def radiomics_for_course(config: PipelineConfig, course_dir: Path, custom_struct
         # Unconfigured legacy fallback only. A configured file defines the exact inventory.
         try:
             base_names = set(_list_roi_names_dicom(rs_custom))
-            manual_names = set(_list_roi_names_dicom(find_dcm(course_dirs.dicom_rtstruct, "RS.dcm", course_dir)))
+            manual_names = set(_list_roi_names_dicom(rs_manual_path))
             auto_names = set(_list_roi_names_dicom(course_dir / "RS_auto.dcm"))
             inferred = {n for n in (base_names - (manual_names | auto_names)) if n}
             # Strip __partial suffix for base matching.
@@ -963,7 +1039,7 @@ def radiomics_for_course(config: PipelineConfig, course_dir: Path, custom_struct
         try:
             from rt_utils import RTStructBuilder
 
-            rs_manual_path = find_dcm(course_dirs.dicom_rtstruct, "RS.dcm", course_dir)
+            rs_manual_path = contracted_rs_manual
             rs_auto_path = course_dir / "RS_auto.dcm"
 
             # Ensure RS_custom exists and is current when a config is available.
@@ -1001,7 +1077,7 @@ def radiomics_for_course(config: PipelineConfig, course_dir: Path, custom_struct
                 )
 
             rt = RTStructBuilder.create_from(
-                dicom_series_path=str(course_dirs.dicom_ct),
+                dicom_series_path=str(contracted_ct_dir),
                 rt_struct_path=str(rs_custom),
             )
             for roi_name in wanted_names:
@@ -1049,7 +1125,7 @@ def radiomics_for_course(config: PipelineConfig, course_dir: Path, custom_struct
             continue
         try:
             masks = _rtstruct_masks(
-                course_dirs.dicom_ct,
+                contracted_ct_dir,
                 rs_path,
                 skip_rois=configured_skip_rois,
                 expected_rois=custom_model_expected_rois[model_name],
@@ -1264,7 +1340,11 @@ def radiomics_for_course(config: PipelineConfig, course_dir: Path, custom_struct
                     "No usable RS_custom.dcm/RS_auto.dcm rows for %s; trying CT TotalSegmentator NIfTI fallback",
                     course_dir,
                 )
-                fallback_out = radiomics_for_course_ct_nifti_fallback(course_dir, config)
+                fallback_out = radiomics_for_course_ct_nifti_fallback(
+                    course_dir,
+                    config,
+                    allow_all_series_temp=allow_all_series_temp,
+                )
                 if fallback_out is not None:
                     return outcome_from_output(fallback_out)
         except Exception as exc:
@@ -1999,14 +2079,109 @@ def _materialize_temp_course_tree(course_dir: Path, ct_slices_dir: Path, rtstruc
     n_slices = 0
     for slice_path in sorted(Path(ct_slices_dir).glob("*.dcm")):
         if slice_path.is_file():
-            _link_or_copy(slice_path, course_dirs.dicom_ct / slice_path.name)
+            # The contract validator rejects paths whose symlink targets leave
+            # the temporary course tree. Copy the selected source objects so
+            # the temporary contract is self-contained and freshness-checkable.
+            shutil.copy2(slice_path, course_dirs.dicom_ct / slice_path.name)
             n_slices += 1
     if n_slices == 0:
         return False
-    _link_or_copy(Path(rtstruct_path), course_dir / "RS_auto.dcm")
+    shutil.copy2(Path(rtstruct_path), course_dir / "RS_auto.dcm")
+    ct_datasets = []
+    for path in sorted(course_dirs.dicom_ct.iterdir()):
+        try:
+            dataset = pydicom.dcmread(str(path), stop_before_pixels=True, force=True)
+        except Exception:
+            continue
+        if str(getattr(dataset, "Modality", "") or "").strip().upper() == "CT":
+            ct_datasets.append(dataset)
+    series_uids = {
+        str(getattr(dataset, "SeriesInstanceUID", "") or "").strip()
+        for dataset in ct_datasets
+        if str(getattr(dataset, "SeriesInstanceUID", "") or "").strip()
+    }
+    if not ct_datasets:
+        # A consumer-facing temporary tree must never exist without a contract
+        # that identifies its selected CT series.
+        return False
+    if len(series_uids) != 1:
+        return False
+    rtstruct = pydicom.dcmread(
+        str(course_dir / "RS_auto.dcm"), stop_before_pixels=True, force=True
+    )
+    rtstruct_uid = str(getattr(rtstruct, "SOPInstanceUID", "") or "").strip()
+    if not rtstruct_uid:
+        return False
+    metadata_path = course_dir / "metadata" / "case_metadata.json"
+    metadata_path.parent.mkdir(parents=True, exist_ok=True)
+    patient_id = course_dir.parent.name
+    course_id = course_dir.name
+    metadata_path.write_text(
+        json.dumps(
+            {
+                "patient_id": patient_id,
+                "course_id": course_id,
+                "course_contract": {
+                    "version": COURSE_CONTRACT_VERSION,
+                    "authority": ALL_SERIES_RADIOMICS_TEMP_AUTHORITY,
+                    "scope": ALL_SERIES_RADIOMICS_TEMP_SCOPE,
+                    "scope_reason": (
+                        "This temporary tree is an explicit all-series exception. It contains one "
+                        "materialized CT series and generated RTSTRUCT for series-level radiomics, "
+                        "not a treatment course. It cannot be used for course-level output."
+                    ),
+                    "patient_id": patient_id,
+                    "course_id": course_id,
+                    "course_key": course_id,
+                    "selected_plans": [],
+                    "selected_doses": [],
+                    "dose_classification": {"classification": "no_doses"},
+                    "dvh": build_dvh_decision(0, 0, "no_records_at_all"),
+                    "authoritative_rtstruct": {
+                        "sop_instance_uid": rtstruct_uid,
+                        "path": "RS_auto.dcm",
+                        "segmentation_source": AUTO_RTSTRUCT_SOURCE,
+                    },
+                    "planning_ct": {
+                        "status": "referenced",
+                        "series_instance_uid": next(iter(series_uids)),
+                        "referenced_series_uids": sorted(series_uids),
+                        "dicom_dir": "DICOM/CT",
+                        "nifti_path": "",
+                        "nifti_provenance": None,
+                        "dicom_only": True,
+                    },
+                    "plan_artifact": None,
+                    "dose_grid": None,
+                    "delivery": {
+                        "prescribed_dose_gy": None,
+                        "delivered_dose_gy": None,
+                        "status": "no_records_at_all",
+                        "method": None,
+                        "dose_response_field": "delivered_dose_gy",
+                        "per_plan": [],
+                        "warnings": [],
+                        "unresolved_record_plan_uids": [],
+                    },
+                    "dose_qc": {
+                        "status": "pass",
+                        "pass": True,
+                        "threshold_gy": DEFAULT_MAX_TOTAL_DOSE_GY,
+                        "reasons": [],
+                    },
+                },
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    try:
+        load_course_contract(course_dir)
+    except Exception as exc:
+        raise RadiomicsCourseExtractionError(
+            f"all-series temporary course contract failed validation for {course_dir}: {exc}"
+        ) from exc
     return True
-
-
 def _pick_representative_4dct_phase(phase_rows: List[dict]) -> dict:
     """C4 fallback when a 4DCT study has no averaged reconstruction: prefer the 50% phase (end-exhale,
     conventionally the most stable) identifiable from the series description, else the first phase in
@@ -2074,9 +2249,22 @@ def _dispatch_radiomics_for_course(config: PipelineConfig, course_dir: Path) -> 
         use_parallel = False
     if use_parallel:
         max_workers = max(1, config.effective_workers())
-        result = parallel_radiomics_for_course(config, course_dir, None, max_workers=max_workers, use_cropped=False)
+        result = parallel_radiomics_for_course(
+            config,
+            course_dir,
+            None,
+            max_workers=max_workers,
+            use_cropped=False,
+            allow_all_series_temp=True,
+        )
     else:
-        result = radiomics_for_course(config, course_dir, None, use_cropped=False)
+        result = radiomics_for_course(
+            config,
+            course_dir,
+            None,
+            use_cropped=False,
+            allow_all_series_temp=True,
+        )
     return getattr(result, "output_path", result)
 
 

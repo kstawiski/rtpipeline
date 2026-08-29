@@ -14,6 +14,7 @@ from scipy import ndimage
 from skimage import morphology
 
 from .custom_structures_rtstruct import _create_custom_structures_rtstruct
+from .course_contract import load_course_contract
 from .utils import sanitize_rtstruct
 
 logger = logging.getLogger(__name__)
@@ -24,7 +25,11 @@ class StructureMerger:
 
     def __init__(self, patient_dir: Path):
         self.patient_dir = patient_dir
-        self.rs_manual_path = patient_dir / "RS.dcm"
+        self.course_contract = load_course_contract(patient_dir)
+        self.rs_manual_path = (
+            self.course_contract.authoritative_rtstruct_path
+            or patient_dir / "metadata" / ".contract-rtstruct-absent"
+        )
         self.rs_auto_path = patient_dir / "RS_auto.dcm"
         self.rs_custom_path = patient_dir / "RS_custom.dcm"
 
