@@ -17,14 +17,15 @@ import SimpleITK as sitk
 logger = logging.getLogger(__name__)
 DVH_METRIC_VERSION = "2026-06-14-plan-dose-rtstruct-v2"
 
-from .layout import build_course_dirs, find_dcm
-from .organize import (
-    _classify_doses,
-    _create_summed_plan,
-    _infer_rx_from_plan_paths,
-    _sum_doses_with_resample,
-    infer_plan_rx_gy,
+from .config import DEFAULT_MAX_TOTAL_DOSE_GY
+from .layout import build_course_dirs
+from .course_contract import (
+    DOSE_GRID_SEMANTICS,
+    DOSE_RESPONSE_FIELD,
+    CourseContractError,
+    load_course_contract,
 )
+
 from .utils import sanitize_rtstruct, mask_is_cropped, run_tasks_with_adaptive_workers, snap_rtstruct_to_dose_grid
 from .custom_models import list_custom_model_outputs
 
@@ -126,6 +127,18 @@ class DVHDoseResolution:
     output_dose_summation_type: Optional[str]
     source_plan_sop_instance_uids: List[str]
     skip_reason: Optional[str] = None
+    selected_plan_paths: List[Path] | None = None
+    selected_dose_paths: List[Path] | None = None
+    dose_grid_semantics: Optional[str] = None
+    prescribed_dose_gy: Optional[float] = None
+    delivered_dose_gy: Optional[float] = None
+    delivery_status: Optional[str] = None
+    dose_response_dose_field: str = DOSE_RESPONSE_FIELD
+    dose_qc_status: Optional[str] = None
+    dose_qc_pass: Optional[bool] = None
+    dose_qc_reasons: List[str] | None = None
+    contract_path: Optional[Path] = None
+    dvh_decision: Dict[str, object] | None = None
 
     @property
     def ok(self) -> bool:
@@ -206,11 +219,6 @@ def _dedupe_by_sop(paths: List[Path]) -> List[Path]:
     return out
 
 
-def _dose_summation_type(path: Path) -> str:
-    ds = _read_header(path)
-    return str(getattr(ds, "DoseSummationType", "") or "").strip().upper() if ds is not None else ""
-
-
 def _dose_frame_of_reference_uid(path: Path) -> str:
     ds = _read_header(path)
     return str(getattr(ds, "FrameOfReferenceUID", "") or "").strip() if ds is not None else ""
@@ -231,84 +239,16 @@ def _rtstruct_frame_of_reference_uids(path: Path) -> set[str]:
     return uids
 
 
-def _ct_frame_of_reference_uids(course_dirs) -> set[str]:
+def _ct_frame_of_reference_uids(ct_dir: Path | None) -> set[str]:
     uids: set[str] = set()
-    for ct_path in _iter_dicom_files(course_dirs.dicom_ct)[:5]:
+    if ct_dir is None:
+        return uids
+    for ct_path in _iter_dicom_files(ct_dir)[:5]:
         ds = _read_header(ct_path)
         uid = str(getattr(ds, "FrameOfReferenceUID", "") or "").strip() if ds is not None else ""
         if uid:
             uids.add(uid)
     return uids
-
-
-def _referenced_plan_uids_from_dose(path: Path) -> List[str]:
-    ds = _read_header(path)
-    if ds is None:
-        return []
-    refs: List[str] = []
-    for ref in getattr(ds, "ReferencedRTPlanSequence", []) or []:
-        uid = str(getattr(ref, "ReferencedSOPInstanceUID", "") or "").strip()
-        if uid and uid not in refs:
-            refs.append(uid)
-    return refs
-
-
-def _referenced_rtstruct_uids_from_plan(path: Path) -> List[str]:
-    ds = _read_header(path)
-    if ds is None:
-        return []
-    refs: List[str] = []
-    for ref in getattr(ds, "ReferencedStructureSetSequence", []) or []:
-        uid = str(getattr(ref, "ReferencedSOPInstanceUID", "") or "").strip()
-        if uid and uid not in refs:
-            refs.append(uid)
-    return refs
-
-
-def _course_frame_of_reference_uids(course_dirs, rs_manual: Path) -> set[str]:
-    uids: set[str] = set()
-    if rs_manual.exists():
-        ds = _read_header(rs_manual)
-        if ds is not None:
-            uid = str(getattr(ds, "FrameOfReferenceUID", "") or "").strip()
-            if uid:
-                uids.add(uid)
-            for ref_for in getattr(ds, "ReferencedFrameOfReferenceSequence", []) or []:
-                uid = str(getattr(ref_for, "FrameOfReferenceUID", "") or "").strip()
-                if uid:
-                    uids.add(uid)
-    uids.update(_ct_frame_of_reference_uids(course_dirs))
-    return uids
-
-
-def _plan_paths_for_doses(plan_paths: List[Path], dose_paths: List[Path]) -> List[Path]:
-    ref_uids: set[str] = set()
-    for dose_path in dose_paths:
-        ref_uids.update(_referenced_plan_uids_from_dose(dose_path))
-    if not ref_uids:
-        return plan_paths[:1] if len(plan_paths) == 1 else []
-    selected: List[Path] = []
-    for plan_path in plan_paths:
-        uid = _sop_uid(plan_path)
-        if uid and uid in ref_uids:
-            selected.append(plan_path)
-    return selected
-
-
-def _source_dose_uids_and_types(dose_paths: List[Path]) -> tuple[List[str], List[str]]:
-    uids: List[str] = []
-    types: List[str] = []
-    for path in dose_paths:
-        ds = _read_header(path)
-        if ds is None:
-            continue
-        uid = str(getattr(ds, "SOPInstanceUID", "") or "").strip()
-        dtype = str(getattr(ds, "DoseSummationType", "") or "").strip().upper()
-        if uid and uid not in uids:
-            uids.append(uid)
-        if dtype and dtype not in types:
-            types.append(dtype)
-    return uids, types
 
 
 def _skip_dose_resolution(reason: str, classification: str = "unresolved") -> DVHDoseResolution:
@@ -330,248 +270,105 @@ def _resolve_dvh_dose(
     course_dir: Path,
     course_dirs,
     rs_manual: Path,
-    max_total_dose_gy: float = 100.0,
+    max_total_dose_gy: float | None = DEFAULT_MAX_TOTAL_DOSE_GY,
 ) -> DVHDoseResolution:
-    """Resolve the clinically valid plan-level RTDOSE used for DVH.
+    """Load organize's authoritative course dose decision without re-deriving it."""
+    del course_dirs, rs_manual
+    contract = load_course_contract(course_dir)
 
-    The generic layout helper intentionally returns the first DICOM file in a
-    modality folder.  DVH cannot use that shortcut for RTDOSE, because a course
-    can contain both PLAN and BEAM dose grids.
-    """
-    root_rp = course_dir / "RP.dcm"
-    root_rd = course_dir / "RD.dcm"
-    plan_paths = _dedupe_by_sop(([root_rp] if root_rp.exists() else []) + _iter_dicom_files(course_dirs.dicom_rtplan))
-    dose_paths_all = _dedupe_by_sop(([root_rd] if root_rd.exists() else []) + _iter_dicom_files(course_dirs.dicom_rtdose))
-
-    if not plan_paths:
-        return _skip_dose_resolution("No RTPLAN file available for DVH dose resolution", "missing_rtplan")
-    if not dose_paths_all:
-        return _skip_dose_resolution("No RTDOSE file available for DVH dose resolution", "missing_rtdose")
-
-    course_for_uids = _course_frame_of_reference_uids(course_dirs, rs_manual)
-    if course_for_uids:
-        matched = [
-            path for path in dose_paths_all
-            if (_dose_frame_of_reference_uid(path) in course_for_uids)
-        ]
-        if matched:
-            if len(matched) < len(dose_paths_all):
-                logger.warning(
-                    "Ignoring %d RTDOSE file(s) whose FrameOfReferenceUID does not match %s",
-                    len(dose_paths_all) - len(matched),
-                    sorted(course_for_uids),
-                )
-            dose_paths_all = matched
-        else:
-            logger.warning(
-                "No RTDOSE FrameOfReferenceUID matches course RTSTRUCT/CT FOR %s; "
-                "falling back to RTPLAN-referenced dose resolution",
-                sorted(course_for_uids),
+    configured_threshold = float(max_total_dose_gy) if max_total_dose_gy is not None else None
+    contract_threshold = contract.dose_qc.get("threshold_gy")
+    if configured_threshold is not None and contract_threshold not in (None, ""):
+        if abs(configured_threshold - float(contract_threshold)) > 1e-9:
+            raise CourseContractError(
+                "stale course contract: dose-QC threshold "
+                f"{float(contract_threshold):.6g} Gy does not match configured "
+                f"{configured_threshold:.6g} Gy"
             )
 
-    root_dtype = _dose_summation_type(root_rd) if root_rd.exists() else ""
-    if root_rd.exists() and root_rp.exists() and root_dtype in _PLAN_DOSE_TYPES and root_rd in dose_paths_all:
-        source_uids, source_types = _source_dose_uids_and_types([root_rd])
-        return DVHDoseResolution(
-            rd_path=root_rd,
-            rp_path=root_rp,
-            classification="course_root_plan_dose",
-            reason="Existing course-root RTDOSE has plan-level DoseSummationType",
-            source_dose_sop_instance_uids=source_uids,
-            source_dose_summation_types=source_types,
-            output_dose_sop_instance_uid=source_uids[0] if source_uids else None,
-            output_dose_summation_type=root_dtype,
-            source_plan_sop_instance_uids=[_sop_uid(root_rp)] if _sop_uid(root_rp) else [],
-        )
-    if root_rd.exists() and root_dtype and root_dtype not in _PLAN_DOSE_TYPES:
-        logger.warning(
-            "Refusing to use course-root RTDOSE %s with DoseSummationType=%s for DVH; resolving from source doses",
-            root_rd,
-            root_dtype,
-        )
-
-    source_dose_paths = [path for path in dose_paths_all if path != root_rd]
-    if not source_dose_paths:
-        source_dose_paths = dose_paths_all
-
-    non_beam_doses = [
-        path for path in source_dose_paths
-        if _dose_summation_type(path) in _PLAN_DOSE_TYPES
+    selected_plan_paths = [
+        contract.resolve_path(item.get("path"), f"selected_plans[{index}].path")
+        for index, item in enumerate(contract.selected_plans)
     ]
-    candidate_doses = non_beam_doses or source_dose_paths
+    selected_dose_paths = [
+        contract.resolve_path(item.get("path"), f"selected_doses[{index}].path")
+        for index, item in enumerate(contract.selected_doses)
+    ]
+    if any(path is None for path in selected_plan_paths + selected_dose_paths):
+        raise CourseContractError("course contract contains an empty selected artifact path")
 
-    if not non_beam_doses:
-        beam_ref_uids = {
-            tuple(_referenced_plan_uids_from_dose(path))
-            for path in candidate_doses
-            if _dose_summation_type(path) == "BEAM"
-        }
-        flat_refs = {uid for refs in beam_ref_uids for uid in refs}
-        if (
-            candidate_doses
-            and len(flat_refs) == 1
-            and all(_dose_summation_type(path) == "BEAM" for path in candidate_doses)
-        ):
-            selected_plans = [path for path in plan_paths if _sop_uid(path) in flat_refs]
-            if len(selected_plans) != 1:
-                return _skip_dose_resolution(
-                    "BEAM-only RTDOSE set could not be matched to exactly one RTPLAN",
-                    "beam_only_plan_match_failed",
-                )
-            classification = "beam_doses_summed_to_plan"
-            selected_doses = candidate_doses
-            should_sum = True
-            reason = f"Summing {len(selected_doses)} BEAM RTDOSE files for one RTPLAN"
-        else:
-            return _skip_dose_resolution(
-                "Only BEAM RTDOSE files were found and they do not form a single-plan summation set",
-                "beam_only_unresolved",
-            )
-    else:
-        dose_classification = _classify_doses(
-            plan_paths=plan_paths,
-            dose_paths=candidate_doses,
-            max_total_dose_gy=max_total_dose_gy,
-        )
-        for warn in dose_classification.warnings:
-            logger.warning("DVH dose classification warning: %s", warn)
-
-        fail_closed_classes = {
-            "ambiguous_no_sum",
-            "separate_courses_no_sum",
-            "separate_regions_no_sum",
-            "no_doses",
-        }
-        if dose_classification.classification in fail_closed_classes:
-            return _skip_dose_resolution(
-                f"{dose_classification.classification}: {dose_classification.reason}",
-                dose_classification.classification,
-            )
-        selected_doses = dose_classification.selected_doses
-        selected_plans = dose_classification.selected_plans or _plan_paths_for_doses(plan_paths, selected_doses)
-        should_sum = bool(dose_classification.should_sum and len(selected_doses) > 1)
-        classification = dose_classification.classification
-        reason = dose_classification.reason
-
-    if not selected_doses:
-        return _skip_dose_resolution("Dose classification selected no RTDOSE files", classification)
-    if not selected_plans:
-        return _skip_dose_resolution("Selected RTDOSE file(s) could not be matched to RTPLAN", classification)
-
-    source_uids, source_types = _source_dose_uids_and_types(selected_doses)
-    selected_types = [_dose_summation_type(path) for path in selected_doses]
-
-    if not should_sum and len(selected_doses) == 1:
-        dtype = selected_types[0] if selected_types else ""
-        if dtype not in _PLAN_DOSE_TYPES:
-            return _skip_dose_resolution(
-                f"Refusing single RTDOSE with DoseSummationType={dtype or 'missing'}",
-                classification,
-            )
-        output_uid = source_uids[0] if source_uids else _sop_uid(selected_doses[0])
+    dose_grid = contract.data.get("dose_grid")
+    classification = contract.data.get("dose_classification")
+    if not isinstance(classification, dict):
+        classification = {}
+    source_plan_uids = [
+        str(item.get("sop_instance_uid") or "") for item in contract.selected_plans
+    ]
+    source_dose_uids = [
+        str(item.get("sop_instance_uid") or "") for item in contract.selected_doses
+    ]
+    if dose_grid is None:
+        if source_plan_uids:
+            contract.require_dvh_artifacts()
+        dvh_decision = dict(contract.data["dvh"])
         return DVHDoseResolution(
-            rd_path=selected_doses[0],
-            rp_path=selected_plans[0],
-            classification=classification,
-            reason=reason,
-            source_dose_sop_instance_uids=source_uids,
-            source_dose_summation_types=source_types,
-            output_dose_sop_instance_uid=output_uid or None,
-            output_dose_summation_type=dtype,
-            source_plan_sop_instance_uids=[uid for uid in (_sop_uid(p) for p in selected_plans) if uid],
-        )
-
-    if len(selected_doses) <= 1:
-        return _skip_dose_resolution(
-            "Dose classification requested summation but selected fewer than two RTDOSE files",
-            classification,
-        )
-
-    try:
-        sum_all_rx = classification not in {"beam_doses_summed_to_plan"} and len(selected_plans) > 1
-        total_rx = _infer_rx_from_plan_paths(selected_plans, sum_all=sum_all_rx)
-        plan_sum_ds, plan_ds_list, source_plan_uids = _create_summed_plan(selected_plans, total_rx)
-        dose_sum_ds, _dose_ds_list, summed_source_uids = _sum_doses_with_resample(
-            selected_doses,
-            plan_sum_ds,
-            plan_ds_list,
-        )
-        if classification == "beam_doses_summed_to_plan":
-            dose_sum_ds.DoseSummationType = "PLAN"
-            dose_sum_ds.SeriesDescription = f"Plan Dose Sum ({len(selected_doses)} beams)"
-        rp_out = course_dir / "RP.dcm"
-        rd_out = course_dir / "RD.dcm"
-        plan_sum_ds.save_as(str(rp_out))
-        dose_sum_ds.save_as(str(rd_out))
-        output_dtype = str(getattr(dose_sum_ds, "DoseSummationType", "") or "").strip().upper()
-        output_uid = str(getattr(dose_sum_ds, "SOPInstanceUID", "") or "").strip()
-        return DVHDoseResolution(
-            rd_path=rd_out,
-            rp_path=rp_out,
-            classification=classification,
-            reason=reason,
-            source_dose_sop_instance_uids=summed_source_uids or source_uids,
-            source_dose_summation_types=source_types,
-            output_dose_sop_instance_uid=output_uid or None,
-            output_dose_summation_type=output_dtype or None,
+            rd_path=None,
+            rp_path=None,
+            classification=str(classification.get("classification") or "contract_no_dose_grid"),
+            reason="Organize recorded no authoritative treatment dose grid",
+            source_dose_sop_instance_uids=source_dose_uids,
+            source_dose_summation_types=[
+                str(item.get("dose_summation_type") or "") for item in contract.selected_doses
+            ],
+            output_dose_sop_instance_uid=None,
+            output_dose_summation_type=None,
             source_plan_sop_instance_uids=source_plan_uids,
+            skip_reason="Organize recorded no authoritative treatment dose grid",
+            selected_plan_paths=[path for path in selected_plan_paths if path is not None],
+            selected_dose_paths=[path for path in selected_dose_paths if path is not None],
+            prescribed_dose_gy=contract.prescribed_dose_gy,
+            delivered_dose_gy=contract.delivered_dose_gy,
+            delivery_status=str(contract.delivery.get("status") or ""),
+            dose_response_dose_field=str(contract.delivery.get("dose_response_field") or ""),
+            dose_qc_status=str(contract.dose_qc.get("status") or ""),
+            dose_qc_pass=bool(contract.dose_qc.get("pass")),
+            dose_qc_reasons=[str(value) for value in contract.dose_qc.get("reasons") or []],
+            contract_path=contract.metadata_path,
+            dvh_decision=dvh_decision,
         )
-    except Exception as exc:
-        logger.warning("Failed to synthesize DVH plan dose for %s: %s", course_dir, exc)
-        return _skip_dose_resolution(f"Failed to synthesize plan dose: {exc}", classification)
-
-
-def _read_course_metadata(course_dir: Path) -> Dict:
-    meta_path = course_dir / "metadata" / "case_metadata.json"
-    if not meta_path.exists():
-        return {}
-    try:
-        data = json.loads(meta_path.read_text(encoding="utf-8"))
-    except Exception as exc:
-        logger.debug("Failed to read course metadata %s: %s", meta_path, exc)
-        return {}
-    return data if isinstance(data, dict) else {}
-
-
-def _candidate_source_study_dirs(course_dir: Path) -> List[Path]:
-    """Return bounded source-study directories that may hold plan-referenced RTSTRUCTs."""
-    meta = _read_course_metadata(course_dir)
-    patient_id = str(meta.get("patient_id") or course_dir.parent.name or "").strip()
-    study_uids: List[str] = []
-    for key in ("ct_study_uid", "course_key"):
-        value = str(meta.get(key) or "").strip()
-        if value and value not in study_uids:
-            study_uids.append(value)
-
-    dirs: List[Path] = []
-    if not patient_id or not study_uids:
-        return dirs
-
-    for ancestor in course_dir.parents:
-        patient_root = ancestor / "data_bucket" / "dicom" / patient_id
-        if not patient_root.is_dir():
-            continue
-        for study_uid in study_uids:
-            candidate = patient_root / study_uid
-            if candidate.is_dir() and candidate not in dirs:
-                dirs.append(candidate)
-    return dirs
-
-
-def _iter_dicom_files_recursive(root: Path, limit: int = 20000) -> Iterable[Path]:
-    if not root.is_dir():
-        return
-    count = 0
-    for path in sorted(root.rglob("*")):
-        if not path.is_file():
-            continue
-        if _looks_like_dicom(path):
-            yield path
-            count += 1
-            if count >= limit:
-                logger.warning("Stopping recursive DICOM scan at %d files under %s", limit, root)
-                return
-
+    if not isinstance(dose_grid, dict):
+        raise CourseContractError("course contract dose_grid must be an object or null")
+    plan_path, dose_path = contract.require_computable_dvh_artifacts()
+    source_dose_types = [
+        str(item.get("dose_summation_type") or "").upper()
+        for item in contract.selected_doses
+    ]
+    return DVHDoseResolution(
+        rd_path=dose_path,
+        rp_path=plan_path,
+        classification=str(classification.get("classification") or "contract_selected"),
+        reason=str(
+            classification.get("reason")
+            or "Organize course contract selected the plan and dose membership"
+        ),
+        source_dose_sop_instance_uids=source_dose_uids,
+        source_dose_summation_types=source_dose_types,
+        output_dose_sop_instance_uid=str(dose_grid.get("sop_instance_uid") or "") or None,
+        output_dose_summation_type=str(dose_grid.get("dose_summation_type") or "").upper() or None,
+        source_plan_sop_instance_uids=source_plan_uids,
+        selected_plan_paths=[path for path in selected_plan_paths if path is not None],
+        selected_dose_paths=[path for path in selected_dose_paths if path is not None],
+        dose_grid_semantics=str(dose_grid.get("semantics") or ""),
+        prescribed_dose_gy=contract.prescribed_dose_gy,
+        delivered_dose_gy=contract.delivered_dose_gy,
+        delivery_status=str(contract.delivery.get("status") or ""),
+        dose_response_dose_field=DOSE_RESPONSE_FIELD,
+        dose_qc_status=str(contract.dose_qc.get("status") or ""),
+        dose_qc_pass=bool(contract.dose_qc.get("pass")),
+        dose_qc_reasons=[str(value) for value in contract.dose_qc.get("reasons") or []],
+        contract_path=contract.metadata_path,
+        dvh_decision=dict(contract.data["dvh"]),
+    )
 
 def _is_rtstruct_path(path: Path) -> bool:
     ds = _read_header(path)
@@ -580,84 +377,6 @@ def _is_rtstruct_path(path: Path) -> bool:
     modality = str(getattr(ds, "Modality", "") or "").strip().upper()
     sop_class = str(getattr(ds, "SOPClassUID", "") or "").strip()
     return modality == "RTSTRUCT" or sop_class == "1.2.840.10008.5.1.4.1.1.481.3"
-
-
-def _find_rtstruct_by_sop(
-    course_dir: Path,
-    course_dirs,
-    sop_instance_uids: List[str],
-) -> Optional[Path]:
-    if not sop_instance_uids:
-        return None
-
-    search_roots: List[Path] = [
-        course_dir,
-        course_dirs.dicom_rtstruct,
-        course_dirs.dicom_related,
-        *(_candidate_source_study_dirs(course_dir)),
-    ]
-    seen_roots: set[Path] = set()
-    roots: List[Path] = []
-    for root in search_roots:
-        if not root.exists():
-            continue
-        resolved = root.resolve(strict=False)
-        if resolved in seen_roots:
-            continue
-        seen_roots.add(resolved)
-        roots.append(root)
-
-    def _check(path: Path) -> Optional[Path]:
-        if not path.is_file() or not _looks_like_dicom(path):
-            return None
-        ds = _read_header(path)
-        if ds is None:
-            return None
-        modality = str(getattr(ds, "Modality", "") or "").strip().upper()
-        sop_class = str(getattr(ds, "SOPClassUID", "") or "").strip()
-        if modality != "RTSTRUCT" and sop_class != "1.2.840.10008.5.1.4.1.1.481.3":
-            return None
-        uid = str(getattr(ds, "SOPInstanceUID", "") or "").strip()
-        return path if uid in sop_instance_uids else None
-
-    def _name_matches(root: Path, pattern: str) -> List[Path]:
-        if root in {course_dir, course_dirs.dicom_rtstruct}:
-            return sorted(root.glob(pattern))
-        return sorted(root.rglob(pattern))
-
-    for root in roots:
-        for uid in sop_instance_uids:
-            for candidate in _name_matches(root, f"*{uid}*.dcm"):
-                found = _check(candidate)
-                if found is not None:
-                    return found
-            for candidate in _name_matches(root, f"*{uid}*"):
-                found = _check(candidate)
-                if found is not None:
-                    return found
-
-    for root in roots:
-        if root in (course_dirs.dicom_related, *(_candidate_source_study_dirs(course_dir))):
-            candidates = _iter_dicom_files_recursive(root)
-        else:
-            candidates = _iter_dicom_files(root)
-        for candidate in candidates:
-            found = _check(candidate)
-            if found is not None:
-                return found
-    return None
-
-
-def _copy_plan_rtstruct_to_course(course_dir: Path, source: Path) -> Path:
-    """Keep the plan-referenced RTSTRUCT beside DVH outputs for resumability/provenance."""
-    dst = course_dir / "RS_plan.dcm"
-    try:
-        if source.resolve(strict=False) != dst.resolve(strict=False):
-            shutil.copy2(source, dst)
-    except Exception as exc:
-        logger.debug("Failed to copy plan-referenced RTSTRUCT %s to %s: %s", source, dst, exc)
-        return source
-    return dst
 
 
 def _rtstruct_matches_dose_for(rs_path: Path, dose_for_uid: str) -> bool:
@@ -676,35 +395,50 @@ def _resolve_dvh_structures(
     rs_auto: Path,
     rs_custom: Optional[Path],
 ) -> DVHStructureResolution:
+    """Use the contracted manual RTSTRUCT and optional downstream-derived sets."""
+    del rtplan_path, rs_manual
+    contract = load_course_contract(course_dir)
+    authoritative = contract.data.get("authoritative_rtstruct")
+    authoritative_uid = (
+        str(authoritative.get("sop_instance_uid") or "")
+        if isinstance(authoritative, dict)
+        else ""
+    )
+    authoritative_path = contract.authoritative_rtstruct_path
     dose_for_uid = str(getattr(rtdose, "FrameOfReferenceUID", "") or "").strip()
-    plan_ref_uids = _referenced_rtstruct_uids_from_plan(rtplan_path)
     selected: List[DVHRTStructSource] = []
     selected_uids: List[str] = []
     reasons: List[str] = []
 
-    plan_rs_path = _find_rtstruct_by_sop(course_dir, course_dirs, plan_ref_uids)
-    if plan_rs_path is not None:
-        if _rtstruct_matches_dose_for(plan_rs_path, dose_for_uid):
-            local_plan_rs = _copy_plan_rtstruct_to_course(course_dir, plan_rs_path)
-            sop_uid = _sop_uid(local_plan_rs)
-            selected.append(DVHRTStructSource(local_plan_rs, "PlanRTSTRUCT", sop_uid or None))
-            if sop_uid:
-                selected_uids.append(sop_uid)
-            reasons.append("Using RTSTRUCT referenced by selected RTPLAN")
+    if authoritative_path is not None:
+        if _rtstruct_matches_dose_for(authoritative_path, dose_for_uid):
+            selected.append(
+                DVHRTStructSource(
+                    authoritative_path,
+                    "Manual",
+                    authoritative_uid or _sop_uid(authoritative_path) or None,
+                )
+            )
+            if authoritative_uid:
+                selected_uids.append(authoritative_uid)
+            reasons.append("Using organize's authoritative RTSTRUCT")
         else:
-            reasons.append("Plan-referenced RTSTRUCT FrameOfReferenceUID does not match selected RTDOSE")
+            reasons.append(
+                "Authoritative RTSTRUCT FrameOfReferenceUID does not match the contracted RTDOSE"
+            )
             logger.warning(
-                "Plan-referenced RTSTRUCT %s does not match RTDOSE FrameOfReferenceUID=%s",
-                plan_rs_path,
+                "Authoritative RTSTRUCT %s does not match RTDOSE FrameOfReferenceUID=%s",
+                authoritative_path,
                 dose_for_uid or "missing",
             )
 
-    course_ct_for = _ct_frame_of_reference_uids(course_dirs)
+    planning_ct_dir = contract.planning_ct_dir
+    course_ct_for = _ct_frame_of_reference_uids(planning_ct_dir)
     allow_nifti_direct = bool(not dose_for_uid or not course_ct_for or dose_for_uid in course_ct_for)
     if not allow_nifti_direct:
         logger.warning(
-            "Skipping CT/NIfTI-derived DVH structures for %s: course CT FrameOfReferenceUID %s "
-            "does not match selected RTDOSE FrameOfReferenceUID %s",
+            "Skipping CT/NIfTI-derived DVH structures for %s: contracted planning CT "
+            "FrameOfReferenceUID %s does not match selected RTDOSE FrameOfReferenceUID %s",
             course_dir,
             sorted(course_ct_for),
             dose_for_uid,
@@ -712,21 +446,17 @@ def _resolve_dvh_structures(
 
     candidate_sources: List[tuple[Optional[Path], str]] = [
         (rs_custom if rs_custom and rs_custom.exists() else None, "Merged"),
-        (rs_manual if rs_manual.exists() else None, "Manual"),
         (rs_auto if rs_auto.exists() else None, "AutoRTS"),
     ]
     selected_path_keys = {src.path.resolve(strict=False) for src in selected}
     for candidate, label in candidate_sources:
-        if candidate is None:
-            continue
-        if not _is_rtstruct_path(candidate):
+        if candidate is None or not _is_rtstruct_path(candidate):
             continue
         if not _rtstruct_matches_dose_for(candidate, dose_for_uid):
             logger.warning(
-                "Skipping %s RTSTRUCT %s: FrameOfReferenceUID %s does not match selected RTDOSE %s",
+                "Skipping %s RTSTRUCT %s because its FrameOfReferenceUID does not match contracted RTDOSE %s",
                 label,
                 candidate,
-                sorted(_rtstruct_frame_of_reference_uids(candidate)),
                 dose_for_uid,
             )
             continue
@@ -742,37 +472,32 @@ def _resolve_dvh_structures(
             selected_uids.append(sop_uid)
 
     if not selected:
-        if plan_ref_uids:
-            reason = (
-                "No RTSTRUCT compatible with the selected plan-level RTDOSE was found; "
-                "the RTPLAN-referenced structure set could not be resolved or did not match dose geometry"
-            )
-        else:
-            reason = "No RTSTRUCT compatible with the selected plan-level RTDOSE was found"
+        reason = (
+            "No contracted or downstream-derived RTSTRUCT is compatible with the "
+            "authoritative treatment dose grid"
+        )
         return DVHStructureResolution(
             sources=[],
             classification="missing_compatible_rtstruct",
             reason=reason,
-            plan_referenced_rtstruct_sop_instance_uids=plan_ref_uids,
+            plan_referenced_rtstruct_sop_instance_uids=(
+                [authoritative_uid] if authoritative_uid else []
+            ),
             selected_rtstruct_sop_instance_uids=[],
             allow_nifti_direct=allow_nifti_direct,
             skip_reason=reason,
         )
 
-    if plan_rs_path is not None and selected and selected[0].source_label == "PlanRTSTRUCT":
-        classification = "plan_referenced_rtstruct"
-    else:
-        classification = "course_rtstruct"
-    reason = "; ".join(reasons) if reasons else "Using course RTSTRUCT compatible with selected RTDOSE"
     return DVHStructureResolution(
         sources=selected,
-        classification=classification,
-        reason=reason,
-        plan_referenced_rtstruct_sop_instance_uids=plan_ref_uids,
+        classification="contract_rtstruct",
+        reason="; ".join(reasons) if reasons else "Using downstream-derived RTSTRUCT",
+        plan_referenced_rtstruct_sop_instance_uids=(
+            [authoritative_uid] if authoritative_uid else []
+        ),
         selected_rtstruct_sop_instance_uids=selected_uids,
         allow_nifti_direct=allow_nifti_direct,
     )
-
 
 def _dose_at_fraction(bins, cumulative, fraction: float) -> float:
     V_total = cumulative[0]
@@ -1197,6 +922,14 @@ def _dvh_has_expected_custom_structures(dvh_path: Path, expected_names: List[str
     return all(_normalize_structure_name(name) in present for name in expected_names)
 
 
+def _contract_digest(course_dir: Path) -> str | None:
+    path = course_dir / "metadata" / "case_metadata.json"
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
 def _write_dvh_qc(
     course_dir: Path,
     df: pd.DataFrame,
@@ -1232,6 +965,7 @@ def _write_dvh_qc(
         "custom_structures_missing": missing_custom,
         "custom_structures_partial": sorted(partial),
         "row_count": int(len(df)),
+        "course_contract_sha256": _contract_digest(course_dir),
     }
     if rx_dose_gy is not None and rx_dose_gy > 0:
         payload["rx_dose_gy"] = float(rx_dose_gy)
@@ -1248,6 +982,18 @@ def _write_dvh_qc(
             "output_dose_sop_instance_uid": dose_resolution.output_dose_sop_instance_uid,
             "output_dose_summation_type": dose_resolution.output_dose_summation_type,
             "source_plan_sop_instance_uids": dose_resolution.source_plan_sop_instance_uids,
+            "selected_plan_paths": [str(path) for path in dose_resolution.selected_plan_paths or []],
+            "selected_dose_paths": [str(path) for path in dose_resolution.selected_dose_paths or []],
+            "dose_grid_semantics": dose_resolution.dose_grid_semantics,
+            "prescribed_dose_gy": dose_resolution.prescribed_dose_gy,
+            "delivered_dose_gy": dose_resolution.delivered_dose_gy,
+            "delivery_status": dose_resolution.delivery_status,
+            "dose_response_dose_field": dose_resolution.dose_response_dose_field,
+            "dose_qc_status": dose_resolution.dose_qc_status,
+            "dose_qc_pass": dose_resolution.dose_qc_pass,
+            "dose_qc_reasons": dose_resolution.dose_qc_reasons or [],
+            "contract_path": str(dose_resolution.contract_path) if dose_resolution.contract_path else None,
+            "dvh": dose_resolution.dvh_decision,
         }
     if structure_resolution is not None:
         payload["structure_resolution"] = {
@@ -1273,11 +1019,27 @@ def _write_dvh_skip_qc(
         "status": "skipped",
         "metric_version": DVH_METRIC_VERSION,
         "reason": reason or dose_resolution.skip_reason or dose_resolution.reason,
+        "course_contract_sha256": _contract_digest(course_dir),
         "dose_resolution": {
             "classification": dose_resolution.classification,
             "reason": dose_resolution.reason,
+            "rd_path": str(dose_resolution.rd_path) if dose_resolution.rd_path else None,
+            "rp_path": str(dose_resolution.rp_path) if dose_resolution.rp_path else None,
             "source_dose_sop_instance_uids": dose_resolution.source_dose_sop_instance_uids,
             "source_dose_summation_types": dose_resolution.source_dose_summation_types,
+            "source_plan_sop_instance_uids": dose_resolution.source_plan_sop_instance_uids,
+            "selected_plan_paths": [str(path) for path in dose_resolution.selected_plan_paths or []],
+            "selected_dose_paths": [str(path) for path in dose_resolution.selected_dose_paths or []],
+            "dose_grid_semantics": dose_resolution.dose_grid_semantics,
+            "prescribed_dose_gy": dose_resolution.prescribed_dose_gy,
+            "delivered_dose_gy": dose_resolution.delivered_dose_gy,
+            "delivery_status": dose_resolution.delivery_status,
+            "dose_response_dose_field": dose_resolution.dose_response_dose_field,
+            "dose_qc_status": dose_resolution.dose_qc_status,
+            "dose_qc_pass": dose_resolution.dose_qc_pass,
+            "dose_qc_reasons": dose_resolution.dose_qc_reasons or [],
+            "contract_path": str(dose_resolution.contract_path) if dose_resolution.contract_path else None,
+            "dvh": dose_resolution.dvh_decision,
         },
     }
     if structure_resolution is not None:
@@ -1292,6 +1054,16 @@ def _write_dvh_skip_qc(
     meta_dir = course_dir / "metadata"
     meta_dir.mkdir(parents=True, exist_ok=True)
     (meta_dir / "dvh_qc.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def _invalidate_dvh_outputs(course_dir: Path) -> None:
+    """Remove outputs and success markers that must not survive a DVH skip."""
+    for name in ("dvh_metrics.xlsx", "dvh_metrics.parquet", ".dvh_done"):
+        path = course_dir / name
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            logger.warning("Could not invalidate stale DVH output %s", path)
 
 
 def _is_dvh_up_to_date(
@@ -1326,6 +1098,9 @@ def _is_dvh_up_to_date(
         if str(qc_data.get("status") or "").strip().lower() != "ok":
             logger.info("DVH QC status is not ok; regenerating")
             return False
+        if qc_data.get("course_contract_sha256") != _contract_digest(course_dir):
+            logger.info("DVH QC is bound to a different course contract; regenerating")
+            return False
         if qc_data.get("metric_version") != DVH_METRIC_VERSION:
             logger.info("DVH metric version is stale or missing; regenerating")
             return False
@@ -1347,20 +1122,19 @@ def _is_dvh_up_to_date(
 
         dvh_mtime = dvh_path.stat().st_mtime
 
-        # Check core RT files and metadata
-        _cd = build_course_dirs(course_dir)
+        # Only contracted RT inputs are dependencies. Extra copied candidates
+        # do not alter the organize-stage decision.
+        contract = load_course_contract(course_dir)
         deps = [
-            find_dcm(_cd.dicom_rtplan, "RP.dcm", course_dir),
-            find_dcm(_cd.dicom_rtdose, "RD.dcm", course_dir),
-            find_dcm(_cd.dicom_rtstruct, "RS.dcm", course_dir),
+            contract.metadata_path,
+            contract.plan_artifact_path,
+            contract.dose_grid_path,
+            contract.authoritative_rtstruct_path,
             course_dir / "RS_auto.dcm",
             course_dir / "RS_auto_cropped.dcm",
             course_dir / "RS_custom.dcm",
-            course_dir / "RS_plan.dcm",
             course_dir / "cropping_metadata.json",  # Ensure DVH reruns if cropping config changes
         ]
-        deps.extend(_iter_dicom_files(_cd.dicom_rtplan))
-        deps.extend(_iter_dicom_files(_cd.dicom_rtdose))
         structure_meta = qc_data.get("structure_resolution") or {}
         for dep_path in structure_meta.get("selected_rtstruct_paths") or []:
             if dep_path:
@@ -1372,7 +1146,7 @@ def _is_dvh_up_to_date(
 
         # If any dependency is newer than DVH output, it's stale
         for dep in deps:
-            if dep.exists() and dep.stat().st_mtime > dvh_mtime:
+            if dep is not None and dep.exists() and dep.stat().st_mtime > dvh_mtime:
                 logger.debug("DVH dependency %s is newer than dvh_metrics.xlsx", dep.name)
                 return False
 
@@ -1419,10 +1193,10 @@ def _create_custom_structures_rtstruct(
         logger.warning("No base RTSTRUCT available for custom structures")
         return None
 
-    course_dirs = build_course_dirs(course_dir)
-    ct_dir = course_dirs.dicom_ct
-    if not ct_dir.exists():
-        logger.warning("CT_DICOM not found for custom structures")
+    contract = load_course_contract(course_dir)
+    ct_dir = contract.planning_ct_dir
+    if ct_dir is None:
+        logger.warning("Contract has no planning CT for custom structures")
         return None
 
     try:
@@ -1687,9 +1461,9 @@ def _compute_nifti_based_dvh(
     if not seg_root.exists():
         return results
 
-    course_dirs = build_course_dirs(course_dir)
-    ct_dir = course_dirs.dicom_ct
-    if not ct_dir.exists():
+    contract = load_course_contract(course_dir)
+    ct_dir = contract.planning_ct_dir
+    if ct_dir is None:
         return results
 
     # --- Load CT with deduplication ---
@@ -1855,66 +1629,6 @@ def _compute_nifti_based_dvh(
     return results
 
 
-def _estimate_rx_from_ctv1(rtstruct: pydicom.dataset.FileDataset, rtdose: pydicom.dataset.FileDataset) -> Optional[float]:
-    """
-    Estimate prescription dose (Rx) from CTV1 D95 as a heuristic fallback.
-
-    WARNING: This is a heuristic approximation with significant limitations:
-    - Only valid for simple single-target IMRT/VMAT plans where plan meets coverage exactly
-    - NOT valid for SIB (Simultaneous Integrated Boost) plans with multiple prescription levels
-    - NOT valid for heterogeneity-corrected prescriptions with escalated hotspots
-    - May be inaccurate if CTV1 naming conventions differ
-
-    Preferred alternatives:
-    - Use RT Plan fields (DoseReferenceSequence, PrescriptionDose) when available
-    - Use user-provided Rx from configuration
-
-    Args:
-        rtstruct: RTSTRUCT dataset containing CTV1
-        rtdose: RTDOSE dataset with dose grid
-
-    Returns:
-        Estimated Rx in Gy based on CTV1 D95, or None if estimation fails
-    """
-    import re
-    try:
-        snap_rtstruct_to_dose_grid(rtstruct, rtdose)
-
-        # Multi-CTV detection guardrail: check for SIB indicators
-        ctv_pattern = re.compile(r'\bctv\s*(\d+)\b', re.IGNORECASE)
-        ctv_numbers = set()
-        for roi in rtstruct.StructureSetROISequence:
-            name = str(getattr(roi, "ROIName", "") or "")
-            matches = ctv_pattern.findall(name.replace("_", " "))
-            ctv_numbers.update(int(m) for m in matches)
-
-        if len(ctv_numbers) > 1:
-            logger.warning(
-                "Multiple CTV levels detected (CTV%s). This suggests a SIB plan where "
-                "CTV1 D95-based Rx estimation is NOT valid. Consider providing explicit "
-                "rx_dose_gy or disabling estimate_rx_from_ctv1.",
-                ", CTV".join(str(n) for n in sorted(ctv_numbers))
-            )
-            return None
-
-        for roi in rtstruct.StructureSetROISequence:
-            name = str(getattr(roi, "ROIName", "") or "")
-            if "ctv1" in name.replace(" ", "").lower():
-                abs_dvh_ctv = dvhcalc.get_dvh(rtstruct, rtdose, roi.ROINumber)
-                if abs_dvh_ctv.volume > 0:
-                    bins_ctv = abs_dvh_ctv.bincenters
-                    cum_ctv = abs_dvh_ctv.counts
-                    rx_estimate = float(_dose_at_fraction(bins_ctv, cum_ctv, 0.95))
-                    logger.debug(
-                        "Estimated Rx from CTV1 D95: %.2f Gy (CAUTION: heuristic, not valid for SIB)",
-                        rx_estimate
-                    )
-                    return rx_estimate
-    except Exception as e:
-        logger.debug("RX estimate failed: %s", e)
-    return None
-
-
 def dvh_for_course(
     course_dir: Path,
     custom_structures_config: Optional[Union[str, Path]] = None,
@@ -1922,7 +1636,7 @@ def dvh_for_course(
     use_cropped: bool = True,
     estimate_rx_from_ctv1: bool = False,
     rx_dose_gy: Optional[float] = None,
-    max_total_dose_gy: float = 100.0,
+    max_total_dose_gy: float | None = DEFAULT_MAX_TOTAL_DOSE_GY,
 ) -> Optional[Path]:
     """
     Compute DVH metrics for a treatment course.
@@ -1939,16 +1653,49 @@ def dvh_for_course(
         rx_dose_gy: Explicit prescription dose in Gy. Takes precedence over estimation.
 
     Returns:
-        Path to the output dvh_metrics.xlsx file, or None if no results.
+        Path to ``dvh_metrics.xlsx`` when dose metrics were computed. Returns
+        ``None`` after writing ``metadata/dvh_qc.json`` when the validated
+        contract declares that metrics are not computable, or when computation
+        fails to produce a valid result. The CLI wrapper distinguishes those
+        cases from the validated contract and QC record.
     """
-    # Check if DVH is already up-to-date (skip recomputation on re-runs)
+    contract = load_course_contract(course_dir)
+
     out_xlsx = course_dir / "dvh_metrics.xlsx"
+    # Resolve and enforce the contract before cache reuse. A newly failing
+    # dose-QC verdict must invalidate an older workbook.
+    course_dirs = build_course_dirs(course_dir)
+    rs_manual = (
+        contract.authoritative_rtstruct_path
+        or course_dir / "metadata" / ".contract-rtstruct-absent"
+    )
+    dose_resolution = _resolve_dvh_dose(
+        course_dir,
+        course_dirs,
+        rs_manual,
+        max_total_dose_gy=max_total_dose_gy,
+    )
+    if not dose_resolution.ok or dose_resolution.dose_qc_pass is False:
+        if dose_resolution.dose_qc_pass is False:
+            dose_resolution.skip_reason = (
+                "Course failed organize dose QC: "
+                + "; ".join(dose_resolution.dose_qc_reasons or ["unspecified dose-QC failure"])
+            )
+        logger.warning(
+            "Skipping DVH for %s: %s",
+            course_dir,
+            dose_resolution.skip_reason or dose_resolution.reason,
+        )
+        _invalidate_dvh_outputs(course_dir)
+        _write_dvh_skip_qc(course_dir, dose_resolution)
+        return None
+
+    # Check if DVH is already up-to-date (skip recomputation on re-runs).
     if _is_dvh_up_to_date(course_dir, out_xlsx, custom_structures_config):
         logger.info("DVH up-to-date for %s; reusing existing results", course_dir.name)
         return out_xlsx
 
-    course_dirs = build_course_dirs(course_dir)
-    rs_manual = find_dcm(course_dirs.dicom_rtstruct, "RS.dcm", course_dir)
+    planning_ct_dir = contract.planning_ct_dir
     rs_auto = course_dir / "RS_auto.dcm"
 
     # Check for systematically cropped RTSTRUCT
@@ -1970,25 +1717,12 @@ def dvh_for_course(
         except Exception as e:
             logger.warning(f"Failed to load cropping metadata from {cropping_metadata_path}: {e}")
 
-    dose_resolution = _resolve_dvh_dose(
-        course_dir,
-        course_dirs,
-        rs_manual,
-        max_total_dose_gy=max_total_dose_gy,
-    )
-    if not dose_resolution.ok:
-        logger.warning(
-            "Skipping DVH for %s: %s",
-            course_dir,
-            dose_resolution.skip_reason or dose_resolution.reason,
-        )
-        _write_dvh_skip_qc(course_dir, dose_resolution)
-        return None
     rd = dose_resolution.rd_path
     rp = dose_resolution.rp_path
     if rd is None or rp is None or not rd.exists() or not rp.exists():
         reason = "Resolved RP/RD path is missing on disk"
         logger.warning("Skipping DVH for %s: %s", course_dir, reason)
+        _invalidate_dvh_outputs(course_dir)
         _write_dvh_skip_qc(course_dir, _skip_dose_resolution(reason, "resolved_path_missing"))
         return None
     try:
@@ -2022,12 +1756,12 @@ def dvh_for_course(
             return None
         if rs_path in builder_cache:
             return builder_cache[rs_path]
-        if not course_dirs.dicom_ct.exists():
+        if planning_ct_dir is None:
             builder_cache[rs_path] = None
             return None
         try:
             builder = RTStructBuilder.create_from(
-                dicom_series_path=str(course_dirs.dicom_ct),
+                dicom_series_path=str(planning_ct_dir),
                 rt_struct_path=str(rs_path),
             )
         except Exception as exc:
@@ -2162,50 +1896,27 @@ def dvh_for_course(
             if item:
                 results.append(item)
 
-    # Determine Rx dose: explicit > RTPLAN metadata > cautious opt-in heuristic > None.
-    rx_est = None
-    rx_source = "none"
+    # Prescription is an organize-stage decision. Do not infer it again from
+    # RTPLAN or from a target DVH. An explicit caller value may only confirm it.
+    rx_est = contract.prescribed_dose_gy
+    rx_source = "course_contract" if rx_est is not None else "none"
     rx_recovery_attempted = True
     if rx_dose_gy is not None and rx_dose_gy > 0:
-        rx_est = float(rx_dose_gy)
-        rx_source = "explicit"
-        logger.info("Using explicit Rx dose: %.2f Gy for %s", rx_est, course_dir.name)
-    else:
-        try:
-            inferred_rx = infer_plan_rx_gy(rtplan)
-        except Exception as exc:
-            logger.debug("Failed to recover Rx from RTPLAN for %s: %s", course_dir.name, exc)
-            inferred_rx = None
-        if inferred_rx is not None and inferred_rx > 0:
-            rx_est = float(inferred_rx)
-            rx_source = "rtplan_dicom"
-            logger.info("Recovered Rx dose from RTPLAN: %.2f Gy for %s", rx_est, course_dir.name)
-        elif estimate_rx_from_ctv1 and rs_manual.exists():
-            try:
-                rx_est = _estimate_rx_from_ctv1(pydicom.dcmread(str(rs_manual)), rtdose)
-                if rx_est:
-                    rx_source = "estimated_ctv1_d95"
-                    logger.info(
-                        "Estimated Rx from CTV1 D95: %.2f Gy for %s (WARNING: heuristic, not valid for SIB)",
-                        rx_est, course_dir.name
-                    )
-            except Exception as exc:
-                logger.debug("CTV1 D95 Rx estimate failed for %s: %s", course_dir.name, exc)
-
+        if rx_est is None or abs(float(rx_dose_gy) - float(rx_est)) > 1e-6:
+            raise CourseContractError(
+                "explicit DVH prescription disagrees with the authoritative course contract: "
+                f"explicit={float(rx_dose_gy):.6g} Gy, contract={rx_est!r}"
+            )
+    if estimate_rx_from_ctv1:
+        logger.warning(
+            "Ignoring estimate_rx_from_ctv1 for %s because prescription must come from the course contract",
+            course_dir.name,
+        )
     if rx_est is None:
-        rx_source = "none"
-        if not estimate_rx_from_ctv1:
-            logger.info(
-                "No Rx dose provided for %s; relative DVH metrics will be missing. "
-                "No recoverable RTPLAN prescription dose found. Set estimate_rx_from_ctv1=True "
-                "or provide rx_dose_gy to enable Rx-relative metrics.",
-                course_dir.name
-            )
-        else:
-            logger.warning(
-                "Could not estimate prescription dose for %s; relative metrics will be missing",
-                course_dir.name
-            )
+        logger.info(
+            "Course contract has no prescribed dose for %s; relative DVH metrics will be missing",
+            course_dir.name,
+        )
 
     # Use RS_custom.dcm if it exists and is up-to-date
     rs_custom = course_dir / "RS_custom.dcm"
@@ -2325,6 +2036,14 @@ def dvh_for_course(
                 json.dump({"points": curve_data_export}, f, ensure_ascii=False)
         except Exception as e:
             logger.warning("Failed to save DVH curves JSON: %s", e)
+
+    for row in clean_results:
+        row["Dose_Grid_Semantics"] = dose_resolution.dose_grid_semantics
+        row["Prescribed_Dose_Gy"] = dose_resolution.prescribed_dose_gy
+        row["Delivered_Dose_Gy"] = dose_resolution.delivered_dose_gy
+        row["Delivery_Status"] = dose_resolution.delivery_status
+        row["Dose_Response_Field"] = dose_resolution.dose_response_dose_field
+        row["Dose_QC_Status"] = dose_resolution.dose_qc_status
 
     df = pd.DataFrame(clean_results)
     df.to_excel(out_xlsx, index=False)

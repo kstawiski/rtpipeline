@@ -37,6 +37,10 @@ from rtpipeline.layout import build_course_dirs
 from rtpipeline.metadata import LinkedSet
 from rtpipeline.organize import DoseClassification
 from rtpipeline.rt_details import DoseInfo, PlanInfo, StructInfo
+from course_contract_test_utils import (
+    write_minimal_course_contract,
+    write_synthetic_planning_ct,
+)
 
 _RTSTRUCT_SOP_CLASS_UID = "1.2.840.10008.5.1.4.1.1.481.3"
 
@@ -326,15 +330,19 @@ def _run_organize_with_fake_classification(tmp_path, monkeypatch, *, plan1, plan
 
     summed_calls: list[list[Path]] = []
 
-    class _FakeSummedPlan:
-        SOPInstanceUID = "1.2.FAKE.SUMMED"
-
-        def save_as(self, path):
-            Path(path).write_bytes(b"FAKE-SUMMED-PLAN")
-
     def _fake_create_summed_plan(plan_files, total_dose_gy=None):
         summed_calls.append(list(plan_files))
-        return _FakeSummedPlan(), [], []
+        dataset = pydicom.dcmread(str(plan_files[0]))
+        dataset.SOPInstanceUID = generate_uid()
+        dataset.file_meta.MediaStorageSOPInstanceUID = dataset.SOPInstanceUID
+        references = []
+        for plan_file in plan_files:
+            source = pydicom.dcmread(str(plan_file), stop_before_pixels=True)
+            item = Dataset()
+            item.ReferencedSOPInstanceUID = str(source.SOPInstanceUID)
+            references.append(item)
+        dataset.ReferencedRTPlanSequence = Sequence(references)
+        return dataset, [], [item.ReferencedSOPInstanceUID for item in references]
 
     monkeypatch.setattr(organize, "_create_summed_plan", _fake_create_summed_plan)
 
@@ -611,6 +619,8 @@ def test_build_auto_rtstruct_resume_rejects_truncated_file(tmp_path, monkeypatch
     course_dir = tmp_path / "course"
     course_dirs = build_course_dirs(course_dir)
     course_dirs.dicom_ct.mkdir(parents=True, exist_ok=True)
+    write_synthetic_planning_ct(course_dir)
+    write_minimal_course_contract(course_dir, planning_ct_dir=course_dirs.dicom_ct)
     out_path = course_dir / "RS_auto.dcm"
     out_path.write_bytes(b"truncated mid write, not a real dicom file")
 
@@ -632,6 +642,8 @@ def test_build_auto_rtstruct_resume_accepts_valid_file_without_regenerating(tmp_
     course_dir = tmp_path / "course"
     course_dirs = build_course_dirs(course_dir)
     course_dirs.dicom_ct.mkdir(parents=True, exist_ok=True)
+    write_synthetic_planning_ct(course_dir)
+    write_minimal_course_contract(course_dir, planning_ct_dir=course_dirs.dicom_ct)
     out_path = course_dir / "RS_auto.dcm"
     _write_valid_rtstruct(out_path, roi_names=["PTV"])
 

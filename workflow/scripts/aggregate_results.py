@@ -126,9 +126,45 @@ def _validate_required_frame(
     return None
 
 
+def _validate_expected_dvh_skip(
+    course_dir: Path,
+    patient_id: str,
+    course_id: str,
+    decision: dict,
+) -> str | None:
+    """Validate the machine-readable no-metrics record for a contracted skip."""
+    output_path = course_dir / "dvh_metrics.xlsx"
+    if output_path.exists() or output_path.with_suffix(".parquet").exists():
+        return (
+            f"{patient_id}/{course_id}: contract declares DVH metrics not computed "
+            "but a stale DVH metrics output is present"
+        )
+    qc_path = course_dir / "metadata" / "dvh_qc.json"
+    try:
+        payload = json.loads(qc_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return (
+            f"{patient_id}/{course_id}: expected DVH not-computed record is missing: "
+            f"{qc_path}"
+        )
+    except (OSError, json.JSONDecodeError) as exc:
+        return (
+            f"{patient_id}/{course_id}: expected DVH not-computed record is unreadable: "
+            f"{exc}"
+        )
+    recorded = (payload.get("dose_resolution") or {}).get("dvh")
+    if payload.get("status") != "skipped" or recorded != decision:
+        return (
+            f"{patient_id}/{course_id}: DVH not-computed record disagrees with the "
+            "authoritative course contract"
+        )
+    return None
+
+
 def _validate_required_inputs(courses):
     errors: list[str] = []
     incomplete: dict[tuple[str, str], list[str]] = {}
+    expected_noncomputed: dict[tuple[str, str], str] = {}
     required_frames: dict[tuple[Path, str], pd.DataFrame] = {}
     sentinel_contract = [
         (".dvh_done", {"ok"}),
@@ -147,6 +183,31 @@ def _validate_required_inputs(courses):
             errors.append(message)
             incomplete[(patient_id, course_id)] = [message]
             continue
+        try:
+            from rtpipeline.course_contract import load_course_contract
+
+            course_contract = load_course_contract(course_dir)
+        except Exception as exc:
+            message = (
+                f"{patient_id}/{course_id}: authoritative course contract is missing, "
+                f"malformed, or stale: {exc}"
+            )
+            errors.append(message)
+            incomplete[(patient_id, course_id)] = [message]
+            continue
+        if course_contract.dose_qc.get("pass") is not True:
+            message = (
+                f"{patient_id}/{course_id}: excluded because authoritative dose QC failed: "
+                + "; ".join(str(value) for value in course_contract.dose_qc.get("reasons") or [])
+            )
+            errors.append(message)
+            incomplete[(patient_id, course_id)] = [message]
+            continue
+        dvh_decision = dict(course_contract.data["dvh"])
+        dvh_not_computed = (
+            dvh_decision.get("metrics_status") == "not_computed"
+            and dvh_decision.get("output") is None
+        )
         for sentinel_name, allowed_statuses in sentinel_contract:
             error = _read_sentinel(
                 course_dir / sentinel_name,
@@ -158,9 +219,25 @@ def _validate_required_inputs(courses):
                 errors.append(error)
                 course_errors.append(error)
 
-        required_outputs = [
-            ("dvh", course_dir / "dvh_metrics.xlsx", {"ROI_Name"}),
-        ]
+        required_outputs = []
+        if dvh_not_computed:
+            error = _validate_expected_dvh_skip(
+                course_dir, patient_id, course_id, dvh_decision
+            )
+            if error:
+                errors.append(error)
+                course_errors.append(error)
+            else:
+                required_frames[(course_dir, "dvh")] = pd.DataFrame(
+                    {"ROI_Name": pd.Series(dtype="object")}
+                )
+                expected_noncomputed[(patient_id, course_id)] = str(
+                    dvh_decision["reason_code"]
+                )
+        else:
+            required_outputs.append(
+                ("dvh", course_dir / "dvh_metrics.xlsx", {"ROI_Name"})
+            )
         if RADIOMICS_ENABLED:
             required_outputs.append(
                 (
@@ -194,21 +271,34 @@ def _validate_required_inputs(courses):
                 required_frames[(course_dir, key)] = frame
         if course_errors:
             incomplete[(patient_id, course_id)] = course_errors
-    return required_frames, errors, incomplete
+    return required_frames, errors, incomplete, expected_noncomputed
 
 
-def _write_campaign_attrition(courses, incomplete) -> None:
+def _write_campaign_attrition(courses, incomplete, expected_noncomputed) -> None:
     """Record why each course was excluded, so the denominator is defensible."""
-    rows = [
-        {
-            "patient_id": patient_id,
-            "course_id": course_id,
-            "status": "excluded" if (patient_id, course_id) in incomplete else "aggregated",
-            "reason_count": len(incomplete.get((patient_id, course_id), [])),
-            "reasons": " | ".join(incomplete.get((patient_id, course_id), [])),
-        }
-        for patient_id, course_id, _ in courses
-    ]
+    rows = []
+    for patient_id, course_id, _ in courses:
+        key = (patient_id, course_id)
+        failures = incomplete.get(key, [])
+        reason = expected_noncomputed.get(key)
+        if failures:
+            status = "excluded"
+            reasons = failures
+        elif reason:
+            status = "not_computed"
+            reasons = [reason]
+        else:
+            status = "aggregated"
+            reasons = []
+        rows.append(
+            {
+                "patient_id": patient_id,
+                "course_id": course_id,
+                "status": status,
+                "reason_count": len(reasons),
+                "reasons": " | ".join(reasons),
+            }
+        )
     pd.DataFrame(rows).to_csv(RESULTS_DIR / "campaign_attrition.csv", index=False)
 
 
@@ -539,7 +629,12 @@ except RuntimeError as exc:
     log_path.write_text(f"Aggregation blocked: {exc}\n", encoding="utf-8")
     raise
 
-required_frames, required_errors, incomplete_courses = _validate_required_inputs(courses)
+(
+    required_frames,
+    required_errors,
+    incomplete_courses,
+    expected_noncomputed_courses,
+) = _validate_required_inputs(courses)
 
 if not CAMPAIGN_MODE:
     if required_errors:
@@ -555,7 +650,9 @@ else:
     # Campaign mode aggregates the courses that completed and reports the rest as
     # declared attrition. Every exclusion keeps its reason in campaign_attrition.csv,
     # so the denominator is auditable rather than silently smaller.
-    _write_campaign_attrition(courses, incomplete_courses)
+    _write_campaign_attrition(
+        courses, incomplete_courses, expected_noncomputed_courses
+    )
     aggregated_courses = [
         course for course in courses if (course[0], course[1]) not in incomplete_courses
     ]
