@@ -26,6 +26,7 @@ from pydicom.uid import generate_uid
 from scipy.ndimage import map_coordinates
 
 from .config import DEFAULT_MAX_TOTAL_DOSE_GY, PipelineConfig
+from . import nifti_provenance
 from .course_contract import (
     COURSE_CONTRACT_VERSION,
     DOSE_GRID_SEMANTICS,
@@ -3691,12 +3692,12 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
                         metadata = _collect_series_metadata(dicom_dir)
                         if modality_hint and not metadata.get("modality"):
                             metadata["modality"] = modality_hint
-                        metadata.update(
-                            {
-                                "nifti_path": str(target_path),
-                                "source_directory": str(dicom_dir),
-                                "generated_at": datetime.datetime.utcnow().isoformat() + "Z",
-                            }
+                        nifti_provenance.annotate(
+                            metadata,
+                            target_path,
+                            dicom_dir,
+                            regenerated=True,
+                            default_modality=modality_hint or "CT",
                         )
                         meta_path.write_text(
                             json.dumps(metadata, indent=2),
