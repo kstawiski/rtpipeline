@@ -188,6 +188,28 @@ def _copy_into(
     """Copy src into dst_dir, preserving name and avoiding clashes."""
     if copy_manager is not None:
         dest, _ = copy_manager.copy_dicom_into(src, dst_dir, prefix)
+        dest = Path(dest)
+        # SOP dedup answers with an existing copy, which for a per-patient object
+        # such as an RTRECORD may live under a different course. A course contract
+        # may only reference artifacts inside its own course directory, so the
+        # object is materialised here instead of being cited across courses.
+        if dest.parent.resolve() != dst_dir.resolve():
+            ensure_dir(dst_dir)
+            source = dest if dest.is_file() else src
+            name = f"{prefix}_{src.name}" if prefix else src.name
+            target = dst_dir / name
+            if target.is_file() and _sop_instance_uid(target) == _sop_instance_uid(source):
+                return target
+            stem, suffix = target.stem, target.suffix
+            counter = 1
+            while target.exists():
+                target = dst_dir / f"{stem}_{counter}{suffix}"
+                counter += 1
+            try:
+                os.link(source, target)
+            except OSError:
+                shutil.copy2(source, target)
+            return target
         return dest
 
     # Fallback to original behavior
