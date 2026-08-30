@@ -106,3 +106,28 @@ def test_stale_destination_from_earlier_run_is_replaced(tmp_path: Path) -> None:
 
     on_disk = str(pydicom.dcmread(str(stale), stop_before_pixels=True).SOPInstanceUID)
     assert on_disk == fresh_sop, "stale artifact from an earlier run was not replaced"
+
+
+def test_copy_into_does_not_cite_another_courses_copy(tmp_path: Path) -> None:
+    """A per-patient object must be materialised inside each course that cites it.
+
+    RTRECORDs are copied into every course of a patient. SOP dedup answers the
+    second course with the first course's path, and a course contract that then
+    names it fails validation with "escapes the course directory".
+    """
+    manager = _manager(tmp_path)
+    src = tmp_path / "src" / "record.dcm"
+    sop = _write_plan(src)
+
+    course_a = tmp_path / "patient" / "2018-05" / "DICOM_related" / "RTRECORD"
+    course_b = tmp_path / "patient" / "2021-08" / "DICOM_related" / "RTRECORD"
+
+    first = _copy_into(src, course_a, copy_manager=manager)
+    second = _copy_into(src, course_b, copy_manager=manager)
+
+    assert first.parent.resolve() == course_a.resolve()
+    assert second.parent.resolve() == course_b.resolve(), (
+        "second course cited the first course's copy"
+    )
+    assert second.is_file()
+    assert str(pydicom.dcmread(str(second), stop_before_pixels=True).SOPInstanceUID) == sop
