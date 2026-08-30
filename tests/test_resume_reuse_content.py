@@ -221,7 +221,7 @@ def test_masks_from_different_planning_ct_rerun_model(monkeypatch, tmp_path):
         course,
     )
 
-    assert len(calls) == 2
+    assert len(calls) == 1
     assert all(call[1].get("task") is None for call in calls)
     audit = json.loads((course / "metadata" / "segmentation_resume.json").read_text(encoding="utf-8"))
     assert audit["decisions"]["total"]["action"] == "rebuilt"
@@ -243,7 +243,7 @@ def test_incomplete_masks_rerun_model(monkeypatch, tmp_path):
         course,
     )
 
-    assert len(calls) == 2
+    assert len(calls) == 1
     audit = json.loads((course / "metadata" / "segmentation_resume.json").read_text(encoding="utf-8"))
     assert audit["decisions"]["total"]["action"] == "rebuilt"
     assert "inconsistent" in audit["decisions"]["total"]["reason"]
@@ -596,7 +596,7 @@ def test_failed_model_run_is_not_recorded_as_rebuilt(monkeypatch, tmp_path):
 
     monkeypatch.setattr(segmentation, "run_totalsegmentator", fail)
     segmentation.segment_course(config, course)
-    assert len(calls) == 2
+    assert len(calls) == 1
     audit = json.loads((course / "metadata" / "segmentation_resume.json").read_text(encoding="utf-8"))
     assert audit["decisions"]["total"]["action"] == "failed"
     assert audit["decisions"]["total"]["model_run"] is True

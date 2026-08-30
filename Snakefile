@@ -287,6 +287,7 @@ if SEG_MAX_WORKERS is not None and SEG_MAX_WORKERS < 1:
 SEG_FORCE_SEGMENTATION = bool(SEG_CONFIG.get("force", False))
 SEG_DEVICE = str(SEG_CONFIG.get("device") or "gpu")
 SEG_FORCE_SPLIT = bool(SEG_CONFIG.get("force_split", True))
+SEG_ALLOW_FALLBACK = bool(SEG_CONFIG.get("allow_fallback", False))
 SEG_NR_THR_RESAMP = _coerce_int(SEG_CONFIG.get("nr_threads_resample"), None)
 SEG_NR_THR_SAVING = _coerce_int(SEG_CONFIG.get("nr_threads_save"), None)
 SEG_NUM_PROC_PRE = _coerce_int(SEG_CONFIG.get("num_proc_preprocessing"), None)
@@ -639,6 +640,7 @@ _seg_params_lambda = lambda w: (
     (f"--totalseg-roi-subset '{SEG_ROI_SUBSET}' " if SEG_ROI_SUBSET else "") +
     (f"--totalseg-device '{SEG_DEVICE}' " if SEG_DEVICE else "") +
     ("--totalseg-force-split " if SEG_FORCE_SPLIT else "--no-totalseg-force-split ") +
+    ("--totalseg-allow-fallback " if SEG_ALLOW_FALLBACK else "") +
     (f"--totalseg-nr-thr-resamp {SEG_NR_THR_RESAMP} " if SEG_NR_THR_RESAMP else "") +
     (f"--totalseg-nr-thr-saving {SEG_NR_THR_SAVING} " if SEG_NR_THR_SAVING else "") +
     (f"--totalseg-num-proc-pre {SEG_NUM_PROC_PRE} " if SEG_NUM_PROC_PRE else "") +
@@ -668,7 +670,8 @@ if config.get("container_mode", False):
             python_bin=CONTAINER_MAIN_BIN,
             dicom_root=str(DICOM_ROOT),
             output_dir=lambda w, output: str(Path(output.sentinel).parents[2]),
-            logs_dir=str(LOGS_DIR)
+            logs_dir=str(LOGS_DIR),
+            campaign_mode=str(CAMPAIGN_MODE)
         shell:
             """
             set -e
@@ -686,11 +689,18 @@ if config.get("container_mode", False):
                 --max-workers {threads} \
                 --manifest "{input.manifest}" \
                 {params.extra_args} > {log} 2>&1; then
-                echo "ok" > {output.sentinel}
+                if ! grep -qx "ok" {output.sentinel}; then
+                    echo "Segmentation command returned zero without a validated ok sentinel; see {log}" >&2
+                    exit 1
+                fi
             else
-                rm -f {output.sentinel}
                 echo "Required course stage failed; see {log}" >&2
-                exit 1
+                if [ ! -s {output.sentinel} ]; then
+                    echo "failed" > {output.sentinel}
+                fi
+                if [ "{params.campaign_mode}" != "True" ]; then
+                    exit 1
+                fi
             fi
             """
 else:
@@ -714,7 +724,8 @@ else:
             python_bin=PYTHON_MAIN_BIN,
             dicom_root=str(DICOM_ROOT),
             output_dir=lambda w, output: str(Path(output.sentinel).parents[2]),
-            logs_dir=str(LOGS_DIR)
+            logs_dir=str(LOGS_DIR),
+            campaign_mode=str(CAMPAIGN_MODE)
         shell:
             """
             set -e
@@ -732,11 +743,18 @@ else:
                 --max-workers {threads} \
                 --manifest "{input.manifest}" \
                 {params.extra_args} > {log} 2>&1; then
-                echo "ok" > {output.sentinel}
+                if ! grep -qx "ok" {output.sentinel}; then
+                    echo "Segmentation command returned zero without a validated ok sentinel; see {log}" >&2
+                    exit 1
+                fi
             else
-                rm -f {output.sentinel}
                 echo "Required course stage failed; see {log}" >&2
-                exit 1
+                if [ ! -s {output.sentinel} ]; then
+                    echo "failed" > {output.sentinel}
+                fi
+                if [ "{params.campaign_mode}" != "True" ]; then
+                    exit 1
+                fi
             fi
             """
 

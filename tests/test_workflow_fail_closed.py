@@ -11,6 +11,7 @@ from types import SimpleNamespace
 
 import pandas as pd
 import pytest
+import rtpipeline.segmentation as segmentation
 
 from course_contract_test_utils import (
     write_minimal_course_contract,
@@ -103,6 +104,11 @@ def test_required_course_stage_failure_returns_nonzero_without_sentinel(
         "run",
         lambda *_args, **_kwargs: SimpleNamespace(returncode=17),
     )
+    monkeypatch.setattr(
+        segmentation,
+        "assess_course_segmentation",
+        lambda _course_dir: {"status": "ok", "reasons": ["validated test fixture"]},
+    )
 
     with pytest.raises(SystemExit) as excinfo:
         runpy.run_path(str(RUN_COURSE_STAGE), init_globals={"snakemake": workflow})
@@ -118,6 +124,11 @@ def test_required_course_stage_success_publishes_ok_sentinel(tmp_path, monkeypat
         subprocess,
         "run",
         lambda *_args, **_kwargs: SimpleNamespace(returncode=0),
+    )
+    monkeypatch.setattr(
+        segmentation,
+        "assess_course_segmentation",
+        lambda _course_dir: {"status": "ok", "reasons": ["validated test fixture"]},
     )
 
     runpy.run_path(str(RUN_COURSE_STAGE), init_globals={"snakemake": workflow})
