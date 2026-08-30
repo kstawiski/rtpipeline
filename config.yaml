@@ -27,8 +27,9 @@ segmentation:
   force: false
   roi_subset: null
   extra_models: []
-  max_workers: 1
-  force_split: true
+  max_workers: 1           # Serializes GPU jobs. Raise only when GPUs have independent capacity.
+  force_split: true        # Reduce peak GPU memory use before considering CPU fallback.
+  allow_fallback: false    # Opt in to a CPU retry after failure. This can be much slower.
   nr_threads_resample: 1
   nr_threads_save: 1
   num_proc_preprocessing: 1

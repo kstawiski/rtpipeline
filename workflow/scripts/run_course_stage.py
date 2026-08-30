@@ -59,6 +59,24 @@ def _require_upstream_status(
         )
 
 
+def _require_segmentation_content(course_dir: Path) -> None:
+    """Reject legacy or forged ``ok`` sentinels whose course content is not usable."""
+
+    root_dir = str(snakemake.params.root_dir)  # type: ignore[name-defined]
+    if root_dir not in sys.path:
+        sys.path.insert(0, root_dir)
+    from rtpipeline.segmentation import assess_course_segmentation
+
+    outcome = assess_course_segmentation(course_dir)
+    if outcome.get("status") != "ok":
+        reasons = outcome.get("reasons")
+        detail = "; ".join(str(reason) for reason in reasons) if isinstance(reasons, list) else str(reasons)
+        raise RuntimeError(
+            f"Required upstream segmentation content is not successful: {course_dir} "
+            f"(status={outcome.get('status')!r}; reasons={detail})"
+        )
+
+
 def _publish_sentinel(path: Path, status: str) -> None:
     temporary = path.with_name(f".{path.name}.tmp")
     temporary.unlink(missing_ok=True)
@@ -146,6 +164,8 @@ for input_name, allowed_statuses in (
     upstream = getattr(snakemake.input, input_name, None)  # type: ignore[name-defined]
     try:
         _require_upstream_status(upstream, input_name, allowed_statuses)
+        if input_name == "segmentation" and upstream:
+            _require_segmentation_content(ledger_root / patient_id / course_id)
     except RuntimeError as exc:
         _close_course(sentinel_path, str(exc), returncode=1, strict_error=exc)
 

@@ -171,12 +171,28 @@ class _QCTask:
 
 
 def _execute_segment_task(task: _SegmentTask) -> bool:
-    from .segmentation import segment_course
+    from .segmentation import (
+        failed_segmentation_outcome,
+        publish_course_segmentation_status,
+        segment_course,
+    )
     from .auto_rtstruct import build_auto_rtstruct
 
-    segment_course(task.cfg, task.course.dirs.root, force=task.force_segmentation)
-    build_auto_rtstruct(task.course.dirs.root)
-    return True
+    course_dir = task.course.dirs.root
+    try:
+        segment_course(task.cfg, course_dir, force=task.force_segmentation)
+        build_auto_rtstruct(course_dir)
+        outcome = publish_course_segmentation_status(course_dir)
+    except Exception as exc:  # noqa: BLE001 - persist a fail-closed course outcome
+        logger.exception("Segmentation stage crashed for %s", course_dir)
+        outcome = publish_course_segmentation_status(
+            course_dir,
+            failed_segmentation_outcome(
+                course_dir,
+                f"segmentation stage crashed: {type(exc).__name__}: {exc}",
+            ),
+        )
+    return outcome["status"] == "ok"
 
 
 def _execute_all_series_segment_task(task: _AllSeriesSegmentTask) -> bool:
@@ -1630,12 +1646,13 @@ def main(argv: list[str] | None = None) -> int:
                     max_workers=seg_worker_limit,
                     logger=logging.getLogger(__name__),
                     show_progress=True,
+                    progress_success_only=True,
                     task_timeout=args.task_timeout,
                 )
                 if segment_tasks
                 else []
             )
-            if any(r is None for r in seg_results):
+            if any(not result for result in seg_results):
                 had_failures = True
 
             if getattr(cfg, "do_segment_all_series", False):

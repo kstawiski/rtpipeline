@@ -92,7 +92,9 @@ def test_segment_all_series_dispatch_status_and_idempotency(tmp_path, monkeypatc
         else:
             masks = output_path / "segmentations"
             masks.mkdir(parents=True, exist_ok=True)
-            sitk.WriteImage(sitk.Image([2, 2, 2], sitk.sitkUInt8), str(masks / "liver.nii.gz"))
+            mask = sitk.Image([2, 2, 2], sitk.sitkUInt8)
+            mask[0, 0, 0] = 1
+            sitk.WriteImage(mask, str(masks / "liver.nii.gz"))
         return True
 
     monkeypatch.setattr(segmentation, "_ensure_ct_nifti", fake_ensure_nifti)
@@ -112,23 +114,23 @@ def test_segment_all_series_dispatch_status_and_idempotency(tmp_path, monkeypatc
     assert set(summary) == eligible_classes
     assert all(summary[image_class]["attempted"] == 1 for image_class in eligible_classes)
     assert all(summary[image_class]["segmented"] == 1 for image_class in eligible_classes)
-    assert len(calls) == 14
+    assert len(calls) == 7
+    assert all(call["output_type"] == "nifti" for call in calls)
 
-    seg_root_by_class = {
-        row["image_class"]: segmentation._series_artifact_dirs(Path(row["output_dir"]))[1]
+    nifti_root_by_class = {
+        row["image_class"]: segmentation._series_artifact_dirs(Path(row["output_dir"]))[0]
         for row in rows
         if row["output_dir"]
     }
 
-    def class_for_output(output_path: Path) -> str:
-        resolved = output_path.resolve()
-        for image_class, seg_root in seg_root_by_class.items():
-            if seg_root.resolve() in resolved.parents:
+    def class_for_input(input_path: Path) -> str:
+        resolved = input_path.resolve()
+        for image_class, nifti_root in nifti_root_by_class.items():
+            if nifti_root.resolve() in resolved.parents:
                 return image_class
-        raise AssertionError(f"Unexpected RTSTRUCT output path: {output_path}")
+        raise AssertionError(f"Unexpected segmentation input path: {input_path}")
 
-    dicom_calls = [call for call in calls if call["output_type"] == "dicom_rtstruct"]
-    by_class = {class_for_output(call["output_path"]): call for call in dicom_calls}
+    by_class = {class_for_input(call["input_path"]): call for call in calls}
     for image_class in {"planning_ct", "diagnostic_ct", "petct_ct", "fourdct_ave", "fourdct_phase"}:
         assert by_class[image_class]["task"] == "total"
         assert by_class[image_class]["extra_args"] is None
@@ -159,7 +161,7 @@ def test_segment_all_series_dispatch_status_and_idempotency(tmp_path, monkeypatc
 
     calls.clear()
     forced = segmentation.segment_all_series_for_patient(cfg, "P1", force=True)
-    assert len(calls) == 14
+    assert len(calls) == 7
     assert all(forced[image_class]["attempted"] == 1 for image_class in eligible_classes)
     persisted = json.loads(manifest_path.read_text(encoding="utf-8"))
     status_by_class = {row["image_class"]: row["status"] for row in persisted["series"]}
@@ -334,7 +336,9 @@ def test_segment_all_series_nifti_failure_isolates_row(tmp_path, monkeypatch):
             output_path.mkdir(parents=True, exist_ok=True)
             masks = output_path / "segmentations"
             masks.mkdir(parents=True, exist_ok=True)
-            sitk.WriteImage(sitk.Image([2, 2, 2], sitk.sitkUInt8), str(masks / "liver.nii.gz"))
+            mask = sitk.Image([2, 2, 2], sitk.sitkUInt8)
+            mask[0, 0, 0] = 1
+            sitk.WriteImage(mask, str(masks / "liver.nii.gz"))
         elif output_type == "dicom_rtstruct":
             output_path.parent.mkdir(parents=True, exist_ok=True)
             output_path.write_text("fake rtstruct", encoding="utf-8")
@@ -413,19 +417,14 @@ def test_segment_all_series_force_uses_sibling_outputs_and_depth_zero(tmp_path, 
 
     def fake_totalseg(config, input_path, output_path, output_type, task=None, extra_args=None):
         assert not is_under(Path(output_path), input_dir)
-        if output_type == "dicom_rtstruct":
-            seen["rtstruct_input"] = Path(input_path)
-            assert Path(input_path) != input_dir
-            assert sorted(p.name for p in Path(input_path).iterdir()) == ["IM_0001.dcm"]
-            assert not any(p.name == "stale.dcm" for p in Path(input_path).rglob("*"))
-            assert not any(p.name == "old.nii.gz" for p in Path(input_path).rglob("*"))
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            output_path.write_text("fake rtstruct", encoding="utf-8")
-        else:
-            output_path.mkdir(parents=True, exist_ok=True)
-            masks = output_path / "segmentations"
-            masks.mkdir(parents=True, exist_ok=True)
-            sitk.WriteImage(sitk.Image([2, 2, 2], sitk.sitkUInt8), str(masks / "liver.nii.gz"))
+        assert output_type == "nifti"
+        seen["totalseg_input"] = Path(input_path)
+        output_path.mkdir(parents=True, exist_ok=True)
+        masks = output_path / "segmentations"
+        masks.mkdir(parents=True, exist_ok=True)
+        mask = sitk.Image([2, 2, 2], sitk.sitkUInt8)
+        mask[0, 0, 0] = 1
+        sitk.WriteImage(mask, str(masks / "liver.nii.gz"))
         return True
 
     monkeypatch.setattr(segmentation, "_ensure_ct_nifti", fake_ensure_nifti)
@@ -434,7 +433,9 @@ def test_segment_all_series_force_uses_sibling_outputs_and_depth_zero(tmp_path, 
     summary = segmentation.segment_all_series_for_patient(cfg, "P1", force=True)
     assert summary["planning_ct"]["segmented"] == 1
     assert seen["dcm2niix_depth"] == 0
-    assert seen["rtstruct_input"] != input_dir
+    nifti_output_dir = Path(str(seen["nifti_dir"]))
+    assert seen["totalseg_input"] == nifti_output_dir / "planning.nii.gz"
+    assert not is_under(nifti_output_dir, input_dir)
     assert stale_inside.exists()
     assert stale_nifti.exists()
 

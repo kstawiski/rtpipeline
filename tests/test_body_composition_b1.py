@@ -169,6 +169,7 @@ def test_b1_routing_adds_body_tasks_only_for_configured_ct_classes(tmp_path, mon
     def fake_totalseg(config, input_path, output_path, output_type, task=None, extra_args=None):
         calls.append(
             {
+                "input_path": Path(input_path),
                 "output_path": Path(output_path),
                 "output_type": output_type,
                 "task": task,
@@ -206,11 +207,11 @@ def test_b1_routing_adds_body_tasks_only_for_configured_ct_classes(tmp_path, mon
 
     by_class: dict[str, list[str]] = {row["image_class"]: [] for row in rows}
     for call in calls:
-        if call["output_type"] != "dicom_rtstruct":
+        if call["output_type"] != "nifti":
             continue
         for row in rows:
-            seg_root = segmentation._series_artifact_dirs(Path(row["output_dir"]))[1]
-            if seg_root.resolve() in call["output_path"].resolve().parents:
+            nifti_root = segmentation._series_artifact_dirs(Path(row["output_dir"]))[0]
+            if nifti_root.resolve() in call["input_path"].resolve().parents:
                 by_class[row["image_class"]].append(str(call["task"]))
 
     assert by_class["planning_ct"] == ["total", "tissue_types", "body"]
