@@ -27,8 +27,17 @@ ALL_SERIES_RADIOMICS_TEMP_AUTHORITY = "all_series_radiomics_materializer"
 MANUAL_RTSTRUCT_SOURCE = "Manual"
 AUTO_RTSTRUCT_SOURCE = "AutoRTS_total"
 
+from .plan_profiles import (
+    DERIVED_RTPLAN_SOP_CLASSES,
+    SOURCE_RTPLAN_SOP_CLASSES,
+)
+
 _ROLE_EXPECTATIONS = {
-    "RTPLAN": ({"RTPLAN"}, {"1.2.840.10008.5.1.4.1.1.481.5"}),
+    # A plan exported by the treatment system may use a governed vendor profile;
+    # a plan this pipeline synthesises may not claim one. See plan_profiles.
+    "RTPLAN": ({"RTPLAN"}, set(SOURCE_RTPLAN_SOP_CLASSES)),
+    "RTPLAN_SOURCE": ({"RTPLAN"}, set(SOURCE_RTPLAN_SOP_CLASSES)),
+    "RTPLAN_DERIVED": ({"RTPLAN"}, set(DERIVED_RTPLAN_SOP_CLASSES)),
     "RTDOSE": ({"RTDOSE"}, {"1.2.840.10008.5.1.4.1.1.481.2"}),
     "RTSTRUCT": ({"RTSTRUCT"}, {"1.2.840.10008.5.1.4.1.1.481.3"}),
     "CT": (
@@ -537,7 +546,7 @@ def validate_course_contract(contract: CourseContract) -> CourseContract:
     plan_uids: list[str] = []
     for index, item in enumerate(selected_plans):
         field = f"selected_plans[{index}]"
-        _validate_dicom_identity(contract, item, field, role="RTPLAN")
+        _validate_dicom_identity(contract, item, field, role="RTPLAN_SOURCE")
         uid = _nonempty_text(item.get("sop_instance_uid"), f"{field}.sop_instance_uid")
         if uid in plan_uids:
             raise CourseContractError(f"duplicate selected RTPLAN SOPInstanceUID {uid}")
@@ -851,11 +860,20 @@ def validate_course_contract(contract: CourseContract) -> CourseContract:
     if plan_artifact is not None:
         if not isinstance(plan_artifact, dict):
             raise CourseContractError("plan_artifact must be an object or null")
-        _validate_dicom_identity(
-            contract, plan_artifact, "plan_artifact", role="RTPLAN"
-        )
         artifact_uid = _nonempty_text(
             plan_artifact.get("sop_instance_uid"), "plan_artifact.sop_instance_uid"
+        )
+        _source_uids = {
+            str((entry or {}).get("sop_instance_uid") or "").strip()
+            for entry in (selected_plans or [])
+            if isinstance(entry, dict)
+        }
+        # A single contracted source copied to the flat artifact path keeps that
+        # source's profile. A synthesised summation carries a new UID and must
+        # therefore conform to the standard class.
+        _artifact_role = "RTPLAN_SOURCE" if artifact_uid in _source_uids else "RTPLAN_DERIVED"
+        _validate_dicom_identity(
+            contract, plan_artifact, "plan_artifact", role=_artifact_role
         )
         artifact_sources = plan_artifact.get("source_plan_uids")
         if not isinstance(artifact_sources, list) or any(

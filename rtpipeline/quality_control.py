@@ -21,6 +21,8 @@ try:
 except ImportError:
     sitk = None
 
+from .plan_profiles import SOURCE_RTPLAN_SOP_CLASSES
+
 logger = logging.getLogger(__name__)
 
 
@@ -218,8 +220,7 @@ class DICOMValidator:
 
             # Check SOP Class UID for RTPLAN
             expected_rtplan_uids = [
-                "1.2.840.10008.5.1.4.1.1.481.5",  # Standard DICOM RTPLAN
-                "1.2.246.352.70.1.70"  # Vendor-specific RTPLAN (commonly used)
+                *SOURCE_RTPLAN_SOP_CLASSES,  # see rtpipeline.plan_profiles
             ]
             if validation["sop_class_uid"] not in expected_rtplan_uids:
                 validation["issues"].append(f"Unexpected SOP Class UID for RTPLAN: {validation['sop_class_uid']}")
