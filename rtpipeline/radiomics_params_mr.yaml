@@ -1,5 +1,5 @@
 # =================================================================================================
-# IBSI-Aligned PyRadiomics Configuration for MRI Feature Extraction
+# PyRadiomics configuration with IBSI-informed reporting for MRI Feature Extraction
 #
 # Assumptions:
 # - Upstream preprocessing targets 1.0x1.0x1.0 mm voxels; extractor enforces the same grid as a safeguard.
@@ -38,7 +38,7 @@ setting:
   force2Ddimension: 0
 
   # ----------------------------------------------------------
-  # IBSI Compliance & Provenance
+  # IBSI-informed reporting & provenance
   # ----------------------------------------------------------
   padDistance: 5
   geometryTolerance: 1e-6

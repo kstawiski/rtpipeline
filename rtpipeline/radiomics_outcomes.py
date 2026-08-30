@@ -44,42 +44,12 @@ _RADIOMIC_FEATURE_MARKERS = (
 )
 
 
-def resume_identity_pairs(dataframe: Any) -> set[tuple[str, str]]:
-    """Validate a wide radiomics workbook and return its source/ROI identities."""
-    import pandas as pd
+def resume_identity_pairs(dataframe: Any) -> set[tuple[str, ...]]:
+    """Validate a CT table and return its full publication identities."""
+    from .radiomics_ct_contract import publication_key, validate_ct_publication
 
-    required_columns = {"segmentation_source", "roi_original_name"}
-    columns = {str(column) for column in dataframe.columns}
-    if dataframe.empty:
-        raise ValueError("existing radiomics workbook is empty")
-    if not required_columns.issubset(columns):
-        missing = sorted(required_columns - columns)
-        raise ValueError(
-            f"existing radiomics workbook lacks required columns: {', '.join(missing)}"
-        )
-    if not any(
-        any(marker in str(column) for marker in _RADIOMIC_FEATURE_MARKERS)
-        for column in dataframe.columns
-    ):
-        raise ValueError("existing radiomics workbook has no radiomic feature columns")
-
-    identities: list[tuple[str, str]] = []
-    for source_value, roi_value in zip(
-        dataframe["segmentation_source"].tolist(),
-        dataframe["roi_original_name"].tolist(),
-    ):
-        if pd.isna(source_value) or pd.isna(roi_value):
-            raise ValueError("existing radiomics workbook has blank source/ROI identities")
-        source = str(source_value).strip()
-        roi_name = str(roi_value).strip()
-        if not source or not roi_name:
-            raise ValueError("existing radiomics workbook has blank source/ROI identities")
-        identities.append((source, roi_name))
-
-    identity_set = set(identities)
-    if len(identity_set) != len(identities):
-        raise ValueError("existing radiomics workbook has duplicate source/ROI identities")
-    return identity_set
+    validate_ct_publication(dataframe)
+    return {publication_key(row) for row in dataframe.to_dict("records")}
 
 
 def write_excel_atomic(df: Any, output_path: Path) -> Path:
@@ -198,10 +168,14 @@ def extraction_status_is_nonfatal_for_required(status: Any) -> bool:
 
     A present, non-empty mask below ``min_voxels`` was historically reported as
     an observed status rather than treated as a course-failing extraction error.
+    An explicit operator-configured skip is also a disposition, not a failed task.
     Empty masks, unreadable contours, timeouts, and extractor errors remain fatal
     for required sources.
     """
-    return str(status).strip().casefold() == "below_minimum_voxels"
+    return str(status).strip().casefold() in {
+        "below_minimum_voxels",
+        "declared_skip",
+    }
 
 
 def course_diagnostic_columns(outcome: RadiomicsCourseOutcome) -> Dict[str, Any]:
@@ -223,33 +197,57 @@ def course_diagnostic_columns(outcome: RadiomicsCourseOutcome) -> Dict[str, Any]
 def outcome_from_output(
     output_path: Path,
     *,
-    required_by_identity: Optional[Mapping[Tuple[str, str], bool]] = None,
+    required_by_identity: Optional[Mapping[Tuple[str, ...], bool]] = None,
 ) -> RadiomicsCourseOutcome:
-    """Read persisted outcomes and reject failed or missing required ROIs.
-
-    ``required_by_identity`` supplies the current task inventory during resume.
-    Source policy remains the fallback for generic backend reconstruction.
-    """
+    """Read persisted outcomes and reject failed or missing required ROI arms."""
     import pandas as pd
+    from .radiomics_ct_contract import base_identity_key, read_authoritative_ct_publication
 
     output_path = Path(output_path)
-    dataframe = pd.read_excel(output_path, engine="openpyxl")
+    parquet_path = output_path.with_suffix(".parquet")
+    is_ct_publication = output_path.name == "radiomics_ct.xlsx" or parquet_path.exists()
+    if is_ct_publication:
+        dataframe = read_authoritative_ct_publication(parquet_path)
+    else:
+        dataframe = pd.read_excel(output_path, engine="openpyxl")
     required_map = {
-        (str(source), str(roi_name)): bool(required)
-        for (source, roi_name), required in (required_by_identity or {}).items()
+        tuple(str(value) for value in identity): bool(required)
+        for identity, required in (required_by_identity or {}).items()
     }
     counts: Dict[str, Dict[str, int]] = {}
     failures: list[Dict[str, str]] = []
     fatal_failures: list[str] = []
-    observed_identities: set[Tuple[str, str]] = set()
-    for row in dataframe.to_dict("records"):
+    observed_identities: set[Tuple[str, ...]] = set()
+    records = dataframe.to_dict("records")
+    if is_ct_publication:
+        grouped: Dict[Tuple[str, ...], list[Dict[str, Any]]] = {}
+        for row in records:
+            grouped.setdefault(base_identity_key(row), []).append(row)
+        record_groups = list(grouped.values())
+    else:
+        record_groups = [[row] for row in records]
+
+    for group in record_groups:
+        row = group[0]
         source_value = row.get("segmentation_source", "unknown")
         source = "unknown" if bool(pd.isna(source_value)) else str(source_value)
         roi_value = row.get("roi_original_name", row.get("roi_name", "unknown"))
         roi_name = "unknown" if bool(pd.isna(roi_value)) else str(roi_value)
-        identity = (source, roi_name)
-        observed_identities.add(identity)
-        status = row.get("extraction_status")
+        if is_ct_publication:
+            identity = base_identity_key(row)
+            full_identities = {
+                (*identity, str(candidate.get("extraction_arm"))) for candidate in group
+            }
+            observed_identities.update(full_identities)
+        else:
+            identity = (source, roi_name)
+            full_identities = {identity}
+            observed_identities.add(identity)
+        statuses = [candidate.get("extraction_status") for candidate in group]
+        status = next(
+            (candidate for candidate in statuses if candidate not in (None, "success")),
+            "success",
+        )
         if bool(pd.isna(status)):
             status = None
         if status == "declared_skip":
@@ -260,26 +258,31 @@ def outcome_from_output(
             source_counts["extracted"] += 1
         else:
             source_counts["failed"] += 1
+            failure_row = next(
+                (candidate for candidate in group if candidate.get("extraction_status") == status),
+                row,
+            )
             failures.append(
                 {
                     "roi_name": roi_name,
                     "source": source,
                     "status": str(status),
-                    "failure_kind": str(row.get("extraction_failure_kind", "extraction_error")),
-                    "reason": str(row.get("extraction_status_detail", "unknown error")),
+                    "failure_kind": str(failure_row.get("extraction_failure_kind", "extraction_error")),
+                    "reason": str(failure_row.get("extraction_status_detail", "unknown error")),
                 }
             )
-            required = required_map.get(identity, roi_source_is_required(source))
+            required = any(
+                required_map.get(candidate, required_map.get(identity, roi_source_is_required(source)))
+                for candidate in full_identities
+            )
             if required and not extraction_status_is_nonfatal_for_required(status):
                 fatal_failures.append(
                     f"required ROI {source}/{roi_name} has persisted status {status}: "
-                    f"{row.get('extraction_status_detail', 'unknown error')}"
+                    f"{failure_row.get('extraction_status_detail', 'unknown error')}"
                 )
     for identity, required in required_map.items():
         if required and identity not in observed_identities:
-            fatal_failures.append(
-                f"required ROI {identity[0]}/{identity[1]} has no persisted outcome"
-            )
+            fatal_failures.append(f"required ROI identity {identity!r} has no persisted outcome")
     if fatal_failures:
         invalidate_radiomics_outputs(output_path)
         raise RadiomicsCourseExtractionError(
@@ -289,7 +292,7 @@ def outcome_from_output(
         output_path,
         roi_counts=counts,
         roi_failures=failures,
-        detail="reconstructed from persisted per-ROI outcomes",
+        detail="reconstructed from persisted per-ROI-arm outcomes",
     )
 
 

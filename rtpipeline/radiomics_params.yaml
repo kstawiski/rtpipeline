@@ -1,11 +1,11 @@
 # =================================================================================================
-# IBSI-Aligned PyRadiomics Configuration for CT Feature Extraction
+# PyRadiomics CT configuration with IBSI-informed reporting
 #
 # Grounded in the validated baseline defined in Knowledge/PyRadiomics CT Configuration Research.md:
 # - Focus on Original image signal for maximum reproducibility.
 # - Standardized preprocessing (1 mm isotropic resampling, B-spline interpolation, 25 HU bin width).
 # - No global normalization or outlier clipping for CT to preserve HU fidelity.
-# - Complete IBSI feature classes enabled; downstream robustness filtering happens post-extraction.
+# - Configured PyRadiomics feature classes are enabled; robustness filtering happens post-extraction.
 # =================================================================================================
 
 setting:
@@ -41,7 +41,7 @@ setting:
   # ROI Quality Control and Validation
   # ----------------------------------------------------------
   
-  # Enforce at least 2D ROI support; single-voxel masks excluded per IBSI guidance
+  # Enforce at least 2D ROI support; single-voxel masks are excluded.
   minimumROIDimensions: 2
   
   # Guardrail against extremely small volumes that destabilize texture statistics
@@ -55,10 +55,10 @@ setting:
   force2Ddimension: 0
   
   # ----------------------------------------------------------
-  # IBSI Compliance and Geometry Handling
+  # Geometry handling and IBSI-informed reporting
   # ----------------------------------------------------------
   
-  # IBSI-recommended padding distance for kernel operations
+  # Padding distance used for kernel operations
   padDistance: 5
   
   # Geometry tolerance for image-mask alignment
@@ -67,7 +67,7 @@ setting:
   # Resample mask to image geometry when needed
   correctMask: True
   
-  # IBSI energy calculation compliance
+  # Energy-feature weighting convention
   weightingNorm: null
   
   # ----------------------------------------------------------

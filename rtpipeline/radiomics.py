@@ -57,6 +57,25 @@ from .radiomics_outcomes import (
     resume_identity_pairs as _resume_identity_pairs,
     write_excel_atomic as _write_excel_atomic,
 )
+from .radiomics_ct_contract import (
+    CT_EXTRACTION_ARMS,
+    PRIMARY_ARM,
+    SENSITIVITY_ARM,
+    classify_ct_roi,
+    configured_parameter_hash,
+    current_code_revision,
+    disposition_rows_for_arms,
+    expected_publication_keys,
+    extract_ct_roi_arms,
+    load_custom_structure_provenance,
+    new_run_identifier,
+    publication_key,
+    read_authoritative_ct_publication,
+    rtstruct_roi_identities,
+    stable_rtstruct_roi_identity,
+    validate_ct_publication,
+    write_ct_publication_atomic,
+)
 
 if TYPE_CHECKING:
     from radiomics import featureextractor
@@ -882,6 +901,19 @@ def _check_radiomics_contract_scope(
         )
 
 
+@dataclass(frozen=True)
+class _DirectCtTask:
+    source: str
+    roi_name: str
+    mask: np.ndarray
+    cropped: bool
+    mask_identity: str
+    stable_roi_identifier: str
+    decision: Any
+    required: bool
+    configured_parameter_hashes: Dict[str, str]
+
+
 
 def radiomics_for_course(
     config: PipelineConfig,
@@ -910,11 +942,12 @@ def radiomics_for_course(
 
     # Resume-friendly: if output exists, only recompute when required ROIs are missing
     existing_df = None
-    if getattr(config, "resume", False) and out_path.exists():
+    parquet_path = out_path.with_suffix(".parquet")
+    if getattr(config, "resume", False) and (parquet_path.exists() or out_path.exists()):
         try:
-            import pandas as pd
-
-            existing_df = pd.read_excel(out_path, engine="openpyxl")
+            if not parquet_path.exists():
+                raise ValueError("authoritative CT Parquet is missing")
+            existing_df = read_authoritative_ct_publication(parquet_path)
             _resume_identity_pairs(existing_df)
             validate_acquisition_descriptor_table(
                 existing_df,
@@ -925,7 +958,7 @@ def radiomics_for_course(
             )
         except Exception as exc:
             logger.warning(
-                "Invalidating unusable resume workbook for %s: %s", course_dir, exc
+                "Invalidating unusable resume publication for %s: %s", course_dir, exc
             )
             _invalidate_radiomics_outputs(out_path)
             existing_df = None
@@ -975,11 +1008,18 @@ def radiomics_for_course(
             _invalidate_radiomics_outputs(out_path)
             return RadiomicsCourseOutcome.nothing_to_do("conda backend found no eligible ROIs")
         return outcome_from_output(conda_out)
+    series_uid = str(contract.planning_ct.get("series_instance_uid") or "").strip()
+    if not series_uid:
+        _invalidate_radiomics_outputs(out_path)
+        raise RadiomicsCourseExtractionError(
+            f"Planning CT contract has no SeriesInstanceUID for radiomics in {course_dir}"
+        )
+    run_identifier = new_run_identifier()
+    code_revision = current_code_revision()
     rows: List[Dict] = []
-    tasks: List[tuple[str, str, np.ndarray, bool]] = []
+    tasks: List[_DirectCtTask] = []
     roi_failures: List[Dict[str, str]] = []
     source_counts: Dict[str, Dict[str, int]] = {}
-    prepared_failure_pairs: set[tuple[str, str]] = set()
 
     # Determine which custom ROIs belong to the current source/ROI identity set.
     # A configured skip is an explicit ineligibility decision, not a failed mask.
@@ -1006,12 +1046,98 @@ def radiomics_for_course(
         try:
             desired_custom_bases = {
                 name for name in _custom_roi_names_from_config(configured_custom_path)
-                if ''.join(ch for ch in name.lower() if ch.isalnum())
-                not in normalized_skip_rois
             }
         except RadiomicsCourseExtractionError:
             _invalidate_radiomics_outputs(out_path)
             raise
+
+    custom_provenance = load_custom_structure_provenance(configured_custom_path)
+    parameter_path = _get_params_file(config, "CT")
+    identity_cache: Dict[str, Dict[str, tuple[str, str]]] = {}
+
+    def _identity_for(rs_path: Path, roi_name: str) -> tuple[str, str]:
+        return stable_rtstruct_roi_identity(rs_path, roi_name)
+
+    def _make_task(
+        source: str,
+        rs_path: Path,
+        roi_name: str,
+        mask: np.ndarray,
+        *,
+        required: bool,
+    ) -> _DirectCtTask:
+        sop_uid, roi_number = _identity_for(rs_path, roi_name)
+        decision = classify_ct_roi(
+            source,
+            roi_name,
+            custom_provenance=custom_provenance if source == "Custom" else None,
+        )
+        configured_hashes = {
+            arm: configured_parameter_hash(
+                parameter_path,
+                arm=arm,
+                window=(decision.primary_resegment_range_hu if arm == PRIMARY_ARM else None),
+                large_roi=False,
+            )
+            for arm in CT_EXTRACTION_ARMS
+        }
+        return _DirectCtTask(
+            source=source,
+            roi_name=roi_name,
+            mask=mask,
+            cropped=mask_is_cropped(mask),
+            mask_identity=sop_uid,
+            stable_roi_identifier=f"rtstruct_roi_number:{roi_number}",
+            decision=decision,
+            required=required,
+            configured_parameter_hashes=configured_hashes,
+        )
+
+    def _common_metadata(task: _DirectCtTask) -> Dict[str, Any]:
+        display_roi = (
+            task.roi_name
+            if (not task.cropped or task.roi_name.endswith("__partial"))
+            else f"{task.roi_name}__partial"
+        )
+        return {
+            "modality": "CT",
+            "segmentation_source": task.source,
+            "roi_name": display_roi,
+            "roi_original_name": task.roi_name,
+            "course_dir": str(course_dir),
+            "patient_id": course_dir.parent.name,
+            "course_id": course_dir.name,
+            "series_uid": series_uid,
+            "mask_identity": task.mask_identity,
+            "rtstruct_sop_instance_uid": task.mask_identity,
+            "stable_roi_identifier": task.stable_roi_identifier,
+            "structure_cropped": bool(task.cropped),
+        }
+
+    def _append_declared_skip(
+        source: str, rs_path: Path, roi_name: str, *, required: bool
+    ) -> None:
+        task = _make_task(
+            source,
+            rs_path,
+            roi_name,
+            np.zeros((0, 0, 0), dtype=bool),
+            required=required,
+        )
+        rows.extend(
+            disposition_rows_for_arms(
+                _common_metadata(task),
+                decision=task.decision,
+                disposition="declared_skip",
+                detail="ROI is listed in radiomics_skip_rois",
+                failure_kind="declared_ineligible",
+                run_identifier=run_identifier,
+                code_revision=code_revision,
+                native_voxel_count=0,
+                required=required,
+                configured_parameter_hashes=task.configured_parameter_hashes,
+            )
+        )
 
     # Process every current non-skipped identity before deciding whether a resume
     # workbook is complete. Partial top-ups can silently miss newly added sources.
@@ -1021,9 +1147,18 @@ def radiomics_for_course(
     rs_auto_path_name = "RS_auto.dcm"
 
     sources = _standard_rtstruct_sources(contract, course_dir)
-    for source, rs_path, _roi_names in sources:
+    for source, rs_path, source_roi_names in sources:
         if not rs_path.exists():
             continue
+        if normalized_skip_rois:
+            for roi_name in (source_roi_names or _list_roi_names_dicom(rs_path)):
+                if ''.join(ch for ch in roi_name.lower() if ch.isalnum()) in normalized_skip_rois:
+                    _append_declared_skip(
+                        source,
+                        rs_path,
+                        roi_name,
+                        required=roi_source_is_required(source),
+                    )
         try:
             source_failures: List[Dict[str, str]] = []
             is_best_effort = not roi_source_is_required(source)
@@ -1036,21 +1171,27 @@ def radiomics_for_course(
             )
             for failure in source_failures:
                 failure["source"] = source
-                failure_record = {
-                    "modality": "CT",
-                    "segmentation_source": source,
-                    "roi_name": failure["roi_name"],
-                    "roi_original_name": failure["roi_name"],
-                    "course_dir": str(course_dir),
-                    "patient_id": course_dir.parent.name,
-                    "course_id": course_dir.name,
-                    "structure_cropped": False,
-                    "extraction_status": failure["status"],
-                    "extraction_status_detail": failure["reason"],
-                    "extraction_failure_kind": failure["failure_kind"],
-                }
-                rows.append(failure_record)
-                prepared_failure_pairs.add((source, failure["roi_name"]))
+                failed_task = _make_task(
+                    source,
+                    rs_path,
+                    failure["roi_name"],
+                    np.zeros((0, 0, 0), dtype=bool),
+                    required=False,
+                )
+                rows.extend(
+                    disposition_rows_for_arms(
+                        _common_metadata(failed_task),
+                        decision=failed_task.decision,
+                        disposition=failure["status"],
+                        detail=failure["reason"],
+                        failure_kind=failure["failure_kind"],
+                        run_identifier=run_identifier,
+                        code_revision=code_revision,
+                        native_voxel_count=0,
+                        required=False,
+                        configured_parameter_hashes=failed_task.configured_parameter_hashes,
+                    )
+                )
             roi_failures.extend(source_failures)
             source_counts.setdefault(
                 source,
@@ -1061,7 +1202,15 @@ def radiomics_for_course(
             _invalidate_radiomics_outputs(out_path)
             raise
         for roi, mask in masks.items():
-            tasks.append((source, roi, mask, mask_is_cropped(mask)))
+            tasks.append(
+                _make_task(
+                    source,
+                    rs_path,
+                    roi,
+                    mask,
+                    required=roi_source_is_required(source),
+                )
+            )
 
     # Process custom structures (extract only custom ROIs; avoid duplicating base ROIs in RS_custom)
     rs_custom = course_dir / "RS_custom.dcm"
@@ -1162,6 +1311,11 @@ def radiomics_for_course(
                 rt_struct_path=str(rs_custom),
             )
             for roi_name in wanted_names:
+                if ''.join(ch for ch in roi_name.lower() if ch.isalnum()) in normalized_skip_rois:
+                    _append_declared_skip(
+                        "Custom", rs_custom, roi_name, required=True
+                    )
+                    continue
                 try:
                     mask = rt.get_roi_mask_by_name(roi_name)
                 except Exception as exc:
@@ -1177,7 +1331,15 @@ def radiomics_for_course(
                     raise RadiomicsCourseExtractionError(
                         f"Expected custom ROI {roi_name!r} in {rs_custom} produced an empty required mask"
                     )
-                tasks.append(("Custom", roi_name, mask_bool, mask_is_cropped(mask_bool)))
+                tasks.append(
+                    _make_task(
+                        "Custom",
+                        rs_custom,
+                        roi_name,
+                        mask_bool,
+                        required=True,
+                    )
+                )
         except Exception as exc:
             if custom_rebuild_attempted and not custom_rebuild_published:
                 record_rs_custom_resume_decision(
@@ -1220,119 +1382,152 @@ def radiomics_for_course(
         except RadiomicsCourseExtractionError:
             _invalidate_radiomics_outputs(out_path)
             raise
+        for roi_name in custom_model_expected_rois[model_name]:
+            if ''.join(ch for ch in roi_name.lower() if ch.isalnum()) in normalized_skip_rois:
+                _append_declared_skip(
+                    f"CustomModel:{model_name}", rs_path, roi_name, required=True
+                )
         for roi, mask in masks.items():
-            tasks.append((f"CustomModel:{model_name}", roi, mask, mask_is_cropped(mask)))
+            tasks.append(
+                _make_task(
+                    f"CustomModel:{model_name}",
+                    rs_path,
+                    roi,
+                    mask,
+                    required=True,
+                )
+            )
 
+    expected_keys = expected_publication_keys(
+        [*(_common_metadata(task) for task in tasks), *rows]
+    )
+    task_by_base = {
+        (
+            course_dir.parent.name,
+            course_dir.name,
+            series_uid,
+            task.source,
+            task.mask_identity,
+            task.roi_name,
+            task.stable_roi_identifier,
+        ): task
+        for task in tasks
+    }
     if existing_df is not None:
-        expected_pairs = {(source, roi) for source, roi, _mask, _cropped in tasks}
-        expected_pairs |= prepared_failure_pairs
+        resume_error: Optional[Exception] = None
         try:
-            existing_pairs = _resume_identity_pairs(existing_df)
+            existing_keys = _resume_identity_pairs(existing_df)
+            expected_config_hashes: Dict[tuple[str, ...], str] = {
+                (*base, arm): task.configured_parameter_hashes[arm]
+                for base, task in task_by_base.items()
+                for arm in CT_EXTRACTION_ARMS
+            }
+            expected_config_hashes.update(
+                {
+                    publication_key(record): str(record["configured_parameter_hash"])
+                    for record in rows
+                }
+            )
+            for record in existing_df.to_dict("records"):
+                key = publication_key(record)
+                if str(record.get("configured_parameter_hash") or "") != str(
+                    expected_config_hashes.get(key) or ""
+                ):
+                    raise ValueError("configured radiomics parameter hash is stale")
         except ValueError as exc:
-            logger.warning("Invalidating unusable resume workbook for %s: %s", course_dir, exc)
-            existing_pairs = set()
-        missing_required = sorted(
-            (source, roi)
-            for source, roi in (expected_pairs - existing_pairs)
-            if roi_source_is_required(source)
-        )
-        if missing_required:
-            _invalidate_radiomics_outputs(out_path)
-            missing_text = ", ".join(
-                f"{source}/{roi}" for source, roi in missing_required
-            )
-            raise RadiomicsCourseExtractionError(
-                f"Persisted radiomics output is missing required ROI outcome(s): {missing_text}"
-            )
-        if expected_pairs and existing_pairs == expected_pairs:
+            resume_error = exc
+            existing_keys = set()
+        if resume_error is None and expected_keys and existing_keys == expected_keys:
             return outcome_from_output(
                 out_path,
                 required_by_identity={
-                    (source, roi): roi_source_is_required(source)
-                    for source, roi in expected_pairs
+                    (*base, arm): task.required
+                    for base, task in task_by_base.items()
+                    for arm in CT_EXTRACTION_ARMS
                 },
             )
         logger.warning(
-            "Invalidating incomplete resume workbook for %s: expected %d source/ROI "
-            "identities, found %d",
+            "Invalidating incomplete or stale resume publication for %s: expected %d "
+            "full ROI-arm identities, found %d%s",
             course_dir,
-            len(expected_pairs),
-            len(existing_pairs),
+            len(expected_keys),
+            len(existing_keys),
+            f"; {resume_error}" if resume_error is not None else "",
         )
         _invalidate_radiomics_outputs(out_path)
         existing_df = None
-    def _do_ct_task(t):
-        source, roi, mask, cropped = t
+    def _do_ct_task(task: _DirectCtTask) -> List[Dict[str, Any]]:
         try:
-            # Create fresh extractor instance for each task to avoid threading issues
             min_voxels, max_voxels_full = _derive_voxel_limits(config)
-            voxel_count = int(np.asarray(mask).astype(bool).sum())
+            voxel_count = int(np.asarray(task.mask).astype(bool).sum())
             if voxel_count < min_voxels:
-                return {
-                    "__status__": "below_min_voxels",
-                    "extraction_status": "below_minimum_voxels",
-                    "extraction_status_detail": (
+                return disposition_rows_for_arms(
+                    _common_metadata(task),
+                    decision=task.decision,
+                    disposition="below_minimum_voxels",
+                    detail=(
                         f"ROI contains {voxel_count} voxels; configured minimum is {min_voxels}"
                     ),
-                    "extraction_failure_kind": "degenerate_mask",
-                    "segmentation_source": source,
-                    "roi_name": roi,
-                    "roi_original_name": roi,
-                    "modality": "CT",
-                    "course_dir": str(course_dir),
-                    "patient_id": course_dir.parent.name,
-                    "course_id": course_dir.name,
-                    "structure_cropped": bool(cropped),
-                    "voxel_count": voxel_count,
-                }
+                    failure_kind="degenerate_mask",
+                    run_identifier=run_identifier,
+                    code_revision=code_revision,
+                    native_voxel_count=voxel_count,
+                    required=task.required,
+                    configured_parameter_hashes=task.configured_parameter_hashes,
+                )
 
-            # Large-ROI detection should reflect the *effective* workload after resampling.
-            # CT radiomics typically resamples to ~1mm isotropic, so thick-slice CT can
-            # inflate voxel counts substantially. Treat BODY as large unconditionally.
             try:
                 spacing = tuple(float(x) for x in img.GetSpacing())
             except Exception:
                 spacing = (1.0, 1.0, 1.0)
             native_voxel_mm3 = float(spacing[0]) * float(spacing[1]) * float(spacing[2])
             physical_volume_mm3 = float(voxel_count) * max(1e-9, native_voxel_mm3)
-            estimated_voxels = physical_volume_mm3  # ~ voxels at 1mm isotropic
-            is_body = str(roi).strip().lower().startswith("body")
-            use_large = is_body or (estimated_voxels > float(max_voxels_full))
-            ext = _extractor_large_roi(config, "CT") if use_large else _extractor(config, 'CT')
-            if ext is None:
-                raise RuntimeError(f"No radiomics extractor available for {source}/{roi}")
-            m_img = _mask_from_array_like(img, mask)
-            res = ext.execute(img, m_img)
-            rec = {k: (float(v) if isinstance(v, (int, float, np.floating)) else str(v)) for k, v in res.items()}
-            display_roi = roi if (not cropped or roi.endswith("__partial")) else f"{roi}__partial"
-            rec.update({
-                'modality': 'CT',
-                'segmentation_source': source,
-                'roi_name': display_roi,
-                'roi_original_name': roi,
-                'course_dir': str(course_dir),
-                'patient_id': course_dir.parent.name,
-                'course_id': course_dir.name,
-                'structure_cropped': bool(cropped),
-            })
-            return rec
-        except Exception as e:
-            detail = f"Radiomics failed for {source}/{roi}: {e}"
-            if not roi_source_is_required(source):
-                return {
-                    "__status__": "failed",
-                    "extraction_status": "failed",
-                    "extraction_status_detail": detail,
-                    "extraction_failure_kind": "extraction_error",
-                    "segmentation_source": source,
-                    "roi_name": roi,
-                    "roi_original_name": roi,
-                    "course_dir": str(course_dir),
-                    "patient_id": course_dir.parent.name,
-                    "course_id": course_dir.name,
-                    "structure_cropped": bool(cropped),
-                }
-            raise RuntimeError(detail) from e
+            estimated_voxels = physical_volume_mm3
+            use_large = task.roi_name.strip().lower().startswith("body") or (
+                estimated_voxels > float(max_voxels_full)
+            )
+
+            def _factory():
+                candidate = (
+                    _extractor_large_roi(config, "CT")
+                    if use_large
+                    else _extractor(config, "CT")
+                )
+                if candidate is None:
+                    raise RuntimeError(
+                        f"No radiomics extractor available for {task.source}/{task.roi_name}"
+                    )
+                return candidate
+
+            mask_image = _mask_from_array_like(img, task.mask)
+            return extract_ct_roi_arms(
+                img,
+                mask_image,
+                factory=_factory,
+                decision=task.decision,
+                common_metadata=_common_metadata(task),
+                run_identifier=run_identifier,
+                code_revision=code_revision,
+                native_voxel_count=voxel_count,
+                required=task.required,
+                configured_parameter_hashes=task.configured_parameter_hashes,
+            )
+        except Exception as exc:
+            detail = f"Radiomics failed for {task.source}/{task.roi_name}: {exc}"
+            if not task.required:
+                return disposition_rows_for_arms(
+                    _common_metadata(task),
+                    decision=task.decision,
+                    disposition="failed",
+                    detail=detail,
+                    failure_kind="extraction_error",
+                    run_identifier=run_identifier,
+                    code_revision=code_revision,
+                    native_voxel_count=int(np.asarray(task.mask).astype(bool).sum()),
+                    required=False,
+                    configured_parameter_hashes=task.configured_parameter_hashes,
+                )
+            raise RuntimeError(detail) from exc
     if tasks:
         sequential_env = os.environ.get('RTPIPELINE_RADIOMICS_SEQUENTIAL', '').lower() in ('1', 'true', 'yes')
         if sequential_env:
@@ -1358,63 +1553,71 @@ def radiomics_for_course(
                 f"Radiomics course {course_dir} returned {len(results)} ROI outcomes for "
                 f"{len(tasks)} attempted tasks"
             )
-        for task, rec in zip(tasks, results):
-            source, roi, _mask, cropped = task
-            status = (rec or {}).get("extraction_status")
-            internal_status = (rec or {}).get("__status__")
-            if internal_status == "skipped" or status == "declared_skip":
-                continue
+        for task, records in zip(tasks, results):
             counts = source_counts.setdefault(
-                source,
+                task.source,
                 {"attempted": 0, "extracted": 0, "failed": 0},
             )
             counts["attempted"] += 1
-            if not rec:
-                if roi_source_is_required(source):
+            if not records:
+                if task.required:
                     _invalidate_radiomics_outputs(out_path)
                     raise RadiomicsCourseExtractionError(
                         f"Radiomics course {course_dir} is incomplete: required ROI "
-                        f"{source}/{roi} returned no outcome record"
+                        f"{task.source}/{task.roi_name} returned no outcome records"
                     )
-                rec = {
-                    "modality": "CT",
-                    "segmentation_source": source,
-                    "roi_name": roi,
-                    "roi_original_name": roi,
-                    "course_dir": str(course_dir),
-                    "patient_id": course_dir.parent.name,
-                    "course_id": course_dir.name,
-                    "structure_cropped": bool(cropped),
-                    "extraction_status": "failed",
-                    "extraction_status_detail": "worker returned no outcome record",
-                    "extraction_failure_kind": "extraction_error",
-                }
-                status = "failed"
-            if status not in (None, "success"):
+                records = disposition_rows_for_arms(
+                    _common_metadata(task),
+                    decision=task.decision,
+                    disposition="failed",
+                    detail="worker returned no outcome records",
+                    failure_kind="extraction_error",
+                    run_identifier=run_identifier,
+                    code_revision=code_revision,
+                    native_voxel_count=int(np.asarray(task.mask).astype(bool).sum()),
+                    required=False,
+                    configured_parameter_hashes=task.configured_parameter_hashes,
+                )
+            if len(records) != len(CT_EXTRACTION_ARMS) or {
+                str(record.get("extraction_arm")) for record in records
+            } != set(CT_EXTRACTION_ARMS):
+                _invalidate_radiomics_outputs(out_path)
+                raise RadiomicsCourseExtractionError(
+                    f"Radiomics course {course_dir} returned an incomplete arm set for "
+                    f"{task.source}/{task.roi_name}"
+                )
+            failing_record = next(
+                (
+                    record
+                    for record in records
+                    if record.get("extraction_status") not in (None, "success")
+                ),
+                None,
+            )
+            if failing_record is not None:
                 counts["failed"] += 1
-                detail = str(rec.get("extraction_status_detail", "unknown error"))
-                if (
-                    roi_source_is_required(source)
-                    and not extraction_status_is_nonfatal_for_required(status)
-                ):
+                status = failing_record.get("extraction_status")
+                detail = str(failing_record.get("extraction_status_detail", "unknown error"))
+                if task.required and not extraction_status_is_nonfatal_for_required(status):
                     _invalidate_radiomics_outputs(out_path)
                     raise RadiomicsCourseExtractionError(
                         f"Radiomics course {course_dir} is incomplete: required ROI "
-                        f"{source}/{roi} failed: {detail}"
+                        f"{task.source}/{task.roi_name} failed: {detail}"
                     )
                 roi_failures.append(
                     {
-                        "roi_name": roi,
-                        "source": source,
+                        "roi_name": task.roi_name,
+                        "source": task.source,
                         "status": str(status),
-                        "failure_kind": str(rec.get("extraction_failure_kind", "extraction_error")),
+                        "failure_kind": str(
+                            failing_record.get("extraction_failure_kind", "extraction_error")
+                        ),
                         "reason": detail,
                     }
                 )
-                rows.append({k: v for k, v in rec.items() if not k.startswith("__")})
-                continue
-            counts["extracted"] += 1
-            rows.append(rec)
+            else:
+                counts["extracted"] += 1
+            rows.extend(records)
     if not rows:
         try:
             from .radiomics_conda import (
@@ -1465,46 +1668,8 @@ def radiomics_for_course(
             acquisition_descriptor,
         )
         import pandas as pd
-        df_new = pd.DataFrame(rows)
-        if existing_df is not None and out_path.exists():
-            # Append-only update (resume top-up): keep original column order and avoid duplicates.
-            try:
-                template_cols = list(existing_df.columns)
-                for col in template_cols:
-                    if col not in df_new.columns:
-                        df_new[col] = np.nan
-                df_new = df_new.loc[:, template_cols]
-                df = pd.concat([existing_df, df_new], ignore_index=True)
-                df = df.drop_duplicates(subset=["segmentation_source", "roi_original_name", "patient_id", "course_id"], keep="last")
-            except Exception:
-                df = pd.concat([existing_df, df_new], ignore_index=True)
-        else:
-            df = df_new
-        out = out_path
-        _write_excel_atomic(df, out)
-        # Also save Parquet for faster aggregation (10-50x I/O speedup)
-        parquet_path = out_path.with_suffix('.parquet')
-        tmp_parquet = parquet_path.with_suffix('.parquet.tmp')
-        try:
-            df.to_parquet(tmp_parquet, index=False, engine='pyarrow')
-            tmp_parquet.replace(parquet_path)
-            logger.debug("Saved Parquet: %s", parquet_path)
-        except Exception as parquet_err:
-            # Retry via an Excel round-trip to coerce non-scalar objects to strings.
-            try:
-                df_roundtrip = pd.read_excel(out_path, engine="openpyxl")
-                df_roundtrip.to_parquet(tmp_parquet, index=False, engine="pyarrow")
-                tmp_parquet.replace(parquet_path)
-                logger.debug("Saved Parquet (round-trip): %s", parquet_path)
-            except Exception as parquet_err2:
-                _remove_artifact_strict(
-                    tmp_parquet, context="cleaning a failed temporary Parquet write"
-                )
-                # Parquet is optional only when no stale or partial sidecar survives.
-                _remove_artifact_strict(
-                    parquet_path, context="invalidating a failed Parquet refresh"
-                )
-                logger.debug("Parquet save failed (non-critical): %s (retry: %s)", parquet_err, parquet_err2)
+        df = pd.DataFrame(rows)
+        write_ct_publication_atomic(df, out_path, expected_keys=expected_keys)
         return outcome
     except Exception as e:
         _invalidate_radiomics_outputs(out_path)
@@ -2091,10 +2256,10 @@ def run_radiomics(config: PipelineConfig, courses: List["object"], custom_struct
                 continue
             p = Path(p)
             try:
-                df = _pd.read_excel(p, engine="openpyxl")
+                df = read_authoritative_ct_publication(p.with_suffix(".parquet"))
             except Exception as exc:
                 raise RadiomicsCourseExtractionError(
-                    f"Expected course radiomics workbook is unreadable: {p}: {exc}"
+                    f"Expected course radiomics Parquet is unreadable: {p.with_suffix('.parquet')}: {exc}"
                 ) from exc
             if isinstance(outcome, RadiomicsCourseOutcome):
                 for column, value in course_diagnostic_columns(outcome).items():
@@ -2424,10 +2589,13 @@ def run_radiomics_all_series(config: PipelineConfig, patient_ids: List[str]) -> 
         return None
     data_dir = output_root / "Data"
     out_csv = data_dir / "radiomics_all_series.csv"
+    out_parquet = data_dir / "radiomics_all_series.parquet"
     preserved_df = None
-    if out_csv.exists():
+    if out_csv.exists() or out_parquet.exists():
         try:
-            existing_df = pd.read_csv(out_csv)
+            if not out_parquet.exists():
+                raise ValueError("authoritative all-series CT Parquet is missing")
+            existing_df = read_authoritative_ct_publication(out_parquet)
             if "patient_id" not in existing_df.columns:
                 raise ValueError("existing CSV lacks required patient_id column")
             validate_acquisition_descriptor_table(existing_df)
@@ -2493,7 +2661,7 @@ def run_radiomics_all_series(config: PipelineConfig, patient_ids: List[str]) -> 
                 if not out_path or not Path(out_path).exists():
                     continue
                 try:
-                    df = pd.read_excel(Path(out_path), engine="openpyxl")
+                    df = read_authoritative_ct_publication(Path(out_path).with_suffix(".parquet"))
                 except Exception as exc:
                     logger.warning(
                         "Failed reading all-series radiomics for patient %s series %s: %s",
@@ -2510,11 +2678,9 @@ def run_radiomics_all_series(config: PipelineConfig, patient_ids: List[str]) -> 
                 df["series_dir"] = str(input_dir)
                 validate_acquisition_descriptor_table(df)
                 # the temp course dir is deleted; repoint course_dir at the persistent series dir and
-                # drop the course-shaped course_id (meaningless in an all-series artifact — series_uid
-                # is the identifier; both CT workers emit it as the temp course basename).
+                # Keep course_id because it is part of the full publication identity.
                 if "course_dir" in df.columns:
                     df["course_dir"] = str(input_dir)
-                df = df.drop(columns=[c for c in ("course_id",) if c in df.columns])
                 all_dfs.append(df)
             finally:
                 shutil.rmtree(course_dir, ignore_errors=True)
@@ -2534,6 +2700,7 @@ def run_radiomics_all_series(config: PipelineConfig, patient_ids: List[str]) -> 
     frames.extend(all_dfs)
     if not frames:
         out_csv.unlink(missing_ok=True)
+        out_parquet.unlink(missing_ok=True)
         logger.info(
             "No all-series CT radiomics remain after refreshing %d patient(s)",
             len(requested_patient_ids),
@@ -2541,15 +2708,27 @@ def run_radiomics_all_series(config: PipelineConfig, patient_ids: List[str]) -> 
         return None
     out_df = pd.concat(frames, ignore_index=True)
     validate_acquisition_descriptor_table(out_df)
+    expected_keys = {publication_key(record) for record in out_df.to_dict("records")}
+    validate_ct_publication(out_df, expected_keys=expected_keys)
     data_dir.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(
         prefix=f".{out_csv.name}.", suffix=".tmp", dir=data_dir, delete=False
     ) as handle:
         tmp_csv = Path(handle.name)
+    parquet_tmp = tmp_csv.with_suffix(".tmp.parquet")
     try:
         out_df.to_csv(tmp_csv, index=False)
+        out_df.to_parquet(parquet_tmp, index=False, engine="pyarrow")
+        parquet_check = pd.read_parquet(parquet_tmp, engine="pyarrow")
+        validate_ct_publication(parquet_check, expected_keys=expected_keys)
+        parquet_tmp.replace(out_parquet)
         tmp_csv.replace(out_csv)
+    except Exception:
+        out_parquet.unlink(missing_ok=True)
+        out_csv.unlink(missing_ok=True)
+        raise
     finally:
         tmp_csv.unlink(missing_ok=True)
+        parquet_tmp.unlink(missing_ok=True)
     logger.info("Wrote all-series CT radiomics: %s (%d rows)", out_csv, len(out_df))
     return out_csv
