@@ -20,6 +20,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import rtpipeline.segmentation as segmentation
 
 import sys
 
@@ -27,6 +28,17 @@ ROOT = Path(__file__).resolve().parents[1]
 RUN_COURSE_STAGE = ROOT / "workflow" / "scripts" / "run_course_stage.py"
 
 _MISSING_PYTHON = "/nonexistent/python-that-cannot-be-launched"
+
+
+@pytest.fixture(autouse=True)
+def _validated_segmentation_content(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep campaign-wrapper tests focused on stage launch and close semantics."""
+
+    monkeypatch.setattr(
+        segmentation,
+        "assess_course_segmentation",
+        lambda _course_dir: {"status": "ok", "reasons": ["validated test fixture"]},
+    )
 
 
 def _stub_failing_python(tmp_path: Path) -> str:

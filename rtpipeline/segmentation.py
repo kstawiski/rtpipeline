@@ -14,6 +14,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import zipfile
 from importlib import resources as importlib_resources
 from pathlib import Path
@@ -32,6 +33,26 @@ from .layout import build_course_dirs
 
 logger = logging.getLogger(__name__)
 _TOTALSEG_OUTPUT_TYPE_FALLBACK = {"nifti", "dicom", "dicom_rtstruct", "dicom_seg"}
+SEGMENTATION_SENTINEL_NAME = ".segmentation_done"
+SEGMENTATION_STATUS_RELATIVE_PATH = Path("metadata/segmentation_status.json")
+_SEGMENTATION_STATUSES = {"ok", "disabled", "failed"}
+_TOTALSEG_RUN_STATE = threading.local()
+
+
+def _set_totalseg_failure(category: str, reason: str) -> None:
+    _TOTALSEG_RUN_STATE.failure = {
+        "category": str(category),
+        "reason": str(reason),
+    }
+
+
+def _clear_totalseg_failure() -> None:
+    _TOTALSEG_RUN_STATE.failure = None
+
+
+def _last_totalseg_failure() -> dict[str, str] | None:
+    value = getattr(_TOTALSEG_RUN_STATE, "failure", None)
+    return dict(value) if isinstance(value, dict) else None
 
 # Lazy import for QC functions to avoid circular imports
 _qc_module = None
@@ -98,7 +119,61 @@ def _run_vec(cmd: List[str], env: Optional[dict] = None, timeout: Optional[int] 
     try:
         cmd_preview = ' '.join(cmd[:4]) + ('...' if len(cmd) > 4 else '')
         logger.debug("Running command (shell=False) with timeout=%ds: %s", timeout, cmd_preview)
-        subprocess.run(cmd, check=True, shell=False, env=env, timeout=timeout)
+        is_totalseg = "totalsegmentator" in cmd[0].lower()
+        if not is_totalseg:
+            subprocess.run(cmd, check=True, shell=False, env=env, timeout=timeout)
+            return True
+
+        # A temporary file avoids PIPE deadlocks from verbose nnU-Net children while
+        # retaining enough evidence to classify CUDA exhaustion. Replay it unchanged
+        # so production logs remain the operator's primary diagnostic surface.
+        with tempfile.TemporaryFile(mode="w+b") as stderr_file:
+            try:
+                subprocess.run(
+                    cmd,
+                    check=True,
+                    shell=False,
+                    env=env,
+                    timeout=timeout,
+                    stderr=stderr_file,
+                )
+            except subprocess.CalledProcessError as exc:
+                stderr_file.flush()
+                stderr_file.seek(0)
+                stderr_bytes = stderr_file.read()
+                if stderr_bytes:
+                    stream = getattr(sys.stderr, "buffer", None)
+                    if stream is not None:
+                        stream.write(stderr_bytes)
+                        stream.flush()
+                    else:
+                        sys.stderr.write(stderr_bytes.decode("utf-8", errors="replace"))
+                stderr_text = stderr_bytes.decode("utf-8", errors="replace").lower()
+                oom_patterns = (
+                    "cuda error: out of memory",
+                    "cuda out of memory",
+                    "cudamalloc failed",
+                    "cublas status alloc failed",
+                )
+                category = (
+                    "cuda_out_of_memory"
+                    if any(pattern in stderr_text for pattern in oom_patterns)
+                    else "nonzero_exit"
+                )
+                reason = f"TotalSegmentator {category} with exit code {exc.returncode}"
+                _set_totalseg_failure(category, reason)
+                raise RuntimeError(reason) from exc
+            else:
+                stderr_file.flush()
+                stderr_file.seek(0)
+                stderr_bytes = stderr_file.read()
+                if stderr_bytes:
+                    stream = getattr(sys.stderr, "buffer", None)
+                    if stream is not None:
+                        stream.write(stderr_bytes)
+                        stream.flush()
+                    else:
+                        sys.stderr.write(stderr_bytes.decode("utf-8", errors="replace"))
         return True
     except subprocess.TimeoutExpired:
         cmd_preview = ' '.join(cmd[:3])
@@ -503,6 +578,24 @@ def _totalseg_supported_output_types(config: PipelineConfig) -> set[str]:
     return _totalseg_supported_output_types_cached(prefix, cmd)
 
 
+def _command_with_device(command: Sequence[str], device: str) -> list[str]:
+    """Return one TotalSegmentator command with exactly one device selection."""
+
+    updated = list(command)
+    device_indices = [index for index, value in enumerate(updated) if value == "-d"]
+    if device_indices:
+        first = device_indices[0]
+        if first + 1 >= len(updated):
+            updated.append(device)
+        else:
+            updated[first + 1] = device
+        for index in reversed(device_indices[1:]):
+            del updated[index : min(index + 2, len(updated))]
+    else:
+        updated.extend(["-d", device])
+    return updated
+
+
 def run_totalsegmentator(
     config: PipelineConfig,
     input_path: Path,
@@ -513,12 +606,18 @@ def run_totalsegmentator(
 ) -> bool:
     """Run TotalSegmentator directly without compatibility wrapper."""
 
+    _clear_totalseg_failure()
+
     # Use TotalSegmentator directly - modern NumPy/SciPy work fine
     supported_types = _totalseg_supported_output_types(config)
     if output_type and output_type not in supported_types:
         logger.info(
             "TotalSegmentator output_type '%s' not supported by current CLI; skipping direct export",
             output_type,
+        )
+        _set_totalseg_failure(
+            "unsupported_output_type",
+            f"TotalSegmentator does not support output type {output_type!r}",
         )
         return False
 
@@ -626,7 +725,6 @@ def run_totalsegmentator(
     use_shell = bool(config.conda_activate)
 
     if use_shell:
-        # Run the trusted activation fragment through the explicit shell helper.
         cmd = "{}{}".format(
             _prefix(config),
             " ".join(shlex.quote(part) for part in cmd_parts),
@@ -634,38 +732,76 @@ def run_totalsegmentator(
         logger.info("Running TotalSegmentator (%s, activated shell): %s", output_type, cmd)
         try:
             ok = _run(cmd, env=env)
-        except RuntimeError:
+        except RuntimeError as exc:
+            if _last_totalseg_failure() is None:
+                _set_totalseg_failure(
+                    "timeout" if "timed out" in str(exc).lower() else "nonzero_exit",
+                    str(exc),
+                )
             ok = False
     else:
-        # Use shell=False for better security (preferred path)
         cmd_preview = " ".join(cmd_parts[:5]) + ("..." if len(cmd_parts) > 5 else "")
         logger.info("Running TotalSegmentator (%s, shell=False): %s", output_type, cmd_preview)
         try:
             ok = _run_vec(cmd_parts, env=env)
-        except RuntimeError:
+        except RuntimeError as exc:
+            if _last_totalseg_failure() is None:
+                _set_totalseg_failure(
+                    "timeout" if "timed out" in str(exc).lower() else "nonzero_exit",
+                    str(exc),
+                )
             ok = False
 
     if not ok:
+        primary_failure = _last_totalseg_failure() or {
+            "category": "nonzero_exit",
+            "reason": "TotalSegmentator returned an unsuccessful process result",
+        }
+        _set_totalseg_failure(primary_failure["category"], primary_failure["reason"])
         if getattr(config, "totalseg_allow_fallback", False):
             logger.info("Retrying TotalSegmentator with CPU-only and single-process env")
-            # Add CPU-only flag and disable multiprocessing
             env_retry = env.copy()
-            env_retry['CUDA_VISIBLE_DEVICES'] = '-1'
+            env_retry["CUDA_VISIBLE_DEVICES"] = "-1"
+            env_retry["TOTALSEG_ACCELERATOR"] = "cpu"
+            env_retry["TOTALSEG_DEVICE"] = "cpu"
+            cmd_parts_retry = _command_with_device(cmd_parts, "cpu")
 
             if use_shell:
-                cmd_retry = cmd + " -d cpu"
+                cmd_retry = "{}{}".format(
+                    _prefix(config),
+                    " ".join(shlex.quote(part) for part in cmd_parts_retry),
+                )
                 try:
                     ok = _run(cmd_retry, env=env_retry)
-                except RuntimeError:
+                except RuntimeError as exc:
+                    _set_totalseg_failure(
+                        "cpu_fallback_failed",
+                        f"{primary_failure['reason']}; CPU fallback failed: {exc}",
+                    )
                     ok = False
             else:
-                cmd_parts_retry = cmd_parts + ["-d", "cpu"]
                 try:
                     ok = _run_vec(cmd_parts_retry, env=env_retry)
-                except RuntimeError:
+                except RuntimeError as exc:
+                    _set_totalseg_failure(
+                        "cpu_fallback_failed",
+                        f"{primary_failure['reason']}; CPU fallback failed: {exc}",
+                    )
                     ok = False
+            if ok:
+                logger.warning(
+                    "TotalSegmentator recovered through the operator-enabled CPU fallback"
+                )
+                _clear_totalseg_failure()
+            elif (_last_totalseg_failure() or {}).get("category") != "cpu_fallback_failed":
+                _set_totalseg_failure(
+                    "cpu_fallback_failed",
+                    f"{primary_failure['reason']}; CPU fallback returned an unsuccessful process result",
+                )
         else:
             logger.error("TotalSegmentator failed and fallback is disabled.")
+    else:
+        _clear_totalseg_failure()
 
     return ok
 
@@ -1288,6 +1424,7 @@ def _series_masks_current(
         if reference.GetDimension() != 3:
             return False, "planning CT NIfTI is not three-dimensional"
         root = base_dir.resolve(strict=False)
+        expected_paths: set[Path] = set()
         for mask_name in masks:
             if not isinstance(mask_name, str) or not mask_name.strip():
                 return False, "mask manifest contains an invalid path"
@@ -1296,12 +1433,36 @@ def _series_masks_current(
                 mask_path.relative_to(root)
             except ValueError:
                 return False, "mask manifest contains a path outside its segmentation directory"
+            expected_paths.add(mask_path)
+        actual_paths = {
+            path.resolve(strict=False)
+            for pattern in (f"{model}--*.nii*", f"{base_name}--{model}--*.nii*")
+            for path in base_dir.glob(pattern)
+            if path.is_file()
+        }
+        if actual_paths != expected_paths:
+            extra = sorted(path.name for path in actual_paths - expected_paths)
+            missing = sorted(path.name for path in expected_paths - actual_paths)
+            return False, (
+                "mask directory does not match its manifest inventory "
+                f"(unmanifested={extra}, missing={missing})"
+            )
+        non_empty_masks = 0
+        for mask_name in masks:
+            mask_path = (base_dir / mask_name).resolve(strict=False)
             mask = sitk.ReadImage(str(mask_path))
             if mask.GetDimension() != 3 or not _same_image_geometry(mask, reference):
                 return False, f"mask {mask_name} is unreadable or mismatched to the planning CT geometry"
+            if bool(np.any(sitk.GetArrayViewFromImage(mask))):
+                non_empty_masks += 1
+        if non_empty_masks == 0:
+            return False, "mask inventory contains no readable non-empty segmentation ROI"
     except Exception as exc:
         return False, f"mask geometry validation failed: {exc}"
-    return True, "complete masks match the contracted planning CT"
+    return True, (
+        f"complete masks match the contracted planning CT and contain "
+        f"{non_empty_masks} non-empty ROI mask(s)"
+    )
 
 
 def _segmentation_source_provenance(
@@ -1636,28 +1797,16 @@ def segment_all_series_for_patient(config: PipelineConfig, patient_id: str, *, f
                 )
                 with tempfile.TemporaryDirectory(prefix="seg_series_", dir=str(tmp_parent)) as tmp_root_str:
                     tmp_root = Path(tmp_root_str)
-                    dicom_input_tmp = tmp_root / model / "dicom"
-                    dicom_input_tmp.mkdir(parents=True, exist_ok=True)
-                    for dicom_slice in sorted(input_dir.glob("*.dcm")):
-                        if dicom_slice.is_file():
-                            shutil.copy2(dicom_slice, dicom_input_tmp / dicom_slice.name)
                     nifti_tmp = tmp_root / model / "nifti"
                     nifti_tmp.mkdir(parents=True, exist_ok=True)
 
                     rt_out = base_dir / f"{base_name}--{model}.dcm"
-                    if rt_out.exists():
-                        if rt_out.is_dir():
-                            shutil.rmtree(rt_out, ignore_errors=True)
-                        else:
-                            rt_out.unlink()
-                    ok_dicom = run_totalsegmentator(
-                        config,
-                        dicom_input_tmp,
-                        rt_out,
-                        "dicom_rtstruct",
-                        task=model,
-                        extra_args=model_extra_args,
-                    )
+                    _clear_previous_masks(base_dir, base_name, model)
+                    if rt_out.is_dir():
+                        shutil.rmtree(rt_out, ignore_errors=True)
+                    else:
+                        rt_out.unlink(missing_ok=True)
+
                     ok_nifti = run_totalsegmentator(
                         config,
                         nifti_path,
@@ -1667,31 +1816,20 @@ def segment_all_series_for_patient(config: PipelineConfig, patient_id: str, *, f
                         extra_args=model_extra_args,
                     )
 
-                    if ok_dicom and rt_out.exists() and rt_out.is_dir():
-                        dicom_files = sorted(rt_out.rglob("*.dcm"))
-                        if dicom_files:
-                            tmp_rt = base_dir / f".{base_name}--{model}.rtstruct.tmp.dcm"
-                            if tmp_rt.exists():
-                                tmp_rt.unlink()
-                            shutil.copy2(dicom_files[0], tmp_rt)
-                            shutil.rmtree(rt_out, ignore_errors=True)
-                            shutil.move(str(tmp_rt), str(rt_out))
-
                     if ok_nifti:
                         _materialize_masks(nifti_tmp, base_dir, base_name, model)
+                        _ensure_model_rtstruct_from_masks(
+                            input_dir,
+                            base_dir,
+                            base_name,
+                            model,
+                        )
 
                     entry = _series_model_manifest_entry(base_dir, base_name, model)
                     if entry is not None and not ok_nifti:
-                        # Masks left by an interrupted earlier run are stale. A failed
-                        # retry must not record them as current output and manufacture a
-                        # false completion signal for the resume check.
                         entry["masks"] = []
                     if entry:
                         manifest_entries.append(entry)
-                    # This is the current run, so its completion manifest has not been
-                    # published yet. Validate the just-captured entry directly here;
-                    # `_series_segmentation_ready` is intentionally reserved for resume
-                    # checks against a manifest written by an earlier completed run.
                     current_masks_value = entry.get("masks", []) if entry else []
                     current_masks = current_masks_value if isinstance(current_masks_value, list) else []
                     current_run_ready = bool(current_masks) and all(
@@ -1805,6 +1943,228 @@ def segment_all_series_for_patient(config: PipelineConfig, patient_id: str, *, f
 
     _write_updated_series_manifest(manifest_path, manifest)
     return summary
+
+
+def _segmentation_status_base(course_dir: Path) -> dict[str, Any]:
+    return {
+        "version": 1,
+        "course_dir": str(Path(course_dir).resolve(strict=False)),
+        "assessed_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "status": "failed",
+        "reasons": [],
+        "evidence": {},
+    }
+
+
+def failed_segmentation_outcome(course_dir: Path, reason: str) -> dict[str, Any]:
+    outcome = _segmentation_status_base(course_dir)
+    outcome["status"] = "failed"
+    outcome["reasons"] = [str(reason)]
+    return outcome
+
+
+def _recorded_segmentation_failures(course_dir: Path) -> list[dict[str, str]]:
+    audit_path = Path(course_dir) / "metadata" / "segmentation_resume.json"
+    try:
+        audit = json.loads(audit_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    decisions = audit.get("decisions") if isinstance(audit, dict) else None
+    if not isinstance(decisions, dict):
+        return []
+    failures: list[dict[str, str]] = []
+    for artifact, raw in decisions.items():
+        if not isinstance(raw, dict) or raw.get("action") != "failed":
+            continue
+        failure = raw.get("failure")
+        category = "segmentation_failure"
+        detail = str(raw.get("reason") or "segmentation artifact failed")
+        if isinstance(failure, dict):
+            category = str(failure.get("category") or category)
+            detail = str(failure.get("reason") or detail)
+        failures.append(
+            {
+                "artifact": str(artifact),
+                "category": category,
+                "reason": detail,
+            }
+        )
+    return failures
+
+
+def assess_course_segmentation(course_dir: Path) -> dict[str, Any]:
+    """Derive the stage outcome from contracted, readable surviving content."""
+
+    course_dir = Path(course_dir)
+    outcome = _segmentation_status_base(course_dir)
+    evidence = outcome["evidence"]
+    assert isinstance(evidence, dict)
+    try:
+        contract = load_course_contract(course_dir)
+    except Exception as exc:
+        outcome["reasons"] = [
+            f"authoritative course contract could not be loaded: {type(exc).__name__}: {exc}"
+        ]
+        return outcome
+
+    ct_dir = contract.planning_ct_dir
+    nifti_path = contract.planning_ct_nifti
+    planning_ct = contract.planning_ct
+    planning_uid = str(planning_ct.get("series_instance_uid") or "").strip()
+    evidence["planning_ct_series_instance_uid"] = planning_uid
+    evidence["planning_ct_dicom_dir"] = str(ct_dir) if ct_dir is not None else None
+    evidence["planning_ct_nifti"] = str(nifti_path) if nifti_path is not None else None
+
+    if ct_dir is None or nifti_path is None:
+        outcome["status"] = "disabled"
+        outcome["reasons"] = [
+            "nothing applicable to segment because the authoritative course contract "
+            "has no planning CT DICOM and NIfTI pair"
+        ]
+        return outcome
+    if not planning_uid:
+        outcome["reasons"] = [
+            "planning CT exists but the authoritative course contract has no series identity"
+        ]
+        return outcome
+    if not nifti_path.is_file():
+        outcome["reasons"] = [f"contracted planning CT NIfTI is missing: {nifti_path}"]
+        return outcome
+
+    nifti_provenance = planning_ct.get("nifti_provenance")
+    source_ct_sop_hash = (
+        str(nifti_provenance.get("sop_hash") or "")
+        if isinstance(nifti_provenance, dict)
+        else ""
+    )
+    base_name = _strip_nifti_base(nifti_path)
+    base_dir = build_course_dirs(course_dir).segmentation_totalseg / base_name
+    manifest_path = base_dir / "manifest.json"
+    evidence["manifest"] = str(manifest_path)
+    evidence["segmentation_directory"] = str(base_dir)
+
+    current, current_reason = _series_masks_current(
+        base_dir,
+        base_name,
+        "total",
+        source_nifti=nifti_path,
+        planning_ct_series_uid=planning_uid,
+        source_ct_sop_hash=source_ct_sop_hash,
+    )
+    evidence["total_masks_current"] = current
+    evidence["total_masks_reason"] = current_reason
+    recorded_failures = _recorded_segmentation_failures(course_dir)
+    evidence["recorded_failures"] = recorded_failures
+    if not current:
+        reasons = [f"usable TotalSegmentator masks are absent: {current_reason}"]
+        reasons.extend(
+            f"{item['artifact']} {item['category']}: {item['reason']}"
+            for item in recorded_failures
+        )
+        outcome["reasons"] = reasons
+        return outcome
+
+    # Requested model failures are material stage failures even when the default
+    # total model survived. Explicit QC skips remain non-failures in the manifest.
+    if recorded_failures:
+        outcome["reasons"] = [
+            f"{item['artifact']} {item['category']}: {item['reason']}"
+            for item in recorded_failures
+        ]
+        return outcome
+
+    from .auto_rtstruct import (
+        _derived_rtstruct_dependencies_are_current,
+        _is_valid_rtstruct,
+        _rtstruct_matches_planning_ct,
+    )
+
+    rs_auto = course_dir / "RS_auto.dcm"
+    rs_auto_valid = _is_valid_rtstruct(rs_auto)
+    rs_auto_matches = rs_auto_valid and _rtstruct_matches_planning_ct(rs_auto, planning_uid)
+    rs_auto_current = bool(
+        rs_auto_matches
+        and _derived_rtstruct_dependencies_are_current(
+            rs_auto,
+            ct_dir=ct_dir,
+            nifti_path=nifti_path,
+            segmentation_root=build_course_dirs(course_dir).segmentation_totalseg,
+        )
+    )
+    evidence["rs_auto"] = str(rs_auto)
+    evidence["rs_auto_readable_non_empty"] = rs_auto_valid
+    evidence["rs_auto_matches_planning_ct"] = rs_auto_matches
+    evidence["rs_auto_current"] = rs_auto_current
+    if not rs_auto_current:
+        outcome["reasons"] = [
+            "RS_auto.dcm could not be derived as a readable, non-empty, current RTSTRUCT "
+            "bound to the contracted planning CT"
+        ]
+        return outcome
+
+    outcome["status"] = "ok"
+    outcome["reasons"] = [
+        "contracted planning CT, complete readable non-empty masks, and current "
+        "RS_auto.dcm were validated"
+    ]
+    return outcome
+
+
+def _write_text_atomic(path: Path, text: str) -> None:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent))
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def publish_course_segmentation_status(
+    course_dir: Path,
+    outcome: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    """Atomically publish a content-derived stage report and legacy status sentinel."""
+
+    course_dir = Path(course_dir)
+    requested = dict(outcome) if outcome is not None else None
+    requested_status = str((requested or {}).get("status") or "").strip().lower()
+    # Success is never caller-asserted. Reassess contracted content even when a
+    # caller supplies an apparently successful outcome. Explicit non-success
+    # outcomes remain available so a caught crash can preserve its exact reason.
+    final = (
+        assess_course_segmentation(course_dir)
+        if requested is None or requested_status == "ok"
+        else requested
+    )
+    status = str(final.get("status") or "").strip().lower()
+    if status not in _SEGMENTATION_STATUSES:
+        final = failed_segmentation_outcome(
+            course_dir,
+            f"invalid segmentation status {status!r} was rejected",
+        )
+        status = "failed"
+    reasons = final.get("reasons")
+    if not isinstance(reasons, list) or not reasons:
+        final["reasons"] = ["segmentation status had no recorded reason"]
+        status = "failed"
+    final["status"] = status
+    final["assessed_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    _write_manifest_atomic(course_dir / SEGMENTATION_STATUS_RELATIVE_PATH, final)
+    _write_text_atomic(course_dir / SEGMENTATION_SENTINEL_NAME, f"{status}\n")
+    logger.log(
+        logging.INFO if status == "ok" else logging.ERROR,
+        "Segmentation stage status=%s course=%s reasons=%s",
+        status,
+        course_dir,
+        "; ".join(str(reason) for reason in final["reasons"]),
+    )
+    return final
 
 
 def segment_course(config: PipelineConfig, course_dir: Path, force: bool = False) -> dict:
@@ -1992,57 +2352,53 @@ def segment_course(config: PipelineConfig, course_dir: Path, force: bool = False
                     logger.debug("Model eligibility check failed for %s: %s", model, exc)
 
             model_tmp = tmp_root / model
-            dicom_tmp = model_tmp / "dicom"
             nifti_tmp = model_tmp / "nifti"
             attempted_any = True
-            dicom_tmp.mkdir(parents=True, exist_ok=True)
             nifti_tmp.mkdir(parents=True, exist_ok=True)
 
             model_entry: Dict[str, object] = {"model": model, "rtstruct": "", "masks": []}
-
             dest_dicom = base_dir / f"{base_name}--{model}.dcm"
-            ok_dicom = run_totalsegmentator(config, ct_dir, dicom_tmp, "dicom_rtstruct", task=task_name)
-            ok_nifti = run_totalsegmentator(config, nifti_path, nifti_tmp, "nifti", task=task_name)
 
-            if ok_dicom:
-                dicom_files = sorted(dicom_tmp.glob("*.dcm"))
-                if dicom_files:
-                    target = dicom_files[0]
-                    if dest_dicom.exists():
-                        dest_dicom.unlink()
-                    shutil.copy2(target, dest_dicom)
-                    if model == "total":
-                        results["dicom_seg"] = str(dest_dicom)
-                elif dicom_tmp.exists():
-                    dicom_files = sorted(dicom_tmp.rglob("*.dcm"))
-                    if dicom_files:
-                        if dest_dicom.exists():
-                            dest_dicom.unlink()
-                        shutil.copy2(dicom_files[0], dest_dicom)
-                        if model == "total":
-                            results["dicom_seg"] = str(dest_dicom)
+            # Rejected prior artifacts cannot remain visible if the replacement
+            # model run fails. TotalSegmentator receives only the contracted NIfTI.
+            _clear_previous_masks(base_dir, base_name, model)
+            dest_dicom.unlink(missing_ok=True)
             legacy_dicom = base_dir / f"{model}.dcm"
-            if legacy_dicom.exists() and legacy_dicom != dest_dicom:
-                try:
-                    legacy_dicom.unlink()
-                except Exception:
-                    logger.debug("Unable to remove legacy RTSTRUCT %s", legacy_dicom)
+            if legacy_dicom != dest_dicom:
+                legacy_dicom.unlink(missing_ok=True)
 
-            if dest_dicom.exists():
-                model_entry["rtstruct"] = str(dest_dicom.relative_to(base_dir))
+            ok_nifti = run_totalsegmentator(
+                config,
+                nifti_path,
+                nifti_tmp,
+                "nifti",
+                task=task_name,
+            )
 
-            # Capture masks ONLY on a successful current run (see all-series path): a failed
-            # retry skips `_materialize_masks`, so on-disk masks would be stale.
             if ok_nifti:
                 _materialize_masks(nifti_tmp, base_dir, base_name, model)
                 masks_for_model = sorted(base_dir.glob(f"{model}--*.nii*"))
                 if masks_for_model:
-                    model_entry["masks"] = [str(p.relative_to(base_dir)) for p in masks_for_model]
+                    model_entry["masks"] = [
+                        str(path.relative_to(base_dir)) for path in masks_for_model
+                    ]
+                    derived_dicom = _ensure_model_rtstruct_from_masks(
+                        ct_dir,
+                        base_dir,
+                        base_name,
+                        model,
+                    )
+                    if derived_dicom is not None:
+                        model_entry["rtstruct"] = str(derived_dicom.relative_to(base_dir))
+                        model_entry["rtstruct_ok"] = True
+                        if model == "total":
+                            results["dicom_seg"] = str(derived_dicom)
             if model_entry["rtstruct"] or model_entry["masks"]:
                 manifest_entries.append(model_entry)
 
             run_succeeded = bool(ok_nifti and model_entry["masks"])
             decision_reason = str(resume_decisions[model].get("reason") or "")
+            failure_detail = None if run_succeeded else _last_totalseg_failure()
             resume_decisions[model] = {
                 "action": "rebuilt" if run_succeeded else "failed",
                 "model_run": True,
@@ -2054,6 +2410,8 @@ def segment_course(config: PipelineConfig, course_dir: Path, force: bool = False
                     else f"{decision_reason}; TotalSegmentator was invoked but did not publish a complete mask inventory"
                 ),
             }
+            if failure_detail is not None:
+                resume_decisions[model]["failure"] = failure_detail
             logger.info(
                 "Segmentation resume course=%s model=%s action=%s model_run=true "
                 "run_succeeded=%s",
@@ -2072,7 +2430,9 @@ def segment_course(config: PipelineConfig, course_dir: Path, force: bool = False
         isinstance(decision, dict) and decision.get("action") != "reused"
         for decision in resume_decisions.values()
     )
-    if manifest_entries and (attempted_any or manifest_needs_update or not manifest_path.exists()):
+    if attempted_any or (
+        manifest_entries and (manifest_needs_update or not manifest_path.exists())
+    ):
         try:
             previous_manifest: dict[str, Any] = {}
             if manifest_path.exists():
@@ -2202,33 +2562,36 @@ def segment_course(config: PipelineConfig, course_dir: Path, force: bool = False
                 for model in mr_models:
                     task_name = model
                     model_tmp = tmp_root / model
-                    dicom_tmp = model_tmp / "dicom"
                     nifti_tmp = model_tmp / "nifti"
-                    dicom_tmp.mkdir(parents=True, exist_ok=True)
                     nifti_tmp.mkdir(parents=True, exist_ok=True)
 
                     rt_out = base_dir_mr / f"{base_name_mr}--{model}.dcm"
-                    ok_dicom = run_totalsegmentator(config, source_dir, dicom_tmp, "dicom_rtstruct", task=task_name)
-                    ok_nifti = run_totalsegmentator(config, nifti_path, nifti_tmp, "nifti", task=task_name)
+                    _clear_previous_masks(base_dir_mr, base_name_mr, model)
+                    rt_out.unlink(missing_ok=True)
+                    ok_nifti = run_totalsegmentator(
+                        config,
+                        nifti_path,
+                        nifti_tmp,
+                        "nifti",
+                        task=task_name,
+                    )
 
                     entry = {"model": model, "rtstruct": "", "masks": []}
-
-                    if ok_dicom:
-                        dicom_files = sorted(dicom_tmp.glob("*.dcm"))
-                        if dicom_files:
-                            if rt_out.exists():
-                                rt_out.unlink()
-                            shutil.copy2(dicom_files[0], rt_out)
-                    if rt_out.exists():
-                        entry["rtstruct"] = str(rt_out.relative_to(base_dir_mr))
-
-                    # Capture masks ONLY on a successful current run (see all-series path):
-                    # a failed retry skips `_materialize_masks`, so on-disk masks would be stale.
                     if ok_nifti:
                         _materialize_masks(nifti_tmp, base_dir_mr, base_name_mr, model)
                         masks_for_model = sorted(base_dir_mr.glob(f"{model}--*.nii*"))
                         if masks_for_model:
-                            entry["masks"] = [str(p.relative_to(base_dir_mr)) for p in masks_for_model]
+                            entry["masks"] = [
+                                str(path.relative_to(base_dir_mr)) for path in masks_for_model
+                            ]
+                            derived = _ensure_model_rtstruct_from_masks(
+                                source_dir,
+                                base_dir_mr,
+                                base_name_mr,
+                                model,
+                            )
+                            if derived is not None:
+                                entry["rtstruct"] = str(derived.relative_to(base_dir_mr))
                     if entry["rtstruct"] or entry["masks"]:
                         manifest_mr.append(entry)
 
@@ -2439,33 +2802,36 @@ def _segment_mr_series_for_course(config: PipelineConfig, course_dirs, course_di
             for model in mr_models:
                 task_name = model
                 model_tmp = tmp_root / model
-                dicom_tmp = model_tmp / "dicom"
                 nifti_tmp = model_tmp / "nifti"
-                dicom_tmp.mkdir(parents=True, exist_ok=True)
                 nifti_tmp.mkdir(parents=True, exist_ok=True)
 
                 rt_out = base_dir_mr / f"{base_name_mr}--{model}.dcm"
-                ok_dicom = run_totalsegmentator(config, source_dir, dicom_tmp, "dicom_rtstruct", task=task_name)
-                ok_nifti = run_totalsegmentator(config, nifti_path, nifti_tmp, "nifti", task=task_name)
+                _clear_previous_masks(base_dir_mr, base_name_mr, model)
+                rt_out.unlink(missing_ok=True)
+                ok_nifti = run_totalsegmentator(
+                    config,
+                    nifti_path,
+                    nifti_tmp,
+                    "nifti",
+                    task=task_name,
+                )
 
                 entry = {"model": model, "rtstruct": "", "masks": []}
-
-                if ok_dicom:
-                    dicom_files = sorted(dicom_tmp.glob("*.dcm"))
-                    if dicom_files:
-                        if rt_out.exists():
-                            rt_out.unlink()
-                        shutil.copy2(dicom_files[0], rt_out)
-                if rt_out.exists():
-                    entry["rtstruct"] = str(rt_out.relative_to(base_dir_mr))
-
-                # Capture masks ONLY on a successful current run (see all-series path): a failed
-                # retry skips `_materialize_masks`, so on-disk masks would be stale.
                 if ok_nifti:
                     _materialize_masks(nifti_tmp, base_dir_mr, base_name_mr, model)
                     masks_for_model = sorted(base_dir_mr.glob(f"{model}--*.nii*"))
                     if masks_for_model:
-                        entry["masks"] = [str(p.relative_to(base_dir_mr)) for p in masks_for_model]
+                        entry["masks"] = [
+                            str(path.relative_to(base_dir_mr)) for path in masks_for_model
+                        ]
+                        derived = _ensure_model_rtstruct_from_masks(
+                            source_dir,
+                            base_dir_mr,
+                            base_name_mr,
+                            model,
+                        )
+                        if derived is not None:
+                            entry["rtstruct"] = str(derived.relative_to(base_dir_mr))
                 if entry["rtstruct"] or entry["masks"]:
                     manifest_mr.append(entry)
 

@@ -712,6 +712,7 @@ def run_tasks_with_adaptive_workers(
     min_workers: int = 1,
     logger: Optional[logging.Logger] = None,
     show_progress: bool = False,
+    progress_success_only: bool = False,
     task_timeout: Optional[int] = None,
     use_processes: bool = True,
 ) -> List[Optional[R]]:
@@ -725,6 +726,9 @@ def run_tasks_with_adaptive_workers(
         min_workers: Lower bound for workers when backing off.
         logger: Optional logger (defaults to module logger).
         show_progress: Emit progress log entries similar to previous pipeline behaviour.
+        progress_success_only: Count only truthy task results as completed progress.
+                               Failed or false results remain in the returned list but
+                               cannot produce a misleading 100% success line.
         task_timeout: Optional timeout per task in seconds (None = no timeout).
                      Use this to prevent individual tasks from hanging indefinitely.
         use_processes: If True (default), use ProcessPoolExecutor for true multi-core
@@ -851,7 +855,15 @@ def run_tasks_with_adaptive_workers(
 
                     try:
                         results[idx] = fut.result(timeout=0)  # Should be instant since done
-                        completed += 1
+                        if not progress_success_only or bool(results[idx]):
+                            completed += 1
+                        else:
+                            log.error(
+                                "%s: task #%d (%s) returned an unsuccessful result",
+                                label,
+                                idx + 1,
+                                item_desc,
+                            )
                         finalized.add(idx)
 
                         # Log slow tasks
@@ -884,7 +896,8 @@ def run_tasks_with_adaptive_workers(
                                 exc,
                                 exc_info=True,
                             )
-                            completed += 1
+                            if not progress_success_only:
+                                completed += 1
                             finalized.add(idx)
                             results[idx] = None
 
@@ -942,7 +955,8 @@ def run_tasks_with_adaptive_workers(
                             )
                             timed_out_final.add(idx)
                             finalized.add(idx)
-                            completed += 1
+                            if not progress_success_only:
+                                completed += 1
                             results[idx] = None
                             remaining.discard(fut)
                     if timed_out_final:
@@ -1056,7 +1070,8 @@ def run_tasks_with_adaptive_workers(
                         idx + 1,
                         item_desc,
                     )
-                    completed += 1
+                    if not progress_success_only:
+                        completed += 1
                     results[idx] = None
                 mem_failures = []
             else:
