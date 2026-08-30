@@ -27,6 +27,7 @@ from scipy.ndimage import map_coordinates
 
 from .config import DEFAULT_MAX_TOTAL_DOSE_GY, PipelineConfig
 from . import nifti_provenance
+from .plan_profiles import is_private_plan_profile, plan_profile_name
 from .course_contract import (
     COURSE_CONTRACT_VERSION,
     DOSE_GRID_SEMANTICS,
@@ -587,6 +588,10 @@ def _looks_like_patient_series_layout(dicom_root: Path) -> bool:
             if not any(name.lower().endswith(".dcm") for name in names):
                 return False
     return True
+
+
+class PlanSummationUnsupportedError(RuntimeError):
+    """A plan summation was requested for sources whose profile forbids it."""
 
 
 class CourseTargetQCError(RuntimeError):
@@ -2165,9 +2170,25 @@ def _create_summed_plan(plan_files: List[Path], total_dose_gy: float | None = No
     base_plan = plan_datasets[0]
     plan_sum = copy.deepcopy(base_plan)
 
+    # A summation clones the first source, SOP class included. A vendor profile
+    # (e.g. Varian Halcyon/Ethos) describes conformance this synthetic object does
+    # not have, and Ethos fraction counts are per-phase remainders that must not be
+    # summed into a whole-course denominator. Refuse rather than mint a false plan.
+    for _ds in plan_datasets:
+        _cls = str(getattr(_ds, "SOPClassUID", "") or "")
+        if is_private_plan_profile(_cls):
+            raise PlanSummationUnsupportedError(
+                "cannot synthesise a plan sum from vendor-profile source plan "
+                f"{getattr(_ds, 'SOPInstanceUID', '?')} ({plan_profile_name(_cls)}); "
+                "retain the source plans separately"
+            )
+
     now = datetime.datetime.now()
     plan_sum.SeriesInstanceUID = generate_uid()
     plan_sum.SOPInstanceUID = generate_uid()
+    # plan_sum is a deepcopy, so its file meta still names the base plan.
+    if getattr(plan_sum, "file_meta", None) is not None:
+        plan_sum.file_meta.MediaStorageSOPInstanceUID = plan_sum.SOPInstanceUID
     plan_sum.InstanceCreationDate = now.strftime("%Y%m%d")
     plan_sum.InstanceCreationTime = now.strftime("%H%M%S")
     plan_sum.SeriesDescription = f"Plan Sum ({len(plan_files)} plans)"
@@ -2191,8 +2212,10 @@ def _create_summed_plan(plan_files: List[Path], total_dose_gy: float | None = No
         plan_sum.PlanIntent = "REVIEW"
     if hasattr(plan_sum, "PlanStatus"):
         plan_sum.PlanStatus = "UNPLANNED"
+    # A pipeline-generated summation is an evaluation artifact, not a clinically
+    # approved plan; APPROVED here contradicts the PlanIntent/PlanStatus above.
     if hasattr(plan_sum, "ApprovalStatus"):
-        plan_sum.ApprovalStatus = "APPROVED"
+        plan_sum.ApprovalStatus = "UNAPPROVED"
 
     beam_mappings: dict[str, dict[int, int]] = {}
     new_beams: list[Dataset] = []
@@ -4908,7 +4931,7 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
                     # Plan demographic/time
                     plan_date = str(getattr(ds_rp, 'RTPlanDate', ''))
                     plan_time = str(getattr(ds_rp, 'RTPlanTime', ''))
-                    plan_intent = str(getattr(ds_rp, 'RTPlanIntent', '')) if hasattr(ds_rp, 'RTPlanIntent') else ''
+                    plan_intent = str(getattr(ds_rp, 'PlanIntent', '')) if hasattr(ds_rp, 'PlanIntent') else ''
                     # Approval timestamps (if present)
                     approval_date = str(getattr(ds_rp, 'ApprovalStatusDate', '')) if hasattr(ds_rp, 'ApprovalStatusDate') else ''
                     approval_time = str(getattr(ds_rp, 'ApprovalStatusTime', '')) if hasattr(ds_rp, 'ApprovalStatusTime') else ''
