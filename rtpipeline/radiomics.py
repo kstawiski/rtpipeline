@@ -40,9 +40,11 @@ from .custom_structures_rtstruct import (
     _is_rs_custom_stale,
     record_rs_custom_resume_decision,
 )
-from functools import lru_cache
-
-from .acquisition_scale import describe_planning_ct
+from .acquisition_scale import (
+    attach_acquisition_descriptor,
+    describe_contract_planning_ct,
+    validate_acquisition_descriptor_table,
+)
 from .radiomics_outcomes import (
     RadiomicsCourseExtractionError,
     RadiomicsCourseOutcome,
@@ -881,16 +883,6 @@ def _check_radiomics_contract_scope(
 
 
 
-@lru_cache(maxsize=256)
-def _acquisition_scale_for(course_dir: Path) -> Dict[str, Any]:
-    """Per-course acquisition-scale descriptor, computed once and reused.
-
-    Purely descriptive: it records how the planning CT maps stored values to HU
-    so that downstream analysis can see, rather than infer, that a cohort mixes
-    standard and extended intensity scales. It never affects a feature value.
-    """
-    return describe_planning_ct(Path(course_dir) / "DICOM" / "CT")
-
 def radiomics_for_course(
     config: PipelineConfig,
     course_dir: Path,
@@ -914,6 +906,7 @@ def radiomics_for_course(
         or course_dir / "metadata" / ".contract-rtstruct-absent"
     )
     out_path = course_dir / 'radiomics_ct.xlsx'
+    acquisition_descriptor = describe_contract_planning_ct(contract)
 
     # Resume-friendly: if output exists, only recompute when required ROIs are missing
     existing_df = None
@@ -923,6 +916,13 @@ def radiomics_for_course(
 
             existing_df = pd.read_excel(out_path, engine="openpyxl")
             _resume_identity_pairs(existing_df)
+            validate_acquisition_descriptor_table(
+                existing_df,
+                expected_descriptor=acquisition_descriptor,
+                expected_series_instance_uid=contract.planning_ct.get(
+                    "series_instance_uid"
+                ),
+            )
         except Exception as exc:
             logger.warning(
                 "Invalidating unusable resume workbook for %s: %s", course_dir, exc
@@ -1305,7 +1305,6 @@ def radiomics_for_course(
             res = ext.execute(img, m_img)
             rec = {k: (float(v) if isinstance(v, (int, float, np.floating)) else str(v)) for k, v in res.items()}
             display_roi = roi if (not cropped or roi.endswith("__partial")) else f"{roi}__partial"
-            rec.update(_acquisition_scale_for(course_dir))
             rec.update({
                 'modality': 'CT',
                 'segmentation_source': source,
@@ -1461,6 +1460,10 @@ def radiomics_for_course(
     for row in rows:
         row.update(diagnostics)
     try:
+        attach_acquisition_descriptor(
+            rows,
+            acquisition_descriptor,
+        )
         import pandas as pd
         df_new = pd.DataFrame(rows)
         if existing_df is not None and out_path.exists():
@@ -2427,6 +2430,7 @@ def run_radiomics_all_series(config: PipelineConfig, patient_ids: List[str]) -> 
             existing_df = pd.read_csv(out_csv)
             if "patient_id" not in existing_df.columns:
                 raise ValueError("existing CSV lacks required patient_id column")
+            validate_acquisition_descriptor_table(existing_df)
             preserved_df = existing_df[
                 ~existing_df["patient_id"].astype(str).isin(requested_patient_ids)
             ].copy()
@@ -2504,6 +2508,7 @@ def run_radiomics_all_series(config: PipelineConfig, patient_ids: List[str]) -> 
                 df["image_class"] = image_class
                 df["is_4d_phase"] = bool(is_4d_phase)
                 df["series_dir"] = str(input_dir)
+                validate_acquisition_descriptor_table(df)
                 # the temp course dir is deleted; repoint course_dir at the persistent series dir and
                 # drop the course-shaped course_id (meaningless in an all-series artifact — series_uid
                 # is the identifier; both CT workers emit it as the temp course basename).
@@ -2535,6 +2540,7 @@ def run_radiomics_all_series(config: PipelineConfig, patient_ids: List[str]) -> 
         )
         return None
     out_df = pd.concat(frames, ignore_index=True)
+    validate_acquisition_descriptor_table(out_df)
     data_dir.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(
         prefix=f".{out_csv.name}.", suffix=".tmp", dir=data_dir, delete=False

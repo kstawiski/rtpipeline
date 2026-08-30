@@ -14,7 +14,7 @@ import tempfile
 import time
 import threading
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Set, TYPE_CHECKING
+from typing import Any, Dict, List, Mapping, Optional, Tuple, Set, TYPE_CHECKING
 
 if TYPE_CHECKING:
     pass  # For future type hints
@@ -24,6 +24,10 @@ import pandas as pd
 import SimpleITK as sitk
 import pydicom
 
+from .acquisition_scale import (
+    attach_acquisition_descriptor,
+    describe_contract_planning_ct,
+)
 from .custom_models import (
     list_custom_model_outputs,
     validate_custom_model_output_inventory,
@@ -1126,6 +1130,7 @@ def process_radiomics_batch(
     checkpoint_path: Optional[Path] = None,
     enable_heartbeat: bool = True,
     env_probe_timeout: Optional[int] = None,
+    acquisition_descriptor: Optional[Mapping[str, Any]] = None,
 ) -> Optional[Path]:
     """Process radiomics extraction tasks and persist them as an Excel sheet.
 
@@ -1137,6 +1142,7 @@ def process_radiomics_batch(
         checkpoint_path: Optional path for checkpoint file (enables resume)
         enable_heartbeat: Whether to enable progress heartbeat logging
         env_probe_timeout: Seconds allowed for each environment import probe
+        acquisition_descriptor: Contract-bound descriptor required for CT rows
 
     Returns:
         Path to output file if successful, None otherwise
@@ -1636,6 +1642,7 @@ def process_radiomics_batch(
         return None
 
     try:
+        attach_acquisition_descriptor(rows, acquisition_descriptor)
         source_counts: Dict[str, Dict[str, int]] = {}
         roi_failures: List[Dict[str, str]] = []
         for row in rows:
@@ -2004,6 +2011,7 @@ def radiomics_for_course_ct_nifti_fallback(
             checkpoint_path=checkpoint_path,
             enable_heartbeat=True,
             env_probe_timeout=getattr(config, "radiomics_env_probe_timeout", None),
+            acquisition_descriptor=describe_contract_planning_ct(contract),
         )
     finally:
         _cleanup_temp_files()
@@ -2555,6 +2563,7 @@ def radiomics_for_course(
             checkpoint_path=checkpoint_path,
             enable_heartbeat=True,
             env_probe_timeout=getattr(config, "radiomics_env_probe_timeout", None),
+            acquisition_descriptor=describe_contract_planning_ct(contract),
         )
     finally:
         Path(ct_image_path).unlink(missing_ok=True)

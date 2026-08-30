@@ -31,6 +31,7 @@ import pytest
 import SimpleITK as sitk
 
 import rtpipeline.radiomics_conda as rc
+from rtpipeline.acquisition_scale import describe_planning_ct
 from course_contract_test_utils import (
     write_minimal_course_contract,
     write_synthetic_planning_ct,
@@ -190,6 +191,7 @@ def test_resume_writes_complete_workbook(tmp_path, monkeypatch):
     result = process_radiomics_batch(
         tasks, str(output_path), sequential=True, max_workers=1,
         checkpoint_path=checkpoint_path, enable_heartbeat=False,
+        acquisition_descriptor=describe_planning_ct(tmp_path / "missing-ct"),
     )
     assert result is not None
     assert sorted(extracted) == ["BLADDER", "BODY", "CTV"], (
@@ -231,6 +233,7 @@ def test_fully_checkpointed_course_regenerates_even_if_env_probe_fails(tmp_path,
     result = process_radiomics_batch(
         tasks, str(output_path), sequential=True, max_workers=1,
         checkpoint_path=checkpoint_path, enable_heartbeat=False,
+        acquisition_descriptor=describe_planning_ct(tmp_path / "missing-ct"),
     )
     assert result is not None, "fully-checkpointed course must still write its workbook"
     written = set(pd.read_excel(output_path)["roi_name"].tolist())
