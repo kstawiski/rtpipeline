@@ -537,14 +537,19 @@ def fake_dispatch():
             "allow_all_series_temp": kwargs.get("allow_all_series_temp"),
             "contract_scope": contract.data["scope"],
         })
-        df = pd.DataFrame([
+        records = [
             {"feature": 1.0, "roi_name": "liver", "modality": "CT",
              "course_dir": str(course_dir), "patient_id": course_dir.parent.name,
              "course_id": course_dir.name},
             {"feature": 2.0, "roi_name": "spleen", "modality": "CT",
              "course_dir": str(course_dir), "patient_id": course_dir.parent.name,
              "course_id": course_dir.name},
-        ])
+        ]
+        rad.attach_acquisition_descriptor(
+            records,
+            rad.describe_contract_planning_ct(contract),
+        )
+        df = pd.DataFrame(records)
         out = course_dir / "radiomics_ct.xlsx"
         df.to_excel(out, index=False)
         return out
@@ -710,6 +715,30 @@ def test_subset_rerun_preserves_other_patients(tmp_path, monkeypatch, fake_dispa
     output = rad.run_radiomics_all_series(cast(Any, _Cfg(out_root)), ["P1"])
     assert output is not None
     assert set(pd.read_csv(output)["patient_id"]) == {"P1", "P2"}
+
+
+def test_subset_rerun_rejects_legacy_rows_without_descriptor(tmp_path, monkeypatch):
+    out_root = tmp_path / "out"
+    data_dir = out_root / "Data"
+    data_dir.mkdir(parents=True)
+    output = data_dir / "radiomics_all_series.csv"
+    pd.DataFrame(
+        [
+            {
+                "patient_id": "P2",
+                "series_uid": "legacy-series",
+                "roi_name": "liver",
+                "feature": 1.0,
+            }
+        ]
+    ).to_csv(output, index=False)
+    before = output.read_bytes()
+    monkeypatch.setattr(rad, "_have_pyradiomics", lambda: True)
+
+    with pytest.raises(RuntimeError, match="acquisition descriptor"):
+        rad.run_radiomics_all_series(cast(Any, _Cfg(out_root)), ["P1"])
+
+    assert output.read_bytes() == before
 
 
 def test_cli_radiomics_stage_runs_all_series_adapter(tmp_path, monkeypatch):

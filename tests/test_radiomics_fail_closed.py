@@ -14,6 +14,10 @@ import pytest
 import rtpipeline.custom_models as custom_models
 import rtpipeline.radiomics as radiomics
 import rtpipeline.radiomics_conda as conda
+from rtpipeline.acquisition_scale import (
+    describe_contract_planning_ct,
+    describe_planning_ct,
+)
 from rtpipeline.config import PipelineConfig
 from rtpipeline.layout import build_course_dirs
 from rtpipeline.radiomics_outcomes import (
@@ -588,6 +592,7 @@ def test_conda_workbook_write_failure_raises_and_invalidates_stale_output(
             sequential=True,
             max_workers=1,
             enable_heartbeat=False,
+            acquisition_descriptor=describe_planning_ct(tmp_path / "missing-ct"),
         )
 
     assert not output.exists()
@@ -1102,9 +1107,13 @@ def test_direct_resume_missing_non_body_manual_roi_fails_and_invalidates(
     _write_contract(course, rtstruct=manual_rs)
     _write_current_auto_rtstruct(course)
     output = course / "radiomics_ct.xlsx"
+    resume_descriptor = describe_contract_planning_ct(
+        radiomics.load_course_contract(course)
+    )
     pd.DataFrame(
         [
             {
+                **resume_descriptor,
                 "segmentation_source": "Manual",
                 "roi_original_name": "BODY",
                 "original_firstorder_Mean": 9.0,
@@ -1667,6 +1676,7 @@ def test_conda_required_below_minimum_status_is_nonfatal_and_published(
         sequential=True,
         max_workers=1,
         enable_heartbeat=False,
+        acquisition_descriptor=describe_planning_ct(tmp_path / "missing-ct"),
     )
 
     assert result_path == output

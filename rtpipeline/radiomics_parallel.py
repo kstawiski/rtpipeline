@@ -34,6 +34,11 @@ from typing import Any, Dict, Iterable, Iterator, List, Optional, Sequence, Set,
 
 import pydicom
 
+from .acquisition_scale import (
+    attach_acquisition_descriptor,
+    describe_contract_planning_ct,
+    validate_acquisition_descriptor_table,
+)
 from .layout import build_course_dirs
 from .course_contract import ALL_SERIES_RADIOMICS_TEMP_SCOPE, load_course_contract
 from .utils import mask_is_cropped, radiomics_mp_context
@@ -693,6 +698,7 @@ def parallel_radiomics_for_course(
         _invalidate_radiomics_outputs(out_path)
         return RadiomicsCourseOutcome.nothing_to_do("CT series is absent")
     assert ct_dir is not None
+    acquisition_descriptor = describe_contract_planning_ct(contract)
     existing_df = None
     if getattr(config, "resume", False) and out_path.exists():
         try:
@@ -700,6 +706,13 @@ def parallel_radiomics_for_course(
 
             existing_df = pd.read_excel(out_path, engine="openpyxl")
             _resume_identity_pairs(existing_df)
+            validate_acquisition_descriptor_table(
+                existing_df,
+                expected_descriptor=acquisition_descriptor,
+                expected_series_instance_uid=contract.planning_ct.get(
+                    "series_instance_uid"
+                ),
+            )
         except Exception as exc:
             logger.warning(
                 "Invalidating unusable parallel resume workbook for %s: %s",
@@ -1252,6 +1265,10 @@ def parallel_radiomics_for_course(
     try:
         import pandas as pd  # type: ignore
 
+        attach_acquisition_descriptor(
+            records_to_write,
+            acquisition_descriptor,
+        )
         df_new = pd.DataFrame(records_to_write)
         if existing_df is not None and out_path.exists():
             output_cols = list(existing_df.columns)
