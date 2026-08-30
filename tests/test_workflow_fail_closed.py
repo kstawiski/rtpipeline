@@ -24,6 +24,45 @@ RUN_COURSE_STAGE = ROOT / "workflow" / "scripts" / "run_course_stage.py"
 AGGREGATE_RESULTS = ROOT / "workflow" / "scripts" / "aggregate_results.py"
 
 
+def _write_ct_publication(course_dir: Path, *, patient_id: str) -> None:
+    from rtpipeline.radiomics_ct_contract import (
+        classify_ct_roi,
+        disposition_rows_for_arms,
+        write_ct_publication_atomic,
+    )
+
+    records = disposition_rows_for_arms(
+        {
+            "modality": "CT",
+            "segmentation_source": "Manual",
+            "roi_name": "PTV",
+            "roi_original_name": "PTV",
+            "patient_id": patient_id,
+            "course_id": "C1",
+            "series_uid": f"series-{patient_id}",
+            "mask_identity": f"mask-{patient_id}",
+            "stable_roi_identifier": "roi-PTV",
+        },
+        decision=classify_ct_roi("Manual", "PTV"),
+        disposition="success",
+        detail="test success",
+        failure_kind="none",
+        run_identifier="test-run",
+        code_revision="test-revision",
+        native_voxel_count=120,
+        required=True,
+        configured_parameter_hashes={
+            "primary_resegmented": "test-primary",
+            "sensitivity_raw": "test-sensitivity",
+        },
+    )
+    for record in records:
+        record["original_firstorder_Mean"] = 1.0
+    write_ct_publication_atomic(
+        pd.DataFrame(records), course_dir / "radiomics_ct.xlsx"
+    )
+
+
 def _course_stage_snakemake(tmp_path: Path) -> SimpleNamespace:
     course_dir = tmp_path / "output" / "P1" / "C1"
     segmentation = course_dir / ".segmentation_done"
@@ -130,9 +169,16 @@ def _write_course_inputs(
     (course_dir / ".qc_done").write_text("ok\n", encoding="utf-8")
     (course_dir / ".custom_models_done").write_text("disabled\n", encoding="utf-8")
     if radiomics_sentinel is not None:
-        (course_dir / ".radiomics_done").write_text(
-            radiomics_sentinel, encoding="utf-8"
-        )
+        if radiomics_sentinel.strip() == "ok" and (
+            course_dir / "radiomics_ct.parquet"
+        ).exists():
+            from rtpipeline.radiomics_ct_contract import write_completion_sentinel
+
+            write_completion_sentinel(course_dir, course_dir / ".radiomics_done")
+        else:
+            (course_dir / ".radiomics_done").write_text(
+                radiomics_sentinel, encoding="utf-8"
+            )
     if plan_only:
         assert dvh_for_course(course_dir) is None
         if dvh_sentinel is not None:
@@ -258,16 +304,8 @@ def test_enabled_radiomics_output_is_required_but_mr_remains_optional(tmp_path):
     output_dir = Path(workflow.params.output_dir)
     for patient in ("P1", "P2"):
         course_dir = output_dir / patient / "C1"
+        _write_ct_publication(course_dir, patient_id=patient)
         _write_course_inputs(course_dir, radiomics_sentinel="ok\n")
-        pd.DataFrame(
-            [
-                {
-                    "roi_name": "PTV",
-                    "segmentation_source": "Manual",
-                    "original_firstorder_Mean": 1.0,
-                }
-            ]
-        ).to_excel(course_dir / "radiomics_ct.xlsx", index=False)
 
     runpy.run_path(str(AGGREGATE_RESULTS), init_globals={"snakemake": workflow})
 
@@ -283,17 +321,9 @@ def test_enabled_radiomics_missing_required_ct_output_blocks_publication(tmp_pat
         course_dir = output_dir / patient / "C1"
         _write_course_inputs(course_dir, radiomics_sentinel="ok\n")
         if patient == "P1":
-            pd.DataFrame(
-                [
-                    {
-                        "roi_name": "PTV",
-                        "segmentation_source": "Manual",
-                        "original_firstorder_Mean": 1.0,
-                    }
-                ]
-            ).to_excel(course_dir / "radiomics_ct.xlsx", index=False)
+            _write_ct_publication(course_dir, patient_id=patient)
 
-    with pytest.raises(RuntimeError, match="radiomics_ct.xlsx is missing"):
+    with pytest.raises(RuntimeError, match="radiomics_ct.parquet is unreadable"):
         runpy.run_path(str(AGGREGATE_RESULTS), init_globals={"snakemake": workflow})
 
     assert not any(path.exists() for path in outputs.values())

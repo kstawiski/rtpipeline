@@ -44,6 +44,24 @@ from .radiomics_outcomes import (
     roi_source_is_required,
     write_excel_atomic as _write_excel_atomic,
 )
+from .radiomics_ct_contract import (
+    CT_EXTRACTION_ARMS,
+    PRIMARY_ARM,
+    SENSITIVITY_ARM,
+    RoiClassDecision,
+    classify_ct_roi,
+    configured_parameter_hash,
+    current_code_revision,
+    disposition_rows_for_arms,
+    file_sha256,
+    load_custom_structure_provenance,
+    new_run_identifier,
+    publication_key,
+    rtstruct_roi_identities,
+    stable_rtstruct_roi_identity,
+    validate_ct_publication,
+    write_ct_publication_atomic,
+)
 from .utils import mask_is_cropped, radiomics_mp_context
 
 logger = logging.getLogger(__name__)
@@ -163,22 +181,40 @@ def _identity_value(obj: Dict[str, Any], name: str, fallback: str = "") -> str:
     return str(value).strip()
 
 
-def _roi_instance_key(obj: Dict[str, Any]) -> str:
-    """Stable source/ROI/series checkpoint identity.
+def _ct_publication_key_text(obj: Dict[str, Any], arm: Optional[str] = None) -> str:
+    metadata = dict(obj.get("metadata") or obj.get("extra_metadata") or {})
+    merged = {**metadata, **obj}
+    if arm is not None:
+        merged["extraction_arm"] = arm
+    key = publication_key(merged)
+    if any(not value for value in key):
+        raise ValueError("CT checkpoint identity has a blank full publication-key field")
+    return "\x1f".join(key)
 
-    Source is required because Manual, AutoRTS, Custom, and custom-model
-    RTSTRUCTs can legitimately contain the same ROI name. Series remains part of
-    the identity for MR, where the same source/ROI recurs across acquisitions.
-    """
+
+def _roi_instance_key(obj: Dict[str, Any]) -> str:
+    """Stable checkpoint identity, including the arm for governed CT rows."""
+    arm = _identity_value(obj, "extraction_arm")
+    if arm:
+        return _ct_publication_key_text(obj, arm)
     source = _identity_value(obj, "segmentation_source")
     roi = _identity_value(obj, "roi_original_name", fallback="roi_name")
     series = _identity_value(obj, "series_uid")
     return f"{source}\x1f{roi}\x1f{series}"
 
 
+def _task_expected_keys(task: Dict[str, Any]) -> Set[str]:
+    if task.get("dual_arm_ct"):
+        return {_ct_publication_key_text(task, arm) for arm in CT_EXTRACTION_ARMS}
+    return {_roi_instance_key(task)}
+
+
 def _validated_identity_keys(records: List[Dict[str, Any]], *, context: str) -> Set[str]:
     keys: List[str] = []
     for record in records:
+        if _identity_value(record, "extraction_arm"):
+            keys.append(_roi_instance_key(record))
+            continue
         source = _identity_value(record, "segmentation_source")
         roi = _identity_value(record, "roi_original_name", fallback="roi_name")
         if not source or not roi:
@@ -187,7 +223,7 @@ def _validated_identity_keys(records: List[Dict[str, Any]], *, context: str) -> 
             )
         keys.append(_roi_instance_key(record))
     if len(keys) != len(set(keys)):
-        raise ValueError(f"{context} has duplicate source/ROI/series identities")
+        raise ValueError(f"{context} has duplicate publication identities")
     return set(keys)
 
 
@@ -206,22 +242,12 @@ def _norm_roi_key(name: str) -> str:
 
 
 def _ct_skip_rois(config: Any) -> Set[str]:
-    skip_rois_default = {
-        "couchsurface",
-        "couchinterior",
-        "couchexterior",
-        "bones",
-        "m1",
-        "m2",
-        "table",
-        "support",
-    }
     cfg_skip = {
         _norm_roi_key(item)
         for item in getattr(config, "radiomics_skip_rois", [])
         if isinstance(item, str) and item.strip()
     }
-    return skip_rois_default | cfg_skip
+    return cfg_skip
 
 
 def _ct_voxel_limits(config: Any) -> Tuple[int, int]:
@@ -304,16 +330,21 @@ class RadiomicsCheckpoint:
         checkpoint_path: Path,
         buffer_size: int = 50,
         expected_keys: Optional[Set[str]] = None,
+        expected_configured_hashes: Optional[Mapping[str, str]] = None,
     ):
         self.checkpoint_path = Path(checkpoint_path)
         self.buffer_size = buffer_size
         self._buffer: List[Dict[str, Any]] = []
         self._completed_keys: Set[str] = set()
         self._lock = threading.Lock()
-        self._load_existing(expected_keys)
+        self._load_existing(expected_keys, expected_configured_hashes)
 
-    def _load_existing(self, expected_keys: Optional[Set[str]]) -> None:
-        """Reuse only a structurally valid, exact current-identity checkpoint."""
+    def _load_existing(
+        self,
+        expected_keys: Optional[Set[str]],
+        expected_configured_hashes: Optional[Mapping[str, str]],
+    ) -> None:
+        """Reuse only a structurally valid current-contract checkpoint subset."""
         if not self.checkpoint_path.exists():
             return
         try:
@@ -333,9 +364,19 @@ class RadiomicsCheckpoint:
             keys = _validated_identity_keys(records, context="checkpoint")
             if expected_keys is not None and keys != expected_keys:
                 raise ValueError(
-                    "checkpoint identity set does not exactly match current tasks "
+                    "checkpoint identity set is incomplete or outside the current tasks "
                     f"(expected {len(expected_keys)}, found {len(keys)})"
                 )
+            if any(_identity_value(record, "extraction_arm") for record in records):
+                validate_ct_publication(df, fail_on_unclassified_required=False)
+                if expected_configured_hashes is None:
+                    raise ValueError("CT checkpoint lacks a current configured-parameter contract")
+                for record in records:
+                    key = _roi_instance_key(record)
+                    if str(record.get("configured_parameter_hash") or "") != str(
+                        expected_configured_hashes.get(key) or ""
+                    ):
+                        raise ValueError("CT checkpoint configured-parameter hash is stale")
             self._completed_keys = keys
             logger.info("Checkpoint loaded: %d ROIs already completed", len(keys))
         except Exception as exc:
@@ -873,87 +914,115 @@ def extract_radiomics_batch_with_conda(
     total_timeout = max(300, len(tasks) * timeout_per_roi)  # At least 5 minutes
 
     # Create batch extraction script that processes all ROIs in one go
-    batch_script = '''
-import sys
+    batch_script = r'''
 import json
-import warnings
 import logging
+import sys
+import warnings
 
-# Suppress warnings before importing radiomics
-warnings.filterwarnings('ignore')
-logging.getLogger('radiomics').setLevel(logging.ERROR)
-logging.getLogger('radiomics.featureextractor').setLevel(logging.ERROR)
+warnings.filterwarnings("ignore")
+logging.getLogger("radiomics").setLevel(logging.ERROR)
+logging.getLogger("radiomics.featureextractor").setLevel(logging.ERROR)
 
 from radiomics import featureextractor
+from rtpipeline.radiomics_ct_contract import RoiClassDecision, extract_ct_roi_arms
 
-# Read batch parameters from file
-with open(sys.argv[1], 'r') as f:
-    batch_params = json.load(f)
+with open(sys.argv[1], "r") as handle:
+    batch_params = json.load(handle)
 
-tasks = batch_params['tasks']
-params_file = batch_params.get('params_file')
+tasks = batch_params["tasks"]
+default_params_file = batch_params.get("params_file")
 
-# Create extractors (full + reduced for large ROIs)
-if params_file:
-    extractor = featureextractor.RadiomicsFeatureExtractor(params_file)
-    extractor_large = featureextractor.RadiomicsFeatureExtractor(params_file)
-else:
-    extractor = featureextractor.RadiomicsFeatureExtractor()
-    extractor_large = featureextractor.RadiomicsFeatureExtractor()
 
-# Configure the reduced extractor for feasibility on very large masks (e.g., BODY)
-try:
-    extractor_large.disableAllImageTypes()
-    extractor_large.enableImageTypeByName('Original')
-except Exception:
-    pass
-try:
-    extractor_large.disableAllFeatures()
-    extractor_large.enableFeatureClassByName('firstorder')
-    extractor_large.enableFeatureClassByName('shape')
-except Exception:
-    pass
-try:
-    extractor_large.settings['resampledPixelSpacing'] = [2.0, 2.0, 2.0]
-except Exception:
-    pass
+def make_extractor(params_file, large_roi):
+    candidate = (
+        featureextractor.RadiomicsFeatureExtractor(params_file)
+        if params_file
+        else featureextractor.RadiomicsFeatureExtractor()
+    )
+    if large_roi:
+        candidate.disableAllImageTypes()
+        candidate.enableImageTypeByName("Original")
+        candidate.disableAllFeatures()
+        candidate.enableFeatureClassByName("firstorder")
+        candidate.enableFeatureClassByName("shape")
+        candidate.settings["resampledPixelSpacing"] = [2.0, 2.0, 2.0]
+    return candidate
 
-# Process each task
+
 for task in tasks:
-    image_path = task['image_path']
-    mask_path = task['mask_path']
-    label = task.get('label')
-    roi_name = task.get('roi_name', 'ROI')
-    large_roi = bool(task.get('large_roi'))
-    task_index = task.get('__task_index__')
-
+    image_path = task["image_path"]
+    mask_path = task["mask_path"]
+    label = task.get("label")
+    roi_name = task.get("roi_name", "ROI")
+    large_roi = bool(task.get("large_roi"))
+    task_index = task.get("__task_index__")
+    params_file = task.get("params_file") or default_params_file
     try:
-        current_extractor = extractor_large if large_roi else extractor
-        if label is not None:
-            features = current_extractor.execute(image_path, mask_path, label=label)
-        else:
-            features = current_extractor.execute(image_path, mask_path)
+        if task.get("dual_arm_ct"):
+            decision = RoiClassDecision(**task["roi_class_decision"])
 
-        # Convert to JSON-serializable format
-        output = {'__status__': 'success', '__roi_name__': roi_name, '__task_index__': task_index}
+            def factory():
+                return make_extractor(params_file, large_roi)
+
+            records = extract_ct_roi_arms(
+                image_path,
+                mask_path,
+                factory=factory,
+                decision=decision,
+                common_metadata=task["metadata"],
+                run_identifier=task["run_identifier"],
+                code_revision=task["code_revision"],
+                native_voxel_count=int(task["native_voxel_count"]),
+                required=bool(task["required"]),
+                configured_parameter_hashes=task.get("configured_parameter_hashes"),
+            )
+            print(
+                json.dumps(
+                    {
+                        "__status__": "success",
+                        "__roi_name__": roi_name,
+                        "__task_index__": task_index,
+                        "__records__": records,
+                    },
+                    default=str,
+                ),
+                flush=True,
+            )
+            continue
+
+        extractor = make_extractor(params_file, large_roi)
+        features = (
+            extractor.execute(image_path, mask_path, label=label)
+            if label is not None
+            else extractor.execute(image_path, mask_path)
+        )
+        output = {
+            "__status__": "success",
+            "__roi_name__": roi_name,
+            "__task_index__": task_index,
+        }
         for key, value in features.items():
             try:
-                if hasattr(value, 'item'):
+                if hasattr(value, "item"):
                     output[key] = value.item()
-                elif hasattr(value, 'tolist'):
+                elif hasattr(value, "tolist"):
                     output[key] = value.tolist()
                 else:
                     output[key] = value
             except Exception:
                 output[key] = str(value)
-        print(json.dumps(output), flush=True)
-
-    except Exception as e:
-        error_msg = str(e).lower()
-        if 'size of the roi is too small' in error_msg:
-            print(json.dumps({'__status__': 'skipped', '__roi_name__': roi_name, '__task_index__': task_index, '__reason__': 'ROI too small'}), flush=True)
-        else:
-            print(json.dumps({'__status__': 'error', '__roi_name__': roi_name, '__task_index__': task_index, '__error__': str(e)}), flush=True)
+        print(json.dumps(output, default=str), flush=True)
+    except Exception as exc:
+        message = str(exc)
+        status = "skipped" if "size of the roi is too small" in message.lower() else "error"
+        payload = {
+            "__status__": status,
+            "__roi_name__": roi_name,
+            "__task_index__": task_index,
+        }
+        payload["__reason__" if status == "skipped" else "__error__"] = message
+        print(json.dumps(payload), flush=True)
 '''
 
     try:
@@ -961,17 +1030,7 @@ for task in tasks:
         with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as batch_file:
             json.dump({
                 'tasks': [
-                    {
-                        'image_path': t.get('image_path'),
-                        'mask_path': t.get('mask_path'),
-                        'label': t.get('label'),
-                        'roi_name': t.get('roi_name', 'ROI'),
-                        'large_roi': bool(t.get('large_roi', False)),
-                        # Unique per-task position, echoed back by the subprocess so the
-                        # caller can match results by index instead of roi_name (which is
-                        # not guaranteed unique within a batch) or a fragile positional zip.
-                        '__task_index__': i,
-                    }
+                    {**t, '__task_index__': i}
                     for i, t in enumerate(tasks)
                 ],
                 'params_file': params_file,
@@ -1154,7 +1213,21 @@ def process_radiomics_batch(
         return None
 
     try:
-        expected_keys = _validated_identity_keys(tasks, context="radiomics task inventory")
+        expected_keys = set().union(*(_task_expected_keys(task) for task in tasks))
+        expected_count = sum(len(_task_expected_keys(task)) for task in tasks)
+        if len(expected_keys) != expected_count:
+            raise ValueError("radiomics task inventory has duplicate full publication identities")
+        expected_configured_hashes: Dict[str, str] = {}
+        for task in tasks:
+            if not task.get("dual_arm_ct"):
+                continue
+            hashes = task.get("configured_parameter_hashes") or {}
+            for arm in CT_EXTRACTION_ARMS:
+                expected_configured_hashes[_ct_publication_key_text(task, arm)] = str(
+                    hashes.get(arm) or ""
+                )
+        if expected_configured_hashes and any(not value for value in expected_configured_hashes.values()):
+            raise ValueError("CT task inventory has a blank configured-parameter hash")
     except ValueError as exc:
         _invalidate_radiomics_outputs(Path(output_path))
         raise RadiomicsCourseExtractionError(str(exc)) from exc
@@ -1168,6 +1241,7 @@ def process_radiomics_batch(
         checkpoint = RadiomicsCheckpoint(
             checkpoint_path,
             expected_keys=expected_keys,
+            expected_configured_hashes=(expected_configured_hashes or None),
         )
         already_completed = checkpoint.get_completed_count()
         if checkpoint_file_existed and already_completed == 0:
@@ -1184,7 +1258,11 @@ def process_radiomics_batch(
     # Filter out already-completed tasks if checkpointing is enabled
     original_task_count = len(tasks)
     if checkpoint:
-        tasks = [t for t in tasks if not checkpoint.is_completed(_roi_instance_key(t))]
+        tasks = [
+            task
+            for task in tasks
+            if not all(checkpoint.is_completed(key) for key in _task_expected_keys(task))
+        ]
         skipped_count = original_task_count - len(tasks)
         if skipped_count > 0:
             logger.info("Skipping %d already-completed ROIs (resume mode)", skipped_count)
@@ -1234,6 +1312,12 @@ def process_radiomics_batch(
             return {'__status__': 'error', '__error__': 'missing required image or mask path'}
 
         try:
+            if task.get("dual_arm_ct"):
+                batch_results = extract_radiomics_batch_with_conda([task], params_file)
+                features = batch_results[0] if batch_results else None
+                if features is None:
+                    return {"__status__": "error", "__error__": "isolated dual-arm extraction returned no result"}
+                return features
             features = extract_radiomics_with_conda(
                 image_path,
                 mask_path,
@@ -1301,6 +1385,22 @@ def process_radiomics_batch(
         metadata.setdefault("modality", "CT")
         metadata.setdefault("roi_name", roi_name)
         metadata.setdefault("roi_original_name", roi_name)
+        if task.get("dual_arm_ct"):
+            decision = RoiClassDecision(**task["roi_class_decision"])
+            failure_rows.extend(
+                disposition_rows_for_arms(
+                    metadata,
+                    decision=decision,
+                    disposition=status,
+                    detail=detail,
+                    failure_kind=failure_kind,
+                    run_identifier=str(task["run_identifier"]),
+                    code_revision=str(task["code_revision"]),
+                    native_voxel_count=task.get("native_voxel_count"),
+                    required=bool(task.get("required")),
+                )
+            )
+            return
         metadata.update(
             {
                 "extraction_status": status,
@@ -1309,6 +1409,32 @@ def process_radiomics_batch(
             }
         )
         failure_rows.append(metadata)
+
+    def _record_success(task: Dict[str, Any], features: Dict[str, Any]) -> None:
+        if task.get("dual_arm_ct"):
+            records = features.get("__records__")
+            if not isinstance(records, list) or len(records) != len(CT_EXTRACTION_ARMS):
+                raise ValueError("isolated CT extraction returned an incomplete arm set")
+            arms = {str(record.get("extraction_arm")) for record in records}
+            if arms != set(CT_EXTRACTION_ARMS):
+                raise ValueError("isolated CT extraction returned invalid extraction arms")
+            results.extend(records)
+            if checkpoint:
+                for record in records:
+                    checkpoint.add_result(record)
+            return
+        features_clean = {
+            key: value for key, value in features.items() if not key.startswith("__")
+        }
+        roi_name = task.get("roi_name", "ROI")
+        metadata = dict(task.get("metadata") or task.get("extra_metadata") or {})
+        metadata.setdefault("roi_name", roi_name)
+        metadata.setdefault("roi_original_name", roi_name)
+        metadata.setdefault("modality", "CT")
+        record = _combine_feature_record(features_clean, metadata)
+        results.append(record)
+        if checkpoint:
+            checkpoint.add_result(record)
 
     def _run_sequential(seq: List[Dict[str, Any]]) -> None:
         for idx, task in enumerate(seq, 1):
@@ -1331,7 +1457,7 @@ def process_radiomics_batch(
                     failure_kind=str(rec.get('__failure_kind__', 'extraction_error')),
                 )
             elif rec:
-                results.append(rec)
+                _record_success(task, rec)
             else:
                 _record_failure(task, "returned no outcome record")
 
@@ -1412,18 +1538,7 @@ def process_radiomics_batch(
                                 heartbeat.update(failed=1)
                         continue
 
-                    # Remove internal status fields and combine with metadata
-                    features_clean = {k: v for k, v in features.items() if not k.startswith('__')}
-                    metadata = dict(task.get('metadata') or task.get('extra_metadata') or {})
-                    metadata.setdefault('roi_name', roi_name)
-                    metadata.setdefault('roi_original_name', roi_name)
-                    metadata.setdefault('modality', 'CT')
-                    record = _combine_feature_record(features_clean, metadata)
-                    results.append(record)
-
-                    # Save to checkpoint if enabled
-                    if checkpoint:
-                        checkpoint.add_result(record)
+                    _record_success(task, features)
                     if heartbeat:
                         heartbeat.update(completed=1)
             else:
@@ -1496,18 +1611,7 @@ def process_radiomics_batch(
                                         heartbeat.update(failed=1)
                                 continue
 
-                            # Remove internal status fields and combine with metadata
-                            features_clean = {k: v for k, v in features.items() if not k.startswith('__')}
-                            metadata = dict(task.get('metadata') or task.get('extra_metadata') or {})
-                            metadata.setdefault('roi_name', roi_name)
-                            metadata.setdefault('roi_original_name', roi_name)
-                            metadata.setdefault('modality', 'CT')
-                            record = _combine_feature_record(features_clean, metadata)
-                            results.append(record)
-
-                            # Save to checkpoint if enabled
-                            if checkpoint:
-                                checkpoint.add_result(record)
+                            _record_success(task, features)
                             if heartbeat:
                                 heartbeat.update(completed=1)
 
@@ -1553,9 +1657,7 @@ def process_radiomics_batch(
                             if heartbeat:
                                 heartbeat.update(failed=1)
                         elif rec:
-                            results.append(rec)
-                            if checkpoint:
-                                checkpoint.add_result(rec)
+                            _record_success(task, rec)
                             if heartbeat:
                                 heartbeat.update(completed=1)
                             logger.debug("Completed radiomics for %s", roi_name)
@@ -1645,7 +1747,12 @@ def process_radiomics_batch(
         attach_acquisition_descriptor(rows, acquisition_descriptor)
         source_counts: Dict[str, Dict[str, int]] = {}
         roi_failures: List[Dict[str, str]] = []
-        for row in rows:
+        count_rows = (
+            [row for row in rows if row.get("extraction_arm") == PRIMARY_ARM]
+            if expected_configured_hashes
+            else rows
+        )
+        for row in count_rows:
             source = str(row.get("segmentation_source", "unknown"))
             status = row.get("extraction_status")
             try:
@@ -1682,11 +1789,11 @@ def process_radiomics_batch(
         for row in rows:
             row.update(diagnostics)
         df = pd.DataFrame(rows)
-        _write_excel_atomic(df, Path(output_path))
-        _remove_artifact_strict(
-            Path(output_path).with_suffix(".parquet"),
-            context="invalidating stale Parquet sidecar after conda workbook publication",
-        )
+        if expected_configured_hashes:
+            tuple_expected = {publication_key(row) for row in rows}
+            write_ct_publication_atomic(df, Path(output_path), expected_keys=tuple_expected)
+        else:
+            _write_excel_atomic(df, Path(output_path))
         logger.info("Saved %d radiomics rows to %s", len(df), output_path)
     except Exception as exc:
         _invalidate_radiomics_outputs(Path(output_path))
@@ -1738,6 +1845,63 @@ def radiomics_for_course_ct_nifti_fallback(
         return None
 
     params_file = str(config.radiomics_params_file) if getattr(config, "radiomics_params_file", None) else None
+    parameter_path = Path(params_file) if params_file else None
+    run_identifier = new_run_identifier()
+    code_revision = current_code_revision()
+
+    def _nifti_governed_fields(
+        roi_name: str,
+        mask_source: Path,
+        series_uid: str,
+        display_roi: str,
+        cropped_flag: bool,
+        native_voxel_count: Optional[int],
+        large_roi: bool,
+        nifti_path_str: str,
+    ) -> Dict[str, Any]:
+        decision = classify_ct_roi("AutoTS_total_nifti_fallback", roi_name)
+        hashes = {
+            arm: configured_parameter_hash(
+                parameter_path,
+                arm=arm,
+                window=(decision.primary_resegment_range_hu if arm == PRIMARY_ARM else None),
+                large_roi=large_roi,
+            )
+            for arm in CT_EXTRACTION_ARMS
+        }
+        mask_digest = file_sha256(mask_source)
+        return {
+            "dual_arm_ct": True,
+            "roi_class_decision": {
+                "roi_class": decision.roi_class,
+                "primary_resegment_range_hu": decision.primary_resegment_range_hu,
+                "primary_intensity_texture_disposition": decision.primary_intensity_texture_disposition,
+                "map_version": decision.map_version,
+                "map_hash": decision.map_hash,
+                "map_entry_source": decision.map_entry_source,
+                "adjudication_status": decision.adjudication_status,
+            },
+            "run_identifier": run_identifier,
+            "code_revision": code_revision,
+            "native_voxel_count": native_voxel_count,
+            "required": False,
+            "configured_parameter_hashes": hashes,
+            "metadata": {
+                "modality": "CT",
+                "series_uid": str(series_uid),
+                "segmentation_source": "AutoTS_total_nifti_fallback",
+                "mask_identity": mask_digest,
+                "stable_roi_identifier": roi_name,
+                "course_dir": str(course_dir),
+                "patient_id": course_dir.parent.name,
+                "course_id": course_dir.name,
+                "structure_cropped": bool(cropped_flag),
+                "roi_original_name": roi_name,
+                "roi_name": display_roi,
+                "nifti_path": nifti_path_str,
+                "mask_path_source": str(mask_source),
+            },
+        }
     skip_rois = _ct_skip_rois(config)
     min_voxels_limit, max_voxels_limit = _ct_voxel_limits(config)
     planning_nifti = contract.planning_ct_nifti
@@ -1752,7 +1916,7 @@ def radiomics_for_course_ct_nifti_fallback(
         series_dirs.insert(0, seg_dir)
 
     tasks: List[Dict[str, Any]] = []
-    preparation_failures: List[Dict[str, str]] = []
+    preparation_failures: List[Dict[str, Any]] = []
     temp_files: List[Path] = []
     image_cache: Dict[Path, Tuple[str, Tuple[float, float, float]]] = {}
     dicom_image_path: Optional[str] = None
@@ -1777,12 +1941,18 @@ def radiomics_for_course_ct_nifti_fallback(
         roi_name: str,
         detail: str,
         *,
+        mask_source: Path,
+        series_uid: str,
+        nifti_path_str: str,
         status: str = "failed",
         failure_kind: str = "extraction_error",
     ) -> None:
         preparation_failures.append(
             {
                 "roi_name": str(roi_name),
+                "mask_source": str(mask_source),
+                "series_uid": str(series_uid),
+                "nifti_path": str(nifti_path_str),
                 "reason": detail,
                 "status": status,
                 "failure_kind": failure_kind,
@@ -1866,7 +2036,15 @@ def radiomics_for_course_ct_nifti_fallback(
                 continue
             norm_key = _norm_roi_key(roi_name)
             if norm_key in skip_rois:
-                logger.debug("Skipping CT fallback ROI %s (skip list)", roi_name)
+                _record_preparation_failure(
+                    roi_name,
+                    "ROI is listed in radiomics_skip_rois",
+                    mask_source=mask_path,
+                    series_uid=series_uid,
+                    nifti_path_str=nifti_path_str,
+                    status="declared_skip",
+                    failure_kind="declared_ineligible",
+                )
                 continue
 
             try:
@@ -1876,6 +2054,9 @@ def radiomics_for_course_ct_nifti_fallback(
                 _record_preparation_failure(
                     roi_name,
                     f"Failed to read CT fallback mask {mask_path}: {exc}",
+                    mask_source=mask_path,
+                    series_uid=series_uid,
+                    nifti_path_str=nifti_path_str,
                 )
                 continue
 
@@ -1884,6 +2065,9 @@ def radiomics_for_course_ct_nifti_fallback(
                 _record_preparation_failure(
                     roi_name,
                     f"CT fallback ROI {roi_name} has an empty mask: {mask_path}",
+                    mask_source=mask_path,
+                    series_uid=series_uid,
+                    nifti_path_str=nifti_path_str,
                     failure_kind="degenerate_mask",
                 )
                 continue
@@ -1894,6 +2078,9 @@ def radiomics_for_course_ct_nifti_fallback(
                     roi_name,
                     f"ROI contains {voxel_count} voxels; configured minimum is "
                     f"{min_voxels_limit}",
+                    mask_source=mask_path,
+                    series_uid=series_uid,
+                    nifti_path_str=nifti_path_str,
                     status="below_minimum_voxels",
                     failure_kind="degenerate_mask",
                 )
@@ -1928,6 +2115,9 @@ def radiomics_for_course_ct_nifti_fallback(
                 _record_preparation_failure(
                     roi_name,
                     f"Failed to convert CT fallback mask {mask_path}: {exc}",
+                    mask_source=mask_path,
+                    series_uid=series_uid,
+                    nifti_path_str=nifti_path_str,
                 )
                 continue
 
@@ -1942,18 +2132,16 @@ def radiomics_for_course_ct_nifti_fallback(
                 "label": None,
                 "large_roi": bool(large_roi),
                 "cleanup": False,
-                "metadata": {
-                    "modality": "CT",
-                    "series_uid": series_uid,
-                    "segmentation_source": "AutoTS_total_nifti_fallback",
-                    "course_dir": str(course_dir),
-                    "patient_id": course_dir.parent.name,
-                    "course_id": course_dir.name,
-                    "structure_cropped": cropped_flag,
-                    "roi_original_name": roi_name,
-                    "nifti_path": nifti_path_str,
-                    "mask_path_source": str(mask_path),
-                },
+                **_nifti_governed_fields(
+                    roi_name,
+                    mask_path,
+                    series_uid,
+                    display_roi,
+                    cropped_flag,
+                    voxel_count,
+                    bool(large_roi),
+                    nifti_path_str,
+                ),
             })
 
     for failure in preparation_failures:
@@ -1966,15 +2154,16 @@ def radiomics_for_course_ct_nifti_fallback(
                 "label": None,
                 "large_roi": False,
                 "cleanup": False,
-                "metadata": {
-                    "modality": "CT",
-                    "segmentation_source": "AutoTS_total_nifti_fallback",
-                    "course_dir": str(course_dir),
-                    "patient_id": course_dir.parent.name,
-                    "course_id": course_dir.name,
-                    "structure_cropped": False,
-                    "roi_original_name": failure["roi_name"],
-                },
+                **_nifti_governed_fields(
+                    failure["roi_name"],
+                    Path(failure["mask_source"]),
+                    failure["series_uid"],
+                    failure["roi_name"],
+                    False,
+                    None,
+                    False,
+                    failure["nifti_path"],
+                ),
                 "precomputed_failure": failure,
             }
         )
@@ -2097,7 +2286,6 @@ def radiomics_for_course(
 
             desired_custom = {
                 name for name in _custom_roi_names_from_config(custom_cfg)
-                if _norm(name) not in skip_rois
             }
         except Exception as exc:
             _invalidate_radiomics_outputs(output_path)
@@ -2175,7 +2363,6 @@ def radiomics_for_course(
             desired_custom = {
                 name[:-9] if name.endswith("__partial") else name
                 for name in inferred
-                if _norm(name) not in skip_rois
             }
 
         custom_wanted: List[str] = []
@@ -2267,6 +2454,73 @@ def radiomics_for_course(
         if getattr(config, "radiomics_params_file", None)
         else None
     )
+    parameter_path = Path(params_file) if params_file else None
+    series_uid = str(contract.planning_ct.get("series_instance_uid") or "").strip()
+    if not series_uid:
+        _invalidate_radiomics_outputs(output_path)
+        raise RadiomicsCourseExtractionError(
+            f"Course contract has no planning CT SeriesInstanceUID: {course_dir}"
+        )
+    run_identifier = new_run_identifier()
+    code_revision = current_code_revision()
+    custom_provenance = load_custom_structure_provenance(custom_cfg)
+    identity_cache: Dict[Path, Dict[str, Tuple[str, str]]] = {}
+
+    def _governed_task_fields(
+        source: str,
+        rs_file: Path,
+        roi_original_name: str,
+        display_roi: str,
+        cropped_flag: bool,
+        native_voxel_count: Optional[int],
+        large_roi: bool,
+    ) -> Dict[str, Any]:
+        rs_file = Path(rs_file).resolve()
+        identity = stable_rtstruct_roi_identity(rs_file, roi_original_name)
+        decision = classify_ct_roi(
+            source,
+            roi_original_name,
+            custom_provenance=custom_provenance,
+        )
+        hashes = {
+            arm: configured_parameter_hash(
+                parameter_path,
+                arm=arm,
+                window=(decision.primary_resegment_range_hu if arm == PRIMARY_ARM else None),
+                large_roi=large_roi,
+            )
+            for arm in CT_EXTRACTION_ARMS
+        }
+        return {
+            "dual_arm_ct": True,
+            "roi_class_decision": {
+                "roi_class": decision.roi_class,
+                "primary_resegment_range_hu": decision.primary_resegment_range_hu,
+                "primary_intensity_texture_disposition": decision.primary_intensity_texture_disposition,
+                "map_version": decision.map_version,
+                "map_hash": decision.map_hash,
+                "map_entry_source": decision.map_entry_source,
+                "adjudication_status": decision.adjudication_status,
+            },
+            "run_identifier": run_identifier,
+            "code_revision": code_revision,
+            "native_voxel_count": native_voxel_count,
+            "required": roi_source_is_required(source),
+            "configured_parameter_hashes": hashes,
+            "metadata": {
+                "modality": "CT",
+                "segmentation_source": source,
+                "course_dir": str(course_dir),
+                "patient_id": course_dir.parent.name,
+                "course_id": course_dir.name,
+                "series_uid": series_uid,
+                "mask_identity": identity[0],
+                "roi_original_name": roi_original_name,
+                "stable_roi_identifier": identity[1],
+                "roi_name": display_roi,
+                "structure_cropped": bool(cropped_flag),
+            },
+        }
 
     # Save CT image to a temporary NRRD. Serialization is required acquisition
     # preparation and must not be reclassified as an empty course.
@@ -2309,6 +2563,7 @@ def radiomics_for_course(
                 preparation_failures.append(
                     {
                         "source": segmentation_source,
+                        "rs_file": str(rs_file),
                         "roi_name": str(roi_name),
                         "status": status,
                         "failure_kind": failure_kind,
@@ -2363,10 +2618,11 @@ def radiomics_for_course(
             for roi_name in roi_names:
                 norm_key = _norm(roi_name)
                 if norm_key in skip_rois:
-                    logger.debug(
-                        "Skipping radiomics for %s/%s (skip list)",
-                        segmentation_source,
+                    _record_preparation_failure(
                         roi_name,
+                        "ROI is listed in radiomics_skip_rois",
+                        status="declared_skip",
+                        failure_kind="declared_ineligible",
                     )
                     continue
                 try:
@@ -2463,14 +2719,15 @@ def radiomics_for_course(
                     "params_file": params_file,
                     "label": None,
                     "large_roi": bool(large_roi),
-                    "metadata": {
-                        "segmentation_source": segmentation_source,
-                        "course_dir": str(course_dir),
-                        "patient_id": course_dir.parent.name,
-                        "course_id": course_dir.name,
-                        "structure_cropped": cropped_flag,
-                        "roi_original_name": roi_name,
-                    },
+                    **_governed_task_fields(
+                        segmentation_source,
+                        rs_file,
+                        roi_name,
+                        display_roi,
+                        cropped_flag,
+                        voxel_count,
+                        bool(large_roi),
+                    ),
                     "cleanup": True,
                     "ct_info": ct_info,
                 })
@@ -2483,14 +2740,15 @@ def radiomics_for_course(
                     "roi_name": failure["roi_name"],
                     "params_file": params_file,
                     "label": None,
-                    "metadata": {
-                        "segmentation_source": failure["source"],
-                        "course_dir": str(course_dir),
-                        "patient_id": course_dir.parent.name,
-                        "course_id": course_dir.name,
-                        "structure_cropped": False,
-                        "roi_original_name": failure["roi_name"],
-                    },
+                    **_governed_task_fields(
+                        failure["source"],
+                        Path(failure["rs_file"]),
+                        failure["roi_name"],
+                        failure["roi_name"],
+                        False,
+                        None,
+                        False,
+                    ),
                     "precomputed_failure": failure,
                     "cleanup": False,
                     "ct_info": ct_info,

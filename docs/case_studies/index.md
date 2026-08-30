@@ -177,7 +177,7 @@ cph.print_summary()
 
 ## Case Study 2: Radiomics Signature for Treatment Response
 
-*Robust CT Radiomics for Response Prediction: IBSI-Aligned Feature Extraction with NTCV Perturbations*
+*Robust CT Radiomics for Response Prediction: PyRadiomics Extraction with IBSI-Informed Reporting and NTCV Perturbations*
 
 ### Summary
 
@@ -219,7 +219,7 @@ graph TD
 #### Step 1: Preprocessing Configuration
 
 ```yaml
-# Systematic preprocessing aligned with IBSI
+# Documented preprocessing with IBSI-informed reporting
 preprocessing:
   resampling:
     spacing_mm: [1.0, 1.0, 3.0]

@@ -133,7 +133,7 @@ Forget parsing DICOM tags. RTpipeline produces tidy, standardized data tables:
 ```
 _RESULTS/
 ├── dvh_metrics.xlsx      # Dmean, D95%, V20Gy for every structure
-├── radiomics_ct.xlsx     # 1000+ IBSI-aligned features (via PyRadiomics)
+├── radiomics_ct.xlsx     # PyRadiomics features with IBSI-informed reporting
 ├── radiomics_robustness_summary.xlsx  # ICC/CoV/QCD summary across perturbations
 ├── case_metadata.xlsx    # Clinical tags, scanner info, kernels
 └── qc_reports.xlsx       # Quality control flags and warnings
@@ -192,7 +192,7 @@ Try RTpipeline in the cloud with free GPU access:
 
 - Accelerate from data collection to analysis in days, not months
 - Focus thesis time on methods and hypotheses, not infrastructure
-- Built-in tools for methodological rigor (ICC, perturbations, IBSI-aligned features)
+- Built-in tools for methodological rigor (ICC, perturbations, and IBSI-informed reporting)
 
 [**PhD Quick Start Guide →**](getting_started/index.md)
 
@@ -329,7 +329,7 @@ Plug-and-play support for institution-specific segmentation models. [Learn more 
 
 - **Segmentation accuracy**: TotalSegmentator and custom models may produce errors. Always review AI-generated contours before clinical use.
 - **Robustness benchmarks**: The 98-99% sensitivity figures cited in documentation are **literature benchmarks** from Zwanenburg et al. (2019), not performance guarantees for this implementation.
-- **IBSI alignment**: Features are extracted via PyRadiomics with IBSI-informed settings, but full IBSI compliance requires independent validation against digital phantoms.
+- **IBSI-informed reporting**: Features are extracted via PyRadiomics with documented settings. No claim of IBSI compliance is made without independent digital-phantom validation.
 - **Multi-center use**: Site-specific validation is essential before deploying across institutions.
 
 ---

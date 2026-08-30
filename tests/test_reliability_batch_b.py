@@ -519,7 +519,7 @@ def test_parallel_radiomics_recovers_from_broken_pool_during_backfill(tmp_path, 
     course_dirs = build_course_dirs(course_dir)
     course_dirs.dicom_ct.mkdir(parents=True, exist_ok=True)
     (course_dirs.dicom_ct / "image.dcm").write_bytes(b"test fixture")
-    roi_names = ["PTV", "BLADDER", "RECTUM", "FEMUR_L"]
+    roi_names = ["liver", "spleen", "urinary_bladder", "femur_left"]
     _write_contract(course_dir)
     contract = load_course_contract(course_dir)
     planning_uid = str(contract.planning_ct["series_instance_uid"])
@@ -536,11 +536,7 @@ def test_parallel_radiomics_recovers_from_broken_pool_during_backfill(tmp_path, 
     # process initialized via initializer=); it just echoes back a minimal, valid row.
     factory = _RecoverableBrokenPoolFactory(
         break_after=2,
-        result_fn=lambda task: {
-            "segmentation_source": task.source,
-            "roi_original_name": task.roi_name,
-            "value": 1.0,
-        },
+        result_fn=lambda task: rp._status_records(task, "success", "test success"),
     )
     monkeypatch.setattr(rp, "ProcessPoolExecutor", factory)
 
@@ -552,9 +548,29 @@ def test_parallel_radiomics_recovers_from_broken_pool_during_backfill(tmp_path, 
 
     import pandas as pd  # type: ignore
 
-    df = pd.read_excel(outcome.output_path, engine="openpyxl")
-    assert sorted(df["roi_original_name"].tolist()) == sorted(roi_names), (
+    df = pd.read_parquet(outcome.output_path.with_suffix(".parquet"), engine="pyarrow")
+    assert sorted(set(df["roi_original_name"].tolist())) == sorted(roi_names), (
         "every ROI task must be recovered after the broken pool -- none silently lost"
+    )
+
+
+def _dual_arm_roi_task(tmp_path, *, course_dir=None):
+    course = Path(course_dir) if course_dir is not None else tmp_path
+    return rp._RoiTask(
+        "Manual",
+        str(tmp_path / "RS.dcm"),
+        "PTV",
+        str(course),
+        "test-series",
+        "test-mask",
+        "test-roi",
+        rp.classify_ct_roi("Manual", "PTV"),
+        "test-run",
+        "test-revision",
+        {
+            "primary_resegmented": "test-primary",
+            "sensitivity_raw": "test-sensitivity",
+        },
     )
 
 
@@ -566,7 +582,7 @@ def test_parallel_worker_mask_read_exception_raises_region_failure(monkeypatch, 
     rp._WORKER_STATE.clear()
     rp._WORKER_STATE.update({"img": object(), "extractor": object(), "skip_rois": set()})
     monkeypatch.setattr(rp, "_get_builder", lambda _path: Builder())
-    task = rp._RoiTask("Manual", str(tmp_path / "RS.dcm"), "PTV", str(tmp_path))
+    task = _dual_arm_roi_task(tmp_path)
 
     with pytest.raises(rp.RadiomicsRegionExtractionError, match="could not be read.*corrupt contour data"):
         rp._extract_one(task)
@@ -580,7 +596,7 @@ def test_parallel_worker_missing_mask_raises_region_failure(monkeypatch, tmp_pat
     rp._WORKER_STATE.clear()
     rp._WORKER_STATE.update({"img": object(), "extractor": object(), "skip_rois": set()})
     monkeypatch.setattr(rp, "_get_builder", lambda _path: Builder())
-    task = rp._RoiTask("Manual", str(tmp_path / "RS.dcm"), "PTV", str(tmp_path))
+    task = _dual_arm_roi_task(tmp_path)
 
     with pytest.raises(rp.RadiomicsRegionExtractionError, match="did not provide a mask"):
         rp._extract_one(task)
@@ -590,7 +606,7 @@ def test_parallel_worker_missing_builder_raises_region_failure(monkeypatch, tmp_
     rp._WORKER_STATE.clear()
     rp._WORKER_STATE.update({"img": object(), "extractor": object(), "skip_rois": set()})
     monkeypatch.setattr(rp, "_get_builder", lambda _path: None)
-    task = rp._RoiTask("Manual", str(tmp_path / "RS.dcm"), "PTV", str(tmp_path))
+    task = _dual_arm_roi_task(tmp_path)
 
     with pytest.raises(rp.RadiomicsRegionExtractionError, match="structure builder is unavailable"):
         rp._extract_one(task)
@@ -612,7 +628,7 @@ def test_parallel_worker_empty_mask_raises_region_failure(monkeypatch, tmp_path)
     rp._WORKER_STATE.clear()
     rp._WORKER_STATE.update({"img": object(), "extractor": object(), "skip_rois": set()})
     monkeypatch.setattr(rp, "_get_builder", lambda _path: Builder())
-    task = rp._RoiTask("Manual", str(tmp_path / "RS.dcm"), "PTV", str(tmp_path))
+    task = _dual_arm_roi_task(tmp_path)
 
     with pytest.raises(rp.RadiomicsRegionExtractionError, match="empty required mask"):
         rp._extract_one(task)
@@ -637,39 +653,68 @@ def test_parallel_worker_undersized_mask_returns_observed_status(monkeypatch, tm
         {"img": object(), "extractor": object(), "skip_rois": set(), "min_voxels": 120}
     )
     monkeypatch.setattr(rp, "_get_builder", lambda _path: Builder())
-    task = rp._RoiTask("Manual", str(tmp_path / "RS.dcm"), "PTV", str(tmp_path))
+    task = _dual_arm_roi_task(tmp_path)
 
-    record = rp._extract_one(task)
+    records = rp._extract_one(task)
 
-    assert record["extraction_status"] == "below_minimum_voxels"
-    assert record["voxel_count"] == 3
-    assert record["segmentation_source"] == "Manual"
-    assert record["roi_original_name"] == "PTV"
+    assert len(records) == 2
+    assert {record["extraction_arm"] for record in records} == {
+        "primary_resegmented",
+        "sensitivity_raw",
+    }
+    assert {record["extraction_status"] for record in records} == {
+        "below_minimum_voxels"
+    }
+    assert {record["native_mask_voxel_count"] for record in records} == {3}
+    assert {record["segmentation_source"] for record in records} == {"Manual"}
+    assert {record["roi_original_name"] for record in records} == {"PTV"}
 
 
 def test_parallel_worker_declared_skip_returns_status(monkeypatch, tmp_path):
     rp._WORKER_STATE.clear()
     rp._WORKER_STATE.update({"img": object(), "extractor": object(), "skip_rois": {"ptv"}})
     monkeypatch.setattr(rp, "_get_builder", lambda _path: object())
-    task = rp._RoiTask("Manual", str(tmp_path / "RS.dcm"), "PTV", str(tmp_path))
+    task = _dual_arm_roi_task(tmp_path)
 
-    record = rp._extract_one(task)
+    records = rp._extract_one(task)
 
-    assert record["extraction_status"] == "declared_skip"
-    assert record["roi_original_name"] == "PTV"
+    assert len(records) == 2
+    assert {record["extraction_status"] for record in records} == {"declared_skip"}
+    assert {record["roi_original_name"] for record in records} == {"PTV"}
 
 
 def test_parallel_success_record_uses_public_feature_schema_only(monkeypatch, tmp_path):
     import numpy as np
+    import rtpipeline.radiomics_ct_contract as contract
 
     class Image:
         def GetSpacing(self):
             return (1.0, 1.0, 1.0)
 
     class Extractor:
-        settings = {"resampledPixelSpacing": (1.0, 1.0, 1.0)}
+        def __init__(self):
+            self.settings = {
+                "resampledPixelSpacing": (1.0, 1.0, 1.0),
+                "minimumROISize": 1,
+                "minimumROIDimensions": 1,
+            }
+            self.enabledFeatures = {"shape": [], "firstorder": []}
+
+        def disableAllImageTypes(self):
+            return None
+
+        def enableImageTypeByName(self, *_args, **_kwargs):
+            return None
+
+        def disableAllFeatures(self):
+            self.enabledFeatures = {}
+
+        def enableFeatureClassByName(self, name):
+            self.enabledFeatures = {name: []}
 
         def execute(self, _image, _mask):
+            if set(self.enabledFeatures) == {"shape"}:
+                return {"original_shape_MeshVolume": 125.0}
             return {"original_firstorder_Mean": 42.0}
 
     class Builder:
@@ -685,27 +730,61 @@ def test_parallel_success_record_uses_public_feature_schema_only(monkeypatch, tm
             "min_voxels": 1,
             "max_voxels": 1000,
             "base_timeout": 600,
+            "config": object(),
         }
     )
     monkeypatch.setattr(rp, "_get_builder", lambda _path: Builder())
     monkeypatch.setattr(radiomics_mod, "_mask_from_array_like", lambda *_a: object())
+    monkeypatch.setattr(radiomics_mod, "_extractor", lambda *_a, **_k: Extractor())
     monkeypatch.setattr(rp, "mask_is_cropped", lambda _mask: False)
-    task = rp._RoiTask("Manual", str(tmp_path / "RS.dcm"), "PTV", str(tmp_path / "patient" / "course"))
+    monkeypatch.setattr(
+        contract,
+        "resampled_mask_qc",
+        lambda *_a, **_k: {
+            "morphologic_resampled_voxel_count": 125,
+            "resegment_after_count": 125,
+            "resegment_below_lower_count": 0,
+            "resegment_above_upper_count": 0,
+            "resegment_nonfinite_count": 0,
+            "components_26_before": 1,
+            "components_26_after": 1,
+            "largest_component_voxel_count_before": 125,
+            "largest_component_voxel_count_after": 125,
+            "largest_component_retained_fraction": 1.0,
+            "resegment_retained_fraction": 1.0,
+            "largest_component_fraction_after": 1.0,
+            "component_count_increased": False,
+            "observed_roi_dimensions_after_resegmentation": 3,
+        },
+    )
+    monkeypatch.setattr(
+        contract,
+        "_runtime_versions",
+        lambda: {
+            "pyradiomics_version": "test",
+            "simpleitk_version": "test",
+            "numpy_version": np.__version__,
+        },
+    )
+    task = _dual_arm_roi_task(
+        tmp_path, course_dir=tmp_path / "patient" / "course"
+    )
 
-    record = rp._extract_one(task)
+    records = rp._extract_one(task)
 
-    assert set(record) == {
-        "original_firstorder_Mean",
-        "modality",
-        "segmentation_source",
-        "roi_name",
-        "roi_original_name",
-        "course_dir",
-        "patient_id",
-        "course_id",
-        "structure_cropped",
+    assert len(records) == 2
+    assert {record["extraction_arm"] for record in records} == {
+        "primary_resegmented",
+        "sensitivity_raw",
     }
-    assert not {"extraction_status", "extraction_status_detail", "voxel_count"} & set(record)
+    assert {record["original_firstorder_Mean"] for record in records} == {42.0}
+    assert {record["original_shape_MeshVolume"] for record in records} == {125.0}
+    for record in records:
+        assert record["patient_id"] == "patient"
+        assert record["course_id"] == "course"
+        assert record["series_uid"] == "test-series"
+        assert record["mask_identity"] == "test-mask"
+        assert record["stable_roi_identifier"] == "test-roi"
 
 
 def test_parallel_radiomics_region_failure_aborts_course_and_invalidates_table(tmp_path, monkeypatch):

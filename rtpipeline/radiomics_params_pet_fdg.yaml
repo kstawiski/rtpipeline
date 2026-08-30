@@ -1,5 +1,5 @@
 # =================================================================================================
-# IBSI-Compliant PyRadiomics Configuration for 18F-FDG PET Feature Extraction
+# PyRadiomics configuration with IBSI-informed reporting for 18F-FDG PET Feature Extraction
 #
 # Based on Knowledge/Pyradiomics PET Configuration Research.md and designed for
 # direct extractor-driven resampling/discretization.
@@ -25,7 +25,7 @@ setting:
   minimumROISize: 64                     # Discourage noisy micro-ROIs post-resampling.
 
   # ----------------------------------------------------------
-  # Texture Neighborhoods & IBSI Compliance
+  # Texture Neighborhoods (IBSI-informed reporting)
   # ----------------------------------------------------------
   distances: [1, 2]                      # Include short & medium offsets for texture robustness.
   force2D: false
@@ -33,7 +33,7 @@ setting:
   geometryTolerance: 1e-6
   correctMask: true
   weightingNorm: null
-  voxelArrayShift: 0                     # Maintain SUV scale; aligns firstorder_Energy with IBSI.
+  voxelArrayShift: 0                     # Maintain SUV scale; matches the IBSI definition of firstorder_Energy.
   additionalInfo: true
   label: 1
   preCrop: false

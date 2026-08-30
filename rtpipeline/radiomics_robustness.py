@@ -733,6 +733,16 @@ def _coerce_scalar_feature_value(key: str, value: Any) -> Optional[float]:
     return None
 
 
+def _is_radiomics_feature_key(key: str) -> bool:
+    return any(
+        marker in str(key)
+        for marker in (
+            "_firstorder_", "_shape_", "_shape2D_", "_glcm_", "_glrlm_",
+            "_glszm_", "_gldm_", "_ngtdm_",
+        )
+    )
+
+
 def _validate_extracted_feature_frame(
     frame: pd.DataFrame,
     expected_perturbation_ids: set[str],
@@ -741,32 +751,81 @@ def _validate_extracted_feature_frame(
     """Fail closed when any perturbation or feature extraction is incomplete."""
     if frame.empty:
         raise RuntimeError(f"no radiomics features were extracted for {context}")
-    observed_ids = set(frame["perturbation_id"].astype(str))
-    missing_ids = sorted(expected_perturbation_ids - observed_ids)
-    unexpected_ids = sorted(observed_ids - expected_perturbation_ids)
+    if "extraction_arm" in frame.columns:
+        from .radiomics_ct_contract import CT_EXTRACTION_ARMS
+
+        identity_columns = [
+            "patient_id",
+            "course_id",
+            "series_uid",
+            "segmentation_source",
+            "mask_identity",
+            "roi_original_name",
+            "stable_roi_identifier",
+            "extraction_arm",
+        ]
+        missing_identity_columns = sorted(set(identity_columns) - set(frame.columns))
+        if missing_identity_columns:
+            raise RuntimeError(
+                "CT robustness extraction lacks identity columns: "
+                + ", ".join(missing_identity_columns)
+            )
+        blank_identity = frame[identity_columns].astype(str).apply(
+            lambda column: column.str.strip().eq("")
+        )
+        if bool(blank_identity.to_numpy().any()):
+            raise RuntimeError("CT robustness extraction has a blank arm-aware identity field")
+
+        expected_ids: set[Any] = {
+            (perturbation_id, arm)
+            for perturbation_id in expected_perturbation_ids
+            for arm in CT_EXTRACTION_ARMS
+        }
+        observed_ids: set[Any] = set(
+            zip(frame["perturbation_id"].astype(str), frame["extraction_arm"].astype(str))
+        )
+    else:
+        expected_ids = set(expected_perturbation_ids)
+        observed_ids = set(frame["perturbation_id"].astype(str))
+    missing_ids = sorted(expected_ids - observed_ids)
+    unexpected_ids = sorted(observed_ids - expected_ids)
     if missing_ids or unexpected_ids:
         raise RuntimeError(
             f"incomplete radiomics extraction for {context}: "
-            f"missing perturbations={missing_ids}, unexpected perturbations={unexpected_ids}"
+            f"missing perturbations/arms={missing_ids}, unexpected perturbations/arms={unexpected_ids}"
         )
     if not np.isfinite(frame["value"].to_numpy(dtype=float)).all():
         raise RuntimeError(f"non-finite radiomics values were extracted for {context}")
 
+    group_columns = ["perturbation_id"]
+    if "extraction_arm" in frame.columns:
+        group_columns.append("extraction_arm")
     feature_sets = {
-        perturbation_id: frozenset(group["feature_name"].astype(str))
-        for perturbation_id, group in frame.groupby("perturbation_id")
+        tuple(str(value) for value in (key if isinstance(key, tuple) else (key,))):
+        frozenset(group["feature_name"].astype(str))
+        for key, group in frame.groupby(group_columns)
     }
-    reference_features = next(iter(feature_sets.values()))
-    if not reference_features:
+    if any(not features for features in feature_sets.values()):
         raise RuntimeError(f"no scalar radiomics features were extracted for {context}")
-    mismatched = sorted(
-        perturbation_id
-        for perturbation_id, features in feature_sets.items()
-        if features != reference_features
+    mismatched = []
+    arms = (
+        frame["extraction_arm"].astype(str).unique()
+        if "extraction_arm" in frame.columns
+        else [None]
     )
+    for arm in arms:
+        arm_sets = {
+            key: features
+            for key, features in feature_sets.items()
+            if arm is None or key[-1] == arm
+        }
+        reference_features = next(iter(arm_sets.values()))
+        mismatched.extend(
+            key for key, features in arm_sets.items() if features != reference_features
+        )
     if mismatched:
         raise RuntimeError(
-            f"feature columns differ across perturbations for {context}: {mismatched}"
+            f"feature columns differ across perturbations for {context}: {sorted(mismatched)}"
         )
 
 
@@ -779,6 +838,8 @@ def extract_features_for_masks(
     patient_id: str = "",
     course_id: str = "",
     perturbed_images: Optional[Dict[str, sitk.Image]] = None,
+    segmentation_source: str = "Manual",
+    run_identifier: Optional[str] = None,
 ) -> pd.DataFrame:
     """
     Extract radiomics features for multiple mask variants.
@@ -803,6 +864,180 @@ def extract_features_for_masks(
     # Check once whether we need the conda fallback
     ext_probe = _extractor(config, modality)
     use_conda = ext_probe is None
+
+    if modality == "CT":
+        import hashlib
+        from .radiomics_ct_contract import (
+            CT_EXTRACTION_ARMS,
+            PRIMARY_ARM,
+            classify_ct_roi,
+            configured_parameter_hash,
+            current_code_revision,
+            extract_ct_roi_arms,
+            load_custom_structure_provenance,
+            new_run_identifier,
+        )
+
+        params_path = _get_params_file(config, "CT")
+        custom_path = getattr(config, "custom_structures_config", None)
+        decision = classify_ct_roi(
+            segmentation_source,
+            structure_name,
+            custom_provenance=(
+                load_custom_structure_provenance(Path(custom_path))
+                if segmentation_source == "Custom" and custom_path
+                else None
+            ),
+        )
+        configured_hashes = {
+            arm: configured_parameter_hash(
+                params_path,
+                arm=arm,
+                window=(decision.primary_resegment_range_hu if arm == PRIMARY_ARM else None),
+                large_roi=False,
+            )
+            for arm in CT_EXTRACTION_ARMS
+        }
+        shared_run_id = run_identifier or new_run_identifier()
+
+        def _append_records(records: List[Dict[str, Any]], perturbation_id: str) -> None:
+            for record in records:
+                metadata = {
+                    "patient_id": patient_id,
+                    "course_id": course_id,
+                    "modality": "CT",
+                    "structure": structure_name,
+                    "segmentation_source": segmentation_source,
+                    "perturbation_id": perturbation_id,
+                    "series_uid": record.get("series_uid", ""),
+                    "mask_identity": record.get("mask_identity", ""),
+                    "roi_original_name": record.get("roi_original_name", structure_name),
+                    "stable_roi_identifier": record.get("stable_roi_identifier", ""),
+                    "extraction_arm": record.get("extraction_arm", ""),
+                    "roi_class": record.get("roi_class", ""),
+                    "roi_map_version": record.get("roi_map_version", ""),
+                    "roi_map_hash": record.get("roi_map_hash", ""),
+                    "effective_parameter_hash": record.get("effective_parameter_hash", ""),
+                    "configured_parameter_hash": record.get("configured_parameter_hash", ""),
+                    "run_identifier": record.get("run_identifier", ""),
+                }
+                for key, value in record.items():
+                    if not _is_radiomics_feature_key(str(key)):
+                        continue
+                    scalar = _coerce_scalar_feature_value(str(key), value)
+                    if scalar is not None:
+                        rows.append({**metadata, "feature_name": str(key), "value": scalar})
+
+        if use_conda:
+            from .radiomics_conda import extract_radiomics_batch_with_conda, check_radiomics_env
+            if not check_radiomics_env():
+                raise RuntimeError(
+                    "radiomics conda environment is unavailable; robustness extraction cannot continue"
+                )
+            tmp_dir = tempfile.mkdtemp(prefix="rtpipe_robust_batch_")
+            try:
+                batch_tasks = []
+                for perturbation_id, mask in masks.items():
+                    current_image = (
+                        perturbed_images.get(perturbation_id, image)
+                        if perturbed_images else image
+                    )
+                    image_path = Path(tmp_dir) / f"image_{len(batch_tasks)}.nrrd"
+                    mask_path = Path(tmp_dir) / f"mask_{len(batch_tasks)}.nrrd"
+                    sitk.WriteImage(current_image, str(image_path))
+                    sitk.WriteImage(sitk.Cast(mask, sitk.sitkUInt8), str(mask_path))
+                    mask_digest = hashlib.sha256(
+                        sitk.GetArrayViewFromImage(mask).tobytes()
+                    ).hexdigest()
+                    batch_tasks.append({
+                        "image_path": str(image_path),
+                        "mask_path": str(mask_path),
+                        "roi_name": f"{structure_name}/{perturbation_id}",
+                        "dual_arm_ct": True,
+                        "roi_class_decision": {
+                            "roi_class": decision.roi_class,
+                            "map_version": decision.map_version,
+                            "map_hash": decision.map_hash,
+                            "map_entry_source": decision.map_entry_source,
+                            "adjudication_status": decision.adjudication_status,
+                            "primary_resegment_range_hu": decision.primary_resegment_range_hu,
+                            "primary_intensity_texture_disposition": decision.primary_intensity_texture_disposition,
+                        },
+                        "metadata": {
+                            "patient_id": patient_id,
+                            "course_id": course_id,
+                            "series_uid": f"robustness:{course_id}",
+                            "segmentation_source": segmentation_source,
+                            "mask_identity": mask_digest,
+                            "roi_original_name": structure_name,
+                            "stable_roi_identifier": structure_name,
+                            "roi_name": structure_name,
+                            "modality": "CT",
+                        },
+                        "run_identifier": shared_run_id,
+                        "code_revision": current_code_revision(),
+                        "native_voxel_count": int(np.count_nonzero(sitk.GetArrayViewFromImage(mask))),
+                        "required": False,
+                        "configured_parameter_hashes": configured_hashes,
+                    })
+                batch_results = extract_radiomics_batch_with_conda(
+                    batch_tasks,
+                    str(params_path) if params_path else None,
+                    timeout_per_roi=120,
+                )
+                for task, result in zip(batch_tasks, batch_results):
+                    if result.get("__status__") != "success":
+                        raise RuntimeError(
+                            f"robustness extraction failed for {task['roi_name']}: "
+                            f"{result.get('__error__', result.get('__reason__', 'unknown error'))}"
+                        )
+                    perturbation_id = task["roi_name"].split("/", 1)[1]
+                    _append_records(result["__records__"], perturbation_id)
+            finally:
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+        else:
+            from radiomics import featureextractor
+
+            def _factory():
+                return (
+                    featureextractor.RadiomicsFeatureExtractor(str(params_path))
+                    if params_path else featureextractor.RadiomicsFeatureExtractor()
+                )
+
+            for perturbation_id, mask in masks.items():
+                current_image = (
+                    perturbed_images.get(perturbation_id, image)
+                    if perturbed_images else image
+                )
+                mask_digest = hashlib.sha256(
+                    sitk.GetArrayViewFromImage(mask).tobytes()
+                ).hexdigest()
+                records = extract_ct_roi_arms(
+                    current_image,
+                    mask,
+                    factory=_factory,
+                    decision=decision,
+                    common_metadata={
+                        "patient_id": patient_id,
+                        "course_id": course_id,
+                        "series_uid": f"robustness:{course_id}",
+                        "segmentation_source": segmentation_source,
+                        "mask_identity": mask_digest,
+                        "roi_original_name": structure_name,
+                        "stable_roi_identifier": structure_name,
+                        "roi_name": structure_name,
+                        "modality": "CT",
+                    },
+                    run_identifier=shared_run_id,
+                    code_revision=current_code_revision(),
+                    native_voxel_count=int(np.count_nonzero(sitk.GetArrayViewFromImage(mask))),
+                    required=False,
+                    configured_parameter_hashes=configured_hashes,
+                )
+                _append_records(records, perturbation_id)
+        frame = pd.DataFrame(rows)
+        _validate_extracted_feature_frame(frame, set(masks), structure_name)
+        return frame
 
     if use_conda:
         from .radiomics_conda import extract_radiomics_batch_with_conda, check_radiomics_env
@@ -1100,10 +1335,12 @@ def summarize_feature_stability(
     rows = []
 
     if group_columns is None:
+        group_columns = ["structure"]
         if "segmentation_source" in df_long.columns:
-            group_columns = ["structure", "segmentation_source", "feature_name"]
-        else:
-            group_columns = ["structure", "feature_name"]
+            group_columns.append("segmentation_source")
+        if "extraction_arm" in df_long.columns:
+            group_columns.append("extraction_arm")
+        group_columns.append("feature_name")
 
     for group_key, group in df_long.groupby(group_columns):
         key_values = group_key if isinstance(group_key, tuple) else (group_key,)
@@ -1281,6 +1518,8 @@ def _validate_cohort_feature_sets(df_long: pd.DataFrame) -> None:
     comparison_columns = ["structure"]
     if "segmentation_source" in df_long.columns:
         comparison_columns.append("segmentation_source")
+    if "extraction_arm" in df_long.columns:
+        comparison_columns.append("extraction_arm")
 
     for group_key, group in df_long.groupby(comparison_columns, dropna=False):
         feature_sets = group.groupby(subject_columns, dropna=False)["feature_name"].agg(
@@ -1946,6 +2185,8 @@ def robustness_for_course(
         logger.info("Parallel radiomics disabled via RTPIPELINE_DISABLE_PARALLEL_RADIOMICS=%s", disable_parallel)
         has_parallel = False
     all_features = []
+    from .radiomics_ct_contract import CT_EXTRACTION_ARMS, new_run_identifier
+    robustness_run_identifier = new_run_identifier()
     expected_perturbations: Dict[Tuple[str, str], set[str]] = {}
     
     # Prepare tasks for parallel execution
@@ -2001,6 +2242,7 @@ def robustness_for_course(
 
             if has_parallel:
                 # Prepare parallel tasks
+                assert temp_dir is not None
                 for pert_id, mask in perturbed_masks.items():
                     # Use perturbed image if available
                     current_image = perturbed_images.get(pert_id, ct_image) if perturbed_images else ct_image
@@ -2008,7 +2250,15 @@ def robustness_for_course(
                     try:
                         # We treat each perturbation as a "structure" for the parallel worker
                         task_file, task_params = _prepare_radiomics_task(
-                            current_image, mask, config, source, roi_name, course_dir, temp_dir, False
+                            current_image,
+                            mask,
+                            config,
+                            source,
+                            roi_name,
+                            course_dir,
+                            temp_dir,
+                            False,
+                            robustness_run_identifier,
                         )
                         # Add perturbation-specific metadata to extra_metadata
                         task_params['extra_metadata'] = {'perturbation_id': pert_id}
@@ -2029,6 +2279,8 @@ def robustness_for_course(
                     patient_id=course_dir.parent.name,
                     course_id=course_dir.name,
                     perturbed_images=perturbed_images,
+                    segmentation_source=source,
+                    run_identifier=robustness_run_identifier,
                 )
                 if not features_df.empty:
                     features_df["segmentation_source"] = source
@@ -2056,7 +2308,7 @@ def robustness_for_course(
             with ctx.Pool(max_workers) as pool:
                 completed_count = 0
                 total_count = len(tasks)
-                successful_task_keys: set[Tuple[str, str, str]] = set()
+                successful_task_keys: set[Tuple[str, str, str, str]] = set()
                 start_time = time.time()
                 last_progress_time = time.time()
                 timed_out = False
@@ -2116,49 +2368,60 @@ def robustness_for_course(
                     # Process result if we got one
 
                     if result:
-                        # Convert wide result dict (from worker) to long format DataFrame rows
-                        meta_keys = {
-                            'modality', 'segmentation_source', 'roi_name', 'roi_original_name',
-                            'course_dir', 'patient_id', 'course_id', 'structure_cropped',
-                            'perturbation_id'
-                        }
-                        
-                        # Extract metadata
-                        metadata = {k: result[k] for k in meta_keys if k in result}
-                        
-                        # Convert features
+                        records = result.get("__records__", [])
                         rows = []
-                        for k, v in result.items():
-                            if k in meta_keys: continue
-                            # Skip diagnostic info if present
-                            if k.startswith('diagnostics_'): continue 
-                            
-                            if isinstance(v, (int, float, np.floating, np.integer)):
-                                row = metadata.copy()
-                                row['feature_name'] = str(k)
-                                row['value'] = float(v)
-                                rows.append(row)
-                        
+                        for record in records:
+                            metadata = {
+                                "modality": record.get("modality", "CT"),
+                                "segmentation_source": result.get("segmentation_source", ""),
+                                "roi_name": result.get("roi_name", ""),
+                                "patient_id": result.get("patient_id", ""),
+                                "course_id": result.get("course_id", ""),
+                                "perturbation_id": result.get("perturbation_id", ""),
+                                "extraction_arm": record.get("extraction_arm", ""),
+                                "roi_class": record.get("roi_class", ""),
+                                "roi_class_map_version": record.get("roi_class_map_version", ""),
+                                "roi_class_map_hash": record.get("roi_class_map_hash", ""),
+                                "effective_parameter_hash": record.get("effective_parameter_hash", ""),
+                                "configured_parameter_hash": record.get("configured_parameter_hash", ""),
+                                "run_identifier": record.get("run_identifier", ""),
+                            }
+                            for key, value in record.items():
+                                if not _is_radiomics_feature_key(str(key)):
+                                    continue
+                                scalar = _coerce_scalar_feature_value(str(key), value)
+                                if scalar is not None:
+                                    rows.append({
+                                        **metadata,
+                                        "feature_name": str(key),
+                                        "value": scalar,
+                                    })
+                            if any(
+                                row["extraction_arm"] == metadata["extraction_arm"]
+                                for row in rows
+                            ):
+                                successful_task_keys.add((
+                                    str(metadata["roi_name"]),
+                                    str(metadata["segmentation_source"]),
+                                    str(metadata["perturbation_id"]),
+                                    str(metadata["extraction_arm"]),
+                                ))
                         if rows:
                             all_features.append(pd.DataFrame(rows))
-                            successful_task_keys.add((
-                                str(metadata.get('roi_name', '')),
-                                str(metadata.get('segmentation_source', '')),
-                                str(metadata.get('perturbation_id', '')),
-                            ))
                         else:
                             logger.error(
                                 "Robustness worker returned no scalar features for %s/%s "
                                 "(perturbation %s)",
-                                metadata.get('segmentation_source'),
-                                metadata.get('roi_name'),
-                                metadata.get('perturbation_id'),
+                                result.get("segmentation_source"),
+                                result.get("roi_name"),
+                                result.get("perturbation_id"),
                             )
 
                 expected_task_keys = {
-                    (roi_name, source, perturbation_id)
+                    (roi_name, source, perturbation_id, arm)
                     for (roi_name, source), perturbation_ids in expected_perturbations.items()
                     for perturbation_id in perturbation_ids
+                    for arm in CT_EXTRACTION_ARMS
                 }
                 missing_task_keys = sorted(expected_task_keys - successful_task_keys)
                 unexpected_task_keys = sorted(successful_task_keys - expected_task_keys)
@@ -2268,10 +2531,14 @@ def aggregate_robustness_results(
 
     per_source_summary: Optional[pd.DataFrame] = None
     if "segmentation_source" in combined_raw.columns:
+        per_source_columns = ["segmentation_source", "structure"]
+        if "extraction_arm" in combined_raw.columns:
+            per_source_columns.append("extraction_arm")
+        per_source_columns.append("feature_name")
         per_source_summary = summarize_feature_stability(
             combined_raw,
             rob_config,
-            group_columns=["segmentation_source", "structure", "feature_name"],
+            group_columns=per_source_columns,
         )
 
     if global_summary.empty:
