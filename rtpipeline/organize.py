@@ -20,6 +20,7 @@ import pydicom
 from pydicom.dataset import Dataset
 from pydicom.multival import MultiValue
 from pydicom.sequence import Sequence
+from pydicom.tag import Tag
 import SimpleITK as sitk
 from pydicom.uid import generate_uid
 from scipy.ndimage import map_coordinates
@@ -135,6 +136,20 @@ def _plan_checkpoint_is_complete(data: dict[str, object], has_discovered_plan: b
     return _has_nonmissing_adjudication(data.get("planning_ct_status"))
 
 
+def _sop_instance_uid(path: Path) -> str:
+    """Return a file's SOPInstanceUID, or "" when it is absent or unreadable."""
+    try:
+        dataset = pydicom.dcmread(
+            str(path),
+            stop_before_pixels=True,
+            force=True,
+            specific_tags=[Tag(0x0008, 0x0018)],
+        )
+    except Exception:
+        return ""
+    return str(getattr(dataset, "SOPInstanceUID", "") or "")
+
+
 def _safe_copy(
     src: Path,
     dst: Path,
@@ -142,7 +157,21 @@ def _safe_copy(
 ) -> None:
     """Copy DICOM file to destination with optional deduplication."""
     if copy_manager is not None:
-        copy_manager.copy_dicom(src, dst, skip_if_exists=False)
+        actual, _copied = copy_manager.copy_dicom(src, dst, skip_if_exists=False)
+        # SOP dedup may answer from a foreign path without writing dst, and an
+        # earlier run may have left a different artifact there. Either way the
+        # course contract names dst, so dst must end up being this source.
+        source = Path(actual) if Path(actual).is_file() else src
+        if _sop_instance_uid(dst) != _sop_instance_uid(source):
+            ensure_dir(dst.parent)
+            if dst.exists():
+                dst.unlink()
+            try:
+                os.link(source, dst)
+            except OSError:
+                shutil.copy2(source, dst)
+        if not dst.exists():
+            raise OSError(f"required DICOM artifact was not materialised at {dst}")
     else:
         ensure_dir(dst.parent)
         if dst.exists() and dst.is_file() and not os.path.samefile(src, dst):
