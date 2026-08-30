@@ -24,6 +24,7 @@ import numpy as np
 
 # Modern NumPy/SciPy work fine with TotalSegmentator - no compatibility shims needed
 
+from .nifti_provenance import annotate as annotate_nifti_provenance
 from .config import PipelineConfig
 from .course_contract import load_course_contract
 from .inventory import TS_TASK_BY_CLASS, manual_rtstruct_bindings_from_inventory, ts_tasks_for_image_class
@@ -830,37 +831,15 @@ def _ensure_ct_nifti(
         # Clean up temp directory completely
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
-    metadata.update(
-        {
-            "nifti_path": str(target),
-            "source_directory": str(ct_dir),
-            "modality": metadata.get("modality") or "CT",
-            "nifti_sha256": hashlib.sha256(target.read_bytes()).hexdigest(),
-        }
+    # Shared with organize's related-series conversion so both sidecars carry the
+    # provenance the course contract requires.
+    annotate_nifti_provenance(
+        metadata,
+        target,
+        ct_dir,
+        regenerated=regenerated,
+        existing_sidecar=existing_sidecar,
     )
-    if regenerated:
-        generated_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
-        metadata["generated_at"] = generated_at
-        # This timestamp describes NIfTI content, unlike generated_at on a sidecar,
-        # which must remain stable when only metadata is refreshed.
-        metadata["nifti_generated_at"] = generated_at
-    else:
-        for key in ("generated_at", "nifti_generated_at"):
-            if key in existing_sidecar:
-                metadata[key] = existing_sidecar[key]
-    try:
-        import SimpleITK as sitk
-
-        image = sitk.ReadImage(str(target))
-        metadata["nifti_geometry"] = {
-            "size": [int(value) for value in image.GetSize()],
-            "spacing": [float(value) for value in image.GetSpacing()],
-            "origin": [float(value) for value in image.GetOrigin()],
-            "direction": [float(value) for value in image.GetDirection()],
-        }
-    except Exception as exc:
-        logger.warning("Could not record NIfTI geometry for %s: %s", target, exc)
-        metadata["nifti_geometry"] = {}
     meta_path = nifti_dir / f"{base}.metadata.json"
     meta_path.write_text(json.dumps(metadata, indent=2), encoding='utf-8')
     return target
