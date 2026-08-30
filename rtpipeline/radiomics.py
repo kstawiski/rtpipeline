@@ -40,6 +40,9 @@ from .custom_structures_rtstruct import (
     _is_rs_custom_stale,
     record_rs_custom_resume_decision,
 )
+from functools import lru_cache
+
+from .acquisition_scale import describe_planning_ct
 from .radiomics_outcomes import (
     RadiomicsCourseExtractionError,
     RadiomicsCourseOutcome,
@@ -877,6 +880,17 @@ def _check_radiomics_contract_scope(
         )
 
 
+
+@lru_cache(maxsize=256)
+def _acquisition_scale_for(course_dir: Path) -> Dict[str, Any]:
+    """Per-course acquisition-scale descriptor, computed once and reused.
+
+    Purely descriptive: it records how the planning CT maps stored values to HU
+    so that downstream analysis can see, rather than infer, that a cohort mixes
+    standard and extended intensity scales. It never affects a feature value.
+    """
+    return describe_planning_ct(Path(course_dir) / "DICOM" / "CT")
+
 def radiomics_for_course(
     config: PipelineConfig,
     course_dir: Path,
@@ -1291,6 +1305,7 @@ def radiomics_for_course(
             res = ext.execute(img, m_img)
             rec = {k: (float(v) if isinstance(v, (int, float, np.floating)) else str(v)) for k, v in res.items()}
             display_roi = roi if (not cropped or roi.endswith("__partial")) else f"{roi}__partial"
+            rec.update(_acquisition_scale_for(course_dir))
             rec.update({
                 'modality': 'CT',
                 'segmentation_source': source,
