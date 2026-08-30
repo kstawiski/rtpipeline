@@ -53,6 +53,57 @@ def _write_valid_ct(path: Path, *, series_uid: str, study_uid: str) -> None:
     dataset.save_as(str(path), enforce_file_format=True)
 
 
+def _write_dual_arm_test_publication(
+    output: Path, base_records: list[dict[str, Any]]
+) -> Path:
+    from rtpipeline.radiomics_ct_contract import (
+        classify_ct_roi,
+        disposition_rows_for_arms,
+        write_ct_publication_atomic,
+    )
+
+    records: list[dict[str, Any]] = []
+    for index, base in enumerate(base_records, start=1):
+        source = str(base.get("segmentation_source") or "AutoRTS_total")
+        roi_name = str(base.get("roi_original_name") or base.get("roi_name") or "liver")
+        normalized = {
+            "modality": "CT",
+            "segmentation_source": source,
+            "roi_name": roi_name,
+            "roi_original_name": roi_name,
+            "patient_id": str(base.get("patient_id") or "P1"),
+            "course_id": str(base.get("course_id") or "C1"),
+            "series_uid": str(base.get("series_uid") or f"series-{index}"),
+            "mask_identity": str(base.get("mask_identity") or f"mask-{index}"),
+            "stable_roi_identifier": str(
+                base.get("stable_roi_identifier") or f"roi-{index}"
+            ),
+            **base,
+        }
+        pair = disposition_rows_for_arms(
+            normalized,
+            decision=classify_ct_roi(source, roi_name),
+            disposition="success",
+            detail="test success",
+            failure_kind="none",
+            run_identifier="test-run",
+            code_revision="test-revision",
+            native_voxel_count=120,
+            required=False,
+            configured_parameter_hashes={
+                "primary_resegmented": "test-primary",
+                "sensitivity_raw": "test-sensitivity",
+            },
+        )
+        for record in pair:
+            for key, value in base.items():
+                if key not in record or key == "feature":
+                    record[key] = value
+        records.extend(pair)
+    write_ct_publication_atomic(pd.DataFrame(records), output)
+    return output
+
+
 class _Cfg:
     """Minimal config: the dispatch is mocked, so only output_root + effective_workers are used."""
 
@@ -317,7 +368,19 @@ def test_parallel_all_series_conda_fallback_preserves_scope_opt_in(
     ):
         seen["allow_all_series_temp"] = allow_all_series_temp
         output = Path(course_dir) / "radiomics_ct.xlsx"
-        pd.DataFrame([{"roi_name": "PTV1"}]).to_excel(output, index=False)
+        _write_dual_arm_test_publication(
+            output,
+            [
+                {
+                    "roi_name": "PTV",
+                    "roi_original_name": "PTV",
+                    "segmentation_source": "AutoRTS_total",
+                    "patient_id": "P1",
+                    "course_id": "series",
+                    "series_uid": series_uid,
+                }
+            ],
+        )
         return output
 
     monkeypatch.setattr(radconda, "radiomics_for_course", fake_conda)
@@ -358,12 +421,7 @@ def test_all_series_parallel_and_conda_emit_one_auto_source(tmp_path, monkeypatc
         def submit(self, _function, task):
             future = Future()
             future.set_result(
-                {
-                    "segmentation_source": task.source,
-                    "roi_original_name": task.roi_name,
-                    "roi_name": task.roi_name,
-                    "feature": 1.0,
-                }
+                radpar._status_records(task, "success", "test success")
             )
             return future
 
@@ -375,14 +433,17 @@ def test_all_series_parallel_and_conda_emit_one_auto_source(tmp_path, monkeypatc
         config, course, max_workers=1, allow_all_series_temp=True
     )
     assert parallel.output_path is not None
-    parallel_frame = pd.read_excel(parallel.output_path)
+    parallel_frame = pd.read_parquet(
+        parallel.output_path.with_suffix(".parquet"), engine="pyarrow"
+    )
     assert list(
         parallel_frame[["segmentation_source", "roi_original_name"]].itertuples(
             index=False, name=None
         )
-    ) == [("AutoRTS_total", "PTV")]
+    ) == [("AutoRTS_total", "PTV"), ("AutoRTS_total", "PTV")]
 
     parallel.output_path.unlink()
+    parallel.output_path.with_suffix(".parquet").unlink()
     monkeypatch.setattr(radconda, "validate_custom_model_output_inventory", lambda *_a, **_k: {})
     monkeypatch.setattr(radconda, "list_custom_model_outputs", lambda *_a, **_k: [])
 
@@ -435,20 +496,21 @@ def test_all_series_parallel_and_conda_emit_one_auto_source(tmp_path, monkeypatc
                     "feature": 1.0,
                 }
             )
-        pd.DataFrame(rows).to_excel(output_path, index=False)
+        _write_dual_arm_test_publication(Path(output_path), rows)
         return output_path
 
     monkeypatch.setattr(radconda, "process_radiomics_batch", fake_batch)
     conda = radconda.radiomics_for_course(
         course, config, allow_all_series_temp=True
     )
-    conda_frame = pd.read_excel(conda)
+    assert conda is not None
+    conda_frame = pd.read_parquet(conda.with_suffix(".parquet"), engine="pyarrow")
     assert len(captured["tasks"]) == 1
     assert list(
         conda_frame[["segmentation_source", "roi_original_name"]].itertuples(
             index=False, name=None
         )
-    ) == [("AutoRTS_total", "PTV")]
+    ) == [("AutoRTS_total", "PTV"), ("AutoRTS_total", "PTV")]
 
 
 def test_find_auto_rtstruct_matches_real_layout(tmp_path):
@@ -537,21 +599,53 @@ def fake_dispatch():
             "allow_all_series_temp": kwargs.get("allow_all_series_temp"),
             "contract_scope": contract.data["scope"],
         })
-        records = [
-            {"feature": 1.0, "roi_name": "liver", "modality": "CT",
-             "course_dir": str(course_dir), "patient_id": course_dir.parent.name,
-             "course_id": course_dir.name},
-            {"feature": 2.0, "roi_name": "spleen", "modality": "CT",
-             "course_dir": str(course_dir), "patient_id": course_dir.parent.name,
-             "course_id": course_dir.name},
-        ]
+        from rtpipeline.radiomics_ct_contract import (
+            classify_ct_roi,
+            disposition_rows_for_arms,
+            write_ct_publication_atomic,
+        )
+
+        records = []
+        series_uid = str(contract.data["planning_ct"]["series_instance_uid"])
+        for index, (roi_name, feature_value) in enumerate(
+            (("liver", 1.0), ("spleen", 2.0)), start=1
+        ):
+            pair = disposition_rows_for_arms(
+                {
+                    "modality": "CT",
+                    "segmentation_source": "AutoRTS_total",
+                    "roi_name": roi_name,
+                    "roi_original_name": roi_name,
+                    "patient_id": course_dir.parent.name,
+                    "course_id": course_dir.name,
+                    "series_uid": series_uid,
+                    "mask_identity": f"test-mask-{index}",
+                    "stable_roi_identifier": f"test-roi-{index}",
+                    "course_dir": str(course_dir),
+                },
+                decision=classify_ct_roi("AutoRTS_total", roi_name),
+                disposition="success",
+                detail="test success",
+                failure_kind="none",
+                run_identifier="test-run",
+                code_revision="test-revision",
+                native_voxel_count=120,
+                required=False,
+                configured_parameter_hashes={
+                    "primary_resegmented": "test-primary",
+                    "sensitivity_raw": "test-sensitivity",
+                },
+            )
+            for record in pair:
+                record["feature"] = feature_value
+            records.extend(pair)
         rad.attach_acquisition_descriptor(
             records,
             rad.describe_contract_planning_ct(contract),
         )
         df = pd.DataFrame(records)
         out = course_dir / "radiomics_ct.xlsx"
-        df.to_excel(out, index=False)
+        write_ct_publication_atomic(df, out)
         return out
 
     return calls, fake
@@ -610,11 +704,18 @@ def test_run_radiomics_all_series_e2e(tmp_path, monkeypatch, fake_dispatch, mode
     assert is4d["u_phB50"] is True
     assert all(v is False for u, v in is4d.items() if u != "u_phB50")
 
-    # 5 series * 2 feature rows
-    assert len(df) == 10
+    # 5 series * 2 ROIs * 2 extraction arms
+    assert len(df) == 20
+    assert set(df["extraction_arm"]) == {"primary_resegmented", "sensitivity_raw"}
 
-    # the course-shaped course_id column is dropped (series_uid is the identifier here)
-    assert "course_id" not in df.columns
+    # The governed publication identity retains a stable course surrogate for every arm.
+    assert set(df["course_id"]) == {
+        "u_plan",
+        "u_diag",
+        "u_pet",
+        "u_aveA",
+        "u_phB50",
+    }
 
     # course-path artifacts NOT created; temp tree cleaned up
     assert not (out_root / "Data" / "radiomics_all.xlsx").exists()
@@ -735,7 +836,9 @@ def test_subset_rerun_rejects_legacy_rows_without_descriptor(tmp_path, monkeypat
     before = output.read_bytes()
     monkeypatch.setattr(rad, "_have_pyradiomics", lambda: True)
 
-    with pytest.raises(RuntimeError, match="acquisition descriptor"):
+    with pytest.raises(
+        RuntimeError, match="authoritative all-series CT Parquet is missing"
+    ):
         rad.run_radiomics_all_series(cast(Any, _Cfg(out_root)), ["P1"])
 
     assert output.read_bytes() == before

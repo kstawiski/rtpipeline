@@ -16,6 +16,7 @@ import pytest
 from pydicom.dataset import FileDataset, FileMetaDataset
 from pydicom.uid import CTImageStorage, ExplicitVRLittleEndian, generate_uid
 
+import rtpipeline.radiomics_ct_contract as radiomics_ct_contract
 import rtpipeline.radiomics as radiomics
 import rtpipeline.radiomics_conda as radiomics_conda
 import rtpipeline.radiomics_parallel as radiomics_parallel
@@ -416,17 +417,7 @@ class _OneRowExecutor:
     def submit(self, _function, task):
         future = Future()
         future.set_result(
-            {
-                "modality": "CT",
-                "segmentation_source": task.source,
-                "roi_name": task.roi_name,
-                "roi_original_name": task.roi_name,
-                "course_dir": task.course_dir,
-                "patient_id": Path(task.course_dir).parent.name,
-                "course_id": Path(task.course_dir).name,
-                "structure_cropped": False,
-                "original_firstorder_Mean": 1.0,
-            }
+            radiomics_parallel._status_records(task, "success", "test success")
         )
         return future
 
@@ -485,7 +476,9 @@ def test_default_parallel_backend_publishes_contracted_full_series_descriptor(
         max_workers=1,
     )
     assert resumed.output_path is not None
-    refreshed = pd.read_excel(resumed.output_path, engine="openpyxl")
+    refreshed = pd.read_parquet(
+        resumed.output_path.with_suffix(".parquet"), engine="pyarrow"
+    )
     assert refreshed.loc[0, "acq_observed_hu_max"] == pytest.approx(7808.0)
     assert seen_ct_dirs == [selected, selected]
 
@@ -501,7 +494,25 @@ def test_native_backend_attaches_descriptor_once_after_feature_extraction(
             return (1.0, 1.0, 1.0)
 
     class Extractor:
+        def __init__(self):
+            self.settings = {"minimumROISize": 1, "minimumROIDimensions": 1}
+            self.enabledFeatures = {"shape": [], "firstorder": []}
+
+        def disableAllImageTypes(self):
+            return None
+
+        def enableImageTypeByName(self, *_args, **_kwargs):
+            return None
+
+        def disableAllFeatures(self):
+            self.enabledFeatures = {}
+
+        def enableFeatureClassByName(self, name):
+            self.enabledFeatures = {name: []}
+
         def execute(self, _image, _mask):
+            if set(self.enabledFeatures) == {"shape"}:
+                return {"original_shape_MeshVolume": 8.0}
             return {"original_firstorder_Mean": 2.0}
 
     monkeypatch.setattr(radiomics, "_load_series_image", lambda *_a, **_k: Image())
@@ -512,6 +523,35 @@ def test_native_backend_attaches_descriptor_once_after_feature_extraction(
         lambda *_a, **_k: {"PTV": np.ones((2, 2, 2), dtype=bool)},
     )
     monkeypatch.setattr(radiomics, "_mask_from_array_like", lambda *_a, **_k: object())
+    monkeypatch.setattr(
+        radiomics_ct_contract,
+        "resampled_mask_qc",
+        lambda *_a, **_k: {
+            "morphologic_resampled_voxel_count": 8,
+            "resegment_after_count": 8,
+            "resegment_below_lower_count": 0,
+            "resegment_above_upper_count": 0,
+            "resegment_nonfinite_count": 0,
+            "components_26_before": 1,
+            "components_26_after": 1,
+            "largest_component_voxel_count_before": 8,
+            "largest_component_voxel_count_after": 8,
+            "largest_component_retained_fraction": 1.0,
+            "resegment_retained_fraction": 1.0,
+            "largest_component_fraction_after": 1.0,
+            "component_count_increased": False,
+            "observed_roi_dimensions_after_resegmentation": 3,
+        },
+    )
+    monkeypatch.setattr(
+        radiomics_ct_contract,
+        "_runtime_versions",
+        lambda: {
+            "pyradiomics_version": "test",
+            "simpleitk_version": "test",
+            "numpy_version": np.__version__,
+        },
+    )
     monkeypatch.setattr(
         radiomics,
         "run_tasks_with_adaptive_workers",

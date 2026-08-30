@@ -1,5 +1,5 @@
 # =================================================================================================
-# IBSI-Compliant PyRadiomics Configuration for 68Ga/18F-PSMA PET Feature Extraction
+# PyRadiomics configuration with IBSI-informed reporting for 68Ga/18F-PSMA PET Feature Extraction
 #
 # Anchored in Knowledge/Pyradiomics PET Configuration Research.md.
 # Tailored for high-contrast PSMA uptake patterns while controlling feature proliferation.
@@ -25,7 +25,7 @@ setting:
   minimumROISize: 64                      # Conservative threshold to stabilize texture metrics; revisit if small nodal lesions dominate.
 
   # ----------------------------------------------------------
-  # Texture Neighborhoods & IBSI Compliance
+  # Texture Neighborhoods (IBSI-informed reporting)
   # ----------------------------------------------------------
   distances: [1, 2]
   force2D: false

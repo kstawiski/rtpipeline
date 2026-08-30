@@ -31,7 +31,7 @@ graph LR
 | Segmentation | `rtpipeline.segmentation`, `rtpipeline.auto_rtstruct`, `rtpipeline.custom_models` | Runs TotalSegmentator and optional custom nnU-Net models, then emits standardized RTSTRUCTs | `RS_auto.dcm`, custom-model RTSTRUCTs, segmentation NIfTIs |
 | CT standardization | `rtpipeline.anatomical_cropping` | Applies anatomy-aware FOV normalization when enabled | Cropped CT/RTSTRUCT variants |
 | Dose/QC/metadata | `rtpipeline.dvh`, `rtpipeline.quality_control`, `rtpipeline.metadata` | Computes DVH metrics, QC reports, and case-level metadata | `dvh_metrics.xlsx`, `qc_reports.xlsx`, `case_metadata.xlsx` |
-| Radiomics | `rtpipeline.radiomics`, `rtpipeline.radiomics_conda`, `rtpipeline.radiomics_parallel` | Extracts IBSI-oriented CT/MR radiomics with process isolation and thread caps | `radiomics_ct.xlsx`, `radiomics_mr.xlsx` |
+| Radiomics | `rtpipeline.radiomics`, `rtpipeline.radiomics_conda`, `rtpipeline.radiomics_parallel` | Extracts PyRadiomics CT/MR features with documented, IBSI-informed reporting and process isolation | `radiomics_ct.xlsx`, `radiomics_mr.xlsx` |
 | Robustness | `rtpipeline.radiomics_robustness`, CLI subcommands `radiomics-robustness` and `radiomics-robustness-aggregate` | Runs perturbation-based feature stability analysis and cohort aggregation | Per-course `radiomics_robustness_ct.parquet`, aggregate `radiomics_robustness_summary.xlsx` |
 
 ## Dual-Environment Design

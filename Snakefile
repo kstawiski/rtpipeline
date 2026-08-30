@@ -1010,7 +1010,7 @@ if config.get("container_mode", False):
                 --max-workers {threads} \
                 --manifest "{input.manifest}" \
                 {params.extra_args} >> {log} 2>&1; then
-                echo "ok" > {output.sentinel}
+                "{params.python}" -c "from pathlib import Path; from rtpipeline.radiomics_ct_contract import write_completion_sentinel; write_completion_sentinel(Path(r'{params.output_dir}') / r'{wildcards.patient}' / r'{wildcards.course}', Path(r'{output.sentinel}'))"
             else
                 rm -f {output.sentinel}
                 echo "Required course stage failed; see {log}" >&2
@@ -1080,7 +1080,7 @@ else:
                 --max-workers {threads} \
                 --manifest "{input.manifest}" \
                 {params.extra_args} >> {log} 2>&1; then
-                echo "ok" > {output.sentinel}
+                "{params.python}" -c "from pathlib import Path; from rtpipeline.radiomics_ct_contract import write_completion_sentinel; write_completion_sentinel(Path(r'{params.output_dir}') / r'{wildcards.patient}' / r'{wildcards.course}', Path(r'{output.sentinel}'))"
             else
                 rm -f {output.sentinel}
                 echo "Required course stage failed; see {log}" >&2
@@ -1157,7 +1157,7 @@ if config.get("container_mode", False):
                 exit 0
             fi
 
-            if [ ! -f "{input.radiomics}" ] || ! grep -qx "ok" "{input.radiomics}"; then
+            if [ ! -f "{input.radiomics}" ] || ! grep -Eq '^(ok|\{.*"status"[[:space:]]*:[[:space:]]*"ok".*\})$' "{input.radiomics}"; then
                 rm -f {output.sentinel}
                 echo "Radiomics robustness cannot run because upstream radiomics failed or is malformed: {input.radiomics}" >&2
                 exit 1
@@ -1217,7 +1217,7 @@ else:
                 exit 0
             fi
 
-            if [ ! -f "{input.radiomics}" ] || ! grep -qx "ok" "{input.radiomics}"; then
+            if [ ! -f "{input.radiomics}" ] || ! grep -Eq '^(ok|\{.*"status"[[:space:]]*:[[:space:]]*"ok".*\})$' "{input.radiomics}"; then
                 rm -f {output.sentinel}
                 echo "Radiomics robustness cannot run because upstream radiomics failed or is malformed: {input.radiomics}" >&2
                 exit 1

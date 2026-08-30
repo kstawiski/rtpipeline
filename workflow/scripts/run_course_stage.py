@@ -1,6 +1,7 @@
 """Run one fail-closed per-course RTpipeline CLI stage from Snakemake."""
 
 import os
+import json
 import subprocess
 import sys
 import time
@@ -36,7 +37,16 @@ def _require_upstream_status(
         return
     path = Path(str(value))
     try:
-        status = path.read_text(encoding="utf-8").strip().lower()
+        text = path.read_text(encoding="utf-8").strip()
+        try:
+            decoded = json.loads(text)
+        except json.JSONDecodeError:
+            decoded = None
+        status = (
+            str(decoded.get("status", "")).strip().lower()
+            if isinstance(decoded, dict)
+            else text.lower()
+        )
     except Exception as exc:
         raise RuntimeError(
             f"Required upstream {label} sentinel is unreadable: {path}: {exc}"
@@ -189,5 +199,30 @@ if result.returncode != 0:
         returncode=result.returncode,
     )
 
-_publish_success_sentinel(sentinel_path)
+if stage_name == "radiomics":
+    course_dir = ledger_root / patient_id / course_id
+    parquet_path = course_dir / "radiomics_ct.parquet"
+    workbook_path = course_dir / "radiomics_ct.xlsx"
+    if workbook_path.exists() and not parquet_path.exists():
+        error = RuntimeError(
+            f"Radiomics stage produced CT Excel without authoritative Parquet: {course_dir}"
+        )
+        _close_course(sentinel_path, str(error), returncode=1, strict_error=error)
+    if parquet_path.exists():
+        try:
+            from rtpipeline.radiomics_ct_contract import write_completion_sentinel
+
+            write_completion_sentinel(course_dir, sentinel_path)
+        except Exception as exc:
+            error = RuntimeError(
+                f"Radiomics completion validation failed for {course_dir}: {exc}"
+            )
+            _close_course(sentinel_path, str(error), returncode=1, strict_error=error)
+    else:
+        error = RuntimeError(
+            f"Radiomics stage completed without authoritative CT Parquet: {course_dir}"
+        )
+        _close_course(sentinel_path, str(error), returncode=1, strict_error=error)
+else:
+    _publish_success_sentinel(sentinel_path)
 _record(campaign_ledger.STATUS_OK, returncode=0)

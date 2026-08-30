@@ -322,11 +322,32 @@ def test_ct_totalseg_nifti_fallback_writes_tagged_workbook(tmp_path, monkeypatch
     seen = {}
 
     def fake_batch(tasks, params_file=None):
+        from rtpipeline.radiomics_ct_contract import (
+            RoiClassDecision,
+            disposition_rows_for_arms,
+        )
+
         seen["tasks"] = tasks
-        return [
-            {"__status__": "success", "__task_index__": i, "original_firstorder_Mean": float(i + 1)}
-            for i, _task in enumerate(tasks)
-        ]
+        results = []
+        for i, task in enumerate(tasks):
+            records = disposition_rows_for_arms(
+                task["metadata"],
+                decision=RoiClassDecision(**task["roi_class_decision"]),
+                disposition="success",
+                detail="test success",
+                failure_kind="none",
+                run_identifier=task["run_identifier"],
+                code_revision=task["code_revision"],
+                native_voxel_count=task["native_voxel_count"],
+                required=task["required"],
+                configured_parameter_hashes=task["configured_parameter_hashes"],
+            )
+            for record in records:
+                record["original_firstorder_Mean"] = float(i + 1)
+            results.append(
+                {"__status__": "success", "__task_index__": i, "__records__": records}
+            )
+        return results
 
     monkeypatch.setattr(rc, "check_radiomics_env", lambda *a, **k: True)
     monkeypatch.setattr(rc, "extract_radiomics_batch_with_conda", fake_batch)
@@ -335,6 +356,7 @@ def test_ct_totalseg_nifti_fallback_writes_tagged_workbook(tmp_path, monkeypatch
     out = rc.radiomics_for_course(course, _minimal_config(radiomics_skip_rois=["skip_me"]))
 
     assert out == course / "radiomics_ct.xlsx"
+    assert out is not None
     tasks = seen["tasks"]
     assert len(tasks) == 1
     assert tasks[0]["roi_name"] == "liver"
@@ -342,11 +364,20 @@ def test_ct_totalseg_nifti_fallback_writes_tagged_workbook(tmp_path, monkeypatch
     assert tasks[0]["metadata"]["segmentation_source"] == "AutoTS_total_nifti_fallback"
     assert tasks[0]["metadata"]["roi_original_name"] == "liver"
 
-    df = pd.read_excel(out)
-    assert df["segmentation_source"].tolist() == ["AutoTS_total_nifti_fallback"]
-    assert df["series_uid"].tolist() == [series_uid]
-    assert df["roi_name"].tolist() == ["liver"]
-    assert df["original_firstorder_Mean"].tolist() == [1]
+    df = pd.read_parquet(out.with_suffix(".parquet"), engine="pyarrow")
+    assert df["segmentation_source"].tolist() == [
+        "AutoTS_total_nifti_fallback",
+        "AutoTS_total_nifti_fallback",
+        "AutoTS_total_nifti_fallback",
+        "AutoTS_total_nifti_fallback",
+    ]
+    assert set(df["series_uid"]) == {series_uid}
+    assert set(df["roi_name"]) == {"liver", "skip_me"}
+    assert set(df["extraction_arm"]) == {"primary_resegmented", "sensitivity_raw"}
+    assert set(df.loc[df["roi_name"] == "liver", "original_firstorder_Mean"]) == {1}
+    assert set(
+        df.loc[df["roi_name"] == "skip_me", "intensity_texture_disposition"]
+    ) == {"declared_skip"}
 
 
 def test_ct_totalseg_nifti_fallback_not_used_when_rs_selected(tmp_path, monkeypatch):

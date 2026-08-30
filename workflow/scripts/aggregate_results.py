@@ -91,7 +91,16 @@ def _read_sentinel(
     if not path.is_file():
         return f"{patient_id}/{course_id}: required sentinel is missing: {path.name}"
     try:
-        status = path.read_text(encoding="utf-8").strip().lower()
+        text = path.read_text(encoding="utf-8").strip()
+        try:
+            decoded = json.loads(text)
+        except json.JSONDecodeError:
+            decoded = None
+        status = (
+            str(decoded.get("status", "")).strip().lower()
+            if isinstance(decoded, dict)
+            else text.lower()
+        )
     except Exception as exc:
         return (
             f"{patient_id}/{course_id}: required sentinel is unreadable: "
@@ -242,13 +251,24 @@ def _validate_required_inputs(courses):
             required_outputs.append(
                 (
                     "radiomics",
-                    course_dir / "radiomics_ct.xlsx",
-                    {"roi_name", "roi_original_name"},
+                    course_dir / "radiomics_ct.parquet",
+                    {"extraction_arm"},
                 )
             )
         for key, output_path, identity_columns in required_outputs:
             try:
-                frame = _read_prefer_parquet(output_path)
+                if key == "radiomics":
+                    from rtpipeline.radiomics_ct_contract import (
+                        read_authoritative_ct_publication,
+                        validate_completion_sentinel,
+                    )
+
+                    validate_completion_sentinel(
+                        course_dir, course_dir / ".radiomics_done"
+                    )
+                    frame = read_authoritative_ct_publication(output_path)
+                else:
+                    frame = _read_prefer_parquet(output_path)
             except Exception as exc:
                 message = (
                     f"{patient_id}/{course_id}: required output {output_path.name} "
@@ -313,7 +333,10 @@ def _declared_output_paths() -> list[Path]:
 
 
 def _invalidate_declared_outputs() -> None:
-    for path in _declared_output_paths():
+    paths = _declared_output_paths()
+    if RADIOMICS_ENABLED:
+        paths.append(Path(str(snakemake.output.radiomics)).with_suffix(".parquet"))  # type: ignore[name-defined]
+    for path in paths:
         try:
             path.unlink(missing_ok=True)
         except OSError as exc:
@@ -501,8 +524,20 @@ def _write_tabular_outputs(all_frames) -> None:
     if RADIOMICS_ENABLED:
         radiomics_frames = all_frames.get("radiomics", [])
         if radiomics_frames:
-            pd.concat(radiomics_frames, ignore_index=True).to_excel(
-                snakemake.output.radiomics, index=False  # type: ignore[name-defined]
+            from rtpipeline.radiomics_ct_contract import (
+                publication_key,
+                write_ct_publication_atomic,
+            )
+
+            combined_radiomics = pd.concat(radiomics_frames, ignore_index=True)
+            expected_keys = {
+                publication_key(record)
+                for record in combined_radiomics.to_dict("records")
+            }
+            write_ct_publication_atomic(
+                combined_radiomics,
+                Path(snakemake.output.radiomics),  # type: ignore[name-defined]
+                expected_keys=expected_keys,
             )
         else:
             pd.DataFrame(

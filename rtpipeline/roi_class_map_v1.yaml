@@ -1,0 +1,343 @@
+# Versioned CT ROI-class governance map. Exact names only.
+schema_version: 1
+map_version: ct-roi-class-map-2026-08-30-v1
+mapping_status: partial_pending_operator_adjudication
+approval_basis:
+  binding_specification_date: '2026-08-30'
+  approved_exact_concepts: CTV, PTV, GTV, bladder, rectum, bowel, sigmoid
+  unresolved_inventory_artifact: analysis/radiomics_manual_custom_name_inventory_20260830.csv
+classes:
+  target:
+    primary_resegment_range_hu:
+    - -1000
+    - 400
+  hollow_pelvic_organ:
+    primary_resegment_range_hu:
+    - -1000
+    - 400
+  solid_soft_tissue_neural:
+    primary_resegment_range_hu:
+    - -500
+    - 400
+  bone:
+    primary_intensity_texture_disposition: not_applicable_bone
+  positioning_support:
+    primary_intensity_texture_disposition: not_primary_analysis_anatomy
+  vessel:
+    primary_intensity_texture_disposition: not_applicable_pending_vessel_adjudication
+  unresolved_mixed:
+    primary_intensity_texture_disposition: unclassified_roi
+totalsegmentator:
+  model: total
+  version: 2.12.0
+  canonical_names_hash: bb50bd8bfd79979eae8ff5d24d6dd768650f0547e49ad7115aa638737802ca4c
+  canonical_names:
+    adrenal_gland_left:
+      roi_class: solid_soft_tissue_neural
+    adrenal_gland_right:
+      roi_class: solid_soft_tissue_neural
+    aorta:
+      roi_class: vessel
+    atrial_appendage_left:
+      roi_class: unresolved_mixed
+    autochthon_left:
+      roi_class: solid_soft_tissue_neural
+    autochthon_right:
+      roi_class: solid_soft_tissue_neural
+    brachiocephalic_trunk:
+      roi_class: vessel
+    brachiocephalic_vein_left:
+      roi_class: vessel
+    brachiocephalic_vein_right:
+      roi_class: vessel
+    brain:
+      roi_class: solid_soft_tissue_neural
+    clavicula_left:
+      roi_class: bone
+    clavicula_right:
+      roi_class: bone
+    colon:
+      roi_class: hollow_pelvic_organ
+    common_carotid_artery_left:
+      roi_class: vessel
+    common_carotid_artery_right:
+      roi_class: vessel
+    costal_cartilages:
+      roi_class: bone
+    duodenum:
+      roi_class: hollow_pelvic_organ
+    esophagus:
+      roi_class: unresolved_mixed
+    femur_left:
+      roi_class: bone
+    femur_right:
+      roi_class: bone
+    gallbladder:
+      roi_class: unresolved_mixed
+    gluteus_maximus_left:
+      roi_class: solid_soft_tissue_neural
+    gluteus_maximus_right:
+      roi_class: solid_soft_tissue_neural
+    gluteus_medius_left:
+      roi_class: solid_soft_tissue_neural
+    gluteus_medius_right:
+      roi_class: solid_soft_tissue_neural
+    gluteus_minimus_left:
+      roi_class: solid_soft_tissue_neural
+    gluteus_minimus_right:
+      roi_class: solid_soft_tissue_neural
+    heart:
+      roi_class: unresolved_mixed
+    hip_left:
+      roi_class: bone
+    hip_right:
+      roi_class: bone
+    humerus_left:
+      roi_class: bone
+    humerus_right:
+      roi_class: bone
+    iliac_artery_left:
+      roi_class: vessel
+    iliac_artery_right:
+      roi_class: vessel
+    iliac_vena_left:
+      roi_class: vessel
+    iliac_vena_right:
+      roi_class: vessel
+    iliopsoas_left:
+      roi_class: solid_soft_tissue_neural
+    iliopsoas_right:
+      roi_class: solid_soft_tissue_neural
+    inferior_vena_cava:
+      roi_class: vessel
+    kidney_cyst_left:
+      roi_class: unresolved_mixed
+    kidney_cyst_right:
+      roi_class: unresolved_mixed
+    kidney_left:
+      roi_class: solid_soft_tissue_neural
+    kidney_right:
+      roi_class: solid_soft_tissue_neural
+    liver:
+      roi_class: solid_soft_tissue_neural
+    lung_lower_lobe_left:
+      roi_class: unresolved_mixed
+    lung_lower_lobe_right:
+      roi_class: unresolved_mixed
+    lung_middle_lobe_right:
+      roi_class: unresolved_mixed
+    lung_upper_lobe_left:
+      roi_class: unresolved_mixed
+    lung_upper_lobe_right:
+      roi_class: unresolved_mixed
+    pancreas:
+      roi_class: solid_soft_tissue_neural
+    portal_vein_and_splenic_vein:
+      roi_class: vessel
+    prostate:
+      roi_class: solid_soft_tissue_neural
+    pulmonary_vein:
+      roi_class: vessel
+    rib_left_1:
+      roi_class: bone
+    rib_left_10:
+      roi_class: bone
+    rib_left_11:
+      roi_class: bone
+    rib_left_12:
+      roi_class: bone
+    rib_left_2:
+      roi_class: bone
+    rib_left_3:
+      roi_class: bone
+    rib_left_4:
+      roi_class: bone
+    rib_left_5:
+      roi_class: bone
+    rib_left_6:
+      roi_class: bone
+    rib_left_7:
+      roi_class: bone
+    rib_left_8:
+      roi_class: bone
+    rib_left_9:
+      roi_class: bone
+    rib_right_1:
+      roi_class: bone
+    rib_right_10:
+      roi_class: bone
+    rib_right_11:
+      roi_class: bone
+    rib_right_12:
+      roi_class: bone
+    rib_right_2:
+      roi_class: bone
+    rib_right_3:
+      roi_class: bone
+    rib_right_4:
+      roi_class: bone
+    rib_right_5:
+      roi_class: bone
+    rib_right_6:
+      roi_class: bone
+    rib_right_7:
+      roi_class: bone
+    rib_right_8:
+      roi_class: bone
+    rib_right_9:
+      roi_class: bone
+    sacrum:
+      roi_class: bone
+    scapula_left:
+      roi_class: bone
+    scapula_right:
+      roi_class: bone
+    skull:
+      roi_class: bone
+    small_bowel:
+      roi_class: hollow_pelvic_organ
+    spinal_cord:
+      roi_class: solid_soft_tissue_neural
+    spleen:
+      roi_class: solid_soft_tissue_neural
+    sternum:
+      roi_class: bone
+    stomach:
+      roi_class: unresolved_mixed
+    subclavian_artery_left:
+      roi_class: vessel
+    subclavian_artery_right:
+      roi_class: vessel
+    superior_vena_cava:
+      roi_class: vessel
+    thyroid_gland:
+      roi_class: solid_soft_tissue_neural
+    trachea:
+      roi_class: unresolved_mixed
+    urinary_bladder:
+      roi_class: hollow_pelvic_organ
+    vertebrae_C1:
+      roi_class: bone
+    vertebrae_C2:
+      roi_class: bone
+    vertebrae_C3:
+      roi_class: bone
+    vertebrae_C4:
+      roi_class: bone
+    vertebrae_C5:
+      roi_class: bone
+    vertebrae_C6:
+      roi_class: bone
+    vertebrae_C7:
+      roi_class: bone
+    vertebrae_L1:
+      roi_class: bone
+    vertebrae_L2:
+      roi_class: bone
+    vertebrae_L3:
+      roi_class: bone
+    vertebrae_L4:
+      roi_class: bone
+    vertebrae_L5:
+      roi_class: bone
+    vertebrae_S1:
+      roi_class: bone
+    vertebrae_T1:
+      roi_class: bone
+    vertebrae_T10:
+      roi_class: bone
+    vertebrae_T11:
+      roi_class: bone
+    vertebrae_T12:
+      roi_class: bone
+    vertebrae_T2:
+      roi_class: bone
+    vertebrae_T3:
+      roi_class: bone
+    vertebrae_T4:
+      roi_class: bone
+    vertebrae_T5:
+      roi_class: bone
+    vertebrae_T6:
+      roi_class: bone
+    vertebrae_T7:
+      roi_class: bone
+    vertebrae_T8:
+      roi_class: bone
+    vertebrae_T9:
+      roi_class: bone
+manual_custom_crosswalk:
+  CTV:
+    roi_class: target
+    adjudication_status: approved_by_binding_spec
+  PTV:
+    roi_class: target
+    adjudication_status: approved_by_binding_spec
+  GTV:
+    roi_class: target
+    adjudication_status: approved_by_binding_spec
+  ctv:
+    roi_class: target
+    adjudication_status: approved_by_binding_spec
+  ptv:
+    roi_class: target
+    adjudication_status: approved_by_binding_spec
+  gtv:
+    roi_class: target
+    adjudication_status: approved_by_binding_spec
+  bladder:
+    roi_class: hollow_pelvic_organ
+    adjudication_status: approved_by_binding_spec
+  Bladder:
+    roi_class: hollow_pelvic_organ
+    adjudication_status: approved_by_binding_spec
+  BLADDER:
+    roi_class: hollow_pelvic_organ
+    adjudication_status: approved_by_binding_spec
+  rectum:
+    roi_class: hollow_pelvic_organ
+    adjudication_status: approved_by_binding_spec
+  Rectum:
+    roi_class: hollow_pelvic_organ
+    adjudication_status: approved_by_binding_spec
+  RECTUM:
+    roi_class: hollow_pelvic_organ
+    adjudication_status: approved_by_binding_spec
+  bowel:
+    roi_class: hollow_pelvic_organ
+    adjudication_status: approved_by_binding_spec
+  Bowel:
+    roi_class: hollow_pelvic_organ
+    adjudication_status: approved_by_binding_spec
+  BOWEL:
+    roi_class: hollow_pelvic_organ
+    adjudication_status: approved_by_binding_spec
+  sigmoid:
+    roi_class: hollow_pelvic_organ
+    adjudication_status: approved_by_binding_spec
+  Sigmoid:
+    roi_class: hollow_pelvic_organ
+    adjudication_status: approved_by_binding_spec
+  SIGMOID:
+    roi_class: hollow_pelvic_organ
+    adjudication_status: approved_by_binding_spec
+derived_crosswalk:
+  bowel_bag:
+    roi_class: hollow_pelvic_organ
+    require_provenance: true
+  iliac_vess:
+    roi_class: vessel
+    require_provenance: true
+  iliac_area:
+    roi_class: vessel
+    require_provenance: true
+  pelvic_bones:
+    roi_class: bone
+    require_provenance: true
+  pelvic_bones_3mm:
+    roi_class: bone
+    require_provenance: true
+governance_notes:
+- Manual, custom-model, and other project-local names are exact-match only.
+- Unlisted names remain unresolved_mixed and require operator adjudication.
+- Derived entries apply only when operation and base structures are recorded.
