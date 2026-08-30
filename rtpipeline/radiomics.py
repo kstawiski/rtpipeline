@@ -1511,7 +1511,16 @@ def _strip_nii_name(nifti_path: Path) -> str:
     return nifti_path.stem
 
 
-def _collect_total_mr_masks(series_dir: Path, seg_dir: Path) -> Dict[str, np.ndarray]:
+# Must match the segmentation_source written onto MR rows below, so that
+# roi_source_is_required() adjudicates the same source name the table records.
+MR_AUTO_SOURCE = "AutoTS_total_mr"
+
+
+def _collect_total_mr_masks(
+    series_dir: Path,
+    seg_dir: Path,
+    failure_outcomes: Optional[List[Dict[str, str]]] = None,
+) -> Dict[str, np.ndarray]:
     masks: Dict[str, np.ndarray] = {}
     if not seg_dir.exists():
         return masks
@@ -1520,20 +1529,39 @@ def _collect_total_mr_masks(series_dir: Path, seg_dir: Path) -> Dict[str, np.nda
         masks.update(_rtstruct_masks(series_dir, rtstruct_path))
         if masks:
             return masks
+    # These masks come from the TotalSegmentator MR model, which emits its whole
+    # structure list regardless of field of view. A pelvic MR legitimately yields
+    # empty brain/lung/liver masks. roi_source_is_required() already classifies
+    # this source (AutoTS_total_mr) as not required, so an empty or unreadable
+    # mask is recorded and skipped rather than aborting the course.
     for mask_path in sorted(seg_dir.glob("total_mr--*.nii*")):
         try:
             img = sitk.ReadImage(str(mask_path))
             arr = sitk.GetArrayFromImage(img)
         except Exception as exc:
-            raise RadiomicsCourseExtractionError(
-                f"Required MR mask is unreadable: {mask_path}: {exc}"
-            ) from exc
+            if roi_source_is_required(MR_AUTO_SOURCE):
+                raise RadiomicsCourseExtractionError(
+                    f"Required MR mask is unreadable: {mask_path}: {exc}"
+                ) from exc
+            if failure_outcomes is not None:
+                failure_outcomes.append(
+                    {"roi_name": mask_path.name, "source": MR_AUTO_SOURCE,
+                     "status": "failed", "detail": f"unreadable: {exc}"}
+                )
+            continue
         arr = np.moveaxis(arr, 0, -1)
         mask = arr > 0
         if not mask.any():
-            raise RadiomicsCourseExtractionError(
-                f"Required MR mask is empty: {mask_path}"
-            )
+            if roi_source_is_required(MR_AUTO_SOURCE):
+                raise RadiomicsCourseExtractionError(
+                    f"Required MR mask is empty: {mask_path}"
+                )
+            if failure_outcomes is not None:
+                failure_outcomes.append(
+                    {"roi_name": mask_path.name, "source": MR_AUTO_SOURCE,
+                     "status": "below_minimum_voxels", "detail": "mask is empty"}
+                )
+            continue
         name = mask_path.name
         if name.endswith('.nii.gz'):
             name = name[:-7]
@@ -1550,6 +1578,9 @@ def radiomics_for_course_mr(config: PipelineConfig, course) -> Optional[Path]:
     mr_root = course_dirs.dicom_mr
     out_path = mr_root / 'radiomics_mr.xlsx'
     mr_required = _mr_radiomics_required(config)
+    # Non-fatal outcomes for the non-required auto MR source, recorded rather
+    # than raised so one empty out-of-FOV mask cannot void the whole course.
+    mr_failures: List[Dict[str, str]] = []
     configured_params = getattr(config, 'radiomics_params_file_mr', None)
     if configured_params is not None and not Path(configured_params).exists():
         _invalidate_radiomics_outputs(out_path)
@@ -1628,7 +1659,7 @@ def radiomics_for_course_mr(config: PipelineConfig, course) -> Optional[Path]:
                 f"MR series is present but unreadable for radiomics: {source_dir}"
             )
         base_name = _strip_nii_name(nifti_path)
-        masks = _collect_total_mr_masks(source_dir, seg_dir)
+        masks = _collect_total_mr_masks(source_dir, seg_dir, mr_failures)
         if not masks:
             continue
         for roi_name, mask in masks.items():
@@ -1648,10 +1679,15 @@ def radiomics_for_course_mr(config: PipelineConfig, course) -> Optional[Path]:
                 })
                 rows.append(rec)
             except Exception as exc:
-                _invalidate_radiomics_outputs(out_path)
-                raise RadiomicsCourseExtractionError(
-                    f"MR radiomics failed for required ROI {series_uid}/{roi_name}: {exc}"
-                ) from exc
+                if roi_source_is_required(MR_AUTO_SOURCE):
+                    _invalidate_radiomics_outputs(out_path)
+                    raise RadiomicsCourseExtractionError(
+                        f"MR radiomics failed for required ROI {series_uid}/{roi_name}: {exc}"
+                    ) from exc
+                mr_failures.append(
+                    {"roi_name": roi_name, "source": MR_AUTO_SOURCE,
+                     "status": "failed", "detail": str(exc)[:200]}
+                )
     if not rows:
         _invalidate_radiomics_outputs(out_path)
         if mr_required:
