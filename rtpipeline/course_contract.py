@@ -34,6 +34,7 @@ from .plan_profiles import (
 )
 from .prescription import (
     PRESCRIPTION_GROUP_FIELDS,
+    aggregate_course_prescription_values,
     resolve_plan_prescriptions,
     resolved_plan_total_gy,
     source_plan_prescribed_dose_gy,
@@ -722,12 +723,6 @@ def validate_course_contract(contract: CourseContract) -> CourseContract:
         data["dose_classification"].get("should_sum") and len(selected_doses) > 1
     )
 
-    def _course_value(values: list[float | None]) -> float | None:
-        if not values or any(value is None for value in values):
-            return None
-        numeric = [float(value) for value in values if value is not None]
-        return float(sum(numeric)) if should_sum_prescriptions else numeric[0]
-
     delivery = contract.delivery
     status = _nonempty_text(delivery.get("status"), "delivery.status")
     prescribed = _optional_nonnegative_number(
@@ -738,12 +733,78 @@ def validate_course_contract(contract: CourseContract) -> CourseContract:
         delivery.get("resolved_prescribed_dose_total_gy"),
         "delivery.resolved_prescribed_dose_total_gy",
     )
-    if prescribed != _course_value(selected_source_doses):
+    prescribed_scope = str(delivery.get("prescribed_dose_scope") or "").strip()
+    dose_response_eligible = delivery.get("dose_response_eligible")
+    if dose_response_eligible is not None:
+        if not isinstance(dose_response_eligible, bool):
+            raise CourseContractError(
+                "delivery.dose_response_eligible must be boolean when present"
+            )
+        expected_eligibility = not prescribed_scope.startswith("UNRESOLVED_")
+        if dose_response_eligible != expected_eligibility:
+            raise CourseContractError(
+                "delivery.dose_response_eligible disagrees with "
+                "delivery.prescribed_dose_scope"
+            )
+    prescription_plan_uids = {
+        str(uid).strip()
+        for uid in data["dose_classification"].get("prescription_plan_uids", [])
+        if str(uid).strip()
+    }
+    course_source_doses = selected_source_doses
+    course_resolved_doses = selected_resolved_doses
+    if prescription_plan_uids:
+        course_source_doses = [
+            value
+            for uid, value in zip(plan_uids, selected_source_doses)
+            if uid in prescription_plan_uids
+        ]
+        course_resolved_doses = [
+            value
+            for uid, value in zip(plan_uids, selected_resolved_doses)
+            if uid in prescription_plan_uids
+        ]
+    def _course_value(values: list[float | None]) -> float | None:
+        if prescribed_scope.startswith("UNRESOLVED_"):
+            return None
+        return aggregate_course_prescription_values(
+            values,
+            sum_all=(should_sum_prescriptions or prescribed_scope == "COURSE_TOTAL_SUMMED"),
+        )
+
+    if prescribed_scope:
+        allowed_scopes = {
+            "SINGLE_PLAN_TOTAL",
+            "COURSE_TOTAL_SUMMED",
+            "UNRESOLVED_COMPONENT",
+            "UNRESOLVED_REPLACEMENT_CHAIN",
+        }
+        if prescribed_scope not in allowed_scopes:
+            raise CourseContractError(
+                f"unknown delivery.prescribed_dose_scope {prescribed_scope!r}"
+            )
+        if prescribed_scope.startswith("UNRESOLVED_") and resolved_prescribed is not None:
+            raise CourseContractError(
+                "an unresolved delivery.prescribed_dose_scope requires "
+                "resolved_prescribed_dose_total_gy to be null"
+            )
+        if prescribed_scope in {"SINGLE_PLAN_TOTAL", "COURSE_TOTAL_SUMMED"} and resolved_prescribed is None:
+            raise CourseContractError(
+                "a resolved delivery.prescribed_dose_scope requires a resolved total"
+            )
+        classified_scope = str(
+            data["dose_classification"].get("prescribed_dose_scope") or ""
+        ).strip()
+        if classified_scope and classified_scope != prescribed_scope:
+            raise CourseContractError(
+                "delivery.prescribed_dose_scope disagrees with dose_classification"
+            )
+    if prescribed != _course_value(course_source_doses):
         raise CourseContractError(
             "delivery.prescribed_dose_gy disagrees with the selected RTPLAN "
             "source prescription"
         )
-    if resolved_prescribed != _course_value(selected_resolved_doses):
+    if resolved_prescribed != _course_value(course_resolved_doses):
         raise CourseContractError(
             "delivery.resolved_prescribed_dose_total_gy disagrees with the "
             "selected RTPLAN BeamDose resolution"
