@@ -70,6 +70,7 @@ rtpipeline = [
   "radiomics_params_mr.yaml",
   "radiomics_params_pet_fdg.yaml",
   "radiomics_params_pet_psma.yaml",
+  "roi_class_map_v1.yaml",
   "custom_structures_pelvic.yaml",
 ]
 

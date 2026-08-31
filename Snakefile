@@ -5,6 +5,16 @@ import os
 import sys
 from pathlib import Path
 
+from rtpipeline.config_dependencies import (
+    advance_dependency_past_unbound_outputs,
+    content_sha256,
+    file_content_or_absent,
+    materialize_stage_dependency,
+    radiomics_parameter_manifest,
+    adopt_legacy_snakemake_inputs,
+    semantic_yaml_or_absent,
+)
+
 configfile: "config.yaml"
 
 ROOT_DIR = Path.cwd()
@@ -415,6 +425,186 @@ if ROBUSTNESS_REQUESTED and not RADIOMICS_ENABLED:
 CT_CROPPING_CONFIG = config.get("ct_cropping", {})
 CT_CROPPING_ENABLED = bool(CT_CROPPING_CONFIG.get("enabled", False))
 
+# Rules consume a stage-specific, content-governed dependency rather than the
+# effective-config file's parse-time mtime. This makes semantic changes visible to
+# the DAG without invalidating outputs after an identical YAML rewrite.
+_CONFIG_SOURCE_PATHS = _workflow_configfiles() or [(ROOT_DIR / "config.yaml").resolve()]
+_CONFIG_NAMESPACE = content_sha256([str(path) for path in _CONFIG_SOURCE_PATHS])[:16]
+_CONFIG_DEPENDENCY_DIR = (
+    ROOT_DIR / ".snakemake" / "rtpipeline-config-dependencies" / _CONFIG_NAMESPACE
+)
+
+
+def _dependency_path(stage, payload, source_paths=()):
+    return str(
+        materialize_stage_dependency(
+            _CONFIG_DEPENDENCY_DIR,
+            stage,
+            payload,
+            source_paths=source_paths,
+        ).resolve()
+    )
+
+
+def _scientific_settings(mapping, ignored=()):
+    return {
+        str(key): value
+        for key, value in dict(mapping or {}).items()
+        if str(key) not in set(ignored)
+    }
+
+
+_custom_structure_path = Path(CUSTOM_STRUCTURES_CONFIG) if CUSTOM_STRUCTURES_CONFIG else None
+_custom_structure_dependency = semantic_yaml_or_absent(_custom_structure_path)
+
+SEGMENTATION_CONFIG_DEPENDENCY = _dependency_path(
+    "segmentation",
+    {
+        "settings": _scientific_settings(
+            SEG_CONFIG,
+            ignored={
+                "force",
+                "max_workers",
+                "workers",
+                "thread_limit",
+                "temp_root",
+                "nr_threads_resample",
+                "nr_threads_save",
+                "num_proc_preprocessing",
+                "num_proc_export",
+            },
+        ),
+        "container_mode": bool(config.get("container_mode", False)),
+        "environment": _ENV_MAIN,
+        "container_environment_prefix": str(CONTAINER_ENV_PREFIX),
+    },
+)
+
+_custom_model_sources = {}
+_custom_model_source_paths = []
+if CUSTOM_MODELS_ROOT:
+    for _model_name in CUSTOM_MODELS_SELECTED:
+        _model_root = Path(CUSTOM_MODELS_ROOT) / _model_name
+        _model_spec = _model_root / "custom_model.yaml"
+        _model_script = _model_root / "script.py"
+        _custom_model_sources[_model_name] = {
+            "spec": semantic_yaml_or_absent(_model_spec),
+            "script": file_content_or_absent(_model_script),
+        }
+        _custom_model_source_paths.extend([_model_spec, _model_script])
+CUSTOM_MODELS_CONFIG_DEPENDENCY = _dependency_path(
+    "custom-models",
+    {
+        "settings": _scientific_settings(
+            CUSTOM_MODELS_CONFIG,
+            ignored={"force", "workers", "retain_weights", "root"},
+        ),
+        "model_sources": _custom_model_sources,
+        "environment": _ENV_MAIN,
+    },
+    _custom_model_source_paths,
+)
+
+CROP_CT_CONFIG_DEPENDENCY = _dependency_path(
+    "crop-ct",
+    {"ct_cropping": CT_CROPPING_CONFIG, "environment": _ENV_MAIN},
+)
+
+DVH_CONFIG_DEPENDENCY = _dependency_path(
+    "dvh",
+    {
+        "max_total_dose_gy": config.get("max_total_dose_gy", 100.0),
+        "settings": config.get("dvh", {}),
+        "use_cropped": bool(
+            CT_CROPPING_CONFIG.get(
+                "use_cropped_for_dvh",
+                CT_CROPPING_CONFIG.get("use_for_dvh", False),
+            )
+        ),
+        "custom_structures": _custom_structure_dependency,
+        "environment": _ENV_MAIN,
+    },
+    [_custom_structure_path] if _custom_structure_path else [],
+)
+
+_ct_params_path = (
+    Path(RADIOMICS_PARAMS)
+    if RADIOMICS_PARAMS
+    else ROOT_DIR / "rtpipeline" / "radiomics_params.yaml"
+)
+_mr_params_path = (
+    Path(RADIOMICS_PARAMS_MR)
+    if RADIOMICS_PARAMS_MR
+    else ROOT_DIR / "rtpipeline" / "radiomics_params_mr.yaml"
+)
+_roi_class_map_path = ROOT_DIR / "rtpipeline" / "roi_class_map_v1.yaml"
+_pet_params_paths = {
+    "fdg": ROOT_DIR / "rtpipeline" / "radiomics_params_pet_fdg.yaml",
+    "psma": ROOT_DIR / "rtpipeline" / "radiomics_params_pet_psma.yaml",
+}
+_radiomics_parameter_provenance = radiomics_parameter_manifest(
+    ct_params=_ct_params_path,
+    mr_params=_mr_params_path,
+    roi_class_map=_roi_class_map_path,
+    pet_params=_pet_params_paths,
+)
+_radiomics_scientific_config = {
+    "settings": _scientific_settings(
+        RADIOMICS_CONFIG,
+        ignored={
+            "enabled",
+            "sequential",
+            "max_parallel_courses",
+            "max_workers",
+            "workers",
+            "threads",
+            "thread_limit",
+            "env_probe_timeout",
+            "params_file",
+            "mr_params_file",
+        },
+    ),
+    "use_cropped": bool(
+        CT_CROPPING_CONFIG.get(
+            "use_cropped_for_radiomics",
+            CT_CROPPING_CONFIG.get("use_for_radiomics", False),
+        )
+    ),
+    "custom_structures": _custom_structure_dependency,
+    "parameter_provenance": _radiomics_parameter_provenance,
+    "environment": _ENV_RADIOMICS,
+    "container_mode": bool(config.get("container_mode", False)),
+    "container_environment_prefix": str(CONTAINER_ENV_PREFIX),
+}
+_radiomics_source_paths = [
+    _ct_params_path,
+    _mr_params_path,
+    _roi_class_map_path,
+    *_pet_params_paths.values(),
+]
+if _custom_structure_path:
+    _radiomics_source_paths.append(_custom_structure_path)
+RADIOMICS_CONFIG_DEPENDENCY = _dependency_path(
+    "radiomics", _radiomics_scientific_config, _radiomics_source_paths
+)
+os.environ["RTPIPELINE_RADIOMICS_CONFIG_DEPENDENCY"] = RADIOMICS_CONFIG_DEPENDENCY
+ROBUSTNESS_CONFIG_DEPENDENCY = _dependency_path(
+    "radiomics-robustness",
+    {
+        "radiomics_configuration_sha256": content_sha256(
+            _radiomics_scientific_config
+        ),
+        "robustness": ROBUSTNESS_CONFIG,
+    },
+    _radiomics_source_paths,
+)
+
+# Adding a real input changes Snakemake's stored input inventory. The one-time
+# migration below extends only the old metadata for affected outputs, allowing
+# their actual mtimes and preserved code provenance to decide whether they are current.
+_CONFIG_DEPENDENCY_MIGRATION_MARKER = _CONFIG_DEPENDENCY_DIR / ".input-inventory-v2"
+_CONFIG_DEPENDENCY_MIGRATION_REQUIRED = not _CONFIG_DEPENDENCY_MIGRATION_MARKER.is_file()
+
 COURSE_META_DIR = OUTPUT_DIR / "_COURSES"
 COURSE_MANIFEST = COURSE_META_DIR / "manifest.json"
 
@@ -584,6 +774,66 @@ RADIOMICS_ROBUSTNESS_SENTINEL_PATTERN = str(OUTPUT_DIR / "{patient}" / "{course}
 CROP_CT_SENTINEL_PATTERN = str(OUTPUT_DIR / "{patient}" / "{course}" / ".crop_ct_done")
 QC_SENTINEL_PATTERN = str(OUTPUT_DIR / "{patient}" / "{course}" / ".qc_done")
 
+_existing_radiomics_sentinels = list(OUTPUT_DIR.glob("*/*/.radiomics_done"))
+_unbound_radiomics_sentinels = advance_dependency_past_unbound_outputs(
+    Path(RADIOMICS_CONFIG_DEPENDENCY),
+    _existing_radiomics_sentinels,
+    binding_field="configuration_dependency_sha256",
+)
+if _unbound_radiomics_sentinels:
+    sys.stderr.write(
+        "[rtpipeline] Invalidating "
+        f"{_unbound_radiomics_sentinels} radiomics completion sentinel(s) "
+        "that are not bound to the effective extraction configuration.\n"
+    )
+
+
+def _configuration_dependency_migration_bindings():
+    dependencies = {
+        ".segmentation_done": SEGMENTATION_CONFIG_DEPENDENCY,
+        ".custom_models_done": CUSTOM_MODELS_CONFIG_DEPENDENCY,
+        ".crop_ct_done": CROP_CT_CONFIG_DEPENDENCY,
+        ".dvh_done": DVH_CONFIG_DEPENDENCY,
+        ".radiomics_done": RADIOMICS_CONFIG_DEPENDENCY,
+        ".radiomics_robustness_done": ROBUSTNESS_CONFIG_DEPENDENCY,
+    }
+    for _, _, directory in _iter_course_dirs():
+        for name, dependency in dependencies.items():
+            candidate = directory / name
+            if candidate.exists():
+                yield candidate, Path(dependency)
+    robustness_summary = Path(
+        AGG_OUTPUTS.get(
+            "radiomics_robustness",
+            RESULTS_DIR / "radiomics_robustness_summary.xlsx",
+        )
+    )
+    if robustness_summary.exists():
+        yield robustness_summary, Path(ROBUSTNESS_CONFIG_DEPENDENCY)
+
+
+if _CONFIG_DEPENDENCY_MIGRATION_REQUIRED:
+    _migration_bindings = dict(_configuration_dependency_migration_bindings())
+    _adopted_metadata = adopt_legacy_snakemake_inputs(
+        ROOT_DIR, _migration_bindings
+    )
+    _migration_record = {
+        "schema": "rtpipeline-config-input-inventory-migration-v2",
+        "affected_existing_outputs": len(_migration_bindings),
+        "metadata_records_adopted": _adopted_metadata,
+    }
+    _migration_tmp = _CONFIG_DEPENDENCY_MIGRATION_MARKER.with_suffix(".tmp")
+    _migration_tmp.write_text(
+        json.dumps(_migration_record, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    os.replace(_migration_tmp, _CONFIG_DEPENDENCY_MIGRATION_MARKER)
+    sys.stderr.write(
+        "[rtpipeline] Adopted stage configuration dependencies for "
+        f"{_adopted_metadata}/{len(_migration_bindings)} existing metadata record(s).\n"
+    )
+
+
 AGGREGATE_RESULTS_INPUTS = {
     "manifest": _manifest_input,
     "dvh": _per_course_sentinels(".dvh_done"),
@@ -653,7 +903,8 @@ if config.get("container_mode", False):
     rule segmentation_course:
         input:
             manifest=_manifest_input,
-            organized=ORGANIZED_SENTINEL_PATTERN
+            organized=ORGANIZED_SENTINEL_PATTERN,
+            configuration=SEGMENTATION_CONFIG_DEPENDENCY
         output:
             sentinel=SEGMENTATION_SENTINEL_PATTERN
         log:
@@ -707,7 +958,8 @@ else:
     rule segmentation_course:
         input:
             manifest=_manifest_input,
-            organized=ORGANIZED_SENTINEL_PATTERN
+            organized=ORGANIZED_SENTINEL_PATTERN,
+            configuration=SEGMENTATION_CONFIG_DEPENDENCY
         output:
             sentinel=SEGMENTATION_SENTINEL_PATTERN
         log:
@@ -773,7 +1025,8 @@ if config.get("container_mode", False):
     rule segmentation_custom_models:
         input:
             manifest=_manifest_input,
-            segmentation=SEGMENTATION_SENTINEL_PATTERN
+            segmentation=SEGMENTATION_SENTINEL_PATTERN,
+            configuration=CUSTOM_MODELS_CONFIG_DEPENDENCY
         output:
             sentinel=CUSTOM_SEG_SENTINEL_PATTERN
         log:
@@ -832,7 +1085,8 @@ else:
     rule segmentation_custom_models:
         input:
             manifest=_manifest_input,
-            segmentation=SEGMENTATION_SENTINEL_PATTERN
+            segmentation=SEGMENTATION_SENTINEL_PATTERN,
+            configuration=CUSTOM_MODELS_CONFIG_DEPENDENCY
         output:
             sentinel=CUSTOM_SEG_SENTINEL_PATTERN
         log:
@@ -892,7 +1146,8 @@ rule crop_ct_course:
     input:
         manifest=_manifest_input,
         segmentation=SEGMENTATION_SENTINEL_PATTERN,
-        custom=CUSTOM_SEG_SENTINEL_PATTERN
+        custom=CUSTOM_SEG_SENTINEL_PATTERN,
+        configuration=CROP_CT_CONFIG_DEPENDENCY
     output:
         sentinel=CROP_CT_SENTINEL_PATTERN
     log:
@@ -925,7 +1180,8 @@ rule dvh_course:
         manifest=_manifest_input,
         segmentation=SEGMENTATION_SENTINEL_PATTERN,
         custom=CUSTOM_SEG_SENTINEL_PATTERN,
-        crop=CROP_CT_SENTINEL_PATTERN
+        crop=CROP_CT_SENTINEL_PATTERN,
+        configuration=DVH_CONFIG_DEPENDENCY
     output:
         sentinel=DVH_SENTINEL_PATTERN
     log:
@@ -954,7 +1210,8 @@ _radiomics_input_dict = {
     "manifest": _manifest_input,
     "segmentation": SEGMENTATION_SENTINEL_PATTERN,
     "custom": CUSTOM_SEG_SENTINEL_PATTERN,
-    "crop": CROP_CT_SENTINEL_PATTERN
+    "crop": CROP_CT_SENTINEL_PATTERN,
+    "configuration": RADIOMICS_CONFIG_DEPENDENCY,
 }
 
 _radiomics_params_lambda = lambda w: (
@@ -1139,7 +1396,8 @@ rule qc_course:
 
 _robustness_input_dict = {
     "manifest": _manifest_input,
-    "radiomics": RADIOMICS_SENTINEL_PATTERN
+    "radiomics": RADIOMICS_SENTINEL_PATTERN,
+    "configuration": ROBUSTNESS_CONFIG_DEPENDENCY,
 }
 
 if config.get("container_mode", False):
@@ -1268,7 +1526,8 @@ else:
 rule aggregate_radiomics_robustness:
     input:
         manifest=_manifest_input,
-        robustness=_per_course_sentinels(".radiomics_robustness_done")
+        robustness=_per_course_sentinels(".radiomics_robustness_done"),
+        configuration=ROBUSTNESS_CONFIG_DEPENDENCY
     output:
         summary=str(AGG_OUTPUTS.get("radiomics_robustness", RESULTS_DIR / "radiomics_robustness_summary.xlsx"))
     log:
