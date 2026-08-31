@@ -49,7 +49,14 @@ from .radiomics_outcomes import (
     extraction_status_is_nonfatal_for_required,
     invalidate_radiomics_outputs as _invalidate_radiomics_outputs,
     remove_artifact_strict as _remove_artifact_strict,
-    write_excel_atomic as _write_excel_atomic,
+)
+from .radiomics_schema import (
+    RadiomicsFeatureTypeError,
+    assert_radiomics_arrow_schema,
+    expected_radiomics_string_columns,
+    normalize_radiomics_dataframe,
+    normalize_radiomics_result,
+    write_radiomics_feature_table_atomic,
 )
 from .radiomics_ct_contract import (
     CT_EXTRACTION_ARMS,
@@ -424,6 +431,10 @@ class RadiomicsCheckpoint:
             return
         try:
             df = pd.read_parquet(self.checkpoint_path)
+            assert_radiomics_arrow_schema(
+                self.checkpoint_path,
+                expected_string_columns=expected_radiomics_string_columns(df),
+            )
             if df.empty:
                 raise ValueError("checkpoint is empty")
             feature_markers = (
@@ -486,11 +497,15 @@ class RadiomicsCheckpoint:
             return
 
         try:
-            new_df = _jsonify_nested_columns(pd.DataFrame(self._buffer))
+            new_df = _jsonify_nested_columns(
+                normalize_radiomics_dataframe(pd.DataFrame(self._buffer))
+            )
 
             if self.checkpoint_path.exists():
                 existing_df = pd.read_parquet(self.checkpoint_path)
-                combined_df = pd.concat([existing_df, new_df], ignore_index=True)
+                combined_df = normalize_radiomics_dataframe(
+                    pd.concat([existing_df, new_df], ignore_index=True)
+                )
             else:
                 self.checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
                 combined_df = new_df
@@ -502,6 +517,10 @@ class RadiomicsCheckpoint:
             tmp_path = self.checkpoint_path.parent / f".{self.checkpoint_path.name}.{os.getpid()}.tmp"
             try:
                 combined_df.to_parquet(tmp_path, index=False)
+                assert_radiomics_arrow_schema(
+                    tmp_path,
+                    expected_string_columns=expected_radiomics_string_columns(combined_df),
+                )
                 os.replace(tmp_path, self.checkpoint_path)
             finally:
                 try:
@@ -783,6 +802,7 @@ import json
 import warnings
 import SimpleITK as sitk
 from radiomics import featureextractor
+from rtpipeline.radiomics_schema import normalize_radiomics_result
 import logging
 
 # Suppress warnings
@@ -809,18 +829,8 @@ if label is not None:
 else:
     features = extractor.execute(image_path, mask_path)
 
-# Convert to JSON-serializable format
-output = {}
-for key, value in features.items():
-    try:
-        if hasattr(value, 'item'):  # numpy scalar
-            output[key] = value.item()
-        elif hasattr(value, 'tolist'):  # numpy array
-            output[key] = value.tolist()
-        else:
-            output[key] = value
-    except Exception:
-        output[key] = str(value)
+# Normalize feature scalars before JSON transport; invalid features fail closed.
+output = normalize_radiomics_result(features)
 
 # Output as JSON
 print(json.dumps(output))
@@ -848,6 +858,7 @@ import json
 import warnings
 import SimpleITK as sitk
 from radiomics import featureextractor
+from rtpipeline.radiomics_schema import normalize_radiomics_result
 import logging
 
 # Suppress warnings
@@ -894,18 +905,8 @@ if label is not None:
 else:
     features = extractor.execute(image_path, mask_path)
 
-# Convert to JSON-serializable format
-output = {{}}
-for key, value in features.items():
-    try:
-        if hasattr(value, 'item'):  # numpy scalar
-            output[key] = value.item()
-        elif hasattr(value, 'tolist'):  # numpy array
-            output[key] = value.tolist()
-        else:
-            output[key] = value
-    except Exception:
-        output[key] = str(value)
+# Normalize feature scalars before JSON transport; invalid features fail closed.
+output = normalize_radiomics_result(features)
 
 # Output as JSON
 print(json.dumps(output))
@@ -933,7 +934,7 @@ print(json.dumps(output))
             # Ignore errors when deleting the temporary file; not critical if removal fails.
             pass
 
-        return features
+        return normalize_radiomics_result(features)
 
     except json.JSONDecodeError as e:
         logger.error(f"Failed to parse radiomics output: {e}")
@@ -1001,6 +1002,7 @@ logging.getLogger("radiomics.featureextractor").setLevel(logging.ERROR)
 
 from radiomics import featureextractor
 from rtpipeline.radiomics_ct_contract import RoiClassDecision, extract_ct_roi_arms
+from rtpipeline.radiomics_schema import normalize_radiomics_result
 
 with open(sys.argv[1], "r") as handle:
     batch_params = json.load(handle)
@@ -1077,16 +1079,7 @@ for task in tasks:
             "__roi_name__": roi_name,
             "__task_index__": task_index,
         }
-        for key, value in features.items():
-            try:
-                if hasattr(value, "item"):
-                    output[key] = value.item()
-                elif hasattr(value, "tolist"):
-                    output[key] = value.tolist()
-                else:
-                    output[key] = value
-            except Exception:
-                output[key] = str(value)
+        output.update(normalize_radiomics_result(features))
         print(json.dumps(output, default=str), flush=True)
     except Exception as exc:
         message = str(exc)
@@ -1498,9 +1491,13 @@ def process_radiomics_batch(
                 for record in records:
                     checkpoint.add_result(record)
             return
-        features_clean = {
-            key: value for key, value in features.items() if not key.startswith("__")
-        }
+        features_clean = normalize_radiomics_result(
+            {
+                key: value
+                for key, value in features.items()
+                if not key.startswith("__")
+            }
+        )
         roi_name = task.get("roi_name", "ROI")
         metadata = dict(task.get("metadata") or task.get("extra_metadata") or {})
         metadata.setdefault("roi_name", roi_name)
@@ -1746,6 +1743,11 @@ def process_radiomics_batch(
                         if heartbeat:
                             heartbeat.update(failed=1)
 
+    except RadiomicsFeatureTypeError:
+        _invalidate_radiomics_outputs(Path(output_path))
+        if checkpoint is not None:
+            checkpoint.discard()
+        raise
     finally:
         # Always stop heartbeat and flush checkpoint
         if heartbeat:
@@ -1868,7 +1870,7 @@ def process_radiomics_batch(
             tuple_expected = {publication_key(row) for row in rows}
             write_ct_publication_atomic(df, Path(output_path), expected_keys=tuple_expected)
         else:
-            _write_excel_atomic(df, Path(output_path))
+            write_radiomics_feature_table_atomic(df, Path(output_path))
         logger.info("Saved %d radiomics rows to %s", len(df), output_path)
     except Exception as exc:
         _invalidate_radiomics_outputs(Path(output_path))

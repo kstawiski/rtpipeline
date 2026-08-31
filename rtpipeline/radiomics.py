@@ -55,7 +55,14 @@ from .radiomics_outcomes import (
     remove_artifact_strict as _remove_artifact_strict,
     roi_source_is_required,
     resume_identity_pairs as _resume_identity_pairs,
-    write_excel_atomic as _write_excel_atomic,
+)
+from .radiomics_schema import (
+    RadiomicsFeatureTypeError,
+    assert_radiomics_arrow_schema,
+    expected_radiomics_string_columns,
+    normalize_radiomics_dataframe,
+    normalize_radiomics_result,
+    write_radiomics_feature_table_atomic,
 )
 from .roi_requiredness import (
     DenominatorLedger,
@@ -2298,7 +2305,7 @@ def radiomics_for_course_mr(config: PipelineConfig, course) -> Optional[Path]:
             try:
                 m_img = _mask_from_array_like(img, mask)
                 res = extractor.execute(img, m_img)
-                rec = {k: (float(v) if isinstance(v, (int, float, np.floating)) else str(v)) for k, v in res.items()}
+                rec = normalize_radiomics_result(res)
                 rec.update({
                     'patient_id': getattr(course, 'patient_id', course_dirs.root.parent.name),
                     'course_id': getattr(course, 'course_id', course_dirs.root.name),
@@ -2403,22 +2410,8 @@ def radiomics_for_course_mr(config: PipelineConfig, course) -> Optional[Path]:
     try:
         import pandas as pd
         df = pd.DataFrame(rows)
-        _write_excel_atomic(df, out_path)
-        # Also save Parquet for faster aggregation, without exposing partial bytes.
-        parquet_path = out_path.with_suffix('.parquet')
-        tmp_parquet = parquet_path.with_suffix('.parquet.tmp')
-        try:
-            df.to_parquet(tmp_parquet, index=False, engine='pyarrow')
-            tmp_parquet.replace(parquet_path)
-            logger.debug("Saved MR Parquet: %s", parquet_path)
-        except Exception as parquet_err:
-            _remove_artifact_strict(
-                tmp_parquet, context="cleaning a failed temporary MR Parquet write"
-            )
-            _remove_artifact_strict(
-                parquet_path, context="invalidating a failed MR Parquet refresh"
-            )
-            logger.debug("MR Parquet save failed (non-critical): %s", parquet_err)
+        parquet_path = write_radiomics_feature_table_atomic(df, out_path)
+        logger.debug("Saved and schema-validated MR Parquet: %s", parquet_path)
         _write_mr_ledger(
             course_dirs,
             course_state={
@@ -2541,7 +2534,13 @@ def radiomics_for_mr_series(config: PipelineConfig, series: MRSeries) -> Optiona
     out_root = config.output_root / series.patient_id / f"MR_{series.series_uid}"
     out_feat = out_root / 'radiomics_features_MR.xlsx'
     if getattr(config, 'resume', False) and out_feat.exists():
-        return out_feat
+        try:
+            assert_radiomics_arrow_schema(out_feat.with_suffix('.parquet'))
+        except Exception as exc:
+            logger.info("Rejecting non-conforming MR radiomics resume output %s: %s", out_feat, exc)
+            _invalidate_radiomics_outputs(out_feat)
+        else:
+            return out_feat
     out_root.mkdir(parents=True, exist_ok=True)
     rows: List[Dict] = []
     # Manual MR RS (if any)
@@ -2552,7 +2551,7 @@ def radiomics_for_mr_series(config: PipelineConfig, series: MRSeries) -> Optiona
             try:
                 m_img = _mask_from_array_like(img, mask)
                 res = extractor.execute(img, m_img)
-                rec = {k: (float(v) if isinstance(v, (int, float, np.floating)) else str(v)) for k, v in res.items()}
+                rec = normalize_radiomics_result(res)
                 rec.update({
                     'modality': 'MR',
                     'segmentation_source': 'Manual',
@@ -2561,6 +2560,8 @@ def radiomics_for_mr_series(config: PipelineConfig, series: MRSeries) -> Optiona
                     'series_uid': series.series_uid,
                 })
                 rows.append(rec)
+            except RadiomicsFeatureTypeError:
+                raise
             except Exception as e:
                 logger.debug("Radiomics MR manual failed for %s: %s", roi, e)
                 continue
@@ -2587,7 +2588,7 @@ def radiomics_for_mr_series(config: PipelineConfig, series: MRSeries) -> Optiona
                         ext = _extractor(config, 'MR', normalize_override=normalize_override)
                         m_img = _mask_from_array_like(img, mask)
                         res = ext.execute(img, m_img)
-                        rec = {k: (float(v) if isinstance(v, (int, float, np.floating)) else str(v)) for k, v in res.items()}
+                        rec = normalize_radiomics_result(res)
                         rec.update({
                             'modality': 'MR',
                             'segmentation_source': 'AutoTS_total_mr',
@@ -2596,6 +2597,8 @@ def radiomics_for_mr_series(config: PipelineConfig, series: MRSeries) -> Optiona
                             'series_uid': series.series_uid,
                         })
                         return rec
+                    except RadiomicsFeatureTypeError:
+                        raise
                     except Exception as e:
                         logger.debug("Radiomics MR total_mr failed for label %s: %s", lab, e)
                         return None
@@ -2627,7 +2630,7 @@ def radiomics_for_mr_series(config: PipelineConfig, series: MRSeries) -> Optiona
                     ext = _extractor(config, 'MR', normalize_override=normalize_override)
                     m_img = _mask_from_array_like(img, mask)
                     res = ext.execute(img, m_img)
-                    rec = {k: (float(v) if isinstance(v, (int, float, np.floating)) else str(v)) for k, v in res.items()}
+                    rec = normalize_radiomics_result(res)
                     rec.update({
                         'modality': 'MR',
                         'segmentation_source': 'AutoTS_total_mr',
@@ -2636,6 +2639,8 @@ def radiomics_for_mr_series(config: PipelineConfig, series: MRSeries) -> Optiona
                         'series_uid': series.series_uid,
                     })
                     return rec
+                except RadiomicsFeatureTypeError:
+                    raise
                 except Exception as e:
                     logger.debug("Radiomics MR total_mr (NIfTI) failed for label %s: %s", lab, e)
                     return None
@@ -2655,12 +2660,13 @@ def radiomics_for_mr_series(config: PipelineConfig, series: MRSeries) -> Optiona
     try:
         import pandas as pd
         df = pd.DataFrame(rows)
-        out = out_feat
-        df.to_excel(out, index=False)
-        return out
+        write_radiomics_feature_table_atomic(df, out_feat)
+        return out_feat
     except Exception as e:
-        logger.warning("Failed to write MR radiomics: %s", e)
-        return None
+        _invalidate_radiomics_outputs(out_feat)
+        raise RadiomicsCourseExtractionError(
+            f"Failed to write MR radiomics for {series.patient_id}/{series.series_uid}: {e}"
+        ) from e
 
 
 def run_radiomics(config: PipelineConfig, courses: List["object"], custom_structures_config: Optional[Path] = None) -> None:
@@ -2842,7 +2848,7 @@ def run_radiomics(config: PipelineConfig, courses: List["object"], custom_struct
 
         if out_rows:
             all_df = _pd.concat(out_rows, ignore_index=True)
-            _write_excel_atomic(all_df, aggregate_path)
+            write_radiomics_feature_table_atomic(all_df, aggregate_path)
         else:
             _invalidate_radiomics_outputs(aggregate_path)
     except Exception as exc:
@@ -3246,7 +3252,8 @@ def run_radiomics_all_series(config: PipelineConfig, patient_ids: List[str]) -> 
             len(requested_patient_ids),
         )
         return None
-    out_df = pd.concat(frames, ignore_index=True)
+    out_df = normalize_radiomics_dataframe(pd.concat(frames, ignore_index=True))
+    expected_strings = expected_radiomics_string_columns(out_df)
     validate_acquisition_descriptor_table(out_df)
     expected_keys = {publication_key(record) for record in out_df.to_dict("records")}
     validate_ct_publication(out_df, expected_keys=expected_keys)
@@ -3259,6 +3266,9 @@ def run_radiomics_all_series(config: PipelineConfig, patient_ids: List[str]) -> 
     try:
         out_df.to_csv(tmp_csv, index=False)
         out_df.to_parquet(parquet_tmp, index=False, engine="pyarrow")
+        assert_radiomics_arrow_schema(
+            parquet_tmp, expected_string_columns=expected_strings
+        )
         parquet_check = pd.read_parquet(parquet_tmp, engine="pyarrow")
         validate_ct_publication(parquet_check, expected_keys=expected_keys)
         parquet_tmp.replace(out_parquet)
