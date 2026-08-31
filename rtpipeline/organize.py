@@ -39,11 +39,19 @@ from .course_contract import (
     DOSE_GRID_SEMANTICS,
     UNKNOWN_DELIVERY_DOSE_GRID_SEMANTICS,
     DOSE_RESPONSE_FIELD,
+    CourseContract,
     CourseContractError,
     _ct_provenance,
     build_dvh_decision,
     load_course_contract,
     relative_contract_path,
+    validate_course_contract,
+)
+from .organize_ledger import (
+    STATUS_TECHNICAL_QUARANTINE,
+    STATUS_VALIDATED,
+    quarantine_course_directory,
+    write_organize_ledger,
 )
 from .ct import CTInstance, index_ct_series, pick_primary_series, copy_ct_series, _clear_dir
 from .dicom_copy import DicomCopyConfig, DicomCopyManager, get_copy_manager, reset_copy_manager
@@ -165,28 +173,56 @@ def _safe_copy(
     dst: Path,
     copy_manager: Optional[DicomCopyManager] = None,
 ) -> None:
-    """Copy DICOM file to destination with optional deduplication."""
+    """Publish an independent canonical DICOM copy atomically.
+
+    Canonical root artifacts such as RP.dcm and RD.dcm can be replaced by a
+    synthesized dataset on a later run. They must therefore never remain hard
+    linked to immutable source copies under DICOM/.
+    """
+    expected_uid = _sop_instance_uid(src)
     if copy_manager is not None:
         actual, _copied = copy_manager.copy_dicom(src, dst, skip_if_exists=False)
-        # SOP dedup may answer from a foreign path without writing dst, and an
-        # earlier run may have left a different artifact there. Either way the
-        # course contract names dst, so dst must end up being this source.
-        source = Path(actual) if Path(actual).is_file() else src
-        if _sop_instance_uid(dst) != _sop_instance_uid(source):
-            ensure_dir(dst.parent)
-            if dst.exists():
-                dst.unlink()
-            try:
-                os.link(source, dst)
-            except OSError:
-                shutil.copy2(source, dst)
-        if not dst.exists():
-            raise OSError(f"required DICOM artifact was not materialised at {dst}")
+        actual_path = Path(actual)
+        if actual_path.is_file() and (
+            not expected_uid or _sop_instance_uid(actual_path) == expected_uid
+        ):
+            source = actual_path
+        else:
+            source = src
     else:
-        ensure_dir(dst.parent)
-        if dst.exists() and dst.is_file() and not os.path.samefile(src, dst):
-            dst.unlink()
-        shutil.copy2(src, dst)
+        source = src
+    ensure_dir(dst.parent)
+    handle, tmp_name = tempfile.mkstemp(
+        dir=str(dst.parent), prefix=f".{dst.name}.", suffix=".tmp"
+    )
+    os.close(handle)
+    tmp_path = Path(tmp_name)
+    try:
+        shutil.copy2(source, tmp_path)
+        os.replace(tmp_path, dst)
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise
+    if not dst.is_file() or _sop_instance_uid(dst) != expected_uid:
+        dst.unlink(missing_ok=True)
+        raise OSError(f"required DICOM artifact was not materialised at {dst}")
+
+
+def _save_dataset_atomic(dataset: Dataset, destination: Path) -> None:
+    """Publish generated DICOM bytes without mutating any existing hard link."""
+
+    ensure_dir(destination.parent)
+    handle, tmp_name = tempfile.mkstemp(
+        dir=str(destination.parent), prefix=f".{destination.name}.", suffix=".tmp"
+    )
+    os.close(handle)
+    tmp_path = Path(tmp_name)
+    try:
+        dataset.save_as(str(tmp_path))
+        os.replace(tmp_path, destination)
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise
 
 
 def _copy_into(
@@ -2960,6 +2996,42 @@ def _write_json_atomic(path: Path, payload: object) -> None:
         raise
 
 
+def _validate_and_publish_case_metadata(
+    course_dir: Path, case_metadata: dict[str, object]
+) -> None:
+    """Validate hidden candidate bytes before publishing the course contract."""
+
+    metadata_dir = course_dir / "metadata"
+    metadata_dir.mkdir(parents=True, exist_ok=True)
+    published = metadata_dir / "case_metadata.json"
+    candidate = metadata_dir / f".case_metadata.{os.getpid()}.candidate.json"
+
+    # Revoke an older generation before validating its replacement. A crash now
+    # leaves a missing contract, which consumers reject, rather than stale bytes.
+    published.unlink(missing_ok=True)
+    candidate.unlink(missing_ok=True)
+    _write_json_atomic(candidate, case_metadata)
+    try:
+        contract_data = case_metadata.get("course_contract")
+        if not isinstance(contract_data, dict):
+            raise CourseContractError("candidate course metadata has no course_contract object")
+        validate_course_contract(
+            CourseContract(
+                course_dir=course_dir.resolve(strict=False),
+                metadata_path=candidate,
+                data=contract_data,
+            )
+        )
+        os.replace(candidate, published)
+        # Validate the exact published target rather than treating rename success
+        # as publication success.
+        load_course_contract(course_dir)
+    except BaseException:
+        candidate.unlink(missing_ok=True)
+        published.unlink(missing_ok=True)
+        raise
+
+
 def _record_expected_courses(config: PipelineConfig, patient_id: str, course_keys: List[str]) -> None:
     try:
         _write_json_atomic(
@@ -2970,15 +3042,23 @@ def _record_expected_courses(config: PipelineConfig, patient_id: str, course_key
         logger.debug("Could not record expected courses for %s: %s", patient_id, exc)
 
 
+def _course_done_path(config: PipelineConfig, patient_id: str, course_key: str) -> Path:
+    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", str(course_key))
+    return _organize_checkpoint_dir(config) / patient_id / f"{safe}.done.json"
+
+
 def _record_course_done(config: PipelineConfig, patient_id: str, course_key: str, course_dir: Path) -> None:
     try:
-        safe = re.sub(r"[^A-Za-z0-9_.-]", "_", str(course_key))
         _write_json_atomic(
-            _organize_checkpoint_dir(config) / patient_id / f"{safe}.done.json",
+            _course_done_path(config, patient_id, course_key),
             {"patient": patient_id, "course_key": str(course_key), "course_dir": str(course_dir)},
         )
     except Exception as exc:
         logger.debug("Could not record completed course %s/%s: %s", patient_id, course_key, exc)
+
+
+def _remove_course_done(config: PipelineConfig, patient_id: str, course_key: str) -> None:
+    _course_done_path(config, patient_id, course_key).unlink(missing_ok=True)
 
 
 def _completed_patients(config: PipelineConfig) -> Dict[str, List[dict]]:
@@ -3419,8 +3499,8 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
                 ref_dose_item.ReferencedSOPInstanceUID = str(dose_sum_ds.SOPInstanceUID)
                 plan_sum_ds.ReferencedDoseSequence = Sequence([ref_dose_item])
 
-                plan_sum_ds.save_as(str(rp_dst))
-                dose_sum_ds.save_as(str(rd_dst))
+                _save_dataset_atomic(plan_sum_ds, rp_dst)
+                _save_dataset_atomic(dose_sum_ds, rd_dst)
 
                 plan_sop_uid = str(plan_sum_ds.SOPInstanceUID)
                 dose_sop_uid = str(dose_sum_ds.SOPInstanceUID)
@@ -3452,7 +3532,7 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
                     plan_sum_ds, plan_ds_list, source_plan_uids = _create_summed_plan(
                         selected_plans, total_rx
                     )
-                    plan_sum_ds.save_as(str(rp_dst))
+                    _save_dataset_atomic(plan_sum_ds, rp_dst)
                     plan_sop_uid = str(plan_sum_ds.SOPInstanceUID)
 
             else:
@@ -4234,12 +4314,6 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
             if res:
                 outputs.append(res)
 
-    for _co in outputs:
-        try:
-            _record_course_done(config, _co.patient_id, _co.course_key, _co.dirs.root)
-        except Exception:
-            pass
-
     # Re-admit the courses of patients that were skipped as already complete, so
     # the manifest still describes the whole cohort rather than only this run.
     if resumed_patients:
@@ -4287,17 +4361,25 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
                 ", ".join(failed_patients[:50]) + (" ..." if len(failed_patients) > 50 else ""),
             )
 
-    # After course-level copying and plan/dose synthesis, write per-case metadata serially to avoid overwhelming IO
+    # After course-level copying and plan/dose synthesis, publish each course
+    # independently. One invalid contract must not prevent validation of later
+    # courses, but no invalid course may retain consumer-visible bytes.
+    validated_outputs: list[CourseOutput] = []
+    organize_entries: list[dict[str, object]] = []
+    quarantine_failures: list[str] = []
     for co in outputs:
         patient_dir = co.dirs.root
         meta_dir = co.dirs.metadata
         meta_dir.mkdir(parents=True, exist_ok=True)
-        manual_manifest = _export_original_segmentation(co, overwrite=bool(config.resume))
-        nifti_files = sorted(co.dirs.nifti.glob("*.nii*"))
+        (patient_dir / ".organized").unlink(missing_ok=True)
         # ------------------------------------------------------------------
         # Save per-case metadata (Excel + JSON) in the course directory
         # ------------------------------------------------------------------
         try:
+            manual_manifest = _export_original_segmentation(
+                co, overwrite=bool(config.resume)
+            )
+            nifti_files = sorted(co.dirs.nifti.glob("*.nii*"))
             # Aggregate course-level details for research/clinic
             # Rebuild context from files on disk
             plan_uids: set[str] = set()
@@ -5332,31 +5414,95 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
                 except Exception:
                     pass
 
-            # Write JSON + XLSX (one-row sheet)
-            metadata_path = meta_dir / "case_metadata.json"
+            # Validate hidden candidate bytes before atomically publishing the
+            # authoritative JSON contract.
             try:
-                with open(metadata_path, "w", encoding="utf-8") as f:
-                    json.dump(case_meta, f, ensure_ascii=False, indent=2)
+                _validate_and_publish_case_metadata(patient_dir, case_meta)
             except Exception as exc:
                 raise CourseContractError(
-                    f"failed to write authoritative course contract for {patient_dir}: {exc}"
+                    f"failed to publish authoritative course contract for {patient_dir}: {exc}"
                 ) from exc
-            # Producer-side validation closes the same path, UID, delivery,
-            # summation-type, and dose-QC checks enforced downstream.
-            load_course_contract(patient_dir)
             try:
                 import pandas as _pd
 
                 _pd.DataFrame([case_meta]).to_excel(meta_dir / "case_metadata.xlsx", index=False)
             except Exception as exc:
                 logger.debug("Failed to write case metadata XLSX for %s: %s", patient_dir, exc)
-        except CourseContractError:
-            raise
-        except Exception as e:
-            logger.debug("Failed to write per-case metadata for %s: %s", patient_dir, e)
+        except Exception as exc:
+            reason = f"{type(exc).__name__}: {exc}"
+            _remove_course_done(config, co.patient_id, co.course_key)
+            quarantine_path: Path | None = None
+            try:
+                quarantine_path = quarantine_course_directory(
+                    config.output_root,
+                    patient_dir,
+                    patient=co.patient_id,
+                    course=co.course_id,
+                    reason=reason,
+                    phase="producer_contract_validation",
+                )
+            except Exception as quarantine_exc:
+                # Keep processing later courses, but fail the producer after the
+                # complete ledger is written because revocation was not proven.
+                (patient_dir / ".organized").unlink(missing_ok=True)
+                (meta_dir / "case_metadata.json").unlink(missing_ok=True)
+                quarantine_failure = (
+                    f"{co.patient_id}/{co.course_id}: {reason}; quarantine failed: "
+                    f"{type(quarantine_exc).__name__}: {quarantine_exc}"
+                )
+                quarantine_failures.append(quarantine_failure)
+                reason = quarantine_failure
+            organize_entries.append(
+                {
+                    "patient": co.patient_id,
+                    "course": co.course_id,
+                    "course_key": co.course_key,
+                    "path": str(patient_dir),
+                    "status": STATUS_TECHNICAL_QUARANTINE,
+                    "reason": reason,
+                    "quarantine_path": (
+                        str(quarantine_path) if quarantine_path is not None else None
+                    ),
+                }
+            )
+            logger.error(
+                "Technically quarantined organized course %s/%s: %s",
+                co.patient_id,
+                co.course_id,
+                reason,
+            )
+            continue
+
+        _record_course_done(config, co.patient_id, co.course_key, patient_dir)
+        validated_outputs.append(co)
+        organize_entries.append(
+            {
+                "patient": co.patient_id,
+                "course": co.course_id,
+                "course_key": co.course_key,
+                "path": str(patient_dir),
+                "status": STATUS_VALIDATED,
+                "reason": None,
+                "quarantine_path": None,
+            }
+        )
+
+    organize_ledger = write_organize_ledger(config.output_root, organize_entries)
+    logger.info(
+        "Organize contract ledger: attempted=%d validated=%d technical_quarantines=%d",
+        organize_ledger["attempted_course_count"],
+        organize_ledger["validated_course_count"],
+        organize_ledger["technical_quarantine_count"],
+    )
 
     # Save copy manager caches and log statistics
     copy_manager.save_caches()
     logger.info("DICOM copy statistics: %s", copy_manager.stats)
 
-    return outputs
+    if quarantine_failures:
+        raise CourseContractError(
+            "could not revoke one or more technically quarantined courses after "
+            "processing the full cohort: " + " | ".join(quarantine_failures)
+        )
+
+    return validated_outputs

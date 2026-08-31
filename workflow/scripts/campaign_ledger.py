@@ -19,6 +19,9 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
+from rtpipeline.organize_ledger import ledger_path as organize_ledger_path
+from rtpipeline.organize_ledger import read_organize_ledger
+
 LEDGER_DIRNAME = "_campaign_ledger"
 RECORDS_DIRNAME = "records"
 
@@ -189,6 +192,40 @@ def rollup(output_dir: Path) -> dict:
                 }
             )
 
+    visible_course_count = len(
+        {(row["patient"], row["course"]) for row in rows}
+    )
+    organize_ledger = None
+    if organize_ledger_path(output_dir).is_file():
+        organize_ledger = read_organize_ledger(output_dir)
+    if organize_ledger is not None:
+        existing_organize = {
+            (row["patient"], row["course"])
+            for row in rows
+            if row["stage"] == "organize"
+        }
+        for entry in organize_ledger["technical_quarantines"]:
+            identity = (entry["patient"], entry["course"])
+            if identity in existing_organize:
+                continue
+            rows.append(
+                {
+                    "patient": entry["patient"],
+                    "course": entry["course"],
+                    "stage": "organize",
+                    "status": STATUS_FAILED,
+                    "status_source": "organize-ledger",
+                    "sentinel_status": STATUS_MISSING,
+                    "returncode": None,
+                    "log_path": None,
+                    "detail": entry["reason"],
+                    "finished_at": organize_ledger.get("generated_at"),
+                    "duration_seconds": None,
+                    "disposition_type": "technical_quarantine",
+                    "clinical_exclusion": False,
+                }
+            )
+
     by_stage: dict[str, dict[str, int]] = {}
     for row in rows:
         counts = by_stage.setdefault(row["stage"], {})
@@ -210,6 +247,24 @@ def rollup(output_dir: Path) -> dict:
         "failed_unit_count": len(failed_units),
         "courses_with_any_failure": len({(p, c) for p, c, _ in failed_units}),
     }
+    if organize_ledger is not None:
+        summary.update(
+            {
+                "visible_course_count": visible_course_count,
+                "course_count": organize_ledger["intended_course_count"],
+                "intended_course_count": organize_ledger["intended_course_count"],
+                "attempted_course_count": organize_ledger["attempted_course_count"],
+                "producer_validated_course_count": organize_ledger[
+                    "validated_course_count"
+                ],
+                "technical_quarantine_count": organize_ledger[
+                    "technical_quarantine_count"
+                ],
+                "technical_quarantines": organize_ledger[
+                    "technical_quarantines"
+                ],
+            }
+        )
 
     target_dir = ledger_dir(output_dir)
     target_dir.mkdir(parents=True, exist_ok=True)
@@ -226,6 +281,8 @@ def rollup(output_dir: Path) -> dict:
         "detail",
         "finished_at",
         "duration_seconds",
+        "disposition_type",
+        "clinical_exclusion",
     ]
     buffer = []
     for row in rows:

@@ -30,6 +30,12 @@ remain distinct compatibility identities. For distributed aggregate radiomics re
 - Aggregation in campaign mode writes `campaign_attrition.csv` recording every
   excluded course with its reason, and still fails closed when no course
   completed or when completion falls below `campaign_min_completion_fraction`.
+- Organize now publishes only producer-validated course contracts. Contract
+  failures are technical quarantines outside the output tree, with exact reasons
+  and attempted, validated, and quarantined counts in the organize ledger and
+  course manifest. Set `campaign_require_all_courses: true` to block the
+  pre-aggregation campaign gate whenever any intended course is quarantined or
+  later has incomplete required inputs.
 - Adds a per-course campaign ledger. Each course/stage outcome is published
   atomically as one record per unit, so parallel jobs never contend and a crash
   cannot leave a torn write. The rollup cross-checks every record against the

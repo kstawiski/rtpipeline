@@ -30,6 +30,7 @@ from rtpipeline import organize as org
 from rtpipeline.config import PipelineConfig
 from rtpipeline.ct import CTInstance
 from rtpipeline.course_contract import load_course_contract
+from rtpipeline.organize_ledger import read_organize_ledger
 from rtpipeline.metadata import LinkedSet, group_by_course, link_rt_sets
 from rtpipeline.rt_details import extract_rt
 from rtpipeline.dvh import dvh_for_course
@@ -1525,3 +1526,51 @@ def test_ct_only_input_produces_a_course_when_explicitly_enabled(tmp_path, monke
 
     assert len(outputs) == 1
     assert len(list(outputs[0].dirs.dicom_ct.glob("*.dcm"))) == 10
+
+
+def test_organize_quarantines_one_contract_failure_and_validates_later_course(
+    tmp_path, monkeypatch
+):
+    cfg = _ct_only_config(tmp_path, allow=True)
+    for series_index in range(2):
+        study_uid = generate_uid()
+        series_uid = generate_uid()
+        frame_uid = generate_uid()
+        for slice_index in range(10):
+            _mk_ct(
+                cfg.dicom_root
+                / "P1"
+                / f"series_{series_index}_ct_{slice_index}.dcm",
+                study_uid=study_uid,
+                series_uid=series_uid,
+                frame_uid=frame_uid,
+                description=f"Diagnostic CT {series_index}",
+            )
+    monkeypatch.setattr(org, "_ensure_ct_nifti", _write_placeholder_ct_nifti)
+    original_publish = org._validate_and_publish_case_metadata
+    publication_calls = 0
+
+    def _fail_first_publication(course_dir, case_metadata):
+        nonlocal publication_calls
+        publication_calls += 1
+        if publication_calls == 1:
+            raise org.CourseContractError("intentional stale selected plan")
+        return original_publish(course_dir, case_metadata)
+
+    monkeypatch.setattr(
+        org, "_validate_and_publish_case_metadata", _fail_first_publication
+    )
+
+    outputs = org.organize_and_merge(cfg)
+
+    assert publication_calls == 2
+    assert len(outputs) == 1
+    ledger = read_organize_ledger(cfg.output_root)
+    assert ledger["attempted_course_count"] == 2
+    assert ledger["validated_course_count"] == 1
+    assert ledger["technical_quarantine_count"] == 1
+    quarantine = ledger["technical_quarantines"][0]
+    assert quarantine["clinical_exclusion"] is False
+    assert "intentional stale selected plan" in quarantine["reason"]
+    assert Path(quarantine["quarantine_path"]).is_dir()
+    assert not Path(quarantine["path"]).exists()
