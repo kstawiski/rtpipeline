@@ -10,9 +10,11 @@ staleness logic with minimal imports.
 
 from __future__ import annotations
 
+import fcntl
 import json
 import logging
 import os
+import tempfile
 from pathlib import Path
 from typing import Dict, Optional, Union
 
@@ -28,6 +30,158 @@ logger = logging.getLogger(__name__)
 
 _RS_CUSTOM_META_VERSION = 2
 _RTSTRUCT_SOP_CLASS_UID = "1.2.840.10008.5.1.4.1.1.481.3"
+
+
+class CustomStructureRTStructError(RuntimeError):
+    """RS_custom could not be built for the named configured ROIs."""
+
+    def __init__(
+        self,
+        course_dir: Path,
+        roi_names: list[str],
+        cause: BaseException,
+    ) -> None:
+        self.course_dir = Path(course_dir)
+        self.roi_names = tuple(str(name) for name in roi_names)
+        self.cause = cause
+        names = ", ".join(self.roi_names) if self.roi_names else "<unresolved>"
+        super().__init__(
+            f"configured ROI(s) [{names}] could not be built in {self.course_dir}: "
+            f"{type(cause).__name__}: {cause}"
+        )
+
+
+def _rtstruct_builder_source(
+    source: Path,
+    ct_dir: Path,
+    temporary_dir: Optional[Path],
+) -> tuple[Path, Optional[Path]]:
+    """Prune unused cross-series image references from a temporary RTSTRUCT copy.
+
+    Some clinical RTSTRUCTs retain references to an older image series even though
+    every surviving ROI contour references the contracted planning CT. rt-utils
+    rejects the whole object in that case. Pruning is safe only when every contour
+    image reference is present in the contracted CT. A contour outside that series
+    remains a hard failure.
+    """
+
+    ct_uids: set[str] = set()
+    ct_series_uids: set[str] = set()
+    for path in Path(ct_dir).rglob("*"):
+        if not path.is_file():
+            continue
+        try:
+            dataset = pydicom.dcmread(path, stop_before_pixels=True)
+        except Exception:
+            continue
+        sop_uid = str(getattr(dataset, "SOPInstanceUID", "")).strip()
+        series_uid = str(getattr(dataset, "SeriesInstanceUID", "")).strip()
+        if sop_uid:
+            ct_uids.add(sop_uid)
+        if series_uid:
+            ct_series_uids.add(series_uid)
+    if not ct_uids or len(ct_series_uids) != 1:
+        raise ValueError(
+            f"contracted planning CT inventory is not one readable series: "
+            f"instances={len(ct_uids)}, series={sorted(ct_series_uids)}"
+        )
+
+    dataset = pydicom.dcmread(source, stop_before_pixels=True)
+    contour_refs = {
+        str(image.ReferencedSOPInstanceUID)
+        for roi_contour in getattr(dataset, "ROIContourSequence", []) or []
+        for contour in getattr(roi_contour, "ContourSequence", []) or []
+        for image in getattr(contour, "ContourImageSequence", []) or []
+        if getattr(image, "ReferencedSOPInstanceUID", None)
+    }
+    missing_contour_refs = sorted(contour_refs - ct_uids)
+    if missing_contour_refs:
+        raise ValueError(
+            "RTSTRUCT ROI contours reference image(s) outside the contracted planning "
+            f"CT; first missing SOP Instance UID: {missing_contour_refs[0]}"
+        )
+
+    unbound_contours = [
+        contour
+        for roi_contour in getattr(dataset, "ROIContourSequence", []) or []
+        for contour in getattr(roi_contour, "ContourSequence", []) or []
+        if not (getattr(contour, "ContourImageSequence", None) or [])
+    ]
+    referenced_images = {
+        str(image.ReferencedSOPInstanceUID)
+        for frame in getattr(dataset, "ReferencedFrameOfReferenceSequence", []) or []
+        for study in getattr(frame, "RTReferencedStudySequence", []) or []
+        for series in getattr(study, "RTReferencedSeriesSequence", []) or []
+        for image in getattr(series, "ContourImageSequence", []) or []
+        if getattr(image, "ReferencedSOPInstanceUID", None)
+    }
+    if referenced_images <= ct_uids:
+        return Path(source), None
+    if unbound_contours:
+        raise ValueError(
+            "RTSTRUCT contains contour geometry without image-level references; "
+            "unused cross-series references cannot be pruned safely"
+        )
+
+    planning_series_uid = next(iter(ct_series_uids))
+    for frame in getattr(dataset, "ReferencedFrameOfReferenceSequence", []) or []:
+        studies = []
+        for study in getattr(frame, "RTReferencedStudySequence", []) or []:
+            series_items = []
+            for series in getattr(study, "RTReferencedSeriesSequence", []) or []:
+                images = [
+                    image
+                    for image in getattr(series, "ContourImageSequence", []) or []
+                    if str(getattr(image, "ReferencedSOPInstanceUID", "")) in ct_uids
+                ]
+                if not images:
+                    continue
+                series.SeriesInstanceUID = planning_series_uid
+                series.ContourImageSequence = images
+                series_items.append(series)
+            if series_items:
+                study.RTReferencedSeriesSequence = series_items
+                studies.append(study)
+        frame.RTReferencedStudySequence = studies
+
+    remaining = {
+        str(image.ReferencedSOPInstanceUID)
+        for frame in getattr(dataset, "ReferencedFrameOfReferenceSequence", []) or []
+        for study in getattr(frame, "RTReferencedStudySequence", []) or []
+        for series in getattr(study, "RTReferencedSeriesSequence", []) or []
+        for image in getattr(series, "ContourImageSequence", []) or []
+        if getattr(image, "ReferencedSOPInstanceUID", None)
+    }
+    if not remaining or not remaining <= ct_uids:
+        unresolved = sorted(remaining - ct_uids)
+        raise ValueError(
+            "RTSTRUCT cross-series references could not be safely restricted to the "
+            f"contracted planning CT: {unresolved[:3]}"
+        )
+
+    temp_kwargs = {}
+    if temporary_dir is not None:
+        temporary_dir = Path(temporary_dir)
+        temporary_dir.mkdir(parents=True, exist_ok=True)
+        temp_kwargs["dir"] = str(temporary_dir)
+    handle, name = tempfile.mkstemp(
+        prefix=f".{Path(source).name}.",
+        suffix=".planning-ct.dcm",
+        **temp_kwargs,
+    )
+    os.close(handle)
+    temporary = Path(name)
+    try:
+        pydicom.dcmwrite(temporary, dataset, write_like_original=False)
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
+    logger.info(
+        "Prepared a temporary planning-CT-only RTSTRUCT reference copy for %s; "
+        "the authoritative source was not modified",
+        source,
+    )
+    return temporary, temporary
 
 
 def _is_valid_rtstruct(path: Path) -> bool:
@@ -47,7 +201,7 @@ def _is_valid_rtstruct(path: Path) -> bool:
     return bool(getattr(ds, "StructureSetROISequence", None))
 
 
-def _write_rtstruct_atomic(out_path: Path, write_fn) -> None:
+def _write_rtstruct_atomic(out_path: Path, write_fn, validate_fn=None) -> None:
     """Write an RTSTRUCT by calling `write_fn(tmp_path_str)`, then atomically publish it
     at `out_path` via os.replace().
 
@@ -63,6 +217,8 @@ def _write_rtstruct_atomic(out_path: Path, write_fn) -> None:
     tmp_path = out_path.parent / f".{out_path.name}.{os.getpid()}.tmp.dcm"
     try:
         write_fn(str(tmp_path))
+        if validate_fn is not None:
+            validate_fn(tmp_path)
         os.replace(tmp_path, out_path)
     finally:
         try:
@@ -296,7 +452,7 @@ def _is_rs_custom_stale(
         return True
 
 
-def _create_custom_structures_rtstruct(
+def _create_custom_structures_rtstruct_unlocked(
     course_dir: Path,
     config_path: Optional[Union[str, Path]] = None,
     rs_manual: Optional[Path] = None,
@@ -337,9 +493,25 @@ def _create_custom_structures_rtstruct(
         logger.warning("Course contract has no planning CT for custom structures")
         return None
 
+    processor = CustomStructureProcessor()
+    if config_path:
+        processor.load_config(config_path)
+    temporary_sources: list[Path] = []
     try:
-        # Load base RTSTRUCT
-        rtstruct = RTStructBuilder.create_from(dicom_series_path=str(ct_dir), rt_struct_path=str(base_rs))
+        # rt-utils rejects any cross-series image reference, even an unused
+        # historical series. Restrict only a temporary copy and only when every
+        # surviving contour is already bound to the contracted planning CT.
+        builder_source, temporary_source = _rtstruct_builder_source(
+            base_rs,
+            ct_dir,
+            None,
+        )
+        if temporary_source is not None:
+            temporary_sources.append(temporary_source)
+        rtstruct = RTStructBuilder.create_from(
+            dicom_series_path=str(ct_dir),
+            rt_struct_path=str(builder_source),
+        )
 
         existing_names: set[str] = set()
         available_masks: Dict[str, np.ndarray] = {}
@@ -550,14 +722,30 @@ def _create_custom_structures_rtstruct(
         # Integrate additional sources to enable custom ops that reference them
         if rs_manual and Path(rs_manual).exists() and base_source != "manual":
             try:
-                manual_builder = RTStructBuilder.create_from(dicom_series_path=str(ct_dir), rt_struct_path=str(rs_manual))
+                manual_source, manual_temporary = _rtstruct_builder_source(
+                    Path(rs_manual), ct_dir, None
+                )
+                if manual_temporary is not None:
+                    temporary_sources.append(manual_temporary)
+                manual_builder = RTStructBuilder.create_from(
+                    dicom_series_path=str(ct_dir),
+                    rt_struct_path=str(manual_source),
+                )
                 _harvest_masks(manual_builder, "manual", add_missing=True)
             except Exception as exc:
                 logger.warning("Failed to integrate manual structures: %s", exc)
 
         if rs_auto and Path(rs_auto).exists() and base_source != "auto":
             try:
-                auto_builder = RTStructBuilder.create_from(dicom_series_path=str(ct_dir), rt_struct_path=str(rs_auto))
+                auto_source, auto_temporary = _rtstruct_builder_source(
+                    Path(rs_auto), ct_dir, None
+                )
+                if auto_temporary is not None:
+                    temporary_sources.append(auto_temporary)
+                auto_builder = RTStructBuilder.create_from(
+                    dicom_series_path=str(ct_dir),
+                    rt_struct_path=str(auto_source),
+                )
                 _harvest_masks(auto_builder, "auto", add_missing=True)
             except Exception as exc:
                 logger.warning("Failed to integrate auto structures: %s", exc)
@@ -570,9 +758,7 @@ def _create_custom_structures_rtstruct(
             return None
         spacing = ct_image.GetSpacing()
 
-        processor = CustomStructureProcessor(spacing=spacing)
-        if config_path:
-            processor.load_config(config_path)
+        processor.spacing = spacing
 
         custom_masks = processor.process_all_custom_structures(available_masks)
         partial_map = getattr(processor, "partial_structures", {})
@@ -633,16 +819,24 @@ def _create_custom_structures_rtstruct(
 
         out_path = course_dir / "RS_custom.dcm"
         _assert_unique_roi_numbers(rtstruct.ds, f"RS_custom before save for {course_dir}")
-        _write_rtstruct_atomic(out_path, rtstruct.save)
-        try:
-            sanitize_rtstruct(out_path)
-        except Exception as exc:
-            logger.debug("Sanitising RS_custom failed for %s: %s", out_path, exc)
-        try:
-            _assert_unique_roi_numbers(pydicom.dcmread(str(out_path)), f"saved RS_custom for {course_dir}")
-        except Exception:
-            out_path.unlink(missing_ok=True)
-            raise
+
+        def _validate_temporary_publication(path: Path) -> None:
+            try:
+                sanitize_rtstruct(path)
+            except Exception as exc:
+                logger.debug("Sanitising temporary RS_custom failed for %s: %s", path, exc)
+            dataset = pydicom.dcmread(str(path))
+            if str(getattr(dataset, "SOPClassUID", "")) != _RTSTRUCT_SOP_CLASS_UID:
+                raise ValueError(f"temporary RS_custom is not an RTSTRUCT: {path}")
+            if not getattr(dataset, "StructureSetROISequence", None):
+                raise ValueError(f"temporary RS_custom has no named ROIs: {path}")
+            _assert_unique_roi_numbers(dataset, f"temporary RS_custom for {course_dir}")
+
+        _write_rtstruct_atomic(
+            out_path,
+            rtstruct.save,
+            validate_fn=_validate_temporary_publication,
+        )
 
         # Record generator metadata to enable safe/stable staleness checks.
         try:
@@ -684,5 +878,48 @@ def _create_custom_structures_rtstruct(
         return out_path
 
     except Exception as exc:  # pragma: no cover - defensive
-        logger.error("Failed to create custom structures RTSTRUCT: %s", exc)
-        return None
+        processor_value = locals().get("processor")
+        roi_names = [
+            str(config.name)
+            for config in getattr(processor_value, "custom_configs", [])
+        ]
+        if isinstance(exc, CustomStructureRTStructError):
+            logger.error("Failed to create custom structures RTSTRUCT: %s", exc)
+            raise
+        error = CustomStructureRTStructError(course_dir, roi_names, exc)
+        logger.error("Failed to create custom structures RTSTRUCT: %s", error)
+        raise error from exc
+    finally:
+        for temporary_source in temporary_sources:
+            temporary_source.unlink(missing_ok=True)
+
+
+def _create_custom_structures_rtstruct(
+    course_dir: Path,
+    config_path: Optional[Union[str, Path]] = None,
+    rs_manual: Optional[Path] = None,
+    rs_auto: Optional[Path] = None,
+) -> Optional[Path]:
+    """Serialize RS_custom production and reuse a current competing publication."""
+
+    course_dir = Path(course_dir)
+    lock_dir = course_dir / "metadata"
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = lock_dir / ".rs_custom.lock"
+    with lock_path.open("a+b") as lock_handle:
+        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+        out_path = course_dir / "RS_custom.dcm"
+        if out_path.is_file() and not _is_rs_custom_stale(
+            out_path,
+            config_path,
+            rs_manual,
+            rs_auto,
+        ):
+            logger.info("Reusing RS_custom published by a competing course stage: %s", out_path)
+            return out_path
+        return _create_custom_structures_rtstruct_unlocked(
+            course_dir,
+            config_path,
+            rs_manual,
+            rs_auto,
+        )

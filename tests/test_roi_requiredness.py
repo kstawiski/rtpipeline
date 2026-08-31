@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import numpy as np
 import pydicom
@@ -8,6 +9,7 @@ from pydicom.dataset import Dataset
 
 from course_contract_test_utils import write_synthetic_rtstruct
 from rtpipeline import radiomics
+from rtpipeline import radiomics_parallel
 from rtpipeline.roi_requiredness import (
     CUSTOM_DEPENDENCY_GRAPH,
     TAXONOMY_CODES,
@@ -226,6 +228,48 @@ def test_modality_ledgers_merge_without_overwriting_course_or_patient_denominato
     assert summary["PATIENT"]["screened"] == 1
     assert summary["COURSE_ROI"]["CT:PTV"]["extracted"] == 1
     assert summary["COURSE_ROI"]["MR:PTV"]["excluded_anatomy"] == 1
+
+
+def test_parallel_ledger_records_configured_roi_realized_by_partial_alias(tmp_path):
+    course_dir = tmp_path / "442568" / "2021-07"
+    course_dir.mkdir(parents=True)
+    task = SimpleNamespace(roi_name="bowel_bag__partial")
+    rows = [
+        {
+            "roi_original_name": "bowel_bag__partial",
+            "roi_name": "bowel_bag__partial",
+            "extraction_status": "success",
+        }
+    ]
+    applicability = [
+        assess_custom_applicability(
+            "bowel_bag",
+            {},
+            generated_state="readable_nonempty",
+        )
+    ]
+
+    radiomics_parallel._write_parallel_roi_ledger(
+        course_dir,
+        [task],  # type: ignore[list-item]
+        rows,
+        applicability,
+        extracted=True,
+    )
+
+    payload = json.loads(
+        (course_dir / "metadata" / "radiomics_roi_ledger.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    recorded = {
+        row["roi_name"]: row
+        for row in payload["course_roi"]
+        if row["course_id"] == "2021-07"
+    }
+    assert recorded["bowel_bag__partial"]["reason_code"] == "extracted"
+    assert recorded["bowel_bag"]["reason_code"] == "extracted"
+    assert "bowel_bag__partial" in recorded["bowel_bag"]["detail"]
 
 
 def test_every_declared_taxonomy_code_is_registered():

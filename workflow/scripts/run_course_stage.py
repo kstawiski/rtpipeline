@@ -2,6 +2,7 @@
 
 import json
 import os
+import shlex
 import subprocess
 import sys
 import time
@@ -222,6 +223,22 @@ def main(workflow: Any) -> None:
     custom_structures = str(workflow.params.custom_structures)
     if custom_structures:
         command.extend(["--custom-structures", custom_structures])
+    extra_args = str(getattr(workflow.params, "extra_args", "") or "").strip()
+    if extra_args:
+        command.extend(shlex.split(extra_args))
+
+    stage_environment = runtime_environment(workflow.params)
+    if stage_name == "radiomics":
+        worker_limit = str(max(1, int(workflow.threads)))
+        stage_environment.update(
+            {
+                "RTPIPELINE_MAX_WORKERS": worker_limit,
+                "RTPIPELINE_RADIOMICS_THREAD_LIMIT": "1",
+                "OMP_NUM_THREADS": "1",
+                "OPENBLAS_NUM_THREADS": "1",
+                "MKL_NUM_THREADS": "1",
+            }
+        )
 
     try:
         with log_path.open("w", encoding="utf-8") as log_file:
@@ -230,7 +247,7 @@ def main(workflow: Any) -> None:
                 check=False,
                 stdout=log_file,
                 stderr=subprocess.STDOUT,
-                env=runtime_environment(workflow.params),
+                env=stage_environment,
             )
     except OSError as exc:
         close_course(

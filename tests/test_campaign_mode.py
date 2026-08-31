@@ -15,6 +15,7 @@ reason.
 
 from __future__ import annotations
 
+import os
 import runpy
 from pathlib import Path
 from types import SimpleNamespace
@@ -186,6 +187,53 @@ def test_a_failed_course_still_closes_its_dependent_stages(tmp_path):
 
     assert excinfo.value.code == 0  # campaign continues
     assert sentinel.read_text(encoding="utf-8").strip() == "failed"  # course does not
+
+
+def test_radiomics_campaign_failure_is_isolated_and_preserves_cli_options(tmp_path):
+    argv_path = tmp_path / "radiomics-argv.txt"
+    env_path = tmp_path / "radiomics-env.txt"
+    stub = tmp_path / "capturing-failing-python"
+    stub.write_text(
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$ARGV_PATH\"\n"
+        "printf '%s\\n' \"$RTPIPELINE_MAX_WORKERS,$OMP_NUM_THREADS\" > \"$ENV_PATH\"\n"
+        "exit 3\n",
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
+
+    workflow = _workflow(tmp_path, campaign_mode=True, python=str(stub))
+    workflow.params.stage = "radiomics"
+    workflow.params.extra_args = '--radiomics-params "/tmp/params with space.yaml" --no-resample'
+    workflow.threads = 4
+    workflow.output.sentinel = str(tmp_path / "PT001" / "COURSE_A" / ".radiomics_done")
+    workflow.input.custom = str(tmp_path / "PT001" / "COURSE_A" / ".segmentation_custom_done")
+    workflow.input.crop = str(tmp_path / "PT001" / "COURSE_A" / ".crop_ct_done")
+    Path(workflow.input.custom).write_text("disabled\n", encoding="utf-8")
+    Path(workflow.input.crop).write_text("ok\n", encoding="utf-8")
+
+    old_argv = os.environ.get("ARGV_PATH")
+    old_env = os.environ.get("ENV_PATH")
+    os.environ["ARGV_PATH"] = str(argv_path)
+    os.environ["ENV_PATH"] = str(env_path)
+    try:
+        with pytest.raises(SystemExit) as excinfo:
+            _run(workflow)
+    finally:
+        if old_argv is None:
+            os.environ.pop("ARGV_PATH", None)
+        else:
+            os.environ["ARGV_PATH"] = old_argv
+        if old_env is None:
+            os.environ.pop("ENV_PATH", None)
+        else:
+            os.environ["ENV_PATH"] = old_env
+
+    assert excinfo.value.code == 0
+    assert Path(workflow.output.sentinel).read_text(encoding="utf-8").strip() == "failed"
+    arguments = argv_path.read_text(encoding="utf-8").splitlines()
+    assert arguments[arguments.index("--radiomics-params") + 1] == "/tmp/params with space.yaml"
+    assert "--no-resample" in arguments
+    assert env_path.read_text(encoding="utf-8").strip() == "4,1"
 
 
 def test_strict_mode_surfaces_the_upstream_error_unflattened(tmp_path):

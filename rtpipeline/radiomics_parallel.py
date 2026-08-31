@@ -366,10 +366,6 @@ def _write_parallel_roi_ledger(
     course_id, patient_id = Path(course_dir).name, Path(course_dir).parent.name
     for task in tasks:
         ledger.expect_course_roi(course_id, task.roi_name)
-    for item in applicability:
-        ledger.expect_course_roi(course_id, item.roi_name)
-        if item.reason_code != "extracted":
-            ledger.record_roi(course_id, patient_id, item.roi_name, reason_code=item.reason_code, disposition="excluded", detail=item.detail)
     seen = set()
     for row in rows:
         name = str(row.get("roi_original_name", row.get("roi_name", "")))
@@ -379,9 +375,58 @@ def _write_parallel_roi_ledger(
         status = str(row.get("extraction_status") or "success")
         reason = str(row.get("roi_structural_code") or ("extracted" if status in {"success", "declared_skip"} else "failed_radiomics_extraction"))
         ledger.record_roi(course_id, patient_id, name, reason_code=reason, disposition="extracted" if reason == "extracted" else "excluded")
+    recorded_pairs = {
+        (str(row.get("course_id")), str(row.get("roi_name"))): row
+        for row in ledger.roi_rows
+    }
     for task in tasks:
-        if (course_id, task.roi_name) not in {(row.get("course_id"), row.get("roi_name")) for row in ledger.roi_rows}:
+        if (course_id, task.roi_name) not in recorded_pairs:
             ledger.record_roi(course_id, patient_id, task.roi_name, reason_code="failed_radiomics_extraction", disposition="excluded")
+    recorded_pairs = {
+        (str(row.get("course_id")), str(row.get("roi_name"))): row
+        for row in ledger.roi_rows
+    }
+    task_names = {task.roi_name for task in tasks}
+    for item in applicability:
+        configured_name = str(item.roi_name)
+        ledger.expect_course_roi(course_id, configured_name)
+        if item.reason_code != "extracted":
+            ledger.record_roi(
+                course_id,
+                patient_id,
+                configured_name,
+                reason_code=item.reason_code,
+                disposition="excluded",
+                detail=item.detail,
+            )
+            continue
+        if configured_name in task_names:
+            continue
+        realized_name = next(
+            (
+                task.roi_name
+                for task in tasks
+                if _norm(task.roi_name)
+                in {_norm(configured_name), _norm(f"{configured_name}__partial")}
+            ),
+            None,
+        )
+        realized = recorded_pairs.get((course_id, realized_name or ""))
+        if realized is None:
+            # Keep the expectation unresolved. ensure_expected_pairs must expose a
+            # missing extraction task rather than accepting an invented disposition.
+            continue
+        reason = str(realized.get("reason_code") or "failed_radiomics_extraction")
+        ledger.record_roi(
+            course_id,
+            patient_id,
+            configured_name,
+            reason_code=reason,
+            disposition="extracted" if reason == "extracted" else "excluded",
+            detail=(
+                f"Configured ROI was realized as {realized_name!r}. {item.detail}"
+            ),
+        )
     ledger.record_course(course_id, patient_id, screened=True, in_scope=True, out_of_scope=False, adequate_coverage=bool(rows), insufficient_coverage=not bool(rows), valid_derivation=any(item.reason_code == "extracted" for item in applicability), technical_exclusion=technical, indeterminate=indeterminate or any(item.reason_code == "indeterminate_applicability" for item in applicability), extracted=extracted, reason_code="extracted" if extracted else ("indeterminate_applicability" if indeterminate else "failed_radiomics_extraction"))
     write_modality_ledger(Path(course_dir) / "metadata", ledger, "CT")
 
@@ -1017,7 +1062,13 @@ def parallel_radiomics_for_course(
                     rs_custom, configured_custom_path, rs_manual, rs_auto_for_custom
                 )
             )
-            if custom_is_stale:
+            if not desired_custom:
+                record_rs_custom_resume_decision(
+                    course_dir,
+                    "not_applicable",
+                    "no configured custom ROI was applicable to the contracted planning CT",
+                )
+            elif custom_is_stale:
                 custom_rebuild_attempted = True
                 from .custom_structures_rtstruct import _quarantine_rejected_rtstruct
 
