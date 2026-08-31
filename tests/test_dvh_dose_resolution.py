@@ -11,9 +11,16 @@ from rtpipeline.dvh import _resolve_dvh_dose, _resolve_dvh_structures
 from rtpipeline.layout import build_course_dirs
 from rtpipeline.organize import _classify_doses
 from rtpipeline.course_contract import (
+    COURSE_CONTRACT_VERSION,
     CourseContractError,
     build_dvh_decision,
     load_course_contract,
+)
+from rtpipeline.prescription import (
+    PRESCRIPTION_GROUP_FIELDS,
+    resolve_plan_prescriptions,
+    resolved_plan_total_gy,
+    source_plan_prescribed_dose_gy,
 )
 
 
@@ -53,9 +60,28 @@ def _mk_plan(
     ds.RTPlanDate = "20240101"
     ds.FrameOfReferenceUID = "1.2.826.0.1.3680043.8.498.1"
     dose_ref = Dataset()
+    dose_ref.DoseReferenceNumber = 1
+    dose_ref.DoseReferenceUID = generate_uid()
     dose_ref.DoseReferenceType = "TARGET"
     dose_ref.TargetPrescriptionDose = float(rx)
     ds.DoseReferenceSequence = Sequence([dose_ref])
+    fraction_group = Dataset()
+    fraction_group.FractionGroupNumber = 1
+    fraction_group.NumberOfFractionsPlanned = 35
+    fraction_group.NumberOfBeams = 1
+    beam_reference = Dataset()
+    beam_reference.ReferencedBeamNumber = 1
+    beam_reference.BeamDose = float(rx) / 35.0
+    beam_reference.BeamDoseType = "PHYSICAL"
+    binding = Dataset()
+    binding.ReferencedDoseReferenceUID = dose_ref.DoseReferenceUID
+    beam_reference.ReferencedDoseReferenceSequence = Sequence([binding])
+    fraction_group.ReferencedBeamSequence = Sequence([beam_reference])
+    ds.FractionGroupSequence = Sequence([fraction_group])
+    beam = Dataset()
+    beam.BeamNumber = 1
+    beam.TreatmentDeliveryType = "TREATMENT"
+    ds.BeamSequence = Sequence([beam])
     if rtstruct_uid:
         ref = Dataset()
         ref.ReferencedSOPClassUID = RTStructureSetStorage
@@ -121,13 +147,23 @@ def _write_contract(
     plan_entries = []
     selected_plan_uids = []
     for path in selected_plans:
-        uid = str(pydicom.dcmread(str(path), stop_before_pixels=True).SOPInstanceUID)
+        dataset = pydicom.dcmread(str(path), stop_before_pixels=True)
+        uid = str(dataset.SOPInstanceUID)
+        groups = resolve_plan_prescriptions(dataset)
+        group = groups[0] if len(groups) == 1 else None
         selected_plan_uids.append(uid)
         plan_entries.append(
             {
                 "sop_instance_uid": uid,
                 "path": rel(path),
                 "source_plan_uids": [uid],
+                "prescribed_dose_gy": source_plan_prescribed_dose_gy(groups),
+                "resolved_prescribed_dose_total_gy": resolved_plan_total_gy(groups),
+                "prescription_groups": groups,
+                **{
+                    field: group.get(field) if group else None
+                    for field in PRESCRIPTION_GROUP_FIELDS
+                },
                 "delivered_record_count": 0,
                 "delivered_fraction_count": 0,
                 "treatment_dates": [],
@@ -150,13 +186,22 @@ def _write_contract(
         )
     per_plan = []
     for path in candidate_plans or selected_plans:
-        uid = str(pydicom.dcmread(str(path), stop_before_pixels=True).SOPInstanceUID)
+        dataset = pydicom.dcmread(str(path), stop_before_pixels=True)
+        uid = str(dataset.SOPInstanceUID)
+        groups = resolve_plan_prescriptions(dataset)
+        group = groups[0] if len(groups) == 1 else None
         per_plan.append(
             {
                 "plan_path": rel(path),
                 "plan_sop_uid": uid,
-                "prescribed_dose_gy": 70.0,
-                "planned_fraction_count": None,
+                "prescribed_dose_gy": source_plan_prescribed_dose_gy(groups),
+                "resolved_prescribed_dose_total_gy": resolved_plan_total_gy(groups),
+                "planned_fraction_count": group.get("planned_fractions") if group else None,
+                "prescription_groups": groups,
+                **{
+                    field: group.get(field) if group else None
+                    for field in PRESCRIPTION_GROUP_FIELDS
+                },
                 "delivered_record_count": 0,
                 "delivered_fraction_count": 0,
                 "treatment_dates": [],
@@ -173,7 +218,7 @@ def _write_contract(
         "patient_id": course.parent.name,
         "course_id": course.name,
         "course_contract": {
-            "version": 1,
+            "version": COURSE_CONTRACT_VERSION,
             "authority": "organize",
             "patient_id": course.parent.name,
             "course_id": course.name,
@@ -192,7 +237,14 @@ def _write_contract(
                 "nifti_path": "",
             },
             "delivery": {
-                "prescribed_dose_gy": 70.0 if selected_plans else None,
+                "prescribed_dose_gy": (
+                    plan_entries[0]["prescribed_dose_gy"] if plan_entries else None
+                ),
+                "resolved_prescribed_dose_total_gy": (
+                    plan_entries[0]["resolved_prescribed_dose_total_gy"]
+                    if plan_entries
+                    else None
+                ),
                 "status": "no_records_at_all",
                 "method": None,
                 "delivered_dose_gy": None,
@@ -206,7 +258,10 @@ def _write_contract(
                 "selected_plan_uids": selected_plan_uids,
                 "per_plan": per_plan,
             },
-            "dose_classification": {"classification": dose_classification},
+            "dose_classification": {
+                "classification": dose_classification,
+                "should_sum": False,
+            },
             "dvh": build_dvh_decision(
                 len(plan_entries),
                 len(dose_entries),

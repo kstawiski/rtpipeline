@@ -88,14 +88,13 @@ def test_aggregation_excludes_a_contract_with_failed_dose_qc(tmp_path: Path) -> 
     payload["course_contract"]["delivery"].update(
         {
             "status": "no_records_at_all",
-            "prescribed_dose_gy": 105.0,
             "delivered_dose_gy": None,
         }
     )
     payload["course_contract"]["dose_qc"] = {
         "status": "fail",
         "pass": False,
-        "threshold_gy": 100.0,
+        "threshold_gy": 40.0,
         "reasons": ["implausible dose total"],
     }
     metadata.write_text(json.dumps(payload, indent=2), encoding="utf-8")
