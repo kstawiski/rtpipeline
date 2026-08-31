@@ -30,6 +30,7 @@ from . import nifti_provenance
 from .plan_profiles import is_private_plan_profile, plan_profile_name
 from .prescription import (
     PRESCRIPTION_GROUP_FIELDS,
+    aggregate_course_prescription_values,
     resolve_plan_prescriptions,
     resolved_plan_total_gy,
     source_plan_prescribed_dose_gy,
@@ -309,37 +310,31 @@ def resolved_plan_rx_total_gy(ds_plan: Dataset) -> float | None:
 
 
 def _infer_rx_from_plan_paths(plan_paths: List[Path], *, sum_all: bool = False) -> float | None:
-    values: list[float] = []
+    values: list[float | None] = []
     for plan_path in plan_paths:
         try:
             ds_plan = pydicom.dcmread(str(plan_path), stop_before_pixels=True)
         except Exception:
+            values.append(None)
             continue
         value = resolved_plan_rx_total_gy(ds_plan)
-        if value is not None and value > 0:
-            values.append(float(value))
-    if not values:
-        return None
-    if sum_all:
-        return float(sum(values))
-    return float(values[0])
+        values.append(float(value) if value is not None and value > 0 else None)
+    return aggregate_course_prescription_values(values, sum_all=sum_all)
 
 
 def _infer_source_rx_from_plan_paths(
     plan_paths: List[Path], *, sum_all: bool = False
 ) -> float | None:
-    values: list[float] = []
+    values: list[float | None] = []
     for plan_path in plan_paths:
         try:
             ds_plan = pydicom.dcmread(str(plan_path), stop_before_pixels=True)
         except Exception:
+            values.append(None)
             continue
         value = infer_plan_rx_gy(ds_plan)
-        if value is not None and value > 0:
-            values.append(float(value))
-    if not values:
-        return None
-    return float(sum(values)) if sum_all else float(values[0])
+        values.append(float(value) if value is not None and value > 0 else None)
+    return aggregate_course_prescription_values(values, sum_all=sum_all)
 
 
 def _summarize_reconstruction(ds: Dataset) -> str:
@@ -747,6 +742,7 @@ class DoseClassification:
     should_sum: bool
     warnings: List[str]
     reason: str
+    prescription_plans: List[Path] = field(default_factory=list)
 
 
 def _extract_dose_metadata(dose_path: Path) -> dict:
@@ -1624,9 +1620,86 @@ def _same_fraction_dose(left: dict, right: dict) -> bool:
     right_fx = int(right.get("fractions_planned") or 0)
     if left_fx <= 0 or right_fx <= 0:
         return False
-    left_dpf = float(left.get("total_rx_gy") or 0.0) / left_fx
-    right_dpf = float(right.get("total_rx_gy") or 0.0) / right_fx
+    def beam_dpf(item: dict) -> float:
+        value = item.get("beam_dose_sum_per_fraction_gy")
+        if value is None:
+            groups = item.get("prescription_groups") or []
+            if len(groups) == 1:
+                value = groups[0].get("beam_dose_sum_per_fraction_gy")
+        return float(value or 0.0)
+
+    left_dpf = beam_dpf(left)
+    right_dpf = beam_dpf(right)
+    if left_dpf <= 0:
+        left_dpf = float(left.get("total_rx_gy") or 0.0) / left_fx
+    if right_dpf <= 0:
+        right_dpf = float(right.get("total_rx_gy") or 0.0) / right_fx
     return left_dpf > 0 and abs(left_dpf - right_dpf) <= max(0.05, 0.02 * max(left_dpf, right_dpf))
+
+
+def _delivered_remainder_chain(
+    plans: List[dict], delivery: Dict[str, dict]
+) -> tuple[dict, List[dict], List[dict], int] | None:
+    """Find a likely delivered remainder or adaptation chain.
+
+    Full PLAN RTDOSE objects from such plans are not additive.  The earlier
+    grid represents the whole intended plan, while later grids represent a
+    delivered remainder or adaptation. Treatment-date order and RTRECORD
+    session counts provide the discriminator. A conservative ``< 0.60`` delivery
+    ratio keeps the observed approximately 80 percent early-stop phases additive
+    while flagging the approximately 50 percent plan-chain pattern. Beam-dose
+    equality is used only to partition a delivery-flagged chain into a remainder
+    and any independent phase. It is never sufficient by itself to collapse plans.
+    """
+
+    def evidence(plan: dict) -> tuple[set[str], int, int]:
+        row = delivery.get(str(plan.get("sop_uid") or ""), {})
+        dates = set(row.get("dates", set()))
+        delivered = len(row.get("sessions", set()))
+        planned = int(plan.get("fractions_planned") or 0)
+        return dates, delivered, planned
+
+    supported = [plan for plan in plans if evidence(plan)[1] > 0]
+    if len(supported) < 2:
+        return None
+    planned_total = sum(evidence(plan)[2] for plan in supported)
+    delivered_total = sum(evidence(plan)[1] for plan in supported)
+    if planned_total <= 0 or delivered_total <= 0 or delivered_total / planned_total >= 0.60:
+        return None
+    anchor = max(
+        supported,
+        key=lambda plan: (
+            evidence(plan)[2],
+            min(evidence(plan)[0]) if evidence(plan)[0] else "",
+            str(plan.get("sop_uid") or ""),
+        ),
+    )
+    anchor_dates, anchor_delivered, anchor_planned = evidence(anchor)
+    if anchor_planned <= 0 or anchor_delivered >= anchor_planned:
+        return None
+    later = [plan for plan in supported if plan is not anchor]
+    if not later:
+        return None
+    replacement_plans: List[dict] = []
+    independent_phases: List[dict] = []
+    represented_fractions = anchor_delivered
+    for plan in sorted(later, key=lambda item: str(item.get("sop_uid") or "")):
+        planned = evidence(plan)[2]
+        if (
+            _same_fraction_dose(plan, anchor)
+            and represented_fractions + planned <= anchor_planned
+        ):
+            replacement_plans.append(plan)
+            represented_fractions += planned
+        else:
+            independent_phases.append(plan)
+    if replacement_plans:
+        return anchor, later, [anchor] + independent_phases, represented_fractions
+    if represented_fractions + sum(
+        evidence(plan)[2] for plan in independent_phases
+    ) <= anchor_planned:
+        return anchor, later, [], represented_fractions
+    return None
 
 
 def _replacement_partition(plans: List[dict]) -> tuple[int, tuple[int, ...]] | None:
@@ -1687,6 +1760,8 @@ def _classify_doses(
     delivery = _record_delivery_evidence(record_paths)
 
     plan_sum_doses = [meta for meta in dose_meta if meta["summation_type"] == "PLAN_SUM"]
+    remainder_chain = None
+    prescription_components: List[dict] = []
     if plan_sum_doses:
         best_sum = max(
             plan_sum_doses,
@@ -1939,29 +2014,36 @@ def _classify_doses(
         )
     else:
         def plan_dates(plan: dict) -> set[str]:
-            return set(delivery.get(str(plan.get("sop_uid") or ""), {}).get("dates", set()))
+            return set(
+                delivery.get(str(plan.get("sop_uid") or ""), {}).get("dates", set())
+            )
 
         def plan_records(plan: dict) -> set[str]:
             return set(delivery.get(str(plan.get("sop_uid") or ""), {}).get("instances", set()))
 
         supported_candidates = [plan for plan in representatives if plan_records(plan)]
+        remainder_chain = _delivered_remainder_chain(
+            supported_candidates,
+            delivery,
+        )
         supported: List[dict] = []
-        for plan in supported_candidates:
-            dates = plan_dates(plan)
-            covering = next(
-                (
-                    other
-                    for other in supported_candidates
-                    if other is not plan and dates and dates < plan_dates(other)
-                ),
-                None,
-            )
-            if covering is not None:
-                warnings.append(
-                    f"Excluded plan {plan.get('sop_uid')} because its treatment dates are a strict subset of plan {covering.get('sop_uid')}"
+        if remainder_chain is None:
+            for plan in supported_candidates:
+                dates = plan_dates(plan)
+                covering = next(
+                    (
+                        other
+                        for other in supported_candidates
+                        if other is not plan and dates and dates < plan_dates(other)
+                    ),
+                    None,
                 )
-            else:
-                supported.append(plan)
+                if covering is not None:
+                    warnings.append(
+                        f"Excluded plan {plan.get('sop_uid')} because its treatment dates are a strict subset of plan {covering.get('sop_uid')}"
+                    )
+                else:
+                    supported.append(plan)
 
         largest = max(
             representatives,
@@ -1971,7 +2053,18 @@ def _classify_doses(
                 str(plan.get("sop_uid") or ""),
             ),
         )
-        if supported:
+        if remainder_chain is not None:
+            anchor, later, prescription_components, represented_fractions = remainder_chain
+            selected_representatives = list(supported_candidates)
+            classification = "replacement_plan_chain"
+            should_sum = False
+            warnings.append(
+                "Did not sum PLAN RTDOSE objects because delivered remainder "
+                f"plans {[str(plan.get('sop_uid') or '') for plan in later]} fit "
+                f"within unfinished plan {anchor.get('sop_uid')} "
+                f"({represented_fractions}/{int(anchor.get('fractions_planned') or 0)} fractions)"
+            )
+        elif supported:
             selected_representatives = list(supported)
             for plan in representatives:
                 if plan in supported or plan in supported_candidates:
@@ -2010,7 +2103,14 @@ def _classify_doses(
             should_sum = True
 
     selected_plans = [plan["path"] for plan in selected_representatives]
-    selected_doses = [dose_for_plan[str(plan["sop_uid"])]["path"] for plan in selected_representatives]
+    selected_doses = (
+        []
+        if classification == "replacement_plan_chain"
+        else [
+            dose_for_plan[str(plan["sop_uid"])]["path"]
+            for plan in selected_representatives
+        ]
+    )
     selected_dose_set = set(selected_doses)
     excluded_doses = [
         dose_for_plan[str(plan["sop_uid"])]["path"]
@@ -2035,9 +2135,18 @@ def _classify_doses(
         should_sum=should_sum,
         warnings=warnings,
         reason=(
+            "Delivered plans form a non-additive remainder or adaptation chain; "
+            "plan membership is retained without an authoritative summed dose grid"
+            if classification == "replacement_plan_chain"
+            else
             "Distinct prescription phases remain after revision and replacement-plan de-duplication"
             if should_sum
             else "One delivered course-total prescription selected"
+        ),
+        prescription_plans=(
+            [plan["path"] for plan in prescription_components]
+            if remainder_chain is not None
+            else []
         ),
     )
 
@@ -3446,6 +3555,10 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
                 "excluded_doses": [str(p) for p in dose_classification.excluded_doses],
                 "should_sum": dose_classification.should_sum,
                 "warnings": dose_classification.warnings,
+                "prescription_plan_uids": [
+                    str(_plan_evidence(path).get("sop_uid") or "")
+                    for path in dose_classification.prescription_plans
+                ],
             }
 
             selected_doses = list(dose_classification.selected_doses)
@@ -3470,14 +3583,40 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
                 sum_selected = bool(
                     dose_classification.should_sum and len(selected_doses) > 1
                 )
+                prescription_plans = list(
+                    dose_classification.prescription_plans or selected_plans
+                )
+                prescription_sum = sum_selected
+                if dose_classification.classification == "replacement_plan_chain":
+                    prescription_sum = len(prescription_plans) > 1
+                    if not dose_classification.prescription_plans:
+                        prescription_plans = []
                 source_rx = _infer_source_rx_from_plan_paths(
-                    selected_plans,
-                    sum_all=sum_selected,
+                    prescription_plans,
+                    sum_all=prescription_sum,
                 )
                 total_rx = _infer_rx_from_plan_paths(
-                    selected_plans,
-                    sum_all=sum_selected,
+                    prescription_plans,
+                    sum_all=prescription_sum,
                 )
+                if dose_classification.classification == "replacement_plan_chain" and not prescription_plans:
+                    # The selected plans are delivered membership, but their full
+                    # PLAN doses and plan-level prescription values are not
+                    # additive across a remainder/adaptation chain.
+                    source_rx = None
+                    total_rx = None
+                if dose_classification.classification == "replacement_plan_chain" and not prescription_plans:
+                    prescription_scope = "UNRESOLVED_REPLACEMENT_CHAIN"
+                elif total_rx is None:
+                    prescription_scope = "UNRESOLVED_COMPONENT"
+                elif (
+                    dose_classification.classification == "replacement_plan_chain"
+                    and len(prescription_plans) > 1
+                ) or (sum_selected):
+                    prescription_scope = "COURSE_TOTAL_SUMMED"
+                else:
+                    prescription_scope = "SINGLE_PLAN_TOTAL"
+                dose_classification_info["prescribed_dose_scope"] = prescription_scope
             delivery_plan_paths = list(selected_plans)
             delivery_dose_paths = list(selected_doses)
 
@@ -3536,15 +3675,31 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
                     plan_sop_uid = str(plan_sum_ds.SOPInstanceUID)
 
             else:
-                # Keep one plan artifact for treatment intent, but do not call it
-                # delivered membership and do not emit an RTDOSE grid.
-                logger.warning("No delivered doses selected after classification for %s/%s", patient_id, course_id)
+                # Keep the classifier's delivered plan membership, but do not
+                # fabricate an additive RTDOSE grid.  A single encompassing plan
+                # is retained only as the root treatment-intent artifact.
+                logger.warning(
+                    "No additive delivered dose grid selected after classification for %s/%s",
+                    patient_id,
+                    course_id,
+                )
                 if rd_dst.exists():
                     rd_dst.unlink()
-                if plan_paths:
-                    intent_plan = _earliest_dated_plan_path(items_sorted, plan_paths)
-                    selected_plans = [intent_plan]
-                    delivery_plan_paths = [intent_plan]
+                intent_candidates = list(selected_plans or plan_paths)
+                if intent_candidates:
+                    if not selected_plans:
+                        intent_plan = _earliest_dated_plan_path(items_sorted, plan_paths)
+                        selected_plans = [intent_plan]
+                        delivery_plan_paths = [intent_plan]
+                    else:
+                        intent_plan = max(
+                            intent_candidates,
+                            key=lambda path: (
+                                int(_plan_evidence(path).get("fractions_planned") or 0),
+                                float(_plan_evidence(path).get("total_rx_gy") or 0.0),
+                                str(path),
+                            ),
+                        )
                     delivery_dose_paths = []
                     _safe_copy(intent_plan, rp_dst, copy_manager=copy_manager)
                     try:
@@ -4960,6 +5115,21 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
                     "source_dose_uids": selected_dose_uids,
                     "source_dose_summation_types": selected_dose_types,
                 }
+            prescribed_dose_scope = str(
+                co.dose_classification.get("prescribed_dose_scope") or ""
+            )
+            if not prescribed_dose_scope:
+                if resolved_prescribed_dose_total_gy is None:
+                    prescribed_dose_scope = "UNRESOLVED_COMPONENT"
+                elif co.dose_classification.get("should_sum") and len(selected_plan_contract) > 1:
+                    prescribed_dose_scope = "COURSE_TOTAL_SUMMED"
+                else:
+                    prescribed_dose_scope = "SINGLE_PLAN_TOTAL"
+            if prescribed_dose_scope.startswith("UNRESOLVED_"):
+                # Retain each plan's raw prescription in selected_plans, but
+                # do not publish a misleading course-level scalar when the
+                # additive total is not resolved.
+                prescribed_dose_gy = None
             nifti_provenance = None
             if co.primary_nifti and Path(co.primary_nifti).is_file():
                 nifti_path = Path(co.primary_nifti)
@@ -5051,11 +5221,13 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
                 ),
                 "delivery": {
                     "prescribed_dose_gy": prescribed_dose_gy,
+                    "prescribed_dose_scope": prescribed_dose_scope,
                     "resolved_prescribed_dose_total_gy": resolved_prescribed_dose_total_gy,
                     "delivered_dose_gy": co.delivered_dose_gy,
                     "status": co.delivery_status,
                     "method": co.delivery_method,
                     "dose_response_field": DOSE_RESPONSE_FIELD,
+                    "dose_response_eligible": not prescribed_dose_scope.startswith("UNRESOLVED_"),
                     "per_plan": per_plan_delivery_contract,
                     "warnings": co.delivery_warnings,
                     "unresolved_record_plan_uids": co.unresolved_record_plan_uids,
@@ -5090,7 +5262,9 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
                 "beam_energies": beam_energies,
                 "treatment_machine": machine_name,
                 "total_prescription_gy": prescribed_dose_gy,
+                "prescribed_dose_scope": prescribed_dose_scope,
                 "resolved_prescribed_dose_total_gy": resolved_prescribed_dose_total_gy,
+                "dose_response_eligible": not prescribed_dose_scope.startswith("UNRESOLVED_"),
                 "delivered_dose_gy": co.delivered_dose_gy,
                 "delivery_status": co.delivery_status,
                 "delivery_method": co.delivery_method,

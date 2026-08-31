@@ -7,6 +7,7 @@ from pydicom.dataset import Dataset
 from pydicom.sequence import Sequence
 
 from rtpipeline.prescription import (
+    aggregate_course_prescription_values,
     classify_prescription_scope,
     resolve_plan_prescriptions,
     within_five_percent,
@@ -211,6 +212,21 @@ def test_multi_fraction_classification_matrix(
     assert row["resolved_prescribed_dose_total_gy"] == expected_total
 
 
+@pytest.mark.parametrize(
+    ("source", "fractions", "beam_sum", "expected_total"),
+    [("2.05062909389991", 25, "2.0", 50.0), ("21.0070463739149", 10, "2.0", 20.0)],
+)
+def test_resolved_total_uses_beamdose_not_computed_reference_point_value(
+    source, fractions, beam_sum, expected_total
+):
+    row = classify_prescription_scope(source, fractions, beam_sum)
+
+    assert row["resolved_prescribed_dose_total_gy"] == pytest.approx(expected_total)
+    assert row["resolved_prescribed_dose_per_fraction_gy"] == pytest.approx(
+        expected_total / fractions
+    )
+
+
 def test_multi_fraction_both_match_matrix_branch_is_fail_closed(monkeypatch):
     # This branch is mathematically unreachable for positive Rx, integer fx > 1,
     # and a 5% relative tolerance. Keep the specified defensive branch covered.
@@ -281,6 +297,83 @@ def test_measured_dfci_per_fraction_cases_resolve_to_expected_totals(
     assert row["source_prescribed_dose_gy"] == pytest.approx(float(source))
     assert row["prescription_resolution_status"] == "PER_FRACTION_CONFIRMED"
     assert row["resolved_prescribed_dose_total_gy"] == pytest.approx(expected_total)
+
+
+def test_dfci_zphys_calculation_point_does_not_replace_site_prescription():
+    """10149603697 carries a computed zPhys point beside the nominal SITE target."""
+    plan = _plan(
+        source_rx="2.0",
+        fractions=25,
+        beams=[("TREATMENT", "2.0", "PHYSICAL")],
+    )
+    nominal = plan.DoseReferenceSequence[0]
+    nominal.DoseReferenceStructureType = "SITE"
+    calculated = Dataset()
+    calculated.DoseReferenceNumber = 2
+    calculated.DoseReferenceUID = "1.2.3.5"
+    calculated.DoseReferenceType = "TARGET"
+    calculated.DoseReferenceStructureType = "COORDINATES"
+    calculated.DoseReferenceDescription = "zphysC1A1pelvism"
+    calculated.DoseReferencePointCoordinates = [-6.87, -10.08, 32.61]
+    calculated.TargetPrescriptionDose = "2.05062909389991"
+    plan.DoseReferenceSequence = Sequence([calculated, nominal])
+
+    row = _resolution(plan)
+
+    assert row["source_dose_reference_number"] == "1"
+    assert row["source_dose_reference_structure_type"] == "SITE"
+    assert row["source_prescribed_dose_gy"] == pytest.approx(2.0)
+    assert row["prescription_resolution_status"] == "PER_FRACTION_CONFIRMED"
+    assert row["resolved_prescribed_dose_total_gy"] == pytest.approx(50.0)
+
+
+def test_dfci_zphys_only_target_disagreement_remains_unresolved():
+    """10130236267's 47.42 Gy coordinate target disagrees with 45 Gy BeamDose."""
+    plan = _plan(
+        source_rx="47.4194410847676",
+        fractions=25,
+        beams=[("TREATMENT", "1.8", "PHYSICAL")],
+    )
+    target = plan.DoseReferenceSequence[0]
+    target.DoseReferenceStructureType = "COORDINATES"
+    target.DoseReferenceDescription = "zPhysC1A1"
+    target.DoseReferencePointCoordinates = [-1.4, -49.12, -41.4]
+
+    row = _resolution(plan)
+
+    assert row["source_prescribed_dose_gy"] == pytest.approx(47.4194410847676)
+    assert row["source_dose_reference_structure_type"] == "COORDINATES"
+    assert row["source_dose_reference_description"] == "zPhysC1A1"
+    assert row["prescription_resolution_status"] == "UNRESOLVED_NO_MATCH"
+    assert row["prescribed_dose_scope"] == "UNRESOLVED"
+    assert row["resolved_prescribed_dose_total_gy"] is None
+
+
+def test_non_zphys_coordinate_prescription_remains_eligible():
+    """Kopernik coordinate targets are not the DFCI zPhys exporter convention."""
+    plan = _plan(
+        source_rx="50",
+        fractions=25,
+        beams=[("TREATMENT", "2", "PHYSICAL")],
+    )
+    target = plan.DoseReferenceSequence[0]
+    target.DoseReferenceStructureType = "COORDINATES"
+    target.DoseReferenceDescription = "PTV 1"
+    target.DoseReferencePointCoordinates = [-31.0, -213.9, 34.0]
+
+    row = _resolution(plan)
+
+    assert row["source_prescribed_dose_gy"] == pytest.approx(50.0)
+    assert row["prescription_resolution_status"] == "TOTAL_CONFIRMED"
+
+
+def test_additive_course_prescription_propagates_any_unresolved_component():
+    assert aggregate_course_prescription_values(
+        [50.0, 12.0, None], sum_all=True
+    ) is None
+    assert aggregate_course_prescription_values(
+        [50.0, 12.0, 32.0], sum_all=True
+    ) == pytest.approx(94.0)
 
 
 @pytest.mark.parametrize(

@@ -835,6 +835,213 @@ def test_genuine_sequential_boost_with_records_on_both_phases_sums(tmp_path: Pat
     assert classified.should_sum
 
 
+def test_delivered_remainder_replan_does_not_sum_full_plan_doses(tmp_path: Path) -> None:
+    """10102925269 used 2 fractions of a 20-fraction plan, then a 17-fraction replan."""
+    struct_uid = generate_uid()
+    study_uid = generate_uid()
+    frame_uid = generate_uid()
+    plan_uids = [generate_uid(), generate_uid()]
+    plans = [
+        _mk_plan(
+            tmp_path / "course_total.dcm",
+            plan_uids[0],
+            struct_uid=struct_uid,
+            study_uid=study_uid,
+            frame_uid=frame_uid,
+            date="20250925",
+            rx_gy=55.0,
+            fractions=20,
+            label="course total",
+        ),
+        _mk_plan(
+            tmp_path / "remainder.dcm",
+            plan_uids[1],
+            struct_uid=struct_uid,
+            study_uid=study_uid,
+            frame_uid=frame_uid,
+            date="20251008",
+            rx_gy=46.75,
+            fractions=17,
+            label="remainder",
+        ),
+    ]
+    doses = [
+        _mk_dose(
+            tmp_path / f"dose_{index}.dcm",
+            generate_uid(),
+            plan_uid=uid,
+            study_uid=study_uid,
+            frame_uid=frame_uid,
+        )
+        for index, uid in enumerate(plan_uids)
+    ]
+    records = _treatment_records(tmp_path, "initial", plan_uids[0], 2)
+    records += _treatment_records(
+        tmp_path,
+        "remainder",
+        plan_uids[1],
+        17,
+        start=date(2024, 1, 1),
+    )
+
+    classified = org._classify_doses(
+        plans,
+        doses,
+        treatment_record_paths=records,
+    )
+
+    assert classified.classification == "replacement_plan_chain"
+    assert classified.selected_plans == plans
+    assert classified.selected_doses == []
+    assert set(classified.excluded_doses) == set(doses)
+    assert classified.should_sum is False
+    assert classified.prescription_plans == [plans[0]]
+
+
+def test_remainder_chain_keeps_independent_boost_in_prescription_scope(
+    tmp_path: Path,
+) -> None:
+    """10149603697 has a 16-fraction remainder and an independent 3-fraction boost."""
+    struct_uid = generate_uid()
+    study_uid = generate_uid()
+    frame_uid = generate_uid()
+    plan_uids = [generate_uid() for _ in range(3)]
+    plans = [
+        _mk_plan(
+            tmp_path / "initial.dcm",
+            plan_uids[0],
+            struct_uid=struct_uid,
+            study_uid=study_uid,
+            frame_uid=frame_uid,
+            date="20220531",
+            rx_gy=50.0,
+            fractions=25,
+            label="A1 pelvis",
+        ),
+        _mk_plan(
+            tmp_path / "remainder.dcm",
+            plan_uids[1],
+            struct_uid=struct_uid,
+            study_uid=study_uid,
+            frame_uid=frame_uid,
+            date="20220601",
+            rx_gy=32.0,
+            fractions=16,
+            label="A1 pelvis:1",
+        ),
+        _mk_plan(
+            tmp_path / "boost.dcm",
+            plan_uids[2],
+            struct_uid=struct_uid,
+            study_uid=study_uid,
+            frame_uid=frame_uid,
+            date="20220608",
+            rx_gy=12.0,
+            fractions=3,
+            label="A2 pelvis",
+        ),
+    ]
+    doses = [
+        _mk_dose(
+            tmp_path / f"dose_{index}.dcm",
+            generate_uid(),
+            plan_uid=uid,
+            study_uid=study_uid,
+            frame_uid=frame_uid,
+        )
+        for index, uid in enumerate(plan_uids)
+    ]
+    records = _treatment_records(tmp_path, "initial", plan_uids[0], 1)
+    records += _treatment_records(
+        tmp_path,
+        "remainder",
+        plan_uids[1],
+        16,
+        start=date(2022, 6, 1),
+    )
+    records += _treatment_records(
+        tmp_path,
+        "boost",
+        plan_uids[2],
+        3,
+        start=date(2022, 6, 8),
+    )
+
+    classified = org._classify_doses(
+        plans,
+        doses,
+        treatment_record_paths=records,
+    )
+
+    assert classified.classification == "replacement_plan_chain"
+    assert classified.selected_plans == plans
+    assert classified.selected_doses == []
+    assert classified.prescription_plans == [plans[0], plans[2]]
+    assert classified.should_sum is False
+
+
+def test_eighty_percent_overlapping_phases_remain_additive(
+    tmp_path: Path,
+) -> None:
+    struct_uid = generate_uid()
+    study_uid = generate_uid()
+    frame_uid = generate_uid()
+    plan_uids = [generate_uid(), generate_uid()]
+    plans = [
+        _mk_plan(
+            tmp_path / "initial_12.dcm",
+            plan_uids[0],
+            struct_uid=struct_uid,
+            study_uid=study_uid,
+            frame_uid=frame_uid,
+            date="20200330",
+            rx_gy=36.0,
+            fractions=12,
+            label="initial",
+        ),
+        _mk_plan(
+            tmp_path / "remaining_3.dcm",
+            plan_uids[1],
+            struct_uid=struct_uid,
+            study_uid=study_uid,
+            frame_uid=frame_uid,
+            date="20200428",
+            rx_gy=9.0,
+            fractions=3,
+            label="remaining",
+        ),
+    ]
+    doses = [
+        _mk_dose(
+            tmp_path / f"overlap_dose_{index}.dcm",
+            generate_uid(),
+            plan_uid=uid,
+            study_uid=study_uid,
+            frame_uid=frame_uid,
+        )
+        for index, uid in enumerate(plan_uids)
+    ]
+    records = _treatment_records(tmp_path, "initial_overlap", plan_uids[0], 9)
+    records += _treatment_records(
+        tmp_path,
+        "remainder_overlap",
+        plan_uids[1],
+        3,
+        start=date(2024, 1, 9),
+    )
+
+    classified = org._classify_doses(
+        plans,
+        doses,
+        treatment_record_paths=records,
+    )
+
+    assert classified.classification == "sequential_phases_summed"
+    assert classified.selected_plans == plans
+    assert classified.selected_doses == doses
+    assert classified.should_sum is True
+
+
 def test_plan_sum_containing_an_undelivered_phase_is_rejected(tmp_path: Path) -> None:
     struct_uid = generate_uid()
     study_uid = generate_uid()

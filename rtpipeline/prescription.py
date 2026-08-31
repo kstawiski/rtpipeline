@@ -18,6 +18,8 @@ PRESCRIPTION_GROUP_FIELDS = (
     "source_prescribed_dose_tag_path",
     "source_dose_reference_number",
     "source_dose_reference_uid",
+    "source_dose_reference_structure_type",
+    "source_dose_reference_description",
     "fraction_group_number",
     "planned_fractions",
     "beam_dose_sum_per_fraction_gy",
@@ -82,6 +84,14 @@ def _target_references(ds_plan: Dataset) -> list[dict[str, Any]]:
                 "source": source,
                 "number": _text(getattr(item, "DoseReferenceNumber", None)) or None,
                 "uid": _text(getattr(item, "DoseReferenceUID", None)) or None,
+                "structure_type": _text(
+                    getattr(item, "DoseReferenceStructureType", None)
+                ).upper()
+                or None,
+                "description": _text(
+                    getattr(item, "DoseReferenceDescription", None)
+                )
+                or None,
                 "tag_path": f"DoseReferenceSequence[{index}].TargetPrescriptionDose",
             }
         )
@@ -130,13 +140,39 @@ def contracted_source_prescription(
             "uid": None,
             "tag_path": "course_contract.selected_plans[].prescribed_dose_gy",
         }
-    return references[0] if references else None
+    if not references:
+        return None
+    # When a plan carries both a SITE target and a coordinate dose point,
+    # retain the nominal SITE prescription as the source.  Coordinate-only
+    # plans remain eligible.  This is a target-selection rule, not a claim
+    # that DoseReferenceStructureType alone defines temporal dose scope.
+    site_references = [
+        reference
+        for reference in references
+        if reference.get("structure_type") == "SITE"
+    ]
+    return site_references[0] if site_references else references[0]
 
 
 def within_five_percent(candidate: Decimal, source: Decimal) -> bool:
     if not candidate.is_finite() or not source.is_finite() or source <= 0:
         return False
     return abs(candidate - source) <= PRESCRIPTION_TOLERANCE * abs(source)
+
+
+def aggregate_course_prescription_values(
+    values: list[float | None], *, sum_all: bool
+) -> float | None:
+    """Aggregate plan values without silently dropping additive components."""
+
+    if not values:
+        return None
+    if not sum_all:
+        first = values[0]
+        return float(first) if first is not None else None
+    if any(value is None for value in values):
+        return None
+    return float(sum(float(value) for value in values if value is not None))
 
 
 def classify_prescription_scope(
@@ -190,8 +226,8 @@ def classify_prescription_scope(
         return {
             **base,
             "prescribed_dose_scope": "INDETERMINATE_SINGLE_FRACTION",
-            "resolved_prescribed_dose_per_fraction_gy": _json_number(source),
-            "resolved_prescribed_dose_total_gy": _json_number(source),
+            "resolved_prescribed_dose_per_fraction_gy": _json_number(beam_sum),
+            "resolved_prescribed_dose_total_gy": _json_number(beam_sum),
             "prescription_resolution_method": "BEAMDOSE_SINGLE_FRACTION_EQUIVALENT_V1",
             "prescription_resolution_status": "INDETERMINATE_SINGLE_FRACTION",
         }
@@ -200,8 +236,8 @@ def classify_prescription_scope(
         return {
             **base,
             "prescribed_dose_scope": "TOTAL",
-            "resolved_prescribed_dose_per_fraction_gy": _json_number(source / Decimal(fractions)),
-            "resolved_prescribed_dose_total_gy": _json_number(source),
+            "resolved_prescribed_dose_per_fraction_gy": _json_number(beam_sum),
+            "resolved_prescribed_dose_total_gy": _json_number(beam_sum * Decimal(fractions)),
             "prescription_resolution_method": "BEAMDOSE_TOTAL_5PCT_V1",
             "prescription_resolution_status": "TOTAL_CONFIRMED",
         }
@@ -209,8 +245,8 @@ def classify_prescription_scope(
         return {
             **base,
             "prescribed_dose_scope": "PER_FRACTION",
-            "resolved_prescribed_dose_per_fraction_gy": _json_number(source),
-            "resolved_prescribed_dose_total_gy": _json_number(source * Decimal(fractions)),
+            "resolved_prescribed_dose_per_fraction_gy": _json_number(beam_sum),
+            "resolved_prescribed_dose_total_gy": _json_number(beam_sum * Decimal(fractions)),
             "prescription_resolution_method": "BEAMDOSE_PER_FRACTION_5PCT_V1",
             "prescription_resolution_status": "PER_FRACTION_CONFIRMED",
         }
@@ -364,6 +400,12 @@ def _unresolved_group(
         "source_prescribed_dose_tag_path": source["tag_path"] if source else None,
         "source_dose_reference_number": source["number"] if source else None,
         "source_dose_reference_uid": source["uid"] if source else None,
+        "source_dose_reference_structure_type": (
+            source.get("structure_type") if source else None
+        ),
+        "source_dose_reference_description": (
+            source.get("description") if source else None
+        ),
         "fraction_group_number": fraction_group_number,
         "planned_fractions": planned_fractions,
         "beam_dose_sum_per_fraction_gy": None,
@@ -506,6 +548,12 @@ def resolve_plan_prescriptions(
                 "source_prescribed_dose_tag_path": group_source["tag_path"],
                 "source_dose_reference_number": group_source["number"],
                 "source_dose_reference_uid": group_source["uid"],
+                "source_dose_reference_structure_type": group_source.get(
+                    "structure_type"
+                ),
+                "source_dose_reference_description": group_source.get(
+                    "description"
+                ),
                 "fraction_group_number": fraction_group_number,
                 "planned_fractions": planned_fractions,
                 "beam_dose_sum_per_fraction_gy": (
