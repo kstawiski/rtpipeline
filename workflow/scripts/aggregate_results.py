@@ -1,7 +1,5 @@
 """Delegate cohort aggregation to the dependency-bearing pipeline interpreter."""
 
-from __future__ import annotations
-
 import json
 import os
 import sys
