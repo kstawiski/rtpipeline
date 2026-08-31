@@ -17,6 +17,9 @@ CAMPAIGN_MODE = bool(getattr(snakemake.params, "campaign_mode", False))  # type:
 CAMPAIGN_MIN_COMPLETION_FRACTION = float(
     getattr(snakemake.params, "campaign_min_completion_fraction", 0.5)  # type: ignore[name-defined]
 )
+CAMPAIGN_REQUIRE_ALL_COURSES = bool(
+    getattr(snakemake.params, "campaign_require_all_courses", False)  # type: ignore[name-defined]
+)
 WORKER_BUDGET = max(1, int(snakemake.params.worker_budget))  # type: ignore[name-defined]
 AUTO_WORKER_BUDGET = max(1, int(snakemake.params.auto_worker_budget))  # type: ignore[name-defined]
 aggregation_threads_value = int(snakemake.params.aggregation_threads)  # type: ignore[name-defined]
@@ -60,7 +63,86 @@ def _manifest_courses():
             )
         seen.add(key)
         courses.append((patient_id, course_id, OUTPUT_DIR / patient_id / course_id))
-    return courses
+    if payload.get("schema") == "rtpipeline-organized-course-manifest-v2":
+        quarantine_entries = payload.get("technical_quarantines")
+        if not isinstance(quarantine_entries, list):
+            raise RuntimeError(
+                "Course manifest is malformed: technical_quarantines must be a list"
+            )
+        try:
+            attempted = int(payload["attempted_course_count"])
+            intended = int(payload["intended_course_count"])
+            validated = int(payload["validated_course_count"])
+            quarantined = int(payload["technical_quarantine_count"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise RuntimeError(
+                "Course manifest is malformed: organize denominator fields are invalid"
+            ) from exc
+        if intended != attempted:
+            raise RuntimeError(
+                "Course manifest is malformed: intended and attempted course counts disagree"
+            )
+        if validated != len(courses):
+            raise RuntimeError(
+                "Course manifest is malformed: validated count does not match courses"
+            )
+        if quarantined != len(quarantine_entries):
+            raise RuntimeError(
+                "Course manifest is malformed: technical quarantine count does not match records"
+            )
+        if attempted != validated + quarantined:
+            raise RuntimeError(
+                "Course manifest is malformed: attempted count does not reconcile with "
+                "validated and technically quarantined courses"
+            )
+        quarantine_ids = set()
+        for index, entry in enumerate(quarantine_entries, start=1):
+            if not isinstance(entry, dict):
+                raise RuntimeError(
+                    f"Course manifest is malformed: technical quarantine {index} is not a mapping"
+                )
+            patient_id = str(entry.get("patient") or "").strip()
+            course_id = str(entry.get("course") or "").strip()
+            reason = str(entry.get("reason") or "").strip()
+            if not patient_id or not course_id or not reason:
+                raise RuntimeError(
+                    f"Course manifest is malformed: technical quarantine {index} lacks "
+                    "patient, course, or exact reason"
+                )
+            if (
+                entry.get("disposition_type") != "technical_quarantine"
+                or entry.get("clinical_exclusion") is not False
+            ):
+                raise RuntimeError(
+                    f"Course manifest is malformed: technical quarantine {index} "
+                    "is not explicitly separated from clinical exclusion"
+                )
+            key = (patient_id, course_id)
+            if key in seen or key in quarantine_ids:
+                raise RuntimeError(
+                    f"Course manifest is malformed: duplicate disposition for "
+                    f"{patient_id}/{course_id}"
+                )
+            quarantine_ids.add(key)
+        cohort = {
+            "intended_course_count": intended,
+            "attempted_course_count": attempted,
+            "validated_course_count": validated,
+            "technical_quarantine_count": quarantined,
+            "technical_quarantines": quarantine_entries,
+        }
+    else:
+        # Legacy manifests did not carry an organize denominator. The current
+        # writer always emits v2, but retain deterministic compatibility for
+        # historical unit artifacts by treating their explicit list as intended.
+        cohort = {
+            "intended_course_count": len(courses),
+            "attempted_course_count": len(courses),
+            "validated_course_count": len(courses),
+            "technical_quarantine_count": 0,
+            "technical_quarantines": [],
+        }
+    return courses, cohort
 
 
 def _read_prefer_parquet(xlsx_path: Path) -> pd.DataFrame | None:
@@ -347,7 +429,9 @@ def _write_radiomics_denominator_aggregate(courses) -> None:
     destination.write_text(json.dumps(output, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8")
 
 
-def _write_campaign_attrition(courses, incomplete, expected_noncomputed) -> None:
+def _write_campaign_attrition(
+    courses, incomplete, expected_noncomputed, technical_quarantines=()
+) -> None:
     """Record why each course was excluded, so the denominator is defensible."""
     rows = []
     for patient_id, course_id, _ in courses:
@@ -372,7 +456,36 @@ def _write_campaign_attrition(courses, incomplete, expected_noncomputed) -> None
                 "reasons": " | ".join(reasons),
             }
         )
+    for entry in technical_quarantines:
+        rows.append(
+            {
+                "patient_id": entry["patient"],
+                "course_id": entry["course"],
+                "status": "technical_quarantine",
+                "reason_count": 1,
+                "reasons": entry["reason"],
+                "disposition_type": "technical_quarantine",
+                "clinical_exclusion": False,
+            }
+        )
     pd.DataFrame(rows).to_csv(RESULTS_DIR / "campaign_attrition.csv", index=False)
+
+
+def _write_organization_gate(cohort: dict, *, blocked: bool, reason: str) -> Path:
+    payload = dict(cohort)
+    payload.update(
+        {
+            "gate": "pre_scientific_aggregation",
+            "status": "blocked" if blocked else "passed",
+            "campaign_require_all_courses": CAMPAIGN_REQUIRE_ALL_COURSES,
+            "reason": reason,
+        }
+    )
+    path = RESULTS_DIR / "organization_gate.json"
+    path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    return path
 
 
 def _declared_output_paths() -> list[Path]:
@@ -710,12 +823,44 @@ _invalidate_declared_outputs()
 log_path.parent.mkdir(parents=True, exist_ok=True)
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 (RESULTS_DIR / "aggregation_errors.log").unlink(missing_ok=True)
+(RESULTS_DIR / "campaign_attrition.csv").unlink(missing_ok=True)
+(RESULTS_DIR / "organization_gate.json").unlink(missing_ok=True)
 
 try:
-    courses = _manifest_courses()
+    courses, organize_cohort = _manifest_courses()
 except RuntimeError as exc:
     log_path.write_text(f"Aggregation blocked: {exc}\n", encoding="utf-8")
     raise
+
+technical_quarantines = organize_cohort["technical_quarantines"]
+organization_gate_blocks = bool(technical_quarantines) and (
+    not CAMPAIGN_MODE or CAMPAIGN_REQUIRE_ALL_COURSES
+)
+if organization_gate_blocks:
+    _write_campaign_attrition(courses, {}, {}, technical_quarantines)
+    reason = (
+        "all intended courses are required, but organize reported "
+        f"{len(technical_quarantines)} technical quarantine(s)"
+    )
+    gate_path = _write_organization_gate(
+        organize_cohort, blocked=True, reason=reason
+    )
+    message = (
+        f"Campaign aggregation blocked before scientific aggregation: {reason}. "
+        f"Attempted {organize_cohort['attempted_course_count']}, producer-validated "
+        f"{organize_cohort['validated_course_count']}. See {gate_path}."
+    )
+    log_path.write_text(message + "\n", encoding="utf-8")
+    raise RuntimeError(message)
+_write_organization_gate(
+    organize_cohort,
+    blocked=False,
+    reason=(
+        "partial campaign aggregation is explicitly permitted"
+        if technical_quarantines
+        else "all attempted courses passed organize contract validation"
+    ),
+)
 
 (
     required_frames,
@@ -734,17 +879,47 @@ if not CAMPAIGN_MODE:
         raise RuntimeError(message.rstrip())
     aggregated_courses = courses
     summary = f"Aggregated {len(courses)} course(s).\n"
+elif CAMPAIGN_REQUIRE_ALL_COURSES:
+    _write_campaign_attrition(
+        courses,
+        incomplete_courses,
+        expected_noncomputed_courses,
+        technical_quarantines,
+    )
+    if required_errors:
+        _report_aggregation_errors(required_errors, "required input failures")
+        gate_reason = (
+            "all intended courses are required and one or more producer-validated "
+            "courses have incomplete required inputs"
+        )
+        gate_path = _write_organization_gate(
+            organize_cohort, blocked=True, reason=gate_reason
+        )
+        message = (
+            "Campaign aggregation blocked before scientific aggregation because "
+            f"{gate_reason}. See {gate_path}:\n"
+            + "".join(f" - {error}\n" for error in required_errors)
+        )
+        log_path.write_text(message, encoding="utf-8")
+        raise RuntimeError(message.rstrip())
+    aggregated_courses = courses
+    summary = (
+        f"Aggregated all {organize_cohort['attempted_course_count']} intended course(s).\n"
+    )
 else:
     # Campaign mode aggregates the courses that completed and reports the rest as
     # declared attrition. Every exclusion keeps its reason in campaign_attrition.csv,
     # so the denominator is auditable rather than silently smaller.
     _write_campaign_attrition(
-        courses, incomplete_courses, expected_noncomputed_courses
+        courses,
+        incomplete_courses,
+        expected_noncomputed_courses,
+        technical_quarantines,
     )
     aggregated_courses = [
         course for course in courses if (course[0], course[1]) not in incomplete_courses
     ]
-    total = len(courses)
+    total = organize_cohort["attempted_course_count"]
     completed = len(aggregated_courses)
     fraction = (completed / total) if total else 0.0
 
@@ -771,7 +946,7 @@ else:
         raise RuntimeError(message)
 
     summary = (
-        f"Aggregated {completed} of {total} course(s) "
+        f"Aggregated {completed} of {total} intended course(s) "
         f"({fraction:.1%}); {total - completed} excluded with recorded reasons "
         f"in campaign_attrition.csv.\n"
     )

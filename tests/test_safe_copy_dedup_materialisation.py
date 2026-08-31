@@ -108,6 +108,30 @@ def test_stale_destination_from_earlier_run_is_replaced(tmp_path: Path) -> None:
     assert on_disk == fresh_sop, "stale artifact from an earlier run was not replaced"
 
 
+def test_stale_foreign_dedup_answer_cannot_replace_the_requested_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manager = _manager(tmp_path)
+    src = tmp_path / "src" / "plan.dcm"
+    expected_sop = _write_plan(src)
+    stale = tmp_path / "other-course" / "RP.dcm"
+    stale_sop = _write_plan(stale)
+    assert stale_sop != expected_sop
+    monkeypatch.setattr(
+        manager,
+        "copy_dicom",
+        lambda source, destination, skip_if_exists=False: (stale, False),
+    )
+    destination = tmp_path / "course" / "RP.dcm"
+
+    _safe_copy(src, destination, copy_manager=manager)
+
+    actual_sop = str(
+        pydicom.dcmread(destination, stop_before_pixels=True).SOPInstanceUID
+    )
+    assert actual_sop == expected_sop
+
+
 def test_copy_into_does_not_cite_another_courses_copy(tmp_path: Path) -> None:
     """A per-patient object must be materialised inside each course that cites it.
 

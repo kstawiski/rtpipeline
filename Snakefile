@@ -354,6 +354,7 @@ CUSTOM_MODELS_RETAIN = bool(CUSTOM_MODELS_CONFIG.get("retain_weights", True))
 RADIOMICS_CONFIG = config.get("radiomics", {})
 CAMPAIGN_MODE = bool(config.get("campaign_mode", False))
 CAMPAIGN_MIN_COMPLETION_FRACTION = float(config.get("campaign_min_completion_fraction", 0.5))
+CAMPAIGN_REQUIRE_ALL_COURSES = bool(config.get("campaign_require_all_courses", False))
 RADIOMICS_ENABLED = bool(RADIOMICS_CONFIG.get("enabled", False))
 RADIOMICS_SEQUENTIAL = bool(RADIOMICS_CONFIG.get("sequential", False))
 _radiomics_params = RADIOMICS_CONFIG.get("params_file")
@@ -1607,6 +1608,7 @@ rule aggregate_results:
         radiomics_enabled=RADIOMICS_ENABLED,
         campaign_mode=CAMPAIGN_MODE,
         campaign_min_completion_fraction=CAMPAIGN_MIN_COMPLETION_FRACTION,
+        campaign_require_all_courses=CAMPAIGN_REQUIRE_ALL_COURSES,
         worker_budget=WORKER_BUDGET,
         auto_worker_budget=AUTO_WORKER_BUDGET,
         aggregation_threads=AGGREGATION_THREADS or 0
