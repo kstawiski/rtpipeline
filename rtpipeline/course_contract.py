@@ -14,9 +14,10 @@ from pathlib import Path
 from typing import Any, Iterable
 
 import pydicom
+from pydicom.dataset import Dataset
 
 
-COURSE_CONTRACT_VERSION = 1
+COURSE_CONTRACT_VERSION = 2
 PLAN_LEVEL_DOSE_SUMMATION_TYPES = frozenset({"PLAN", "PLAN_SUM"})
 BEAM_LEVEL_DOSE_SUMMATION_TYPES = frozenset({"BEAM"})
 DOSE_GRID_SEMANTICS = "planned_dose_for_delivered_plan_set"
@@ -30,6 +31,12 @@ AUTO_RTSTRUCT_SOURCE = "AutoRTS_total"
 from .plan_profiles import (
     DERIVED_RTPLAN_SOP_CLASSES,
     SOURCE_RTPLAN_SOP_CLASSES,
+)
+from .prescription import (
+    PRESCRIPTION_GROUP_FIELDS,
+    resolve_plan_prescriptions,
+    resolved_plan_total_gy,
+    source_plan_prescribed_dose_gy,
 )
 
 _ROLE_EXPECTATIONS = {
@@ -364,6 +371,18 @@ class CourseContract:
             raise CourseContractError("course contract prescribed_dose_gy is not numeric") from exc
 
     @property
+    def resolved_prescribed_dose_total_gy(self) -> float | None:
+        value = self.delivery.get("resolved_prescribed_dose_total_gy")
+        if value in (None, ""):
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError) as exc:
+            raise CourseContractError(
+                "course contract resolved_prescribed_dose_total_gy is not numeric"
+            ) from exc
+
+    @property
     def delivered_dose_gy(self) -> float | None:
         value = self.delivery.get("delivered_dose_gy")
         if value in (None, ""):
@@ -511,6 +530,67 @@ def _validate_dicom_identity(
     return path
 
 
+def _validate_plan_prescription(
+    item: dict[str, Any], dataset: Dataset, field: str
+) -> None:
+    """Verify serialized prescription evidence against the exact RTPLAN bytes."""
+
+    actual_groups = _list_of_dicts(
+        item.get("prescription_groups"), f"{field}.prescription_groups"
+    )
+    identity_group = actual_groups[0] if actual_groups else {}
+    source_tag_path = str(
+        identity_group.get("source_prescribed_dose_tag_path") or ""
+    )
+    binding_source = (
+        None
+        if source_tag_path.startswith("FractionGroupSequence[")
+        else item.get("prescribed_dose_gy")
+    )
+    expected_groups = resolve_plan_prescriptions(
+        dataset,
+        source_prescribed_dose_gy=binding_source,
+        source_dose_reference_number=identity_group.get(
+            "source_dose_reference_number"
+        ),
+        source_dose_reference_uid=identity_group.get("source_dose_reference_uid"),
+    )
+    if actual_groups != expected_groups:
+        raise CourseContractError(
+            f"stale course contract at {field}: prescription_groups do not "
+            "match the RTPLAN BeamDose evidence"
+        )
+    expected_group = expected_groups[0] if len(expected_groups) == 1 else None
+    for name in PRESCRIPTION_GROUP_FIELDS:
+        if name not in item:
+            raise CourseContractError(f"course contract field {field}.{name} is missing")
+        expected = expected_group.get(name) if expected_group else None
+        if item.get(name) != expected:
+            raise CourseContractError(
+                f"stale course contract at {field}.{name}: serialized value "
+                "does not match the RTPLAN BeamDose evidence"
+            )
+    source = _optional_nonnegative_number(
+        item.get("prescribed_dose_gy"), f"{field}.prescribed_dose_gy"
+    )
+    expected_source = source_plan_prescribed_dose_gy(expected_groups)
+    if source != expected_source:
+        raise CourseContractError(
+            f"stale course contract at {field}.prescribed_dose_gy: source "
+            "prescription does not match the RTPLAN"
+        )
+    resolved = _optional_nonnegative_number(
+        item.get("resolved_prescribed_dose_total_gy"),
+        f"{field}.resolved_prescribed_dose_total_gy",
+    )
+    expected_resolved = resolved_plan_total_gy(expected_groups)
+    if resolved != expected_resolved:
+        raise CourseContractError(
+            f"stale course contract at {field}.resolved_prescribed_dose_total_gy: "
+            "resolved total does not match the RTPLAN BeamDose evidence"
+        )
+
+
 def validate_course_contract(contract: CourseContract) -> CourseContract:
     data = contract.data
     if data.get("version") != COURSE_CONTRACT_VERSION:
@@ -544,9 +624,18 @@ def validate_course_contract(contract: CourseContract) -> CourseContract:
     if not isinstance(data.get("dose_classification"), dict):
         raise CourseContractError("course contract field dose_classification must be an object")
     plan_uids: list[str] = []
+    selected_source_doses: list[float | None] = []
+    selected_resolved_doses: list[float | None] = []
     for index, item in enumerate(selected_plans):
         field = f"selected_plans[{index}]"
-        _validate_dicom_identity(contract, item, field, role="RTPLAN_SOURCE")
+        plan_path = _validate_dicom_identity(
+            contract, item, field, role="RTPLAN_SOURCE"
+        )
+        _validate_plan_prescription(
+            item,
+            _read_header(plan_path, f"{field}.path"),
+            field,
+        )
         uid = _nonempty_text(item.get("sop_instance_uid"), f"{field}.sop_instance_uid")
         if uid in plan_uids:
             raise CourseContractError(f"duplicate selected RTPLAN SOPInstanceUID {uid}")
@@ -558,6 +647,17 @@ def validate_course_contract(contract: CourseContract) -> CourseContract:
             raise CourseContractError(f"{field} delivery counts must be integers") from exc
         if records < 0 or fractions < 0:
             raise CourseContractError(f"{field} delivery counts must be nonnegative")
+        selected_source_doses.append(
+            _optional_nonnegative_number(
+                item.get("prescribed_dose_gy"), f"{field}.prescribed_dose_gy"
+            )
+        )
+        selected_resolved_doses.append(
+            _optional_nonnegative_number(
+                item.get("resolved_prescribed_dose_total_gy"),
+                f"{field}.resolved_prescribed_dose_total_gy",
+            )
+        )
 
     dose_uids: list[str] = []
     selected_types: list[str] = []
@@ -618,12 +718,36 @@ def validate_course_contract(contract: CourseContract) -> CourseContract:
                 "BEAM RTDOSE sources require at least two components for exactly one selected RTPLAN"
             )
 
+    should_sum_prescriptions = bool(
+        data["dose_classification"].get("should_sum") and len(selected_doses) > 1
+    )
+
+    def _course_value(values: list[float | None]) -> float | None:
+        if not values or any(value is None for value in values):
+            return None
+        numeric = [float(value) for value in values if value is not None]
+        return float(sum(numeric)) if should_sum_prescriptions else numeric[0]
+
     delivery = contract.delivery
     status = _nonempty_text(delivery.get("status"), "delivery.status")
     prescribed = _optional_nonnegative_number(
         delivery.get("prescribed_dose_gy"),
         "delivery.prescribed_dose_gy",
     )
+    resolved_prescribed = _optional_nonnegative_number(
+        delivery.get("resolved_prescribed_dose_total_gy"),
+        "delivery.resolved_prescribed_dose_total_gy",
+    )
+    if prescribed != _course_value(selected_source_doses):
+        raise CourseContractError(
+            "delivery.prescribed_dose_gy disagrees with the selected RTPLAN "
+            "source prescription"
+        )
+    if resolved_prescribed != _course_value(selected_resolved_doses):
+        raise CourseContractError(
+            "delivery.resolved_prescribed_dose_total_gy disagrees with the "
+            "selected RTPLAN BeamDose resolution"
+        )
     delivered = _optional_nonnegative_number(
         delivery.get("delivered_dose_gy"),
         "delivery.delivered_dose_gy",
@@ -632,12 +756,22 @@ def validate_course_contract(contract: CourseContract) -> CourseContract:
         "fully_delivered",
         "partially_delivered",
         "delivered_but_records_absent",
+        "delivery_unresolved",
         "no_records_at_all",
     }:
         raise CourseContractError(f"unknown delivery.status {status!r}")
-    if status in {"fully_delivered", "partially_delivered"} and delivered is None:
-        raise CourseContractError(f"delivery.status {status!r} requires delivered_dose_gy")
-    if status in {"delivered_but_records_absent", "no_records_at_all"} and delivered is not None:
+    if status in {"fully_delivered", "partially_delivered"} and (
+        delivered is None or resolved_prescribed is None
+    ):
+        raise CourseContractError(
+            f"delivery.status {status!r} requires delivered_dose_gy and "
+            "resolved_prescribed_dose_total_gy"
+        )
+    if status in {
+        "delivered_but_records_absent",
+        "delivery_unresolved",
+        "no_records_at_all",
+    } and delivered is not None:
         raise CourseContractError(
             f"delivery.status {status!r} requires delivered_dose_gy to be null"
         )
@@ -657,6 +791,7 @@ def validate_course_contract(contract: CourseContract) -> CourseContract:
         plan_path = contract.resolve_path(item.get("plan_path"), f"{field}.plan_path")
         assert plan_path is not None
         dataset = _read_header(plan_path, f"{field}.plan_path")
+        _validate_plan_prescription(item, dataset, field)
         actual_modality = str(getattr(dataset, "Modality", "") or "").strip().upper()
         actual_sop_class = str(getattr(dataset, "SOPClassUID", "") or "").strip()
         if (actual_modality, actual_sop_class) not in {
@@ -921,7 +1056,12 @@ def validate_course_contract(contract: CourseContract) -> CourseContract:
             )
         expected_semantics = (
             UNKNOWN_DELIVERY_DOSE_GRID_SEMANTICS
-            if status in {"delivered_but_records_absent", "no_records_at_all"}
+            if status
+            in {
+                "delivered_but_records_absent",
+                "delivery_unresolved",
+                "no_records_at_all",
+            }
             else DOSE_GRID_SEMANTICS
         )
         if dose_grid.get("semantics") != expected_semantics:
@@ -1000,15 +1140,15 @@ def validate_course_contract(contract: CourseContract) -> CourseContract:
         raise CourseContractError("dose_qc.threshold_gy must be positive")
     expected_qc_failure = any(
         value is not None and value > threshold
-        for value in (prescribed, delivered)
+        for value in (resolved_prescribed, delivered)
     )
     if (not qc_pass) != expected_qc_failure:
         raise CourseContractError(
-            "dose_qc verdict disagrees with prescribed or delivered dose and threshold"
+            "dose_qc verdict disagrees with resolved prescribed or delivered dose and threshold"
         )
     if qc_status != ("fail" if expected_qc_failure else "pass"):
         raise CourseContractError(
-            "dose_qc.status disagrees with prescribed or delivered dose and threshold"
+            "dose_qc.status disagrees with resolved prescribed or delivered dose and threshold"
         )
     if expected_qc_failure and not reasons:
         raise CourseContractError("failing dose_qc requires at least one reason")

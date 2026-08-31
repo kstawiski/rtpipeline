@@ -6,6 +6,8 @@ from types import SimpleNamespace
 
 import pydicom
 import pytest
+from pydicom.dataset import Dataset
+from pydicom.sequence import Sequence
 from pydicom.uid import RTDoseStorage
 
 from course_contract_test_utils import (
@@ -47,6 +49,55 @@ def test_contract_rejects_role_swap_with_preserved_sop_uid(tmp_path: Path) -> No
         load_course_contract(course)
 
     assert metadata.is_file()
+
+
+def test_contract_rejects_stale_beamdose_resolution(tmp_path: Path) -> None:
+    course = tmp_path / "P1" / "C1"
+    plan, dose = write_synthetic_plan_and_dose(course)
+    write_minimal_course_contract(
+        course,
+        selected_plans=[plan],
+        selected_doses=[dose],
+    )
+    assert load_course_contract(course).resolved_prescribed_dose_total_gy == 50.0
+
+    dataset = pydicom.dcmread(str(plan))
+    dataset.FractionGroupSequence[0].ReferencedBeamSequence[0].BeamDose = 5.0
+    dataset.save_as(str(plan), enforce_file_format=True)
+
+    with pytest.raises(CourseContractError, match="prescription_groups"):
+        load_course_contract(course)
+
+
+def test_contract_round_trips_group_scoped_prescription(tmp_path: Path) -> None:
+    course = tmp_path / "P1" / "C1"
+    plan, dose = write_synthetic_plan_and_dose(
+        course,
+        prescribed_dose_gy=30.0,
+        planned_fraction_count=2,
+    )
+    dataset = pydicom.dcmread(str(plan))
+    dataset.FractionGroupSequence[0].ReferencedBeamSequence[0].BeamDose = 3.0
+    group_reference = Dataset()
+    group_reference.ReferencedDoseReferenceNumber = 1
+    group_reference.TargetPrescriptionDose = 6.0
+    dataset.FractionGroupSequence[0].ReferencedDoseReferenceSequence = Sequence(
+        [group_reference]
+    )
+    dataset.save_as(str(plan), enforce_file_format=True)
+    write_minimal_course_contract(
+        course,
+        selected_plans=[plan],
+        selected_doses=[dose],
+    )
+
+    contract = load_course_contract(course)
+
+    assert contract.prescribed_dose_gy == 6.0
+    assert contract.resolved_prescribed_dose_total_gy == 6.0
+    assert contract.selected_plans[0]["source_prescribed_dose_tag_path"].startswith(
+        "FractionGroupSequence[0]"
+    )
 
 
 def test_contract_requires_auditable_rtrecord_for_nonzero_delivery(tmp_path: Path) -> None:
@@ -200,7 +251,9 @@ def test_dvh_invalidates_stale_output_when_contract_dose_qc_fails(
     tmp_path: Path, monkeypatch
 ) -> None:
     course = tmp_path / "P1" / "C1"
-    plan, dose = write_synthetic_plan_and_dose(course)
+    plan, dose = write_synthetic_plan_and_dose(
+        course, prescribed_dose_gy=105.0
+    )
     metadata_path = write_minimal_course_contract(
         course, selected_plans=[plan], selected_doses=[dose]
     )
@@ -209,7 +262,6 @@ def test_dvh_invalidates_stale_output_when_contract_dose_qc_fails(
     contract["delivery"].update(
         {
             "status": "delivered_but_records_absent",
-            "prescribed_dose_gy": 105.0,
             "delivered_dose_gy": None,
         }
     )
@@ -218,7 +270,7 @@ def test_dvh_invalidates_stale_output_when_contract_dose_qc_fails(
         "status": "fail",
         "pass": False,
         "threshold_gy": 100.0,
-        "reasons": ["prescribed dose 105.0 Gy exceeds 100.0 Gy"],
+        "reasons": ["resolved prescribed dose 105.0 Gy exceeds 100.0 Gy"],
     }
     _save_metadata(metadata_path, payload)
     stale = course / "dvh_metrics.xlsx"
