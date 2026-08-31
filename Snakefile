@@ -1603,6 +1603,11 @@ rule aggregate_results:
     conda:
         "envs/rtpipeline.yaml"
     params:
+        python=PYTHON_MAIN,
+        python_bin=PYTHON_MAIN_BIN,
+        root_dir=lambda w: str(ROOT_DIR),
+        configfile=str(EFFECTIVE_CONFIGFILE),
+        radiomics_env=_ENV_RADIOMICS,
         output_dir=lambda w, input: str(Path(input.manifest).parents[1]),
         results_dir=lambda w, output: str(Path(output.dvh).parent),
         radiomics_enabled=RADIOMICS_ENABLED,

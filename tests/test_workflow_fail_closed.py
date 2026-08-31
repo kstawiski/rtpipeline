@@ -12,6 +12,7 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 import rtpipeline.segmentation as segmentation
+import rtpipeline.snakemake_delegate as snakemake_delegate
 
 from course_contract_test_utils import (
     write_minimal_course_contract,
@@ -23,6 +24,27 @@ from rtpipeline.dvh import dvh_for_course
 ROOT = Path(__file__).resolve().parents[1]
 RUN_COURSE_STAGE = ROOT / "workflow" / "scripts" / "run_course_stage.py"
 AGGREGATE_RESULTS = ROOT / "workflow" / "scripts" / "aggregate_results.py"
+
+
+@pytest.fixture(autouse=True)
+def _delegate_parent_segmentation_assessment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Keep wrapper unit tests able to replace segmentation assessment locally."""
+
+    original = snakemake_delegate.invoke
+
+    def invoke(**kwargs):
+        if kwargs.get("operation") != "assess-segmentation":
+            return original(**kwargs)
+        arguments = list(kwargs["arguments"])
+        course_dir = Path(arguments[arguments.index("--course-dir") + 1])
+        return {
+            "course_dir": str(course_dir.resolve(strict=False)),
+            "outcome": segmentation.assess_course_segmentation(course_dir),
+        }
+
+    monkeypatch.setattr(snakemake_delegate, "invoke", invoke)
 
 
 def _write_ct_publication(course_dir: Path, *, patient_id: str) -> None:
