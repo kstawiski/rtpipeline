@@ -15,6 +15,13 @@ from typing import Any, Callable, Iterable, Mapping, MutableMapping, Optional, S
 import numpy as np
 import yaml
 
+from .radiomics_schema import (
+    assert_radiomics_arrow_schema,
+    expected_radiomics_string_columns,
+    normalize_radiomics_dataframe,
+    normalize_radiomics_result,
+)
+
 
 PRIMARY_ARM = "primary_resegmented"
 SENSITIVITY_ARM = "sensitivity_raw"
@@ -477,20 +484,7 @@ def build_ct_extractors(
 
 
 def _scalarize(result: Mapping[str, Any]) -> dict[str, Any]:
-    output: dict[str, Any] = {}
-    for key, value in result.items():
-        try:
-            if hasattr(value, "item"):
-                output[str(key)] = value.item()
-            elif hasattr(value, "tolist"):
-                output[str(key)] = value.tolist()
-            elif isinstance(value, (str, int, float, bool)) or value is None:
-                output[str(key)] = value
-            else:
-                output[str(key)] = str(value)
-        except Exception:
-            output[str(key)] = str(value)
-    return output
+    return normalize_radiomics_result(result)
 
 
 def _feature_subset(result: Mapping[str, Any], markers: tuple[str, ...]) -> dict[str, Any]:
@@ -1002,7 +996,8 @@ def write_ct_publication_atomic(
     workbook_path = Path(workbook_path)
     parquet_path = workbook_path.with_suffix(".parquet")
     workbook_path.parent.mkdir(parents=True, exist_ok=True)
-    publish_df = _jsonify_nested_columns(dataframe)
+    publish_df = _jsonify_nested_columns(normalize_radiomics_dataframe(dataframe))
+    expected_strings = expected_radiomics_string_columns(publish_df)
     validate_ct_publication(publish_df, expected_keys=expected_keys)
 
     fd, parquet_tmp_name = tempfile.mkstemp(
@@ -1017,6 +1012,9 @@ def write_ct_publication_atomic(
     workbook_tmp = Path(workbook_tmp_name)
     try:
         publish_df.to_parquet(parquet_tmp, index=False, engine="pyarrow")
+        assert_radiomics_arrow_schema(
+            parquet_tmp, expected_string_columns=expected_strings
+        )
         parquet_check = pd.read_parquet(parquet_tmp, engine="pyarrow")
         validate_ct_publication(parquet_check, expected_keys=expected_keys)
         publish_df.to_excel(workbook_tmp, index=False)
@@ -1040,6 +1038,10 @@ def read_authoritative_ct_publication(path: Path) -> Any:
     candidate = Path(path)
     parquet_path = candidate if candidate.suffix == ".parquet" else candidate.with_suffix(".parquet")
     dataframe = pd.read_parquet(parquet_path, engine="pyarrow")
+    assert_radiomics_arrow_schema(
+        parquet_path,
+        expected_string_columns=expected_radiomics_string_columns(dataframe),
+    )
     validate_ct_publication(dataframe)
     return dataframe
 
