@@ -17,6 +17,9 @@ F2 - utils.sanitize_rtstruct / roi_fixer.fix_rtstruct_rois: post-processing rewr
 
 from __future__ import annotations
 
+import copy
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -29,6 +32,7 @@ from pydicom.uid import CTImageStorage, ExplicitVRLittleEndian, RTDoseStorage, R
 
 import rtpipeline.auto_rtstruct as auto_rtstruct
 import rtpipeline.custom_structures_rtstruct as custom_structures_rtstruct
+import rtpipeline.dvh as dvh
 import rtpipeline.organize as organize
 import rtpipeline.roi_fixer as roi_fixer
 import rtpipeline.utils as utils
@@ -597,6 +601,143 @@ def test_write_rtstruct_atomic_temp_path_ends_in_dcm(tmp_path, module):
 
     module._write_rtstruct_atomic(out_path, _capture_and_write)
     assert captured["tmp_path"].endswith(".dcm")
+
+
+def test_custom_atomic_validation_happens_before_publication(tmp_path):
+    out_path = tmp_path / "RS_custom.dcm"
+    out_path.write_bytes(b"known-good-prior-publication")
+
+    def _write_candidate(path: str) -> None:
+        Path(path).write_bytes(b"invalid-candidate")
+
+    def _reject_candidate(_path: Path) -> None:
+        raise ValueError("candidate is not a readable RTSTRUCT")
+
+    with pytest.raises(ValueError, match="not a readable RTSTRUCT"):
+        custom_structures_rtstruct._write_rtstruct_atomic(
+            out_path,
+            _write_candidate,
+            validate_fn=_reject_candidate,
+        )
+
+    assert out_path.read_bytes() == b"known-good-prior-publication"
+    assert list(tmp_path.glob(".*.tmp.dcm")) == []
+
+
+def test_dvh_custom_builder_delegates_to_governed_publisher(tmp_path, monkeypatch):
+    expected = tmp_path / "RS_custom.dcm"
+    calls = []
+
+    def _governed(*args):
+        calls.append(args)
+        return expected
+
+    monkeypatch.setattr(
+        custom_structures_rtstruct,
+        "_create_custom_structures_rtstruct",
+        _governed,
+    )
+
+    result = dvh._create_custom_structures_rtstruct(
+        tmp_path,
+        "custom.yaml",
+        tmp_path / "RS.dcm",
+        tmp_path / "RS_auto.dcm",
+    )
+
+    assert result == expected
+    assert calls == [
+        (
+            tmp_path,
+            "custom.yaml",
+            tmp_path / "RS.dcm",
+            tmp_path / "RS_auto.dcm",
+        )
+    ]
+
+
+def test_custom_publication_lock_reuses_competing_stage_result(tmp_path, monkeypatch):
+    course_dir = tmp_path / "P1" / "C1"
+    course_dir.mkdir(parents=True)
+    calls: list[int] = []
+
+    def _build(course, *_args):
+        calls.append(1)
+        time.sleep(0.05)
+        output = Path(course) / "RS_custom.dcm"
+        output.write_bytes(b"governed-publication")
+        return output
+
+    monkeypatch.setattr(custom_structures_rtstruct, "_is_rs_custom_stale", lambda *_args: False)
+    monkeypatch.setattr(
+        custom_structures_rtstruct,
+        "_create_custom_structures_rtstruct_unlocked",
+        _build,
+    )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(
+            executor.map(
+                lambda _index: custom_structures_rtstruct._create_custom_structures_rtstruct(
+                    course_dir
+                ),
+                range(2),
+            )
+        )
+
+    assert calls == [1]
+    assert results == [course_dir / "RS_custom.dcm"] * 2
+
+
+def test_custom_build_error_names_configured_rois_and_underlying_reason(tmp_path):
+    error = custom_structures_rtstruct.CustomStructureRTStructError(
+        tmp_path / "P1" / "C1",
+        ["iliac_vess", "bowel_bag"],
+        ValueError("problematic SOP Instance UID: 1.2.3"),
+    )
+
+    message = str(error)
+    assert "configured ROI(s) [iliac_vess, bowel_bag]" in message
+    assert "ValueError: problematic SOP Instance UID: 1.2.3" in message
+
+
+def test_custom_builder_prunes_only_unused_cross_series_references(tmp_path):
+    from rt_utils import RTStructBuilder
+
+    ct_dir = tmp_path / "ct"
+    ct_dir.mkdir()
+    rtstruct = _build_real_rtstruct(ct_dir)
+    source = tmp_path / "RS.dcm"
+    rtstruct.save(str(source))
+    source_bytes = source.read_bytes()
+
+    dataset = pydicom.dcmread(source)
+    referenced_series = dataset.ReferencedFrameOfReferenceSequence[0].RTReferencedStudySequence[0].RTReferencedSeriesSequence
+    stale_series = copy.deepcopy(referenced_series[0])
+    stale_series.SeriesInstanceUID = generate_uid()
+    stale_image = copy.deepcopy(stale_series.ContourImageSequence[0])
+    stale_image.ReferencedSOPInstanceUID = generate_uid()
+    stale_series.ContourImageSequence = Sequence([stale_image])
+    referenced_series.append(stale_series)
+    dataset.save_as(source, write_like_original=False)
+    source_with_stale_reference = source.read_bytes()
+
+    with pytest.raises(Exception, match="not contained in input series data"):
+        RTStructBuilder.create_from(str(ct_dir), str(source))
+
+    prepared, temporary = custom_structures_rtstruct._rtstruct_builder_source(
+        source,
+        ct_dir,
+        tmp_path,
+    )
+    try:
+        repaired = RTStructBuilder.create_from(str(ct_dir), str(prepared))
+        assert repaired.get_roi_names() == ["PTV"]
+        assert source.read_bytes() == source_with_stale_reference
+        assert source.read_bytes() != source_bytes
+    finally:
+        assert temporary is not None
+        temporary.unlink(missing_ok=True)
 
 
 @pytest.mark.parametrize("module", [auto_rtstruct, custom_structures_rtstruct])

@@ -1900,6 +1900,8 @@ def _recorded_segmentation_failures(course_dir: Path) -> list[dict[str, str]]:
         return []
     failures: list[dict[str, str]] = []
     for artifact, raw in decisions.items():
+        if str(artifact) == "RS_custom":
+            continue
         if not isinstance(raw, dict) or raw.get("action") != "failed":
             continue
         failure = raw.get("failure")

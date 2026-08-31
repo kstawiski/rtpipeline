@@ -1171,7 +1171,7 @@ def _is_dvh_up_to_date(
         return False
 
 
-def _create_custom_structures_rtstruct(
+def _legacy_create_custom_structures_rtstruct(
     course_dir: Path,
     config_path: Optional[Union[str, Path]] = None,
     rs_manual: Optional[Path] = None,
@@ -1444,6 +1444,19 @@ def _create_custom_structures_rtstruct(
     except Exception as e:
         logger.error("Failed to create custom structures RTSTRUCT: %s", e)
         return None
+
+
+def _create_custom_structures_rtstruct(
+    course_dir: Path,
+    config_path: Optional[Union[str, Path]] = None,
+    rs_manual: Optional[Path] = None,
+    rs_auto: Optional[Path] = None,
+) -> Optional[Path]:
+    """Delegate all DVH-side RS_custom publication to the governed builder."""
+
+    from .custom_structures_rtstruct import _create_custom_structures_rtstruct as create
+
+    return create(course_dir, config_path, rs_manual, rs_auto)
 
 
 def _compute_nifti_based_dvh(
@@ -1926,14 +1939,20 @@ def dvh_for_course(
     # Use RS_custom.dcm if it exists and is up-to-date
     rs_custom = course_dir / "RS_custom.dcm"
 
-    # Check if RS_custom needs regeneration
-    if custom_structures_config and _is_rs_custom_stale(
+    # One governed builder owns RS_custom publication. DVH and radiomics may run
+    # concurrently for a course, so the builder serializes publication and validates
+    # temporary bytes before the atomic replace.
+    from .custom_structures_rtstruct import (
+        _create_custom_structures_rtstruct as _create_governed_rs_custom,
+        _is_rs_custom_stale as _governed_rs_custom_is_stale,
+    )
+
+    if custom_structures_config and _governed_rs_custom_is_stale(
         rs_custom, custom_structures_config, rs_manual, rs_auto
     ):
         try:
             logger.info("Regenerating RS_custom.dcm for %s", course_dir.name)
-            from .custom_structures import CustomStructureProcessor
-            rs_custom = _create_custom_structures_rtstruct(
+            rs_custom = _create_governed_rs_custom(
                 course_dir, custom_structures_config, rs_manual, rs_auto
             )
         except Exception as e:
