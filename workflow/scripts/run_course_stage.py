@@ -1,33 +1,19 @@
 """Run one fail-closed per-course RTpipeline CLI stage from Snakemake."""
 
-import os
+from __future__ import annotations
+
 import json
+import os
 import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Any, NoReturn
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import campaign_ledger
 
-
-def _runtime_environment() -> dict[str, str]:
-    env = os.environ.copy()
-    root_dir = str(snakemake.params.root_dir)  # type: ignore[name-defined]
-    existing_pythonpath = env.get("PYTHONPATH")
-    if existing_pythonpath:
-        if root_dir not in existing_pythonpath.split(os.pathsep):
-            env["PYTHONPATH"] = os.pathsep.join([root_dir, existing_pythonpath])
-    else:
-        env["PYTHONPATH"] = root_dir
-
-    env["RTPIPELINE_CONFIGFILE"] = str(snakemake.params.configfile)  # type: ignore[name-defined]
-    env["RTPIPELINE_RADIOMICS_ENV"] = str(snakemake.params.radiomics_env)  # type: ignore[name-defined]
-    python_bin = str(snakemake.params.python_bin)  # type: ignore[name-defined]
-    current_path = env.get("PATH", "")
-    if python_bin not in current_path.split(os.pathsep):
-        env["PATH"] = os.pathsep.join([python_bin, current_path])
-    return env
+from rtpipeline.snakemake_delegate import invoke, runtime_environment
 
 
 def _require_upstream_status(
@@ -59,18 +45,31 @@ def _require_upstream_status(
         )
 
 
-def _require_segmentation_content(course_dir: Path) -> None:
-    """Reject legacy or forged ``ok`` sentinels whose course content is not usable."""
+def _require_segmentation_content(workflow: Any, course_dir: Path) -> None:
+    """Validate segmentation content inside the dependency-bearing interpreter."""
 
-    root_dir = str(snakemake.params.root_dir)  # type: ignore[name-defined]
-    if root_dir not in sys.path:
-        sys.path.insert(0, root_dir)
-    from rtpipeline.segmentation import assess_course_segmentation
-
-    outcome = assess_course_segmentation(course_dir)
+    payload = invoke(
+        python=str(workflow.params.python),
+        operation="assess-segmentation",
+        arguments=("--course-dir", str(course_dir)),
+        result_dir=Path(workflow.log[0]).parent,
+        env=runtime_environment(workflow.params),
+    )
+    expected_course = str(course_dir.resolve(strict=False))
+    if payload.get("course_dir") != expected_course:
+        raise RuntimeError(
+            "Segmentation assessment returned a mismatched course identity"
+        )
+    outcome = payload.get("outcome")
+    if not isinstance(outcome, dict):
+        raise RuntimeError("Segmentation assessment returned no structured outcome")
     if outcome.get("status") != "ok":
         reasons = outcome.get("reasons")
-        detail = "; ".join(str(reason) for reason in reasons) if isinstance(reasons, list) else str(reasons)
+        detail = (
+            "; ".join(str(reason) for reason in reasons)
+            if isinstance(reasons, list)
+            else str(reasons)
+        )
         raise RuntimeError(
             f"Required upstream segmentation content is not successful: {course_dir} "
             f"(status={outcome.get('status')!r}; reasons={detail})"
@@ -91,158 +90,190 @@ def _publish_success_sentinel(path: Path) -> None:
     _publish_sentinel(path, "ok")
 
 
-def _close_course(
-    sentinel: Path,
-    detail: str,
-    returncode: int,
-    strict_error: BaseException | None = None,
+def _publish_radiomics_completion(
+    workflow: Any, course_dir: Path, sentinel_path: Path
 ) -> None:
-    """End this course without ending the campaign.
-
-    Outside campaign mode the job fails, which is what a single-cohort operator
-    wants: the sentinel is removed and Snakemake stops. In campaign mode the
-    course records ``failed`` in its own sentinel and the job exits zero, so the
-    DAG completes over the remaining thousands of courses. The course stays
-    closed regardless: _require_upstream_status refuses to run any dependent
-    stage whose upstream sentinel does not say ok, and aggregation counts only
-    ok courses.
-    """
-    _record(campaign_ledger.STATUS_FAILED, returncode=returncode, detail=detail)
-    print(detail, file=sys.stderr)
-    if bool(getattr(snakemake.params, "campaign_mode", False)):  # type: ignore[name-defined]
-        _publish_sentinel(sentinel, "failed")
-        print(
-            f"[campaign-mode] course {patient_id}/{course_id} closed at stage "
-            f"{stage_name}; campaign continues and the ledger records the failure.",
-            file=sys.stderr,
-        )
-        raise SystemExit(0)
-    sentinel.unlink(missing_ok=True)
-    if strict_error is not None:
-        # Outside campaign mode the original exception is the operator-facing
-        # signal; preserve it rather than flattening it into an exit code.
-        raise strict_error
-    raise SystemExit(returncode or 1)
-
-
-sentinel_path = Path(snakemake.output.sentinel)  # type: ignore[name-defined]
-sentinel_path.parent.mkdir(parents=True, exist_ok=True)
-sentinel_path.unlink(missing_ok=True)
-log_path = Path(snakemake.log[0])  # type: ignore[name-defined]
-log_path.parent.mkdir(parents=True, exist_ok=True)
-
-stage_name = str(snakemake.params.stage)  # type: ignore[name-defined]
-patient_id = str(snakemake.wildcards.patient)  # type: ignore[name-defined]
-course_id = str(snakemake.wildcards.course)  # type: ignore[name-defined]
-ledger_root = Path(snakemake.params.output_dir)  # type: ignore[name-defined]
-started_at = campaign_ledger._utcnow()
-started_monotonic = time.monotonic()
-
-
-def _record(status: str, returncode: int | None = None, detail: str | None = None) -> None:
-    try:
-        campaign_ledger.record(
-            ledger_root,
-            patient_id,
-            course_id,
-            stage_name,
-            status,
-            returncode=returncode,
-            log_path=str(log_path),
-            detail=detail,
-            started_at=started_at,
-            duration_seconds=round(time.monotonic() - started_monotonic, 3),
-        )
-    except Exception as exc:  # ledger failure must not mask the stage outcome
-        print(f"[campaign-ledger] could not record {stage_name}: {exc}", file=sys.stderr)
-
-for input_name, allowed_statuses in (
-    ("segmentation", {"ok"}),
-    ("custom", {"disabled", "ok"}),
-    ("crop", {"ok"}),
-):
-    upstream = getattr(snakemake.input, input_name, None)  # type: ignore[name-defined]
-    try:
-        _require_upstream_status(upstream, input_name, allowed_statuses)
-        if input_name == "segmentation" and upstream:
-            _require_segmentation_content(ledger_root / patient_id / course_id)
-    except RuntimeError as exc:
-        _close_course(sentinel_path, str(exc), returncode=1, strict_error=exc)
-
-command = [
-    str(snakemake.params.python),  # type: ignore[name-defined]
-    "-m",
-    "rtpipeline.cli",
-    "--dicom-root",
-    str(snakemake.params.dicom_root),  # type: ignore[name-defined]
-    "--outdir",
-    str(snakemake.params.output_dir),  # type: ignore[name-defined]
-    "--logs",
-    str(snakemake.params.logs_dir),  # type: ignore[name-defined]
-    "--stage",
-    str(snakemake.params.stage),  # type: ignore[name-defined]
-    "--course-filter",
-    f"{snakemake.wildcards.patient}/{snakemake.wildcards.course}",  # type: ignore[name-defined]
-    "--manifest",
-    str(snakemake.input.manifest),  # type: ignore[name-defined]
-    "--max-workers",
-    str(max(1, int(snakemake.threads))),  # type: ignore[name-defined]
-]
-custom_structures = str(snakemake.params.custom_structures)  # type: ignore[name-defined]
-if custom_structures:
-    command.extend(["--custom-structures", custom_structures])
-
-try:
-    with log_path.open("w", encoding="utf-8") as log_file:
-        result = subprocess.run(
-            command,
-            check=False,
-            stdout=log_file,
-            stderr=subprocess.STDOUT,
-            env=_runtime_environment(),
-        )
-except OSError as exc:
-    # A missing or unexecutable interpreter raises instead of returning a code.
-    # Left unhandled this would abort the whole campaign on an environment
-    # problem, which is exactly the failure campaign mode exists to contain.
-    _close_course(
-        sentinel_path,
-        f"Stage {stage_name} could not be launched: {exc}",
-        returncode=127,
+    payload = invoke(
+        python=str(workflow.params.python),
+        operation="publish-radiomics-completion",
+        arguments=(
+            "--course-dir",
+            str(course_dir),
+            "--sentinel-path",
+            str(sentinel_path),
+        ),
+        result_dir=Path(workflow.log[0]).parent,
+        env=runtime_environment(workflow.params),
     )
-
-if result.returncode != 0:
-    _close_course(
-        sentinel_path,
-        f"Required stage {stage_name} failed with exit code "
-        f"{result.returncode}; see {log_path}",
-        returncode=result.returncode,
-    )
-
-if stage_name == "radiomics":
-    course_dir = ledger_root / patient_id / course_id
-    parquet_path = course_dir / "radiomics_ct.parquet"
-    workbook_path = course_dir / "radiomics_ct.xlsx"
-    if workbook_path.exists() and not parquet_path.exists():
-        error = RuntimeError(
-            f"Radiomics stage produced CT Excel without authoritative Parquet: {course_dir}"
+    expected_path = str(sentinel_path.resolve(strict=False))
+    sentinel = payload.get("sentinel")
+    if (
+        payload.get("course_dir") != str(course_dir.resolve(strict=False))
+        or payload.get("sentinel_path") != expected_path
+        or not isinstance(sentinel, dict)
+        or sentinel.get("status") != "ok"
+    ):
+        raise RuntimeError(
+            "Radiomics completion validation returned a mismatched structured result"
         )
-        _close_course(sentinel_path, str(error), returncode=1, strict_error=error)
-    if parquet_path.exists():
+    try:
+        observed = json.loads(sentinel_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise RuntimeError(
+            f"Radiomics completion sentinel is unreadable after publication: "
+            f"{sentinel_path}: {exc}"
+        ) from exc
+    if observed != sentinel:
+        raise RuntimeError(
+            "Radiomics completion sentinel differs from the validated delegated result"
+        )
+
+
+def main(workflow: Any) -> None:
+    sentinel_path = Path(workflow.output.sentinel)
+    sentinel_path.parent.mkdir(parents=True, exist_ok=True)
+    sentinel_path.unlink(missing_ok=True)
+    log_path = Path(workflow.log[0])
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+
+    stage_name = str(workflow.params.stage)
+    patient_id = str(workflow.wildcards.patient)
+    course_id = str(workflow.wildcards.course)
+    ledger_root = Path(workflow.params.output_dir)
+    started_at = campaign_ledger._utcnow()
+    started_monotonic = time.monotonic()
+
+    def record(
+        status: str, returncode: int | None = None, detail: str | None = None
+    ) -> None:
         try:
-            from rtpipeline.radiomics_ct_contract import write_completion_sentinel
+            campaign_ledger.record(
+                ledger_root,
+                patient_id,
+                course_id,
+                stage_name,
+                status,
+                returncode=returncode,
+                log_path=str(log_path),
+                detail=detail,
+                started_at=started_at,
+                duration_seconds=round(time.monotonic() - started_monotonic, 3),
+            )
+        except Exception as exc:
+            print(
+                f"[campaign-ledger] could not record {stage_name}: {exc}",
+                file=sys.stderr,
+            )
 
-            write_completion_sentinel(course_dir, sentinel_path)
+    def close_course(
+        detail: str,
+        returncode: int,
+        strict_error: BaseException | None = None,
+    ) -> NoReturn:
+        """Close this course while allowing an explicit campaign to continue."""
+
+        record(campaign_ledger.STATUS_FAILED, returncode=returncode, detail=detail)
+        print(detail, file=sys.stderr)
+        if bool(getattr(workflow.params, "campaign_mode", False)):
+            _publish_sentinel(sentinel_path, "failed")
+            print(
+                f"[campaign-mode] course {patient_id}/{course_id} closed at stage "
+                f"{stage_name}; campaign continues and the ledger records the failure.",
+                file=sys.stderr,
+            )
+            raise SystemExit(0)
+        sentinel_path.unlink(missing_ok=True)
+        if strict_error is not None:
+            raise strict_error
+        raise SystemExit(returncode or 1)
+
+    for input_name, allowed_statuses in (
+        ("segmentation", {"ok"}),
+        ("custom", {"disabled", "ok"}),
+        ("crop", {"ok"}),
+    ):
+        upstream = getattr(workflow.input, input_name, None)
+        try:
+            _require_upstream_status(upstream, input_name, allowed_statuses)
+            if input_name == "segmentation" and upstream:
+                _require_segmentation_content(
+                    workflow, ledger_root / patient_id / course_id
+                )
+        except RuntimeError as exc:
+            close_course(str(exc), returncode=1, strict_error=exc)
+
+    command = [
+        str(workflow.params.python),
+        "-m",
+        "rtpipeline.cli",
+        "--dicom-root",
+        str(workflow.params.dicom_root),
+        "--outdir",
+        str(workflow.params.output_dir),
+        "--logs",
+        str(workflow.params.logs_dir),
+        "--stage",
+        str(workflow.params.stage),
+        "--course-filter",
+        f"{patient_id}/{course_id}",
+        "--manifest",
+        str(workflow.input.manifest),
+        "--max-workers",
+        str(max(1, int(workflow.threads))),
+    ]
+    custom_structures = str(workflow.params.custom_structures)
+    if custom_structures:
+        command.extend(["--custom-structures", custom_structures])
+
+    try:
+        with log_path.open("w", encoding="utf-8") as log_file:
+            result = subprocess.run(
+                command,
+                check=False,
+                stdout=log_file,
+                stderr=subprocess.STDOUT,
+                env=runtime_environment(workflow.params),
+            )
+    except OSError as exc:
+        close_course(
+            f"Stage {stage_name} could not be launched: {exc}",
+            returncode=127,
+        )
+
+    if result.returncode != 0:
+        close_course(
+            f"Required stage {stage_name} failed with exit code "
+            f"{result.returncode}; see {log_path}",
+            returncode=result.returncode,
+        )
+
+    if stage_name == "radiomics":
+        course_dir = ledger_root / patient_id / course_id
+        parquet_path = course_dir / "radiomics_ct.parquet"
+        workbook_path = course_dir / "radiomics_ct.xlsx"
+        if workbook_path.exists() and not parquet_path.exists():
+            error = RuntimeError(
+                f"Radiomics stage produced CT Excel without authoritative Parquet: "
+                f"{course_dir}"
+            )
+            close_course(str(error), returncode=1, strict_error=error)
+        if not parquet_path.exists():
+            error = RuntimeError(
+                f"Radiomics stage completed without authoritative CT Parquet: "
+                f"{course_dir}"
+            )
+            close_course(str(error), returncode=1, strict_error=error)
+        try:
+            _publish_radiomics_completion(workflow, course_dir, sentinel_path)
         except Exception as exc:
             error = RuntimeError(
                 f"Radiomics completion validation failed for {course_dir}: {exc}"
             )
-            _close_course(sentinel_path, str(error), returncode=1, strict_error=error)
+            close_course(str(error), returncode=1, strict_error=error)
     else:
-        error = RuntimeError(
-            f"Radiomics stage completed without authoritative CT Parquet: {course_dir}"
-        )
-        _close_course(sentinel_path, str(error), returncode=1, strict_error=error)
-else:
-    _publish_success_sentinel(sentinel_path)
-_record(campaign_ledger.STATUS_OK, returncode=0)
+        _publish_success_sentinel(sentinel_path)
+    record(campaign_ledger.STATUS_OK, returncode=0)
+
+
+if "snakemake" in globals():
+    main(snakemake)  # type: ignore[name-defined]

@@ -21,6 +21,7 @@ from types import SimpleNamespace
 
 import pytest
 import rtpipeline.segmentation as segmentation
+import rtpipeline.snakemake_delegate as snakemake_delegate
 
 import sys
 
@@ -39,6 +40,19 @@ def _validated_segmentation_content(monkeypatch: pytest.MonkeyPatch) -> None:
         "assess_course_segmentation",
         lambda _course_dir: {"status": "ok", "reasons": ["validated test fixture"]},
     )
+    original = snakemake_delegate.invoke
+
+    def invoke(**kwargs):
+        if kwargs.get("operation") != "assess-segmentation":
+            return original(**kwargs)
+        arguments = list(kwargs["arguments"])
+        course_dir = Path(arguments[arguments.index("--course-dir") + 1])
+        return {
+            "course_dir": str(course_dir.resolve(strict=False)),
+            "outcome": segmentation.assess_course_segmentation(course_dir),
+        }
+
+    monkeypatch.setattr(snakemake_delegate, "invoke", invoke)
 
 
 def _stub_failing_python(tmp_path: Path) -> str:

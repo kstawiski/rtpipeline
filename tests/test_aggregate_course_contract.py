@@ -15,7 +15,7 @@ from rtpipeline.dvh import dvh_for_course
 
 
 ROOT = Path(__file__).resolve().parents[1]
-AGGREGATE = ROOT / "workflow" / "scripts" / "aggregate_results.py"
+AGGREGATE = ROOT / "rtpipeline" / "workflow_aggregate.py"
 
 
 def _aggregate_functions():
