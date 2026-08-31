@@ -1,56 +1,35 @@
 """Materialize a producer-validated organized-course manifest."""
 
+from __future__ import annotations
+
 import json
 import os
 import subprocess
 import tempfile
 from pathlib import Path
+from typing import Any
 
-from rtpipeline.course_contract import load_course_contract
-from rtpipeline.organize_ledger import (
-    STATUS_TECHNICAL_QUARANTINE,
-    STATUS_VALIDATED,
-    quarantine_course_directory,
-    read_organize_ledger,
-    write_organize_ledger,
-)
+from rtpipeline.snakemake_delegate import invoke, runtime_environment
 
 
 MANIFEST_SCHEMA = "rtpipeline-organized-course-manifest-v2"
-
-
-def _runtime_environment() -> dict[str, str]:
-    env = os.environ.copy()
-    root_dir = str(snakemake.params.root_dir)  # type: ignore[name-defined]
-    existing_pythonpath = env.get("PYTHONPATH")
-    if existing_pythonpath:
-        if root_dir not in existing_pythonpath.split(os.pathsep):
-            env["PYTHONPATH"] = os.pathsep.join([root_dir, existing_pythonpath])
-    else:
-        env["PYTHONPATH"] = root_dir
-    env["RTPIPELINE_CONFIGFILE"] = str(snakemake.params.configfile)  # type: ignore[name-defined]
-    env["RTPIPELINE_RADIOMICS_ENV"] = str(snakemake.params.radiomics_env)  # type: ignore[name-defined]
-    python_bin = str(snakemake.params.python_bin)  # type: ignore[name-defined]
-    current_path = env.get("PATH", "")
-    if python_bin not in current_path.split(os.pathsep):
-        env["PATH"] = os.pathsep.join([python_bin, current_path])
-    return env
+STATUS_VALIDATED = "validated"
 
 
 def _write_text_atomic(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    handle, tmp_name = tempfile.mkstemp(
+    handle, temporary_name = tempfile.mkstemp(
         dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp"
     )
-    tmp_path = Path(tmp_name)
+    temporary = Path(temporary_name)
     try:
         with os.fdopen(handle, "w", encoding="utf-8") as stream:
             stream.write(text)
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(tmp_path, path)
+        os.replace(temporary, path)
     except BaseException:
-        tmp_path.unlink(missing_ok=True)
+        temporary.unlink(missing_ok=True)
         raise
 
 
@@ -94,22 +73,6 @@ def _revoke_all_organized_flags(output_dir: Path) -> None:
         (course_dir / ".organized").unlink(missing_ok=True)
 
 
-def _validated_course_path(
-    output_dir: Path, patient: str, course: str, path_text: str
-) -> Path:
-    root = output_dir.resolve(strict=False)
-    course_dir = Path(path_text).resolve(strict=False)
-    try:
-        relative = course_dir.relative_to(root)
-    except ValueError as exc:
-        raise RuntimeError(f"ledger course path is outside output root: {course_dir}") from exc
-    if relative.parts != (patient, course):
-        raise RuntimeError(
-            "ledger path identity does not match patient/course identifiers"
-        )
-    return course_dir
-
-
 def _manifest_payload(ledger: dict, courses: list[dict]) -> dict:
     return {
         "schema": MANIFEST_SCHEMA,
@@ -124,18 +87,95 @@ def _manifest_payload(ledger: dict, courses: list[dict]) -> dict:
     }
 
 
-def _existing_manifest_is_valid(manifest_path: Path, output_dir: Path) -> bool:
+def _delegate_validation(
+    workflow: Any, output_dir: Path, *, mode: str, result_dir: Path
+) -> tuple[dict, list[dict], list[dict]]:
+    payload = invoke(
+        python=str(workflow.params.python),
+        operation="validate-organize",
+        arguments=("--output-dir", str(output_dir), "--mode", mode),
+        result_dir=result_dir,
+        env=runtime_environment(workflow.params),
+    )
+    if payload.get("mode") != mode:
+        raise RuntimeError(
+            "pipeline manifest validator returned a mismatched validation mode"
+        )
+    ledger = payload.get("ledger")
+    validated = payload.get("validated_courses")
+    invalid = payload.get("invalid_courses")
+    if (
+        not isinstance(ledger, dict)
+        or not isinstance(validated, list)
+        or not all(isinstance(entry, dict) for entry in validated)
+        or not isinstance(invalid, list)
+        or not all(isinstance(entry, dict) for entry in invalid)
+    ):
+        raise RuntimeError("pipeline manifest validator returned a malformed payload")
+    ledger_validated = {
+        (entry["patient"], entry["course"], str(entry.get("path") or ""))
+        for entry in ledger.get("courses", [])
+        if isinstance(entry, dict) and entry.get("status") == STATUS_VALIDATED
+    }
+    delegated_validated = {
+        (
+            str(entry.get("patient") or ""),
+            str(entry.get("course") or ""),
+            str(entry.get("path") or ""),
+        )
+        for entry in validated
+    }
+    delegated_invalid_ids = {
+        (
+            str(entry.get("patient") or ""),
+            str(entry.get("course") or ""),
+        )
+        for entry in invalid
+    }
+    ledger_validated_ids = {
+        (patient, course) for patient, course, _ in ledger_validated
+    }
+    delegated_validated_ids = {
+        (patient, course) for patient, course, _ in delegated_validated
+    }
+    if mode == "check":
+        reconciled = (
+            ledger.get("validated_course_count")
+            == len(validated) + len(invalid)
+            and delegated_validated <= ledger_validated
+            and delegated_validated_ids.isdisjoint(delegated_invalid_ids)
+            and delegated_validated_ids | delegated_invalid_ids
+            == ledger_validated_ids
+        )
+    else:
+        reconciled = (
+            ledger.get("validated_course_count") == len(validated)
+            and delegated_validated == ledger_validated
+        )
+    if not reconciled:
+        raise RuntimeError(
+            "pipeline manifest validator result does not reconcile with its ledger"
+        )
+    return ledger, validated, invalid
+
+
+def _existing_manifest_is_valid(
+    workflow: Any, manifest_path: Path, output_dir: Path
+) -> bool:
     if not manifest_path.is_file():
         return False
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        ledger = read_organize_ledger(output_dir)
+        ledger, validated, invalid = _delegate_validation(
+            workflow,
+            output_dir,
+            mode="check",
+            result_dir=manifest_path.parent,
+        )
     except Exception:
         return False
-    if manifest.get("schema") != MANIFEST_SCHEMA:
+    if manifest.get("schema") != MANIFEST_SCHEMA or invalid:
         return False
-    # A prior technical quarantine is retryable. Never let resume turn it into a
-    # silently accepted reduced cohort.
     if ledger["technical_quarantine_count"]:
         return False
     for field in (
@@ -154,11 +194,6 @@ def _existing_manifest_is_valid(manifest_path: Path, output_dir: Path) -> bool:
         or manifest.get("cohort_status") != ledger["status"]
     ):
         return False
-    ledger_validated = {
-        (entry["patient"], entry["course"], str(entry.get("path") or ""))
-        for entry in ledger["courses"]
-        if entry["status"] == STATUS_VALIDATED
-    }
     manifest_validated = {
         (
             str(entry.get("patient") or ""),
@@ -166,103 +201,51 @@ def _existing_manifest_is_valid(manifest_path: Path, output_dir: Path) -> bool:
             str(entry.get("path") or ""),
         )
         for entry in manifest_courses
-        if isinstance(entry, dict)
+    }
+    delegated_validated = {
+        (entry["patient"], entry["course"], str(entry.get("path") or ""))
+        for entry in validated
     }
     if (
-        len(manifest_courses) != len(ledger_validated)
-        or manifest_validated != ledger_validated
+        len(manifest_courses) != len(delegated_validated)
+        or manifest_validated != delegated_validated
     ):
         return False
-    for patient, course, path_text in ledger_validated:
-        course_dir = None
+    for entry in validated:
+        course_dir = Path(str(entry["path"]))
         try:
-            course_dir = _validated_course_path(
-                output_dir, patient, course, path_text
-            )
-            if (course_dir / ".organized").read_text(encoding="utf-8").strip() != "ok":
+            if (course_dir / ".organized").read_text(
+                encoding="utf-8"
+            ).strip() != "ok":
                 return False
-            load_course_contract(course_dir)
         except Exception:
-            if course_dir is not None:
-                (course_dir / ".organized").unlink(missing_ok=True)
+            (course_dir / ".organized").unlink(missing_ok=True)
             return False
     return True
 
 
-def _validated_courses_from_ledger(
-    output_dir: Path, *, prioritize_short_courses: bool
+def _validated_courses_from_delegate(
+    workflow: Any,
+    output_dir: Path,
+    *,
+    prioritize_short_courses: bool,
+    result_dir: Path,
 ) -> tuple[dict, list[dict]]:
-    ledger = read_organize_ledger(output_dir)
-    entries = [dict(entry) for entry in ledger["courses"]]
-    validation_failures: list[str] = []
-    courses: list[dict] = []
-
-    for entry in entries:
-        if entry["status"] != STATUS_VALIDATED:
-            continue
-        patient_id = entry["patient"]
-        course_id = entry["course"]
-        course_path = Path(str(entry.get("path") or ""))
-        safe_course_path = None
-        try:
-            safe_course_path = _validated_course_path(
-                output_dir, patient_id, course_id, str(course_path)
-            )
-            course_path = safe_course_path
-            load_course_contract(course_path)
-        except Exception as exc:
-            reason = f"manifest validation failed: {type(exc).__name__}: {exc}"
-            quarantine_path = None
-            try:
-                quarantine_path = quarantine_course_directory(
-                    output_dir,
-                    course_path,
-                    patient=patient_id,
-                    course=course_id,
-                    reason=reason,
-                    phase="manifest_contract_validation",
-                )
-            except Exception as quarantine_exc:
-                if safe_course_path is not None:
-                    (safe_course_path / ".organized").unlink(missing_ok=True)
-                    (
-                        safe_course_path / "metadata" / "case_metadata.json"
-                    ).unlink(missing_ok=True)
-                validation_failures.append(
-                    f"{patient_id}/{course_id}: {reason}; quarantine failed: "
-                    f"{type(quarantine_exc).__name__}: {quarantine_exc}"
-                )
-                reason = validation_failures[-1]
-            entry.update(
-                {
-                    "status": STATUS_TECHNICAL_QUARANTINE,
-                    "reason": reason,
-                    "quarantine_path": (
-                        str(quarantine_path) if quarantine_path is not None else None
-                    ),
-                }
-            )
-            continue
-
-        courses.append(
-            {
-                "patient": patient_id,
-                "course": course_id,
-                "path": str(course_path),
-                "complexity": _estimate_course_complexity(course_path),
-            }
-        )
-
-    ledger = write_organize_ledger(output_dir, entries)
-    if ledger["validated_course_count"] != len(courses):
-        raise RuntimeError(
-            "validated organize-ledger count does not match producer-validated manifest courses"
-        )
-    if validation_failures:
-        raise RuntimeError(
-            "could not revoke one or more manifest-rejected courses after validating "
-            "the complete ledger: " + " | ".join(validation_failures)
-        )
+    ledger, validated, _ = _delegate_validation(
+        workflow,
+        output_dir,
+        mode="quarantine",
+        result_dir=result_dir,
+    )
+    courses = [
+        {
+            "patient": entry["patient"],
+            "course": entry["course"],
+            "path": str(entry["path"]),
+            "complexity": _estimate_course_complexity(Path(str(entry["path"]))),
+        }
+        for entry in validated
+    ]
     if prioritize_short_courses:
         courses.sort(
             key=lambda entry: (
@@ -276,39 +259,40 @@ def _validated_courses_from_ledger(
     return ledger, courses
 
 
-manifest_path = Path(snakemake.output.manifest)  # type: ignore[name-defined]
-manifest_path.parent.mkdir(parents=True, exist_ok=True)
-log_path = Path(snakemake.log[0])  # type: ignore[name-defined]
-log_path.parent.mkdir(parents=True, exist_ok=True)
-output_dir = Path(snakemake.params.output_dir)  # type: ignore[name-defined]
+def main(workflow: Any) -> None:
+    manifest_path = Path(workflow.output.manifest)
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path = Path(workflow.log[0])
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    output_dir = Path(workflow.params.output_dir)
 
-skip_existing = _existing_manifest_is_valid(manifest_path, output_dir)
-if skip_existing:
-    log_path.write_text(
-        "Organize stage skipped after manifest and course-contract validation.\n",
-        encoding="utf-8",
-    )
-else:
+    if _existing_manifest_is_valid(workflow, manifest_path, output_dir):
+        log_path.write_text(
+            "Organize stage skipped after manifest and course-contract validation.\n",
+            encoding="utf-8",
+        )
+        return
+
     # Revoke the prior publication before executing the producer. If execution
     # fails, neither stale manifest bytes nor stale success flags survive.
     manifest_path.unlink(missing_ok=True)
     _revoke_all_organized_flags(output_dir)
     command = [
-        str(snakemake.params.python),  # type: ignore[name-defined]
+        str(workflow.params.python),
         "-m",
         "rtpipeline.cli",
         "--dicom-root",
-        str(snakemake.params.dicom_root),  # type: ignore[name-defined]
+        str(workflow.params.dicom_root),
         "--outdir",
         str(output_dir),
         "--logs",
-        str(snakemake.params.logs_dir),  # type: ignore[name-defined]
+        str(workflow.params.logs_dir),
         "--stage",
         "organize",
         "--max-workers",
-        str(max(1, int(snakemake.threads))),  # type: ignore[name-defined]
+        str(max(1, int(workflow.threads))),
     ]
-    custom_structures = str(snakemake.params.custom_structures)  # type: ignore[name-defined]
+    custom_structures = str(workflow.params.custom_structures)
     if custom_structures:
         command.extend(["--custom-structures", custom_structures])
     with log_path.open("w", encoding="utf-8") as log_file:
@@ -319,16 +303,30 @@ else:
             check=True,
             stdout=log_file,
             stderr=subprocess.STDOUT,
-            env=_runtime_environment(),
+            env=runtime_environment(workflow.params),
         )
 
-    ledger, courses = _validated_courses_from_ledger(
-        output_dir,
-        prioritize_short_courses=bool(  # type: ignore[name-defined]
-            snakemake.params.prioritize_short_courses
-        ),
-    )
+    try:
+        ledger, courses = _validated_courses_from_delegate(
+            workflow,
+            output_dir,
+            prioritize_short_courses=bool(
+                workflow.params.prioritize_short_courses
+            ),
+            result_dir=manifest_path.parent,
+        )
+    except Exception as exc:
+        with log_path.open("a", encoding="utf-8") as log_file:
+            log_file.write(f"Manifest contract validation failed: {exc}\n")
+        raise
+
     for course in courses:
         _write_text_atomic(Path(course["path"]) / ".organized", "ok\n")
     payload = _manifest_payload(ledger, courses)
-    _write_text_atomic(manifest_path, json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    _write_text_atomic(
+        manifest_path, json.dumps(payload, indent=2, sort_keys=True) + "\n"
+    )
+
+
+if "snakemake" in globals():
+    main(snakemake)  # type: ignore[name-defined]
