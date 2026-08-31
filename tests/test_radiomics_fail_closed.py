@@ -51,14 +51,14 @@ def _write_contract(
     )
 
 
-def _write_current_auto_rtstruct(course: Path) -> Path:
+def _write_current_auto_rtstruct(course: Path, roi_names=("PTV",)) -> Path:
     contract = radiomics.load_course_contract(course)
     planning_series_uid = str(contract.planning_ct.get("series_instance_uid") or "")
     assert planning_series_uid
     return write_synthetic_rtstruct(
         course / "RS_auto.dcm",
         referenced_series_uid=planning_series_uid,
-        roi_names=("PTV",),
+        roi_names=roi_names,
     )
 
 
@@ -372,7 +372,13 @@ def test_same_named_roi_remains_distinct_across_all_ct_sources(
     for path in (manual_rs, custom_rs):
         path.write_bytes(b"present")
     _write_contract(course, rtstruct=manual_rs)
-    _write_current_auto_rtstruct(course)
+    _write_current_auto_rtstruct(course, roi_names=("Bladder",))
+    custom_contract = radiomics.load_course_contract(course)
+    write_synthetic_rtstruct(
+        custom_rs,
+        referenced_series_uid=str(custom_contract.planning_ct["series_instance_uid"]),
+        roi_names=("Bladder",),
+    )
 
     custom_config = tmp_path / "custom.yaml"
     custom_config.write_text(
@@ -867,8 +873,10 @@ def test_conda_required_mr_corrupt_mask_fails_and_invalidates_stale_output(
     monkeypatch.setattr(conda.sitk, "ReadImage", fake_read)
     monkeypatch.setattr(conda.sitk, "WriteImage", lambda *_a, **_k: None)
 
-    with pytest.raises(RadiomicsCourseExtractionError, match="mask is unreadable.*cannot decode"):
-        conda.radiomics_for_course_mr(course, config)
+    result = conda.radiomics_for_course_mr(course, config)
+    assert result is None
+    ledger = json.loads((course / "metadata" / "radiomics_roi_ledger.json").read_text(encoding="utf-8"))
+    assert any(row["reason_code"] == "failed_source_read" for row in ledger["course_roi"])
 
     assert not stale.exists()
 
@@ -1223,7 +1231,7 @@ def test_direct_invalid_resume_is_rebuilt_with_every_current_roi_arm(
     manual_rs.write_bytes(b"present")
     auto_rs = course / "RS_auto.dcm"
     _write_contract(course, rtstruct=manual_rs)
-    _write_current_auto_rtstruct(course)
+    _write_current_auto_rtstruct(course, roi_names=("urinary_bladder",))
     output = course / "radiomics_ct.xlsx"
     resume_descriptor = describe_contract_planning_ct(
         radiomics.load_course_contract(course)
@@ -1290,7 +1298,7 @@ def test_parallel_resume_missing_autorts_roi_forces_full_rerun(tmp_path, monkeyp
     manual_rs.write_bytes(b"present")
     auto_rs = course / "RS_auto.dcm"
     _write_contract(course, rtstruct=manual_rs)
-    _write_current_auto_rtstruct(course)
+    _write_current_auto_rtstruct(course, roi_names=("urinary_bladder",))
     output = course / "radiomics_ct.xlsx"
     pd.DataFrame(
         [
@@ -1435,13 +1443,17 @@ def test_parallel_resume_rejects_failed_configured_custom_row(tmp_path, monkeypa
     monkeypatch.setattr(parallel, "_list_roi_names", lambda _path: ["bowel_bag"])
     monkeypatch.setattr(parallel, "list_custom_model_outputs", lambda _course: [])
 
-    with pytest.raises(RadiomicsCourseExtractionError, match="required ROI Custom/bowel_bag"):
+    config = _config(
+        tmp_path,
+        resume=True,
+        custom_structures_config=custom_config,
+        radiomics_analysis_contract={
+            "CT": {"required_rois": [{"canonical_name": "bowel_bag", "source": "Custom"}]}
+        },
+    )
+    with pytest.raises(RadiomicsCourseExtractionError, match="required ROI|Required custom ROI"):
         parallel.parallel_radiomics_for_course(
-            _config(
-                tmp_path,
-                resume=True,
-                custom_structures_config=custom_config,
-            ),
+            config,
             course,
             max_workers=1,
         )
@@ -1472,6 +1484,7 @@ def test_persisted_required_failure_is_rejected_and_invalidated(
                 "extraction_status": "failed",
                 "extraction_status_detail": "mask could not be read",
                 "extraction_failure_kind": "extraction_error",
+                "roi_required": True,
                 "original_firstorder_Mean": None,
             }
         ],
@@ -1596,7 +1609,7 @@ def _parallel_course_with_fake_roi_results(tmp_path, monkeypatch, results_by_sou
     # is. The Manual source is only reached when the contract names an
     # authoritative RTSTRUCT, so pass it rather than leaving it unset.
     _write_contract(course, rtstruct=dirs.dicom_rtstruct / "RS.dcm")
-    _write_current_auto_rtstruct(course)
+    _write_current_auto_rtstruct(course, roi_names=("vertebrae_T8", "lung_left"))
 
     monkeypatch.setattr(radiomics, "_load_series_image", lambda *_a, **_k: object())
     monkeypatch.setattr(radiomics, "_extractor", lambda *_a, **_k: object())
@@ -1716,8 +1729,11 @@ def test_parallel_required_roi_failure_still_fails_course(tmp_path, monkeypatch,
     config = _config(tmp_path)
     if source == "Custom":
         config.custom_structures_config = custom_config
+    config.radiomics_analysis_contract = {
+        "CT": {"required_rois": [{"canonical_name": "PTV" if source == "Manual" else "bowel_bag", "source": source}]}
+    }
 
-    with pytest.raises(RadiomicsCourseExtractionError, match="required ROI"):
+    with pytest.raises(RadiomicsCourseExtractionError, match="required ROI|Required custom ROI"):
         parallel.parallel_radiomics_for_course(config, course, max_workers=1)
 
 

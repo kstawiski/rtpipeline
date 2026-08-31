@@ -63,6 +63,15 @@ from .radiomics_outcomes import (
     resume_identity_pairs as _resume_identity_pairs,
     write_excel_atomic as _write_excel_atomic,
 )
+from .roi_requiredness import (
+    DenominatorLedger,
+    Requiredness,
+    assess_custom_applicability,
+    inspect_rtstruct,
+    match_requirements,
+    requirements_from_contract,
+    write_modality_ledger,
+)
 from .radiomics_ct_contract import (
     CT_EXTRACTION_ARMS,
     PRIMARY_ARM,
@@ -341,6 +350,40 @@ def _task_common_metadata(
         "stable_roi_identifier": task.stable_roi_identifier,
         "structure_cropped": bool(cropped),
     }
+
+
+def _write_parallel_roi_ledger(
+    course_dir: Path,
+    tasks: Sequence[_RoiTask],
+    rows: Sequence[Mapping[str, Any]],
+    applicability: Sequence[Any] = (),
+    *,
+    extracted: bool,
+    technical: bool = False,
+    indeterminate: bool = False,
+) -> None:
+    ledger = DenominatorLedger()
+    course_id, patient_id = Path(course_dir).name, Path(course_dir).parent.name
+    for task in tasks:
+        ledger.expect_course_roi(course_id, task.roi_name)
+    for item in applicability:
+        ledger.expect_course_roi(course_id, item.roi_name)
+        if item.reason_code != "extracted":
+            ledger.record_roi(course_id, patient_id, item.roi_name, reason_code=item.reason_code, disposition="excluded", detail=item.detail)
+    seen = set()
+    for row in rows:
+        name = str(row.get("roi_original_name", row.get("roi_name", "")))
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        status = str(row.get("extraction_status") or "success")
+        reason = str(row.get("roi_structural_code") or ("extracted" if status in {"success", "declared_skip"} else "failed_radiomics_extraction"))
+        ledger.record_roi(course_id, patient_id, name, reason_code=reason, disposition="extracted" if reason == "extracted" else "excluded")
+    for task in tasks:
+        if (course_id, task.roi_name) not in {(row.get("course_id"), row.get("roi_name")) for row in ledger.roi_rows}:
+            ledger.record_roi(course_id, patient_id, task.roi_name, reason_code="failed_radiomics_extraction", disposition="excluded")
+    ledger.record_course(course_id, patient_id, screened=True, in_scope=True, out_of_scope=False, adequate_coverage=bool(rows), insufficient_coverage=not bool(rows), valid_derivation=any(item.reason_code == "extracted" for item in applicability), technical_exclusion=technical, indeterminate=indeterminate or any(item.reason_code == "indeterminate_applicability" for item in applicability), extracted=extracted, reason_code="extracted" if extracted else ("indeterminate_applicability" if indeterminate else "failed_radiomics_extraction"))
+    write_modality_ledger(Path(course_dir) / "metadata", ledger, "CT")
 
 
 def _status_records(
@@ -854,6 +897,8 @@ def parallel_radiomics_for_course(
     # Custom structures (optional): prepare RS_custom but extract only custom ROIs (no duplication)
     rs_custom = course_dir / "RS_custom.dcm"
     desired_custom: set[str] = set()
+    custom_applicability: list[Any] = []
+    observed_required: set[str] = set()
     configured_custom_value = (
         custom_structures_config
         or getattr(config, "custom_structures_config", None)
@@ -883,12 +928,94 @@ def parallel_radiomics_for_course(
                 if isinstance(item, str) and item.strip()
             }
         }
+        # Decide applicability before rebuilding RS_custom. The dependency
+        # evidence comes from the current source inventories, never from the
+        # cropped planning volume.
+        dependency_states: dict[str, Any] = {}
+        for source_name, source_path, _ in sources:
+            try:
+                inventory = inspect_rtstruct(source_path)
+            except Exception:
+                continue
+            for observation in inventory.named_rois:
+                dependency_states[observation.name] = {
+                    "readable": not bool(observation.structural_code),
+                    "non_empty": observation.has_readable_contour,
+                }
+        try:
+            from .radiomics import _planning_ct_fov, _analysis_contract, _roi_requiredness
+            custom_contract = _analysis_contract(config)
+        except Exception:
+            custom_contract = {}
+            _planning_ct_fov = lambda _path: {}
+            _roi_requiredness = lambda _config, _source, _name: Requiredness.INVENTORY_ONLY
+        available_custom = {}
+        if rs_custom.is_file():
+            try:
+                custom_inventory = inspect_rtstruct(rs_custom)
+                available_custom = {item.name: item for item in custom_inventory.named_rois}
+            except Exception:
+                available_custom = {}
+        applicable_custom: set[str] = set()
+        for base in sorted(desired_custom):
+            candidate = next(
+                (available_custom[name] for name in (base, f"{base}__partial") if name in available_custom),
+                None,
+            )
+            generated_state = "absent"
+            if candidate is not None:
+                generated_state = "readable_nonempty" if candidate.has_readable_contour else "unreadable"
+            assessment = assess_custom_applicability(
+                base, dependency_states, _planning_ct_fov(course_dir), generated_state=generated_state,
+            )
+            custom_applicability.append(assessment)
+            if assessment.reason_code == "extracted":
+                applicable_custom.add(base)
+                if _roi_requiredness(config, "Custom", base) == Requiredness.ANALYSIS_REQUIRED:
+                    observed_required.add(base)
+            elif assessment.reason_code in {"not_applicable_anatomy", "not_applicable_scope"}:
+                if _roi_requiredness(config, "Custom", base) == Requiredness.ANALYSIS_REQUIRED:
+                    observed_required.add(base)
+            elif assessment.reason_code in {"failed_custom_generation", "indeterminate_applicability"}:
+                _write_parallel_roi_ledger(
+                    course_dir,
+                    (),
+                    (),
+                    custom_applicability,
+                    extracted=False,
+                    technical=assessment.reason_code == "failed_custom_generation",
+                    indeterminate=assessment.reason_code == "indeterminate_applicability",
+                )
+                _invalidate_radiomics_outputs(out_path)
+                raise RadiomicsCourseExtractionError(
+                    f"Configured custom ROI {base!r} has {assessment.reason_code}: {assessment.detail}"
+                )
+            elif (
+                _roi_requiredness(config, "Custom", base) == Requiredness.ANALYSIS_REQUIRED
+                and assessment.reason_code not in {"not_applicable_anatomy", "not_applicable_scope"}
+            ):
+                _write_parallel_roi_ledger(
+                    course_dir,
+                    (),
+                    (),
+                    custom_applicability,
+                    extracted=False,
+                    technical=True,
+                )
+                _invalidate_radiomics_outputs(out_path)
+                raise RadiomicsCourseExtractionError(
+                    f"Required custom ROI {base!r} has {assessment.reason_code}: {assessment.detail}"
+                )
+        desired_custom = applicable_custom
         custom_rebuild_attempted = False
         custom_rebuild_published = False
         try:
             rs_auto_for_custom = course_dir / "RS_auto.dcm"
-            custom_is_stale = _is_rs_custom_stale(
-                rs_custom, configured_custom_path, rs_manual, rs_auto_for_custom
+            custom_is_stale = bool(
+                desired_custom
+                and _is_rs_custom_stale(
+                    rs_custom, configured_custom_path, rs_manual, rs_auto_for_custom
+                )
             )
             if custom_is_stale:
                 custom_rebuild_attempted = True
@@ -1021,21 +1148,85 @@ def parallel_radiomics_for_course(
     # Enumerate every current non-skipped identity before accepting a resume
     # workbook. BODY-only top-ups can miss ordinary Manual/AutoRTS/model ROIs.
     tasks: List[_RoiTask] = []
+    required_contract = requirements_from_contract(
+        getattr(config, "radiomics_analysis_contract", {}) or {}, "CT"
+    )
     try:
+        from .radiomics import _roi_requiredness
+        analysis_config = getattr(config, "radiomics_analysis_contract", {}) or {}
         for source, rs_path, expected_rois in sources:
-            roi_names = expected_rois or _list_roi_names(rs_path)
+            if expected_rois:
+                roi_names = list(expected_rois)
+            else:
+                try:
+                    inventory = inspect_rtstruct(rs_path)
+                except Exception:
+                    inventory = None
+                if inventory is None:
+                    roi_names = list(_list_roi_names(rs_path))
+                else:
+                    for match in match_requirements(inventory, required_contract, source=source):
+                        if match.observation is not None:
+                            observed_required.add(match.requirement.canonical_name)
+                        if match.structural_code == "REQUIRED_ROI_AMBIGUOUS_MATCH":
+                            _write_parallel_roi_ledger(
+                                course_dir,
+                                (),
+                                [{
+                                    "roi_original_name": match.requirement.canonical_name,
+                                    "segmentation_source": source,
+                                    "extraction_status": "failed",
+                                    "roi_structural_code": "REQUIRED_ROI_AMBIGUOUS_MATCH",
+                                }],
+                                extracted=False,
+                                indeterminate=True,
+                            )
+                            raise RadiomicsCourseExtractionError(
+                                f"Required ROI {match.requirement.canonical_name!r} has ambiguous identity in {rs_path} "
+                                "[REQUIRED_ROI_AMBIGUOUS_MATCH]"
+                            )
+                    for observation in inventory.named_rois:
+                        requiredness = _roi_requiredness(config, source, observation.name)
+                        if observation.structural_code and requiredness == Requiredness.ANALYSIS_REQUIRED:
+                            raise RadiomicsCourseExtractionError(
+                                f"Required ROI {observation.name!r} in {rs_path} has "
+                                f"{observation.structural_code}"
+                            )
+                    roi_names = [
+                        observation.name for observation in inventory.named_rois
+                        if not observation.structural_code
+                    ]
+                    if not roi_names:
+                        try:
+                            roi_names = list(_list_roi_names(rs_path))
+                        except Exception:
+                            roi_names = []
+                    if inventory.named_rois:
+                        valid_names = {observation.name for observation in inventory.named_rois if not observation.structural_code}
+                        roi_names = [name for name in roi_names if name in valid_names]
+                    if not roi_names and "RTSTRUCT_NO_NAMED_ROIS" in inventory.structural_codes:
+                        logger.info("RTSTRUCT has no named ROIs and contributes no inventory: %s", rs_path)
             for roi_name in roi_names:
                 if _norm(roi_name) in skip_rois:
                     continue
+                selected_model = source.startswith("CustomModel:")
+                requiredness = _roi_requiredness(
+                    config, source, roi_name, selected_model=selected_model
+                )
+                if requiredness == Requiredness.ANALYSIS_REQUIRED:
+                    for requirement in required_contract:
+                        if (
+                            requirement.requiredness == Requiredness.ANALYSIS_REQUIRED
+                            and (not requirement.source or _norm(requirement.source) == _norm(source))
+                            and any(_norm(accepted) == _norm(roi_name) for accepted in requirement.accepted_names)
+                        ):
+                            observed_required.add(requirement.canonical_name)
                 tasks.append(
                     _build_task(
                         source,
                         rs_path,
                         roi_name,
-                        required=roi_source_is_required(
-                            source,
-                            operator_configured=source == "Custom",
-                        ),
+                        required=requiredness == Requiredness.ANALYSIS_REQUIRED,
                     )
                 )
     except Exception:
@@ -1049,7 +1240,7 @@ def parallel_radiomics_for_course(
         raise RadiomicsCourseExtractionError(
             f"Required custom RTSTRUCT is missing for configured ROIs in {course_dir}"
         )
-    if rs_custom.exists():
+    if rs_custom.exists() and (desired_custom or configured_custom_path is None):
         try:
             avail = set(_list_roi_names(rs_custom))
             if configured_custom_path is None and not desired_custom:
@@ -1075,12 +1266,21 @@ def parallel_radiomics_for_course(
             for roi_name in wanted:
                 if _norm(roi_name) in skip_rois:
                     continue
+                required_custom = _roi_requiredness(config, "Custom", roi_name) == Requiredness.ANALYSIS_REQUIRED
+                if required_custom:
+                    for requirement in required_contract:
+                        if (
+                            requirement.requiredness == Requiredness.ANALYSIS_REQUIRED
+                            and (not requirement.source or _norm(requirement.source) == "custom")
+                            and any(_norm(accepted) == _norm(roi_name) for accepted in requirement.accepted_names)
+                        ):
+                            observed_required.add(requirement.canonical_name)
                 tasks.append(
                     _build_task(
                         "Custom",
                         rs_custom,
                         roi_name,
-                        required=True,
+                        required=required_custom,
                     )
                 )
         except Exception as exc:
@@ -1090,6 +1290,31 @@ def parallel_radiomics_for_course(
             raise RadiomicsCourseExtractionError(
                 f"Failed to enumerate custom radiomics tasks for {course_dir}: {exc}"
             ) from exc
+
+    missing_required = [
+        requirement.canonical_name
+        for requirement in required_contract
+        if requirement.requiredness == Requiredness.ANALYSIS_REQUIRED
+        and requirement.canonical_name not in observed_required
+    ]
+    if missing_required:
+        _write_parallel_roi_ledger(
+            course_dir,
+            (),
+            [{
+                "roi_original_name": name,
+                "extraction_status": "failed",
+                "roi_structural_code": "REQUIRED_ROI_NOT_DECLARED",
+            } for name in missing_required],
+            extracted=False,
+            technical=True,
+        )
+        _invalidate_radiomics_outputs(out_path)
+        raise RadiomicsCourseExtractionError(
+            "Required ROI(s) are absent from current RTSTRUCT sources: "
+            + ", ".join(missing_required)
+            + " [REQUIRED_ROI_NOT_DECLARED]"
+        )
 
     expected_keys = expected_publication_keys(
         {
@@ -1131,9 +1356,7 @@ def parallel_radiomics_for_course(
             resume_error = exc
             existing_keys = set()
         if resume_error is None and expected_keys and existing_keys == expected_keys:
-            logger.debug(
-                "Parallel radiomics resume publication is complete for %s", course_dir
-            )
+            _write_parallel_roi_ledger(course_dir, tasks, existing_df.to_dict("records"), custom_applicability, extracted=True)
             return _resume_outcome(out_path, tasks, existing_df)
         logger.warning(
             "Invalidating incomplete or stale parallel resume publication for %s: "
@@ -1379,10 +1602,11 @@ def parallel_radiomics_for_course(
     records_to_write = list(rows)
     if not records_to_write:
         if existing_df is not None and out_path.exists():
-            logger.debug("No new radiomics rows for %s (resume top-up)", course_dir)
+            _write_parallel_roi_ledger(course_dir, tasks, existing_df.to_dict("records"), custom_applicability, extracted=True)
             return _resume_outcome(out_path, tasks, existing_df)
         logger.info("No eligible radiomics regions for %s", course_dir)
         _invalidate_radiomics_outputs(out_path)
+        _write_parallel_roi_ledger(course_dir, tasks, (), custom_applicability, extracted=False, technical=True)
         return RadiomicsCourseOutcome.nothing_to_do(
             "all enumerated ROIs were explicitly skipped",
             roi_counts=source_counts,
@@ -1425,6 +1649,7 @@ def parallel_radiomics_for_course(
         else:
             df = df_new
         write_ct_publication_atomic(df, out_path, expected_keys=expected_keys)
+        _write_parallel_roi_ledger(course_dir, tasks, records_to_write, custom_applicability, extracted=True, technical=bool(roi_failures))
         return outcome
     except Exception as exc:
         _invalidate_radiomics_outputs(out_path)
