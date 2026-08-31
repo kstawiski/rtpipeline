@@ -208,3 +208,37 @@ if any(name in sys.modules for name in blocked):
     assert result.returncode == 0, result.stdout
     assert "course-contract validation" in log_path.read_text(encoding="utf-8")
     assert (course_dir / ".organized").read_text(encoding="utf-8") == "ok\n"
+
+
+def test_script_targets_have_no_future_import() -> None:
+    """Snakemake prepends a preamble to a ``script:`` target.
+
+    A ``from __future__`` statement is then no longer the first statement in the
+    generated file, so Python raises
+
+        SyntaxError: from __future__ imports must occur at the beginning of the file
+
+    and the rule fails before it can log anything. This aborted a 230-course
+    cohort three times. A module imported normally may still use it; only the
+    files Snakemake executes directly may not.
+    """
+    import re
+    from pathlib import Path
+
+    snakefile = Path(__file__).resolve().parents[1] / "Snakefile"
+    targets = set(re.findall(r'"(workflow/scripts/[A-Za-z0-9_]+\.py)"', snakefile.read_text()))
+    assert targets, "no script: targets discovered in the Snakefile"
+    offenders = []
+    for rel in sorted(targets):
+        path = snakefile.parent / rel
+        if not path.is_file():
+            continue
+        for line in path.read_text().splitlines():
+            stripped = line.strip()
+            if stripped.startswith("from __future__"):
+                offenders.append(rel)
+                break
+    assert not offenders, (
+        "Snakemake script targets must not use a __future__ import "
+        f"(preamble is prepended before them): {offenders}"
+    )
