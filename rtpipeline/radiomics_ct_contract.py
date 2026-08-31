@@ -1046,10 +1046,62 @@ def read_authoritative_ct_publication(path: Path) -> Any:
     return dataframe
 
 
-def sentinel_payload(dataframe: Any, parquet_path: Path) -> dict[str, Any]:
+def _validate_configuration_dependency(dataframe: Any, dependency_path: Path) -> str:
+    from .config_dependencies import (
+        RADIOMICS_DEPENDENCY_SCHEMA,
+        radiomics_row_parameter_key,
+        read_stage_dependency,
+    )
+
+    record = read_stage_dependency(dependency_path, expected_stage="radiomics")
+    payload = record.get("payload") or {}
+    provenance = payload.get("parameter_provenance") or {}
+    if provenance.get("schema") != RADIOMICS_DEPENDENCY_SCHEMA:
+        raise ValueError("radiomics configuration dependency lacks parameter provenance")
+    ct_manifest = provenance.get("ct") or {}
+    roi_map = ct_manifest.get("roi_class_map") or {}
+    configured_hashes = ct_manifest.get("configured_parameter_hashes") or {}
+    if not isinstance(configured_hashes, Mapping) or not configured_hashes:
+        raise ValueError("radiomics configuration dependency has no configured CT hashes")
+
+    for row in dataframe.to_dict("records"):
+        if str(row.get("roi_map_version")) != str(roi_map.get("version")) or str(
+            row.get("roi_map_hash")
+        ) != str(roi_map.get("sha256")):
+            raise ValueError(
+                "CT radiomics row provenance disagrees with the DAG ROI class map"
+            )
+        keys = [
+            radiomics_row_parameter_key(
+                str(row.get("extraction_arm") or ""),
+                row.get("effective_resegment_lower_hu"),
+                row.get("effective_resegment_upper_hu"),
+                large_roi=large_roi,
+            )
+            for large_roi in (False, True)
+        ]
+        expected_hashes = {
+            str(configured_hashes[key])
+            for key in keys
+            if configured_hashes.get(key)
+        }
+        if str(row.get("configured_parameter_hash")) not in expected_hashes:
+            raise ValueError(
+                "CT radiomics row configured_parameter_hash disagrees with the "
+                f"DAG extraction configuration for {keys}"
+            )
+    return str(record["sha256"])
+
+
+def sentinel_payload(
+    dataframe: Any,
+    parquet_path: Path,
+    *,
+    configuration_dependency: Optional[Path] = None,
+) -> dict[str, Any]:
     keys = sorted("\x1f".join(key) for key in validate_ct_publication(dataframe))
     key_digest = hashlib.sha256("\n".join(keys).encode("utf-8")).hexdigest()
-    return {
+    payload = {
         "status": "ok",
         "schema": "rtpipeline-radiomics-completion-v1",
         "authoritative_parquet": str(Path(parquet_path).name),
@@ -1068,10 +1120,18 @@ def sentinel_payload(dataframe: Any, parquet_path: Path) -> dict[str, Any]:
             {str(value) for value in dataframe["code_revision"].tolist()}
         ),
     }
+    if configuration_dependency is not None:
+        payload["configuration_dependency_sha256"] = _validate_configuration_dependency(
+            dataframe, Path(configuration_dependency)
+        )
+    return payload
 
 
 def validate_completion_sentinel(
-    course_dir: Path, sentinel_path: Optional[Path] = None
+    course_dir: Path,
+    sentinel_path: Optional[Path] = None,
+    *,
+    configuration_dependency: Optional[Path] = None,
 ) -> dict[str, Any]:
     course_dir = Path(course_dir)
     target = Path(sentinel_path) if sentinel_path else course_dir / ".radiomics_done"
@@ -1083,8 +1143,12 @@ def validate_completion_sentinel(
         raise ValueError("governed radiomics completion sentinel must be a JSON object")
     parquet_path = course_dir / "radiomics_ct.parquet"
     dataframe = read_authoritative_ct_publication(parquet_path)
-    expected = sentinel_payload(dataframe, parquet_path)
-    for field in (
+    expected = sentinel_payload(
+        dataframe,
+        parquet_path,
+        configuration_dependency=configuration_dependency,
+    )
+    fields = [
         "status",
         "schema",
         "authoritative_parquet",
@@ -1095,7 +1159,10 @@ def validate_completion_sentinel(
         "effective_parameter_hashes",
         "configured_parameter_hashes",
         "code_revisions",
-    ):
+    ]
+    if configuration_dependency is not None:
+        fields.append("configuration_dependency_sha256")
+    for field in fields:
         if observed.get(field) != expected.get(field):
             raise ValueError(
                 f"governed radiomics completion sentinel is stale for {field}"
@@ -1103,11 +1170,26 @@ def validate_completion_sentinel(
     return observed
 
 
-def write_completion_sentinel(course_dir: Path, sentinel_path: Optional[Path] = None) -> Path:
+def write_completion_sentinel(
+    course_dir: Path,
+    sentinel_path: Optional[Path] = None,
+    *,
+    configuration_dependency: Optional[Path] = None,
+) -> Path:
     course_dir = Path(course_dir)
+    if configuration_dependency is None:
+        configured_dependency = os.environ.get(
+            "RTPIPELINE_RADIOMICS_CONFIG_DEPENDENCY", ""
+        ).strip()
+        if configured_dependency:
+            configuration_dependency = Path(configured_dependency)
     parquet_path = course_dir / "radiomics_ct.parquet"
     dataframe = read_authoritative_ct_publication(parquet_path)
-    payload = sentinel_payload(dataframe, parquet_path)
+    payload = sentinel_payload(
+        dataframe,
+        parquet_path,
+        configuration_dependency=configuration_dependency,
+    )
     target = Path(sentinel_path) if sentinel_path else course_dir / ".radiomics_done"
     target.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(prefix=f".{target.name}.", suffix=".tmp", dir=target.parent)

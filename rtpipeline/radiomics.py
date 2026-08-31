@@ -82,6 +82,7 @@ from .radiomics_ct_contract import (
     configured_parameter_hash,
     current_code_revision,
     disposition_rows_for_arms,
+    effective_parameter_hash,
     expected_publication_keys,
     extract_ct_roi_arms,
     load_custom_structure_provenance,
@@ -2231,6 +2232,8 @@ def radiomics_for_course_mr(config: PipelineConfig, course) -> Optional[Path]:
         return result
 
     rows: List[Dict[str, object]] = []
+    run_identifier = new_run_identifier()
+    code_revision = current_code_revision()
     for series_root in sorted(p for p in mr_root.iterdir() if p.is_dir()):
         nifti_dir = series_root / 'NIFTI'
         dicom_dir = series_root / 'DICOM'
@@ -2315,6 +2318,13 @@ def radiomics_for_course_mr(config: PipelineConfig, course) -> Optional[Path]:
                     'series_dir': str(source_dir),
                     'series_uid': series_uid,
                     'nifti_path': str(nifti_path),
+                    **_mr_parameter_provenance(
+                        config,
+                        extractor,
+                        normalize_override=normalize_override,
+                        run_identifier=run_identifier,
+                        code_revision=code_revision,
+                    ),
                 })
                 rows.append(rec)
             except Exception as exc:
@@ -2520,6 +2530,71 @@ def _infer_mr_weighting(series_dir: Path, series_uid: str) -> Optional[str]:
     return None
 
 
+def _mr_parameter_arm(normalize_override: Optional[bool]) -> str:
+    if normalize_override is None:
+        return "mr_configured"
+    return "mr_normalized" if normalize_override else "mr_native_intensity"
+
+
+def _mr_parameter_provenance(
+    config: PipelineConfig,
+    extractor: Any,
+    *,
+    normalize_override: Optional[bool],
+    run_identifier: str,
+    code_revision: str,
+) -> dict[str, str]:
+    arm = _mr_parameter_arm(normalize_override)
+    params_path = _get_params_file(config, "MR")
+    return {
+        "extraction_arm": arm,
+        "configured_parameter_hash": configured_parameter_hash(
+            params_path,
+            arm=arm,
+            window=None,
+            large_roi=False,
+        ),
+        "effective_parameter_hash": effective_parameter_hash(
+            extractor,
+            arm=arm,
+            window=None,
+        ),
+        "run_identifier": run_identifier,
+        "code_revision": code_revision,
+    }
+
+
+def _mr_resume_parameter_provenance_is_current(
+    dataframe: Any,
+    params_path: Optional[Path],
+) -> bool:
+    required = {
+        "extraction_arm",
+        "configured_parameter_hash",
+        "effective_parameter_hash",
+        "run_identifier",
+        "code_revision",
+    }
+    if dataframe.empty or not required.issubset({str(column) for column in dataframe.columns}):
+        return False
+    for row in dataframe.to_dict("records"):
+        arm = str(row.get("extraction_arm") or "")
+        if arm not in {"mr_configured", "mr_normalized", "mr_native_intensity"}:
+            return False
+        expected = configured_parameter_hash(
+            params_path,
+            arm=arm,
+            window=None,
+            large_roi=False,
+        )
+        if str(row.get("configured_parameter_hash") or "") != expected:
+            return False
+        for field in ("effective_parameter_hash", "run_identifier", "code_revision"):
+            if not str(row.get(field) or "").strip():
+                return False
+    return True
+
+
 def radiomics_for_mr_series(config: PipelineConfig, series: MRSeries) -> Optional[Path]:
     # Determine weighting to toggle normalization: T2 -> False, T1 -> True, else default False
     wt = _infer_mr_weighting(series.dir, series.series_uid)
@@ -2535,7 +2610,15 @@ def radiomics_for_mr_series(config: PipelineConfig, series: MRSeries) -> Optiona
     out_feat = out_root / 'radiomics_features_MR.xlsx'
     if getattr(config, 'resume', False) and out_feat.exists():
         try:
-            assert_radiomics_arrow_schema(out_feat.with_suffix('.parquet'))
+            import pandas as pd
+
+            parquet_path = out_feat.with_suffix('.parquet')
+            assert_radiomics_arrow_schema(parquet_path)
+            existing = pd.read_parquet(parquet_path, engine="pyarrow")
+            if not _mr_resume_parameter_provenance_is_current(
+                existing, _get_params_file(config, "MR")
+            ):
+                raise ValueError("MR parameter provenance is absent or stale")
         except Exception as exc:
             logger.info("Rejecting non-conforming MR radiomics resume output %s: %s", out_feat, exc)
             _invalidate_radiomics_outputs(out_feat)
@@ -2543,6 +2626,8 @@ def radiomics_for_mr_series(config: PipelineConfig, series: MRSeries) -> Optiona
             return out_feat
     out_root.mkdir(parents=True, exist_ok=True)
     rows: List[Dict] = []
+    run_identifier = new_run_identifier()
+    code_revision = current_code_revision()
     # Manual MR RS (if any)
     for_uid = _mr_series_for_uid(series.dir, series.series_uid) or ''
     for rs in _find_mr_manual_rs(config.dicom_root, series.patient_id, for_uid):
@@ -2558,6 +2643,13 @@ def radiomics_for_mr_series(config: PipelineConfig, series: MRSeries) -> Optiona
                     'roi_name': roi,
                     'series_dir': str(series.dir),
                     'series_uid': series.series_uid,
+                    **_mr_parameter_provenance(
+                        config,
+                        extractor,
+                        normalize_override=normalize_override,
+                        run_identifier=run_identifier,
+                        code_revision=code_revision,
+                    ),
                 })
                 rows.append(rec)
             except RadiomicsFeatureTypeError:
@@ -2595,6 +2687,13 @@ def radiomics_for_mr_series(config: PipelineConfig, series: MRSeries) -> Optiona
                             'roi_name': label_map.get(lab, f'Segment_{lab}'),
                             'series_dir': str(series.dir),
                             'series_uid': series.series_uid,
+                            **_mr_parameter_provenance(
+                                config,
+                                ext,
+                                normalize_override=normalize_override,
+                                run_identifier=run_identifier,
+                                code_revision=code_revision,
+                            ),
                         })
                         return rec
                     except RadiomicsFeatureTypeError:
@@ -2637,6 +2736,13 @@ def radiomics_for_mr_series(config: PipelineConfig, series: MRSeries) -> Optiona
                         'roi_name': label_map.get(lab, f'Segment_{lab}'),
                         'series_dir': str(series.dir),
                         'series_uid': series.series_uid,
+                        **_mr_parameter_provenance(
+                            config,
+                            ext,
+                            normalize_override=normalize_override,
+                            run_identifier=run_identifier,
+                            code_revision=code_revision,
+                        ),
                     })
                     return rec
                 except RadiomicsFeatureTypeError:

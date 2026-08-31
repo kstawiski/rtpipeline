@@ -1001,7 +1001,11 @@ logging.getLogger("radiomics").setLevel(logging.ERROR)
 logging.getLogger("radiomics.featureextractor").setLevel(logging.ERROR)
 
 from radiomics import featureextractor
-from rtpipeline.radiomics_ct_contract import RoiClassDecision, extract_ct_roi_arms
+from rtpipeline.radiomics_ct_contract import (
+    RoiClassDecision,
+    effective_parameter_hash,
+    extract_ct_roi_arms,
+)
 from rtpipeline.radiomics_schema import normalize_radiomics_result
 
 with open(sys.argv[1], "r") as handle:
@@ -1079,6 +1083,13 @@ for task in tasks:
             "__roi_name__": roi_name,
             "__task_index__": task_index,
         }
+        provenance_arm = task.get("parameter_provenance_arm")
+        if provenance_arm:
+            output["__effective_parameter_hash__"] = effective_parameter_hash(
+                extractor,
+                arm=str(provenance_arm),
+                window=None,
+            )
         output.update(normalize_radiomics_result(features))
         print(json.dumps(output, default=str), flush=True)
     except Exception as exc:
@@ -1500,6 +1511,11 @@ def process_radiomics_batch(
         )
         roi_name = task.get("roi_name", "ROI")
         metadata = dict(task.get("metadata") or task.get("extra_metadata") or {})
+        effective_hash = features.get("__effective_parameter_hash__")
+        if task.get("parameter_provenance_arm") and not effective_hash:
+            raise ValueError("isolated extraction omitted effective parameter provenance")
+        if effective_hash:
+            metadata["effective_parameter_hash"] = str(effective_hash)
         metadata.setdefault("roi_name", roi_name)
         metadata.setdefault("roi_original_name", roi_name)
         metadata.setdefault("modality", "CT")
@@ -3046,6 +3062,15 @@ def radiomics_for_course_mr(
         raise RadiomicsCourseExtractionError(
             f"Configured required MR radiomics parameter path is missing: {params_file}"
         )
+    mr_parameter_arm = "mr_configured"
+    mr_run_identifier = new_run_identifier()
+    mr_code_revision = current_code_revision()
+    mr_configured_parameter_hash = configured_parameter_hash(
+        Path(params_file) if params_file is not None else None,
+        arm=mr_parameter_arm,
+        window=None,
+        large_roi=False,
+    )
 
     if not mr_root.exists():
         logger.debug("No MR directory in %s", course_dir)
@@ -3187,6 +3212,7 @@ def radiomics_for_course_mr(
                 'mask_path': mask_nrrd.name,
                 'roi_name': roi_name,
                 'params_file': str(params_file) if params_file else None,
+                'parameter_provenance_arm': mr_parameter_arm,
                 'cleanup': False,
                 'metadata': {
                     'modality': 'MR',
@@ -3194,6 +3220,10 @@ def radiomics_for_course_mr(
                     'segmentation_source': 'AutoTS_total_mr',
                     'patient_id': course_dir.parent.name,
                     'course_id': course_dir.name,
+                    'extraction_arm': mr_parameter_arm,
+                    'configured_parameter_hash': mr_configured_parameter_hash,
+                    'run_identifier': mr_run_identifier,
+                    'code_revision': mr_code_revision,
                 }
             })
 
