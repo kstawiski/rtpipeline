@@ -14,7 +14,7 @@ import tempfile
 import time
 import threading
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional, Tuple, Set, TYPE_CHECKING
+from typing import Any, Dict, List, Mapping, Optional, Tuple, Sequence, Set, TYPE_CHECKING
 
 if TYPE_CHECKING:
     pass  # For future type hints
@@ -34,6 +34,14 @@ from .custom_models import (
 )
 from .layout import build_course_dirs
 from .course_contract import ALL_SERIES_RADIOMICS_TEMP_SCOPE, load_course_contract
+from .roi_requiredness import (
+    DenominatorLedger,
+    Requiredness,
+    assess_custom_applicability,
+    requiredness_for,
+    requirements_from_contract,
+    write_modality_ledger,
+)
 from .radiomics_outcomes import (
     RadiomicsCourseExtractionError,
     RadiomicsCourseOutcome,
@@ -41,7 +49,6 @@ from .radiomics_outcomes import (
     extraction_status_is_nonfatal_for_required,
     invalidate_radiomics_outputs as _invalidate_radiomics_outputs,
     remove_artifact_strict as _remove_artifact_strict,
-    roi_source_is_required,
     write_excel_atomic as _write_excel_atomic,
 )
 from .radiomics_ct_contract import (
@@ -65,6 +72,74 @@ from .radiomics_ct_contract import (
 from .utils import mask_is_cropped, radiomics_mp_context
 
 logger = logging.getLogger(__name__)
+
+
+def _write_conda_roi_ledger(
+    course_dir: Path,
+    tasks: Sequence[Mapping[str, Any]],
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    extracted: bool,
+    expected_names: Sequence[str] = (),
+    missing_reason: str = "failed_radiomics_extraction",
+    in_scope: bool = True,
+    modality: str = "CT",
+) -> None:
+    ledger = DenominatorLedger()
+    course_id, patient_id = Path(course_dir).name, Path(course_dir).parent.name
+    for task in tasks:
+        ledger.expect_course_roi(course_id, str(task.get("roi_name", "")))
+    for name in expected_names:
+        ledger.expect_course_roi(course_id, str(name))
+    seen = set()
+    for row in rows:
+        name = str(row.get("roi_original_name", row.get("roi_name", "")))
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        status = str(row.get("extraction_status") or "success")
+        reason = str(row.get("reason_code") or ("extracted" if status in {"success", "declared_skip"} else "failed_radiomics_extraction"))
+        if status == "below_minimum_voxels":
+            reason = "ROI_MASK_BELOW_MIN_VOXELS"
+        ledger.record_roi(course_id, patient_id, name, reason_code=reason, disposition="extracted" if reason == "extracted" else "excluded")
+    for task in tasks:
+        name = str(task.get("roi_name", ""))
+        if name and (course_id, name) not in {(row.get("course_id"), row.get("roi_name")) for row in ledger.roi_rows}:
+            failure = task.get("precomputed_failure") or {}
+            reason = str(failure.get("reason_code") or "failed_radiomics_extraction")
+            if reason not in {
+                "extracted", "not_applicable_modality", "not_applicable_scope",
+                "not_applicable_anatomy", "insufficient_fov", "failed_source_segmentation",
+                "failed_source_read", "failed_custom_generation", "failed_custom_read",
+                "failed_radiomics_extraction", "indeterminate_applicability",
+                "not_computed_valid_empty_scope",
+                "ROI_DECLARED_NO_CONTOUR_ITEM", "ROI_DECLARED_EMPTY_CONTOUR_SEQUENCE",
+                "ROI_CONTOUR_UNPARSEABLE", "ROI_CONTOUR_PARTIALLY_UNPARSEABLE",
+                "ROI_CONTOUR_ORPHAN_REFERENCE", "ROI_MASK_EMPTY_AFTER_RASTERIZATION",
+                "ROI_MASK_BELOW_MIN_VOXELS", "REQUIRED_ROI_NOT_DECLARED",
+                "REQUIRED_ROI_AMBIGUOUS_MATCH", "ROI_EXTRACTION_FAILED", "RTSTRUCT_NO_NAMED_ROIS",
+            }:
+                reason = "failed_radiomics_extraction"
+            ledger.record_roi(course_id, patient_id, name, reason_code=reason, disposition="excluded")
+    present_names = {str(row.get("roi_name", "")) for row in ledger.roi_rows}
+    for name in expected_names:
+        if str(name) not in present_names:
+            ledger.record_roi(course_id, patient_id, str(name), reason_code=missing_reason, disposition="excluded")
+    ledger.record_course(
+        course_id,
+        patient_id,
+        screened=True,
+        in_scope=in_scope,
+        out_of_scope=not in_scope,
+        adequate_coverage=bool(rows),
+        insufficient_coverage=not bool(rows),
+        valid_derivation=False,
+        technical_exclusion=not extracted,
+        indeterminate=False,
+        extracted=extracted,
+        reason_code="extracted" if extracted else "failed_radiomics_extraction",
+    )
+    write_modality_ledger(Path(course_dir) / "metadata", ledger, modality)
 
 
 RADIOMICS_ENV = os.environ.get("RTPIPELINE_RADIOMICS_ENV", "rtpipeline-radiomics")
@@ -1377,7 +1452,7 @@ def process_radiomics_batch(
         metadata = dict(task.get("metadata") or task.get("extra_metadata") or {})
         source = str(metadata.get("segmentation_source", "unknown"))
         if (
-            roi_source_is_required(source)
+            bool(task.get("required", True))
             and not extraction_status_is_nonfatal_for_required(status)
         ):
             failures.append(f"{source}/{roi_name}: {detail}")
@@ -1397,7 +1472,7 @@ def process_radiomics_batch(
                     run_identifier=str(task["run_identifier"]),
                     code_revision=str(task["code_revision"]),
                     native_voxel_count=task.get("native_voxel_count"),
-                    required=bool(task.get("required")),
+                    required=bool(task.get("required", True)),
                 )
             )
             return
@@ -2251,6 +2326,7 @@ def radiomics_for_course(
     if not has_ct_dicom and not has_ct_nifti:
         logger.warning(f"No CT image found in {course_dir}")
         _invalidate_radiomics_outputs(output_path)
+        _write_conda_roi_ledger(course_dir, (), (), extracted=False, expected_names=(), missing_reason="not_applicable_scope", in_scope=False)
         return None
     if ct_dir is None:
         raise RadiomicsCourseExtractionError(
@@ -2292,6 +2368,51 @@ def radiomics_for_course(
             raise RadiomicsCourseExtractionError(
                 f"Failed to read configured custom ROI identities for {course_dir}: {exc}"
             ) from exc
+        try:
+            from .roi_requiredness import inspect_rtstruct
+            from .radiomics import _planning_ct_fov
+            dependency_states: dict[str, Any] = {}
+            for source_path in (rs_manual, rs_auto):
+                if not Path(source_path).is_file():
+                    continue
+                try:
+                    source_inventory = inspect_rtstruct(source_path)
+                except Exception:
+                    continue
+                for observation in source_inventory.named_rois:
+                    dependency_states[observation.name] = {
+                        "readable": not bool(observation.structural_code),
+                        "non_empty": observation.has_readable_contour,
+                    }
+            custom_inventory = inspect_rtstruct(rs_custom) if rs_custom.is_file() else None
+            available_custom = {
+                item.name: item for item in getattr(custom_inventory, "named_rois", ())
+            }
+            applicable_custom: set[str] = set()
+            for base in sorted(desired_custom):
+                candidate = next(
+                    (available_custom[name] for name in (base, f"{base}__partial") if name in available_custom),
+                    None,
+                )
+                generated_state = (
+                    "readable_nonempty" if candidate is not None and candidate.has_readable_contour
+                    else "unreadable" if candidate is not None else "absent"
+                )
+                assessment = assess_custom_applicability(
+                    base, dependency_states, _planning_ct_fov(course_dir), generated_state=generated_state,
+                )
+                if assessment.reason_code == "extracted":
+                    applicable_custom.add(base)
+                elif assessment.reason_code in {"failed_custom_generation", "indeterminate_applicability"}:
+                    raise RadiomicsCourseExtractionError(
+                        f"Configured custom ROI {base!r} has {assessment.reason_code}: {assessment.detail}"
+                    )
+            desired_custom = applicable_custom
+        except RadiomicsCourseExtractionError:
+            _invalidate_radiomics_outputs(output_path)
+            raise
+        except Exception as exc:
+            logger.warning("Could not complete custom ROI applicability inspection for %s: %s", course_dir, exc)
         custom_rebuild_attempted = False
         custom_rebuild_published = False
         try:
@@ -2505,7 +2626,13 @@ def radiomics_for_course(
             "run_identifier": run_identifier,
             "code_revision": code_revision,
             "native_voxel_count": native_voxel_count,
-            "required": roi_source_is_required(source),
+            "required": requiredness_for(
+                source,
+                roi_original_name,
+                contract=getattr(config, "radiomics_analysis_contract", {}) or {},
+                modality="CT",
+                explicitly_selected_model=source.startswith("CustomModel:"),
+            ) == Requiredness.ANALYSIS_REQUIRED,
             "configured_parameter_hashes": hashes,
             "metadata": {
                 "modality": "CT",
@@ -2546,7 +2673,16 @@ def radiomics_for_course(
         min_voxels_limit, max_voxels_limit = _ct_voxel_limits(config)
 
         for segmentation_source, rs_file, selected_rois in source_specs:
-            best_effort = not roi_source_is_required(segmentation_source)
+            best_effort = True
+
+            def _roi_is_required(roi_name: str) -> bool:
+                return requiredness_for(
+                    segmentation_source,
+                    roi_name,
+                    contract=getattr(config, "radiomics_analysis_contract", {}) or {},
+                    modality="CT",
+                    explicitly_selected_model=segmentation_source.startswith("CustomModel:"),
+                ) == Requiredness.ANALYSIS_REQUIRED
 
             def _record_preparation_failure(
                 roi_name: str,
@@ -2554,9 +2690,10 @@ def radiomics_for_course(
                 *,
                 status: str = "failed",
                 failure_kind: str = "extraction_error",
+                reason_code: Optional[str] = None,
             ) -> None:
                 if (
-                    not best_effort
+                    _roi_is_required(roi_name)
                     and not extraction_status_is_nonfatal_for_required(status)
                 ):
                     raise RadiomicsCourseExtractionError(reason)
@@ -2568,6 +2705,7 @@ def radiomics_for_course(
                         "status": status,
                         "failure_kind": failure_kind,
                         "reason": reason,
+                        "reason_code": reason_code,
                     }
                 )
                 logger.warning(
@@ -2576,6 +2714,32 @@ def radiomics_for_course(
                     roi_name,
                     reason,
                 )
+
+            try:
+                from .roi_requiredness import inspect_rtstruct
+                inventory = inspect_rtstruct(rs_file)
+            except Exception:
+                inventory = None
+            preflight_excluded = set()
+            if inventory is not None:
+                for observation in inventory.named_rois:
+                    if observation.structural_code:
+                        if _roi_is_required(observation.name):
+                            raise RadiomicsCourseExtractionError(
+                                f"Required ROI {observation.name!r} in {rs_file} has "
+                                f"{observation.structural_code}"
+                            )
+                        preflight_excluded.add(observation.name)
+                        if observation.structural_code not in {
+                            "ROI_DECLARED_NO_CONTOUR_ITEM",
+                            "ROI_DECLARED_EMPTY_CONTOUR_SEQUENCE",
+                        }:
+                            _record_preparation_failure(
+                            observation.name,
+                            f"ROI {observation.name!r} in {rs_file} has structural status {observation.structural_code}",
+                            failure_kind="structural_roi_error",
+                            reason_code=observation.structural_code,
+                        )
 
             try:
                 rtstruct = RTStructBuilder.create_from(
@@ -2587,6 +2751,7 @@ def radiomics_for_course(
                     if selected_rois is not None
                     else list(rtstruct.get_roi_names())
                 )
+                roi_names = [name for name in roi_names if name not in preflight_excluded]
             except Exception as exc:
                 if best_effort:
                     try:
@@ -2607,6 +2772,8 @@ def radiomics_for_course(
                     f"Failed to construct RTSTRUCT reader for {segmentation_source} at {rs_file}: {exc}"
                 ) from exc
             if not roi_names:
+                if inventory is not None:
+                    continue
                 raise RadiomicsCourseExtractionError(
                     f"Required RTSTRUCT contains no named ROIs: {segmentation_source} at {rs_file}"
                 )
@@ -2813,7 +2980,7 @@ def radiomics_for_course(
     checkpoint_path = course_dir / "metadata" / "radiomics_ct_checkpoint.parquet"
 
     try:
-        return process_radiomics_batch(
+        result = process_radiomics_batch(
             tasks,
             output_path,
             sequential=sequential,
@@ -2823,6 +2990,15 @@ def radiomics_for_course(
             env_probe_timeout=getattr(config, "radiomics_env_probe_timeout", None),
             acquisition_descriptor=describe_contract_planning_ct(contract),
         )
+        result_rows = []
+        if result is not None:
+            try:
+                import pandas as pd
+                result_rows = pd.read_parquet(Path(result).with_suffix(".parquet")).to_dict("records")
+            except Exception:
+                result_rows = []
+        _write_conda_roi_ledger(course_dir, tasks, result_rows, extracted=result is not None)
+        return result
     finally:
         Path(ct_image_path).unlink(missing_ok=True)
 
@@ -2851,7 +3027,15 @@ def radiomics_for_course_mr(
     mr_root = course_dir / "MR"
     out_path = mr_root / "radiomics_mr.xlsx"
     configured_mr_params = getattr(config, 'radiomics_params_file_mr', None) if config is not None else None
-    mr_required = configured_mr_params is not None or params_file is not None
+    mr_required = any(
+        requirement.requiredness == Requiredness.ANALYSIS_REQUIRED
+        for requirement in requirements_from_contract(getattr(config, "radiomics_analysis_contract", {}) or {}, "MR")
+    )
+    mr_requirements = requirements_from_contract(getattr(config, "radiomics_analysis_contract", {}) or {}, "MR")
+    mr_expected_names = [requirement.canonical_name for requirement in mr_requirements if requirement.requiredness != Requiredness.INVENTORY_ONLY]
+    mr_failures: list[dict[str, str]] = []
+    def _norm_mr(value: Any) -> str:
+        return "".join(ch for ch in str(value or "").casefold() if ch.isalnum())
 
     if params_file is None and configured_mr_params is not None:
         params_file = Path(configured_mr_params)
@@ -2864,10 +3048,15 @@ def radiomics_for_course_mr(
     if not mr_root.exists():
         logger.debug("No MR directory in %s", course_dir)
         _invalidate_radiomics_outputs(out_path)
-        if mr_required:
-            raise RadiomicsCourseExtractionError(
-                f"MR radiomics is required but no MR directory exists for {course_dir}"
-            )
+        _write_conda_roi_ledger(
+            course_dir,
+            [],
+            [],
+            extracted=False,
+            expected_names=mr_expected_names,
+            missing_reason="not_applicable_modality",
+            modality="MR",
+        )
         return None
 
     tasks: List[Dict[str, Any]] = []
@@ -2879,11 +3068,21 @@ def radiomics_for_course_mr(
         seg_dir = series_root / "Segmentation_TotalSegmentator"
 
         if not nifti_dir.exists() or not seg_dir.exists():
+            mr_failures.append({
+                "roi_name": series_root.name,
+                "reason_code": "failed_source_segmentation",
+                "detail": "MR segmentation or NIfTI output is missing",
+            })
             continue
 
         # Find MR NIfTI file
         nifti_files = sorted(nifti_dir.glob("*.nii.gz"))
         if not nifti_files:
+            mr_failures.append({
+                "roi_name": series_root.name,
+                "reason_code": "failed_source_read",
+                "detail": "MR series has no readable NIfTI image",
+            })
             continue
 
         mr_nifti = nifti_files[0]
@@ -2910,30 +3109,40 @@ def radiomics_for_course_mr(
             temp_files.append(Path(mr_nrrd.name))
             mr_image_path = mr_nrrd.name
         except Exception as exc:
-            _invalidate_radiomics_outputs(out_path)
-            raise RadiomicsCourseExtractionError(
-                f"Failed to acquire/serialize required MR image {mr_nifti}: {exc}"
-            ) from exc
+            mr_failures.append({
+                "roi_name": series_root.name,
+                "reason_code": "failed_source_read",
+                "detail": str(exc),
+            })
+            continue
 
         series_uid = series_root.name
 
         # Process each mask in Segmentation_TotalSegmentator
         for mask_path in sorted(seg_dir.glob("total_mr--*.nii.gz")):
+            mask_name = mask_path.name
+            roi_name = mask_name[10:] if mask_name.startswith("total_mr--") else mask_name
+            if roi_name.endswith(".nii.gz"):
+                roi_name = roi_name[:-7]
             try:
                 mask_img = sitk.ReadImage(str(mask_path))
                 mask_arr = sitk.GetArrayFromImage(mask_img)
             except Exception as exc:
-                _invalidate_radiomics_outputs(out_path)
-                raise RadiomicsCourseExtractionError(
-                    f"Required MR mask is unreadable: {mask_path}: {exc}"
-                ) from exc
+                mr_failures.append({
+                    "roi_name": roi_name,
+                    "reason_code": "failed_source_read",
+                    "detail": str(exc),
+                })
+                continue
 
             mask_bool = mask_arr > 0
             if not mask_bool.any():
-                _invalidate_radiomics_outputs(out_path)
-                raise RadiomicsCourseExtractionError(
-                    f"Required MR mask is empty: {mask_path}"
-                )
+                mr_failures.append({
+                    "roi_name": roi_name,
+                    "reason_code": "not_computed_valid_empty_scope",
+                    "detail": "MR mask is valid but empty",
+                })
+                continue
             if int(mask_bool.sum()) < min_voxels_limit:
                 logger.info(
                     "Skipping MR mask %s: %d voxels below minimum %d",
@@ -2941,6 +3150,11 @@ def radiomics_for_course_mr(
                     int(mask_bool.sum()),
                     min_voxels_limit,
                 )
+                mr_failures.append({
+                    "roi_name": roi_name,
+                    "reason_code": "ROI_MASK_BELOW_MIN_VOXELS",
+                    "detail": f"mask contains {int(mask_bool.sum())} voxels",
+                })
                 continue
 
             mask_name = mask_path.name
@@ -2959,10 +3173,12 @@ def radiomics_for_course_mr(
                 sitk.WriteImage(mask_img, mask_nrrd.name)
                 temp_files.append(Path(mask_nrrd.name))
             except Exception as exc:
-                _invalidate_radiomics_outputs(out_path)
-                raise RadiomicsCourseExtractionError(
-                    f"Failed to serialize required MR mask {mask_path}: {exc}"
-                ) from exc
+                mr_failures.append({
+                    "roi_name": roi_name,
+                    "reason_code": "failed_radiomics_extraction",
+                    "detail": str(exc),
+                })
+                continue
 
             tasks.append({
                 'image_path': mr_image_path,
@@ -2987,9 +3203,36 @@ def radiomics_for_course_mr(
             except OSError as exc:
                 logger.debug("Failed to clean MR temporary file %s: %s", tf, exc)
         _invalidate_radiomics_outputs(out_path)
-        if mr_required:
+        missing_reason = (
+            "not_applicable_modality"
+            if not any(path.is_dir() for path in mr_root.iterdir())
+            else mr_failures[0].get("reason_code", "not_computed_valid_empty_scope")
+            if mr_failures
+            else "not_computed_valid_empty_scope"
+        )
+        failure_rows = [
+            {"roi_name": failure.get("roi_name", ""), "reason_code": failure.get("reason_code"), "extraction_status": "failed"}
+            for failure in mr_failures
+        ]
+        _write_conda_roi_ledger(
+            course_dir,
+            [],
+            failure_rows,
+            extracted=False,
+            expected_names=mr_expected_names,
+            missing_reason=missing_reason,
+            modality="MR",
+        )
+        present = {_norm_mr(row.get("roi_name", "")) for row in failure_rows}
+        missing_required = [
+            requirement.canonical_name
+            for requirement in mr_requirements
+            if requirement.requiredness == Requiredness.ANALYSIS_REQUIRED
+            and not any(_norm_mr(alias) in present for alias in requirement.accepted_names)
+        ]
+        if missing_required:
             raise RadiomicsCourseExtractionError(
-                f"MR radiomics is required but produced no eligible tasks for {course_dir}"
+                "Required MR ROI(s) are absent: " + ", ".join(missing_required)
             )
         return None
 
@@ -3024,6 +3267,33 @@ def radiomics_for_course_mr(
             enable_heartbeat=True,
             env_probe_timeout=getattr(config, "radiomics_env_probe_timeout", None),
         )
+        result_rows = []
+        if result is not None:
+            try:
+                import pandas as pd
+                result_rows = pd.read_parquet(Path(result).with_suffix(".parquet")).to_dict("records")
+            except Exception:
+                result_rows = []
+        _write_conda_roi_ledger(
+            course_dir,
+            tasks,
+            list(result_rows) + mr_failures,
+            extracted=result is not None,
+            expected_names=mr_expected_names,
+            modality="MR",
+        )
+        present = {_norm_mr(row.get("roi_original_name", row.get("roi_name", ""))) for row in list(result_rows) + mr_failures}
+        missing_required = [
+            requirement.canonical_name
+            for requirement in mr_requirements
+            if requirement.requiredness == Requiredness.ANALYSIS_REQUIRED
+            and not any(_norm_mr(alias) in present for alias in requirement.accepted_names)
+        ]
+        if missing_required:
+            _invalidate_radiomics_outputs(out_path)
+            raise RadiomicsCourseExtractionError(
+                "Required MR ROI(s) are absent from extracted rows: " + ", ".join(missing_required)
+            )
         if result is None and mr_required:
             _invalidate_radiomics_outputs(out_path)
             raise RadiomicsCourseExtractionError(

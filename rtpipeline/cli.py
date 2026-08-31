@@ -1027,6 +1027,7 @@ def _radiomics_robustness_course(argv: list[str]) -> int:
         radiomics_skip_rois=skip_rois,
         radiomics_max_voxels=_coerce_int(radiomics_cfg.get("max_voxels")),
         radiomics_min_voxels=_coerce_int(radiomics_cfg.get("min_voxels")),
+        radiomics_analysis_contract={},
         radiomics_env_probe_timeout=env_probe_timeout,
         radiomics_robustness_enabled=rob_config.enabled,
         radiomics_robustness_config=rob_config_data,
@@ -1332,6 +1333,12 @@ def main(argv: list[str] | None = None) -> int:
             with open(config_file_path) as f:
                 yaml_config = yaml.safe_load(f) or {}
             logger.info("Loaded pipeline YAML settings from %s", config_file_path)
+            radiomics_yaml = yaml_config.get("radiomics", {}) or {}
+            cfg.radiomics_analysis_contract = (
+                radiomics_yaml.get("analysis_contract")
+                or yaml_config.get("radiomics_analysis_contract")
+                or {}
+            )
             if args.max_total_dose_gy is None:
                 _apply_dose_yaml_config(cfg, yaml_config)
 

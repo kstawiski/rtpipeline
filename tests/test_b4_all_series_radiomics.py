@@ -440,7 +440,7 @@ def test_all_series_parallel_and_conda_emit_one_auto_source(tmp_path, monkeypatc
         parallel_frame[["segmentation_source", "roi_original_name"]].itertuples(
             index=False, name=None
         )
-    ) == [("AutoRTS_total", "PTV"), ("AutoRTS_total", "PTV")]
+    ) == [("AutoRTS_total", "PTV1"), ("AutoRTS_total", "PTV1")]
 
     parallel.output_path.unlink()
     parallel.output_path.with_suffix(".parquet").unlink()
