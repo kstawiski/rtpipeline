@@ -297,6 +297,30 @@ def test_stage_status_is_derived_from_readable_non_empty_masks(
         assert (course_dir / ".segmentation_done").read_text(encoding="utf-8").strip() == "failed"
 
 
+def test_rs_custom_failure_does_not_close_its_upstream_segmentation_stage(tmp_path: Path):
+    course_dir = tmp_path / "P1" / "C1"
+    metadata = course_dir / "metadata"
+    metadata.mkdir(parents=True)
+    (metadata / "segmentation_resume.json").write_text(
+        json.dumps(
+            {
+                "decisions": {
+                    "RS_custom": {
+                        "action": "failed",
+                        "reason": (
+                            "configured ROI(s) [bowel_bag] could not be built: "
+                            "ValueError: missing source mask"
+                        ),
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert segmentation._recorded_segmentation_failures(course_dir) == []
+
+
 def test_totalsegmentator_cuda_oom_is_recorded_explicitly(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

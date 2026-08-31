@@ -1974,6 +1974,12 @@ def _recorded_segmentation_failures(course_dir: Path) -> list[dict[str, str]]:
         return []
     failures: list[dict[str, str]] = []
     for artifact, raw in decisions.items():
+        # RS_custom is produced after segmentation and may consume outputs from the
+        # segmentation_custom_models rule. Letting its radiomics/DVH failure close
+        # .segmentation_done creates a dependency cycle that prevents its own repair.
+        # RS_custom remains fail-closed in the owning course stage and its sentinel.
+        if str(artifact) == "RS_custom":
+            continue
         if not isinstance(raw, dict) or raw.get("action") != "failed":
             continue
         failure = raw.get("failure")

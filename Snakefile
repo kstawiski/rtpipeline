@@ -1240,59 +1240,21 @@ if config.get("container_mode", False):
         conda:
             "envs/rtpipeline-radiomics.yaml"
         params:
+            stage="radiomics",
+            campaign_mode=CAMPAIGN_MODE,
             extra_args=_radiomics_params_lambda,
             python=CONTAINER_RADIOMICS_PYTHON,
+            python_bin="",
+            root_dir=lambda w: str(ROOT_DIR),
+            configfile=str(EFFECTIVE_CONFIGFILE),
+            radiomics_env=_ENV_RADIOMICS,
             dicom_root=str(DICOM_ROOT),
             output_dir=lambda w, output: str(Path(output.sentinel).parents[2]),
             logs_dir=str(LOGS_DIR),
+            custom_structures="",
             workflow_threads=SNAKEMAKE_THREADS
-        shell:
-            """
-            set -e
-            # Export worker budget for subprocess coordination
-            export RTPIPELINE_MAX_WORKERS={threads}
-            export RTPIPELINE_RADIOMICS_THREAD_LIMIT=1
-            # BLAS thread limits to prevent internal parallelism explosion
-            export OMP_NUM_THREADS=1
-            export OPENBLAS_NUM_THREADS=1
-            export MKL_NUM_THREADS=1
-            mkdir -p $(dirname {log})
-            echo "DEBUG: threads={threads} SNAKEMAKE_THREADS={params.workflow_threads}" >> {log}
-            mkdir -p $(dirname {output.sentinel})
-            rm -f {output.sentinel}
-
-            if [ ! -f "{input.segmentation}" ] || ! grep -qx "ok" "{input.segmentation}"; then
-                rm -f {output.sentinel}
-                echo "Radiomics requires a successful segmentation sentinel: {input.segmentation}" >&2
-                exit 1
-            fi
-            if [ ! -f "{input.custom}" ] || ! grep -Eqx "ok|disabled" "{input.custom}"; then
-                rm -f {output.sentinel}
-                echo "Radiomics requires a successful or disabled custom-stage sentinel: {input.custom}" >&2
-                exit 1
-            fi
-            if [ ! -f "{input.crop}" ] || ! grep -qx "ok" "{input.crop}"; then
-                rm -f {output.sentinel}
-                echo "Radiomics requires a successful crop-stage sentinel: {input.crop}" >&2
-                exit 1
-            fi
-            
-            if "{params.python}" -m rtpipeline.cli \
-                --dicom-root "{params.dicom_root}" \
-                --outdir "{params.output_dir}" \
-                --logs "{params.logs_dir}" \
-                --stage radiomics \
-                --course-filter "{wildcards.patient}/{wildcards.course}" \
-                --max-workers {threads} \
-                --manifest "{input.manifest}" \
-                {params.extra_args} >> {log} 2>&1; then
-                "{params.python}" -c "from pathlib import Path; from rtpipeline.radiomics_ct_contract import write_completion_sentinel; write_completion_sentinel(Path(r'{params.output_dir}') / r'{wildcards.patient}' / r'{wildcards.course}', Path(r'{output.sentinel}'))"
-            else
-                rm -f {output.sentinel}
-                echo "Required course stage failed; see {log}" >&2
-                exit 1
-            fi
-            """
+        script:
+            "workflow/scripts/run_course_stage.py"
 else:
     rule radiomics_course:
         input:
@@ -1308,61 +1270,21 @@ else:
         conda:
             "envs/rtpipeline-radiomics.yaml"
         params:
+            stage="radiomics",
+            campaign_mode=CAMPAIGN_MODE,
             extra_args=_radiomics_params_lambda,
             python=PYTHON_RADIOMICS,
             python_bin=PYTHON_RADIOMICS_BIN,
+            root_dir=lambda w: str(ROOT_DIR),
+            configfile=str(EFFECTIVE_CONFIGFILE),
+            radiomics_env=_ENV_RADIOMICS,
             dicom_root=str(DICOM_ROOT),
             output_dir=lambda w, output: str(Path(output.sentinel).parents[2]),
             logs_dir=str(LOGS_DIR),
+            custom_structures="",
             workflow_threads=SNAKEMAKE_THREADS
-        shell:
-            """
-            set -e
-            # Export worker budget for subprocess coordination
-            export RTPIPELINE_MAX_WORKERS={threads}
-            export RTPIPELINE_RADIOMICS_THREAD_LIMIT=1
-            # BLAS thread limits to prevent internal parallelism explosion
-            export OMP_NUM_THREADS=1
-            export OPENBLAS_NUM_THREADS=1
-            export MKL_NUM_THREADS=1
-            mkdir -p $(dirname {log})
-            echo "DEBUG: threads={threads} SNAKEMAKE_THREADS={params.workflow_threads}" >> {log}
-            mkdir -p $(dirname {output.sentinel})
-            rm -f {output.sentinel}
-
-            if [ ! -f "{input.segmentation}" ] || ! grep -qx "ok" "{input.segmentation}"; then
-                rm -f {output.sentinel}
-                echo "Radiomics requires a successful segmentation sentinel: {input.segmentation}" >&2
-                exit 1
-            fi
-            if [ ! -f "{input.custom}" ] || ! grep -Eqx "ok|disabled" "{input.custom}"; then
-                rm -f {output.sentinel}
-                echo "Radiomics requires a successful or disabled custom-stage sentinel: {input.custom}" >&2
-                exit 1
-            fi
-            if [ ! -f "{input.crop}" ] || ! grep -qx "ok" "{input.crop}"; then
-                rm -f {output.sentinel}
-                echo "Radiomics requires a successful crop-stage sentinel: {input.crop}" >&2
-                exit 1
-            fi
-            
-            export PATH="{params.python_bin}:$PATH"
-            if "{params.python}" -m rtpipeline.cli \
-                --dicom-root "{params.dicom_root}" \
-                --outdir "{params.output_dir}" \
-                --logs "{params.logs_dir}" \
-                --stage radiomics \
-                --course-filter "{wildcards.patient}/{wildcards.course}" \
-                --max-workers {threads} \
-                --manifest "{input.manifest}" \
-                {params.extra_args} >> {log} 2>&1; then
-                "{params.python}" -c "from pathlib import Path; from rtpipeline.radiomics_ct_contract import write_completion_sentinel; write_completion_sentinel(Path(r'{params.output_dir}') / r'{wildcards.patient}' / r'{wildcards.course}', Path(r'{output.sentinel}'))"
-            else
-                rm -f {output.sentinel}
-                echo "Required course stage failed; see {log}" >&2
-                exit 1
-            fi
-            """
+        script:
+            "workflow/scripts/run_course_stage.py"
 
 
 rule qc_course:
