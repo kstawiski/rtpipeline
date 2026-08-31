@@ -50,12 +50,27 @@ def _plan(path: Path, uid: str, rx: float, fractions: int) -> Path:
     ds.RTPlanDate = "20240101"
     dose_ref = Dataset()
     dose_ref.DoseReferenceNumber = "1"
+    dose_ref.DoseReferenceUID = generate_uid()
     dose_ref.DoseReferenceType = "TARGET"
     dose_ref.TargetPrescriptionDose = rx
     ds.DoseReferenceSequence = Sequence([dose_ref])
     fraction_group = Dataset()
+    fraction_group.FractionGroupNumber = 1
     fraction_group.NumberOfFractionsPlanned = fractions
+    fraction_group.NumberOfBeams = 1
+    beam_reference = Dataset()
+    beam_reference.ReferencedBeamNumber = 1
+    beam_reference.BeamDose = rx / fractions
+    beam_reference.BeamDoseType = "PHYSICAL"
+    target_binding = Dataset()
+    target_binding.ReferencedDoseReferenceUID = dose_ref.DoseReferenceUID
+    beam_reference.ReferencedDoseReferenceSequence = Sequence([target_binding])
+    fraction_group.ReferencedBeamSequence = Sequence([beam_reference])
     ds.FractionGroupSequence = Sequence([fraction_group])
+    beam = Dataset()
+    beam.BeamNumber = 1
+    beam.TreatmentDeliveryType = "TREATMENT"
+    ds.BeamSequence = Sequence([beam])
     return _write(ds, path)
 
 
@@ -118,6 +133,35 @@ def test_no_treatment_records_are_unknown_not_zero(tmp_path):
 
     assert summary["delivered_dose_gy"] is None
     assert summary["delivery_status"] == "no_records_at_all"
+
+
+def test_records_with_unresolved_prescription_scope_do_not_create_delivery_state(
+    tmp_path,
+):
+    plan = _plan(tmp_path / "plan.dcm", generate_uid(), 50.0, 25)
+    dataset = pydicom.dcmread(str(plan))
+    del dataset.FractionGroupSequence[0].ReferencedBeamSequence[0].BeamDose
+    dataset.save_as(str(plan), write_like_original=False)
+    plan_uid = str(dataset.SOPInstanceUID)
+    record = _record(
+        tmp_path / "record.dcm",
+        generate_uid(),
+        plan_uid,
+        "20240201",
+        2.0,
+    )
+
+    summary = organize._calculate_delivery_summary([plan], [record])
+
+    assert summary["delivered_dose_gy"] is None
+    assert summary["delivery_status"] == "delivery_unresolved"
+    details = summary["delivery_plan_details"]
+    assert isinstance(details, list)
+    assert details[0]["status"] == "delivery_unresolved"
+    assert (
+        details[0]["prescription_resolution_method"]
+        == "UNRESOLVED_INCOMPLETE_BEAM_MEMBERSHIP"
+    )
     assert summary["delivered_dose_gy"] != 0.0
     assert summary["delivered_dose_gy"] != 50.0
 
@@ -260,7 +304,7 @@ def test_dose_plausibility_warning_is_emitted_for_prescription_mismatch(tmp_path
         summary = organize._calculate_delivery_summary([plan], records)
 
     assert summary["delivered_dose_gy"] == pytest.approx(40.0)
-    assert any("exceeds prescribed dose" in message for message in caplog.messages)
+    assert any("exceeds resolved prescribed total" in message for message in caplog.messages)
 
 
 def test_absent_plan_reference_is_counted_logged_and_not_attributed(tmp_path, caplog):

@@ -131,6 +131,7 @@ class DVHDoseResolution:
     selected_dose_paths: List[Path] | None = None
     dose_grid_semantics: Optional[str] = None
     prescribed_dose_gy: Optional[float] = None
+    resolved_prescribed_dose_total_gy: Optional[float] = None
     delivered_dose_gy: Optional[float] = None
     delivery_status: Optional[str] = None
     dose_response_dose_field: str = DOSE_RESPONSE_FIELD
@@ -327,6 +328,7 @@ def _resolve_dvh_dose(
             selected_plan_paths=[path for path in selected_plan_paths if path is not None],
             selected_dose_paths=[path for path in selected_dose_paths if path is not None],
             prescribed_dose_gy=contract.prescribed_dose_gy,
+            resolved_prescribed_dose_total_gy=contract.resolved_prescribed_dose_total_gy,
             delivered_dose_gy=contract.delivered_dose_gy,
             delivery_status=str(contract.delivery.get("status") or ""),
             dose_response_dose_field=str(contract.delivery.get("dose_response_field") or ""),
@@ -360,6 +362,7 @@ def _resolve_dvh_dose(
         selected_dose_paths=[path for path in selected_dose_paths if path is not None],
         dose_grid_semantics=str(dose_grid.get("semantics") or ""),
         prescribed_dose_gy=contract.prescribed_dose_gy,
+        resolved_prescribed_dose_total_gy=contract.resolved_prescribed_dose_total_gy,
         delivered_dose_gy=contract.delivered_dose_gy,
         delivery_status=str(contract.delivery.get("status") or ""),
         dose_response_dose_field=DOSE_RESPONSE_FIELD,
@@ -986,6 +989,7 @@ def _write_dvh_qc(
             "selected_dose_paths": [str(path) for path in dose_resolution.selected_dose_paths or []],
             "dose_grid_semantics": dose_resolution.dose_grid_semantics,
             "prescribed_dose_gy": dose_resolution.prescribed_dose_gy,
+            "resolved_prescribed_dose_total_gy": dose_resolution.resolved_prescribed_dose_total_gy,
             "delivered_dose_gy": dose_resolution.delivered_dose_gy,
             "delivery_status": dose_resolution.delivery_status,
             "dose_response_dose_field": dose_resolution.dose_response_dose_field,
@@ -1032,6 +1036,7 @@ def _write_dvh_skip_qc(
             "selected_dose_paths": [str(path) for path in dose_resolution.selected_dose_paths or []],
             "dose_grid_semantics": dose_resolution.dose_grid_semantics,
             "prescribed_dose_gy": dose_resolution.prescribed_dose_gy,
+            "resolved_prescribed_dose_total_gy": dose_resolution.resolved_prescribed_dose_total_gy,
             "delivered_dose_gy": dose_resolution.delivered_dose_gy,
             "delivery_status": dose_resolution.delivery_status,
             "dose_response_dose_field": dose_resolution.dose_response_dose_field,
@@ -1896,10 +1901,10 @@ def dvh_for_course(
             if item:
                 results.append(item)
 
-    # Prescription is an organize-stage decision. Do not infer it again from
-    # RTPLAN or from a target DVH. An explicit caller value may only confirm it.
-    rx_est = contract.prescribed_dose_gy
-    rx_source = "course_contract" if rx_est is not None else "none"
+    # Relative dose arithmetic requires the BeamDose-confirmed total, not the
+    # preserved source value whose temporal scope may be unresolved.
+    rx_est = contract.resolved_prescribed_dose_total_gy
+    rx_source = "course_contract_resolved_total" if rx_est is not None else "none"
     rx_recovery_attempted = True
     if rx_dose_gy is not None and rx_dose_gy > 0:
         if rx_est is None or abs(float(rx_dose_gy) - float(rx_est)) > 1e-6:

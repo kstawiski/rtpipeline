@@ -20,9 +20,16 @@ import pandas as pd
 import pydicom
 
 from rtpipeline.course_contract import (
+    COURSE_CONTRACT_VERSION,
     DOSE_GRID_SEMANTICS,
     DOSE_RESPONSE_FIELD,
     UNKNOWN_DELIVERY_DOSE_GRID_SEMANTICS,
+)
+from rtpipeline.prescription import (
+    PRESCRIPTION_GROUP_FIELDS,
+    resolve_plan_prescriptions,
+    resolved_plan_total_gy,
+    source_plan_prescribed_dose_gy,
 )
 from rtpipeline.dvh import _resolve_dvh_dose
 from rtpipeline.layout import build_course_dirs
@@ -197,16 +204,53 @@ def _exercise_fixed_resolver(
 
         selected_plans = []
         per_plan = []
+        plan_rows = {str(row["sop_instance_uid"]): row for row in plans}
         for uid, path in plan_paths.items():
             evidence = record_evidence.get(uid, {})
             count = int(evidence.get("delivered_record_count") or 0)
             fraction_count = int(evidence.get("delivered_fraction_count") or 0)
             dates = list(evidence.get("treatment_dates") or [])
+            dataset = pydicom.dcmread(str(path), stop_before_pixels=True, force=True)
+            source_value = plan_rows.get(uid, {}).get("prescribed_dose_gy")
+            if source_value in (None, "") and len(selected_plan_uids) == 1:
+                source_value = prescribed_dose_gy
+            groups = resolve_plan_prescriptions(
+                dataset,
+                source_prescribed_dose_gy=source_value,
+            )
+            source_value = source_plan_prescribed_dose_gy(groups)
+            resolved_value = resolved_plan_total_gy(groups)
+            group = groups[0] if len(groups) == 1 else None
+            flattened = {
+                field: group.get(field) if group else None
+                for field in PRESCRIPTION_GROUP_FIELDS
+            }
+            planned_fraction_count = (
+                int(group.get("planned_fractions") or 0) or None if group else None
+            )
+            plan_status = (
+                "no_records"
+                if count == 0
+                else (
+                    "delivery_unresolved"
+                    if resolved_value is None
+                    else (
+                        "fully_delivered"
+                        if planned_fraction_count
+                        and fraction_count >= planned_fraction_count
+                        else "partially_delivered"
+                    )
+                )
+            )
             if uid in selected_plan_uids:
                 selected_plans.append(
                     {
                         "sop_instance_uid": uid,
                         "path": relative(path),
+                        "prescribed_dose_gy": source_value,
+                        "resolved_prescribed_dose_total_gy": resolved_value,
+                        "prescription_groups": groups,
+                        **flattened,
                         "delivered_record_count": count,
                         "delivered_fraction_count": fraction_count,
                         "treatment_dates": dates,
@@ -216,8 +260,11 @@ def _exercise_fixed_resolver(
                 {
                     "plan_path": relative(path),
                     "plan_sop_uid": uid,
-                    "prescribed_dose_gy": None,
-                    "planned_fraction_count": None,
+                    "prescribed_dose_gy": source_value,
+                    "resolved_prescribed_dose_total_gy": resolved_value,
+                    "prescription_groups": groups,
+                    **flattened,
+                    "planned_fraction_count": planned_fraction_count,
                     "delivered_record_count": count,
                     "delivered_fraction_count": fraction_count,
                     "treatment_dates": dates,
@@ -228,7 +275,7 @@ def _exercise_fixed_resolver(
                     ],
                     "zero_delivery_records": count == 0,
                     "selected_for_dose_grid": uid in selected_plan_uids,
-                    "status": "no_records" if count == 0 else "partially_delivered",
+                    "status": plan_status,
                 }
             )
 
@@ -245,13 +292,37 @@ def _exercise_fixed_resolver(
                 }
             )
 
+        selected_source_values = [
+            item.get("prescribed_dose_gy") for item in selected_plans
+        ]
+        selected_resolved_values = [
+            item.get("resolved_prescribed_dose_total_gy") for item in selected_plans
+        ]
+        course_source = (
+            float(selected_source_values[0])
+            if selected_source_values and selected_source_values[0] is not None
+            else None
+        )
+        course_resolved = (
+            float(selected_resolved_values[0])
+            if selected_resolved_values and selected_resolved_values[0] is not None
+            else None
+        )
+        effective_delivery_status = delivery_status
+        effective_delivered_dose = delivered_dose_gy
+        if (
+            delivery_status in {"fully_delivered", "partially_delivered"}
+            and course_resolved is None
+        ):
+            effective_delivery_status = "delivery_unresolved"
+            effective_delivered_dose = None
         qc_failure = any(
             value is not None and value > threshold_gy
-            for value in (prescribed_dose_gy, delivered_dose_gy)
+            for value in (course_resolved, effective_delivered_dose)
         )
         semantics = (
             DOSE_GRID_SEMANTICS
-            if delivery_status in {"fully_delivered", "partially_delivered"}
+            if effective_delivery_status in {"fully_delivered", "partially_delivered"}
             else UNKNOWN_DELIVERY_DOSE_GRID_SEMANTICS
         )
         dose_grid = None
@@ -266,7 +337,7 @@ def _exercise_fixed_resolver(
                 ],
             }
         contract = {
-            "version": 1,
+            "version": COURSE_CONTRACT_VERSION,
             "authority": "organize",
             "patient_id": patient_id,
             "course_id": course_id,
@@ -281,10 +352,11 @@ def _exercise_fixed_resolver(
                 "nifti_path": "",
             },
             "delivery": {
-                "prescribed_dose_gy": prescribed_dose_gy,
-                "status": delivery_status,
+                "prescribed_dose_gy": course_source,
+                "resolved_prescribed_dose_total_gy": course_resolved,
+                "status": effective_delivery_status,
                 "method": None,
-                "delivered_dose_gy": delivered_dose_gy,
+                "delivered_dose_gy": effective_delivered_dose,
                 "dose_response_field": DOSE_RESPONSE_FIELD,
                 "delivered_record_count": sum(
                     int(item["delivered_record_count"])

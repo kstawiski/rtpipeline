@@ -22,10 +22,17 @@ from pydicom.uid import (
 )
 
 from rtpipeline.course_contract import (
+    COURSE_CONTRACT_VERSION,
     build_dvh_decision,
     DOSE_GRID_SEMANTICS,
     DOSE_RESPONSE_FIELD,
     UNKNOWN_DELIVERY_DOSE_GRID_SEMANTICS,
+)
+from rtpipeline.prescription import (
+    PRESCRIPTION_GROUP_FIELDS,
+    resolve_plan_prescriptions,
+    resolved_plan_total_gy,
+    source_plan_prescribed_dose_gy,
 )
 
 
@@ -148,13 +155,28 @@ def write_synthetic_plan_and_dose(
     plan.Modality = "RTPLAN"
     plan.PatientID = course_dir.parent.name
     dose_reference = Dataset()
+    dose_reference.DoseReferenceNumber = 1
+    dose_reference.DoseReferenceUID = generate_uid()
     dose_reference.DoseReferenceType = "TARGET"
     dose_reference.TargetPrescriptionDose = float(prescribed_dose_gy)
     plan.DoseReferenceSequence = Sequence([dose_reference])
     fraction_group = Dataset()
     fraction_group.FractionGroupNumber = 1
     fraction_group.NumberOfFractionsPlanned = int(planned_fraction_count)
+    fraction_group.NumberOfBeams = 1
+    beam_reference = Dataset()
+    beam_reference.ReferencedBeamNumber = 1
+    beam_reference.BeamDose = float(prescribed_dose_gy) / int(planned_fraction_count)
+    beam_reference.BeamDoseType = "PHYSICAL"
+    target_binding = Dataset()
+    target_binding.ReferencedDoseReferenceUID = dose_reference.DoseReferenceUID
+    beam_reference.ReferencedDoseReferenceSequence = Sequence([target_binding])
+    fraction_group.ReferencedBeamSequence = Sequence([beam_reference])
     plan.FractionGroupSequence = Sequence([fraction_group])
+    beam = Dataset()
+    beam.BeamNumber = 1
+    beam.TreatmentDeliveryType = "TREATMENT"
+    plan.BeamSequence = Sequence([beam])
     plan_path.parent.mkdir(parents=True, exist_ok=True)
     plan.save_as(str(plan_path), enforce_file_format=True)
 
@@ -183,7 +205,7 @@ def write_minimal_course_contract(
     dose_qc_pass: bool = True,
     dose_qc_threshold_gy: float = 100.0,
 ) -> Path:
-    """Write a valid version-1 contract around artifacts created by a test."""
+    """Write a valid current-version contract around artifacts created by a test."""
     course_dir = Path(course_dir)
     dicom_dir = course_dir / "DICOM"
     all_dicom = list(dicom_dir.rglob("*.dcm")) if dicom_dir.exists() else []
@@ -286,10 +308,21 @@ def write_minimal_course_contract(
         dataset = _header(path)
         uid = str(dataset.SOPInstanceUID)
         plan_uids.append(uid)
+        prescription_groups = resolve_plan_prescriptions(dataset)
+        source_prescribed = source_plan_prescribed_dose_gy(prescription_groups)
+        resolved_total = resolved_plan_total_gy(prescription_groups)
+        group = prescription_groups[0] if len(prescription_groups) == 1 else None
         plan_entries.append(
             {
                 "sop_instance_uid": uid,
                 "path": _relative(course_dir, path),
+                "prescribed_dose_gy": source_prescribed,
+                "resolved_prescribed_dose_total_gy": resolved_total,
+                "prescription_groups": prescription_groups,
+                **{
+                    field: group.get(field) if group else None
+                    for field in PRESCRIPTION_GROUP_FIELDS
+                },
                 "delivered_record_count": 0,
                 "delivered_fraction_count": 0,
                 "treatment_dates": [],
@@ -322,8 +355,13 @@ def write_minimal_course_contract(
         {
             "plan_path": item["path"],
             "plan_sop_uid": item["sop_instance_uid"],
-            "prescribed_dose_gy": None,
-            "planned_fraction_count": None,
+            "prescribed_dose_gy": item["prescribed_dose_gy"],
+            "resolved_prescribed_dose_total_gy": item[
+                "resolved_prescribed_dose_total_gy"
+            ],
+            "planned_fraction_count": item.get("planned_fractions"),
+            "prescription_groups": item["prescription_groups"],
+            **{field: item[field] for field in PRESCRIPTION_GROUP_FIELDS},
             "delivered_record_count": 0,
             "delivered_fraction_count": 0,
             "treatment_dates": [],
@@ -336,7 +374,8 @@ def write_minimal_course_contract(
     ]
     semantics = (
         UNKNOWN_DELIVERY_DOSE_GRID_SEMANTICS
-        if delivery_status in {"no_records_at_all", "delivered_but_records_absent"}
+        if delivery_status
+        in {"no_records_at_all", "delivered_but_records_absent", "delivery_unresolved"}
         else DOSE_GRID_SEMANTICS
     )
     rtstruct_entry = None
@@ -363,11 +402,17 @@ def write_minimal_course_contract(
             "source_dose_uids": dose_uids,
             "source_dose_summation_types": dose_types,
         }
+    course_source_prescribed = (
+        plan_entries[0]["prescribed_dose_gy"] if plan_entries else None
+    )
+    course_resolved_prescribed = (
+        plan_entries[0]["resolved_prescribed_dose_total_gy"] if plan_entries else None
+    )
     payload = {
         "patient_id": course_dir.parent.name,
         "course_id": course_dir.name,
         "course_contract": {
-            "version": 1,
+            "version": COURSE_CONTRACT_VERSION,
             "authority": "organize",
             "patient_id": course_dir.parent.name,
             "course_id": course_dir.name,
@@ -375,7 +420,8 @@ def write_minimal_course_contract(
             "selected_plans": plan_entries,
             "selected_doses": dose_entries,
             "dose_classification": {
-                "classification": "single_dose" if dose_entries else "no_doses"
+                "classification": "single_dose" if dose_entries else "no_doses",
+                "should_sum": False,
             },
             "dvh": build_dvh_decision(
                 len(plan_entries),
@@ -404,7 +450,8 @@ def write_minimal_course_contract(
             "plan_artifact": plan_artifact,
             "dose_grid": dose_grid,
             "delivery": {
-                "prescribed_dose_gy": None,
+                "prescribed_dose_gy": course_source_prescribed,
+                "resolved_prescribed_dose_total_gy": course_resolved_prescribed,
                 "delivered_dose_gy": None,
                 "status": delivery_status,
                 "method": None,

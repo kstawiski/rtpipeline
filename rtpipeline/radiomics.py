@@ -2986,6 +2986,7 @@ def _materialize_temp_course_tree(course_dir: Path, ct_slices_dir: Path, rtstruc
                     "dose_grid": None,
                     "delivery": {
                         "prescribed_dose_gy": None,
+                        "resolved_prescribed_dose_total_gy": None,
                         "delivered_dose_gy": None,
                         "status": "no_records_at_all",
                         "method": None,

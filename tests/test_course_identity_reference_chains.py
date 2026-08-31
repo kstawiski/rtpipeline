@@ -146,12 +146,25 @@ def _mk_plan(
     ref_struct.ReferencedSOPInstanceUID = struct_uid
     ds.ReferencedStructureSetSequence = Sequence([ref_struct])
     dose_ref = Dataset()
+    dose_ref.DoseReferenceNumber = 1
+    dose_ref.DoseReferenceUID = generate_uid()
     dose_ref.DoseReferenceType = "TARGET"
     dose_ref.TargetPrescriptionDose = float(rx_gy)
     ds.DoseReferenceSequence = Sequence([dose_ref])
+    beam = Dataset()
+    beam.BeamNumber = 1
+    beam.TreatmentDeliveryType = "TREATMENT"
+    ds.BeamSequence = Sequence([beam])
     fraction_group = Dataset()
     fraction_group.FractionGroupNumber = 1
     fraction_group.NumberOfFractionsPlanned = fractions
+    fraction_group.NumberOfBeams = 1
+    referenced_beam = Dataset()
+    referenced_beam.ReferencedBeamNumber = 1
+    referenced_beam.BeamDose = float(rx_gy) / fractions
+    referenced_beam.BeamDoseType = "PHYSICAL"
+    referenced_beam.ReferencedDoseReferenceUID = dose_ref.DoseReferenceUID
+    fraction_group.ReferencedBeamSequence = Sequence([referenced_beam])
     ds.FractionGroupSequence = Sequence([fraction_group])
     return _write(ds, path)
 
@@ -1400,12 +1413,22 @@ def test_organize_contract_round_trips_dose_membership_to_dvh(
     assert selected_dose_uids == [dose_uid]
     assert contract.data["dose_grid"] is not None
     delivery = contract.delivery
+    assert delivery["prescribed_dose_gy"] == pytest.approx(55.0)
+    assert delivery["resolved_prescribed_dose_total_gy"] == pytest.approx(55.0)
     assert delivery["status"] == "partially_delivered"
     assert delivery["delivered_dose_gy"] == pytest.approx(2.75)
     assert delivery["method"] == "record_fraction_weighted_prescription"
     assert len(delivery["per_plan"]) == 1
     plan_delivery = delivery["per_plan"][0]
     assert plan_delivery["plan_sop_uid"] == plan_uid
+    assert plan_delivery["source_prescribed_dose_gy"] == pytest.approx(55.0)
+    assert plan_delivery["beam_dose_sum_per_fraction_gy"] == pytest.approx(2.75)
+    assert plan_delivery["prescription_resolution_status"] == "TOTAL_CONFIRMED"
+    assert (
+        plan_delivery["prescription_resolution_method"]
+        == "BEAMDOSE_TOTAL_5PCT_V1"
+    )
+    assert plan_delivery["resolved_prescribed_dose_total_gy"] == pytest.approx(55.0)
     assert plan_delivery["delivered_record_count"] == 1
     assert plan_delivery["delivered_fraction_count"] == 1
     assert plan_delivery["treatment_dates"] == ["20240102"]
