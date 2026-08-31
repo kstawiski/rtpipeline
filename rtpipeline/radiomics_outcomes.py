@@ -149,18 +149,30 @@ class RadiomicsCourseOutcome:
         return sum(values.get("failed", 0) for values in (self.roi_counts or {}).values())
 
 
-def roi_source_is_required(source: str, *, operator_configured: bool = False) -> bool:
-    """Return the fail-closed policy for a source, never for an anatomy name.
+def roi_source_is_required(
+    source: str,
+    *,
+    operator_configured: bool = False,
+    requiredness: Any = None,
+    contract: Any = None,
+    roi_name: Optional[str] = None,
+    modality: str = "CT",
+) -> bool:
+    """Return whether this source/ROI is analysis-required.
 
-    Operator-configured structures are required even if a caller gives them a
-    source label that resembles an automatically generated one. TotalSegmentator
-    organ outputs are best-effort because their inventory is region-independent.
-    All other RTSTRUCT sources remain required by default.
+    Provenance labels such as ``Manual`` and ``AutoRTS_total`` do not establish
+    requiredness. The campaign contract does. ``operator_configured`` remains a
+    compatibility escape hatch for explicitly selected model outputs.
     """
     if operator_configured:
         return True
-    normalized = str(source).strip().casefold()
-    return not normalized.startswith(("autorts_total", "autots_total"))
+    if requiredness is not None:
+        value = getattr(requiredness, "value", requiredness)
+        return str(value) == "analysis_required"
+    if contract is not None and roi_name is not None:
+        from .roi_requiredness import requiredness_for
+        return requiredness_for(source, roi_name, contract=contract, modality=modality).value == "analysis_required"
+    return False
 
 
 def extraction_status_is_nonfatal_for_required(status: Any) -> bool:
@@ -272,9 +284,9 @@ def outcome_from_output(
                 }
             )
             required = any(
-                required_map.get(candidate, required_map.get(identity, roi_source_is_required(source)))
+                required_map.get(candidate, required_map.get(identity, False))
                 for candidate in full_identities
-            )
+            ) or any(bool(candidate.get("required", candidate.get("roi_required", False))) for candidate in group)
             if required and not extraction_status_is_nonfatal_for_required(status):
                 fatal_failures.append(
                     f"required ROI {source}/{roi_name} has persisted status {status}: "

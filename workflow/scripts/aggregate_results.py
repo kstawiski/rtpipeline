@@ -5,6 +5,7 @@ import shutil
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import Any
 
 import pandas as pd  # type: ignore
 
@@ -292,6 +293,58 @@ def _validate_required_inputs(courses):
         if course_errors:
             incomplete[(patient_id, course_id)] = course_errors
     return required_frames, errors, incomplete, expected_noncomputed
+
+
+def _write_radiomics_denominator_aggregate(courses) -> None:
+    """Combine per-course ledgers without replacing course counts by row counts."""
+    course_rows = []
+    course_roi_rows = []
+    for patient_id, course_id, course_dir in courses:
+        path = course_dir / "metadata" / "radiomics_roi_ledger.json"
+        if not path.exists():
+            publication = course_dir / "radiomics_ct.parquet"
+            if not publication.exists():
+                publication = course_dir / "radiomics_ct.xlsx"
+            if not publication.exists():
+                raise RuntimeError(f"Radiomics denominator ledger and publication are missing for {patient_id}/{course_id}")
+            try:
+                frame = pd.read_parquet(publication) if publication.suffix == ".parquet" else pd.read_excel(publication)
+                legacy_rows = frame.to_dict("records")
+            except Exception as exc:
+                raise RuntimeError(f"Radiomics denominator ledger is missing and publication is unreadable for {patient_id}/{course_id}: {exc}") from exc
+            course_rows.append({"entity": "COURSE", "course_id": str(course_id), "patient_id": str(patient_id), "screened": 1, "in_scope": 1, "out_of_scope": 0, "adequate_coverage": int(bool(legacy_rows)), "insufficient_coverage": int(not bool(legacy_rows)), "valid_derivation": 0, "technical_exclusion": int(any(str(row.get("extraction_status", "success")) != "success" for row in legacy_rows)), "indeterminate": 0, "extracted": int(bool(legacy_rows)), "reason_code": "extracted" if legacy_rows else "failed_radiomics_extraction"})
+            for row in legacy_rows:
+                roi = str(row.get("roi_original_name", row.get("roi_name", "")))
+                if roi:
+                    course_roi_rows.append({"entity": "COURSE_ROI", "course_id": str(course_id), "patient_id": str(patient_id), "roi_name": roi, "disposition": "extracted" if str(row.get("extraction_status", "success")) == "success" else "excluded", "reason_code": "extracted" if str(row.get("extraction_status", "success")) == "success" else "failed_radiomics_extraction"})
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise RuntimeError(f"Radiomics denominator ledger is unreadable for {patient_id}/{course_id}: {exc}") from exc
+        rows = payload.get("course", [])
+        roi_rows = payload.get("course_roi", [])
+        if not any(str(row.get("course_id")) == str(course_id) and str(row.get("patient_id")) == str(patient_id) for row in rows):
+            raise RuntimeError(f"Radiomics denominator ledger has no COURSE row for {patient_id}/{course_id}")
+        if any(str(row.get("course_id")) == str(course_id) for row in roi_rows):
+            course_rows.extend(rows)
+            course_roi_rows.extend(roi_rows)
+        else:
+            raise RuntimeError(f"Radiomics denominator ledger has no COURSE_ROI rows for {patient_id}/{course_id}")
+    patient_map: dict[str, dict[str, Any]] = {}
+    state_names = ("screened", "in_scope", "out_of_scope", "adequate_coverage", "insufficient_coverage", "valid_derivation", "technical_exclusion", "indeterminate", "extracted")
+    for row in course_rows:
+        patient = patient_map.setdefault(str(row["patient_id"]), {"entity": "PATIENT", "patient_id": str(row["patient_id"]), "course_count": 0})
+        patient["course_count"] += 1
+        for state in state_names:
+            patient[state] = int(bool(patient.get(state)) or bool(row.get(state)))
+    output = {
+        "course": course_rows,
+        "course_roi": course_roi_rows,
+        "patient": sorted(patient_map.values(), key=lambda row: row["patient_id"]),
+    }
+    destination = RESULTS_DIR / "radiomics_denominator_ledger.json"
+    destination.write_text(json.dumps(output, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8")
 
 
 def _write_campaign_attrition(courses, incomplete, expected_noncomputed) -> None:
@@ -725,6 +778,8 @@ else:
 
 all_frames, aggregation_errors = _collect_all_frames(aggregated_courses, required_frames)
 _report_aggregation_errors(aggregation_errors)
+if RADIOMICS_ENABLED:
+    _write_radiomics_denominator_aggregate(aggregated_courses)
 _write_tabular_outputs(all_frames)
 _copy_supplemental_sources()
 _write_qc(aggregated_courses)

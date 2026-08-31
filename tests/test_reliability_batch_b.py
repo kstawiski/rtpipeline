@@ -498,6 +498,17 @@ def _write_rtstruct_with_rois(
         roi.ROIName = name
         rois.append(roi)
     ds.StructureSetROISequence = rois
+    contours = Sequence()
+    for i in range(1, len(roi_names) + 1):
+        contour_roi = Dataset()
+        contour_roi.ReferencedROINumber = i
+        contour = Dataset()
+        contour.ContourGeometricType = "CLOSED_PLANAR"
+        contour.NumberOfContourPoints = 3
+        contour.ContourData = [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0]
+        contour_roi.ContourSequence = Sequence([contour])
+        contours.append(contour_roi)
+    ds.ROIContourSequence = contours
     if source_series_uid:
         series = Dataset()
         series.SeriesInstanceUID = source_series_uid
@@ -804,6 +815,7 @@ def test_parallel_radiomics_region_failure_aborts_course_and_invalidates_table(t
         dicom_root=tmp_path / "dicom",
         output_root=tmp_path / "out",
         logs_root=tmp_path / "logs",
+        radiomics_analysis_contract={"CT": {"required_rois": [{"canonical_name": "PTV", "source": "Manual"}]}},
     )
     monkeypatch.setattr(radiomics_mod, "_extractor", lambda *a, **kw: object())
     monkeypatch.setattr(radiomics_mod, "_load_series_image", lambda *_a, **_k: object())
@@ -841,6 +853,7 @@ def test_parallel_radiomics_none_result_aborts_course_and_invalidates_table(tmp_
         dicom_root=tmp_path / "dicom",
         output_root=tmp_path / "out",
         logs_root=tmp_path / "logs",
+        radiomics_analysis_contract={"CT": {"required_rois": [{"canonical_name": "PTV", "source": "Manual"}]}},
     )
     monkeypatch.setattr(radiomics_mod, "_extractor", lambda *a, **kw: object())
     monkeypatch.setattr(radiomics_mod, "_load_series_image", lambda *_a, **_k: object())

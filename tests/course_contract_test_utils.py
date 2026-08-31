@@ -98,6 +98,17 @@ def write_synthetic_rtstruct(
             roi.ROIName = str(name)
             rois.append(roi)
         dataset.StructureSetROISequence = Sequence(rois)
+        contour_rois = []
+        for number in range(1, len(names) + 1):
+            contour_roi = Dataset()
+            contour_roi.ReferencedROINumber = number
+            contour = Dataset()
+            contour.ContourGeometricType = "CLOSED_PLANAR"
+            contour.NumberOfContourPoints = 3
+            contour.ContourData = [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0]
+            contour_roi.ContourSequence = Sequence([contour])
+            contour_rois.append(contour_roi)
+        dataset.ROIContourSequence = Sequence(contour_rois)
     if referenced_series_uid:
         series = Dataset()
         series.SeriesInstanceUID = str(referenced_series_uid)
