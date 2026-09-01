@@ -449,6 +449,14 @@ def test_default_parallel_backend_publishes_contracted_full_series_descriptor(
 
     monkeypatch.setattr(radiomics, "_load_series_image", fake_load)
     monkeypatch.setattr(radiomics, "_extractor", lambda *_a, **_k: object())
+    monkeypatch.setattr(
+        radiomics_parallel,
+        "effective_parameter_hashes_for_arms",
+        lambda *_args, **_kwargs: {
+            "primary_resegmented": "effective-primary",
+            "sensitivity_raw": "effective-sensitivity",
+        },
+    )
     monkeypatch.setattr(radiomics_parallel, "ProcessPoolExecutor", _OneRowExecutor)
     monkeypatch.setattr(radiomics_parallel, "_calculate_optimal_workers", lambda: 1)
 

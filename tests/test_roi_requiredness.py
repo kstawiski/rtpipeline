@@ -177,6 +177,99 @@ def test_custom_roi_conflicting_evidence_fails_closed():
     assert result.fatal
 
 
+def test_partial_union_sources_still_require_a_derived_roi():
+    provenance = {
+        "bowel_bag": {
+            "operation": "union",
+            "source_structures": ["colon", "small_bowel", "duodenum"],
+        }
+    }
+    result = assess_custom_applicability(
+        "bowel_bag",
+        {
+            "colon": "readable_nonempty",
+            "small_bowel": "empty",
+            "duodenum": "empty",
+        },
+        {"contains_regions": ["pelvis"]},
+        custom_provenance=provenance,
+    )
+
+    assert result.dependencies == ("colon", "small_bowel", "duodenum")
+    assert result.reason_code == "failed_custom_generation"
+    assert result.fatal
+
+
+def test_derived_union_chain_accepts_a_partial_root_dependency():
+    provenance = {
+        "iliac_vess": {
+            "operation": "union",
+            "source_structures": [
+                "iliac_artery_left",
+                "iliac_artery_right",
+                "iliac_vena_left",
+                "iliac_vena_right",
+            ],
+        },
+        "iliac_area": {
+            "operation": "union",
+            "source_structures": ["iliac_vess"],
+        },
+    }
+    result = assess_custom_applicability(
+        "iliac_area",
+        {
+            "iliac_artery_left": "readable_nonempty",
+            "iliac_artery_right": "empty",
+            "iliac_vena_left": "empty",
+            "iliac_vena_right": "empty",
+        },
+        {"contains_regions": ["pelvis"]},
+        custom_provenance=provenance,
+    )
+
+    assert result.reason_code == "failed_custom_generation"
+    assert result.fatal
+
+
+def test_source_unavailable_outcome_becomes_anatomically_not_applicable():
+    provenance = {
+        "pelvic_bones": {
+            "operation": "union",
+            "source_structures": ["sacrum", "hip_left", "hip_right"],
+        }
+    }
+    result = assess_custom_applicability(
+        "pelvic_bones",
+        {name: "empty" for name in provenance["pelvic_bones"]["source_structures"]},
+        {"excluded_regions": ["pelvis"]},
+        custom_provenance=provenance,
+        generation_outcome={"status": "source_unavailable"},
+    )
+
+    assert result.reason_code == "not_applicable_anatomy"
+    assert not result.fatal
+
+
+def test_explicit_generation_failure_is_technical_even_when_sources_are_unavailable():
+    provenance = {
+        "pelvic_bones": {
+            "operation": "union",
+            "source_structures": ["sacrum", "hip_left", "hip_right"],
+        }
+    }
+    result = assess_custom_applicability(
+        "pelvic_bones",
+        {},
+        {"excluded_regions": ["pelvis"]},
+        custom_provenance=provenance,
+        generation_outcome={"status": "failed_generation"},
+    )
+
+    assert result.reason_code == "failed_custom_generation"
+    assert result.fatal
+
+
 def test_denominator_ledger_keeps_course_patient_and_course_roi_rows():
     ledger = DenominatorLedger()
     ledger.expect_course_roi("C1", "iliac_vess")

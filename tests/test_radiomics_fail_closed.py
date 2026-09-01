@@ -164,6 +164,10 @@ def _write_test_ct_publication(output: Path, base_rows: list[dict]) -> None:
                 "primary_resegmented": "test-primary",
                 "sensitivity_raw": "test-sensitivity",
             },
+            effective_hashes={
+                "primary_resegmented": "effective-primary",
+                "sensitivity_raw": "effective-sensitivity",
+            },
         )
         for record in pair:
             for key, value in base.items():
@@ -550,7 +554,7 @@ def test_direct_rtstruct_construction_failure_invalidates_stale_course_output(
     (course / "radiomics_ct.parquet").write_bytes(b"stale")
 
     monkeypatch.setattr(radiomics, "_load_series_image", lambda *_a, **_k: object())
-    monkeypatch.setattr(radiomics, "_extractor", lambda *_a, **_k: object())
+    monkeypatch.setattr(radiomics, "_extractor", lambda *_a, **_k: _FakeExtractor())
     monkeypatch.setattr(
         radiomics,
         "_rtstruct_masks",
@@ -1109,7 +1113,7 @@ def test_parallel_backend_publication_failure_invalidates_stale_outputs(
             pass
 
     monkeypatch.setattr(radiomics, "_load_series_image", lambda *_a, **_k: object())
-    monkeypatch.setattr(radiomics, "_extractor", lambda *_a, **_k: object())
+    monkeypatch.setattr(radiomics, "_extractor", lambda *_a, **_k: _FakeExtractor())
     monkeypatch.setattr(parallel, "ProcessPoolExecutor", FakeExecutor)
     monkeypatch.setattr(parallel, "_list_roi_names", lambda _path: ["PTV"])
     monkeypatch.setattr(parallel, "list_custom_model_outputs", lambda _course: [])
@@ -1612,7 +1616,7 @@ def _parallel_course_with_fake_roi_results(tmp_path, monkeypatch, results_by_sou
     _write_current_auto_rtstruct(course, roi_names=("vertebrae_T8", "lung_left"))
 
     monkeypatch.setattr(radiomics, "_load_series_image", lambda *_a, **_k: object())
-    monkeypatch.setattr(radiomics, "_extractor", lambda *_a, **_k: object())
+    monkeypatch.setattr(radiomics, "_extractor", lambda *_a, **_k: _FakeExtractor())
     monkeypatch.setattr(
         parallel,
         "_list_roi_names",
@@ -1703,7 +1707,7 @@ def test_parallel_required_roi_failure_still_fails_course(tmp_path, monkeypatch,
     _write_contract(course, rtstruct=rtstruct_for_contract)
     _write_current_auto_rtstruct(course)
     monkeypatch.setattr(radiomics, "_load_series_image", lambda *_a, **_k: object())
-    monkeypatch.setattr(radiomics, "_extractor", lambda *_a, **_k: object())
+    monkeypatch.setattr(radiomics, "_extractor", lambda *_a, **_k: _FakeExtractor())
     monkeypatch.setattr(parallel, "_calculate_optimal_workers", lambda: 1)
     monkeypatch.setattr(parallel, "list_custom_model_outputs", lambda _course: [])
     monkeypatch.setattr(

@@ -38,6 +38,7 @@ from .custom_models import (
 from .custom_structures_rtstruct import (
     _create_custom_structures_rtstruct,
     _is_rs_custom_stale,
+    load_rs_custom_outcomes,
     record_rs_custom_resume_decision,
 )
 from .acquisition_scale import (
@@ -83,6 +84,7 @@ from .radiomics_ct_contract import (
     current_code_revision,
     disposition_rows_for_arms,
     effective_parameter_hash,
+    effective_parameter_hashes_for_arms,
     expected_publication_keys,
     extract_ct_roi_arms,
     load_custom_structure_provenance,
@@ -1077,6 +1079,7 @@ class _DirectCtTask:
     decision: Any
     required: bool
     configured_parameter_hashes: Dict[str, str]
+    effective_parameter_hashes: Dict[str, str]
 
 
 
@@ -1295,6 +1298,19 @@ def radiomics_for_course(
     parameter_path = _get_params_file(config, "CT")
     identity_cache: Dict[str, Dict[str, tuple[str, str]]] = {}
 
+    def _effective_hashes(decision: Any, *, large_roi: bool = False) -> Dict[str, str]:
+        def _factory() -> Any:
+            candidate = (
+                _extractor_large_roi(config, "CT")
+                if large_roi
+                else _extractor(config, "CT")
+            )
+            if candidate is None:
+                raise RuntimeError("No CT radiomics extractor is available")
+            return candidate
+
+        return effective_parameter_hashes_for_arms(_factory, decision)
+
     def _identity_for(rs_path: Path, roi_name: str) -> tuple[str, str]:
         return stable_rtstruct_roi_identity(rs_path, roi_name)
 
@@ -1331,6 +1347,7 @@ def radiomics_for_course(
             decision=decision,
             required=required,
             configured_parameter_hashes=configured_hashes,
+            effective_parameter_hashes=_effective_hashes(decision),
         )
 
     def _common_metadata(task: _DirectCtTask) -> Dict[str, Any]:
@@ -1375,6 +1392,7 @@ def radiomics_for_course(
                 code_revision=code_revision,
                 native_voxel_count=0,
                 required=required,
+                effective_hashes=task.effective_parameter_hashes,
                 configured_parameter_hashes=task.configured_parameter_hashes,
             )
         )
@@ -1470,6 +1488,7 @@ def radiomics_for_course(
                         code_revision=code_revision,
                         native_voxel_count=0,
                         required=failed_task.required,
+                        effective_hashes=failed_task.effective_parameter_hashes,
                         configured_parameter_hashes=failed_task.configured_parameter_hashes,
                     )
                 )
@@ -1494,9 +1513,24 @@ def radiomics_for_course(
     # Process custom structures (extract only custom ROIs; avoid duplicating base ROIs in RS_custom)
     rs_custom = course_dir / "RS_custom.dcm"
     want_custom = bool(desired_custom_bases)
+    dependency_states: dict[str, Any] = {}
+    pending_custom_assessments: set[str] = set()
+    custom_stage_outcomes: dict[str, dict[str, object]] = {}
+    if (
+        configured_custom_path is not None
+        and rs_custom.is_file()
+        and not _is_rs_custom_stale(
+            rs_custom,
+            configured_custom_path,
+            contracted_rs_manual,
+            course_dir / "RS_auto.dcm",
+        )
+    ):
+        custom_stage_outcomes = load_rs_custom_outcomes(course_dir)
     if want_custom and configured_custom_path is not None:
-        # Applicability is adjudicated before attempting a rebuild. The graph is
-        # evaluated against source masks and the un-cropped planning CT FOV.
+        # First classify source applicability. A missing but source-applicable ROI is
+        # a rebuild candidate, not a terminal finding. Final applicability is recorded
+        # only after the governed RS_custom builder has had one repair attempt.
         custom_inventory = None
         if rs_custom.is_file():
             try:
@@ -1508,7 +1542,6 @@ def radiomics_for_course(
             observation.name: observation
             for observation in getattr(custom_inventory, "named_rois", ())
         }
-        dependency_states: dict[str, Any] = {}
         for task in tasks:
             dependency_states[task.roi_name] = {
                 "readable": True,
@@ -1528,31 +1561,35 @@ def radiomics_for_course(
                 dependency_states,
                 _planning_ct_fov(course_dir),
                 generated_state=generated_state,
+                custom_provenance=custom_provenance,
             )
-            custom_applicability.append(assessment)
             custom_required = _roi_requiredness(config, "Custom", base) == Requiredness.ANALYSIS_REQUIRED
             if assessment.reason_code == "extracted":
                 eligible_custom.add(base)
+                custom_applicability.append(assessment)
                 if custom_required:
                     observed_required.add(base)
-            elif assessment.reason_code in {"failed_custom_generation", "indeterminate_applicability"}:
-                _finalize_ct_ledger(
-                    extracted=False,
-                    technical=assessment.reason_code == "failed_custom_generation",
-                    indeterminate=assessment.reason_code == "indeterminate_applicability",
-                )
+            elif assessment.reason_code == "failed_custom_generation":
+                eligible_custom.add(base)
+                pending_custom_assessments.add(base)
+            elif assessment.reason_code == "indeterminate_applicability":
+                custom_applicability.append(assessment)
+                _finalize_ct_ledger(extracted=False, indeterminate=True)
                 _invalidate_radiomics_outputs(out_path)
                 raise RadiomicsCourseExtractionError(
                     f"Configured custom ROI {base!r} has {assessment.reason_code}: {assessment.detail}"
                 )
-            elif custom_required and assessment.reason_code not in {
-                "not_applicable_anatomy", "not_applicable_scope",
-            }:
-                _finalize_ct_ledger(extracted=False, technical=True)
-                _invalidate_radiomics_outputs(out_path)
-                raise RadiomicsCourseExtractionError(
-                    f"Required custom ROI {base!r} has {assessment.reason_code}: {assessment.detail}"
-                )
+            else:
+                custom_applicability.append(assessment)
+                if assessment.reason_code in {"not_applicable_anatomy", "not_applicable_scope"}:
+                    if custom_required:
+                        observed_required.add(base)
+                elif custom_required:
+                    _finalize_ct_ledger(extracted=False, technical=True)
+                    _invalidate_radiomics_outputs(out_path)
+                    raise RadiomicsCourseExtractionError(
+                        f"Required custom ROI {base!r} has {assessment.reason_code}: {assessment.detail}"
+                    )
         desired_custom_bases = eligible_custom
         want_custom = bool(desired_custom_bases)
     if configured_custom_path is None and not want_custom and rs_custom.exists():
@@ -1629,8 +1666,30 @@ def radiomics_for_course(
                     f"Required custom RTSTRUCT is missing for configured ROIs in {course_dir}"
                 )
 
-            # Resolve every declared ROI (base vs base__partial); omission is fatal.
+            # Resolve every declared ROI (base vs base__partial). A configured
+            # source-applicable ROI gets one governed rebuild attempt before a
+            # missing outcome is treated as a technical generation failure.
             available = set(_list_roi_names_dicom(rs_custom))
+            for base in sorted(pending_custom_assessments):
+                generated_state = (
+                    "readable_nonempty"
+                    if base in available or f"{base}__partial" in available
+                    else "absent"
+                )
+                final_assessment = assess_custom_applicability(
+                    base,
+                    dependency_states,
+                    _planning_ct_fov(course_dir),
+                    generated_state=generated_state,
+                    custom_provenance=custom_provenance,
+                )
+                custom_applicability.append(final_assessment)
+                if final_assessment.reason_code == "extracted" and (
+                    _roi_requiredness(config, "Custom", base)
+                    == Requiredness.ANALYSIS_REQUIRED
+                ):
+                    observed_required.add(base)
+
             wanted_names: list[str] = []
             missing_custom: list[str] = []
             for base in sorted(desired_custom_bases):
@@ -1833,6 +1892,7 @@ def radiomics_for_course(
         _invalidate_radiomics_outputs(out_path)
         existing_df = None
     def _do_ct_task(task: _DirectCtTask) -> List[Dict[str, Any]]:
+        effective_hashes = task.effective_parameter_hashes
         try:
             min_voxels, max_voxels_full = _derive_voxel_limits(config)
             voxel_count = int(np.asarray(task.mask).astype(bool).sum())
@@ -1849,6 +1909,7 @@ def radiomics_for_course(
                     code_revision=code_revision,
                     native_voxel_count=voxel_count,
                     required=task.required,
+                    effective_hashes=effective_hashes,
                     configured_parameter_hashes=task.configured_parameter_hashes,
                 )
 
@@ -1862,6 +1923,8 @@ def radiomics_for_course(
             use_large = task.roi_name.strip().lower().startswith("body") or (
                 estimated_voxels > float(max_voxels_full)
             )
+            if use_large:
+                effective_hashes = _effective_hashes(task.decision, large_roi=True)
 
             def _factory():
                 candidate = (
@@ -1901,6 +1964,7 @@ def radiomics_for_course(
                     code_revision=code_revision,
                     native_voxel_count=int(np.asarray(task.mask).astype(bool).sum()),
                     required=False,
+                    effective_hashes=effective_hashes,
                     configured_parameter_hashes=task.configured_parameter_hashes,
                 )
             raise RuntimeError(detail) from exc
@@ -1952,6 +2016,7 @@ def radiomics_for_course(
                     code_revision=code_revision,
                     native_voxel_count=int(np.asarray(task.mask).astype(bool).sum()),
                     required=False,
+                    effective_hashes=task.effective_parameter_hashes,
                     configured_parameter_hashes=task.configured_parameter_hashes,
                 )
             if len(records) != len(CT_EXTRACTION_ARMS) or {

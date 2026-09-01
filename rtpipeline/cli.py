@@ -1584,10 +1584,11 @@ def main(argv: list[str] | None = None) -> int:
         return courses
 
     if "organize" in stages:
-        courses = organize_and_merge(cfg)
+        metadata_snapshot = {} if not args.no_metadata else None
+        courses = organize_and_merge(cfg, metadata_snapshot=metadata_snapshot)
         if not args.no_metadata:
             from .meta import export_metadata
-            export_metadata(cfg)
+            export_metadata(cfg, source_snapshot=metadata_snapshot)
 
     had_failures = False
 

@@ -13,6 +13,7 @@ import subprocess
 import tempfile
 import time
 import threading
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Tuple, Sequence, Set, TYPE_CHECKING
 
@@ -700,6 +701,76 @@ def _conda_subprocess_env() -> Dict[str, str]:
     return env
 
 
+@lru_cache(maxsize=64)
+def _materialized_ct_arm_hashes(
+    params_file: str,
+    large_roi: bool,
+    decision_json: str,
+) -> Dict[str, str]:
+    """Materialize the selected Conda extractors and return both runtime hashes."""
+    payload = json.dumps(
+        {
+            "params_file": params_file or None,
+            "large_roi": bool(large_roi),
+            "decision": json.loads(decision_json),
+        },
+        separators=(",", ":"),
+    )
+    script = r'''
+import json
+import sys
+from radiomics import featureextractor
+from rtpipeline.radiomics_ct_contract import (
+    RoiClassDecision,
+    effective_parameter_hashes_for_arms,
+)
+
+payload = json.loads(sys.argv[1])
+
+def factory():
+    params_file = payload.get("params_file")
+    extractor = (
+        featureextractor.RadiomicsFeatureExtractor(params_file)
+        if params_file
+        else featureextractor.RadiomicsFeatureExtractor()
+    )
+    if payload.get("large_roi"):
+        extractor.disableAllImageTypes()
+        extractor.enableImageTypeByName("Original")
+        extractor.disableAllFeatures()
+        extractor.enableFeatureClassByName("firstorder")
+        extractor.enableFeatureClassByName("shape")
+        extractor.settings["resampledPixelSpacing"] = [2.0, 2.0, 2.0]
+    return extractor
+
+decision = RoiClassDecision(**payload["decision"])
+print(json.dumps(effective_parameter_hashes_for_arms(factory, decision)))
+'''
+    result = subprocess.run(
+        [CONDA_EXE, "run", "-n", RADIOMICS_ENV, "python", "-c", script, payload],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env=_conda_subprocess_env(),
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            "Failed to materialize Conda radiomics parameter provenance: "
+            f"{result.stderr.strip()}"
+        )
+    try:
+        hashes = json.loads(result.stdout.strip().splitlines()[-1])
+    except (IndexError, json.JSONDecodeError) as exc:
+        raise RuntimeError(
+            "Conda radiomics parameter-provenance probe returned invalid JSON"
+        ) from exc
+    if set(hashes) != set(CT_EXTRACTION_ARMS) or any(
+        not str(hashes.get(arm) or "").strip() for arm in CT_EXTRACTION_ARMS
+    ):
+        raise RuntimeError("Conda radiomics parameter-provenance probe returned incomplete hashes")
+    return {arm: str(hashes[arm]) for arm in CT_EXTRACTION_ARMS}
+
+
 def check_radiomics_env(timeout: Optional[int] = None, retries: int = 1) -> bool:
     """Check if the radiomics conda environment exists and is functional.
 
@@ -1364,6 +1435,20 @@ def process_radiomics_batch(
             f"Radiomics conda environment '{RADIOMICS_ENV}' is unavailable"
         )
 
+    for task in tasks:
+        if not task.get("dual_arm_ct"):
+            continue
+        decision_payload = json.dumps(
+            task["roi_class_decision"],
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        task["effective_parameter_hashes"] = _materialized_ct_arm_hashes(
+            str(task.get("params_file") or ""),
+            bool(task.get("large_roi", False)),
+            decision_payload,
+        )
+
     def _execute(task: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         roi_name = task.get('roi_name', 'ROI')
         image_path = task.get('image_path')
@@ -1477,6 +1562,8 @@ def process_radiomics_batch(
                     code_revision=str(task["code_revision"]),
                     native_voxel_count=task.get("native_voxel_count"),
                     required=bool(task.get("required", True)),
+                    effective_hashes=task.get("effective_parameter_hashes"),
+                    configured_parameter_hashes=task.get("configured_parameter_hashes"),
                 )
             )
             return
@@ -2368,6 +2455,10 @@ def radiomics_for_course(
     )
     custom_cfg: Optional[Path] = None
     desired_custom: Set[str] = set()
+    dependency_states: dict[str, Any] = {}
+    pending_custom_assessments: set[str] = set()
+    custom_provenance: dict[str, Any] = {}
+    planning_ct_fov: Any = {}
     if custom_cfg_value:
         custom_cfg = Path(custom_cfg_value)
         if not custom_cfg.is_file():
@@ -2389,7 +2480,8 @@ def radiomics_for_course(
         try:
             from .roi_requiredness import inspect_rtstruct
             from .radiomics import _planning_ct_fov
-            dependency_states: dict[str, Any] = {}
+            custom_provenance = load_custom_structure_provenance(custom_cfg)
+            planning_ct_fov = _planning_ct_fov(course_dir)
             for source_path in (rs_manual, rs_auto):
                 if not Path(source_path).is_file():
                     continue
@@ -2417,11 +2509,18 @@ def radiomics_for_course(
                     else "unreadable" if candidate is not None else "absent"
                 )
                 assessment = assess_custom_applicability(
-                    base, dependency_states, _planning_ct_fov(course_dir), generated_state=generated_state,
+                    base,
+                    dependency_states,
+                    planning_ct_fov,
+                    generated_state=generated_state,
+                    custom_provenance=custom_provenance,
                 )
                 if assessment.reason_code == "extracted":
                     applicable_custom.add(base)
-                elif assessment.reason_code in {"failed_custom_generation", "indeterminate_applicability"}:
+                elif assessment.reason_code == "failed_custom_generation":
+                    applicable_custom.add(base)
+                    pending_custom_assessments.add(base)
+                elif assessment.reason_code == "indeterminate_applicability":
                     raise RadiomicsCourseExtractionError(
                         f"Configured custom ROI {base!r} has {assessment.reason_code}: {assessment.detail}"
                     )
@@ -2511,6 +2610,24 @@ def radiomics_for_course(
                     f"Required custom RTSTRUCT is missing for configured ROIs in {course_dir}"
                 )
             available_custom = set(_list_roi_names_dicom(rs_custom))
+            for base in sorted(pending_custom_assessments):
+                final_assessment = assess_custom_applicability(
+                    base,
+                    dependency_states,
+                    planning_ct_fov,
+                    generated_state=(
+                        "readable_nonempty"
+                        if base in available_custom
+                        or f"{base}__partial" in available_custom
+                        else "absent"
+                    ),
+                    custom_provenance=custom_provenance,
+                )
+                if final_assessment.reason_code != "extracted":
+                    raise RadiomicsCourseExtractionError(
+                        f"Configured custom ROI {base!r} remains unavailable after rebuild: "
+                        f"{final_assessment.reason_code}: {final_assessment.detail}"
+                    )
             missing_custom: List[str] = []
             for base in sorted(desired_custom):
                 if base in available_custom:

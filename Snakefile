@@ -1039,49 +1039,21 @@ if config.get("container_mode", False):
         conda:
             "envs/rtpipeline.yaml"
         params:
-            enabled=str(CUSTOM_MODELS_ENABLED),
+            stage="segmentation_custom",
+            campaign_mode=CAMPAIGN_MODE,
+            enabled=CUSTOM_MODELS_ENABLED,
             extra_args=_custom_params_lambda,
             python=CONTAINER_MAIN_PYTHON,
             python_bin=CONTAINER_MAIN_BIN,
+            root_dir=lambda w: str(ROOT_DIR),
+            configfile=str(EFFECTIVE_CONFIGFILE),
+            radiomics_env=_ENV_RADIOMICS,
             dicom_root=str(DICOM_ROOT),
             output_dir=lambda w, output: str(Path(output.sentinel).parents[2]),
-            logs_dir=str(LOGS_DIR)
-        shell:
-            """
-            set -e
-            mkdir -p $(dirname {output.sentinel})
-            rm -f {output.sentinel}
-            mkdir -p $(dirname {log})
-
-            if [ ! -f "{input.segmentation}" ] || ! grep -qx "ok" "{input.segmentation}"; then
-                rm -f {output.sentinel}
-                echo "Custom segmentation requires a successful segmentation sentinel: {input.segmentation}" >&2
-                exit 1
-            fi
-            
-            if [ "{params.enabled}" = "False" ]; then
-                echo "disabled" > {output.sentinel}
-                exit 0
-            fi
-            
-            export PATH="{params.python_bin}:$PATH"
-            
-            if "{params.python}" -m rtpipeline.cli \
-                --dicom-root "{params.dicom_root}" \
-                --outdir "{params.output_dir}" \
-                --logs "{params.logs_dir}" \
-                --stage segmentation_custom \
-                --course-filter "{wildcards.patient}/{wildcards.course}" \
-                --max-workers {threads} \
-                --manifest "{input.manifest}" \
-                {params.extra_args} > {log} 2>&1; then
-                echo "ok" > {output.sentinel}
-            else
-                rm -f {output.sentinel}
-                echo "Required course stage failed; see {log}" >&2
-                exit 1
-            fi
-            """
+            logs_dir=str(LOGS_DIR),
+            custom_structures=""
+        script:
+            "workflow/scripts/run_course_stage.py"
 else:
     rule segmentation_custom_models:
         input:
@@ -1099,48 +1071,21 @@ else:
         conda:
             "envs/rtpipeline.yaml"
         params:
-            enabled=str(CUSTOM_MODELS_ENABLED),
+            stage="segmentation_custom",
+            campaign_mode=CAMPAIGN_MODE,
+            enabled=CUSTOM_MODELS_ENABLED,
             extra_args=_custom_params_lambda,
             python=PYTHON_MAIN,
             python_bin=PYTHON_MAIN_BIN,
+            root_dir=lambda w: str(ROOT_DIR),
+            configfile=str(EFFECTIVE_CONFIGFILE),
+            radiomics_env=_ENV_RADIOMICS,
             dicom_root=str(DICOM_ROOT),
             output_dir=lambda w, output: str(Path(output.sentinel).parents[2]),
-            logs_dir=str(LOGS_DIR)
-        shell:
-            """
-            set -e
-            mkdir -p $(dirname {output.sentinel})
-            rm -f {output.sentinel}
-            mkdir -p $(dirname {log})
-
-            if [ ! -f "{input.segmentation}" ] || ! grep -qx "ok" "{input.segmentation}"; then
-                rm -f {output.sentinel}
-                echo "Custom segmentation requires a successful segmentation sentinel: {input.segmentation}" >&2
-                exit 1
-            fi
-            
-            if [ "{params.enabled}" = "False" ]; then
-                echo "disabled" > {output.sentinel}
-                exit 0
-            fi
-            
-            export PATH="{params.python_bin}:$PATH"
-            if "{params.python}" -m rtpipeline.cli \
-                --dicom-root "{params.dicom_root}" \
-                --outdir "{params.output_dir}" \
-                --logs "{params.logs_dir}" \
-                --stage segmentation_custom \
-                --course-filter "{wildcards.patient}/{wildcards.course}" \
-                --max-workers {threads} \
-                --manifest "{input.manifest}" \
-                {params.extra_args} > {log} 2>&1; then
-                echo "ok" > {output.sentinel}
-            else
-                rm -f {output.sentinel}
-                echo "Required course stage failed; see {log}" >&2
-                exit 1
-            fi
-            """
+            logs_dir=str(LOGS_DIR),
+            custom_structures=""
+        script:
+            "workflow/scripts/run_course_stage.py"
 
 
 rule crop_ct_course:

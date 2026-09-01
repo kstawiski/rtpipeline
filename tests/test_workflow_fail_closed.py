@@ -78,6 +78,10 @@ def _write_ct_publication(course_dir: Path, *, patient_id: str) -> None:
             "primary_resegmented": "test-primary",
             "sensitivity_raw": "test-sensitivity",
         },
+        effective_hashes={
+            "primary_resegmented": "effective-primary",
+            "sensitivity_raw": "effective-sensitivity",
+        },
     )
     for record in records:
         record["original_firstorder_Mean"] = 1.0
