@@ -13,7 +13,14 @@ import pytest
 from pydicom.uid import generate_uid
 
 import rtpipeline.organize as organize
-from rtpipeline.course_contract import build_dvh_decision, load_course_contract
+from rtpipeline.course_contract import (
+    CourseContract,
+    CourseContractError,
+    DOSE_RESPONSE_ELIGIBILITY_BASIS,
+    build_dvh_decision,
+    load_course_contract,
+    validate_course_contract,
+)
 from course_contract_test_utils import (
     write_minimal_course_contract,
     write_synthetic_plan_and_dose,
@@ -109,7 +116,7 @@ def _publish_scope_regression_contract(
     course: Path,
     *,
     prescribed_dose_scope: str,
-    publication: dict[str, object],
+    publication: organize._CourseDosePublication,
 ) -> dict:
     selected_plan, _ = write_synthetic_plan_and_dose(
         course,
@@ -147,8 +154,16 @@ def _publish_scope_regression_contract(
             "delivered_dose_gy": publication["delivered_dose_gy"],
             "status": publication["delivery_status"],
             "method": publication["delivery_method"],
-            "dose_response_eligible": not prescribed_dose_scope.startswith(
-                "UNRESOLVED_"
+            "dose_response_eligible": organize._course_dose_response_eligible(
+                prescribed_dose_scope=prescribed_dose_scope,
+                resolved_prescribed_dose_total_gy=publication[
+                    "resolved_prescribed_dose_total_gy"
+                ],
+                delivered_dose_gy=publication["delivered_dose_gy"],
+                delivery_status=str(publication["delivery_status"]),
+            ),
+            "dose_response_eligibility_basis": (
+                DOSE_RESPONSE_ELIGIBILITY_BASIS
             ),
         }
     )
@@ -210,7 +225,9 @@ def test_unresolved_replacement_scope_publishes_null_course_totals(tmp_path: Pat
     assert dose_qc["dose_plausibility_warning"] is False
 
 
-def test_resolved_single_plan_scope_retains_valid_plan_fallback(tmp_path: Path):
+def test_resolved_single_plan_scope_retains_prescription_but_is_delivery_ineligible(
+    tmp_path: Path,
+):
     publication = organize._scope_aware_course_dose_publication(
         prescribed_dose_scope="SINGLE_PLAN_TOTAL",
         course_prescribed_dose_gy=None,
@@ -232,7 +249,57 @@ def test_resolved_single_plan_scope_retains_valid_plan_fallback(tmp_path: Path):
     assert contract["delivery"]["resolved_prescribed_dose_total_gy"] == pytest.approx(
         50.0
     )
-    assert contract["delivery"]["dose_response_eligible"] is True
+    assert contract["delivery"]["dose_response_eligible"] is False
+
+    contract["delivery"]["dose_response_eligible"] = True
+    with pytest.raises(
+        CourseContractError,
+        match="dose_response_eligible disagrees with",
+    ):
+        validate_course_contract(
+            CourseContract(
+                course_dir=tmp_path / "P1" / "resolved",
+                metadata_path=(
+                    tmp_path
+                    / "P1"
+                    / "resolved"
+                    / "metadata"
+                    / "case_metadata.json"
+                ),
+                data=contract,
+            )
+        )
+
+    contract["delivery"].pop("dose_response_eligible")
+    with pytest.raises(
+        CourseContractError,
+        match="eligibility_basis requires dose_response_eligible",
+    ):
+        validate_course_contract(
+            CourseContract(
+                course_dir=tmp_path / "P1" / "resolved",
+                metadata_path=(
+                    tmp_path
+                    / "P1"
+                    / "resolved"
+                    / "metadata"
+                    / "case_metadata.json"
+                ),
+                data=contract,
+            )
+        )
+
+    contract["delivery"]["dose_response_eligible"] = True
+    contract["delivery"].pop("dose_response_eligibility_basis")
+    validate_course_contract(
+        CourseContract(
+            course_dir=tmp_path / "P1" / "resolved",
+            metadata_path=(
+                tmp_path / "P1" / "resolved" / "metadata" / "case_metadata.json"
+            ),
+            data=contract,
+        )
+    )
 
 
 def test_manifest_writer_quarantines_one_stale_course_and_keeps_later_valid_course(

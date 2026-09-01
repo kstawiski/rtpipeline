@@ -7,6 +7,7 @@ from __future__ import annotations
 from datetime import date, timedelta
 import json
 from pathlib import Path
+from typing import cast
 
 import numpy as np
 import pandas as pd
@@ -27,6 +28,10 @@ from pydicom.uid import (
 
 from rtpipeline import cli as cli_module
 from rtpipeline import organize as org
+from rtpipeline.clinical_prescription import (
+    confirm_two_phase_fractionation,
+    parse_kopernik_treatment_description,
+)
 from rtpipeline.config import PipelineConfig
 from rtpipeline.ct import CTInstance
 from rtpipeline.course_contract import load_course_contract
@@ -1080,6 +1085,50 @@ def test_kopernik_419783_replacement_chain_withholds_course_dose_totals(
     assert publication["resolved_prescribed_dose_total_gy"] is None
     assert publication["delivered_dose_gy"] is None
     assert publication["delivery_status"] == "delivery_unresolved"
+
+    parsed = parse_kopernik_treatment_description(
+        "ICD9: 92.27: Teleradioterapia radykalna technika IMRT na obszar "
+        "pecherza moczowego do dawki 37,0Gy/p.ref po 2,0Gy (6 frakcji) "
+        "i 2,5Gy (10 frakcji)"
+    )
+    per_plan_delivery = cast(
+        list[dict[str, object]], delivery["delivery_plan_details"]
+    )
+    phase_confirmation = confirm_two_phase_fractionation(
+        parsed["sites"], per_plan_delivery
+    )
+    clinical_evidence = {
+        "outcome": "RESOLVED_FROM_CLINICAL_RECORD",
+        "clinical_resolved_total_gy": 37.0,
+        "fractionation_classification": phase_confirmation,
+    }
+    recovered = org._clinical_delivery_publication(
+        clinical_prescription_evidence=clinical_evidence,
+        delivered_dose_gy=publication["delivered_dose_gy"],
+        delivery_status=str(publication["delivery_status"]),
+        delivery_method=publication["delivery_method"],
+    )
+    resolved_publication = org._scope_aware_course_dose_publication(
+        prescribed_dose_scope="COURSE_TOTAL_CLINICAL_RECORD",
+        course_prescribed_dose_gy=37.0,
+        course_resolved_prescribed_dose_total_gy=37.0,
+        plan_prescribed_dose_gy=50.0,
+        plan_resolved_prescribed_dose_total_gy=50.0,
+        delivered_dose_gy=recovered["delivered_dose_gy"],
+        delivery_status=recovered["delivery_status"],
+        delivery_method=recovered["delivery_method"],
+    )
+
+    assert phase_confirmation is not None
+    assert phase_confirmation["dicom_delivered_total_gy"] == pytest.approx(37.0)
+    assert recovered["independently_established"] is True
+    assert resolved_publication == {
+        "prescribed_dose_gy": 37.0,
+        "resolved_prescribed_dose_total_gy": 37.0,
+        "delivered_dose_gy": 37.0,
+        "delivery_status": "fully_delivered",
+        "delivery_method": "clinical_two_phase_fractionation_with_dicom_records",
+    }
 
 
 def test_eighty_percent_overlapping_phases_remain_additive(

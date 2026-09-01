@@ -8,6 +8,7 @@ import pandas as pd
 import pytest
 
 from rtpipeline import cli
+from rtpipeline import organize
 from rtpipeline.clinical_prescription import (
     ClinicalRecord,
     ClinicalRecordIndex,
@@ -363,6 +364,249 @@ def test_two_phase_confirmation_requires_unique_plan_phase_binding() -> None:
         }
     ]
     assert confirm_two_phase_fractionation(parsed["sites"], ambiguous) is None
+    mismatched_total = [dict(parsed["sites"][0], total_dose_gy=38.0)]
+    assert confirm_two_phase_fractionation(mismatched_total, _plan_delivery()) is None
+
+
+@pytest.mark.parametrize(
+    (
+        "case",
+        "outcome",
+        "include_phase_confirmation",
+        "scope",
+        "course_total",
+        "plan_total",
+        "raw_delivered",
+        "raw_status",
+        "expected_delivered",
+        "expected_status",
+        "expected_method",
+    ),
+    [
+        (
+            "clinical-resolved-and-independently-delivered",
+            "RESOLVED_FROM_CLINICAL_RECORD",
+            True,
+            "COURSE_TOTAL_CLINICAL_RECORD",
+            37.0,
+            50.0,
+            None,
+            "delivery_unresolved",
+            37.0,
+            "fully_delivered",
+            "clinical_two_phase_fractionation_with_dicom_records",
+        ),
+        (
+            "clinical-resolved-without-delivered-scalar",
+            "RESOLVED_FROM_CLINICAL_RECORD",
+            False,
+            "COURSE_TOTAL_CLINICAL_RECORD",
+            36.0,
+            36.0,
+            36.0,
+            "fully_delivered",
+            None,
+            "delivery_unresolved",
+            "course_delivery_scalar_unavailable",
+        ),
+        (
+            "dicom-resolved-single-plan",
+            None,
+            False,
+            "SINGLE_PLAN_TOTAL",
+            37.0,
+            37.0,
+            37.0,
+            "fully_delivered",
+            37.0,
+            "fully_delivered",
+            "calculated_dose_reference",
+        ),
+        (
+            "dicom-resolved-summed-course",
+            None,
+            False,
+            "COURSE_TOTAL_SUMMED",
+            62.0,
+            50.0,
+            62.0,
+            "fully_delivered",
+            62.0,
+            "fully_delivered",
+            "calculated_dose_reference",
+        ),
+        (
+            "clinical-corroborates-dicom",
+            "CORROBORATED_DICOM",
+            True,
+            "SINGLE_PLAN_TOTAL",
+            37.0,
+            37.0,
+            37.0,
+            "fully_delivered",
+            37.0,
+            "fully_delivered",
+            "calculated_dose_reference",
+        ),
+        (
+            "clinical-corroborates-dicom-summed-course",
+            "CORROBORATED_DICOM",
+            True,
+            "COURSE_TOTAL_SUMMED",
+            62.0,
+            50.0,
+            62.0,
+            "fully_delivered",
+            62.0,
+            "fully_delivered",
+            "calculated_dose_reference",
+        ),
+        (
+            "clinical-disagrees-with-dicom",
+            "DISAGREES_WITH_DICOM",
+            True,
+            "SINGLE_PLAN_TOTAL",
+            36.0,
+            36.0,
+            36.0,
+            "fully_delivered",
+            36.0,
+            "fully_delivered",
+            "calculated_dose_reference",
+        ),
+        (
+            "clinical-disagrees-with-dicom-summed-course",
+            "DISAGREES_WITH_DICOM",
+            True,
+            "COURSE_TOTAL_SUMMED",
+            61.0,
+            50.0,
+            61.0,
+            "fully_delivered",
+            61.0,
+            "fully_delivered",
+            "calculated_dose_reference",
+        ),
+        (
+            "clinical-unresolved-dicom-single-plan",
+            "UNRESOLVED",
+            False,
+            "SINGLE_PLAN_TOTAL",
+            37.0,
+            37.0,
+            37.0,
+            "fully_delivered",
+            37.0,
+            "fully_delivered",
+            "calculated_dose_reference",
+        ),
+        (
+            "clinical-unresolved-dicom-summed-course",
+            "UNRESOLVED",
+            False,
+            "COURSE_TOTAL_SUMMED",
+            62.0,
+            50.0,
+            62.0,
+            "fully_delivered",
+            62.0,
+            "fully_delivered",
+            "calculated_dose_reference",
+        ),
+        (
+            "unresolved-replacement-chain",
+            "UNRESOLVED",
+            False,
+            "UNRESOLVED_REPLACEMENT_CHAIN",
+            None,
+            50.0,
+            37.0,
+            "partially_delivered",
+            None,
+            "delivery_unresolved",
+            "unresolved_course_prescription_scope",
+        ),
+        (
+            "unresolved-component",
+            "UNRESOLVED",
+            False,
+            "UNRESOLVED_COMPONENT",
+            None,
+            36.0,
+            36.0,
+            "fully_delivered",
+            None,
+            "delivery_unresolved",
+            "unresolved_course_prescription_scope",
+        ),
+    ],
+    ids=lambda value: value if isinstance(value, str) else None,
+)
+def test_delivery_publication_matrix_across_sources_and_scopes(
+    case: str,
+    outcome: str | None,
+    include_phase_confirmation: bool,
+    scope: str,
+    course_total: float | None,
+    plan_total: float | None,
+    raw_delivered: float | None,
+    raw_status: str,
+    expected_delivered: float | None,
+    expected_status: str,
+    expected_method: str,
+) -> None:
+    del case
+    evidence = None
+    if outcome is not None:
+        parsed = parse_kopernik_treatment_description(
+            REAL_DESCRIPTIONS["419783/2020-02"]
+        )
+        evidence = {
+            "outcome": outcome,
+            "clinical_resolved_total_gy": course_total,
+            "fractionation_classification": (
+                confirm_two_phase_fractionation(parsed["sites"], _plan_delivery())
+                if include_phase_confirmation
+                else None
+            ),
+        }
+    clinical_publication = organize._clinical_delivery_publication(
+        clinical_prescription_evidence=evidence,
+        delivered_dose_gy=raw_delivered,
+        delivery_status=raw_status,
+        delivery_method="calculated_dose_reference",
+    )
+    publication = organize._scope_aware_course_dose_publication(
+        prescribed_dose_scope=scope,
+        course_prescribed_dose_gy=course_total,
+        course_resolved_prescribed_dose_total_gy=course_total,
+        plan_prescribed_dose_gy=plan_total,
+        plan_resolved_prescribed_dose_total_gy=plan_total,
+        delivered_dose_gy=clinical_publication["delivered_dose_gy"],
+        delivery_status=clinical_publication["delivery_status"],
+        delivery_method=clinical_publication["delivery_method"],
+    )
+
+    assert publication["delivered_dose_gy"] == expected_delivered
+    assert publication["delivery_status"] == expected_status
+    assert publication["delivery_method"] == expected_method
+    eligibility = organize._course_dose_response_eligible(
+        prescribed_dose_scope=scope,
+        resolved_prescribed_dose_total_gy=publication[
+            "resolved_prescribed_dose_total_gy"
+        ],
+        delivered_dose_gy=publication["delivered_dose_gy"],
+        delivery_status=str(publication["delivery_status"]),
+    )
+    assert eligibility is (
+        expected_delivered is not None
+        and expected_status in {"fully_delivered", "partially_delivered"}
+    )
+    if expected_status in {"fully_delivered", "partially_delivered"}:
+        assert publication["delivered_dose_gy"] is not None
+        assert publication["resolved_prescribed_dose_total_gy"] is not None
+    else:
+        assert publication["delivered_dose_gy"] is None
 
 
 def test_loader_records_workbook_identity_dates_row_and_exact_text(

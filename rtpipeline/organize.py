@@ -46,6 +46,7 @@ from .course_contract import (
     DOSE_GRID_SEMANTICS,
     UNKNOWN_DELIVERY_DOSE_GRID_SEMANTICS,
     DOSE_RESPONSE_FIELD,
+    DOSE_RESPONSE_ELIGIBILITY_BASIS,
     CourseContract,
     CourseContractError,
     _ct_provenance,
@@ -157,6 +158,74 @@ class _CourseDosePublication(TypedDict):
     delivery_method: str | None
 
 
+class _ClinicalDeliveryPublication(TypedDict):
+    delivered_dose_gy: float | None
+    delivery_status: str
+    delivery_method: str | None
+    independently_established: bool
+
+
+def _clinical_delivery_publication(
+    *,
+    clinical_prescription_evidence: object,
+    delivered_dose_gy: float | None,
+    delivery_status: str,
+    delivery_method: str | None,
+) -> _ClinicalDeliveryPublication:
+    """Publish DICOM delivery recovered by clinical phase-to-plan binding.
+
+    Clinical evidence may resolve the prescription but cannot manufacture a
+    delivered dose. The two-phase adjudication is independent delivery evidence
+    because each self-checked clinical phase binds uniquely to delivered
+    RTRECORD fractions and an RTPLAN dose per fraction.
+    """
+
+    unchanged: _ClinicalDeliveryPublication = {
+        "delivered_dose_gy": delivered_dose_gy,
+        "delivery_status": delivery_status,
+        "delivery_method": delivery_method,
+        "independently_established": False,
+    }
+    if not isinstance(clinical_prescription_evidence, dict) or (
+        clinical_prescription_evidence.get("outcome")
+        != "RESOLVED_FROM_CLINICAL_RECORD"
+    ):
+        return unchanged
+    unresolved: _ClinicalDeliveryPublication = {
+        "delivered_dose_gy": None,
+        "delivery_status": "delivery_unresolved",
+        "delivery_method": "course_delivery_scalar_unavailable",
+        "independently_established": False,
+    }
+    phase = clinical_prescription_evidence.get("fractionation_classification")
+    if not isinstance(phase, dict) or phase.get("classification") != (
+        "TWO_FRACTIONATION_PHASES"
+    ):
+        return unresolved
+    try:
+        resolved_total = float(
+            clinical_prescription_evidence["clinical_resolved_total_gy"]
+        )
+        phase_total = float(phase["clinical_total_gy"])
+        dicom_delivered_total = float(phase["dicom_delivered_total_gy"])
+    except (KeyError, TypeError, ValueError):
+        return unresolved
+    if not all(
+        np.isfinite(value)
+        for value in (resolved_total, phase_total, dicom_delivered_total)
+    ) or not (
+        np.isclose(resolved_total, phase_total, rtol=0.0, atol=0.001)
+        and np.isclose(resolved_total, dicom_delivered_total, rtol=0.0, atol=0.001)
+    ):
+        return unresolved
+    return {
+        "delivered_dose_gy": dicom_delivered_total,
+        "delivery_status": "fully_delivered",
+        "delivery_method": "clinical_two_phase_fractionation_with_dicom_records",
+        "independently_established": True,
+    }
+
+
 def _scope_aware_course_dose_publication(
     *,
     prescribed_dose_scope: str,
@@ -201,13 +270,45 @@ def _scope_aware_course_dose_publication(
     resolved = course_resolved_prescribed_dose_total_gy
     if resolved is None and allow_plan_fallback:
         resolved = plan_resolved_prescribed_dose_total_gy
+    published_delivered = delivered_dose_gy
+    published_status = str(delivery_status)
+    published_method = delivery_method
+    if published_status in {"fully_delivered", "partially_delivered"} and (
+        published_delivered is None or resolved is None
+    ):
+        published_delivered = None
+        published_status = "delivery_unresolved"
+        published_method = "course_delivery_scalar_unavailable"
+    elif published_status in {
+        "delivered_but_records_absent",
+        "delivery_unresolved",
+        "no_records_at_all",
+    }:
+        published_delivered = None
     return {
         "prescribed_dose_gy": prescribed,
         "resolved_prescribed_dose_total_gy": resolved,
-        "delivered_dose_gy": delivered_dose_gy,
-        "delivery_status": delivery_status,
-        "delivery_method": delivery_method,
+        "delivered_dose_gy": published_delivered,
+        "delivery_status": published_status,
+        "delivery_method": published_method,
     }
+
+
+def _course_dose_response_eligible(
+    *,
+    prescribed_dose_scope: str,
+    resolved_prescribed_dose_total_gy: float | None,
+    delivered_dose_gy: float | None,
+    delivery_status: str,
+) -> bool:
+    """Require the declared dose-response scalar to be available and resolved."""
+
+    return bool(
+        not str(prescribed_dose_scope or "").startswith("UNRESOLVED_")
+        and resolved_prescribed_dose_total_gy is not None
+        and delivered_dose_gy is not None
+        and delivery_status in {"fully_delivered", "partially_delivered"}
+    )
 
 
 def _has_nonmissing_adjudication(value: object) -> bool:
@@ -5348,7 +5449,19 @@ def organize_and_merge(
                     phase_classification = clinical_prescription_evidence.get(
                         "fractionation_classification"
                     )
-                    if phase_classification:
+                    clinical_delivery = _clinical_delivery_publication(
+                        clinical_prescription_evidence=(
+                            clinical_prescription_evidence
+                        ),
+                        delivered_dose_gy=co.delivered_dose_gy,
+                        delivery_status=co.delivery_status,
+                        delivery_method=co.delivery_method,
+                    )
+                    co.delivered_dose_gy = clinical_delivery["delivered_dose_gy"]
+                    co.delivery_status = clinical_delivery["delivery_status"]
+                    co.delivery_method = clinical_delivery["delivery_method"]
+                    if clinical_delivery["independently_established"]:
+                        assert isinstance(phase_classification, dict)
                         dose_classification_contract[
                             "dicom_reason"
                         ] = dose_classification_contract.get("reason")
@@ -5377,10 +5490,6 @@ def organize_and_merge(
                         dose_classification_contract[
                             "clinical_fractionation_evidence"
                         ] = phase_classification
-                        co.delivery_status = "fully_delivered"
-                        co.delivery_method = (
-                            "clinical_two_phase_fractionation_with_dicom_records"
-                        )
                         warning = (
                             "Clinical treatment record and delivered RTRECORD counts "
                             "confirm two completed fractionation phases; superseded "
@@ -5407,6 +5516,14 @@ def organize_and_merge(
             co.delivered_dose_gy = published_dose["delivered_dose_gy"]
             co.delivery_status = str(published_dose["delivery_status"])
             co.delivery_method = published_dose["delivery_method"]
+            dose_response_eligible = _course_dose_response_eligible(
+                prescribed_dose_scope=prescribed_dose_scope,
+                resolved_prescribed_dose_total_gy=(
+                    resolved_prescribed_dose_total_gy
+                ),
+                delivered_dose_gy=co.delivered_dose_gy,
+                delivery_status=co.delivery_status,
+            )
             if dose_grid_contract is not None:
                 dose_grid_contract["semantics"] = (
                     UNKNOWN_DELIVERY_DOSE_GRID_SEMANTICS
@@ -5555,7 +5672,10 @@ def organize_and_merge(
                     "status": co.delivery_status,
                     "method": co.delivery_method,
                     "dose_response_field": DOSE_RESPONSE_FIELD,
-                    "dose_response_eligible": not prescribed_dose_scope.startswith("UNRESOLVED_"),
+                    "dose_response_eligible": dose_response_eligible,
+                    "dose_response_eligibility_basis": (
+                        DOSE_RESPONSE_ELIGIBILITY_BASIS
+                    ),
                     "prescription_source": (
                         "CLINICAL_RECORD"
                         if prescribed_dose_scope == CLINICAL_RESOLVED_SCOPE
@@ -5599,7 +5719,10 @@ def organize_and_merge(
                 "total_prescription_gy": prescribed_dose_gy,
                 "prescribed_dose_scope": prescribed_dose_scope,
                 "resolved_prescribed_dose_total_gy": resolved_prescribed_dose_total_gy,
-                "dose_response_eligible": not prescribed_dose_scope.startswith("UNRESOLVED_"),
+                "dose_response_eligible": dose_response_eligible,
+                "dose_response_eligibility_basis": (
+                    DOSE_RESPONSE_ELIGIBILITY_BASIS
+                ),
                 "prescription_source": (
                     "CLINICAL_RECORD"
                     if prescribed_dose_scope == CLINICAL_RESOLVED_SCOPE
