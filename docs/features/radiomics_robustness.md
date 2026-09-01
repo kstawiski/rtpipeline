@@ -367,16 +367,31 @@ within half a voxel diagonal.
 ### Per-course parquet file (raw long-form values)
 
 Columns:
-- `patient_id`, `course_id`: Subject/course identifiers
-- `structure`: ROI name (e.g., "BLADDER", "GTV_primary")
-- `segmentation_source`: Source of segmentation (e.g., "AutoRTS_total", "Custom", "CustomModel:cardiac_STOPSTORM")
-- `perturbation_id`: Exact NTCV state identifier
-- `feature_name`: PyRadiomics feature (e.g., "original_glcm_Correlation")
-- `value`: Scalar feature value
+- `patient_id`, `course_id`: Subject and course identifiers copied from the authoritative main CT radiomics publication.
+- `series_uid`: Planning CT series identity copied from the main CT radiomics row.
+- `segmentation_source`: Original ROI source copied from the main CT radiomics row. Contracted manual RTSTRUCTs use `Manual`. Copied support ROIs in `RS_custom.dcm` are not relabeled as `Custom`.
+- `mask_identity`: Identity of the unperturbed source mask artifact under the main CT radiomics schema. For RTSTRUCT inputs this is normally the source RTSTRUCT SOP Instance UID. It is not the perturbed-mask hash.
+- `roi_original_name`: Original ROI name copied from the main CT radiomics row.
+- `stable_roi_identifier`: Stable identifier of the unperturbed source ROI copied from the main CT radiomics row. For RTSTRUCT inputs this is normally `rtstruct_roi_number:<number>`.
+- `measurement_type`: Always `segmentation_perturbation`. This prevents a robustness row from being interpreted as a primary unperturbed measurement.
+- `perturbation_id`: Exact NTCV state identifier. It distinguishes the complete image and mask perturbation state.
+- `perturbed_mask_identity`: SHA-256 identity of the actual binary perturbed mask and its geometry. Noise-only image states can share this mask identity, while their distinct `perturbation_id` values retain the image perturbation distinction.
+- `extraction_arm`: Main CT radiomics extraction arm. Both configured CT arms are required for each accepted perturbation.
+- `structure`: ROI name used for the robustness analysis.
+- `feature_name`: PyRadiomics feature, such as `original_glcm_Correlation`.
+- `value`: Scalar feature value.
 
-The course command fails and writes no parquet if any configured perturbation
-or feature extraction is missing, times out, is non-finite, or has a different
-feature set. Cohort statistics are created only by the aggregate command.
+The original identity fields are read from `radiomics_ct.parquet`, which is the
+same publication produced by main CT radiomics. Robustness does not reconstruct
+those fields independently. A selected ROI without one unique matching identity
+is excluded before perturbation compute. The reason is recorded in
+`metadata/radiomics_robustness_identity.json`, and other identifiable ROIs in the
+course continue.
+
+For each accepted ROI, the course command still fails and writes no parquet if
+any configured perturbation or extraction arm is missing, times out, is
+non-finite, or has a different feature set. Cohort statistics are created only
+by the aggregate command.
 
 ### Aggregated Excel file
 
