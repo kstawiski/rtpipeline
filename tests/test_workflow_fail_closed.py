@@ -249,6 +249,7 @@ def _aggregate_snakemake(
 
     output_paths = {
         "dvh": results_dir / "dvh_metrics.xlsx",
+        "dvh_parquet": results_dir / "dvh_metrics.parquet",
         "fractions": results_dir / "fractions.xlsx",
         "metadata": results_dir / "case_metadata.xlsx",
         "qc": results_dir / "qc_reports.xlsx",
@@ -275,6 +276,13 @@ def _aggregate_snakemake(
         ),
     )
     return workflow, output_paths
+
+
+def test_snakefile_declares_typed_dvh_aggregate() -> None:
+    snakefile = (ROOT / "Snakefile").read_text(encoding="utf-8")
+
+    assert '"dvh_parquet": RESULTS_DIR / "dvh_metrics.parquet"' in snakefile
+    assert '"dvh_parquet": str(AGG_OUTPUTS["dvh_parquet"])' in snakefile
 
 
 @pytest.mark.parametrize(
@@ -331,8 +339,14 @@ def test_noncampaign_aggregation_accepts_plan_only_course_without_workbook(tmp_p
 
     aggregate = pd.read_excel(outputs["dvh"])
     assert aggregate[["patient_id", "course_id"]].drop_duplicates().to_dict("records") == [
-        {"patient_id": "P1", "course_id": "C1"}
+        {"patient_id": "P1", "course_id": "C1"},
+        {"patient_id": "P2", "course_id": "C1"},
     ]
+    failure = aggregate.loc[
+        (aggregate["patient_id"] == "P2") & (aggregate["course_id"] == "C1")
+    ].iloc[0]
+    assert failure["row_status"] == "not_computed"
+    assert "dose_grid" in failure["failure_reason"]
     assert not (output_dir / "P2" / "C1" / "dvh_metrics.xlsx").exists()
 
 

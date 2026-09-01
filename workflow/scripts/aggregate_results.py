@@ -15,6 +15,13 @@ def _workflow_context(workflow: Any) -> dict:
         name: str(getattr(workflow.output, name))
         for name in ("dvh", "fractions", "metadata", "qc")
     }
+    outputs["dvh_parquet"] = str(
+        getattr(
+            workflow.output,
+            "dvh_parquet",
+            Path(str(workflow.output.dvh)).with_suffix(".parquet"),
+        )
+    )
     for name in ("radiomics", "radiomics_mr"):
         value = getattr(workflow.output, name, None)
         if value is not None:

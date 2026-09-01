@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass
 import hashlib
 import json
 import logging
 import os
 from pathlib import Path
+import re
 import shutil
 from typing import Dict, Iterable, List, Optional, Union
 
@@ -15,7 +17,260 @@ import pydicom
 import SimpleITK as sitk
 
 logger = logging.getLogger(__name__)
-DVH_METRIC_VERSION = "2026-06-14-plan-dose-rtstruct-v2"
+DVH_METRIC_VERSION = "2026-09-01-technique-provenance-v3"
+
+RELATIVE_DVH_METRIC_COLUMNS = (
+    "Dmean%",
+    "Dmax%",
+    "Dmin%",
+    "D95%",
+    "D98%",
+    "D2%",
+    "D50%",
+    "HI%",
+    "Spread%",
+    "V95%Rx (cm³)",
+    "V95%Rx (%)",
+    "V100%Rx (cm³)",
+    "V100%Rx (%)",
+)
+_TARGET_NAME_PATTERN = re.compile(r"(?:^|[^a-z0-9])(gtv|ctv|ptv|itv|target)(?:$|[^a-z0-9])")
+
+
+def _is_target_structure_name(name: object) -> bool:
+    normalized = re.sub(r"[^a-z0-9]+", " ", str(name or "").strip().lower())
+    compact = normalized.replace(" ", "")
+    return bool(
+        _TARGET_NAME_PATTERN.search(normalized)
+        or compact.startswith(("gtv", "ctv", "ptv", "itv"))
+    )
+
+
+def _dose_grid_contour_coordinates(
+    rtstruct_ds: object, roi_number: int
+) -> list[np.ndarray]:
+    contours: list[np.ndarray] = []
+    for roi_contour in getattr(rtstruct_ds, "ROIContourSequence", None) or []:
+        try:
+            if int(getattr(roi_contour, "ReferencedROINumber", -1)) != int(roi_number):
+                continue
+        except (TypeError, ValueError):
+            continue
+        for contour in getattr(roi_contour, "ContourSequence", None) or []:
+            raw = getattr(contour, "ContourData", None)
+            try:
+                values = np.asarray(
+                    [float(value) for value in (raw or [])], dtype=float
+                )
+            except (TypeError, ValueError):
+                continue
+            if values.size < 3 or values.size % 3 or not np.isfinite(values).all():
+                continue
+            contours.append(values.reshape((-1, 3)))
+    return contours
+
+
+def classify_zero_dose_roi_geometry(
+    rtstruct_ds: object, roi_number: int, dose_ds: object
+) -> dict[str, str]:
+    """Classify zero Dmax by comparing RTSTRUCT contours with the RTDOSE grid.
+
+    The result is deliberately a QC classification, not an assertion that an
+    outside-grid contour is anatomically correct. An outside contour can still
+    indicate a registration or wrong-dose-grid defect and therefore carries an
+    explicit review reason.
+    """
+    try:
+        rows = int(getattr(dose_ds, "Rows"))
+        columns = int(getattr(dose_ds, "Columns"))
+        frames = int(getattr(dose_ds, "NumberOfFrames"))
+        spacing = np.asarray([float(value) for value in dose_ds.PixelSpacing], dtype=float)
+        origin = np.asarray([float(value) for value in dose_ds.ImagePositionPatient], dtype=float)
+        orientation = np.asarray(
+            [float(value) for value in dose_ds.ImageOrientationPatient], dtype=float
+        )
+        offsets = np.asarray(
+            [float(value) for value in getattr(dose_ds, "GridFrameOffsetVector")],
+            dtype=float,
+        )
+        if rows <= 0 or columns <= 0 or frames <= 0 or spacing.size != 2:
+            raise ValueError("dose grid dimensions or spacing are invalid")
+        if orientation.size != 6 or offsets.size != frames:
+            raise ValueError("dose grid orientation or frame offsets are invalid")
+        row_direction = orientation[:3]
+        column_direction = orientation[3:]
+        row_norm = np.linalg.norm(row_direction)
+        column_norm = np.linalg.norm(column_direction)
+        if row_norm == 0 or column_norm == 0:
+            raise ValueError("dose grid orientation vectors are invalid")
+        row_direction = row_direction / row_norm
+        column_direction = column_direction / column_norm
+        normal_direction = np.cross(row_direction, column_direction)
+        normal_norm = np.linalg.norm(normal_direction)
+        if normal_norm == 0:
+            raise ValueError("dose grid orientation vectors are collinear")
+        normal_direction = normal_direction / normal_norm
+    except (AttributeError, TypeError, ValueError):
+        return {
+            "status": "zero_dose_geometry_unresolved",
+            "reason": "RTDOSE grid geometry is incomplete or malformed.",
+        }
+
+    contours = _dose_grid_contour_coordinates(rtstruct_ds, roi_number)
+    if not contours:
+        return {
+            "status": "zero_dose_geometry_unresolved",
+            "reason": "ROI has no valid contour coordinates for dose-grid comparison.",
+        }
+    points = np.concatenate(contours, axis=0)
+    relative = points - origin
+    column_indices = relative @ row_direction / spacing[1]
+    row_indices = relative @ column_direction / spacing[0]
+    frame_coordinates = relative @ normal_direction
+    tolerance_mm = 1e-3
+    inside = (
+        (column_indices >= -tolerance_mm / spacing[1])
+        & (column_indices <= columns - 1 + tolerance_mm / spacing[1])
+        & (row_indices >= -tolerance_mm / spacing[0])
+        & (row_indices <= rows - 1 + tolerance_mm / spacing[0])
+    )
+    offset_min = float(np.min(offsets))
+    offset_max = float(np.max(offsets))
+    inside &= frame_coordinates >= offset_min - tolerance_mm
+    inside &= frame_coordinates <= offset_max + tolerance_mm
+    if not bool(np.any(inside)):
+        return {
+            "status": "zero_dose_outside_dose_grid",
+            "reason": (
+                "All valid ROI contour points are outside the selected RTDOSE grid. "
+                "This is consistent with an outside-grid ROI but requires review for "
+                "wrong-dose-grid or registration failure."
+            ),
+        }
+    return {
+        "status": "zero_dose_in_grid",
+        "reason": (
+            "At least one valid ROI contour point lies inside the selected RTDOSE grid, "
+            "while the computed ROI DmaxGy is zero. Treat as an in-grid zero-dose finding, "
+            "not as proof of registration correctness."
+        ),
+    }
+
+
+def _resample_mask_to_ct_if_equivalent(
+    mask_image: sitk.Image, ct_image: sitk.Image
+) -> sitk.Image | None:
+    """Resample a mask only after the shared physical-grid equivalence gate passes."""
+    from .auto_rtstruct import _geometry_compatible
+
+    if not _geometry_compatible(mask_image, ct_image):
+        return None
+    return sitk.Resample(
+        mask_image,
+        ct_image,
+        sitk.Transform(),
+        sitk.sitkNearestNeighbor,
+        0,
+        mask_image.GetPixelID(),
+    )
+
+
+def annotate_dvh_metrics(
+    metrics: dict,
+    *,
+    technique: str,
+    structure_name: str,
+    prescription_resolved: bool = True,
+    rtstruct_sop_instance_uid: str | None,
+    rtstruct_path: Path | None,
+    structure_provenance_type: str = "RTSTRUCT",
+    structure_provenance_path: Path | None = None,
+    zero_dose_status: str = "not_zero",
+    zero_dose_reason: str = "DmaxGy is positive.",
+) -> dict[str, object]:
+    """Attach explicit technique, provenance, missingness, and zero-dose semantics."""
+    output = dict(metrics)
+    normalized_technique = str(technique or "UNKNOWN").strip().upper() or "UNKNOWN"
+    is_ebrt = normalized_technique == "EBRT"
+    if not is_ebrt:
+        relative_status = "suppressed_non_ebrt"
+        relative_reason = (
+            "Prescription-relative DVH metrics are suppressed because EBRT, "
+            "brachytherapy, and mixed courses are not comparable on this scale."
+        )
+        for column in RELATIVE_DVH_METRIC_COLUMNS:
+            output[column] = None
+    elif prescription_resolved:
+        relative_status = "computed"
+        relative_reason = "Prescription-relative metrics use the resolved course prescription."
+    else:
+        relative_status = "unavailable_prescription_unresolved"
+        relative_reason = (
+            "Prescription-relative DVH metrics are unavailable because the course "
+            "prescription was not resolved."
+        )
+        for column in RELATIVE_DVH_METRIC_COLUMNS:
+            output[column] = None
+
+    target_structure = _is_target_structure_name(structure_name)
+    if not target_structure:
+        output["HI%"] = None
+        output["HI_status"] = "not_applicable_non_target"
+        output["HI_reason"] = "HI% is emitted only for target structures."
+    elif not is_ebrt:
+        output["HI_status"] = "suppressed_non_ebrt"
+        output["HI_reason"] = relative_reason
+    elif not prescription_resolved:
+        output["HI_status"] = "unavailable_prescription_unresolved"
+        output["HI_reason"] = relative_reason
+    elif output.get("HI%") is None or not np.isfinite(float(output["HI%"])):
+        output["HI_status"] = "not_computable"
+        output["HI_reason"] = "HI% could not be computed from the target DVH."
+    else:
+        output["HI_status"] = "computed"
+        output["HI_reason"] = "HI% was computed for a target structure."
+
+    provenance_type = str(structure_provenance_type or "").strip() or "UNKNOWN"
+    if provenance_type == "RTSTRUCT" and rtstruct_sop_instance_uid and rtstruct_path:
+        provenance_status = "traceable"
+        provenance_reason = "ROI is traceable to the contracted RTSTRUCT SOP instance and path."
+        rtstruct_provenance_status = "traceable"
+        rtstruct_provenance_reason = provenance_reason
+    elif provenance_type == "NIFTI_MASK" and structure_provenance_path:
+        provenance_status = "traceable"
+        provenance_reason = "ROI is traceable to its source NIfTI mask path."
+        rtstruct_provenance_status = "not_applicable"
+        rtstruct_provenance_reason = (
+            "ROI was computed from a NIfTI mask, so RTSTRUCT identity is not applicable."
+        )
+    else:
+        provenance_status = "unresolved"
+        provenance_reason = "ROI lacks a usable source structure identity and path."
+        rtstruct_provenance_status = "unresolved"
+        rtstruct_provenance_reason = provenance_reason
+    output.update(
+        {
+            "treatment_technique": normalized_technique,
+            "treatment_technique_source": "DICOM_RTPLAN",
+            "relative_metric_status": relative_status,
+            "relative_metric_reason": relative_reason,
+            "rtstruct_sop_instance_uid": rtstruct_sop_instance_uid,
+            "rtstruct_path": str(rtstruct_path) if rtstruct_path else None,
+            "structure_provenance_type": provenance_type,
+            "structure_provenance_status": provenance_status,
+            "structure_provenance_reason": provenance_reason,
+            "structure_provenance_path": (
+                str(structure_provenance_path)
+                if structure_provenance_path
+                else str(rtstruct_path) if rtstruct_path else None
+            ),
+            "rtstruct_provenance_status": rtstruct_provenance_status,
+            "rtstruct_provenance_reason": rtstruct_provenance_reason,
+            "zero_dose_status": zero_dose_status,
+            "zero_dose_reason": zero_dose_reason,
+        }
+    )
+    return output
 
 from .config import DEFAULT_MAX_TOTAL_DOSE_GY
 from .layout import build_course_dirs
@@ -942,6 +1197,7 @@ def _write_dvh_qc(
     rx_recovery_attempted: bool = True,
     dose_resolution: Optional[DVHDoseResolution] = None,
     structure_resolution: Optional[DVHStructureResolution] = None,
+    treatment_technique: str = "UNKNOWN",
 ) -> None:
     present: set[str] = set()
     partial: set[str] = set()
@@ -963,6 +1219,22 @@ def _write_dvh_qc(
         "metric_version": DVH_METRIC_VERSION,
         "rx_source": rx_source,
         "rx_relative_metrics_available": rx_source != "none",
+        "treatment_technique": treatment_technique,
+        "relative_metric_status_counts": (
+            df["relative_metric_status"].value_counts(dropna=False).to_dict()
+            if "relative_metric_status" in df
+            else {}
+        ),
+        "rtstruct_provenance_status_counts": (
+            df["rtstruct_provenance_status"].value_counts(dropna=False).to_dict()
+            if "rtstruct_provenance_status" in df
+            else {}
+        ),
+        "zero_dose_status_counts": (
+            df["zero_dose_status"].value_counts(dropna=False).to_dict()
+            if "zero_dose_status" in df
+            else {}
+        ),
         "rx_recovery_attempted": rx_recovery_attempted,
         "custom_structures_expected": expected_custom_names,
         "custom_structures_missing": missing_custom,
@@ -1086,6 +1358,21 @@ def _is_dvh_up_to_date(
         return False
 
     try:
+        parquet_path = dvh_path.with_suffix(".parquet")
+        if not parquet_path.exists():
+            logger.info("Typed DVH Parquet sidecar is missing; regenerating")
+            return False
+        parquet_frame = pd.read_parquet(parquet_path)
+        required_columns = {
+            "treatment_technique",
+            "relative_metric_status",
+            "structure_provenance_status",
+            "zero_dose_status",
+        }
+        if not required_columns.issubset(parquet_frame.columns):
+            logger.info("Typed DVH Parquet sidecar has an old schema; regenerating")
+            return False
+
         expected_custom = _expected_custom_structure_names(custom_structures_config)
         if expected_custom and not _dvh_has_expected_custom_structures(dvh_path, expected_custom):
             logger.info("DVH output is missing expected custom structures; regenerating")
@@ -1466,6 +1753,8 @@ def _compute_nifti_based_dvh(
     rd_path: Path,
     rx_est: Optional[float],
     existing_roi_names: set,
+    technique: str = "UNKNOWN",
+    prescription_resolved: bool = False,
 ) -> List[Dict]:
     """Compute DVH for TotalSegmentator and custom composite structures directly from NIfTI masks.
 
@@ -1536,17 +1825,22 @@ def _compute_nifti_based_dvh(
     # --- Load TotalSegmentator NIfTI masks (resampled to CT) ---
     # Masks stored as (z, y, x) — SimpleITK native order
     ts_masks_zyx: Dict[str, np.ndarray] = {}
+    ts_mask_paths: Dict[str, Path] = {}
     for ts_name, nii_file in _iter_totalseg_masks(seg_root):
         try:
             img = sitk.ReadImage(str(nii_file))
-            img = sitk.Resample(
-                img, ct_image,
-                sitk.Transform(), sitk.sitkNearestNeighbor,
-                0, img.GetPixelID(),
-            )
+            img = _resample_mask_to_ct_if_equivalent(img, ct_image)
+            if img is None:
+                logger.warning(
+                    "NIfTI DVH: rejected %s because its physical voxel grid does not "
+                    "match the planning CT",
+                    nii_file,
+                )
+                continue
             arr = sitk.GetArrayFromImage(img).astype(bool)
             if np.any(arr):
                 ts_masks_zyx[ts_name] = arr
+                ts_mask_paths[ts_name] = nii_file
         except Exception as exc:
             logger.debug("NIfTI DVH: Failed to load %s: %s", ts_name, exc)
 
@@ -1597,6 +1891,38 @@ def _compute_nifti_based_dvh(
             )
             if metrics is None:
                 continue
+
+            zero_dose_status = "not_zero"
+            zero_dose_reason = "DmaxGy is positive."
+            try:
+                if float(metrics.get("DmaxGy", 0.0) or 0.0) == 0.0:
+                    zero_dose_status = "zero_dose_in_grid"
+                    zero_dose_reason = (
+                        "NIfTI mask was sampled on the CT-aligned dose array and its "
+                        "computed DmaxGy is zero. Original RTDOSE coverage still requires review."
+                    )
+            except (TypeError, ValueError):
+                zero_dose_status = "zero_dose_geometry_unresolved"
+                zero_dose_reason = "DmaxGy was zero but NIfTI mask geometry could not be checked."
+            source_path = ts_mask_paths.get(name)
+            if source_path is None:
+                source_path = (
+                    Path(custom_structures_config)
+                    if custom_structures_config and name in custom_masks_zyx
+                    else seg_root
+                )
+            metrics = annotate_dvh_metrics(
+                metrics,
+                technique=technique,
+                structure_name=name,
+                prescription_resolved=prescription_resolved,
+                rtstruct_sop_instance_uid=None,
+                rtstruct_path=None,
+                structure_provenance_type="NIFTI_MASK",
+                structure_provenance_path=source_path,
+                zero_dose_status=zero_dose_status,
+                zero_dose_reason=zero_dose_reason,
+            )
 
             # Check if mask is cropped at image boundary
             cropped = False
@@ -1678,6 +2004,10 @@ def dvh_for_course(
         cases from the validated contract and QC record.
     """
     contract = load_course_contract(course_dir)
+    treatment_technique = str(
+        contract.treatment_technique.get("classification") or "UNKNOWN"
+    ).strip().upper()
+    prescription_resolved = contract.resolved_prescribed_dose_total_gy is not None
 
     out_xlsx = course_dir / "dvh_metrics.xlsx"
     # Resolve and enforce the contract before cache reuse. A newly failing
@@ -1795,6 +2125,7 @@ def dvh_for_course(
             source_label,
             rx_value,
             rtstruct_ds,
+            geometry_rtstruct_ds,
             builder_obj,
             rtstruct_sop_uid,
             rtstruct_path,
@@ -1815,6 +2146,28 @@ def dvh_for_course(
         metrics = _compute_metrics(abs_dvh, rx_value)
         if metrics is None:
             return None
+        zero_dose_status = "not_zero"
+        zero_dose_reason = "DmaxGy is positive."
+        try:
+            if float(metrics.get("DmaxGy", 0.0) or 0.0) == 0.0:
+                zero_qc = classify_zero_dose_roi_geometry(
+                    geometry_rtstruct_ds, int(roi_number), rtdose
+                )
+                zero_dose_status = zero_qc["status"]
+                zero_dose_reason = zero_qc["reason"]
+        except (TypeError, ValueError):
+            zero_dose_status = "zero_dose_geometry_unresolved"
+            zero_dose_reason = "DmaxGy was zero but its dose-grid geometry could not be checked."
+        metrics = annotate_dvh_metrics(
+            metrics,
+            technique=treatment_technique,
+            structure_name=roi_name,
+            prescription_resolved=prescription_resolved,
+            rtstruct_sop_instance_uid=rtstruct_sop_uid,
+            rtstruct_path=rtstruct_path,
+            zero_dose_status=zero_dose_status,
+            zero_dose_reason=zero_dose_reason,
+        )
         cropped = False
         if builder_obj is not None:
             try:
@@ -1855,13 +2208,17 @@ def dvh_for_course(
         )
         return metrics
 
-    def process_struct(rs_source: DVHRTStructSource, rx_dose: float) -> None:
+    def process_struct(rs_source: DVHRTStructSource, rx_dose: Optional[float]) -> None:
         rs_path = rs_source.path
         try:
             rtstruct = pydicom.dcmread(str(rs_path))
         except Exception as e:
             logger.warning("Cannot read RTSTRUCT %s: %s", rs_path, e)
             return
+
+        # Keep original contour coordinates for zero-dose geometry QC. The
+        # downstream snap operation intentionally mutates a working dataset.
+        geometry_rtstruct = copy.deepcopy(rtstruct)
 
         # Use cached snap if we've already snapped this RS+dose combination
         dose_sop_uid = str(getattr(rtdose, "SOPInstanceUID", ""))
@@ -1889,6 +2246,7 @@ def dvh_for_course(
                 rs_source.source_label,
                 rx_dose,
                 rtstruct,
+                geometry_rtstruct,
                 builder,
                 rs_source.sop_instance_uid,
                 rs_path,
@@ -2010,6 +2368,8 @@ def dvh_for_course(
             rd_path=rd,
             rx_est=rx_est,
             existing_roi_names=existing_roi_names,
+            technique=treatment_technique,
+            prescription_resolved=prescription_resolved,
         )
         results.extend(nifti_results)
     else:
@@ -2064,13 +2424,44 @@ def dvh_for_course(
     for row in clean_results:
         row["Dose_Grid_Semantics"] = dose_resolution.dose_grid_semantics
         row["Prescribed_Dose_Gy"] = dose_resolution.prescribed_dose_gy
+        row["Prescribed_Dose_Status"] = (
+            "resolved"
+            if dose_resolution.resolved_prescribed_dose_total_gy is not None
+            else "unresolved"
+        )
+        row["Prescribed_Dose_Reason"] = (
+            "Prescription total is available from the authoritative course contract."
+            if dose_resolution.resolved_prescribed_dose_total_gy is not None
+            else (
+                "Prescription is present but its course total is unresolved."
+                if dose_resolution.prescribed_dose_gy is not None
+                else "Prescription is absent from the authoritative course contract."
+            )
+        )
         row["Delivered_Dose_Gy"] = dose_resolution.delivered_dose_gy
+        row["Delivered_Dose_Status"] = (
+            "resolved" if dose_resolution.delivered_dose_gy is not None else "unresolved"
+        )
+        row["Delivered_Dose_Reason"] = (
+            "Delivered dose is available from the authoritative course contract."
+            if dose_resolution.delivered_dose_gy is not None
+            else (
+                "Delivered dose is not available in the authoritative course contract. "
+                "This row remains valid for planned-dose DVH analysis only."
+            )
+        )
         row["Delivery_Status"] = dose_resolution.delivery_status
         row["Dose_Response_Field"] = dose_resolution.dose_response_dose_field
         row["Dose_QC_Status"] = dose_resolution.dose_qc_status
 
     df = pd.DataFrame(clean_results)
     df.to_excel(out_xlsx, index=False)
+    try:
+        df.to_parquet(out_xlsx.with_suffix(".parquet"), index=False)
+    except Exception as exc:
+        raise RuntimeError(
+            f"Unable to write typed course DVH sidecar {out_xlsx.with_suffix('.parquet')}: {exc}"
+        ) from exc
     expected_custom = _expected_custom_structure_names(custom_structures_config)
     if expected_custom:
         missing_custom = [
@@ -2092,5 +2483,6 @@ def dvh_for_course(
         rx_recovery_attempted,
         dose_resolution,
         structure_resolution,
+        treatment_technique=treatment_technique,
     )
     return out_xlsx
