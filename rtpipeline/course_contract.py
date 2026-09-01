@@ -11,6 +11,7 @@ import hashlib
 import json
 import math
 from pathlib import Path
+import re
 from typing import Any, Iterable
 
 import pydicom
@@ -32,6 +33,12 @@ from .plan_profiles import (
     DERIVED_RTPLAN_SOP_CLASSES,
     SOURCE_RTPLAN_SOP_CLASSES,
     plan_profile_name,
+)
+from .clinical_prescription import (
+    CLINICAL_EVIDENCE_SCHEMA,
+    CLINICAL_RESOLVED_SCOPE,
+    confirm_two_phase_fractionation,
+    parse_kopernik_treatment_description,
 )
 from .prescription import (
     PRESCRIPTION_GROUP_FIELDS,
@@ -729,6 +736,187 @@ def _validate_plan_prescription(
         )
 
 
+def _same_dose(left: object, right: object, tolerance: float = 0.05) -> bool:
+    if left in (None, "") or right in (None, ""):
+        return left in (None, "") and right in (None, "")
+    try:
+        return abs(float(str(left)) - float(str(right))) <= tolerance
+    except (TypeError, ValueError):
+        return False
+
+
+def _validate_clinical_prescription_evidence(
+    evidence: object,
+    *,
+    dicom_resolved_total_gy: float | None,
+    dicom_prescribed_scope: str,
+    prescribed_scope: str,
+    per_plan_delivery: list[dict[str, Any]],
+) -> float | None:
+    """Validate the portable row snapshot and its resolution decision."""
+
+    if evidence is None:
+        if prescribed_scope == CLINICAL_RESOLVED_SCOPE:
+            raise CourseContractError(
+                "a clinically resolved prescription requires clinical_prescription_evidence"
+            )
+        return None
+    if not isinstance(evidence, dict):
+        raise CourseContractError(
+            "course contract field clinical_prescription_evidence must be an object or null"
+        )
+    if evidence.get("schema") != CLINICAL_EVIDENCE_SCHEMA:
+        raise CourseContractError("unsupported clinical prescription evidence schema")
+    source = evidence.get("source")
+    if not isinstance(source, dict):
+        raise CourseContractError("clinical prescription evidence source must be an object")
+    workbook_path = str(source.get("workbook_path") or "").strip()
+    workbook_hash = str(source.get("workbook_sha256") or "").strip()
+    if not workbook_path or not re.fullmatch(r"[0-9a-f]{64}", workbook_hash):
+        raise CourseContractError(
+            "clinical prescription evidence requires a source path and SHA-256"
+        )
+    if not str(source.get("sheet_name") or "").strip():
+        raise CourseContractError("clinical prescription evidence source sheet is empty")
+    try:
+        if int(source.get("row_count") or 0) <= 0:
+            raise ValueError
+    except (TypeError, ValueError) as exc:
+        raise CourseContractError(
+            "clinical prescription evidence source row_count must be positive"
+        ) from exc
+
+    dicom = evidence.get("dicom")
+    if not isinstance(dicom, dict):
+        raise CourseContractError("clinical prescription DICOM snapshot must be an object")
+    if not _same_dose(
+        dicom.get("resolved_prescribed_dose_total_gy"),
+        dicom_resolved_total_gy,
+    ):
+        raise CourseContractError("clinical prescription evidence DICOM total is stale")
+    if str(dicom.get("prescribed_dose_scope") or "") != dicom_prescribed_scope:
+        raise CourseContractError("clinical prescription evidence DICOM scope is stale")
+
+    outcome = str(evidence.get("outcome") or "")
+    if outcome not in {
+        "UNRESOLVED",
+        "RESOLVED_FROM_CLINICAL_RECORD",
+        "CORROBORATED_DICOM",
+        "DISAGREES_WITH_DICOM",
+    }:
+        raise CourseContractError(
+            f"unknown clinical prescription evidence outcome {outcome!r}"
+        )
+    match = evidence.get("match")
+    if not isinstance(match, dict):
+        raise CourseContractError("clinical prescription match evidence must be an object")
+    record = evidence.get("record")
+    parsed = evidence.get("parse")
+    sites: list[dict[str, Any]] = []
+    if match.get("status") == "MATCHED":
+        if not isinstance(record, dict):
+            raise CourseContractError("matched clinical evidence requires a source record")
+        if record.get("workbook_sha256") != workbook_hash:
+            raise CourseContractError(
+                "clinical source record hash disagrees with the workbook source"
+            )
+        if record.get("parsed_field") != "Opis leczenia":
+            raise CourseContractError(
+                "clinical source record must name the parsed Opis leczenia field"
+            )
+        if not str(record.get("record_id") or "").strip():
+            raise CourseContractError("clinical source record_id is empty")
+        try:
+            if int(record.get("excel_row") or 0) < 2:
+                raise ValueError
+        except (TypeError, ValueError) as exc:
+            raise CourseContractError(
+                "clinical source record excel_row must identify a data row"
+            ) from exc
+        source_text = record.get("source_text")
+        if not isinstance(source_text, str):
+            raise CourseContractError("clinical source_text must be a string")
+        expected_parse = parse_kopernik_treatment_description(source_text)
+        if parsed != expected_parse:
+            raise CourseContractError(
+                "clinical prescription parse does not match the exact source text"
+            )
+        sites = list(expected_parse.get("sites") or [])
+        match_evidence = match.get("match_evidence")
+        if not isinstance(match_evidence, dict):
+            raise CourseContractError("matched clinical evidence lacks match details")
+        record_window = match_evidence.get("record_window")
+        expected_window = [
+            record.get("treatment_start_date"),
+            record.get("treatment_end_date"),
+        ]
+        if record_window != expected_window:
+            raise CourseContractError(
+                "clinical prescription match window disagrees with source record dates"
+            )
+    elif record is not None or parsed is not None:
+        raise CourseContractError(
+            "unmatched clinical prescription evidence cannot contain a parsed record"
+        )
+
+    expected_phase = confirm_two_phase_fractionation(sites, per_plan_delivery)
+    if evidence.get("fractionation_classification") != expected_phase:
+        raise CourseContractError(
+            "clinical fractionation classification disagrees with record and RTPLAN delivery evidence"
+        )
+    totals = sorted({float(item["total_dose_gy"]) for item in sites})
+    clinical_total = evidence.get("clinical_resolved_total_gy")
+    effective_total = evidence.get("effective_resolved_total_gy")
+    source_label = evidence.get("effective_prescription_source")
+
+    if outcome == "RESOLVED_FROM_CLINICAL_RECORD":
+        if dicom_resolved_total_gy is not None or len(totals) != 1:
+            raise CourseContractError(
+                "clinical resolution requires unresolved DICOM and one unique clinical total"
+            )
+        if not _same_dose(clinical_total, totals[0]) or not _same_dose(
+            effective_total, totals[0]
+        ):
+            raise CourseContractError(
+                "clinical resolved total disagrees with self-checked site evidence"
+            )
+        if source_label != "CLINICAL_RECORD" or prescribed_scope != CLINICAL_RESOLVED_SCOPE:
+            raise CourseContractError(
+                "clinical resolution source or prescribed scope is inconsistent"
+            )
+        return totals[0]
+
+    if prescribed_scope == CLINICAL_RESOLVED_SCOPE:
+        raise CourseContractError(
+            "clinical resolved scope requires RESOLVED_FROM_CLINICAL_RECORD"
+        )
+    if clinical_total not in (None, ""):
+        raise CourseContractError(
+            "non-resolving clinical evidence cannot publish a clinical total"
+        )
+    if not _same_dose(effective_total, dicom_resolved_total_gy):
+        raise CourseContractError(
+            "clinical evidence effective total disagrees with DICOM precedence"
+        )
+    expected_source = "DICOM" if dicom_resolved_total_gy is not None else None
+    if source_label != expected_source:
+        raise CourseContractError(
+            "clinical evidence effective prescription source is inconsistent"
+        )
+    matching_totals = [
+        value for value in totals if _same_dose(value, dicom_resolved_total_gy)
+    ]
+    if outcome == "CORROBORATED_DICOM" and (
+        dicom_resolved_total_gy is None or not matching_totals
+    ):
+        raise CourseContractError("clinical corroboration does not match DICOM")
+    if outcome == "DISAGREES_WITH_DICOM" and (
+        dicom_resolved_total_gy is None or matching_totals
+    ):
+        raise CourseContractError("clinical disagreement is not supported")
+    return None
+
+
 def validate_course_contract(contract: CourseContract) -> CourseContract:
     data = contract.data
     if data.get("version") != COURSE_CONTRACT_VERSION:
@@ -872,6 +1060,7 @@ def validate_course_contract(contract: CourseContract) -> CourseContract:
     )
 
     delivery = contract.delivery
+    per_plan = _list_of_dicts(delivery.get("per_plan"), "delivery.per_plan")
     status = _nonempty_text(delivery.get("status"), "delivery.status")
     prescribed = _optional_nonnegative_number(
         delivery.get("prescribed_dose_gy"),
@@ -912,18 +1101,47 @@ def validate_course_contract(contract: CourseContract) -> CourseContract:
             for uid, value in zip(plan_uids, selected_resolved_doses)
             if uid in prescription_plan_uids
         ]
-    def _course_value(values: list[float | None]) -> float | None:
-        if prescribed_scope.startswith("UNRESOLVED_"):
+
+    def _course_value_for_scope(
+        values: list[float | None], scope_value: str
+    ) -> float | None:
+        if scope_value.startswith("UNRESOLVED_"):
             return None
         return aggregate_course_prescription_values(
             values,
-            sum_all=(should_sum_prescriptions or prescribed_scope == "COURSE_TOTAL_SUMMED"),
+            sum_all=(
+                should_sum_prescriptions or scope_value == "COURSE_TOTAL_SUMMED"
+            ),
         )
+
+    dicom_scope = prescribed_scope
+    if prescribed_scope == CLINICAL_RESOLVED_SCOPE:
+        dicom_scope = str(
+            data["dose_classification"].get("dicom_prescribed_dose_scope") or ""
+        ).strip()
+        if not dicom_scope:
+            raise CourseContractError(
+                "clinical resolution must retain the original DICOM prescription scope"
+            )
+    dicom_resolved = _course_value_for_scope(course_resolved_doses, dicom_scope)
+    clinical_resolved = _validate_clinical_prescription_evidence(
+        data.get("clinical_prescription_evidence"),
+        dicom_resolved_total_gy=dicom_resolved,
+        dicom_prescribed_scope=dicom_scope,
+        prescribed_scope=prescribed_scope,
+        per_plan_delivery=per_plan,
+    )
+
+    def _course_value(values: list[float | None]) -> float | None:
+        if prescribed_scope == CLINICAL_RESOLVED_SCOPE:
+            return clinical_resolved
+        return _course_value_for_scope(values, prescribed_scope)
 
     if prescribed_scope:
         allowed_scopes = {
             "SINGLE_PLAN_TOTAL",
             "COURSE_TOTAL_SUMMED",
+            CLINICAL_RESOLVED_SCOPE,
             "UNRESOLVED_COMPONENT",
             "UNRESOLVED_REPLACEMENT_CHAIN",
         }
@@ -936,7 +1154,11 @@ def validate_course_contract(contract: CourseContract) -> CourseContract:
                 "an unresolved delivery.prescribed_dose_scope requires "
                 "resolved_prescribed_dose_total_gy to be null"
             )
-        if prescribed_scope in {"SINGLE_PLAN_TOTAL", "COURSE_TOTAL_SUMMED"} and resolved_prescribed is None:
+        if prescribed_scope in {
+            "SINGLE_PLAN_TOTAL",
+            "COURSE_TOTAL_SUMMED",
+            CLINICAL_RESOLVED_SCOPE,
+        } and resolved_prescribed is None:
             raise CourseContractError(
                 "a resolved delivery.prescribed_dose_scope requires a resolved total"
             )
@@ -949,14 +1171,24 @@ def validate_course_contract(contract: CourseContract) -> CourseContract:
             )
     if prescribed != _course_value(course_source_doses):
         raise CourseContractError(
-            "delivery.prescribed_dose_gy disagrees with the selected RTPLAN "
-            "source prescription"
+            "delivery.prescribed_dose_gy disagrees with authoritative prescription evidence"
         )
     if resolved_prescribed != _course_value(course_resolved_doses):
         raise CourseContractError(
-            "delivery.resolved_prescribed_dose_total_gy disagrees with the "
-            "selected RTPLAN BeamDose resolution"
+            "delivery.resolved_prescribed_dose_total_gy disagrees with authoritative prescription evidence"
         )
+    if "prescription_source" in delivery:
+        expected_prescription_source = (
+            "CLINICAL_RECORD"
+            if prescribed_scope == CLINICAL_RESOLVED_SCOPE
+            else "DICOM"
+            if resolved_prescribed is not None
+            else None
+        )
+        if delivery.get("prescription_source") != expected_prescription_source:
+            raise CourseContractError(
+                "delivery.prescription_source disagrees with prescription scope"
+            )
     delivered = _optional_nonnegative_number(
         delivery.get("delivered_dose_gy"),
         "delivery.delivered_dose_gy",
@@ -988,7 +1220,6 @@ def validate_course_contract(contract: CourseContract) -> CourseContract:
         raise CourseContractError(
             f"delivery.dose_response_field must be {DOSE_RESPONSE_FIELD!r}"
         )
-    per_plan = _list_of_dicts(delivery.get("per_plan"), "delivery.per_plan")
     per_plan_uids = [
         _nonempty_text(item.get("plan_sop_uid"), f"delivery.per_plan[{index}].plan_sop_uid")
         for index, item in enumerate(per_plan)
