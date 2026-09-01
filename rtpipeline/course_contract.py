@@ -17,7 +17,7 @@ import pydicom
 from pydicom.dataset import Dataset
 
 
-COURSE_CONTRACT_VERSION = 2
+COURSE_CONTRACT_VERSION = 3
 PLAN_LEVEL_DOSE_SUMMATION_TYPES = frozenset({"PLAN", "PLAN_SUM"})
 BEAM_LEVEL_DOSE_SUMMATION_TYPES = frozenset({"BEAM"})
 DOSE_GRID_SEMANTICS = "planned_dose_for_delivered_plan_set"
@@ -31,6 +31,7 @@ AUTO_RTSTRUCT_SOURCE = "AutoRTS_total"
 from .plan_profiles import (
     DERIVED_RTPLAN_SOP_CLASSES,
     SOURCE_RTPLAN_SOP_CLASSES,
+    plan_profile_name,
 )
 from .prescription import (
     PRESCRIPTION_GROUP_FIELDS,
@@ -99,6 +100,133 @@ def build_dvh_decision(
             "DVH emits no dose metrics and records this reason in metadata."
             if selected_plan_count
             else "Organize selected no plan or RTDOSE sources. DVH emits no dose metrics and records this reason in metadata."
+        ),
+    }
+
+
+def _nonnegative_int(value: object) -> int:
+    try:
+        parsed = int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+    return max(0, parsed)
+
+
+def _plan_treatment_technique_evidence(path: Path, course_dir: Path | None) -> dict[str, Any]:
+    dataset = _read_header(path, "treatment_technique.plan_evidence.path")
+    modality = str(getattr(dataset, "Modality", "") or "").strip().upper()
+    if modality != "RTPLAN":
+        raise CourseContractError(
+            f"treatment technique evidence is not an RTPLAN: {path} ({modality!r})"
+        )
+    fraction_groups = list(getattr(dataset, "FractionGroupSequence", None) or [])
+    beam_sequence_count = len(getattr(dataset, "BeamSequence", None) or [])
+    brachy_setup_sequence_count = len(
+        getattr(dataset, "BrachyApplicationSetupSequence", None) or []
+    )
+    number_of_beams = sum(
+        _nonnegative_int(getattr(group, "NumberOfBeams", None))
+        for group in fraction_groups
+    )
+    number_of_brachy_setups = sum(
+        _nonnegative_int(
+            getattr(group, "NumberOfBrachyApplicationSetups", None)
+        )
+        for group in fraction_groups
+    )
+    referenced_beam_count = sum(
+        len(getattr(group, "ReferencedBeamSequence", None) or [])
+        for group in fraction_groups
+    )
+    referenced_brachy_count = sum(
+        len(
+            getattr(
+                group,
+                "ReferencedBrachyApplicationSetupSequence",
+                None,
+            )
+            or []
+        )
+        for group in fraction_groups
+    )
+    sop_class_uid = str(getattr(dataset, "SOPClassUID", "") or "").strip()
+    has_ebrt = any((beam_sequence_count, number_of_beams, referenced_beam_count))
+    has_brachy = any(
+        (
+            brachy_setup_sequence_count,
+            number_of_brachy_setups,
+            referenced_brachy_count,
+        )
+    )
+    if has_ebrt and has_brachy:
+        classification = "MIXED"
+    elif has_brachy:
+        classification = "BRACHYTHERAPY"
+    elif has_ebrt:
+        classification = "EBRT"
+    else:
+        classification = "UNKNOWN"
+    resolved = path.resolve(strict=False)
+    if course_dir is None:
+        path_value = str(resolved)
+    else:
+        try:
+            path_value = resolved.relative_to(
+                Path(course_dir).resolve(strict=False)
+            ).as_posix()
+        except ValueError as exc:
+            raise CourseContractError(
+                f"treatment technique plan escapes the course directory: {resolved}"
+            ) from exc
+    return {
+        "sop_instance_uid": str(
+            getattr(dataset, "SOPInstanceUID", "") or ""
+        ).strip(),
+        "sop_class_uid": sop_class_uid,
+        "sop_class_profile": plan_profile_name(sop_class_uid),
+        "path": path_value,
+        "classification": classification,
+        "beam_sequence_count": beam_sequence_count,
+        "number_of_beams": number_of_beams,
+        "referenced_beam_count": referenced_beam_count,
+        "brachy_application_setup_sequence_count": brachy_setup_sequence_count,
+        "number_of_brachy_application_setups": number_of_brachy_setups,
+        "referenced_brachy_application_setup_count": referenced_brachy_count,
+    }
+
+
+def build_treatment_technique_contract(
+    plan_paths: Iterable[Path | str],
+    *,
+    course_dir: Path | str | None = None,
+) -> dict[str, Any]:
+    """Classify selected treatment plans from standard DICOM plan sequences."""
+    root = Path(course_dir) if course_dir is not None else None
+    evidence = [
+        _plan_treatment_technique_evidence(Path(path), root)
+        for path in dict.fromkeys(Path(path) for path in plan_paths)
+    ]
+    plan_classes = {str(item["classification"]) for item in evidence}
+    has_ebrt = bool(plan_classes.intersection({"EBRT", "MIXED"}))
+    has_brachy = bool(plan_classes.intersection({"BRACHYTHERAPY", "MIXED"}))
+    if has_ebrt and has_brachy:
+        classification = "MIXED"
+    elif has_brachy:
+        classification = "BRACHYTHERAPY"
+    elif has_ebrt:
+        classification = "EBRT"
+    else:
+        classification = "UNKNOWN"
+    eligible = classification == "EBRT"
+    return {
+        "classification": classification,
+        "plan_evidence": evidence,
+        "dose_response_eligible": eligible,
+        "dose_response_exclusion_reason": (
+            None if eligible else f"treatment_technique_{classification.lower()}"
+        ),
+        "prescription_relative_dvh_metrics": (
+            "available_when_prescription_resolved" if eligible else "suppressed"
         ),
     }
 
@@ -339,6 +467,15 @@ class CourseContract:
     @property
     def selected_doses(self) -> list[dict[str, Any]]:
         return _list_of_dicts(self.data.get("selected_doses"), "selected_doses")
+
+    @property
+    def treatment_technique(self) -> dict[str, Any]:
+        value = self.data.get("treatment_technique")
+        if not isinstance(value, dict):
+            raise CourseContractError(
+                "course contract field treatment_technique must be an object"
+            )
+        return value
 
     @property
     def delivery(self) -> dict[str, Any]:
@@ -625,6 +762,7 @@ def validate_course_contract(contract: CourseContract) -> CourseContract:
     if not isinstance(data.get("dose_classification"), dict):
         raise CourseContractError("course contract field dose_classification must be an object")
     plan_uids: list[str] = []
+    treatment_plan_paths: list[Path] = []
     selected_source_doses: list[float | None] = []
     selected_resolved_doses: list[float | None] = []
     for index, item in enumerate(selected_plans):
@@ -632,6 +770,7 @@ def validate_course_contract(contract: CourseContract) -> CourseContract:
         plan_path = _validate_dicom_identity(
             contract, item, field, role="RTPLAN_SOURCE"
         )
+        treatment_plan_paths.append(plan_path)
         _validate_plan_prescription(
             item,
             _read_header(plan_path, f"{field}.path"),
@@ -658,6 +797,15 @@ def validate_course_contract(contract: CourseContract) -> CourseContract:
                 item.get("resolved_prescribed_dose_total_gy"),
                 f"{field}.resolved_prescribed_dose_total_gy",
             )
+        )
+
+    expected_treatment_technique = build_treatment_technique_contract(
+        treatment_plan_paths, course_dir=contract.course_dir
+    )
+    if contract.treatment_technique != expected_treatment_technique:
+        raise CourseContractError(
+            "stale course contract at treatment_technique: serialized DICOM "
+            "technique evidence does not match selected RTPLAN sources"
         )
 
     dose_uids: list[str] = []

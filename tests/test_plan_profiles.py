@@ -21,6 +21,7 @@ from rtpipeline.organize import PlanSummationUnsupportedError, _create_summed_pl
 
 VARIAN = plan_profiles.VARIAN_RT_PLAN_1_SOP_CLASS
 STANDARD = plan_profiles.STANDARD_RT_PLAN_SOP_CLASS
+BRACHY_RECORD = plan_profiles.RT_BRACHY_TREATMENT_RECORD_SOP_CLASS
 
 
 def _plan(path: Path, sop_class: str, *, rx: float = 20.0, fractions: int = 5) -> Path:
@@ -54,6 +55,13 @@ def test_source_role_admits_the_varian_profile() -> None:
     modalities, classes = _ROLE_EXPECTATIONS["RTPLAN_SOURCE"]
     assert VARIAN in classes and STANDARD in classes
     assert "RTPLAN" in modalities
+
+
+def test_rt_brachy_treatment_record_is_not_an_rtplan_source() -> None:
+    _modalities, classes = _ROLE_EXPECTATIONS["RTPLAN_SOURCE"]
+
+    assert BRACHY_RECORD not in classes
+    assert plan_profiles.plan_profile_name(BRACHY_RECORD) == "not_rt_plan"
 
 
 def test_derived_role_refuses_the_varian_profile() -> None:
