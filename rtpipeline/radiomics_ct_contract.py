@@ -483,6 +483,28 @@ def build_ct_extractors(
     return shape_extractor, raw_extractor, primary_extractor
 
 
+def effective_parameter_hashes_for_arms(
+    factory: Callable[[], Any],
+    decision: RoiClassDecision,
+) -> dict[str, str]:
+    """Hash the materialized extractor settings selected for each CT arm."""
+    _, raw_extractor, primary_extractor = build_ct_extractors(
+        factory, decision.primary_resegment_range_hu
+    )
+    return {
+        PRIMARY_ARM: effective_parameter_hash(
+            primary_extractor or raw_extractor,
+            arm=PRIMARY_ARM,
+            window=decision.primary_resegment_range_hu,
+        ),
+        SENSITIVITY_ARM: effective_parameter_hash(
+            raw_extractor,
+            arm=SENSITIVITY_ARM,
+            window=None,
+        ),
+    }
+
+
 def _scalarize(result: Mapping[str, Any]) -> dict[str, Any]:
     return normalize_radiomics_result(result)
 
@@ -730,6 +752,14 @@ def disposition_rows_for_arms(
     effective_hashes: Optional[Mapping[str, str]] = None,
     configured_parameter_hashes: Optional[Mapping[str, str]] = None,
 ) -> list[dict[str, Any]]:
+    if not effective_hashes or any(
+        not str(effective_hashes.get(arm) or "").strip()
+        or str(effective_hashes.get(arm)).strip() == "unavailable"
+        for arm in CT_EXTRACTION_ARMS
+    ):
+        raise ValueError(
+            "disposition rows require runtime effective-parameter hashes for both CT arms"
+        )
     versions = {
         "pyradiomics_version": "unavailable",
         "simpleitk_version": "unavailable",
@@ -749,7 +779,7 @@ def disposition_rows_for_arms(
                 "roi_map_hash": decision.map_hash,
                 "roi_map_entry_source": decision.map_entry_source,
                 "roi_class_adjudication_status": decision.adjudication_status,
-                "effective_parameter_hash": str((effective_hashes or {}).get(arm, "unavailable")),
+                "effective_parameter_hash": str(effective_hashes[arm]),
                 "configured_parameter_hash": str(
                     (configured_parameter_hashes or {}).get(arm, "unavailable")
                 ),

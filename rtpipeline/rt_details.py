@@ -5,11 +5,12 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional
+from typing import Callable, Dict, Iterable, List, Optional
 
 import pydicom
 from pydicom.dataset import FileDataset
 
+from .ct import CTInstance
 from .utils import read_dicom, get, _scoped_walk, parallel_map_files, DEFAULT_INDEX_WORKERS
 
 logger = logging.getLogger(__name__)
@@ -130,22 +131,85 @@ def extract_rt(
     single pass over the results in the SAME order the files were discovered
     in, so the output does not depend on thread completion order.
     """
+    plans, doses, structs, _records = extract_rt_with_records(
+        dicom_root,
+        patient_ids,
+        max_workers=max_workers,
+    )
+    return plans, doses, structs
+
+
+def extract_rt_with_records(
+    dicom_root: Path,
+    patient_ids: Optional[Iterable[str]] = None,
+    max_workers: Optional[int] = None,
+    metadata_snapshot: dict | None = None,
+    include_ct_index: bool = False,
+    dataset_callback: Callable[[Path, FileDataset], None] | None = None,
+) -> tuple:
+    """Extract RT objects and index RTRECORD paths in one ordered header pass.
+
+    The organizer used to scan every source file once in ``extract_rt`` and then
+    scan the same tree again, serially, just to find RTRECORD objects. This
+    combined entry point keeps the public ``extract_rt`` result unchanged while
+    allowing the organizer to classify all four RT modalities with the same
+    configured, bounded thread pool.
+    """
     plans: List[PlanInfo] = []
     doses: List[DoseInfo] = []
     structs: List[StructInfo] = []
+    records: Dict[str, List[Path]] = {}
+    ct_index: Dict[str, Dict[str, Dict[str, List[CTInstance]]]] = {}
 
     paths: List[Path] = []
     for base, _, files in _scoped_walk(dicom_root, patient_ids):
         for name in files:
             paths.append(Path(base) / name)
+    paths.sort(key=str)
 
     workers = max_workers if max_workers is not None else DEFAULT_INDEX_WORKERS
-    datasets = parallel_map_files(paths, read_dicom, workers)
+    snapshot_files = []
+    if metadata_snapshot is not None:
+        from .meta import (
+            _metadata_source_file,
+            _source_inventory_identity_from_files,
+        )
 
-    for p, ds in zip(paths, datasets):
+        def _read_with_metadata(path: Path):
+            source_file = _metadata_source_file(path)
+            return source_file.dataset, source_file
+
+        datasets = parallel_map_files(paths, _read_with_metadata, workers)
+    else:
+        datasets = ((dataset, None) for dataset in parallel_map_files(paths, read_dicom, workers))
+
+    for p, (ds, source_file) in zip(paths, datasets):
+        if source_file is not None:
+            snapshot_files.append(source_file)
         if ds is None:
             continue
-        modality = getattr(ds, "Modality", None)
+        if dataset_callback is not None:
+            dataset_callback(p, ds)
+        modality = str(getattr(ds, "Modality", "") or "").strip().upper()
+        if include_ct_index and modality == "CT":
+            patient_id = str(get(ds, (0x0010, 0x0020), ""))
+            study_uid = str(get(ds, (0x0020, 0x000D), ""))
+            series_uid = str(get(ds, (0x0020, 0x000E), ""))
+            series_num = get(ds, (0x0020, 0x0011))
+            inst_num = get(ds, (0x0020, 0x0013))
+            if patient_id and study_uid and series_uid:
+                ct_index.setdefault(patient_id, {}).setdefault(study_uid, {}).setdefault(
+                    series_uid, []
+                ).append(
+                    CTInstance(
+                        p,
+                        patient_id,
+                        study_uid,
+                        series_uid,
+                        series_num,
+                        int(inst_num) if inst_num is not None else None,
+                    )
+                )
         if modality == "RTPLAN":
             ref_structs = _referenced_sop_uids(ds, "ReferencedStructureSetSequence")
             plans.append(
@@ -188,7 +252,41 @@ def extract_rt(
                     roi_names=_safe_roi_names(ds),
                 )
             )
+        elif modality == "RTRECORD":
+            patient_id = str(get(ds, (0x0010, 0x0020), "")).strip()
+            if patient_id:
+                records.setdefault(patient_id, []).append(p)
+    for patient in ct_index.values():
+        for study in patient.values():
+            for series in study.values():
+                series.sort(
+                    key=lambda item: (
+                        item.instance_number is None,
+                        item.instance_number or 0,
+                        str(item.path),
+                    )
+                )
     # Basic logs
-    logger.info("Found RTPLAN=%d, RTDOSE=%d, RTSTRUCT=%d", len(plans), len(doses), len(structs))
-    return plans, doses, structs
+    logger.info(
+        "Found RTPLAN=%d, RTDOSE=%d, RTSTRUCT=%d, RTRECORD=%d",
+        len(plans),
+        len(doses),
+        len(structs),
+        sum(len(paths) for paths in records.values()),
+    )
+    if metadata_snapshot is not None:
+        snapshot_identity = _source_inventory_identity_from_files(
+            dicom_root, patient_ids, snapshot_files
+        )
+        metadata_snapshot.clear()
+        metadata_snapshot.update(
+            {
+                "identity": snapshot_identity,
+                "candidates": paths,
+                "results": [item.result for item in snapshot_files],
+            }
+        )
+    if include_ct_index:
+        return plans, doses, structs, records, ct_index
+    return plans, doses, structs, records
 

@@ -56,6 +56,7 @@ class CustomStructureProcessor:
         self.spacing = spacing
         self.custom_configs: List[CustomStructureConfig] = []
         self.partial_structures: dict[str, list[str]] = {}
+        self.structure_outcomes: dict[str, dict[str, object]] = {}
 
     def load_config(self, config_path: Union[str, Path]) -> None:
         """
@@ -309,6 +310,15 @@ class CustomStructureProcessor:
             source_masks.append(mask)
             found_mappings[source_name] = actual_key
 
+        outcome = {
+            "status": "source_unavailable",
+            "operation": config.operation,
+            "source_structures": list(config.source_structures),
+            "available_sources": list(found_mappings),
+            "unavailable_sources": list(dict.fromkeys(missing_sources)),
+            "realized_name": None,
+        }
+
         if not source_masks:
             logger.warning(
                 "No usable source structures found for custom structure '%s' (requested: %s). Available structures: %s",
@@ -317,6 +327,7 @@ class CustomStructureProcessor:
                 ", ".join(sorted(list(available_masks.keys())[:10]))  # Show first 10
             )
             self.partial_structures.pop(config.name, None)
+            self.structure_outcomes[config.name] = outcome
             return None
 
         if missing_sources:
@@ -350,6 +361,7 @@ class CustomStructureProcessor:
                 len(missing_sources), ", ".join(sorted({src for src in missing_sources})),
             )
             self.partial_structures.pop(config.name, None)
+            self.structure_outcomes[config.name] = outcome
             return None
 
         # Apply boolean operation
@@ -363,6 +375,8 @@ class CustomStructureProcessor:
             result = self.xor(source_masks)
         else:
             logger.error(f"Unknown operation: {config.operation}")
+            outcome["status"] = "failed_generation"
+            self.structure_outcomes[config.name] = outcome
             return None
 
         # Validate structure size before margin
@@ -373,6 +387,8 @@ class CustomStructureProcessor:
                 "Check if source structures overlap correctly.",
                 config.name, config.operation
             )
+            outcome["status"] = "failed_generation"
+            self.structure_outcomes[config.name] = outcome
             return None
         elif voxel_count_pre < 10:
             logger.warning(
@@ -390,6 +406,8 @@ class CustomStructureProcessor:
                     "Custom structure '%s': margin operation resulted in empty structure",
                     config.name
                 )
+                outcome["status"] = "failed_generation"
+                self.structure_outcomes[config.name] = outcome
                 return None
             logger.debug(
                 "Custom structure '%s': margin changed voxel count from %d to %d",
@@ -413,6 +431,11 @@ class CustomStructureProcessor:
                 config.name, config.operation, len(source_masks), final_voxel_count
             )
 
+        outcome["status"] = "generated_partial" if missing_sources else "generated"
+        outcome["realized_name"] = (
+            f"{config.name}__partial" if missing_sources else config.name
+        )
+        self.structure_outcomes[config.name] = outcome
         return result
 
     def process_all_custom_structures(
@@ -429,6 +452,8 @@ class CustomStructureProcessor:
             Dictionary of custom structure masks
         """
         custom_masks = {}
+        self.partial_structures.clear()
+        self.structure_outcomes.clear()
 
         for config in self.custom_configs:
             mask = self.process_custom_structure(config, available_masks)

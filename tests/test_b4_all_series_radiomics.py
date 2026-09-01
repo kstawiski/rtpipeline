@@ -94,6 +94,10 @@ def _write_dual_arm_test_publication(
                 "primary_resegmented": "test-primary",
                 "sensitivity_raw": "test-sensitivity",
             },
+            effective_hashes={
+                "primary_resegmented": "effective-primary",
+                "sensitivity_raw": "effective-sensitivity",
+            },
         )
         for record in pair:
             for key, value in base.items():
@@ -310,12 +314,54 @@ def test_all_series_temp_contract_is_consumed_only_by_all_series_dispatch(tmp_pa
             return (1.0, 1.0, 1.0)
 
     class _Extractor:
+        def __init__(self):
+            self.settings = {"resampledPixelSpacing": [1.0, 1.0, 1.0]}
+            self.enabledImagetypes = {"Original": {}}
+            self.enabledFeatures = {"firstorder": [], "shape": []}
+
+        def disableAllImageTypes(self):
+            self.enabledImagetypes = {}
+
+        def enableImageTypeByName(self, name):
+            self.enabledImagetypes[name] = {}
+
+        def disableAllFeatures(self):
+            self.enabledFeatures = {}
+
+        def enableFeatureClassByName(self, name):
+            self.enabledFeatures[name] = []
+
         def execute(self, _image, _mask):
-            return {"original_firstorder_Mean": 1.0}
+            return {
+                "original_firstorder_Mean": 1.0,
+                "original_shape_VoxelVolume": 4096.0,
+            }
 
     monkeypatch.setattr(rad, "_load_series_image", lambda *_args, **_kwargs: _Image())
     monkeypatch.setattr(rad, "_extractor", lambda *_args, **_kwargs: _Extractor())
     monkeypatch.setattr(rad, "_extractor_large_roi", lambda *_args, **_kwargs: _Extractor())
+    import rtpipeline.radiomics_ct_contract as ct_contract
+
+    monkeypatch.setattr(
+        ct_contract,
+        "resampled_mask_qc",
+        lambda *_args, **_kwargs: {
+            "morphologic_resampled_voxel_count": 4096,
+            "resegment_after_count": 4096,
+            "resegment_below_lower_count": 0,
+            "resegment_above_upper_count": 0,
+            "resegment_nonfinite_count": 0,
+            "components_26_before": 1,
+            "components_26_after": 1,
+            "largest_component_voxel_count_before": 4096,
+            "largest_component_voxel_count_after": 4096,
+            "resegment_retained_fraction": 1.0,
+            "largest_component_retained_fraction": 1.0,
+            "largest_component_fraction_after": 1.0,
+            "component_count_increased": False,
+            "observed_roi_dimensions_after_resegmentation": 3,
+        },
+    )
     monkeypatch.setattr(
         rad,
         "_rtstruct_masks",
@@ -413,6 +459,14 @@ def test_all_series_parallel_and_conda_emit_one_auto_source(tmp_path, monkeypatc
 
     monkeypatch.setattr(rad, "_load_series_image", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(rad, "_extractor", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(
+        radpar,
+        "effective_parameter_hashes_for_arms",
+        lambda *_args, **_kwargs: {
+            "primary_resegmented": "effective-primary",
+            "sensitivity_raw": "effective-sensitivity",
+        },
+    )
     monkeypatch.setattr(radpar, "validate_custom_model_output_inventory", lambda *_a, **_k: {})
     monkeypatch.setattr(radpar, "list_custom_model_outputs", lambda *_a, **_k: [])
     monkeypatch.setattr(radpar, "_list_roi_names", lambda *_args: ["PTV"])
@@ -634,6 +688,10 @@ def fake_dispatch():
                 configured_parameter_hashes={
                     "primary_resegmented": "test-primary",
                     "sensitivity_raw": "test-sensitivity",
+                },
+                effective_hashes={
+                    "primary_resegmented": "effective-primary",
+                    "sensitivity_raw": "effective-sensitivity",
                 },
             )
             for record in pair:

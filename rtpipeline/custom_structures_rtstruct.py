@@ -11,6 +11,7 @@ staleness logic with minimal imports.
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import logging
 import os
@@ -30,6 +31,37 @@ logger = logging.getLogger(__name__)
 
 _RS_CUSTOM_META_VERSION = 2
 _RTSTRUCT_SOP_CLASS_UID = "1.2.840.10008.5.1.4.1.1.481.3"
+
+
+def load_rs_custom_outcomes(course_dir: Path) -> Dict[str, Dict[str, object]]:
+    """Load per-ROI custom-stage outcomes bound to the published RTSTRUCT."""
+
+    course_dir = Path(course_dir)
+    rs_custom = course_dir / "RS_custom.dcm"
+    metadata_path = course_dir / "metadata" / "rs_custom_meta.json"
+    if not rs_custom.is_file() or not metadata_path.is_file():
+        return {}
+    try:
+        payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+        expected_uid = str(payload.get("rs_custom_sop_instance_uid") or "").strip()
+        actual_uid = str(
+            getattr(
+                pydicom.dcmread(str(rs_custom), stop_before_pixels=True),
+                "SOPInstanceUID",
+                "",
+            )
+            or ""
+        ).strip()
+        outcomes = payload.get("custom_structure_outcomes")
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return {}
+    if not expected_uid or expected_uid != actual_uid or not isinstance(outcomes, dict):
+        return {}
+    return {
+        str(name): dict(value)
+        for name, value in outcomes.items()
+        if isinstance(value, dict)
+    }
 
 
 class CustomStructureRTStructError(RuntimeError):
@@ -762,6 +794,10 @@ def _create_custom_structures_rtstruct_unlocked(
 
         custom_masks = processor.process_all_custom_structures(available_masks)
         partial_map = getattr(processor, "partial_structures", {})
+        structure_outcomes = {
+            str(name): dict(value)
+            for name, value in getattr(processor, "structure_outcomes", {}).items()
+        }
         warning_entries = []
 
         for name, mask in custom_masks.items():
@@ -787,6 +823,11 @@ def _create_custom_structures_rtstruct_unlocked(
                         "cropped": bool(cropped_flag),
                     }
                 )
+            outcome = structure_outcomes.setdefault(name, {})
+            outcome["realized_name"] = final_name
+            outcome["cropped"] = bool(cropped_flag)
+            if cropped_flag and outcome.get("status") == "generated":
+                outcome["status"] = "generated_partial"
             try:
                 _add_roi_with_unique_number(
                     rtstruct,
@@ -796,6 +837,9 @@ def _create_custom_structures_rtstruct_unlocked(
                 )
                 logger.info("Added custom structure: %s", final_name)
             except Exception as exc:
+                outcome["status"] = "failed_generation"
+                outcome["detail"] = f"RTSTRUCT publication failed: {type(exc).__name__}: {exc}"
+                outcome["realized_name"] = None
                 logger.warning("Failed to add custom structure %s: %s", final_name, exc)
 
         if warning_entries:
@@ -842,12 +886,24 @@ def _create_custom_structures_rtstruct_unlocked(
         try:
             meta_dir = course_dir / "metadata"
             meta_dir.mkdir(parents=True, exist_ok=True)
+            published_dataset = pydicom.dcmread(str(out_path), stop_before_pixels=True)
+            config_sha256 = ""
+            if config_path and Path(config_path).is_file():
+                config_sha256 = hashlib.sha256(Path(config_path).read_bytes()).hexdigest()
             meta_payload = {
                 "version": _RS_CUSTOM_META_VERSION,
                 "base_source": base_source,
                 "base_rtstruct": str(base_rs.name if base_rs else ""),
                 "rs_manual_present": bool(rs_manual and Path(rs_manual).exists()),
                 "rs_auto_present": bool(rs_auto and Path(rs_auto).exists()),
+                "rs_custom_sop_instance_uid": str(
+                    getattr(published_dataset, "SOPInstanceUID", "") or ""
+                ),
+                "planning_ct_series_instance_uid": str(
+                    contract.planning_ct.get("series_instance_uid") or ""
+                ),
+                "custom_config_sha256": config_sha256,
+                "custom_structure_outcomes": structure_outcomes,
                 "note": "Generated in CT DICOM coordinates; do not rely on RS_auto_cropped.dcm for radiomics",
             }
             (meta_dir / "rs_custom_meta.json").write_text(json.dumps(meta_payload, indent=2), encoding="utf-8")

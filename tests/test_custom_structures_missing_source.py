@@ -44,6 +44,47 @@ def test_union_with_missing_source_still_produces_partial():
     assert result is not None
     assert int(np.sum(result > 0)) > 0
     assert "uni" in proc.partial_structures  # flagged as partial
+    assert proc.structure_outcomes["uni"] == {
+        "status": "generated_partial",
+        "operation": "union",
+        "source_structures": ["a", "b", "c"],
+        "available_sources": ["a", "b"],
+        "unavailable_sources": ["c"],
+        "realized_name": "uni__partial",
+    }
+
+
+def test_no_usable_source_records_source_unavailable_outcome():
+    proc = CustomStructureProcessor(spacing=(1.0, 1.0, 1.0))
+    cfg = CustomStructureConfig(
+        name="iliac_vess",
+        operation="union",
+        source_structures=["iliac_artery_left", "iliac_artery_right"],
+    )
+
+    assert proc.process_custom_structure(cfg, {}) is None
+    assert proc.structure_outcomes["iliac_vess"] == {
+        "status": "source_unavailable",
+        "operation": "union",
+        "source_structures": ["iliac_artery_left", "iliac_artery_right"],
+        "available_sources": [],
+        "unavailable_sources": ["iliac_artery_left", "iliac_artery_right"],
+        "realized_name": None,
+    }
+
+
+def test_all_source_operation_records_source_unavailable_when_one_source_is_missing():
+    proc = CustomStructureProcessor(spacing=(1.0, 1.0, 1.0))
+    cfg = CustomStructureConfig(
+        name="ix",
+        operation="intersection",
+        source_structures=["a", "b", "c"],
+    )
+
+    assert proc.process_custom_structure(cfg, _masks()) is None
+    assert proc.structure_outcomes["ix"]["status"] == "source_unavailable"
+    assert proc.structure_outcomes["ix"]["available_sources"] == ["a", "b"]
+    assert proc.structure_outcomes["ix"]["unavailable_sources"] == ["c"]
 
 
 def test_intersection_all_sources_present_succeeds():

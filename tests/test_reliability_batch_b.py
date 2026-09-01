@@ -541,6 +541,14 @@ def test_parallel_radiomics_recovers_from_broken_pool_during_backfill(tmp_path, 
     # Bypass the real PyRadiomics extractor construction / NumPy-version routing -- this
     # test targets the submit/recovery control flow, not feature extraction itself.
     monkeypatch.setattr(radiomics_mod, "_extractor", lambda *a, **kw: object())
+    monkeypatch.setattr(
+        rp,
+        "effective_parameter_hashes_for_arms",
+        lambda *_args, **_kwargs: {
+            "primary_resegmented": "effective-primary",
+            "sensitivity_raw": "effective-sensitivity",
+        },
+    )
     monkeypatch.setattr(radiomics_mod, "_load_series_image", lambda *_a, **_k: object())
 
     # result_fn stands in for the real _extract_one (which only works inside a worker
@@ -581,6 +589,10 @@ def _dual_arm_roi_task(tmp_path, *, course_dir=None):
         {
             "primary_resegmented": "test-primary",
             "sensitivity_raw": "test-sensitivity",
+        },
+        {
+            "primary_resegmented": "effective-primary",
+            "sensitivity_raw": "effective-sensitivity",
         },
     )
 
@@ -818,6 +830,14 @@ def test_parallel_radiomics_region_failure_aborts_course_and_invalidates_table(t
         radiomics_analysis_contract={"CT": {"required_rois": [{"canonical_name": "PTV", "source": "Manual"}]}},
     )
     monkeypatch.setattr(radiomics_mod, "_extractor", lambda *a, **kw: object())
+    monkeypatch.setattr(
+        rp,
+        "effective_parameter_hashes_for_arms",
+        lambda *_args, **_kwargs: {
+            "primary_resegmented": "effective-primary",
+            "sensitivity_raw": "effective-sensitivity",
+        },
+    )
     monkeypatch.setattr(radiomics_mod, "_load_series_image", lambda *_a, **_k: object())
 
     def fail_region(task):
@@ -856,6 +876,14 @@ def test_parallel_radiomics_none_result_aborts_course_and_invalidates_table(tmp_
         radiomics_analysis_contract={"CT": {"required_rois": [{"canonical_name": "PTV", "source": "Manual"}]}},
     )
     monkeypatch.setattr(radiomics_mod, "_extractor", lambda *a, **kw: object())
+    monkeypatch.setattr(
+        rp,
+        "effective_parameter_hashes_for_arms",
+        lambda *_args, **_kwargs: {
+            "primary_resegmented": "effective-primary",
+            "sensitivity_raw": "effective-sensitivity",
+        },
+    )
     monkeypatch.setattr(radiomics_mod, "_load_series_image", lambda *_a, **_k: object())
     monkeypatch.setattr(
         rp,
@@ -979,6 +1007,14 @@ def test_parallel_status_rows_are_not_written_as_feature_rows(tmp_path, monkeypa
         radiomics_skip_rois=["PTV"],
     )
     monkeypatch.setattr(radiomics_mod, "_extractor", lambda *a, **kw: object())
+    monkeypatch.setattr(
+        rp,
+        "effective_parameter_hashes_for_arms",
+        lambda *_args, **_kwargs: {
+            "primary_resegmented": "effective-primary",
+            "sensitivity_raw": "effective-sensitivity",
+        },
+    )
     monkeypatch.setattr(radiomics_mod, "_load_series_image", lambda *_a, **_k: object())
     monkeypatch.setattr(
         rp,

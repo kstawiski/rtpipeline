@@ -60,7 +60,12 @@ from .inventory import materialize_patient_series_from_inventory
 from .layout import CourseDirs, build_course_dirs, course_dir_name
 from .metadata import LinkedSet, group_by_course, link_rt_sets, parse_date
 from .modality_classifier import classify_series
-from .rt_details import extract_rt, StructInfo, has_target_volumes, target_volume_names
+from .rt_details import (
+    extract_rt_with_records,
+    StructInfo,
+    has_target_volumes,
+    target_volume_names,
+)
 from .utils import (
     ensure_dir,
     run_tasks_with_adaptive_workers,
@@ -2281,6 +2286,81 @@ def _export_original_segmentation(
     )
 
 
+def _index_series_dataset(
+    path: Path,
+    ds: Dataset,
+    series_index: Dict[tuple[str, str], List[Path]],
+    registrations: Dict[str, List[Dict[str, object]]],
+    series_meta: Dict[tuple[str, str], Dict[str, object]],
+) -> None:
+    """Add one already-read DICOM dataset to series and REG indexes."""
+    modality = str(getattr(ds, "Modality", "") or "")
+    patient_id = str(get(ds, (0x0010, 0x0020), "")) or ""
+    series_uid = str(get(ds, (0x0020, 0x000E), "")) or ""
+    if patient_id and series_uid:
+        series_index.setdefault((patient_id, series_uid), []).append(path)
+        meta = series_meta.setdefault((patient_id, series_uid), {})
+        if "modality" not in meta and modality:
+            meta["modality"] = modality
+    if modality != "REG" or not patient_id:
+        return
+    reg_item: Dict[str, object] = {
+        "path": path,
+        "for_uids": set(),
+        "referenced_series": set(),
+        "series_by_for": {},
+    }
+
+    def _add_for(uid: str | None) -> None:
+        if uid:
+            cast(set, reg_item["for_uids"]).add(uid)
+
+    def _add_series(series_uid_ref: str | None, for_uid: str | None = None) -> None:
+        if not series_uid_ref:
+            return
+        cast(set, reg_item["referenced_series"]).add(series_uid_ref)
+        if for_uid:
+            series_by_for = cast(
+                Dict[str, set[str]], reg_item.setdefault("series_by_for", {})
+            )
+            series_by_for.setdefault(for_uid, set()).add(series_uid_ref)
+
+    try:
+        for ref_for in getattr(ds, "ReferencedFrameOfReferenceSequence", []) or []:
+            for_uid = str(getattr(ref_for, "FrameOfReferenceUID", "") or "")
+            _add_for(for_uid)
+            for study in getattr(ref_for, "RTReferencedStudySequence", []) or []:
+                for series in getattr(study, "RTReferencedSeriesSequence", []) or []:
+                    _add_series(
+                        str(getattr(series, "SeriesInstanceUID", "") or ""),
+                        for_uid,
+                    )
+
+        for reg_seq in getattr(ds, "RegistrationSequence", []) or []:
+            reg_for_uid = str(getattr(reg_seq, "FrameOfReferenceUID", "") or "")
+            _add_for(reg_for_uid)
+            for ref_study in getattr(reg_seq, "ReferencedStudySequence", []) or []:
+                for ref_series in getattr(ref_study, "ReferencedSeriesSequence", []) or []:
+                    _add_series(
+                        str(getattr(ref_series, "SeriesInstanceUID", "") or ""),
+                        reg_for_uid,
+                    )
+
+        for ref_series in getattr(ds, "ReferencedSeriesSequence", []) or []:
+            _add_series(str(getattr(ref_series, "SeriesInstanceUID", "") or ""))
+
+        for other_study in (
+            getattr(ds, "StudiesContainingOtherReferencedInstancesSequence", []) or []
+        ):
+            for ref_series in getattr(other_study, "ReferencedSeriesSequence", []) or []:
+                _add_series(str(getattr(ref_series, "SeriesInstanceUID", "") or ""))
+    except Exception as exc:
+        logger.debug("Failed indexing registration %s: %s", path, exc)
+        return
+
+    registrations.setdefault(patient_id, []).append(reg_item)
+
+
 def _index_series_and_registrations(
     dicom_root: Path,
     patient_ids: Optional[Iterable[str]] = None,
@@ -2308,80 +2388,14 @@ def _index_series_and_registrations(
                 continue
             paths.append(Path(base) / name)
 
+    paths.sort(key=str)
     workers = max_workers if max_workers is not None else DEFAULT_INDEX_WORKERS
     datasets = parallel_map_files(paths, read_dicom, workers)
 
     for p, ds in zip(paths, datasets):
         if ds is None:
             continue
-        modality = str(getattr(ds, 'Modality', '') or '')
-        patient_id = str(get(ds, (0x0010, 0x0020), "")) or ""
-        series_uid = str(get(ds, (0x0020, 0x000E), "")) or ""
-        if patient_id and series_uid:
-            series_index.setdefault((patient_id, series_uid), []).append(p)
-            meta = series_meta.setdefault((patient_id, series_uid), {})
-            if "modality" not in meta and modality:
-                meta["modality"] = modality
-        modality = str(getattr(ds, 'Modality', '') or '')
-        if modality != 'REG' or not patient_id:
-            continue
-        reg_item: Dict[str, object] = {
-            'path': p,
-            'for_uids': set(),
-            'referenced_series': set(),
-            'series_by_for': {},
-        }
-
-        def _add_for(uid: str | None) -> None:
-            if not uid:
-                return
-            cast(set, reg_item['for_uids']).add(uid)
-
-        def _add_series(series_uid: str | None, for_uid: str | None = None) -> None:
-            if not series_uid:
-                return
-            cast(set, reg_item['referenced_series']).add(series_uid)
-            if for_uid:
-                series_by_for = cast(Dict[str, set[str]], reg_item.setdefault('series_by_for', {}))
-                series_by_for.setdefault(for_uid, set()).add(series_uid)
-
-        try:
-            for ref_for in getattr(ds, 'ReferencedFrameOfReferenceSequence', []) or []:
-                for_uid = str(getattr(ref_for, 'FrameOfReferenceUID', '') or '')
-                if for_uid:
-                    _add_for(for_uid)
-                for study in getattr(ref_for, 'RTReferencedStudySequence', []) or []:
-                    for series in getattr(study, 'RTReferencedSeriesSequence', []) or []:
-                        series_uid_ref = str(getattr(series, 'SeriesInstanceUID', '') or '')
-                        if series_uid_ref:
-                            _add_series(series_uid_ref, for_uid)
-
-            for reg_seq in getattr(ds, 'RegistrationSequence', []) or []:
-                reg_for_uid = str(getattr(reg_seq, 'FrameOfReferenceUID', '') or '')
-                if reg_for_uid:
-                    _add_for(reg_for_uid)
-                for ref_study in getattr(reg_seq, 'ReferencedStudySequence', []) or []:
-                    for ref_series in getattr(ref_study, 'ReferencedSeriesSequence', []) or []:
-                        series_uid_ref = str(getattr(ref_series, 'SeriesInstanceUID', '') or '')
-                        if series_uid_ref:
-                            _add_series(series_uid_ref, reg_for_uid)
-
-            for ref_series in getattr(ds, 'ReferencedSeriesSequence', []) or []:
-                series_uid_ref = str(getattr(ref_series, 'SeriesInstanceUID', '') or '')
-                if series_uid_ref:
-                    _add_series(series_uid_ref)
-
-            for other_study in getattr(ds, 'StudiesContainingOtherReferencedInstancesSequence', []) or []:
-                for ref_series in getattr(other_study, 'ReferencedSeriesSequence', []) or []:
-                    series_uid_ref = str(getattr(ref_series, 'SeriesInstanceUID', '') or '')
-                    if series_uid_ref:
-                        _add_series(series_uid_ref)
-
-        except Exception as exc:
-            logger.debug("Failed indexing registration %s: %s", p, exc)
-            continue
-
-        registrations.setdefault(patient_id, []).append(reg_item)
+        _index_series_dataset(p, ds, series_index, registrations, series_meta)
     return series_index, registrations, series_meta
 
 def _create_summed_plan(plan_files: List[Path], total_dose_gy: float | None = None) -> tuple[pydicom.dataset.FileDataset, list[pydicom.dataset.FileDataset], list[str]]:
@@ -2859,7 +2873,28 @@ def _sum_doses_with_resample(
     return new_ds, [], source_dose_uids
 
 
-def _index_rt_files(root: Path, patient_ids: Optional[Iterable[str]] = None) -> Dict[str, List[Path]]:
+def _read_rt_record_identity(path: Path) -> tuple[str, Path] | None:
+    """Return ``(PatientID, path)`` for an RTRECORD, otherwise ``None``."""
+    try:
+        ds = pydicom.dcmread(
+            str(path),
+            stop_before_pixels=True,
+            specific_tags=["PatientID", "Modality"],
+            force=True,
+        )
+    except Exception:
+        return None
+    if str(getattr(ds, "Modality", "") or "").strip().upper() != "RTRECORD":
+        return None
+    patient_id = str(getattr(ds, "PatientID", "") or "").strip()
+    return (patient_id, path) if patient_id else None
+
+
+def _index_rt_files(
+    root: Path,
+    patient_ids: Optional[Iterable[str]] = None,
+    max_workers: Optional[int] = None,
+) -> Dict[str, List[Path]]:
     """Index RTRECORD objects by PatientID using the DICOM Modality tag.
 
     RTRECORD files are not required to carry an ``RT`` filename prefix or a
@@ -2868,32 +2903,24 @@ def _index_rt_files(root: Path, patient_ids: Optional[Iterable[str]] = None) -> 
     """
     index = defaultdict(list)
     logger.info("Indexing RT treatment records in %s...", root)
-    candidate_count = 0
-    count = 0
+    paths: List[Path] = []
     for base, _, files in _scoped_walk(root, patient_ids):
-        for fn in files:
-            candidate_count += 1
-            path = Path(base) / fn
-            try:
-                ds = pydicom.dcmread(
-                    str(path),
-                    stop_before_pixels=True,
-                    specific_tags=["PatientID", "Modality"],
-                    force=True,
-                )
-                if str(getattr(ds, "Modality", "") or "").strip().upper() != "RTRECORD":
-                    continue
-                pid = str(getattr(ds, "PatientID", "")).strip()
-                if pid:
-                    index[pid].append(path)
-                    count += 1
-            except Exception:
-                continue
+        paths.extend(Path(base) / fn for fn in files)
+    paths.sort(key=str)
+    workers = max_workers if max_workers is not None else DEFAULT_INDEX_WORKERS
+    count = 0
+    for row in parallel_map_files(paths, _read_rt_record_identity, workers):
+        if row is None:
+            continue
+        patient_id, path = row
+        index[patient_id].append(path)
+        count += 1
     logger.info(
-        "Indexed %d RTRECORD objects for %d patients from %d input files",
+        "Indexed %d RTRECORD objects for %d patients from %d input files with %d worker(s)",
         count,
         len(index),
-        candidate_count,
+        len(paths),
+        max(1, workers),
     )
     return index
 
@@ -3202,7 +3229,11 @@ def _completed_patients(config: PipelineConfig) -> Dict[str, List[dict]]:
     return complete
 
 
-def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
+def organize_and_merge(
+    config: PipelineConfig,
+    *,
+    metadata_snapshot: dict | None = None,
+) -> List[CourseOutput]:
     """End-to-end RT organization and course merging according to config."""
     config.ensure_dirs()
 
@@ -3273,20 +3304,49 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
                 )
                 scope_ids = remaining
 
-    # Index CTs, extract RT sets, link and group into courses.
-    # Header-read concurrency honours the user's --max-workers / config cap (so
-    # e.g. --max-workers 1 for debugging really uses a single thread) instead of
-    # the static DEFAULT_INDEX_WORKERS the functions fall back to for direct callers.
-    index_workers = config.effective_workers()
-    ct_index = index_ct_series(config.dicom_root, scope_ids, max_workers=index_workers)
+    # One bounded thread pool reads each source header once. The combined result
+    # also builds the CT index, avoiding a second full-tree DICOM read.
+    index_workers = min(config.effective_workers(), DEFAULT_INDEX_WORKERS)
+    logger.info("Organize source-header scan using %d thread worker(s)", index_workers)
     patient_series_layout = _looks_like_patient_series_layout(config.dicom_root)
     if patient_series_layout:
         logger.info(
             "Detected a patient/series directory shape; scanning RT and registration objects because "
             "directory shape alone does not establish a CT-only cohort"
         )
-    rt_file_index = _index_rt_files(config.dicom_root, scope_ids)
-    plans, doses, structs = extract_rt(config.dicom_root, scope_ids, max_workers=index_workers)
+    series_index: Dict[tuple[str, str], List[Path]] = {}
+    registrations_index: Dict[str, List[Dict[str, object]]] = {}
+    series_meta: Dict[tuple[str, str], Dict[str, object]] = {}
+
+    def _collect_series_dataset(path: Path, ds: Dataset) -> None:
+        _index_series_dataset(
+            path,
+            ds,
+            series_index,
+            registrations_index,
+            series_meta,
+        )
+
+    discovery = extract_rt_with_records(
+        config.dicom_root,
+        scope_ids,
+        max_workers=index_workers,
+        metadata_snapshot=metadata_snapshot,
+        include_ct_index=True,
+        dataset_callback=_collect_series_dataset,
+    )
+    if len(discovery) == 5:
+        plans, doses, structs, rt_file_index, ct_index = discovery
+    else:
+        # Compatibility for patched/third-party implementations that still
+        # expose the historical four-value return contract.
+        plans, doses, structs, rt_file_index = discovery
+        ct_index = index_ct_series(config.dicom_root, scope_ids, max_workers=index_workers)
+        series_index, registrations_index, series_meta = _index_series_and_registrations(
+            config.dicom_root,
+            scope_ids,
+            max_workers=index_workers,
+        )
     record_paths = [path for paths in rt_file_index.values() for path in paths]
     delivery_reference_audit = _delivery_reference_audit(
         record_paths,
@@ -3313,11 +3373,8 @@ def organize_and_merge(config: PipelineConfig) -> List[CourseOutput]:
     courses = group_by_course(linked_sets, config.merge_criteria, config.max_days_between_plans)
     if not courses and not (resumed_patients and scope_ids == []):
         _raise_if_empty_organize_discovery(config, ct_index, plans, doses, structs)
-    series_index, registrations_index, series_meta = _index_series_and_registrations(
-        config.dicom_root,
-        scope_ids,
-        max_workers=index_workers,
-    )
+    # Series and registration indexes were assembled from the same header pass
+    # above. The compatibility branch populated them with the legacy scanner.
 
     planned_struct_uids = {
         plan.referenced_struct_sop for plan in plans if plan.referenced_struct_sop

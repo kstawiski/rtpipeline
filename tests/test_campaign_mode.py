@@ -176,6 +176,49 @@ def test_campaign_mode_writes_a_ledger_record(tmp_path):
     assert entry["stage"] == "dvh"
 
 
+def test_custom_segmentation_campaign_failure_is_isolated_per_course(tmp_path):
+    workflow = _workflow(tmp_path, campaign_mode=True)
+    workflow.params.stage = "segmentation_custom"
+    workflow.output.sentinel = str(
+        tmp_path / "PT001" / "COURSE_A" / ".segmentation_custom_done"
+    )
+
+    with pytest.raises(SystemExit) as excinfo:
+        _run(workflow)
+
+    assert excinfo.value.code == 0
+    assert Path(workflow.output.sentinel).read_text(encoding="utf-8").strip() == "failed"
+    records = list((tmp_path / "_campaign_ledger" / "records").glob("*.json"))
+    import json
+
+    entries = [json.loads(path.read_text(encoding="utf-8")) for path in records]
+    entry = next(row for row in entries if row["stage"] == "segmentation_custom")
+    assert entry["status"] == "failed"
+
+
+def test_disabled_custom_segmentation_publishes_disabled_without_launch(tmp_path):
+    workflow = _workflow(tmp_path, campaign_mode=True, python=_MISSING_PYTHON)
+    workflow.params.stage = "segmentation_custom"
+    workflow.params.enabled = False
+    workflow.output.sentinel = str(
+        tmp_path / "PT001" / "COURSE_A" / ".segmentation_custom_done"
+    )
+
+    _run(workflow)
+
+    assert Path(workflow.output.sentinel).read_text(encoding="utf-8").strip() == "disabled"
+
+
+def test_snakefile_routes_custom_segmentation_through_campaign_wrapper():
+    snakefile = (ROOT / "Snakefile").read_text(encoding="utf-8")
+    start = snakefile.index("rule segmentation_custom_models:")
+    end = snakefile.index("rule crop_ct_course:", start)
+    section = snakefile[start:end]
+
+    assert section.count('script:\n            "workflow/scripts/run_course_stage.py"') == 2
+    assert section.count("campaign_mode=CAMPAIGN_MODE") == 2
+
+
 def test_a_failed_course_still_closes_its_dependent_stages(tmp_path):
     """The point of fail-closed: downstream must refuse a failed upstream."""
     workflow = _workflow(tmp_path, campaign_mode=True)

@@ -1419,7 +1419,11 @@ def test_duplicate_paths_for_one_structure_uid_keep_rs_and_referenced_ct(tmp_pat
     }
 
     monkeypatch.setattr(org, "index_ct_series", lambda *args, **kwargs: ct_index)
-    monkeypatch.setattr(org, "extract_rt", lambda *args, **kwargs: (plan_infos, dose_infos, struct_infos))
+    monkeypatch.setattr(
+        org,
+        "extract_rt_with_records",
+        lambda *args, **kwargs: (plan_infos, dose_infos, struct_infos, {}),
+    )
     monkeypatch.setattr(org, "link_rt_sets", lambda *args, **kwargs: linked)
     monkeypatch.setattr(org, "group_by_course", lambda *args, **kwargs: {("P1", struct_uid): linked})
     monkeypatch.setattr(org, "_index_series_and_registrations", lambda *args, **kwargs: ({}, {}, {}))

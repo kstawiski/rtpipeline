@@ -600,53 +600,178 @@ def assess_custom_applicability(
     anatomy_region: str = "pelvis",
     anatomy_bounds: Any = None,
     in_scope: Optional[bool] = None,
+    custom_provenance: Optional[Mapping[str, Mapping[str, Any]]] = None,
+    generation_outcome: Optional[Mapping[str, Any]] = None,
 ) -> CustomApplicability:
     """Classify a configured derived ROI without treating anatomy absence as corruption."""
     name = str(roi_name)
-    dependencies = CUSTOM_DEPENDENCY_GRAPH.get(name, ())
+    provenance = custom_provenance or {}
+
+    def derivation_spec(derived_name: str) -> tuple[tuple[str, ...], str]:
+        item = provenance.get(derived_name)
+        if isinstance(item, Mapping):
+            configured_sources = item.get("source_structures")
+            if isinstance(configured_sources, Sequence) and not isinstance(
+                configured_sources, (str, bytes)
+            ):
+                sources = tuple(str(value) for value in configured_sources if str(value))
+            else:
+                sources = ()
+            operation = str(item.get("operation") or "union").casefold()
+            if sources:
+                return sources, operation
+        return CUSTOM_DEPENDENCY_GRAPH.get(derived_name, ()), "union"
+
+    dependencies, operation = derivation_spec(name)
     if not dependencies and isinstance(dependency_states.get(name), Mapping):
-        dependencies = tuple(str(v) for v in dependency_states[name].get("source_structures", ()))
+        dependencies = tuple(
+            str(value)
+            for value in dependency_states[name].get("source_structures", ())
+        )
     generated = _state(generated_state)
+    outcome_status = str((generation_outcome or {}).get("status") or "").casefold()
     if generated == "readable_nonempty":
-        return CustomApplicability(name, "extracted", tuple(dependencies), "derived ROI is readable and non-empty")
+        return CustomApplicability(
+            name,
+            "extracted",
+            tuple(dependencies),
+            "derived ROI is readable and non-empty",
+        )
+    if outcome_status in {"generated", "generated_partial"}:
+        return CustomApplicability(
+            name,
+            "failed_custom_generation",
+            tuple(dependencies),
+            "custom-stage metadata declares a generated ROI but the RTSTRUCT ROI is missing",
+            True,
+        )
+    if outcome_status == "failed_generation":
+        return CustomApplicability(
+            name,
+            "failed_custom_generation",
+            tuple(dependencies),
+            "custom stage recorded a derivation failure",
+            True,
+        )
     if in_scope is False:
-        return CustomApplicability(name, "not_applicable_scope", tuple(dependencies), "campaign scope excludes this ROI")
-    def resolve_dependency_state(dep: str, seen: frozenset[str] = frozenset()) -> str:
-        if dep in seen:
+        return CustomApplicability(
+            name,
+            "not_applicable_scope",
+            tuple(dependencies),
+            "campaign scope excludes this ROI",
+        )
+
+    def resolve_dependency_state(
+        dependency: str,
+        seen: frozenset[str] = frozenset(),
+    ) -> str:
+        if dependency in seen:
             return "unreadable"
-        raw = dependency_states.get(dep)
-        state = _state(raw)
-        if state != "absent" or dep not in CUSTOM_DEPENDENCY_GRAPH:
-            return state
-        child_states = [
-            resolve_dependency_state(child, seen | {dep})
-            for child in CUSTOM_DEPENDENCY_GRAPH[dep]
-        ]
-        if child_states and all(item == "readable_nonempty" for item in child_states):
-            return "readable_nonempty"
-        if child_states and all(item in {"empty", "absent"} for item in child_states):
+        if dependency in dependency_states:
+            return _state(dependency_states[dependency])
+        child_dependencies, child_operation = derivation_spec(dependency)
+        if not child_dependencies:
             return "empty"
+        child_states = [
+            resolve_dependency_state(child, seen | {dependency})
+            for child in child_dependencies
+        ]
         if any(item == "unreadable" for item in child_states):
             return "unreadable"
-        return "empty"
+        if child_operation == "union":
+            return (
+                "readable_nonempty"
+                if any(item == "readable_nonempty" for item in child_states)
+                else "empty"
+            )
+        return (
+            "readable_nonempty"
+            if child_states and all(item == "readable_nonempty" for item in child_states)
+            else "empty"
+        )
 
-    states = [resolve_dependency_state(dep) for dep in dependencies]
+    states = [resolve_dependency_state(dependency) for dependency in dependencies]
     if generated == "unreadable":
-        return CustomApplicability(name, "failed_custom_read", tuple(dependencies), "derived ROI could not be read", True)
-    if states and all(state == "readable_nonempty" for state in states):
-        return CustomApplicability(name, "failed_custom_generation", tuple(dependencies), "all dependencies are readable and non-empty but the derived ROI is missing", True)
+        return CustomApplicability(
+            name,
+            "failed_custom_read",
+            tuple(dependencies),
+            "derived ROI could not be read",
+            True,
+        )
     if any(state == "unreadable" for state in states):
         if any(state == "readable_nonempty" for state in states):
-            return CustomApplicability(name, "indeterminate_applicability", tuple(dependencies), "dependency evidence conflicts", True)
-        return CustomApplicability(name, "failed_source_read", tuple(dependencies), "dependency segmentation cannot be read")
-    if any(state == "readable_nonempty" for state in states) and any(state in {"empty", "absent"} for state in states):
-        return CustomApplicability(name, "indeterminate_applicability", tuple(dependencies), "dependency evidence conflicts", True)
+            return CustomApplicability(
+                name,
+                "indeterminate_applicability",
+                tuple(dependencies),
+                "dependency evidence conflicts",
+                True,
+            )
+        return CustomApplicability(
+            name,
+            "failed_source_read",
+            tuple(dependencies),
+            "dependency segmentation cannot be read",
+        )
+
+    has_nonempty = any(state == "readable_nonempty" for state in states)
+    has_empty = any(state in {"empty", "absent"} for state in states)
+    can_generate = (
+        has_nonempty
+        if operation == "union"
+        else bool(states) and all(state == "readable_nonempty" for state in states)
+    )
+    if outcome_status == "source_unavailable" and has_nonempty:
+        return CustomApplicability(
+            name,
+            "indeterminate_applicability",
+            tuple(dependencies),
+            "custom-stage source outcome conflicts with current dependency masks",
+            True,
+        )
+    if can_generate:
+        detail = (
+            "at least one union dependency is readable and non-empty but the derived ROI is missing"
+            if operation == "union"
+            else "all dependencies are readable and non-empty but the derived ROI is missing"
+        )
+        return CustomApplicability(
+            name,
+            "failed_custom_generation",
+            tuple(dependencies),
+            detail,
+            True,
+        )
+    if has_nonempty and has_empty:
+        return CustomApplicability(
+            name,
+            "indeterminate_applicability",
+            tuple(dependencies),
+            "dependency evidence conflicts for an operation that requires every source",
+            True,
+        )
     contains = _fov_contains(planning_ct_fov, anatomy_region, anatomy_bounds)
     if contains is None:
-        return CustomApplicability(name, "insufficient_fov", tuple(dependencies), "un-cropped planning CT FOV does not resolve anatomy scope")
+        return CustomApplicability(
+            name,
+            "insufficient_fov",
+            tuple(dependencies),
+            "un-cropped planning CT FOV does not resolve anatomy scope",
+        )
     if not contains:
-        return CustomApplicability(name, "not_applicable_anatomy", tuple(dependencies), "dependencies are absent or empty and the FOV excludes the anatomy")
-    return CustomApplicability(name, "failed_source_segmentation", tuple(dependencies), "dependencies are absent or empty although anatomy is in the FOV")
+        return CustomApplicability(
+            name,
+            "not_applicable_anatomy",
+            tuple(dependencies),
+            "dependencies are absent or empty and the FOV excludes the anatomy",
+        )
+    return CustomApplicability(
+        name,
+        "failed_source_segmentation",
+        tuple(dependencies),
+        "dependencies are absent or empty although anatomy is in the FOV",
+    )
 
 
 def classify_rasterized_mask(mask: Any, minimum_voxels: int = 1) -> Optional[str]:

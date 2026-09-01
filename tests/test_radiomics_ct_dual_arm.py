@@ -197,6 +197,100 @@ def test_derived_roi_requires_recorded_operation_and_classifiable_bases():
     assert rejected.adjudication_status == "operator_adjudication_required"
 
 
+@pytest.mark.parametrize(
+    ("name", "roi_class"),
+    [
+        ("Aorta", "vessel"),
+        ("CTV1", "target"),
+        ("CTV2", "target"),
+        ("CTV3", "target"),
+        ("Dwunastnica", "hollow_pelvic_organ"),
+        ("Esica__partial", "hollow_pelvic_organ"),
+        ("Jelito cienkie__partial", "hollow_pelvic_organ"),
+        ("Jelito grube__partial", "hollow_pelvic_organ"),
+        ("Kora Nerek Suma", "solid_soft_tissue_neural"),
+        ("Kora Nerki Lewej", "solid_soft_tissue_neural"),
+        ("Kora Nerki Prawej", "solid_soft_tissue_neural"),
+        ("Kosci", "bone"),
+        ("LAD", "vessel"),
+        ("Mostek", "bone"),
+        ("Nerka Lewa", "solid_soft_tissue_neural"),
+        ("Nerka Prawa", "solid_soft_tissue_neural"),
+        ("Nerki", "solid_soft_tissue_neural"),
+        ("PTV1", "target"),
+        ("PTV2", "target"),
+        ("PTV3", "target"),
+        ("Pluco Lewe", "unresolved_mixed"),
+        ("Pluco Prawe", "unresolved_mixed"),
+        ("Pluco Suma", "unresolved_mixed"),
+        ("Przelyk", "unresolved_mixed"),
+        ("Rdzen", "solid_soft_tissue_neural"),
+        ("Serce", "unresolved_mixed"),
+        ("Sledziona", "solid_soft_tissue_neural"),
+        ("Splot Ramienny Lewy", "solid_soft_tissue_neural"),
+        ("Splot Ramienny Prawy", "solid_soft_tissue_neural"),
+        ("Tarczyca", "solid_soft_tissue_neural"),
+        ("Tchawica", "unresolved_mixed"),
+        ("Tetnica plucna", "vessel"),
+        ("Watroba", "solid_soft_tissue_neural"),
+        ("Zoladek", "unresolved_mixed"),
+        ("Zyla Glowna Dolna", "vessel"),
+        ("jelita", "hollow_pelvic_organ"),
+        ("ogon konski", "solid_soft_tissue_neural"),
+    ],
+)
+def test_kopernik_exact_crosswalk_uses_defensible_anatomic_classes(name, roi_class):
+    decision = contract.classify_ct_roi("Manual", name)
+
+    assert decision.roi_class == roi_class
+    assert decision.adjudication_status == "approved_by_anatomic_equivalence"
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "Bronchus_L",
+        "Bronchus_R",
+        "Krtan",
+        "Oskrzele_L",
+        "Oskrzele_R",
+        "PBT",
+        "Pluco Suma M",
+        "Pluco Suma M - PTV1",
+        "Pluco Suma M - PTV3",
+        "Rdzen Marg",
+        "m3",
+        "podkladka",
+    ],
+)
+def test_kopernik_ambiguous_names_remain_unadjudicated_without_a_governed_class(name):
+    decision = contract.classify_ct_roi("Manual", name)
+
+    assert decision.roi_class == "unresolved_mixed"
+    assert decision.adjudication_status == "operator_adjudication_required"
+
+
+def test_disposition_rows_require_runtime_effective_parameter_hashes():
+    decision = contract.classify_ct_roi("Manual", "PTV")
+
+    with pytest.raises(ValueError, match="effective-parameter hashes"):
+        contract.disposition_rows_for_arms(
+            _common_identity(),
+            decision=decision,
+            disposition="below_minimum_voxels",
+            detail="native mask is too small",
+            failure_kind="degenerate_mask",
+            run_identifier="run-1",
+            code_revision="revision-1",
+            native_voxel_count=3,
+            required=True,
+            configured_parameter_hashes={
+                contract.PRIMARY_ARM: "configured-primary",
+                contract.SENSITIVITY_ARM: "configured-sensitivity",
+            },
+        )
+
+
 def test_required_unclassified_roi_blocks_publication(monkeypatch):
     decision = contract.classify_ct_roi("Manual", "operator must adjudicate this")
     rows = contract.disposition_rows_for_arms(
@@ -212,6 +306,10 @@ def test_required_unclassified_roi_blocks_publication(monkeypatch):
         configured_parameter_hashes={
             contract.PRIMARY_ARM: "configured-primary",
             contract.SENSITIVITY_ARM: "configured-sensitivity",
+        },
+        effective_hashes={
+            contract.PRIMARY_ARM: "effective-primary",
+            contract.SENSITIVITY_ARM: "effective-sensitivity",
         },
     )
 

@@ -1,6 +1,6 @@
 # Versioned CT ROI-class governance map. Exact names only.
 schema_version: 1
-map_version: ct-roi-class-map-2026-08-30-v1
+map_version: ct-roi-class-map-2026-09-01-v3
 mapping_status: partial_pending_operator_adjudication
 approval_basis:
   binding_specification_date: '2026-08-30'
@@ -9,16 +9,16 @@ approval_basis:
 classes:
   target:
     primary_resegment_range_hu:
-    - -1000
-    - 400
+      - -1000
+      - 400
   hollow_pelvic_organ:
     primary_resegment_range_hu:
-    - -1000
-    - 400
+      - -1000
+      - 400
   solid_soft_tissue_neural:
     primary_resegment_range_hu:
-    - -500
-    - 400
+      - -500
+      - 400
   bone:
     primary_intensity_texture_disposition: not_applicable_bone
   positioning_support:
@@ -321,6 +321,154 @@ manual_custom_crosswalk:
   SIGMOID:
     roi_class: hollow_pelvic_organ
     adjudication_status: approved_by_binding_spec
+  Aorta:
+    roi_class: vessel
+    adjudication_status: approved_by_anatomic_equivalence
+    evidence_basis: exact anatomic equivalent of TotalSegmentator aorta
+  CTV1:
+    roi_class: target
+    adjudication_status: approved_by_anatomic_equivalence
+    evidence_basis: numbered clinical target volume, approved CTV concept
+  CTV2:
+    roi_class: target
+    adjudication_status: approved_by_anatomic_equivalence
+    evidence_basis: numbered clinical target volume, approved CTV concept
+  CTV3:
+    roi_class: target
+    adjudication_status: approved_by_anatomic_equivalence
+    evidence_basis: numbered clinical target volume, approved CTV concept
+  Dwunastnica:
+    roi_class: hollow_pelvic_organ
+    adjudication_status: approved_by_anatomic_equivalence
+    evidence_basis: Polish exact name for duodenum
+  Esica:
+    roi_class: hollow_pelvic_organ
+    adjudication_status: approved_by_anatomic_equivalence
+    evidence_basis: Polish exact name for sigmoid colon
+  Jelito cienkie:
+    roi_class: hollow_pelvic_organ
+    adjudication_status: approved_by_anatomic_equivalence
+    evidence_basis: Polish exact name for small bowel
+  Jelito grube:
+    roi_class: hollow_pelvic_organ
+    adjudication_status: approved_by_anatomic_equivalence
+    evidence_basis: Polish exact name for large bowel or colon
+  Kora Nerek Suma:
+    roi_class: solid_soft_tissue_neural
+    adjudication_status: approved_by_anatomic_equivalence
+    evidence_basis: combined renal cortex, solid renal parenchyma
+  Kora Nerki Lewej:
+    roi_class: solid_soft_tissue_neural
+    adjudication_status: approved_by_anatomic_equivalence
+    evidence_basis: left renal cortex, solid renal parenchyma
+  Kora Nerki Prawej:
+    roi_class: solid_soft_tissue_neural
+    adjudication_status: approved_by_anatomic_equivalence
+    evidence_basis: right renal cortex, solid renal parenchyma
+  Kosci:
+    roi_class: bone
+    adjudication_status: approved_by_anatomic_equivalence
+    evidence_basis: Polish exact name for bones
+  LAD:
+    roi_class: vessel
+    adjudication_status: approved_by_anatomic_equivalence
+    evidence_basis: left anterior descending coronary artery
+  Mostek:
+    roi_class: bone
+    adjudication_status: approved_by_anatomic_equivalence
+    evidence_basis: Polish exact name for sternum
+  Nerka Lewa:
+    roi_class: solid_soft_tissue_neural
+    adjudication_status: approved_by_anatomic_equivalence
+    evidence_basis: Polish exact name for left kidney
+  Nerka Prawa:
+    roi_class: solid_soft_tissue_neural
+    adjudication_status: approved_by_anatomic_equivalence
+    evidence_basis: Polish exact name for right kidney
+  Nerki:
+    roi_class: solid_soft_tissue_neural
+    adjudication_status: approved_by_anatomic_equivalence
+    evidence_basis: Polish exact plural name for kidneys
+  PTV1:
+    roi_class: target
+    adjudication_status: approved_by_anatomic_equivalence
+    evidence_basis: numbered planning target volume, approved PTV concept
+  PTV2:
+    roi_class: target
+    adjudication_status: approved_by_anatomic_equivalence
+    evidence_basis: numbered planning target volume, approved PTV concept
+  PTV3:
+    roi_class: target
+    adjudication_status: approved_by_anatomic_equivalence
+    evidence_basis: numbered planning target volume, approved PTV concept
+  Pluco Lewe:
+    roi_class: unresolved_mixed
+    adjudication_status: approved_by_anatomic_equivalence
+    evidence_basis: Polish exact name for left lung; canonical lung class is unresolved_mixed
+  Pluco Prawe:
+    roi_class: unresolved_mixed
+    adjudication_status: approved_by_anatomic_equivalence
+    evidence_basis: Polish exact name for right lung; canonical lung class is unresolved_mixed
+  Pluco Suma:
+    roi_class: unresolved_mixed
+    adjudication_status: approved_by_anatomic_equivalence
+    evidence_basis: combined lungs; canonical lung class is unresolved_mixed
+  Przelyk:
+    roi_class: unresolved_mixed
+    adjudication_status: approved_by_anatomic_equivalence
+    evidence_basis: Polish exact name for esophagus; canonical esophagus class is unresolved_mixed
+  Rdzen:
+    roi_class: solid_soft_tissue_neural
+    adjudication_status: approved_by_anatomic_equivalence
+    evidence_basis: Polish clinical name for spinal cord
+  Serce:
+    roi_class: unresolved_mixed
+    adjudication_status: approved_by_anatomic_equivalence
+    evidence_basis: Polish exact name for heart; canonical heart class is unresolved_mixed
+  Sledziona:
+    roi_class: solid_soft_tissue_neural
+    adjudication_status: approved_by_anatomic_equivalence
+    evidence_basis: Polish exact name for spleen
+  Splot Ramienny Lewy:
+    roi_class: solid_soft_tissue_neural
+    adjudication_status: approved_by_anatomic_equivalence
+    evidence_basis: Polish exact name for left brachial plexus, neural tissue
+  Splot Ramienny Prawy:
+    roi_class: solid_soft_tissue_neural
+    adjudication_status: approved_by_anatomic_equivalence
+    evidence_basis: Polish exact name for right brachial plexus, neural tissue
+  Tarczyca:
+    roi_class: solid_soft_tissue_neural
+    adjudication_status: approved_by_anatomic_equivalence
+    evidence_basis: Polish exact name for thyroid gland
+  Tchawica:
+    roi_class: unresolved_mixed
+    adjudication_status: approved_by_anatomic_equivalence
+    evidence_basis: Polish exact name for trachea; canonical trachea class is unresolved_mixed
+  Tetnica plucna:
+    roi_class: vessel
+    adjudication_status: approved_by_anatomic_equivalence
+    evidence_basis: Polish exact name for pulmonary artery
+  Watroba:
+    roi_class: solid_soft_tissue_neural
+    adjudication_status: approved_by_anatomic_equivalence
+    evidence_basis: Polish exact name for liver
+  Zoladek:
+    roi_class: unresolved_mixed
+    adjudication_status: approved_by_anatomic_equivalence
+    evidence_basis: Polish exact name for stomach; canonical stomach class is unresolved_mixed
+  Zyla Glowna Dolna:
+    roi_class: vessel
+    adjudication_status: approved_by_anatomic_equivalence
+    evidence_basis: Polish exact name for inferior vena cava
+  jelita:
+    roi_class: hollow_pelvic_organ
+    adjudication_status: approved_by_anatomic_equivalence
+    evidence_basis: Polish plural name for bowel, an approved bowel concept
+  ogon konski:
+    roi_class: solid_soft_tissue_neural
+    adjudication_status: approved_by_anatomic_equivalence
+    evidence_basis: Polish exact name for cauda equina, neural tissue
 derived_crosswalk:
   bowel_bag:
     roi_class: hollow_pelvic_organ
@@ -338,6 +486,6 @@ derived_crosswalk:
     roi_class: bone
     require_provenance: true
 governance_notes:
-- Manual, custom-model, and other project-local names are exact-match only.
-- Unlisted names remain unresolved_mixed and require operator adjudication.
-- Derived entries apply only when operation and base structures are recorded.
+  - Manual, custom-model, and other project-local names are exact-match only.
+  - Unlisted names remain unresolved_mixed and require operator adjudication.
+  - Derived entries apply only when operation and base structures are recorded.

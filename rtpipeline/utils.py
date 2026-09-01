@@ -187,7 +187,7 @@ def _resolve_scoped_dirs(root: Path, patient_ids: Iterable[str]) -> tuple[List[P
     return dirs, missing
 
 
-def _walk_following_symlinks(root):
+def _walk_following_symlinks(root, onerror=None):
     """``os.walk`` that descends into symlinked directories, without cycling.
 
     A cohort subset is routinely expressed as a directory of symlinks to the
@@ -202,10 +202,10 @@ def _walk_following_symlinks(root):
     directory is recorded by its resolved real path and visited at most once.
     """
     if not follow_input_symlinks():
-        yield from os.walk(root)
+        yield from os.walk(root, onerror=onerror)
         return
     seen: set[str] = set()
-    for base, dirs, files in os.walk(root, followlinks=True):
+    for base, dirs, files in os.walk(root, followlinks=True, onerror=onerror):
         try:
             real = os.path.realpath(base)
         except OSError:
@@ -217,7 +217,12 @@ def _walk_following_symlinks(root):
         yield base, dirs, files
 
 
-def _scoped_walk(root: Path, patient_ids: Optional[Iterable[str]] = None):
+def _scoped_walk(
+    root: Path,
+    patient_ids: Optional[Iterable[str]] = None,
+    *,
+    onerror=None,
+):
     """``os.walk`` over ``root``, optionally restricted to the cohort's subtrees.
 
     ``patient_ids is None`` walks the entire ``root`` exactly like ``os.walk``
@@ -231,7 +236,7 @@ def _scoped_walk(root: Path, patient_ids: Optional[Iterable[str]] = None):
     nothing (walks no files).
     """
     if patient_ids is None:
-        yield from _walk_following_symlinks(root)
+        yield from _walk_following_symlinks(root, onerror=onerror)
         return
     patient_ids = list(patient_ids)
     dirs, missing = _resolve_scoped_dirs(root, patient_ids)
@@ -241,10 +246,10 @@ def _scoped_walk(root: Path, patient_ids: Optional[Iterable[str]] = None):
             "(e.g. %s); falling back to a full-root walk to avoid dropping data.",
             len(missing), len(patient_ids), root, ", ".join(missing[:5]),
         )
-        yield from _walk_following_symlinks(root)
+        yield from _walk_following_symlinks(root, onerror=onerror)
         return
     for d in dirs:
-        yield from _walk_following_symlinks(d)
+        yield from _walk_following_symlinks(d, onerror=onerror)
 
 
 def _scoped_patient_dirs(root: Path, patient_ids: Optional[Iterable[str]] = None) -> List[Path]:

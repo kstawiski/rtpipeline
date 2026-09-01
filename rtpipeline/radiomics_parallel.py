@@ -82,6 +82,7 @@ from .radiomics_ct_contract import (
     configured_parameter_hash,
     current_code_revision,
     disposition_rows_for_arms,
+    effective_parameter_hashes_for_arms,
     expected_publication_keys,
     extract_ct_roi_arms,
     load_custom_structure_provenance,
@@ -261,6 +262,7 @@ class _RoiTask:
     run_identifier: str
     code_revision: str
     configured_parameter_hashes: Dict[str, str] = field(compare=False, hash=False)
+    effective_parameter_hashes: Dict[str, str] = field(compare=False, hash=False)
     required: Optional[bool] = None
 
 
@@ -449,6 +451,7 @@ def _status_records(
         code_revision=task.code_revision,
         native_voxel_count=voxel_count,
         required=_task_is_required(task),
+        effective_hashes=task.effective_parameter_hashes,
         configured_parameter_hashes=task.configured_parameter_hashes,
     )
 
@@ -943,6 +946,9 @@ def parallel_radiomics_for_course(
     rs_custom = course_dir / "RS_custom.dcm"
     desired_custom: set[str] = set()
     custom_applicability: list[Any] = []
+    pending_custom_assessments: set[str] = set()
+    dependency_states: dict[str, Any] = {}
+    planning_ct_fov: Any = {}
     observed_required: set[str] = set()
     configured_custom_value = (
         custom_structures_config
@@ -973,10 +979,9 @@ def parallel_radiomics_for_course(
                 if isinstance(item, str) and item.strip()
             }
         }
-        # Decide applicability before rebuilding RS_custom. The dependency
-        # evidence comes from the current source inventories, never from the
-        # cropped planning volume.
-        dependency_states: dict[str, Any] = {}
+        custom_provenance = load_custom_structure_provenance(configured_custom_path)
+        # Decide applicability before rebuilding RS_custom. Source-applicable
+        # missing ROIs remain repair candidates until the governed builder has run.
         for source_name, source_path, _ in sources:
             try:
                 inventory = inspect_rtstruct(source_path)
@@ -990,6 +995,7 @@ def parallel_radiomics_for_course(
         try:
             from .radiomics import _planning_ct_fov, _analysis_contract, _roi_requiredness
             custom_contract = _analysis_contract(config)
+            planning_ct_fov = _planning_ct_fov(course_dir)
         except Exception:
             custom_contract = {}
             _planning_ct_fov = lambda _path: {}
@@ -1011,46 +1017,56 @@ def parallel_radiomics_for_course(
             if candidate is not None:
                 generated_state = "readable_nonempty" if candidate.has_readable_contour else "unreadable"
             assessment = assess_custom_applicability(
-                base, dependency_states, _planning_ct_fov(course_dir), generated_state=generated_state,
+                base,
+                dependency_states,
+                planning_ct_fov,
+                generated_state=generated_state,
+                custom_provenance=custom_provenance,
             )
-            custom_applicability.append(assessment)
+            required_custom = (
+                _roi_requiredness(config, "Custom", base)
+                == Requiredness.ANALYSIS_REQUIRED
+            )
             if assessment.reason_code == "extracted":
                 applicable_custom.add(base)
-                if _roi_requiredness(config, "Custom", base) == Requiredness.ANALYSIS_REQUIRED:
+                custom_applicability.append(assessment)
+                if required_custom:
                     observed_required.add(base)
-            elif assessment.reason_code in {"not_applicable_anatomy", "not_applicable_scope"}:
-                if _roi_requiredness(config, "Custom", base) == Requiredness.ANALYSIS_REQUIRED:
-                    observed_required.add(base)
-            elif assessment.reason_code in {"failed_custom_generation", "indeterminate_applicability"}:
+            elif assessment.reason_code == "failed_custom_generation":
+                applicable_custom.add(base)
+                pending_custom_assessments.add(base)
+            elif assessment.reason_code == "indeterminate_applicability":
+                custom_applicability.append(assessment)
                 _write_parallel_roi_ledger(
                     course_dir,
                     (),
                     (),
                     custom_applicability,
                     extracted=False,
-                    technical=assessment.reason_code == "failed_custom_generation",
-                    indeterminate=assessment.reason_code == "indeterminate_applicability",
+                    indeterminate=True,
                 )
                 _invalidate_radiomics_outputs(out_path)
                 raise RadiomicsCourseExtractionError(
                     f"Configured custom ROI {base!r} has {assessment.reason_code}: {assessment.detail}"
                 )
-            elif (
-                _roi_requiredness(config, "Custom", base) == Requiredness.ANALYSIS_REQUIRED
-                and assessment.reason_code not in {"not_applicable_anatomy", "not_applicable_scope"}
-            ):
-                _write_parallel_roi_ledger(
-                    course_dir,
-                    (),
-                    (),
-                    custom_applicability,
-                    extracted=False,
-                    technical=True,
-                )
-                _invalidate_radiomics_outputs(out_path)
-                raise RadiomicsCourseExtractionError(
-                    f"Required custom ROI {base!r} has {assessment.reason_code}: {assessment.detail}"
-                )
+            else:
+                custom_applicability.append(assessment)
+                if assessment.reason_code in {"not_applicable_anatomy", "not_applicable_scope"}:
+                    if required_custom:
+                        observed_required.add(base)
+                elif required_custom:
+                    _write_parallel_roi_ledger(
+                        course_dir,
+                        (),
+                        (),
+                        custom_applicability,
+                        extracted=False,
+                        technical=True,
+                    )
+                    _invalidate_radiomics_outputs(out_path)
+                    raise RadiomicsCourseExtractionError(
+                        f"Required custom ROI {base!r} has {assessment.reason_code}: {assessment.detail}"
+                    )
         desired_custom = applicable_custom
         custom_rebuild_attempted = False
         custom_rebuild_published = False
@@ -1154,7 +1170,7 @@ def parallel_radiomics_for_course(
     run_identifier = new_run_identifier()
     code_revision = current_code_revision()
     custom_provenance = load_custom_structure_provenance(configured_custom_path)
-    from .radiomics import _get_params_file
+    from .radiomics import _extractor, _get_params_file
 
     parameter_path = _get_params_file(config, "CT")
     identity_cache: Dict[str, Dict[str, Tuple[str, str]]] = {}
@@ -1181,6 +1197,13 @@ def parallel_radiomics_for_course(
             )
             for arm in CT_EXTRACTION_ARMS
         }
+
+        def _factory() -> Any:
+            candidate = _extractor(config, "CT")
+            if candidate is None:
+                raise RuntimeError("No CT radiomics extractor is available")
+            return candidate
+
         return _RoiTask(
             source=source,
             rs_path=str(rs_path),
@@ -1193,6 +1216,9 @@ def parallel_radiomics_for_course(
             run_identifier=run_identifier,
             code_revision=code_revision,
             configured_parameter_hashes=configured_hashes,
+            effective_parameter_hashes=effective_parameter_hashes_for_arms(
+                _factory, decision
+            ),
             required=required,
         )
 
@@ -1299,6 +1325,26 @@ def parallel_radiomics_for_course(
                 auto_names = set(_list_roi_names(rs_auto)) if rs_auto.exists() else set()
                 inferred = {n for n in (avail - (manual_names | auto_names)) if n}
                 desired_custom = {n[:-9] if n.endswith("__partial") else n for n in inferred}
+
+            for base in sorted(pending_custom_assessments):
+                generated_state = (
+                    "readable_nonempty"
+                    if base in avail or f"{base}__partial" in avail
+                    else "absent"
+                )
+                final_assessment = assess_custom_applicability(
+                    base,
+                    dependency_states,
+                    planning_ct_fov,
+                    generated_state=generated_state,
+                    custom_provenance=custom_provenance,
+                )
+                custom_applicability.append(final_assessment)
+                if final_assessment.reason_code == "extracted" and (
+                    _roi_requiredness(config, "Custom", base)
+                    == Requiredness.ANALYSIS_REQUIRED
+                ):
+                    observed_required.add(base)
 
             wanted: list[str] = []
             missing_custom: list[str] = []
