@@ -10,12 +10,15 @@ from pathlib import Path
 import pandas as pd
 import pydicom
 import pytest
+from pydicom.dataelem import RawDataElement
 from pydicom.dataset import Dataset, FileDataset, FileMetaDataset
 from pydicom.errors import InvalidDicomError
 from pydicom.sequence import Sequence
+from pydicom.tag import Tag
 from pydicom.uid import (
     CTImageStorage,
     ExplicitVRLittleEndian,
+    ImplicitVRLittleEndian,
     RTBeamsTreatmentRecordStorage,
     RTDoseStorage,
     RTPlanStorage,
@@ -26,6 +29,7 @@ from pydicom.uid import (
 
 from rtpipeline import meta
 from rtpipeline.config import PipelineConfig
+from rtpipeline.utils import ORGANIZE_DISCOVERY_TAGS
 
 
 def _file_dataset(path: Path, sop_class_uid: str, modality: str, sop_uid: str) -> FileDataset:
@@ -106,6 +110,11 @@ def _config(tmp_path: Path) -> PipelineConfig:
         logs_root=tmp_path / "logs",
         max_workers_override=1,
     )
+
+
+def _is_detailed_metadata_read(kwargs: dict) -> bool:
+    tags = kwargs.get("specific_tags")
+    return tags is None or set(tags) != {meta._MODALITY_TAG}
 
 
 def _write_export(root: Path, names: dict[str, str]) -> None:
@@ -278,17 +287,123 @@ def test_snapshot_read_keeps_verified_modality_when_detailed_header_fails(
     original = pydicom.dcmread
 
     def fail_detailed_header(path, *args, **kwargs):
-        if Path(path) == plan and kwargs.get("specific_tags") is None:
+        if Path(path) == plan and _is_detailed_metadata_read(kwargs):
             raise InvalidDicomError("synthetic detailed-header failure")
         return original(path, *args, **kwargs)
 
     monkeypatch.setattr(meta.pydicom, "dcmread", fail_detailed_header)
 
-    source_file = meta._metadata_source_file(plan)
+    source_read = meta._metadata_source_file(plan)
 
-    assert source_file.result.modality == "RTPLAN"
-    assert source_file.result.row is None
-    assert source_file.result.extraction_error
+    assert source_read.source.result.modality == "RTPLAN"
+    assert source_read.source.result.row is None
+    assert source_read.source.result.extraction_error
+    assert source_read.dataset is None
+
+
+def test_snapshot_read_decodes_only_discovery_tags_and_drops_contour_payload(tmp_path):
+    path = tmp_path / "dicom" / "large_struct.dcm"
+    ds = _file_dataset(path, RTStructureSetStorage, "RTSTRUCT", generate_uid())
+    roi = Dataset()
+    roi.ROINumber = 1
+    roi.ROIName = "PTV1"
+    ds.StructureSetROISequence = Sequence([roi])
+    contour = Dataset()
+    contour.ContourData = [float(index) for index in range(3000)]
+    roi_contour = Dataset()
+    roi_contour.ReferencedROINumber = 1
+    roi_contour.ContourSequence = Sequence([contour])
+    ds.ROIContourSequence = Sequence([roi_contour])
+    ds.add_new((0x7777, 0x0010), "OB", b"x" * 100_000)
+    _write(ds, path)
+
+    full = pydicom.dcmread(path, stop_before_pixels=True, force=True)
+    source_read = meta._metadata_source_file(path)
+
+    assert source_read.dataset is not None
+    assert set(source_read.dataset.keys()).issubset(set(ORGANIZE_DISCOVERY_TAGS))
+    assert "StructureSetROISequence" in source_read.dataset
+    assert "ROIContourSequence" not in source_read.dataset
+    assert (0x7777, 0x0010) not in source_read.dataset
+    assert source_read.source.result == meta._metadata_result_from_dataset(path, full)
+    assert not hasattr(source_read.source, "dataset")
+
+
+def test_metadata_scan_does_not_decode_unrequested_nested_leaf(tmp_path):
+    path = tmp_path / "dicom" / "record.dcm"
+    ds = _file_dataset(
+        path,
+        RTBeamsTreatmentRecordStorage,
+        "RTRECORD",
+        generate_uid(),
+    )
+    ds.file_meta.TransferSyntaxUID = ImplicitVRLittleEndian
+    machine = Dataset()
+    machine.ContourData = [float(index) for index in range(3000)]
+    machine.TreatmentMachineName = "LINAC_A"
+    ds.TreatmentMachineSequence = Sequence([machine])
+    _write(ds, path)
+
+    source_read = meta._metadata_source_file(path)
+
+    assert source_read.source.result.row is not None
+    assert source_read.source.result.row["machine"] == "LINAC_A"
+    assert source_read.dataset is not None
+    child = source_read.dataset.TreatmentMachineSequence[0]
+    raw_contour = child.get_item(Tag(0x3006, 0x0050))
+    assert isinstance(raw_contour, RawDataElement)
+
+
+def test_projected_dose_preserves_first_referenced_uid_order(tmp_path):
+    """Projection must retain an earlier referenced-image UID used by legacy lookup."""
+    path = tmp_path / "dicom" / "dose.dcm"
+    image_uid = generate_uid()
+    plan_uid = generate_uid()
+    ds = _file_dataset(path, RTDoseStorage, "RTDOSE", generate_uid())
+    image = Dataset()
+    image.ReferencedSOPInstanceUID = image_uid
+    ds.ReferencedImageSequence = Sequence([image])
+    plan = Dataset()
+    plan.ReferencedSOPInstanceUID = plan_uid
+    ds.ReferencedRTPlanSequence = Sequence([plan])
+    _write(ds, path)
+
+    full = pydicom.dcmread(path, stop_before_pixels=True, force=True)
+    source_read = meta._metadata_source_file(path)
+
+    assert source_read.source.result == meta._metadata_result_from_dataset(path, full)
+    assert source_read.source.result.row is not None
+    assert source_read.source.result.row["plan_id"] == image_uid
+
+
+def test_streamed_inventory_digest_matches_v1_canonical_payload(tmp_path):
+    root = tmp_path / "dicom"
+    paths = [_write_ct(root / "CT_1.dcm"), _write_ct(root / "CT_2.dcm")]
+    sources = [meta._metadata_source_file(path).source for path in paths]
+
+    identity = meta._source_inventory_identity_from_files(root, ["P1"], sources)
+    records = [
+        [
+            os.path.relpath(source.path, root),
+            source.size,
+            source.mtime_ns,
+            source.ctime_ns,
+            source.device,
+            source.inode,
+        ]
+        for source in sources
+    ]
+    expected = meta._canonical_sha256(
+        {
+            "schema": "rtpipeline-source-inventory-v1",
+            "root": str(root.resolve(strict=False)),
+            "scope_sha256": identity.scope_digest,
+            "files": records,
+        }
+    )
+
+    assert identity.digest == expected
+    assert identity.file_count == 2
 
 
 def test_detected_plans_that_yield_no_rows_fail_loudly(tmp_path, monkeypatch):
@@ -298,7 +413,7 @@ def test_detected_plans_that_yield_no_rows_fail_loudly(tmp_path, monkeypatch):
     original = pydicom.dcmread
 
     def fail_after_modality_detection(path, *args, **kwargs):
-        if Path(path) == plan and kwargs.get("specific_tags") is None:
+        if Path(path) == plan and _is_detailed_metadata_read(kwargs):
             raise InvalidDicomError("synthetic detailed-header failure")
         return original(path, *args, **kwargs)
 
@@ -325,7 +440,7 @@ def test_each_detected_modality_that_yields_no_rows_fails_loudly(
     original = pydicom.dcmread
 
     def fail_after_modality_detection(path, *args, **kwargs):
-        if Path(path) == source and kwargs.get("specific_tags") is None:
+        if Path(path) == source and _is_detailed_metadata_read(kwargs):
             raise InvalidDicomError("synthetic detailed-header failure")
         return original(path, *args, **kwargs)
 
@@ -463,7 +578,7 @@ def test_partial_supported_modality_failure_does_not_publish(tmp_path, monkeypat
     original = meta.pydicom.dcmread
 
     def fail_detailed_read(path, *args, **kwargs):
-        if Path(path) == bad and kwargs.get("specific_tags") is None:
+        if Path(path) == bad and _is_detailed_metadata_read(kwargs):
             raise InvalidDicomError("synthetic partial detailed-header failure")
         return original(path, *args, **kwargs)
 

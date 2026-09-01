@@ -181,6 +181,7 @@ def annotate_dvh_metrics(
     technique: str,
     structure_name: str,
     prescription_resolved: bool = True,
+    dose_response_eligible: bool = True,
     rtstruct_sop_instance_uid: str | None,
     rtstruct_path: Path | None,
     structure_provenance_type: str = "RTSTRUCT",
@@ -192,7 +193,15 @@ def annotate_dvh_metrics(
     output = dict(metrics)
     normalized_technique = str(technique or "UNKNOWN").strip().upper() or "UNKNOWN"
     is_ebrt = normalized_technique == "EBRT"
-    if not is_ebrt:
+    if not dose_response_eligible:
+        relative_status = "excluded_dose_response_ineligible"
+        relative_reason = (
+            "Prescription-relative DVH metrics are excluded because the "
+            "authoritative course contract marks this course as dose-response ineligible."
+        )
+        for column in RELATIVE_DVH_METRIC_COLUMNS:
+            output[column] = None
+    elif not is_ebrt:
         relative_status = "suppressed_non_ebrt"
         relative_reason = (
             "Prescription-relative DVH metrics are suppressed because EBRT, "
@@ -217,6 +226,9 @@ def annotate_dvh_metrics(
         output["HI%"] = None
         output["HI_status"] = "not_applicable_non_target"
         output["HI_reason"] = "HI% is emitted only for target structures."
+    elif not dose_response_eligible:
+        output["HI_status"] = "excluded_dose_response_ineligible"
+        output["HI_reason"] = relative_reason
     elif not is_ebrt:
         output["HI_status"] = "suppressed_non_ebrt"
         output["HI_reason"] = relative_reason
@@ -250,6 +262,7 @@ def annotate_dvh_metrics(
         rtstruct_provenance_reason = provenance_reason
     output.update(
         {
+            "dose_response_eligible": bool(dose_response_eligible),
             "treatment_technique": normalized_technique,
             "treatment_technique_source": "DICOM_RTPLAN",
             "relative_metric_status": relative_status,
@@ -390,6 +403,7 @@ class DVHDoseResolution:
     delivered_dose_gy: Optional[float] = None
     delivery_status: Optional[str] = None
     dose_response_dose_field: str = DOSE_RESPONSE_FIELD
+    dose_response_eligible: bool = False
     dose_qc_status: Optional[str] = None
     dose_qc_pass: Optional[bool] = None
     dose_qc_reasons: List[str] | None = None
@@ -522,6 +536,15 @@ def _skip_dose_resolution(reason: str, classification: str = "unresolved") -> DV
     )
 
 
+def _contract_dose_response_eligible(contract) -> bool:
+    """Read the scope eligibility flag, with legacy-contract compatibility."""
+
+    value = contract.delivery.get("dose_response_eligible")
+    if isinstance(value, bool):
+        return value
+    return contract.resolved_prescribed_dose_total_gy is not None
+
+
 def _resolve_dvh_dose(
     course_dir: Path,
     course_dirs,
@@ -587,6 +610,7 @@ def _resolve_dvh_dose(
             delivered_dose_gy=contract.delivered_dose_gy,
             delivery_status=str(contract.delivery.get("status") or ""),
             dose_response_dose_field=str(contract.delivery.get("dose_response_field") or ""),
+            dose_response_eligible=_contract_dose_response_eligible(contract),
             dose_qc_status=str(contract.dose_qc.get("status") or ""),
             dose_qc_pass=bool(contract.dose_qc.get("pass")),
             dose_qc_reasons=[str(value) for value in contract.dose_qc.get("reasons") or []],
@@ -621,6 +645,7 @@ def _resolve_dvh_dose(
         delivered_dose_gy=contract.delivered_dose_gy,
         delivery_status=str(contract.delivery.get("status") or ""),
         dose_response_dose_field=DOSE_RESPONSE_FIELD,
+        dose_response_eligible=_contract_dose_response_eligible(contract),
         dose_qc_status=str(contract.dose_qc.get("status") or ""),
         dose_qc_pass=bool(contract.dose_qc.get("pass")),
         dose_qc_reasons=[str(value) for value in contract.dose_qc.get("reasons") or []],
@@ -1265,6 +1290,7 @@ def _write_dvh_qc(
             "delivered_dose_gy": dose_resolution.delivered_dose_gy,
             "delivery_status": dose_resolution.delivery_status,
             "dose_response_dose_field": dose_resolution.dose_response_dose_field,
+            "dose_response_eligible": dose_resolution.dose_response_eligible,
             "dose_qc_status": dose_resolution.dose_qc_status,
             "dose_qc_pass": dose_resolution.dose_qc_pass,
             "dose_qc_reasons": dose_resolution.dose_qc_reasons or [],
@@ -1312,6 +1338,7 @@ def _write_dvh_skip_qc(
             "delivered_dose_gy": dose_resolution.delivered_dose_gy,
             "delivery_status": dose_resolution.delivery_status,
             "dose_response_dose_field": dose_resolution.dose_response_dose_field,
+            "dose_response_eligible": dose_resolution.dose_response_eligible,
             "dose_qc_status": dose_resolution.dose_qc_status,
             "dose_qc_pass": dose_resolution.dose_qc_pass,
             "dose_qc_reasons": dose_resolution.dose_qc_reasons or [],
@@ -1364,6 +1391,7 @@ def _is_dvh_up_to_date(
             return False
         parquet_frame = pd.read_parquet(parquet_path)
         required_columns = {
+            "dose_response_eligible",
             "treatment_technique",
             "relative_metric_status",
             "structure_provenance_status",
@@ -1755,6 +1783,7 @@ def _compute_nifti_based_dvh(
     existing_roi_names: set,
     technique: str = "UNKNOWN",
     prescription_resolved: bool = False,
+    dose_response_eligible: bool = True,
 ) -> List[Dict]:
     """Compute DVH for TotalSegmentator and custom composite structures directly from NIfTI masks.
 
@@ -1916,6 +1945,7 @@ def _compute_nifti_based_dvh(
                 technique=technique,
                 structure_name=name,
                 prescription_resolved=prescription_resolved,
+                dose_response_eligible=dose_response_eligible,
                 rtstruct_sop_instance_uid=None,
                 rtstruct_path=None,
                 structure_provenance_type="NIFTI_MASK",
@@ -2007,7 +2037,11 @@ def dvh_for_course(
     treatment_technique = str(
         contract.treatment_technique.get("classification") or "UNKNOWN"
     ).strip().upper()
-    prescription_resolved = contract.resolved_prescribed_dose_total_gy is not None
+    dose_response_eligible = _contract_dose_response_eligible(contract)
+    prescription_resolved = (
+        dose_response_eligible
+        and contract.resolved_prescribed_dose_total_gy is not None
+    )
 
     out_xlsx = course_dir / "dvh_metrics.xlsx"
     # Resolve and enforce the contract before cache reuse. A newly failing
@@ -2163,6 +2197,7 @@ def dvh_for_course(
             technique=treatment_technique,
             structure_name=roi_name,
             prescription_resolved=prescription_resolved,
+            dose_response_eligible=dose_response_eligible,
             rtstruct_sop_instance_uid=rtstruct_sop_uid,
             rtstruct_path=rtstruct_path,
             zero_dose_status=zero_dose_status,
@@ -2370,6 +2405,7 @@ def dvh_for_course(
             existing_roi_names=existing_roi_names,
             technique=treatment_technique,
             prescription_resolved=prescription_resolved,
+            dose_response_eligible=dose_response_eligible,
         )
         results.extend(nifti_results)
     else:
@@ -2452,6 +2488,7 @@ def dvh_for_course(
         )
         row["Delivery_Status"] = dose_resolution.delivery_status
         row["Dose_Response_Field"] = dose_resolution.dose_response_dose_field
+        row["Dose_Response_Eligible"] = dose_resolution.dose_response_eligible
         row["Dose_QC_Status"] = dose_resolution.dose_qc_status
 
     df = pd.DataFrame(clean_results)

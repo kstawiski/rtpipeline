@@ -63,6 +63,28 @@ def test_brachy_relative_metrics_are_suppressed_with_a_reason() -> None:
     assert annotated["rtstruct_sop_instance_uid"] == "1.2.3"
 
 
+def test_dose_response_ineligible_course_suppresses_relative_endpoints() -> None:
+    metrics = {name: 1.0 for name in RELATIVE_DVH_METRIC_COLUMNS}
+    metrics["HI%"] = 2.0
+
+    annotated = annotate_dvh_metrics(
+        metrics,
+        technique="EBRT",
+        structure_name="PTV",
+        prescription_resolved=False,
+        dose_response_eligible=False,
+        rtstruct_sop_instance_uid="1.2.3",
+        rtstruct_path=Path("RS.dcm"),
+    )
+
+    assert annotated["dose_response_eligible"] is False
+    assert all(annotated[column] is None for column in RELATIVE_DVH_METRIC_COLUMNS)
+    assert annotated["relative_metric_status"] == (
+        "excluded_dose_response_ineligible"
+    )
+    assert annotated["HI_status"] == "excluded_dose_response_ineligible"
+
+
 def test_non_target_homogeneity_is_explicitly_not_applicable() -> None:
     metrics = {"HI%": 3.0}
 
