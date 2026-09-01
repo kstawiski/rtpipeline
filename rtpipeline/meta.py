@@ -43,13 +43,19 @@ try:
 except Exception:
     pass
 import pydicom
-from pydicom.dataset import FileDataset
+from pydicom.datadict import dictionary_VR
+from pydicom.dataset import Dataset, FileDataset
 from pydicom.multival import MultiValue
 from pydicom.sequence import Sequence
-from pydicom.tag import Tag
+from pydicom.tag import BaseTag, Tag
 
 from .config import PipelineConfig
-from .utils import DEFAULT_INDEX_WORKERS, _scoped_walk, parallel_map_files
+from .utils import (
+    DEFAULT_INDEX_WORKERS,
+    ORGANIZE_DISCOVERY_TAGS,
+    _scoped_walk,
+    parallel_map_files,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +100,54 @@ def _nested_get(ds: pydicom.dataset.FileDataset, tag: str) -> str:
     return "NA"
 
 
+def _nested_get_many(
+    ds: FileDataset,
+    tags: Iterable[str],
+) -> Dict[str, str]:
+    """Fetch each tag's first scalar value without decoding unrelated leaves."""
+    targets: Dict[BaseTag, str] = {}
+    for text in tags:
+        try:
+            targets[Tag(int(text[:4], 16), int(text[4:], 16))] = text
+        except Exception:
+            continue
+    found: Dict[str, str] = {}
+
+    def visit(dataset: Dataset) -> bool:
+        for tag in sorted(dataset.keys()):
+            raw = dataset.get_item(tag)
+            if raw is None:
+                continue
+            text = targets.get(tag)
+            element = None
+            if text is not None and text not in found:
+                element = dataset[tag]
+                value = element.value
+                if not isinstance(value, (Dataset, Sequence)):
+                    found[text] = _format_value(value)
+                    if len(found) == len(targets):
+                        return True
+            vr = getattr(raw, "VR", None)
+            if vr is None or str(vr) == "UN":
+                try:
+                    known_vr = dictionary_VR(tag)
+                except KeyError:
+                    known_vr = None
+                if known_vr is not None:
+                    vr = known_vr
+            if str(vr or "") != "SQ":
+                continue
+            if element is None:
+                element = dataset[tag]
+            for child in element.value or []:
+                if visit(child):
+                    return True
+        return False
+
+    visit(ds)
+    return found
+
+
 @dataclass
 class ExportPaths:
     root: Path
@@ -123,7 +177,7 @@ class MetadataExportError(RuntimeError):
     """Raised when discovered DICOM objects cannot be represented in an export."""
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class MetadataSourceIdentity:
     """Cryptographic identity of the exact source-file namespace being exported."""
 
@@ -132,7 +186,7 @@ class MetadataSourceIdentity:
     scope_digest: str
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class MetadataReadResult:
     """One source candidate classified and extracted from a single header read."""
 
@@ -142,9 +196,9 @@ class MetadataReadResult:
     extraction_error: str | None = None
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class MetadataSourceFile:
-    """One file's stable inventory metadata and metadata-export row."""
+    """One file's stable inventory metadata and compact metadata-export row."""
 
     path: Path
     size: int
@@ -153,6 +207,13 @@ class MetadataSourceFile:
     device: int
     inode: int
     result: MetadataReadResult
+
+
+@dataclass(frozen=True, slots=True)
+class MetadataSourceRead:
+    """One transient projected dataset plus its persistable compact source row."""
+
+    source: MetadataSourceFile
     dataset: FileDataset | None
 
 
@@ -421,20 +482,31 @@ def _referenced_sop_uids(ds: pydicom.dataset.FileDataset, sequence_name: str) ->
 
 def _metadata_row(path: Path, modality: str, ds: pydicom.dataset.FileDataset) -> dict | None:
     """Build one export row from an already-read DICOM header."""
+    nested = _nested_get_many(
+        ds,
+        (
+            "00080018", "00081155", "00100020", "00100030", "00100040",
+            "00101000", "0020000D", "0020000E", "00200011", "00200013",
+            "30020052", "30080022", "30080024", "30080025", "3008002A",
+            "3008002C", "3008003B", "300A0002", "300A0006", "300A0016",
+            "300A00B2", "300E0002",
+        ),
+    )
+    value = lambda tag: nested.get(tag, "NA")
     if modality == "RTPLAN":
         return {
             "file_path": str(path),
             "_sop_instance_uid": str(getattr(ds, "SOPInstanceUID", "") or ""),
-            "plan_name": _nested_get(ds, "300A0002"),
-            "plan_date": _nested_get(ds, "300A0006"),
-            "reference_dose_name": _nested_get(ds, "300A0016"),
-            "approval": _nested_get(ds, "300E0002"),
-            "CT_series": _nested_get(ds, "0020000E"),
-            "CT_study": _nested_get(ds, "0020000D"),
-            "patient_id": _nested_get(ds, "00100020"),
-            "patient_dob": _nested_get(ds, "00100030"),
-            "patient_gender": _nested_get(ds, "00100040"),
-            "patient_pesel": _nested_get(ds, "00101000"),
+            "plan_name": value("300A0002"),
+            "plan_date": value("300A0006"),
+            "reference_dose_name": value("300A0016"),
+            "approval": value("300E0002"),
+            "CT_series": value("0020000E"),
+            "CT_study": value("0020000D"),
+            "patient_id": value("00100020"),
+            "patient_dob": value("00100030"),
+            "patient_gender": value("00100040"),
+            "patient_pesel": value("00101000"),
         }
     if modality == "RTDOSE":
         return {
@@ -442,10 +514,10 @@ def _metadata_row(path: Path, modality: str, ds: pydicom.dataset.FileDataset) ->
             "_referenced_plan_sop_uids": _referenced_sop_uids(
                 ds, "ReferencedRTPlanSequence"
             ),
-            "CT_series": _nested_get(ds, "0020000E"),
-            "CT_study": _nested_get(ds, "0020000D"),
-            "plan_id": _nested_get(ds, "00081155"),
-            "patient_id": _nested_get(ds, "00100020"),
+            "CT_series": value("0020000E"),
+            "CT_study": value("0020000D"),
+            "plan_id": value("00081155"),
+            "patient_id": value("00100020"),
         }
     if modality == "RTSTRUCT":
         structures = [
@@ -455,10 +527,10 @@ def _metadata_row(path: Path, modality: str, ds: pydicom.dataset.FileDataset) ->
         ]
         return {
             "file_path": str(path),
-            "CT_series": _nested_get(ds, "0020000E"),
-            "CT_study": _nested_get(ds, "0020000D"),
-            "approval": _nested_get(ds, "300E0002"),
-            "patient_id": _nested_get(ds, "00100020"),
+            "CT_series": value("0020000E"),
+            "CT_study": value("0020000D"),
+            "approval": value("300E0002"),
+            "patient_id": value("00100020"),
             "available_structures": ", ".join(structures) if structures else "",
         }
     if modality == "RTRECORD":
@@ -470,35 +542,35 @@ def _metadata_row(path: Path, modality: str, ds: pydicom.dataset.FileDataset) ->
         fraction_number = (
             getattr(ds, "CurrentFractionNumber", None)
             or getattr(ds, "ReferencedFractionNumber", None)
-            or _nested_get(ds, "30080022")
+            or value("30080022")
         )
         return {
             "file_path": str(path),
             "fraction_id": str(
-                getattr(ds, "SOPInstanceUID", "") or _nested_get(ds, "00080018")
+                getattr(ds, "SOPInstanceUID", "") or value("00080018")
             ),
-            "date": getattr(ds, "TreatmentDate", None) or _nested_get(ds, "30080024"),
-            "time": getattr(ds, "TreatmentTime", None) or _nested_get(ds, "30080025"),
+            "date": getattr(ds, "TreatmentDate", None) or value("30080024"),
+            "time": getattr(ds, "TreatmentTime", None) or value("30080025"),
             "fraction_number": fraction_number,
-            "verification_status": _nested_get(ds, "3008002C"),
-            "termination_status": _nested_get(ds, "3008002A"),
-            "delivery_time": _nested_get(ds, "3008003B"),
-            "fluence_mode": _nested_get(ds, "30020052"),
+            "verification_status": value("3008002C"),
+            "termination_status": value("3008002A"),
+            "delivery_time": value("3008003B"),
+            "fluence_mode": value("30020052"),
             "plan_id": plan_ids[0] if len(plan_ids) == 1 else None,
             "referenced_plan_ids": ";".join(plan_ids),
-            "machine": _nested_get(ds, "300A00B2"),
+            "machine": value("300A00B2"),
             "patient_id": str(
-                getattr(ds, "PatientID", "") or _nested_get(ds, "00100020")
+                getattr(ds, "PatientID", "") or value("00100020")
             ),
         }
     if modality == "CT":
         return {
             "original_path": str(path),
-            "PatientID": _nested_get(ds, "00100020"),
-            "CT_study": _nested_get(ds, "0020000D"),
-            "CT_series": _nested_get(ds, "0020000E"),
-            "SeriesNumber": _nested_get(ds, "00200011"),
-            "InstanceNumber": _nested_get(ds, "00200013"),
+            "PatientID": value("00100020"),
+            "CT_study": value("0020000D"),
+            "CT_series": value("0020000E"),
+            "SeriesNumber": value("00200011"),
+            "InstanceNumber": value("00200013"),
         }
     return None
 
@@ -527,11 +599,16 @@ def _metadata_result_from_dataset(
     return MetadataReadResult(path=path, modality=modality, row=row)
 
 
-def _metadata_source_file(path: Path) -> MetadataSourceFile:
+def _metadata_source_file(path: Path) -> MetadataSourceRead:
     """Read one source header and bind its row to a stable inventory tuple."""
     before = _inventory_stat(path)
     try:
-        dataset = pydicom.dcmread(str(path), stop_before_pixels=True, force=True)
+        dataset = pydicom.dcmread(
+            str(path),
+            stop_before_pixels=True,
+            force=True,
+            specific_tags=ORGANIZE_DISCOVERY_TAGS,
+        )
     except Exception as exc:
         verified = _read_verified_modality(path)
         dataset = None
@@ -549,14 +626,16 @@ def _metadata_source_file(path: Path) -> MetadataSourceFile:
             f"Metadata source changed while it was read: {path}"
         )
     _, size, mtime_ns, ctime_ns, device, inode = after
-    return MetadataSourceFile(
-        path=path,
-        size=size,
-        mtime_ns=mtime_ns,
-        ctime_ns=ctime_ns,
-        device=device,
-        inode=inode,
-        result=result,
+    return MetadataSourceRead(
+        source=MetadataSourceFile(
+            path=path,
+            size=size,
+            mtime_ns=mtime_ns,
+            ctime_ns=ctime_ns,
+            device=device,
+            inode=inode,
+            result=result,
+        ),
         dataset=dataset,
     )
 
@@ -564,7 +643,11 @@ def _metadata_source_file(path: Path) -> MetadataSourceFile:
 def _read_metadata_file(path: Path) -> MetadataReadResult:
     """Classify and extract one candidate using one normal header read."""
     try:
-        ds = pydicom.dcmread(str(path), stop_before_pixels=True)
+        ds = pydicom.dcmread(
+            str(path),
+            stop_before_pixels=True,
+            specific_tags=ORGANIZE_DISCOVERY_TAGS,
+        )
     except Exception as exc:
         # Preserve the old two-stage fail-closed behavior. If the detailed read
         # fails but a minimal forced read identifies a supported modality, the
@@ -627,6 +710,83 @@ def _canonical_sha256(payload: object) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _update_hash_with_canonical_json(digest, payload: object) -> None:
+    encoder = json.JSONEncoder(
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    )
+    for chunk in encoder.iterencode(payload):
+        digest.update(chunk.encode("utf-8"))
+
+
+class _SourceInventoryAccumulator:
+    """Stream the v1 inventory digest without retaining every inventory row."""
+
+    def __init__(
+        self,
+        dicom_root: Path,
+        patient_ids: Optional[Iterable[str]],
+    ) -> None:
+        self.root = Path(dicom_root)
+        scope_payload = {
+            "patient_ids": sorted({str(item) for item in (patient_ids or [])}),
+            "follow_input_symlinks": os.environ.get(
+                "RTPIPELINE_FOLLOW_INPUT_SYMLINKS", ""
+            ).strip().lower(),
+        }
+        self.scope_digest = _canonical_sha256(scope_payload)
+        self._digest = hashlib.sha256()
+        self._digest.update(b'{"files":[')
+        self.file_count = 0
+
+    def add(
+        self,
+        path: Path,
+        size: int,
+        mtime_ns: int,
+        ctime_ns: int,
+        device: int,
+        inode: int,
+    ) -> None:
+        try:
+            relative_path = os.path.relpath(path, self.root)
+        except Exception as exc:
+            raise MetadataExportError(
+                f"Could not normalize metadata source path {path} against {self.root}: {exc}"
+            ) from exc
+        if self.file_count:
+            self._digest.update(b",")
+        _update_hash_with_canonical_json(
+            self._digest,
+            [relative_path, size, mtime_ns, ctime_ns, device, inode],
+        )
+        self.file_count += 1
+
+    def add_source_file(self, source: MetadataSourceFile) -> None:
+        self.add(
+            source.path,
+            source.size,
+            source.mtime_ns,
+            source.ctime_ns,
+            source.device,
+            source.inode,
+        )
+
+    def identity(self) -> MetadataSourceIdentity:
+        digest = self._digest.copy()
+        digest.update(b'],"root":')
+        _update_hash_with_canonical_json(digest, str(self.root.resolve(strict=False)))
+        digest.update(b',"schema":"rtpipeline-source-inventory-v1","scope_sha256":')
+        _update_hash_with_canonical_json(digest, self.scope_digest)
+        digest.update(b"}")
+        return MetadataSourceIdentity(
+            digest.hexdigest(),
+            self.file_count,
+            self.scope_digest,
+        )
+
+
 def _source_inventory_identity_from_paths(
     dicom_root: Path,
     patient_ids: Optional[Iterable[str]],
@@ -642,43 +802,18 @@ def _source_inventory_identity_from_paths(
     stat the full scope aborts metadata export rather than permitting reuse.
     """
     root = Path(dicom_root)
+    accumulator = _SourceInventoryAccumulator(dicom_root, patient_ids)
     try:
-        stats = list(
-            parallel_map_files(paths, _inventory_stat, max(1, max_workers))
-        )
+        stats = parallel_map_files(paths, _inventory_stat, max(1, max_workers))
+        for path, size, mtime_ns, ctime_ns, device, inode in stats:
+            accumulator.add(path, size, mtime_ns, ctime_ns, device, inode)
     except Exception as exc:
+        if isinstance(exc, MetadataExportError):
+            raise
         raise MetadataExportError(
             f"Could not establish the complete metadata source inventory under {root}: {exc}"
         ) from exc
-
-    scope = sorted({str(item) for item in (patient_ids or [])})
-    scope_payload = {
-        "patient_ids": scope,
-        "follow_input_symlinks": os.environ.get(
-            "RTPIPELINE_FOLLOW_INPUT_SYMLINKS", ""
-        ).strip().lower(),
-    }
-    records = []
-    for path, size, mtime_ns, ctime_ns, device, inode in stats:
-        try:
-            relative_path = os.path.relpath(path, root)
-        except Exception as exc:
-            raise MetadataExportError(
-                f"Could not normalize metadata source path {path} against {root}: {exc}"
-            ) from exc
-        records.append(
-            [relative_path, size, mtime_ns, ctime_ns, device, inode]
-        )
-    scope_digest = _canonical_sha256(scope_payload)
-    digest = _canonical_sha256(
-        {
-            "schema": "rtpipeline-source-inventory-v1",
-            "root": str(root.resolve(strict=False)),
-            "scope_sha256": scope_digest,
-            "files": records,
-        }
-    )
-    return MetadataSourceIdentity(digest, len(records), scope_digest), paths
+    return accumulator.identity(), paths
 
 
 def _source_inventory_identity_from_files(
@@ -686,34 +821,10 @@ def _source_inventory_identity_from_files(
     patient_ids: Optional[Iterable[str]],
     files: List[MetadataSourceFile],
 ) -> MetadataSourceIdentity:
-    root = Path(dicom_root)
-    scope_payload = {
-        "patient_ids": sorted({str(item) for item in (patient_ids or [])}),
-        "follow_input_symlinks": os.environ.get(
-            "RTPIPELINE_FOLLOW_INPUT_SYMLINKS", ""
-        ).strip().lower(),
-    }
-    records = [
-        [
-            os.path.relpath(item.path, root),
-            item.size,
-            item.mtime_ns,
-            item.ctime_ns,
-            item.device,
-            item.inode,
-        ]
-        for item in files
-    ]
-    scope_digest = _canonical_sha256(scope_payload)
-    digest = _canonical_sha256(
-        {
-            "schema": "rtpipeline-source-inventory-v1",
-            "root": str(root.resolve(strict=False)),
-            "scope_sha256": scope_digest,
-            "files": records,
-        }
-    )
-    return MetadataSourceIdentity(digest, len(records), scope_digest)
+    accumulator = _SourceInventoryAccumulator(dicom_root, patient_ids)
+    for item in files:
+        accumulator.add_source_file(item)
+    return accumulator.identity()
 
 
 def _source_inventory_identity(
@@ -722,10 +833,11 @@ def _source_inventory_identity(
     *,
     max_workers: int,
 ) -> tuple[MetadataSourceIdentity, List[Path]]:
-    paths = _source_candidate_paths(dicom_root, patient_ids)
+    scope_ids = list(patient_ids) if patient_ids is not None else None
+    paths = _source_candidate_paths(dicom_root, scope_ids)
     return _source_inventory_identity_from_paths(
         dicom_root,
-        patient_ids,
+        scope_ids,
         paths,
         max_workers=max_workers,
     )

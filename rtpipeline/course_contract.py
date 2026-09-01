@@ -1226,11 +1226,20 @@ def validate_course_contract(contract: CourseContract) -> CourseContract:
             raise CourseContractError(
                 "plan_artifact.source_plan_uids must be a list of nonempty strings"
             )
-        expected_sources = plan_uids if plan_uids else [artifact_uid]
-        if set(artifact_sources) != set(expected_sources):
-            raise CourseContractError(
-                "plan_artifact.source_plan_uids disagrees with selected RTPLAN membership"
-            )
+        source_artifact = artifact_uid in _source_uids
+        if source_artifact:
+            if artifact_sources != [artifact_uid]:
+                raise CourseContractError(
+                    "a copied source plan_artifact must declare exactly its own "
+                    "SOPInstanceUID in source_plan_uids"
+                )
+        else:
+            expected_sources = plan_uids if plan_uids else [artifact_uid]
+            if set(artifact_sources) != set(expected_sources):
+                raise CourseContractError(
+                    "derived plan_artifact.source_plan_uids disagrees with "
+                    "selected RTPLAN membership"
+                )
         artifact_path = contract.resolve_path(plan_artifact.get("path"), "plan_artifact.path")
         assert artifact_path is not None
         artifact_refs = set(
@@ -1239,14 +1248,10 @@ def validate_course_contract(contract: CourseContract) -> CourseContract:
                 "ReferencedRTPlanSequence",
             )
         )
-        if artifact_uid in set(artifact_sources):
-            if len(artifact_sources) != 1 or artifact_uid != artifact_sources[0]:
-                raise CourseContractError(
-                    "plan_artifact points to one selected plan but declares multiple source plans"
-                )
-        elif artifact_refs != set(artifact_sources):
+        if not source_artifact and artifact_refs != set(artifact_sources):
             raise CourseContractError(
-                "derived plan_artifact references do not match its source_plan_uids"
+                "derived plan_artifact references do not match "
+                "plan_artifact.source_plan_uids"
             )
 
     dose_grid = data.get("dose_grid")

@@ -5,13 +5,19 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Dict, Iterable, List, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional, cast
 
 import pydicom
 from pydicom.dataset import FileDataset
 
 from .ct import CTInstance
-from .utils import read_dicom, get, _scoped_walk, parallel_map_files, DEFAULT_INDEX_WORKERS
+from .utils import (
+    read_organize_discovery_dicom,
+    get,
+    _scoped_walk,
+    parallel_map_files,
+    DEFAULT_INDEX_WORKERS,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -161,32 +167,43 @@ def extract_rt_with_records(
     records: Dict[str, List[Path]] = {}
     ct_index: Dict[str, Dict[str, Dict[str, List[CTInstance]]]] = {}
 
+    scope_ids = list(patient_ids) if patient_ids is not None else None
     paths: List[Path] = []
-    for base, _, files in _scoped_walk(dicom_root, patient_ids):
+    for base, _, files in _scoped_walk(dicom_root, scope_ids):
         for name in files:
             paths.append(Path(base) / name)
     paths.sort(key=str)
 
     workers = max_workers if max_workers is not None else DEFAULT_INDEX_WORKERS
-    snapshot_files = []
+    snapshot_results = []
+    inventory_accumulator = None
     if metadata_snapshot is not None:
         from .meta import (
             _metadata_source_file,
-            _source_inventory_identity_from_files,
+            _SourceInventoryAccumulator,
         )
 
-        def _read_with_metadata(path: Path):
-            source_file = _metadata_source_file(path)
-            return source_file.dataset, source_file
-
-        datasets = parallel_map_files(paths, _read_with_metadata, workers)
+        inventory_accumulator = _SourceInventoryAccumulator(dicom_root, scope_ids)
+        datasets = parallel_map_files(paths, _metadata_source_file, workers)
     else:
-        datasets = ((dataset, None) for dataset in parallel_map_files(paths, read_dicom, workers))
+        datasets = parallel_map_files(
+            paths,
+            read_organize_discovery_dicom,
+            workers,
+        )
 
-    for p, (ds, source_file) in zip(paths, datasets):
-        if source_file is not None:
-            snapshot_files.append(source_file)
+    for p, source_read in zip(paths, datasets):
+        if metadata_snapshot is not None:
+            metadata_read = cast(Any, source_read)
+            source_file = metadata_read.source
+            ds = metadata_read.dataset
+            assert inventory_accumulator is not None
+            inventory_accumulator.add_source_file(source_file)
+            snapshot_results.append(source_file.result)
+        else:
+            ds = cast(FileDataset | None, source_read)
         if ds is None:
+            source_read = None
             continue
         if dataset_callback is not None:
             dataset_callback(p, ds)
@@ -256,6 +273,13 @@ def extract_rt_with_records(
             patient_id = str(get(ds, (0x0010, 0x0020), "")).strip()
             if patient_id:
                 records.setdefault(patient_id, []).append(p)
+
+        # concurrent.futures keeps the most recently yielded result alive in
+        # its ordered map generator while the caller processes the next item.
+        # Clear our local reference too so one large projected sequence cannot
+        # survive beyond this iteration.
+        ds = None
+        source_read = None
     for patient in ct_index.values():
         for study in patient.values():
             for series in study.values():
@@ -275,15 +299,14 @@ def extract_rt_with_records(
         sum(len(paths) for paths in records.values()),
     )
     if metadata_snapshot is not None:
-        snapshot_identity = _source_inventory_identity_from_files(
-            dicom_root, patient_ids, snapshot_files
-        )
+        assert inventory_accumulator is not None
+        snapshot_identity = inventory_accumulator.identity()
         metadata_snapshot.clear()
         metadata_snapshot.update(
             {
                 "identity": snapshot_identity,
                 "candidates": paths,
-                "results": [item.result for item in snapshot_files],
+                "results": snapshot_results,
             }
         )
     if include_ct_index:
