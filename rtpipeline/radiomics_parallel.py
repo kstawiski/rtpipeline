@@ -30,7 +30,7 @@ from concurrent.futures import ProcessPoolExecutor, wait, FIRST_COMPLETED
 from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
-from typing import Any, Dict, Iterable, Iterator, List, Optional, Sequence, Set, Tuple
+from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional, Sequence, Set, Tuple
 
 import pydicom
 
@@ -1777,6 +1777,7 @@ def _prepare_radiomics_task(
     temp_dir: Path,
     large_roi: bool,
     run_identifier: Optional[str] = None,
+    source_identity: Optional[Mapping[str, Any]] = None,
 ) -> Tuple[Path, Dict[str, Any]]:
     """Save image/mask to temp files and prepare a task descriptor.
 
@@ -1788,6 +1789,11 @@ def _prepare_radiomics_task(
     import SimpleITK as sitk
     import numpy as np
     from .radiomics import _get_params_file
+    from .radiomics_robustness import (
+        ROBUSTNESS_MEASUREMENT_TYPE,
+        RobustnessRoiIdentity,
+        _perturbed_mask_identity,
+    )
     from .radiomics_ct_contract import (
         CT_EXTRACTION_ARMS,
         PRIMARY_ARM,
@@ -1812,9 +1818,30 @@ def _prepare_radiomics_task(
     if not img_path.exists():
         sitk.WriteImage(image, str(img_path))
 
-    # Each mask is unique
-    mask_id = abs(hash((id(mask), roi_name, source)))
-    mask_path = temp_dir / f"mask_{mask_id}.nrrd"
+    if source_identity is None:
+        raise RuntimeError(
+            f"CT robustness identity is unavailable for {source}/{roi_name}"
+        )
+    identity = RobustnessRoiIdentity.from_mapping(source_identity)
+    expected_context = {
+        "patient_id": course_dir.parent.name,
+        "course_id": course_dir.name,
+        "segmentation_source": source,
+        "roi_original_name": roi_name,
+    }
+    mismatches = [
+        f"{column}={getattr(identity, column)!r} expected {value!r}"
+        for column, value in expected_context.items()
+        if getattr(identity, column) != str(value)
+    ]
+    if mismatches:
+        raise RuntimeError(
+            "CT robustness source identity does not match task context: "
+            + "; ".join(mismatches)
+        )
+
+    perturbed_mask_identity = _perturbed_mask_identity(mask)
+    mask_path = temp_dir / f"mask_{perturbed_mask_identity.split(':', 1)[1]}.nrrd"
     sitk.WriteImage(sitk.Cast(mask, sitk.sitkUInt8), str(mask_path))
 
     params_file = _get_params_file(config, "CT")
@@ -1837,22 +1864,12 @@ def _prepare_radiomics_task(
         )
         for arm in CT_EXTRACTION_ARMS
     }
-    mask_digest = hashlib.sha256(
-        sitk.GetArrayViewFromImage(mask).tobytes()
-    ).hexdigest()
-    try:
-        series_uid = str(
-            load_course_contract(course_dir).planning_ct.get("series_instance_uid") or ""
-        )
-    except Exception:
-        series_uid = "robustness-unknown-series"
     task_params = {
         "image_path": str(img_path),
         "mask_path": str(mask_path),
         "segmentation_source": source,
         "roi_name": roi_name,
-        "patient_id": course_dir.parent.name,
-        "course_id": course_dir.name,
+        **identity.as_dict(),
         "large_roi": large_roi,
         "params_file": str(params_file) if params_file else None,
         "dual_arm_ct": True,
@@ -1869,9 +1886,8 @@ def _prepare_radiomics_task(
         "code_revision": current_code_revision(),
         "native_voxel_count": int(np.count_nonzero(sitk.GetArrayViewFromImage(mask))),
         "configured_parameter_hashes": configured_hashes,
-        "series_uid": series_uid,
-        "mask_identity": mask_digest,
-        "stable_roi_identifier": roi_name,
+        "measurement_type": ROBUSTNESS_MEASUREMENT_TYPE,
+        "perturbed_mask_identity": perturbed_mask_identity,
     }
     return mask_path, task_params
 
@@ -1924,8 +1940,12 @@ def _isolated_radiomics_extraction_with_retry(task) -> Optional[Dict[str, Any]]:
             "series_uid": task_params.get("series_uid", ""),
             "segmentation_source": task_params.get("segmentation_source", ""),
             "mask_identity": task_params.get("mask_identity", ""),
-            "roi_original_name": task_params.get("roi_name", ""),
+            "roi_original_name": task_params.get("roi_original_name", ""),
             "stable_roi_identifier": task_params.get("stable_roi_identifier", ""),
+            "measurement_type": task_params.get("measurement_type", ""),
+            "perturbed_mask_identity": task_params.get(
+                "perturbed_mask_identity", ""
+            ),
             "roi_name": task_params.get("roi_name", ""),
             "modality": "CT",
         }
