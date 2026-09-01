@@ -8,7 +8,7 @@ import pydicom
 import pytest
 from pydicom.dataset import Dataset
 from pydicom.sequence import Sequence
-from pydicom.uid import RTDoseStorage
+from pydicom.uid import RTDoseStorage, UID
 
 from course_contract_test_utils import (
     write_minimal_course_contract,
@@ -151,6 +151,42 @@ def test_derived_artifacts_are_bound_to_selected_membership(tmp_path: Path) -> N
     _save_metadata(metadata_path, payload)
 
     with pytest.raises(CourseContractError, match="source_plan_uids"):
+        load_course_contract(course)
+
+
+def test_copied_plan_artifact_can_represent_one_member_of_nonadditive_plan_set(
+    tmp_path: Path,
+) -> None:
+    course = tmp_path / "P1" / "replacement"
+    plan, _ = write_synthetic_plan_and_dose(course)
+    second_plan = course / "DICOM" / "RTPLAN" / "replacement_plan.dcm"
+    second_plan.write_bytes(plan.read_bytes())
+    second_dataset = pydicom.dcmread(str(second_plan))
+    second_dataset.SOPInstanceUID = UID("2.25.888888888888888888888888888888888888")
+    second_dataset.file_meta.MediaStorageSOPInstanceUID = second_dataset.SOPInstanceUID
+    second_dataset.save_as(str(second_plan), enforce_file_format=True)
+
+    metadata_path = write_minimal_course_contract(
+        course,
+        selected_plans=[plan, second_plan],
+        selected_doses=[],
+    )
+    contract = load_course_contract(course)
+    first_uid = str(pydicom.dcmread(plan, stop_before_pixels=True).SOPInstanceUID)
+    second_uid = str(second_dataset.SOPInstanceUID)
+
+    plan_artifact = contract.data["plan_artifact"]
+    assert len(contract.selected_plans) == 2
+    assert plan_artifact["sop_instance_uid"] == first_uid
+    assert plan_artifact["source_plan_uids"] == [first_uid]
+
+    payload = _metadata(metadata_path)
+    payload["course_contract"]["plan_artifact"]["source_plan_uids"] = [
+        first_uid,
+        second_uid,
+    ]
+    _save_metadata(metadata_path, payload)
+    with pytest.raises(CourseContractError, match="copied source plan_artifact"):
         load_course_contract(course)
 
 

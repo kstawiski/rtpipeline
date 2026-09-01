@@ -13,6 +13,7 @@ import pytest
 from pydicom.uid import generate_uid
 
 import rtpipeline.organize as organize
+from rtpipeline.course_contract import build_dvh_decision, load_course_contract
 from course_contract_test_utils import (
     write_minimal_course_contract,
     write_synthetic_plan_and_dose,
@@ -102,6 +103,136 @@ def test_invalid_candidate_contract_is_never_published(tmp_path: Path):
 
     assert not metadata_path.exists()
     assert not list((course / "metadata").glob("*.candidate.json"))
+
+
+def _publish_scope_regression_contract(
+    course: Path,
+    *,
+    prescribed_dose_scope: str,
+    publication: dict[str, object],
+) -> dict:
+    selected_plan, _ = write_synthetic_plan_and_dose(
+        course,
+        prescribed_dose_gy=50.0,
+        planned_fraction_count=25,
+    )
+    metadata_path = write_minimal_course_contract(course)
+    case_metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    contract = case_metadata["course_contract"]
+    plan_uid = str(
+        pydicom.dcmread(selected_plan, stop_before_pixels=True).SOPInstanceUID
+    )
+    contract["dose_classification"].update(
+        {
+            "classification": (
+                "replacement_plan_chain"
+                if prescribed_dose_scope.startswith("UNRESOLVED_")
+                else "single_dose"
+            ),
+            "prescribed_dose_scope": prescribed_dose_scope,
+            "prescription_plan_uids": (
+                []
+                if prescribed_dose_scope.startswith("UNRESOLVED_")
+                else [plan_uid]
+            ),
+        }
+    )
+    contract["delivery"].update(
+        {
+            "prescribed_dose_gy": publication["prescribed_dose_gy"],
+            "prescribed_dose_scope": prescribed_dose_scope,
+            "resolved_prescribed_dose_total_gy": publication[
+                "resolved_prescribed_dose_total_gy"
+            ],
+            "delivered_dose_gy": publication["delivered_dose_gy"],
+            "status": publication["delivery_status"],
+            "method": publication["delivery_method"],
+            "dose_response_eligible": not prescribed_dose_scope.startswith(
+                "UNRESOLVED_"
+            ),
+        }
+    )
+    contract["dvh"] = build_dvh_decision(
+        len(contract["selected_plans"]),
+        len(contract["selected_doses"]),
+        str(publication["delivery_status"]),
+    )
+    organize._validate_and_publish_case_metadata(course, case_metadata)
+    return load_course_contract(course).data
+
+
+def test_unresolved_replacement_scope_publishes_null_course_totals(tmp_path: Path):
+    """419783/2020-02 must retain 16/35 fraction evidence without a false total."""
+
+    publication = organize._scope_aware_course_dose_publication(
+        prescribed_dose_scope="UNRESOLVED_REPLACEMENT_CHAIN",
+        course_prescribed_dose_gy=None,
+        course_resolved_prescribed_dose_total_gy=None,
+        plan_prescribed_dose_gy=50.0,
+        plan_resolved_prescribed_dose_total_gy=50.0,
+        delivered_dose_gy=37.0,
+        delivery_status="partially_delivered",
+        delivery_method="calculated_dose_reference",
+    )
+
+    assert publication == {
+        "prescribed_dose_gy": None,
+        "resolved_prescribed_dose_total_gy": None,
+        "delivered_dose_gy": None,
+        "delivery_status": "delivery_unresolved",
+        "delivery_method": "unresolved_course_prescription_scope",
+    }
+    contract = _publish_scope_regression_contract(
+        tmp_path / "419783" / "2020-02",
+        prescribed_dose_scope="UNRESOLVED_REPLACEMENT_CHAIN",
+        publication=publication,
+    )
+    assert contract["delivery"]["resolved_prescribed_dose_total_gy"] is None
+    assert contract["delivery"]["dose_response_eligible"] is False
+    assert contract["delivery"]["status"] == "delivery_unresolved"
+
+    high_raw_dose = organize._scope_aware_course_dose_publication(
+        prescribed_dose_scope="UNRESOLVED_REPLACEMENT_CHAIN",
+        course_prescribed_dose_gy=None,
+        course_resolved_prescribed_dose_total_gy=None,
+        plan_prescribed_dose_gy=150.0,
+        plan_resolved_prescribed_dose_total_gy=150.0,
+        delivered_dose_gy=137.0,
+        delivery_status="partially_delivered",
+        delivery_method="calculated_dose_reference",
+    )
+    dose_qc = organize._dose_plausibility(
+        high_raw_dose["resolved_prescribed_dose_total_gy"],
+        high_raw_dose["delivered_dose_gy"],
+        100.0,
+    )
+    assert dose_qc["dose_qc_pass"] is True
+    assert dose_qc["dose_plausibility_warning"] is False
+
+
+def test_resolved_single_plan_scope_retains_valid_plan_fallback(tmp_path: Path):
+    publication = organize._scope_aware_course_dose_publication(
+        prescribed_dose_scope="SINGLE_PLAN_TOTAL",
+        course_prescribed_dose_gy=None,
+        course_resolved_prescribed_dose_total_gy=None,
+        plan_prescribed_dose_gy=50.0,
+        plan_resolved_prescribed_dose_total_gy=50.0,
+        delivered_dose_gy=None,
+        delivery_status="no_records_at_all",
+        delivery_method=None,
+    )
+
+    assert publication["prescribed_dose_gy"] == pytest.approx(50.0)
+    assert publication["resolved_prescribed_dose_total_gy"] == pytest.approx(50.0)
+    contract = _publish_scope_regression_contract(
+        tmp_path / "P1" / "resolved",
+        prescribed_dose_scope="SINGLE_PLAN_TOTAL",
+        publication=publication,
+    )
+    assert contract["delivery"]["resolved_prescribed_dose_total_gy"] == pytest.approx(
+        50.0
+    )
+    assert contract["delivery"]["dose_response_eligible"] is True
 
 
 def test_manifest_writer_quarantines_one_stale_course_and_keeps_later_valid_course(

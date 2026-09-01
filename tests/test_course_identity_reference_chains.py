@@ -980,6 +980,108 @@ def test_remainder_chain_keeps_independent_boost_in_prescription_scope(
     assert classified.should_sum is False
 
 
+def test_kopernik_419783_replacement_chain_withholds_course_dose_totals(
+    tmp_path: Path,
+) -> None:
+    """Reproduce the three-plan, 35-planned, 16-delivered course configuration."""
+
+    struct_uid = generate_uid()
+    study_uid = generate_uid()
+    frame_uid = generate_uid()
+    plan_uids = [generate_uid() for _ in range(3)]
+    plans = [
+        _mk_plan(
+            tmp_path / "RAP_50Gy.dcm",
+            plan_uids[0],
+            struct_uid=struct_uid,
+            study_uid=study_uid,
+            frame_uid=frame_uid,
+            date="20200224",
+            rx_gy=50.0,
+            fractions=25,
+            label="RAP",
+        ),
+        _mk_plan(
+            tmp_path / "RAP_25Gy_nowy.dcm",
+            plan_uids[1],
+            struct_uid=struct_uid,
+            study_uid=study_uid,
+            frame_uid=frame_uid,
+            date="20200312",
+            rx_gy=25.0,
+            fractions=10,
+            label="RAP 25Gy Nowy",
+        ),
+        _mk_plan(
+            tmp_path / "RAP_12Gy_stary.dcm",
+            plan_uids[2],
+            struct_uid=struct_uid,
+            study_uid=study_uid,
+            frame_uid=frame_uid,
+            date="20200224",
+            rx_gy=12.0,
+            fractions=6,
+            label="RAP12Gy stary",
+        ),
+    ]
+    doses = [
+        _mk_dose(
+            tmp_path / f"dose_{index}.dcm",
+            generate_uid(),
+            plan_uid=uid,
+            study_uid=study_uid,
+            frame_uid=frame_uid,
+        )
+        for index, uid in enumerate(plan_uids)
+    ]
+    records = _treatment_records(tmp_path, "RAP", plan_uids[0], 6)
+    records += _treatment_records(
+        tmp_path,
+        "RAP_25Gy_nowy",
+        plan_uids[1],
+        10,
+        start=date(2020, 2, 25),
+    )
+
+    classified = org._classify_doses(
+        plans,
+        doses,
+        treatment_record_paths=records,
+    )
+    delivery = org._calculate_delivery_summary(
+        plans,
+        records,
+        selected_plan_paths=classified.selected_plans,
+    )
+
+    assert classified.classification == "replacement_plan_chain"
+    assert classified.prescription_plans == []
+    assert classified.selected_plans == plans[:2]
+    assert classified.selected_doses == []
+    assert delivery["planned_fraction_count"] == 35
+    assert delivery["delivered_fraction_count"] == 16
+    delivered_dose_gy = delivery["delivered_dose_gy"]
+    delivery_method = delivery["delivery_method"]
+    assert isinstance(delivered_dose_gy, (int, float))
+    assert delivery_method is None or isinstance(delivery_method, str)
+    assert delivered_dose_gy == pytest.approx(37.0)
+    assert 100 * 16 / 35 == pytest.approx(45.7142857143)
+
+    publication = org._scope_aware_course_dose_publication(
+        prescribed_dose_scope="UNRESOLVED_REPLACEMENT_CHAIN",
+        course_prescribed_dose_gy=None,
+        course_resolved_prescribed_dose_total_gy=None,
+        plan_prescribed_dose_gy=50.0,
+        plan_resolved_prescribed_dose_total_gy=50.0,
+        delivered_dose_gy=float(delivered_dose_gy),
+        delivery_status=str(delivery["delivery_status"]),
+        delivery_method=delivery_method,
+    )
+    assert publication["resolved_prescribed_dose_total_gy"] is None
+    assert publication["delivered_dose_gy"] is None
+    assert publication["delivery_status"] == "delivery_unresolved"
+
+
 def test_eighty_percent_overlapping_phases_remain_additive(
     tmp_path: Path,
 ) -> None:

@@ -336,6 +336,30 @@ def test_combined_rt_discovery_can_collect_series_data_in_the_same_pass(tmp_path
     assert ct_index[fx.patient][fx.study][fx.ct_series]
 
 
+def test_combined_discovery_snapshot_retains_no_pydicom_datasets(tmp_path):
+    fx = _build_fixture(tmp_path)
+    snapshot = {}
+
+    serial = extract_rt_with_records(
+        fx.root,
+        max_workers=1,
+        metadata_snapshot=snapshot,
+        include_ct_index=True,
+    )
+    parallel_snapshot = {}
+    parallel = extract_rt_with_records(
+        fx.root,
+        max_workers=8,
+        metadata_snapshot=parallel_snapshot,
+        include_ct_index=True,
+    )
+
+    assert serial == parallel
+    assert snapshot == parallel_snapshot
+    assert len(snapshot["results"]) == len(snapshot["candidates"])
+    assert all(not hasattr(result, "dataset") for result in snapshot["results"])
+
+
 def test_legacy_record_index_parallel_matches_serial(tmp_path):
     fx = _build_fixture(tmp_path)
     first = fx.root / fx.patient / fx.study / "RTRECORD_1.dcm"
@@ -568,23 +592,16 @@ def test_max_workers_one_spawns_no_threads():
     assert 1 <= DEFAULT_INDEX_WORKERS <= 64
 
 
-def test_parallel_map_files_multi_chunk_boundary_order_preserved():
-    """Exercise the MULTI-CHUNK streaming path — the heart of the bounded-memory fix.
+def test_parallel_map_files_window_order_preserved():
+    """The bounded sliding window must preserve exact input order."""
+    items = list(range(50))
 
-    The committed DICOM fixtures are all far smaller than the default chunk_size, so
-    without this test the ``while``/``islice`` chunk loop only ever runs once. Here a
-    small chunk_size over many items forces many chunk boundaries; results must still
-    be yielded in input (submission) order with no drop, duplicate, or reorder at the
-    edges, and must equal the plain serial result even when later items complete first.
-    """
-    items = list(range(50))  # chunk_size=7 -> ~8 chunks
-
-    # Identity across ~8 chunk boundaries: order and contents preserved exactly.
+    # Identity across repeated window refills: order and contents stay exact.
     out = list(parallel_map_files(items, lambda x: x, max_workers=4, chunk_size=7))
     assert out == items
 
     # Out-of-order completion: earlier items sleep LONGER so later items finish first;
-    # ThreadPoolExecutor.map must still surface results in submission order per chunk.
+    # The helper must still surface results in input order.
     def slow_early(x):
         time.sleep((5 - (x % 5)) * 0.001)
         return x * x
@@ -594,3 +611,41 @@ def test_parallel_map_files_multi_chunk_boundary_order_preserved():
 
     # chunk_size larger than the input still yields the full, in-order result.
     assert list(parallel_map_files(items, lambda x: x, max_workers=4, chunk_size=999)) == items
+
+
+def test_parallel_map_files_never_queues_more_results_than_workers():
+    """A blocked first item cannot let later completed results fill cohort memory."""
+    first_started = threading.Event()
+    release_first = threading.Event()
+    started = []
+    started_lock = threading.Lock()
+
+    def block_first(item):
+        with started_lock:
+            started.append(item)
+        if item == 0:
+            first_started.set()
+            assert release_first.wait(timeout=5)
+        return item
+
+    output = []
+
+    def consume():
+        output.extend(
+            parallel_map_files(range(100), block_first, max_workers=4, chunk_size=999)
+        )
+
+    consumer = threading.Thread(target=consume)
+    consumer.start()
+    try:
+        assert first_started.wait(timeout=2)
+        deadline = time.monotonic() + 2
+        while len(started) < 4 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert 2 <= len(started) <= 4
+    finally:
+        release_first.set()
+        consumer.join(timeout=5)
+
+    assert not consumer.is_alive()
+    assert output == list(range(100))

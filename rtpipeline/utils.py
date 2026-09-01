@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+from collections import deque
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed, wait, FIRST_COMPLETED
 from itertools import chain, islice
 from pathlib import Path
@@ -299,6 +300,58 @@ def _default_index_workers() -> int:
 DEFAULT_INDEX_WORKERS = _default_index_workers()
 
 
+# The combined organize/metadata discovery pass needs only these top-level
+# elements.  Requested sequences are decoded with their children by pydicom,
+# which preserves the RT reference, ROI-name, registration, and treatment-record
+# fields used by the discovery consumers without decoding unrelated private
+# elements or large contour-coordinate sequences.
+ORGANIZE_DISCOVERY_TAGS = [
+    Tag(0x0008, 0x0018),  # SOPInstanceUID
+    Tag(0x0008, 0x1140),  # ReferencedImageSequence
+    Tag(0x0008, 0x1155),  # ReferencedSOPInstanceUID
+    Tag(0x0008, 0x0060),  # Modality
+    Tag(0x0008, 0x1115),  # ReferencedSeriesSequence
+    Tag(0x0008, 0x1200),  # StudiesContainingOtherReferencedInstancesSequence
+    Tag(0x0010, 0x0020),  # PatientID
+    Tag(0x0010, 0x0030),  # PatientBirthDate
+    Tag(0x0010, 0x0040),  # PatientSex
+    Tag(0x0010, 0x1000),  # OtherPatientIDs
+    Tag(0x0020, 0x000D),  # StudyInstanceUID
+    Tag(0x0020, 0x000E),  # SeriesInstanceUID
+    Tag(0x0020, 0x0011),  # SeriesNumber
+    Tag(0x0020, 0x0013),  # InstanceNumber
+    Tag(0x0020, 0x0052),  # FrameOfReferenceUID
+    Tag(0x0070, 0x0308),  # RegistrationSequence
+    Tag(0x3002, 0x0050),  # PrimaryFluenceModeSequence
+    Tag(0x3002, 0x0052),  # FluenceModeID
+    Tag(0x3006, 0x0010),  # ReferencedFrameOfReferenceSequence
+    Tag(0x3006, 0x0020),  # StructureSetROISequence
+    Tag(0x3006, 0x0024),  # ReferencedFrameOfReferenceUID
+    Tag(0x3008, 0x0020),  # TreatmentSessionBeamSequence
+    Tag(0x3008, 0x0021),  # TreatmentSessionIonBeamSequence
+    Tag(0x3008, 0x0022),  # CurrentFractionNumber
+    Tag(0x3008, 0x0024),  # TreatmentControlPointDate
+    Tag(0x3008, 0x0025),  # TreatmentControlPointTime
+    Tag(0x3008, 0x002A),  # TreatmentTerminationStatus
+    Tag(0x3008, 0x002C),  # TreatmentVerificationStatus
+    Tag(0x3008, 0x003B),  # DeliveredTreatmentTime
+    Tag(0x3008, 0x0040),  # ControlPointDeliverySequence
+    Tag(0x3008, 0x0110),  # TreatmentSessionApplicationSetupSequence
+    Tag(0x3008, 0x0223),  # ReferencedFractionNumber
+    Tag(0x3008, 0x0250),  # TreatmentDate
+    Tag(0x3008, 0x0251),  # TreatmentTime
+    Tag(0x300A, 0x0002),  # RTPlanLabel
+    Tag(0x300A, 0x0003),  # RTPlanName
+    Tag(0x300A, 0x0006),  # RTPlanDate
+    Tag(0x300A, 0x0010),  # DoseReferenceSequence
+    Tag(0x300A, 0x00B2),  # TreatmentMachineName
+    Tag(0x300A, 0x0206),  # TreatmentMachineSequence
+    Tag(0x300C, 0x0002),  # ReferencedRTPlanSequence
+    Tag(0x300C, 0x0060),  # ReferencedStructureSetSequence
+    Tag(0x300E, 0x0002),  # ApprovalStatus
+]
+
+
 def parallel_map_files(
     paths: Iterable[Any],
     fn: Callable[[Any], R],
@@ -314,14 +367,11 @@ def parallel_map_files(
     the exact sequence a plain serial ``(fn(p) for p in paths)`` would produce,
     just faster, so downstream assembly logic is unaffected by thread scheduling.
 
-    Memory is BOUNDED: ``paths`` is consumed in chunks of at most ``chunk_size``
-    and each chunk's results are yielded before the next chunk is submitted, so
-    at most ``~chunk_size`` in-flight futures / decoded results (e.g. pydicom
-    ``FileDataset`` headers) are resident at once -- NOT all N of them. This is
-    the critical property when N is ~600k header reads over a large NFS tree: a
-    naive ``list(ex.map(...))`` would hold every decoded header in RAM at peak
-    and risk OOM, whereas streaming keeps the footprint flat. A single
-    ``ThreadPoolExecutor`` is reused across all chunks (not recreated per chunk).
+    Memory is BOUNDED: no more than ``min(chunk_size, max_workers)`` futures and
+    decoded results are resident at once.  A slow early file cannot cause later
+    completed datasets to accumulate.  This matters because nested RT headers
+    may be tens of megabytes even without pixel data.  Results still leave the
+    window in exact input order.  A single executor is reused for the full run.
 
     ``max_workers <= 1`` (or fewer than 2 items) runs a plain serial generator
     with no executor and no threads at all, reproducing the original
@@ -333,7 +383,7 @@ def parallel_map_files(
             yield fn(item)
         return
 
-    chunk_size = max(1, chunk_size)
+    in_flight_limit = min(max(1, chunk_size), max_workers)
     # Peek the first two items: a 0- or 1-item input never justifies a thread pool.
     head = list(islice(items_iter, 2))
     if len(head) < 2:
@@ -341,15 +391,19 @@ def parallel_map_files(
             yield fn(item)
         return
 
-    stream = chain(head, items_iter)
+    stream = iter(chain(head, items_iter))
     with ThreadPoolExecutor(max_workers=max_workers) as ex:
-        while True:
-            chunk = list(islice(stream, chunk_size))
-            if not chunk:
-                return
-            # Executor.map submits the whole chunk and yields results in submission
-            # order, so at most chunk_size futures/results are alive for this chunk.
-            yield from ex.map(fn, chunk)
+        pending = deque()
+        for item in islice(stream, in_flight_limit):
+            pending.append(ex.submit(fn, item))
+        while pending:
+            future = pending.popleft()
+            yield future.result()
+            try:
+                item = next(stream)
+            except StopIteration:
+                continue
+            pending.append(ex.submit(fn, item))
 
 
 def validate_path(path: Path | str, base: Path | str, allow_absolute: bool = False) -> Path:
@@ -406,6 +460,20 @@ def read_dicom(path: str | os.PathLike) -> FileDataset | None:
         return pydicom.dcmread(str(path), force=True, stop_before_pixels=True)
     except Exception as e:
         logger.debug("Failed to read DICOM %s: %s", path, e)
+        return None
+
+
+def read_organize_discovery_dicom(path: str | os.PathLike) -> FileDataset | None:
+    """Read the bounded tag projection used by combined organize discovery."""
+    try:
+        return pydicom.dcmread(
+            str(path),
+            force=True,
+            stop_before_pixels=True,
+            specific_tags=ORGANIZE_DISCOVERY_TAGS,
+        )
+    except Exception as e:
+        logger.debug("Failed to read DICOM discovery tags from %s: %s", path, e)
         return None
 
 

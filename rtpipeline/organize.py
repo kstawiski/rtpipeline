@@ -13,7 +13,7 @@ from collections import defaultdict
 from itertools import combinations
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple, cast
+from typing import Dict, Iterable, List, Optional, Tuple, TypedDict, cast
 
 import numpy as np
 import pydicom
@@ -141,6 +141,67 @@ _VALID_DELIVERY_STATUSES = frozenset(
         "no_records_at_all",
     }
 )
+
+
+class _CourseDosePublication(TypedDict):
+    prescribed_dose_gy: float | None
+    resolved_prescribed_dose_total_gy: float | None
+    delivered_dose_gy: float | None
+    delivery_status: str
+    delivery_method: str | None
+
+
+def _scope_aware_course_dose_publication(
+    *,
+    prescribed_dose_scope: str,
+    course_prescribed_dose_gy: float | None,
+    course_resolved_prescribed_dose_total_gy: float | None,
+    plan_prescribed_dose_gy: float | None,
+    plan_resolved_prescribed_dose_total_gy: float | None,
+    delivered_dose_gy: float | None,
+    delivery_status: str,
+    delivery_method: str | None,
+) -> _CourseDosePublication:
+    """Return internally consistent course-level dose publication values.
+
+    Plan-level prescription evidence may fill a missing course scalar only for
+    a single-plan course. An unresolved multi-plan scope cannot borrow one
+    plan's total. Its fraction and per-plan evidence remain publishable, but
+    course-level prescription and delivered Gy totals do not.
+    """
+
+    scope = str(prescribed_dose_scope or "").strip()
+    if scope.startswith("UNRESOLVED_"):
+        unresolved_status = str(delivery_status)
+        unresolved_method = delivery_method
+        if delivered_dose_gy is not None or unresolved_status in {
+            "fully_delivered",
+            "partially_delivered",
+        }:
+            unresolved_status = "delivery_unresolved"
+            unresolved_method = "unresolved_course_prescription_scope"
+        return {
+            "prescribed_dose_gy": None,
+            "resolved_prescribed_dose_total_gy": None,
+            "delivered_dose_gy": None,
+            "delivery_status": unresolved_status,
+            "delivery_method": unresolved_method,
+        }
+
+    allow_plan_fallback = scope in {"", "SINGLE_PLAN_TOTAL"}
+    prescribed = course_prescribed_dose_gy
+    if prescribed is None and allow_plan_fallback:
+        prescribed = plan_prescribed_dose_gy
+    resolved = course_resolved_prescribed_dose_total_gy
+    if resolved is None and allow_plan_fallback:
+        resolved = plan_resolved_prescribed_dose_total_gy
+    return {
+        "prescribed_dose_gy": prescribed,
+        "resolved_prescribed_dose_total_gy": resolved,
+        "delivered_dose_gy": delivered_dose_gy,
+        "delivery_status": delivery_status,
+        "delivery_method": delivery_method,
+    }
 
 
 def _has_nonmissing_adjudication(value: object) -> bool:
@@ -5071,32 +5132,16 @@ def organize_and_merge(
             except Exception:
                 pass
 
-            prescribed_dose_gy = (
+            candidate_prescribed_dose_gy = (
                 co.total_prescription_gy
                 if co.total_prescription_gy is not None
                 else (plan_total_rx if plan_total_rx > 0 else None)
             )
-            resolved_prescribed_dose_total_gy = (
+            candidate_resolved_prescribed_dose_total_gy = (
                 co.resolved_prescription_total_gy
                 if co.resolved_prescription_total_gy is not None
                 else plan_resolved_total_rx
             )
-            dose_threshold_gy = float(config.max_total_dose_gy)
-            dose_plausibility = _dose_plausibility(
-                resolved_prescribed_dose_total_gy,
-                co.delivered_dose_gy,
-                dose_threshold_gy,
-            )
-            if dose_plausibility["dose_plausibility_warning"]:
-                logger.warning(
-                    "PLAUSIBILITY WARNING: %s/%s exceeds configured dose threshold %.1f Gy "
-                    "(resolved_prescribed_total=%s, delivered=%s)",
-                    co.patient_id,
-                    co.course_id,
-                    dose_threshold_gy,
-                    resolved_prescribed_dose_total_gy,
-                    co.delivered_dose_gy,
-                )
             selected_plan_contract: list[dict[str, object]] = []
             for item in co.selected_plan_contract:
                 serialized = dict(item)
@@ -5122,12 +5167,6 @@ def organize_and_merge(
                 )
                 per_plan_delivery_contract.append(serialized)
 
-            dose_qc_contract = {
-                "status": dose_plausibility["dose_qc_status"],
-                "pass": dose_plausibility["dose_qc_pass"],
-                "threshold_gy": dose_plausibility["dose_plausibility_threshold_gy"],
-                "reasons": dose_plausibility["dose_qc_reasons"],
-            }
             authoritative_rtstruct = None
             if co.rs_path and co.rs_path.exists() and co.authoritative_rtstruct_uid:
                 authoritative_rtstruct = {
@@ -5181,17 +5220,80 @@ def organize_and_merge(
                 co.dose_classification.get("prescribed_dose_scope") or ""
             )
             if not prescribed_dose_scope:
-                if resolved_prescribed_dose_total_gy is None:
+                if candidate_resolved_prescribed_dose_total_gy is None:
                     prescribed_dose_scope = "UNRESOLVED_COMPONENT"
                 elif co.dose_classification.get("should_sum") and len(selected_plan_contract) > 1:
                     prescribed_dose_scope = "COURSE_TOTAL_SUMMED"
                 else:
                     prescribed_dose_scope = "SINGLE_PLAN_TOTAL"
+            published_dose = _scope_aware_course_dose_publication(
+                prescribed_dose_scope=prescribed_dose_scope,
+                course_prescribed_dose_gy=co.total_prescription_gy,
+                course_resolved_prescribed_dose_total_gy=(
+                    co.resolved_prescription_total_gy
+                ),
+                plan_prescribed_dose_gy=(plan_total_rx if plan_total_rx > 0 else None),
+                plan_resolved_prescribed_dose_total_gy=plan_resolved_total_rx,
+                delivered_dose_gy=co.delivered_dose_gy,
+                delivery_status=co.delivery_status,
+                delivery_method=co.delivery_method,
+            )
+            prescribed_dose_gy = published_dose["prescribed_dose_gy"]
+            resolved_prescribed_dose_total_gy = published_dose[
+                "resolved_prescribed_dose_total_gy"
+            ]
+            co.delivered_dose_gy = published_dose["delivered_dose_gy"]
+            co.delivery_status = str(published_dose["delivery_status"])
+            co.delivery_method = published_dose["delivery_method"]
+            if dose_grid_contract is not None:
+                dose_grid_contract["semantics"] = (
+                    UNKNOWN_DELIVERY_DOSE_GRID_SEMANTICS
+                    if co.delivery_status
+                    in {
+                        "delivered_but_records_absent",
+                        "delivery_unresolved",
+                        "no_records_at_all",
+                    }
+                    else DOSE_GRID_SEMANTICS
+                )
             if prescribed_dose_scope.startswith("UNRESOLVED_"):
-                # Retain each plan's raw prescription in selected_plans, but
-                # do not publish a misleading course-level scalar when the
-                # additive total is not resolved.
-                prescribed_dose_gy = None
+                warning = (
+                    "Course prescription scope is unresolved; course-level "
+                    "prescription and delivered Gy totals are withheld while "
+                    "per-plan delivery and fraction counts are retained."
+                )
+                if warning not in co.delivery_warnings:
+                    co.delivery_warnings.append(warning)
+            dose_threshold_gy = float(config.max_total_dose_gy)
+            dose_plausibility = _dose_plausibility(
+                resolved_prescribed_dose_total_gy,
+                co.delivered_dose_gy,
+                dose_threshold_gy,
+            )
+            if dose_plausibility["dose_plausibility_warning"]:
+                logger.warning(
+                    "PLAUSIBILITY WARNING: %s/%s exceeds configured dose threshold %.1f Gy "
+                    "(resolved_prescribed_total=%s, delivered=%s)",
+                    co.patient_id,
+                    co.course_id,
+                    dose_threshold_gy,
+                    resolved_prescribed_dose_total_gy,
+                    co.delivered_dose_gy,
+                )
+            dose_qc_contract = {
+                "status": dose_plausibility["dose_qc_status"],
+                "pass": dose_plausibility["dose_qc_pass"],
+                "threshold_gy": dose_plausibility["dose_plausibility_threshold_gy"],
+                "reasons": dose_plausibility["dose_qc_reasons"],
+            }
+            logger.info(
+                "[organize] %s/%s source prescription=%s resolved total=%s scope=%s",
+                co.patient_id,
+                co.course_id,
+                prescribed_dose_gy,
+                resolved_prescribed_dose_total_gy,
+                prescribed_dose_scope,
+            )
             nifti_provenance = None
             if co.primary_nifti and Path(co.primary_nifti).is_file():
                 nifti_path = Path(co.primary_nifti)

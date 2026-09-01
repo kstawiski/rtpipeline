@@ -389,7 +389,7 @@ def write_minimal_course_contract(
     plan_artifact = (
         {
             **dict(plan_entries[0]),
-            "source_plan_uids": plan_uids,
+            "source_plan_uids": [plan_uids[0]],
         }
         if plan_entries
         else None
