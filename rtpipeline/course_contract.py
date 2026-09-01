@@ -24,6 +24,7 @@ BEAM_LEVEL_DOSE_SUMMATION_TYPES = frozenset({"BEAM"})
 DOSE_GRID_SEMANTICS = "planned_dose_for_delivered_plan_set"
 UNKNOWN_DELIVERY_DOSE_GRID_SEMANTICS = "planned_dose_for_selected_plan_set_delivery_unknown"
 DOSE_RESPONSE_FIELD = "delivered_dose_gy"
+DOSE_RESPONSE_ELIGIBILITY_BASIS = "delivered_dose_gy_available"
 ALL_SERIES_RADIOMICS_TEMP_SCOPE = "all_series_radiomics_temp"
 ALL_SERIES_RADIOMICS_TEMP_AUTHORITY = "all_series_radiomics_materializer"
 MANUAL_RTSTRUCT_SOURCE = "Manual"
@@ -1072,17 +1073,41 @@ def validate_course_contract(contract: CourseContract) -> CourseContract:
     )
     prescribed_scope = str(delivery.get("prescribed_dose_scope") or "").strip()
     dose_response_eligible = delivery.get("dose_response_eligible")
+    dose_response_eligibility_basis = delivery.get(
+        "dose_response_eligibility_basis"
+    )
     if dose_response_eligible is not None:
         if not isinstance(dose_response_eligible, bool):
             raise CourseContractError(
                 "delivery.dose_response_eligible must be boolean when present"
             )
-        expected_eligibility = not prescribed_scope.startswith("UNRESOLVED_")
-        if dose_response_eligible != expected_eligibility:
+        legacy_expected_eligibility = not prescribed_scope.startswith(
+            "UNRESOLVED_"
+        )
+        if (
+            dose_response_eligibility_basis is None
+            and dose_response_eligible != legacy_expected_eligibility
+        ):
             raise CourseContractError(
                 "delivery.dose_response_eligible disagrees with "
                 "delivery.prescribed_dose_scope"
             )
+    if dose_response_eligibility_basis not in {
+        None,
+        DOSE_RESPONSE_ELIGIBILITY_BASIS,
+    }:
+        raise CourseContractError(
+            "unknown delivery.dose_response_eligibility_basis "
+            f"{dose_response_eligibility_basis!r}"
+        )
+    if (
+        dose_response_eligibility_basis == DOSE_RESPONSE_ELIGIBILITY_BASIS
+        and dose_response_eligible is None
+    ):
+        raise CourseContractError(
+            "delivery.dose_response_eligibility_basis requires "
+            "dose_response_eligible"
+        )
     prescription_plan_uids = {
         str(uid).strip()
         for uid in data["dose_classification"].get("prescription_plan_uids", [])
@@ -1216,6 +1241,21 @@ def validate_course_contract(contract: CourseContract) -> CourseContract:
         raise CourseContractError(
             f"delivery.status {status!r} requires delivered_dose_gy to be null"
         )
+    if (
+        dose_response_eligibility_basis == DOSE_RESPONSE_ELIGIBILITY_BASIS
+        and dose_response_eligible is not None
+    ):
+        expected_eligibility = bool(
+            not prescribed_scope.startswith("UNRESOLVED_")
+            and resolved_prescribed is not None
+            and delivered is not None
+            and status in {"fully_delivered", "partially_delivered"}
+        )
+        if dose_response_eligible != expected_eligibility:
+            raise CourseContractError(
+                "delivery.dose_response_eligible disagrees with "
+                "delivery.dose_response_eligibility_basis"
+            )
     if delivery.get("dose_response_field") != DOSE_RESPONSE_FIELD:
         raise CourseContractError(
             f"delivery.dose_response_field must be {DOSE_RESPONSE_FIELD!r}"

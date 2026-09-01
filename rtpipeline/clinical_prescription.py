@@ -699,17 +699,21 @@ def confirm_two_phase_fractionation(
                 "dicom_delivery": selected,
             }
         )
+    clinical_total = float(sites[0].get("total_dose_gy") or 0.0)
+    dicom_delivered_total = float(
+        sum(
+            int(item["delivered_fraction_count"])
+            * float(item["dose_per_fraction_gy"])
+            for item in observed
+        )
+    )
+    if not _close(clinical_total, dicom_delivered_total, 0.001):
+        return None
     return {
         "classification": "TWO_FRACTIONATION_PHASES",
         "basis": "Each clinical phase matches one delivered RTPLAN by fraction count and dose per fraction",
-        "clinical_total_gy": float(sites[0].get("total_dose_gy") or 0.0),
-        "dicom_delivered_total_gy": float(
-            sum(
-                int(item["delivered_fraction_count"])
-                * float(item["dose_per_fraction_gy"])
-                for item in observed
-            )
-        ),
+        "clinical_total_gy": clinical_total,
+        "dicom_delivered_total_gy": dicom_delivered_total,
         "phase_plan_bindings": [
             {
                 "clinical_fraction_count": int(
