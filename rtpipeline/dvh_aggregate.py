@@ -9,13 +9,15 @@ from typing import Any
 
 import pandas as pd
 
-DVH_AGGREGATE_SCHEMA_VERSION = "rtpipeline-dvh-aggregate-v1"
+DVH_AGGREGATE_SCHEMA_VERSION = "rtpipeline-dvh-aggregate-v2"
 DVH_IDENTIFIER_COLUMNS = (
     "patient_id",
     "course_id",
     "ROI_Number",
     "ROI_Name",
     "ROI_OriginalName",
+    "ROI_Interpreted_Type",
+    "target_like",
 )
 DVH_PROVENANCE_COLUMNS = (
     "treatment_technique",
@@ -34,6 +36,14 @@ DVH_QC_COLUMNS = (
     "HI_reason",
     "zero_dose_status",
     "zero_dose_reason",
+    "zero_dose_trigger_metric",
+    "dose_metric_status",
+    "dose_metric_reason",
+    "Dose_Plan_Scope_Status",
+    "Dose_Plan_Scope_Reason",
+    "Course_Treatment_Isocenter_Status",
+    "Course_Treatment_Isocenter_Reason",
+    "Course_Target_Dose_Coverage_Status",
     "Prescribed_Dose_Status",
     "Prescribed_Dose_Reason",
     "Delivered_Dose_Status",
@@ -66,15 +76,35 @@ DVH_NUMERIC_COLUMNS = (
     "Volume (cm³)",
     "Prescribed_Dose_Gy",
     "Delivered_Dose_Gy",
+    "zero_dose_trigger_value_gy",
+    "Course_Treatment_Plan_Count",
+    "Dose_Grid_Plan_Count",
+    "Unrepresented_Treatment_Plan_Count",
+    "Course_Treatment_Isocenter_Count",
+    "Course_Treatment_Isocenter_Max_Separation_mm",
+    "Course_Treatment_Isocenter_Readable_Plan_Count",
+    "Course_Target_Near_Zero_Row_Count",
+    "Course_Target_Outside_Dose_Grid_Count",
+    "Course_Target_Partly_Inside_Dose_Grid_Count",
+    "Course_Target_In_Grid_Near_Zero_Count",
+    "Course_Target_Geometry_Unresolved_Count",
 )
-DVH_BOOLEAN_COLUMNS = ("structure_cropped",)
+DVH_BOOLEAN_COLUMNS = (
+    "structure_cropped",
+    "target_like",
+    "dose_metric_usable_for_dose_response",
+    "dose_response_eligible",
+    "Dose_Response_Eligible",
+)
 DVH_STRING_COLUMNS = (
     "patient_id",
     "course_id",
     "ROI_Name",
     "ROI_OriginalName",
+    "ROI_Interpreted_Type",
     *DVH_PROVENANCE_COLUMNS,
     *DVH_QC_COLUMNS,
+    "Unrepresented_Treatment_Plan_UIDs",
     "row_status",
     "failure_reason",
     "aggregate_schema_version",
@@ -94,6 +124,21 @@ DVH_RELATIVE_COLUMNS = (
     "V100%Rx (cm³)",
     "V100%Rx (%)",
 )
+DVH_DOSE_METRIC_COLUMNS = (
+    "DmeanGy",
+    "DmaxGy",
+    "DminGy",
+    "D95Gy",
+    "D98Gy",
+    "D2Gy",
+    "D50Gy",
+    "D1ccGy",
+    "D0.1ccGy",
+    "HI",
+    "SpreadGy",
+    "IntegralDose_Gycm3",
+    *DVH_RELATIVE_COLUMNS,
+)
 DVH_REQUIRED_COLUMNS = (
     *DVH_IDENTIFIER_COLUMNS,
     "row_status",
@@ -102,6 +147,16 @@ DVH_REQUIRED_COLUMNS = (
     *DVH_PROVENANCE_COLUMNS,
     *DVH_QC_COLUMNS,
 )
+
+
+def _dose_metric_column(column: object) -> bool:
+    name = str(column)
+    if name in DVH_DOSE_METRIC_COLUMNS:
+        return True
+    return name.startswith("V") and any(
+        token in name
+        for token in ("Gy (cm³)", "Gy (%)", "%Rx (cm³)", "%Rx (%)")
+    )
 
 
 def _course_key(row: Mapping[str, Any]) -> tuple[str, str]:
@@ -181,6 +236,30 @@ def build_dvh_aggregate(
                 current.loc[non_ebrt, "relative_metric_reason"] = (
                     "Prescription-relative metrics are suppressed for non-EBRT courses."
                 )
+        if "zero_dose_status" in current:
+            outside_grid = current["zero_dose_status"].astype("string").eq(
+                "zero_dose_outside_dose_grid"
+            )
+            if bool(outside_grid.any()):
+                for column in current.columns:
+                    if _dose_metric_column(column):
+                        current.loc[outside_grid, column] = pd.NA
+                if "dose_metric_usable_for_dose_response" not in current:
+                    current["dose_metric_usable_for_dose_response"] = pd.NA
+                current.loc[
+                    outside_grid, "dose_metric_usable_for_dose_response"
+                ] = False
+                if "dose_metric_status" not in current:
+                    current["dose_metric_status"] = pd.NA
+                current.loc[outside_grid, "dose_metric_status"] = (
+                    "not_measurable_outside_dose_grid"
+                )
+                if "dose_metric_reason" not in current:
+                    current["dose_metric_reason"] = pd.NA
+                current.loc[outside_grid, "dose_metric_reason"] = (
+                    "Dose-derived metrics are null because the ROI does not intersect "
+                    "the selected RTDOSE grid."
+                )
         current["row_status"] = "computed"
         current["failure_reason"] = pd.NA
         current["aggregate_schema_version"] = DVH_AGGREGATE_SCHEMA_VERSION
@@ -217,6 +296,14 @@ def build_dvh_aggregate(
                 "HI_reason": "No DVH row exists because the course was not computed.",
                 "zero_dose_status": "not_available",
                 "zero_dose_reason": "No DVH row exists because the course was not computed.",
+                "zero_dose_trigger_metric": pd.NA,
+                "dose_metric_status": "not_available",
+                "dose_metric_reason": "No DVH row exists because the course was not computed.",
+                "Dose_Plan_Scope_Status": "not_available",
+                "Dose_Plan_Scope_Reason": "No DVH row exists because the course was not computed.",
+                "Course_Treatment_Isocenter_Status": "not_available",
+                "Course_Treatment_Isocenter_Reason": "No DVH row exists because the course was not computed.",
+                "Course_Target_Dose_Coverage_Status": "not_available",
                 "Prescribed_Dose_Status": "not_available",
                 "Prescribed_Dose_Reason": "No DVH row exists because the course was not computed.",
                 "Delivered_Dose_Status": "not_available",
