@@ -340,6 +340,7 @@ def test_ct_totalseg_nifti_fallback_writes_tagged_workbook(tmp_path, monkeypatch
                 code_revision=task["code_revision"],
                 native_voxel_count=task["native_voxel_count"],
                 required=task["required"],
+                effective_hashes=task["effective_parameter_hashes"],
                 configured_parameter_hashes=task["configured_parameter_hashes"],
             )
             for record in records:
@@ -350,6 +351,14 @@ def test_ct_totalseg_nifti_fallback_writes_tagged_workbook(tmp_path, monkeypatch
         return results
 
     monkeypatch.setattr(rc, "check_radiomics_env", lambda *a, **k: True)
+    monkeypatch.setattr(
+        rc,
+        "_materialized_ct_arm_hashes",
+        lambda *_a, **_k: {
+            "primary_resegmented": "effective-primary",
+            "sensitivity_raw": "effective-sensitivity",
+        },
+    )
     monkeypatch.setattr(rc, "extract_radiomics_batch_with_conda", fake_batch)
     monkeypatch.setenv("RTPIPELINE_RADIOMICS_SEQUENTIAL", "1")
 

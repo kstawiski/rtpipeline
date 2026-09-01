@@ -39,8 +39,8 @@ from pydicom.uid import (
 )
 
 from rtpipeline.ct import CTInstance, index_ct_series
-from rtpipeline.organize import _index_series_and_registrations
-from rtpipeline.rt_details import extract_rt
+from rtpipeline.organize import _index_rt_files, _index_series_and_registrations
+from rtpipeline.rt_details import extract_rt, extract_rt_with_records
 from rtpipeline.utils import (
     DEFAULT_INDEX_WORKERS,
     _default_index_workers,
@@ -140,6 +140,19 @@ def _mk_reg(path: Path, *, patient: str, study: str, series: str,
     ref_for.FrameOfReferenceUID = frame_of_reference_uid
     ref_for.RTReferencedStudySequence = Sequence([rt_study])
     ds.ReferencedFrameOfReferenceSequence = Sequence([ref_for])
+    _save(ds, path)
+
+
+def _mk_record(path: Path, *, patient: str, study: str, series: str) -> None:
+    ds = _base_ds(
+        path,
+        "1.2.840.10008.5.1.4.1.1.481.4",
+        generate_uid(),
+        patient=patient,
+        study=study,
+        series=series,
+        modality="RTRECORD",
+    )
     _save(ds, path)
 
 
@@ -272,6 +285,67 @@ def test_extract_rt_parallel_matches_serial(tmp_path):
     assert struct.study_uid == fx.study
     assert struct.frame_of_reference_uid == fx.frame_of_reference_uid
     assert struct.roi_names == ["PTV"]
+
+
+def test_combined_rt_discovery_indexes_records_deterministically(tmp_path):
+    fx = _build_fixture(tmp_path)
+    record = fx.root / fx.patient / fx.study / "record_without_extension"
+    _mk_record(record, patient=fx.patient, study=fx.study, series=generate_uid())
+
+    serial = extract_rt_with_records(fx.root, max_workers=1)
+    parallel = extract_rt_with_records(fx.root, max_workers=8)
+
+    assert serial == parallel
+    assert serial[:3] == extract_rt(fx.root, max_workers=1)
+    assert serial[3] == {fx.patient: [record]}
+
+
+def test_combined_rt_discovery_can_return_ct_index_without_second_scan(tmp_path):
+    fx = _build_fixture(tmp_path)
+
+    plans, doses, structs, records, ct_index = extract_rt_with_records(
+        fx.root,
+        max_workers=8,
+        include_ct_index=True,
+    )
+
+    assert plans and doses and structs and records == {}
+    expected = index_ct_series(fx.root, max_workers=1)
+    assert ct_index == expected
+    assert [item.path.name for item in ct_index[fx.patient][fx.study][fx.ct_series]] == [
+        "CT_1.dcm", "CT_3.dcm", "CT_0.dcm", "CT_4.dcm", "CT_2.dcm"
+    ]
+
+
+def test_combined_rt_discovery_can_collect_series_data_in_the_same_pass(tmp_path):
+    fx = _build_fixture(tmp_path)
+    observed = []
+
+    plans, doses, structs, records, ct_index = extract_rt_with_records(
+        fx.root,
+        max_workers=8,
+        include_ct_index=True,
+        dataset_callback=lambda path, _dataset: observed.append(path),
+    )
+
+    assert plans and doses and structs and records == {}
+    assert sorted(observed, key=str) == sorted(
+        [path for path in fx.root.rglob("*") if path.is_file()],
+        key=str,
+    )
+    assert ct_index[fx.patient][fx.study][fx.ct_series]
+
+
+def test_legacy_record_index_parallel_matches_serial(tmp_path):
+    fx = _build_fixture(tmp_path)
+    first = fx.root / fx.patient / fx.study / "RTRECORD_1.dcm"
+    second = fx.root / fx.patient / fx.study / "record_without_extension"
+    _mk_record(first, patient=fx.patient, study=fx.study, series=generate_uid())
+    _mk_record(second, patient=fx.patient, study=fx.study, series=generate_uid())
+
+    assert _index_rt_files(fx.root, max_workers=1) == _index_rt_files(
+        fx.root, max_workers=8
+    ) == {fx.patient: [first, second]}
 
 
 # --------------------------------------------------------------------------- 3) _index_series_and_registrations

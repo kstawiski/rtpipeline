@@ -201,6 +201,13 @@ def main(workflow: Any) -> None:
         except RuntimeError as exc:
             close_course(str(exc), returncode=1, strict_error=exc)
 
+    if stage_name == "segmentation_custom" and not bool(
+        getattr(workflow.params, "enabled", True)
+    ):
+        _publish_sentinel(sentinel_path, "disabled")
+        record(campaign_ledger.STATUS_OK, returncode=0, detail="stage disabled")
+        return
+
     command = [
         str(workflow.params.python),
         "-m",
