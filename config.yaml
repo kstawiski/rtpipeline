@@ -11,6 +11,13 @@ dicom_root: "Input"
 output_dir: "Output"
 logs_dir: "Logs"
 
+# Optional cohort-owned clinical treatment register. Leave disabled for cohorts
+# without this source, including DFCI. When enabled, the XLSX is used only to
+# resolve DICOM-unknown prescriptions, corroborate DICOM, or flag disagreement.
+clinical_prescription_records:
+  enabled: false
+  path: null
+
 max_workers: null
 
 scheduler:

@@ -66,6 +66,24 @@ OUTPUT_DIR = _ensure_writable_dir((ROOT_DIR / config.get("output_dir", "Data_Sna
 LOGS_DIR = _ensure_writable_dir((ROOT_DIR / config.get("logs_dir", "Logs_Snakemake")).resolve(), "Logs_Snakemake_fallback")
 RESULTS_DIR = OUTPUT_DIR / "_RESULTS"
 
+_clinical_prescription_config = config.get("clinical_prescription_records")
+if isinstance(_clinical_prescription_config, dict):
+    _clinical_prescription_enabled = _clinical_prescription_config.get("enabled", True)
+    _clinical_prescription_value = _clinical_prescription_config.get("path")
+elif isinstance(_clinical_prescription_config, str):
+    _clinical_prescription_enabled = True
+    _clinical_prescription_value = _clinical_prescription_config
+else:
+    _clinical_prescription_enabled = False
+    _clinical_prescription_value = None
+if _clinical_prescription_enabled and _clinical_prescription_value:
+    _clinical_prescription_path = Path(str(_clinical_prescription_value)).expanduser()
+    if not _clinical_prescription_path.is_absolute():
+        _clinical_prescription_path = ROOT_DIR / _clinical_prescription_path
+    CLINICAL_PRESCRIPTION_RECORDS = _clinical_prescription_path.resolve()
+else:
+    CLINICAL_PRESCRIPTION_RECORDS = None
+
 
 def _workflow_configfiles() -> list[Path]:
     try:
@@ -863,6 +881,12 @@ rule all:
 
 
 checkpoint organize_courses:
+    input:
+        clinical_records=lambda wildcards: (
+            [str(CLINICAL_PRESCRIPTION_RECORDS)]
+            if CLINICAL_PRESCRIPTION_RECORDS is not None
+            else []
+        )
     output:
         manifest=str(COURSE_MANIFEST)
     log:
@@ -881,6 +905,11 @@ checkpoint organize_courses:
         output_dir=lambda w, output: str(Path(output.manifest).parents[1]),
         logs_dir=str(LOGS_DIR),
         custom_structures=CUSTOM_STRUCTURES_CONFIG,
+        clinical_prescription_records=(
+            str(CLINICAL_PRESCRIPTION_RECORDS)
+            if CLINICAL_PRESCRIPTION_RECORDS is not None
+            else ""
+        ),
         prioritize_short_courses=PRIORITIZE_SHORT_COURSES
     script:
         "workflow/scripts/organize_courses.py"

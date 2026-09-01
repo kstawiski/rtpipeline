@@ -19,6 +19,9 @@ class PipelineConfig:
     max_days_between_plans: int | None = None  # optional time window filter (days)
     # Dose values above this threshold are reported for clinical-plausibility review.
     max_total_dose_gy: float = DEFAULT_MAX_TOTAL_DOSE_GY
+    # Optional, cohort-owned treatment register used only as auditable
+    # prescription evidence. None leaves DICOM-only behavior unchanged.
+    clinical_prescription_records_path: Path | None = None
     # Diagnostic CT-only cohorts require an explicit opt-in. The default prevents
     # an RT linkage failure from being misrepresented as a valid CT-only export.
     allow_ct_only_courses: bool = False

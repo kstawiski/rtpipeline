@@ -9,7 +9,7 @@ import os
 from pathlib import Path
 import re
 import shutil
-from typing import Dict, Iterable, List, Optional, Union
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Union
 
 import numpy as np
 import pandas as pd
@@ -17,7 +17,8 @@ import pydicom
 import SimpleITK as sitk
 
 logger = logging.getLogger(__name__)
-DVH_METRIC_VERSION = "2026-09-01-technique-provenance-v3"
+DVH_METRIC_VERSION = "2026-09-01-target-coverage-v4"
+NEAR_ZERO_TARGET_D95_GY = 0.1
 
 RELATIVE_DVH_METRIC_COLUMNS = (
     "Dmean%",
@@ -34,22 +35,49 @@ RELATIVE_DVH_METRIC_COLUMNS = (
     "V100%Rx (cm³)",
     "V100%Rx (%)",
 )
-_TARGET_NAME_PATTERN = re.compile(r"(?:^|[^a-z0-9])(gtv|ctv|ptv|itv|target)(?:$|[^a-z0-9])")
+TARGET_ROI_INTERPRETED_TYPES = frozenset(
+    {"PTV", "CTV", "GTV", "ITV", "TARGET", "TREATED_VOLUME"}
+)
+_UNSPECIFIED_ROI_INTERPRETED_TYPES = frozenset({"", "UNKNOWN", "UNDEFINED"})
+
+
+def _is_target_structure(
+    name: object, interpreted_type: object | None = None
+) -> bool:
+    """Use DICOM target semantics first and names only when type is absent."""
+    from .rt_details import is_target_volume_name
+
+    roi_type = str(interpreted_type or "").strip().upper()
+    if roi_type in TARGET_ROI_INTERPRETED_TYPES:
+        return True
+    if roi_type not in _UNSPECIFIED_ROI_INTERPRETED_TYPES:
+        return False
+    return is_target_volume_name(name)
 
 
 def _is_target_structure_name(name: object) -> bool:
-    normalized = re.sub(r"[^a-z0-9]+", " ", str(name or "").strip().lower())
-    compact = normalized.replace(" ", "")
-    return bool(
-        _TARGET_NAME_PATTERN.search(normalized)
-        or compact.startswith(("gtv", "ctv", "ptv", "itv"))
-    )
+    """Backward-compatible name-only target classification."""
+    return _is_target_structure(name)
+
+
+def _roi_interpreted_type_map(rtstruct_ds: object) -> dict[int, str]:
+    interpreted: dict[int, str] = {}
+    for observation in getattr(rtstruct_ds, "RTROIObservationsSequence", None) or []:
+        try:
+            roi_number = int(getattr(observation, "ReferencedROINumber"))
+        except (AttributeError, TypeError, ValueError):
+            continue
+        interpreted[roi_number] = str(
+            getattr(observation, "RTROIInterpretedType", "") or ""
+        ).strip().upper()
+    return interpreted
 
 
 def _dose_grid_contour_coordinates(
     rtstruct_ds: object, roi_number: int
-) -> list[np.ndarray]:
+) -> tuple[list[np.ndarray], int]:
     contours: list[np.ndarray] = []
+    unresolved_contour_count = 0
     for roi_contour in getattr(rtstruct_ds, "ROIContourSequence", None) or []:
         try:
             if int(getattr(roi_contour, "ReferencedROINumber", -1)) != int(roi_number):
@@ -57,29 +85,113 @@ def _dose_grid_contour_coordinates(
         except (TypeError, ValueError):
             continue
         for contour in getattr(roi_contour, "ContourSequence", None) or []:
+            geometric_type = str(
+                getattr(contour, "ContourGeometricType", "") or ""
+            ).strip().upper()
             raw = getattr(contour, "ContourData", None)
             try:
                 values = np.asarray(
                     [float(value) for value in (raw or [])], dtype=float
                 )
             except (TypeError, ValueError):
+                unresolved_contour_count += 1
                 continue
-            if values.size < 3 or values.size % 3 or not np.isfinite(values).all():
+            point_count = values.size // 3 if values.size % 3 == 0 else 0
+            geometry_supported = (
+                not geometric_type
+                or geometric_type in {"CLOSED_PLANAR", "CLOSEDPLANAR_XOR"}
+                and point_count >= 3
+                or geometric_type == "POINT"
+                and point_count == 1
+            )
+            if (
+                values.size < 3
+                or values.size % 3
+                or not np.isfinite(values).all()
+                or not geometry_supported
+            ):
+                unresolved_contour_count += 1
                 continue
             contours.append(values.reshape((-1, 3)))
-    return contours
+    return contours, unresolved_contour_count
+
+
+def _clip_polygon_to_axis_bound(
+    polygon: np.ndarray,
+    *,
+    axis: int,
+    boundary: float,
+    keep_above: bool,
+    tolerance: float,
+) -> np.ndarray:
+    """Clip a planar 3D polygon to one axis-aligned half-space."""
+    if len(polygon) == 0:
+        return polygon
+
+    def inside(point: np.ndarray) -> bool:
+        if keep_above:
+            return bool(point[axis] >= boundary - tolerance)
+        return bool(point[axis] <= boundary + tolerance)
+
+    clipped: list[np.ndarray] = []
+    previous = polygon[-1]
+    previous_inside = inside(previous)
+    for current in polygon:
+        current_inside = inside(current)
+        if current_inside != previous_inside:
+            denominator = float(current[axis] - previous[axis])
+            if denominator != 0.0:
+                fraction = (boundary - float(previous[axis])) / denominator
+                fraction = min(max(fraction, 0.0), 1.0)
+                clipped.append(previous + fraction * (current - previous))
+        if current_inside:
+            clipped.append(current)
+        previous = current
+        previous_inside = current_inside
+    if not clipped:
+        return np.empty((0, 3), dtype=float)
+    return np.asarray(clipped, dtype=float)
+
+
+def _polygon_intersects_box(
+    polygon: np.ndarray,
+    lower: np.ndarray,
+    upper: np.ndarray,
+    tolerance: float,
+) -> bool:
+    """Return whether a planar contour polygon intersects a 3D axis-aligned box."""
+    if len(polygon) == 0:
+        return False
+    if len(polygon) == 1:
+        return bool(
+            np.all(polygon[0] >= lower - tolerance)
+            and np.all(polygon[0] <= upper + tolerance)
+        )
+    clipped = np.asarray(polygon, dtype=float)
+    for axis in range(3):
+        clipped = _clip_polygon_to_axis_bound(
+            clipped,
+            axis=axis,
+            boundary=float(lower[axis]),
+            keep_above=True,
+            tolerance=tolerance,
+        )
+        clipped = _clip_polygon_to_axis_bound(
+            clipped,
+            axis=axis,
+            boundary=float(upper[axis]),
+            keep_above=False,
+            tolerance=tolerance,
+        )
+        if len(clipped) == 0:
+            return False
+    return True
 
 
 def classify_zero_dose_roi_geometry(
     rtstruct_ds: object, roi_number: int, dose_ds: object
 ) -> dict[str, str]:
-    """Classify zero Dmax by comparing RTSTRUCT contours with the RTDOSE grid.
-
-    The result is deliberately a QC classification, not an assertion that an
-    outside-grid contour is anatomically correct. An outside contour can still
-    indicate a registration or wrong-dose-grid defect and therefore carries an
-    explicit review reason.
-    """
+    """Classify near-zero ROI dose by contour coverage of the RTDOSE grid."""
     try:
         rows = int(getattr(dose_ds, "Rows"))
         columns = int(getattr(dose_ds, "Columns"))
@@ -93,68 +205,216 @@ def classify_zero_dose_roi_geometry(
             [float(value) for value in getattr(dose_ds, "GridFrameOffsetVector")],
             dtype=float,
         )
-        if rows <= 0 or columns <= 0 or frames <= 0 or spacing.size != 2:
+        if (
+            rows <= 0
+            or columns <= 0
+            or frames <= 0
+            or spacing.size != 2
+            or not np.isfinite(spacing).all()
+            or bool(np.any(spacing <= 0))
+        ):
             raise ValueError("dose grid dimensions or spacing are invalid")
-        if orientation.size != 6 or offsets.size != frames:
+        if (
+            origin.size != 3
+            or not np.isfinite(origin).all()
+            or orientation.size != 6
+            or not np.isfinite(orientation).all()
+            or offsets.size != frames
+            or not np.isfinite(offsets).all()
+        ):
             raise ValueError("dose grid orientation or frame offsets are invalid")
-        row_direction = orientation[:3]
-        column_direction = orientation[3:]
-        row_norm = np.linalg.norm(row_direction)
+        column_direction = orientation[:3]
+        row_direction = orientation[3:]
         column_norm = np.linalg.norm(column_direction)
-        if row_norm == 0 or column_norm == 0:
+        row_norm = np.linalg.norm(row_direction)
+        if column_norm == 0 or row_norm == 0:
             raise ValueError("dose grid orientation vectors are invalid")
-        row_direction = row_direction / row_norm
         column_direction = column_direction / column_norm
-        normal_direction = np.cross(row_direction, column_direction)
+        row_direction = row_direction / row_norm
+        if abs(float(column_direction @ row_direction)) > 1e-4:
+            raise ValueError("dose grid orientation vectors are not orthogonal")
+        normal_direction = np.cross(column_direction, row_direction)
         normal_norm = np.linalg.norm(normal_direction)
         if normal_norm == 0:
             raise ValueError("dose grid orientation vectors are collinear")
         normal_direction = normal_direction / normal_norm
+        # DICOM permits absolute patient-z frame offsets only for the canonical
+        # axial orientation. Convert that option to offsets relative to the
+        # ImagePositionPatient used by the coordinate transform below.
+        canonical_axial = np.allclose(
+            orientation,
+            np.asarray([1.0, 0.0, 0.0, 0.0, 1.0, 0.0]),
+            atol=1e-6,
+        )
+        if canonical_axial and np.isclose(offsets[0], origin[2], atol=1e-3):
+            offsets = offsets - origin[2]
     except (AttributeError, TypeError, ValueError):
         return {
             "status": "zero_dose_geometry_unresolved",
             "reason": "RTDOSE grid geometry is incomplete or malformed.",
         }
 
-    contours = _dose_grid_contour_coordinates(rtstruct_ds, roi_number)
+    contours, unresolved_contour_count = _dose_grid_contour_coordinates(
+        rtstruct_ds, roi_number
+    )
+    if unresolved_contour_count:
+        return {
+            "status": "zero_dose_geometry_unresolved",
+            "reason": (
+                f"ROI has {unresolved_contour_count} malformed or unsupported contour "
+                "item(s), so coverage of the complete contour set cannot be established."
+            ),
+        }
     if not contours:
         return {
             "status": "zero_dose_geometry_unresolved",
             "reason": "ROI has no valid contour coordinates for dose-grid comparison.",
         }
-    points = np.concatenate(contours, axis=0)
-    relative = points - origin
-    column_indices = relative @ row_direction / spacing[1]
-    row_indices = relative @ column_direction / spacing[0]
-    frame_coordinates = relative @ normal_direction
-    tolerance_mm = 1e-3
-    inside = (
-        (column_indices >= -tolerance_mm / spacing[1])
-        & (column_indices <= columns - 1 + tolerance_mm / spacing[1])
-        & (row_indices >= -tolerance_mm / spacing[0])
-        & (row_indices <= rows - 1 + tolerance_mm / spacing[0])
+
+    column_bounds = (0.0, float(columns - 1) * float(spacing[1]))
+    row_bounds = (0.0, float(rows - 1) * float(spacing[0]))
+    frame_bounds = (float(np.min(offsets)), float(np.max(offsets)))
+    grid_lower = np.asarray(
+        [column_bounds[0], row_bounds[0], frame_bounds[0]], dtype=float
     )
-    offset_min = float(np.min(offsets))
-    offset_max = float(np.max(offsets))
-    inside &= frame_coordinates >= offset_min - tolerance_mm
-    inside &= frame_coordinates <= offset_max + tolerance_mm
-    if not bool(np.any(inside)):
+    grid_upper = np.asarray(
+        [column_bounds[1], row_bounds[1], frame_bounds[1]], dtype=float
+    )
+    tolerance_mm = 1e-3
+    all_contours_inside = True
+    any_contour_intersects = False
+
+    for contour in contours:
+        relative = contour - origin
+        grid_contour = np.column_stack(
+            (
+                relative @ column_direction,
+                relative @ row_direction,
+                relative @ normal_direction,
+            )
+        )
+        vertices_inside = (
+            (grid_contour[:, 0] >= column_bounds[0] - tolerance_mm)
+            & (grid_contour[:, 0] <= column_bounds[1] + tolerance_mm)
+            & (grid_contour[:, 1] >= row_bounds[0] - tolerance_mm)
+            & (grid_contour[:, 1] <= row_bounds[1] + tolerance_mm)
+            & (grid_contour[:, 2] >= frame_bounds[0] - tolerance_mm)
+            & (grid_contour[:, 2] <= frame_bounds[1] + tolerance_mm)
+        )
+        contour_inside = bool(np.all(vertices_inside))
+        all_contours_inside &= contour_inside
+        if contour_inside or _polygon_intersects_box(
+            grid_contour, grid_lower, grid_upper, tolerance_mm
+        ):
+            any_contour_intersects = True
+
+    if all_contours_inside:
         return {
-            "status": "zero_dose_outside_dose_grid",
+            "status": "zero_dose_in_grid",
+            "reason": "All valid ROI contour points lie inside the selected RTDOSE grid bounds.",
+        }
+    if any_contour_intersects:
+        return {
+            "status": "zero_dose_partly_inside_dose_grid",
             "reason": (
-                "All valid ROI contour points are outside the selected RTDOSE grid. "
-                "This is consistent with an outside-grid ROI but requires review for "
-                "wrong-dose-grid or registration failure."
+                "Valid ROI contour geometry intersects the selected RTDOSE grid but is not "
+                "entirely contained by its bounds."
             ),
         }
     return {
-        "status": "zero_dose_in_grid",
+        "status": "zero_dose_outside_dose_grid",
         "reason": (
-            "At least one valid ROI contour point lies inside the selected RTDOSE grid, "
-            "while the computed ROI DmaxGy is zero. Treat as an in-grid zero-dose finding, "
-            "not as proof of registration correctness."
+            "The valid ROI contour polygons do not intersect the selected RTDOSE grid. "
+            "The computed zero is not a whole-ROI dose measurement."
         ),
     }
+
+
+def _near_zero_dose_geometry_qc(
+    metrics: Mapping[str, object],
+    *,
+    target_like: bool,
+    rtstruct_ds: object | None,
+    roi_number: int | None,
+    dose_ds: object | None,
+) -> dict[str, Any]:
+    """Apply Task 15 zero-dose geometry QC to exact and target D95 near-zeros."""
+    trigger_metric: str | None = None
+    trigger_value: float | None = None
+    try:
+        raw_dmax = metrics.get("DmaxGy")
+        if raw_dmax is not None:
+            dmax = float(raw_dmax)  # type: ignore[arg-type]
+            if np.isfinite(dmax) and dmax == 0.0:
+                trigger_metric = "DmaxGy"
+                trigger_value = dmax
+    except (TypeError, ValueError):
+        pass
+    if trigger_metric is None and target_like:
+        try:
+            raw_d95 = metrics.get("D95Gy")
+            if raw_d95 is not None:
+                d95 = float(raw_d95)  # type: ignore[arg-type]
+                if np.isfinite(d95) and 0.0 <= d95 <= NEAR_ZERO_TARGET_D95_GY + 1e-12:
+                    trigger_metric = "D95Gy"
+                    trigger_value = d95
+        except (TypeError, ValueError):
+            pass
+    if trigger_metric is None:
+        return {
+            "status": "not_zero",
+            "reason": (
+                f"DmaxGy is positive and target D95Gy is above {NEAR_ZERO_TARGET_D95_GY:g} Gy."
+                if target_like
+                else "DmaxGy is positive."
+            ),
+            "trigger_metric": None,
+            "trigger_value_gy": None,
+        }
+    if rtstruct_ds is None or roi_number is None or dose_ds is None:
+        return {
+            "status": "zero_dose_geometry_unresolved",
+            "reason": (
+                f"{trigger_metric} is {trigger_value:g} Gy, but the ROI has no RTSTRUCT "
+                "contour geometry for comparison with the selected RTDOSE grid."
+            ),
+            "trigger_metric": trigger_metric,
+            "trigger_value_gy": trigger_value,
+        }
+    geometry = classify_zero_dose_roi_geometry(rtstruct_ds, roi_number, dose_ds)
+    return {
+        "status": geometry["status"],
+        "reason": (
+            f"{trigger_metric} is {trigger_value:g} Gy. {geometry['reason']}"
+        ),
+        "trigger_metric": trigger_metric,
+        "trigger_value_gy": trigger_value,
+    }
+
+
+def _is_dose_derived_metric_column(column: object) -> bool:
+    name = str(column)
+    if name == "Volume (cm³)":
+        return False
+    if name in {
+        "DmeanGy",
+        "DmaxGy",
+        "DminGy",
+        "D95Gy",
+        "D98Gy",
+        "D2Gy",
+        "D50Gy",
+        "D1ccGy",
+        "D0.1ccGy",
+        "HI",
+        "SpreadGy",
+        "IntegralDose_Gycm3",
+        *RELATIVE_DVH_METRIC_COLUMNS,
+    }:
+        return True
+    return bool(
+        re.fullmatch(r"V(?:\d+(?:\.\d+)?Gy|(?:95|100)%Rx) \((?:cm³|%)\)", name)
+    )
 
 
 def _resample_mask_to_ct_if_equivalent(
@@ -180,6 +440,8 @@ def annotate_dvh_metrics(
     *,
     technique: str,
     structure_name: str,
+    structure_interpreted_type: str | None = None,
+    target_like: bool | None = None,
     prescription_resolved: bool = True,
     dose_response_eligible: bool = True,
     rtstruct_sop_instance_uid: str | None,
@@ -188,10 +450,18 @@ def annotate_dvh_metrics(
     structure_provenance_path: Path | None = None,
     zero_dose_status: str = "not_zero",
     zero_dose_reason: str = "DmaxGy is positive.",
+    zero_dose_trigger_metric: str | None = None,
+    zero_dose_trigger_value_gy: float | None = None,
 ) -> dict[str, object]:
-    """Attach explicit technique, provenance, missingness, and zero-dose semantics."""
+    """Attach technique, provenance, missingness, and near-zero semantics."""
     output = dict(metrics)
     normalized_technique = str(technique or "UNKNOWN").strip().upper() or "UNKNOWN"
+    normalized_roi_type = str(structure_interpreted_type or "").strip().upper()
+    target_structure = (
+        bool(target_like)
+        if target_like is not None
+        else _is_target_structure(structure_name, normalized_roi_type)
+    )
     is_ebrt = normalized_technique == "EBRT"
     if not dose_response_eligible:
         relative_status = "excluded_dose_response_ineligible"
@@ -221,11 +491,50 @@ def annotate_dvh_metrics(
         for column in RELATIVE_DVH_METRIC_COLUMNS:
             output[column] = None
 
-    target_structure = _is_target_structure_name(structure_name)
+    if zero_dose_status == "zero_dose_outside_dose_grid":
+        for column in tuple(output):
+            if _is_dose_derived_metric_column(column):
+                output[column] = None
+        dose_metric_status = "not_measurable_outside_dose_grid"
+        dose_metric_reason = (
+            "Dose-derived metrics are null because the ROI does not intersect the selected "
+            "RTDOSE grid. Zero would be a measurement claim unsupported by this geometry."
+        )
+        geometry_usable_for_dose_response = False
+    elif zero_dose_status == "zero_dose_partly_inside_dose_grid":
+        dose_metric_status = "computed_partial_dose_grid_coverage"
+        dose_metric_reason = (
+            "Dose-derived metrics are retained for audit, but the ROI is only partly inside "
+            "the selected RTDOSE grid and the values are not valid whole-ROI dose-response "
+            "measurements."
+        )
+        geometry_usable_for_dose_response = False
+    elif zero_dose_status == "zero_dose_geometry_unresolved":
+        dose_metric_status = "computed_geometry_unresolved"
+        dose_metric_reason = (
+            "Dose-derived metrics are retained, but near-zero dose-grid coverage could not "
+            "be adjudicated from RTSTRUCT contour geometry."
+        )
+        geometry_usable_for_dose_response = False
+    elif zero_dose_status == "zero_dose_in_grid":
+        dose_metric_status = "computed_in_grid_near_zero"
+        dose_metric_reason = (
+            "Dose-derived metrics are retained because the complete ROI contour set is "
+            "inside the selected RTDOSE grid."
+        )
+        geometry_usable_for_dose_response = True
+    else:
+        dose_metric_status = "computed"
+        dose_metric_reason = "Dose metrics did not meet the near-zero geometry-QC trigger."
+        geometry_usable_for_dose_response = True
+
     if not target_structure:
         output["HI%"] = None
         output["HI_status"] = "not_applicable_non_target"
         output["HI_reason"] = "HI% is emitted only for target structures."
+    elif zero_dose_status == "zero_dose_outside_dose_grid":
+        output["HI_status"] = "not_measurable_outside_dose_grid"
+        output["HI_reason"] = dose_metric_reason
     elif not dose_response_eligible:
         output["HI_status"] = "excluded_dose_response_ineligible"
         output["HI_reason"] = relative_reason
@@ -263,6 +572,13 @@ def annotate_dvh_metrics(
     output.update(
         {
             "dose_response_eligible": bool(dose_response_eligible),
+            "dose_metric_usable_for_dose_response": bool(
+                dose_response_eligible and geometry_usable_for_dose_response
+            ),
+            "dose_metric_status": dose_metric_status,
+            "dose_metric_reason": dose_metric_reason,
+            "target_like": target_structure,
+            "ROI_Interpreted_Type": normalized_roi_type or None,
             "treatment_technique": normalized_technique,
             "treatment_technique_source": "DICOM_RTPLAN",
             "relative_metric_status": relative_status,
@@ -281,6 +597,8 @@ def annotate_dvh_metrics(
             "rtstruct_provenance_reason": rtstruct_provenance_reason,
             "zero_dose_status": zero_dose_status,
             "zero_dose_reason": zero_dose_reason,
+            "zero_dose_trigger_metric": zero_dose_trigger_metric,
+            "zero_dose_trigger_value_gy": zero_dose_trigger_value_gy,
         }
     )
     return output
@@ -400,6 +718,8 @@ class DVHDoseResolution:
     dose_grid_semantics: Optional[str] = None
     prescribed_dose_gy: Optional[float] = None
     resolved_prescribed_dose_total_gy: Optional[float] = None
+    prescription_source: Optional[str] = None
+    clinical_prescription_outcome: Optional[str] = None
     delivered_dose_gy: Optional[float] = None
     delivery_status: Optional[str] = None
     dose_response_dose_field: str = DOSE_RESPONSE_FIELD
@@ -413,6 +733,232 @@ class DVHDoseResolution:
     @property
     def ok(self) -> bool:
         return self.rd_path is not None and self.rp_path is not None and self.skip_reason is None
+
+
+@dataclass(frozen=True)
+class DVHDosePlanScope:
+    status: str
+    reason: str
+    course_treatment_plan_count: int
+    dose_grid_plan_count: int
+    unrepresented_treatment_plan_uids: tuple[str, ...]
+
+    @property
+    def complete(self) -> bool:
+        return self.status == "complete_course_plan_set"
+
+
+def classify_dvh_dose_plan_scope(
+    contract: object, source_plan_sop_instance_uids: Iterable[object]
+) -> DVHDosePlanScope:
+    """Compare plans represented by the dose grid with the course plan set."""
+    expected: set[str] = set()
+    try:
+        delivery = getattr(contract, "delivery")
+        for item in delivery.get("per_plan") or []:
+            uid = str(item.get("plan_sop_uid") or "").strip()
+            if uid:
+                expected.add(uid)
+    except (AttributeError, TypeError):
+        pass
+    if not expected:
+        try:
+            for item in getattr(contract, "selected_plans"):
+                uid = str(item.get("sop_instance_uid") or "").strip()
+                if uid:
+                    expected.add(uid)
+        except (AttributeError, TypeError):
+            pass
+    represented = {
+        str(uid).strip() for uid in source_plan_sop_instance_uids if str(uid).strip()
+    }
+    missing = tuple(sorted(expected - represented))
+    unexpected = tuple(sorted(represented - expected)) if expected else ()
+    matched = represented & expected
+    if not expected:
+        return DVHDosePlanScope(
+            status="course_plan_set_unresolved",
+            reason=(
+                "The authoritative course contract does not expose a plan set against "
+                "which the selected dose grid can be checked."
+            ),
+            course_treatment_plan_count=0,
+            dose_grid_plan_count=len(represented),
+            unrepresented_treatment_plan_uids=(),
+        )
+    if not represented:
+        return DVHDosePlanScope(
+            status="dose_grid_plan_linkage_unresolved",
+            reason=(
+                "The selected RTDOSE does not expose a referenced RTPLAN UID, so course "
+                "plan-set coverage is not established."
+            ),
+            course_treatment_plan_count=len(expected),
+            dose_grid_plan_count=0,
+            unrepresented_treatment_plan_uids=tuple(sorted(expected)),
+        )
+    if not matched:
+        return DVHDosePlanScope(
+            status="dose_grid_plan_set_mismatch",
+            reason=(
+                "The selected dose grid references no plan UID in the authoritative "
+                "course treatment plan set."
+            ),
+            course_treatment_plan_count=len(expected),
+            dose_grid_plan_count=0,
+            unrepresented_treatment_plan_uids=tuple(sorted(expected)),
+        )
+    if missing:
+        return DVHDosePlanScope(
+            status="partial_course_plan_set",
+            reason=(
+                f"The selected dose grid represents {len(matched)} of "
+                f"{len(expected)} course treatment plans; {len(missing)} plan(s) are not "
+                "represented."
+            ),
+            course_treatment_plan_count=len(expected),
+            dose_grid_plan_count=len(matched),
+            unrepresented_treatment_plan_uids=missing,
+        )
+    if unexpected:
+        return DVHDosePlanScope(
+            status="dose_grid_plan_set_mismatch",
+            reason=(
+                "The selected dose grid references plan UIDs outside the authoritative "
+                "course plan set."
+            ),
+            course_treatment_plan_count=len(expected),
+            dose_grid_plan_count=len(represented),
+            unrepresented_treatment_plan_uids=(),
+        )
+    return DVHDosePlanScope(
+        status="complete_course_plan_set",
+        reason=(
+            f"The selected dose grid represents all {len(expected)} plan(s) in the "
+            "authoritative course treatment plan set."
+        ),
+        course_treatment_plan_count=len(expected),
+        dose_grid_plan_count=len(represented),
+        unrepresented_treatment_plan_uids=(),
+    )
+
+
+@dataclass(frozen=True)
+class CourseTreatmentIsocenterGeometry:
+    status: str
+    reason: str
+    isocenter_count: int
+    max_separation_mm: float | None
+    plan_count: int
+    readable_plan_count: int
+
+
+def summarize_plan_isocenter_positions(
+    plan_positions: Mapping[str, Iterable[Iterable[float]]],
+    *,
+    expected_plan_count: int | None = None,
+) -> CourseTreatmentIsocenterGeometry:
+    """Summarize objective plan-isocenter evidence without inferring treated regions."""
+    unique_positions: set[tuple[float, float, float]] = set()
+    readable_plan_count = 0
+    for positions in plan_positions.values():
+        plan_has_position = False
+        for position in positions:
+            try:
+                coordinates = tuple(round(float(value), 3) for value in position)
+            except (TypeError, ValueError):
+                continue
+            if len(coordinates) != 3 or not all(np.isfinite(coordinates)):
+                continue
+            unique_positions.add(coordinates)  # type: ignore[arg-type]
+            plan_has_position = True
+        if plan_has_position:
+            readable_plan_count += 1
+    plan_count = expected_plan_count if expected_plan_count is not None else len(plan_positions)
+    max_separation_mm: float | None = None
+    if len(unique_positions) >= 2:
+        vectors = [np.asarray(position, dtype=float) for position in unique_positions]
+        max_separation_mm = max(
+            float(np.linalg.norm(left - right))
+            for index, left in enumerate(vectors)
+            for right in vectors[index + 1 :]
+        )
+    if plan_count <= 0 or readable_plan_count < plan_count:
+        status = "plan_isocenter_geometry_unresolved"
+        reason = (
+            f"Isocenter geometry was readable for {readable_plan_count} of {plan_count} "
+            "course plans. No treated-region count is inferred."
+        )
+    elif len(unique_positions) > 1:
+        status = "multiple_plan_isocenters"
+        reason = (
+            f"DICOM RTPLAN records contain {len(unique_positions)} distinct isocenters. "
+            "This makes spatial multiplicity visible but does not by itself establish "
+            "the number of anatomically separate treated regions."
+        )
+    elif len(unique_positions) == 1:
+        status = "single_plan_isocenter"
+        reason = (
+            "DICOM RTPLAN records contain one distinct isocenter. Isocenter count is not "
+            "a treated-region count."
+        )
+    else:
+        status = "plan_isocenter_geometry_unresolved"
+        reason = "No valid DICOM RTPLAN isocenter coordinates were available."
+    return CourseTreatmentIsocenterGeometry(
+        status=status,
+        reason=reason,
+        isocenter_count=len(unique_positions),
+        max_separation_mm=max_separation_mm,
+        plan_count=plan_count,
+        readable_plan_count=readable_plan_count,
+    )
+
+
+def course_treatment_isocenter_geometry(contract: object) -> CourseTreatmentIsocenterGeometry:
+    """Read course RTPLAN headers and summarize their isocenter geometry."""
+    delivery = getattr(contract, "delivery", {}) or {}
+    entries = list(delivery.get("per_plan") or []) if isinstance(delivery, dict) else []
+    if not entries:
+        entries = list(getattr(contract, "selected_plans", []) or [])
+    plan_positions: dict[str, list[tuple[float, float, float]]] = {}
+    for index, entry in enumerate(entries):
+        if not isinstance(entry, dict):
+            continue
+        plan_uid = str(entry.get("plan_sop_uid") or entry.get("sop_instance_uid") or index)
+        raw_path = entry.get("plan_path") or entry.get("path")
+        if not raw_path:
+            plan_positions[plan_uid] = []
+            continue
+        try:
+            resolver = getattr(contract, "resolve_path")
+            plan_path = resolver(raw_path, f"course plan {index}")
+        except Exception:
+            plan_path = None
+        if plan_path is None or not Path(plan_path).is_file():
+            plan_positions[plan_uid] = []
+            continue
+        try:
+            plan = pydicom.dcmread(str(plan_path), stop_before_pixels=True)
+        except Exception:
+            plan_positions[plan_uid] = []
+            continue
+        positions: list[tuple[float, float, float]] = []
+        for beam in getattr(plan, "BeamSequence", []) or []:
+            for control_point in getattr(beam, "ControlPointSequence", []) or []:
+                raw_position = getattr(control_point, "IsocenterPosition", None)
+                if raw_position is None:
+                    continue
+                try:
+                    position = tuple(float(value) for value in raw_position)
+                except (TypeError, ValueError):
+                    continue
+                if len(position) == 3:
+                    positions.append(position)  # type: ignore[arg-type]
+        plan_positions[plan_uid] = positions
+    return summarize_plan_isocenter_positions(
+        plan_positions, expected_plan_count=len(entries)
+    )
 
 
 @dataclass
@@ -607,6 +1153,8 @@ def _resolve_dvh_dose(
             selected_dose_paths=[path for path in selected_dose_paths if path is not None],
             prescribed_dose_gy=contract.prescribed_dose_gy,
             resolved_prescribed_dose_total_gy=contract.resolved_prescribed_dose_total_gy,
+            prescription_source=str(contract.delivery.get("prescription_source") or "") or None,
+            clinical_prescription_outcome=str((contract.data.get("clinical_prescription_evidence") or {}).get("outcome") or "") or None,
             delivered_dose_gy=contract.delivered_dose_gy,
             delivery_status=str(contract.delivery.get("status") or ""),
             dose_response_dose_field=str(contract.delivery.get("dose_response_field") or ""),
@@ -642,6 +1190,8 @@ def _resolve_dvh_dose(
         dose_grid_semantics=str(dose_grid.get("semantics") or ""),
         prescribed_dose_gy=contract.prescribed_dose_gy,
         resolved_prescribed_dose_total_gy=contract.resolved_prescribed_dose_total_gy,
+        prescription_source=str(contract.delivery.get("prescription_source") or "") or None,
+        clinical_prescription_outcome=str((contract.data.get("clinical_prescription_evidence") or {}).get("outcome") or "") or None,
         delivered_dose_gy=contract.delivered_dose_gy,
         delivery_status=str(contract.delivery.get("status") or ""),
         dose_response_dose_field=DOSE_RESPONSE_FIELD,
@@ -1213,6 +1763,46 @@ def _contract_digest(course_dir: Path) -> str | None:
         return None
 
 
+def summarize_target_near_zero_rows(
+    rows: Iterable[Mapping[str, object]],
+) -> dict[str, object]:
+    """Return mutually exclusive target near-zero geometry counts for one course."""
+    status_order = (
+        "zero_dose_outside_dose_grid",
+        "zero_dose_partly_inside_dose_grid",
+        "zero_dose_in_grid",
+        "zero_dose_geometry_unresolved",
+    )
+    counts = {status: 0 for status in status_order}
+    for row in rows:
+        if not bool(row.get("target_like")):
+            continue
+        status = str(row.get("zero_dose_status") or "")
+        if status in counts:
+            counts[status] += 1
+    total = sum(counts.values())
+    if total == 0:
+        course_status = "no_near_zero_targets"
+    elif counts["zero_dose_outside_dose_grid"]:
+        course_status = "near_zero_target_outside_selected_dose_grid"
+    elif counts["zero_dose_partly_inside_dose_grid"]:
+        course_status = "near_zero_target_partly_inside_selected_dose_grid"
+    elif counts["zero_dose_geometry_unresolved"]:
+        course_status = "near_zero_target_geometry_unresolved"
+    else:
+        course_status = "near_zero_targets_inside_selected_dose_grid"
+    return {
+        "status": course_status,
+        "near_zero_target_row_count": total,
+        "outside_dose_grid_count": counts["zero_dose_outside_dose_grid"],
+        "partly_inside_dose_grid_count": counts[
+            "zero_dose_partly_inside_dose_grid"
+        ],
+        "inside_dose_grid_count": counts["zero_dose_in_grid"],
+        "geometry_unresolved_count": counts["zero_dose_geometry_unresolved"],
+    }
+
+
 def _write_dvh_qc(
     course_dir: Path,
     df: pd.DataFrame,
@@ -1223,6 +1813,8 @@ def _write_dvh_qc(
     dose_resolution: Optional[DVHDoseResolution] = None,
     structure_resolution: Optional[DVHStructureResolution] = None,
     treatment_technique: str = "UNKNOWN",
+    dose_plan_scope: DVHDosePlanScope | None = None,
+    isocenter_geometry: CourseTreatmentIsocenterGeometry | None = None,
 ) -> None:
     present: set[str] = set()
     partial: set[str] = set()
@@ -1239,11 +1831,15 @@ def _write_dvh_qc(
         name for name in expected_custom_names
         if _normalize_structure_name(name) not in present
     ]
+    target_coverage = summarize_target_near_zero_rows(df.to_dict("records"))
     payload = {
         "status": "ok" if not missing_custom else "degraded",
         "metric_version": DVH_METRIC_VERSION,
         "rx_source": rx_source,
-        "rx_relative_metrics_available": rx_source != "none",
+        "rx_relative_metrics_available": bool(
+            "relative_metric_status" in df
+            and df["relative_metric_status"].eq("computed").any()
+        ),
         "treatment_technique": treatment_technique,
         "relative_metric_status_counts": (
             df["relative_metric_status"].value_counts(dropna=False).to_dict()
@@ -1260,6 +1856,7 @@ def _write_dvh_qc(
             if "zero_dose_status" in df
             else {}
         ),
+        "target_near_zero_dose_grid_coverage": target_coverage,
         "rx_recovery_attempted": rx_recovery_attempted,
         "custom_structures_expected": expected_custom_names,
         "custom_structures_missing": missing_custom,
@@ -1271,6 +1868,37 @@ def _write_dvh_qc(
         payload["rx_dose_gy"] = float(rx_dose_gy)
     if rx_source == "none":
         payload["warning"] = "Prescription-relative DVH metrics are unavailable; absolute Gy/cc metrics are present."
+    elif dose_plan_scope is not None and not dose_plan_scope.complete:
+        payload["warning"] = (
+            "The selected dose grid does not represent the complete course treatment plan set. "
+            "Absolute metrics retain selected-grid meaning; prescription-relative dose-response "
+            "metrics are suppressed."
+        )
+    if dose_plan_scope is not None:
+        payload["dose_plan_scope"] = {
+            "status": dose_plan_scope.status,
+            "reason": dose_plan_scope.reason,
+            "course_treatment_plan_count": dose_plan_scope.course_treatment_plan_count,
+            "dose_grid_plan_count": dose_plan_scope.dose_grid_plan_count,
+            "unrepresented_treatment_plan_uids": list(
+                dose_plan_scope.unrepresented_treatment_plan_uids
+            ),
+            "dose_response_eligible": bool(
+                dose_resolution is not None
+                and dose_resolution.dose_response_eligible
+                and dose_plan_scope.complete
+            ),
+        }
+    if isocenter_geometry is not None:
+        payload["course_treatment_isocenter_geometry"] = {
+            "status": isocenter_geometry.status,
+            "reason": isocenter_geometry.reason,
+            "isocenter_count": isocenter_geometry.isocenter_count,
+            "max_separation_mm": isocenter_geometry.max_separation_mm,
+            "plan_count": isocenter_geometry.plan_count,
+            "readable_plan_count": isocenter_geometry.readable_plan_count,
+            "treated_region_count": None,
+        }
     if dose_resolution is not None:
         payload["dose_resolution"] = {
             "classification": dose_resolution.classification,
@@ -1290,7 +1918,10 @@ def _write_dvh_qc(
             "delivered_dose_gy": dose_resolution.delivered_dose_gy,
             "delivery_status": dose_resolution.delivery_status,
             "dose_response_dose_field": dose_resolution.dose_response_dose_field,
-            "dose_response_eligible": dose_resolution.dose_response_eligible,
+            "dose_response_eligible": bool(
+                dose_resolution.dose_response_eligible
+                and (dose_plan_scope is None or dose_plan_scope.complete)
+            ),
             "dose_qc_status": dose_resolution.dose_qc_status,
             "dose_qc_pass": dose_resolution.dose_qc_pass,
             "dose_qc_reasons": dose_resolution.dose_qc_reasons or [],
@@ -1392,10 +2023,19 @@ def _is_dvh_up_to_date(
         parquet_frame = pd.read_parquet(parquet_path)
         required_columns = {
             "dose_response_eligible",
+            "dose_metric_usable_for_dose_response",
+            "dose_metric_status",
+            "target_like",
+            "ROI_Interpreted_Type",
             "treatment_technique",
             "relative_metric_status",
             "structure_provenance_status",
             "zero_dose_status",
+            "zero_dose_trigger_metric",
+            "Dose_Plan_Scope_Status",
+            "Course_Treatment_Isocenter_Status",
+            "Course_Treatment_Isocenter_Count",
+            "Course_Target_Dose_Coverage_Status",
         }
         if not required_columns.issubset(parquet_frame.columns):
             logger.info("Typed DVH Parquet sidecar has an old schema; regenerating")
@@ -1921,18 +2561,14 @@ def _compute_nifti_based_dvh(
             if metrics is None:
                 continue
 
-            zero_dose_status = "not_zero"
-            zero_dose_reason = "DmaxGy is positive."
-            try:
-                if float(metrics.get("DmaxGy", 0.0) or 0.0) == 0.0:
-                    zero_dose_status = "zero_dose_in_grid"
-                    zero_dose_reason = (
-                        "NIfTI mask was sampled on the CT-aligned dose array and its "
-                        "computed DmaxGy is zero. Original RTDOSE coverage still requires review."
-                    )
-            except (TypeError, ValueError):
-                zero_dose_status = "zero_dose_geometry_unresolved"
-                zero_dose_reason = "DmaxGy was zero but NIfTI mask geometry could not be checked."
+            target_like = _is_target_structure(name)
+            zero_qc = _near_zero_dose_geometry_qc(
+                metrics,
+                target_like=target_like,
+                rtstruct_ds=None,
+                roi_number=None,
+                dose_ds=None,
+            )
             source_path = ts_mask_paths.get(name)
             if source_path is None:
                 source_path = (
@@ -1944,14 +2580,25 @@ def _compute_nifti_based_dvh(
                 metrics,
                 technique=technique,
                 structure_name=name,
+                target_like=target_like,
                 prescription_resolved=prescription_resolved,
                 dose_response_eligible=dose_response_eligible,
                 rtstruct_sop_instance_uid=None,
                 rtstruct_path=None,
                 structure_provenance_type="NIFTI_MASK",
                 structure_provenance_path=source_path,
-                zero_dose_status=zero_dose_status,
-                zero_dose_reason=zero_dose_reason,
+                zero_dose_status=str(zero_qc["status"]),
+                zero_dose_reason=str(zero_qc["reason"]),
+                zero_dose_trigger_metric=(
+                    str(zero_qc["trigger_metric"])
+                    if zero_qc["trigger_metric"] is not None
+                    else None
+                ),
+                zero_dose_trigger_value_gy=(
+                    float(zero_qc["trigger_value_gy"])
+                    if zero_qc["trigger_value_gy"] is not None
+                    else None
+                ),
             )
 
             # Check if mask is cropped at image boundary
@@ -2037,11 +2684,7 @@ def dvh_for_course(
     treatment_technique = str(
         contract.treatment_technique.get("classification") or "UNKNOWN"
     ).strip().upper()
-    dose_response_eligible = _contract_dose_response_eligible(contract)
-    prescription_resolved = (
-        dose_response_eligible
-        and contract.resolved_prescribed_dose_total_gy is not None
-    )
+    contract_dose_response_eligible = _contract_dose_response_eligible(contract)
 
     out_xlsx = course_dir / "dvh_metrics.xlsx"
     # Resolve and enforce the contract before cache reuse. A newly failing
@@ -2071,6 +2714,18 @@ def dvh_for_course(
         _invalidate_dvh_outputs(course_dir)
         _write_dvh_skip_qc(course_dir, dose_resolution)
         return None
+
+    dose_plan_scope = classify_dvh_dose_plan_scope(
+        contract, dose_resolution.source_plan_sop_instance_uids
+    )
+    isocenter_geometry = course_treatment_isocenter_geometry(contract)
+    dose_response_eligible = bool(
+        contract_dose_response_eligible and dose_plan_scope.complete
+    )
+    prescription_resolved = bool(
+        dose_response_eligible
+        and contract.resolved_prescribed_dose_total_gy is not None
+    )
 
     # Check if DVH is already up-to-date (skip recomputation on re-runs).
     if _is_dvh_up_to_date(course_dir, out_xlsx, custom_structures_config):
@@ -2156,6 +2811,7 @@ def dvh_for_course(
         (
             roi_number,
             roi_name,
+            roi_interpreted_type,
             source_label,
             rx_value,
             rtstruct_ds,
@@ -2180,28 +2836,28 @@ def dvh_for_course(
         metrics = _compute_metrics(abs_dvh, rx_value)
         if metrics is None:
             return None
-        zero_dose_status = "not_zero"
-        zero_dose_reason = "DmaxGy is positive."
-        try:
-            if float(metrics.get("DmaxGy", 0.0) or 0.0) == 0.0:
-                zero_qc = classify_zero_dose_roi_geometry(
-                    geometry_rtstruct_ds, int(roi_number), rtdose
-                )
-                zero_dose_status = zero_qc["status"]
-                zero_dose_reason = zero_qc["reason"]
-        except (TypeError, ValueError):
-            zero_dose_status = "zero_dose_geometry_unresolved"
-            zero_dose_reason = "DmaxGy was zero but its dose-grid geometry could not be checked."
+        target_like = _is_target_structure(roi_name, roi_interpreted_type)
+        zero_qc = _near_zero_dose_geometry_qc(
+            metrics,
+            target_like=target_like,
+            rtstruct_ds=geometry_rtstruct_ds,
+            roi_number=int(roi_number),
+            dose_ds=rtdose,
+        )
         metrics = annotate_dvh_metrics(
             metrics,
             technique=treatment_technique,
             structure_name=roi_name,
+            structure_interpreted_type=roi_interpreted_type,
+            target_like=target_like,
             prescription_resolved=prescription_resolved,
             dose_response_eligible=dose_response_eligible,
             rtstruct_sop_instance_uid=rtstruct_sop_uid,
             rtstruct_path=rtstruct_path,
-            zero_dose_status=zero_dose_status,
-            zero_dose_reason=zero_dose_reason,
+            zero_dose_status=str(zero_qc["status"]),
+            zero_dose_reason=str(zero_qc["reason"]),
+            zero_dose_trigger_metric=zero_qc["trigger_metric"],
+            zero_dose_trigger_value_gy=zero_qc["trigger_value_gy"],
         )
         cropped = False
         if builder_obj is not None:
@@ -2220,7 +2876,11 @@ def dvh_for_course(
             # Resample if too many points to keep JSON size manageable
             # dicompyler-core uses 1 cGy bin width by default, which is fine
             # but we can skip zero-volume tails
-            if abs_dvh.counts[0] > 0:
+            if (
+                abs_dvh.counts[0] > 0
+                and metrics.get("dose_metric_status")
+                != "not_measurable_outside_dose_grid"
+            ):
                 # Normalize to percent volume
                 vol_pct = (abs_dvh.counts / abs_dvh.counts[0]) * 100.0
                 # Create points list
@@ -2263,6 +2923,7 @@ def dvh_for_course(
             snap_cache[snap_key] = True
 
         builder = _get_builder(rs_path)
+        roi_interpreted_types = _roi_interpreted_type_map(geometry_rtstruct)
         rois = list(getattr(rtstruct, "StructureSetROISequence", []) or [])
         if not rois:
             return
@@ -2278,6 +2939,7 @@ def dvh_for_course(
             tasks.append((
                 roi_number,
                 roi_name,
+                roi_interpreted_types.get(roi_number, ""),
                 rs_source.source_label,
                 rx_dose,
                 rtstruct,
@@ -2445,9 +3107,13 @@ def dvh_for_course(
                 "roi_name": res.get("ROI_Name", "Unknown"),
                 "source": res.get("Segmentation_Source", "Unknown"),
                 "volume_cm3": res.get("Volume (cm³)", 0),
-                "data": points
+                "dose_metric_status": res.get("dose_metric_status"),
+                "zero_dose_status": res.get("zero_dose_status"),
+                "data": points,
             })
-    
+
+    target_coverage = summarize_target_near_zero_rows(clean_results)
+
     # Save curve data to JSON
     if curve_data_export:
         try:
@@ -2459,14 +3125,58 @@ def dvh_for_course(
 
     for row in clean_results:
         row["Dose_Grid_Semantics"] = dose_resolution.dose_grid_semantics
+        row["Dose_Plan_Scope_Status"] = dose_plan_scope.status
+        row["Dose_Plan_Scope_Reason"] = dose_plan_scope.reason
+        row["Course_Treatment_Plan_Count"] = dose_plan_scope.course_treatment_plan_count
+        row["Dose_Grid_Plan_Count"] = dose_plan_scope.dose_grid_plan_count
+        row["Unrepresented_Treatment_Plan_Count"] = len(
+            dose_plan_scope.unrepresented_treatment_plan_uids
+        )
+        row["Unrepresented_Treatment_Plan_UIDs"] = ";".join(
+            dose_plan_scope.unrepresented_treatment_plan_uids
+        )
+        row["Course_Treatment_Isocenter_Status"] = isocenter_geometry.status
+        row["Course_Treatment_Isocenter_Reason"] = isocenter_geometry.reason
+        row["Course_Treatment_Isocenter_Count"] = isocenter_geometry.isocenter_count
+        row["Course_Treatment_Isocenter_Max_Separation_mm"] = (
+            isocenter_geometry.max_separation_mm
+        )
+        row["Course_Treatment_Isocenter_Readable_Plan_Count"] = (
+            isocenter_geometry.readable_plan_count
+        )
+        row["Course_Target_Dose_Coverage_Status"] = target_coverage["status"]
+        row["Course_Target_Near_Zero_Row_Count"] = target_coverage[
+            "near_zero_target_row_count"
+        ]
+        row["Course_Target_Outside_Dose_Grid_Count"] = target_coverage[
+            "outside_dose_grid_count"
+        ]
+        row["Course_Target_Partly_Inside_Dose_Grid_Count"] = target_coverage[
+            "partly_inside_dose_grid_count"
+        ]
+        row["Course_Target_In_Grid_Near_Zero_Count"] = target_coverage[
+            "inside_dose_grid_count"
+        ]
+        row["Course_Target_Geometry_Unresolved_Count"] = target_coverage[
+            "geometry_unresolved_count"
+        ]
         row["Prescribed_Dose_Gy"] = dose_resolution.prescribed_dose_gy
         row["Prescribed_Dose_Status"] = (
             "resolved"
+            if dose_plan_scope.complete
+            and dose_resolution.resolved_prescribed_dose_total_gy is not None
+            else "resolved_selected_plan_scope_only"
             if dose_resolution.resolved_prescribed_dose_total_gy is not None
             else "unresolved"
         )
         row["Prescribed_Dose_Reason"] = (
-            "Prescription total is available from the authoritative course contract."
+            "Prescription total is available for the complete course plan set."
+            if dose_plan_scope.complete
+            and dose_resolution.resolved_prescribed_dose_total_gy is not None
+            else (
+                "The prescription is resolved for the selected dose plan scope, but the "
+                "dose grid does not represent the complete course treatment plan set."
+            )
             if dose_resolution.resolved_prescribed_dose_total_gy is not None
             else (
                 "Prescription is present but its course total is unresolved."
@@ -2476,10 +3186,19 @@ def dvh_for_course(
         )
         row["Delivered_Dose_Gy"] = dose_resolution.delivered_dose_gy
         row["Delivered_Dose_Status"] = (
-            "resolved" if dose_resolution.delivered_dose_gy is not None else "unresolved"
+            "resolved"
+            if dose_plan_scope.complete and dose_resolution.delivered_dose_gy is not None
+            else "resolved_selected_plan_scope_only"
+            if dose_resolution.delivered_dose_gy is not None
+            else "unresolved"
         )
         row["Delivered_Dose_Reason"] = (
-            "Delivered dose is available from the authoritative course contract."
+            "Delivered dose is available for the complete course plan set."
+            if dose_plan_scope.complete and dose_resolution.delivered_dose_gy is not None
+            else (
+                "Delivered dose is available for the selected plan scope, but the dose "
+                "grid does not represent the complete course treatment plan set."
+            )
             if dose_resolution.delivered_dose_gy is not None
             else (
                 "Delivered dose is not available in the authoritative course contract. "
@@ -2488,7 +3207,13 @@ def dvh_for_course(
         )
         row["Delivery_Status"] = dose_resolution.delivery_status
         row["Dose_Response_Field"] = dose_resolution.dose_response_dose_field
-        row["Dose_Response_Eligible"] = dose_resolution.dose_response_eligible
+        row["Dose_Response_Eligible"] = dose_response_eligible
+        row["Prescription_Source"] = dose_resolution.prescription_source
+        row["Clinical_Prescription_Outcome"] = dose_resolution.clinical_prescription_outcome
+        row["dose_metric_usable_for_dose_response"] = bool(
+            row.get("dose_metric_usable_for_dose_response")
+            and dose_response_eligible
+        )
         row["Dose_QC_Status"] = dose_resolution.dose_qc_status
 
     df = pd.DataFrame(clean_results)
@@ -2521,5 +3246,7 @@ def dvh_for_course(
         dose_resolution,
         structure_resolution,
         treatment_technique=treatment_technique,
+        dose_plan_scope=dose_plan_scope,
+        isocenter_geometry=isocenter_geometry,
     )
     return out_xlsx

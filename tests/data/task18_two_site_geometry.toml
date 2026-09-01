@@ -1,0 +1,39 @@
+[provenance]
+source_case = "426529/2023-12"
+rtstruct_sha256 = "74db17dd1589fff467609a2183508627de8e76f53632f8a8c9135e7541a54bb3"
+selected_rtdose_sha256 = "b7dc21fb137829e71a4c0bb240fa642f5146f74fda8b2e6c8b8e5fda1ec9bf8c"
+derivation = "Target boxes are exact extrema translated by the RTDOSE ImagePositionPatient. No patient metadata or full contour coordinates are retained."
+
+[dose_grid]
+image_position_patient = [0.0, 0.0, 0.0]
+image_orientation_patient = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0]
+pixel_spacing_mm = [1.25, 1.25]
+rows = 285
+columns = 401
+number_of_frames = 517
+frame_offset_start_mm = 0.0
+frame_offset_stop_mm = 774.0
+frame_offset_step_mm = 1.5
+
+[plan_isocenters]
+plan_one = [[-9.512, -225.512, -699.5]]
+plan_two = [[-12.512, -187.512, -469.5]]
+measured_max_separation_mm = 233.137
+
+[[targets]]
+roi_number = 11
+roi_name = "PTV 1"
+interpreted_type = "PTV"
+translated_min_mm = [209.702, 167.652, 286.5]
+translated_max_mm = [273.292, 223.322, 327.0]
+selected_plan_d95_gy = 0.01
+selected_plan_dmax_gy = 0.03
+
+[[targets]]
+roi_number = 12
+roi_name = "PTV 2"
+interpreted_type = "PTV"
+translated_min_mm = [196.392, 190.852, 522.0]
+translated_max_mm = [278.262, 274.572, 553.5]
+selected_plan_d95_gy = 23.845
+selected_plan_dmax_gy = 32.06

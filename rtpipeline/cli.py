@@ -62,6 +62,44 @@ def _apply_dose_yaml_config(cfg: PipelineConfig, yaml_config: dict[str, Any]) ->
     cfg.max_total_dose_gy = value
 
 
+def _apply_clinical_prescription_yaml_config(
+    cfg: PipelineConfig,
+    yaml_config: dict[str, Any],
+    *,
+    config_dir: Path,
+) -> None:
+    """Apply the optional cohort-owned treatment-register path."""
+
+    if cfg.clinical_prescription_records_path is not None:
+        return
+    value = yaml_config.get("clinical_prescription_records")
+    if value in (None, ""):
+        return
+    if isinstance(value, str):
+        configured_path = value
+    elif isinstance(value, dict):
+        enabled = value.get("enabled", True)
+        if not isinstance(enabled, bool):
+            raise ConfigValidationError(
+                "clinical_prescription_records.enabled must be boolean"
+            )
+        if not enabled:
+            return
+        configured_path = value.get("path")
+    else:
+        raise ConfigValidationError(
+            "clinical_prescription_records must be a path string or mapping"
+        )
+    if not isinstance(configured_path, str) or not configured_path.strip():
+        raise ConfigValidationError(
+            "clinical_prescription_records.path must be a nonempty path"
+        )
+    candidate = Path(configured_path).expanduser()
+    if not candidate.is_absolute():
+        candidate = config_dir / candidate
+    cfg.clinical_prescription_records_path = candidate.resolve(strict=False)
+
+
 def _positive_dose_threshold(value: str) -> float:
     try:
         parsed = float(value)
@@ -536,6 +574,14 @@ def build_parser() -> argparse.ArgumentParser:
         type=_positive_dose_threshold,
         default=None,
         help="Warn when prescribed or delivered course dose exceeds this value in Gy (default: 100)",
+    )
+    p.add_argument(
+        "--clinical-prescription-records",
+        default=None,
+        help=(
+            "Optional cohort treatment-register XLSX used as auditable prescription "
+            "evidence; omitted means DICOM-only resolution"
+        ),
     )
     p.add_argument(
         "--allow-ct-only-courses",
@@ -1243,6 +1289,11 @@ def main(argv: list[str] | None = None) -> int:
         merge_criteria=args.merge_criteria,
         max_days_between_plans=args.max_days,
         max_total_dose_gy=args.max_total_dose_gy if args.max_total_dose_gy is not None else 100.0,
+        clinical_prescription_records_path=(
+            Path(args.clinical_prescription_records).expanduser().resolve(strict=False)
+            if args.clinical_prescription_records
+            else None
+        ),
         allow_ct_only_courses=args.allow_ct_only_courses,
         do_segmentation=not args.no_segmentation,
         do_dvh=not args.no_dvh,
@@ -1333,6 +1384,11 @@ def main(argv: list[str] | None = None) -> int:
             with open(config_file_path) as f:
                 yaml_config = yaml.safe_load(f) or {}
             logger.info("Loaded pipeline YAML settings from %s", config_file_path)
+            _apply_clinical_prescription_yaml_config(
+                cfg,
+                yaml_config,
+                config_dir=config_file_path.parent.resolve(strict=False),
+            )
             radiomics_yaml = yaml_config.get("radiomics", {}) or {}
             cfg.radiomics_analysis_contract = (
                 radiomics_yaml.get("analysis_contract")

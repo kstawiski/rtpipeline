@@ -1,6 +1,7 @@
 """Materialize a producer-validated organized-course manifest."""
 
 import json
+import hashlib
 import os
 import subprocess
 import tempfile
@@ -12,6 +13,26 @@ from rtpipeline.snakemake_delegate import invoke, runtime_environment
 
 MANIFEST_SCHEMA = "rtpipeline-organized-course-manifest-v2"
 STATUS_VALIDATED = "validated"
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _clinical_source_hash(workflow: Any) -> str | None:
+    value = str(
+        getattr(workflow.params, "clinical_prescription_records", "") or ""
+    ).strip()
+    if not value:
+        return None
+    path = Path(value)
+    if not path.is_file():
+        return "<missing>"
+    return _sha256(path)
 
 
 def _write_text_atomic(path: Path, text: str) -> None:
@@ -209,9 +230,25 @@ def _existing_manifest_is_valid(
         or manifest_validated != delegated_validated
     ):
         return False
+    expected_clinical_hash = _clinical_source_hash(workflow)
     for entry in validated:
         course_dir = Path(str(entry["path"]))
         try:
+            metadata = json.loads(
+                (course_dir / "metadata" / "case_metadata.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            contract = metadata.get("course_contract") or {}
+            evidence = contract.get("clinical_prescription_evidence")
+            if expected_clinical_hash is None:
+                if evidence is not None:
+                    return False
+            elif not isinstance(evidence, dict) or (
+                (evidence.get("source") or {}).get("workbook_sha256")
+                != expected_clinical_hash
+            ):
+                return False
             if (course_dir / ".organized").read_text(
                 encoding="utf-8"
             ).strip() != "ok":
@@ -293,6 +330,11 @@ def main(workflow: Any) -> None:
     custom_structures = str(workflow.params.custom_structures)
     if custom_structures:
         command.extend(["--custom-structures", custom_structures])
+    clinical_records = str(
+        getattr(workflow.params, "clinical_prescription_records", "") or ""
+    )
+    if clinical_records:
+        command.extend(["--clinical-prescription-records", clinical_records])
     with log_path.open("w", encoding="utf-8") as log_file:
         log_file.write("DEBUG: Starting rtpipeline.cli organize stage...\n")
         log_file.flush()

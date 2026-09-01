@@ -27,6 +27,12 @@ from scipy.ndimage import map_coordinates
 
 from .config import DEFAULT_MAX_TOTAL_DOSE_GY, PipelineConfig
 from . import nifti_provenance
+from .clinical_prescription import (
+    CLINICAL_RESOLVED_SCOPE,
+    adjudicate_clinical_prescription,
+    clinical_evidence_matches_source,
+    load_kopernik_treatment_records,
+)
 from .plan_profiles import is_private_plan_profile, plan_profile_name
 from .prescription import (
     PRESCRIPTION_GROUP_FIELDS,
@@ -3299,6 +3305,20 @@ def organize_and_merge(
     """End-to-end RT organization and course merging according to config."""
     config.ensure_dirs()
 
+    clinical_record_index = None
+    clinical_source_path = getattr(
+        config, "clinical_prescription_records_path", None
+    )
+    if clinical_source_path is not None:
+        clinical_record_index = load_kopernik_treatment_records(
+            Path(clinical_source_path)
+        )
+        logger.info(
+            "Loaded %d auditable clinical treatment record(s) from %s",
+            clinical_record_index.row_count,
+            clinical_record_index.source_path,
+        )
+
     # Initialize copy manager for optimized DICOM copying
     copy_config = DicomCopyConfig(
         dedup_by_sop_uid=getattr(config, "dicom_copy_dedup_by_sop_uid", True),
@@ -3335,11 +3355,19 @@ def organize_and_merge(
             for checkpoint_entry in checkpoint_entries:
                 checkpoint_dir = Path(str(checkpoint_entry.get("course_dir") or ""))
                 checkpoint_key = str(checkpoint_entry.get("course_key") or checkpoint_dir.name)
-                if not checkpoint_dir.is_dir() or _hydrate_existing_course(
-                    checkpoint_patient,
-                    checkpoint_key,
-                    checkpoint_dir,
-                ) is None:
+                hydrated_checkpoint = (
+                    _hydrate_existing_course(
+                        checkpoint_patient,
+                        checkpoint_key,
+                        checkpoint_dir,
+                    )
+                    if checkpoint_dir.is_dir()
+                    else None
+                )
+                if hydrated_checkpoint is None or not clinical_evidence_matches_source(
+                    hydrated_checkpoint.course_contract,
+                    clinical_record_index,
+                ):
                     valid = False
                     break
             if valid:
@@ -5226,11 +5254,145 @@ def organize_and_merge(
                     prescribed_dose_scope = "COURSE_TOTAL_SUMMED"
                 else:
                     prescribed_dose_scope = "SINGLE_PLAN_TOTAL"
+            dicom_prescribed_dose_scope = prescribed_dose_scope
+            dicom_published_dose = _scope_aware_course_dose_publication(
+                prescribed_dose_scope=dicom_prescribed_dose_scope,
+                course_prescribed_dose_gy=candidate_prescribed_dose_gy,
+                course_resolved_prescribed_dose_total_gy=(
+                    candidate_resolved_prescribed_dose_total_gy
+                ),
+                plan_prescribed_dose_gy=(plan_total_rx if plan_total_rx > 0 else None),
+                plan_resolved_prescribed_dose_total_gy=plan_resolved_total_rx,
+                delivered_dose_gy=co.delivered_dose_gy,
+                delivery_status=co.delivery_status,
+                delivery_method=co.delivery_method,
+            )
+            dose_classification_contract = dict(co.dose_classification)
+            clinical_prescription_evidence = None
+            if clinical_record_index is not None:
+                plan_dates: set[str] = set()
+                treatment_dates: set[str] = set()
+                for item in co.per_plan_delivery_contract:
+                    treatment_dates.update(
+                        str(value)
+                        for value in item.get("treatment_dates", []) or []
+                        if str(value).strip()
+                    )
+                    plan_path = str(item.get("plan_path") or "")
+                    if not plan_path:
+                        continue
+                    try:
+                        plan_dataset = pydicom.dcmread(
+                            plan_path, stop_before_pixels=True, force=True
+                        )
+                    except Exception:
+                        continue
+                    plan_date = str(
+                        getattr(plan_dataset, "RTPlanDate", "") or ""
+                    ).strip()
+                    if plan_date:
+                        plan_dates.add(plan_date)
+                clinical_prescription_evidence = adjudicate_clinical_prescription(
+                    clinical_record_index,
+                    patient_id=co.patient_id,
+                    course_id=co.course_id,
+                    course_start_date=(
+                        start_date.isoformat()
+                        if start_date is not None
+                        else (co.course_start or "")
+                    ),
+                    course_end_date=(
+                        end_date.isoformat() if end_date is not None else ""
+                    ),
+                    plan_dates=sorted(plan_dates),
+                    treatment_dates=sorted(treatment_dates),
+                    dicom_resolved_total_gy=(
+                        dicom_published_dose[
+                            "resolved_prescribed_dose_total_gy"
+                        ]
+                    ),
+                    dicom_prescribed_dose_scope=dicom_prescribed_dose_scope,
+                    dicom_classification=str(
+                        co.dose_classification.get("classification") or ""
+                    )
+                    or None,
+                    per_plan_delivery=co.per_plan_delivery_contract,
+                )
+                clinical_prescription_evidence["dicom"]["delivery_status"] = (
+                    co.delivery_status
+                )
+                clinical_prescription_evidence["dicom"]["delivery_method"] = (
+                    co.delivery_method
+                )
+                clinical_prescription_evidence["dicom"]["delivered_dose_gy"] = (
+                    co.delivered_dose_gy
+                )
+                if (
+                    clinical_prescription_evidence.get("outcome")
+                    == "RESOLVED_FROM_CLINICAL_RECORD"
+                ):
+                    clinical_total = float(
+                        clinical_prescription_evidence[
+                            "clinical_resolved_total_gy"
+                        ]
+                    )
+                    candidate_prescribed_dose_gy = clinical_total
+                    candidate_resolved_prescribed_dose_total_gy = clinical_total
+                    prescribed_dose_scope = CLINICAL_RESOLVED_SCOPE
+                    dose_classification_contract[
+                        "dicom_prescribed_dose_scope"
+                    ] = dicom_prescribed_dose_scope
+                    dose_classification_contract[
+                        "prescribed_dose_scope"
+                    ] = prescribed_dose_scope
+                    phase_classification = clinical_prescription_evidence.get(
+                        "fractionation_classification"
+                    )
+                    if phase_classification:
+                        dose_classification_contract[
+                            "dicom_reason"
+                        ] = dose_classification_contract.get("reason")
+                        dose_classification_contract[
+                            "dicom_warnings"
+                        ] = list(dose_classification_contract.get("warnings") or [])
+                        dose_classification_contract[
+                            "dicom_classification"
+                        ] = dose_classification_contract.get("classification")
+                        dose_classification_contract["classification"] = (
+                            "TWO_FRACTIONATION_PHASES"
+                        )
+                        dose_classification_contract["reason"] = str(
+                            phase_classification.get("basis") or ""
+                        )
+                        dose_classification_contract["prescription_plan_uids"] = [
+                            str(item.get("plan_sop_uid") or "")
+                            for item in phase_classification.get(
+                                "phase_plan_bindings", []
+                            )
+                            if str(item.get("plan_sop_uid") or "")
+                        ]
+                        dose_classification_contract[
+                            "prescription_classification"
+                        ] = "two_fractionation_phases"
+                        dose_classification_contract[
+                            "clinical_fractionation_evidence"
+                        ] = phase_classification
+                        co.delivery_status = "fully_delivered"
+                        co.delivery_method = (
+                            "clinical_two_phase_fractionation_with_dicom_records"
+                        )
+                        warning = (
+                            "Clinical treatment record and delivered RTRECORD counts "
+                            "confirm two completed fractionation phases; superseded "
+                            "RTPLAN planned counts remain in per-plan evidence."
+                        )
+                        if warning not in co.delivery_warnings:
+                            co.delivery_warnings.append(warning)
             published_dose = _scope_aware_course_dose_publication(
                 prescribed_dose_scope=prescribed_dose_scope,
-                course_prescribed_dose_gy=co.total_prescription_gy,
+                course_prescribed_dose_gy=candidate_prescribed_dose_gy,
                 course_resolved_prescribed_dose_total_gy=(
-                    co.resolved_prescription_total_gy
+                    candidate_resolved_prescribed_dose_total_gy
                 ),
                 plan_prescribed_dose_gy=(plan_total_rx if plan_total_rx > 0 else None),
                 plan_resolved_prescribed_dose_total_gy=plan_resolved_total_rx,
@@ -5359,7 +5521,8 @@ def organize_and_merge(
                 "selected_plans": selected_plan_contract,
                 "selected_doses": selected_dose_contract,
                 "treatment_technique": treatment_technique_contract,
-                "dose_classification": co.dose_classification,
+                "dose_classification": dose_classification_contract,
+                "clinical_prescription_evidence": clinical_prescription_evidence,
                 "authoritative_rtstruct": authoritative_rtstruct,
                 "planning_ct": {
                     "status": co.planning_ct_status,
@@ -5393,6 +5556,13 @@ def organize_and_merge(
                     "method": co.delivery_method,
                     "dose_response_field": DOSE_RESPONSE_FIELD,
                     "dose_response_eligible": not prescribed_dose_scope.startswith("UNRESOLVED_"),
+                    "prescription_source": (
+                        "CLINICAL_RECORD"
+                        if prescribed_dose_scope == CLINICAL_RESOLVED_SCOPE
+                        else "DICOM"
+                        if resolved_prescribed_dose_total_gy is not None
+                        else None
+                    ),
                     "per_plan": per_plan_delivery_contract,
                     "warnings": co.delivery_warnings,
                     "unresolved_record_plan_uids": co.unresolved_record_plan_uids,
@@ -5430,6 +5600,24 @@ def organize_and_merge(
                 "prescribed_dose_scope": prescribed_dose_scope,
                 "resolved_prescribed_dose_total_gy": resolved_prescribed_dose_total_gy,
                 "dose_response_eligible": not prescribed_dose_scope.startswith("UNRESOLVED_"),
+                "prescription_source": (
+                    "CLINICAL_RECORD"
+                    if prescribed_dose_scope == CLINICAL_RESOLVED_SCOPE
+                    else "DICOM"
+                    if resolved_prescribed_dose_total_gy is not None
+                    else None
+                ),
+                "clinical_prescription_outcome": (
+                    clinical_prescription_evidence.get("outcome")
+                    if clinical_prescription_evidence is not None
+                    else None
+                ),
+                "clinical_prescription_reason": (
+                    clinical_prescription_evidence.get("reason")
+                    if clinical_prescription_evidence is not None
+                    else None
+                ),
+                "clinical_prescription_evidence": clinical_prescription_evidence,
                 "treatment_technique": treatment_technique_contract["classification"],
                 "treatment_technique_contract": treatment_technique_contract,
                 "delivered_dose_gy": co.delivered_dose_gy,
