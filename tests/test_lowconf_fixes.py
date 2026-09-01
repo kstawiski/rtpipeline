@@ -51,6 +51,18 @@ from rtpipeline.custom_models import (
 from rtpipeline.segmenters.nnunetv2_modelfolder import _temporary_env
 
 
+def _task_identity(source: str, roi_name: str) -> dict[str, str]:
+    return {
+        "patient_id": "P1",
+        "course_id": "2024-01",
+        "series_uid": "1.2.840.test.series",
+        "segmentation_source": source,
+        "mask_identity": f"1.2.840.test.mask.{source}",
+        "roi_original_name": roi_name,
+        "stable_roi_identifier": f"rtstruct_roi_number:{roi_name}",
+    }
+
+
 # ---------------------------------------------------------------------------
 # 5 - dicom_copy._try_hardlink atomic replace
 # ---------------------------------------------------------------------------
@@ -157,10 +169,26 @@ def test_prepare_radiomics_task_image_key_is_content_derived(tmp_path: Path) -> 
     course_dir.mkdir(parents=True)
 
     _, params_a = _prepare_radiomics_task(
-        img_a, mk_mask(), None, "source_a", "ROI", course_dir, tmp_path, False
+        img_a,
+        mk_mask(),
+        None,
+        "source_a",
+        "ROI",
+        course_dir,
+        tmp_path,
+        False,
+        source_identity=_task_identity("source_a", "ROI"),
     )
     _, params_b = _prepare_radiomics_task(
-        img_b, mk_mask(), None, "source_b", "ROI", course_dir, tmp_path, False
+        img_b,
+        mk_mask(),
+        None,
+        "source_b",
+        "ROI",
+        course_dir,
+        tmp_path,
+        False,
+        source_identity=_task_identity("source_b", "ROI"),
     )
 
     assert params_a["image_path"] == params_b["image_path"]
@@ -188,10 +216,26 @@ def test_prepare_radiomics_task_different_content_never_collides(tmp_path: Path)
     img2 = mk_image(2)
 
     _, params1 = _prepare_radiomics_task(
-        img1, mk_mask(), None, "s1", "ROI1", course_dir, tmp_path, False
+        img1,
+        mk_mask(),
+        None,
+        "s1",
+        "ROI1",
+        course_dir,
+        tmp_path,
+        False,
+        source_identity=_task_identity("s1", "ROI1"),
     )
     _, params2 = _prepare_radiomics_task(
-        img2, mk_mask(), None, "s2", "ROI2", course_dir, tmp_path, False
+        img2,
+        mk_mask(),
+        None,
+        "s2",
+        "ROI2",
+        course_dir,
+        tmp_path,
+        False,
+        source_identity=_task_identity("s2", "ROI2"),
     )
 
     assert params1["image_path"] != params2["image_path"]

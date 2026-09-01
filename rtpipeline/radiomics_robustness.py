@@ -36,6 +36,8 @@ Based on 2023-2025 radiomics stability research:
 from __future__ import annotations
 
 import logging
+import hashlib
+import json
 import os
 import shutil
 import tempfile
@@ -44,7 +46,7 @@ from dataclasses import dataclass, field
 from multiprocessing import get_context
 from multiprocessing import TimeoutError as MPTimeoutError
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional, Tuple
+from typing import Any, Dict, List, Literal, Mapping, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -53,9 +55,219 @@ import SimpleITK as sitk
 from .config import PipelineConfig
 from .course_contract import load_course_contract
 from .layout import build_course_dirs
+from .radiomics_ct_contract import read_authoritative_ct_publication
 from .rt_details import DEFAULT_ROI_FAMILY_NAMES
 
 logger = logging.getLogger(__name__)
+
+
+ROBUSTNESS_MEASUREMENT_TYPE = "segmentation_perturbation"
+ROBUSTNESS_SOURCE_IDENTITY_COLUMNS = (
+    "patient_id",
+    "course_id",
+    "series_uid",
+    "segmentation_source",
+    "mask_identity",
+    "roi_original_name",
+    "stable_roi_identifier",
+)
+ROBUSTNESS_PERTURBATION_IDENTITY_COLUMNS = (
+    "measurement_type",
+    "perturbation_id",
+    "perturbed_mask_identity",
+)
+
+
+class RobustnessIdentityError(RuntimeError):
+    """An individual robustness result cannot be traced to its source ROI."""
+
+
+@dataclass(frozen=True)
+class RobustnessRoiIdentity:
+    """Original ROI identity copied from the authoritative CT publication."""
+
+    patient_id: str
+    course_id: str
+    series_uid: str
+    segmentation_source: str
+    mask_identity: str
+    roi_original_name: str
+    stable_roi_identifier: str
+
+    @classmethod
+    def from_mapping(cls, values: Mapping[str, Any]) -> "RobustnessRoiIdentity":
+        normalized = {
+            column: str(values.get(column) or "").strip()
+            for column in ROBUSTNESS_SOURCE_IDENTITY_COLUMNS
+        }
+        missing = sorted(
+            column
+            for column, value in normalized.items()
+            if not value or value.lower() in {"nan", "none", "<na>"}
+        )
+        if missing:
+            raise ValueError(
+                "Original CT ROI identity is incomplete: " + ", ".join(missing)
+            )
+        return cls(**normalized)
+
+    def as_dict(self) -> Dict[str, str]:
+        return {
+            column: getattr(self, column)
+            for column in ROBUSTNESS_SOURCE_IDENTITY_COLUMNS
+        }
+
+    @property
+    def key(self) -> Tuple[str, str]:
+        return self.segmentation_source, self.roi_original_name
+
+
+def _perturbed_mask_identity(mask: sitk.Image) -> str:
+    """Return a geometry-bound digest for one perturbed binary mask."""
+    array = (sitk.GetArrayViewFromImage(mask) != 0).astype(np.uint8, copy=False)
+    geometry = {
+        "direction": [float(value) for value in mask.GetDirection()],
+        "origin": [float(value) for value in mask.GetOrigin()],
+        "size": [int(value) for value in mask.GetSize()],
+        "spacing": [float(value) for value in mask.GetSpacing()],
+    }
+    digest = hashlib.sha256()
+    digest.update(
+        json.dumps(geometry, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    )
+    digest.update(b"\0")
+    digest.update(array.tobytes(order="C"))
+    return f"sha256:{digest.hexdigest()}"
+
+
+def _identity_catalog_from_main_frame(
+    frame: pd.DataFrame,
+    *,
+    expected_patient_id: str,
+    expected_course_id: str,
+    expected_series_uid: str,
+) -> Tuple[
+    Dict[Tuple[str, str], RobustnessRoiIdentity],
+    Dict[Tuple[str, str], Dict[str, str]],
+]:
+    """Build a unique original-ROI catalog from main CT radiomics output."""
+    missing = sorted(set(ROBUSTNESS_SOURCE_IDENTITY_COLUMNS) - set(frame.columns))
+    if missing:
+        raise RuntimeError(
+            "Authoritative CT radiomics publication lacks identity columns: "
+            + ", ".join(missing)
+        )
+
+    catalog: Dict[Tuple[str, str], RobustnessRoiIdentity] = {}
+    issues: Dict[Tuple[str, str], Dict[str, str]] = {}
+    grouped = frame.groupby(
+        ["segmentation_source", "roi_original_name"],
+        sort=False,
+        dropna=False,
+    )
+    for raw_key, group in grouped:
+        key = tuple(str(value or "").strip() for value in raw_key)
+        try:
+            identities = {
+                RobustnessRoiIdentity.from_mapping(row)
+                for row in group[list(ROBUSTNESS_SOURCE_IDENTITY_COLUMNS)].to_dict(
+                    "records"
+                )
+            }
+        except ValueError as exc:
+            issues[key] = {
+                "reason_code": "main_radiomics_identity_incomplete",
+                "reason_detail": str(exc),
+            }
+            continue
+        if len(identities) != 1:
+            issues[key] = {
+                "reason_code": "main_radiomics_identity_ambiguous",
+                "reason_detail": (
+                    f"Main CT radiomics has {len(identities)} original identities "
+                    f"for {key[0]}/{key[1]}"
+                ),
+            }
+            continue
+        identity = next(iter(identities))
+        expected = {
+            "patient_id": str(expected_patient_id),
+            "course_id": str(expected_course_id),
+            "series_uid": str(expected_series_uid),
+        }
+        mismatches = [
+            f"{column}={getattr(identity, column)!r} expected {value!r}"
+            for column, value in expected.items()
+            if getattr(identity, column) != value
+        ]
+        if mismatches:
+            issues[key] = {
+                "reason_code": "main_radiomics_identity_course_mismatch",
+                "reason_detail": "; ".join(mismatches),
+            }
+            continue
+        catalog[key] = identity
+    return catalog, issues
+
+
+def _load_main_ct_identity_catalog(
+    course_dir: Path,
+    *,
+    expected_series_uid: str,
+) -> Tuple[
+    Dict[Tuple[str, str], RobustnessRoiIdentity],
+    Dict[Tuple[str, str], Dict[str, str]],
+]:
+    publication_path = course_dir / "radiomics_ct.parquet"
+    frame = read_authoritative_ct_publication(publication_path)
+    return _identity_catalog_from_main_frame(
+        frame,
+        expected_patient_id=course_dir.parent.name,
+        expected_course_id=course_dir.name,
+        expected_series_uid=expected_series_uid,
+    )
+
+
+def _write_robustness_identity_ledger(
+    course_dir: Path,
+    *,
+    selected_count: int,
+    rows: List[Dict[str, Any]],
+) -> Path:
+    """Atomically record resolved and excluded robustness ROI identities."""
+    path = course_dir / "metadata" / "radiomics_robustness_identity.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "schema_version": 1,
+        "patient_id": course_dir.parent.name,
+        "course_id": course_dir.name,
+        "identity_source": "radiomics_ct.parquet",
+        "selected_roi_count": int(selected_count),
+        "identity_resolved_roi_count": sum(
+            row.get("identity_status") == "resolved" for row in rows
+        ),
+        "identity_excluded_roi_count": sum(
+            row.get("identity_status") == "excluded" for row in rows
+        ),
+        "rows": rows,
+    }
+    fd, temp_name = tempfile.mkstemp(
+        dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_name, path)
+    except BaseException:
+        try:
+            os.unlink(temp_name)
+        except FileNotFoundError:
+            pass
+        raise
+    return path
 
 
 # ============================================================================
@@ -743,10 +955,57 @@ def _is_radiomics_feature_key(key: str) -> bool:
     )
 
 
+def _feature_rows_from_worker_result(result: Mapping[str, Any]) -> List[Dict[str, Any]]:
+    """Flatten one arm-aware worker result without dropping identity fields."""
+    rows: List[Dict[str, Any]] = []
+    for record in result.get("__records__", []):
+        metadata = {
+            "modality": record.get("modality", "CT"),
+            "roi_name": result.get("roi_name", record.get("roi_name", "")),
+            "perturbation_id": result.get("perturbation_id", ""),
+            "extraction_arm": record.get("extraction_arm", ""),
+            "measurement_type": record.get("measurement_type", ""),
+            "perturbed_mask_identity": record.get(
+                "perturbed_mask_identity", ""
+            ),
+            "roi_class": record.get("roi_class", ""),
+            "roi_class_map_version": record.get("roi_class_map_version", ""),
+            "roi_class_map_hash": record.get("roi_class_map_hash", ""),
+            "effective_parameter_hash": record.get(
+                "effective_parameter_hash", ""
+            ),
+            "configured_parameter_hash": record.get(
+                "configured_parameter_hash", ""
+            ),
+            "run_identifier": record.get("run_identifier", ""),
+        }
+        metadata.update(
+            {
+                column: record.get(column, "")
+                for column in ROBUSTNESS_SOURCE_IDENTITY_COLUMNS
+            }
+        )
+        for key, value in record.items():
+            if not _is_radiomics_feature_key(str(key)):
+                continue
+            scalar = _coerce_scalar_feature_value(str(key), value)
+            if scalar is not None:
+                rows.append(
+                    {
+                        **metadata,
+                        "feature_name": str(key),
+                        "value": scalar,
+                    }
+                )
+    return rows
+
+
 def _validate_extracted_feature_frame(
     frame: pd.DataFrame,
     expected_perturbation_ids: set[str],
     context: str,
+    *,
+    expected_source_identity: Optional[RobustnessRoiIdentity] = None,
 ) -> None:
     """Fail closed when any perturbation or feature extraction is incomplete."""
     if frame.empty:
@@ -754,27 +1013,55 @@ def _validate_extracted_feature_frame(
     if "extraction_arm" in frame.columns:
         from .radiomics_ct_contract import CT_EXTRACTION_ARMS
 
-        identity_columns = [
-            "patient_id",
-            "course_id",
-            "series_uid",
-            "segmentation_source",
-            "mask_identity",
-            "roi_original_name",
-            "stable_roi_identifier",
-            "extraction_arm",
-        ]
+        identity_columns = list(ROBUSTNESS_SOURCE_IDENTITY_COLUMNS) + list(
+            ROBUSTNESS_PERTURBATION_IDENTITY_COLUMNS
+        ) + ["extraction_arm"]
         missing_identity_columns = sorted(set(identity_columns) - set(frame.columns))
         if missing_identity_columns:
-            raise RuntimeError(
+            raise RobustnessIdentityError(
                 "CT robustness extraction lacks identity columns: "
                 + ", ".join(missing_identity_columns)
             )
-        blank_identity = frame[identity_columns].astype(str).apply(
-            lambda column: column.str.strip().eq("")
+        normalized_identity = frame[identity_columns].astype(str).apply(
+            lambda column: column.str.strip()
+        )
+        blank_identity = normalized_identity.apply(
+            lambda column: column.eq("")
+            | column.str.lower().isin({"nan", "none", "<na>"})
         )
         if bool(blank_identity.to_numpy().any()):
-            raise RuntimeError("CT robustness extraction has a blank arm-aware identity field")
+            raise RobustnessIdentityError(
+                "CT robustness extraction has a blank arm-aware identity field"
+            )
+        measurement_types = set(normalized_identity["measurement_type"])
+        if measurement_types != {ROBUSTNESS_MEASUREMENT_TYPE}:
+            raise RobustnessIdentityError(
+                "CT robustness rows have invalid measurement_type values: "
+                f"{sorted(measurement_types)}"
+            )
+        invalid_perturbed_identity = ~normalized_identity[
+            "perturbed_mask_identity"
+        ].str.fullmatch(r"sha256:[0-9a-f]{64}")
+        if bool(invalid_perturbed_identity.any()):
+            raise RobustnessIdentityError(
+                "CT robustness extraction has an invalid perturbed_mask_identity"
+            )
+        mask_identities_per_perturbation = frame.groupby("perturbation_id")[
+            "perturbed_mask_identity"
+        ].nunique(dropna=False)
+        if bool(mask_identities_per_perturbation.ne(1).any()):
+            raise RobustnessIdentityError(
+                "CT robustness extraction maps one perturbation to multiple perturbed masks"
+            )
+        if expected_source_identity is not None:
+            for column, expected_value in expected_source_identity.as_dict().items():
+                observed = set(normalized_identity[column])
+                if observed != {expected_value}:
+                    raise RobustnessIdentityError(
+                        f"CT robustness {column} disagrees with main radiomics for "
+                        f"{context}: observed={sorted(observed)!r}, "
+                        f"expected={expected_value!r}"
+                    )
 
         expected_ids: set[Any] = {
             (perturbation_id, arm)
@@ -840,6 +1127,7 @@ def extract_features_for_masks(
     perturbed_images: Optional[Dict[str, sitk.Image]] = None,
     segmentation_source: str = "Manual",
     run_identifier: Optional[str] = None,
+    source_identity: Optional[RobustnessRoiIdentity] = None,
 ) -> pd.DataFrame:
     """
     Extract radiomics features for multiple mask variants.
@@ -853,6 +1141,7 @@ def extract_features_for_masks(
         patient_id: Patient identifier
         course_id: Course identifier
         perturbed_images: Optional dictionary of {perturbation_id: perturbed_image} for noise perturbations
+        source_identity: Original CT ROI identity from ``radiomics_ct.parquet``
 
     Returns:
         Tidy DataFrame with columns [patient_id, course_id, structure, perturbation_id, feature_name, value]
@@ -861,12 +1150,18 @@ def extract_features_for_masks(
 
     rows = []
 
+    if modality == "CT" and source_identity is None:
+        raise RuntimeError(
+            f"CT robustness identity is unavailable for "
+            f"{segmentation_source}/{structure_name}"
+        )
+
     # Check once whether we need the conda fallback
     ext_probe = _extractor(config, modality)
     use_conda = ext_probe is None
 
     if modality == "CT":
-        import hashlib
+        identity_failures: Dict[str, str] = {}
         from .radiomics_ct_contract import (
             CT_EXTRACTION_ARMS,
             PRIMARY_ARM,
@@ -877,6 +1172,28 @@ def extract_features_for_masks(
             load_custom_structure_provenance,
             new_run_identifier,
         )
+
+        assert source_identity is not None
+        expected_context = {
+            "patient_id": patient_id,
+            "course_id": course_id,
+            "segmentation_source": segmentation_source,
+            "roi_original_name": structure_name,
+        }
+        mismatches = [
+            f"{column}={getattr(source_identity, column)!r} expected {value!r}"
+            for column, value in expected_context.items()
+            if getattr(source_identity, column) != str(value)
+        ]
+        if mismatches:
+            raise RuntimeError(
+                "CT robustness source identity does not match extraction context: "
+                + "; ".join(mismatches)
+            )
+        perturbed_mask_identities = {
+            perturbation_id: _perturbed_mask_identity(mask)
+            for perturbation_id, mask in masks.items()
+        }
 
         params_path = _get_params_file(config, "CT")
         custom_path = getattr(config, "custom_structures_config", None)
@@ -902,17 +1219,23 @@ def extract_features_for_masks(
 
         def _append_records(records: List[Dict[str, Any]], perturbation_id: str) -> None:
             for record in records:
+                for column, expected_value in source_identity.as_dict().items():
+                    observed_value = str(record.get(column) or "").strip()
+                    if observed_value != expected_value:
+                        raise RobustnessIdentityError(
+                            f"CT robustness worker {column} disagrees with main "
+                            f"radiomics for {segmentation_source}/{structure_name}: "
+                            f"observed={observed_value!r}, expected={expected_value!r}"
+                        )
                 metadata = {
-                    "patient_id": patient_id,
-                    "course_id": course_id,
+                    **source_identity.as_dict(),
                     "modality": "CT",
                     "structure": structure_name,
-                    "segmentation_source": segmentation_source,
                     "perturbation_id": perturbation_id,
-                    "series_uid": record.get("series_uid", ""),
-                    "mask_identity": record.get("mask_identity", ""),
-                    "roi_original_name": record.get("roi_original_name", structure_name),
-                    "stable_roi_identifier": record.get("stable_roi_identifier", ""),
+                    "measurement_type": ROBUSTNESS_MEASUREMENT_TYPE,
+                    "perturbed_mask_identity": perturbed_mask_identities[
+                        perturbation_id
+                    ],
                     "extraction_arm": record.get("extraction_arm", ""),
                     "roi_class": record.get("roi_class", ""),
                     "roi_map_version": record.get("roi_map_version", ""),
@@ -946,9 +1269,6 @@ def extract_features_for_masks(
                     mask_path = Path(tmp_dir) / f"mask_{len(batch_tasks)}.nrrd"
                     sitk.WriteImage(current_image, str(image_path))
                     sitk.WriteImage(sitk.Cast(mask, sitk.sitkUInt8), str(mask_path))
-                    mask_digest = hashlib.sha256(
-                        sitk.GetArrayViewFromImage(mask).tobytes()
-                    ).hexdigest()
                     batch_tasks.append({
                         "image_path": str(image_path),
                         "mask_path": str(mask_path),
@@ -964,13 +1284,7 @@ def extract_features_for_masks(
                             "primary_intensity_texture_disposition": decision.primary_intensity_texture_disposition,
                         },
                         "metadata": {
-                            "patient_id": patient_id,
-                            "course_id": course_id,
-                            "series_uid": f"robustness:{course_id}",
-                            "segmentation_source": segmentation_source,
-                            "mask_identity": mask_digest,
-                            "roi_original_name": structure_name,
-                            "stable_roi_identifier": structure_name,
+                            **source_identity.as_dict(),
                             "roi_name": structure_name,
                             "modality": "CT",
                         },
@@ -992,7 +1306,16 @@ def extract_features_for_masks(
                             f"{result.get('__error__', result.get('__reason__', 'unknown error'))}"
                         )
                     perturbation_id = task["roi_name"].split("/", 1)[1]
-                    _append_records(result["__records__"], perturbation_id)
+                    try:
+                        _append_records(result["__records__"], perturbation_id)
+                    except RobustnessIdentityError as exc:
+                        identity_failures[perturbation_id] = str(exc)
+                        logger.warning(
+                            "Excluding robustness perturbation %s/%s for identity failure: %s",
+                            structure_name,
+                            perturbation_id,
+                            exc,
+                        )
             finally:
                 shutil.rmtree(tmp_dir, ignore_errors=True)
         else:
@@ -1009,22 +1332,13 @@ def extract_features_for_masks(
                     perturbed_images.get(perturbation_id, image)
                     if perturbed_images else image
                 )
-                mask_digest = hashlib.sha256(
-                    sitk.GetArrayViewFromImage(mask).tobytes()
-                ).hexdigest()
                 records = extract_ct_roi_arms(
                     current_image,
                     mask,
                     factory=_factory,
                     decision=decision,
                     common_metadata={
-                        "patient_id": patient_id,
-                        "course_id": course_id,
-                        "series_uid": f"robustness:{course_id}",
-                        "segmentation_source": segmentation_source,
-                        "mask_identity": mask_digest,
-                        "roi_original_name": structure_name,
-                        "stable_roi_identifier": structure_name,
+                        **source_identity.as_dict(),
                         "roi_name": structure_name,
                         "modality": "CT",
                     },
@@ -1034,9 +1348,32 @@ def extract_features_for_masks(
                     required=False,
                     configured_parameter_hashes=configured_hashes,
                 )
-                _append_records(records, perturbation_id)
+                try:
+                    _append_records(records, perturbation_id)
+                except RobustnessIdentityError as exc:
+                    identity_failures[perturbation_id] = str(exc)
+                    logger.warning(
+                        "Excluding robustness perturbation %s/%s for identity failure: %s",
+                        structure_name,
+                        perturbation_id,
+                        exc,
+                    )
+        if identity_failures:
+            rows = [
+                row
+                for row in rows
+                if str(row.get("perturbation_id", "")) not in identity_failures
+            ]
         frame = pd.DataFrame(rows)
-        _validate_extracted_feature_frame(frame, set(masks), structure_name)
+        valid_perturbations = set(masks) - set(identity_failures)
+        if valid_perturbations:
+            _validate_extracted_feature_frame(
+                frame,
+                valid_perturbations,
+                structure_name,
+                expected_source_identity=source_identity,
+            )
+        frame.attrs["identity_failures"] = dict(identity_failures)
         return frame
 
     if use_conda:
@@ -1950,6 +2287,7 @@ def robustness_for_course(
     Run radiomics robustness analysis for a single course.
 
     Collects masks from multiple sources:
+    - Contracted manual RTSTRUCT
     - TotalSegmentator (RS_auto.dcm)
     - Custom structures (RS_custom.dcm)
     - Custom models (Segmentation_{model_name}/rtstruct.dcm)
@@ -2000,15 +2338,59 @@ def robustness_for_course(
         logger.warning("No CT image found for robustness analysis in %s", course_dir)
         return None
 
+    series_uid = str(
+        contract.planning_ct.get("series_instance_uid") or ""
+    ).strip()
+    if not series_uid:
+        raise RuntimeError(
+            f"Planning CT contract has no SeriesInstanceUID for robustness in {course_dir}"
+        )
+    identity_catalog, identity_catalog_issues = _load_main_ct_identity_catalog(
+        course_dir,
+        expected_series_uid=series_uid,
+    )
+
     # ========================================================================
     # Collect masks from all segmentation sources
     # ========================================================================
-    from .radiomics import _rtstruct_masks
+    from .radiomics import _rtstruct_masks, _standard_rtstruct_sources
     from .custom_models import list_custom_model_outputs
     from fnmatch import fnmatch
 
     # Dictionary: {(roi_name, source): mask_array}
     all_masks: Dict[Tuple[str, str], np.ndarray] = {}
+    unresolved_selected_identities: Dict[Tuple[str, str], Dict[str, str]] = {}
+
+    def _matches_robustness_pattern(roi_name: str) -> bool:
+        return any(
+            fnmatch(roi_name.upper(), pattern.upper())
+            for pattern in rob_config.perturbation.apply_to_structures
+        )
+
+    def _register_mask(
+        roi_name: str,
+        source: str,
+        mask_array: np.ndarray,
+        *,
+        report_missing_identity: bool = True,
+    ) -> bool:
+        """Register only masks with a unique main-radiomics identity."""
+        key = (source, roi_name)
+        if key in identity_catalog:
+            all_masks[(roi_name, source)] = mask_array
+            return True
+        if report_missing_identity and _matches_robustness_pattern(roi_name):
+            unresolved_selected_identities[key] = identity_catalog_issues.get(
+                key,
+                {
+                    "reason_code": "identity_absent_from_main_radiomics",
+                    "reason_detail": (
+                        f"No authoritative CT radiomics identity for "
+                        f"{source}/{roi_name}"
+                    ),
+                },
+            )
+        return False
 
     if _use_nifti_masks:
         # Load masks directly from NIfTI segmentation files (no DICOM needed)
@@ -2032,8 +2414,9 @@ def robustness_for_course(
                             mask_img, ct_image, sitk.Transform(),
                             sitk.sitkNearestNeighbor, 0)
                     mask_array = sitk.GetArrayFromImage(mask_img).astype(bool)
-                    if mask_array.any():
-                        all_masks[(roi_name, "AutoRTS_total")] = mask_array
+                    if mask_array.any() and _register_mask(
+                        roi_name, "AutoRTS_total", mask_array
+                    ):
                         loaded += 1
                 except Exception as e:
                     logger.debug("Failed to load seg mask %s: %s", seg_file.name, e)
@@ -2057,51 +2440,79 @@ def robustness_for_course(
                                 mask_img, ct_image, sitk.Transform(),
                                 sitk.sitkNearestNeighbor, 0)
                         mask_array = sitk.GetArrayFromImage(mask_img).astype(bool)
-                        if mask_array.any():
-                            all_masks[(roi_name, f"CustomModel:{model_dir.name}")] = mask_array
+                        if mask_array.any() and _register_mask(
+                            roi_name,
+                            f"CustomModel:{model_dir.name}",
+                            mask_array,
+                        ):
                             loaded += 1
                     except Exception as e:
                         logger.debug("Failed to load custom mask %s: %s", seg_file.name, e)
             if loaded:
                 logger.info("Loaded %d structures from custom model NIfTI files", loaded)
     else:
-        # Standard DICOM-based mask loading
-        # 1. TotalSegmentator (RS_auto.dcm)
-        rs_auto = course_dir / "RS_auto.dcm"
-        if rs_auto.exists():
-            assert ct_dir is not None
-            ts_masks = _rtstruct_masks(ct_dir, rs_auto)
-            for roi_name, mask_array in ts_masks.items():
-                all_masks[(roi_name, "AutoRTS_total")] = mask_array
-            logger.info("Loaded %d structures from TotalSegmentator", len(ts_masks))
-        else:
-            logger.info("RS_auto.dcm not found")
+        # Use the same contracted standard-source resolver as main CT radiomics.
+        # This includes Manual and a provenance-current AutoRTS source.
+        assert ct_dir is not None
+        for source, rtstruct_path, expected_rois in _standard_rtstruct_sources(
+            contract, course_dir
+        ):
+            source_masks = _rtstruct_masks(ct_dir, rtstruct_path)
+            allowed_names = set(expected_rois) if expected_rois else None
+            loaded = 0
+            for roi_name, mask_array in source_masks.items():
+                if allowed_names is not None and roi_name not in allowed_names:
+                    continue
+                if _register_mask(roi_name, source, mask_array):
+                    loaded += 1
+            logger.info(
+                "Loaded %d identity-matched structures from %s",
+                loaded,
+                source,
+            )
 
-        # 2. Custom structures (RS_custom.dcm)
+        # RS_custom contains copied Manual/Auto support ROIs. Only identities
+        # published as Custom by the main path are independent Custom ROIs.
         rs_custom = course_dir / "RS_custom.dcm"
         if rs_custom.exists():
-            assert ct_dir is not None
             custom_masks = _rtstruct_masks(ct_dir, rs_custom)
+            loaded = 0
             for roi_name, mask_array in custom_masks.items():
-                all_masks[(roi_name, "Custom")] = mask_array
-            logger.info("Loaded %d structures from custom structures", len(custom_masks))
+                if _register_mask(
+                    roi_name,
+                    "Custom",
+                    mask_array,
+                    report_missing_identity=True,
+                ):
+                    loaded += 1
+            logger.info(
+                "Loaded %d identity-matched custom structures from %d RS_custom ROIs",
+                loaded,
+                len(custom_masks),
+            )
         else:
             logger.debug("RS_custom.dcm not found")
 
-    # 3. Custom models (DICOM path — skipped in NIfTI mode, handled above)
+    # Custom models (DICOM path, skipped in NIfTI mode and handled above).
     if not _use_nifti_masks:
-      try:
-        for model_name, model_dir in list_custom_model_outputs(course_dir):
-            rs_model = model_dir / "rtstruct.dcm"
-            if rs_model.exists():
-                assert ct_dir is not None
-                model_masks = _rtstruct_masks(ct_dir, rs_model)
-                source_label = f"CustomModel:{model_name}"
-                for roi_name, mask_array in model_masks.items():
-                    all_masks[(roi_name, source_label)] = mask_array
-                logger.info("Loaded %d structures from custom model '%s'", len(model_masks), model_name)
-      except Exception as e:
-        logger.debug("Failed to load custom model outputs: %s", e)
+        try:
+            for model_name, model_dir in list_custom_model_outputs(course_dir):
+                rs_model = model_dir / "rtstruct.dcm"
+                if rs_model.exists():
+                    assert ct_dir is not None
+                    model_masks = _rtstruct_masks(ct_dir, rs_model)
+                    source_label = f"CustomModel:{model_name}"
+                    loaded = 0
+                    for roi_name, mask_array in model_masks.items():
+                        if _register_mask(roi_name, source_label, mask_array):
+                            loaded += 1
+                    logger.info(
+                        "Loaded %d identity-matched structures from custom model '%s'",
+                        loaded,
+                        model_name,
+                    )
+        except Exception as e:
+            logger.debug("Failed to load custom model outputs: %s", e)
 
     # NIfTI fallback: if DICOM-based mask loading returned 0 masks, try NIfTI
     if not all_masks and not _use_nifti_masks:
@@ -2128,33 +2539,105 @@ def robustness_for_course(
                             mask_img, ct_image, sitk.Transform(),
                             sitk.sitkNearestNeighbor, 0)
                     mask_array = sitk.GetArrayFromImage(mask_img).astype(bool)
-                    if mask_array.any():
-                        all_masks[(roi_name, "AutoRTS_total")] = mask_array
+                    if mask_array.any() and _register_mask(
+                        roi_name, "AutoRTS_total", mask_array
+                    ):
                         loaded += 1
                 except Exception as e:
                     logger.debug("Failed to load seg mask %s: %s", seg_file.name, e)
             logger.info("NIfTI fallback: loaded %d structures from segmentation files", loaded)
 
-    if not all_masks:
-        logger.warning("No masks found from any source for %s", course_dir)
-        return None
-
-    logger.info("Total masks collected: %d from %d unique sources",
-                len(all_masks), len(set(source for _, source in all_masks.keys())))
+    logger.info(
+        "Total identity-matched masks collected: %d from %d unique sources",
+        len(all_masks),
+        len(set(source for _, source in all_masks.keys())),
+    )
 
     # ========================================================================
-    # Filter structures based on configuration patterns
+    # Filter structures and resolve identities before perturbation compute
     # ========================================================================
-    selected_structures: List[Tuple[str, str]] = []  # [(roi_name, source), ...]
+    selected_structures: List[Tuple[str, str]] = []
+    identity_ledger_rows: List[Dict[str, Any]] = []
 
-    for (roi_name, source), mask_array in all_masks.items():
-        for pattern in rob_config.perturbation.apply_to_structures:
-            if fnmatch(roi_name.upper(), pattern.upper()):
-                selected_structures.append((roi_name, source))
-                break
+    def _record_identity_failure(
+        source: str,
+        roi_name: str,
+        perturbation_id: str,
+        reason_detail: str,
+    ) -> None:
+        identity_failed_perturbations[(roi_name, source, perturbation_id)] = reason_detail
+        identity_ledger_rows.append(
+            {
+                "segmentation_source": source,
+                "roi_original_name": roi_name,
+                "identity_status": "excluded",
+                "measurement_type": ROBUSTNESS_MEASUREMENT_TYPE,
+                "perturbation_id": perturbation_id,
+                "reason_code": "perturbation_identity_validation_failed",
+                "reason_detail": reason_detail,
+            }
+        )
+        logger.warning(
+            "Excluding robustness perturbation %s/%s/%s for identity failure: %s",
+            source,
+            roi_name,
+            perturbation_id,
+            reason_detail,
+        )
+
+    for roi_name, source in all_masks:
+        if not _matches_robustness_pattern(roi_name):
+            continue
+        selected_structures.append((roi_name, source))
+        identity = identity_catalog[(source, roi_name)]
+        identity_ledger_rows.append(
+            {
+                "segmentation_source": source,
+                "roi_original_name": roi_name,
+                "identity_status": "resolved",
+                "measurement_type": ROBUSTNESS_MEASUREMENT_TYPE,
+                **identity.as_dict(),
+            }
+        )
+
+    for (source, roi_name), issue in sorted(
+        unresolved_selected_identities.items()
+    ):
+        identity_ledger_rows.append(
+            {
+                "segmentation_source": source,
+                "roi_original_name": roi_name,
+                "identity_status": "excluded",
+                "measurement_type": ROBUSTNESS_MEASUREMENT_TYPE,
+                **issue,
+            }
+        )
+        logger.warning(
+            "Excluding robustness ROI %s/%s before perturbation: %s (%s)",
+            source,
+            roi_name,
+            issue["reason_code"],
+            issue["reason_detail"],
+        )
+
+    if identity_ledger_rows:
+        _write_robustness_identity_ledger(
+            course_dir,
+            selected_count=len(identity_ledger_rows),
+            rows=identity_ledger_rows,
+        )
 
     if not selected_structures:
-        logger.info("No structures matched robustness patterns; skipping %s", course_dir)
+        if unresolved_selected_identities:
+            logger.warning(
+                "No robustness ROI has publishable identity for %s",
+                course_dir,
+            )
+        else:
+            logger.info(
+                "No structures matched robustness patterns; skipping %s",
+                course_dir,
+            )
         return None
 
     logger.info("Selected %d structure(s) for robustness analysis:", len(selected_structures))
@@ -2188,6 +2671,7 @@ def robustness_for_course(
     from .radiomics_ct_contract import CT_EXTRACTION_ARMS, new_run_identifier
     robustness_run_identifier = new_run_identifier()
     expected_perturbations: Dict[Tuple[str, str], set[str]] = {}
+    identity_failed_perturbations: Dict[Tuple[str, str, str], str] = {}
     
     # Prepare tasks for parallel execution
     tasks = []
@@ -2259,6 +2743,7 @@ def robustness_for_course(
                             temp_dir,
                             False,
                             robustness_run_identifier,
+                            identity_catalog[(source, roi_name)].as_dict(),
                         )
                         # Add perturbation-specific metadata to extra_metadata
                         task_params['extra_metadata'] = {'perturbation_id': pert_id}
@@ -2281,7 +2766,17 @@ def robustness_for_course(
                     perturbed_images=perturbed_images,
                     segmentation_source=source,
                     run_identifier=robustness_run_identifier,
+                    source_identity=identity_catalog[(source, roi_name)],
                 )
+                for perturbation_id, reason_detail in features_df.attrs.get(
+                    "identity_failures", {}
+                ).items():
+                    _record_identity_failure(
+                        source, roi_name, perturbation_id, str(reason_detail)
+                    )
+                    expected_perturbations[(roi_name, source)].discard(
+                        perturbation_id
+                    )
                 if not features_df.empty:
                     features_df["segmentation_source"] = source
                     all_features.append(features_df)
@@ -2368,46 +2863,50 @@ def robustness_for_course(
                     # Process result if we got one
 
                     if result:
-                        records = result.get("__records__", [])
-                        rows = []
-                        for record in records:
-                            metadata = {
-                                "modality": record.get("modality", "CT"),
-                                "segmentation_source": result.get("segmentation_source", ""),
-                                "roi_name": result.get("roi_name", ""),
-                                "patient_id": result.get("patient_id", ""),
-                                "course_id": result.get("course_id", ""),
-                                "perturbation_id": result.get("perturbation_id", ""),
-                                "extraction_arm": record.get("extraction_arm", ""),
-                                "roi_class": record.get("roi_class", ""),
-                                "roi_class_map_version": record.get("roi_class_map_version", ""),
-                                "roi_class_map_hash": record.get("roi_class_map_hash", ""),
-                                "effective_parameter_hash": record.get("effective_parameter_hash", ""),
-                                "configured_parameter_hash": record.get("configured_parameter_hash", ""),
-                                "run_identifier": record.get("run_identifier", ""),
-                            }
-                            for key, value in record.items():
-                                if not _is_radiomics_feature_key(str(key)):
-                                    continue
-                                scalar = _coerce_scalar_feature_value(str(key), value)
-                                if scalar is not None:
-                                    rows.append({
-                                        **metadata,
-                                        "feature_name": str(key),
-                                        "value": scalar,
-                                    })
-                            if any(
-                                row["extraction_arm"] == metadata["extraction_arm"]
-                                for row in rows
-                            ):
-                                successful_task_keys.add((
-                                    str(metadata["roi_name"]),
-                                    str(metadata["segmentation_source"]),
-                                    str(metadata["perturbation_id"]),
-                                    str(metadata["extraction_arm"]),
-                                ))
+                        rows = _feature_rows_from_worker_result(result)
                         if rows:
-                            all_features.append(pd.DataFrame(rows))
+                            result_frame = pd.DataFrame(rows)
+                            roi_name = str(result.get("roi_name", ""))
+                            source = str(result.get("segmentation_source", ""))
+                            perturbation_id = str(result.get("perturbation_id", ""))
+                            if (roi_name, source, perturbation_id) in identity_failed_perturbations:
+                                continue
+                            source_identity = identity_catalog.get((source, roi_name))
+                            try:
+                                if source_identity is None:
+                                    raise RobustnessIdentityError(
+                                        "Robustness worker result has no authoritative "
+                                        f"identity for {source}/{roi_name}"
+                                    )
+                                _validate_extracted_feature_frame(
+                                    result_frame,
+                                    {perturbation_id},
+                                    f"{source}/{roi_name}/{perturbation_id}",
+                                    expected_source_identity=source_identity,
+                                )
+                            except RobustnessIdentityError as exc:
+                                _record_identity_failure(
+                                    source, roi_name, perturbation_id, str(exc)
+                                )
+                                task_key = (roi_name, source, perturbation_id)
+                                expected_perturbations.get(
+                                    (roi_name, source), set()
+                                ).discard(perturbation_id)
+                                for arm in CT_EXTRACTION_ARMS:
+                                    successful_task_keys.discard((*task_key, arm))
+                                continue
+                            for extraction_arm in result_frame[
+                                "extraction_arm"
+                            ].astype(str).unique():
+                                successful_task_keys.add(
+                                    (
+                                        roi_name,
+                                        source,
+                                        perturbation_id,
+                                        extraction_arm,
+                                    )
+                                )
+                            all_features.append(result_frame)
                         else:
                             logger.error(
                                 "Robustness worker returned no scalar features for %s/%s "
@@ -2451,6 +2950,13 @@ def robustness_for_course(
             except Exception as e:
                 logger.debug("Failed to clean up temp dir %s: %s", temp_dir, e)
 
+    if identity_failed_perturbations:
+        _write_robustness_identity_ledger(
+            course_dir,
+            selected_count=len(identity_ledger_rows),
+            rows=identity_ledger_rows,
+        )
+
     if not all_features:
         logger.warning("No features extracted for robustness analysis in %s", course_dir)
         return None
@@ -2459,7 +2965,21 @@ def robustness_for_course(
     combined_df = pd.concat(all_features, ignore_index=True)
     if "roi_name" in combined_df.columns and "structure" not in combined_df.columns:
         combined_df.rename(columns={"roi_name": "structure"}, inplace=True)
+    if identity_failed_perturbations:
+        failed_keys = set(identity_failed_perturbations)
+        combined_df = combined_df.loc[
+            ~combined_df.apply(
+                lambda row: (
+                    str(row.get("structure", "")),
+                    str(row.get("segmentation_source", "")),
+                    str(row.get("perturbation_id", "")),
+                ) in failed_keys,
+                axis=1,
+            )
+        ].reset_index(drop=True)
     for (roi_name, source), expected_ids in expected_perturbations.items():
+        if not expected_ids:
+            continue
         group = combined_df[
             (combined_df["structure"].astype(str) == str(roi_name))
             & (combined_df["segmentation_source"].astype(str) == str(source))
@@ -2468,6 +2988,7 @@ def robustness_for_course(
             group,
             expected_ids,
             f"{source}/{roi_name}",
+            expected_source_identity=identity_catalog[(source, roi_name)],
         )
 
     # Save raw feature values for aggregation stage
