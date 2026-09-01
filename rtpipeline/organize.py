@@ -44,6 +44,7 @@ from .course_contract import (
     CourseContractError,
     _ct_provenance,
     build_dvh_decision,
+    build_treatment_technique_contract,
     load_course_contract,
     relative_contract_path,
     validate_course_contract,
@@ -5144,6 +5145,10 @@ def organize_and_merge(
                 str(item.get("sop_instance_uid") or "")
                 for item in selected_plan_contract
             ]
+            treatment_technique_contract = build_treatment_technique_contract(
+                [Path(str(item["path"])) for item in co.selected_plan_contract],
+                course_dir=patient_dir,
+            )
             selected_dose_uids = [
                 str(item.get("sop_instance_uid") or "")
                 for item in selected_dose_contract
@@ -5251,6 +5256,7 @@ def organize_and_merge(
                 "course_key": co.course_key,
                 "selected_plans": selected_plan_contract,
                 "selected_doses": selected_dose_contract,
+                "treatment_technique": treatment_technique_contract,
                 "dose_classification": co.dose_classification,
                 "authoritative_rtstruct": authoritative_rtstruct,
                 "planning_ct": {
@@ -5322,6 +5328,8 @@ def organize_and_merge(
                 "prescribed_dose_scope": prescribed_dose_scope,
                 "resolved_prescribed_dose_total_gy": resolved_prescribed_dose_total_gy,
                 "dose_response_eligible": not prescribed_dose_scope.startswith("UNRESOLVED_"),
+                "treatment_technique": treatment_technique_contract["classification"],
+                "treatment_technique_contract": treatment_technique_contract,
                 "delivered_dose_gy": co.delivered_dose_gy,
                 "delivery_status": co.delivery_status,
                 "delivery_method": co.delivery_method,

@@ -98,6 +98,67 @@ def _target_references(ds_plan: Dataset) -> list[dict[str, Any]]:
     return references
 
 
+def _brachy_application_setup_prescription(
+    ds_plan: Dataset,
+) -> dict[str, Any] | None:
+    """Return the plan-level HDR setup dose when no target dose reference exists."""
+    setups = list(getattr(ds_plan, "BrachyApplicationSetupSequence", None) or [])
+    setup_by_number = {
+        _text(getattr(setup, "BrachyApplicationSetupNumber", None)): setup
+        for setup in setups
+    }
+    values: list[tuple[Decimal, str]] = []
+    references = []
+    for group_index, group in enumerate(
+        getattr(ds_plan, "FractionGroupSequence", None) or []
+    ):
+        for reference_index, reference in enumerate(
+            getattr(group, "ReferencedBrachyApplicationSetupSequence", None) or []
+        ):
+            number = _text(
+                getattr(reference, "ReferencedBrachyApplicationSetupNumber", None)
+            )
+            references.append((group_index, reference_index, number, reference))
+    referenced_numbers = {number for _gi, _ri, number, _reference in references if number}
+    for setup_index, setup in enumerate(setups):
+        number = _text(getattr(setup, "BrachyApplicationSetupNumber", None))
+        if referenced_numbers and number not in referenced_numbers:
+            continue
+        dose = _positive_decimal(getattr(setup, "BrachyApplicationSetupDose", None))
+        if dose is not None:
+            values.append(
+                (
+                    dose,
+                    f"BrachyApplicationSetupSequence[{setup_index}].BrachyApplicationSetupDose",
+                )
+            )
+    for group_index, reference_index, number, reference in references:
+        setup = setup_by_number.get(number)
+        dose = _positive_decimal(
+            getattr(setup or reference, "BrachyApplicationSetupDose", None)
+        )
+        if dose is not None and not setup:
+            values.append(
+                (
+                    dose,
+                    "FractionGroupSequence[{}].ReferencedBrachyApplicationSetupSequence"
+                    "[{}].BrachyApplicationSetupDose".format(group_index, reference_index),
+                )
+            )
+    if not values:
+        return None
+    return {
+        "item": None,
+        "index": None,
+        "source": sum((dose for dose, _tag_path in values), Decimal("0")),
+        "number": None,
+        "uid": None,
+        "structure_type": "SITE",
+        "description": "Brachytherapy application setup dose",
+        "tag_path": ";".join(tag_path for _dose, tag_path in values),
+    }
+
+
 def contracted_source_prescription(
     ds_plan: Dataset,
     *,
@@ -435,6 +496,9 @@ def resolve_plan_prescriptions(
         source_dose_reference_number=source_dose_reference_number,
         source_dose_reference_uid=source_dose_reference_uid,
     )
+    brachy_source = _brachy_application_setup_prescription(ds_plan)
+    if source is None and brachy_source is not None:
+        source = brachy_source
     if not fraction_groups:
         return [
             _unresolved_group(
@@ -463,6 +527,51 @@ def resolve_plan_prescriptions(
                     reason="no contracted target TargetPrescriptionDose is available",
                 )
             )
+            continue
+
+        # Brachytherapy application setup dose is a plan-level dose, not BeamDose.
+        # Resolve it only for a single planned application. Multi-fraction scope
+        # remains explicit and unresolved rather than borrowing EBRT arithmetic.
+        if brachy_source is not None and not getattr(
+            fraction_group, "ReferencedBeamSequence", None
+        ):
+            if planned_fractions == 1:
+                results.append(
+                    {
+                        "source_prescribed_dose_gy": _json_number(source["source"]),
+                        "source_prescribed_dose_tag_path": source["tag_path"],
+                        "source_dose_reference_number": source["number"],
+                        "source_dose_reference_uid": source["uid"],
+                        "source_dose_reference_structure_type": source.get("structure_type"),
+                        "source_dose_reference_description": source.get("description"),
+                        "fraction_group_number": fraction_group_number,
+                        "planned_fractions": planned_fractions,
+                        "beam_dose_sum_per_fraction_gy": None,
+                        "prescribed_dose_scope": "TOTAL",
+                        "resolved_prescribed_dose_per_fraction_gy": _json_number(source["source"]),
+                        "resolved_prescribed_dose_total_gy": _json_number(source["source"]),
+                        "prescription_resolution_method": "BRACHY_APPLICATION_SETUP_DOSE_V1",
+                        "prescription_resolution_status": "TOTAL_CONFIRMED",
+                        "beam_dose_target_binding": "BRACHY_APPLICATION_SETUP",
+                        "prescription_resolution_details": {
+                            "tag_path": source["tag_path"],
+                            "reason": "single-fraction BrachyApplicationSetupDose used as plan total",
+                        },
+                    }
+                )
+            else:
+                results.append(
+                    _unresolved_group(
+                        source=source,
+                        fraction_group_number=fraction_group_number,
+                        planned_fractions=planned_fractions,
+                        method="UNRESOLVED_BRACHY_FRACTION_SCOPE",
+                        reason=(
+                            "BrachyApplicationSetupDose is available, but its total versus "
+                            "per-fraction scope is unresolved for multiple planned fractions"
+                        ),
+                    )
+                )
             continue
 
         matching_group_references: list[tuple[int, Dataset]] = []

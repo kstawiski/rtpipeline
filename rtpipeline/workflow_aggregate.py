@@ -9,6 +9,8 @@ from typing import Any
 
 import pandas as pd  # type: ignore
 
+from rtpipeline.dvh_aggregate import build_dvh_aggregate, write_dvh_aggregate
+
 
 OUTPUT_DIR = Path(snakemake.params.output_dir)  # type: ignore[name-defined]
 RESULTS_DIR = Path(snakemake.params.results_dir)  # type: ignore[name-defined]
@@ -489,7 +491,7 @@ def _write_organization_gate(cohort: dict, *, blocked: bool, reason: str) -> Pat
 
 
 def _declared_output_paths() -> list[Path]:
-    names = ["dvh", "fractions", "metadata", "qc"]
+    names = ["dvh", "dvh_parquet", "fractions", "metadata", "qc"]
     if RADIOMICS_ENABLED:
         names.extend(["radiomics", "radiomics_mr"])
     return [
@@ -502,6 +504,7 @@ def _invalidate_declared_outputs() -> None:
     paths = _declared_output_paths()
     if RADIOMICS_ENABLED:
         paths.append(Path(str(snakemake.output.radiomics)).with_suffix(".parquet"))  # type: ignore[name-defined]
+
     for path in paths:
         try:
             path.unlink(missing_ok=True)
@@ -556,6 +559,20 @@ def _load_course(course, required_frames):
 
     frame = required_frames[(course_dir, "dvh")].copy()
     _add_course_ids(frame, patient_id, course_id)
+    try:
+        from rtpipeline.course_contract import load_course_contract
+
+        technique = str(
+            load_course_contract(course_dir).treatment_technique.get("classification")
+            or "UNKNOWN"
+        ).upper()
+    except Exception:
+        technique = "UNKNOWN"
+    if "treatment_technique" in frame.columns:
+        frame["treatment_technique"] = frame["treatment_technique"].fillna(technique)
+    else:
+        frame["treatment_technique"] = technique
+    frame["treatment_technique_source"] = "DICOM_RTPLAN"
     if "structure_cropped" not in frame.columns:
         frame["structure_cropped"] = False
     frame["contrast_phase"] = contrast_phase
@@ -651,30 +668,39 @@ def _report_aggregation_errors(
         pass
 
 
-def _write_dvh(frames: list[pd.DataFrame]) -> None:
-    if not frames:
-        pd.DataFrame(
-            columns=["patient_id", "course_id", "ROI_Name", "structure_cropped"]
-        ).to_excel(snakemake.output.dvh, index=False)  # type: ignore[name-defined]
-        return
-    combined = pd.concat(frames, ignore_index=True)
+def _write_dvh(
+    frames: list[pd.DataFrame],
+    courses,
+    incomplete=None,
+    expected_noncomputed=None,
+) -> None:
+    """Write a typed cohort DVH table, retaining one failure row per course."""
+    combined = build_dvh_aggregate(
+        frames,
+        courses,
+        incomplete=incomplete,
+        expected_noncomputed=expected_noncomputed,
+    )
     if "Segmentation_Source" not in combined.columns:
         combined["Segmentation_Source"] = "Unknown"
     if "ROI_Name" in combined.columns:
-        roi_series = combined["ROI_Name"].astype(str)
+        roi_series = combined["ROI_Name"].astype("string")
     else:
-        roi_series = pd.Series([""] * len(combined), index=combined.index)
+        roi_series = pd.Series([pd.NA] * len(combined), index=combined.index, dtype="string")
         combined.insert(len(combined.columns), "ROI_Name", roi_series)
-    combined["_roi_key"] = roi_series.str.strip().str.lower()
+    combined["_roi_key"] = roi_series.fillna("").str.strip().str.lower()
+    computed = combined["row_status"].astype("string") == "computed"
     manual_keys = set(
         combined.loc[
-            combined["Segmentation_Source"].astype(str).str.lower() == "manual",
+            computed
+            & combined["Segmentation_Source"].astype("string").str.lower().eq("manual"),
             "_roi_key",
         ].dropna()
     )
     drop_mask = (
-        combined["Segmentation_Source"]
-        .astype(str)
+        computed
+        & combined["Segmentation_Source"]
+        .astype("string")
         .str.lower()
         .isin({"custom", "merged"})
         & combined["_roi_key"].isin(manual_keys)
@@ -682,11 +708,21 @@ def _write_dvh(frames: list[pd.DataFrame]) -> None:
     if drop_mask.any():
         combined = combined.loc[~drop_mask].copy()
     combined.drop(columns=["_roi_key"], errors="ignore", inplace=True)
-    combined.to_excel(snakemake.output.dvh, index=False)  # type: ignore[name-defined]
+    write_dvh_aggregate(combined, Path(str(snakemake.output.dvh)))  # type: ignore[name-defined]
 
 
-def _write_tabular_outputs(all_frames) -> None:
-    _write_dvh(all_frames.get("dvh", []))
+def _write_tabular_outputs(
+    all_frames,
+    courses,
+    incomplete=None,
+    expected_noncomputed=None,
+) -> None:
+    _write_dvh(
+        all_frames.get("dvh", []),
+        courses,
+        incomplete=incomplete,
+        expected_noncomputed=expected_noncomputed,
+    )
     if RADIOMICS_ENABLED:
         radiomics_frames = all_frames.get("radiomics", [])
         if radiomics_frames:
@@ -955,7 +991,12 @@ all_frames, aggregation_errors = _collect_all_frames(aggregated_courses, require
 _report_aggregation_errors(aggregation_errors)
 if RADIOMICS_ENABLED:
     _write_radiomics_denominator_aggregate(aggregated_courses)
-_write_tabular_outputs(all_frames)
+_write_tabular_outputs(
+    all_frames,
+    courses,
+    incomplete=incomplete_courses,
+    expected_noncomputed=expected_noncomputed_courses,
+)
 _copy_supplemental_sources()
 _write_qc(aggregated_courses)
 log_path.write_text(summary, encoding="utf-8")

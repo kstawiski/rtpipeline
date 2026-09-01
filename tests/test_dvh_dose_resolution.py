@@ -13,6 +13,7 @@ from rtpipeline.organize import _classify_doses
 from rtpipeline.course_contract import (
     COURSE_CONTRACT_VERSION,
     CourseContractError,
+    build_treatment_technique_contract,
     build_dvh_decision,
     load_course_contract,
 )
@@ -224,6 +225,9 @@ def _write_contract(
             "course_id": course.name,
             "selected_plans": plan_entries,
             "selected_doses": dose_entries,
+            "treatment_technique": build_treatment_technique_contract(
+                selected_plans, course_dir=course
+            ),
             "authoritative_rtstruct": (
                 {"sop_instance_uid": rt_uid, "path": rel(rtstruct)}
                 if rtstruct is not None

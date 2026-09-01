@@ -24,6 +24,7 @@ from .course_contract import (
     AUTO_RTSTRUCT_SOURCE,
     COURSE_CONTRACT_VERSION,
     build_dvh_decision,
+    build_treatment_technique_contract,
     load_course_contract,
 )
 from .layout import build_course_dirs
@@ -3143,6 +3144,7 @@ def _materialize_temp_course_tree(course_dir: Path, ct_slices_dir: Path, rtstruc
                     "course_key": course_id,
                     "selected_plans": [],
                     "selected_doses": [],
+                    "treatment_technique": build_treatment_technique_contract([]),
                     "dose_classification": {"classification": "no_doses"},
                     "dvh": build_dvh_decision(0, 0, "no_records_at_all"),
                     "authoritative_rtstruct": {

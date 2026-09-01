@@ -22,6 +22,10 @@ from typing import Final
 # DICOM PS3.4 RT Plan Storage.
 STANDARD_RT_PLAN_SOP_CLASS: Final = "1.2.840.10008.5.1.4.1.1.481.5"
 
+# DICOM PS3.4 RT Brachy Treatment Record Storage. Brachytherapy plans still
+# use RT Plan Storage and are identified from FractionGroupSequence evidence.
+RT_BRACHY_TREATMENT_RECORD_SOP_CLASS: Final = "1.2.840.10008.5.1.4.1.1.481.6"
+
 # "RT Plan Varian 1 Storage": a standard RT Plan extended for the dual-layer
 # Halcyon MLC (RTBeamLimitingDeviceType MLCX1/MLCX2), plus private absolute-dose
 # calibration (group 3249) and optional data-integrity information (group 3287).
@@ -30,7 +34,10 @@ VARIAN_RT_PLAN_1_SOP_CLASS: Final = "1.2.246.352.70.1.70"
 
 #: Storage classes accepted for a plan that came from the treatment system.
 SOURCE_RTPLAN_SOP_CLASSES: Final = frozenset(
-    {STANDARD_RT_PLAN_SOP_CLASS, VARIAN_RT_PLAN_1_SOP_CLASS}
+    {
+        STANDARD_RT_PLAN_SOP_CLASS,
+        VARIAN_RT_PLAN_1_SOP_CLASS,
+    }
 )
 
 #: Storage classes a pipeline-generated plan may claim. A synthesized summation
@@ -39,6 +46,7 @@ DERIVED_RTPLAN_SOP_CLASSES: Final = frozenset({STANDARD_RT_PLAN_SOP_CLASS})
 
 _PROFILE_NAMES: Final = {
     STANDARD_RT_PLAN_SOP_CLASS: "standard_rt_plan",
+    RT_BRACHY_TREATMENT_RECORD_SOP_CLASS: "not_rt_plan",
     VARIAN_RT_PLAN_1_SOP_CLASS: "varian_rt_plan_1",
 }
 

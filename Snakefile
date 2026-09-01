@@ -611,6 +611,7 @@ COURSE_MANIFEST = COURSE_META_DIR / "manifest.json"
 
 AGG_OUTPUTS = {
     "dvh": RESULTS_DIR / "dvh_metrics.xlsx",
+    "dvh_parquet": RESULTS_DIR / "dvh_metrics.parquet",
     "fractions": RESULTS_DIR / "fractions.xlsx",
     "metadata": RESULTS_DIR / "case_metadata.xlsx",
     "qc": RESULTS_DIR / "qc_reports.xlsx",
@@ -844,6 +845,7 @@ AGGREGATE_RESULTS_INPUTS = {
 
 AGGREGATE_RESULTS_OUTPUTS = {
     "dvh": str(AGG_OUTPUTS["dvh"]),
+    "dvh_parquet": str(AGG_OUTPUTS["dvh_parquet"]),
     "fractions": str(AGG_OUTPUTS["fractions"]),
     "metadata": str(AGG_OUTPUTS["metadata"]),
     "qc": str(AGG_OUTPUTS["qc"]),

@@ -23,6 +23,7 @@ from pydicom.uid import (
 
 from rtpipeline.course_contract import (
     COURSE_CONTRACT_VERSION,
+    build_treatment_technique_contract,
     build_dvh_decision,
     DOSE_GRID_SEMANTICS,
     DOSE_RESPONSE_FIELD,
@@ -419,6 +420,9 @@ def write_minimal_course_contract(
             "course_key": course_dir.name,
             "selected_plans": plan_entries,
             "selected_doses": dose_entries,
+            "treatment_technique": build_treatment_technique_contract(
+                plans, course_dir=course_dir
+            ),
             "dose_classification": {
                 "classification": "single_dose" if dose_entries else "no_doses",
                 "should_sum": False,
