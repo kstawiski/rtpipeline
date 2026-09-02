@@ -15,6 +15,7 @@ from course_contract_test_utils import (
 )
 from rtpipeline.radiomics_cohort import provenance_from_frame
 from rtpipeline.radiomics_ct_contract import (
+    _feature_schema_metadata,
     classify_ct_roi,
     disposition_rows_for_arms,
     write_completion_sentinel,
@@ -58,6 +59,7 @@ def _write_publication(course_dir: Path, patient: str) -> None:
     )
     for record in records:
         record["original_firstorder_Mean"] = 1.0
+        record.update(_feature_schema_metadata({"original_firstorder_Mean"}))
     write_ct_publication_atomic(
         pd.DataFrame(records), course_dir / "radiomics_ct.xlsx"
     )
