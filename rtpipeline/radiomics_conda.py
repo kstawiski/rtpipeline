@@ -37,6 +37,7 @@ from .layout import build_course_dirs
 from .course_contract import ALL_SERIES_RADIOMICS_TEMP_SCOPE, load_course_contract
 from .roi_requiredness import (
     DenominatorLedger,
+    FAILED_RADIOMICS_FEATURE_COMPLETENESS,
     FAILED_RADIOMICS_RESOURCE_LIMIT,
     REASON_CODES,
     Requiredness,
@@ -71,6 +72,8 @@ from .radiomics_schema import (
 from .radiomics_ct_contract import (
     CT_EXTRACTION_ARMS,
     PRIMARY_ARM,
+    RADIOMICS_FEATURE_COMPLETENESS_COLUMN,
+    RADIOMICS_FEATURE_COMPLETENESS_REASON_COLUMN,
     SENSITIVITY_ARM,
     RoiClassDecision,
     classify_ct_roi,
@@ -108,14 +111,31 @@ def _write_conda_roi_ledger(
         ledger.expect_course_roi(course_id, str(task.get("roi_name", "")))
     for name in expected_names:
         ledger.expect_course_roi(course_id, str(name))
-    seen = set()
+    rows_by_roi: Dict[str, List[Mapping[str, Any]]] = {}
     for row in rows:
         name = str(row.get("roi_original_name", row.get("roi_name", "")))
-        if not name or name in seen:
-            continue
-        seen.add(name)
+        if name:
+            rows_by_roi.setdefault(name, []).append(row)
+    has_incomplete = any(
+        str(row.get(RADIOMICS_FEATURE_COMPLETENESS_COLUMN) or "")
+        == "incomplete"
+        for row in rows
+    )
+    for name, candidates in rows_by_roi.items():
+        row = next(
+            (
+                item
+                for item in candidates
+                if str(item.get(RADIOMICS_FEATURE_COMPLETENESS_COLUMN) or "")
+                == "incomplete"
+            ),
+            candidates[0],
+        )
         status = str(row.get("extraction_status") or "success")
         detail_code = str(row.get("roi_structural_code") or "")
+        completeness = str(
+            row.get(RADIOMICS_FEATURE_COMPLETENESS_COLUMN) or ""
+        )
         reason = str(
             row.get("reason_code")
             or detail_code
@@ -125,9 +145,11 @@ def _write_conda_roi_ledger(
                 else "failed_radiomics_extraction"
             )
         )
-        if status == "below_minimum_voxels":
+        if completeness == "incomplete":
+            reason = FAILED_RADIOMICS_FEATURE_COMPLETENESS
+        elif status == "below_minimum_voxels":
             reason = "ROI_MASK_BELOW_MIN_VOXELS"
-        if reason == RESAMPLED_BBOX_LIMIT_CODE:
+        elif reason == RESAMPLED_BBOX_LIMIT_CODE:
             reason = FAILED_RADIOMICS_RESOURCE_LIMIT
         ledger.record_roi(
             course_id,
@@ -136,7 +158,12 @@ def _write_conda_roi_ledger(
             reason_code=reason,
             disposition="extracted" if reason == "extracted" else "excluded",
             detail_code=detail_code or None,
-            detail=str(row.get("extraction_status_detail") or ""),
+            detail=str(
+                row.get(RADIOMICS_FEATURE_COMPLETENESS_REASON_COLUMN)
+                if completeness == "incomplete"
+                else row.get("extraction_status_detail")
+                or ""
+            ),
             estimated_resampled_bbox_voxel_count=row.get(
                 "estimated_resampled_bbox_voxel_count"
             ),
@@ -182,7 +209,7 @@ def _write_conda_roi_ledger(
         adequate_coverage=bool(rows),
         insufficient_coverage=not bool(rows),
         valid_derivation=False,
-        technical_exclusion=not extracted,
+        technical_exclusion=not extracted or has_incomplete,
         indeterminate=False,
         extracted=extracted,
         reason_code="extracted" if extracted else "failed_radiomics_extraction",
@@ -2469,6 +2496,20 @@ def radiomics_for_course_ct_nifti_fallback(
     finally:
         _cleanup_temp_files()
 
+    result_rows: List[Dict[str, Any]] = []
+    if result is not None:
+        try:
+            result_rows = pd.read_parquet(
+                Path(result).with_suffix(".parquet")
+            ).to_dict("records")
+        except Exception:
+            result_rows = []
+    _write_conda_roi_ledger(
+        course_dir,
+        tasks,
+        result_rows,
+        extracted=result is not None,
+    )
     if result is None:
         _invalidate_radiomics_outputs(output_path)
     return result

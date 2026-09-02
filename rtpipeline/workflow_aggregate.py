@@ -734,7 +734,11 @@ def _load_course(course, required_frames):
     course_results["dvh"] = frame
 
     if RADIOMICS_ENABLED:
-        frame = required_frames[(course_dir, "radiomics")].copy()
+        from rtpipeline.radiomics_ct_contract import analysis_eligible_feature_rows
+
+        frame = analysis_eligible_feature_rows(
+            required_frames[(course_dir, "radiomics")]
+        )
         _add_course_ids(frame, patient_id, course_id)
         if "structure_cropped" not in frame.columns:
             frame["structure_cropped"] = False

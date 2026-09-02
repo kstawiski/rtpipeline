@@ -70,6 +70,7 @@ from .radiomics_resource_guard import (
 )
 from .roi_requiredness import (
     DenominatorLedger,
+    FAILED_RADIOMICS_FEATURE_COMPLETENESS,
     FAILED_RADIOMICS_RESOURCE_LIMIT,
     Requiredness,
     assess_custom_applicability,
@@ -81,6 +82,7 @@ from .roi_requiredness import (
 from .radiomics_ct_contract import (
     CT_EXTRACTION_ARMS,
     PRIMARY_ARM,
+    RADIOMICS_FEATURE_COMPLETENESS_COLUMN,
     SENSITIVITY_ARM,
     RoiClassDecision,
     base_identity_key,
@@ -374,16 +376,45 @@ def _write_parallel_roi_ledger(
     course_id, patient_id = Path(course_dir).name, Path(course_dir).parent.name
     for task in tasks:
         ledger.expect_course_roi(course_id, task.roi_name)
-    seen = set()
+    rows_by_roi: Dict[str, List[Mapping[str, Any]]] = {}
     for row in rows:
         name = str(row.get("roi_original_name", row.get("roi_name", "")))
-        if not name or name in seen:
-            continue
-        seen.add(name)
+        if name:
+            rows_by_roi.setdefault(name, []).append(row)
+    technical = technical or any(
+        str(row.get(RADIOMICS_FEATURE_COMPLETENESS_COLUMN) or "")
+        == "incomplete"
+        for row in rows
+    )
+    for name, roi_rows in rows_by_roi.items():
+        row = next(
+            (
+                candidate
+                for candidate in roi_rows
+                if str(
+                    candidate.get(RADIOMICS_FEATURE_COMPLETENESS_COLUMN) or ""
+                )
+                == "incomplete"
+            ),
+            next(
+                (
+                    candidate
+                    for candidate in roi_rows
+                    if str(candidate.get("extraction_status") or "success")
+                    not in {"success", "declared_skip"}
+                ),
+                roi_rows[0],
+            ),
+        )
         status = str(row.get("extraction_status") or "success")
         detail_code = str(row.get("roi_structural_code") or "")
+        completeness = str(
+            row.get(RADIOMICS_FEATURE_COMPLETENESS_COLUMN) or ""
+        )
         reason = (
-            FAILED_RADIOMICS_RESOURCE_LIMIT
+            FAILED_RADIOMICS_FEATURE_COMPLETENESS
+            if completeness == "incomplete"
+            else FAILED_RADIOMICS_RESOURCE_LIMIT
             if detail_code == RESAMPLED_BBOX_LIMIT_CODE
             else detail_code
             or (
@@ -399,7 +430,12 @@ def _write_parallel_roi_ledger(
             reason_code=reason,
             disposition="extracted" if reason == "extracted" else "excluded",
             detail_code=detail_code or None,
-            detail=str(row.get("extraction_status_detail") or ""),
+            detail=str(
+                row.get("radiomics_feature_completeness_reason")
+                if completeness == "incomplete"
+                else row.get("extraction_status_detail")
+                or ""
+            ),
             estimated_resampled_bbox_voxel_count=row.get(
                 "estimated_resampled_bbox_voxel_count"
             ),
@@ -1811,7 +1847,21 @@ def parallel_radiomics_for_course(
         else:
             df = df_new
         write_ct_publication_atomic(df, out_path, expected_keys=expected_keys)
-        _write_parallel_roi_ledger(course_dir, tasks, records_to_write, custom_applicability, extracted=True, technical=bool(roi_failures))
+        published_df = read_authoritative_ct_publication(out_path)
+        _write_parallel_roi_ledger(
+            course_dir,
+            tasks,
+            published_df.to_dict("records"),
+            custom_applicability,
+            extracted=True,
+            technical=bool(roi_failures)
+            or bool(
+                published_df[RADIOMICS_FEATURE_COMPLETENESS_COLUMN]
+                .astype(str)
+                .eq("incomplete")
+                .any()
+            ),
+        )
         return outcome
     except Exception as exc:
         _invalidate_radiomics_outputs(out_path)

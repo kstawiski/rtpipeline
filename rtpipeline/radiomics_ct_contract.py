@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
+import platform
+import socket
 import subprocess
 import tempfile
 import uuid
+import zlib
 from dataclasses import dataclass
 from functools import lru_cache
+from importlib import metadata as importlib_metadata
 from importlib import resources as importlib_resources
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, MutableMapping, Optional, Sequence
@@ -17,6 +22,7 @@ import yaml
 
 from .radiomics_schema import (
     assert_radiomics_arrow_schema,
+    is_radiomic_feature_column,
     expected_radiomics_string_columns,
     normalize_radiomics_dataframe,
     normalize_radiomics_result,
@@ -35,6 +41,30 @@ INTENSITY_TEXTURE_FEATURE_MARKERS = (
     "_gldm_",
     "_ngtdm_",
 )
+RADIOMICS_UNDEFINED_FEATURES_COLUMN = "radiomics_undefined_features_json"
+RADIOMICS_FEATURE_COMPLETENESS_COLUMN = "radiomics_feature_completeness"
+RADIOMICS_FEATURE_COMPLETENESS_REASON_COLUMN = (
+    "radiomics_feature_completeness_reason"
+)
+RADIOMICS_FEATURE_COMPLETENESS_SCHEMA_COLUMN = (
+    "radiomics_feature_completeness_schema"
+)
+RADIOMICS_MISSING_FEATURES_COLUMN = "radiomics_missing_features_json"
+RADIOMICS_MISSING_COUNT_COLUMN = "radiomics_missing_feature_count"
+RADIOMICS_EXPECTED_SCHEMA_SHA256_COLUMN = (
+    "radiomics_expected_feature_schema_sha256"
+)
+RADIOMICS_EXPECTED_COUNT_COLUMN = "radiomics_expected_feature_count"
+RADIOMICS_EXPECTED_SCHEMA_SOURCE_COLUMN = (
+    "radiomics_expected_feature_schema_source"
+)
+RADIOMICS_EXPECTED_SCHEMA_ZLIB_COLUMN = (
+    "radiomics_expected_feature_schema_zlib_b64"
+)
+EXECUTION_HOST_COLUMN = "execution_host"
+ENVIRONMENT_FINGERPRINT_COLUMN = "environment_fingerprint"
+FEATURE_COMPLETENESS_SCHEMA = "rtpipeline-radiomics-feature-completeness-v1"
+ALLOWED_UNDEFINED_FEATURE_SUFFIXES = ("_glcm_MCC",)
 PUBLICATION_KEY_COLUMNS = (
     "patient_id",
     "course_id",
@@ -375,6 +405,609 @@ def file_sha256(path: Path, *, chunk_size: int = 1024 * 1024) -> str:
     return digest.hexdigest()
 
 
+def _safe_package_version(distribution_name: str) -> str:
+    try:
+        return importlib_metadata.version(distribution_name)
+    except importlib_metadata.PackageNotFoundError:
+        return "unavailable"
+
+
+def execution_environment_fingerprint() -> str:
+    """Hash the runtime identity that can affect radiomics values."""
+    payload = {
+        "python": platform.python_version(),
+        "implementation": platform.python_implementation(),
+        "system": platform.system(),
+        "release": platform.release(),
+        "machine": platform.machine(),
+        "libc": platform.libc_ver(),
+        "numpy": _safe_package_version("numpy"),
+        "scipy": _safe_package_version("scipy"),
+        "pywavelets": _safe_package_version("PyWavelets"),
+        "simpleitk": _safe_package_version("SimpleITK"),
+        "pyradiomics": _safe_package_version("pyradiomics"),
+        "pyarrow": _safe_package_version("pyarrow"),
+    }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def _course_input_path(course_dir: Path, value: Any, field: str) -> Path:
+    text = str(value or "").strip()
+    if not text:
+        raise ValueError(f"radiomics input closure field {field} is empty")
+    candidate = Path(text)
+    if not candidate.is_absolute():
+        candidate = course_dir / candidate
+    resolved = candidate.resolve(strict=False)
+    try:
+        resolved.relative_to(course_dir.resolve(strict=False))
+    except ValueError as exc:
+        raise ValueError(
+            f"radiomics input closure field {field} escapes the course directory"
+        ) from exc
+    return resolved
+
+
+def _input_artifact_entries(role: str, path: Path) -> list[str]:
+    """Return path-independent content records for one governed input artifact."""
+    if not path.exists():
+        return [f"M\t{role}"]
+    if path.is_file():
+        return [f"F\t{role}\t{file_sha256(path)}"]
+    if not path.is_dir():
+        return [f"X\t{role}"]
+    entries: list[str] = []
+    traversal_root = path.resolve(strict=False)
+    for directory, dirnames, filenames in os.walk(
+        traversal_root, followlinks=False
+    ):
+        dirnames.sort()
+        filenames.sort()
+        directory_path = Path(directory)
+        for filename in filenames:
+            candidate = directory_path / filename
+            try:
+                relative = candidate.relative_to(traversal_root).as_posix()
+            except ValueError as exc:
+                raise ValueError(
+                    f"radiomics input closure traversal escaped {role}"
+                ) from exc
+            if candidate.is_file():
+                entries.append(
+                    f"F\t{role}/{relative}\t{file_sha256(candidate)}"
+                )
+    if not entries:
+        entries.append(f"D\t{role}")
+    return entries
+
+
+def input_closure_sha256(
+    course_dir: Path,
+    dataframe: Any = None,
+) -> str:
+    """Hash the exact DICOM and RTSTRUCT inputs used by CT radiomics.
+
+    Logical roles, rather than host-specific absolute paths, make the closure
+    comparable across hosts. Downstream course products are deliberately absent.
+    """
+    root = Path(course_dir)
+    artifacts: list[tuple[str, Path]] = []
+    contract_entry: Optional[str] = None
+    contract_path = root / "metadata" / "case_metadata.json"
+    if contract_path.is_file():
+        try:
+            metadata = json.loads(contract_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError(
+                "radiomics input closure course contract is unreadable"
+            ) from exc
+        if not isinstance(metadata, Mapping):
+            raise ValueError(
+                "radiomics input closure course metadata is malformed"
+            )
+        contract = metadata.get("course_contract")
+        if not isinstance(contract, Mapping):
+            raise ValueError(
+                "radiomics input closure course contract is malformed"
+            )
+        planning_ct = contract.get("planning_ct") or {}
+        if not isinstance(planning_ct, Mapping):
+            raise ValueError(
+                "radiomics input closure planning_ct contract is malformed"
+            )
+        dicom_dir = planning_ct.get("dicom_dir")
+        if dicom_dir:
+            artifacts.append(
+                (
+                    "planning_ct_dicom",
+                    _course_input_path(root, dicom_dir, "planning_ct.dicom_dir"),
+                )
+            )
+        authoritative = contract.get("authoritative_rtstruct")
+        if authoritative is not None:
+            if not isinstance(authoritative, Mapping):
+                raise ValueError(
+                    "radiomics input closure authoritative_rtstruct is malformed"
+                )
+            rtstruct_path = authoritative.get("path")
+            if rtstruct_path:
+                artifacts.append(
+                    (
+                        "authoritative_rtstruct",
+                        _course_input_path(
+                            root,
+                            rtstruct_path,
+                            "authoritative_rtstruct.path",
+                        ),
+                    )
+                )
+        decision = {
+            "version": contract.get("version"),
+            "authority": contract.get("authority"),
+            "course_id": contract.get("course_id"),
+            "course_key": contract.get("course_key"),
+            "planning_ct": {
+                key: planning_ct.get(key)
+                for key in (
+                    "status",
+                    "series_instance_uid",
+                    "referenced_series_uids",
+                )
+            },
+            "authoritative_rtstruct": (
+                {"sop_instance_uid": authoritative.get("sop_instance_uid")}
+                if isinstance(authoritative, Mapping)
+                else None
+            ),
+        }
+        contract_digest = hashlib.sha256(
+            json.dumps(
+                decision, sort_keys=True, separators=(",", ":")
+            ).encode("utf-8")
+        ).hexdigest()
+        contract_entry = (
+            f"J\tcourse_contract_radiomics_decision\t{contract_digest}"
+        )
+
+    sources: set[str] = set()
+    if dataframe is not None and "segmentation_source" in dataframe.columns:
+        sources = {
+            str(value).strip()
+            for value in dataframe["segmentation_source"].tolist()
+            if not _is_missing(value) and str(value).strip()
+        }
+    if "Manual" in sources and not any(
+        role == "authoritative_rtstruct" for role, _ in artifacts
+    ):
+        artifacts.append(("authoritative_rtstruct", root / "RS_orig.dcm"))
+    if "AutoRTS_total" in sources:
+        artifacts.append(("autorts_rtstruct", root / "RS_auto.dcm"))
+    if "Custom" in sources:
+        artifacts.append(("custom_rtstruct", root / "RS_custom.dcm"))
+    for source in sorted(sources):
+        if not source.startswith("CustomModel:"):
+            continue
+        model_name = source.partition(":")[2].strip()
+        if not model_name or Path(model_name).name != model_name:
+            raise ValueError(
+                f"invalid custom-model segmentation source in radiomics input closure: {source}"
+            )
+        artifacts.append(
+            (
+                f"custom_model_rtstruct/{model_name}",
+                root / "Segmentation_CustomModels" / model_name / "rtstruct.dcm",
+            )
+        )
+
+    if dataframe is not None and "segmentation_source" in dataframe.columns:
+        for _, row in dataframe.iterrows():
+            if str(row.get("segmentation_source") or "") != (
+                "AutoTS_total_nifti_fallback"
+            ):
+                continue
+            identity = json.dumps(
+                {
+                    "series_uid": str(row.get("series_uid") or ""),
+                    "stable_roi_identifier": str(
+                        row.get("stable_roi_identifier")
+                        or row.get("roi_original_name")
+                        or ""
+                    ),
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            logical_id = hashlib.sha256(identity.encode("utf-8")).hexdigest()
+            mask_source = row.get("mask_path_source")
+            if not _is_missing(mask_source) and str(mask_source).strip():
+                artifacts.append(
+                    (
+                        f"nifti_fallback_mask/{logical_id}",
+                        _course_input_path(
+                            root,
+                            mask_source,
+                            "mask_path_source",
+                        ),
+                    )
+                )
+            nifti_path = row.get("nifti_path")
+            if not _is_missing(nifti_path) and str(nifti_path).strip():
+                artifacts.append(
+                    (
+                        f"nifti_fallback_image/{str(row.get('series_uid') or '')}",
+                        _course_input_path(root, nifti_path, "nifti_path"),
+                    )
+                )
+
+    entries: list[str] = [contract_entry] if contract_entry is not None else []
+    seen_roles: set[str] = set()
+    for role, path in artifacts:
+        if role in seen_roles:
+            continue
+        seen_roles.add(role)
+        entries.extend(_input_artifact_entries(role, path))
+    encoded = "\n".join(sorted(entries)).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _parse_feature_name_list(value: Any) -> set[str]:
+    if _is_missing(value):
+        return set()
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                f"{RADIOMICS_UNDEFINED_FEATURES_COLUMN} is not valid JSON"
+            ) from exc
+    if not isinstance(value, (list, tuple, set)):
+        raise ValueError(f"{RADIOMICS_UNDEFINED_FEATURES_COLUMN} must be a JSON list")
+    return {str(item) for item in value}
+
+
+def _nonfinite_feature_value(value: Any) -> bool:
+    if _is_missing(value):
+        return True
+    try:
+        return not bool(np.isfinite(float(value)))
+    except (TypeError, ValueError, OverflowError):
+        return True
+
+
+def feature_completeness_records(dataframe: Any) -> list[dict[str, Any]]:
+    """Describe the analysis completeness of each published ROI-arm row.
+
+    Expected features are the course publication schema, restricted to shape for
+    primary rows whose intensity and texture family has a declared non-applicable
+    disposition. Extractor-returned nonfinite values are valid only when named in
+    the undefined-feature record.
+    """
+    feature_columns = sorted(
+        str(column)
+        for column in dataframe.columns
+        if is_radiomic_feature_column(str(column))
+    )
+    shape_columns = [
+        name for name in feature_columns if any(marker in name for marker in SHAPE_FEATURE_MARKERS)
+    ]
+    records: list[dict[str, Any]] = []
+    for _, row in dataframe.iterrows():
+        values = row.to_dict()
+        undefined = _parse_feature_name_list(
+            values.get(RADIOMICS_UNDEFINED_FEATURES_COLUMN)
+        )
+        unknown_undefined = undefined.difference(feature_columns)
+        if unknown_undefined:
+            raise ValueError(
+                "undefined feature record names unknown features: "
+                + ", ".join(sorted(unknown_undefined))
+            )
+        def _status_value(column: str, default: str) -> str:
+            value = values.get(column)
+            if _is_missing(value):
+                return default
+            text = str(value).strip().casefold()
+            return text or default
+
+        unsupported_undefined = {
+            name
+            for name in undefined
+            if not name.endswith(ALLOWED_UNDEFINED_FEATURE_SUFFIXES)
+        }
+        if unsupported_undefined:
+            raise ValueError(
+                "undefined feature record names features without an approved "
+                "undefined-value contract: "
+                + ", ".join(sorted(unsupported_undefined))
+            )
+        extraction_status = _status_value("extraction_status", "success")
+        shape_disposition = _status_value("shape_disposition", "success")
+        intensity_disposition = _status_value(
+            "intensity_texture_disposition", "success"
+        )
+
+        if extraction_status != "success":
+            missing: list[str] = []
+            if extraction_status in {
+                "below_minimum_voxels",
+                "below_minimum_dimensions",
+            }:
+                completeness = "excluded_geometry"
+                reason = f"extraction_status:{extraction_status}"
+            elif extraction_status == "declared_skip":
+                completeness = "excluded_declared"
+                reason = "extraction_status:declared_skip"
+            else:
+                completeness = "failed_extraction"
+                reason = f"extraction_status:{extraction_status or 'missing'}"
+            if undefined:
+                raise ValueError(
+                    "excluded radiomics row must not declare undefined features"
+                )
+        else:
+            expected = feature_columns
+            if intensity_disposition and intensity_disposition != "success":
+                expected = shape_columns
+            schema_fields = {
+                RADIOMICS_EXPECTED_SCHEMA_SHA256_COLUMN,
+                RADIOMICS_EXPECTED_COUNT_COLUMN,
+                RADIOMICS_EXPECTED_SCHEMA_SOURCE_COLUMN,
+                RADIOMICS_EXPECTED_SCHEMA_ZLIB_COLUMN,
+            }
+            schema_present = {
+                field
+                for field in schema_fields
+                if not _is_missing(values.get(field))
+                and str(values.get(field)).strip()
+            }
+            if schema_present and schema_present != schema_fields:
+                raise ValueError(
+                    "incomplete configured radiomics feature schema record"
+                )
+            if schema_present:
+                expected_count = int(values[RADIOMICS_EXPECTED_COUNT_COLUMN])
+                expected_digest = str(
+                    values[RADIOMICS_EXPECTED_SCHEMA_SHA256_COLUMN]
+                ).strip()
+                schema_source = str(
+                    values[RADIOMICS_EXPECTED_SCHEMA_SOURCE_COLUMN]
+                ).strip()
+                if schema_source != "configured-extractor-v1":
+                    raise ValueError(
+                        "radiomics expected feature schema lacks configured-extractor provenance"
+                    )
+                configured_names = _decode_feature_schema(
+                    values[RADIOMICS_EXPECTED_SCHEMA_ZLIB_COLUMN]
+                )
+                if expected_count != len(configured_names):
+                    raise ValueError(
+                        "radiomics configured feature count does not match schema payload"
+                    )
+                if expected_digest != _feature_schema_sha256(configured_names):
+                    raise ValueError(
+                        "radiomics configured feature schema digest is stale"
+                    )
+                expected = configured_names
+            missing = [
+                name
+                for name in expected
+                if _nonfinite_feature_value(values.get(name))
+            ]
+            stale_undefined = undefined.difference(missing)
+            if stale_undefined:
+                raise ValueError(
+                    "undefined feature record names finite or non-applicable features: "
+                    + ", ".join(sorted(stale_undefined))
+                )
+            unexplained = sorted(set(missing).difference(undefined))
+            if shape_disposition != "success":
+                completeness = "incomplete"
+                reason = "successful_row_lacks_successful_shape_disposition"
+            elif unexplained:
+                completeness = "incomplete"
+                reason = "unexplained_nonfinite_expected_features"
+            elif undefined:
+                completeness = "complete_with_undefined"
+                reason = "extractor_declared_undefined_features"
+            elif intensity_disposition and intensity_disposition != "success":
+                completeness = "complete_with_not_applicable"
+                reason = f"intensity_texture_disposition:{intensity_disposition}"
+            else:
+                completeness = "complete"
+                reason = "all_expected_features_finite"
+        records.append(
+            {
+                "publication_key": publication_key(values),
+                "status": completeness,
+                "reason": reason,
+                "missing_features": sorted(missing),
+                "undefined_features": sorted(undefined),
+                "missing_count": len(missing),
+                "required": str(values.get("roi_required") or "")
+                .strip()
+                .casefold()
+                in {"1", "true", "yes", "on"},
+            }
+        )
+    return records
+
+
+def validate_feature_completeness_records(
+    dataframe: Any,
+    *,
+    require_no_unexplained: bool = False,
+) -> list[dict[str, Any]]:
+    """Validate persisted per-ROI completeness metadata when present."""
+    metadata_columns = {
+        RADIOMICS_FEATURE_COMPLETENESS_COLUMN,
+        RADIOMICS_FEATURE_COMPLETENESS_REASON_COLUMN,
+        RADIOMICS_FEATURE_COMPLETENESS_SCHEMA_COLUMN,
+        RADIOMICS_MISSING_FEATURES_COLUMN,
+        RADIOMICS_MISSING_COUNT_COLUMN,
+        RADIOMICS_UNDEFINED_FEATURES_COLUMN,
+    }
+    present = metadata_columns.intersection(set(dataframe.columns))
+    records = feature_completeness_records(dataframe)
+    if present:
+        # The extractor may provide only the undefined-feature list before the
+        # publication writer materializes the complete persisted record.
+        producer_only = {RADIOMICS_UNDEFINED_FEATURES_COLUMN}
+        if present != metadata_columns and present != producer_only:
+            missing = sorted(metadata_columns.difference(present))
+            raise ValueError(
+                "incomplete radiomics feature completeness record, missing: "
+                + ", ".join(missing)
+            )
+    if present == metadata_columns:
+        for position, (_, row) in enumerate(dataframe.iterrows()):
+            expected = records[position]
+            observed_missing = _parse_feature_name_list(
+                row[RADIOMICS_MISSING_FEATURES_COLUMN]
+            )
+            observed_undefined = _parse_feature_name_list(
+                row[RADIOMICS_UNDEFINED_FEATURES_COLUMN]
+            )
+            if str(row[RADIOMICS_FEATURE_COMPLETENESS_SCHEMA_COLUMN]) != FEATURE_COMPLETENESS_SCHEMA:
+                raise ValueError("unsupported radiomics feature completeness schema")
+            if str(row[RADIOMICS_FEATURE_COMPLETENESS_COLUMN]) != expected["status"]:
+                raise ValueError("radiomics feature completeness status is stale")
+            if str(row[RADIOMICS_FEATURE_COMPLETENESS_REASON_COLUMN]) != expected["reason"]:
+                raise ValueError("radiomics feature completeness reason is stale")
+            try:
+                observed_count = int(row[RADIOMICS_MISSING_COUNT_COLUMN])
+            except (TypeError, ValueError):
+                raise ValueError("radiomics missing feature count is invalid") from None
+            if observed_count != expected["missing_count"]:
+                raise ValueError("radiomics missing feature count is stale")
+            if observed_missing != set(expected["missing_features"]):
+                raise ValueError("radiomics missing feature record is stale")
+            if observed_undefined != set(expected["undefined_features"]):
+                raise ValueError("radiomics undefined feature record is stale")
+    if require_no_unexplained:
+        incomplete = [record for record in records if record["status"] == "incomplete"]
+        if incomplete:
+            examples = "; ".join(
+                f"{record['publication_key']} missing={record['missing_features']}"
+                for record in incomplete[:3]
+            )
+            raise ValueError(
+                f"{len(incomplete)} ROI-arm rows have unexplained incomplete feature vectors: {examples}"
+            )
+    return records
+
+
+ANALYSIS_ELIGIBLE_COMPLETENESS = frozenset(
+    {"complete", "complete_with_undefined", "complete_with_not_applicable"}
+)
+
+
+def analysis_eligible_feature_rows(dataframe: Any) -> Any:
+    """Return complete ROI pairs and exclude both arms if either arm is ineligible."""
+    records = validate_feature_completeness_records(dataframe)
+    if RADIOMICS_FEATURE_COMPLETENESS_COLUMN not in dataframe.columns:
+        raise ValueError(
+            "radiomics publication lacks per-ROI feature completeness records"
+        )
+    base_eligibility: dict[tuple[str, ...], bool] = {}
+    for record in records:
+        base = tuple(record["publication_key"][:-1])
+        eligible = record["status"] in ANALYSIS_ELIGIBLE_COMPLETENESS
+        base_eligibility[base] = base_eligibility.get(base, True) and eligible
+    keep = [
+        base_eligibility[tuple(record["publication_key"][:-1])]
+        for record in records
+    ]
+    return dataframe.loc[keep].copy()
+
+
+def _add_feature_completeness_metadata(dataframe: Any) -> Any:
+    output = dataframe.copy()
+    for column, default in (
+        (EXECUTION_HOST_COLUMN, socket.gethostname()),
+        (ENVIRONMENT_FINGERPRINT_COLUMN, execution_environment_fingerprint()),
+        (RADIOMICS_UNDEFINED_FEATURES_COLUMN, "[]"),
+    ):
+        if column not in output.columns:
+            output[column] = default
+        else:
+            output[column] = output[column].map(
+                lambda value: default if _is_missing(value) else value
+            )
+    records = feature_completeness_records(output)
+    output[RADIOMICS_FEATURE_COMPLETENESS_SCHEMA_COLUMN] = FEATURE_COMPLETENESS_SCHEMA
+    output[RADIOMICS_FEATURE_COMPLETENESS_COLUMN] = [record["status"] for record in records]
+    output[RADIOMICS_FEATURE_COMPLETENESS_REASON_COLUMN] = [record["reason"] for record in records]
+    output[RADIOMICS_MISSING_FEATURES_COLUMN] = [
+        _feature_names_json(record["missing_features"]) for record in records
+    ]
+    output[RADIOMICS_MISSING_COUNT_COLUMN] = [record["missing_count"] for record in records]
+    return output
+
+
+def _canonical_feature_value(value: Any) -> Any:
+    if _is_missing(value):
+        return "NaN"
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return str(value)
+    if np.isnan(number):
+        return "NaN"
+    if np.isposinf(number):
+        return "+Inf"
+    if np.isneginf(number):
+        return "-Inf"
+    return number.hex()
+
+
+def canonical_feature_table_sha256(dataframe: Any) -> str:
+    feature_columns = sorted(
+        str(column) for column in dataframe.columns if is_radiomic_feature_column(str(column))
+    )
+    rows = []
+    for _, row in dataframe.iterrows():
+        values = row.to_dict()
+        rows.append(
+            {
+                "key": list(publication_key(values)),
+                "features": {
+                    name: _canonical_feature_value(values.get(name))
+                    for name in feature_columns
+                },
+            }
+        )
+    rows.sort(key=lambda item: json.dumps(item["key"], separators=(",", ":")))
+    encoded = json.dumps(
+        {"columns": feature_columns, "rows": rows},
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def missingness_digest(dataframe: Any) -> str:
+    feature_columns = sorted(
+        str(column) for column in dataframe.columns if is_radiomic_feature_column(str(column))
+    )
+    rows = []
+    for _, row in dataframe.iterrows():
+        values = row.to_dict()
+        rows.append(
+            {
+                "key": list(publication_key(values)),
+                "missing": [
+                    name for name in feature_columns
+                    if _nonfinite_feature_value(values.get(name))
+                ],
+            }
+        )
+    rows.sort(key=lambda item: json.dumps(item["key"], separators=(",", ":")))
+    encoded = json.dumps(rows, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def stable_rtstruct_roi_identity(path: Path, roi_name: str) -> tuple[str, str]:
     """Return DICOM identities, or content/name identities for legacy inputs."""
     try:
@@ -513,6 +1146,167 @@ def _feature_subset(result: Mapping[str, Any], markers: tuple[str, ...]) -> dict
     return {str(key): value for key, value in result.items() if any(marker in str(key) for marker in markers)}
 
 
+def _approved_undefined_feature_names(result: Mapping[str, Any]) -> set[str]:
+    """Return nonfinite values covered by an approved feature-level contract."""
+    names: set[str] = set()
+    for key, value in result.items():
+        name = str(key)
+        if not is_radiomic_feature_column(name) or not name.endswith(
+            ALLOWED_UNDEFINED_FEATURE_SUFFIXES
+        ):
+            continue
+        if _is_missing(value):
+            names.add(name)
+            continue
+        try:
+            if not np.isfinite(float(value)):
+                names.add(name)
+        except (TypeError, ValueError, OverflowError):
+            names.add(name)
+    return names
+
+
+def _feature_names_json(names: Iterable[str]) -> str:
+    return json.dumps(sorted({str(name) for name in names}), separators=(",", ":"))
+
+
+def _feature_schema_sha256(names: Iterable[str]) -> str:
+    encoded = "\n".join(sorted({str(name) for name in names})).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _configured_feature_names(
+    extractor: Any,
+    *,
+    observed_result: Optional[Mapping[str, Any]] = None,
+) -> set[str]:
+    """Resolve expected PyRadiomics names from configured classes and image types."""
+    try:
+        import radiomics
+
+        get_feature_classes = getattr(radiomics, "getFeatureClasses")
+    except (ImportError, AttributeError):
+        if observed_result is None:
+            raise
+        return {
+            str(name)
+            for name in observed_result
+            if is_radiomic_feature_column(str(name))
+        }
+
+    feature_classes = get_feature_classes()
+    enabled_features = dict(getattr(extractor, "enabledFeatures", {}) or {})
+    enabled_images = dict(getattr(extractor, "enabledImagetypes", {}) or {})
+    names_by_class: dict[str, list[str]] = {}
+    for class_name, configured in enabled_features.items():
+        feature_class = feature_classes.get(str(class_name))
+        if feature_class is None:
+            raise ValueError(
+                f"unsupported configured PyRadiomics feature class: {class_name}"
+            )
+        available = feature_class.getFeatureNames()
+        selected = (
+            [str(name) for name in configured]
+            if configured
+            else [
+                str(name)
+                for name, deprecated in available.items()
+                if not deprecated
+            ]
+        )
+        names_by_class[str(class_name)] = selected
+
+    prefixes: list[str] = []
+    for image_name, settings in enabled_images.items():
+        name = str(image_name)
+        options = dict(settings or {})
+        if name == "Original":
+            prefixes.append("original")
+        elif name == "LoG":
+            sigmas = options.get("sigma") or extractor.settings.get("sigma") or []
+            prefixes.extend(
+                "log-sigma-"
+                + str(float(sigma)).replace(".", "-")
+                + "-mm-3D"
+                for sigma in sigmas
+            )
+        elif name == "Wavelet":
+            level = int(options.get("level", 1))
+            if level != 1:
+                raise ValueError(
+                    "configured CT feature schema supports Wavelet level 1 only"
+                )
+            prefixes.extend(
+                f"wavelet-{band}"
+                for band in (
+                    "HHH",
+                    "HHL",
+                    "HLH",
+                    "HLL",
+                    "LHH",
+                    "LHL",
+                    "LLH",
+                    "LLL",
+                )
+            )
+        else:
+            simple_prefixes = {
+                "Square": "square",
+                "SquareRoot": "squareroot",
+                "Logarithm": "logarithm",
+                "Exponential": "exponential",
+                "Gradient": "gradient",
+            }
+            if name not in simple_prefixes:
+                raise ValueError(
+                    f"unsupported configured CT image type for feature schema: {name}"
+                )
+            prefixes.append(simple_prefixes[name])
+
+    expected: set[str] = set()
+    for class_name, feature_names in names_by_class.items():
+        if class_name in {"shape", "shape2D"}:
+            expected.update(
+                f"original_{class_name}_{feature_name}"
+                for feature_name in feature_names
+            )
+            continue
+        for prefix in prefixes:
+            expected.update(
+                f"{prefix}_{class_name}_{feature_name}"
+                for feature_name in feature_names
+            )
+    return expected
+
+
+def _feature_schema_metadata(names: Iterable[str]) -> dict[str, Any]:
+    expected = sorted({str(name) for name in names})
+    encoded = json.dumps(expected, separators=(",", ":")).encode("utf-8")
+    compressed = base64.b64encode(zlib.compress(encoded, level=9)).decode("ascii")
+    return {
+        RADIOMICS_EXPECTED_SCHEMA_SHA256_COLUMN: _feature_schema_sha256(expected),
+        RADIOMICS_EXPECTED_COUNT_COLUMN: len(expected),
+        RADIOMICS_EXPECTED_SCHEMA_SOURCE_COLUMN: "configured-extractor-v1",
+        RADIOMICS_EXPECTED_SCHEMA_ZLIB_COLUMN: compressed,
+    }
+
+
+def _decode_feature_schema(value: Any) -> list[str]:
+    try:
+        compressed = base64.b64decode(str(value), validate=True)
+        decoded = zlib.decompress(compressed)
+        names = json.loads(decoded.decode("utf-8"))
+    except Exception as exc:
+        raise ValueError(
+            "configured radiomics feature schema payload is invalid"
+        ) from exc
+    if not isinstance(names, list) or any(not isinstance(name, str) for name in names):
+        raise ValueError("configured radiomics feature schema payload is not a name list")
+    if names != sorted(set(names)):
+        raise ValueError("configured radiomics feature schema names are not canonical")
+    return names
+
+
 def _component_qc(mask: np.ndarray) -> tuple[int, int]:
     foreground = np.asarray(mask, dtype=bool)
     if not foreground.any():
@@ -635,6 +1429,8 @@ def _arm_metadata(
         "run_identifier": run_identifier,
         "native_mask_voxel_count": int(native_voxel_count),
         "roi_required": bool(required),
+        "execution_host": socket.gethostname(),
+        "environment_fingerprint": execution_environment_fingerprint(),
         **_runtime_versions(),
     }
 
@@ -657,10 +1453,18 @@ def extract_ct_roi_arms(
     )
     shape_result = _scalarize(shape_extractor.execute(image, mask))
     shape_features = _feature_subset(shape_result, SHAPE_FEATURE_MARKERS)
+    shape_expected = _configured_feature_names(
+        shape_extractor, observed_result=shape_result
+    )
+    shape_undefined = _approved_undefined_feature_names(shape_result)
     if not shape_features:
         raise RuntimeError("separate shape-only extractor returned no shape features")
 
     raw_result = _scalarize(raw_extractor.execute(image, mask))
+    raw_expected = shape_expected | _configured_feature_names(
+        raw_extractor, observed_result=raw_result
+    )
+    raw_undefined = _approved_undefined_feature_names(raw_result)
     raw_result.update(shape_features)
     raw_qc = resampled_mask_qc(image, mask, raw_extractor, None)
     sensitivity = dict(raw_result)
@@ -685,14 +1489,20 @@ def extract_ct_roi_arms(
             "shape_disposition": "success",
             "intensity_texture_disposition": "success",
             "extraction_status": "success",
+            RADIOMICS_UNDEFINED_FEATURES_COLUMN: _feature_names_json(
+                raw_undefined | shape_undefined
+            ),
+            **_feature_schema_metadata(raw_expected),
         }
     )
 
     primary_qc_extractor = primary_extractor or raw_extractor
+    primary_expected = set(shape_expected)
     primary_qc = resampled_mask_qc(
         image, mask, primary_qc_extractor, decision.primary_resegment_range_hu
     )
     primary: dict[str, Any] = dict(shape_features)
+    primary_undefined = set(shape_undefined)
     primary.update(common_metadata)
     primary.update(
         _arm_metadata(
@@ -722,6 +1532,12 @@ def extract_ct_roi_arms(
             disposition = "below_minimum_dimensions"
         else:
             primary_result = _scalarize(primary_extractor.execute(image, mask))
+            primary_expected.update(
+                _configured_feature_names(
+                    primary_extractor, observed_result=primary_result
+                )
+            )
+            primary_undefined.update(_approved_undefined_feature_names(primary_result))
             primary_result = {
                 key: value
                 for key, value in primary_result.items()
@@ -732,6 +1548,10 @@ def extract_ct_roi_arms(
             disposition = "success"
     primary["intensity_texture_disposition"] = disposition
     primary["extraction_status"] = "success"
+    primary[RADIOMICS_UNDEFINED_FEATURES_COLUMN] = _feature_names_json(
+        primary_undefined
+    )
+    primary.update(_feature_schema_metadata(primary_expected))
 
     rows = [primary, sensitivity]
     assert_paired_shape_identity(rows)
@@ -764,6 +1584,8 @@ def disposition_rows_for_arms(
         "pyradiomics_version": "unavailable",
         "simpleitk_version": "unavailable",
         "numpy_version": str(np.__version__),
+        "execution_host": socket.gethostname(),
+        "environment_fingerprint": execution_environment_fingerprint(),
     }
     rows: list[dict[str, Any]] = []
     for arm in CT_EXTRACTION_ARMS:
@@ -792,6 +1614,7 @@ def disposition_rows_for_arms(
                 "extraction_status": disposition,
                 "extraction_status_detail": detail,
                 "extraction_failure_kind": failure_kind,
+                RADIOMICS_UNDEFINED_FEATURES_COLUMN: "[]",
                 "morphologic_resampled_voxel_count": None,
                 "resegment_after_count": None,
                 "resegment_below_lower_count": None,
@@ -998,6 +1821,7 @@ def validate_ct_publication(
         if len({str(row.get("run_identifier")) for row in pair}) != 1:
             raise ValueError(f"paired CT arms do not share one run_identifier: {base}")
         assert_paired_shape_identity(pair)
+    validate_feature_completeness_records(dataframe)
     return key_set
 
 
@@ -1027,6 +1851,22 @@ def write_ct_publication_atomic(
     parquet_path = workbook_path.with_suffix(".parquet")
     workbook_path.parent.mkdir(parents=True, exist_ok=True)
     publish_df = _jsonify_nested_columns(normalize_radiomics_dataframe(dataframe))
+    publish_df = _add_feature_completeness_metadata(publish_df)
+    completeness = validate_feature_completeness_records(publish_df)
+    required_incomplete = [
+        record
+        for record in completeness
+        if record["status"] == "incomplete" and record["required"]
+    ]
+    if required_incomplete:
+        examples = "; ".join(
+            f"{record['publication_key']} missing={record['missing_features']}"
+            for record in required_incomplete[:3]
+        )
+        raise ValueError(
+            f"{len(required_incomplete)} required ROI-arm rows have incomplete "
+            f"feature vectors: {examples}"
+        )
     expected_strings = expected_radiomics_string_columns(publish_df)
     validate_ct_publication(publish_df, expected_keys=expected_keys)
 
@@ -1130,11 +1970,74 @@ def sentinel_payload(
     configuration_dependency: Optional[Path] = None,
 ) -> dict[str, Any]:
     keys = sorted("\x1f".join(key) for key in validate_ct_publication(dataframe))
+    schema_fields = (
+        RADIOMICS_EXPECTED_SCHEMA_SHA256_COLUMN,
+        RADIOMICS_EXPECTED_COUNT_COLUMN,
+        RADIOMICS_EXPECTED_SCHEMA_SOURCE_COLUMN,
+        RADIOMICS_EXPECTED_SCHEMA_ZLIB_COLUMN,
+    )
+    for row in dataframe.to_dict("records"):
+        if str(row.get("extraction_status") or "success") != "success":
+            continue
+        missing_schema = [
+            field
+            for field in schema_fields
+            if _is_missing(row.get(field)) or not str(row.get(field)).strip()
+        ]
+        if missing_schema:
+            raise ValueError(
+                "completion sentinel requires configured feature schema provenance "
+                "for every successful ROI-arm row"
+            )
+        if str(row[RADIOMICS_EXPECTED_SCHEMA_SOURCE_COLUMN]) != "configured-extractor-v1":
+            raise ValueError(
+                "completion sentinel refuses inferred feature schema provenance"
+            )
     key_digest = hashlib.sha256("\n".join(keys).encode("utf-8")).hexdigest()
+    completeness = validate_feature_completeness_records(dataframe)
+
+    def _single_metadata_value(column: str, fallback: str) -> str:
+        if column not in dataframe.columns:
+            return fallback
+        values = {
+            str(value).strip()
+            for value in dataframe[column].tolist()
+            if not _is_missing(value) and str(value).strip()
+        }
+        if not values:
+            return fallback
+        if len(values) != 1:
+            raise ValueError(f"radiomics publication has multiple {column} values")
+        return next(iter(values))
+
+    def _fingerprint_metadata_value(column: str, fallback: str) -> str:
+        if column not in dataframe.columns:
+            return fallback
+        values = sorted(
+            {
+                str(value).strip()
+                for value in dataframe[column].tolist()
+                if not _is_missing(value) and str(value).strip()
+            }
+        )
+        if not values:
+            return fallback
+        if len(values) == 1:
+            return values[0]
+        encoded = json.dumps(values, separators=(",", ":")).encode("utf-8")
+        return "sha256-set:" + hashlib.sha256(encoded).hexdigest()
+
+    eligible_row_count = len(analysis_eligible_feature_rows(dataframe))
     payload = {
         "status": "ok",
-        "schema": "rtpipeline-radiomics-completion-v1",
+        "schema": "rtpipeline-radiomics-completion-v2",
         "authoritative_parquet": str(Path(parquet_path).name),
+        "authoritative_parquet_sha256": file_sha256(Path(parquet_path)),
+        "input_closure_sha256": input_closure_sha256(
+            Path(parquet_path).parent, dataframe
+        ),
+        "canonical_feature_table_sha256": canonical_feature_table_sha256(dataframe),
+        "missingness_digest": missingness_digest(dataframe),
         "row_count": int(len(dataframe)),
         "identity_set_sha256": key_digest,
         "roi_map_version": str(dataframe["roi_map_version"].iloc[0]),
@@ -1149,6 +2052,46 @@ def sentinel_payload(
         "code_revisions": sorted(
             {str(value) for value in dataframe["code_revision"].tolist()}
         ),
+        "execution_host": _single_metadata_value(
+            EXECUTION_HOST_COLUMN, socket.gethostname()
+        ),
+        "environment_fingerprint": _fingerprint_metadata_value(
+            ENVIRONMENT_FINGERPRINT_COLUMN, execution_environment_fingerprint()
+        ),
+        "feature_completeness": {
+            "schema": FEATURE_COMPLETENESS_SCHEMA,
+            "row_count": len(completeness),
+            "analysis_eligible_row_count": eligible_row_count,
+            "complete_row_count": sum(
+                record["status"] == "complete" for record in completeness
+            ),
+            "complete_with_undefined_row_count": sum(
+                record["status"] == "complete_with_undefined"
+                for record in completeness
+            ),
+            "complete_with_not_applicable_row_count": sum(
+                record["status"] == "complete_with_not_applicable"
+                for record in completeness
+            ),
+            "failed_extraction_row_count": sum(
+                record["status"] == "failed_extraction"
+                for record in completeness
+            ),
+            "geometry_exclusion_row_count": sum(
+                record["status"] == "excluded_geometry"
+                for record in completeness
+            ),
+            "declared_exclusion_row_count": sum(
+                record["status"] == "excluded_declared"
+                for record in completeness
+            ),
+            "incomplete_row_count": sum(
+                record["status"] == "incomplete" for record in completeness
+            ),
+            "undefined_feature_row_count": sum(
+                bool(record["undefined_features"]) for record in completeness
+            ),
+        },
     }
     if configuration_dependency is not None:
         payload["configuration_dependency_sha256"] = _validate_configuration_dependency(
@@ -1182,13 +2125,21 @@ def validate_completion_sentinel(
         "status",
         "schema",
         "authoritative_parquet",
+        "authoritative_parquet_sha256",
+        "input_closure_sha256",
+        "canonical_feature_table_sha256",
+        "missingness_digest",
         "row_count",
         "identity_set_sha256",
         "roi_map_version",
         "roi_map_hash",
+        "run_identifiers",
         "effective_parameter_hashes",
         "configured_parameter_hashes",
         "code_revisions",
+        "execution_host",
+        "environment_fingerprint",
+        "feature_completeness",
     ]
     if configuration_dependency is not None:
         fields.append("configuration_dependency_sha256")
