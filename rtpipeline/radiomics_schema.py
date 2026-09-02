@@ -77,6 +77,12 @@ RADIOMICS_TEXT_COLUMNS = frozenset(
         "radiomics_cohort_provenance_schema",
         "radiomics_denominator_source_sha256",
         "radiomics_cohort_exclusions_json",
+        # Structural disposition code for an ROI that was not extracted, e.g.
+        # ROI_RESAMPLED_BBOX_EXCEEDS_LIMIT, ROI_MASK_BELOW_MIN_VOXELS,
+        # REQUIRED_ROI_NOT_DECLARED, REQUIRED_ROI_AMBIGUOUS_MATCH. The resource
+        # guard emits this on exactly the rows it bounds, so omitting it from
+        # this allowlist made every guarded course fail at publication.
+        "roi_structural_code",
     }
 )
 
