@@ -29,12 +29,12 @@ not exercise the production code path.
 
 ``_geometry_compatible`` is the universal pre-resample safety net (applied to both
 the combined-segmentation path and the per-ROI binary-mask fallback): if the
-selected segmentation does not share the CT's physical voxel grid, the build
-aborts instead of emitting a wrong RTSTRUCT. The grid comparison accepts signed
-axis permutations used by NIfTI/DICOM conversion but rejects altered spacing,
-voxel counts, physical extents, and non-corresponding oblique directions."""
+selected segmentation does not share the CT's physical volume, the build aborts
+instead of emitting a wrong RTSTRUCT. The comparison accepts resampled grids and
+signed axis permutations, but rejects discordant extents and orientations."""
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import numpy as np
@@ -332,14 +332,30 @@ def test_geometry_translated_by_fifty_mm_is_incompatible() -> None:
     assert _geometry_compatible(translated, _img()) is False
 
 
-def test_geometry_different_spacing_is_incompatible() -> None:
-    different_spacing = _img(spacing=(1.1, 1.0, 3.0))
+def test_geometry_spacing_that_changes_extent_is_incompatible() -> None:
+    different_spacing = _img(spacing=(2.0, 1.0, 3.0))
     assert _geometry_compatible(different_spacing, _img()) is False
 
 
-def test_geometry_different_voxel_count_is_incompatible() -> None:
-    different_count = _img(size=(8, 8, 7))
+def test_geometry_cropped_voxel_count_is_incompatible() -> None:
+    different_count = _img(size=(8, 8, 5))
     assert _geometry_compatible(different_count, _img()) is False
+
+
+def test_geometry_resampled_axial_mask_with_same_extent_is_compatible() -> None:
+    ct = _img(
+        origin=(-250.0, -250.0, -207.000015),
+        spacing=(0.9765625, 0.9765625, 2.9968254),
+        size=(512, 512, 190),
+    )
+    mask = _img(
+        origin=(-250.0, 249.0234375, -207.000015),
+        spacing=(0.9765625, 0.9765625, 2.4),
+        direction=(1, 0, 0, 0, -1, 0, 0, 0, 1),
+        size=(512, 512, 236),
+    )
+
+    assert _geometry_compatible(mask, ct) is True
 
 
 def test_geometry_oblique_direction_is_incompatible() -> None:
@@ -407,6 +423,7 @@ def test_build_auto_rtstruct_selects_planning_among_same_for(tmp_path, monkeypat
     planning_dcm = _write_total_rtstruct(
         seg_root / "zzz_planning", shared_for, ref_series_uid=planning_series
     )
+    os.utime(planning_dcm, ns=(1_000_000_000, 1_000_000_000))
 
     # Isolate the C1 selection->copy wiring from SimpleITK CT loading and the
     # RTSTRUCT post-processing (not under test here).
@@ -421,6 +438,7 @@ def test_build_auto_rtstruct_selects_planning_among_same_for(tmp_path, monkeypat
     assert phase_series not in _seg_source_series_uids(out)
     # And it is byte-identical to the planning dir's RTSTRUCT (correct source copied).
     assert out.read_bytes() == planning_dcm.read_bytes()
+    assert out.stat().st_mtime_ns > planning_dcm.stat().st_mtime_ns
 
 
 def test_build_auto_rtstruct_fail_closed_when_no_planning_match(tmp_path, monkeypatch) -> None:

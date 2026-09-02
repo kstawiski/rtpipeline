@@ -1,5 +1,6 @@
 """Aggregate per-course RTpipeline artifacts into cohort workbooks."""
 
+import hashlib
 import json
 import shutil
 from collections import defaultdict
@@ -10,6 +11,11 @@ from typing import Any
 import pandas as pd  # type: ignore
 
 from rtpipeline.dvh_aggregate import build_dvh_aggregate, write_dvh_aggregate
+from rtpipeline.radiomics_cohort import (
+    attach_radiomics_cohort_provenance,
+    build_radiomics_cohort_provenance,
+    is_valid_radiomics_cohort_table,
+)
 
 
 OUTPUT_DIR = Path(snakemake.params.output_dir)  # type: ignore[name-defined]
@@ -490,6 +496,144 @@ def _write_organization_gate(cohort: dict, *, blocked: bool, reason: str) -> Pat
     return path
 
 
+def _campaign_failure_stage_aliases(error: str) -> set[str]:
+    mappings = (
+        ((".dvh_done", "dvh_metrics"), {"dvh"}),
+        ((".qc_done",), {"qc"}),
+        ((".custom_models_done",), {"custom_models", "segmentation_custom"}),
+        ((".radiomics_done", "radiomics_ct.parquet"), {"radiomics"}),
+    )
+    for tokens, aliases in mappings:
+        if any(token in error for token in tokens):
+            return aliases
+    return set()
+
+
+def _valid_failed_campaign_record(
+    record: dict[str, Any], *, denominator_mtime_ns: int
+) -> bool:
+    try:
+        returncode = int(record["returncode"])
+    except (KeyError, TypeError, ValueError):
+        return False
+    return (
+        str(record.get("status") or "").strip() == "failed"
+        and bool(str(record.get("detail") or "").strip())
+        and returncode != 0
+        and int(record.get("_source_mtime_ns") or 0) >= denominator_mtime_ns
+    )
+
+
+def _recorded_campaign_exclusions(incomplete) -> list[dict[str, Any]]:
+    """Require explicit failed campaign records for every downstream omission."""
+
+    if not incomplete:
+        return []
+    records_dir = OUTPUT_DIR / "_campaign_ledger" / "records"
+    denominator_paths = [
+        path
+        for path in (
+            OUTPUT_DIR / "_COURSES" / "organize_ledger.json",
+            Path(snakemake.input.manifest),  # type: ignore[name-defined]
+        )
+        if path.exists()
+    ]
+    denominator_mtime_ns = max(
+        (path.stat().st_mtime_ns for path in denominator_paths), default=0
+    )
+    records: dict[tuple[str, str], dict[str, dict[str, Any]]] = defaultdict(dict)
+    if records_dir.is_dir():
+        for path in sorted(records_dir.glob("*.json")):
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise RuntimeError(
+                    f"Campaign ledger record is unreadable: {path}: {exc}"
+                ) from exc
+            if not isinstance(payload, dict):
+                raise RuntimeError(f"Campaign ledger record is malformed: {path}")
+            patient = str(payload.get("patient") or "").strip()
+            course = str(payload.get("course") or "").strip()
+            stage = str(payload.get("stage") or "").strip()
+            if not patient or not course or not stage:
+                raise RuntimeError(
+                    f"Campaign ledger record lacks patient, course, or stage: {path}"
+                )
+            payload["_source_mtime_ns"] = path.stat().st_mtime_ns
+            payload["_source_sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+            records[(patient, course)][stage] = payload
+
+    exclusions: list[dict[str, Any]] = []
+    unrecorded: list[str] = []
+    for (patient, course), errors in sorted(incomplete.items()):
+        required_alias_groups = []
+        for error in errors:
+            aliases = _campaign_failure_stage_aliases(error)
+            if not aliases:
+                unrecorded.append(f"{patient}/{course}: {error}")
+            else:
+                required_alias_groups.append(aliases)
+
+        matched: dict[str, dict[str, Any]] = {}
+        course_records = records.get((patient, course), {})
+        for aliases in required_alias_groups:
+            candidates = [
+                course_records[stage]
+                for stage in sorted(aliases)
+                if stage in course_records
+            ]
+            valid = [
+                record
+                for record in candidates
+                if _valid_failed_campaign_record(
+                    record, denominator_mtime_ns=denominator_mtime_ns
+                )
+            ]
+            if not valid:
+                unrecorded.append(
+                    f"{patient}/{course}: no failed campaign record with a reason "
+                    f"for stage {sorted(aliases)}"
+                )
+                continue
+            record = valid[0]
+            matched[str(record["stage"])] = record
+
+        if matched and not any(item.startswith(f"{patient}/{course}:") for item in unrecorded):
+            reasons = [
+                f"{stage}: {str(record['detail']).strip()}"
+                for stage, record in sorted(matched.items())
+            ]
+            source_hashes = sorted(
+                {str(record["_source_sha256"]) for record in matched.values()}
+            )
+            source_record_sha256 = source_hashes[0]
+            if len(source_hashes) > 1:
+                source_record_sha256 = hashlib.sha256(
+                    "\n".join(source_hashes).encode("ascii")
+                ).hexdigest()
+            exclusions.append(
+                {
+                    "patient_id": patient,
+                    "course_id": course,
+                    "stages": sorted(matched),
+                    "reason": " | ".join(reasons),
+                    "source_record_sha256": source_record_sha256,
+                }
+            )
+
+    if unrecorded:
+        raise RuntimeError(
+            "Campaign aggregation has unrecorded course failure(s); every omission "
+            "requires a matching failed campaign-ledger record with a nonempty reason:\n"
+            + "".join(f" - {reason}\n" for reason in unrecorded)
+        )
+    if len(exclusions) != len(incomplete):
+        raise RuntimeError(
+            "Campaign exclusion ledger does not reconcile with incomplete courses"
+        )
+    return exclusions
+
+
 def _declared_output_paths() -> list[Path]:
     names = ["dvh", "dvh_parquet", "fractions", "metadata", "qc"]
     if RADIOMICS_ENABLED:
@@ -502,10 +646,19 @@ def _declared_output_paths() -> list[Path]:
 
 def _invalidate_declared_outputs() -> None:
     paths = _declared_output_paths()
+    canonical_radiomics = OUTPUT_DIR / "Data" / "radiomics_all.xlsx"
+    protected_radiomics: set[Path] = set()
     if RADIOMICS_ENABLED:
-        paths.append(Path(str(snakemake.output.radiomics)).with_suffix(".parquet"))  # type: ignore[name-defined]
+        declared_radiomics = Path(str(snakemake.output.radiomics))  # type: ignore[name-defined]
+        for workbook in (declared_radiomics, canonical_radiomics):
+            if is_valid_radiomics_cohort_table(workbook):
+                protected_radiomics.update({workbook, workbook.with_suffix(".parquet")})
+            else:
+                paths.extend([workbook, workbook.with_suffix(".parquet")])
 
-    for path in paths:
+    for path in dict.fromkeys(paths):
+        if path in protected_radiomics:
+            continue
         try:
             path.unlink(missing_ok=True)
         except OSError as exc:
@@ -716,6 +869,7 @@ def _write_tabular_outputs(
     courses,
     incomplete=None,
     expected_noncomputed=None,
+    radiomics_cohort_provenance=None,
 ) -> None:
     _write_dvh(
         all_frames.get("dvh", []),
@@ -732,6 +886,36 @@ def _write_tabular_outputs(
             )
 
             combined_radiomics = pd.concat(radiomics_frames, ignore_index=True)
+            expected_courses = {
+                (str(patient_id), str(course_id))
+                for patient_id, course_id, _course_dir in courses
+                if (patient_id, course_id) not in (incomplete or {})
+            }
+            if not {"patient_id", "course_id"}.issubset(combined_radiomics.columns):
+                raise RuntimeError(
+                    "Radiomics cohort rows lack patient_id or course_id"
+                )
+            observed_courses = {
+                (str(patient), str(course))
+                for patient, course in zip(
+                    combined_radiomics["patient_id"],
+                    combined_radiomics["course_id"],
+                )
+            }
+            if observed_courses != expected_courses:
+                missing = sorted(expected_courses - observed_courses)
+                unexpected = sorted(observed_courses - expected_courses)
+                raise RuntimeError(
+                    "Radiomics cohort row identities do not reconcile with extracted "
+                    f"courses: missing={missing}, unexpected={unexpected}"
+                )
+            if radiomics_cohort_provenance is None:
+                raise RuntimeError(
+                    "Radiomics cohort publication lacks denominator provenance"
+                )
+            combined_radiomics = attach_radiomics_cohort_provenance(
+                combined_radiomics, radiomics_cohort_provenance
+            )
             expected_keys = {
                 publication_key(record)
                 for record in combined_radiomics.to_dict("records")
@@ -739,6 +923,11 @@ def _write_tabular_outputs(
             write_ct_publication_atomic(
                 combined_radiomics,
                 Path(snakemake.output.radiomics),  # type: ignore[name-defined]
+                expected_keys=expected_keys,
+            )
+            write_ct_publication_atomic(
+                combined_radiomics,
+                OUTPUT_DIR / "Data" / "radiomics_all.xlsx",
                 expected_keys=expected_keys,
             )
         else:
@@ -904,6 +1093,7 @@ _write_organization_gate(
     incomplete_courses,
     expected_noncomputed_courses,
 ) = _validate_required_inputs(courses)
+downstream_exclusions: list[dict[str, Any]] = []
 
 if not CAMPAIGN_MODE:
     if required_errors:
@@ -946,6 +1136,10 @@ else:
     # Campaign mode aggregates the courses that completed and reports the rest as
     # declared attrition. Every exclusion keeps its reason in campaign_attrition.csv,
     # so the denominator is auditable rather than silently smaller.
+    downstream_exclusions = _recorded_campaign_exclusions(incomplete_courses)
+    for exclusion in downstream_exclusions:
+        key = (exclusion["patient_id"], exclusion["course_id"])
+        incomplete_courses[key] = [exclusion["reason"]]
     _write_campaign_attrition(
         courses,
         incomplete_courses,
@@ -987,6 +1181,30 @@ else:
         f"in campaign_attrition.csv.\n"
     )
 
+radiomics_cohort_provenance = None
+if RADIOMICS_ENABLED:
+    denominator_source_path = OUTPUT_DIR / "_COURSES" / "organize_ledger.json"
+    if not denominator_source_path.exists():
+        denominator_source_path = Path(snakemake.input.manifest)  # type: ignore[name-defined]
+    denominator_source_sha256 = hashlib.sha256(
+        denominator_source_path.read_bytes()
+    ).hexdigest()
+    provenance_technical_quarantines = [
+        {**entry, "source_record_sha256": denominator_source_sha256}
+        for entry in technical_quarantines
+    ]
+    radiomics_cohort_provenance = build_radiomics_cohort_provenance(
+        intended_count=int(organize_cohort["intended_course_count"]),
+        validated_count=int(organize_cohort["validated_course_count"]),
+        extracted_courses=[
+            (patient_id, course_id)
+            for patient_id, course_id, _course_dir in aggregated_courses
+        ],
+        technical_quarantines=provenance_technical_quarantines,
+        downstream_exclusions=downstream_exclusions,
+        denominator_source_sha256=denominator_source_sha256,
+    )
+
 all_frames, aggregation_errors = _collect_all_frames(aggregated_courses, required_frames)
 _report_aggregation_errors(aggregation_errors)
 if RADIOMICS_ENABLED:
@@ -996,6 +1214,7 @@ _write_tabular_outputs(
     courses,
     incomplete=incomplete_courses,
     expected_noncomputed=expected_noncomputed_courses,
+    radiomics_cohort_provenance=radiomics_cohort_provenance,
 )
 _copy_supplemental_sources()
 _write_qc(aggregated_courses)

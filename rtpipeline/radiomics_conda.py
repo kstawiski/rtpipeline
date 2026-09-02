@@ -37,7 +37,10 @@ from .layout import build_course_dirs
 from .course_contract import ALL_SERIES_RADIOMICS_TEMP_SCOPE, load_course_contract
 from .roi_requiredness import (
     DenominatorLedger,
+    FAILED_RADIOMICS_RESOURCE_LIMIT,
+    REASON_CODES,
     Requiredness,
+    TAXONOMY_CODES,
     assess_custom_applicability,
     requiredness_for,
     requirements_from_contract,
@@ -50,6 +53,12 @@ from .radiomics_outcomes import (
     extraction_status_is_nonfatal_for_required,
     invalidate_radiomics_outputs as _invalidate_radiomics_outputs,
     remove_artifact_strict as _remove_artifact_strict,
+)
+from .radiomics_resource_guard import (
+    RESAMPLED_BBOX_LIMIT_CODE,
+    configured_grid_settings,
+    estimate_resampled_bounding_box,
+    resolve_max_resampled_bbox_voxels,
 )
 from .radiomics_schema import (
     RadiomicsFeatureTypeError,
@@ -106,29 +115,60 @@ def _write_conda_roi_ledger(
             continue
         seen.add(name)
         status = str(row.get("extraction_status") or "success")
-        reason = str(row.get("reason_code") or ("extracted" if status in {"success", "declared_skip"} else "failed_radiomics_extraction"))
+        detail_code = str(row.get("roi_structural_code") or "")
+        reason = str(
+            row.get("reason_code")
+            or detail_code
+            or (
+                "extracted"
+                if status in {"success", "declared_skip"}
+                else "failed_radiomics_extraction"
+            )
+        )
         if status == "below_minimum_voxels":
             reason = "ROI_MASK_BELOW_MIN_VOXELS"
-        ledger.record_roi(course_id, patient_id, name, reason_code=reason, disposition="extracted" if reason == "extracted" else "excluded")
+        if reason == RESAMPLED_BBOX_LIMIT_CODE:
+            reason = FAILED_RADIOMICS_RESOURCE_LIMIT
+        ledger.record_roi(
+            course_id,
+            patient_id,
+            name,
+            reason_code=reason,
+            disposition="extracted" if reason == "extracted" else "excluded",
+            detail_code=detail_code or None,
+            detail=str(row.get("extraction_status_detail") or ""),
+            estimated_resampled_bbox_voxel_count=row.get(
+                "estimated_resampled_bbox_voxel_count"
+            ),
+            max_resampled_bbox_voxel_count=row.get(
+                "max_resampled_bbox_voxel_count"
+            ),
+        )
     for task in tasks:
         name = str(task.get("roi_name", ""))
         if name and (course_id, name) not in {(row.get("course_id"), row.get("roi_name")) for row in ledger.roi_rows}:
             failure = task.get("precomputed_failure") or {}
             reason = str(failure.get("reason_code") or "failed_radiomics_extraction")
-            if reason not in {
-                "extracted", "not_applicable_modality", "not_applicable_scope",
-                "not_applicable_anatomy", "insufficient_fov", "failed_source_segmentation",
-                "failed_source_read", "failed_custom_generation", "failed_custom_read",
-                "failed_radiomics_extraction", "indeterminate_applicability",
-                "not_computed_valid_empty_scope",
-                "ROI_DECLARED_NO_CONTOUR_ITEM", "ROI_DECLARED_EMPTY_CONTOUR_SEQUENCE",
-                "ROI_CONTOUR_UNPARSEABLE", "ROI_CONTOUR_PARTIALLY_UNPARSEABLE",
-                "ROI_CONTOUR_ORPHAN_REFERENCE", "ROI_MASK_EMPTY_AFTER_RASTERIZATION",
-                "ROI_MASK_BELOW_MIN_VOXELS", "REQUIRED_ROI_NOT_DECLARED",
-                "REQUIRED_ROI_AMBIGUOUS_MATCH", "ROI_EXTRACTION_FAILED", "RTSTRUCT_NO_NAMED_ROIS",
-            }:
+            if reason == RESAMPLED_BBOX_LIMIT_CODE:
+                reason = FAILED_RADIOMICS_RESOURCE_LIMIT
+            if reason not in REASON_CODES and reason not in TAXONOMY_CODES:
                 reason = "failed_radiomics_extraction"
-            ledger.record_roi(course_id, patient_id, name, reason_code=reason, disposition="excluded")
+            failure_metadata = dict(failure.get("metadata") or {})
+            ledger.record_roi(
+                course_id,
+                patient_id,
+                name,
+                reason_code=reason,
+                disposition="excluded",
+                detail_code=failure_metadata.get("roi_structural_code"),
+                detail=str(failure.get("reason") or ""),
+                estimated_resampled_bbox_voxel_count=failure_metadata.get(
+                    "estimated_resampled_bbox_voxel_count"
+                ),
+                max_resampled_bbox_voxel_count=failure_metadata.get(
+                    "max_resampled_bbox_voxel_count"
+                ),
+            )
     present_names = {str(row.get("roi_name", "")) for row in ledger.roi_rows}
     for name in expected_names:
         if str(name) not in present_names:
@@ -1539,6 +1579,9 @@ def process_radiomics_batch(
     ) -> None:
         roi_name = str(task.get("roi_name", "ROI"))
         metadata = dict(task.get("metadata") or task.get("extra_metadata") or {})
+        metadata.update(
+            dict((task.get("precomputed_failure") or {}).get("metadata") or {})
+        )
         source = str(metadata.get("segmentation_source", "unknown"))
         if (
             bool(task.get("required", True))
@@ -2126,6 +2169,8 @@ def radiomics_for_course_ct_nifti_fallback(
         nifti_path_str: str,
         status: str = "failed",
         failure_kind: str = "extraction_error",
+        reason_code: Optional[str] = None,
+        metadata: Optional[Mapping[str, Any]] = None,
     ) -> None:
         preparation_failures.append(
             {
@@ -2136,6 +2181,8 @@ def radiomics_for_course_ct_nifti_fallback(
                 "reason": detail,
                 "status": status,
                 "failure_kind": failure_kind,
+                "reason_code": reason_code,
+                "metadata": dict(metadata or {}),
             }
         )
         logger.warning(
@@ -2263,6 +2310,43 @@ def radiomics_for_course_ct_nifti_fallback(
                     nifti_path_str=nifti_path_str,
                     status="below_minimum_voxels",
                     failure_kind="degenerate_mask",
+                )
+                continue
+
+            mask_spacing = tuple(float(value) for value in mask_img.GetSpacing())
+            resampled_spacing, pad_distance = configured_grid_settings(
+                parameter_path,
+                native_spacing_xyz=mask_spacing,
+            )
+            work_estimate = estimate_resampled_bounding_box(
+                mask_bool,
+                native_spacing_xyz=mask_spacing,
+                resampled_spacing_xyz=resampled_spacing,
+                array_axis_to_xyz=(2, 1, 0),
+                pad_distance=pad_distance,
+            )
+            max_bbox_voxels = resolve_max_resampled_bbox_voxels(config)
+            if work_estimate.estimated_resampled_bbox_voxels > max_bbox_voxels:
+                detail = (
+                    f"ROI {roi_name} requires an estimated padded resampled bounding "
+                    f"box of {work_estimate.estimated_resampled_bbox_voxels} voxels "
+                    f"({work_estimate.estimated_resampled_bbox_shape}); configured "
+                    f"maximum is {max_bbox_voxels}. Full configured radiomics was "
+                    "not started."
+                )
+                _record_preparation_failure(
+                    roi_name,
+                    detail,
+                    mask_source=mask_path,
+                    series_uid=series_uid,
+                    nifti_path_str=nifti_path_str,
+                    failure_kind="resource_limit",
+                    reason_code=FAILED_RADIOMICS_RESOURCE_LIMIT,
+                    metadata={
+                        "reason_code": FAILED_RADIOMICS_RESOURCE_LIMIT,
+                        "roi_structural_code": RESAMPLED_BBOX_LIMIT_CODE,
+                        **work_estimate.metadata(limit=max_bbox_voxels),
+                    },
                 )
                 continue
 
@@ -2826,6 +2910,7 @@ def radiomics_for_course(
                 status: str = "failed",
                 failure_kind: str = "extraction_error",
                 reason_code: Optional[str] = None,
+                metadata: Optional[Mapping[str, Any]] = None,
             ) -> None:
                 if (
                     _roi_is_required(roi_name)
@@ -2841,6 +2926,7 @@ def radiomics_for_course(
                         "failure_kind": failure_kind,
                         "reason": reason,
                         "reason_code": reason_code,
+                        "metadata": dict(metadata or {}),
                     }
                 )
                 logger.warning(
@@ -2972,6 +3058,39 @@ def radiomics_for_course(
                     )
                     continue
                 spacing = tuple(ct_info.get("spacing", (1.0, 1.0, 1.0)))
+                resampled_spacing, pad_distance = configured_grid_settings(
+                    parameter_path,
+                    native_spacing_xyz=spacing,
+                )
+                work_estimate = estimate_resampled_bounding_box(
+                    mask_bool,
+                    native_spacing_xyz=spacing,
+                    resampled_spacing_xyz=resampled_spacing,
+                    array_axis_to_xyz=(1, 0, 2),
+                    pad_distance=pad_distance,
+                )
+                max_bbox_voxels = resolve_max_resampled_bbox_voxels(config)
+                if work_estimate.estimated_resampled_bbox_voxels > max_bbox_voxels:
+                    detail = (
+                        f"ROI {roi_name} requires an estimated padded resampled "
+                        f"bounding box of "
+                        f"{work_estimate.estimated_resampled_bbox_voxels} voxels "
+                        f"({work_estimate.estimated_resampled_bbox_shape}); configured "
+                        f"maximum is {max_bbox_voxels}. Full configured radiomics was "
+                        "not started."
+                    )
+                    _record_preparation_failure(
+                        roi_name,
+                        detail,
+                        failure_kind="resource_limit",
+                        reason_code=FAILED_RADIOMICS_RESOURCE_LIMIT,
+                        metadata={
+                            "reason_code": FAILED_RADIOMICS_RESOURCE_LIMIT,
+                            "roi_structural_code": RESAMPLED_BBOX_LIMIT_CODE,
+                            **work_estimate.metadata(limit=max_bbox_voxels),
+                        },
+                    )
+                    continue
                 try:
                     native_voxel_mm3 = (
                         float(spacing[0]) * float(spacing[1]) * float(spacing[2])

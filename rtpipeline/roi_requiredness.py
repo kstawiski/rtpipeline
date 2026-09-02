@@ -38,6 +38,9 @@ TAXONOMY_CODES = frozenset({
     "RTSTRUCT_NO_NAMED_ROIS",
 })
 
+FAILED_RADIOMICS_RESOURCE_LIMIT = "failed_radiomics_resource_limit"
+
+
 REASON_CODES = frozenset({
     "extracted",
     "not_applicable_modality",
@@ -49,6 +52,7 @@ REASON_CODES = frozenset({
     "failed_custom_generation",
     "failed_custom_read",
     "failed_radiomics_extraction",
+    FAILED_RADIOMICS_RESOURCE_LIMIT,
     "indeterminate_applicability",
     "not_computed_valid_empty_scope",
 })
