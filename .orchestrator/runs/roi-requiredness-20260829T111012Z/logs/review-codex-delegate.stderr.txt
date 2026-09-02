@@ -1,0 +1,32 @@
+[codex_adapter] role=review workspace=/umed-projekty/rtpipeline/.orchestrator/runs/roi-requiredness-20260829T111012Z/snapshots/review-codex-delegate cli=/home/konrad/.local/bin/codex
+[codex_adapter] cli stderr (tail):  44",
+      "evidence": "The diagnosis says the min_voxels gate runs after a worker obtains and resamples a mask. In the parallel path, voxel counting and the threshold check occur at radiomics_parallel.py:443-453 before _mask_from_array_like and extractor execution at 503-505. The direct path checks the threshold at radiomics.py:1087-1099, and the conda path checks it at radiomics_conda.py:2278-2295 before serialization and extraction.",
+      "impact": "The diagnosis gives an inaccurate execution-stage explanation for degenerate-mask handling and may lead a reader to infer that PyRadiomics resampling occurred before the threshold gate.",
+      "repair": "State that the threshold is applied after the worker obtains the mask, before extractor resampling or feature extraction. If RTSTRUCT-to-CT mask construction is intended by the word resamples, name that operation explicitly and distinguish it from PyRadiomics resampling.",
+      "verification": "Reconcile the diagnosis wording with all three CT execution paths and run the empty-mask and below-minimum tests, confirming that both are classified as degenerate_mask before feature extraction."
+    },
+    {
+      "finding_id": "source-prefix-policy-contradiction",
+      "severity": "minor",
+      "criterion": "method_validity",
+      "location": "rtpipeline/radiomics_outcomes.py:182-193; docs/diagnosis-radiomics-roi-requiredness.md:28-36",
+      "evidence": "The diagnosis says AutoRTS_total is best effort and that other sources remain required by default. The implementation instead treats every normalized source beginning with autorts_total or autots_total as best effort. Thus an unrecognized label such as AutoRTS_total_variant is exempt from the required gate, despite not being one of the documented source identities.",
+      "impact": "A malformed or future non-TotalSegmentator source label can evade fail-closed handling. The implementation and diagnosis do not share a precise source taxonomy, so requiredness can drift silently as source names evolve.",
+      "repair": "Use an explicit registry of recognized best-effort source identities, including the intentionally supported NIfTI fallback if applicable, while retaining an explicit operator-configuration override. Alternatively, document the prefix contract and make it an intentional, tested part of the source policy.",
+      "verification": "Test exact recognized auto sources as best effort, unknown and prefix-collision sources as required, and configured custom structures as required regardless of their source label."
+    },
+    {
+      "finding_id": "undeclared-evidence-record",
+      "severity": "minor",
+      "criterion": "reproducibility",
+      "location": "docs/diagnosis-radiomics-roi-requiredness.md:58-79, especially lines 62 and 79",
+      "evidence": "The document reports that 79 focused tests passed and says the calculations and fact-versus-inference distinctions are recorded in analysis/roi_requiredness_evidence.json. That JSON is not present in packet.artifact.files or the declared artifact digest, and it is excluded by the workspace .gitignore rule *.json. No standalone focused-test stdout receipt is present in the run logs inspected.",
+      "impact": "A consumer of the declared artifact cannot inspect the cited calculation ledger or independently reproduce the focused-test claim from the deliverable. The documentation therefore depends on an undeclared workspace artifact.",
+      "repair": "Include a tracked, immutable focused-test and evidence receipt in the deliverable, or remove the dependency and state the calculations and durable test evidence directly in the diagnosis. Keep external campaign logs explicitly labeled as external sources.",
+      "verification": "Rebuild the artifact manifest and confirm every evidence path cited by the diagnosis is declared and readable. Verify the focused-test command and result from a stored receipt rather than an executor summary alone."
+    }
+  ]
+}
+tokens used
+1,040,129
+[codex_adapter] response written to /umed-projekty/rtpipeline/.orchestrator/runs/roi-requiredness-20260829T111012Z/responses/review-codex-delegate.json

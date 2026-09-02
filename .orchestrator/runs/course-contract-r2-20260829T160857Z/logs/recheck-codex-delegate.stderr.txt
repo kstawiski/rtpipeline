@@ -1,0 +1,36 @@
+[codex_adapter] role=recheck workspace=/umed-projekty/rtpipeline/.orchestrator/runs/course-contract-r2-20260829T160857Z/snapshots/recheck-codex-delegate cli=/home/konrad/.local/bin/codex
+[codex_adapter] cli stderr (tail): ",
+      "evidence": "A dose-bearing organize-to-DVH test exists and its membership, semantics, QC, workbook, and byte-identity assertions pass (tests/test_course_identity_reference_chains.py:1293-1391), but it does not include RTRECORD delivery evidence in the serialized contract. The test creates an RTRECORD at line 1327, then monkeypatches org._index_rt_files to return {} at line 1342. Organizer obtains RTRECORDs only from that index (rtpipeline/organize.py:2941-2943), uses it for classification and copied delivery evidence (rtpipeline/organize.py:3174-3191 and 3508-3521), and consequently the generated contract has delivery.status='no_records_at_all' with per_plan record_paths=[] when the test is run. The required delivery-backed serializer round trip remains uncovered."
+    },
+    {
+      "finding_id": "openai-codex::CC001-PARALLEL-CONDA-SCOPE",
+      "status": "resolved",
+      "evidence": "The parallel radiomics native-extractor fallback now forwards allow_all_series_temp to the conda backend (rtpipeline/radiomics_parallel.py:638-652). The conda scope checks still reject temporary contracts without dispatcher opt-in (rtpipeline/radiomics_conda.py:1833-1845). The regression test forces the native extractor to None, verifies the conda backend receives True, and verifies the same contract is rejected without opt-in (tests/test_b4_all_series_radiomics.py:281-318)."
+    },
+    {
+      "finding_id": "openai-codex::CC001-RTSTRUCT-PROVENANCE",
+      "status": "resolved",
+      "evidence": "The all-series materializer records the generated RTSTRUCT as AutoRTS_total, and contract validation requires that source label for the temporary scope (rtpipeline/radiomics.py:1947; rtpipeline/course_contract.py:772-788). Shared source construction deduplicates by resolved RTSTRUCT path (rtpipeline/radiomics.py:98-124), and both parallel and conda paths use it. The serial-native, parallel-native, and conda tests each produce one AutoRTS_total source and one ROI task without duplicate paths (tests/test_b4_all_series_radiomics.py:240-277 and 321-432)."
+    },
+    {
+      "finding_id": "openai-codex::CC002-CLI-OUTCOME",
+      "status": "resolved",
+      "evidence": "The CLI now distinguishes the validated plan-only not-computed outcome from a failed DVH task by returning _DVHStageOutcome rather than None after matching the contract and skipped QC record (rtpipeline/cli.py:238-276). The organizer round-trip test confirms exit_status == 0, no workbook, preserved plan membership, unchanged contract bytes, and matching dvh_qc.json; the dose-QC boundary test confirms a nonzero exit for a failing course (tests/test_course_identity_reference_chains.py:1267-1290; tests/test_course_contract_authority.py:243-258)."
+    },
+    {
+      "finding_id": "openai-codex::CC002-DVH-DECISION-UNVALIDATED",
+      "status": "resolved",
+      "evidence": "Contract loading now fails closed unless the complete dvh object exactly equals the canonical decision derived from selected plan count, selected dose count, and delivery status (rtpipeline/course_contract.py:957-965). The tests mutate a plan-only decision by removing it, claiming computed output, changing its reason, or omitting a required field, and each mutation raises CourseContractError (tests/test_course_contract_authority.py:168-197)."
+    },
+    {
+      "finding_id": "openai-codex::CC002-UNSUPPORTED-NONDELIVERY-CLAIM",
+      "status": "resolved",
+      "evidence": "build_dvh_decision now uses dose_record_status='delivery_unknown_no_rtrecord' when delivery.status is no_records_at_all, while retaining plan_only_no_authoritative_dose_grid as the separate computational reason (rtpipeline/course_contract.py:65-80). The documentation explicitly states that this records the evidence ceiling without asserting that no dose was delivered (docs/diagnosis-course-contract.md:66-68), and the plan-only test asserts the unknown-delivery status (tests/test_course_contract_authority.py:156-165)."
+    }
+  ]
+}
+tokens used
+285,603
+[codex_adapter] response written to /umed-projekty/rtpipeline/.orchestrator/runs/course-contract-r2-20260829T160857Z/responses/recheck-codex-delegate.json
+
+[bio-orchestrator] adapter exited with descendants still live; granting 10s before terminating the group

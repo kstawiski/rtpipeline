@@ -1,0 +1,4 @@
+[hermes_adapter] role=repair workspace=/home/konrad/.local/state/agent-worktrees/rtpipeline/dose-authority-efce014 provider=custom:codex-lb model=gpt-5.6-sol
+[hermes_adapter] response written to /umed-projekty/rtpipeline/.orchestrator/runs/course-contract-r2-20260829T160857Z/responses/repair-material-findings.json
+[hermes_adapter] self-learning turn: toolsets skills,memory, budget 900s, cwd /home/konrad/.claude/tmp/bio-hermes-learn-gj3s4394
+[hermes_adapter] self-learning turn finished: Recorded the transferable lessons in two places:  - Updated durable RTpipeline memory with plan-only DVH and aggregation semantics. - Updated `authoritative-course-contract-repair` so validated plan-only courses produce explicit `not_computed` results, aggregators preserve the contract reason, and unexplained missing artifacts still fail.

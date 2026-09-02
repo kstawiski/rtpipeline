@@ -1,0 +1,27 @@
+[codex_adapter] role=review workspace=/umed-projekty/rtpipeline/.orchestrator/runs/roi-round2-20260828T105130Z/snapshots/review-codex-delegate cli=/home/konrad/.local/bin/codex
+[codex_adapter] cli stderr (tail):  [
+    {
+      "finding_id": "F001",
+      "severity": "major",
+      "criterion": "method_validity",
+      "location": "rtpipeline/roi_harmonisation.py:1027-1038 (_PHI_COMPACT_INITIALS and phi_findings); docs/roi-harmonisation.md:41; tests/test_roi_harmonisation.py:450-462",
+      "evidence": "The compact-initial regex is `(?<=[\\s_.-])([A-Z]{2})(?![A-Za-z0-9])`, so it only recognizes a two-letter token when a separator precedes that token. With the snapshot imported through PYTHONPATH, `phi_findings('Bladder_KS')` returns ['initials'], but `phi_findings('KS_Bladder')` and `phi_findings('KS Bladder')` both return []. The documentation says that a compact two-letter capital token is detected when a separator attaches it to a longer label, without limiting the rule to suffix position. The retained structural requirement is separator-bearing initials, while the regression tests cover only the suffix form.",
+      "impact": "A separator-bearing two-letter initials token in leading position can be sent to the local model proposal endpoint, contrary to the documented PHI guard boundary and the required structural detection class. Loopback hosting does not remove the requirement to withhold identifier-shaped names before the request.",
+      "repair": "Make compact-initial detection position-symmetric at token boundaries, for example by matching a two-letter uppercase token at the start or after a separator when it is followed by the end or a separator. Retain the Roman-letter exemption so `GTVm - segm IV/VIII` remains sendable, and add regression cases for `KS_Bladder` and `KS Bladder`. Recompute the complete 546-name comparison and update the documented after-count and exact withheld list if the symmetric rule changes them.",
+      "verification": "With PYTHONPATH set to the reviewed worktree, assert that `phi_findings('KS_Bladder')` and `phi_findings('KS Bladder')` contain `initials`, while all required clinical examples remain unwithheld, including `GTVm - segm IV/VIII` and `ITD`. Re-run `tests/test_roi_harmonisation.py` and the full-vocabulary calculation against `/home/konrad/rtpipeline_campaign/kopernik_bladder_v2/Output`, recording the exact before and after counts and names."
+    },
+    {
+      "finding_id": "F002",
+      "severity": "minor",
+      "criterion": "evidence_traceability",
+      "location": "docs/roi-harmonisation.md:47; supporting calculation files analysis/compute_roi_phi_guard_counts.py and analysis/roi_phi_guard_kopernik_counts.json",
+      "evidence": "The documentation reports that the rejected rules withheld 173 of 546 names (31.7%) and the revised rules withheld 0 of 546 (0.0%), but does not identify the generating calculation, the recorded result, the source vocabulary path, or the denominator as distinct exact ROI names. The calculation script and JSON record are present in the workspace but are not included in the packet's declared artifact file list.",
+      "impact": "The quantitative justification for removing the person-name heuristic is not reproducible from the declared reader-facing artifact. A reader cannot distinguish the figures as a recorded calculation or recover the exact source and hash-pinned vocabulary used.",
+      "repair": "Add a concise provenance sentence to the identifier-guard section naming the calculation script, recorded result, source vocabulary, and denominator. Ensure the calculation record is shipped with the documentation or reproduce its source path, name-frequency hash, RTSTRUCT-scope hash, and exact before/after lists in an included artifact.",
+      "verification": "Confirm the documentation points to an included reproducibility record and states that the denominator is 546 distinct exact ROI names. Re-run the recorded calculation against `/home/konrad/rtpipeline_campaign/kopernik_bladder_v2/Output` and verify 173 (31.7%) before, 0 (0.0%) after for the current rule, together with the recorded name-frequency and RTSTRUCT-scope hashes."
+    }
+  ]
+}
+tokens used
+277,521
+[codex_adapter] response written to /umed-projekty/rtpipeline/.orchestrator/runs/roi-round2-20260828T105130Z/responses/review-codex-delegate.json

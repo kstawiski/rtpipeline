@@ -1,0 +1,4 @@
+[hermes_adapter] role=repair workspace=/umed-projekty/rtpipeline provider=custom:codex-lb model=gpt-5.6-sol
+[hermes_adapter] response written to /umed-projekty/rtpipeline/.orchestrator/runs/resume-reuse-r2-20260829T210426Z/responses/repair-material-findings.json
+[hermes_adapter] self-learning turn: toolsets skills,memory, budget 900s, cwd /home/konrad/.claude/tmp/bio-hermes-learn-t52cl6zb
+[hermes_adapter] self-learning turn finished: No new corpus entry was needed. The transferable lesson is already captured in:  - Memory. Rejected or unverifiable derived artifacts must be removed or quarantined outside consumer-visible paths before rebuilding. - Skill `authoritative-course-contract-repair`. Presence alone is insufficient for reuse. Correspondence to the authoritative input must be established, and removal or quarantine must be audited before replacement begins.  I did not add a duplicate or retain task-specific paths, commits, test counts, or outcomes.

@@ -118,6 +118,35 @@ def test_fully_contracted_plan_checkpoint_is_resumable(tmp_path):
     assert result.source_plan_uids == [str(pydicom.dcmread(plan, stop_before_pixels=True).SOPInstanceUID)]
 
 
+def test_hydration_preserves_copied_plan_artifact_provenance(tmp_path):
+    course_dir = tmp_path / "PT001" / "COURSE_A"
+    first_plan, first_dose = write_synthetic_plan_and_dose(course_dir)
+    renamed_plan = first_plan.with_name("first_plan.dcm")
+    renamed_dose = first_dose.with_name("first_dose.dcm")
+    first_plan.rename(renamed_plan)
+    first_dose.rename(renamed_dose)
+    first_plan, first_dose = renamed_plan, renamed_dose
+    second_plan, _ = write_synthetic_plan_and_dose(
+        course_dir,
+        prescribed_dose_gy=36.0,
+    )
+    write_minimal_course_contract(
+        course_dir,
+        selected_plans=[first_plan, second_plan],
+        selected_doses=[],
+    )
+
+    result = _hydrate_existing_course("PT001", "COURSE_A", course_dir)
+
+    first_uid = str(
+        pydicom.dcmread(first_plan, stop_before_pixels=True).SOPInstanceUID
+    )
+    assert result is not None
+    assert len(result.selected_plan_contract) == 2
+    assert result.plan_sop_uid == first_uid
+    assert result.source_plan_uids == [first_uid]
+
+
 @pytest.mark.parametrize("suffix", [".nii", ".nii.gz"])
 def test_either_nifti_suffix_counts_as_converted(tmp_path, suffix):
     course_dir = tmp_path / "PT001" / "COURSE_A"

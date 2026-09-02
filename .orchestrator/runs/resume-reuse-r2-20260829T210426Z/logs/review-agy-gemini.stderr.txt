@@ -1,0 +1,3 @@
+[agy_adapter] role=review workspace=/umed-projekty/rtpipeline/.orchestrator/runs/resume-reuse-r2-20260829T210426Z/snapshots/review-agy-gemini model=gemini-3.7-flash-high
+[agy_adapter] using response file written by the agent
+[agy_adapter] response written to /umed-projekty/rtpipeline/.orchestrator/runs/resume-reuse-r2-20260829T210426Z/responses/review-agy-gemini.json

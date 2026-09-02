@@ -1,0 +1,29 @@
+[codex_adapter] role=review workspace=/umed-projekty/rtpipeline/.orchestrator/runs/dose-round2-20260828T125833Z/snapshots/review-codex-delegate cli=/home/konrad/.local/bin/codex
+[codex_adapter] cli stderr (tail): ocumented statuses, and require a non-missing planning-CT adjudication. Gate hydration on that predicate before applying any defaults. Defaults may remain only for genuinely plan-free courses. Add parameterized regressions for null, blank, and unknown values and verify that no default is persisted.",
+      "verification": "Run the expanded tests/test_resume_completeness.py with nested, legacy-root, and metadata-pointer plans, asserting that every semantically missing adjudication returns None and that a fully adjudicated checkpoint still hydrates. Re-read docs/diagnosis-delivered-dose.md:45-47 against the final predicate and run the supported full suite."
+    },
+    {
+      "finding_id": "F-PLANNING-CT-MANIFEST-DROP-05",
+      "severity": "major",
+      "criterion": "method_validity",
+      "location": "rtpipeline/cli.py:316-320 and 1470-1485",
+      "evidence": "_load_courses_from_manifest logs and skips every course for which _hydrate_existing_course returns None. ensure_courses then adopts manifest_courses whenever the list is nonempty, so a mixed manifest with one valid course and one plan-bearing course requiring reprocessing returns only the valid course and never calls organize_and_merge. A synthetic mixed manifest produced ['good'] while silently dropping the incomplete nested-plan course.",
+      "impact": "Manifest-driven resume for a downstream stage can omit incomplete courses without failing or reprocessing them. Those courses receive no delivered-dose or planning-CT adjudication, violating the required reprocess-not-hydrate behavior and silently producing an incomplete stage input.",
+      "repair": "Do not accept a partial manifest result. Track rejected or missing entries and fall back to organize_and_merge so they are rediscovered and reprocessed, or fail closed with an explicit reprocessing-required error when organize is unavailable. Add a mixed-manifest regression proving that one rejected course cannot be hidden by other hydrated entries.",
+      "verification": "Exercise the CLI with resume enabled, an explicit manifest, and a mix of one fully adjudicated course and one nested-plan course lacking adjudication. Confirm that the incomplete course is reprocessed or the command fails loudly, and that no returned course list silently omits it."
+    },
+    {
+      "finding_id": "F-DOSE-COHORT-PROVENANCE-06",
+      "severity": "minor",
+      "criterion": "interpretation",
+      "location": "docs/diagnosis-delivered-dose.md:29-37; analysis/output_fraction_census.py:91-110; analysis/dfci_table_census.py:92-112; analysis/evidence_ledger.json:209-215",
+      "evidence": "The documentation says the cohort calculations call the production estimator for every course, but it does not state that selected plan UIDs and total_prescription_gy were read from the completed pre-fix course metadata. Both census scripts obtain selected_uids from source_plan_uids or plan_sop_uid and reported from total_prescription_gy in that existing metadata. The evidence ledger records this limitation explicitly, but the reader-facing diagnosis omits it.",
+      "impact": "Readers may interpret the paired cohort distributions as an end-to-end re-evaluation by the repaired pipeline. The delivered-dose estimator was recomputed, but plan selection and the reported prescription were inherited from the pre-fix rebuild and were not independently re-derived by these censuses.",
+      "repair": "Add a limitation near the cohort-scale description stating that delivered estimates were recomputed with the repaired estimator while selected plan UIDs and total_prescription_gy came from the completed pre-fix rebuild. Preserve the existing numbers and uncertainty language.",
+      "verification": "Confirm the added sentence matches the evidence-ledger limitation, distinguishes recomputed delivery from inherited plan selection and prescription, and leaves every count, denominator, interval, qualifier, and limitation unchanged."
+    }
+  ]
+}
+tokens used
+695,008
+[codex_adapter] response written to /umed-projekty/rtpipeline/.orchestrator/runs/dose-round2-20260828T125833Z/responses/review-codex-delegate.json

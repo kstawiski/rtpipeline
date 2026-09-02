@@ -1,0 +1,27 @@
+[codex_adapter] role=recheck workspace=/umed-projekty/rtpipeline/.orchestrator/runs/roi-harmonisation-20260828T092306Z/snapshots/recheck-codex-delegate cli=/home/konrad/.local/bin/codex
+[codex_adapter] cli stderr (tail): -codex::F001",
+      "status": "resolved",
+      "evidence": "rtpipeline/roi_harmonisation.py:973-1126 now detects delimiter-attached short identifiers, compact initials outside a radiotherapy exemption set, and unrecognised title-case person-name-like tokens, then records only name_sha256, frequency, and reason categories for withheld entries. An endpoint-capture probe covering identifier tokens at the start, middle, and end of ROI names withheld all 9 MRN, KS, and Smith variants; none of the original strings appeared in the raw request or proposal provenance. A separate all-withheld test prevents any request. Tests at tests/test_roi_harmonisation.py:496-566 cover the named MRN, compact-initial, surname, request-payload, provenance, hash-only report, and no-request cases, and the complete 40-test focused file passed."
+    },
+    {
+      "finding_id": "openai-codex::F002",
+      "status": "unresolved",
+      "evidence": "The repair detects changes within the cohort roots frozen in the vocabulary, but it does not bind the RTSTRUCT objects being annotated in the current pipeline run to that frozen scope. verify_live_vocabulary at rtpipeline/roi_harmonisation.py:451-465 recollects only scope['cohort_roots']; cli.py:1515-1523 performs that check before discovering the current courses, and cli.py:1525-1539 then annotates each selected course without checking that its SOPInstanceUID belongs to the frozen identity set. apply_mapping at roi_harmonisation.py:1375-1412 checks names only. A direct probe froze and approved cohort A containing one Bladder RTSTRUCT, successfully verified unchanged cohort A, then annotated a distinct Bladder RTSTRUCT from an entirely new cohort B that was absent from the frozen roots and RTSTRUCT scope hash. The focused tests at tests/test_roi_harmonisation.py:690-748 pass for addition, removal, and spelling drift under an already frozen root, but do not cover a current course outside those roots. Therefore a new cohort containing only known names can still be processed without scope mismatch or re-approval, leaving the finding's new-cohort denominator failure materially present."
+    },
+    {
+      "finding_id": "openai-codex::F003",
+      "status": "resolved",
+      "evidence": "rtpipeline/roi_harmonisation.py:1260-1278 now sends model_version_or_digest with the model name and deterministic parameters. Lines 1176-1192 require an observed name and version or digest from the response, and lines 1293-1301 reject any mismatch before accepting rows. Provenance at lines 1337-1353 records requested and observed identities separately. A direct endpoint probe confirmed the requested digest was present in the request and that a different observed digest returned an unavailable investigator-mode template with no accepted model mapping. The matched-identity repeatability and mismatch regressions at tests/test_roi_harmonisation.py:618-664 passed within the 40-test focused run."
+    },
+    {
+      "finding_id": "openai-codex::F004",
+      "status": "resolved",
+      "evidence": "The repaired artifact adds rtpipeline/tg263_terms_v20170815.py and validates its 717-term inventory against the pinned hash at rtpipeline/roi_harmonisation.py:156-168. Mapping validation at lines 679-710 requires TG-263-labelled non-target aliases to occur in that registry, permits only the documented governed target grammar outside the primary-name list, and requires registry edition and source provenance. A direct probe rejected DefinitelyNotATG263Term as TG-263 and accepted the same invented alias only after it was marked project-local. tests/test_roi_harmonisation.py:347-380 exercises recognized terms, target construction, invented-term rejection, project-local handling, edition, source URL, and provenance; it passed in the complete 40-test focused run. Documentation at docs/roi-harmonisation.md:126-136 links the authoritative AAPM worksheet and report and states the supported edition and validation boundary."
+    }
+  ]
+}
+tokens used
+140,067
+[codex_adapter] response written to /umed-projekty/rtpipeline/.orchestrator/runs/roi-harmonisation-20260828T092306Z/responses/recheck-codex-delegate.json
+
+[bio-orchestrator] adapter exited with descendants still live; granting 10s before terminating the group

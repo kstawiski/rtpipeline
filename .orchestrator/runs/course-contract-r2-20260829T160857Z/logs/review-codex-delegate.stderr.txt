@@ -1,0 +1,33 @@
+[codex_adapter] role=review workspace=/umed-projekty/rtpipeline/.orchestrator/runs/course-contract-r2-20260829T160857Z/snapshots/review-codex-delegate cli=/home/konrad/.local/bin/codex
+[codex_adapter] cli stderr (tail): lidates selected plans, doses, delivery, artifacts, CT provenance, and dose QC but never validates the contract's dvh object. DVH regenerates the decision only when the value is absent or not a dictionary; any dictionary is copied into dvh_qc.json unchanged. A plan-only contract can therefore claim metrics_status='computed' and output='dvh_metrics.xlsx' while dose_grid is null and still pass contract loading.",
+      "impact": "The explicit contract/output distinction required by CC-002 is not fail-closed. A malformed or stale decision can tell readers that metrics were computed even though DVH emitted no dose metrics.",
+      "repair": "Validate the complete dvh decision schema and require its fields to agree with selected plan count, selected dose count, delivery status, dose-grid presence, and expected output. For current contracts, compare the decision with the canonical decision generated from those authoritative fields.",
+      "verification": "Add contract-loading tests that mutate a valid plan-only decision to 'computed', assign a workbook output, change its reason code, or omit required fields, and assert CourseContractError. Retain a passing test for the canonical organize-written decision."
+    },
+    {
+      "finding_id": "CC002-UNSUPPORTED-NONDELIVERY-CLAIM",
+      "severity": "major",
+      "criterion": "interpretation",
+      "location": "rtpipeline/course_contract.py:62-80; docs/diagnosis-course-contract.md:64-68; tests/test_course_contract_authority.py:131-158",
+      "evidence": "The documentation correctly states that absence of all RTRECORD objects makes delivery unknown rather than zero. Nevertheless, build_dvh_decision maps delivery_status='no_records_at_all' to dose_record_status='no_dose_delivered_or_recorded', and the final prose and test require that wording. Missing RTRECORD evidence establishes that delivery was not recorded, not that no dose was delivered.",
+      "impact": "The reader-facing contract overstates a patient's treatment history and collapses unknown delivery into confirmed non-delivery, contrary to the artifact's own evidence ceiling.",
+      "repair": "Use a status such as 'delivery_unknown_no_rtrecord' or 'no_delivery_record_available' and keep it separate from the computational reason 'no_authoritative_rtdose_selected'. Reserve a confirmed non-delivery label for cases with evidence that supports that conclusion.",
+      "verification": "Update the plan-only tests and documentation to assert unknown delivery when no RTRECORD exists, while still asserting metrics_status='not_computed' because no authoritative dose grid was selected. Add a distinct evidence-backed zero-delivery case if confirmed non-delivery must be represented."
+    },
+    {
+      "finding_id": "DOC-VERIFICATION-COUNT-DRIFT",
+      "severity": "minor",
+      "criterion": "reproducibility",
+      "location": "docs/diagnosis-course-contract.md:134",
+      "evidence": "The polish source states '933 passed and 2 skipped', while the final document changes that numerical claim to '944 passed and 2 skipped'. The exact-byte pre-review suite receipt at logs/check-pre-review-full-suite.stdout.txt instead reports '945 passed, 1 skipped, 961 warnings in 49.46s'.",
+      "impact": "The document's exact verification count is neither fidelity-preserving relative to its declared prose source nor traceable to the current artifact's suite receipt, although the receipt confirms that the suite passed.",
+      "repair": "Bind the verification sentence to the current exact-byte test receipt and state its actual result, or remove unstable exact counts and cite the retained receipt. Numerical verification results must be updated as evidence-backed verification data, not introduced as an unsupported polish change.",
+      "verification": "Confirm the final sentence matches the retained suite receipt, then run the polish verifier with the correct draft source and ensure no unexplained numeral movement remains."
+    }
+  ]
+}
+tokens used
+612,721
+[codex_adapter] response written to /umed-projekty/rtpipeline/.orchestrator/runs/course-contract-r2-20260829T160857Z/responses/review-codex-delegate.json
+
+[bio-orchestrator] adapter exited with descendants still live; granting 10s before terminating the group

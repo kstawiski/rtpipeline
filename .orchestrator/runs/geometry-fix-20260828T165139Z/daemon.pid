@@ -1,0 +1,17 @@
+{
+  "pid": 2639323,
+  "started_at": "2026-08-28T16:51:39.821951+00:00",
+  "command": [
+    "/home/linuxbrew/.linuxbrew/opt/python@3.14/bin/python3.14",
+    "-m",
+    "biomedical_orchestrator",
+    "run",
+    "--spec",
+    ".orchestrator/specs/geometry_fix.json",
+    "--routes",
+    "/home/konrad/.config/orchestrator/routes.json",
+    "--run-dir",
+    ".orchestrator/runs/geometry-fix-20260828T165139Z"
+  ],
+  "log": ".orchestrator/runs/geometry-fix-20260828T165139Z/daemon.log"
+}

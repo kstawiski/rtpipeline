@@ -32,6 +32,7 @@ from .clinical_prescription import (
     adjudicate_clinical_prescription,
     clinical_evidence_matches_source,
     load_kopernik_treatment_records,
+    record_clinical_evidence_regeneration,
 )
 from .plan_profiles import is_private_plan_profile, plan_profile_name
 from .prescription import (
@@ -163,6 +164,79 @@ class _ClinicalDeliveryPublication(TypedDict):
     delivery_status: str
     delivery_method: str | None
     independently_established: bool
+
+
+class _HydratedDoseState(TypedDict):
+    prescribed_dose_gy: float | None
+    resolved_prescribed_dose_total_gy: float | None
+    delivered_dose_gy: float | None
+    delivery_status: str
+    delivery_method: str | None
+    dose_classification: dict[str, object]
+
+
+def _hydrated_preclinical_dose_state(
+    contract: CourseContract,
+) -> _HydratedDoseState:
+    """Recover DICOM state rather than a previously published clinical overlay."""
+
+    delivery = contract.delivery
+    state: _HydratedDoseState = {
+        "prescribed_dose_gy": contract.prescribed_dose_gy,
+        "resolved_prescribed_dose_total_gy": (
+            contract.resolved_prescribed_dose_total_gy
+        ),
+        "delivered_dose_gy": contract.delivered_dose_gy,
+        "delivery_status": str(delivery.get("status") or ""),
+        "delivery_method": (
+            delivery.get("method") if isinstance(delivery.get("method"), str) else None
+        ),
+        "dose_classification": dict(
+            contract.data.get("dose_classification") or {}
+        ),
+    }
+    evidence = contract.data.get("clinical_prescription_evidence")
+    if not (
+        str(state["dose_classification"].get("prescribed_dose_scope") or "")
+        == CLINICAL_RESOLVED_SCOPE
+        and isinstance(evidence, dict)
+        and evidence.get("outcome") == "RESOLVED_FROM_CLINICAL_RECORD"
+    ):
+        return state
+
+    dicom = evidence.get("dicom")
+    if not isinstance(dicom, dict):
+        raise CourseContractError("clinical evidence has no DICOM snapshot")
+    dicom_scope = str(dicom.get("prescribed_dose_scope") or "")
+    if not dicom_scope:
+        raise CourseContractError("clinical evidence has no DICOM dose scope")
+    resolved = _finite_nonnegative(
+        dicom.get("resolved_prescribed_dose_total_gy")
+    )
+    state["prescribed_dose_gy"] = resolved
+    state["resolved_prescribed_dose_total_gy"] = resolved
+    state["delivered_dose_gy"] = _finite_nonnegative(
+        dicom.get("delivered_dose_gy")
+    )
+    state["delivery_status"] = str(
+        dicom.get("delivery_status") or "delivery_unresolved"
+    )
+    snapshot_method = dicom.get("delivery_method")
+    state["delivery_method"] = (
+        snapshot_method if isinstance(snapshot_method, str) else None
+    )
+    state["dose_classification"]["prescribed_dose_scope"] = dicom_scope
+    raw_classification = state["dose_classification"].get("dicom_classification")
+    if raw_classification:
+        state["dose_classification"]["classification"] = raw_classification
+        state["dose_classification"]["reason"] = state[
+            "dose_classification"
+        ].get("dicom_reason")
+        raw_warnings = state["dose_classification"].get("dicom_warnings")
+        state["dose_classification"]["warnings"] = (
+            list(raw_warnings) if isinstance(raw_warnings, list) else []
+        )
+    return state
 
 
 def _clinical_delivery_publication(
@@ -621,12 +695,16 @@ def _hydrate_existing_course(
     if not related_files and course_dirs.dicom_related.exists():
         related_files = [p for p in course_dirs.dicom_related.rglob("*.dcm") if p.is_file()]
 
-    total_rx_val = contract.prescribed_dose_gy
-    resolved_total_rx_val = contract.resolved_prescribed_dose_total_gy
-    delivered_value = contract.delivered_dose_gy
+    hydrated_dose = _hydrated_preclinical_dose_state(contract)
+    total_rx_val = hydrated_dose["prescribed_dose_gy"]
+    resolved_total_rx_val = hydrated_dose[
+        "resolved_prescribed_dose_total_gy"
+    ]
+    delivered_value = hydrated_dose["delivered_dose_gy"]
     delivery_contract = contract.delivery
-    delivery_status = str(delivery_contract.get("status") or "")
-    delivery_method = delivery_contract.get("method")
+    delivery_status = hydrated_dose["delivery_status"]
+    delivery_method = hydrated_dose["delivery_method"]
+    dose_classification = hydrated_dose["dose_classification"]
     delivery_plan_details = list(delivery_contract.get("per_plan") or [])
     selected_delivery = [
         item for item in delivery_plan_details if item.get("selected_for_dose_grid") is True
@@ -678,12 +756,34 @@ def _hydrate_existing_course(
     dose_grid = contract.data.get("dose_grid") or {}
     plan_uid = str(plan_artifact.get("sop_instance_uid") or "") or None
     dose_uid = str(dose_grid.get("sop_instance_uid") or "") or None
-    source_plan_uids = {
-        str(item.get("sop_instance_uid") or "") for item in contract.selected_plans
-    }
-    source_dose_uids = {
-        str(item.get("sop_instance_uid") or "") for item in contract.selected_doses
-    }
+    artifact_source_plan_uids = plan_artifact.get("source_plan_uids")
+    source_plan_uids = (
+        {
+            str(uid)
+            for uid in artifact_source_plan_uids
+            if str(uid or "")
+        }
+        if isinstance(artifact_source_plan_uids, list)
+        else {
+            str(item.get("sop_instance_uid") or "")
+            for item in contract.selected_plans
+            if str(item.get("sop_instance_uid") or "")
+        }
+    )
+    grid_source_dose_uids = dose_grid.get("source_dose_uids")
+    source_dose_uids = (
+        {
+            str(uid)
+            for uid in grid_source_dose_uids
+            if str(uid or "")
+        }
+        if isinstance(grid_source_dose_uids, list)
+        else {
+            str(item.get("sop_instance_uid") or "")
+            for item in contract.selected_doses
+            if str(item.get("sop_instance_uid") or "")
+        }
+    )
 
     return CourseOutput(
         patient_id=patient_id,
@@ -721,7 +821,7 @@ def _hydrate_existing_course(
             str((contract.data.get("authoritative_rtstruct") or {}).get("sop_instance_uid") or "")
             or None
         ),
-        dose_classification=dict(contract.data.get("dose_classification") or {}),
+        dose_classification=dose_classification,
         dose_qc=dict(contract.dose_qc),
         course_contract=dict(contract.data),
     )
@@ -5370,6 +5470,13 @@ def organize_and_merge(
             )
             dose_classification_contract = dict(co.dose_classification)
             clinical_prescription_evidence = None
+            previous_clinical_prescription_evidence = None
+            if isinstance(co.course_contract, dict):
+                previous_candidate = co.course_contract.get(
+                    "clinical_prescription_evidence"
+                )
+                if isinstance(previous_candidate, dict):
+                    previous_clinical_prescription_evidence = previous_candidate
             if clinical_record_index is not None:
                 plan_dates: set[str] = set()
                 treatment_dates: set[str] = set()
@@ -5427,6 +5534,10 @@ def organize_and_merge(
                 )
                 clinical_prescription_evidence["dicom"]["delivered_dose_gy"] = (
                     co.delivered_dose_gy
+                )
+                clinical_prescription_evidence = record_clinical_evidence_regeneration(
+                    clinical_prescription_evidence,
+                    previous_clinical_prescription_evidence,
                 )
                 if (
                     clinical_prescription_evidence.get("outcome")

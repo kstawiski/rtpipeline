@@ -1,0 +1,5 @@
+[hermes_adapter] role=execute workspace=/umed-projekty/rtpipeline provider=custom:codex-lb model=gpt-5.6-sol
+[hermes_adapter] using response file written by the agent
+[hermes_adapter] response written to /umed-projekty/rtpipeline/.orchestrator/runs/delivered-dose-20260828T084649Z/responses/execute-hermes-sol-xhigh.json
+[hermes_adapter] self-learning turn: toolsets skills,memory, budget 900s, cwd /home/konrad/.claude/tmp/bio-hermes-learn-a95dxrsv
+[hermes_adapter] self-learning turn finished: Recorded the generalizable RTpipeline rules in persistent memory:  - Delivered dose remains distinct from prescribed intent. - Delivered dose uses RTRECORD-linked delivered fractions. - No treatment records means unknown, represented as null. - References to absent plans remain unassigned, counted, and logged. - Empty non-DICOM discovery and unresolved clinical reference chains fail closed. - Planning CT absence must be explicit.  I did not create a new skill. The record supports stable codebase conventions, but it does not establish a sufficiently general procedure beyond the existing RTpipeline memory.

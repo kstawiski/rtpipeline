@@ -1,0 +1,5 @@
+[hermes_adapter] role=execute workspace=/umed-projekty/rtpipeline provider=custom:codex-lb model=gpt-5.6-sol
+[hermes_adapter] using response file written by the agent
+[hermes_adapter] response written to /umed-projekty/rtpipeline/.orchestrator/runs/hardening-20260828T013959Z/responses/execute-hermes-sol-xhigh.json
+[hermes_adapter] self-learning turn: toolsets skills,memory, budget 900s, cwd /home/konrad/.claude/tmp/bio-hermes-learn-30uyenbl
+[hermes_adapter] self-learning turn finished: Recorded the durable RTpipeline principles in memory:  - Use DICOM Modality tags and reference chains rather than filenames or labels. - Share strict target detection and exclude crop and optimization-helper ROIs. - Deduplicate RTSTRUCT paths by SOPInstanceUID and fail closed on true ambiguity. - Treat plan-and-dose courses without genuine targets as QC failures. - Make CT-only behavior explicit rather than silently returning no output. - Preserve uncertainty when replans cannot be mapped through delivery records.  I did not create a new skill because the reusable repair procedure is already covered by the existing self-improvement skill.

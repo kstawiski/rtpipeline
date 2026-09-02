@@ -1,0 +1,17 @@
+{
+  "pid": 942618,
+  "started_at": "2026-08-29T11:30:51.619854+00:00",
+  "command": [
+    "/home/linuxbrew/.linuxbrew/opt/python@3.14/bin/python3.14",
+    "-m",
+    "biomedical_orchestrator",
+    "run",
+    "--spec",
+    ".orchestrator/specs/dose_authority.json",
+    "--routes",
+    "/home/konrad/.config/orchestrator/routes.json",
+    "--run-dir",
+    ".orchestrator/runs/dose-authority-20260829T113051Z"
+  ],
+  "log": ".orchestrator/runs/dose-authority-20260829T113051Z/daemon.log"
+}

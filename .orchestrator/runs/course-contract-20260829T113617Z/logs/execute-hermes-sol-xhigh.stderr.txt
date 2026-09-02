@@ -1,0 +1,4 @@
+[hermes_adapter] role=execute workspace=/home/konrad/.local/state/agent-worktrees/rtpipeline/dose-authority-efce014 provider=custom:codex-lb model=gpt-5.6-sol
+[hermes_adapter] response written to /umed-projekty/rtpipeline/.orchestrator/runs/course-contract-20260829T113617Z/responses/execute-hermes-sol-xhigh.json
+[hermes_adapter] self-learning turn: toolsets skills,memory, budget 900s, cwd /home/konrad/.claude/tmp/bio-hermes-learn-cflwwmy0
+[hermes_adapter] self-learning turn finished: Recorded the generalizable RTpipeline course-contract and dose-authority invariants in persistent memory. I also consolidated overlapping artifact-release and post-outcome amendment notes to avoid duplication. No new skill was created because the record supports stable codebase rules, not a sufficiently detailed reusable procedure.

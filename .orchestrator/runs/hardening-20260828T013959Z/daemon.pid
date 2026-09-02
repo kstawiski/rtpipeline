@@ -1,0 +1,17 @@
+{
+  "pid": 212140,
+  "started_at": "2026-08-28T01:39:59.225732+00:00",
+  "command": [
+    "/home/linuxbrew/.linuxbrew/opt/python@3.14/bin/python3.14",
+    "-m",
+    "biomedical_orchestrator",
+    "run",
+    "--spec",
+    ".orchestrator/specs/hardening.json",
+    "--routes",
+    "/home/konrad/.config/orchestrator/routes.json",
+    "--run-dir",
+    ".orchestrator/runs/hardening-20260828T013959Z"
+  ],
+  "log": ".orchestrator/runs/hardening-20260828T013959Z/daemon.log"
+}

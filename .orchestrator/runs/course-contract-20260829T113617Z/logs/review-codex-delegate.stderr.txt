@@ -1,0 +1,39 @@
+[codex_adapter] role=review workspace=/umed-projekty/rtpipeline/.orchestrator/runs/course-contract-20260829T113617Z/snapshots/review-codex-delegate cli=/home/konrad/.local/bin/codex
+[codex_adapter] cli stderr (tail):  and remove all first-candidate and segmentation-directory fallbacks for course-level planning CT use.",
+      "verification": "Add a multiple-NIfTI regression test with a contracted non-first file and assert that only the contracted path is used. Add a missing-contract test that fails before any NIfTI scan and update the re-derivation table to include this site."
+    },
+    {
+      "finding_id": "planning-nifti-identity-unchecked",
+      "severity": "major",
+      "criterion": "integrity",
+      "location": "rtpipeline/course_contract.py:439-475",
+      "evidence": "Planning-CT validation confirms that the declared DICOM directory contains one SeriesInstanceUID and that the declared NIfTI path exists, but it does not verify that the NIfTI carries matching provenance, geometry, or a sidecar series identity. In the snapshot reproduction, a NIfTI sidecar declaring a different series_instance_uid was accepted by `load_course_contract(...)`.",
+      "impact": "A replaced or stale NIfTI can silently feed CT-based segmentation, radiomics, DVH, and QC while the contract appears current.",
+      "repair": "Persist NIfTI provenance tied to the selected CT series, such as the dcm2niix sidecar SeriesInstanceUID, geometry and orientation metadata, and a content hash, and validate those values against the contract and selected DICOM series.",
+      "verification": "Add tests for mismatched sidecar UID, geometry, orientation, and content hash, plus a valid matching case. Require stale or unverifiable NIfTI provenance to raise `CourseContractError`."
+    },
+    {
+      "finding_id": "aggregation-ignores-course-contract",
+      "severity": "major",
+      "criterion": "reproducibility",
+      "location": "workflow/scripts/aggregate_results.py:129-197, 254-327, 542-560",
+      "evidence": "The aggregation entry point validates sentinels and reads DVH, radiomics, and metadata workbooks, but it never loads `metadata/case_metadata.json` through `load_course_contract` and never checks `course_contract.dose_qc`. In the snapshot reproduction, two courses with valid sentinels and workbooks but no course contract were aggregated successfully.",
+      "impact": "The cohort denominator can include courses with no authoritative treatment selection, missing or stale contracts, or failing dose QC. Aggregation can therefore publish results that the course-level contract should exclude or flag.",
+      "repair": "Load and validate the course contract for every manifest course before accepting required outputs, fail or record auditable attrition for missing, stale, or unreadable contracts, and exclude or explicitly flag courses whose binding dose-QC verdict is fail.",
+      "verification": "Add aggregation harness tests for missing contracts, stale identities, dose-QC failure, and valid contracts. Assert that invalid courses cannot enter cohort workbooks and that attrition records preserve the exact reason."
+    },
+    {
+      "finding_id": "course-unit-wording-error",
+      "severity": "minor",
+      "criterion": "evidence_traceability",
+      "location": "docs/diagnosis-course-contract.md:28",
+      "evidence": "The sentence says the second disagreement reflected an earlier undelivered course. The table and the following paragraph identify the actual event as plan `arc` having zero delivery records within course `441642/2021-05`; no separate earlier course is shown.",
+      "impact": "This changes the unit of the documented finding from an undelivered plan to an undelivered course and can mislead readers about the number and location of affected courses.",
+      "repair": "Replace the phrase with wording such as `an earlier undelivered plan in the same course`, preserving the existing counts, percentages, and direction.",
+      "verification": "Reconcile the sentence against the four-course evidence ledger and rerun the prose fidelity check to confirm that only the noun is corrected and no numeric or qualifier drift occurs."
+    }
+  ]
+}
+tokens used
+2,028,078
+[codex_adapter] response written to /umed-projekty/rtpipeline/.orchestrator/runs/course-contract-20260829T113617Z/responses/review-codex-delegate.json

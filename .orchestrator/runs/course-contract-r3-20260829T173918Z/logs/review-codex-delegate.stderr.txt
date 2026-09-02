@@ -1,0 +1,29 @@
+[codex_adapter] role=review workspace=/umed-projekty/rtpipeline/.orchestrator/runs/course-contract-r3-20260829T173918Z/snapshots/review-codex-delegate cli=/home/konrad/.local/bin/codex
+[codex_adapter] cli stderr (tail): mputed outcome names the missing authoritative dose grid.
+   133	
+   134	The dose-bearing branch uses synthetic valid RTPLAN, plan-level RTDOSE pixels, RTSTRUCT contours, planning CT headers, and RTRECORD evidence. It asserts that organize's non-empty selected plan membership, selected dose membership, and dose-grid metadata are written and loadable. DVH reads those selections from the written contract, computes metrics, and writes `dvh_metrics.xlsx`. The test checks that the emitted DVH decision reports `metrics_status` as `computed` and that its output path exists. It also compares the plan UIDs recorded by organize and DVH. The contract bytes, dose-grid semantics, and dose-QC threshold remain unchanged. These tests use synthesized DICOM and do not require patient DICOM.
+   135	
+   136	The all-series test loads the materializer's temporary contract and confirms one `AutoRTS_total` source for the copied RTSTRUCT. Serial radiomics records that source. The parallel fallback forwards the restricted opt-in to the conda environment, while direct course-level calls remain rejected.
+   137	
+   138	The full local test suite completed with 954 passed and 2 skipped tests under Python 3.14. The 89 focused repair tests also passed under the minimum supported Python 3.10. Python compilation and `git diff --check` completed without errors.
+   139	
+   140	The real-course comparison confirms membership control without recalculating new cohort DVH values. A subsequent governed rebuild should regenerate downstream workbooks from the repaired contracts, preserve contract provenance, and exclude or flag courses with failing dose QC.
+
+**Verifying dose grid UID consistency**
+**Planning static lint and evidence verification**
+**Identifying documentation overstatement on delivery evidence**
+**Assessing integrity check repair options**
+**Recommending record binding for repair**
+**Verifying record binding with tests**
+**Analyzing material severity definitions and reporting criteria**
+**Verifying polish document consistency against draft**
+**Ensuring test output consistency and assertion order**
+**Verifying contract integrity tests**
+**Finalizing JSON report details**
+codex
+{"artifact_digest":"1e0f083e0ff7357edfbde0ae335b7bbf9569ff14d6445fe900bd564bf8538212","decision":"changes_required","findings":[{"finding_id":"R3-RTRECORD-EVIDENCE-DISCONNECTED","severity":"minor","criterion":"integrity","location":"tests/test_course_identity_reference_chains.py:1362 and 1377; docs/diagnosis-course-contract.md:134","evidence":"The dose-bearing test creates record.dcm with _mk_record at line 1362, but line 1377 replaces org._index_rt_files with a function returning an empty mapping. organize_and_merge obtains all treatment_record_paths exclusively from that index, so the synthetic RTRECORD is neither copied nor used for classification or contract delivery evidence. The documentation nevertheless states that this branch uses RTRECORD evidence.","impact":"The required organize-written dose-bearing contract and computed DVH round trip are covered, but the documentation overstates the test's delivery-evidence coverage and leaves a dead synthetic fixture that can mislead future maintainers.","repair":"Retain the returned record path, make the _index_rt_files test double return {\"P1\": [record]}, and assert that the organizer-written delivery contract contains the record and a nonzero delivered-record count. Alternatively, remove the unused record fixture and revise the documentation to state explicitly that delivery remains unknown because the test supplies no RTRECORD evidence.","verification":"Run both paired round-trip tests and the full suite. For the RTRECORD-preserving repair, additionally assert that the copied record path exists, the selected plan's per-plan delivery entry has delivered_record_count greater than zero, and the contract delivery status is not no_records_at_all; then confirm the documentation describes those exact assertions."}]}
+tokens used
+161,120
+[codex_adapter] response written to /umed-projekty/rtpipeline/.orchestrator/runs/course-contract-r3-20260829T173918Z/responses/review-codex-delegate.json
+
+[bio-orchestrator] adapter exited with descendants still live; granting 10s before terminating the group

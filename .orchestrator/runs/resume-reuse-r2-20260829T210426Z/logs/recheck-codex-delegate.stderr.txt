@@ -1,0 +1,124 @@
+[codex_adapter] role=recheck workspace=/umed-projekty/rtpipeline/.orchestrator/runs/resume-reuse-r2-20260829T210426Z/snapshots/recheck-codex-delegate cli=/home/konrad/.local/bin/codex
+[codex_adapter] cli stderr (tail): rpretation matches the evidence, avoids causal or clinical overreach, and communicates limitations relevant to the task."
+    },
+    {
+      "id": "integrity",
+      "requirement": "No sources, identifiers, data, methods, results, or checks are fabricated or represented as completed without evidence."
+    }
+  ],
+  "source_policy": {
+    "verify_persistent_identifiers": true,
+    "separate_fact_calculation_inference": true,
+    "claim_kinds": [
+      "fact",
+      "calculation",
+      "inference"
+    ],
+    "persistent_id_patterns": [
+      "^(?:doi:\\s*|https?://(?:dx\\.)?doi\\.org/)?10\\.\\d{4,9}/\\S+$",
+      "^(?:PMID:?\\s*)?\\d{1,9}$",
+      "^PMC\\d{4,9}$",
+      "^(?:arXiv:)?\\d{4}\\.\\d{4,5}(?:v\\d+)?$",
+      "^NCT\\d{8}$",
+      "^ISBN(?:-1[03])?:?\\s*[\\d-]{10,17}X?$",
+      "^https?://\\S+$"
+    ]
+  },
+  "review_policy": {
+    "known_severities": [
+      "blocker",
+      "major",
+      "minor",
+      "note"
+    ],
+    "material_severities": [
+      "blocker",
+      "major"
+    ]
+  },
+  "context": {
+    "phase": "focused recheck",
+    "target_findings": [],
+    "repair": {
+      "family": "openai-gpt",
+      "summary": "Resolved RRC-002. Invalid, stale, or mismatched RS_auto files are removed before rebuild work begins, the removal and reason are audited immediately, and downstream source selection requires validated correspondence to the contracted planning CT. Added regression coverage for failed rebuilds, audit persistence, stale-artifact removal, source exclusion, and valid reuse. Updated and polished the diagnosis documentation. Focused checks passed 55 tests. Full suite passed 988 tests with 2 skipped.",
+      "artifact_changed": true,
+      "changed_files": {
+        "added": [],
+        "removed": [],
+        "modified": [
+          "docs/diagnosis-resume-reuse.md",
+          "rtpipeline/auto_rtstruct.py",
+          "tests/test_resume_reuse_content.py"
+        ]
+      },
+      "reported_changed_paths": [
+        "docs/diagnosis-resume-reuse.draft.md",
+        "docs/diagnosis-resume-reuse.md",
+        "rtpipeline/auto_rtstruct.py",
+        "tests/test_resume_reuse_content.py"
+      ]
+    }
+  },
+  "response_contract": {
+    "type": "object",
+    "required": [
+      "artifact_digest",
+      "resolutions"
+    ],
+    "properties": {
+      "artifact_digest": {
+        "type": "string",
+        "minLength": 64,
+        "maxLength": 64
+      },
+      "resolutions": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": [
+            "finding_id",
+            "status",
+            "evidence"
+          ],
+          "properties": {
+            "finding_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "status": {
+              "enum": [
+                "resolved",
+                "unresolved",
+                "disputed",
+                "unable"
+              ]
+            },
+            "evidence": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      }
+    },
+    "dispute_policy": "A disputed finding can close only when its originating reviewer family also marks it resolved or disputed and no family marks it unresolved."
+  },
+  "instructions": [
+    "Return one JSON object matching response_contract.",
+    "Use only severity values declared in response_contract.severity_policy when reviewing.",
+    "Do not self-declare model family or independence; route receipts supply that metadata.",
+    "Do not delegate another review or start an open-ended improvement cycle.",
+    "Do not claim files, checks, sources, or results that are not present in the packet or workspace.",
+    "Review and recheck roles may run inside a read-only snapshot of the workspace; do not attempt to modify it."
+  ]
+}
+**Clarifying target findings resolution**
+**Confirming JSON-only output**
+codex
+{"artifact_digest":"38555cebd65d71dbf3f3946952ace1ea13f4b8eb3384f3034c4e92df35f9c7f3","resolutions":[]}
+tokens used
+33,641
+[codex_adapter] response written to /umed-projekty/rtpipeline/.orchestrator/runs/resume-reuse-r2-20260829T210426Z/responses/recheck-codex-delegate.json
+
+[bio-orchestrator] adapter exited with descendants still live; granting 10s before terminating the group

@@ -1,0 +1,17 @@
+{
+  "pid": 4071512,
+  "started_at": "2026-08-27T23:21:05.872447+00:00",
+  "command": [
+    "/home/linuxbrew/.linuxbrew/opt/python@3.14/bin/python3.14",
+    "-m",
+    "biomedical_orchestrator",
+    "run",
+    "--spec",
+    ".orchestrator/specs/rt_object_selection.json",
+    "--routes",
+    "/home/konrad/.config/orchestrator/routes.json",
+    "--run-dir",
+    ".orchestrator/runs/rt-object-selection-20260827T232105Z"
+  ],
+  "log": ".orchestrator/runs/rt-object-selection-20260827T232105Z/daemon.log"
+}

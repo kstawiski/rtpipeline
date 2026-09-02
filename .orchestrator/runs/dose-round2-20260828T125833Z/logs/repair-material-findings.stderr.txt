@@ -1,0 +1,5 @@
+[hermes_adapter] role=repair workspace=/umed-projekty/rtpipeline provider=custom:codex-lb model=gpt-5.6-sol
+[hermes_adapter] using response file written by the agent
+[hermes_adapter] response written to /umed-projekty/rtpipeline/.orchestrator/runs/dose-round2-20260828T125833Z/responses/repair-material-findings.json
+[hermes_adapter] self-learning turn: toolsets skills,memory, budget 900s, cwd /home/konrad/.claude/tmp/bio-hermes-learn-vdoi9b2i
+[hermes_adapter] self-learning turn finished: Updated the existing `delivered-dose-fail-closed` skill with the generalizable manifest rule:  - A manifest mixing complete and stale course checkpoints is incomplete as a whole. - The pipeline must recompute through the normal organizer rather than return partial hydrated results. - If recomputation is unavailable, it must fail explicitly.  The existing skill already captured the other transferable lessons about artifact-based plan discovery, missing adjudication as a reprocessing trigger, avoiding hidden defaults, layout-complete regression coverage, and read-only census of legacy outputs. No duplicate memory entry was added.

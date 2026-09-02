@@ -1,0 +1,17 @@
+{
+  "pid": 1277777,
+  "started_at": "2026-08-28T09:23:06.885904+00:00",
+  "command": [
+    "/home/linuxbrew/.linuxbrew/opt/python@3.14/bin/python3.14",
+    "-m",
+    "biomedical_orchestrator",
+    "run",
+    "--spec",
+    ".orchestrator/specs/roi_harmonization.json",
+    "--routes",
+    "/home/konrad/.config/orchestrator/routes.json",
+    "--run-dir",
+    ".orchestrator/runs/roi-harmonisation-20260828T092306Z"
+  ],
+  "log": ".orchestrator/runs/roi-harmonisation-20260828T092306Z/daemon.log"
+}

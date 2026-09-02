@@ -1,0 +1,17 @@
+{
+  "pid": 98097,
+  "started_at": "2026-08-29T18:39:29.610895+00:00",
+  "command": [
+    "/home/linuxbrew/.linuxbrew/opt/python@3.14/bin/python3.14",
+    "-m",
+    "biomedical_orchestrator",
+    "run",
+    "--spec",
+    ".orchestrator/specs/resume_reuse.json",
+    "--routes",
+    "/home/konrad/.config/orchestrator/routes.json",
+    "--run-dir",
+    ".orchestrator/runs/resume-reuse-20260829T183929Z"
+  ],
+  "log": ".orchestrator/runs/resume-reuse-20260829T183929Z/daemon.log"
+}

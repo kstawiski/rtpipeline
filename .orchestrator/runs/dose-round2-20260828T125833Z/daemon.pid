@@ -1,0 +1,17 @@
+{
+  "pid": 2080290,
+  "started_at": "2026-08-28T12:58:33.236881+00:00",
+  "command": [
+    "/home/linuxbrew/.linuxbrew/opt/python@3.14/bin/python3.14",
+    "-m",
+    "biomedical_orchestrator",
+    "run",
+    "--spec",
+    ".orchestrator/specs/dose_round2.json",
+    "--routes",
+    "/home/konrad/.config/orchestrator/routes.json",
+    "--run-dir",
+    ".orchestrator/runs/dose-round2-20260828T125833Z"
+  ],
+  "log": ".orchestrator/runs/dose-round2-20260828T125833Z/daemon.log"
+}

@@ -1,0 +1,17 @@
+{
+  "pid": 4049101,
+  "started_at": "2026-08-27T23:13:01.043222+00:00",
+  "command": [
+    "/home/linuxbrew/.linuxbrew/opt/python@3.14/bin/python3.14",
+    "-m",
+    "biomedical_orchestrator",
+    "run",
+    "--spec",
+    ".orchestrator/specs/dfci_rt_linkage.json",
+    "--routes",
+    "/home/konrad/.config/orchestrator/routes.json",
+    "--run-dir",
+    ".orchestrator/runs/dfci-rt-linkage-20260827T231300Z"
+  ],
+  "log": ".orchestrator/runs/dfci-rt-linkage-20260827T231300Z/daemon.log"
+}

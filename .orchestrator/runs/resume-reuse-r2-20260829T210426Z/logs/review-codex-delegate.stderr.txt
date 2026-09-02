@@ -1,0 +1,79 @@
+[codex_adapter] role=review workspace=/umed-projekty/rtpipeline/.orchestrator/runs/resume-reuse-r2-20260829T210426Z/snapshots/review-codex-delegate cli=/home/konrad/.local/bin/codex
+[codex_adapter] cli stderr (tail): empty strings"
+   866	            )
+   867	        expected_sources = plan_uids if plan_uids else [artifact_uid]
+   868	        if set(artifact_sources) != set(expected_sources):
+   869	            raise CourseContractError(
+   870	                "plan_artifact.source_plan_uids disagrees with selected RTPLAN membership"
+   871	            )
+   872	        artifact_path = contract.resolve_path(plan_artifact.get("path"), "plan_artifact.path")
+   873	        assert artifact_path is not None
+   874	        artifact_refs = set(
+   875	            _referenced_sop_uids(
+   876	                _read_header(artifact_path, "plan_artifact.path"),
+   877	                "ReferencedRTPlanSequence",
+   878	            )
+   879	        )
+   880	        if artifact_uid in set(artifact_sources):
+
+**Validating actual hash reads**
+exec
+/bin/bash -lc "sed -n '245,280p' rtpipeline/course_contract.py | nl -ba -v245" in /umed-projekty/rtpipeline/.orchestrator/runs/resume-reuse-r2-20260829T210426Z/snapshots/review-codex-delegate
+ succeeded in 113ms:
+   245	    expected_ct = _ct_provenance(ct_dir)
+   246	    for key in ("series_instance_uid", "sop_hash", "geometry", "nifti_geometry", "nifti_sha256"):
+   247	        if key not in provenance or key not in sidecar_data:
+   248	            raise CourseContractError(
+   249	                f"planning CT NIfTI provenance is incomplete for {key}: {nifti}"
+   250	            )
+   251	        if sidecar_data.get(key) != provenance.get(key):
+   252	            raise CourseContractError(
+   253	                f"stale planning CT NIfTI provenance: sidecar {key} does not match the course contract"
+   254	            )
+   255	    if provenance.get("series_instance_uid") != series_uid:
+   256	        raise CourseContractError(
+   257	            "stale planning CT NIfTI provenance: SeriesInstanceUID does not match the contract"
+   258	        )
+   259	    if provenance.get("series_instance_uid") != expected_ct["series_instance_uid"]:
+   260	        raise CourseContractError(
+   261	            "stale planning CT NIfTI provenance: SeriesInstanceUID does not match the selected DICOM series"
+   262	        )
+   263	    if provenance.get("sop_hash") != expected_ct["sop_hash"]:
+   264	        raise CourseContractError(
+   265	            "stale planning CT NIfTI provenance: source CT instance hash does not match the selected series"
+   266	        )
+   267	    if provenance.get("geometry") != expected_ct["geometry"]:
+   268	        raise CourseContractError(
+   269	            "stale planning CT NIfTI provenance: source CT geometry does not match the selected series"
+   270	        )
+   271	    # Geometry and orientation are validated from the conversion sidecar and
+   272	    # source-series provenance above. Downstream image readers remain responsible
+   273	    # for rejecting an unreadable NIfTI before it is used.
+   274	    if provenance.get("nifti_sha256") != _sha256(nifti):
+   275	        raise CourseContractError(
+   276	            "stale planning CT NIfTI provenance: content hash does not match the NIfTI on disk"
+   277	        )
+   278	
+   279	
+   280	@dataclass(frozen=True)
+
+**Clarifying segmentation dependency handling**
+**Identifying missing manifest dependency in staleness check**
+**Highlighting manifest exclusion from dependency checks**
+**Identifying incomplete mask provenance validation**
+**Evaluating RTSTRUCT validity checks**
+**Detecting RS_auto decision overwrite conflict**
+**Verifying model run decision logic**
+**Assessing artifact source traceability**
+**Planning final syntax and style checks**
+exec
+/bin/bash -lc 'git diff --check -- rtpipeline tests docs/diagnosis-resume-reuse.md' in /umed-projekty/rtpipeline/.orchestrator/runs/resume-reuse-r2-20260829T210426Z/snapshots/review-codex-delegate
+ succeeded in 435ms:
+**Confirming exact JSON artifact_digest**
+codex
+{"artifact_digest":"af31d9f8e34857c6d7486cf710ab1d7e5a7f7246ba0873bafb6be76a8a7a54f4","decision":"pass","findings":[]}
+tokens used
+198,149
+[codex_adapter] response written to /umed-projekty/rtpipeline/.orchestrator/runs/resume-reuse-r2-20260829T210426Z/responses/review-codex-delegate.json
+
+[bio-orchestrator] adapter exited with descendants still live; granting 10s before terminating the group

@@ -1,0 +1,3 @@
+[agy_adapter] role=recheck workspace=/umed-projekty/rtpipeline/.orchestrator/runs/roi-requiredness-20260829T111012Z/snapshots/recheck-agy-gemini model=gemini-3.7-flash-high
+[agy_adapter] using response file written by the agent
+[agy_adapter] response written to /umed-projekty/rtpipeline/.orchestrator/runs/roi-requiredness-20260829T111012Z/responses/recheck-agy-gemini.json

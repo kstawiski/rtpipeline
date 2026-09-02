@@ -1,0 +1,17 @@
+{
+  "pid": 3565193,
+  "started_at": "2026-08-29T16:08:57.971426+00:00",
+  "command": [
+    "/home/linuxbrew/.linuxbrew/opt/python@3.14/bin/python3.14",
+    "-m",
+    "biomedical_orchestrator",
+    "run",
+    "--spec",
+    ".orchestrator/specs/course_contract_r2.json",
+    "--routes",
+    "/home/konrad/.config/orchestrator/routes.json",
+    "--run-dir",
+    ".orchestrator/runs/course-contract-r2-20260829T160857Z"
+  ],
+  "log": ".orchestrator/runs/course-contract-r2-20260829T160857Z/daemon.log"
+}

@@ -1,0 +1,17 @@
+{
+  "pid": 1570757,
+  "started_at": "2026-08-28T10:51:30.974475+00:00",
+  "command": [
+    "/home/linuxbrew/.linuxbrew/opt/python@3.14/bin/python3.14",
+    "-m",
+    "biomedical_orchestrator",
+    "run",
+    "--spec",
+    ".orchestrator/specs/roi_round2.json",
+    "--routes",
+    "/home/konrad/.config/orchestrator/routes.json",
+    "--run-dir",
+    ".orchestrator/runs/roi-round2-20260828T105130Z"
+  ],
+  "log": ".orchestrator/runs/roi-round2-20260828T105130Z/daemon.log"
+}

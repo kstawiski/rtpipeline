@@ -1,0 +1,185 @@
+........................................................................ [  8%]
+........................................................................ [ 16%]
+........................................................................ [ 24%]
+........................................................................ [ 33%]
+........................................................................ [ 41%]
+........................................................................ [ 49%]
+................................................................s....... [ 58%]
+........................................................................ [ 66%]
+........................................................................ [ 74%]
+........................................................................ [ 83%]
+........................................................................ [ 91%]
+........................................................................ [ 99%]
+..                                                                       [100%]
+=============================== warnings summary ===============================
+<frozen importlib._bootstrap>:241
+<frozen importlib._bootstrap>:241
+  <frozen importlib._bootstrap>:241: DeprecationWarning: builtin type SwigPyPacked has no __module__ attribute
+
+<frozen importlib._bootstrap>:241
+<frozen importlib._bootstrap>:241
+  <frozen importlib._bootstrap>:241: DeprecationWarning: builtin type SwigPyObject has no __module__ attribute
+
+<frozen importlib._bootstrap>:241
+<frozen importlib._bootstrap>:241
+  <frozen importlib._bootstrap>:241: DeprecationWarning: builtin type swigvarlink has no __module__ attribute
+
+../../../../../micromamba/envs/rtpipeline/lib/python3.11/site-packages/pydicom/pixel_data_handlers/util.py:114
+  /home/konrad/micromamba/envs/rtpipeline/lib/python3.11/site-packages/pydicom/pixel_data_handlers/util.py:114: DeprecationWarning: The 'pydicom.pixel_data_handlers' module will be removed in v4.0, please use 'from pydicom.pixels.utils import pixel_dtype' instead
+    warn_and_log(msg, DeprecationWarning)
+
+tests/test_body_composition_b1.py: 5 warnings
+tests/test_science_batch_c.py: 6 warnings
+  /home/konrad/micromamba/envs/rtpipeline/lib/python3.11/site-packages/pydicom/dataset.py:1378: DeprecationWarning: 'FileDataset.is_little_endian' will be removed in v4.0, set the Transfer Syntax UID or use the 'little_endian' argument with FileDataset.save_as() or dcmwrite() instead
+    warn_and_log(
+
+tests/test_body_composition_b1.py: 5 warnings
+tests/test_science_batch_c.py: 6 warnings
+  /home/konrad/micromamba/envs/rtpipeline/lib/python3.11/site-packages/pydicom/dataset.py:1337: DeprecationWarning: 'FileDataset.is_implicit_VR' will be removed in v4.0, set the Transfer Syntax UID or use the 'implicit_vr' argument with FileDataset.save_as() or dcmwrite() instead
+    warn_and_log(
+
+tests/test_body_composition_b1.py: 5 warnings
+tests/test_course_identity_reference_chains.py: 224 warnings
+tests/test_dvh_dose_resolution.py: 16 warnings
+tests/test_lowconf_fixes.py: 2 warnings
+tests/test_metadata_modality_hardening.py: 16 warnings
+tests/test_mr_classify_guard_and_cbct_guard.py: 103 warnings
+tests/test_parallel_discovery_equivalence.py: 68 warnings
+tests/test_percourse_ct_selection.py: 33 warnings
+tests/test_reliability_batch_b.py: 6 warnings
+tests/test_science_batch_c.py: 26 warnings
+  /home/konrad/micromamba/envs/rtpipeline/lib/python3.11/site-packages/pydicom/filewriter.py:1309: DeprecationWarning: 'write_like_original' is deprecated and will be removed in v4.0, please use 'enforce_file_format' instead
+    warn_and_log(
+
+tests/test_mr_classify_guard_and_cbct_guard.py: 103 warnings
+  /home/konrad/micromamba/envs/rtpipeline/lib/python3.11/site-packages/pydicom/dataset.py:1378: DeprecationWarning: 'Dataset.is_little_endian' will be removed in v4.0, set the Transfer Syntax UID or use the 'little_endian' argument with Dataset.save_as() or dcmwrite() instead
+    warn_and_log(
+
+tests/test_mr_classify_guard_and_cbct_guard.py: 103 warnings
+  /home/konrad/micromamba/envs/rtpipeline/lib/python3.11/site-packages/pydicom/dataset.py:1337: DeprecationWarning: 'Dataset.is_implicit_VR' will be removed in v4.0, set the Transfer Syntax UID or use the 'implicit_vr' argument with Dataset.save_as() or dcmwrite() instead
+    warn_and_log(
+
+tests/test_percourse_ct_selection.py::test_selection_prefers_referenced_smaller_series
+tests/test_percourse_ct_selection.py::test_selection_unresolved_reference_fails_closed
+tests/test_percourse_ct_selection.py::test_selection_multiple_resolved_deterministic_tiebreak
+tests/test_percourse_ct_selection.py::test_selection_tiebreak_equal_slices_lowest_uid
+tests/test_percourse_ct_selection.py::test_selection_searches_across_studies
+  /home/konrad/micromamba/envs/rtpipeline/lib/python3.11/site-packages/pydicom/valuerep.py:440: UserWarning: Invalid value for VR UI: 'rstudy'. Please see <https://dicom.nema.org/medical/dicom/current/output/html/part05.html#table_6.2-1> for allowed values for each VR.
+    warn_and_log(msg)
+
+tests/test_percourse_ct_selection.py::test_selection_prefers_referenced_smaller_series
+  /home/konrad/micromamba/envs/rtpipeline/lib/python3.11/site-packages/pydicom/valuerep.py:440: UserWarning: Invalid value for VR UI: 'SER_SMALL'. Please see <https://dicom.nema.org/medical/dicom/current/output/html/part05.html#table_6.2-1> for allowed values for each VR.
+    warn_and_log(msg)
+
+tests/test_percourse_ct_selection.py::test_selection_unresolved_reference_fails_closed
+  /home/konrad/micromamba/envs/rtpipeline/lib/python3.11/site-packages/pydicom/valuerep.py:440: UserWarning: Invalid value for VR UI: 'SER_NOT_INDEXED'. Please see <https://dicom.nema.org/medical/dicom/current/output/html/part05.html#table_6.2-1> for allowed values for each VR.
+    warn_and_log(msg)
+
+tests/test_percourse_ct_selection.py::test_selection_multiple_resolved_deterministic_tiebreak
+  /home/konrad/micromamba/envs/rtpipeline/lib/python3.11/site-packages/pydicom/valuerep.py:440: UserWarning: Invalid value for VR UI: 'SER_A'. Please see <https://dicom.nema.org/medical/dicom/current/output/html/part05.html#table_6.2-1> for allowed values for each VR.
+    warn_and_log(msg)
+
+tests/test_percourse_ct_selection.py::test_selection_multiple_resolved_deterministic_tiebreak
+  /home/konrad/micromamba/envs/rtpipeline/lib/python3.11/site-packages/pydicom/valuerep.py:440: UserWarning: Invalid value for VR UI: 'SER_B'. Please see <https://dicom.nema.org/medical/dicom/current/output/html/part05.html#table_6.2-1> for allowed values for each VR.
+    warn_and_log(msg)
+
+tests/test_percourse_ct_selection.py::test_selection_tiebreak_equal_slices_lowest_uid
+  /home/konrad/micromamba/envs/rtpipeline/lib/python3.11/site-packages/pydicom/valuerep.py:440: UserWarning: Invalid value for VR UI: 'SER_ZZZ'. Please see <https://dicom.nema.org/medical/dicom/current/output/html/part05.html#table_6.2-1> for allowed values for each VR.
+    warn_and_log(msg)
+
+tests/test_percourse_ct_selection.py::test_selection_tiebreak_equal_slices_lowest_uid
+  /home/konrad/micromamba/envs/rtpipeline/lib/python3.11/site-packages/pydicom/valuerep.py:440: UserWarning: Invalid value for VR UI: 'SER_AAA'. Please see <https://dicom.nema.org/medical/dicom/current/output/html/part05.html#table_6.2-1> for allowed values for each VR.
+    warn_and_log(msg)
+
+tests/test_percourse_ct_selection.py::test_selection_searches_across_studies
+  /home/konrad/micromamba/envs/rtpipeline/lib/python3.11/site-packages/pydicom/valuerep.py:440: UserWarning: Invalid value for VR UI: 'SER_REF'. Please see <https://dicom.nema.org/medical/dicom/current/output/html/part05.html#table_6.2-1> for allowed values for each VR.
+    warn_and_log(msg)
+
+tests/test_percourse_ct_selection.py::test_copy_ct_series_purges_stale_dst
+tests/test_percourse_ct_selection.py::test_copy_ct_series_materializes_dst_on_foreign_dedup
+  /home/konrad/micromamba/envs/rtpipeline/lib/python3.11/site-packages/pydicom/valuerep.py:440: UserWarning: Invalid value for VR UI: 'ST'. Please see <https://dicom.nema.org/medical/dicom/current/output/html/part05.html#table_6.2-1> for allowed values for each VR.
+    warn_and_log(msg)
+
+tests/test_percourse_ct_selection.py::test_copy_ct_series_purges_stale_dst
+tests/test_percourse_ct_selection.py::test_copy_ct_series_materializes_dst_on_foreign_dedup
+  /home/konrad/micromamba/envs/rtpipeline/lib/python3.11/site-packages/pydicom/valuerep.py:440: UserWarning: Invalid value for VR UI: 'S'. Please see <https://dicom.nema.org/medical/dicom/current/output/html/part05.html#table_6.2-1> for allowed values for each VR.
+    warn_and_log(msg)
+
+tests/test_release_integrity.py::test_cov_is_computed_within_subject_not_across_subjects
+tests/test_release_integrity.py::test_ineligible_relative_dispersion_is_not_misclassified_as_poor
+tests/test_release_integrity.py::test_aggregate_keeps_structure_source_rows_separate
+tests/test_release_integrity.py::test_aggregate_keeps_structure_source_rows_separate
+tests/test_release_integrity.py::test_aggregate_keeps_structure_source_rows_separate
+tests/test_release_integrity.py::test_aggregate_keeps_structure_source_rows_separate
+  /home/konrad/micromamba/envs/rtpipeline/lib/python3.11/site-packages/pingouin/parametric.py:1014: RuntimeWarning: divide by zero encountered in scalar divide
+    fval = msbetween / mserror
+
+tests/test_release_integrity.py::test_cov_is_computed_within_subject_not_across_subjects
+tests/test_release_integrity.py::test_ineligible_relative_dispersion_is_not_misclassified_as_poor
+tests/test_release_integrity.py::test_aggregate_keeps_structure_source_rows_separate
+tests/test_release_integrity.py::test_aggregate_keeps_structure_source_rows_separate
+tests/test_release_integrity.py::test_aggregate_keeps_structure_source_rows_separate
+tests/test_release_integrity.py::test_aggregate_keeps_structure_source_rows_separate
+  /home/konrad/micromamba/envs/rtpipeline/lib/python3.11/site-packages/pingouin/reliability.py:320: RuntimeWarning: divide by zero encountered in scalar divide
+    f1k = msb / msw
+
+tests/test_release_integrity.py::test_cov_is_computed_within_subject_not_across_subjects
+tests/test_release_integrity.py::test_ineligible_relative_dispersion_is_not_misclassified_as_poor
+tests/test_release_integrity.py::test_aggregate_keeps_structure_source_rows_separate
+tests/test_release_integrity.py::test_aggregate_keeps_structure_source_rows_separate
+tests/test_release_integrity.py::test_aggregate_keeps_structure_source_rows_separate
+tests/test_release_integrity.py::test_aggregate_keeps_structure_source_rows_separate
+  /home/konrad/micromamba/envs/rtpipeline/lib/python3.11/site-packages/pingouin/reliability.py:325: RuntimeWarning: divide by zero encountered in scalar divide
+    f2k = f3k = msb / mse
+
+tests/test_release_integrity.py::test_cov_is_computed_within_subject_not_across_subjects
+tests/test_release_integrity.py::test_ineligible_relative_dispersion_is_not_misclassified_as_poor
+tests/test_release_integrity.py::test_aggregate_keeps_structure_source_rows_separate
+tests/test_release_integrity.py::test_aggregate_keeps_structure_source_rows_separate
+tests/test_release_integrity.py::test_aggregate_keeps_structure_source_rows_separate
+tests/test_release_integrity.py::test_aggregate_keeps_structure_source_rows_separate
+  /home/konrad/micromamba/envs/rtpipeline/lib/python3.11/site-packages/pingouin/reliability.py:354: RuntimeWarning: invalid value encountered in scalar divide
+    l1 = (f1l - 1) / (f1l + (k - 1))
+
+tests/test_release_integrity.py::test_cov_is_computed_within_subject_not_across_subjects
+tests/test_release_integrity.py::test_ineligible_relative_dispersion_is_not_misclassified_as_poor
+tests/test_release_integrity.py::test_aggregate_keeps_structure_source_rows_separate
+tests/test_release_integrity.py::test_aggregate_keeps_structure_source_rows_separate
+tests/test_release_integrity.py::test_aggregate_keeps_structure_source_rows_separate
+tests/test_release_integrity.py::test_aggregate_keeps_structure_source_rows_separate
+  /home/konrad/micromamba/envs/rtpipeline/lib/python3.11/site-packages/pingouin/reliability.py:355: RuntimeWarning: invalid value encountered in scalar divide
+    u1 = (f1u - 1) / (f1u + (k - 1))
+
+tests/test_release_integrity.py::test_cov_is_computed_within_subject_not_across_subjects
+tests/test_release_integrity.py::test_ineligible_relative_dispersion_is_not_misclassified_as_poor
+tests/test_release_integrity.py::test_aggregate_keeps_structure_source_rows_separate
+tests/test_release_integrity.py::test_aggregate_keeps_structure_source_rows_separate
+tests/test_release_integrity.py::test_aggregate_keeps_structure_source_rows_separate
+tests/test_release_integrity.py::test_aggregate_keeps_structure_source_rows_separate
+  /home/konrad/micromamba/envs/rtpipeline/lib/python3.11/site-packages/pingouin/reliability.py:358: RuntimeWarning: invalid value encountered in scalar divide
+    l3 = (f3l - 1) / (f3l + (k - 1))
+
+tests/test_release_integrity.py::test_cov_is_computed_within_subject_not_across_subjects
+tests/test_release_integrity.py::test_ineligible_relative_dispersion_is_not_misclassified_as_poor
+tests/test_release_integrity.py::test_aggregate_keeps_structure_source_rows_separate
+tests/test_release_integrity.py::test_aggregate_keeps_structure_source_rows_separate
+tests/test_release_integrity.py::test_aggregate_keeps_structure_source_rows_separate
+tests/test_release_integrity.py::test_aggregate_keeps_structure_source_rows_separate
+  /home/konrad/micromamba/envs/rtpipeline/lib/python3.11/site-packages/pingouin/reliability.py:359: RuntimeWarning: invalid value encountered in scalar divide
+    u3 = (f3u - 1) / (f3u + (k - 1))
+
+tests/test_release_integrity.py::test_cov_is_computed_within_subject_not_across_subjects
+tests/test_release_integrity.py::test_ineligible_relative_dispersion_is_not_misclassified_as_poor
+tests/test_release_integrity.py::test_aggregate_keeps_structure_source_rows_separate
+tests/test_release_integrity.py::test_aggregate_keeps_structure_source_rows_separate
+tests/test_release_integrity.py::test_aggregate_keeps_structure_source_rows_separate
+tests/test_release_integrity.py::test_aggregate_keeps_structure_source_rows_separate
+  /home/konrad/micromamba/envs/rtpipeline/lib/python3.11/site-packages/pingouin/reliability.py:361: RuntimeWarning: invalid value encountered in scalar divide
+    fj = msj / mse
+
+tests/test_roi_harmonisation.py::test_collect_scans_extensionless_rtstructs_and_deduplicates_sop_uid
+  /home/konrad/micromamba/envs/rtpipeline/lib/python3.11/site-packages/pydicom/filereader.py:402: UserWarning: Expected implicit VR, but found explicit VR - using explicit VR for reading
+    warn_and_log(f"{msg} - using {found_vr} VR for reading", UserWarning)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+865 passed, 1 skipped, 799 warnings in 86.91s (0:01:26)

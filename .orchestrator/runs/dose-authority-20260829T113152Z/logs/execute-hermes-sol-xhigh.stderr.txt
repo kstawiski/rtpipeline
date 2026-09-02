@@ -1,0 +1,3 @@
+[hermes_adapter] role=execute workspace=/home/konrad/.local/state/agent-worktrees/rtpipeline/dose-authority-efce014 provider=custom:codex-lb model=gpt-5.6-sol
+
+[bio-orchestrator] terminated: orchestrator interrupted

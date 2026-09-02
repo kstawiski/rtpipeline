@@ -1,0 +1,35 @@
+[codex_adapter] role=recheck workspace=/umed-projekty/rtpipeline/.orchestrator/runs/resume-reuse-20260829T183929Z/snapshots/recheck-codex-delegate cli=/home/konrad/.local/bin/codex
+[codex_adapter] cli stderr (tail): n of the production predicate confirmed the same course, mask count, bytes, currentness decision, and expected timing variability. The polished document is byte-identical to its draft, and the deterministic polish check reported no numeral, em-dash, or sentence-length movement; its opening leads with the processing question and consequence rather than a caveat or apology."
+    },
+    {
+      "finding_id": "claude::RR-06",
+      "status": "resolved",
+      "evidence": "docs/diagnosis-resume-reuse.md explicitly limits this revision to TotalSegmentator masks, RS_auto, and RS_custom; names .organized, .custom_models_done, .crop_ct_done, .dvh_done, .radiomics_done, .radiomics_robustness_done, and .qc_done as remaining sentinel-gated stages; explains that stage-specific inventories and dependency identities are deferred; and states directly that the NTCV robustness chain remains outside the repair. This satisfies the finding's permitted documentation resolution without implying that robustness resume is protected."
+    },
+    {
+      "finding_id": "openai-codex::RRC-001",
+      "status": "resolved",
+      "evidence": "rtpipeline/auto_rtstruct.py:166-195 now makes _iter_binary_masks filter the requested prefix. The RS_auto fallback at 814-846 enumerates masks once, normalizes current and legacy names, and prefers the current file for the same ROI. _unique_roi_name at 231-240 advances through _dup, _dup2, and later suffixes deterministically. rtpipeline/segmentation.py:878-885 removes both current and legacy mask names before publishing a rerun. tests/test_resume_reuse_content.py:385-425 exercises current-only, legacy-only, and mixed layouts with a recording builder and requires exactly liver and spleen once each."
+    },
+    {
+      "finding_id": "openai-codex::RRC-002",
+      "status": "unresolved",
+      "evidence": "The stale-file eligibility defect is partly repaired: rtpipeline/auto_rtstruct.py:668-700 quarantines a rejected RS_auto before rebuilding and records failed rebuilds, while rtpipeline/radiomics.py:129-165 performs a planning-series and dependency check. However, rtpipeline/cli.py:173-179 still discards build_auto_rtstruct()'s return value and returns True unconditionally. A read-only monkeypatch probe against this artifact produced build_auto_rtstruct_result=None and execute_segment_task_result=True. Therefore a required RS_auto rebuild can fail while the course segmentation worker still reports success and permits the completion marker, contrary to the finding's required stage-failure propagation."
+    },
+    {
+      "finding_id": "openai-codex::RRC-003",
+      "status": "resolved",
+      "evidence": "rtpipeline/custom_structures_rtstruct.py:156-212 now requires a loadable production course contract by default, returns stale on contract-loading uncertainty, rejects absent planning-series identity, and rejects an RS_custom whose referenced series differs. Contract-free behavior requires the explicit allow_contractless flag. The direct, parallel, and conda preparation routes at rtpipeline/radiomics.py:1084-1113, rtpipeline/radiomics_parallel.py:803-850, and rtpipeline/radiomics_conda.py:2108-2157 quarantine a rejected RS_custom, require a published replacement, record failure, invalidate downstream output, and raise rather than retaining the stale path."
+    },
+    {
+      "finding_id": "openai-codex::RRC-004",
+      "status": "resolved",
+      "evidence": "rtpipeline/segmentation.py:1221-1242 now requires a comparable ordering chain. When nifti_generated_at and manifest generated_at are valid, reuse requires the manifest to be strictly later. When a timestamp is absent or invalid, the predicate uses manifest.json and planning-NIfTI filesystem times and rejects equal, older, or unstatable ordering. tests/test_resume_reuse_content.py:298-361 verifies rejection when the current NIfTI is newer and acceptance when a later sidecar metadata refresh leaves the matching NIfTI content unchanged."
+    }
+  ]
+}
+tokens used
+155,325
+[codex_adapter] response written to /umed-projekty/rtpipeline/.orchestrator/runs/resume-reuse-20260829T183929Z/responses/recheck-codex-delegate.json
+
+[bio-orchestrator] adapter exited with descendants still live; granting 10s before terminating the group

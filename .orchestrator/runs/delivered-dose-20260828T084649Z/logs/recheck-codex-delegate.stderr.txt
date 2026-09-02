@@ -1,0 +1,35 @@
+[codex_adapter] role=recheck workspace=/umed-projekty/rtpipeline/.orchestrator/runs/delivered-dose-20260828T084649Z/snapshots/recheck-codex-delegate cli=/home/konrad/.local/bin/codex
+[codex_adapter] cli stderr (tail): r-session dose disagrees with prescribed dose per fraction. Direct production calls on the read-only Kopernik source returned 52.25 Gy for patient 482967 (55 Gy plan, 19 of 20 sessions), 36 Gy for the fully delivered 36 Gy plan in patient 432976, 56.25 Gy for that course after weighting its partial plan, and 40 Gy with an explicit exceeds-prescribed-dose warning for patient 327471. Patient 419783 returned 37 Gy rather than 75 Gy. The duplicate-dose and cumulative-observation regressions pass."
+    },
+    {
+      "finding_id": "claude::F-DOSE-THRESHOLD-04",
+      "status": "resolved",
+      "evidence": "rtpipeline/cli.py adds _apply_dose_yaml_config, validates max_total_dose_gy, exposes --max-total-dose-gy, applies the YAML value when the CLI flag is absent, and passes cfg.max_total_dose_gy into DVH tasks. Organize metadata emits the shared threshold and prescribed/delivered warning fields. The threshold-loading, CLI-exposure, and configured-warning regressions pass. docs/diagnosis-delivered-dose.md:57 documents the single key and 100.0 Gy default."
+    },
+    {
+      "finding_id": "openai-codex::F-COHORT-UNKNOWN-AS-ZERO-02",
+      "status": "resolved",
+      "evidence": "The production summary sets estimable=False for any selected plan with no linked records, so the course delivered dose becomes null rather than zero. Both census scripts calculate reported-minus-delivered only when both values are non-null. The regenerated Kopernik artifact has 20 unknown courses and 102 paired courses; DFCI has 46 unknown courses and 184 paired courses. DFCI rows for patient 10150190220 and analogous recordless-plan cases now have delivered_dose_gy=null and no paired difference. The selected-recordless-plan regression passes."
+    },
+    {
+      "finding_id": "openai-codex::F-DOSE-SESSION-DOUBLECOUNT-01",
+      "status": "resolved",
+      "evidence": "Session-level aggregation now keys additive components by beam or application identity within each de-duplicated treatment session and ignores repeated copies of the same component. Treatment-summary cumulative values are collected separately and the latest valid target-bound observation is selected without summing prior cumulative observations. The synthetic 30 Gy/3-fraction test with two explicit-dose records per session returns 30 Gy, and the latest-cumulative test returns 30 Gy rather than the sum of observations. The full-suite artifact records 876 passed and 1 skipped."
+    },
+    {
+      "finding_id": "openai-codex::F-DOSE-THRESHOLD-CONFIG-04",
+      "status": "resolved",
+      "evidence": "The supported CLI and YAML paths now populate one validated PipelineConfig.max_total_dose_gy value. The DVH resolver accepts that value instead of using a literal 100.0 at the pipeline call site, and the CLI passes the same value into each DVH task. Organize case metadata records dose_plausibility_threshold_gy plus separate prescribed and delivered warnings. The YAML, CLI, and configured-warning regressions pass, and the documentation identifies max_total_dose_gy as the authoritative key."
+    },
+    {
+      "finding_id": "openai-codex::F-PLANNING-CT-RESUME-03",
+      "status": "unresolved",
+      "evidence": "The added check at rtpipeline/organize.py:332-334 requires planning_ct_status only when metadata has a truthy rp_path or the legacy root RP.dcm exists. It does not recognize an RTPLAN present only under DICOM/RTPLAN, although _hydrate_existing_course has already discovered that nested plan at lines 291-292. A read-only call on an existing course with four nested RTPLAN files, empty metadata rp_path, and no delivery_status or planning_ct_status returned a non-null hydrated CourseOutput with delivery_status=no_records_at_all and planning_ct_status=unknown. Thus the documented claim that any RTPLAN checkpoint lacking planning-CT adjudication is reprocessed remains bypassable for nested-layout legacy checkpoints. The supplied regression covers only a root RP.dcm case."
+    }
+  ]
+}
+tokens used
+255,088
+[codex_adapter] response written to /umed-projekty/rtpipeline/.orchestrator/runs/delivered-dose-20260828T084649Z/responses/recheck-codex-delegate.json
+
+[bio-orchestrator] adapter exited with descendants still live; granting 10s before terminating the group

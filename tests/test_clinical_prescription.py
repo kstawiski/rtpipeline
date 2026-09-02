@@ -13,13 +13,20 @@ from rtpipeline.clinical_prescription import (
     ClinicalRecord,
     ClinicalRecordIndex,
     adjudicate_clinical_prescription,
+    clinical_evidence_content_sha256,
     clinical_evidence_matches_source,
     confirm_two_phase_fractionation,
     load_kopernik_treatment_records,
     match_clinical_record,
     parse_kopernik_treatment_description,
+    record_clinical_evidence_regeneration,
 )
 from rtpipeline.config import PipelineConfig
+from rtpipeline.course_contract import (
+    CourseContract,
+    CourseContractError,
+    _validate_clinical_prescription_evidence,
+)
 
 
 REAL_DESCRIPTIONS = {
@@ -276,6 +283,195 @@ def test_adjudication_resolves_corroborates_and_flags_disagreement() -> None:
     assert disagrees["disagreement"]["clinical_site_totals"] == [
         {"site": "pecherza moczowego", "total_dose_gy": 37.0}
     ]
+
+
+@pytest.mark.parametrize(
+    ("course_key", "clinical_total_gy"),
+    [
+        ("432976/2020-04", 36.0),
+        ("446498/2022-04", 50.4),
+    ],
+)
+def test_task27_clinical_resume_restores_real_course_dicom_snapshot(
+    tmp_path: Path,
+    course_key: str,
+    clinical_total_gy: float,
+) -> None:
+    """Reproduce the 36/50.4 Gy versus null Task 27 resume mismatch."""
+
+    previous_evidence = {
+        "schema": "rtpipeline-clinical-prescription-evidence-v1",
+        "outcome": "RESOLVED_FROM_CLINICAL_RECORD",
+        "source": {"workbook_sha256": "a" * 64},
+        "dicom": {
+            "resolved_prescribed_dose_total_gy": None,
+            "prescribed_dose_scope": "UNRESOLVED_COMPONENT",
+            "dose_classification": "sequential_phases_summed",
+            "delivered_dose_gy": None,
+            "delivery_status": "delivery_unresolved",
+            "delivery_method": "unresolved_course_prescription_scope",
+        },
+    }
+    data = {
+        "delivery": {
+            "prescribed_dose_gy": clinical_total_gy,
+            "resolved_prescribed_dose_total_gy": clinical_total_gy,
+            "delivered_dose_gy": None,
+            "status": "delivery_unresolved",
+            "method": "course_delivery_scalar_unavailable",
+        },
+        "dose_classification": {
+            "classification": "sequential_phases_summed",
+            "should_sum": True,
+            "prescribed_dose_scope": "COURSE_TOTAL_CLINICAL_RECORD",
+            "dicom_prescribed_dose_scope": "UNRESOLVED_COMPONENT",
+        },
+        "clinical_prescription_evidence": previous_evidence,
+    }
+    contract = CourseContract(
+        course_dir=tmp_path / course_key,
+        metadata_path=tmp_path / course_key / "metadata" / "case_metadata.json",
+        data=data,
+    )
+
+    # The pre-fix resume path fed the published clinical scalar back into the
+    # evidence's DICOM field. Contract validation recomputed null from the plans.
+    assert contract.resolved_prescribed_dose_total_gy == clinical_total_gy
+    assert previous_evidence["dicom"]["resolved_prescribed_dose_total_gy"] is None
+
+    hydrated = organize._hydrated_preclinical_dose_state(contract)
+
+    assert hydrated["resolved_prescribed_dose_total_gy"] is None
+    assert hydrated["prescribed_dose_gy"] is None
+    assert hydrated["dose_classification"]["prescribed_dose_scope"] == (
+        "UNRESOLVED_COMPONENT"
+    )
+
+    regenerated = record_clinical_evidence_regeneration(
+        dict(previous_evidence), previous_evidence
+    )
+    provenance = regenerated["regeneration_provenance"]
+    assert provenance["previous_evidence_payload_sha256"] == (
+        clinical_evidence_content_sha256(previous_evidence)
+    )
+    assert provenance["previous_evidence_payload"] == previous_evidence
+    assert provenance["current_dicom_snapshot"] == regenerated["dicom"]
+
+
+def test_task27_stale_dicom_guard_still_rejects_the_real_432976_mismatch() -> None:
+    evidence = adjudicate_clinical_prescription(
+        _index(
+            _record(
+                patient_id="432976",
+                start=date(2020, 4, 15),
+                end=date(2020, 4, 30),
+                description=REAL_DESCRIPTIONS["432976/2020-04"],
+            )
+        ),
+        patient_id="432976",
+        course_id="2020-04",
+        course_start_date="2020-04-15",
+        course_end_date="2020-04-30",
+        plan_dates=["20200428"],
+        treatment_dates=["20200415", "20200430"],
+        dicom_resolved_total_gy=None,
+        dicom_prescribed_dose_scope="UNRESOLVED_COMPONENT",
+        dicom_classification="sequential_phases_summed",
+        per_plan_delivery=[],
+    )
+    evidence["dicom"].update(
+        {
+            "resolved_prescribed_dose_total_gy": 36.0,
+            "delivered_dose_gy": None,
+            "delivery_status": "delivery_unresolved",
+            "delivery_method": "unresolved_course_prescription_scope",
+        }
+    )
+
+    with pytest.raises(
+        CourseContractError,
+        match=r"snapshot=36\.0, recomputed=None",
+    ):
+        _validate_clinical_prescription_evidence(
+            evidence,
+            dicom_resolved_total_gy=None,
+            dicom_prescribed_scope="UNRESOLVED_COMPONENT",
+            prescribed_scope="COURSE_TOTAL_CLINICAL_RECORD",
+            per_plan_delivery=[],
+        )
+
+    evidence["dicom"]["resolved_prescribed_dose_total_gy"] = None
+    regenerated = record_clinical_evidence_regeneration(dict(evidence), evidence)
+    regenerated["regeneration_provenance"]["previous_evidence_payload"][
+        "dicom"
+    ]["resolved_prescribed_dose_total_gy"] = 99.0
+    with pytest.raises(
+        CourseContractError,
+        match="regeneration provenance hash is stale",
+    ):
+        _validate_clinical_prescription_evidence(
+            regenerated,
+            dicom_resolved_total_gy=None,
+            dicom_prescribed_scope="UNRESOLVED_COMPONENT",
+            prescribed_scope="COURSE_TOTAL_CLINICAL_RECORD",
+            per_plan_delivery=[],
+        )
+
+
+def test_task27_resume_preserves_recovered_419783_dicom_phase_provenance(
+    tmp_path: Path,
+) -> None:
+    data = {
+        "delivery": {
+            "prescribed_dose_gy": 37.0,
+            "resolved_prescribed_dose_total_gy": 37.0,
+            "delivered_dose_gy": 37.0,
+            "status": "fully_delivered",
+            "method": "clinical_two_phase_fractionation_with_dicom_records",
+        },
+        "dose_classification": {
+            "classification": "TWO_FRACTIONATION_PHASES",
+            "prescribed_dose_scope": "COURSE_TOTAL_CLINICAL_RECORD",
+            "dicom_prescribed_dose_scope": "UNRESOLVED_REPLACEMENT_CHAIN",
+            "dicom_classification": "replacement_plan_chain",
+            "dicom_reason": "delivered treatment spans a replacement chain",
+            "dicom_warnings": ["replacement plans need clinical adjudication"],
+        },
+        "clinical_prescription_evidence": {
+            "outcome": "RESOLVED_FROM_CLINICAL_RECORD",
+            "dicom": {
+                "resolved_prescribed_dose_total_gy": None,
+                "prescribed_dose_scope": "UNRESOLVED_REPLACEMENT_CHAIN",
+                "delivered_dose_gy": 37.0,
+                "delivery_status": "partially_delivered",
+                "delivery_method": "calculated_dose_reference",
+            },
+        },
+    }
+    contract = CourseContract(
+        course_dir=tmp_path / "419783" / "2020-02",
+        metadata_path=(
+            tmp_path
+            / "419783"
+            / "2020-02"
+            / "metadata"
+            / "case_metadata.json"
+        ),
+        data=data,
+    )
+
+    hydrated = organize._hydrated_preclinical_dose_state(contract)
+
+    assert hydrated["resolved_prescribed_dose_total_gy"] is None
+    assert hydrated["delivered_dose_gy"] == 37.0
+    assert hydrated["delivery_status"] == "partially_delivered"
+    assert hydrated["delivery_method"] == "calculated_dose_reference"
+    assert hydrated["dose_classification"]["classification"] == (
+        "replacement_plan_chain"
+    )
+    assert hydrated["dose_classification"]["prescribed_dose_scope"] == (
+        "UNRESOLVED_REPLACEMENT_CHAIN"
+    )
 
 
 def test_partial_treatment_overlap_cannot_resolve_dicom_unknown_course() -> None:

@@ -1,0 +1,35 @@
+[codex_adapter] role=recheck workspace=/umed-projekty/rtpipeline/.orchestrator/runs/roi-round2-20260828T105130Z/snapshots/recheck-codex-delegate cli=/home/konrad/.local/bin/codex
+[codex_adapter] cli stderr (tail): eproduces 546 distinct names and exactly 5 withheld after the change: NS_Control, NS_GTV1_2, NS_jelit_czwsp, NS_jelita, NS_watroba, each flagged 'initials' and each a leading-position separator-bounded token that the previous suffix-only rule let through. docs/roi-harmonisation.md states before 173 names (31.7%), after 5 names (0.9%), names the exact five retained matches, and adds that this does not establish the vocabulary was anonymous; analysis/roi_phi_guard_kopernik_counts.json carries the same source path, name count 546, before 173 and after 5 with the identical name list."
+    }
+  ]
+}
+===/umed-projekty/rtpipeline/.orchestrator/runs/roi-round2-20260828T105130Z/responses/recheck-claude2-opus.json.receipt.json
+{
+  "receipt_version": 4,
+  "route_id": "claude2-opus",
+  "family": "claude",
+  "role": "recheck",
+  "packet_sha256": "677e044cdc89ca6947cfff78ea7cf4bf1e63f8c0d76c59fad77c520cc8866abe",
+  "response_sha256": "73a07a595679c1a8de1b0799b7040ea60014cf8038fa6449fa5a19fca9bb6cec",
+  "command_template_sha256": "5336fb1bf4e5d90d9db7ac859b8be5d02c059b8f1fb802a5437d769dba7a65a5",
+  "route_config_sha256": "bb5a817df9db0bb96b350e95e071ad7303607f26ebb03047c85749dbadd7730e",
+  "artifact_digest": "08ec85a9a217a31bed5ab9cd5da2bdbaa80c52c6958a0030fcb018206efef531",
+  "started_at": "2026-08-28T12:03:43.530263+00:00",
+  "ended_at": "2026-08-28T12:08:10.020740+00:00",
+  "elapsed_seconds": 266.455,
+  "exit_code": 0,
+  "timed_out": false,
+  "receipt_digest": "274e18a2f49422d20b5c64ca641e185591293b2f88159c8b8608855dcda5c8b1"
+}
+
+**Verifying module resolution and output path**
+**Finalizing JSON output structure and content**
+**Including environment details in evidence**
+**Verifying response formatting**
+codex
+{"artifact_digest":"08ec85a9a217a31bed5ab9cd5da2bdbaa80c52c6958a0030fcb018206efef531","resolutions":[{"finding_id":"claude::F001","status":"resolved","evidence":"The repaired snapshot defines _PHI_COMPACT_INITIALS as r\"(?:(?<=[\\s_.-])|^)([A-Z]{2})(?=[\\s_.-]|$)\" in rtpipeline/roi_harmonisation.py:1027-1029, making compact-initial detection symmetric at leading and trailing separator-bounded positions. phi_findings retains the Roman-numeral exemption at lines 1033-1038. With PYTHONPATH set to the snapshot, KS_Bladder, KS Bladder, and Bladder_KS return ['initials']; all required clinical and Roman-numeral examples, including GTV Primary, GTV Nodal, Anorectum, Bones, Esica, Great Vessels, Dose 43[Gy], Dose 95[%], Glowa kk. Lewa, GTVm - segm IV/VIII, and ITD, return []. tests/test_roi_harmonisation.py passes all 54 tests. The live Kopernik calculation confirms 546 distinct names, 173 withheld before (31.7%) and 5 after (0.9%), exactly NS_Control, NS_GTV1_2, NS_jelit_czwsp, NS_jelita, and NS_watroba. Documentation line 41 states the symmetric boundary rule, while lines 45 and 49 explicitly make investigator review the control for unlabelled person names."},{"finding_id":"openai-codex::F001","status":"resolved","evidence":"The compact-initial regex in rtpipeline/roi_harmonisation.py:1027-1029 now matches a two-letter uppercase token at the start or after a separator and before the end or another separator, while phi_findings applies the existing Roman-letter exclusion. Direct snapshot evaluation verifies KS_Bladder and KS Bladder are withheld as initials, while GTVm - segm IV/VIII and ITD remain unwithheld, alongside all required clinical examples. tests/test_roi_harmonisation.py:450-503 includes the leading-position regressions and passes 54/54 tests. Re-running analysis/compute_roi_phi_guard_counts.py against /home/konrad/rtpipeline_campaign/kopernik_bladder_v2/Output produced the required 546-name denominator, 173-name (31.7%) baseline, and 5-name (0.9%) repaired result with the exact retained list NS_Control, NS_GTV1_2, NS_jelit_czwsp, NS_jelita, and NS_watroba. docs/roi-harmonisation.md:41-49 documents the symmetric rule, removal of generic person-name detection, and the residual investigator-review limitation."}]}
+tokens used
+131,620
+[codex_adapter] response written to /umed-projekty/rtpipeline/.orchestrator/runs/roi-round2-20260828T105130Z/responses/recheck-codex-delegate.json
+
+[bio-orchestrator] adapter exited with descendants still live; granting 10s before terminating the group

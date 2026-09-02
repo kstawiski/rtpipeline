@@ -1,0 +1,2 @@
+
+[bio-orchestrator] adapter exited with descendants still live; granting 0s before terminating the group

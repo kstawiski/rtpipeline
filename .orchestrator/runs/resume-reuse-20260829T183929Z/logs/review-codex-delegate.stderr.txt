@@ -1,0 +1,40 @@
+[codex_adapter] role=review workspace=/umed-projekty/rtpipeline/.orchestrator/runs/resume-reuse-20260829T183929Z/snapshots/review-codex-delegate cli=/home/konrad/.local/bin/codex
+[codex_adapter] cli stderr (tail): te must reject the old file, while any contract-free compatibility mode must be explicit and separately tested."
+    },
+    {
+      "finding_id": "RRC-004",
+      "severity": "major",
+      "criterion": "method_validity",
+      "location": "rtpipeline/segmentation.py:1082-1133; docs/diagnosis-resume-reuse.md:13",
+      "evidence": "The documented legacy upgrade requires the mask generation order not to precede the current NIfTI provenance. The implementation compares manifest_time with sidecar_time only when both exist, but falls back to filesystem mtimes only when manifest_time is absent. If the manifest has generated_at and the sidecar lacks generated_at, no ordering check occurs. This state is permitted because course-contract NIfTI validation does not require sidecar generated_at. In a direct reproduction with a legacy manifest, a sidecar without generated_at, and a planning NIfTI made newer than the manifest, _series_masks_current returned True.",
+      "impact": "Legacy masks can be reused after the planning NIfTI has changed even though the code cannot establish that the masks were generated from the current NIfTI. This contradicts both the fail-closed requirement and the diagnosis document.",
+      "repair": "Require a complete, comparable generation-order chain for legacy reuse. When either timestamp is absent or invalid, use validated file mtimes for both sides if they establish order; otherwise rebuild. Do not accept an uncheckable combination.",
+      "verification": "Add regression cases for missing, invalid, older, equal, and newer manifest and sidecar timestamps, including a newer planning NIfTI. Only cases that positively establish mask generation after the current NIfTI provenance should reuse the masks."
+    },
+    {
+      "finding_id": "RRC-005",
+      "severity": "minor",
+      "criterion": "integrity",
+      "location": "docs/diagnosis-resume-reuse.md:3-5 relative to docs/diagnosis-resume-reuse.draft.md:3-5",
+      "evidence": "The polished opening changes 'when the expensive masks are already present' to 'when the masks are already present', removing the qualifier 'expensive'. It also changes 'no RS_auto' to 'no automated radiotherapy structure set (RS_auto)', adding an expansion for a project-specific identifier that the draft did not supply. The polish rules prohibit lowering claim strength and prohibit expanding a project-invented abbreviation from outside the draft.",
+      "impact": "The first change weakens the documented cost consequence, while the second introduces unsupported explanatory content during polish. Neither changes a number, but both move content that the polisher was required to preserve.",
+      "repair": "Restore the cost qualifier. Either retain RS_auto without expansion or have the drafter establish its exact meaning in the draft before polishing.",
+      "verification": "Run the polish verification with the draft as the draft input and the current document as the polished input. Do not use the material/source input intended for draft verification. Confirm that qualifiers, claim strength, project-specific identifiers, citation bindings, and paragraph boundaries are unchanged."
+    },
+    {
+      "finding_id": "RRC-006",
+      "severity": "minor",
+      "criterion": "interpretation",
+      "location": "docs/diagnosis-resume-reuse.md:7",
+      "evidence": "The measured numeric range is written as '322 to 494 seconds'. The declared polish standard requires an en dash in numeric ranges.",
+      "impact": "The wording is understandable and does not change the measurement, but it does not satisfy the required reader-facing mechanics.",
+      "repair": "Render the range as '322–494 seconds' while preserving both endpoints, the unit, the surrounding qualifier, and citation [1].",
+      "verification": "Recheck all numeric ranges for en dashes and rerun the polish comparison to confirm that no number, unit, direction, qualifier, or citation binding changed."
+    }
+  ]
+}
+tokens used
+432,242
+[codex_adapter] response written to /umed-projekty/rtpipeline/.orchestrator/runs/resume-reuse-20260829T183929Z/responses/review-codex-delegate.json
+
+[bio-orchestrator] adapter exited with descendants still live; granting 10s before terminating the group

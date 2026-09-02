@@ -1,0 +1,55 @@
+[codex_adapter] role=recheck workspace=/umed-projekty/rtpipeline/.orchestrator/runs/dose-round2-20260828T125833Z/snapshots/recheck-codex-delegate cli=/home/konrad/.local/bin/codex
+[codex_adapter] cli stderr (tail): tus, 'planning_ct_status': 'referenced'}, True) for status in valid_delivery)
+assert _plan_checkpoint_is_complete({}, False)
+print('resume adjudication predicate matrix: OK')
+
+manifest = json.dumps({'courses': [
+    {'patient': 'GOOD', 'course': 'A', 'path': '/virtual/good'},
+    {'patient': 'INCOMPLETE', 'course': 'B', 'path': '/virtual/incomplete'},
+]})
+cfg = SimpleNamespace(output_root=Path('/virtual/output'))
+with patch.object(Path, 'exists', return_value=True), \\
+     patch.object(Path, 'read_text', return_value=manifest), \\
+     patch.object(cli, '_hydrate_existing_course', side_effect=[object(), None]):
+    loaded = cli._load_courses_from_manifest(cfg, Path('/virtual/manifest.json'), set(), set())
+assert loaded == []
+print('mixed manifest partial-result rejection: OK')
+
+sentinel = [object()]
+with patch.object(cli, 'organize_and_merge', return_value=sentinel) as organize:
+    assert cli._organize_after_manifest_rejection(cfg) is sentinel
+    organize.assert_called_once_with(cfg)
+print('manifest rejection organize fallback: OK')
+PY" in /umed-projekty/rtpipeline/.orchestrator/runs/dose-round2-20260828T125833Z/snapshots/recheck-codex-delegate
+ succeeded in 762ms:
+Manifest /virtual/manifest.json is incomplete for 1 selected course(s); rejecting all 1 hydrated course(s) and falling back to full organize stage (INCOMPLETE/B: reprocessing required)
+resume adjudication predicate matrix: OK
+mixed manifest partial-result rejection: OK
+manifest rejection organize fallback: OK
+
+**Planning to mock filesystem interactions**
+**Assessing fallback test directories and read-only constraints**
+**Confirming course loading handles empty results**
+**Verifying plan and test coverage**
+**Confirming documentation fidelity and JSON output**
+codex
+{
+  "artifact_digest": "1f956a6fda5a436393c7f2a87e577de281091ca86a5bbd3d43c52f881505ecd7",
+  "resolutions": [
+    {
+      "finding_id": "openai-codex::F-PLANNING-CT-MANIFEST-DROP-05",
+      "status": "resolved",
+      "evidence": "rtpipeline/cli.py:299-347 tracks every selected manifest entry that is missing or cannot hydrate and returns an empty result when any entry is rejected, discarding the otherwise valid hydrated subset. ensure_courses at lines 1506-1524 then calls _organize_after_manifest_rejection, whose lines 356-363 run organize_and_merge or raise an explicit reprocessing-required error if organize is unavailable. tests/test_resume_completeness.py:251-320 covers the mixed valid/incomplete manifest, organize fallback, and loud unavailable-organize failure. Direct in-memory execution against the repaired artifact confirmed that a mixed manifest returns no partial subset and that rejection invokes organize."
+    },
+    {
+      "finding_id": "openai-codex::F-PLANNING-CT-RESUME-SEMANTIC-04",
+      "status": "resolved",
+      "evidence": "rtpipeline/organize.py:100-115 defines the fail-closed pre-hydration predicate: a discovered-plan course requires one of the four valid delivery statuses and a non-null, nonblank planning-CT adjudication other than unknown. Lines 319-365 derive plan presence from find_dcm, which resolves nested DICOM/RTPLAN and legacy RP.dcm layouts, together with a nonempty metadata rp_path; lines 365-372 reject incomplete checkpoints before the legacy defaults at lines 401 and 419. tests/test_resume_completeness.py:126-248 covers nested, legacy-root, and metadata-pointer plans; absent, null, blank, whitespace, unknown, and invalid adjudications; all four delivery statuses; fully adjudicated hydration; and plan-free defaults. Direct predicate-matrix execution passed. docs/diagnosis-delivered-dose.md:45-53 states the discovered-file gate, semantic reprocessing conditions, and the 113-of-122 Kopernik and 186-of-230 DFCI consequences. The documentation and its pre-polish draft are byte-identical at SHA-256 1373fe0cdbe0bf6738058b4af433e9a6e8143025ea6765e5a4a655e378a70d2e, so the polish moved no number, qualifier, hedge, limitation, or claim strength."
+    }
+  ]
+}
+tokens used
+106,304
+[codex_adapter] response written to /umed-projekty/rtpipeline/.orchestrator/runs/dose-round2-20260828T125833Z/responses/recheck-codex-delegate.json
+
+[bio-orchestrator] adapter exited with descendants still live; granting 10s before terminating the group

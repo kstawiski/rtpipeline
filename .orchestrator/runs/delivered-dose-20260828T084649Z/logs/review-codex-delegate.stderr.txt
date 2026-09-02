@@ -1,0 +1,30 @@
+[codex_adapter] role=review workspace=/umed-projekty/rtpipeline/.orchestrator/runs/delivered-dose-20260828T084649Z/snapshots/review-codex-delegate cli=/home/konrad/.local/bin/codex
+[codex_adapter] cli stderr (tail): port, or classifier-excluded. Defect C therefore remains reachable in resumed campaigns.",
+      "repair": "Include planning_ct_status and any fields required to reproduce its adjudication in the checkpoint compatibility predicate. Treat checkpoints lacking those fields as stale and force the affected course or patient through planning-CT discovery and reference-chain evaluation. Correct the documentation if any legacy checkpoint category is intentionally retained.",
+      "verification": "Add a resume regression using otherwise valid legacy metadata without planning_ct_status and assert that hydration is rejected and reprocessing occurs. Verify that a current checkpoint with complete planning-CT adjudication remains resumable, and recheck the three DFCI courses after rebuilding from stale metadata."
+    },
+    {
+      "finding_id": "F-DOSE-THRESHOLD-CONFIG-04",
+      "severity": "major",
+      "criterion": "question_alignment",
+      "location": "rtpipeline/config.py:17-18; rtpipeline/cli.py:408-425, rtpipeline/cli.py:1118-1156, and rtpipeline/cli.py:1231-1234; rtpipeline/dvh.py:426-430; docs/diagnosis-delivered-dose.md:94-98",
+      "evidence": "Although PipelineConfig defines max_total_dose_gy with a 100 Gy default, the normal CLI and project-YAML configuration paths do not populate that field, so a non-default project value remains 100.0. The DVH plausibility path separately hardcodes max_total_dose_gy=100.0. Thus the threshold is not operationally configurable and the old and new warning paths are not governed by one reconciled value, contrary to the documented behavior.",
+      "impact": "Operators cannot select a clinically appropriate threshold for a cohort, and different pipeline stages can evaluate prescribed or delivered dose against inconsistent configuration sources. The requested configurable, reconciled plausibility safeguard is incomplete.",
+      "repair": "Wire max_total_dose_gy through the supported project-YAML and CLI configuration flow, then pass the same validated value to organize metadata, quality-control reporting, and DVH plausibility checks. Remove the hardcoded DVH threshold and document the single authoritative configuration key.",
+      "verification": "Add an end-to-end configuration test using a non-default threshold, such as 40 Gy, and show that prescribed- and delivered-dose warnings in every relevant stage change consistently. Also verify that omitting the key retains the 100 Gy default."
+    },
+    {
+      "finding_id": "F-ABSENT-PLAN-COUNT-METADATA-05",
+      "severity": "minor",
+      "criterion": "evidence_traceability",
+      "location": "rtpipeline/organize.py:56-82, rtpipeline/organize.py:3049-3074, and rtpipeline/organize.py:4058-4095; docs/diagnosis-delivered-dose.md:31",
+      "evidence": "_calculate_delivery_summary returns unresolved_record_count and unresolved_reference_count, but CourseOutput has no corresponding fields and the construction and serialization paths drop both values. Emitted metadata retains unresolved_record_plan_uids only. The diagnosis document nevertheless states that course metadata records absent-plan record counts.",
+      "impact": "The durable course artifact cannot show how many RTRECORD objects were excluded because their referenced plans were absent. UID presence alone cannot distinguish one excluded record from hundreds, weakening auditability and making the documentation inaccurate.",
+      "repair": "Add explicit unresolved RTRECORD object and reference counts to CourseOutput and serialized course metadata, preserving the existing UID list and warnings. Alternatively, remove the metadata claim and provide another durable counted audit artifact, but the requested count should remain machine-readable.",
+      "verification": "Extend the absent-plan regression to assert the exact serialized counts as well as the UID and warning. Round-trip the metadata through checkpoint hydration and confirm the values survive resume."
+    }
+  ]
+}
+tokens used
+872,704
+[codex_adapter] response written to /umed-projekty/rtpipeline/.orchestrator/runs/delivered-dose-20260828T084649Z/responses/review-codex-delegate.json

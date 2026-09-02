@@ -1,0 +1,54 @@
+[codex_adapter] role=recheck workspace=/umed-projekty/rtpipeline/.orchestrator/runs/course-contract-r3-20260829T173918Z/snapshots/recheck-codex-delegate cli=/home/konrad/.local/bin/codex
+[codex_adapter] cli stderr (tail): ans:
+  1321	        meta = _plan_evidence(path)
+  1322	        uid = str(meta.get("sop_uid") or "")
+  1323	        plan_evidence = evidence.get(
+  1324	            uid,
+  1325	            {"instances": set(), "sessions": set(), "dates": set(), "records": []},
+  1326	        )
+  1327	        records = list(plan_evidence.get("records", []))
+  1328	        record_count = len(plan_evidence.get("instances", set()))
+  1329	        fraction_count = len(plan_evidence.get("sessions", set()))
+  1330	        copied = copied_plan_paths.get(path)
+  1331	        details.append(
+  1332	            {
+  1333	                "plan_path": str(copied or ""),
+  1334	                "plan_sop_uid": uid,
+  1335	                "prescribed_dose_gy": meta.get("total_rx_gy"),
+  1336	                "planned_fraction_count": int(meta.get("fractions_planned") or 0) or None,
+  1337	                "delivered_record_count": int(record_count),
+  1338	                "delivered_fraction_count": int(fraction_count),
+  1339	                "treatment_dates": sorted(str(value) for value in plan_evidence.get("dates", set())),
+  1340	                "record_paths": [
+  1341	                    str(copied_record_paths.get(Path(str(row.get("path") or "")), ""))
+  1342	                    for row in records
+  1343	                ],
+  1344	                "zero_delivery_records": record_count == 0,
+  1345	                "selected_for_dose_grid": path in selected,
+  1346	                "status": (
+  1347	                    "no_records"
+  1348	                    if record_count == 0
+  1349	                    else (
+  1350	                        "fully_delivered"
+  1351	                        if int(meta.get("fractions_planned") or 0) > 0
+  1352	                        and fraction_count >= int(meta.get("fractions_planned") or 0)
+  1353	                        else "partially_delivered"
+  1354	                    )
+  1355	                ),
+  1356	            }
+  1357	        )
+  1358	    return details
+  1359	
+  1360	
+
+**Verifying doc accuracy and test environment**
+**Confirming write restrictions and static checks**
+**Confirming test artifact reliability**
+**Verifying output consistency and JSON format**
+codex
+{"artifact_digest":"13c9c750212a685b660cacc22cd296cbff0659684730031214c135aa7ad66fef","resolutions":[{"finding_id":"claude::claude::R5-DOC-CLAIMS-RTRECORD-EVIDENCE-THE-ROUND-TRIP-DISABLES","status":"resolved","evidence":"The dose-bearing round trip now creates a synthetic RTRECORD at tests/test_course_identity_reference_chains.py:1362 and no longer monkeypatches org._index_rt_files; organize therefore calls the real index at rtpipeline/organize.py:2941. The test verifies the organize-written contract has exact non-empty plan and dose membership and a dose grid (lines 1394-1401), then asserts partially_delivered status, 2.75 Gy delivered dose, record_fraction_weighted_prescription, one record, one delivered fraction, treatment date 20240102, and a non-empty record path resolving to an existing file (lines 1402-1419). It passes that same course to dvh_for_course and requires a non-empty on-disk workbook with matching plan and dose UIDs, propagated Delivery_Status and Delivered_Dose_Gy, and populated DmeanGy metrics (lines 1423-1440). It also requires dvh_qc.json to report metrics_status computed, output dvh_metrics.xlsx with an existing path, identical plan membership, partially delivered status, and the same delivered dose (lines 1441-1450). Documentation at docs/diagnosis-course-contract.md:134 now accurately describes this RTRECORD-bearing coverage. The packet records that both round-trip tests passed, a delivery-serializer perturbation made the repaired test fail, and the full suite passed with 954 passed and 2 skipped. A fresh rerun in this read-only recheck snapshot could not start because pytest had no writable temporary directory; the resolution is supported by the repaired artifact and the packet-recorded execution evidence."}]}
+tokens used
+75,303
+[codex_adapter] response written to /umed-projekty/rtpipeline/.orchestrator/runs/course-contract-r3-20260829T173918Z/responses/recheck-codex-delegate.json
+
+[bio-orchestrator] adapter exited with descendants still live; granting 10s before terminating the group
