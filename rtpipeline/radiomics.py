@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import math
 import os
 import shutil
 import tempfile
@@ -47,6 +49,11 @@ from .acquisition_scale import (
     describe_contract_planning_ct,
     validate_acquisition_descriptor_table,
 )
+from .radiomics_cohort import (
+    attach_radiomics_cohort_provenance,
+    build_radiomics_cohort_provenance,
+    is_valid_radiomics_cohort_table,
+)
 from .radiomics_outcomes import (
     RadiomicsCourseExtractionError,
     RadiomicsCourseOutcome,
@@ -58,6 +65,11 @@ from .radiomics_outcomes import (
     roi_source_is_required,
     resume_identity_pairs as _resume_identity_pairs,
 )
+from .radiomics_resource_guard import (
+    RESAMPLED_BBOX_LIMIT_CODE,
+    estimate_resampled_bounding_box,
+    resolve_max_resampled_bbox_voxels,
+)
 from .radiomics_schema import (
     RadiomicsFeatureTypeError,
     assert_radiomics_arrow_schema,
@@ -68,7 +80,10 @@ from .radiomics_schema import (
 )
 from .roi_requiredness import (
     DenominatorLedger,
+    FAILED_RADIOMICS_RESOURCE_LIMIT,
+    REASON_CODES,
     Requiredness,
+    TAXONOMY_CODES,
     assess_custom_applicability,
     inspect_rtstruct,
     match_requirements,
@@ -1213,24 +1228,39 @@ def radiomics_for_course(
             seen.add(key)
             name = key[1]
             if name:
+                status = row.get("extraction_status")
+                detail_code = str(row.get("roi_structural_code") or "")
+                reason = (
+                    "extracted"
+                    if status in (None, "success")
+                    else "ROI_MASK_BELOW_MIN_VOXELS"
+                    if status == "below_minimum_voxels"
+                    else FAILED_RADIOMICS_RESOURCE_LIMIT
+                    if detail_code == RESAMPLED_BBOX_LIMIT_CODE
+                    else "failed_radiomics_extraction"
+                )
                 roi_ledger.expect_course_roi(ledger_course_id, name)
                 roi_ledger.record_roi(
                     ledger_course_id,
                     ledger_patient_id,
                     name,
-                    reason_code=(
-                        "extracted" if row.get("extraction_status") in (None, "success")
-                        else "ROI_MASK_BELOW_MIN_VOXELS" if row.get("extraction_status") == "below_minimum_voxels"
-                        else "failed_radiomics_extraction"
-                    ),
-                    disposition="extracted" if row.get("extraction_status") in (None, "success") else "excluded",
+                    reason_code=reason,
+                    disposition="extracted" if reason == "extracted" else "excluded",
                     segmentation_source=key[0],
+                    detail_code=detail_code or None,
+                    detail=str(row.get("extraction_status_detail") or ""),
+                    estimated_resampled_bbox_voxel_count=row.get(
+                        "estimated_resampled_bbox_voxel_count"
+                    ),
+                    max_resampled_bbox_voxel_count=row.get(
+                        "max_resampled_bbox_voxel_count"
+                    ),
                 )
         for failure in roi_failures:
             name = str(failure.get("roi_name", ""))
             if name:
                 reason = str(failure.get("structural_code") or failure.get("reason_code") or "failed_radiomics_extraction")
-                if reason not in {"extracted", "not_applicable_scope", "not_applicable_anatomy", "insufficient_fov", "failed_source_segmentation", "failed_source_read", "failed_custom_generation", "failed_custom_read", "failed_radiomics_extraction", "indeterminate_applicability", "not_computed_valid_empty_scope"} and reason not in {"ROI_DECLARED_NO_CONTOUR_ITEM", "ROI_DECLARED_EMPTY_CONTOUR_SEQUENCE", "ROI_CONTOUR_UNPARSEABLE", "ROI_CONTOUR_PARTIALLY_UNPARSEABLE", "ROI_CONTOUR_ORPHAN_REFERENCE", "ROI_MASK_EMPTY_AFTER_RASTERIZATION", "ROI_MASK_BELOW_MIN_VOXELS", "REQUIRED_ROI_NOT_DECLARED", "REQUIRED_ROI_AMBIGUOUS_MATCH", "ROI_EXTRACTION_FAILED", "RTSTRUCT_NO_NAMED_ROIS"}:
+                if reason not in REASON_CODES and reason not in TAXONOMY_CODES:
                     reason = "failed_radiomics_extraction"
                 roi_ledger.record_roi(ledger_course_id, ledger_patient_id, name, reason_code=reason, disposition="excluded", source=failure.get("source", ""))
         present_names = {str(row.get("roi_name", "")) for row in roi_ledger.roi_rows}
@@ -1918,6 +1948,55 @@ def radiomics_for_course(
                 spacing = tuple(float(x) for x in img.GetSpacing())
             except Exception:
                 spacing = (1.0, 1.0, 1.0)
+            try:
+                resampled_spacing = tuple(
+                    float(value)
+                    for value in (
+                        extractor.settings.get("resampledPixelSpacing") or spacing
+                    )
+                )
+            except Exception:
+                resampled_spacing = spacing
+            try:
+                pad_distance = int(
+                    math.ceil(float(extractor.settings.get("padDistance", 5)))
+                )
+            except (TypeError, ValueError, OverflowError):
+                pad_distance = 5
+            work_estimate = estimate_resampled_bounding_box(
+                task.mask,
+                native_spacing_xyz=spacing,
+                resampled_spacing_xyz=resampled_spacing,
+                array_axis_to_xyz=(1, 0, 2),
+                pad_distance=pad_distance,
+            )
+            max_bbox_voxels = resolve_max_resampled_bbox_voxels(config)
+            if work_estimate.estimated_resampled_bbox_voxels > max_bbox_voxels:
+                detail = (
+                    f"ROI {task.roi_name} requires an estimated padded resampled "
+                    f"bounding box of "
+                    f"{work_estimate.estimated_resampled_bbox_voxels} voxels "
+                    f"({work_estimate.estimated_resampled_bbox_shape}); configured "
+                    f"maximum is {max_bbox_voxels}. Full configured radiomics was "
+                    "not started."
+                )
+                return disposition_rows_for_arms(
+                    {
+                        **_common_metadata(task),
+                        "roi_structural_code": RESAMPLED_BBOX_LIMIT_CODE,
+                        **work_estimate.metadata(limit=max_bbox_voxels),
+                    },
+                    decision=task.decision,
+                    disposition="failed",
+                    detail=detail,
+                    failure_kind="resource_limit",
+                    run_identifier=run_identifier,
+                    code_revision=code_revision,
+                    native_voxel_count=voxel_count,
+                    required=task.required,
+                    effective_hashes=effective_hashes,
+                    configured_parameter_hashes=task.configured_parameter_hashes,
+                )
             native_voxel_mm3 = float(spacing[0]) * float(spacing[1]) * float(spacing[2])
             physical_volume_mm3 = float(voxel_count) * max(1e-9, native_voxel_mm3)
             estimated_voxels = physical_volume_mm3
@@ -2841,6 +2920,65 @@ def radiomics_for_mr_series(config: PipelineConfig, series: MRSeries) -> Optiona
         ) from e
 
 
+def _radiomics_course_identity(course: Any) -> tuple[str, str]:
+    root = Path(course.dirs.root)
+    patient = str(getattr(course, "patient_id", "") or root.parent.name).strip()
+    course_key = str(getattr(course, "course_key", "") or root.name).strip()
+    if not patient or not course_key:
+        raise RuntimeError("radiomics course is missing patient or course identity")
+    return patient, course_key
+
+
+def _full_organize_cohort(
+    config: PipelineConfig, courses: list[Any]
+) -> Optional[dict[str, Any]]:
+    """Return the organize ledger only for a complete validated-course invocation."""
+
+    from .organize_ledger import OrganizeLedgerError, ledger_path, read_organize_ledger
+
+    path = ledger_path(config.output_root)
+    supplied = {_radiomics_course_identity(course) for course in courses}
+    if not path.exists():
+        source_bytes = json.dumps(sorted(supplied), separators=(",", ":")).encode()
+        return {
+            "intended_course_count": len(courses),
+            "validated_course_count": len(courses),
+            "technical_quarantines": [],
+            "denominator_source_sha256": hashlib.sha256(source_bytes).hexdigest(),
+        }
+    try:
+        ledger = read_organize_ledger(config.output_root)
+    except OrganizeLedgerError as exc:
+        raise RuntimeError(f"Radiomics organize ledger is invalid: {exc}") from exc
+    expected = {
+        (entry["patient"], entry["course"])
+        for entry in ledger["courses"]
+        if entry["status"] == "validated"
+    }
+    if supplied != expected:
+        return None
+    source_sha256 = hashlib.sha256(path.read_bytes()).hexdigest()
+    ledger["technical_quarantines"] = [
+        {**entry, "source_record_sha256": source_sha256}
+        for entry in ledger["technical_quarantines"]
+    ]
+    ledger["denominator_source_sha256"] = source_sha256
+    return ledger
+
+
+def _invalidate_unprovenanced_radiomics_cohort(path: Path) -> None:
+    """Remove legacy/invalid aggregates while preserving a valid prior publication."""
+
+    if is_valid_radiomics_cohort_table(path):
+        logger.warning(
+            "Preserving prior radiomics cohort aggregate with valid denominator "
+            "provenance after the current invocation failed or was incomplete: %s",
+            path,
+        )
+        return
+    _invalidate_radiomics_outputs(path)
+
+
 def run_radiomics(config: PipelineConfig, courses: List["object"], custom_structures_config: Optional[Path] = None) -> None:
     """Top-level orchestrator: per-course CT radiomics and per-series MR radiomics.
     'courses' elements are CourseOutput-like with patient_id, course_key, dirs.root.
@@ -2848,6 +2986,7 @@ def run_radiomics(config: PipelineConfig, courses: List["object"], custom_struct
     _apply_radiomics_thread_limit(_resolve_thread_limit(getattr(config, 'radiomics_thread_limit', None)))
 
     aggregate_path = config.output_root / 'Data' / 'radiomics_all.xlsx'
+    organize_cohort = _full_organize_cohort(config, courses)
 
     # A requested radiomics stage must not preserve outputs from an older run when
     # neither the native nor isolated backend can execute.
@@ -2858,7 +2997,7 @@ def run_radiomics(config: PipelineConfig, courses: List["object"], custom_struct
             _invalidate_radiomics_outputs(course_root / "radiomics_ct.xlsx")
             for mr_output in course_root.rglob("radiomics_features_MR.xlsx"):
                 _invalidate_radiomics_outputs(mr_output)
-        _invalidate_radiomics_outputs(aggregate_path)
+        _invalidate_unprovenanced_radiomics_cohort(aggregate_path)
         raise RuntimeError("PyRadiomics is unavailable; requested radiomics extraction failed")
 
     # Check if enhanced parallel radiomics processing is enabled
@@ -2917,7 +3056,7 @@ def run_radiomics(config: PipelineConfig, courses: List["object"], custom_struct
         show_progress=True,
     )
     if len(ct_results) != len(courses):
-        _invalidate_radiomics_outputs(aggregate_path)
+        _invalidate_unprovenanced_radiomics_cohort(aggregate_path)
         raise RuntimeError(
             "CT radiomics worker returned an incomplete result vector; "
             f"expected {len(courses)} course outcomes and received {len(ct_results)}"
@@ -2928,7 +3067,7 @@ def run_radiomics(config: PipelineConfig, courses: List["object"], custom_struct
         if result is None
     ]
     if failed_courses:
-        _invalidate_radiomics_outputs(aggregate_path)
+        _invalidate_unprovenanced_radiomics_cohort(aggregate_path)
         raise RuntimeError(
             "CT radiomics failed for course(s); cohort aggregation was not written: "
             + ", ".join(failed_courses)
@@ -2941,7 +3080,7 @@ def run_radiomics(config: PipelineConfig, courses: List["object"], custom_struct
             mr_output = radiomics_for_course_mr(config, course)
         except Exception as exc:
             if mr_required:
-                _invalidate_radiomics_outputs(aggregate_path)
+                _invalidate_unprovenanced_radiomics_cohort(aggregate_path)
                 raise RuntimeError(
                     f"Required MR radiomics failed for course {getattr(course, 'dirs', course)}; "
                     f"cohort aggregation was not written: {exc}"
@@ -2955,14 +3094,51 @@ def run_radiomics(config: PipelineConfig, courses: List["object"], custom_struct
             if mr_output is not None:
                 mr_outputs.append(Path(mr_output))
             elif mr_required:
-                _invalidate_radiomics_outputs(aggregate_path)
+                _invalidate_unprovenanced_radiomics_cohort(aggregate_path)
                 raise RuntimeError(
                     f"Required MR radiomics produced no workbook for {getattr(course, 'dirs', course)}; "
                     "cohort aggregation was not written"
                 )
 
+    # A filtered workflow invocation extracts one course but cannot prove the cohort
+    # denominator. The final aggregate rule owns cohort publication in that mode.
+    if organize_cohort is None:
+        _invalidate_unprovenanced_radiomics_cohort(aggregate_path)
+        logger.info(
+            "Skipping cohort radiomics publication because this invocation does not "
+            "contain every organize-validated course"
+        )
+        return
+
+    missing_outputs = [
+        _radiomics_course_identity(course)
+        for course, outcome in zip(courses, ct_results)
+        if getattr(outcome, "output_path", None) is None
+    ]
+    if missing_outputs:
+        _invalidate_unprovenanced_radiomics_cohort(aggregate_path)
+        if len(missing_outputs) == len(courses):
+            return
+        formatted = ", ".join(
+            f"{patient}/{course}" for patient, course in missing_outputs
+        )
+        raise RuntimeError(
+            "CT radiomics produced no publication for organize-validated course(s); "
+            f"cohort aggregation was not written: {formatted}"
+        )
+
+    provenance = build_radiomics_cohort_provenance(
+        intended_count=int(organize_cohort["intended_course_count"]),
+        validated_count=int(organize_cohort["validated_course_count"]),
+        extracted_courses=[_radiomics_course_identity(course) for course in courses],
+        technical_quarantines=organize_cohort["technical_quarantines"],
+        denominator_source_sha256=organize_cohort[
+            "denominator_source_sha256"
+        ],
+    )
+
     # Cohort merge. Every workbook declared EXTRACTED by a course is expected and
-    # must be readable; aggregate publication is atomic and invalidated on failure.
+    # must be readable. Temporary files are validated before replacing a prior table.
     try:
         import pandas as _pd
 
@@ -3020,11 +3196,12 @@ def run_radiomics(config: PipelineConfig, courses: List["object"], custom_struct
 
         if out_rows:
             all_df = _pd.concat(out_rows, ignore_index=True)
+            all_df = attach_radiomics_cohort_provenance(all_df, provenance)
             write_radiomics_feature_table_atomic(all_df, aggregate_path)
         else:
-            _invalidate_radiomics_outputs(aggregate_path)
+            _invalidate_unprovenanced_radiomics_cohort(aggregate_path)
     except Exception as exc:
-        _invalidate_radiomics_outputs(aggregate_path)
+        _invalidate_unprovenanced_radiomics_cohort(aggregate_path)
         if isinstance(exc, RadiomicsCourseExtractionError):
             raise
         raise RadiomicsCourseExtractionError(
@@ -3035,12 +3212,11 @@ def run_radiomics(config: PipelineConfig, courses: List["object"], custom_struct
 # ---------------------------------------------------------------------------
 # B4 + C4 — all-series (non-course) CT radiomics
 #
-# Course radiomics (run_radiomics / radiomics_for_course / parallel_radiomics_for_course)
-# is left byte-identical. This block adds a SEPARATE entry point that radiomics the
+# This block is a separate entry point that extracts radiomics from the
 # materialized all-series CT series (planning/diagnostic/PET-CT/4DCT-averaged), one
 # representative volume per 4DCT study (C4), and writes its own Data/radiomics_all_series.csv.
-# It NEVER calls run_radiomics (which runs the per-course MR loop and rewrites the cohort
-# merge Data/radiomics_all.xlsx via rglob).
+# It never calls run_radiomics, which also runs the per-course MR loop and may publish
+# Data/radiomics_all.xlsx only for a complete, reconciled organize cohort.
 # ---------------------------------------------------------------------------
 
 # Base CT classes radiomic'd as-is. 4DCT (fourdct_ave / fourdct_phase) is handled separately
@@ -3252,7 +3428,7 @@ def _select_all_series_radiomics_rows(
 
 def _dispatch_radiomics_for_course(config: PipelineConfig, course_dir: Path) -> Optional[Path]:
     """Mirror the per-course CT dispatch (radiomics.py:1244-1274) on one temp course dir.
-    NEVER calls run_radiomics (which runs the MR loop + rewrites the cohort merge radiomics_all.xlsx)."""
+    Never call run_radiomics because it also owns complete-cohort publication."""
     try:
         from .radiomics_parallel import is_parallel_radiomics_enabled, parallel_radiomics_for_course
         use_parallel = is_parallel_radiomics_enabled()

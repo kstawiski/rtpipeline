@@ -1053,8 +1053,8 @@ def write_ct_publication_atomic(
         os.replace(parquet_tmp, parquet_path)
         os.replace(workbook_tmp, workbook_path)
     except Exception:
-        parquet_path.unlink(missing_ok=True)
-        workbook_path.unlink(missing_ok=True)
+        # Destinations are untouched until both temporary files validate. Preserve a
+        # prior published pair if creation or validation of the replacement fails.
         raise
     finally:
         parquet_tmp.unlink(missing_ok=True)

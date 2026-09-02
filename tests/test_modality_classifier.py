@@ -105,6 +105,33 @@ def test_localizer_image_type_is_excluded():
     assert reason == "image_type_localizer"
 
 
+def test_localizer_description_does_not_discard_full_axial_planning_ct():
+    image_class, reason = classify_series(
+        _meta(
+            series_description="Localizer 2.5",
+            image_types=["ORIGINAL\\PRIMARY\\AXIAL"],
+            n_instances=261,
+            rt_linked=True,
+        )
+    )
+
+    assert image_class == "planning_ct"
+    assert reason is None
+
+
+def test_localizer_description_without_axial_volume_is_excluded():
+    image_class, reason = classify_series(
+        _meta(
+            series_description="CT Localizer",
+            image_types=["ORIGINAL\\PRIMARY"],
+            n_instances=20,
+        )
+    )
+
+    assert image_class == "exclude"
+    assert reason == "description_localizer"
+
+
 def test_ep2d_diff_mr_is_functional():
     image_class, reason = classify_series(
         _meta(

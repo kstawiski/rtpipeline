@@ -63,8 +63,14 @@ from .radiomics_outcomes import (
     resume_identity_pairs as _resume_identity_pairs,
     write_excel_atomic as _write_excel_atomic,
 )
+from .radiomics_resource_guard import (
+    RESAMPLED_BBOX_LIMIT_CODE,
+    estimate_resampled_bounding_box,
+    resolve_max_resampled_bbox_voxels,
+)
 from .roi_requiredness import (
     DenominatorLedger,
+    FAILED_RADIOMICS_RESOURCE_LIMIT,
     Requiredness,
     assess_custom_applicability,
     inspect_rtstruct,
@@ -375,8 +381,32 @@ def _write_parallel_roi_ledger(
             continue
         seen.add(name)
         status = str(row.get("extraction_status") or "success")
-        reason = str(row.get("roi_structural_code") or ("extracted" if status in {"success", "declared_skip"} else "failed_radiomics_extraction"))
-        ledger.record_roi(course_id, patient_id, name, reason_code=reason, disposition="extracted" if reason == "extracted" else "excluded")
+        detail_code = str(row.get("roi_structural_code") or "")
+        reason = (
+            FAILED_RADIOMICS_RESOURCE_LIMIT
+            if detail_code == RESAMPLED_BBOX_LIMIT_CODE
+            else detail_code
+            or (
+                "extracted"
+                if status in {"success", "declared_skip"}
+                else "failed_radiomics_extraction"
+            )
+        )
+        ledger.record_roi(
+            course_id,
+            patient_id,
+            name,
+            reason_code=reason,
+            disposition="extracted" if reason == "extracted" else "excluded",
+            detail_code=detail_code or None,
+            detail=str(row.get("extraction_status_detail") or ""),
+            estimated_resampled_bbox_voxel_count=row.get(
+                "estimated_resampled_bbox_voxel_count"
+            ),
+            max_resampled_bbox_voxel_count=row.get(
+                "max_resampled_bbox_voxel_count"
+            ),
+        )
     recorded_pairs = {
         (str(row.get("course_id")), str(row.get("roi_name"))): row
         for row in ledger.roi_rows
@@ -440,9 +470,12 @@ def _status_records(
     *,
     voxel_count: Optional[int] = None,
     failure_kind: str = "extraction_error",
+    metadata: Optional[Mapping[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
+    common_metadata = _task_common_metadata(task)
+    common_metadata.update(dict(metadata or {}))
     return disposition_rows_for_arms(
-        _task_common_metadata(task),
+        common_metadata,
         decision=task.decision,
         disposition=status,
         detail=detail,
@@ -619,6 +652,38 @@ def _extract_one(task: _RoiTask) -> List[Dict[str, Any]]:
         resampled = tuple(float(x) for x in resampled)
     except Exception:
         resampled = spacing
+    try:
+        pad_distance = int(math.ceil(float(ext.settings.get("padDistance", 5))))
+    except (TypeError, ValueError, OverflowError):
+        pad_distance = 5
+    work_estimate = estimate_resampled_bounding_box(
+        mask_bool,
+        native_spacing_xyz=spacing,
+        resampled_spacing_xyz=resampled,
+        array_axis_to_xyz=(1, 0, 2),
+        pad_distance=pad_distance,
+    )
+    max_bbox_voxels = resolve_max_resampled_bbox_voxels(
+        _WORKER_STATE.get("config")
+    )
+    if work_estimate.estimated_resampled_bbox_voxels > max_bbox_voxels:
+        detail = (
+            f"ROI {task.roi_name} requires an estimated padded resampled bounding "
+            f"box of {work_estimate.estimated_resampled_bbox_voxels} voxels "
+            f"({work_estimate.estimated_resampled_bbox_shape}); configured maximum "
+            f"is {max_bbox_voxels}. Full configured radiomics was not started."
+        )
+        return _status_records(
+            task,
+            "failed",
+            detail,
+            voxel_count=voxel_count,
+            failure_kind="resource_limit",
+            metadata={
+                "roi_structural_code": RESAMPLED_BBOX_LIMIT_CODE,
+                **work_estimate.metadata(limit=max_bbox_voxels),
+            },
+        )
     resampled_voxel_mm3 = float(resampled[0]) * float(resampled[1]) * float(resampled[2])
     estimated_voxels = physical_volume_mm3 / max(1e-9, resampled_voxel_mm3)
     if is_body or estimated_voxels > float(max_voxels):

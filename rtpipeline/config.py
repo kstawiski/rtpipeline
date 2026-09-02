@@ -120,6 +120,10 @@ class PipelineConfig:
     radiomics_params_file: Path | None = None
     radiomics_skip_rois: list[str] = field(default_factory=list)
     radiomics_max_voxels: int | None = None
+    # Hard bound on the dense padded crop created at the configured resampling
+    # spacing. Unlike radiomics_max_voxels, this protects sparse and disjoint masks
+    # whose small foreground spans a very large working grid.
+    radiomics_max_resampled_bbox_voxels: int | None = None
     radiomics_min_voxels: int | None = None
     radiomics_thread_limit: int | None = None
     radiomics_env_probe_timeout: int | None = None

@@ -299,7 +299,18 @@ def _common_image_exclusion(meta: Mapping[str, Any], *, include_mip: bool) -> st
         return "image_type_localizer"
 
     description = _text(meta, "series_description")
-    if _LOCALIZER_DESC_RE.search(description):
+    is_axial_volume = (
+        n_instances is not None
+        and n_instances >= 10
+        and (
+            _image_type_contains(meta, "AXIAL")
+            or _image_type_contains(meta, "HELICAL")
+        )
+    )
+    if _LOCALIZER_DESC_RE.search(description) and not is_axial_volume:
+        # Description text is not acquisition geometry. Some planning CT series use
+        # "Localizer" in their description despite a full axial acquisition. Keep a
+        # series when the image type and slice count establish a volumetric scan.
         return "description_localizer"
     if include_mip and _MIP_PROJECTION_RE.search(description):
         return "description_mip_projection"
