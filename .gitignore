@@ -181,3 +181,7 @@ AGENTS.md
 !/config_prostata.yaml
 !/config.example.yaml
 !/radiomics_params.yaml
+
+# Test fixtures are evidence, not artifacts: 75d28c6 silently dropped
+# tests/data/*.json under the blanket *.json rule above.
+!tests/data/*.json
