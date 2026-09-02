@@ -80,6 +80,7 @@ from .radiomics_schema import (
 )
 from .roi_requiredness import (
     DenominatorLedger,
+    FAILED_RADIOMICS_FEATURE_COMPLETENESS,
     FAILED_RADIOMICS_RESOURCE_LIMIT,
     REASON_CODES,
     Requiredness,
@@ -94,6 +95,8 @@ from .roi_requiredness import (
 from .radiomics_ct_contract import (
     CT_EXTRACTION_ARMS,
     PRIMARY_ARM,
+    RADIOMICS_FEATURE_COMPLETENESS_COLUMN,
+    RADIOMICS_FEATURE_COMPLETENESS_REASON_COLUMN,
     SENSITIVITY_ARM,
     classify_ct_roi,
     configured_parameter_hash,
@@ -1218,44 +1221,78 @@ def radiomics_for_course(
     }
 
     def _finalize_ct_ledger(*, extracted: bool, technical: bool = False, indeterminate: bool = False) -> None:
+        technical = technical or any(
+            str(row.get(RADIOMICS_FEATURE_COMPLETENESS_COLUMN) or "")
+            == "incomplete"
+            for row in rows
+        )
         for name in sorted(ledger_expected_names):
             roi_ledger.expect_course_roi(ledger_course_id, name)
-        seen: set[tuple[str, str]] = set()
+        rows_by_roi: Dict[tuple[str, str], List[Mapping[str, Any]]] = {}
         for row in rows:
-            key = (str(row.get("segmentation_source", "")), str(row.get("roi_original_name", row.get("roi_name", ""))))
-            if key in seen:
-                continue
-            seen.add(key)
+            key = (
+                str(row.get("segmentation_source", "")),
+                str(row.get("roi_original_name", row.get("roi_name", ""))),
+            )
+            if key[1]:
+                rows_by_roi.setdefault(key, []).append(row)
+        for key, pair_rows in rows_by_roi.items():
+            row = pair_rows[0]
             name = key[1]
-            if name:
-                status = row.get("extraction_status")
-                detail_code = str(row.get("roi_structural_code") or "")
-                reason = (
-                    "extracted"
-                    if status in (None, "success")
-                    else "ROI_MASK_BELOW_MIN_VOXELS"
-                    if status == "below_minimum_voxels"
-                    else FAILED_RADIOMICS_RESOURCE_LIMIT
-                    if detail_code == RESAMPLED_BBOX_LIMIT_CODE
-                    else "failed_radiomics_extraction"
-                )
-                roi_ledger.expect_course_roi(ledger_course_id, name)
-                roi_ledger.record_roi(
-                    ledger_course_id,
-                    ledger_patient_id,
-                    name,
-                    reason_code=reason,
-                    disposition="extracted" if reason == "extracted" else "excluded",
-                    segmentation_source=key[0],
-                    detail_code=detail_code or None,
-                    detail=str(row.get("extraction_status_detail") or ""),
-                    estimated_resampled_bbox_voxel_count=row.get(
-                        "estimated_resampled_bbox_voxel_count"
-                    ),
-                    max_resampled_bbox_voxel_count=row.get(
-                        "max_resampled_bbox_voxel_count"
-                    ),
-                )
+            statuses = {
+                str(item.get("extraction_status") or "success")
+                for item in pair_rows
+            }
+            completeness = {
+                str(item.get(RADIOMICS_FEATURE_COMPLETENESS_COLUMN) or "")
+                for item in pair_rows
+            }
+            detail_code = str(row.get("roi_structural_code") or "")
+            if "incomplete" in completeness:
+                reason = FAILED_RADIOMICS_FEATURE_COMPLETENESS
+            elif statuses == {"success"}:
+                reason = "extracted"
+            elif "below_minimum_voxels" in statuses:
+                reason = "ROI_MASK_BELOW_MIN_VOXELS"
+            elif detail_code == RESAMPLED_BBOX_LIMIT_CODE:
+                reason = FAILED_RADIOMICS_RESOURCE_LIMIT
+            else:
+                reason = "failed_radiomics_extraction"
+            completeness_detail = next(
+                (
+                    str(
+                        item.get(RADIOMICS_FEATURE_COMPLETENESS_REASON_COLUMN)
+                        or ""
+                    )
+                    for item in pair_rows
+                    if str(
+                        item.get(RADIOMICS_FEATURE_COMPLETENESS_COLUMN) or ""
+                    )
+                    == "incomplete"
+                ),
+                "",
+            )
+            roi_ledger.expect_course_roi(ledger_course_id, name)
+            roi_ledger.record_roi(
+                ledger_course_id,
+                ledger_patient_id,
+                name,
+                reason_code=reason,
+                disposition="extracted" if reason == "extracted" else "excluded",
+                segmentation_source=key[0],
+                detail_code=detail_code or None,
+                detail=(
+                    completeness_detail
+                    if reason == FAILED_RADIOMICS_FEATURE_COMPLETENESS
+                    else str(row.get("extraction_status_detail") or "")
+                ),
+                estimated_resampled_bbox_voxel_count=row.get(
+                    "estimated_resampled_bbox_voxel_count"
+                ),
+                max_resampled_bbox_voxel_count=row.get(
+                    "max_resampled_bbox_voxel_count"
+                ),
+            )
         for failure in roi_failures:
             name = str(failure.get("roi_name", ""))
             if name:
@@ -2184,7 +2221,6 @@ def radiomics_for_course(
     diagnostics = course_diagnostic_columns(outcome)
     for row in rows:
         row.update(diagnostics)
-    _finalize_ct_ledger(extracted=True, technical=bool(roi_failures), indeterminate=False)
     try:
         attach_acquisition_descriptor(
             rows,
@@ -2193,6 +2229,14 @@ def radiomics_for_course(
         import pandas as pd
         df = pd.DataFrame(rows)
         write_ct_publication_atomic(df, out_path, expected_keys=expected_keys)
+        rows[:] = read_authoritative_ct_publication(
+            out_path.with_suffix(".parquet")
+        ).to_dict("records")
+        _finalize_ct_ledger(
+            extracted=True,
+            technical=bool(roi_failures),
+            indeterminate=False,
+        )
         return outcome
     except Exception as e:
         _invalidate_radiomics_outputs(out_path)

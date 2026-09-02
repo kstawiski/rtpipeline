@@ -49,6 +49,7 @@ def _delegate_parent_segmentation_assessment(
 
 def _write_ct_publication(course_dir: Path, *, patient_id: str) -> None:
     from rtpipeline.radiomics_ct_contract import (
+        _feature_schema_metadata,
         classify_ct_roi,
         disposition_rows_for_arms,
         write_ct_publication_atomic,
@@ -85,6 +86,7 @@ def _write_ct_publication(course_dir: Path, *, patient_id: str) -> None:
     )
     for record in records:
         record["original_firstorder_Mean"] = 1.0
+        record.update(_feature_schema_metadata({"original_firstorder_Mean"}))
     write_ct_publication_atomic(
         pd.DataFrame(records), course_dir / "radiomics_ct.xlsx"
     )

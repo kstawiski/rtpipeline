@@ -39,6 +39,7 @@ TAXONOMY_CODES = frozenset({
 })
 
 FAILED_RADIOMICS_RESOURCE_LIMIT = "failed_radiomics_resource_limit"
+FAILED_RADIOMICS_FEATURE_COMPLETENESS = "failed_radiomics_feature_completeness"
 
 
 REASON_CODES = frozenset({
@@ -53,6 +54,7 @@ REASON_CODES = frozenset({
     "failed_custom_read",
     "failed_radiomics_extraction",
     FAILED_RADIOMICS_RESOURCE_LIMIT,
+    FAILED_RADIOMICS_FEATURE_COMPLETENESS,
     "indeterminate_applicability",
     "not_computed_valid_empty_scope",
 })
