@@ -74,6 +74,9 @@ RADIOMICS_TEXT_COLUMNS = frozenset(
         "acq_kernel",
         "acq_scale_class",
         "acq_contrast_agent",
+        "radiomics_cohort_provenance_schema",
+        "radiomics_denominator_source_sha256",
+        "radiomics_cohort_exclusions_json",
     }
 )
 
@@ -323,8 +326,8 @@ def write_radiomics_feature_table_atomic(dataframe: Any, workbook_path: Path) ->
         os.replace(parquet_tmp, parquet_path)
         os.replace(workbook_tmp, workbook_path)
     except Exception:
-        parquet_path.unlink(missing_ok=True)
-        workbook_path.unlink(missing_ok=True)
+        # Destinations are untouched until both temporary files validate. Preserve a
+        # prior published pair if creation or validation of the replacement fails.
         raise
     finally:
         parquet_tmp.unlink(missing_ok=True)

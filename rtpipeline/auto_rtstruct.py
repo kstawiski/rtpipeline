@@ -541,14 +541,13 @@ def _select_seg_dir_for_ct(
 def _geometry_compatible(
     seg_img: sitk.Image, ct_img: sitk.Image, tol_mm: float = 2.0
 ) -> bool:
-    """Return whether two 3-D images cover the same physical voxel grid.
+    """Return whether two 3-D images cover the same physical volume.
 
-    The comparison is invariant to a signed permutation of the image axes. This
-    handles the normal NIfTI/DICOM convention change without treating a different
-    scan as compatible. It requires matching voxel counts, per-axis spacing and
-    physical step vectors under one signed axis mapping, then checks both physical
-    bounding-box corners within ``tol_mm``. Any unreadable or unsupported geometry
-    fails closed.
+    TotalSegmentator may resample a source CT before producing masks, so compatible
+    images need not have equal spacing or voxel counts. Course and segmentation
+    provenance establish source-series identity before this safety check. Here we
+    require matching physical axes under a signed permutation and matching physical
+    extents, with one half-voxel allowance for resampling-rounding differences.
     """
     try:
         if seg_img.GetDimension() != 3 or ct_img.GetDimension() != 3:
@@ -558,7 +557,7 @@ def _geometry_compatible(
         ct_size = np.asarray(ct_img.GetSize(), dtype=int)
         if seg_size.shape != (3,) or ct_size.shape != (3,):
             return False
-        if int(np.prod(seg_size)) != int(np.prod(ct_size)):
+        if np.any(seg_size <= 0) or np.any(ct_size <= 0):
             return False
 
         seg_spacing = np.asarray(seg_img.GetSpacing(), dtype=float)
@@ -575,24 +574,15 @@ def _geometry_compatible(
         if not np.all(np.isfinite(seg_direction)) or not np.all(np.isfinite(ct_direction)):
             return False
 
-        # Columns of D @ diag(spacing) are the physical displacement vectors
-        # between adjacent voxels along each image-index axis. A signed permutation
-        # is the exact class of axis-order/sign changes that preserves the grid.
-        seg_steps = seg_direction @ np.diag(seg_spacing)
-        ct_steps = ct_direction @ np.diag(ct_spacing)
-        grid_match = False
+        # Direction columns are physical image axes. Spacing is deliberately not
+        # included because masks may be produced on a resampled grid.
+        orientation_match = False
         for permutation in permutations(range(3)):
-            if not np.array_equal(seg_size, ct_size[list(permutation)]):
-                continue
-            if not np.allclose(
-                seg_spacing, ct_spacing[list(permutation)], atol=1e-3, rtol=0
-            ):
-                continue
             if all(
                 any(
                     np.allclose(
-                        seg_steps[:, seg_axis],
-                        sign * ct_steps[:, ref_axis],
+                        seg_direction[:, seg_axis],
+                        sign * ct_direction[:, ref_axis],
                         atol=1e-3,
                         rtol=0,
                     )
@@ -600,9 +590,9 @@ def _geometry_compatible(
                 )
                 for seg_axis, ref_axis in enumerate(permutation)
             ):
-                grid_match = True
+                orientation_match = True
                 break
-        if not grid_match:
+        if not orientation_match:
             return False
 
         def _extent(img: sitk.Image):
@@ -620,9 +610,12 @@ def _geometry_compatible(
 
         seg_lo, seg_hi = _extent(seg_img)
         ct_lo, ct_hi = _extent(ct_img)
+        extent_tolerance = tol_mm + 0.5 * max(
+            float(seg_spacing.max()), float(ct_spacing.max())
+        )
         return bool(
-            np.allclose(seg_lo, ct_lo, atol=tol_mm, rtol=0)
-            and np.allclose(seg_hi, ct_hi, atol=tol_mm, rtol=0)
+            np.allclose(seg_lo, ct_lo, atol=extent_tolerance, rtol=0)
+            and np.allclose(seg_hi, ct_hi, atol=extent_tolerance, rtol=0)
         )
     except Exception as e:
         logger.debug("Geometry compatibility check failed: %s", e)
@@ -790,7 +783,13 @@ def build_auto_rtstruct(course_dir: Path) -> Optional[Path]:
                 seg_img, label_map = _load_seg_dicom(dicom_seg_path)
             elif sop == '1.2.840.10008.5.1.4.1.1.481.3':
                 try:
-                    _write_rtstruct_atomic(out_path, lambda tmp: shutil.copy2(str(dicom_seg_path), tmp))
+                    # Copy bytes without preserving the producer timestamp. The new
+                    # publication must be newer than every input dependency or its
+                    # own freshness gate rejects it as stale.
+                    _write_rtstruct_atomic(
+                        out_path,
+                        lambda tmp: shutil.copyfile(str(dicom_seg_path), tmp),
+                    )
                 except Exception as e:
                     logger.error('Failed to copy RTSTRUCT to RS_auto: %s', e)
                     return _failed(f"copying the matched RTSTRUCT failed: {e}")

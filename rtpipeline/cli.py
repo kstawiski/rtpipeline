@@ -609,6 +609,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Skip radiomics for ROIs exceeding this voxel count (default: 15,000,000)",
     )
     p.add_argument(
+        "--radiomics-max-resampled-bbox-voxels",
+        type=int,
+        default=None,
+        help=(
+            "Do not start radiomics when the estimated padded resampled ROI crop "
+            "exceeds this voxel count (default: 15,000,000)"
+        ),
+    )
+    p.add_argument(
         "--radiomics-min-voxels",
         type=int,
         default=None,
@@ -1072,6 +1081,9 @@ def _radiomics_robustness_course(argv: list[str]) -> int:
         radiomics_params_file_mr=params_path_mr,
         radiomics_skip_rois=skip_rois,
         radiomics_max_voxels=_coerce_int(radiomics_cfg.get("max_voxels")),
+        radiomics_max_resampled_bbox_voxels=_coerce_int(
+            radiomics_cfg.get("max_resampled_bbox_voxels")
+        ),
         radiomics_min_voxels=_coerce_int(radiomics_cfg.get("min_voxels")),
         radiomics_analysis_contract={},
         radiomics_env_probe_timeout=env_probe_timeout,
@@ -1321,6 +1333,9 @@ def main(argv: list[str] | None = None) -> int:
         radiomics_params_file_mr=Path(args.radiomics_params_mr).resolve() if args.radiomics_params_mr else None,
         radiomics_skip_rois=skip_rois,
         radiomics_max_voxels=args.radiomics_max_voxels,
+        radiomics_max_resampled_bbox_voxels=(
+            args.radiomics_max_resampled_bbox_voxels
+        ),
         radiomics_min_voxels=args.radiomics_min_voxels,
         radiomics_env_probe_timeout=args.radiomics_env_probe_timeout,
         custom_structures_config=None,  # Will be set below

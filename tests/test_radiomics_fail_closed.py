@@ -742,6 +742,63 @@ def test_unreadable_expected_course_workbook_blocks_and_invalidates_aggregate(
     assert not aggregate.exists()
 
 
+def test_failed_course_preserves_prior_valid_provenanced_aggregate(
+    tmp_path, monkeypatch
+):
+    course_root = tmp_path / "P1" / "C1"
+    course_root.mkdir(parents=True)
+    course = SimpleNamespace(
+        patient_id="P1",
+        course_key="C1",
+        dirs=SimpleNamespace(root=course_root),
+    )
+    config = _config(tmp_path)
+    aggregate = config.output_root / "Data" / "radiomics_all.xlsx"
+    _write_test_ct_publication(
+        aggregate,
+        [
+            {
+                "segmentation_source": "Manual",
+                "roi_original_name": "PTV",
+                "original_firstorder_Mean": 1.0,
+            }
+        ],
+    )
+    from rtpipeline.radiomics_cohort import (
+        attach_radiomics_cohort_provenance,
+        build_radiomics_cohort_provenance,
+    )
+    from rtpipeline.radiomics_ct_contract import write_ct_publication_atomic
+
+    prior = pd.read_parquet(aggregate.with_suffix(".parquet"))
+    provenance = build_radiomics_cohort_provenance(
+        intended_count=1,
+        validated_count=1,
+        extracted_courses=[("P1", "C1")],
+        denominator_source_sha256="a" * 64,
+    )
+    prior = attach_radiomics_cohort_provenance(prior, provenance)
+    write_ct_publication_atomic(prior, aggregate)
+    workbook_bytes = aggregate.read_bytes()
+    parquet_bytes = aggregate.with_suffix(".parquet").read_bytes()
+
+    monkeypatch.setattr(radiomics, "_have_pyradiomics", lambda: True)
+    import rtpipeline.radiomics_parallel as parallel
+
+    monkeypatch.setattr(parallel, "is_parallel_radiomics_enabled", lambda: False)
+    monkeypatch.setattr(
+        radiomics,
+        "run_tasks_with_adaptive_workers",
+        lambda *_a, **_k: [None],
+    )
+
+    with pytest.raises(RuntimeError, match="CT radiomics failed"):
+        radiomics.run_radiomics(config, [course])
+
+    assert aggregate.read_bytes() == workbook_bytes
+    assert aggregate.with_suffix(".parquet").read_bytes() == parquet_bytes
+
+
 def test_cohort_aggregate_carries_course_source_counts(tmp_path, monkeypatch):
     course_root = tmp_path / "P1" / "C1"
     course_root.mkdir(parents=True)

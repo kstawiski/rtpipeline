@@ -403,6 +403,14 @@ else:
 RADIOMICS_MAX_VOXELS = _coerce_int(RADIOMICS_CONFIG.get("max_voxels"), 15_000_000)
 if RADIOMICS_MAX_VOXELS is not None and RADIOMICS_MAX_VOXELS < 1:
     RADIOMICS_MAX_VOXELS = 15_000_000
+RADIOMICS_MAX_RESAMPLED_BBOX_VOXELS = _coerce_int(
+    RADIOMICS_CONFIG.get("max_resampled_bbox_voxels"), 15_000_000
+)
+if (
+    RADIOMICS_MAX_RESAMPLED_BBOX_VOXELS is not None
+    and RADIOMICS_MAX_RESAMPLED_BBOX_VOXELS < 1
+):
+    RADIOMICS_MAX_RESAMPLED_BBOX_VOXELS = 15_000_000
 RADIOMICS_MIN_VOXELS = _coerce_int(RADIOMICS_CONFIG.get("min_voxels"), 120)
 if RADIOMICS_MIN_VOXELS is not None and RADIOMICS_MIN_VOXELS < 1:
     RADIOMICS_MIN_VOXELS = 1
@@ -1196,6 +1204,10 @@ _radiomics_params_lambda = lambda w: (
     (f"--radiomics-params '{RADIOMICS_PARAMS}' " if RADIOMICS_PARAMS else "") +
     (f"--radiomics-params-mr '{RADIOMICS_PARAMS_MR}' " if RADIOMICS_PARAMS_MR else "") +
     (f"--radiomics-max-voxels {RADIOMICS_MAX_VOXELS} " if RADIOMICS_MAX_VOXELS else "") +
+    (
+        f"--radiomics-max-resampled-bbox-voxels {RADIOMICS_MAX_RESAMPLED_BBOX_VOXELS} "
+        if RADIOMICS_MAX_RESAMPLED_BBOX_VOXELS else ""
+    ) +
     (f"--radiomics-min-voxels {RADIOMICS_MIN_VOXELS} " if RADIOMICS_MIN_VOXELS else "") +
     " ".join(f"--radiomics-skip-roi '{roi}'" for roi in RADIOMICS_SKIP_ROIS) + " " +
     (f"--custom-structures '{CUSTOM_STRUCTURES_CONFIG}'" if CUSTOM_STRUCTURES_CONFIG else "")

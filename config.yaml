@@ -65,6 +65,9 @@ radiomics:
     - m1
     - m2
   max_voxels: 1500000000
+  # Hard cap for the dense, padded crop materialized at radiomics resampling spacing.
+  # Exceeding ROIs receive an auditable resource-limit disposition without extraction.
+  max_resampled_bbox_voxels: 15000000
   min_voxels: 64
 
 # Complete shipped standard grid: 3 noise x 3 translation x 3 contour x
