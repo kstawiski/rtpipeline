@@ -1,0 +1,18 @@
+{
+  "provenance": {
+    "cohort": "DFCI",
+    "course": "10022703523/2023-01",
+    "source_artifact": "radiomics_ct.parquet",
+    "captured_read_only_from_host": "s1",
+    "failure_observed": "CT robustness extraction lacks identity columns: mask_identity, roi_original_name, series_uid, stable_roi_identifier"
+  },
+  "main_radiomics_identity": {
+    "patient_id": "10022703523",
+    "course_id": "2023-01",
+    "series_uid": "1.3.12.2.1107.5.1.4.100157.30000023010512525426800000746",
+    "segmentation_source": "Manual",
+    "mask_identity": "1.2.246.352.71.4.454944983115.1337690.20230124152102",
+    "roi_original_name": "Bladder",
+    "stable_roi_identifier": "rtstruct_roi_number:13"
+  }
+}
