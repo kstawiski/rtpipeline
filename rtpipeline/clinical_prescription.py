@@ -29,10 +29,12 @@ scalar.
 
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 import hashlib
+import json
 import math
 from pathlib import Path
 import re
@@ -44,6 +46,53 @@ CLINICAL_EVIDENCE_SCHEMA = "rtpipeline-clinical-prescription-evidence-v1"
 CLINICAL_PARSER_VERSION = "kopernik-opis-leczenia-v1"
 CLINICAL_SOURCE_FORMAT = "kopernik-rt-treatments-xlsx-v1"
 CLINICAL_RESOLVED_SCOPE = "COURSE_TOTAL_CLINICAL_RECORD"
+CLINICAL_EVIDENCE_REGENERATION_SCHEMA = (
+    "rtpipeline-clinical-prescription-evidence-regeneration-v1"
+)
+
+
+def clinical_evidence_payload(evidence: Mapping[str, Any]) -> dict[str, Any]:
+    """Return bounded evidence content without a recursively nested receipt."""
+
+    payload = copy.deepcopy(dict(evidence))
+    payload.pop("regeneration_provenance", None)
+    return payload
+
+
+def clinical_evidence_content_sha256(evidence: Mapping[str, Any]) -> str:
+    """Hash the bounded clinical-evidence payload in canonical JSON form."""
+
+    encoded = json.dumps(
+        clinical_evidence_payload(evidence),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def record_clinical_evidence_regeneration(
+    evidence: dict[str, Any],
+    previous_evidence: object,
+) -> dict[str, Any]:
+    """Link regenerated evidence to the exact prior clinical-evidence payload."""
+
+    if not isinstance(previous_evidence, Mapping):
+        return evidence
+    previous_payload = clinical_evidence_payload(previous_evidence)
+    regenerated = dict(evidence)
+    regenerated["regeneration_provenance"] = {
+        "schema": CLINICAL_EVIDENCE_REGENERATION_SCHEMA,
+        "authority": "organize",
+        "reason": "organize_resume_republication",
+        "previous_evidence_payload_sha256": clinical_evidence_content_sha256(
+            previous_payload
+        ),
+        "previous_evidence_payload": previous_payload,
+        "current_source": dict(evidence.get("source") or {}),
+        "current_dicom_snapshot": dict(evidence.get("dicom") or {}),
+    }
+    return regenerated
 
 _REQUIRED_COLUMNS = (
     "ID",

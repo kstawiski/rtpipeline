@@ -36,8 +36,10 @@ from .plan_profiles import (
     plan_profile_name,
 )
 from .clinical_prescription import (
+    CLINICAL_EVIDENCE_REGENERATION_SCHEMA,
     CLINICAL_EVIDENCE_SCHEMA,
     CLINICAL_RESOLVED_SCOPE,
+    clinical_evidence_content_sha256,
     confirm_two_phase_fractionation,
     parse_kopernik_treatment_description,
 )
@@ -790,11 +792,97 @@ def _validate_clinical_prescription_evidence(
     dicom = evidence.get("dicom")
     if not isinstance(dicom, dict):
         raise CourseContractError("clinical prescription DICOM snapshot must be an object")
-    if not _same_dose(
-        dicom.get("resolved_prescribed_dose_total_gy"),
-        dicom_resolved_total_gy,
+    dicom_delivery_status = str(dicom.get("delivery_status") or "")
+    if dicom_delivery_status not in {
+        "fully_delivered",
+        "partially_delivered",
+        "delivered_but_records_absent",
+        "delivery_unresolved",
+        "no_records_at_all",
+    }:
+        raise CourseContractError(
+            "clinical prescription DICOM snapshot delivery status is invalid"
+        )
+    dicom_delivered_dose_gy = _optional_nonnegative_number(
+        dicom.get("delivered_dose_gy"),
+        "clinical_prescription_evidence.dicom.delivered_dose_gy",
+    )
+    if dicom_delivery_status in {"fully_delivered", "partially_delivered"}:
+        if dicom_delivered_dose_gy is None:
+            raise CourseContractError(
+                "clinical prescription DICOM snapshot delivery dose is missing"
+            )
+    elif dicom_delivered_dose_gy is not None:
+        raise CourseContractError(
+            "clinical prescription DICOM snapshot delivery dose contradicts its status"
+        )
+    dicom_delivery_method = dicom.get("delivery_method")
+    if dicom_delivery_method is not None and not isinstance(
+        dicom_delivery_method, str
     ):
-        raise CourseContractError("clinical prescription evidence DICOM total is stale")
+        raise CourseContractError(
+            "clinical prescription DICOM snapshot delivery method is invalid"
+        )
+    regeneration = evidence.get("regeneration_provenance")
+    if regeneration is not None:
+        if not isinstance(regeneration, dict):
+            raise CourseContractError(
+                "clinical prescription regeneration provenance must be an object"
+            )
+        if regeneration.get("schema") != CLINICAL_EVIDENCE_REGENERATION_SCHEMA:
+            raise CourseContractError(
+                "clinical prescription regeneration provenance schema is unsupported"
+            )
+        if regeneration.get("authority") != "organize" or regeneration.get(
+            "reason"
+        ) != "organize_resume_republication":
+            raise CourseContractError(
+                "clinical prescription regeneration provenance authority is invalid"
+            )
+        previous_sha256 = regeneration.get("previous_evidence_payload_sha256")
+        if not isinstance(previous_sha256, str) or re.fullmatch(
+            r"[0-9a-f]{64}", previous_sha256
+        ) is None:
+            raise CourseContractError(
+                "clinical prescription regeneration provenance hash is invalid"
+            )
+        for key in (
+            "previous_evidence_payload",
+            "current_source",
+            "current_dicom_snapshot",
+        ):
+            if not isinstance(regeneration.get(key), dict):
+                raise CourseContractError(
+                    f"clinical prescription regeneration provenance {key} must be an object"
+                )
+        previous_payload = regeneration["previous_evidence_payload"]
+        if "regeneration_provenance" in previous_payload:
+            raise CourseContractError(
+                "clinical prescription prior evidence payload is recursively nested"
+            )
+        if previous_payload.get("schema") != CLINICAL_EVIDENCE_SCHEMA:
+            raise CourseContractError(
+                "clinical prescription prior evidence payload schema is unsupported"
+            )
+        if clinical_evidence_content_sha256(previous_payload) != previous_sha256:
+            raise CourseContractError(
+                "clinical prescription regeneration provenance hash is stale"
+            )
+        if regeneration["current_source"] != source:
+            raise CourseContractError(
+                "clinical prescription regeneration provenance source is stale"
+            )
+        if regeneration["current_dicom_snapshot"] != dicom:
+            raise CourseContractError(
+                "clinical prescription regeneration provenance DICOM snapshot is stale"
+            )
+    evidence_dicom_total_gy = dicom.get("resolved_prescribed_dose_total_gy")
+    if not _same_dose(evidence_dicom_total_gy, dicom_resolved_total_gy):
+        raise CourseContractError(
+            "clinical prescription evidence DICOM total is stale: "
+            f"snapshot={evidence_dicom_total_gy!r}, "
+            f"recomputed={dicom_resolved_total_gy!r}"
+        )
     if str(dicom.get("prescribed_dose_scope") or "") != dicom_prescribed_scope:
         raise CourseContractError("clinical prescription evidence DICOM scope is stale")
 
