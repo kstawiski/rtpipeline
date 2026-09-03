@@ -182,6 +182,64 @@ def _publish_radiomics_completion(
     }
 
 
+def _publish_stage_completion(
+    course_dir: Path,
+    sentinel_path: Path,
+    *,
+    stage: str,
+    status: str,
+    configuration_dependency: Path,
+) -> dict[str, Any]:
+    from .stage_completion import write_stage_completion_sentinel
+
+    course_dir = Path(course_dir)
+    sentinel = write_stage_completion_sentinel(
+        course_dir,
+        Path(sentinel_path),
+        stage=stage,
+        status=status,
+        configuration_dependency=Path(configuration_dependency),
+    )
+    return {
+        "course_dir": str(course_dir.resolve(strict=False)),
+        "sentinel_path": str(Path(sentinel_path).resolve(strict=False)),
+        "stage": sentinel["stage_name"],
+        "status": sentinel["status"],
+        "output_count": sentinel["output_count"],
+        "output_set_sha256": sentinel["output_set_sha256"],
+    }
+
+
+def _publish_organize_completions(
+    output_dir: Path, *, configuration_dependency: Path
+) -> dict[str, Any]:
+    validation = _validate_organize(Path(output_dir), quarantine_invalid=False)
+    if validation["invalid_courses"]:
+        raise RuntimeError(
+            "cannot publish organize completions for invalid course contracts"
+        )
+    published: list[str] = []
+    output_sets: list[str] = []
+    for entry in validation["validated_courses"]:
+        course_dir = Path(entry["path"])
+        result = _publish_stage_completion(
+            course_dir,
+            course_dir / ".organized",
+            stage="organize",
+            status="ok",
+            configuration_dependency=Path(configuration_dependency),
+        )
+        published.append(f"{entry['patient']}/{entry['course']}")
+        output_sets.append(result["output_set_sha256"])
+    return {
+        "published_count": len(published),
+        "courses": published,
+        "output_set_sha256": __import__("hashlib").sha256(
+            "\n".join(output_sets).encode("utf-8")
+        ).hexdigest(),
+    }
+
+
 def _to_namespace(value: object) -> object:
     if isinstance(value, dict):
         return SimpleNamespace(
@@ -225,6 +283,17 @@ def _parser() -> argparse.ArgumentParser:
     radiomics.add_argument("--course-dir", required=True)
     radiomics.add_argument("--sentinel-path", required=True)
 
+    stage = subparsers.add_parser("publish-stage-completion")
+    stage.add_argument("--course-dir", required=True)
+    stage.add_argument("--sentinel-path", required=True)
+    stage.add_argument("--stage", required=True)
+    stage.add_argument("--status", choices=("ok", "disabled"), required=True)
+    stage.add_argument("--configuration-dependency", required=True)
+
+    organize_completion = subparsers.add_parser("publish-organize-completions")
+    organize_completion.add_argument("--output-dir", required=True)
+    organize_completion.add_argument("--configuration-dependency", required=True)
+
     aggregate = subparsers.add_parser("aggregate")
     aggregate.add_argument("--context-path", required=True)
     return parser
@@ -244,6 +313,19 @@ def main(argv: list[str] | None = None) -> int:
         elif operation == "publish-radiomics-completion":
             payload = _publish_radiomics_completion(
                 Path(args.course_dir), Path(args.sentinel_path)
+            )
+        elif operation == "publish-stage-completion":
+            payload = _publish_stage_completion(
+                Path(args.course_dir),
+                Path(args.sentinel_path),
+                stage=args.stage,
+                status=args.status,
+                configuration_dependency=Path(args.configuration_dependency),
+            )
+        elif operation == "publish-organize-completions":
+            payload = _publish_organize_completions(
+                Path(args.output_dir),
+                configuration_dependency=Path(args.configuration_dependency),
             )
         elif operation == "aggregate":
             payload = _aggregate(Path(args.context_path))

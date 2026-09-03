@@ -846,6 +846,38 @@ def _hydrate_existing_course(
     )
 
 
+def _previous_clinical_prescription_evidence(
+    *,
+    patient_id: str,
+    course_id: str,
+    course_dir: Path,
+    current_contract: object,
+) -> dict[str, object] | None:
+    """Load prior same-course evidence before a full organize replacement."""
+
+    candidates: list[object] = [current_contract]
+    metadata_path = Path(course_dir) / "metadata" / "case_metadata.json"
+    if metadata_path.is_file():
+        try:
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            metadata = None
+        if isinstance(metadata, dict):
+            candidates.append(metadata.get("course_contract"))
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        if (
+            str(candidate.get("patient_id") or "") != str(patient_id)
+            or str(candidate.get("course_id") or "") != str(course_id)
+        ):
+            continue
+        evidence = candidate.get("clinical_prescription_evidence")
+        if isinstance(evidence, dict):
+            return copy.deepcopy(evidence)
+    return None
+
+
 def _sanitize_name(text: str, fallback: str = "item") -> str:
     cleaned = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in text.strip())
     cleaned = cleaned.strip("_")
@@ -5787,13 +5819,14 @@ def organize_and_merge(
             )
             dose_classification_contract = dict(co.dose_classification)
             clinical_prescription_evidence = None
-            previous_clinical_prescription_evidence = None
-            if isinstance(co.course_contract, dict):
-                previous_candidate = co.course_contract.get(
-                    "clinical_prescription_evidence"
+            previous_clinical_prescription_evidence = (
+                _previous_clinical_prescription_evidence(
+                    patient_id=co.patient_id,
+                    course_id=co.course_id,
+                    course_dir=co.dirs.root,
+                    current_contract=co.course_contract,
                 )
-                if isinstance(previous_candidate, dict):
-                    previous_clinical_prescription_evidence = previous_candidate
+            )
             if clinical_record_index is not None:
                 plan_dates: set[str] = set()
                 treatment_dates: set[str] = set()

@@ -33,6 +33,7 @@ from rtpipeline.organize_ledger import (
     read_organize_ledger,
     write_organize_ledger,
 )
+from rtpipeline.config_dependencies import materialize_stage_dependency
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -54,7 +55,11 @@ def _ledger_entry(course: Path, status: str = STATUS_VALIDATED, reason=None) -> 
 
 
 def _organize_workflow(tmp_path: Path, output_dir: Path) -> SimpleNamespace:
+    configuration = materialize_stage_dependency(
+        tmp_path / "dependencies", "organize", {"test": True}
+    )
     return SimpleNamespace(
+        input=SimpleNamespace(configuration=str(configuration)),
         output=SimpleNamespace(
             manifest=str(output_dir / "_COURSES" / "manifest.json")
         ),
@@ -73,6 +78,12 @@ def _organize_workflow(tmp_path: Path, output_dir: Path) -> SimpleNamespace:
         ),
         threads=2,
     )
+
+
+def _add_organized_inventory(course: Path) -> None:
+    path = course / "DICOM" / "CT" / "fixture.dcm"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"organized fixture")
 
 
 def test_atomic_generated_plan_write_breaks_existing_hardlink(tmp_path: Path):
@@ -344,6 +355,8 @@ def test_manifest_writer_quarantines_one_stale_course_and_keeps_later_valid_cour
     valid = output_dir / "P2" / "C2"
     stale_metadata = write_minimal_course_contract(stale)
     write_minimal_course_contract(valid)
+    _add_organized_inventory(stale)
+    _add_organized_inventory(valid)
     stale_payload = json.loads(stale_metadata.read_text(encoding="utf-8"))
     stale_payload["course_contract"]["version"] = 0
     stale_metadata.write_text(json.dumps(stale_payload), encoding="utf-8")
@@ -373,7 +386,9 @@ def test_manifest_writer_quarantines_one_stale_course_and_keeps_later_valid_cour
     assert [(item["patient"], item["course"]) for item in manifest["courses"]] == [
         ("P2", "C2")
     ]
-    assert (valid / ".organized").read_text(encoding="utf-8").strip() == "ok"
+    assert json.loads((valid / ".organized").read_text(encoding="utf-8"))[
+        "status"
+    ] == "ok"
     assert not stale.exists()
     assert not (stale / ".organized").exists()
 
@@ -397,6 +412,7 @@ def test_resume_revalidates_manifest_and_contract_before_skipping(
     output_dir = tmp_path / "output"
     course = output_dir / "P1" / "C1"
     write_minimal_course_contract(course)
+    _add_organized_inventory(course)
     write_organize_ledger(output_dir, [_ledger_entry(course)])
     workflow = _organize_workflow(tmp_path, output_dir)
 
@@ -421,6 +437,7 @@ def test_resume_success_flag_cannot_hide_a_stale_contract(
     output_dir = tmp_path / "output"
     course = output_dir / "P1" / "C1"
     metadata_path = write_minimal_course_contract(course)
+    _add_organized_inventory(course)
     write_organize_ledger(output_dir, [_ledger_entry(course)])
     workflow = _organize_workflow(tmp_path, output_dir)
     monkeypatch.setattr(

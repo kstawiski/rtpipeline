@@ -292,18 +292,22 @@ def test_snakefile_exposes_stage_configuration_dependencies():
     snakefile = (PACKAGE_DIR.parent / "Snakefile").read_text(encoding="utf-8")
 
     for name in (
+        "ORGANIZE_CONFIG_DEPENDENCY",
         "SEGMENTATION_CONFIG_DEPENDENCY",
         "CUSTOM_MODELS_CONFIG_DEPENDENCY",
         "CROP_CT_CONFIG_DEPENDENCY",
         "DVH_CONFIG_DEPENDENCY",
         "RADIOMICS_CONFIG_DEPENDENCY",
         "ROBUSTNESS_CONFIG_DEPENDENCY",
+        "QC_CONFIG_DEPENDENCY",
     ):
         assert f"{name} = _dependency_path(" in snakefile
-    assert snakefile.count("configuration=SEGMENTATION_CONFIG_DEPENDENCY") == 2
+    assert snakefile.count("configuration=SEGMENTATION_CONFIG_DEPENDENCY") == 1
+    assert snakefile.count("configuration=ORGANIZE_CONFIG_DEPENDENCY") == 1
     assert snakefile.count("configuration=CUSTOM_MODELS_CONFIG_DEPENDENCY") == 2
     assert snakefile.count("configuration=CROP_CT_CONFIG_DEPENDENCY") == 1
     assert snakefile.count("configuration=DVH_CONFIG_DEPENDENCY") == 1
+    assert snakefile.count("configuration=QC_CONFIG_DEPENDENCY") == 1
     assert '"configuration": RADIOMICS_CONFIG_DEPENDENCY' in snakefile
     assert '"configuration": ROBUSTNESS_CONFIG_DEPENDENCY' in snakefile
     assert "configuration=ROBUSTNESS_CONFIG_DEPENDENCY" in snakefile

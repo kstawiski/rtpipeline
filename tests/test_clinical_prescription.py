@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import date
+import json
 from pathlib import Path
 
 import pandas as pd
@@ -356,6 +357,70 @@ def test_task27_clinical_resume_restores_real_course_dicom_snapshot(
     )
     assert provenance["previous_evidence_payload"] == previous_evidence
     assert provenance["current_dicom_snapshot"] == regenerated["dicom"]
+
+
+def test_full_reorganize_loads_prior_same_course_clinical_evidence(tmp_path: Path) -> None:
+    course_dir = tmp_path / "Output" / "123" / "2026-01"
+    metadata_dir = course_dir / "metadata"
+    metadata_dir.mkdir(parents=True)
+    prior = {
+        "schema": "rtpipeline-clinical-prescription-evidence-v1",
+        "outcome": "RESOLVED_FROM_CLINICAL_RECORD",
+        "effective_prescription_source": "CLINICAL_RECORD",
+        "effective_resolved_total_gy": 40.0,
+    }
+    (metadata_dir / "case_metadata.json").write_text(
+        json.dumps(
+            {
+                "course_contract": {
+                    "patient_id": "123",
+                    "course_id": "2026-01",
+                    "clinical_prescription_evidence": prior,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    observed = organize._previous_clinical_prescription_evidence(
+        patient_id="123",
+        course_id="2026-01",
+        course_dir=course_dir,
+        current_contract={},
+    )
+
+    assert observed == prior
+    assert observed is not prior
+
+
+def test_full_reorganize_rejects_prior_clinical_evidence_for_wrong_identity(
+    tmp_path: Path,
+) -> None:
+    course_dir = tmp_path / "Output" / "123" / "2026-01"
+    metadata_dir = course_dir / "metadata"
+    metadata_dir.mkdir(parents=True)
+    (metadata_dir / "case_metadata.json").write_text(
+        json.dumps(
+            {
+                "course_contract": {
+                    "patient_id": "other",
+                    "course_id": "2026-01",
+                    "clinical_prescription_evidence": {"outcome": "UNRESOLVED"},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert (
+        organize._previous_clinical_prescription_evidence(
+            patient_id="123",
+            course_id="2026-01",
+            course_dir=course_dir,
+            current_contract={},
+        )
+        is None
+    )
 
 
 def test_task27_stale_dicom_guard_still_rejects_the_real_432976_mismatch() -> None:

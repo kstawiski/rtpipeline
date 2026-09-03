@@ -8,6 +8,7 @@ import pandas as pd
 import pytest
 
 from course_contract_test_utils import (
+    write_bound_aggregation_sentinels,
     write_minimal_course_contract,
     write_synthetic_plan_and_dose,
 )
@@ -43,11 +44,10 @@ def _course(tmp_path: Path) -> Path:
     write_minimal_course_contract(
         course, selected_plans=[plan], selected_doses=[dose]
     )
-    for name in (".dvh_done", ".qc_done", ".custom_models_done"):
-        (course / name).write_text("ok", encoding="utf-8")
     pd.DataFrame({"ROI_Name": ["PTV"]}).to_excel(
         course / "dvh_metrics.xlsx", index=False
     )
+    write_bound_aggregation_sentinels(course, tmp_path / "dependencies")
     return course
 
 
@@ -128,7 +128,17 @@ def test_aggregation_excludes_stale_contract_identity(tmp_path: Path) -> None:
     assert "authoritative course contract" in errors[0]
 
 
-@pytest.mark.parametrize("sentinel", [".dvh_done", ".qc_done", ".custom_models_done"])
+@pytest.mark.parametrize(
+    "sentinel",
+    [
+        ".organized",
+        ".segmentation_done",
+        ".custom_models_done",
+        ".crop_ct_done",
+        ".dvh_done",
+        ".qc_done",
+    ],
+)
 def test_aggregation_still_requires_stage_sentinels(tmp_path: Path, sentinel: str) -> None:
     namespace = _aggregate_functions()
     course = _course(tmp_path)
@@ -142,6 +152,38 @@ def test_aggregation_still_requires_stage_sentinels(tmp_path: Path, sentinel: st
     assert any(sentinel in error for error in errors)
 
 
+def test_aggregation_rejects_legacy_unbound_stage_sentinel(tmp_path: Path) -> None:
+    namespace = _aggregate_functions()
+    course = _course(tmp_path)
+    (course / ".qc_done").write_text("ok\n", encoding="utf-8")
+
+    _frames, errors, incomplete, _noncomputed = _validate(
+        namespace, [("P1", "C1", course)]
+    )
+
+    assert ("P1", "C1") in incomplete
+    assert isinstance(errors, list)
+    assert any(".qc_done" in error and "unbound or stale" in error for error in errors)
+
+
+def test_aggregation_rejects_stage_output_changed_after_completion(
+    tmp_path: Path,
+) -> None:
+    namespace = _aggregate_functions()
+    course = _course(tmp_path)
+    (course / "qc_reports" / "summary.json").write_text(
+        '{"status":"changed"}\n', encoding="utf-8"
+    )
+
+    _frames, errors, incomplete, _noncomputed = _validate(
+        namespace, [("P1", "C1", course)]
+    )
+
+    assert ("P1", "C1") in incomplete
+    assert isinstance(errors, list)
+    assert any(".qc_done" in error and "unbound or stale" in error for error in errors)
+
+
 def test_aggregation_accepts_plan_only_not_computed_and_records_reason(
     tmp_path: Path,
 ) -> None:
@@ -151,8 +193,7 @@ def test_aggregation_accepts_plan_only_not_computed_and_records_reason(
     dose.unlink()
     write_minimal_course_contract(course, selected_plans=[plan], selected_doses=[])
     assert dvh_for_course(course) is None
-    for name in (".dvh_done", ".qc_done", ".custom_models_done"):
-        (course / name).write_text("ok", encoding="utf-8")
+    write_bound_aggregation_sentinels(course, tmp_path / "dependencies")
 
     frames, errors, incomplete, noncomputed = _validate(
         namespace, [("P1", "C1", course)]
