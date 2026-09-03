@@ -11,6 +11,7 @@ from typing import Dict, Iterable, Optional, Tuple
 import pydicom
 import SimpleITK as sitk
 import numpy as np
+from pydicom.dataset import Dataset
 
 logger = logging.getLogger(__name__)
 
@@ -248,6 +249,84 @@ def _resample_to_reference(seg_img: sitk.Image, ref_img: sitk.Image) -> sitk.Ima
         return seg_img
     res = sitk.Resample(seg_img, ref_img, sitk.Transform(), sitk.sitkNearestNeighbor, 0, seg_img.GetPixelID())
     return res
+
+
+def _image_array_for_rtstruct(
+    image: sitk.Image, series_data: Iterable[Dataset]
+) -> np.ndarray:
+    """Sample an image on the exact, potentially non-uniform DICOM planes.
+
+    ``rt-utils`` requires ``(columns, rows, slices)`` with one plane per source
+    DICOM object. SimpleITK regularizes mixed slice spacing onto a uniform z
+    grid, so moving axes from that image can produce the wrong slice count.
+    """
+
+    slices = list(series_data)
+    if not slices:
+        raise ValueError("RTSTRUCT source series contains no DICOM slices")
+    sampled: list[np.ndarray] = []
+    expected_shape: tuple[int, int] | None = None
+    identity = sitk.Transform(3, sitk.sitkIdentity)
+
+    for dataset in slices:
+        try:
+            rows = int(dataset.Rows)
+            columns = int(dataset.Columns)
+            spacing = [float(value) for value in dataset.PixelSpacing]
+            orientation = np.asarray(
+                [float(value) for value in dataset.ImageOrientationPatient],
+                dtype=float,
+            ).reshape(2, 3)
+            origin = tuple(float(value) for value in dataset.ImagePositionPatient)
+        except Exception as exc:
+            raise ValueError(
+                "RTSTRUCT source slice lacks rows, columns, pixel spacing, "
+                "orientation, or image position"
+            ) from exc
+        shape = (columns, rows)
+        if expected_shape is None:
+            expected_shape = shape
+        elif shape != expected_shape:
+            raise ValueError("RTSTRUCT source series has inconsistent slice dimensions")
+
+        normal = np.cross(orientation[0], orientation[1])
+        norm = float(np.linalg.norm(normal))
+        if not np.isfinite(norm) or norm <= 0:
+            raise ValueError("RTSTRUCT source slice has invalid orientation cosines")
+        normal /= norm
+        direction = np.column_stack((orientation[0], orientation[1], normal))
+
+        reference = sitk.Image(columns, rows, 1, image.GetPixelID())
+        reference.SetOrigin(origin)
+        reference.SetSpacing((spacing[1], spacing[0], 1.0))
+        reference.SetDirection(tuple(float(value) for value in direction.ravel()))
+        plane = sitk.Resample(
+            image,
+            reference,
+            identity,
+            sitk.sitkNearestNeighbor,
+            0,
+            image.GetPixelID(),
+        )
+        # SimpleITK returns (z, rows, columns); rt-utils requires
+        # (columns, rows, slices).
+        sampled.append(sitk.GetArrayFromImage(plane)[0].T)
+
+    return np.stack(sampled, axis=2)
+
+
+def _image_array_for_rtstruct_builder(
+    image: sitk.Image, ct_image: sitk.Image, rtstruct: object
+) -> np.ndarray:
+    """Return an RTUtils mask, using exact DICOM planes when the API exposes them."""
+    series_data = getattr(rtstruct, "series_data", None)
+    if series_data:
+        return _image_array_for_rtstruct(image, series_data)
+
+    # Retain compatibility with lightweight/custom RTUtils builders that do not
+    # expose series_data. These cannot represent an irregular DICOM z grid.
+    image = _resample_to_reference(image, ct_image)
+    return np.moveaxis(sitk.GetArrayFromImage(image), 0, -1)
 
 
 def _read_for_uid(dcm_path: Path) -> str:
@@ -842,10 +921,10 @@ def build_auto_rtstruct(course_dir: Path) -> Optional[Path]:
     added_names: set[str] = set()
 
     if seg_img is not None:
-        # Resample segmentation to CT geometry and add each label present
-        seg_res = _resample_to_reference(seg_img, ct_img)
-        seg_arr = sitk.GetArrayFromImage(seg_res)  # [z,y,x] integer labels
-        seg_arr = np.moveaxis(seg_arr, 0, -1)  # -> [y,x,z] for rt-utils
+        # Sample the segmentation on the exact source planes. A DICOM series may
+        # contain mixed slice spacing even though its NIfTI representation uses
+        # a regularized z grid.
+        seg_arr = _image_array_for_rtstruct_builder(seg_img, ct_img, rtstruct)
         labels = [int(v) for v in np.unique(seg_arr) if int(v) != 0]
         if not labels:
             logger.info("Segmentation contains no labels in %s", course_dir)
@@ -913,11 +992,11 @@ def build_auto_rtstruct(course_dir: Path) -> Optional[Path]:
             binary_masks = []
         for name, mask_img in binary_masks:
             try:
-                resampled = _resample_to_reference(mask_img, ct_img)
-                mask_arr = sitk.GetArrayFromImage(resampled)
-                mask_arr = np.moveaxis(mask_arr, 0, -1)  # -> [y,x,z]
+                mask_arr = (
+                    _image_array_for_rtstruct_builder(mask_img, ct_img, rtstruct) > 0
+                )
             except Exception as e:
-                logger.debug("Failed to resample mask %s: %s", name, e)
+                logger.debug("Failed to sample mask %s on DICOM planes: %s", name, e)
                 continue
 
             mask_bin = mask_arr > 0

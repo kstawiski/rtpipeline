@@ -209,6 +209,72 @@ def test_disabled_custom_segmentation_publishes_disabled_without_launch(tmp_path
     assert Path(workflow.output.sentinel).read_text(encoding="utf-8").strip() == "disabled"
 
 
+def test_disabled_crop_skips_rich_segmentation_validation(tmp_path, monkeypatch):
+    """A disabled crop must not load a newer contract schema before its no-op."""
+
+    workflow = _workflow(tmp_path, campaign_mode=True, python=_MISSING_PYTHON)
+    workflow.params.stage = "crop_ct"
+    workflow.params.enabled = False
+    workflow.output.sentinel = str(
+        tmp_path / "PT001" / "COURSE_A" / ".crop_ct_done"
+    )
+    monkeypatch.setattr(
+        segmentation,
+        "assess_course_segmentation",
+        lambda _course_dir: {
+            "status": "failed",
+            "reasons": ["unsupported course contract version 3; expected 4"],
+        },
+    )
+
+    _run(workflow)
+
+    assert Path(workflow.output.sentinel).read_text(encoding="utf-8").strip() == "disabled"
+    log_path = Path(workflow.log[0])
+    assert not log_path.exists() or log_path.stat().st_size == 0
+
+
+def test_disabled_crop_still_refuses_failed_segmentation_sentinel(tmp_path):
+    """The no-op may skip rich validation but cannot bypass a failed prerequisite."""
+
+    workflow = _workflow(tmp_path, campaign_mode=True, python=_MISSING_PYTHON)
+    workflow.params.stage = "crop_ct"
+    workflow.params.enabled = False
+    workflow.output.sentinel = str(
+        tmp_path / "PT001" / "COURSE_A" / ".crop_ct_done"
+    )
+    Path(workflow.input.segmentation).write_text("failed\n", encoding="utf-8")
+
+    with pytest.raises(SystemExit) as excinfo:
+        _run(workflow)
+
+    assert excinfo.value.code == 0
+    assert Path(workflow.output.sentinel).read_text(encoding="utf-8").strip() == "failed"
+
+
+def test_no_planning_ct_propagates_as_not_applicable(tmp_path, monkeypatch):
+    workflow = _workflow(tmp_path, campaign_mode=True, python=_MISSING_PYTHON)
+    workflow.input.custom = str(
+        tmp_path / "PT001" / "COURSE_A" / ".segmentation_custom_done"
+    )
+    workflow.input.crop = str(tmp_path / "PT001" / "COURSE_A" / ".crop_ct_done")
+    Path(workflow.input.segmentation).write_text("disabled\n", encoding="utf-8")
+    Path(workflow.input.custom).write_text("disabled\n", encoding="utf-8")
+    Path(workflow.input.crop).write_text("disabled\n", encoding="utf-8")
+    monkeypatch.setattr(
+        segmentation,
+        "assess_course_segmentation",
+        lambda _course_dir: {
+            "status": "disabled",
+            "reasons": ["authoritative course contract declares no planning CT"],
+        },
+    )
+
+    _run(workflow)
+
+    assert Path(workflow.output.sentinel).read_text(encoding="utf-8").strip() == "disabled"
+
+
 def test_snakefile_routes_custom_segmentation_through_campaign_wrapper():
     snakefile = (ROOT / "Snakefile").read_text(encoding="utf-8")
     start = snakefile.index("rule segmentation_custom_models:")
@@ -217,6 +283,12 @@ def test_snakefile_routes_custom_segmentation_through_campaign_wrapper():
 
     assert section.count('script:\n            "workflow/scripts/run_course_stage.py"') == 2
     assert section.count("campaign_mode=CAMPAIGN_MODE") == 2
+
+
+def test_segmentation_rules_accept_explicit_no_planning_ct_status():
+    snakefile = (ROOT / "Snakefile").read_text(encoding="utf-8")
+
+    assert snakefile.count('grep -Eqx "(ok|disabled)" {output.sentinel}') == 2
 
 
 def test_a_failed_course_still_closes_its_dependent_stages(tmp_path):
