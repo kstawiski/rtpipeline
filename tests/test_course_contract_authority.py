@@ -6,9 +6,16 @@ from types import SimpleNamespace
 
 import pydicom
 import pytest
-from pydicom.dataset import Dataset
+from pydicom.dataset import Dataset, FileDataset, FileMetaDataset
 from pydicom.sequence import Sequence
-from pydicom.uid import RTDoseStorage, UID
+from pydicom.uid import (
+    ExplicitVRLittleEndian,
+    RTBeamsTreatmentRecordStorage,
+    RTDoseStorage,
+    RTTreatmentSummaryRecordStorage,
+    UID,
+    generate_uid,
+)
 
 from course_contract_test_utils import (
     write_minimal_course_contract,
@@ -19,6 +26,7 @@ from rtpipeline import cli as cli_module
 from rtpipeline.course_contract import (
     CourseContractError,
     build_dvh_decision,
+    classify_course_dose_completeness,
     load_course_contract,
 )
 from rtpipeline.dvh import _resolve_dvh_dose, dvh_for_course
@@ -31,6 +39,103 @@ def _metadata(path: Path) -> dict:
 
 def _save_metadata(path: Path, data: dict) -> None:
     path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
+def _write_treatment_record(
+    path: Path,
+    *,
+    plan_uid: str,
+    treatment_date: str,
+    delivery_type: str = "TREATMENT",
+    current_fraction: int | str | None = None,
+    referenced_fraction: int | str | None = None,
+    nested_fraction: int | str | None = None,
+    summary: bool = False,
+) -> Path:
+    sop_class = (
+        RTTreatmentSummaryRecordStorage
+        if summary
+        else RTBeamsTreatmentRecordStorage
+    )
+    sop_instance_uid = generate_uid()
+    file_meta = FileMetaDataset()
+    file_meta.MediaStorageSOPClassUID = sop_class
+    file_meta.MediaStorageSOPInstanceUID = sop_instance_uid
+    file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
+    dataset = FileDataset(
+        str(path),
+        {},
+        file_meta=file_meta,
+        preamble=b"\0" * 128,
+    )
+    dataset.SOPClassUID = sop_class
+    dataset.SOPInstanceUID = sop_instance_uid
+    dataset.Modality = "RTRECORD"
+    dataset.TreatmentDate = treatment_date
+    reference = Dataset()
+    reference.ReferencedSOPInstanceUID = plan_uid
+    dataset.ReferencedRTPlanSequence = Sequence([reference])
+    if current_fraction is not None:
+        dataset.CurrentFractionNumber = current_fraction
+    if referenced_fraction is not None:
+        dataset.ReferencedFractionNumber = referenced_fraction
+    if not summary:
+        session = Dataset()
+        session.TreatmentDeliveryType = delivery_type
+        session.TreatmentTerminationStatus = "NORMAL"
+        if nested_fraction is not None:
+            session.CurrentFractionNumber = nested_fraction
+        dataset.TreatmentSessionBeamSequence = Sequence([session])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    dataset.save_as(str(path), enforce_file_format=True)
+    return path
+
+
+def _set_contract_delivery_evidence(
+    metadata_path: Path,
+    record_paths: list[Path],
+    *,
+    fraction_count: int,
+    treatment_dates: list[str],
+) -> None:
+    payload = _metadata(metadata_path)
+    contract = payload["course_contract"]
+    course = metadata_path.parent.parent
+    entry = contract["delivery"]["per_plan"][0]
+    entry.update(
+        {
+            "delivered_record_count": len(record_paths),
+            "delivered_fraction_count": fraction_count,
+            "treatment_dates": treatment_dates,
+            "record_paths": [
+                path.relative_to(course).as_posix() for path in record_paths
+            ],
+            "zero_delivery_records": False,
+            "status": "delivery_unresolved",
+        }
+    )
+    contract["selected_plans"][0].update(
+        {
+            "delivered_record_count": len(record_paths),
+            "delivered_fraction_count": fraction_count,
+            "treatment_dates": treatment_dates,
+        }
+    )
+    contract["dose_completeness"] = classify_course_dose_completeness(
+        selected_plans=contract["selected_plans"],
+        selected_doses=contract["selected_doses"],
+        dose_classification=contract["dose_classification"],
+        dose_grid=contract.get("dose_grid"),
+        per_plan_delivery=contract["delivery"]["per_plan"],
+        delivery_status=contract["delivery"]["status"],
+        spatial_mapping_validated=bool(
+            contract["dose_completeness"].get(
+                "spatial_mapping_validated",
+                False,
+            )
+        ),
+    )
+    _save_metadata(metadata_path, payload)
 
 
 def test_contract_rejects_role_swap_with_preserved_sop_uid(tmp_path: Path) -> None:
@@ -130,6 +235,131 @@ def test_contract_requires_auditable_rtrecord_for_nonzero_delivery(tmp_path: Pat
 
     with pytest.raises(CourseContractError, match="delivery.*RTRECORD evidence"):
         load_course_contract(course)
+
+
+def test_contract_delivery_count_matches_validated_session_evidence(
+    tmp_path: Path,
+) -> None:
+    course = tmp_path / "P1" / "C1"
+    plan, _dose = write_synthetic_plan_and_dose(course)
+    metadata_path = write_minimal_course_contract(
+        course,
+        selected_plans=[plan],
+        selected_doses=[],
+        delivery_status="delivery_unresolved",
+    )
+    plan_uid = str(pydicom.dcmread(plan, stop_before_pixels=True).SOPInstanceUID)
+    record_dir = course / "DICOM_related" / "RTRECORD"
+    records = [
+        _write_treatment_record(
+            record_dir / "current.dcm",
+            plan_uid=plan_uid,
+            treatment_date="20240101",
+            current_fraction=1,
+        ),
+        _write_treatment_record(
+            record_dir / "referenced.dcm",
+            plan_uid=plan_uid,
+            treatment_date="20240101",
+            referenced_fraction=2,
+        ),
+        _write_treatment_record(
+            record_dir / "nested_3.dcm",
+            plan_uid=plan_uid,
+            treatment_date="20240101",
+            nested_fraction=3,
+        ),
+        _write_treatment_record(
+            record_dir / "nested_4.dcm",
+            plan_uid=plan_uid,
+            treatment_date="20240101",
+            nested_fraction=4,
+        ),
+        _write_treatment_record(
+            record_dir / "signed_current.dcm",
+            plan_uid=plan_uid,
+            treatment_date="20240101",
+            current_fraction="+5",
+        ),
+        _write_treatment_record(
+            record_dir / "signed_referenced.dcm",
+            plan_uid=plan_uid,
+            treatment_date="20240101",
+            referenced_fraction="+6",
+        ),
+        _write_treatment_record(
+            record_dir / "signed_nested.dcm",
+            plan_uid=plan_uid,
+            treatment_date="20240101",
+            nested_fraction="+7",
+        ),
+        _write_treatment_record(
+            record_dir / "portal_1.dcm",
+            plan_uid=plan_uid,
+            treatment_date="20240102",
+            delivery_type="PORTFILM",
+        ),
+        _write_treatment_record(
+            record_dir / "portal_2.dcm",
+            plan_uid=plan_uid,
+            treatment_date="20240103",
+            delivery_type="PORTFILM",
+        ),
+    ]
+    _set_contract_delivery_evidence(
+        metadata_path,
+        records,
+        fraction_count=7,
+        treatment_dates=["20240101"],
+    )
+
+    assert load_course_contract(course).delivery["per_plan"][0][
+        "delivered_fraction_count"
+    ] == 7
+
+
+@pytest.mark.parametrize(
+    ("fraction_number", "summary_fraction"),
+    [(None, None), (1, None), (1, 1), (1, 99)],
+)
+def test_treatment_summary_never_removes_or_adds_a_fraction_session(
+    tmp_path: Path,
+    fraction_number: int | None,
+    summary_fraction: int | None,
+) -> None:
+    course = tmp_path / "P1" / "C1"
+    plan, _dose = write_synthetic_plan_and_dose(course)
+    metadata_path = write_minimal_course_contract(
+        course,
+        selected_plans=[plan],
+        selected_doses=[],
+        delivery_status="delivery_unresolved",
+    )
+    plan_uid = str(pydicom.dcmread(plan, stop_before_pixels=True).SOPInstanceUID)
+    record_dir = course / "DICOM_related" / "RTRECORD"
+    fraction_record = _write_treatment_record(
+        record_dir / "fraction.dcm",
+        plan_uid=plan_uid,
+        treatment_date="20240101",
+        current_fraction=fraction_number,
+    )
+    summary_record = _write_treatment_record(
+        record_dir / "summary.dcm",
+        plan_uid=plan_uid,
+        treatment_date="20240101",
+        referenced_fraction=summary_fraction,
+        summary=True,
+    )
+    _set_contract_delivery_evidence(
+        metadata_path,
+        [fraction_record, summary_record],
+        fraction_count=1,
+        treatment_dates=["20240101"],
+    )
+
+    assert load_course_contract(course).delivery["per_plan"][0][
+        "delivered_fraction_count"
+    ] == 1
 
 
 def test_derived_artifacts_are_bound_to_selected_membership(tmp_path: Path) -> None:

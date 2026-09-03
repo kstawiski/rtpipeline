@@ -51,6 +51,9 @@ from .course_contract import (
     CourseContract,
     CourseContractError,
     _ct_provenance,
+    _is_treatment_summary_record,
+    _record_delivery_session_evidence,
+    _record_delivery_session_key,
     build_dvh_decision,
     build_treatment_technique_contract,
     classify_course_dose_completeness,
@@ -1335,41 +1338,6 @@ def _record_dose_reference(ds: Dataset) -> tuple[float | None, str | None]:
     return float(sum(float(item["dose_gy"]) for item in components)), "calculated_dose_reference"
 
 
-def _record_delivery_session_evidence(ds: Dataset) -> tuple[bool, int | None, str]:
-    """Require a completed treatment-bearing RTRECORD session."""
-    session_items: list[Dataset] = []
-    for sequence_name in (
-        "TreatmentSessionBeamSequence",
-        "TreatmentSessionIonBeamSequence",
-        "TreatmentSessionApplicationSetupSequence",
-    ):
-        session_items.extend(list(getattr(ds, sequence_name, None) or []))
-    qualifying: list[Dataset] = []
-    for item in session_items:
-        delivery_type = str(
-            getattr(item, "TreatmentDeliveryType", "") or ""
-        ).strip().upper()
-        termination = str(
-            getattr(item, "TreatmentTerminationStatus", "") or ""
-        ).strip().upper()
-        if delivery_type in {"TREATMENT", "CONTINUATION"} and termination == "NORMAL":
-            qualifying.append(item)
-    if not qualifying:
-        return (
-            False,
-            None,
-            "No treatment-bearing session item had NORMAL termination in this RTRECORD.",
-        )
-    fraction_numbers = {
-        int(value)
-        for item in qualifying
-        for value in [getattr(item, "CurrentFractionNumber", None)]
-        if str(value or "").isdigit()
-    }
-    fraction_number = next(iter(fraction_numbers)) if len(fraction_numbers) == 1 else None
-    return True, fraction_number, "A TREATMENT or CONTINUATION session item had NORMAL termination."
-
-
 def _record_delivery_evidence(record_paths: Iterable[Path]) -> Dict[str, dict]:
     """Retain RTRECORD instances and count verified delivered treatment sessions."""
     evidence: Dict[str, dict] = defaultdict(
@@ -1387,28 +1355,15 @@ def _record_delivery_evidence(record_paths: Iterable[Path]) -> Dict[str, dict]:
         session_validated, nested_fraction_number, session_reason = (
             _record_delivery_session_evidence(ds)
         )
-        fraction_number = (
-            getattr(ds, "CurrentFractionNumber", None)
-            or getattr(ds, "ReferencedFractionNumber", None)
-            or nested_fraction_number
+        session_key = _record_delivery_session_key(
+            ds,
+            record_uid,
+            nested_fraction_number=nested_fraction_number,
         )
-        fraction_value = int(fraction_number) if str(fraction_number or "").isdigit() else None
-        if fraction_value is not None:
-            session_key = ("fraction", treatment_date, fraction_value)
-        elif treatment_date:
-            # RT Beams Treatment Record exports may emit one instance per arc or
-            # beam. Records on the same date and plan are one delivered fraction
-            # unless a DICOM fraction number distinguishes them.
-            session_key = ("date", treatment_date)
-        else:
-            session_key = ("record", record_uid)
+        fraction_value = int(session_key[2]) if session_key[0] == "fraction" else None
         components = _record_session_dose_components(ds)
         cumulative_references = _record_cumulative_dose_references(ds)
-        is_summary_record = bool(
-            getattr(ds, "TreatmentSummaryCalculatedDoseReferenceSequence", None)
-            or str(getattr(ds, "SOPClassUID", "") or "")
-            == "1.2.840.10008.5.1.4.1.1.481.7"
-        )
+        is_summary_record = _is_treatment_summary_record(ds)
         dose_gy = float(sum(float(item["dose_gy"]) for item in components)) if components else None
         dose_method = "calculated_dose_reference" if dose_gy is not None else None
         for ref in getattr(ds, "ReferencedRTPlanSequence", []) or []:
