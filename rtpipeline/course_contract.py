@@ -18,13 +18,16 @@ import pydicom
 from pydicom.dataset import Dataset
 
 
-COURSE_CONTRACT_VERSION = 3
-PLAN_LEVEL_DOSE_SUMMATION_TYPES = frozenset({"PLAN", "PLAN_SUM"})
+COURSE_CONTRACT_VERSION = 4
+PLAN_LEVEL_DOSE_SUMMATION_TYPES = frozenset({"PLAN", "PLAN_SUM", "MULTI_PLAN"})
 BEAM_LEVEL_DOSE_SUMMATION_TYPES = frozenset({"BEAM"})
-DOSE_GRID_SEMANTICS = "planned_dose_for_delivered_plan_set"
+DOSE_GRID_SEMANTICS = "planned_rtdose_weighted_by_rtrecord_delivered_fraction_counts"
 UNKNOWN_DELIVERY_DOSE_GRID_SEMANTICS = "planned_dose_for_selected_plan_set_delivery_unknown"
 DOSE_RESPONSE_FIELD = "delivered_dose_gy"
-DOSE_RESPONSE_ELIGIBILITY_BASIS = "delivered_dose_gy_available"
+DOSE_RESPONSE_ELIGIBILITY_BASIS = "verified_complete_course_dose_and_rtrecord_delivery_evidence"
+DOSE_COMPLETENESS_SCHEMA_VERSION = 1
+DOSE_COMPLETENESS_ELIGIBLE_STATUS = "eligible"
+DOSE_COMPLETENESS_NOT_DEFENSIBLE_STATUS = "not_defensible"
 ALL_SERIES_RADIOMICS_TEMP_SCOPE = "all_series_radiomics_temp"
 ALL_SERIES_RADIOMICS_TEMP_AUTHORITY = "all_series_radiomics_materializer"
 MANUAL_RTSTRUCT_SOURCE = "Manual"
@@ -77,10 +80,13 @@ def build_dvh_decision(
     selected_plan_count: int,
     selected_dose_count: int,
     delivery_status: str,
+    *,
+    dose_response_eligible: bool = True,
+    dose_completeness: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Describe whether DVH can compute metrics from the contracted dose sources."""
     if selected_dose_count:
-        return {
+        result = {
             "status": "ready",
             "metrics_status": "computed",
             "reason_code": "authoritative_dose_grid",
@@ -88,7 +94,33 @@ def build_dvh_decision(
             "output": "dvh_metrics.xlsx",
             "delivery_status": delivery_status,
             "reason": "The contract contains an authoritative RTDOSE grid for DVH.",
+            "dose_response_eligible": bool(dose_response_eligible),
         }
+        if not dose_response_eligible:
+            completeness_status = (dose_completeness or {}).get("status")
+            completeness_failed = (
+                completeness_status != DOSE_COMPLETENESS_ELIGIBLE_STATUS
+            )
+            result.update(
+                {
+                    "reason_code": (
+                        "dose_response_course_dose_incomplete"
+                        if completeness_failed
+                        else "dose_response_other_requirements_unresolved"
+                    ),
+                    "reason": (
+                        str(
+                            (dose_completeness or {}).get("reason")
+                            or "The dose grid is retained for QC, but complete course-level dose is not established for dose-response analysis."
+                        )
+                        if completeness_failed
+                        else "A verified complete course-dose grid is available, but another dose-response requirement such as prescription or delivery status is unresolved."
+                    ),
+                    "dose_completeness_status": completeness_status,
+                    "dose_completeness_reason_code": (dose_completeness or {}).get("reason_code"),
+                }
+            )
+        return result
     if selected_plan_count:
         reason_code = "plan_only_no_authoritative_dose_grid"
     else:
@@ -112,6 +144,224 @@ def build_dvh_decision(
             else "Organize selected no plan or RTDOSE sources. DVH emits no dose metrics and records this reason in metadata."
         ),
     }
+
+
+def classify_course_dose_completeness(
+    *,
+    selected_plans: Iterable[dict[str, Any]],
+    selected_doses: Iterable[dict[str, Any]],
+    dose_classification: dict[str, Any],
+    dose_grid: dict[str, Any] | None,
+    per_plan_delivery: Iterable[dict[str, Any]],
+    delivery_status: str,
+    spatial_mapping_validated: bool | None = None,
+) -> dict[str, Any]:
+    """Classify whether one course has defensible complete dose evidence.
+
+    The expected plan set is the organizer's selected, revision-aware course
+    membership. A plan selected by date-only fallback while another distinct
+    plan has treatment records is not accepted. A plan sum is accepted only
+    when each selected plan has a positive, bounded delivered-fraction weight.
+    This function deliberately does not infer anatomical regions from plan
+    isocentres.
+    """
+
+    def uid(item: dict[str, Any], *fields: str) -> str:
+        for field in fields:
+            value = str(item.get(field) or "").strip()
+            if value:
+                return value
+        return ""
+
+    selected = [dict(item) for item in selected_plans]
+    doses = [dict(item) for item in selected_doses]
+    per_plan = [dict(item) for item in per_plan_delivery]
+    selected_uids = {
+        uid(item, "sop_instance_uid", "plan_sop_uid") for item in selected
+    }
+    selected_uids.discard("")
+    delivered_uids = {
+        uid(item, "plan_sop_uid", "sop_instance_uid")
+        for item in per_plan
+        if uid(item, "plan_sop_uid", "sop_instance_uid")
+        and int(item.get("delivered_fraction_count") or 0) > 0
+    }
+    unselected_delivered = sorted(delivered_uids - selected_uids)
+    classification = str(dose_classification.get("classification") or "").strip()
+    source_refs = {
+        str(reference).strip()
+        for item in doses
+        for reference in item.get("referenced_plan_uids") or []
+        if str(reference).strip()
+    }
+    expected = sorted(selected_uids)
+    base = {
+        "schema_version": DOSE_COMPLETENESS_SCHEMA_VERSION,
+        "status": DOSE_COMPLETENESS_NOT_DEFENSIBLE_STATUS,
+        "category": "not_defensible",
+        "reason_code": "",
+        "reason": "",
+        "expected_plan_uids": expected,
+        "delivered_plan_uids": sorted(delivered_uids),
+        "represented_plan_uids": sorted(source_refs),
+        "unselected_delivered_plan_uids": unselected_delivered,
+        "dose_summation_types": sorted(
+            {
+                str(item.get("dose_summation_type") or "").strip().upper()
+                for item in doses
+                if str(item.get("dose_summation_type") or "").strip()
+            }
+        ),
+        "delivered_fraction_weights": {},
+        "spatial_mapping_validated": bool(spatial_mapping_validated),
+    }
+
+    def reject(code: str, reason: str) -> dict[str, Any]:
+        result = dict(base)
+        result.update({"reason_code": code, "reason": reason})
+        return result
+
+    if delivery_status not in {"fully_delivered", "partially_delivered"}:
+        return reject(
+            "delivery_evidence_unresolved",
+            "Dose-response eligibility requires an estimable delivery status backed by RTRECORD evidence.",
+        )
+    if not selected_uids:
+        return reject(
+            "no_selected_course_plan",
+            "No authoritative selected RTPLAN membership is available for course-level dose coverage.",
+        )
+    if unselected_delivered:
+        return reject(
+            "unselected_delivered_plan_requires_reconciliation",
+            "A distinct RTPLAN has delivery records but is omitted from the selected dose membership. "
+            "Only an explicit equivalent-plan revision chain can justify treating that plan as a replacement rather than an additional dose contributor.",
+        )
+    if not doses:
+        return reject(
+            "no_authoritative_dose_grid",
+            "The course has no selected RTDOSE source from which complete ROI dose can be established.",
+        )
+    if source_refs != selected_uids:
+        return reject(
+            "dose_plan_uid_coverage_mismatch",
+            "Selected RTDOSE references do not exactly cover the authoritative selected RTPLAN membership.",
+        )
+
+    dose_types = [
+        str(item.get("dose_summation_type") or "").strip().upper() for item in doses
+    ]
+    plan_by_uid = {
+        uid(item, "sop_instance_uid", "plan_sop_uid"): item for item in selected
+    }
+    weights: dict[str, float] = {}
+    for plan_uid in sorted(selected_uids):
+        item = plan_by_uid.get(plan_uid)
+        if item is None:
+            return reject(
+                "selected_plan_evidence_missing",
+                f"No selected RTPLAN evidence is available for {plan_uid}.",
+            )
+        try:
+            planned = float(item.get("planned_fraction_count") or 0)
+            delivered = float(item.get("delivered_fraction_count") or 0)
+        except (TypeError, ValueError):
+            return reject(
+                "delivered_fraction_weight_unresolved",
+                f"Delivered fraction weight is nonnumeric for selected RTPLAN {plan_uid}.",
+            )
+        weight = delivered / planned if planned > 0 else float("nan")
+        if not math.isfinite(weight) or weight <= 0 or weight > 1:
+            return reject(
+                "delivered_fraction_weight_invalid",
+                f"Delivered fraction weight for selected RTPLAN {plan_uid} is not in (0, 1].",
+            )
+        weights[plan_uid] = weight
+    if len(doses) == 1 and dose_types == ["MULTI_PLAN"]:
+        if spatial_mapping_validated is not True:
+            return reject(
+                "dose_grid_not_validated",
+                "The exact-coverage MULTI_PLAN RTDOSE has not passed physical Gy and patient-coordinate grid validation.",
+            )
+        if any(not math.isclose(weight, 1.0) for weight in weights.values()):
+            return reject(
+                "multi_plan_dose_not_delivered_weighted",
+                "The MULTI_PLAN RTDOSE represents planned dose, but at least one contributing plan was not fully delivered.",
+            )
+        result = dict(base)
+        result.update(
+            {
+                "status": DOSE_COMPLETENESS_ELIGIBLE_STATUS,
+                "category": "multi_plan_rtdose_exact_uid_coverage",
+                "reason_code": "multi_plan_rtdose_exact_uid_coverage",
+                "reason": "One MULTI_PLAN RTDOSE references every selected course RTPLAN SOP Instance UID exactly.",
+            }
+        )
+        return result
+    if not doses or any(dose_type != "PLAN" for dose_type in dose_types):
+        return reject(
+            "unsupported_course_dose_sources",
+            "The selected dose sources are neither one exact MULTI_PLAN RTDOSE nor per-plan PLAN RTDOSE sources.",
+        )
+
+    dose_refs = [
+        {
+            str(reference).strip()
+            for reference in item.get("referenced_plan_uids") or []
+            if str(reference).strip()
+        }
+        for item in doses
+    ]
+    dose_plan_uids = [next(iter(refs)) for refs in dose_refs if len(refs) == 1]
+    if (
+        any(len(refs) != 1 for refs in dose_refs)
+        or len(dose_plan_uids) != len(selected_uids)
+        or len(set(dose_plan_uids)) != len(dose_plan_uids)
+        or set(dose_plan_uids) != selected_uids
+    ):
+        return reject(
+            "per_plan_dose_linkage_unresolved",
+            "Per-plan PLAN RTDOSE sources do not provide one-to-one coverage of the selected plan UIDs.",
+        )
+    requires_accumulation = bool(
+        len(doses) > 1 or any(not math.isclose(weight, 1.0) for weight in weights.values())
+    )
+    if requires_accumulation and spatial_mapping_validated is not True:
+        return reject(
+            "spatial_mapping_not_validated",
+            "Per-plan dose sources and fraction weights are available, but the patient-coordinate spatial mapping has not been validated.",
+        )
+    if not requires_accumulation and spatial_mapping_validated is not True:
+        return reject(
+            "dose_grid_not_validated",
+            "The single PLAN RTDOSE has not passed physical Gy and patient-coordinate grid validation.",
+        )
+    if len(selected_uids) == 1:
+        category = "single_plan_course_dose_delivered_weighted"
+        reason = (
+            "RTRECORD evidence identifies one clinically contributing plan; its linked "
+            "PLAN RTDOSE has a positive bounded delivered-fraction weight."
+        )
+    else:
+        category = "per_plan_dose_accumulation_delivered_weighted"
+        reason = (
+            "Each selected plan has one linked PLAN RTDOSE and a positive bounded "
+            "RTRECORD fraction weight."
+        )
+    result = dict(base)
+    result.update(
+        {
+            "status": DOSE_COMPLETENESS_ELIGIBLE_STATUS,
+            "category": category,
+            "reason_code": category,
+            "reason": reason,
+            "delivered_fraction_weights": weights,
+            "spatial_mapping_validated": bool(
+                spatial_mapping_validated or not requires_accumulation
+            ),
+        }
+    )
+    return result
 
 
 def _nonnegative_int(value: object) -> int:
@@ -1169,16 +1419,10 @@ def validate_course_contract(contract: CourseContract) -> CourseContract:
             raise CourseContractError(
                 "delivery.dose_response_eligible must be boolean when present"
             )
-        legacy_expected_eligibility = not prescribed_scope.startswith(
-            "UNRESOLVED_"
-        )
-        if (
-            dose_response_eligibility_basis is None
-            and dose_response_eligible != legacy_expected_eligibility
-        ):
+        if dose_response_eligibility_basis is None:
             raise CourseContractError(
-                "delivery.dose_response_eligible disagrees with "
-                "delivery.prescribed_dose_scope"
+                "delivery.dose_response_eligible requires "
+                "delivery.dose_response_eligibility_basis"
             )
     if dose_response_eligibility_basis not in {
         None,
@@ -1195,6 +1439,25 @@ def validate_course_contract(contract: CourseContract) -> CourseContract:
         raise CourseContractError(
             "delivery.dose_response_eligibility_basis requires "
             "dose_response_eligible"
+        )
+    ineligibility_reason_code = delivery.get(
+        "dose_response_ineligibility_reason_code"
+    )
+    ineligibility_reason = delivery.get("dose_response_ineligibility_reason")
+    if dose_response_eligible is True and (
+        ineligibility_reason_code is not None or ineligibility_reason is not None
+    ):
+        raise CourseContractError(
+            "dose-response-eligible delivery cannot carry an ineligibility reason"
+        )
+    if dose_response_eligible is False and (
+        not isinstance(ineligibility_reason_code, str)
+        or not ineligibility_reason_code.strip()
+        or not isinstance(ineligibility_reason, str)
+        or not ineligibility_reason.strip()
+    ):
+        raise CourseContractError(
+            "dose-response-ineligible delivery requires a structured reason code and reason"
         )
     prescription_plan_uids = {
         str(uid).strip()
@@ -1339,6 +1602,21 @@ def validate_course_contract(contract: CourseContract) -> CourseContract:
             and delivered is not None
             and status in {"fully_delivered", "partially_delivered"}
         )
+        serialized_completeness = data.get("dose_completeness")
+        if serialized_completeness is not None:
+            if not isinstance(serialized_completeness, dict):
+                raise CourseContractError(
+                    "course contract field dose_completeness must be an object"
+                )
+            if serialized_completeness.get("schema_version") != DOSE_COMPLETENESS_SCHEMA_VERSION:
+                raise CourseContractError(
+                    "unsupported dose_completeness schema version"
+                )
+            expected_eligibility = bool(
+                expected_eligibility
+                and serialized_completeness.get("status")
+                == DOSE_COMPLETENESS_ELIGIBLE_STATUS
+            )
         if dose_response_eligible != expected_eligibility:
             raise CourseContractError(
                 "delivery.dose_response_eligible disagrees with "
@@ -1479,6 +1757,43 @@ def validate_course_contract(contract: CourseContract) -> CourseContract:
             raise CourseContractError(
                 "a plan with zero delivery records is selected for the treatment dose grid: "
                 + ", ".join(zero_record_selected)
+            )
+
+    serialized_completeness = data.get("dose_completeness")
+    if not isinstance(serialized_completeness, dict):
+        raise CourseContractError(
+            "course contract field dose_completeness must be an object"
+        )
+    expected_completeness = classify_course_dose_completeness(
+        selected_plans=selected_plans,
+        selected_doses=selected_doses,
+        dose_classification=data["dose_classification"],
+        dose_grid=data.get("dose_grid")
+        if isinstance(data.get("dose_grid"), dict)
+        else None,
+        per_plan_delivery=per_plan,
+        delivery_status=status,
+        spatial_mapping_validated=bool(
+            serialized_completeness.get("spatial_mapping_validated", False)
+        ),
+    )
+    comparable_fields = (
+        "status",
+        "category",
+        "reason_code",
+        "expected_plan_uids",
+        "delivered_plan_uids",
+        "represented_plan_uids",
+        "unselected_delivered_plan_uids",
+        "dose_summation_types",
+        "delivered_fraction_weights",
+        "spatial_mapping_validated",
+    )
+    for field in comparable_fields:
+        if serialized_completeness.get(field) != expected_completeness.get(field):
+            raise CourseContractError(
+                "stale course contract at dose_completeness: "
+                f"{field} does not match authoritative evidence"
             )
 
     rtstruct = data.get("authoritative_rtstruct")
@@ -1625,17 +1940,13 @@ def validate_course_contract(contract: CourseContract) -> CourseContract:
         ).upper()
         if grid_type not in PLAN_LEVEL_DOSE_SUMMATION_TYPES:
             raise CourseContractError(
-                f"authoritative dose grid must be PLAN or PLAN_SUM, not {grid_type!r}"
+                f"authoritative dose grid must be PLAN, PLAN_SUM, or MULTI_PLAN, not {grid_type!r}"
             )
         expected_semantics = (
-            UNKNOWN_DELIVERY_DOSE_GRID_SEMANTICS
-            if status
-            in {
-                "delivered_but_records_absent",
-                "delivery_unresolved",
-                "no_records_at_all",
-            }
-            else DOSE_GRID_SEMANTICS
+            DOSE_GRID_SEMANTICS
+            if serialized_completeness.get("status")
+            == DOSE_COMPLETENESS_ELIGIBLE_STATUS
+            else UNKNOWN_DELIVERY_DOSE_GRID_SEMANTICS
         )
         if dose_grid.get("semantics") != expected_semantics:
             raise CourseContractError(
@@ -1676,8 +1987,6 @@ def validate_course_contract(contract: CourseContract) -> CourseContract:
                 )
             )
             expected_plan_refs = set(plan_uids)
-            if plan_artifact is not None:
-                expected_plan_refs.add(str(plan_artifact.get("sop_instance_uid") or ""))
             if grid_plan_refs != expected_plan_refs or grid_dose_refs != set(dose_uids):
                 raise CourseContractError(
                     "derived dose_grid references do not match its contracted source membership"
@@ -1688,7 +1997,13 @@ def validate_course_contract(contract: CourseContract) -> CourseContract:
     dvh = data.get("dvh")
     if not isinstance(dvh, dict):
         raise CourseContractError("course contract field dvh must be an object")
-    expected_dvh = build_dvh_decision(len(plan_uids), len(dose_uids), status)
+    expected_dvh = build_dvh_decision(
+        len(plan_uids),
+        len(dose_uids),
+        status,
+        dose_response_eligible=bool(dose_response_eligible),
+        dose_completeness=serialized_completeness,
+    )
     if dvh != expected_dvh:
         raise CourseContractError(
             "course contract field dvh disagrees with selected plan membership, "

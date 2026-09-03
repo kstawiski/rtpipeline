@@ -15,6 +15,7 @@ from rtpipeline.course_contract import (
     CourseContractError,
     build_treatment_technique_contract,
     build_dvh_decision,
+    classify_course_dose_completeness,
     load_course_contract,
 )
 from rtpipeline.prescription import (
@@ -215,6 +216,32 @@ def _write_contract(
     rt_uid = ""
     if rtstruct is not None:
         rt_uid = str(pydicom.dcmread(str(rtstruct), stop_before_pixels=True).SOPInstanceUID)
+    dose_classification_payload = {
+        "classification": dose_classification,
+        "should_sum": False,
+    }
+    dose_grid = (
+        {
+            **dose_entries[0],
+            "semantics": "planned_dose_for_selected_plan_set_delivery_unknown",
+            "source_plan_uids": selected_plan_uids,
+            "source_dose_uids": [item["sop_instance_uid"] for item in dose_entries],
+            "source_dose_summation_types": [
+                item["dose_summation_type"] for item in dose_entries
+            ],
+        }
+        if selected_doses
+        else None
+    )
+    dose_completeness = classify_course_dose_completeness(
+        selected_plans=plan_entries,
+        selected_doses=dose_entries,
+        dose_classification=dose_classification_payload,
+        dose_grid=dose_grid,
+        per_plan_delivery=per_plan,
+        delivery_status="no_records_at_all",
+        spatial_mapping_validated=bool(selected_doses),
+    )
     payload = {
         "patient_id": course.parent.name,
         "course_id": course.name,
@@ -262,29 +289,19 @@ def _write_contract(
                 "selected_plan_uids": selected_plan_uids,
                 "per_plan": per_plan,
             },
-            "dose_classification": {
-                "classification": dose_classification,
-                "should_sum": False,
-            },
+            "dose_classification": dose_classification_payload,
+            "dose_completeness": dose_completeness,
             "dvh": build_dvh_decision(
                 len(plan_entries),
                 len(dose_entries),
                 "no_records_at_all",
+                dose_response_eligible=False,
+                dose_completeness=dose_completeness,
             ),
             "plan_artifact": (
                 plan_entries[0] if selected_plans else None
             ),
-            "dose_grid": (
-                {
-                    **dose_entries[0],
-                    "semantics": "planned_dose_for_selected_plan_set_delivery_unknown",
-                    "source_plan_uids": selected_plan_uids,
-                    "source_dose_uids": [item["sop_instance_uid"] for item in dose_entries],
-                    "source_dose_summation_types": [item["dose_summation_type"] for item in dose_entries],
-                }
-                if selected_doses
-                else None
-            ),
+            "dose_grid": dose_grid,
             "dose_qc": {"status": "pass", "pass": True, "threshold_gy": 100.0, "reasons": []},
         },
     }
