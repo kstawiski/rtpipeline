@@ -535,6 +535,99 @@ def _unique(values: Iterable[str]) -> list[str]:
     return list(dict.fromkeys(value for value in values if value))
 
 
+RT_TREATMENT_SUMMARY_RECORD_SOP_CLASS_UID = "1.2.840.10008.5.1.4.1.1.481.7"
+_DELIVERY_SESSION_SEQUENCE_NAMES = (
+    "TreatmentSessionBeamSequence",
+    "TreatmentSessionIonBeamSequence",
+    "TreatmentSessionApplicationSetupSequence",
+)
+
+
+def _nonnegative_dicom_integer(value: object) -> int | None:
+    text = "" if value is None else str(value).strip()
+    if not text:
+        return None
+    try:
+        parsed = int(text, 10)
+    except ValueError:
+        return None
+    return parsed if parsed >= 0 else None
+
+
+def _record_delivery_session_evidence(
+    dataset: object,
+) -> tuple[bool, int | None, str]:
+    """Return validated treatment-session evidence from an RTRECORD."""
+    qualifying_items: list[object] = []
+    for sequence_name in _DELIVERY_SESSION_SEQUENCE_NAMES:
+        for item in getattr(dataset, sequence_name, None) or []:
+            delivery_type = str(
+                getattr(item, "TreatmentDeliveryType", "") or ""
+            ).strip().upper()
+            termination = str(
+                getattr(item, "TreatmentTerminationStatus", "") or ""
+            ).strip().upper()
+            if delivery_type in {"TREATMENT", "CONTINUATION"} and termination == "NORMAL":
+                qualifying_items.append(item)
+
+    if not qualifying_items:
+        return (
+            False,
+            None,
+            "No treatment-bearing session item had NORMAL termination in this RTRECORD.",
+        )
+
+    nested_fraction_numbers = {
+        parsed
+        for item in qualifying_items
+        for parsed in [
+            _nonnegative_dicom_integer(
+                getattr(item, "CurrentFractionNumber", None)
+            )
+        ]
+        if parsed is not None
+    }
+    nested_fraction_number = (
+        next(iter(nested_fraction_numbers))
+        if len(nested_fraction_numbers) == 1
+        else None
+    )
+    return (
+        True,
+        nested_fraction_number,
+        "A TREATMENT or CONTINUATION session item had NORMAL termination.",
+    )
+
+
+def _record_delivery_session_key(
+    dataset: object,
+    record_uid: str,
+    *,
+    nested_fraction_number: int | None = None,
+) -> tuple[str, str, str]:
+    """Build the canonical delivery-session key used by producer and validator."""
+    treatment_date = str(getattr(dataset, "TreatmentDate", "") or "").strip()
+    fraction_value = getattr(dataset, "CurrentFractionNumber", None)
+    fraction_value = fraction_value or getattr(
+        dataset, "ReferencedFractionNumber", None
+    )
+    fraction_value = fraction_value or nested_fraction_number
+    fraction_number = _nonnegative_dicom_integer(fraction_value)
+    if fraction_number is not None:
+        return "fraction", treatment_date, str(fraction_number)
+    if treatment_date:
+        return "date", treatment_date, ""
+    return "record", record_uid, ""
+
+
+def _is_treatment_summary_record(dataset: object) -> bool:
+    return bool(
+        getattr(dataset, "TreatmentSummaryCalculatedDoseReferenceSequence", None)
+        or str(getattr(dataset, "SOPClassUID", "") or "")
+        == RT_TREATMENT_SUMMARY_RECORD_SOP_CLASS_UID
+    )
+
+
 def _referenced_sop_uids(dataset: object, sequence_name: str) -> list[str]:
     return _unique(
         str(getattr(item, "ReferencedSOPInstanceUID", "") or "").strip()
@@ -1702,25 +1795,21 @@ def validate_course_contract(contract: CourseContract) -> CourseContract:
                 )
             record_uids.add(record_uid)
             treatment_date = str(getattr(record, "TreatmentDate", "") or "").strip()
-            if treatment_date:
-                observed_dates.add(treatment_date)
-            fraction_value = getattr(record, "CurrentFractionNumber", None)
-            fraction_value = fraction_value or getattr(record, "ReferencedFractionNumber", None)
-            if fraction_value not in (None, "") and str(fraction_value).isdigit():
-                fraction_sessions.add(("fraction", treatment_date, str(int(fraction_value))))
-            elif treatment_date:
-                fraction_sessions.add(("date", treatment_date, ""))
-            else:
-                fraction_sessions.add(("record", record_uid, ""))
-            is_summary = bool(
-                getattr(record, "TreatmentSummaryCalculatedDoseReferenceSequence", None)
-                or str(getattr(record, "SOPClassUID", "") or "")
-                == "1.2.840.10008.5.1.4.1.1.481.7"
+            session_validated, nested_fraction_number, _reason = (
+                _record_delivery_session_evidence(record)
             )
-            if is_summary:
-                fraction_sessions.discard(("fraction", treatment_date, str(int(fraction_value)))) if (
-                    fraction_value not in (None, "") and str(fraction_value).isdigit()
-                ) else fraction_sessions.discard(("date", treatment_date, "")) if treatment_date else fraction_sessions.discard(("record", record_uid, ""))
+            if treatment_date and session_validated:
+                observed_dates.add(treatment_date)
+            if _is_treatment_summary_record(record):
+                continue
+            if session_validated:
+                fraction_sessions.add(
+                    _record_delivery_session_key(
+                        record,
+                        record_uid,
+                        nested_fraction_number=nested_fraction_number,
+                    )
+                )
         if len(record_uids) != record_count:
             raise CourseContractError(
                 f"{field}.delivered_record_count does not match the RTRECORD evidence"
