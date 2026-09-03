@@ -203,6 +203,32 @@ def _read_sentinel(
             f"{patient_id}/{course_id}: required sentinel is failed or malformed: "
             f"{path.name} has status {status!r}; expected {allowed}"
         )
+    generic_stages = {
+        ".organized": "organize",
+        ".segmentation_done": "segmentation",
+        ".custom_models_done": "custom_models",
+        ".crop_ct_done": "crop_ct",
+        ".dvh_done": "dvh",
+        ".qc_done": "qc",
+    }
+    stage = generic_stages.get(path.name)
+    if stage is not None:
+        try:
+            from rtpipeline.stage_completion import (
+                validate_stage_completion_sentinel,
+            )
+
+            validate_stage_completion_sentinel(
+                path,
+                expected_stage=stage,
+                expected_patient=patient_id,
+                expected_course=course_id,
+            )
+        except Exception as exc:
+            return (
+                f"{patient_id}/{course_id}: required sentinel is unbound or stale: "
+                f"{path.name}: {exc}"
+            )
     return None
 
 
@@ -267,9 +293,12 @@ def _validate_required_inputs(courses):
     expected_noncomputed: dict[tuple[str, str], str] = {}
     required_frames: dict[tuple[Path, str], pd.DataFrame] = {}
     sentinel_contract = [
+        (".organized", {"ok"}),
+        (".segmentation_done", {"disabled", "ok"}),
+        (".custom_models_done", {"disabled", "ok"}),
+        (".crop_ct_done", {"disabled", "ok"}),
         (".dvh_done", {"ok"}),
         (".qc_done", {"ok"}),
-        (".custom_models_done", {"disabled", "ok"}),
     ]
     if RADIOMICS_ENABLED:
         sentinel_contract.append((".radiomics_done", {"ok"}))

@@ -10,6 +10,7 @@ import pandas as pd
 import pytest
 
 from course_contract_test_utils import (
+    write_bound_aggregation_sentinels,
     write_minimal_course_contract,
     write_synthetic_plan_and_dose,
 )
@@ -75,10 +76,8 @@ def _write_course(output_dir: Path, patient: str, *, radiomics_ok: bool) -> None
     pd.DataFrame([{"ROI_Name": "PTV", "DmeanGy": 42.0}]).to_excel(
         course_dir / "dvh_metrics.xlsx", index=False
     )
-    (course_dir / ".dvh_done").write_text("ok\n", encoding="utf-8")
-    (course_dir / ".qc_done").write_text("ok\n", encoding="utf-8")
-    (course_dir / ".custom_models_done").write_text(
-        "disabled\n", encoding="utf-8"
+    write_bound_aggregation_sentinels(
+        course_dir, output_dir / "_stage-dependencies"
     )
     if radiomics_ok:
         _write_publication(course_dir, patient)

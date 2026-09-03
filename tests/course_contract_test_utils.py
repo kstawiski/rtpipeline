@@ -36,6 +36,53 @@ from rtpipeline.prescription import (
     resolved_plan_total_gy,
     source_plan_prescribed_dose_gy,
 )
+from rtpipeline.config_dependencies import materialize_stage_dependency
+from rtpipeline.stage_completion import (
+    stage_definition,
+    write_stage_completion_sentinel,
+)
+
+
+def write_bound_aggregation_sentinels(
+    course_dir: Path, dependency_root: Path
+) -> None:
+    """Write production-shaped generic completion evidence for aggregation tests."""
+
+    course = Path(course_dir)
+    dicom = course / "DICOM" / "source" / "object.dcm"
+    dicom.parent.mkdir(parents=True, exist_ok=True)
+    if not dicom.exists():
+        dicom.write_bytes(b"test-dicom-object")
+    qc_report = course / "qc_reports" / "summary.json"
+    qc_report.parent.mkdir(parents=True, exist_ok=True)
+    if not qc_report.exists():
+        qc_report.write_text('{"status":"ok"}\n', encoding="utf-8")
+    dvh_qc = course / "metadata" / "dvh_qc.json"
+    if not dvh_qc.exists():
+        dvh_qc.write_text('{"status":"ok"}\n', encoding="utf-8")
+
+    statuses = {
+        "organize": "ok",
+        "segmentation": "disabled",
+        "custom_models": "disabled",
+        "crop_ct": "disabled",
+        "dvh": "ok",
+        "qc": "ok",
+    }
+    for stage, status in statuses.items():
+        definition = stage_definition(stage)
+        dependency = materialize_stage_dependency(
+            Path(dependency_root),
+            definition.configuration_stage,
+            {"fixture": "bound-aggregation-sentinel", "stage": stage},
+        )
+        write_stage_completion_sentinel(
+            course,
+            course / definition.sentinel,
+            stage=stage,
+            status=status,
+            configuration_dependency=dependency,
+        )
 
 
 def _header(path: Path):

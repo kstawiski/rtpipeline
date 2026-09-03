@@ -87,10 +87,6 @@ def _publish_sentinel(path: Path, status: str) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def _publish_success_sentinel(path: Path) -> None:
-    _publish_sentinel(path, "ok")
-
-
 def _publish_radiomics_completion(
     workflow: Any, course_dir: Path, sentinel_path: Path
 ) -> None:
@@ -128,6 +124,75 @@ def _publish_radiomics_completion(
         raise RuntimeError(
             "Radiomics completion sentinel differs from the validated delegated result"
         )
+
+
+def _publish_stage_completion(
+    workflow: Any,
+    course_dir: Path,
+    sentinel_path: Path,
+    *,
+    status: str,
+) -> None:
+    configuration = getattr(workflow.input, "configuration", None)
+    if not configuration:
+        raise RuntimeError(
+            f"Stage {workflow.params.stage} has no configuration dependency"
+        )
+    if status == "disabled":
+        from rtpipeline.stage_completion import write_stage_completion_sentinel
+
+        payload = write_stage_completion_sentinel(
+            course_dir,
+            sentinel_path,
+            stage=str(workflow.params.stage),
+            status=status,
+            configuration_dependency=Path(str(configuration)),
+        )
+        if payload.get("status") != status:
+            raise RuntimeError("Disabled-stage completion validation returned a mismatch")
+        return
+    payload = invoke(
+        python=str(workflow.params.python),
+        operation="publish-stage-completion",
+        arguments=(
+            "--course-dir",
+            str(course_dir),
+            "--sentinel-path",
+            str(sentinel_path),
+            "--stage",
+            str(workflow.params.stage),
+            "--status",
+            status,
+            "--configuration-dependency",
+            str(configuration),
+        ),
+        result_dir=Path(workflow.log[0]).parent,
+        env=runtime_environment(workflow.params),
+    )
+    if (
+        payload.get("course_dir") != str(course_dir.resolve(strict=False))
+        or payload.get("sentinel_path") != str(sentinel_path.resolve(strict=False))
+        or payload.get("status") != status
+        or not isinstance(payload.get("output_count"), int)
+        or not str(payload.get("output_set_sha256") or "")
+    ):
+        raise RuntimeError(
+            "Stage completion validation returned a mismatched structured result"
+        )
+
+
+def _producer_terminal_status(path: Path) -> str:
+    try:
+        text = Path(path).read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        return text.splitlines()[0].strip().lower() if text else ""
+    if isinstance(payload, dict):
+        return str(payload.get("status") or "").strip().lower()
+    return ""
 
 
 def main(workflow: Any) -> None:
@@ -189,6 +254,7 @@ def main(workflow: Any) -> None:
         raise SystemExit(returncode or 1)
 
     for input_name, allowed_statuses in (
+        ("organized", {"ok"}),
         ("segmentation", {"disabled", "ok"}),
         ("custom", {"disabled", "ok"}),
         ("crop", {"disabled", "ok"}),
@@ -200,7 +266,19 @@ def main(workflow: Any) -> None:
             close_course(str(exc), returncode=1, strict_error=exc)
 
     if not bool(getattr(workflow.params, "enabled", True)):
-        _publish_sentinel(sentinel_path, "disabled")
+        try:
+            _publish_stage_completion(
+                workflow,
+                ledger_root / patient_id / course_id,
+                sentinel_path,
+                status="disabled",
+            )
+        except Exception as exc:
+            error = RuntimeError(
+                f"Disabled-stage completion validation failed for "
+                f"{patient_id}/{course_id}: {exc}"
+            )
+            close_course(str(error), returncode=1, strict_error=error)
         record(campaign_ledger.STATUS_OK, returncode=0, detail="stage disabled")
         return
 
@@ -213,7 +291,19 @@ def main(workflow: Any) -> None:
         except RuntimeError as exc:
             close_course(str(exc), returncode=1, strict_error=exc)
         if segmentation_status == "disabled":
-            _publish_sentinel(sentinel_path, "disabled")
+            try:
+                _publish_stage_completion(
+                    workflow,
+                    ledger_root / patient_id / course_id,
+                    sentinel_path,
+                    status="disabled",
+                )
+            except Exception as exc:
+                error = RuntimeError(
+                    f"Not-applicable-stage completion validation failed for "
+                    f"{patient_id}/{course_id}: {exc}"
+                )
+                close_course(str(error), returncode=1, strict_error=error)
             record(
                 campaign_ledger.STATUS_OK,
                 returncode=0,
@@ -306,7 +396,25 @@ def main(workflow: Any) -> None:
             )
             close_course(str(error), returncode=1, strict_error=error)
     else:
-        _publish_success_sentinel(sentinel_path)
+        course_dir = ledger_root / patient_id / course_id
+        completion_status = (
+            "disabled"
+            if stage_name == "segmentation"
+            and _producer_terminal_status(sentinel_path) == "disabled"
+            else "ok"
+        )
+        try:
+            _publish_stage_completion(
+                workflow,
+                course_dir,
+                sentinel_path,
+                status=completion_status,
+            )
+        except Exception as exc:
+            error = RuntimeError(
+                f"Stage completion validation failed for {course_dir}: {exc}"
+            )
+            close_course(str(error), returncode=1, strict_error=error)
     record(campaign_ledger.STATUS_OK, returncode=0)
 
 

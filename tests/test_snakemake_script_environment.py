@@ -7,7 +7,9 @@ import sys
 from pathlib import Path
 
 from course_contract_test_utils import write_minimal_course_contract
+from rtpipeline.config_dependencies import materialize_stage_dependency
 from rtpipeline.organize_ledger import write_organize_ledger
+from rtpipeline.stage_completion import write_stage_completion_sentinel
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -114,6 +116,9 @@ def test_manifest_resume_runs_with_dicom_dependencies_blocked_in_outer_interpret
     output_dir = tmp_path / "output"
     course_dir = output_dir / "P1" / "C1"
     write_minimal_course_contract(course_dir)
+    dicom = course_dir / "DICOM" / "CT" / "image.dcm"
+    dicom.parent.mkdir(parents=True)
+    dicom.write_bytes(b"test DICOM inventory")
     ledger = write_organize_ledger(
         output_dir,
         [
@@ -128,7 +133,16 @@ def test_manifest_resume_runs_with_dicom_dependencies_blocked_in_outer_interpret
             }
         ],
     )
-    (course_dir / ".organized").write_text("ok\n", encoding="utf-8")
+    configuration_path = materialize_stage_dependency(
+        tmp_path / "dependencies", "organize", {"test": True}
+    )
+    write_stage_completion_sentinel(
+        course_dir,
+        course_dir / ".organized",
+        stage="organize",
+        status="ok",
+        configuration_dependency=configuration_path,
+    )
     manifest_path = output_dir / "_COURSES" / "manifest.json"
     manifest_path.write_text(
         json.dumps(
@@ -174,6 +188,7 @@ class BlockPipelineOnly(importlib.abc.MetaPathFinder):
 
 sys.meta_path.insert(0, BlockPipelineOnly())
 workflow = SimpleNamespace(
+    input=SimpleNamespace(configuration={str(configuration_path)!r}),
     output=SimpleNamespace(manifest={str(manifest_path)!r}),
     log=[{str(log_path)!r}],
     params=SimpleNamespace(
@@ -207,7 +222,9 @@ if any(name in sys.modules for name in blocked):
     )
     assert result.returncode == 0, result.stdout
     assert "course-contract validation" in log_path.read_text(encoding="utf-8")
-    assert (course_dir / ".organized").read_text(encoding="utf-8") == "ok\n"
+    organized = json.loads((course_dir / ".organized").read_text(encoding="utf-8"))
+    assert organized["schema"] == "rtpipeline-stage-completion-v1"
+    assert organized["status"] == "ok"
 
 
 def test_script_targets_have_no_future_import() -> None:

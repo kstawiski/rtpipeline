@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from rtpipeline.snakemake_delegate import invoke, runtime_environment
+from rtpipeline.stage_completion import validate_stage_completion_sentinel
 
 
 MANIFEST_SCHEMA = "rtpipeline-organized-course-manifest-v2"
@@ -231,6 +232,14 @@ def _existing_manifest_is_valid(
     ):
         return False
     expected_clinical_hash = _clinical_source_hash(workflow)
+    try:
+        configuration_path = Path(str(workflow.input.configuration))
+        expected_configuration_hash = str(
+            json.loads(configuration_path.read_text(encoding="utf-8")).get("sha256")
+            or ""
+        )
+    except Exception:
+        return False
     for entry in validated:
         course_dir = Path(str(entry["path"]))
         try:
@@ -249,9 +258,16 @@ def _existing_manifest_is_valid(
                 != expected_clinical_hash
             ):
                 return False
-            if (course_dir / ".organized").read_text(
-                encoding="utf-8"
-            ).strip() != "ok":
+            completion = validate_stage_completion_sentinel(
+                course_dir / ".organized",
+                expected_stage="organize",
+                expected_patient=str(entry["patient"]),
+                expected_course=str(entry["course"]),
+            )
+            if (
+                completion.get("configuration_dependency_sha256")
+                != expected_configuration_hash
+            ):
                 return False
         except Exception:
             (course_dir / ".organized").unlink(missing_ok=True)
@@ -292,6 +308,29 @@ def _validated_courses_from_delegate(
     else:
         courses.sort(key=lambda entry: (entry["patient"], entry["course"]))
     return ledger, courses
+
+
+def _publish_organize_completions(
+    workflow: Any, output_dir: Path, result_dir: Path
+) -> dict:
+    configuration = getattr(workflow.input, "configuration", None)
+    if not configuration:
+        raise RuntimeError("Organize stage has no configuration dependency")
+    payload = invoke(
+        python=str(workflow.params.python),
+        operation="publish-organize-completions",
+        arguments=(
+            "--output-dir",
+            str(output_dir),
+            "--configuration-dependency",
+            str(configuration),
+        ),
+        result_dir=result_dir,
+        env=runtime_environment(workflow.params),
+    )
+    if not isinstance(payload.get("published_count"), int):
+        raise RuntimeError("Organize completion publication returned no count")
+    return payload
 
 
 def main(workflow: Any) -> None:
@@ -360,8 +399,14 @@ def main(workflow: Any) -> None:
             log_file.write(f"Manifest contract validation failed: {exc}\n")
         raise
 
-    for course in courses:
-        _write_text_atomic(Path(course["path"]) / ".organized", "ok\n")
+    completion = _publish_organize_completions(
+        workflow, output_dir, manifest_path.parent
+    )
+    if completion["published_count"] != len(courses):
+        _revoke_all_organized_flags(output_dir)
+        raise RuntimeError(
+            "Organize completion count does not match validated manifest courses"
+        )
     payload = _manifest_payload(ledger, courses)
     _write_text_atomic(
         manifest_path, json.dumps(payload, indent=2, sort_keys=True) + "\n"

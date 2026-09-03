@@ -4,15 +4,12 @@ import base64
 import hashlib
 import json
 import os
-import platform
 import socket
-import subprocess
 import tempfile
 import uuid
 import zlib
 from dataclasses import dataclass
 from functools import lru_cache
-from importlib import metadata as importlib_metadata
 from importlib import resources as importlib_resources
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, MutableMapping, Optional, Sequence
@@ -26,6 +23,11 @@ from .radiomics_schema import (
     expected_radiomics_string_columns,
     normalize_radiomics_dataframe,
     normalize_radiomics_result,
+)
+from .stage_completion import (
+    current_code_revision,
+    execution_environment_fingerprint,
+    file_sha256,
 )
 
 
@@ -445,45 +447,6 @@ def rtstruct_roi_identities(path: Path) -> dict[str, tuple[str, str]]:
     if not identities:
         raise ValueError(f"RTSTRUCT contains no stable ROI identities: {path}")
     return identities
-
-
-def file_sha256(path: Path, *, chunk_size: int = 1024 * 1024) -> str:
-    digest = hashlib.sha256()
-    with Path(path).open("rb") as handle:
-        while True:
-            block = handle.read(chunk_size)
-            if not block:
-                break
-            digest.update(block)
-    return digest.hexdigest()
-
-
-def _safe_package_version(distribution_name: str) -> str:
-    try:
-        return importlib_metadata.version(distribution_name)
-    except importlib_metadata.PackageNotFoundError:
-        return "unavailable"
-
-
-def execution_environment_fingerprint() -> str:
-    """Hash the runtime identity that can affect radiomics values."""
-    payload = {
-        "python": platform.python_version(),
-        "implementation": platform.python_implementation(),
-        "system": platform.system(),
-        "release": platform.release(),
-        "machine": platform.machine(),
-        "libc": platform.libc_ver(),
-        "numpy": _safe_package_version("numpy"),
-        "scipy": _safe_package_version("scipy"),
-        "pywavelets": _safe_package_version("PyWavelets"),
-        "simpleitk": _safe_package_version("SimpleITK"),
-        "pyradiomics": _safe_package_version("pyradiomics"),
-        "pyarrow": _safe_package_version("pyarrow"),
-    }
-    return hashlib.sha256(
-        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()
 
 
 def _course_input_path(course_dir: Path, value: Any, field: str) -> Path:
@@ -1095,26 +1058,6 @@ def configured_parameter_hash(
     }
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-
-
-def current_code_revision() -> str:
-    configured = os.environ.get("RTPIPELINE_CODE_REVISION", "").strip()
-    if configured:
-        return configured
-    try:
-        root = Path(__file__).resolve().parents[1]
-        result = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=root,
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        revision = result.stdout.strip()
-        return revision or "unknown"
-    except Exception:
-        return "unknown"
 
 
 def new_run_identifier() -> str:
