@@ -39,6 +39,8 @@ DVH_QC_COLUMNS = (
     "zero_dose_trigger_metric",
     "dose_metric_status",
     "dose_metric_reason",
+    "dose_response_quarantine_status",
+    "dose_response_quarantine_reason",
     "Dose_Plan_Scope_Status",
     "Dose_Plan_Scope_Reason",
     "Course_Treatment_Isocenter_Status",
@@ -48,6 +50,7 @@ DVH_QC_COLUMNS = (
     "Prescribed_Dose_Reason",
     "Delivered_Dose_Status",
     "Delivered_Dose_Reason",
+    "Delivered_Dose_Provenance",
 )
 DVH_NUMERIC_COLUMNS = (
     "ROI_Number",
@@ -95,6 +98,7 @@ DVH_BOOLEAN_COLUMNS = (
     "dose_metric_usable_for_dose_response",
     "dose_response_eligible",
     "Dose_Response_Eligible",
+    "Physical_Delivered_Dose_Grid_Available",
 )
 DVH_STRING_COLUMNS = (
     "patient_id",
