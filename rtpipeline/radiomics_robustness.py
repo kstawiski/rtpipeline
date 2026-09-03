@@ -1282,6 +1282,7 @@ def extract_features_for_masks(
                             "adjudication_status": decision.adjudication_status,
                             "primary_resegment_range_hu": decision.primary_resegment_range_hu,
                             "primary_intensity_texture_disposition": decision.primary_intensity_texture_disposition,
+                            "feature_publication_policy": decision.feature_publication_policy,
                         },
                         "metadata": {
                             **source_identity.as_dict(),

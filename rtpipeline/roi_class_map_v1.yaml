@@ -1,6 +1,6 @@
 # Versioned CT ROI-class governance map. Exact names only.
 schema_version: 1
-map_version: ct-roi-class-map-2026-09-01-v3
+map_version: ct-roi-class-map-2026-09-02-v4
 mapping_status: partial_pending_operator_adjudication
 approval_basis:
   binding_specification_date: '2026-08-30'
@@ -23,6 +23,10 @@ classes:
     primary_intensity_texture_disposition: not_applicable_bone
   positioning_support:
     primary_intensity_texture_disposition: not_primary_analysis_anatomy
+    radiomic_feature_policy: inventory_only_no_features
+  planning_helper:
+    primary_intensity_texture_disposition: not_applicable_planning_helper
+    radiomic_feature_policy: inventory_only_no_features
   vessel:
     primary_intensity_texture_disposition: not_applicable_pending_vessel_adjudication
   unresolved_mixed:
@@ -312,6 +316,90 @@ manual_custom_crosswalk:
   BOWEL:
     roi_class: hollow_pelvic_organ
     adjudication_status: approved_by_binding_spec
+  '2cm od PTV1':
+    roi_class: planning_helper
+    adjudication_status: approved_non_anatomic_planning_helper
+    evidence_basis: exact name denotes a distance margin from a planning target volume
+  Bag_Bowel:
+    roi_class: planning_helper
+    adjudication_status: approved_non_anatomic_planning_helper
+    evidence_basis: exact name denotes a bowel-bag planning construct rather than bowel tissue
+  Bowel_Bag:
+    roi_class: planning_helper
+    adjudication_status: approved_non_anatomic_planning_helper
+    evidence_basis: exact name denotes a bowel-bag planning construct rather than bowel tissue
+  Bowel_Small_PRV5mm:
+    roi_class: planning_helper
+    adjudication_status: approved_non_anatomic_planning_helper
+    evidence_basis: exact name denotes a planning-risk-volume expansion
+  'Dose 500[cGy]':
+    roi_class: planning_helper
+    adjudication_status: approved_non_anatomic_planning_helper
+    evidence_basis: exact name denotes an isodose-derived control region
+  'Dose 1000[cGy]':
+    roi_class: planning_helper
+    adjudication_status: approved_non_anatomic_planning_helper
+    evidence_basis: exact name denotes an isodose-derived control region
+  'Dose 1500[cGy]':
+    roi_class: planning_helper
+    adjudication_status: approved_non_anatomic_planning_helper
+    evidence_basis: exact name denotes an isodose-derived control region
+  'Dose 2000[cGy]':
+    roi_class: planning_helper
+    adjudication_status: approved_non_anatomic_planning_helper
+    evidence_basis: exact name denotes an isodose-derived control region
+  'Dose 2500[cGy]':
+    roi_class: planning_helper
+    adjudication_status: approved_non_anatomic_planning_helper
+    evidence_basis: exact name denotes an isodose-derived control region
+  'Fiz Body':
+    roi_class: planning_helper
+    adjudication_status: approved_non_anatomic_planning_helper
+    evidence_basis: exact name denotes a physical-body planning control contour
+  'Jelita - PTV':
+    roi_class: planning_helper
+    adjudication_status: approved_non_anatomic_planning_helper
+    evidence_basis: exact name denotes a Boolean bowel-minus-target planning construct
+  m3:
+    roi_class: planning_helper
+    adjudication_status: approved_non_anatomic_planning_helper
+    evidence_basis: cohort inventory adjudication identifies this exact name as a Varian planning control region
+  m4:
+    roi_class: planning_helper
+    adjudication_status: approved_non_anatomic_planning_helper
+    evidence_basis: cohort inventory adjudication identifies this exact name as a Varian planning control region
+  m5:
+    roi_class: planning_helper
+    adjudication_status: approved_non_anatomic_planning_helper
+    evidence_basis: cohort inventory adjudication identifies this exact name as a Varian planning control region
+  m7:
+    roi_class: planning_helper
+    adjudication_status: approved_non_anatomic_planning_helper
+    evidence_basis: cohort inventory adjudication identifies this exact name as a Varian planning control region
+  m8:
+    roi_class: planning_helper
+    adjudication_status: approved_non_anatomic_planning_helper
+    evidence_basis: cohort inventory adjudication identifies this exact name as a Varian planning control region
+  obszar:
+    roi_class: planning_helper
+    adjudication_status: approved_non_anatomic_planning_helper
+    evidence_basis: cohort inventory adjudication identifies this generic area contour as a planning control region
+  podkladka:
+    roi_class: positioning_support
+    adjudication_status: approved_positioning_support
+    evidence_basis: Polish exact name for the treatment-positioning pad
+  zWall5:
+    roi_class: planning_helper
+    adjudication_status: approved_non_anatomic_planning_helper
+    evidence_basis: exact name denotes a wall planning-control contour
+  zzCivcoInterior:
+    roi_class: positioning_support
+    adjudication_status: approved_positioning_support
+    evidence_basis: exact name denotes the interior of CIVCO positioning equipment
+  zz_2cm od PTV12:
+    roi_class: planning_helper
+    adjudication_status: approved_non_anatomic_planning_helper
+    evidence_basis: exact name denotes a distance margin from planning target volumes
   sigmoid:
     roi_class: hollow_pelvic_organ
     adjudication_status: approved_by_binding_spec
