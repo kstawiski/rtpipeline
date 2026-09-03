@@ -47,6 +47,7 @@ from pydicom.uid import ExplicitVRLittleEndian, generate_uid
 
 from rtpipeline.auto_rtstruct import (
     _geometry_compatible,
+    _image_array_for_rtstruct,
     _read_for_uid,
     _seg_source_series_uids,
     _select_seg_dir_for_ct,
@@ -122,6 +123,30 @@ def _img(origin=(0.0, 0.0, 0.0), spacing=(1.0, 1.0, 3.0),
     im.SetSpacing(tuple(float(v) for v in spacing))
     im.SetDirection(tuple(float(v) for v in direction))
     return im
+
+
+def test_mask_sampling_preserves_nonuniform_dicom_slice_planes() -> None:
+    """RTSTRUCT masks must have one plane per DICOM slice, not regularized z."""
+
+    values = np.zeros((6, 3, 4), dtype=np.uint8)
+    for z in range(values.shape[0]):
+        values[z, 1, 2] = z + 1
+    image = sitk.GetImageFromArray(values)
+    slices = []
+    for z in (0.0, 1.0, 3.0, 5.0):
+        dataset = Dataset()
+        dataset.Rows = 3
+        dataset.Columns = 4
+        dataset.PixelSpacing = [1.0, 1.0]
+        dataset.ImageOrientationPatient = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0]
+        dataset.ImagePositionPatient = [0.0, 0.0, z]
+        slices.append(dataset)
+
+    sampled = _image_array_for_rtstruct(image, slices)
+
+    assert sampled.shape == (4, 3, 4)
+    assert sampled[2, 1, :].tolist() == [1, 2, 4, 6]
+    assert np.count_nonzero(sampled) == 4
 
 
 # --------------------------------------------------------------------------- #
@@ -515,8 +540,9 @@ def test_rung1_series_match_consistent_for_ok(tmp_path: Path) -> None:
 # --------------------------------------------------------------------------- #
 
 class _StubRT:
-    def __init__(self) -> None:
+    def __init__(self, series_data) -> None:
         self.rois: list = []
+        self.series_data = series_data
 
     def add_roi(self, mask, name) -> None:
         self.rois.append(name)
@@ -526,9 +552,11 @@ class _StubRT:
 
 
 class _StubBuilder:
+    series_data = []
+
     @staticmethod
     def create_new(dicom_series_path):
-        return _StubRT()
+        return _StubRT(_StubBuilder.series_data)
 
 
 def _write_multilabel(seg_dir: Path, base_name: str, ref: sitk.Image) -> None:
@@ -543,6 +571,22 @@ def _write_multilabel(seg_dir: Path, base_name: str, ref: sitk.Image) -> None:
 
 
 def _patch_build_env(ar, monkeypatch, ct_img: sitk.Image) -> None:
+    direction = np.asarray(ct_img.GetDirection(), dtype=float).reshape(3, 3)
+    series_data = []
+    for z in range(ct_img.GetSize()[2]):
+        dataset = Dataset()
+        dataset.Rows = ct_img.GetSize()[1]
+        dataset.Columns = ct_img.GetSize()[0]
+        dataset.PixelSpacing = [ct_img.GetSpacing()[1], ct_img.GetSpacing()[0]]
+        dataset.ImageOrientationPatient = [
+            *direction[:, 0].tolist(),
+            *direction[:, 1].tolist(),
+        ]
+        dataset.ImagePositionPatient = list(
+            ct_img.TransformIndexToPhysicalPoint((0, 0, z))
+        )
+        series_data.append(dataset)
+    _StubBuilder.series_data = series_data
     monkeypatch.setattr(ar, "_load_ct_image", lambda d: ct_img)
     monkeypatch.setattr(ar, "sanitize_rtstruct", lambda p: None)
     monkeypatch.setattr(ar, "fix_rtstruct_rois", lambda ct, p: None)

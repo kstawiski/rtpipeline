@@ -44,7 +44,7 @@ def _require_upstream_status(
         )
 
 
-def _require_segmentation_content(workflow: Any, course_dir: Path) -> None:
+def _require_segmentation_content(workflow: Any, course_dir: Path) -> str:
     """Validate segmentation content inside the dependency-bearing interpreter."""
 
     payload = invoke(
@@ -62,7 +62,8 @@ def _require_segmentation_content(workflow: Any, course_dir: Path) -> None:
     outcome = payload.get("outcome")
     if not isinstance(outcome, dict):
         raise RuntimeError("Segmentation assessment returned no structured outcome")
-    if outcome.get("status") != "ok":
+    status = str(outcome.get("status") or "").strip().lower()
+    if status not in {"disabled", "ok"}:
         reasons = outcome.get("reasons")
         detail = (
             "; ".join(str(reason) for reason in reasons)
@@ -73,6 +74,7 @@ def _require_segmentation_content(workflow: Any, course_dir: Path) -> None:
             f"Required upstream segmentation content is not successful: {course_dir} "
             f"(status={outcome.get('status')!r}; reasons={detail})"
         )
+    return status
 
 
 def _publish_sentinel(path: Path, status: str) -> None:
@@ -187,26 +189,37 @@ def main(workflow: Any) -> None:
         raise SystemExit(returncode or 1)
 
     for input_name, allowed_statuses in (
-        ("segmentation", {"ok"}),
+        ("segmentation", {"disabled", "ok"}),
         ("custom", {"disabled", "ok"}),
-        ("crop", {"ok"}),
+        ("crop", {"disabled", "ok"}),
     ):
         upstream = getattr(workflow.input, input_name, None)
         try:
             _require_upstream_status(upstream, input_name, allowed_statuses)
-            if input_name == "segmentation" and upstream:
-                _require_segmentation_content(
-                    workflow, ledger_root / patient_id / course_id
-                )
         except RuntimeError as exc:
             close_course(str(exc), returncode=1, strict_error=exc)
 
-    if stage_name == "segmentation_custom" and not bool(
-        getattr(workflow.params, "enabled", True)
-    ):
+    if not bool(getattr(workflow.params, "enabled", True)):
         _publish_sentinel(sentinel_path, "disabled")
         record(campaign_ledger.STATUS_OK, returncode=0, detail="stage disabled")
         return
+
+    segmentation = getattr(workflow.input, "segmentation", None)
+    if segmentation:
+        try:
+            segmentation_status = _require_segmentation_content(
+                workflow, ledger_root / patient_id / course_id
+            )
+        except RuntimeError as exc:
+            close_course(str(exc), returncode=1, strict_error=exc)
+        if segmentation_status == "disabled":
+            _publish_sentinel(sentinel_path, "disabled")
+            record(
+                campaign_ledger.STATUS_OK,
+                returncode=0,
+                detail="stage not applicable because no planning CT is declared",
+            )
+            return
 
     command = [
         str(workflow.params.python),

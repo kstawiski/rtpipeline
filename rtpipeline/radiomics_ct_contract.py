@@ -126,15 +126,48 @@ class RoiClassDecision:
     feature_publication_policy: str
 
 
-@lru_cache(maxsize=2)
 def load_roi_class_map(path_text: Optional[str] = None) -> tuple[dict[str, Any], str]:
+    dependency_path = (
+        ""
+        if path_text
+        else str(os.environ.get("RTPIPELINE_RADIOMICS_CONFIG_DEPENDENCY") or "")
+    )
+    return _load_roi_class_map(path_text, dependency_path)
+
+
+@lru_cache(maxsize=8)
+def _load_roi_class_map(
+    path_text: Optional[str], dependency_path: str
+) -> tuple[dict[str, Any], str]:
+    expected_hash = ""
     if path_text:
         path = Path(path_text)
         raw = path.read_bytes()
+        data = yaml.safe_load(raw)
+    elif dependency_path:
+        from .config_dependencies import read_stage_dependency
+
+        record = read_stage_dependency(Path(dependency_path))
+        if record.get("stage") != "radiomics":
+            raise ValueError("radiomics dependency record has the wrong stage")
+        payload = record.get("payload")
+        provenance = (
+            payload.get("parameter_provenance")
+            if isinstance(payload, dict)
+            else None
+        )
+        ct = provenance.get("ct") if isinstance(provenance, dict) else None
+        identity = ct.get("roi_class_map") if isinstance(ct, dict) else None
+        data = identity.get("content") if isinstance(identity, dict) else None
+        expected_hash = (
+            str(identity.get("sha256") or "") if isinstance(identity, dict) else ""
+        )
+        if not isinstance(data, dict) or not expected_hash:
+            raise ValueError("radiomics dependency lacks a bound CT ROI class map")
     else:
         resource = importlib_resources.files("rtpipeline").joinpath("roi_class_map_v1.yaml")
         raw = resource.read_bytes()
-    data = yaml.safe_load(raw)
+        data = yaml.safe_load(raw)
     if not isinstance(data, dict):
         raise ValueError("CT ROI class map must be a mapping")
     if int(data.get("schema_version", 0)) != 1:
@@ -163,7 +196,10 @@ def load_roi_class_map(path_text: Optional[str] = None) -> tuple[dict[str, Any],
     if observed_canonical_hash != expected_canonical_hash:
         raise ValueError("CT ROI class map TotalSegmentator vocabulary hash is stale")
     canonical = json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-    return data, hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    if dependency_path and digest != expected_hash:
+        raise ValueError("radiomics dependency CT ROI class map hash is stale")
+    return data, digest
 
 
 def roi_class_map_identity(path: Optional[Path] = None) -> tuple[str, str]:

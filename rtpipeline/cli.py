@@ -298,7 +298,10 @@ def _execute_dvh_task(task: _DVHTask) -> _DVHStageOutcome | None:
         task.custom_structures,
         parallel_workers=task.parallel_workers,
         use_cropped=task.use_cropped,
-        rx_dose_gy=task.course.total_prescription_gy,
+        # The organizer's explicit value is only a convenience copy. DVH loads
+        # the authoritative course contract itself and must resolve prescription
+        # from that single source of truth.
+        rx_dose_gy=None,
         max_total_dose_gy=task.max_total_dose_gy,
     )
     contract = load_course_contract(task.course.dirs.root)
