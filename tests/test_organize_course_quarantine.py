@@ -17,7 +17,9 @@ from rtpipeline.course_contract import (
     CourseContract,
     CourseContractError,
     DOSE_RESPONSE_ELIGIBILITY_BASIS,
+    UNKNOWN_DELIVERY_DOSE_GRID_SEMANTICS,
     build_dvh_decision,
+    classify_course_dose_completeness,
     load_course_contract,
     validate_course_contract,
 )
@@ -167,10 +169,36 @@ def _publish_scope_regression_contract(
             ),
         }
     )
+    contract["dose_completeness"] = classify_course_dose_completeness(
+        selected_plans=contract["selected_plans"],
+        selected_doses=contract["selected_doses"],
+        dose_classification=contract["dose_classification"],
+        dose_grid=contract["dose_grid"],
+        per_plan_delivery=contract["delivery"]["per_plan"],
+        delivery_status=str(publication["delivery_status"]),
+        spatial_mapping_validated=bool(
+            contract["dose_completeness"].get("spatial_mapping_validated")
+        ),
+    )
+    if contract["dose_completeness"]["status"] != "eligible":
+        contract["dose_grid"]["semantics"] = UNKNOWN_DELIVERY_DOSE_GRID_SEMANTICS
+    if not contract["delivery"]["dose_response_eligible"]:
+        contract["delivery"]["dose_response_ineligibility_reason_code"] = str(
+            contract["dose_completeness"].get("reason_code")
+            or "dose_response_other_requirements_unresolved"
+        )
+        contract["delivery"]["dose_response_ineligibility_reason"] = str(
+            contract["dose_completeness"].get("reason")
+            or "Dose-response eligibility requirements are unresolved."
+        )
     contract["dvh"] = build_dvh_decision(
         len(contract["selected_plans"]),
         len(contract["selected_doses"]),
         str(publication["delivery_status"]),
+        dose_response_eligible=bool(
+            contract["delivery"]["dose_response_eligible"]
+        ),
+        dose_completeness=contract["dose_completeness"],
     )
     organize._validate_and_publish_case_metadata(course, case_metadata)
     return load_course_contract(course).data
@@ -252,6 +280,8 @@ def test_resolved_single_plan_scope_retains_prescription_but_is_delivery_ineligi
     assert contract["delivery"]["dose_response_eligible"] is False
 
     contract["delivery"]["dose_response_eligible"] = True
+    contract["delivery"]["dose_response_ineligibility_reason_code"] = None
+    contract["delivery"]["dose_response_ineligibility_reason"] = None
     with pytest.raises(
         CourseContractError,
         match="dose_response_eligible disagrees with",
@@ -291,15 +321,19 @@ def test_resolved_single_plan_scope_retains_prescription_but_is_delivery_ineligi
 
     contract["delivery"]["dose_response_eligible"] = True
     contract["delivery"].pop("dose_response_eligibility_basis")
-    validate_course_contract(
-        CourseContract(
-            course_dir=tmp_path / "P1" / "resolved",
-            metadata_path=(
-                tmp_path / "P1" / "resolved" / "metadata" / "case_metadata.json"
-            ),
-            data=contract,
+    with pytest.raises(
+        CourseContractError,
+        match="dose_response_eligible requires",
+    ):
+        validate_course_contract(
+            CourseContract(
+                course_dir=tmp_path / "P1" / "resolved",
+                metadata_path=(
+                    tmp_path / "P1" / "resolved" / "metadata" / "case_metadata.json"
+                ),
+                data=contract,
+            )
         )
-    )
 
 
 def test_manifest_writer_quarantines_one_stale_course_and_keeps_later_valid_course(

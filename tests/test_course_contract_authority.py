@@ -301,7 +301,13 @@ def test_dvh_invalidates_stale_output_when_contract_dose_qc_fails(
             "delivered_dose_gy": None,
         }
     )
-    contract["dvh"] = build_dvh_decision(1, 1, "delivered_but_records_absent")
+    contract["dvh"] = build_dvh_decision(
+        1,
+        1,
+        "delivered_but_records_absent",
+        dose_response_eligible=False,
+        dose_completeness=contract["dose_completeness"],
+    )
     contract["dose_qc"] = {
         "status": "fail",
         "pass": False,

@@ -53,6 +53,7 @@ from .course_contract import (
     _ct_provenance,
     build_dvh_decision,
     build_treatment_technique_contract,
+    classify_course_dose_completeness,
     load_course_contract,
     relative_contract_path,
     validate_course_contract,
@@ -118,6 +119,9 @@ class CourseOutput:
     delivered_dose_gy: float | None = None
     delivery_status: str = "no_records_at_all"
     delivery_method: str | None = None
+    delivered_dose_provenance: str | None = None
+    delivered_dose_value_methods: list[str] = field(default_factory=list)
+    physical_delivered_dose_grid_available: bool = False
     delivered_record_count: int = 0
     delivered_fraction_count: int = 0
     planned_fraction_count: int | None = None
@@ -132,6 +136,7 @@ class CourseOutput:
     per_plan_delivery_contract: list[dict[str, object]] = field(default_factory=list)
     authoritative_rtstruct_uid: str | None = None
     dose_classification: dict[str, object] = field(default_factory=dict)
+    dose_spatial_mapping_validated: bool = False
     dose_qc: dict[str, object] = field(default_factory=dict)
     course_contract: dict[str, object] = field(default_factory=dict)
 
@@ -805,6 +810,15 @@ def _hydrate_existing_course(
         delivered_dose_gy=delivered_value,
         delivery_status=delivery_status,
         delivery_method=delivery_method if isinstance(delivery_method, str) else None,
+        delivered_dose_provenance=(
+            str(delivery_contract.get("delivered_dose_provenance") or "") or None
+        ),
+        delivered_dose_value_methods=[
+            str(value) for value in delivery_contract.get("delivered_dose_value_methods", [])
+        ],
+        physical_delivered_dose_grid_available=bool(
+            delivery_contract.get("physical_delivered_dose_grid_available", False)
+        ),
         delivered_record_count=delivered_record_count,
         delivered_fraction_count=delivered_fraction_count,
         planned_fraction_count=planned_fraction_count,
@@ -822,6 +836,11 @@ def _hydrate_existing_course(
             or None
         ),
         dose_classification=dose_classification,
+        dose_spatial_mapping_validated=bool(
+            (contract.data.get("dose_completeness") or {}).get(
+                "spatial_mapping_validated", False
+            )
+        ),
         dose_qc=dict(contract.dose_qc),
         course_contract=dict(contract.data),
     )
@@ -1284,8 +1303,43 @@ def _record_dose_reference(ds: Dataset) -> tuple[float | None, str | None]:
     return float(sum(float(item["dose_gy"]) for item in components)), "calculated_dose_reference"
 
 
+def _record_delivery_session_evidence(ds: Dataset) -> tuple[bool, int | None, str]:
+    """Require a completed treatment-bearing RTRECORD session."""
+    session_items: list[Dataset] = []
+    for sequence_name in (
+        "TreatmentSessionBeamSequence",
+        "TreatmentSessionIonBeamSequence",
+        "TreatmentSessionApplicationSetupSequence",
+    ):
+        session_items.extend(list(getattr(ds, sequence_name, None) or []))
+    qualifying: list[Dataset] = []
+    for item in session_items:
+        delivery_type = str(
+            getattr(item, "TreatmentDeliveryType", "") or ""
+        ).strip().upper()
+        termination = str(
+            getattr(item, "TreatmentTerminationStatus", "") or ""
+        ).strip().upper()
+        if delivery_type in {"TREATMENT", "CONTINUATION"} and termination == "NORMAL":
+            qualifying.append(item)
+    if not qualifying:
+        return (
+            False,
+            None,
+            "No treatment-bearing session item had NORMAL termination in this RTRECORD.",
+        )
+    fraction_numbers = {
+        int(value)
+        for item in qualifying
+        for value in [getattr(item, "CurrentFractionNumber", None)]
+        if str(value or "").isdigit()
+    }
+    fraction_number = next(iter(fraction_numbers)) if len(fraction_numbers) == 1 else None
+    return True, fraction_number, "A TREATMENT or CONTINUATION session item had NORMAL termination."
+
+
 def _record_delivery_evidence(record_paths: Iterable[Path]) -> Dict[str, dict]:
-    """Retain RTRECORD instances and count distinct delivered treatment sessions."""
+    """Retain RTRECORD instances and count verified delivered treatment sessions."""
     evidence: Dict[str, dict] = defaultdict(
         lambda: {"dates": set(), "sessions": set(), "instances": set(), "records": []}
     )
@@ -1298,9 +1352,13 @@ def _record_delivery_evidence(record_paths: Iterable[Path]) -> Dict[str, dict]:
         record_uid = str(getattr(ds, "SOPInstanceUID", "") or path)
         treatment_date = str(getattr(ds, "TreatmentDate", "") or "")
         treatment_time = str(getattr(ds, "TreatmentTime", "") or "")
+        session_validated, nested_fraction_number, session_reason = (
+            _record_delivery_session_evidence(ds)
+        )
         fraction_number = (
             getattr(ds, "CurrentFractionNumber", None)
             or getattr(ds, "ReferencedFractionNumber", None)
+            or nested_fraction_number
         )
         fraction_value = int(fraction_number) if str(fraction_number or "").isdigit() else None
         if fraction_value is not None:
@@ -1329,9 +1387,9 @@ def _record_delivery_evidence(record_paths: Iterable[Path]) -> Dict[str, dict]:
             if record_uid in plan_evidence["instances"]:
                 continue
             plan_evidence["instances"].add(record_uid)
-            if not is_summary_record:
+            if not is_summary_record and session_validated:
                 plan_evidence["sessions"].add(session_key)
-            if treatment_date:
+            if treatment_date and session_validated:
                 plan_evidence["dates"].add(treatment_date)
             plan_evidence["records"].append(
                 {
@@ -1340,6 +1398,8 @@ def _record_delivery_evidence(record_paths: Iterable[Path]) -> Dict[str, dict]:
                     "treatment_date": treatment_date,
                     "treatment_time": treatment_time,
                     "fraction_number": fraction_value,
+                    "delivery_session_validated": bool(session_validated),
+                    "delivery_session_reason": session_reason,
                     "dose_gy": dose_gy,
                     "dose_method": dose_method,
                     "session_key": session_key,
@@ -1453,7 +1513,10 @@ def _calculate_delivery_summary(
         records_for_plan = list(plan_evidence.get("records", []))
         record_count = len(plan_evidence.get("instances", set()))
         fraction_count = len(plan_evidence.get("sessions", set()))
-        matching = record_count > 0
+        cumulative_record_dose = any(
+            row.get("cumulative_dose_references") for row in records_for_plan
+        )
+        matching = fraction_count > 0 or cumulative_record_dose
         any_matching_records = any_matching_records or matching
         delivered_records += record_count
         delivered_fractions += fraction_count
@@ -1569,7 +1632,10 @@ def _calculate_delivery_summary(
             if dose is None and records_for_plan:
                 session_rows: dict[object, list[dict[str, object]]] = defaultdict(list)
                 for row in records_for_plan:
-                    if not row.get("is_summary_record"):
+                    if (
+                        not row.get("is_summary_record")
+                        and row.get("delivery_session_validated")
+                    ):
                         session_rows[row.get("session_key")].append(row)
                 explicit_session_doses: list[float] = []
                 explicit_failure: str | None = None
@@ -1727,10 +1793,22 @@ def _calculate_delivery_summary(
         method = "mixed_rtrecord_and_fraction_weighted"
     else:
         method = None
+    method_set = sorted(str(value) for value in methods if str(value).strip())
+    if method_set and set(method_set).issubset(
+        {"cumulative_dose_reference", "calculated_dose_reference"}
+    ):
+        dose_provenance = "RTRECORD_dose_reference"
+    elif method_set:
+        dose_provenance = "RTRECORD_fraction_weighted_planned_prescription"
+    else:
+        dose_provenance = "no_record_linked_dose_value"
     return {
         "delivered_dose_gy": dose_value,
         "delivery_status": status,
         "delivery_method": method,
+        "delivered_dose_provenance": dose_provenance,
+        "delivered_dose_value_methods": method_set,
+        "physical_delivered_dose_grid_available": False,
         "delivered_record_count": delivered_records,
         "delivered_fraction_count": delivered_fractions,
         "planned_fraction_count": total_planned_fx or None,
@@ -1916,14 +1994,14 @@ def _delivered_remainder_chain(
 ) -> tuple[dict, List[dict], List[dict], int] | None:
     """Find a likely delivered remainder or adaptation chain.
 
-    Full PLAN RTDOSE objects from such plans are not additive.  The earlier
-    grid represents the whole intended plan, while later grids represent a
-    delivered remainder or adaptation. Treatment-date order and RTRECORD
-    session counts provide the discriminator. A conservative ``< 0.60`` delivery
-    ratio keeps the observed approximately 80 percent early-stop phases additive
-    while flagging the approximately 50 percent plan-chain pattern. Beam-dose
-    equality is used only to partition a delivery-flagged chain into a remainder
-    and any independent phase. It is never sufficient by itself to collapse plans.
+    Full planned RTDOSE objects from these plans are not directly additive.
+    Treatment dates and RTRECORD fraction sessions identify the delivered part
+    of each source grid. The classifier retains all contributing plans so the
+    course grid can be resampled and weighted by delivered divided by planned
+    fractions. The ``< 0.60`` ratio only separates observed early replacement
+    chains from independent overlapping phases. Beam-dose equality partitions
+    replacement plans from independent phases but never collapses delivered
+    plan membership.
     """
 
     def evidence(plan: dict) -> tuple[set[str], int, int]:
@@ -2032,6 +2110,61 @@ def _classify_doses(
     plan_meta = [_plan_evidence(path) for path in plan_paths]
     plan_by_uid = {meta["sop_uid"]: meta for meta in plan_meta if meta.get("sop_uid")}
     delivery = _record_delivery_evidence(record_paths)
+
+    multi_plan_doses = [meta for meta in dose_meta if meta["summation_type"] == "MULTI_PLAN"]
+    if multi_plan_doses:
+        delivered_uids = {
+            uid
+            for uid, evidence in delivery.items()
+            if evidence.get("sessions", set())
+        }
+        exact_candidates = []
+        for candidate in multi_plan_doses:
+            covered = set(candidate["referenced_plan_uids"])
+            exact = bool(covered) and covered.issubset(set(plan_by_uid))
+            if record_paths:
+                exact = exact and delivered_uids == covered
+            if exact:
+                exact_candidates.append(candidate)
+        if exact_candidates:
+            best_multi = max(
+                exact_candidates,
+                key=lambda meta: (
+                    len(meta["referenced_plan_uids"]),
+                    str(meta["path"]),
+                ),
+            )
+            covered = set(best_multi["referenced_plan_uids"])
+            selected_plans = [
+                meta["path"] for meta in plan_meta if meta.get("sop_uid") in covered
+            ]
+            if len(selected_plans) == len(covered):
+                excluded = [
+                    meta["path"]
+                    for meta in dose_meta
+                    if meta is not best_multi
+                    and set(meta["referenced_plan_uids"])
+                    and set(meta["referenced_plan_uids"]).issubset(covered)
+                ]
+                return DoseClassification(
+                    classification="MULTI_PLAN_exact_coverage",
+                    selected_doses=[best_multi["path"]],
+                    selected_plans=selected_plans,
+                    excluded_doses=excluded,
+                    should_sum=False,
+                    warnings=warnings,
+                    reason=(
+                        "RTDOSE MULTI_PLAN references every plan supported by the "
+                        "course delivery evidence"
+                    ),
+                )
+        warnings.append(
+            "Excluded MULTI_PLAN RTDOSE because its ReferencedRTPlanSequence did not "
+            "exactly cover the delivered course plan set"
+        )
+        dose_meta = [
+            meta for meta in dose_meta if meta["summation_type"] != "MULTI_PLAN"
+        ]
 
     plan_sum_doses = [meta for meta in dose_meta if meta["summation_type"] == "PLAN_SUM"]
     remainder_chain = None
@@ -2265,9 +2398,9 @@ def _classify_doses(
         total_index, part_indices = replacement
         total = representatives[total_index]
         parts = [representatives[index] for index in part_indices]
-        total_support = len(delivery.get(str(total.get("sop_uid") or ""), {}).get("instances", set()))
+        total_support = len(delivery.get(str(total.get("sop_uid") or ""), {}).get("sessions", set()))
         part_support = sum(
-            len(delivery.get(str(part.get("sop_uid") or ""), {}).get("instances", set()))
+            len(delivery.get(str(part.get("sop_uid") or ""), {}).get("sessions", set()))
             for part in parts
         )
         if total_support or part_support:
@@ -2293,7 +2426,7 @@ def _classify_doses(
             )
 
         def plan_records(plan: dict) -> set[str]:
-            return set(delivery.get(str(plan.get("sop_uid") or ""), {}).get("instances", set()))
+            return set(delivery.get(str(plan.get("sop_uid") or ""), {}).get("sessions", set()))
 
         supported_candidates = [plan for plan in representatives if plan_records(plan)]
         remainder_chain = _delivered_remainder_chain(
@@ -2330,13 +2463,11 @@ def _classify_doses(
         if remainder_chain is not None:
             anchor, later, prescription_components, represented_fractions = remainder_chain
             selected_representatives = list(supported_candidates)
-            classification = "replacement_plan_chain"
-            should_sum = False
+            classification = "delivered_remainder_plan_doses_accumulated"
+            should_sum = len(selected_representatives) > 1
             warnings.append(
-                "Did not sum PLAN RTDOSE objects because delivered remainder "
-                f"plans {[str(plan.get('sop_uid') or '') for plan in later]} fit "
-                f"within unfinished plan {anchor.get('sop_uid')} "
-                f"({represented_fractions}/{int(anchor.get('fractions_planned') or 0)} fractions)"
+                "Delivered remainder or adaptation plans retain separate RTDOSE "
+                "membership for RTRECORD fraction-weighted course accumulation"
             )
         elif supported:
             selected_representatives = list(supported)
@@ -2409,9 +2540,9 @@ def _classify_doses(
         should_sum=should_sum,
         warnings=warnings,
         reason=(
-            "Delivered plans form a non-additive remainder or adaptation chain; "
-            "plan membership is retained without an authoritative summed dose grid"
-            if classification == "replacement_plan_chain"
+            "Delivered remainder or adaptation plans retain one course-level "
+            "dose after spatial accumulation with RTRECORD fraction weights"
+            if classification == "delivered_remainder_plan_doses_accumulated"
             else
             "Distinct prescription phases remain after revision and replacement-plan de-duplication"
             if should_sum
@@ -2842,212 +2973,331 @@ def _create_summed_plan(plan_files: List[Path], total_dose_gy: float | None = No
     return plan_sum, plan_datasets, source_uid_order
 
 
+def _validated_dose_grid_geometry(
+    dataset: Dataset,
+    path: Path,
+) -> dict[str, object]:
+    """Return a validated physical-coordinate model for one RTDOSE grid."""
+    try:
+        rows = int(getattr(dataset, "Rows"))
+        cols = int(getattr(dataset, "Columns"))
+        frames = int(getattr(dataset, "NumberOfFrames", 1) or 1)
+        spacing = np.asarray(getattr(dataset, "PixelSpacing"), dtype=float)
+        origin = np.asarray(getattr(dataset, "ImagePositionPatient"), dtype=float)
+        iop = np.asarray(getattr(dataset, "ImageOrientationPatient"), dtype=float)
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise ValueError(f"{path} lacks a complete RTDOSE spatial geometry") from exc
+    if rows <= 0 or cols <= 0 or frames <= 0 or spacing.size != 2 or origin.size != 3 or iop.size != 6:
+        raise ValueError(f"{path} has invalid RTDOSE dimensions or geometry lengths")
+    if not np.all(np.isfinite(spacing)) or np.any(spacing <= 0):
+        raise ValueError(f"{path} has invalid RTDOSE PixelSpacing")
+    if not np.all(np.isfinite(origin)) or not np.all(np.isfinite(iop)):
+        raise ValueError(f"{path} has nonfinite RTDOSE geometry")
+    row_cos = iop[:3]
+    col_cos = iop[3:]
+    if not np.isclose(np.linalg.norm(row_cos), 1.0, atol=1e-3) or not np.isclose(
+        np.linalg.norm(col_cos), 1.0, atol=1e-3
+    ) or abs(float(np.dot(row_cos, col_cos))) > 1e-3:
+        raise ValueError(f"{path} has nonorthonormal ImageOrientationPatient")
+    slice_cos = np.cross(row_cos, col_cos)
+    if not np.isclose(np.linalg.norm(slice_cos), 1.0, atol=1e-3):
+        raise ValueError(f"{path} has degenerate dose-grid slice orientation")
+    dose_units = str(getattr(dataset, "DoseUnits", "") or "").strip().upper()
+    dose_type = str(getattr(dataset, "DoseType", "") or "").strip().upper()
+    try:
+        dose_scaling = float(getattr(dataset, "DoseGridScaling"))
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise ValueError(f"{path} lacks a valid DoseGridScaling") from exc
+    if dose_units != "GY" or dose_type != "PHYSICAL":
+        raise ValueError(
+            f"{path} must contain physical dose in Gy, not {dose_type!r}/{dose_units!r}"
+        )
+    if not np.isfinite(dose_scaling) or dose_scaling <= 0:
+        raise ValueError(f"{path} has invalid DoseGridScaling")
+    raw_offsets = getattr(dataset, "GridFrameOffsetVector", None)
+    if raw_offsets is None:
+        if frames != 1:
+            raise ValueError(f"{path} lacks GridFrameOffsetVector for a multiframe RTDOSE")
+        offsets = np.asarray([0.0], dtype=float)
+    else:
+        offsets = np.asarray(raw_offsets, dtype=float)
+        if offsets.size != frames or not np.all(np.isfinite(offsets)):
+            raise ValueError(f"{path} has invalid GridFrameOffsetVector")
+    if offsets.size and not np.isclose(offsets[0], 0.0, atol=1e-3):
+        axial_identity = np.allclose(
+            iop,
+            np.asarray([1.0, 0.0, 0.0, 0.0, 1.0, 0.0]),
+            atol=1e-6,
+        )
+        if axial_identity and np.isclose(offsets[0], origin[2], atol=1e-3):
+            offsets = offsets - origin[2]
+        else:
+            raise ValueError(
+                f"{path} uses an unsupported GridFrameOffsetVector coordinate option"
+            )
+    if offsets.size > 1 and np.any(np.diff(offsets) == 0):
+        raise ValueError(f"{path} has duplicate RTDOSE frame offsets")
+    if offsets.size > 1 and np.all(np.diff(offsets) < 0):
+        offsets = offsets[::-1]
+    elif offsets.size > 1 and np.any(np.diff(offsets) < 0):
+        raise ValueError(f"{path} has nonmonotonic RTDOSE frame offsets")
+    frame_of_reference = str(getattr(dataset, "FrameOfReferenceUID", "") or "").strip()
+    if not frame_of_reference:
+        raise ValueError(f"{path} lacks FrameOfReferenceUID for dose accumulation")
+    return {
+        "rows": rows,
+        "cols": cols,
+        "frames": frames,
+        "spacing": spacing,
+        "origin": origin,
+        "row_cos": row_cos,
+        "col_cos": col_cos,
+        "slice_cos": slice_cos,
+        "offsets": offsets,
+        "frame_of_reference": frame_of_reference,
+    }
+
+
 def _sum_doses_with_resample(
     dose_files: List[Path],
     plan_sum: pydicom.dataset.FileDataset,
     plan_datasets: list[pydicom.dataset.FileDataset],
+    dose_weights: Optional[List[float]] = None,
 ) -> tuple[pydicom.dataset.FileDataset, list[pydicom.dataset.FileDataset], list[str]]:
     if not dose_files:
         raise ValueError("No dose files to sum")
 
-    # First pass: Scan headers to find best resolution grid without loading pixels
+    explicit_delivered_weights = dose_weights is not None
+    if dose_weights is None:
+        dose_weights = [1.0] * len(dose_files)
+    if len(dose_weights) != len(dose_files):
+        raise ValueError("dose_weights must have one value per RTDOSE source")
+    if any(
+        not np.isfinite(float(weight)) or float(weight) <= 0 or float(weight) > 1
+        for weight in dose_weights
+    ):
+        raise ValueError("dose_weights must be finite values in (0, 1]")
+
+    # Validate every source before reading pixels. A failed source or ambiguous
+    # coordinate system must fail the course sum rather than publish a partial sum.
     ref_idx = 0
     best_resolution = float("inf")
-    dose_headers = []
-    
+    dose_headers: list[Dataset | None] = []
+    dose_geometries: list[dict[str, object] | None] = []
     for i, path in enumerate(dose_files):
         try:
-            ds = pydicom.dcmread(str(path), stop_before_pixels=True)
-            dose_headers.append(ds)
-            
-            if not hasattr(ds, "PixelSpacing") or len(ds.PixelSpacing) < 2:
-                continue
-                
-            pixel_spacing = list(map(float, ds.PixelSpacing))
-            slice_thickness = 1.0
-            if hasattr(ds, "GridFrameOffsetVector") and len(ds.GridFrameOffsetVector) > 1:
-                try:
-                    slice_thickness = abs(float(ds.GridFrameOffsetVector[1] - ds.GridFrameOffsetVector[0]))
-                except Exception:
-                    slice_thickness = 1.0
-            
-            voxel_volume = pixel_spacing[0] * pixel_spacing[1] * slice_thickness
+            header = pydicom.dcmread(str(path), stop_before_pixels=True)
+            geometry = _validated_dose_grid_geometry(header, path)
+            dose_headers.append(header)
+            dose_geometries.append(geometry)
+            offsets = np.asarray(geometry["offsets"], dtype=float)
+            slice_spacing = float(np.median(np.abs(np.diff(offsets)))) if len(offsets) > 1 else 1.0
+            spacing = np.asarray(geometry["spacing"], dtype=float)
+            voxel_volume = float(spacing[0] * spacing[1] * slice_spacing)
             if voxel_volume < best_resolution:
                 best_resolution = voxel_volume
                 ref_idx = i
-        except Exception as e:
-            logger.warning(f"Failed to read dose header {path}: {e}")
+        except Exception as exc:
+            logger.error("Dose grid validation failed for %s: %s", path, exc)
             dose_headers.append(None)
+            dose_geometries.append(None)
+    if not dose_headers or dose_headers[ref_idx] is None or dose_geometries[ref_idx] is None:
+        raise ValueError("Could not validate any RTDOSE grid")
+    frame_uids = {
+        str(geometry["frame_of_reference"])
+        for geometry in dose_geometries
+        if geometry is not None
+    }
+    if len(frame_uids) != 1:
+        raise ValueError(
+            "Dose accumulation requires one shared FrameOfReferenceUID across all sources"
+        )
 
-    if not dose_headers or dose_headers[ref_idx] is None:
-         raise ValueError("Could not read any valid dose headers")
-
-    # Load reference dose fully
-    logger.info(f"Using {dose_files[ref_idx].name} as reference dose grid (finest resolution)")
+    # Use the finest validated source as the output orientation and in-plane
+    # resolution, but expand its lattice to the union of every source extent.
+    # Selecting one source extent would silently discard dose that lies only in
+    # another plan's grid.
+    logger.info(
+        "Using %s as dose-sum orientation and resolution reference",
+        dose_files[ref_idx].name,
+    )
     ds_ref = pydicom.dcmread(str(dose_files[ref_idx]), stop_before_pixels=False)
-    
-    # Initialize accumulator with reference dose
-    arr_ref = ds_ref.pixel_array.astype("float32")
-    dose_scaling_ref = float(getattr(ds_ref, "DoseGridScaling", 1.0))
-    accumulated = arr_ref * dose_scaling_ref
+    ref_geometry = dose_geometries[ref_idx]
+    assert ref_geometry is not None
+    ref_pixels = ds_ref.pixel_array
+    expected_ref_shape = (
+        int(ref_geometry["frames"]),
+        int(ref_geometry["rows"]),
+        int(ref_geometry["cols"]),
+    )
+    if ref_pixels.shape != expected_ref_shape:
+        raise ValueError(
+            f"{dose_files[ref_idx]} pixel shape does not match its RTDOSE geometry"
+        )
+    if not np.allclose(
+        np.asarray(ref_geometry["offsets"], dtype=float),
+        np.asarray(
+            _validated_dose_grid_geometry(ds_ref, dose_files[ref_idx])["offsets"],
+            dtype=float,
+        ),
+        atol=1e-9,
+        rtol=0.0,
+    ):
+        raise ValueError(
+            f"{dose_files[ref_idx]} changed between RTDOSE header and pixel read"
+        )
 
-    # Grid geometry of reference
-    rows_ref, cols_ref = ds_ref.Rows, ds_ref.Columns
-    frames_ref = int(getattr(ds_ref, "NumberOfFrames", 1) or 1)
-    origin_ref = np.array(list(map(float, getattr(ds_ref, "ImagePositionPatient", [0, 0, 0]))))
-    pixel_spacing_ref = list(map(float, getattr(ds_ref, "PixelSpacing", [1.0, 1.0])))
-    offsets_ref = getattr(ds_ref, "GridFrameOffsetVector", None)
+    origin_ref = np.asarray(ref_geometry["origin"], dtype=float)
+    spacing_ref = np.asarray(ref_geometry["spacing"], dtype=float)
+    row_cosines_ref = np.asarray(ref_geometry["row_cos"], dtype=float)
+    col_cosines_ref = np.asarray(ref_geometry["col_cos"], dtype=float)
+    slice_cosines_ref = np.asarray(ref_geometry["slice_cos"], dtype=float)
 
-    # C6 fix: extract ImageOrientationPatient direction cosines for reference grid
-    iop_ref = list(map(float, getattr(ds_ref, "ImageOrientationPatient", [1, 0, 0, 0, 1, 0])))
-    row_cosines_ref = np.array(iop_ref[0:3])
-    col_cosines_ref = np.array(iop_ref[3:6])
-    slice_cosines_ref = np.cross(row_cosines_ref, col_cosines_ref)
+    projected_corners: list[np.ndarray] = []
+    slice_spacings: list[float] = []
+    for geometry in dose_geometries:
+        assert geometry is not None
+        source_origin = np.asarray(geometry["origin"], dtype=float)
+        source_spacing = np.asarray(geometry["spacing"], dtype=float)
+        source_row_cos = np.asarray(geometry["row_cos"], dtype=float)
+        source_col_cos = np.asarray(geometry["col_cos"], dtype=float)
+        source_slice_cos = np.asarray(geometry["slice_cos"], dtype=float)
+        source_offsets = np.asarray(geometry["offsets"], dtype=float)
+        if len(source_offsets) > 1:
+            slice_spacings.append(float(np.min(np.abs(np.diff(source_offsets)))))
+        row_extent = (int(geometry["rows"]) - 1) * source_spacing[0]
+        col_extent = (int(geometry["cols"]) - 1) * source_spacing[1]
+        for row_mm in (0.0, row_extent):
+            for col_mm in (0.0, col_extent):
+                for slice_mm in (float(source_offsets[0]), float(source_offsets[-1])):
+                    point = (
+                        source_origin
+                        + row_mm * source_col_cos
+                        + col_mm * source_row_cos
+                        + slice_mm * source_slice_cos
+                    )
+                    delta = point - origin_ref
+                    projected_corners.append(
+                        np.asarray(
+                            [
+                                float(np.dot(delta, col_cosines_ref)),
+                                float(np.dot(delta, row_cosines_ref)),
+                                float(np.dot(delta, slice_cosines_ref)),
+                            ]
+                        )
+                    )
+    bounds = np.asarray(projected_corners, dtype=float)
+    if bounds.size == 0 or not np.all(np.isfinite(bounds)):
+        raise ValueError("Could not construct a finite union RTDOSE extent")
+    slice_spacing = min(slice_spacings) if slice_spacings else 1.0
+    output_spacing = np.asarray(
+        [spacing_ref[0], spacing_ref[1], slice_spacing],
+        dtype=float,
+    )
+    lower = np.floor(np.min(bounds, axis=0) / output_spacing) * output_spacing
+    upper = np.ceil(np.max(bounds, axis=0) / output_spacing) * output_spacing
+    output_shape = np.rint((upper - lower) / output_spacing).astype(int) + 1
+    if np.any(output_shape <= 0):
+        raise ValueError("Dose accumulation produced an invalid union grid shape")
+    rows_ref, cols_ref = int(output_shape[0]), int(output_shape[1])
+    output_origin = (
+        origin_ref
+        + lower[0] * col_cosines_ref
+        + lower[1] * row_cosines_ref
+        + lower[2] * slice_cosines_ref
+    )
+    output_offset_values = list(
+        np.arange(int(output_shape[2]), dtype=np.float64) * slice_spacing
+    )
+    for geometry in dose_geometries:
+        assert geometry is not None
+        source_origin = np.asarray(geometry["origin"], dtype=float)
+        source_slice_cos = np.asarray(geometry["slice_cos"], dtype=float)
+        for source_offset in np.asarray(geometry["offsets"], dtype=float):
+            frame_origin = source_origin + source_offset * source_slice_cos
+            projected_offset = float(
+                np.dot(frame_origin - output_origin, slice_cosines_ref)
+            )
+            if -1e-6 <= projected_offset <= upper[2] - lower[2] + 1e-6:
+                output_offset_values.append(projected_offset)
+    offsets_ref = np.asarray(
+        sorted({round(value, 9) for value in output_offset_values}),
+        dtype=np.float64,
+    )
+    frames_ref = len(offsets_ref)
+    accumulated = np.zeros((frames_ref, rows_ref, cols_ref), dtype=np.float32)
 
-    if offsets_ref is not None and len(offsets_ref) == frames_ref:
-        z_offsets_ref = np.array([float(offset) for offset in offsets_ref])
-    else:
-        z_offsets_ref = np.arange(frames_ref, dtype=np.float64)
-
-    # Compute physical positions for reference grid using direction cosines
-    # Each voxel (r, c, f) maps to: origin + c * ps[1] * row_cosines + r * ps[0] * col_cosines + offset[f] * slice_cosines
-    z_positions_ref = origin_ref[2] + z_offsets_ref * slice_cosines_ref[2]
-
-    # Ensure z_positions_ref is monotonically increasing for proper interpolation
-    if len(z_positions_ref) > 1 and z_positions_ref[0] > z_positions_ref[-1]:
-        z_positions_ref = z_positions_ref[::-1]
-        z_offsets_ref = z_offsets_ref[::-1]
-        accumulated = accumulated[::-1, :, :]  # Flip along z-axis to match
-
-    # In-plane (X/Y) reference positions must include BOTH the row-index and the
-    # column-index direction-cosine contributions, not just the axis-aligned term.
-    # For an oblique-but-consistent grid (in-plane rotation), row_cosines_ref/
-    # col_cosines_ref have nonzero cross components (e.g. row direction contributes
-    # to Y, column direction contributes to X); dropping them silently resamples to
-    # the wrong physical position. This mirrors the full-vector treatment already
-    # used for the Z axis above. For axis-aligned grids the added cross terms are
-    # exactly zero, so behavior for the common case is unchanged.
-    # NOTE (scope): this corrects the REFERENCE grid's forward in-plane mapping.
-    # The source-side inverse index mapping and the Z axis' in-plane coupling remain
-    # axis-aligned approximations, so a fully in-plane-rotated SOURCE grid is still
-    # approximate. Clinical RTDOSE grids are axis-aligned and a source/reference
-    # orientation-mismatch warning fires below, so production impact is nil; a full
-    # 3D-affine resample would be needed to handle oblique source grids exactly.
     row_idx_ref = np.arange(rows_ref, dtype=np.float64)[:, None]
     col_idx_ref = np.arange(cols_ref, dtype=np.float64)[None, :]
-    y_positions_ref = (origin_ref[1]
-                       + row_idx_ref * pixel_spacing_ref[0] * col_cosines_ref[1]
-                       + col_idx_ref * pixel_spacing_ref[1] * row_cosines_ref[1])
-    x_positions_ref = (origin_ref[0]
-                       + row_idx_ref * pixel_spacing_ref[0] * col_cosines_ref[0]
-                       + col_idx_ref * pixel_spacing_ref[1] * row_cosines_ref[0])
-
-    # Store 1D coordinate arrays for memory-efficient resampling (avoid full meshgrid)
-    # These will be broadcast during resampling
-
-    source_dose_uids = []
-    uid = str(getattr(ds_ref, "SOPInstanceUID", ""))
-    if uid:
-        source_dose_uids.append(uid)
-        
-    # Second pass: Iteratively load and resample other doses
+    xy_ref = (
+        output_origin[None, None, :]
+        + row_idx_ref[:, :, None]
+        * spacing_ref[0]
+        * col_cosines_ref[None, None, :]
+        + col_idx_ref[:, :, None]
+        * spacing_ref[1]
+        * row_cosines_ref[None, None, :]
+    )
+    ref_points = (
+        xy_ref[None, :, :, :]
+        + offsets_ref[:, None, None, None]
+        * slice_cosines_ref[None, None, None, :]
+    )
+    source_dose_uids: list[str] = []
     for i, path in enumerate(dose_files):
-        if i == ref_idx:
-            continue
-            
-        logger.debug(f"Resampling and adding dose {path.name}...")
+        logger.debug("Resampling and adding dose %s with weight %.6g", path.name, dose_weights[i])
         try:
             ds = pydicom.dcmread(str(path), stop_before_pixels=False)
-            
-            uid = str(getattr(ds, "SOPInstanceUID", ""))
+            uid = str(getattr(ds, "SOPInstanceUID", "") or "")
             if uid and uid not in source_dose_uids:
                 source_dose_uids.append(uid)
-
+            geometry = dose_geometries[i]
+            assert geometry is not None
             arr = ds.pixel_array.astype("float32")
-            arr *= float(getattr(ds, "DoseGridScaling", 1.0))
+            expected_shape = (
+                int(cast(int, geometry["frames"])),
+                int(cast(int, geometry["rows"])),
+                int(cast(int, geometry["cols"])),
+            )
+            if arr.shape != expected_shape:
+                raise ValueError("pixel shape does not match validated RTDOSE geometry")
+            raw_offsets = getattr(ds, "GridFrameOffsetVector", None)
+            if raw_offsets is not None and len(raw_offsets) > 1 and np.all(
+                np.diff(np.asarray(raw_offsets, dtype=float)) < 0
+            ):
+                arr = arr[::-1, :, :]
+            arr *= float(getattr(ds, "DoseGridScaling", 1.0)) * float(dose_weights[i])
+            source_geometry = geometry
+            origin = np.asarray(source_geometry["origin"], dtype=float)
+            row_cos_src = np.asarray(source_geometry["row_cos"], dtype=float)
+            col_cos_src = np.asarray(source_geometry["col_cos"], dtype=float)
+            slice_cos_src = np.asarray(source_geometry["slice_cos"], dtype=float)
+            spacing_src = np.asarray(source_geometry["spacing"], dtype=float)
+            offsets_src = np.asarray(source_geometry["offsets"], dtype=float)
 
-            rows, cols = ds.Rows, ds.Columns
-            frames = int(getattr(ds, "NumberOfFrames", 1) or 1)
-            origin = np.array(list(map(float, getattr(ds, "ImagePositionPatient", [0, 0, 0]))))
-            pixel_spacing = list(map(float, getattr(ds, "PixelSpacing", [1.0, 1.0])))
-            offsets = getattr(ds, "GridFrameOffsetVector", None)
-
-            # C6 fix: extract source ImageOrientationPatient
-            iop_src = list(map(float, getattr(ds, "ImageOrientationPatient", [1, 0, 0, 0, 1, 0])))
-            row_cos_src = np.array(iop_src[0:3])
-            col_cos_src = np.array(iop_src[3:6])
-            slice_cos_src = np.cross(row_cos_src, col_cos_src)
-
-            # Warn if source and reference have different orientations
-            if (np.dot(slice_cosines_ref, slice_cos_src) < 0.99 or
-                    np.dot(row_cosines_ref, row_cos_src) < 0.99):
-                logger.warning(
-                    "Dose %s has different ImageOrientationPatient than reference. "
-                    "Resampling may produce spatially misaligned results.",
-                    path.name,
-                )
-
-            if offsets is not None and len(offsets) == frames:
-                z_offsets_src = np.array([float(offset) for offset in offsets])
-            else:
-                z_offsets_src = np.arange(frames, dtype=np.float64)
-
-            z_coords = origin[2] + z_offsets_src * slice_cos_src[2]
-
-            if frames == 1:
-                arr = arr.reshape((1, rows, cols))
-
-            # Ensure z_coords is monotonically increasing for proper interpolation
-            if len(z_coords) > 1 and z_coords[0] > z_coords[-1]:
-                z_coords = z_coords[::-1]
-                arr = arr[::-1, :, :]  # Flip along z-axis to match
-
-            # Build coordinate grids for reference positions. y_positions_ref/x_positions_ref
-            # are now (rows_ref, cols_ref) grids (see above), so broadcast them across frames
-            # instead of np.meshgrid (which requires 1-D inputs).
-            Z = np.broadcast_to(z_positions_ref[:, None, None], (frames_ref, rows_ref, cols_ref))
-            Y = np.broadcast_to(y_positions_ref[None, :, :], (frames_ref, rows_ref, cols_ref))
-            X = np.broadcast_to(x_positions_ref[None, :, :], (frames_ref, rows_ref, cols_ref))
-
-            # C6 fix: do NOT clip source coordinates — let map_coordinates use cval=0
-            # for out-of-bounds voxels (true zero-fill instead of edge-value leak)
-
-            # Compute fractional indices using proper interpolation
-            # np.interp maps physical z-coordinates to array indices
-            z_idx_values = np.arange(len(z_coords), dtype=np.float64)
-            z_idx = np.interp(Z.ravel(), z_coords, z_idx_values, left=-1, right=-1).reshape(Z.shape)
-            y_idx = (Y - origin[1]) / pixel_spacing[0]
-            x_idx = (X - origin[0]) / pixel_spacing[1]
-
-            # Mark out-of-bounds z indices for proper zero-fill
-            z_oob = (z_idx < 0)
-            z_idx = np.clip(z_idx, 0, len(z_coords) - 1)
-
-            coords = np.stack([z_idx, y_idx, x_idx], axis=0)
-            resampled = map_coordinates(arr, coords, order=1, mode="constant", cval=0.0)
-            resampled = resampled.reshape((frames_ref, rows_ref, cols_ref))
-
-            # Zero out voxels that were outside the source z-range
-            resampled[z_oob] = 0.0
-
-            # Free meshgrid memory after use
-            del Z, Y, X
-            
+            delta = ref_points - origin[None, None, None, :]
+            row_idx = np.einsum("...i,i->...", delta, col_cos_src) / spacing_src[0]
+            col_idx = np.einsum("...i,i->...", delta, row_cos_src) / spacing_src[1]
+            offset_values = np.einsum("...i,i->...", delta, slice_cos_src)
+            frame_indices = np.arange(len(offsets_src), dtype=np.float64)
+            frame_idx = np.interp(
+                offset_values.ravel(), offsets_src, frame_indices, left=-1, right=-1
+            ).reshape(offset_values.shape)
+            frame_oob = (frame_idx < 0) | (frame_idx > len(offsets_src) - 1)
+            frame_idx = np.clip(frame_idx, 0, len(offsets_src) - 1)
+            coords = np.stack([frame_idx, row_idx, col_idx], axis=0)
+            resampled = map_coordinates(
+                arr, coords, order=1, mode="constant", cval=0.0
+            ).reshape((frames_ref, rows_ref, cols_ref))
+            resampled[frame_oob] = 0.0
             accumulated += resampled
-            
-            # Explicitly clear large arrays to free memory
-            del ds
-            del arr
-            del resampled
-            del coords
-            
-        except Exception as e:
-            logger.error(f"Failed to resample dose {path}: {e}")
-            # Continue with partial sum or raise? Continuing preserves robustness but might be inaccurate.
-            # Given this is a summation, missing a component is critical failure.
-            raise RuntimeError(f"Dose summation failed for {path}: {e}")
+            del ds, arr, resampled, coords, delta
+        except Exception as exc:
+            logger.error("Failed to resample dose %s: %s", path, exc)
+            raise RuntimeError(f"Dose summation failed for {path}: {exc}") from exc
 
-    # Final scaling and packing
+    # Every source was validated before pixels were accumulated.
+
     max_dose = float(np.nanmax(accumulated)) if accumulated.size else 0.0
     if max_dose > 1000:
         scaling_factor = 10.0
@@ -3068,7 +3318,7 @@ def _sum_doses_with_resample(
     new_ds.InstanceCreationTime = now.strftime("%H%M%S")
     new_ds.SeriesDescription = f"Dose Sum ({len(dose_files)} plans)"
     if len(dose_files) > 1:
-        new_ds.DoseSummationType = "PLAN_SUM"
+        new_ds.DoseSummationType = "MULTI_PLAN" if len(plan_datasets) > 1 else "PLAN"
     else:
         new_ds.DoseSummationType = str(getattr(new_ds, "DoseSummationType", "PLAN"))
 
@@ -3076,6 +3326,13 @@ def _sum_doses_with_resample(
     new_ds.BitsStored = 32
     new_ds.HighBit = 31
     new_ds.PixelRepresentation = 0  # unsigned
+    new_ds.Rows = rows_ref
+    new_ds.Columns = cols_ref
+    new_ds.NumberOfFrames = frames_ref
+    new_ds.ImagePositionPatient = [float(value) for value in output_origin]
+    new_ds.GridFrameOffsetVector = [float(value) for value in offsets_ref]
+    if hasattr(new_ds, "SliceThickness"):
+        new_ds.SliceThickness = float(slice_spacing)
     new_ds.DoseGridScaling = 1.0 / scaling_factor
     for tag in [(0x0028, 0x0106), (0x0028, 0x0107)]:
         if tag in new_ds:
@@ -3094,11 +3351,8 @@ def _sum_doses_with_resample(
 
     # Update references to plans and source doses
     ref_plan_items: list[Dataset] = []
-    sum_item = Dataset()
-    sum_item.ReferencedSOPClassUID = str(getattr(plan_sum, "SOPClassUID", "1.2.840.10008.5.1.4.1.1.481.5"))
-    sum_item.ReferencedSOPInstanceUID = str(plan_sum.SOPInstanceUID)
-    ref_plan_items.append(sum_item)
-    for ds_plan in plan_datasets:
+    source_plan_datasets = plan_datasets or [plan_sum]
+    for ds_plan in source_plan_datasets:
         item = Dataset()
         item.ReferencedSOPClassUID = str(getattr(ds_plan, "SOPClassUID", "1.2.840.10008.5.1.4.1.1.481.5"))
         item.ReferencedSOPInstanceUID = str(ds_plan.SOPInstanceUID)
@@ -3121,7 +3375,9 @@ def _sum_doses_with_resample(
         new_ds.ReferencedInstanceSequence = Sequence(ref_instances)
 
     comment = (
-        f"Summed from {len(dose_files)} dose distributions on {now.isoformat()}"
+        "Validated spatial dose sum with delivered-fraction weights."
+        if explicit_delivered_weights
+        else "Planned RTDOSE sum; delivery weights unavailable."
     )
     if hasattr(new_ds, "DoseComment"):
         new_ds.DoseComment = comment
@@ -3864,6 +4120,7 @@ def organize_and_merge(
         delivery_plan_paths: list[Path] = list(plan_paths)
         delivery_dose_paths: list[Path] = list(dose_paths)
         dose_classification_info: dict = {}
+        dose_spatial_mapping_validated = False
         selected_plans: list[Path] = []
         selected_doses: list[Path] = []
 
@@ -3935,10 +4192,6 @@ def organize_and_merge(
                     dose_classification.prescription_plans or selected_plans
                 )
                 prescription_sum = sum_selected
-                if dose_classification.classification == "replacement_plan_chain":
-                    prescription_sum = len(prescription_plans) > 1
-                    if not dose_classification.prescription_plans:
-                        prescription_plans = []
                 source_rx = _infer_source_rx_from_plan_paths(
                     prescription_plans,
                     sum_all=prescription_sum,
@@ -3947,20 +4200,9 @@ def organize_and_merge(
                     prescription_plans,
                     sum_all=prescription_sum,
                 )
-                if dose_classification.classification == "replacement_plan_chain" and not prescription_plans:
-                    # The selected plans are delivered membership, but their full
-                    # PLAN doses and plan-level prescription values are not
-                    # additive across a remainder/adaptation chain.
-                    source_rx = None
-                    total_rx = None
-                if dose_classification.classification == "replacement_plan_chain" and not prescription_plans:
-                    prescription_scope = "UNRESOLVED_REPLACEMENT_CHAIN"
-                elif total_rx is None:
+                if total_rx is None:
                     prescription_scope = "UNRESOLVED_COMPONENT"
-                elif (
-                    dose_classification.classification == "replacement_plan_chain"
-                    and len(prescription_plans) > 1
-                ) or (sum_selected):
+                elif sum_selected:
                     prescription_scope = "COURSE_TOTAL_SUMMED"
                 else:
                     prescription_scope = "SINGLE_PLAN_TOTAL"
@@ -3968,15 +4210,72 @@ def organize_and_merge(
             delivery_plan_paths = list(selected_plans)
             delivery_dose_paths = list(selected_doses)
 
-            if dose_classification.should_sum and len(selected_doses) > 1:
-                # Primary + boost case: sum the selected doses
-                logger.info("Summing %d doses (primary + boost)", len(selected_doses))
+            dose_weights_for_accumulation: list[float] | None = None
+            if selected_doses:
+                per_plan_delivery_for_sum = _per_plan_delivery_contract(
+                    plan_paths,
+                    treatment_record_paths,
+                    selected_plans,
+                    copied_plan_paths,
+                    copied_record_paths,
+                )
+                plan_weight_by_uid = {
+                    str(item.get("plan_sop_uid") or "").strip(): float(
+                        item.get("delivered_fraction_count") or 0
+                    )
+                    / float(item.get("planned_fraction_count") or 0)
+                    for item in per_plan_delivery_for_sum
+                    if str(item.get("plan_sop_uid") or "").strip()
+                    and float(item.get("planned_fraction_count") or 0) > 0
+                }
+                candidate_weights: list[float] = []
+                for dose_path in selected_doses:
+                    dose_meta = _extract_dose_metadata(dose_path)
+                    references = [
+                        str(uid).strip()
+                        for uid in dose_meta.get("referenced_plan_uids", [])
+                        if str(uid).strip()
+                    ]
+                    if len(references) == 1 and references[0] in plan_weight_by_uid:
+                        candidate_weights.append(plan_weight_by_uid[references[0]])
+                    else:
+                        candidate_weights = []
+                        break
+                if len(candidate_weights) == len(selected_doses) and all(
+                    np.isfinite(weight) and 0 < weight <= 1
+                    for weight in candidate_weights
+                ):
+                    dose_weights_for_accumulation = candidate_weights
+
+            single_plan_requires_scaling = bool(
+                len(selected_doses) == 1
+                and len(selected_plans) == 1
+                and dose_weights_for_accumulation
+                and not np.isclose(dose_weights_for_accumulation[0], 1.0)
+            )
+            if (
+                dose_classification.should_sum and len(selected_doses) > 1
+            ) or single_plan_requires_scaling:
+                logger.info(
+                    "Accumulating %d dose source(s) with delivered-fraction weights",
+                    len(selected_doses),
+                )
                 plan_sum_ds, plan_ds_list, source_plan_uids = _create_summed_plan(
                     selected_plans, total_rx
                 )
+                if dose_weights_for_accumulation is None:
+                    logger.warning(
+                        "Summing planned RTDOSE sources without delivered-fraction "
+                        "weights; the course contract will remain dose-response "
+                        "ineligible"
+                    )
                 dose_sum_ds, dose_ds_list, source_dose_uids = _sum_doses_with_resample(
-                    selected_doses, plan_sum_ds, plan_ds_list
+                    selected_doses,
+                    plan_sum_ds,
+                    plan_ds_list,
+                    dose_weights=dose_weights_for_accumulation,
                 )
+                dose_spatial_mapping_validated = True
                 if dose_classification.classification == "beam_doses_summed_to_plan":
                     dose_sum_ds.DoseSummationType = "PLAN"
                     dose_sum_ds.SeriesDescription = f"Plan Dose Sum ({len(selected_doses)} beams)"
@@ -3993,13 +4292,19 @@ def organize_and_merge(
                 dose_sop_uid = str(dose_sum_ds.SOPInstanceUID)
 
             elif len(selected_doses) == 1:
-                # Single dose selected (PLAN_SUM, replan ITT, or ambiguous)
+                # One source grid needs no cross-grid transform, but it still
+                # must be a finite PHYSICAL dose in Gy with valid patient-space
+                # geometry before it can support dose-response metrics.
+                ds_dose_single = pydicom.dcmread(
+                    str(selected_doses[0]),
+                    stop_before_pixels=True,
+                )
+                _validated_dose_grid_geometry(ds_dose_single, selected_doses[0])
+                dose_spatial_mapping_validated = True
+                dose_sop_uid = str(
+                    getattr(ds_dose_single, "SOPInstanceUID", "") or ""
+                ) or None
                 _safe_copy(selected_doses[0], rd_dst, copy_manager=copy_manager)
-                try:
-                    ds_dose_single = pydicom.dcmread(str(selected_doses[0]), stop_before_pixels=True)
-                    dose_sop_uid = str(getattr(ds_dose_single, "SOPInstanceUID", "") or None)
-                except Exception:
-                    dose_sop_uid = None
                 if dose_sop_uid:
                     source_dose_uids.append(dose_sop_uid)
 
@@ -4352,6 +4657,17 @@ def organize_and_merge(
             delivered_dose_gy=delivery_summary["delivered_dose_gy"],
             delivery_status=str(delivery_summary["delivery_status"]),
             delivery_method=delivery_summary["delivery_method"],
+            delivered_dose_provenance=str(
+                delivery_summary.get("delivered_dose_provenance") or ""
+            )
+            or None,
+            delivered_dose_value_methods=[
+                str(value)
+                for value in delivery_summary.get("delivered_dose_value_methods", [])
+            ],
+            physical_delivered_dose_grid_available=bool(
+                delivery_summary.get("physical_delivered_dose_grid_available", False)
+            ),
             delivered_record_count=int(delivery_summary["delivered_record_count"]),
             delivered_fraction_count=int(delivery_summary["delivered_fraction_count"]),
             planned_fraction_count=delivery_summary["planned_fraction_count"],
@@ -4366,6 +4682,7 @@ def organize_and_merge(
             per_plan_delivery_contract=per_plan_delivery,
             authoritative_rtstruct_uid=authoritative_rtstruct_uid,
             dose_classification=dose_classification_info,
+            dose_spatial_mapping_validated=dose_spatial_mapping_validated,
             dose_qc={
                 "status": dose_plausibility["dose_qc_status"],
                 "pass": dose_plausibility["dose_qc_pass"],
@@ -5635,16 +5952,88 @@ def organize_and_merge(
                 delivered_dose_gy=co.delivered_dose_gy,
                 delivery_status=co.delivery_status,
             )
+            dose_completeness = classify_course_dose_completeness(
+                selected_plans=selected_plan_contract,
+                selected_doses=selected_dose_contract,
+                dose_classification=dose_classification_contract,
+                dose_grid=dose_grid_contract,
+                per_plan_delivery=per_plan_delivery_contract,
+                delivery_status=str(co.delivery_status),
+                spatial_mapping_validated=co.dose_spatial_mapping_validated,
+            )
+            dose_response_eligible = bool(
+                dose_response_eligible
+                and dose_completeness["status"] == "eligible"
+            )
+            dose_response_ineligibility_reason_code: str | None = None
+            dose_response_ineligibility_reason: str | None = None
+            if not dose_response_eligible:
+                if dose_completeness["status"] != "eligible":
+                    dose_response_ineligibility_reason_code = str(
+                        dose_completeness.get("reason_code")
+                        or "course_dose_not_defensible"
+                    )
+                    dose_response_ineligibility_reason = str(
+                        dose_completeness.get("reason")
+                        or "Course-level dose completeness was not established."
+                    )
+                elif (
+                    prescribed_dose_scope.startswith("UNRESOLVED_")
+                    or resolved_prescribed_dose_total_gy is None
+                ):
+                    dose_response_ineligibility_reason_code = (
+                        "course_prescription_scope_unresolved"
+                    )
+                    dose_response_ineligibility_reason = (
+                        "A verified complete course-dose grid is available, but the "
+                        "course prescription scope is unresolved."
+                    )
+                elif (
+                    co.delivered_dose_gy is None
+                    or co.delivery_status
+                    not in {"fully_delivered", "partially_delivered"}
+                ):
+                    dose_response_ineligibility_reason_code = (
+                        "course_delivery_evidence_unresolved"
+                    )
+                    dose_response_ineligibility_reason = (
+                        "A verified complete course-dose grid is available, but "
+                        "RTRECORD evidence does not establish an estimable delivered "
+                        "course dose."
+                    )
+                else:
+                    dose_response_ineligibility_reason_code = (
+                        "dose_response_other_requirements_unresolved"
+                    )
+                    dose_response_ineligibility_reason = (
+                        "A verified complete course-dose grid is available, but another "
+                        "dose-response eligibility requirement is unresolved."
+                    )
+                co.delivery_warnings.append(
+                    "Dose-response eligibility withheld: "
+                    + dose_response_ineligibility_reason
+                )
+            if dose_grid_contract is not None:
+                dose_grid_contract["dose_completeness_status"] = dose_completeness[
+                    "status"
+                ]
+                dose_grid_contract["dose_completeness_category"] = dose_completeness[
+                    "category"
+                ]
+                dose_grid_contract["dose_completeness_reason_code"] = dose_completeness[
+                    "reason_code"
+                ]
+                dose_grid_contract["dose_completeness_reason"] = dose_completeness[
+                    "reason"
+                ]
+                dose_grid_contract["delivered_fraction_weights"] = dose_completeness[
+                    "delivered_fraction_weights"
+                ]
             if dose_grid_contract is not None:
                 dose_grid_contract["semantics"] = (
-                    UNKNOWN_DELIVERY_DOSE_GRID_SEMANTICS
-                    if co.delivery_status
-                    in {
-                        "delivered_but_records_absent",
-                        "delivery_unresolved",
-                        "no_records_at_all",
-                    }
-                    else DOSE_GRID_SEMANTICS
+                    DOSE_GRID_SEMANTICS
+                    if dose_completeness["status"] == "eligible"
+                    else UNKNOWN_DELIVERY_DOSE_GRID_SEMANTICS
                 )
             if prescribed_dose_scope.startswith("UNRESOLVED_"):
                 warning = (
@@ -5750,6 +6139,7 @@ def organize_and_merge(
                 "selected_doses": selected_dose_contract,
                 "treatment_technique": treatment_technique_contract,
                 "dose_classification": dose_classification_contract,
+                "dose_completeness": dose_completeness,
                 "clinical_prescription_evidence": clinical_prescription_evidence,
                 "authoritative_rtstruct": authoritative_rtstruct,
                 "planning_ct": {
@@ -5774,12 +6164,17 @@ def organize_and_merge(
                     len(selected_plan_contract),
                     len(selected_dose_contract),
                     str(co.delivery_status),
+                    dose_response_eligible=dose_response_eligible,
+                    dose_completeness=dose_completeness,
                 ),
                 "delivery": {
                     "prescribed_dose_gy": prescribed_dose_gy,
                     "prescribed_dose_scope": prescribed_dose_scope,
                     "resolved_prescribed_dose_total_gy": resolved_prescribed_dose_total_gy,
                     "delivered_dose_gy": co.delivered_dose_gy,
+                    "delivered_dose_provenance": co.delivered_dose_provenance,
+                    "delivered_dose_value_methods": co.delivered_dose_value_methods,
+                    "physical_delivered_dose_grid_available": co.physical_delivered_dose_grid_available,
                     "status": co.delivery_status,
                     "method": co.delivery_method,
                     "dose_response_field": DOSE_RESPONSE_FIELD,
@@ -5787,6 +6182,17 @@ def organize_and_merge(
                     "dose_response_eligibility_basis": (
                         DOSE_RESPONSE_ELIGIBILITY_BASIS
                     ),
+                    "dose_response_ineligibility_reason_code": (
+                        dose_response_ineligibility_reason_code
+                    ),
+                    "dose_response_ineligibility_reason": (
+                        dose_response_ineligibility_reason
+                    ),
+                    "dose_response_dose_completeness": {
+                        "status": dose_completeness["status"],
+                        "category": dose_completeness["category"],
+                        "reason_code": dose_completeness["reason_code"],
+                    },
                     "prescription_source": (
                         "CLINICAL_RECORD"
                         if prescribed_dose_scope == CLINICAL_RESOLVED_SCOPE
@@ -5831,9 +6237,15 @@ def organize_and_merge(
                 "prescribed_dose_scope": prescribed_dose_scope,
                 "resolved_prescribed_dose_total_gy": resolved_prescribed_dose_total_gy,
                 "dose_response_eligible": dose_response_eligible,
-                "dose_response_eligibility_basis": (
-                    DOSE_RESPONSE_ELIGIBILITY_BASIS
+                "dose_response_ineligibility_reason_code": (
+                    dose_response_ineligibility_reason_code
                 ),
+                "dose_response_ineligibility_reason": (
+                    dose_response_ineligibility_reason
+                ),
+                "dose_completeness": dose_completeness,
+                "delivered_dose_provenance": co.delivered_dose_provenance,
+                "dose_response_eligibility_basis": DOSE_RESPONSE_ELIGIBILITY_BASIS,
                 "prescription_source": (
                     "CLINICAL_RECORD"
                     if prescribed_dose_scope == CLINICAL_RESOLVED_SCOPE

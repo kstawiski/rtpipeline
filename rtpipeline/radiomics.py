@@ -27,6 +27,7 @@ from .course_contract import (
     COURSE_CONTRACT_VERSION,
     build_dvh_decision,
     build_treatment_technique_contract,
+    classify_course_dose_completeness,
     load_course_contract,
 )
 from .layout import build_course_dirs
@@ -3345,6 +3346,15 @@ def _materialize_temp_course_tree(course_dir: Path, ct_slices_dir: Path, rtstruc
     metadata_path.parent.mkdir(parents=True, exist_ok=True)
     patient_id = course_dir.parent.name
     course_id = course_dir.name
+    temp_dose_classification = {"classification": "no_doses"}
+    temp_dose_completeness = classify_course_dose_completeness(
+        selected_plans=[],
+        selected_doses=[],
+        dose_classification=temp_dose_classification,
+        dose_grid=None,
+        per_plan_delivery=[],
+        delivery_status="no_records_at_all",
+    )
     metadata_path.write_text(
         json.dumps(
             {
@@ -3365,7 +3375,8 @@ def _materialize_temp_course_tree(course_dir: Path, ct_slices_dir: Path, rtstruc
                     "selected_plans": [],
                     "selected_doses": [],
                     "treatment_technique": build_treatment_technique_contract([]),
-                    "dose_classification": {"classification": "no_doses"},
+                    "dose_classification": temp_dose_classification,
+                    "dose_completeness": temp_dose_completeness,
                     "dvh": build_dvh_decision(0, 0, "no_records_at_all"),
                     "authoritative_rtstruct": {
                         "sop_instance_uid": rtstruct_uid,

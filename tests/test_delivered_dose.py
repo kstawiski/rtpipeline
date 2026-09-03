@@ -82,6 +82,12 @@ def _record(path: Path, uid: str, plan_uid: str, treatment_date: str, dose_gy: f
     ref_plan.ReferencedSOPClassUID = RTPlanStorage
     ref_plan.ReferencedSOPInstanceUID = plan_uid
     ds.ReferencedRTPlanSequence = Sequence([ref_plan])
+    session = Dataset()
+    session.CurrentFractionNumber = int(treatment_date[-2:])
+    session.TreatmentDeliveryType = "TREATMENT"
+    session.TreatmentTerminationStatus = "NORMAL"
+    session.ReferencedBeamNumber = 1
+    ds.TreatmentSessionBeamSequence = Sequence([session])
     if dose_gy is not None:
         dose_ref = Dataset()
         dose_ref.CalculatedDoseReferenceDoseValue = dose_gy
@@ -133,6 +139,36 @@ def test_no_treatment_records_are_unknown_not_zero(tmp_path):
 
     assert summary["delivered_dose_gy"] is None
     assert summary["delivery_status"] == "no_records_at_all"
+
+
+@pytest.mark.parametrize(
+    ("delivery_type", "termination_status"),
+    [("TRMT_PORTFILM", "NORMAL"), ("TREATMENT", "MACHINE")],
+)
+def test_noncompleted_or_nontreatment_record_is_not_a_delivered_fraction(
+    tmp_path,
+    delivery_type,
+    termination_status,
+):
+    plan = _plan(tmp_path / "plan.dcm", generate_uid(), 50.0, 25)
+    plan_uid = str(pydicom.dcmread(str(plan), stop_before_pixels=True).SOPInstanceUID)
+    record = _record(
+        tmp_path / "record.dcm",
+        generate_uid(),
+        plan_uid,
+        "20240201",
+    )
+    dataset = pydicom.dcmread(str(record))
+    session = dataset.TreatmentSessionBeamSequence[0]
+    session.TreatmentDeliveryType = delivery_type
+    session.TreatmentTerminationStatus = termination_status
+    dataset.save_as(str(record), write_like_original=False)
+
+    summary = organize._calculate_delivery_summary([plan], [record])
+
+    assert summary["delivered_dose_gy"] is None
+    assert summary["delivered_fraction_count"] == 0
+    assert summary["delivery_status"] == "delivered_but_records_absent"
 
 
 def test_records_with_unresolved_prescription_scope_do_not_create_delivery_state(

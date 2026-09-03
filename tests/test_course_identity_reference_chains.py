@@ -190,6 +190,9 @@ def _mk_dose(
     ds.FrameOfReferenceUID = frame_uid
     ds.add_new((0x3006, 0x0024), "UI", frame_uid)
     ds.DoseSummationType = "PLAN"
+    ds.DoseUnits = "GY"
+    ds.DoseType = "PHYSICAL"
+    ds.DoseGridScaling = 0.1
     ds.Rows = 2
     ds.Columns = 2
     ds.NumberOfFrames = 2
@@ -204,8 +207,6 @@ def _mk_dose(
         ds.BitsStored = 16
         ds.HighBit = 15
         ds.PixelRepresentation = 0
-        ds.DoseUnits = "GY"
-        ds.DoseGridScaling = 0.1
         ds.PixelData = np.full((2, 2, 2), 10, dtype=np.uint16).tobytes()
     ref_plan = Dataset()
     ref_plan.ReferencedSOPClassUID = RTPlanStorage
@@ -247,6 +248,12 @@ def _mk_record(path: Path, plan_uid: str, *, date: str = "20240102") -> Path:
     ref_plan.ReferencedSOPClassUID = RTPlanStorage
     ref_plan.ReferencedSOPInstanceUID = plan_uid
     ds.ReferencedRTPlanSequence = Sequence([ref_plan])
+    session = Dataset()
+    session.CurrentFractionNumber = int(date[-2:])
+    session.TreatmentDeliveryType = "TREATMENT"
+    session.TreatmentTerminationStatus = "NORMAL"
+    session.ReferencedBeamNumber = 1
+    ds.TreatmentSessionBeamSequence = Sequence([session])
     return _write(ds, path)
 
 
@@ -840,7 +847,7 @@ def test_genuine_sequential_boost_with_records_on_both_phases_sums(tmp_path: Pat
     assert classified.should_sum
 
 
-def test_delivered_remainder_replan_does_not_sum_full_plan_doses(tmp_path: Path) -> None:
+def test_delivered_remainder_replan_accumulates_delivered_fraction_weights(tmp_path: Path) -> None:
     """10102925269 used 2 fractions of a 20-fraction plan, then a 17-fraction replan."""
     struct_uid = generate_uid()
     study_uid = generate_uid()
@@ -895,11 +902,11 @@ def test_delivered_remainder_replan_does_not_sum_full_plan_doses(tmp_path: Path)
         treatment_record_paths=records,
     )
 
-    assert classified.classification == "replacement_plan_chain"
+    assert classified.classification == "delivered_remainder_plan_doses_accumulated"
     assert classified.selected_plans == plans
-    assert classified.selected_doses == []
-    assert set(classified.excluded_doses) == set(doses)
-    assert classified.should_sum is False
+    assert classified.selected_doses == doses
+    assert classified.excluded_doses == []
+    assert classified.should_sum is True
     assert classified.prescription_plans == [plans[0]]
 
 
@@ -978,11 +985,11 @@ def test_remainder_chain_keeps_independent_boost_in_prescription_scope(
         treatment_record_paths=records,
     )
 
-    assert classified.classification == "replacement_plan_chain"
+    assert classified.classification == "delivered_remainder_plan_doses_accumulated"
     assert classified.selected_plans == plans
-    assert classified.selected_doses == []
+    assert classified.selected_doses == doses
     assert classified.prescription_plans == [plans[0], plans[2]]
-    assert classified.should_sum is False
+    assert classified.should_sum is True
 
 
 def test_kopernik_419783_replacement_chain_withholds_course_dose_totals(
@@ -1059,10 +1066,11 @@ def test_kopernik_419783_replacement_chain_withholds_course_dose_totals(
         selected_plan_paths=classified.selected_plans,
     )
 
-    assert classified.classification == "replacement_plan_chain"
+    assert classified.classification == "delivered_remainder_plan_doses_accumulated"
     assert classified.prescription_plans == []
     assert classified.selected_plans == plans[:2]
-    assert classified.selected_doses == []
+    assert classified.selected_doses == doses[:2]
+    assert classified.should_sum is True
     assert delivery["planned_fraction_count"] == 35
     assert delivery["delivered_fraction_count"] == 16
     delivered_dose_gy = delivery["delivered_dose_gy"]
@@ -1727,7 +1735,7 @@ def test_organize_contract_round_trips_dose_membership_to_dvh(
         fractions=20,
         label="dose-bearing",
     )
-    _mk_dose(
+    dose_path = _mk_dose(
         dicom_root / "dose.dcm",
         dose_uid,
         plan_uid=plan_uid,
@@ -1735,7 +1743,12 @@ def test_organize_contract_round_trips_dose_membership_to_dvh(
         frame_uid=frame_uid,
         with_pixels=True,
     )
-    _mk_record(dicom_root / "record.dcm", plan_uid)
+    for index in range(20):
+        _mk_record(
+            dicom_root / f"record_{index}.dcm",
+            plan_uid,
+            date=f"202401{index + 2:02d}",
+        )
     ct = [
         _mk_ct(
             dicom_root / f"ct_{index}.dcm",
@@ -1752,6 +1765,14 @@ def test_organize_contract_round_trips_dose_membership_to_dvh(
     monkeypatch.setattr(org, "_index_series_and_registrations", lambda *args, **kwargs: ({}, {}, {}))
     monkeypatch.setattr(org, "_looks_like_patient_series_layout", lambda *args, **kwargs: False)
     monkeypatch.setattr(org, "_ensure_ct_nifti", _write_placeholder_ct_nifti)
+    validated_dose_paths: list[Path] = []
+    validate_dose_grid = org._validated_dose_grid_geometry
+
+    def _track_dose_grid_validation(ds, path):
+        validated_dose_paths.append(Path(path))
+        return validate_dose_grid(ds, path)
+
+    monkeypatch.setattr(org, "_validated_dose_grid_geometry", _track_dose_grid_validation)
 
     cfg = PipelineConfig(
         dicom_root=dicom_root,
@@ -1762,6 +1783,7 @@ def test_organize_contract_round_trips_dose_membership_to_dvh(
     )
     outputs = org.organize_and_merge(cfg)
 
+    assert validated_dose_paths == [dose_path]
     assert len(outputs) == 1
     course_dir = outputs[0].dirs.root
     contract = load_course_contract(course_dir)
@@ -1778,8 +1800,8 @@ def test_organize_contract_round_trips_dose_membership_to_dvh(
     delivery = contract.delivery
     assert delivery["prescribed_dose_gy"] == pytest.approx(55.0)
     assert delivery["resolved_prescribed_dose_total_gy"] == pytest.approx(55.0)
-    assert delivery["status"] == "partially_delivered"
-    assert delivery["delivered_dose_gy"] == pytest.approx(2.75)
+    assert delivery["status"] == "fully_delivered"
+    assert delivery["delivered_dose_gy"] == pytest.approx(55.0)
     assert delivery["method"] == "record_fraction_weighted_prescription"
     assert len(delivery["per_plan"]) == 1
     plan_delivery = delivery["per_plan"][0]
@@ -1792,9 +1814,11 @@ def test_organize_contract_round_trips_dose_membership_to_dvh(
         == "BEAMDOSE_TOTAL_5PCT_V1"
     )
     assert plan_delivery["resolved_prescribed_dose_total_gy"] == pytest.approx(55.0)
-    assert plan_delivery["delivered_record_count"] == 1
-    assert plan_delivery["delivered_fraction_count"] == 1
-    assert plan_delivery["treatment_dates"] == ["20240102"]
+    assert plan_delivery["delivered_record_count"] == 20
+    assert plan_delivery["delivered_fraction_count"] == 20
+    assert plan_delivery["treatment_dates"] == [
+        f"202401{index:02d}" for index in range(2, 22)
+    ]
     assert plan_delivery["zero_delivery_records"] is False
     assert plan_delivery["record_paths"]
     record_path = contract.resolve_path(

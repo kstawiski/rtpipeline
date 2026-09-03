@@ -452,6 +452,8 @@ def annotate_dvh_metrics(
     zero_dose_reason: str = "DmaxGy is positive.",
     zero_dose_trigger_metric: str | None = None,
     zero_dose_trigger_value_gy: float | None = None,
+    dose_response_ineligibility_reason: str | None = None,
+    quarantine_near_zero: bool = False,
 ) -> dict[str, object]:
     """Attach technique, provenance, missingness, and near-zero semantics."""
     output = dict(metrics)
@@ -463,10 +465,15 @@ def annotate_dvh_metrics(
         else _is_target_structure(structure_name, normalized_roi_type)
     )
     is_ebrt = normalized_technique == "EBRT"
-    if not dose_response_eligible:
-        relative_status = "excluded_dose_response_ineligible"
+    if not dose_response_eligible or quarantine_near_zero:
+        relative_status = (
+            "quarantined_near_zero_requires_reconciliation"
+            if quarantine_near_zero
+            else "excluded_dose_response_ineligible"
+        )
         relative_reason = (
-            "Prescription-relative DVH metrics are excluded because the "
+            dose_response_ineligibility_reason
+            or "Prescription-relative DVH metrics are excluded because the "
             "authoritative course contract marks this course as dose-response ineligible."
         )
         for column in RELATIVE_DVH_METRIC_COLUMNS:
@@ -528,6 +535,18 @@ def annotate_dvh_metrics(
         dose_metric_reason = "Dose metrics did not meet the near-zero geometry-QC trigger."
         geometry_usable_for_dose_response = True
 
+    if quarantine_near_zero:
+        dose_metric_status = "quarantined_near_zero_requires_reconciliation"
+        dose_metric_reason = (
+            "Near-zero target dose is retained for audit but quarantined pending "
+            "course-plan and target reconciliation. Low D95 alone does not establish "
+            "non-treatment or permit reassignment."
+        )
+        geometry_usable_for_dose_response = False
+        dose_response_eligible = False
+    elif not dose_response_eligible and dose_response_ineligibility_reason:
+        dose_metric_reason = dose_response_ineligibility_reason
+
     if not target_structure:
         output["HI%"] = None
         output["HI_status"] = "not_applicable_non_target"
@@ -577,6 +596,11 @@ def annotate_dvh_metrics(
             ),
             "dose_metric_status": dose_metric_status,
             "dose_metric_reason": dose_metric_reason,
+            "dose_response_quarantine_status": (
+                "pending_plan_target_reconciliation"
+                if quarantine_near_zero
+                else None
+            ),
             "target_like": target_structure,
             "ROI_Interpreted_Type": normalized_roi_type or None,
             "treatment_technique": normalized_technique,
@@ -721,6 +745,7 @@ class DVHDoseResolution:
     prescription_source: Optional[str] = None
     clinical_prescription_outcome: Optional[str] = None
     delivered_dose_gy: Optional[float] = None
+    delivered_dose_provenance: Optional[str] = None
     delivery_status: Optional[str] = None
     dose_response_dose_field: str = DOSE_RESPONSE_FIELD
     dose_response_eligible: bool = False
@@ -753,12 +778,25 @@ def classify_dvh_dose_plan_scope(
 ) -> DVHDosePlanScope:
     """Compare plans represented by the dose grid with the course plan set."""
     expected: set[str] = set()
+    completeness: dict[str, object] | None = None
+    try:
+        raw_data = getattr(contract, "data")
+        candidate = raw_data.get("dose_completeness")
+        if isinstance(candidate, dict):
+            completeness = candidate
+            for value in candidate.get("expected_plan_uids") or []:
+                uid = str(value).strip()
+                if uid:
+                    expected.add(uid)
+    except (AttributeError, TypeError):
+        pass
     try:
         delivery = getattr(contract, "delivery")
-        for item in delivery.get("per_plan") or []:
-            uid = str(item.get("plan_sop_uid") or "").strip()
-            if uid:
-                expected.add(uid)
+        if not expected:
+            for item in delivery.get("per_plan") or []:
+                uid = str(item.get("plan_sop_uid") or "").strip()
+                if uid:
+                    expected.add(uid)
     except (AttributeError, TypeError):
         pass
     if not expected:
@@ -830,6 +868,17 @@ def classify_dvh_dose_plan_scope(
             course_treatment_plan_count=len(expected),
             dose_grid_plan_count=len(represented),
             unrepresented_treatment_plan_uids=(),
+        )
+    if completeness is not None and completeness.get("status") != "eligible":
+        return DVHDosePlanScope(
+            status="dose_course_incomplete",
+            reason=str(
+                completeness.get("reason")
+                or "The course-level dose completeness contract is not eligible."
+            ),
+            course_treatment_plan_count=len(expected),
+            dose_grid_plan_count=len(represented),
+            unrepresented_treatment_plan_uids=missing,
         )
     return DVHDosePlanScope(
         status="complete_course_plan_set",
@@ -1156,6 +1205,9 @@ def _resolve_dvh_dose(
             prescription_source=str(contract.delivery.get("prescription_source") or "") or None,
             clinical_prescription_outcome=str((contract.data.get("clinical_prescription_evidence") or {}).get("outcome") or "") or None,
             delivered_dose_gy=contract.delivered_dose_gy,
+            delivered_dose_provenance=str(
+                contract.delivery.get("delivered_dose_provenance") or ""
+            ) or None,
             delivery_status=str(contract.delivery.get("status") or ""),
             dose_response_dose_field=str(contract.delivery.get("dose_response_field") or ""),
             dose_response_eligible=_contract_dose_response_eligible(contract),
@@ -1193,6 +1245,9 @@ def _resolve_dvh_dose(
         prescription_source=str(contract.delivery.get("prescription_source") or "") or None,
         clinical_prescription_outcome=str((contract.data.get("clinical_prescription_evidence") or {}).get("outcome") or "") or None,
         delivered_dose_gy=contract.delivered_dose_gy,
+        delivered_dose_provenance=str(
+            contract.delivery.get("delivered_dose_provenance") or ""
+        ) or None,
         delivery_status=str(contract.delivery.get("status") or ""),
         dose_response_dose_field=DOSE_RESPONSE_FIELD,
         dose_response_eligible=_contract_dose_response_eligible(contract),
@@ -2424,6 +2479,7 @@ def _compute_nifti_based_dvh(
     technique: str = "UNKNOWN",
     prescription_resolved: bool = False,
     dose_response_eligible: bool = True,
+    dose_response_ineligibility_reason: str | None = None,
 ) -> List[Dict]:
     """Compute DVH for TotalSegmentator and custom composite structures directly from NIfTI masks.
 
@@ -2583,6 +2639,12 @@ def _compute_nifti_based_dvh(
                 target_like=target_like,
                 prescription_resolved=prescription_resolved,
                 dose_response_eligible=dose_response_eligible,
+                dose_response_ineligibility_reason=dose_response_ineligibility_reason,
+                quarantine_near_zero=bool(
+                    target_like
+                    and zero_qc.get("trigger_value_gy") is not None
+                    and float(zero_qc["trigger_value_gy"]) <= 0.1
+                ),
                 rtstruct_sop_instance_uid=None,
                 rtstruct_path=None,
                 structure_provenance_type="NIFTI_MASK",
@@ -2685,6 +2747,9 @@ def dvh_for_course(
         contract.treatment_technique.get("classification") or "UNKNOWN"
     ).strip().upper()
     contract_dose_response_eligible = _contract_dose_response_eligible(contract)
+    contract_dose_completeness_reason = str(
+        contract.delivery.get("dose_response_ineligibility_reason") or ""
+    ).strip()
 
     out_xlsx = course_dir / "dvh_metrics.xlsx"
     # Resolve and enforce the contract before cache reuse. A newly failing
@@ -2852,6 +2917,12 @@ def dvh_for_course(
             target_like=target_like,
             prescription_resolved=prescription_resolved,
             dose_response_eligible=dose_response_eligible,
+            dose_response_ineligibility_reason=contract_dose_completeness_reason,
+            quarantine_near_zero=bool(
+                target_like
+                and zero_qc.get("trigger_value_gy") is not None
+                and float(zero_qc["trigger_value_gy"]) <= 0.1
+            ),
             rtstruct_sop_instance_uid=rtstruct_sop_uid,
             rtstruct_path=rtstruct_path,
             zero_dose_status=str(zero_qc["status"]),
@@ -3068,6 +3139,7 @@ def dvh_for_course(
             technique=treatment_technique,
             prescription_resolved=prescription_resolved,
             dose_response_eligible=dose_response_eligible,
+            dose_response_ineligibility_reason=contract_dose_completeness_reason,
         )
         results.extend(nifti_results)
     else:
@@ -3113,6 +3185,24 @@ def dvh_for_course(
             })
 
     target_coverage = summarize_target_near_zero_rows(clean_results)
+    near_zero_count = target_coverage.get("near_zero_target_row_count")
+    course_near_zero_quarantine = bool(
+        isinstance(near_zero_count, (int, float)) and near_zero_count > 0
+    )
+    if course_near_zero_quarantine:
+        dose_response_eligible = False
+        quarantine_reason = (
+            "At least one target-like ROI has D95Gy <= 0.1 Gy. The course is "
+            "quarantined pending plan-target reconciliation; this is not an automatic "
+            "clinical exclusion or dose reassignment."
+        )
+        for row in clean_results:
+            row["dose_response_quarantine_status"] = (
+                "pending_plan_target_reconciliation"
+            )
+            row["dose_response_quarantine_reason"] = quarantine_reason
+            row["dose_response_eligible"] = False
+            row["dose_metric_usable_for_dose_response"] = False
 
     # Save curve data to JSON
     if curve_data_export:
@@ -3185,6 +3275,8 @@ def dvh_for_course(
             )
         )
         row["Delivered_Dose_Gy"] = dose_resolution.delivered_dose_gy
+        row["Delivered_Dose_Provenance"] = dose_resolution.delivered_dose_provenance
+        row["Physical_Delivered_Dose_Grid_Available"] = False
         row["Delivered_Dose_Status"] = (
             "resolved"
             if dose_plan_scope.complete and dose_resolution.delivered_dose_gy is not None
@@ -3193,11 +3285,15 @@ def dvh_for_course(
             else "unresolved"
         )
         row["Delivered_Dose_Reason"] = (
-            "Delivered dose is available for the complete course plan set."
+            "A nominal delivered total was derived from RTRECORD fraction counts and "
+            "planned RTPLAN dose references for the complete plan set. The physical "
+            "dose grid is RTDOSE-based planned dose, not measured delivered dose."
             if dose_plan_scope.complete and dose_resolution.delivered_dose_gy is not None
             else (
-                "Delivered dose is available for the selected plan scope, but the dose "
-                "grid does not represent the complete course treatment plan set."
+                "A nominal delivered total was derived from RTRECORD fraction counts "
+                "and planned RTPLAN dose references for the selected plan scope only. "
+                "The physical dose grid is RTDOSE-based planned dose, and the course "
+                "plan set is incomplete."
             )
             if dose_resolution.delivered_dose_gy is not None
             else (

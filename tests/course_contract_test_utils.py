@@ -25,6 +25,7 @@ from rtpipeline.course_contract import (
     COURSE_CONTRACT_VERSION,
     build_treatment_technique_contract,
     build_dvh_decision,
+    classify_course_dose_completeness,
     DOSE_GRID_SEMANTICS,
     DOSE_RESPONSE_FIELD,
     UNKNOWN_DELIVERY_DOSE_GRID_SEMANTICS,
@@ -409,6 +410,20 @@ def write_minimal_course_contract(
     course_resolved_prescribed = (
         plan_entries[0]["resolved_prescribed_dose_total_gy"] if plan_entries else None
     )
+    dose_classification = {
+        "classification": "single_dose" if dose_entries else "no_doses",
+        "should_sum": False,
+    }
+    dose_completeness = classify_course_dose_completeness(
+        selected_plans=plan_entries,
+        selected_doses=dose_entries,
+        dose_classification=dose_classification,
+        dose_grid=dose_grid,
+        per_plan_delivery=per_plan,
+        delivery_status=delivery_status,
+        spatial_mapping_validated=bool(dose_entries),
+    )
+    dose_response_eligible = False
     payload = {
         "patient_id": course_dir.parent.name,
         "course_id": course_dir.name,
@@ -423,14 +438,14 @@ def write_minimal_course_contract(
             "treatment_technique": build_treatment_technique_contract(
                 plans, course_dir=course_dir
             ),
-            "dose_classification": {
-                "classification": "single_dose" if dose_entries else "no_doses",
-                "should_sum": False,
-            },
+            "dose_classification": dose_classification,
+            "dose_completeness": dose_completeness,
             "dvh": build_dvh_decision(
                 len(plan_entries),
                 len(dose_entries),
                 delivery_status,
+                dose_response_eligible=dose_response_eligible,
+                dose_completeness=dose_completeness,
             ),
             "authoritative_rtstruct": rtstruct_entry,
             "planning_ct": {

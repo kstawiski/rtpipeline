@@ -34,6 +34,7 @@ from types import SimpleNamespace
 from typing import List
 
 import numpy as np
+import pydicom
 import pytest
 import SimpleITK as sitk
 from pydicom.dataset import Dataset, FileDataset, FileMetaDataset
@@ -42,7 +43,10 @@ from pydicom.uid import ExplicitVRLittleEndian, RTDoseStorage, RTPlanStorage, ge
 
 from rtpipeline.dicom_copy import DicomCopyConfig, DicomCopyManager
 from rtpipeline.radiomics_parallel import _prepare_radiomics_task
-from rtpipeline.organize import _sum_doses_with_resample
+from rtpipeline.organize import (
+    _sum_doses_with_resample,
+    _validated_dose_grid_geometry,
+)
 from rtpipeline.custom_models import (
     _check_label_name_collisions,
     _load_named_binary_masks,
@@ -297,6 +301,44 @@ def _mk_dose_dataset(
     return path
 
 
+def test_dose_geometry_normalizes_dicom_absolute_z_offsets(tmp_path: Path) -> None:
+    path = _mk_dose_dataset(
+        tmp_path / "absolute_offsets.dcm",
+        rows=2,
+        cols=2,
+        frames=2,
+        pixel_spacing=[1.0, 1.0],
+        origin=[0.0, 0.0, -100.0],
+        iop=[1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        offsets=[-100.0, -97.0],
+        values=np.ones((2, 2, 2), dtype=np.uint16),
+    )
+    dataset = pydicom.dcmread(str(path), stop_before_pixels=True)
+
+    geometry = _validated_dose_grid_geometry(dataset, path)
+
+    assert np.asarray(geometry["offsets"]).tolist() == [0.0, 3.0]
+
+
+def test_dose_geometry_rejects_nonphysical_dose(tmp_path: Path) -> None:
+    path = _mk_dose_dataset(
+        tmp_path / "effective.dcm",
+        rows=2,
+        cols=2,
+        frames=1,
+        pixel_spacing=[1.0, 1.0],
+        origin=[0.0, 0.0, 0.0],
+        iop=[1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        offsets=[0.0],
+        values=np.ones((1, 2, 2), dtype=np.uint16),
+    )
+    dataset = pydicom.dcmread(str(path), stop_before_pixels=False)
+    dataset.DoseType = "EFFECTIVE"
+
+    with pytest.raises(ValueError, match="physical dose in Gy"):
+        _validated_dose_grid_geometry(dataset, path)
+
+
 def test_sum_doses_with_resample_handles_oblique_reference_in_plane_rotation(tmp_path: Path) -> None:
     """Reference grid is in-plane rotated 90 degrees:
       row_cosines_ref (u) = [0, 1, 0]   -> column index increases along +Y
@@ -345,12 +387,142 @@ def test_sum_doses_with_resample_handles_oblique_reference_in_plane_rotation(tmp
 
     result = new_ds.pixel_array.astype("float64") * float(new_ds.DoseGridScaling)
 
+    output_origin = np.asarray(new_ds.ImagePositionPatient, dtype=float)
+    output_iop = np.asarray(new_ds.ImageOrientationPatient, dtype=float)
+    output_row_cos = output_iop[:3]
+    output_col_cos = output_iop[3:]
+    output_spacing = np.asarray(new_ds.PixelSpacing, dtype=float)
+    output_offsets = np.asarray(new_ds.GridFrameOffsetVector, dtype=float)
+    output_slice_cos = np.cross(output_row_cos, output_col_cos)
     for f in range(frames):
         for r in range(rows_ref):
             for c in range(cols_ref):
+                physical = np.asarray([-float(r), float(c), float(f)])
+                delta = physical - output_origin
+                output_r = int(round(float(np.dot(delta, output_col_cos) / output_spacing[0])))
+                output_c = int(round(float(np.dot(delta, output_row_cos) / output_spacing[1])))
+                output_slice = float(np.dot(delta, output_slice_cos))
+                output_f = int(np.argmin(np.abs(output_offsets - output_slice)))
                 # source row = c, source col = 2 - r (see derivation above)
                 expected = 100 * f + 10 * c + (2 - r)
-                assert result[f, r, c] == pytest.approx(expected, abs=0.5), (f, r, c)
+                assert result[output_f, output_r, output_c] == pytest.approx(
+                    expected,
+                    abs=0.5,
+                ), (f, r, c)
+
+
+def test_sum_doses_applies_delivered_fraction_weights(tmp_path: Path) -> None:
+    first = _mk_dose_dataset(
+        tmp_path / "first.dcm",
+        rows=2,
+        cols=2,
+        frames=2,
+        pixel_spacing=[1.0, 1.0],
+        origin=[0.0, 0.0, 0.0],
+        iop=[1, 0, 0, 0, 1, 0],
+        offsets=[0.0, 1.0],
+        values=np.full((2, 2, 2), 10),
+    )
+    second = _mk_dose_dataset(
+        tmp_path / "second.dcm",
+        rows=2,
+        cols=2,
+        frames=2,
+        pixel_spacing=[1.0, 1.0],
+        origin=[0.0, 0.0, 0.0],
+        iop=[1, 0, 0, 0, 1, 0],
+        offsets=[0.0, 1.0],
+        values=np.full((2, 2, 2), 20),
+    )
+    plan_sum = Dataset()
+    plan_sum.SOPClassUID = RTPlanStorage
+    plan_sum.SOPInstanceUID = generate_uid()
+
+    output, _, _ = _sum_doses_with_resample(
+        [first, second], plan_sum, [], dose_weights=[0.5, 0.25]
+    )
+
+    physical = output.pixel_array.astype(float) * float(output.DoseGridScaling)
+    assert np.allclose(physical, 10.0, atol=0.01)
+    assert "delivered-fraction weights" in str(output.DoseComment)
+
+
+def test_sum_doses_uses_union_extent_without_dropping_disjoint_source(
+    tmp_path: Path,
+) -> None:
+    first = _mk_dose_dataset(
+        tmp_path / "first.dcm",
+        rows=2,
+        cols=2,
+        frames=2,
+        pixel_spacing=[1.0, 1.0],
+        origin=[0.0, 0.0, 0.0],
+        iop=[1, 0, 0, 0, 1, 0],
+        offsets=[0.0, 1.0],
+        values=np.full((2, 2, 2), 10.0),
+    )
+    second = _mk_dose_dataset(
+        tmp_path / "second.dcm",
+        rows=2,
+        cols=2,
+        frames=2,
+        pixel_spacing=[1.0, 1.0],
+        origin=[10.0, 0.0, 0.0],
+        iop=[1, 0, 0, 0, 1, 0],
+        offsets=[0.0, 1.0],
+        values=np.full((2, 2, 2), 20.0),
+    )
+    plan_sum = Dataset()
+    plan_sum.SOPClassUID = RTPlanStorage
+    plan_sum.SOPInstanceUID = generate_uid()
+
+    new_ds, _, source_uids = _sum_doses_with_resample(
+        [first, second],
+        plan_sum,
+        [],
+    )
+
+    result = new_ds.pixel_array.astype("float64") * float(new_ds.DoseGridScaling)
+    assert result.shape == (2, 2, 12)
+    tolerance = float(new_ds.DoseGridScaling)
+    assert np.allclose(result[:, :, :2], 10.0, atol=tolerance)
+    assert np.allclose(result[:, :, 10:], 20.0, atol=tolerance)
+    assert np.allclose(result[:, :, 2:10], 0.0, atol=tolerance)
+    assert len(source_uids) == 2
+
+
+def test_sum_doses_rejects_different_frames_of_reference(tmp_path: Path) -> None:
+    first = _mk_dose_dataset(
+        tmp_path / "first.dcm",
+        rows=2,
+        cols=2,
+        frames=2,
+        pixel_spacing=[1.0, 1.0],
+        origin=[0.0, 0.0, 0.0],
+        iop=[1, 0, 0, 0, 1, 0],
+        offsets=[0.0, 1.0],
+        values=np.ones((2, 2, 2)),
+    )
+    second = _mk_dose_dataset(
+        tmp_path / "second.dcm",
+        rows=2,
+        cols=2,
+        frames=2,
+        pixel_spacing=[1.0, 1.0],
+        origin=[0.0, 0.0, 0.0],
+        iop=[1, 0, 0, 0, 1, 0],
+        offsets=[0.0, 1.0],
+        values=np.ones((2, 2, 2)),
+    )
+    changed = pydicom.dcmread(str(second))
+    changed.FrameOfReferenceUID = "9.8.7"
+    changed.save_as(str(second), enforce_file_format=True)
+    plan_sum = Dataset()
+    plan_sum.SOPClassUID = RTPlanStorage
+    plan_sum.SOPInstanceUID = generate_uid()
+
+    with pytest.raises(ValueError, match="FrameOfReferenceUID"):
+        _sum_doses_with_resample([first, second], plan_sum, [])
 
 
 # ---------------------------------------------------------------------------
