@@ -484,6 +484,23 @@ def _scientific_settings(mapping, ignored=()):
 _custom_structure_path = Path(CUSTOM_STRUCTURES_CONFIG) if CUSTOM_STRUCTURES_CONFIG else None
 _custom_structure_dependency = semantic_yaml_or_absent(_custom_structure_path)
 
+ORGANIZE_CONFIG_DEPENDENCY = _dependency_path(
+    "organize",
+    {
+        "dicom_root": str(DICOM_ROOT),
+        "clinical_prescription_records": (
+            str(CLINICAL_PRESCRIPTION_RECORDS)
+            if CLINICAL_PRESCRIPTION_RECORDS is not None
+            else None
+        ),
+        "custom_structures": _custom_structure_dependency,
+        "prioritize_short_courses": PRIORITIZE_SHORT_COURSES,
+        "environment": _ENV_MAIN,
+    },
+    [CLINICAL_PRESCRIPTION_RECORDS]
+    if CLINICAL_PRESCRIPTION_RECORDS is not None
+    else [],
+)
 SEGMENTATION_CONFIG_DEPENDENCY = _dependency_path(
     "segmentation",
     {
@@ -611,6 +628,14 @@ _radiomics_source_paths = [
 ]
 if _custom_structure_path:
     _radiomics_source_paths.append(_custom_structure_path)
+QC_CONFIG_DEPENDENCY = _dependency_path(
+    "qc",
+    {
+        "custom_structures": _custom_structure_dependency,
+        "environment": _ENV_MAIN,
+    },
+    [_custom_structure_path] if _custom_structure_path else [],
+)
 RADIOMICS_CONFIG_DEPENDENCY = _dependency_path(
     "radiomics", _radiomics_scientific_config, _radiomics_source_paths
 )
@@ -802,6 +827,26 @@ RADIOMICS_ROBUSTNESS_SENTINEL_PATTERN = str(OUTPUT_DIR / "{patient}" / "{course}
 CROP_CT_SENTINEL_PATTERN = str(OUTPUT_DIR / "{patient}" / "{course}" / ".crop_ct_done")
 QC_SENTINEL_PATTERN = str(OUTPUT_DIR / "{patient}" / "{course}" / ".qc_done")
 
+_GENERIC_STAGE_COMPLETION_DEPENDENCIES = (
+    ("segmentation", ".segmentation_done", SEGMENTATION_CONFIG_DEPENDENCY),
+    ("custom_models", ".custom_models_done", CUSTOM_MODELS_CONFIG_DEPENDENCY),
+    ("crop_ct", ".crop_ct_done", CROP_CT_CONFIG_DEPENDENCY),
+    ("dvh", ".dvh_done", DVH_CONFIG_DEPENDENCY),
+    ("qc", ".qc_done", QC_CONFIG_DEPENDENCY),
+)
+for _stage_name, _sentinel_name, _dependency in _GENERIC_STAGE_COMPLETION_DEPENDENCIES:
+    _existing_stage_sentinels = list(OUTPUT_DIR.glob(f"*/*/{_sentinel_name}"))
+    _unbound_stage_sentinels = advance_dependency_past_unbound_outputs(
+        Path(_dependency),
+        _existing_stage_sentinels,
+        binding_field="configuration_dependency_sha256",
+    )
+    if _unbound_stage_sentinels:
+        sys.stderr.write(
+            f"[rtpipeline] Invalidating {_unbound_stage_sentinels} {_stage_name} "
+            "completion sentinel(s) that lack configuration-bound stage evidence.\n"
+        )
+
 _existing_radiomics_sentinels = list(OUTPUT_DIR.glob("*/*/.radiomics_done"))
 _unbound_radiomics_sentinels = advance_dependency_past_unbound_outputs(
     Path(RADIOMICS_CONFIG_DEPENDENCY),
@@ -890,6 +935,7 @@ rule all:
 
 checkpoint organize_courses:
     input:
+        configuration=ORGANIZE_CONFIG_DEPENDENCY,
         clinical_records=lambda wildcards: (
             [str(CLINICAL_PRESCRIPTION_RECORDS)]
             if CLINICAL_PRESCRIPTION_RECORDS is not None
@@ -939,116 +985,45 @@ _seg_params_lambda = lambda w: (
     ("--force-segmentation" if SEG_FORCE_SEGMENTATION else "")
 )
 
-if config.get("container_mode", False):
-    rule segmentation_course:
-        input:
-            manifest=_manifest_input,
-            organized=ORGANIZED_SENTINEL_PATTERN,
-            configuration=SEGMENTATION_CONFIG_DEPENDENCY
-        output:
-            sentinel=SEGMENTATION_SENTINEL_PATTERN
-        log:
-            str(LOGS_DIR / "segmentation" / "{patient}_{course}.log")
-        threads:
-            4
-        resources:
-            seg_workers=1
-        conda:
-            "envs/rtpipeline.yaml"
-        params:
-            extra_args=_seg_params_lambda,
-            python=CONTAINER_MAIN_PYTHON,
-            python_bin=CONTAINER_MAIN_BIN,
-            dicom_root=str(DICOM_ROOT),
-            output_dir=lambda w, output: str(Path(output.sentinel).parents[2]),
-            logs_dir=str(LOGS_DIR),
-            campaign_mode=str(CAMPAIGN_MODE)
-        shell:
-            """
-            set -e
-            export PATH="{params.python_bin}:$PATH"
-            mkdir -p $(dirname {output.sentinel})
-            rm -f {output.sentinel}
-            mkdir -p $(dirname {log})
-            
-            if "{params.python}" -m rtpipeline.cli \
-                --dicom-root "{params.dicom_root}" \
-                --outdir "{params.output_dir}" \
-                --logs "{params.logs_dir}" \
-                --stage segmentation \
-                --course-filter "{wildcards.patient}/{wildcards.course}" \
-                --max-workers {threads} \
-                --manifest "{input.manifest}" \
-                {params.extra_args} > {log} 2>&1; then
-                if ! grep -Eqx "(ok|disabled)" {output.sentinel}; then
-                    echo "Segmentation command returned zero without a validated terminal sentinel; see {log}" >&2
-                    exit 1
-                fi
-            else
-                echo "Required course stage failed; see {log}" >&2
-                if [ ! -s {output.sentinel} ]; then
-                    echo "failed" > {output.sentinel}
-                fi
-                if [ "{params.campaign_mode}" != "True" ]; then
-                    exit 1
-                fi
-            fi
-            """
-else:
-    rule segmentation_course:
-        input:
-            manifest=_manifest_input,
-            organized=ORGANIZED_SENTINEL_PATTERN,
-            configuration=SEGMENTATION_CONFIG_DEPENDENCY
-        output:
-            sentinel=SEGMENTATION_SENTINEL_PATTERN
-        log:
-            str(LOGS_DIR / "segmentation" / "{patient}_{course}.log")
-        threads:
-            4
-        resources:
-            seg_workers=1
-        conda:
-            "envs/rtpipeline.yaml"
-        params:
-            extra_args=_seg_params_lambda,
-            python=PYTHON_MAIN,
-            python_bin=PYTHON_MAIN_BIN,
-            dicom_root=str(DICOM_ROOT),
-            output_dir=lambda w, output: str(Path(output.sentinel).parents[2]),
-            logs_dir=str(LOGS_DIR),
-            campaign_mode=str(CAMPAIGN_MODE)
-        shell:
-            """
-            set -e
-            export PATH="{params.python_bin}:$PATH"
-            mkdir -p $(dirname {output.sentinel})
-            rm -f {output.sentinel}
-            mkdir -p $(dirname {log})
-
-            if "{params.python}" -m rtpipeline.cli \
-                --dicom-root "{params.dicom_root}" \
-                --outdir "{params.output_dir}" \
-                --logs "{params.logs_dir}" \
-                --stage segmentation \
-                --course-filter "{wildcards.patient}/{wildcards.course}" \
-                --max-workers {threads} \
-                --manifest "{input.manifest}" \
-                {params.extra_args} > {log} 2>&1; then
-                if ! grep -Eqx "(ok|disabled)" {output.sentinel}; then
-                    echo "Segmentation command returned zero without a validated terminal sentinel; see {log}" >&2
-                    exit 1
-                fi
-            else
-                echo "Required course stage failed; see {log}" >&2
-                if [ ! -s {output.sentinel} ]; then
-                    echo "failed" > {output.sentinel}
-                fi
-                if [ "{params.campaign_mode}" != "True" ]; then
-                    exit 1
-                fi
-            fi
-            """
+rule segmentation_course:
+    input:
+        manifest=_manifest_input,
+        organized=ORGANIZED_SENTINEL_PATTERN,
+        configuration=SEGMENTATION_CONFIG_DEPENDENCY
+    output:
+        sentinel=SEGMENTATION_SENTINEL_PATTERN
+    log:
+        str(LOGS_DIR / "segmentation" / "{patient}_{course}.log")
+    threads:
+        4
+    resources:
+        seg_workers=1
+    conda:
+        "envs/rtpipeline.yaml"
+    params:
+        stage="segmentation",
+        campaign_mode=CAMPAIGN_MODE,
+        enabled=True,
+        extra_args=_seg_params_lambda,
+        python=(
+            CONTAINER_MAIN_PYTHON
+            if config.get("container_mode", False)
+            else PYTHON_MAIN
+        ),
+        python_bin=(
+            CONTAINER_MAIN_BIN
+            if config.get("container_mode", False)
+            else PYTHON_MAIN_BIN
+        ),
+        root_dir=lambda w: str(ROOT_DIR),
+        configfile=str(EFFECTIVE_CONFIGFILE),
+        radiomics_env=_ENV_RADIOMICS,
+        dicom_root=str(DICOM_ROOT),
+        output_dir=lambda w, output: str(Path(output.sentinel).parents[2]),
+        logs_dir=str(LOGS_DIR),
+        custom_structures=CUSTOM_STRUCTURES_CONFIG
+    script:
+        "workflow/scripts/run_course_stage.py"
 
 
 _custom_params_lambda = lambda w: (
@@ -1280,7 +1255,8 @@ rule qc_course:
     input:
         manifest=_manifest_input,
         segmentation=SEGMENTATION_SENTINEL_PATTERN,
-        crop=CROP_CT_SENTINEL_PATTERN
+        crop=CROP_CT_SENTINEL_PATTERN,
+        configuration=QC_CONFIG_DEPENDENCY
     output:
         sentinel=QC_SENTINEL_PATTERN
     log:

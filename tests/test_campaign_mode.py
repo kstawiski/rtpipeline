@@ -23,6 +23,7 @@ from types import SimpleNamespace
 import pytest
 import rtpipeline.segmentation as segmentation
 import rtpipeline.snakemake_delegate as snakemake_delegate
+from rtpipeline.config_dependencies import materialize_stage_dependency
 
 import sys
 
@@ -77,9 +78,16 @@ def _workflow(tmp_path: Path, *, campaign_mode: bool, python: str | None = None)
     manifest.write_text('{"courses": []}', encoding="utf-8")
     segmentation = course_dir / ".segmentation_done"
     segmentation.write_text("ok\n", encoding="utf-8")
+    configuration = materialize_stage_dependency(
+        tmp_path / "dependencies", "dvh", {"test": True}
+    )
 
     return SimpleNamespace(
-        input=SimpleNamespace(manifest=str(manifest), segmentation=str(segmentation)),
+        input=SimpleNamespace(
+            manifest=str(manifest),
+            segmentation=str(segmentation),
+            configuration=str(configuration),
+        ),
         output=SimpleNamespace(sentinel=str(course_dir / ".dvh_done")),
         log=[str(logs / "dvh.log")],
         threads=1,
@@ -102,6 +110,18 @@ def _workflow(tmp_path: Path, *, campaign_mode: bool, python: str | None = None)
 
 def _run(workflow):
     return runpy.run_path(str(RUN_COURSE_STAGE), init_globals={"snakemake": workflow})
+
+
+def _set_stage_configuration(workflow, tmp_path: Path, stage: str) -> None:
+    configuration_stage = {
+        "segmentation_custom": "custom-models",
+        "crop_ct": "crop-ct",
+    }.get(stage, stage)
+    workflow.input.configuration = str(
+        materialize_stage_dependency(
+            tmp_path / "dependencies", configuration_stage, {"test": True}
+        )
+    )
 
 
 def test_campaign_mode_contains_a_launch_failure(tmp_path):
@@ -179,8 +199,9 @@ def test_campaign_mode_writes_a_ledger_record(tmp_path):
 def test_custom_segmentation_campaign_failure_is_isolated_per_course(tmp_path):
     workflow = _workflow(tmp_path, campaign_mode=True)
     workflow.params.stage = "segmentation_custom"
+    _set_stage_configuration(workflow, tmp_path, "segmentation_custom")
     workflow.output.sentinel = str(
-        tmp_path / "PT001" / "COURSE_A" / ".segmentation_custom_done"
+        tmp_path / "PT001" / "COURSE_A" / ".custom_models_done"
     )
 
     with pytest.raises(SystemExit) as excinfo:
@@ -199,14 +220,19 @@ def test_custom_segmentation_campaign_failure_is_isolated_per_course(tmp_path):
 def test_disabled_custom_segmentation_publishes_disabled_without_launch(tmp_path):
     workflow = _workflow(tmp_path, campaign_mode=True, python=_MISSING_PYTHON)
     workflow.params.stage = "segmentation_custom"
+    _set_stage_configuration(workflow, tmp_path, "segmentation_custom")
     workflow.params.enabled = False
     workflow.output.sentinel = str(
-        tmp_path / "PT001" / "COURSE_A" / ".segmentation_custom_done"
+        tmp_path / "PT001" / "COURSE_A" / ".custom_models_done"
     )
 
     _run(workflow)
 
-    assert Path(workflow.output.sentinel).read_text(encoding="utf-8").strip() == "disabled"
+    import json
+
+    payload = json.loads(Path(workflow.output.sentinel).read_text(encoding="utf-8"))
+    assert payload["status"] == "disabled"
+    assert payload["schema"] == "rtpipeline-stage-completion-v1"
 
 
 def test_disabled_crop_skips_rich_segmentation_validation(tmp_path, monkeypatch):
@@ -214,6 +240,7 @@ def test_disabled_crop_skips_rich_segmentation_validation(tmp_path, monkeypatch)
 
     workflow = _workflow(tmp_path, campaign_mode=True, python=_MISSING_PYTHON)
     workflow.params.stage = "crop_ct"
+    _set_stage_configuration(workflow, tmp_path, "crop_ct")
     workflow.params.enabled = False
     workflow.output.sentinel = str(
         tmp_path / "PT001" / "COURSE_A" / ".crop_ct_done"
@@ -229,7 +256,11 @@ def test_disabled_crop_skips_rich_segmentation_validation(tmp_path, monkeypatch)
 
     _run(workflow)
 
-    assert Path(workflow.output.sentinel).read_text(encoding="utf-8").strip() == "disabled"
+    import json
+
+    assert json.loads(Path(workflow.output.sentinel).read_text(encoding="utf-8"))[
+        "status"
+    ] == "disabled"
     log_path = Path(workflow.log[0])
     assert not log_path.exists() or log_path.stat().st_size == 0
 
@@ -239,6 +270,7 @@ def test_disabled_crop_still_refuses_failed_segmentation_sentinel(tmp_path):
 
     workflow = _workflow(tmp_path, campaign_mode=True, python=_MISSING_PYTHON)
     workflow.params.stage = "crop_ct"
+    _set_stage_configuration(workflow, tmp_path, "crop_ct")
     workflow.params.enabled = False
     workflow.output.sentinel = str(
         tmp_path / "PT001" / "COURSE_A" / ".crop_ct_done"
@@ -255,7 +287,7 @@ def test_disabled_crop_still_refuses_failed_segmentation_sentinel(tmp_path):
 def test_no_planning_ct_propagates_as_not_applicable(tmp_path, monkeypatch):
     workflow = _workflow(tmp_path, campaign_mode=True, python=_MISSING_PYTHON)
     workflow.input.custom = str(
-        tmp_path / "PT001" / "COURSE_A" / ".segmentation_custom_done"
+        tmp_path / "PT001" / "COURSE_A" / ".custom_models_done"
     )
     workflow.input.crop = str(tmp_path / "PT001" / "COURSE_A" / ".crop_ct_done")
     Path(workflow.input.segmentation).write_text("disabled\n", encoding="utf-8")
@@ -272,7 +304,11 @@ def test_no_planning_ct_propagates_as_not_applicable(tmp_path, monkeypatch):
 
     _run(workflow)
 
-    assert Path(workflow.output.sentinel).read_text(encoding="utf-8").strip() == "disabled"
+    import json
+
+    assert json.loads(Path(workflow.output.sentinel).read_text(encoding="utf-8"))[
+        "status"
+    ] == "disabled"
 
 
 def test_snakefile_routes_custom_segmentation_through_campaign_wrapper():
@@ -285,10 +321,15 @@ def test_snakefile_routes_custom_segmentation_through_campaign_wrapper():
     assert section.count("campaign_mode=CAMPAIGN_MODE") == 2
 
 
-def test_segmentation_rules_accept_explicit_no_planning_ct_status():
+def test_segmentation_rule_uses_structured_campaign_wrapper():
     snakefile = (ROOT / "Snakefile").read_text(encoding="utf-8")
 
-    assert snakefile.count('grep -Eqx "(ok|disabled)" {output.sentinel}') == 2
+    start = snakefile.index("rule segmentation_course:")
+    end = snakefile.index("_custom_params_lambda", start)
+    section = snakefile[start:end]
+    assert 'script:\n        "workflow/scripts/run_course_stage.py"' in section
+    assert 'stage="segmentation"' in section
+    assert "grep -Eqx" not in section
 
 
 def test_a_failed_course_still_closes_its_dependent_stages(tmp_path):

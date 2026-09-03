@@ -15,10 +15,12 @@ import rtpipeline.segmentation as segmentation
 import rtpipeline.snakemake_delegate as snakemake_delegate
 
 from course_contract_test_utils import (
+    write_bound_aggregation_sentinels,
     write_minimal_course_contract,
     write_synthetic_plan_and_dose,
 )
 from rtpipeline.dvh import dvh_for_course
+from rtpipeline.config_dependencies import materialize_stage_dependency
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -99,10 +101,17 @@ def _course_stage_snakemake(tmp_path: Path) -> SimpleNamespace:
     segmentation.write_text("ok\n", encoding="utf-8")
     manifest = tmp_path / "manifest.json"
     manifest.write_text('{"courses": []}\n', encoding="utf-8")
+    configuration = materialize_stage_dependency(
+        tmp_path / "dependencies", "dvh", {"test": True}
+    )
     return SimpleNamespace(
         output=SimpleNamespace(sentinel=str(course_dir / ".dvh_done")),
         log=[str(tmp_path / "logs" / "dvh.log")],
-        input=SimpleNamespace(manifest=str(manifest), segmentation=str(segmentation)),
+        input=SimpleNamespace(
+            manifest=str(manifest),
+            segmentation=str(segmentation),
+            configuration=str(configuration),
+        ),
         params=SimpleNamespace(
             root_dir=str(ROOT),
             configfile=str(tmp_path / "config.yaml"),
@@ -148,10 +157,18 @@ def test_required_course_stage_failure_returns_nonzero_without_sentinel(
 def test_required_course_stage_success_publishes_ok_sentinel(tmp_path, monkeypatch):
     workflow = _course_stage_snakemake(tmp_path)
     sentinel = Path(workflow.output.sentinel)
+
+    def _producer_success(*_args, **_kwargs):
+        qc = sentinel.parent / "metadata" / "dvh_qc.json"
+        qc.parent.mkdir(parents=True, exist_ok=True)
+        qc.write_text('{"status":"ok"}\n', encoding="utf-8")
+        (sentinel.parent / "dvh_metrics.parquet").write_bytes(b"test-dvh")
+        return SimpleNamespace(returncode=0)
+
     monkeypatch.setattr(
         subprocess,
         "run",
-        lambda *_args, **_kwargs: SimpleNamespace(returncode=0),
+        _producer_success,
     )
     monkeypatch.setattr(
         segmentation,
@@ -161,7 +178,10 @@ def test_required_course_stage_success_publishes_ok_sentinel(tmp_path, monkeypat
 
     runpy.run_path(str(RUN_COURSE_STAGE), init_globals={"snakemake": workflow})
 
-    assert sentinel.read_text(encoding="utf-8") == "ok\n"
+    payload = json.loads(sentinel.read_text(encoding="utf-8"))
+    assert payload["schema"] == "rtpipeline-stage-completion-v1"
+    assert payload["status"] == "ok"
+    assert payload["content_closure_sha256"]
 
 
 def test_required_course_stage_rejects_failed_upstream_without_sentinel(tmp_path):
@@ -183,7 +203,8 @@ def test_snakefile_required_shell_stages_do_not_write_failure_sentinels():
     assert 'echo "failed: see log" > {output.sentinel}' not in snakefile
     assert "skipped: upstream segmentation failed" not in snakefile
     assert 'echo "disabled" > {output.sentinel}' in snakefile
-    assert "Required course stage failed; see {log}" in snakefile
+    assert 'script:\n        "workflow/scripts/run_course_stage.py"' in snakefile
+    assert 'stage="segmentation"' in snakefile
 
 
 def _write_course_inputs(
@@ -203,10 +224,6 @@ def _write_course_inputs(
     write_minimal_course_contract(
         course_dir, selected_plans=[plan], selected_doses=selected_doses
     )
-    if dvh_sentinel is not None:
-        (course_dir / ".dvh_done").write_text(dvh_sentinel, encoding="utf-8")
-    (course_dir / ".qc_done").write_text("ok\n", encoding="utf-8")
-    (course_dir / ".custom_models_done").write_text("disabled\n", encoding="utf-8")
     if radiomics_sentinel is not None:
         if radiomics_sentinel.strip() == "ok" and (
             course_dir / "radiomics_ct.parquet"
@@ -234,6 +251,13 @@ def _write_course_inputs(
         pd.DataFrame(
             [{"ROI_Name": "PTV", "DmeanGy": 42.0}]
         ).to_excel(course_dir / "dvh_metrics.xlsx", index=False)
+    write_bound_aggregation_sentinels(
+        course_dir, course_dir.parents[1] / "stage-dependencies"
+    )
+    if dvh_sentinel is None:
+        (course_dir / ".dvh_done").unlink()
+    elif dvh_sentinel.strip() != "ok":
+        (course_dir / ".dvh_done").write_text(dvh_sentinel, encoding="utf-8")
 
 
 def _aggregate_snakemake(
