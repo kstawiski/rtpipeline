@@ -1,5 +1,6 @@
 from pathlib import Path
 import json
+from types import SimpleNamespace
 
 import pydicom
 import pytest
@@ -24,6 +25,47 @@ from rtpipeline.prescription import (
     resolved_plan_total_gy,
     source_plan_prescribed_dose_gy,
 )
+
+
+def test_cli_dvh_does_not_forward_a_duplicate_explicit_prescription(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stale CourseOutput copy cannot disagree with the authoritative contract."""
+
+    from rtpipeline import cli, course_contract, dvh
+
+    captured: dict[str, object] = {}
+    output = tmp_path / "dvh_metrics.xlsx"
+
+    def fake_dvh_for_course(*_args, **kwargs):
+        captured.update(kwargs)
+        output.write_bytes(b"result")
+        return output
+
+    monkeypatch.setattr(dvh, "dvh_for_course", fake_dvh_for_course)
+    monkeypatch.setattr(
+        course_contract,
+        "load_course_contract",
+        lambda _path: SimpleNamespace(
+            data={"dvh": {"metrics_status": "computed"}},
+            dose_qc={"pass": True},
+        ),
+    )
+    task = cli._DVHTask(
+        course=SimpleNamespace(  # type: ignore[arg-type]
+            dirs=SimpleNamespace(root=tmp_path),
+            total_prescription_gy=45.0,
+        ),
+        custom_structures=None,
+        use_cropped=False,
+        parallel_workers=1,
+        max_total_dose_gy=100.0,
+    )
+
+    result = cli._execute_dvh_task(task)
+
+    assert result is not None and result.status == "computed"
+    assert captured["rx_dose_gy"] is None
 
 
 def _write(ds: FileDataset, path: Path) -> Path:

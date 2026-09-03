@@ -173,6 +173,32 @@ def test_radiomics_manifest_covers_ct_mr_and_pet_parameter_files():
     }
 
 
+def test_default_roi_map_comes_from_the_dag_dependency(tmp_path, monkeypatch):
+    """A live checkout edit cannot change a running radiomics job's ROI map."""
+
+    manifest = _parameter_manifest()
+    dependency = materialize_stage_dependency(
+        tmp_path / "dependencies",
+        "radiomics",
+        {"parameter_provenance": manifest},
+    )
+    monkeypatch.setenv("RTPIPELINE_RADIOMICS_CONFIG_DEPENDENCY", str(dependency))
+    monkeypatch.setattr(
+        contract.importlib_resources,
+        "files",
+        lambda _package: (_ for _ in ()).throw(
+            AssertionError("the mutable package resource must not be read")
+        ),
+    )
+    contract._load_roi_class_map.cache_clear()
+
+    data, digest = contract.load_roi_class_map()
+
+    identity = manifest["ct"]["roi_class_map"]
+    assert data == identity["content"]
+    assert digest == identity["sha256"]
+
+
 def test_mr_rows_reuse_the_manifest_configured_hash():
     from rtpipeline import radiomics
 

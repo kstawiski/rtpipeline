@@ -980,8 +980,8 @@ if config.get("container_mode", False):
                 --max-workers {threads} \
                 --manifest "{input.manifest}" \
                 {params.extra_args} > {log} 2>&1; then
-                if ! grep -qx "ok" {output.sentinel}; then
-                    echo "Segmentation command returned zero without a validated ok sentinel; see {log}" >&2
+                if ! grep -Eqx "(ok|disabled)" {output.sentinel}; then
+                    echo "Segmentation command returned zero without a validated terminal sentinel; see {log}" >&2
                     exit 1
                 fi
             else
@@ -1035,8 +1035,8 @@ else:
                 --max-workers {threads} \
                 --manifest "{input.manifest}" \
                 {params.extra_args} > {log} 2>&1; then
-                if ! grep -qx "ok" {output.sentinel}; then
-                    echo "Segmentation command returned zero without a validated ok sentinel; see {log}" >&2
+                if ! grep -Eqx "(ok|disabled)" {output.sentinel}; then
+                    echo "Segmentation command returned zero without a validated terminal sentinel; see {log}" >&2
                     exit 1
                 fi
             else
@@ -1144,6 +1144,7 @@ rule crop_ct_course:
     params:
         campaign_mode=CAMPAIGN_MODE,
         stage="crop_ct",
+        enabled=CT_CROPPING_ENABLED,
         python=PYTHON_MAIN,
         python_bin=PYTHON_MAIN_BIN,
         root_dir=lambda w: str(ROOT_DIR),
