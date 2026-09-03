@@ -191,8 +191,9 @@ def test_derived_roi_requires_recorded_operation_and_classifiable_bases():
     )
     rejected = contract.classify_ct_roi("Custom", "bowel_bag", custom_provenance={})
 
-    assert accepted.roi_class == "hollow_pelvic_organ"
-    assert accepted.adjudication_status == "approved_by_binding_spec"
+    assert accepted.roi_class == "planning_helper"
+    assert accepted.adjudication_status == "approved_non_anatomic_derived_structure"
+    assert accepted.feature_publication_policy == contract.FEATURE_POLICY_INVENTORY_ONLY
     assert rejected.roi_class == "unresolved_mixed"
     assert rejected.adjudication_status == "operator_adjudication_required"
 
@@ -259,8 +260,6 @@ def test_kopernik_exact_crosswalk_uses_defensible_anatomic_classes(name, roi_cla
         "Pluco Suma M - PTV1",
         "Pluco Suma M - PTV3",
         "Rdzen Marg",
-        "m3",
-        "podkladka",
     ],
 )
 def test_kopernik_ambiguous_names_remain_unadjudicated_without_a_governed_class(name):
@@ -268,6 +267,90 @@ def test_kopernik_ambiguous_names_remain_unadjudicated_without_a_governed_class(
 
     assert decision.roi_class == "unresolved_mixed"
     assert decision.adjudication_status == "operator_adjudication_required"
+
+
+@pytest.mark.parametrize(
+    ("name", "roi_class"),
+    [
+        ("2cm od PTV1", "planning_helper"),
+        ("Bowel_Bag", "planning_helper"),
+        ("Bowel_Small_PRV5mm", "planning_helper"),
+        ("Fiz Body", "planning_helper"),
+        ("Jelita - PTV", "planning_helper"),
+        ("m3", "planning_helper"),
+        ("m4", "planning_helper"),
+        ("m5", "planning_helper"),
+        ("m7", "planning_helper"),
+        ("m8", "planning_helper"),
+        ("obszar", "planning_helper"),
+        ("podkladka", "positioning_support"),
+        ("zzCivcoInterior", "positioning_support"),
+        ("zz_2cm od PTV12", "planning_helper"),
+    ],
+)
+def test_exact_non_anatomic_names_are_inventory_only(name, roi_class):
+    decision = contract.classify_ct_roi("Manual", name)
+
+    assert decision.roi_class == roi_class
+    assert decision.feature_publication_policy == contract.FEATURE_POLICY_INVENTORY_ONLY
+
+
+def test_inventory_only_roi_retains_identity_without_feature_values(monkeypatch):
+    rows = _dual_arm_rows(
+        monkeypatch,
+        decision=contract.classify_ct_roi("Manual", "m3"),
+        required=False,
+    )
+
+    assert {row["extraction_status"] for row in rows} == {
+        "not_applicable_planning_helper"
+    }
+    assert {row["extraction_failure_kind"] for row in rows} == {"declared_ineligible"}
+    assert {row["roi_class"] for row in rows} == {"planning_helper"}
+    assert all(not any("_shape_" in key or "_firstorder_" in key for key in row) for row in rows)
+
+
+class _InvalidShapeExtractor(_FakeExtractor):
+    def execute(self, image, mask):
+        result = super().execute(image, mask)
+        if set(self.enabledFeatures) == {"shape"}:
+            result.update(
+                {
+                    "original_shape_MeshVolume": -29.458333333333332,
+                    "original_shape_SurfaceVolumeRatio": -11.745545713423589,
+                    "original_shape_Sphericity": 0.13331372628121332,
+                }
+            )
+        return result
+
+
+def test_invalid_shape_physicality_is_recorded_without_feature_values(monkeypatch):
+    monkeypatch.setattr(contract, "resampled_mask_qc", _qc)
+    monkeypatch.setattr(contract, "_runtime_versions", _versions)
+    rows = contract.extract_ct_roi_arms(
+        object(),
+        object(),
+        factory=_InvalidShapeExtractor,
+        decision=contract.classify_ct_roi("AutoRTS_total", "skull"),
+        common_metadata={**_common_identity(), "roi_original_name": "skull", "roi_name": "skull"},
+        run_identifier="run-1",
+        code_revision="revision-1",
+        native_voxel_count=150,
+        required=False,
+        configured_parameter_hashes={
+            contract.PRIMARY_ARM: "configured-primary",
+            contract.SENSITIVITY_ARM: "configured-sensitivity",
+        },
+    )
+
+    assert {row["extraction_status"] for row in rows} == {
+        "failed_shape_physical_validity"
+    }
+    assert {row["extraction_failure_kind"] for row in rows} == {
+        "invalid_shape_physicality"
+    }
+    assert all("original_shape_MeshVolume" not in row for row in rows)
+    assert all("original_shape_MeshVolume=-29.458333333333332" in row["extraction_status_detail"] for row in rows)
 
 
 def test_disposition_rows_require_runtime_effective_parameter_hashes():

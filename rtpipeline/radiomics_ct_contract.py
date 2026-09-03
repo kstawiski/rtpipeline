@@ -91,6 +91,7 @@ _PRIMARY_WINDOWS: dict[str, tuple[float, float]] = {
 _NONAPPLICABLE_DISPOSITIONS = {
     "bone": "not_applicable_bone",
     "positioning_support": "not_primary_analysis_anatomy",
+    "planning_helper": "not_applicable_planning_helper",
     "vessel": "not_applicable_pending_vessel_adjudication",
     "unresolved_mixed": "unclassified_roi",
 }
@@ -100,11 +101,17 @@ _COMPLETE_DISPOSITIONS = {
     "below_minimum_dimensions",
     "not_applicable_bone",
     "not_primary_analysis_anatomy",
+    "not_applicable_planning_helper",
     "not_applicable_pending_vessel_adjudication",
     "unclassified_roi",
     "declared_skip",
     "failed",
+    "failed_shape_physical_validity",
 }
+
+FEATURE_POLICY_EXTRACT = "extract"
+FEATURE_POLICY_INVENTORY_ONLY = "inventory_only_no_features"
+_FEATURE_POLICIES = {FEATURE_POLICY_EXTRACT, FEATURE_POLICY_INVENTORY_ONLY}
 
 
 @dataclass(frozen=True)
@@ -116,6 +123,7 @@ class RoiClassDecision:
     adjudication_status: str
     primary_resegment_range_hu: Optional[tuple[float, float]]
     primary_intensity_texture_disposition: str
+    feature_publication_policy: str
 
 
 @lru_cache(maxsize=2)
@@ -209,6 +217,14 @@ def _decision(
     disposition = "success" if window is not None else _NONAPPLICABLE_DISPOSITIONS.get(
         roi_class, "unclassified_roi"
     )
+    class_spec = data.get("classes", {}).get(roi_class, {})
+    feature_policy = str(
+        class_spec.get("radiomic_feature_policy") or FEATURE_POLICY_EXTRACT
+    )
+    if feature_policy not in _FEATURE_POLICIES:
+        raise ValueError(
+            f"unsupported radiomic feature policy {feature_policy!r} for ROI class {roi_class!r}"
+        )
     return RoiClassDecision(
         roi_class=roi_class,
         map_version=str(data["map_version"]),
@@ -217,6 +233,7 @@ def _decision(
         adjudication_status=status,
         primary_resegment_range_hu=window,
         primary_intensity_texture_disposition=disposition,
+        feature_publication_policy=feature_policy,
     )
 
 
@@ -348,11 +365,11 @@ def classify_ct_roi(
                     status="operator_adjudication_required",
                 )
             return _decision(
-                str(inherited_class),
+                "planning_helper",
                 data=data,
                 digest=digest,
-                source="derived_crosswalk:recorded_operation_and_classified_bases",
-                status="approved_by_binding_spec",
+                source="derived_crosswalk:recorded_boolean_operation",
+                status="approved_non_anatomic_derived_structure",
             )
 
     entry = data.get("manual_custom_crosswalk", {}).get(base_name)
@@ -1435,6 +1452,53 @@ def _arm_metadata(
     }
 
 
+def shape_physicality_violations(shape_features: Mapping[str, Any]) -> list[str]:
+    """Return objective physical-validity failures from one shape feature set."""
+    violations: list[str] = []
+    strictly_positive = {
+        "original_shape_MeshVolume",
+        "original_shape_SurfaceArea",
+        "original_shape_SurfaceVolumeRatio",
+        "original_shape_VoxelVolume",
+    }
+    for name, value in sorted(shape_features.items()):
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            violations.append(f"{name}=non_numeric")
+            continue
+        if not np.isfinite(numeric):
+            violations.append(f"{name}=non_finite")
+            continue
+        if name in strictly_positive and numeric <= 0.0:
+            violations.append(f"{name}={numeric:.17g} is not positive")
+        elif numeric < 0.0:
+            violations.append(f"{name}={numeric:.17g} is negative")
+        if name == "original_shape_Sphericity" and numeric > 1.0 + 1e-6:
+            violations.append(f"{name}={numeric:.17g} exceeds 1")
+    return violations
+
+
+def _effective_hashes_for_built_extractors(
+    raw_extractor: Any,
+    primary_extractor: Any,
+    decision: RoiClassDecision,
+) -> dict[str, str]:
+    primary_qc_extractor = primary_extractor or raw_extractor
+    return {
+        SENSITIVITY_ARM: effective_parameter_hash(
+            raw_extractor,
+            arm=SENSITIVITY_ARM,
+            window=None,
+        ),
+        PRIMARY_ARM: effective_parameter_hash(
+            primary_qc_extractor,
+            arm=PRIMARY_ARM,
+            window=decision.primary_resegment_range_hu,
+        ),
+    }
+
+
 def extract_ct_roi_arms(
     image: Any,
     mask: Any,
@@ -1451,6 +1515,29 @@ def extract_ct_roi_arms(
     shape_extractor, raw_extractor, primary_extractor = build_ct_extractors(
         factory, decision.primary_resegment_range_hu
     )
+    effective_hashes = _effective_hashes_for_built_extractors(
+        raw_extractor,
+        primary_extractor,
+        decision,
+    )
+    if decision.feature_publication_policy == FEATURE_POLICY_INVENTORY_ONLY:
+        return disposition_rows_for_arms(
+            common_metadata,
+            decision=decision,
+            disposition=decision.primary_intensity_texture_disposition,
+            detail=(
+                f"ROI class {decision.roi_class} is retained for inventory only. "
+                "Radiomic feature publication is prohibited."
+            ),
+            failure_kind="declared_ineligible",
+            run_identifier=run_identifier,
+            code_revision=code_revision,
+            native_voxel_count=native_voxel_count,
+            required=required,
+            effective_hashes=effective_hashes,
+            configured_parameter_hashes=configured_parameter_hashes,
+            runtime_versions=_runtime_versions(),
+        )
     shape_result = _scalarize(shape_extractor.execute(image, mask))
     shape_features = _feature_subset(shape_result, SHAPE_FEATURE_MARKERS)
     shape_expected = _configured_feature_names(
@@ -1459,6 +1546,22 @@ def extract_ct_roi_arms(
     shape_undefined = _approved_undefined_feature_names(shape_result)
     if not shape_features:
         raise RuntimeError("separate shape-only extractor returned no shape features")
+    shape_violations = shape_physicality_violations(shape_features)
+    if shape_violations:
+        return disposition_rows_for_arms(
+            common_metadata,
+            decision=decision,
+            disposition="failed_shape_physical_validity",
+            detail="Shape feature physicality failed: " + " | ".join(shape_violations),
+            failure_kind="invalid_shape_physicality",
+            run_identifier=run_identifier,
+            code_revision=code_revision,
+            native_voxel_count=native_voxel_count,
+            required=required,
+            effective_hashes=effective_hashes,
+            configured_parameter_hashes=configured_parameter_hashes,
+            runtime_versions=_runtime_versions(),
+        )
 
     raw_result = _scalarize(raw_extractor.execute(image, mask))
     raw_expected = shape_expected | _configured_feature_names(
@@ -1571,6 +1674,7 @@ def disposition_rows_for_arms(
     required: bool,
     effective_hashes: Optional[Mapping[str, str]] = None,
     configured_parameter_hashes: Optional[Mapping[str, str]] = None,
+    runtime_versions: Optional[Mapping[str, str]] = None,
 ) -> list[dict[str, Any]]:
     if not effective_hashes or any(
         not str(effective_hashes.get(arm) or "").strip()
@@ -1580,13 +1684,13 @@ def disposition_rows_for_arms(
         raise ValueError(
             "disposition rows require runtime effective-parameter hashes for both CT arms"
         )
-    versions = {
+    versions = dict(runtime_versions or {
         "pyradiomics_version": "unavailable",
         "simpleitk_version": "unavailable",
         "numpy_version": str(np.__version__),
         "execution_host": socket.gethostname(),
         "environment_fingerprint": execution_environment_fingerprint(),
-    }
+    })
     rows: list[dict[str, Any]] = []
     for arm in CT_EXTRACTION_ARMS:
         window = decision.primary_resegment_range_hu if arm == PRIMARY_ARM else None
