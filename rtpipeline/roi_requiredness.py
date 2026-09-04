@@ -127,6 +127,21 @@ class ROIObservation:
         return self.valid_contours > 0
 
 
+def dependency_state_from_observation(observation: ROIObservation) -> dict[str, bool]:
+    """Translate an RTSTRUCT observation into custom-source evidence."""
+    empty_contour_codes = {
+        "ROI_DECLARED_NO_CONTOUR_ITEM",
+        "ROI_DECLARED_EMPTY_CONTOUR_SEQUENCE",
+    }
+    return {
+        "readable": (
+            observation.structural_code is None
+            or observation.structural_code in empty_contour_codes
+        ),
+        "non_empty": observation.has_readable_contour,
+    }
+
+
 @dataclass(frozen=True)
 class RTStructInventory:
     path: Path

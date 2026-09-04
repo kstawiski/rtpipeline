@@ -74,6 +74,7 @@ from .roi_requiredness import (
     FAILED_RADIOMICS_RESOURCE_LIMIT,
     Requiredness,
     assess_custom_applicability,
+    dependency_state_from_observation,
     inspect_rtstruct,
     match_requirements,
     requirements_from_contract,
@@ -1089,10 +1090,9 @@ def parallel_radiomics_for_course(
             except Exception:
                 continue
             for observation in inventory.named_rois:
-                dependency_states[observation.name] = {
-                    "readable": not bool(observation.structural_code),
-                    "non_empty": observation.has_readable_contour,
-                }
+                dependency_states[observation.name] = (
+                    dependency_state_from_observation(observation)
+                )
         try:
             from .radiomics import _planning_ct_fov, _analysis_contract, _roi_requiredness
             custom_contract = _analysis_contract(config)

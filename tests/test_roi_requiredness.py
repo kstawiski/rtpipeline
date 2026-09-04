@@ -18,6 +18,7 @@ from rtpipeline.roi_requiredness import (
     Requiredness,
     assess_custom_applicability,
     classify_rasterized_mask,
+    dependency_state_from_observation,
     inspect_rtstruct,
     match_requirements,
     requiredness_for,
@@ -173,6 +174,64 @@ def test_custom_roi_conflicting_evidence_fails_closed():
         },
         {"contains_regions": ["pelvis"]},
     )
+    assert result.reason_code == "indeterminate_applicability"
+    assert result.fatal
+
+
+def test_declared_empty_dependency_is_not_mislabeled_unreadable():
+    dataset = Dataset()
+    dataset.StructureSetROISequence = [_declared(1, "small_bowel")]
+    dataset.ROIContourSequence = [_contour_item(1, [])]
+    observation = _inventory(dataset).named_rois[0]
+    state = dependency_state_from_observation(observation)
+    provenance = {
+        "bowel_bag": {
+            "operation": "union",
+            "source_structures": ["colon", "small_bowel", "duodenum"],
+        }
+    }
+
+    result = assess_custom_applicability(
+        "bowel_bag",
+        {
+            "colon": "readable_nonempty",
+            "small_bowel": state,
+            "duodenum": "readable_nonempty",
+        },
+        {"contains_regions": ["pelvis"]},
+        custom_provenance=provenance,
+    )
+
+    assert state == {"readable": True, "non_empty": False}
+    assert result.reason_code == "failed_custom_generation"
+    assert result.fatal
+
+
+def test_unparseable_dependency_remains_fail_closed():
+    dataset = Dataset()
+    dataset.StructureSetROISequence = [_declared(1, "small_bowel")]
+    dataset.ROIContourSequence = [_contour_item(1, [[1, 2]])]
+    observation = _inventory(dataset).named_rois[0]
+    state = dependency_state_from_observation(observation)
+    provenance = {
+        "bowel_bag": {
+            "operation": "union",
+            "source_structures": ["colon", "small_bowel", "duodenum"],
+        }
+    }
+
+    result = assess_custom_applicability(
+        "bowel_bag",
+        {
+            "colon": "readable_nonempty",
+            "small_bowel": state,
+            "duodenum": "readable_nonempty",
+        },
+        {"contains_regions": ["pelvis"]},
+        custom_provenance=provenance,
+    )
+
+    assert state == {"readable": False, "non_empty": False}
     assert result.reason_code == "indeterminate_applicability"
     assert result.fatal
 
