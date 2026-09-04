@@ -2604,7 +2604,10 @@ def radiomics_for_course(
                 f"Failed to read configured custom ROI identities for {course_dir}: {exc}"
             ) from exc
         try:
-            from .roi_requiredness import inspect_rtstruct
+            from .roi_requiredness import (
+                dependency_state_from_observation,
+                inspect_rtstruct,
+            )
             from .radiomics import _planning_ct_fov
             custom_provenance = load_custom_structure_provenance(custom_cfg)
             planning_ct_fov = _planning_ct_fov(course_dir)
@@ -2616,10 +2619,9 @@ def radiomics_for_course(
                 except Exception:
                     continue
                 for observation in source_inventory.named_rois:
-                    dependency_states[observation.name] = {
-                        "readable": not bool(observation.structural_code),
-                        "non_empty": observation.has_readable_contour,
-                    }
+                    dependency_states[observation.name] = (
+                        dependency_state_from_observation(observation)
+                    )
             custom_inventory = inspect_rtstruct(rs_custom) if rs_custom.is_file() else None
             available_custom = {
                 item.name: item for item in getattr(custom_inventory, "named_rois", ())
