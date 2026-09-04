@@ -1,6 +1,6 @@
 # Versioned CT ROI-class governance map. Exact names only.
 schema_version: 1
-map_version: ct-roi-class-map-2026-09-02-v4
+map_version: ct-roi-class-map-2026-09-04-v5
 mapping_status: partial_pending_operator_adjudication
 approval_basis:
   binding_specification_date: '2026-08-30'
@@ -565,15 +565,18 @@ derived_crosswalk:
     roi_class: vessel
     require_provenance: true
   iliac_area:
-    roi_class: vessel
+    roi_class: planning_helper
     require_provenance: true
+    evidence_basis: nonzero vessel expansion includes non-vessel tissue for dose planning
   pelvic_bones:
     roi_class: bone
     require_provenance: true
   pelvic_bones_3mm:
-    roi_class: bone
+    roi_class: planning_helper
     require_provenance: true
+    evidence_basis: nonzero bone expansion includes non-bone tissue for treatment planning
 governance_notes:
   - Manual, custom-model, and other project-local names are exact-match only.
   - Unlisted names remain unresolved_mixed and require operator adjudication.
   - Derived entries apply only when operation and base structures are recorded.
+  - A recorded nonzero margin produces a planning helper rather than anatomy.
