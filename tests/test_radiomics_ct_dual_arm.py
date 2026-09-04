@@ -191,11 +191,141 @@ def test_derived_roi_requires_recorded_operation_and_classifiable_bases():
     )
     rejected = contract.classify_ct_roi("Custom", "bowel_bag", custom_provenance={})
 
-    assert accepted.roi_class == "planning_helper"
-    assert accepted.adjudication_status == "approved_non_anatomic_derived_structure"
-    assert accepted.feature_publication_policy == contract.FEATURE_POLICY_INVENTORY_ONLY
+    assert accepted.roi_class == "hollow_pelvic_organ"
+    assert accepted.map_entry_source == "derived_crosswalk:recorded_operation_and_classified_bases"
+    assert accepted.adjudication_status == "approved_by_binding_spec"
+    assert accepted.feature_publication_policy == contract.FEATURE_POLICY_EXTRACT
     assert rejected.roi_class == "unresolved_mixed"
     assert rejected.adjudication_status == "operator_adjudication_required"
+
+
+@pytest.mark.parametrize(
+    (
+        "name",
+        "roi_class",
+        "primary_disposition",
+        "entry_source",
+        "adjudication_status",
+        "feature_policy",
+    ),
+    [
+        (
+            "iliac_vess",
+            "vessel",
+            "not_applicable_pending_vessel_adjudication",
+            "derived_crosswalk:recorded_operation_and_classified_bases",
+            "approved_by_binding_spec",
+            contract.FEATURE_POLICY_EXTRACT,
+        ),
+        (
+            "iliac_area",
+            "planning_helper",
+            "not_applicable_planning_helper",
+            "derived_crosswalk:recorded_margin_operation",
+            "approved_non_anatomic_derived_margin",
+            contract.FEATURE_POLICY_INVENTORY_ONLY,
+        ),
+        (
+            "pelvic_bones",
+            "bone",
+            "not_applicable_bone",
+            "derived_crosswalk:recorded_operation_and_classified_bases",
+            "approved_by_binding_spec",
+            contract.FEATURE_POLICY_EXTRACT,
+        ),
+        (
+            "pelvic_bones_3mm",
+            "planning_helper",
+            "not_applicable_planning_helper",
+            "derived_crosswalk:recorded_margin_operation",
+            "approved_non_anatomic_derived_margin",
+            contract.FEATURE_POLICY_INVENTORY_ONLY,
+        ),
+        (
+            "bowel_bag",
+            "hollow_pelvic_organ",
+            "success",
+            "derived_crosswalk:recorded_operation_and_classified_bases",
+            "approved_by_binding_spec",
+            contract.FEATURE_POLICY_EXTRACT,
+        ),
+    ],
+)
+def test_configured_derived_rois_follow_operation_and_margin_provenance(
+    name,
+    roi_class,
+    primary_disposition,
+    entry_source,
+    adjudication_status,
+    feature_policy,
+):
+    config = Path(contract.__file__).parents[1] / "custom_structures_pelvic.yaml"
+    provenance = contract.load_custom_structure_provenance(config)
+
+    decision = contract.classify_ct_roi(
+        "Custom", name, custom_provenance=provenance
+    )
+
+    assert decision.roi_class == roi_class
+    assert decision.map_entry_source == entry_source
+    assert decision.adjudication_status == adjudication_status
+    assert decision.primary_intensity_texture_disposition == primary_disposition
+    assert decision.feature_publication_policy == feature_policy
+
+
+def test_partial_derived_roi_remains_inventory_only_pending_adjudication():
+    config = Path(contract.__file__).parents[1] / "custom_structures_pelvic.yaml"
+    decision = contract.classify_ct_roi(
+        "Custom",
+        "bowel_bag__partial",
+        custom_provenance=contract.load_custom_structure_provenance(config),
+    )
+
+    assert decision.roi_class == "planning_helper"
+    assert decision.map_entry_source == (
+        "derived_crosswalk:recorded_partial_boolean_operation"
+    )
+    assert decision.adjudication_status == (
+        "partial_derived_structure_pending_adjudication"
+    )
+    assert decision.feature_publication_policy == contract.FEATURE_POLICY_INVENTORY_ONLY
+
+
+@pytest.mark.parametrize(
+    ("name", "primary_disposition"),
+    [
+        ("iliac_vess", "not_applicable_pending_vessel_adjudication"),
+        ("pelvic_bones", "not_applicable_bone"),
+    ],
+)
+def test_derived_vessel_and_bone_publish_shape_without_primary_intensity_texture(
+    monkeypatch, name, primary_disposition
+):
+    config = Path(contract.__file__).parents[1] / "custom_structures_pelvic.yaml"
+    decision = contract.classify_ct_roi(
+        "Custom",
+        name,
+        custom_provenance=contract.load_custom_structure_provenance(config),
+    )
+
+    rows = _dual_arm_rows(monkeypatch, decision=decision)
+    primary = next(row for row in rows if row["extraction_arm"] == contract.PRIMARY_ARM)
+    sensitivity = next(
+        row for row in rows if row["extraction_arm"] == contract.SENSITIVITY_ARM
+    )
+
+    assert primary["extraction_status"] == "success"
+    assert primary["shape_disposition"] == "success"
+    assert primary["intensity_texture_disposition"] == primary_disposition
+    assert primary["original_shape_VoxelVolume"] == 125.0
+    assert not any(
+        marker in key
+        for key in primary
+        for marker in contract.INTENSITY_TEXTURE_FEATURE_MARKERS
+    )
+    assert sensitivity["extraction_status"] == "success"
+    assert sensitivity["original_firstorder_Mean"] == 20.0
+    assert sensitivity["original_glcm_Contrast"] == 2.0
 
 
 @pytest.mark.parametrize(

@@ -214,6 +214,35 @@ def _strip_partial(name: str) -> str:
     return text[:-9] if text.endswith("__partial") else text
 
 
+def _recorded_margin_is_nonzero(value: Any) -> Optional[bool]:
+    if value is None:
+        return False
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, Mapping):
+        allowed = {
+            "anterior_mm",
+            "posterior_mm",
+            "left_mm",
+            "right_mm",
+            "superior_mm",
+            "inferior_mm",
+            "uniform_mm",
+        }
+        if any(str(key) not in allowed for key in value):
+            return None
+        values = [item for item in value.values() if item is not None]
+    else:
+        values = [value]
+    try:
+        margins = [float(item) for item in values]
+    except (TypeError, ValueError):
+        return None
+    if any(not np.isfinite(item) for item in margins):
+        return None
+    return any(item != 0.0 for item in margins)
+
+
 def load_custom_structure_provenance(path: Optional[Path]) -> dict[str, dict[str, Any]]:
     if path is None:
         return {}
@@ -326,9 +355,16 @@ def classify_ct_roi(
                 )
             operation = str(provenance.get("operation") or "")
             bases = provenance.get("source_structures")
-            if operation not in {"union", "intersection", "subtract", "xor"} or not isinstance(
-                bases, Sequence
-            ) or isinstance(bases, (str, bytes)) or not bases:
+            margin_is_nonzero = _recorded_margin_is_nonzero(
+                provenance.get("margin")
+            )
+            if (
+                operation not in {"union", "intersection", "subtract", "xor"}
+                or not isinstance(bases, Sequence)
+                or isinstance(bases, (str, bytes))
+                or not bases
+                or margin_is_nonzero is None
+            ):
                 return _decision(
                     "unresolved_mixed",
                     data=data,
@@ -353,9 +389,17 @@ def classify_ct_roi(
                     return None
                 nested_operation = str(nested_provenance.get("operation") or "")
                 nested_bases = nested_provenance.get("source_structures")
-                if nested_operation not in {"union", "intersection", "subtract", "xor"} or not isinstance(
-                    nested_bases, Sequence
-                ) or isinstance(nested_bases, (str, bytes)) or not nested_bases:
+                nested_margin_is_nonzero = _recorded_margin_is_nonzero(
+                    nested_provenance.get("margin")
+                )
+                if (
+                    nested_operation
+                    not in {"union", "intersection", "subtract", "xor"}
+                    or not isinstance(nested_bases, Sequence)
+                    or isinstance(nested_bases, (str, bytes))
+                    or not nested_bases
+                    or nested_margin_is_nonzero is None
+                ):
                     return None
                 nested_classes = [
                     _recorded_base_class(str(item), seen | {base})
@@ -368,9 +412,12 @@ def classify_ct_roi(
                     value != inherited for value in nested_classes[1:]
                 ):
                     return None
-                if inherited != str(nested.get("roi_class") or ""):
+                effective_class = (
+                    "planning_helper" if nested_margin_is_nonzero else inherited
+                )
+                if effective_class != str(nested.get("roi_class") or ""):
                     return None
-                return inherited
+                return effective_class
 
             base_classes = [
                 _recorded_base_class(str(base), {base_name}) for base in bases
@@ -394,7 +441,10 @@ def classify_ct_roi(
                     source="derived_crosswalk:mixed_recorded_base_classes",
                     status="operator_adjudication_required",
                 )
-            if inherited_class != str(derived_entry.get("roi_class") or ""):
+            effective_class = (
+                "planning_helper" if margin_is_nonzero else inherited_class
+            )
+            if effective_class != str(derived_entry.get("roi_class") or ""):
                 return _decision(
                     "unresolved_mixed",
                     data=data,
@@ -402,12 +452,28 @@ def classify_ct_roi(
                     source="derived_crosswalk:declared_class_disagrees_with_bases",
                     status="operator_adjudication_required",
                 )
+            if name.endswith("__partial"):
+                return _decision(
+                    "planning_helper",
+                    data=data,
+                    digest=digest,
+                    source="derived_crosswalk:recorded_partial_boolean_operation",
+                    status="partial_derived_structure_pending_adjudication",
+                )
             return _decision(
-                "planning_helper",
+                str(effective_class),
                 data=data,
                 digest=digest,
-                source="derived_crosswalk:recorded_boolean_operation",
-                status="approved_non_anatomic_derived_structure",
+                source=(
+                    "derived_crosswalk:recorded_margin_operation"
+                    if margin_is_nonzero
+                    else "derived_crosswalk:recorded_operation_and_classified_bases"
+                ),
+                status=(
+                    "approved_non_anatomic_derived_margin"
+                    if margin_is_nonzero
+                    else "approved_by_binding_spec"
+                ),
             )
 
     entry = data.get("manual_custom_crosswalk", {}).get(base_name)
