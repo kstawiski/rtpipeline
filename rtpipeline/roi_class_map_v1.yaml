@@ -1,6 +1,61 @@
-# Versioned CT ROI-class governance map. Exact names only.
+# Versioned CT ROI-class governance map. Conservative rules and exact governance.
 schema_version: 1
-map_version: ct-roi-class-map-2026-09-04-v5
+map_version: ct-roi-class-map-2026-09-06-v6
+name_rules:
+  version: ct-roi-name-rules-v1
+  normalization: >-
+    ASCII case folding and whitespace collapse, Unicode hyphen/nonbreaking
+    hyphen/en dash/minus to ASCII hyphen, spaces around plus/minus removed,
+    and one index gap removed only in a complete unqualified target identifier.
+    Other operators, digit strings, underscores, prefixes, suffixes and
+    diacritics are retained. This is class lookup, never contour identity.
+  collision_policy: unresolved_mixed_on_class_or_adjudication_disagreement
+  target_detector: rtpipeline.rt_details.is_target_volume_name
+  crop_anatomy_names:
+    - odbytnica
+    - pecherz
+    - pęcherz
+    - nerka l
+    - nerka p
+    - pluco lewe
+    - pluco prawe
+    - pluco suma
+    - plucop
+    - odb
+    - serce
+  crop_anatomy_evidence_basis: >-
+    Polish organ names for rectum, bladder, kidney, lung and heart identify
+    subtraction operands only. They do not adjudicate the organ tissue class.
+    Additional K/M lung qualifiers require review and are not normalized away.
+  rules:
+    unqualified_target:
+      roi_class: target
+      adjudication_status: resolved_by_name_rule
+      evidence_basis: >-
+        Shared target detector plus complete unqualified identifier guard.
+        CTV/PTV/GTV with optional integer index, or GTV with n/p/m and optional
+        integer index, denote clinical/planning/gross target volumes.
+        No other prefix, suffix, operator or tissue name is admitted.
+    boolean_subtraction:
+      roi_class: planning_helper
+      adjudication_status: resolved_by_name_rule
+      evidence_basis: >-
+        Subtraction between two unqualified targets or an identified organ
+        minus an unqualified target is a Boolean planning crop, not a target.
+        Target-minus-organ can instead be a target's anatomic qualifier and
+        requires review, as do unknown operands and mixed-tissue additions.
+    distance_margin:
+      roi_class: planning_helper
+      adjudication_status: resolved_by_name_rule
+      evidence_basis: >-
+        A numeric mm/cm distance followed by Polish od and an unqualified
+        target denotes a planning-distance construct, with optional zz_ prefix.
+    optimization_helper:
+      roi_class: planning_helper
+      adjudication_status: resolved_by_name_rule
+      evidence_basis: >-
+        A z, marg, z_marg or z_min prefix attached to an otherwise unqualified
+        target denotes a planning-control contour, never a target.
 mapping_status: partial_pending_operator_adjudication
 approval_basis:
   binding_specification_date: '2026-08-30'
@@ -557,6 +612,412 @@ manual_custom_crosswalk:
     roi_class: solid_soft_tissue_neural
     adjudication_status: approved_by_anatomic_equivalence
     evidence_basis: Polish exact name for cauda equina, neural tissue
+  Jelita w PTV:
+    roi_class: unresolved_mixed
+    adjudication_status: operator_adjudication_required
+    evidence_basis: Addition or intersection combines target and organ tissue. Mixed-tissue composition remains unresolved
+      pending qualified review and recorded operation provenance.
+  CTV1-61,6:
+    roi_class: unresolved_mixed
+    adjudication_status: operator_adjudication_required
+    evidence_basis: A hyphen following a target may encode dose, an anatomic qualifier, historical context, or subtraction.
+      Qualified review must distinguish these meanings without deleting the suffix.
+  CTV1_v1:
+    roi_class: unresolved_mixed
+    adjudication_status: operator_adjudication_required
+    evidence_basis: A target token has additional anatomic, temporal, dose, version, sum, or local qualifiers outside
+      the unqualified identifier rule. Qualified review must confirm target versus control meaning.
+  CTV1_v2:
+    roi_class: unresolved_mixed
+    adjudication_status: operator_adjudication_required
+    evidence_basis: A target token has additional anatomic, temporal, dose, version, sum, or local qualifiers outside
+      the unqualified identifier rule. Qualified review must confirm target versus control meaning.
+  CTV2 - 58,8:
+    roi_class: unresolved_mixed
+    adjudication_status: operator_adjudication_required
+    evidence_basis: A hyphen following a target may encode dose, an anatomic qualifier, historical context, or subtraction.
+      Qualified review must distinguish these meanings without deleting the suffix.
+  CTV22 - 58,8:
+    roi_class: unresolved_mixed
+    adjudication_status: operator_adjudication_required
+    evidence_basis: A hyphen following a target may encode dose, an anatomic qualifier, historical context, or subtraction.
+      Qualified review must distinguish these meanings without deleting the suffix.
+  CTV3-52.5:
+    roi_class: unresolved_mixed
+    adjudication_status: operator_adjudication_required
+    evidence_basis: A hyphen following a target may encode dose, an anatomic qualifier, historical context, or subtraction.
+      Qualified review must distinguish these meanings without deleting the suffix.
+  CTV33-52,5:
+    roi_class: unresolved_mixed
+    adjudication_status: operator_adjudication_required
+    evidence_basis: A hyphen following a target may encode dose, an anatomic qualifier, historical context, or subtraction.
+      Qualified review must distinguish these meanings without deleting the suffix.
+  CTV4 - 45:
+    roi_class: unresolved_mixed
+    adjudication_status: operator_adjudication_required
+    evidence_basis: A hyphen following a target may encode dose, an anatomic qualifier, historical context, or subtraction.
+      Qualified review must distinguish these meanings without deleting the suffix.
+  CTVN_Prostate:
+    roi_class: unresolved_mixed
+    adjudication_status: operator_adjudication_required
+    evidence_basis: A target token has additional anatomic, temporal, dose, version, sum, or local qualifiers outside
+      the unqualified identifier rule. Qualified review must confirm target versus control meaning.
+  CTV_20/4_01/2024:
+    roi_class: unresolved_mixed
+    adjudication_status: operator_adjudication_required
+    evidence_basis: A target token has additional anatomic, temporal, dose, version, sum, or local qualifiers outside
+      the unqualified identifier rule. Qualified review must confirm target versus control meaning.
+  GTV k krzyz:
+    roi_class: unresolved_mixed
+    adjudication_status: operator_adjudication_required
+    evidence_basis: A target token has additional anatomic, temporal, dose, version, sum, or local qualifiers outside
+      the unqualified identifier rule. Qualified review must confirm target versus control meaning.
+  GTV k krzyz1:
+    roi_class: unresolved_mixed
+    adjudication_status: operator_adjudication_required
+    evidence_basis: A target token has additional anatomic, temporal, dose, version, sum, or local qualifiers outside
+      the unqualified identifier rule. Qualified review must confirm target versus control meaning.
+  GTV wezly:
+    roi_class: unresolved_mixed
+    adjudication_status: operator_adjudication_required
+    evidence_basis: A target token has additional anatomic, temporal, dose, version, sum, or local qualifiers outside
+      the unqualified identifier rule. Qualified review must confirm target versus control meaning.
+  GTV1-prostata:
+    roi_class: unresolved_mixed
+    adjudication_status: operator_adjudication_required
+    evidence_basis: A hyphen following a target may encode dose, an anatomic qualifier, historical context, or subtraction.
+      Qualified review must distinguish these meanings without deleting the suffix.
+  GTV2-pęcherz:
+    roi_class: unresolved_mixed
+    adjudication_status: operator_adjudication_required
+    evidence_basis: A hyphen following a target may encode dose, an anatomic qualifier, historical context, or subtraction.
+      Qualified review must distinguish these meanings without deleting the suffix.
+  GTV3_prechemo:
+    roi_class: unresolved_mixed
+    adjudication_status: operator_adjudication_required
+    evidence_basis: A target token has additional anatomic, temporal, dose, version, sum, or local qualifiers outside
+      the unqualified identifier rule. Qualified review must confirm target versus control meaning.
+  GTVm - lopatka:
+    roi_class: unresolved_mixed
+    adjudication_status: operator_adjudication_required
+    evidence_basis: A hyphen following a target may encode dose, an anatomic qualifier, historical context, or subtraction.
+      Qualified review must distinguish these meanings without deleting the suffix.
+  GTVm - segm IV/VIII:
+    roi_class: unresolved_mixed
+    adjudication_status: operator_adjudication_required
+    evidence_basis: A hyphen following a target may encode dose, an anatomic qualifier, historical context, or subtraction.
+      Qualified review must distinguish these meanings without deleting the suffix.
+  GTVm - segm VI/VII:
+    roi_class: unresolved_mixed
+    adjudication_status: operator_adjudication_required
+    evidence_basis: A hyphen following a target may encode dose, an anatomic qualifier, historical context, or subtraction.
+      Qualified review must distinguish these meanings without deleting the suffix.
+  GTVm1Acc:
+    roi_class: unresolved_mixed
+    adjudication_status: operator_adjudication_required
+    evidence_basis: A target token has additional anatomic, temporal, dose, version, sum, or local qualifiers outside
+      the unqualified identifier rule. Qualified review must confirm target versus control meaning.
+  GTVm_SUMA:
+    roi_class: unresolved_mixed
+    adjudication_status: operator_adjudication_required
+    evidence_basis: A target token has additional anatomic, temporal, dose, version, sum, or local qualifiers outside
+      the unqualified identifier rule. Qualified review must confirm target versus control meaning.
+  GTVn4p:
+    roi_class: unresolved_mixed
+    adjudication_status: operator_adjudication_required
+    evidence_basis: A target token has additional anatomic, temporal, dose, version, sum, or local qualifiers outside
+      the unqualified identifier rule. Qualified review must confirm target versus control meaning.
+  GTVn_SBRT?:
+    roi_class: unresolved_mixed
+    adjudication_status: operator_adjudication_required
+    evidence_basis: A target token has additional anatomic, temporal, dose, version, sum, or local qualifiers outside
+      the unqualified identifier rule. Qualified review must confirm target versus control meaning.
+  Jelita + PTV1:
+    roi_class: unresolved_mixed
+    adjudication_status: operator_adjudication_required
+    evidence_basis: Addition or intersection combines target and organ tissue. Mixed-tissue composition remains unresolved
+      pending qualified review and recorded operation provenance.
+  NS_GTV1_2:
+    roi_class: unresolved_mixed
+    adjudication_status: operator_adjudication_required
+    evidence_basis: The local prefix or composite name is not an unqualified target identifier. Qualified review is
+      needed rather than guessing the clinical or optimization meaning.
+  PTV1 + PTV2:
+    roi_class: unresolved_mixed
+    adjudication_status: operator_adjudication_required
+    evidence_basis: Explicit target union lacks recorded purpose and operation provenance. A clinical combined target
+      and an optimization union cannot be distinguished from the name alone.
+  PTV1 - PTV4.5:
+    roi_class: unresolved_mixed
+    adjudication_status: operator_adjudication_required
+    evidence_basis: Apparent target subtraction contains an unadjudicated suffix or operand. Retain unresolved_mixed
+      until the operator confirms operands and Boolean purpose.
+  PTV1+PTV2:
+    roi_class: unresolved_mixed
+    adjudication_status: operator_adjudication_required
+    evidence_basis: Explicit target union lacks recorded purpose and operation provenance. A clinical combined target
+      and an optimization union cannot be distinguished from the name alone.
+  PTV1-0.5jel:
+    roi_class: unresolved_mixed
+    adjudication_status: operator_adjudication_required
+    evidence_basis: A hyphen following a target may encode dose, an anatomic qualifier, historical context, or subtraction.
+      Qualified review must distinguish these meanings without deleting the suffix.
+  PTV1-jelita:
+    roi_class: unresolved_mixed
+    adjudication_status: operator_adjudication_required
+    evidence_basis: A hyphen following a target may encode dose, an anatomic qualifier, historical context, or subtraction.
+      Qualified review must distinguish these meanings without deleting the suffix.
+  PTV1-poprzednio:
+    roi_class: unresolved_mixed
+    adjudication_status: operator_adjudication_required
+    evidence_basis: A hyphen following a target may encode dose, an anatomic qualifier, historical context, or subtraction.
+      Qualified review must distinguish these meanings without deleting the suffix.
+  PTV1/stary:
+    roi_class: unresolved_mixed
+    adjudication_status: operator_adjudication_required
+    evidence_basis: A target token has additional anatomic, temporal, dose, version, sum, or local qualifiers outside
+      the unqualified identifier rule. Qualified review must confirm target versus control meaning.
+  PTV1_2007:
+    roi_class: unresolved_mixed
+    adjudication_status: operator_adjudication_required
+    evidence_basis: A target token has additional anatomic, temporal, dose, version, sum, or local qualifiers outside
+      the unqualified identifier rule. Qualified review must confirm target versus control meaning.
+  PTV1_2_SUMA:
+    roi_class: unresolved_mixed
+    adjudication_status: operator_adjudication_required
+    evidence_basis: A target token has additional anatomic, temporal, dose, version, sum, or local qualifiers outside
+      the unqualified identifier rule. Qualified review must confirm target versus control meaning.
+  PTV1_fiz:
+    roi_class: unresolved_mixed
+    adjudication_status: operator_adjudication_required
+    evidence_basis: A target token has additional anatomic, temporal, dose, version, sum, or local qualifiers outside
+      the unqualified identifier rule. Qualified review must confirm target versus control meaning.
+  PTV1_v1:
+    roi_class: unresolved_mixed
+    adjudication_status: operator_adjudication_required
+    evidence_basis: A target token has additional anatomic, temporal, dose, version, sum, or local qualifiers outside
+      the unqualified identifier rule. Qualified review must confirm target versus control meaning.
+  PTV1_v2:
+    roi_class: unresolved_mixed
+    adjudication_status: operator_adjudication_required
+    evidence_basis: A target token has additional anatomic, temporal, dose, version, sum, or local qualifiers outside
+      the unqualified identifier rule. Qualified review must confirm target versus control meaning.
+  PTV2  60/2:
+    roi_class: unresolved_mixed
+    adjudication_status: operator_adjudication_required
+    evidence_basis: A target token has additional anatomic, temporal, dose, version, sum, or local qualifiers outside
+      the unqualified identifier rule. Qualified review must confirm target versus control meaning.
+  PTV2 + PTV1:
+    roi_class: unresolved_mixed
+    adjudication_status: operator_adjudication_required
+    evidence_basis: Explicit target union lacks recorded purpose and operation provenance. A clinical combined target
+      and an optimization union cannot be distinguished from the name alone.
+  PTV2 + PTV3:
+    roi_class: unresolved_mixed
+    adjudication_status: operator_adjudication_required
+    evidence_basis: Explicit target union lacks recorded purpose and operation provenance. A clinical combined target
+      and an optimization union cannot be distinguished from the name alone.
+  PTV2 20/4 08.2024:
+    roi_class: unresolved_mixed
+    adjudication_status: operator_adjudication_required
+    evidence_basis: A target token has additional anatomic, temporal, dose, version, sum, or local qualifiers outside
+      the unqualified identifier rule. Qualified review must confirm target versus control meaning.
+  PTV2-PTV1  60/2.4:
+    roi_class: unresolved_mixed
+    adjudication_status: operator_adjudication_required
+    evidence_basis: Apparent target subtraction contains an unadjudicated suffix or operand. Retain unresolved_mixed
+      until the operator confirms operands and Boolean purpose.
+  PTV2-esica:
+    roi_class: unresolved_mixed
+    adjudication_status: operator_adjudication_required
+    evidence_basis: A hyphen following a target may encode dose, an anatomic qualifier, historical context, or subtraction.
+      Qualified review must distinguish these meanings without deleting the suffix.
+  PTV2-jelita:
+    roi_class: unresolved_mixed
+    adjudication_status: operator_adjudication_required
+    evidence_basis: A hyphen following a target may encode dose, an anatomic qualifier, historical context, or subtraction.
+      Qualified review must distinguish these meanings without deleting the suffix.
+  PTV2/stary:
+    roi_class: unresolved_mixed
+    adjudication_status: operator_adjudication_required
+    evidence_basis: A target token has additional anatomic, temporal, dose, version, sum, or local qualifiers outside
+      the unqualified identifier rule. Qualified review must confirm target versus control meaning.
+  PTV2_2007:
+    roi_class: unresolved_mixed
+    adjudication_status: operator_adjudication_required
+    evidence_basis: A target token has additional anatomic, temporal, dose, version, sum, or local qualifiers outside
+      the unqualified identifier rule. Qualified review must confirm target versus control meaning.
+  PTV3  58.75:
+    roi_class: unresolved_mixed
+    adjudication_status: operator_adjudication_required
+    evidence_basis: A target token has additional anatomic, temporal, dose, version, sum, or local qualifiers outside
+      the unqualified identifier rule. Qualified review must confirm target versus control meaning.
+  PTV3 - PTV2_fiz:
+    roi_class: unresolved_mixed
+    adjudication_status: operator_adjudication_required
+    evidence_basis: Apparent target subtraction contains an unadjudicated suffix or operand. Retain unresolved_mixed
+      until the operator confirms operands and Boolean purpose.
+  PTV3-PTV_suma:
+    roi_class: unresolved_mixed
+    adjudication_status: operator_adjudication_required
+    evidence_basis: Apparent target subtraction contains an unadjudicated suffix or operand. Retain unresolved_mixed
+      until the operator confirms operands and Boolean purpose.
+  PTV4  50/2:
+    roi_class: unresolved_mixed
+    adjudication_status: operator_adjudication_required
+    evidence_basis: A target token has additional anatomic, temporal, dose, version, sum, or local qualifiers outside
+      the unqualified identifier rule. Qualified review must confirm target versus control meaning.
+  PTV4 stare:
+    roi_class: unresolved_mixed
+    adjudication_status: operator_adjudication_required
+    evidence_basis: A target token has additional anatomic, temporal, dose, version, sum, or local qualifiers outside
+      the unqualified identifier rule. Qualified review must confirm target versus control meaning.
+  PTV5 stare:
+    roi_class: unresolved_mixed
+    adjudication_status: operator_adjudication_required
+    evidence_basis: A target token has additional anatomic, temporal, dose, version, sum, or local qualifiers outside
+      the unqualified identifier rule. Qualified review must confirm target versus control meaning.
+  PTV_20/4_01/2024:
+    roi_class: unresolved_mixed
+    adjudication_status: operator_adjudication_required
+    evidence_basis: A target token has additional anatomic, temporal, dose, version, sum, or local qualifiers outside
+      the unqualified identifier rule. Qualified review must confirm target versus control meaning.
+  PTV_suma:
+    roi_class: unresolved_mixed
+    adjudication_status: operator_adjudication_required
+    evidence_basis: A target token has additional anatomic, temporal, dose, version, sum, or local qualifiers outside
+      the unqualified identifier rule. Qualified review must confirm target versus control meaning.
+  Pluco Suma K - GTV1:
+    roi_class: unresolved_mixed
+    adjudication_status: operator_adjudication_required
+    evidence_basis: An apparent crop or control contains an unadjudicated abbreviated operand or prefix. Its identity
+      and intended operation need qualified review.
+  Pluco Suma M - PTV1:
+    roi_class: unresolved_mixed
+    adjudication_status: operator_adjudication_required
+    evidence_basis: An apparent crop or control contains an unadjudicated abbreviated operand or prefix. Its identity
+      and intended operation need qualified review.
+  Pluco Suma M - PTV3:
+    roi_class: unresolved_mixed
+    adjudication_status: operator_adjudication_required
+    evidence_basis: An apparent crop or control contains an unadjudicated abbreviated operand or prefix. Its identity
+      and intended operation need qualified review.
+  SUMA PTV:
+    roi_class: unresolved_mixed
+    adjudication_status: operator_adjudication_required
+    evidence_basis: A target token has additional anatomic, temporal, dose, version, sum, or local qualifiers outside
+      the unqualified identifier rule. Qualified review must confirm target versus control meaning.
+  gtv wezly:
+    roi_class: unresolved_mixed
+    adjudication_status: operator_adjudication_required
+    evidence_basis: A target token has additional anatomic, temporal, dose, version, sum, or local qualifiers outside
+      the unqualified identifier rule. Qualified review must confirm target versus control meaning.
+  gtvk krzyz/fiz:
+    roi_class: unresolved_mixed
+    adjudication_status: operator_adjudication_required
+    evidence_basis: A target token has additional anatomic, temporal, dose, version, sum, or local qualifiers outside
+      the unqualified identifier rule. Qualified review must confirm target versus control meaning.
+  jel-g - PTV:
+    roi_class: unresolved_mixed
+    adjudication_status: operator_adjudication_required
+    evidence_basis: An apparent crop or control contains an unadjudicated abbreviated operand or prefix. Its identity
+      and intended operation need qualified review.
+  jelC-ptv:
+    roi_class: unresolved_mixed
+    adjudication_status: operator_adjudication_required
+    evidence_basis: An apparent crop or control contains an unadjudicated abbreviated operand or prefix. Its identity
+      and intended operation need qualified review.
+  jelita + PTV:
+    roi_class: unresolved_mixed
+    adjudication_status: operator_adjudication_required
+    evidence_basis: Addition or intersection combines target and organ tissue. Mixed-tissue composition remains unresolved
+      pending qualified review and recorded operation provenance.
+  jelita w PTV1:
+    roi_class: unresolved_mixed
+    adjudication_status: operator_adjudication_required
+    evidence_basis: Addition or intersection combines target and organ tissue. Mixed-tissue composition remains unresolved
+      pending qualified review and recorded operation provenance.
+  m3/ptv1:
+    roi_class: unresolved_mixed
+    adjudication_status: operator_adjudication_required
+    evidence_basis: The local prefix or composite name is not an unqualified target identifier. Qualified review is
+      needed rather than guessing the clinical or optimization meaning.
+  m4/sumaptv:
+    roi_class: unresolved_mixed
+    adjudication_status: operator_adjudication_required
+    evidence_basis: The local prefix or composite name is not an unqualified target identifier. Qualified review is
+      needed rather than guessing the clinical or optimization meaning.
+  m_CTV1-stab:
+    roi_class: unresolved_mixed
+    adjudication_status: operator_adjudication_required
+    evidence_basis: An apparent crop or control contains an unadjudicated abbreviated operand or prefix. Its identity
+      and intended operation need qualified review.
+  m_PTV1-stab:
+    roi_class: unresolved_mixed
+    adjudication_status: operator_adjudication_required
+    evidence_basis: An apparent crop or control contains an unadjudicated abbreviated operand or prefix. Its identity
+      and intended operation need qualified review.
+  nPTV1:
+    roi_class: unresolved_mixed
+    adjudication_status: operator_adjudication_required
+    evidence_basis: The local prefix or composite name is not an unqualified target identifier. Qualified review is
+      needed rather than guessing the clinical or optimization meaning.
+  nPTV2:
+    roi_class: unresolved_mixed
+    adjudication_status: operator_adjudication_required
+    evidence_basis: The local prefix or composite name is not an unqualified target identifier. Qualified review is
+      needed rather than guessing the clinical or optimization meaning.
+  nPTV3:
+    roi_class: unresolved_mixed
+    adjudication_status: operator_adjudication_required
+    evidence_basis: The local prefix or composite name is not an unqualified target identifier. Qualified review is
+      needed rather than guessing the clinical or optimization meaning.
+  nPTV4:
+    roi_class: unresolved_mixed
+    adjudication_status: operator_adjudication_required
+    evidence_basis: The local prefix or composite name is not an unqualified target identifier. Qualified review is
+      needed rather than guessing the clinical or optimization meaning.
+  odb and PTV:
+    roi_class: unresolved_mixed
+    adjudication_status: operator_adjudication_required
+    evidence_basis: Addition or intersection combines target and organ tissue. Mixed-tissue composition remains unresolved
+      pending qualified review and recorded operation provenance.
+  ptv-gtv/fiz:
+    roi_class: unresolved_mixed
+    adjudication_status: operator_adjudication_required
+    evidence_basis: Apparent target subtraction contains an unadjudicated suffix or operand. Retain unresolved_mixed
+      until the operator confirms operands and Boolean purpose.
+  ptv1orptv2:
+    roi_class: unresolved_mixed
+    adjudication_status: operator_adjudication_required
+    evidence_basis: A target token has additional anatomic, temporal, dose, version, sum, or local qualifiers outside
+      the unqualified identifier rule. Qualified review must confirm target versus control meaning.
+  ptv3-suma:
+    roi_class: unresolved_mixed
+    adjudication_status: operator_adjudication_required
+    evidence_basis: A hyphen following a target may encode dose, an anatomic qualifier, historical context, or subtraction.
+      Qualified review must distinguish these meanings without deleting the suffix.
+  sl-ptv:
+    roi_class: unresolved_mixed
+    adjudication_status: operator_adjudication_required
+    evidence_basis: An apparent crop or control contains an unadjudicated abbreviated operand or prefix. Its identity
+      and intended operation need qualified review.
+  sp-ptv:
+    roi_class: unresolved_mixed
+    adjudication_status: operator_adjudication_required
+    evidence_basis: An apparent crop or control contains an unadjudicated abbreviated operand or prefix. Its identity
+      and intended operation need qualified review.
+  zBowel + PTV1:
+    roi_class: unresolved_mixed
+    adjudication_status: operator_adjudication_required
+    evidence_basis: Addition or intersection combines target and organ tissue. Mixed-tissue composition remains unresolved
+      pending qualified review and recorded operation provenance.
+  zmarg_PTV-0.5jel:
+    roi_class: unresolved_mixed
+    adjudication_status: operator_adjudication_required
+    evidence_basis: An apparent crop or control contains an unadjudicated abbreviated operand or prefix. Its identity
+      and intended operation need qualified review.
+
 derived_crosswalk:
   bowel_bag:
     roi_class: hollow_pelvic_organ
@@ -576,7 +1037,10 @@ derived_crosswalk:
     require_provenance: true
     evidence_basis: nonzero bone expansion includes non-bone tissue for treatment planning
 governance_notes:
-  - Manual, custom-model, and other project-local names are exact-match only.
-  - Unlisted names remain unresolved_mixed and require operator adjudication.
+  - Manual and project-local class lookup uses versioned conservative name_rules before exact fallback.
+  - Normalization never changes contour identity or discards semantic operators.
+  - Explicit pending entries and conflicting normalized entries remain unresolved_mixed.
+  - Unqualified target identifiers reuse rt_details.is_target_volume_name with a full-name qualifier guard.
+  - Mixed expressions, unknown qualifiers and unknown tissue operands require operator adjudication.
   - Derived entries apply only when operation and base structures are recorded.
   - A recorded nonzero margin produces a planning helper rather than anatomy.

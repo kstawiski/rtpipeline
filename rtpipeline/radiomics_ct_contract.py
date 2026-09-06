@@ -109,6 +109,13 @@ _COMPLETE_DISPOSITIONS = {
     "declared_skip",
     "failed",
     "failed_shape_physical_validity",
+    "declared_empty",
+    "non_volumetric",
+    "malformed_source_roi",
+    "nonvolumetric_nonmeasurement",
+    "invalid_contour_geometry",
+    "unresolved_source_scope",
+    "below_minimum_dimensions",
 }
 
 FEATURE_POLICY_EXTRACT = "extract"
@@ -476,13 +483,15 @@ def classify_ct_roi(
                 ),
             )
 
-    entry = data.get("manual_custom_crosswalk", {}).get(base_name)
-    if isinstance(entry, dict):
+    from .roi_name_rules import lookup_manual_roi_class
+
+    entry, entry_source = lookup_manual_roi_class(base_name, data)
+    if isinstance(entry, Mapping):
         return _decision(
             str(entry["roi_class"]),
             data=data,
             digest=digest,
-            source="manual_custom_crosswalk:exact_name",
+            source=entry_source,
             status=str(entry.get("adjudication_status") or "approved"),
         )
     return _decision(
@@ -498,7 +507,8 @@ def rtstruct_roi_identities(path: Path) -> dict[str, tuple[str, str]]:
     import pydicom
 
     dataset = pydicom.dcmread(str(path), stop_before_pixels=True, force=True)
-    sop_uid = str(getattr(dataset, "SOPInstanceUID", "") or "").strip()
+    from .rtstruct_identity import validate_rtstruct_identity
+    sop_uid = validate_rtstruct_identity(dataset)
     if not sop_uid:
         raise ValueError(f"RTSTRUCT has no SOPInstanceUID: {path}")
     identities: dict[str, tuple[str, str]] = {}
@@ -1399,10 +1409,17 @@ def resampled_mask_qc(
 
     settings = dict(extractor.settings)
     settings.pop("resegmentRange", None)
+    # Disable only diagnostic size/dimension admission. The original thresholds
+    # are enforced against these measured counts before any feature execute.
+    settings.pop("minimumROISize", None)
+    settings["minimumROIDimensions"] = 1
+    settings["preCrop"] = False
     loaded_image, loaded_mask = extractor.loadImage(image, mask, None, **settings)
-    _, corrected_mask = imageoperations.checkMask(loaded_image, loaded_mask, **settings)
-    if corrected_mask is not None:
-        loaded_mask = corrected_mask
+    preliminary = sitk.GetArrayViewFromImage(loaded_mask) == int(settings.get("label", 1))
+    if _observed_dimensions(preliminary) > 0:
+        _, corrected_mask = imageoperations.checkMask(loaded_image, loaded_mask, **settings)
+        if corrected_mask is not None:
+            loaded_mask = corrected_mask
     label = int(settings.get("label", 1))
     image_array = sitk.GetArrayFromImage(loaded_image)
     morphologic = sitk.GetArrayFromImage(loaded_mask) == label
@@ -1431,6 +1448,7 @@ def resampled_mask_qc(
         )
     return {
         "morphologic_resampled_voxel_count": morphologic_count,
+        "observed_roi_dimensions_before_resegmentation": _observed_dimensions(morphologic),
         "resegment_after_count": after_count,
         "resegment_below_lower_count": below_count,
         "resegment_above_upper_count": above_count,
@@ -1545,6 +1563,53 @@ def _effective_hashes_for_built_extractors(
 
 
 def extract_ct_roi_arms(
+    image: Any, mask: Any, *, factory: Callable[[], Any],
+    decision: RoiClassDecision, common_metadata: Mapping[str, Any],
+    run_identifier: str, code_revision: str, native_voxel_count: int,
+    required: bool, configured_parameter_hashes: Optional[Mapping[str, str]] = None,
+) -> list[dict[str, Any]]:
+    from .radiomics_memory import RadiomicsMemoryLimit
+    metadata = dict(common_metadata)
+    legacy = metadata.pop("_resource_guard_legacy", None)
+    arguments = dict(factory=factory, decision=decision, common_metadata=metadata,
+                     run_identifier=run_identifier, code_revision=code_revision,
+                     native_voxel_count=native_voxel_count, required=required,
+                     configured_parameter_hashes=configured_parameter_hashes)
+    try:
+        return _extract_ct_roi_arms_impl(image, mask, **arguments)
+    except RadiomicsMemoryLimit as exc:
+        # No partial feature row can escape a late filtered-image rejection.
+        if legacy is None:
+            import SimpleITK as sitk
+            from .radiomics_resource_guard import estimate_resampled_bounding_box
+            from .radiomics_memory import legacy_rejection
+            m = sitk.ReadImage(str(mask)) if isinstance(mask, (str, Path)) else mask
+            ext = factory()
+            spacing = m.GetSpacing()
+            estimate = estimate_resampled_bounding_box(
+                sitk.GetArrayViewFromImage(m), native_spacing_xyz=spacing,
+                resampled_spacing_xyz=ext.settings.get("resampledPixelSpacing") or spacing,
+                array_axis_to_xyz=(2, 1, 0), pad_distance=ext.settings.get("padDistance", 5),
+            )
+            legacy = legacy_rejection(estimate, 15_000_000, metadata.get("roi_name", "ROI"))
+        _, raw, primary = build_ct_extractors(factory, decision.primary_resegment_range_hu)
+        return disposition_rows_for_arms(
+            {**metadata, **legacy["metadata"],
+             "roi_structural_code": "ROI_PREDICTED_MEMORY_EXCEEDS_LIMIT",
+             "resource_guard_predicted_peak_bytes": exc.predicted_peak_bytes,
+             "resource_guard_memory_budget_bytes": 8 * 1024**3},
+            decision=decision, disposition="failed",
+            detail=f"Full feature extraction rejected by memory predictor: {exc}. "
+                   f"Predicted peak {exc.predicted_peak_bytes} bytes; budget {8 * 1024**3} bytes.",
+            failure_kind="resource_limit",
+            run_identifier=run_identifier, code_revision=code_revision,
+            native_voxel_count=native_voxel_count, required=required,
+            effective_hashes=_effective_hashes_for_built_extractors(raw, primary, decision),
+            configured_parameter_hashes=configured_parameter_hashes,
+        )
+
+
+def _extract_ct_roi_arms_impl(
     image: Any,
     mask: Any,
     *,
@@ -1560,11 +1625,7 @@ def extract_ct_roi_arms(
     shape_extractor, raw_extractor, primary_extractor = build_ct_extractors(
         factory, decision.primary_resegment_range_hu
     )
-    effective_hashes = _effective_hashes_for_built_extractors(
-        raw_extractor,
-        primary_extractor,
-        decision,
-    )
+    effective_hashes = _effective_hashes_for_built_extractors(raw_extractor, primary_extractor, decision)
     if decision.feature_publication_policy == FEATURE_POLICY_INVENTORY_ONLY:
         return disposition_rows_for_arms(
             common_metadata,
@@ -1583,6 +1644,67 @@ def extract_ct_roi_arms(
             configured_parameter_hashes=configured_parameter_hashes,
             runtime_versions=_runtime_versions(),
         )
+    # Budget guards apply only to the production extractor interface. Test doubles
+    # that do not implement computeFeatures retain their existing unit-test role.
+    resource_metadata = {}
+    if hasattr(raw_extractor, "computeFeatures"):
+        import SimpleITK as sitk
+        from .radiomics_resource_guard import estimate_resampled_bounding_box
+        from .radiomics_memory import (
+            preflight_metadata, install_texture_budget, STAGE2_CODE,
+            RadiomicsMemoryLimit,
+        )
+        resource_mask = sitk.ReadImage(str(mask)) if isinstance(mask, (str, Path)) else mask
+        resource_array = sitk.GetArrayViewFromImage(resource_mask)
+        resource_spacing = resource_mask.GetSpacing()
+        estimate = estimate_resampled_bounding_box(
+            resource_array, native_spacing_xyz=resource_spacing,
+            resampled_spacing_xyz=raw_extractor.settings.get("resampledPixelSpacing") or resource_spacing,
+            array_axis_to_xyz=(2, 1, 0),
+            pad_distance=raw_extractor.settings.get("padDistance", 5),
+        )
+        resource_metadata = preflight_metadata(
+            estimate, resource_array, native_spacing_xyz=resource_spacing,
+            array_axis_to_xyz=(2, 1, 0), settings=raw_extractor.settings,
+            image_types=raw_extractor.enabledImagetypes,
+        )
+        if resource_metadata is None:
+            raise RadiomicsMemoryLimit("preprocessing allocation envelope exceeds byte budget")
+        for candidate in (shape_extractor, raw_extractor, primary_extractor):
+            if candidate is not None:
+                install_texture_budget(candidate, resource_metadata)
+        common_metadata = {**common_metadata, **resource_metadata}
+    effective_hashes = _effective_hashes_for_built_extractors(
+        raw_extractor,
+        primary_extractor,
+        decision,
+    )
+    raw_qc = resampled_mask_qc(image, mask, raw_extractor, None)
+    shape_qc = (raw_qc if shape_extractor.settings == raw_extractor.settings else
+                resampled_mask_qc(image, mask, shape_extractor, None))
+    for grid, candidate, qc in (("shape", shape_extractor, shape_qc),
+                                ("raw", raw_extractor, raw_qc)):
+        count = int(qc["morphologic_resampled_voxel_count"])
+        dimensions = int(qc.get("observed_roi_dimensions_before_resegmentation",
+                                qc["observed_roi_dimensions_after_resegmentation"]))
+        minimum = candidate.settings.get("minimumROISize")
+        minimum_dimensions = int(candidate.settings.get("minimumROIDimensions", 2))
+        disposition = ("below_minimum_voxels" if count == 0 or
+                       (minimum is not None and count <= int(minimum)) else
+                       "below_minimum_dimensions" if dimensions < minimum_dimensions else None)
+        if disposition is not None:
+            return disposition_rows_for_arms(
+                {**common_metadata, **qc, "resampled_mask_voxel_count": count,
+                 "admissibility_grid": grid}, decision=decision, disposition=disposition,
+                detail=(f"ROI contains {native_voxel_count} native voxels and {count} "
+                        f"resampled {grid} voxels with {dimensions} dimensions. "
+                        f"Configured minimum size is {minimum} and dimensions {minimum_dimensions}."),
+                failure_kind="resampled_degenerate_mask", run_identifier=run_identifier,
+                code_revision=code_revision, native_voxel_count=native_voxel_count,
+                required=required, effective_hashes=effective_hashes,
+                configured_parameter_hashes=configured_parameter_hashes,
+                runtime_versions=_runtime_versions(),
+            )
     shape_result = _scalarize(shape_extractor.execute(image, mask))
     shape_features = _feature_subset(shape_result, SHAPE_FEATURE_MARKERS)
     shape_expected = _configured_feature_names(
@@ -1614,7 +1736,6 @@ def extract_ct_roi_arms(
     )
     raw_undefined = _approved_undefined_feature_names(raw_result)
     raw_result.update(shape_features)
-    raw_qc = resampled_mask_qc(image, mask, raw_extractor, None)
     sensitivity = dict(raw_result)
     sensitivity.update(common_metadata)
     sensitivity.update(
@@ -1702,6 +1823,8 @@ def extract_ct_roi_arms(
     primary.update(_feature_schema_metadata(primary_expected))
 
     rows = [primary, sensitivity]
+    for row in rows:
+        row.update(resource_metadata)
     assert_paired_shape_identity(rows)
     return rows
 

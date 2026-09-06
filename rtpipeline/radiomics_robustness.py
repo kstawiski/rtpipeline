@@ -386,6 +386,12 @@ class RobustnessConfig:
         )
 
 
+from .radiomics_robustness_outcomes import (
+    GeometricNonmeasurement, GeometricNotExtractable, GEOMETRIC_REASON_CODES,
+    volume_nonmeasurement, extraction_nonmeasurement, nonmeasurement_rows,
+)
+
+
 def _select_largest_scores_deterministically(
     candidates: np.ndarray,
     scores: np.ndarray,
@@ -547,6 +553,14 @@ def _validate_translated_mask(
     translated_voxels = int(np.count_nonzero(sitk.GetArrayViewFromImage(translated_binary)))
     if original_voxels == 0:
         raise RuntimeError("cannot translate an empty mask")
+    if translated_voxels < original_voxels:
+        raise GeometricNotExtractable(GeometricNonmeasurement(
+            "translation_outside_image", {
+                "original_voxels": original_voxels, "translated_voxels": translated_voxels,
+                "translation_mm": list(translation_mm), "image_size": list(original.GetSize()),
+                "detail": "translation clipped foreground at image boundary",
+            },
+        ))
     if translated_voxels != original_voxels:
         raise RuntimeError(
             "translation clipped or duplicated foreground voxels at the image boundary: "
@@ -689,7 +703,7 @@ def generate_perturbed_masks(
             if pert_mask is not None:
                 perturbed[pert_id] = pert_mask
             else:
-                logger.warning("Failed to generate perturbation %s for %s", pert_id, structure_name)
+                perturbed[pert_id] = volume_nonmeasurement(original_mask, tau)
 
     return perturbed
 
@@ -846,13 +860,26 @@ def generate_ntcv_perturbations(
     for translation_index, trans_vec in enumerate(translation_vectors):
         if any(abs(t) > 1e-3 for t in trans_vec):
             translated_mask = translate_mask(original_mask, trans_vec)
-            _validate_translated_mask(original_mask, translated_mask, trans_vec)
+            translation_outcome = None
+            try:
+                _validate_translated_mask(original_mask, translated_mask, trans_vec)
+            except GeometricNotExtractable as exc:
+                translation_outcome = exc.outcome
             trans_suffix = (
                 f"_t{int(trans_vec[0])}_{int(trans_vec[1])}_{int(trans_vec[2])}"
             )
         else:
             translated_mask = original_mask
             trans_suffix = ""
+            translation_outcome = None
+
+        if translation_outcome is not None:
+            for contour_index in range(contour_realizations + 1):
+                contour_suffix = f"_c{contour_index}" if contour_index else ""
+                for tau in volume_changes:
+                    vol_suffix = "_v0" if abs(tau) < 1e-6 else f"_v{int(tau * 100):+03d}"
+                    geometry_states.append((f"{trans_suffix}{contour_suffix}{vol_suffix}", translation_outcome))
+            continue
 
         contour_variants = [translated_mask]
         for contour_index in range(1, contour_realizations + 1):
@@ -896,9 +923,7 @@ def generate_ntcv_perturbations(
                 else:
                     final_mask = volume_adapt_mask(contour_mask, tau)
                     if final_mask is None:
-                        raise RuntimeError(
-                            f"volume adaptation failed for {structure_name} (tau={tau:.2f})"
-                        )
+                        final_mask = volume_nonmeasurement(contour_mask, tau)
                     vol_suffix = f"_v{int(tau * 100):+03d}"
                 geometry_states.append(
                     (f"{trans_suffix}{contour_suffix}{vol_suffix}", final_mask)
@@ -957,10 +982,16 @@ def _is_radiomics_feature_key(key: str) -> bool:
 
 def _feature_rows_from_worker_result(result: Mapping[str, Any]) -> List[Dict[str, Any]]:
     """Flatten one arm-aware worker result without dropping identity fields."""
+    if "__nonmeasurement_rows__" in result:
+        return [dict(row, robustness_attempts=result.get("robustness_attempts", 1),
+                     robustness_retry_errors=json.dumps(result.get("robustness_retry_errors", [])))
+                for row in result["__nonmeasurement_rows__"]]
     rows: List[Dict[str, Any]] = []
     for record in result.get("__records__", []):
         metadata = {
             "modality": record.get("modality", "CT"),
+            "robustness_attempts": result.get("robustness_attempts", 1),
+            "robustness_retry_errors": json.dumps(result.get("robustness_retry_errors", [])),
             "roi_name": result.get("roi_name", record.get("roi_name", "")),
             "perturbation_id": result.get("perturbation_id", ""),
             "extraction_arm": record.get("extraction_arm", ""),
@@ -1001,6 +1032,71 @@ def _feature_rows_from_worker_result(result: Mapping[str, Any]) -> List[Dict[str
 
 
 def _validate_extracted_feature_frame(
+    frame, expected_perturbation_ids, context, *, expected_source_identity=None,
+):
+    from .robustness_watchdog import validate_technical_frame
+    if "robustness_status" in frame and frame.robustness_status.eq("technical_failure").any():
+        failed = frame.loc[frame.robustness_status.eq("technical_failure")]
+        remaining = frame.loc[~frame.robustness_status.eq("technical_failure")]
+        failed_ids = validate_technical_frame(failed, expected_perturbation_ids, context, expected_source_identity)
+        if failed_ids & set(remaining.perturbation_id.astype(str)):
+            raise RuntimeError(f"condition is both measured and technically failed for {context}")
+        expected_perturbation_ids = set(expected_perturbation_ids) - failed_ids
+        if not expected_perturbation_ids:
+            if not remaining.empty:
+                raise RuntimeError(f"unexpected results for {context}")
+            return
+        frame = remaining
+    return _validate_nontechnical_feature_frame(
+        frame, expected_perturbation_ids, context, expected_source_identity=expected_source_identity,
+    )
+
+
+def _validate_nontechnical_feature_frame(
+    frame, expected_perturbation_ids, context, *, expected_source_identity=None,
+):
+    """Reconcile every requested condition with measured or proven impossible rows."""
+    if "robustness_status" not in frame:
+        return _validate_measured_feature_frame(
+            frame, expected_perturbation_ids, context,
+            expected_source_identity=expected_source_identity,
+        )
+    from .radiomics_ct_contract import CT_EXTRACTION_ARMS
+    statuses = frame["robustness_status"].fillna("measured")
+    if not set(statuses).issubset({"measured", "geometrically_impossible"}):
+        raise RuntimeError(f"invalid robustness status for {context}")
+    impossible = frame.loc[statuses == "geometrically_impossible"]
+    measured = frame.loc[statuses == "measured"]
+    impossible_ids = set(impossible["perturbation_id"].astype(str))
+    if not impossible_ids <= expected_perturbation_ids:
+        raise RuntimeError(f"unexpected impossible conditions for {context}")
+    if impossible_ids & set(measured["perturbation_id"].astype(str)):
+        raise RuntimeError(f"condition is both measured and impossible for {context}")
+    for pid, group in impossible.groupby("perturbation_id"):
+        if len(group) != len(CT_EXTRACTION_ARMS) or set(group["extraction_arm"]) != set(CT_EXTRACTION_ARMS):
+            raise RuntimeError(f"incomplete non-measurement arms for {context}/{pid}")
+        if group["value"].notna().any() or group["feature_name"].notna().any():
+            raise RuntimeError(f"non-measurement contains feature values for {context}/{pid}")
+        if group["reason_code"].nunique() != 1 or group["geometry_evidence"].nunique() != 1:
+            raise RuntimeError(f"discordant non-measurement arms for {context}/{pid}")
+        for row in group.to_dict("records"):
+            GeometricNonmeasurement(row["reason_code"], json.loads(row["geometry_evidence"]))
+            if row.get("measurement_type") != ROBUSTNESS_MEASUREMENT_TYPE:
+                raise RuntimeError(f"invalid non-measurement type for {context}/{pid}")
+            if expected_source_identity is not None:
+                for col, value in expected_source_identity.as_dict().items():
+                    if str(row.get(col, "")) != value:
+                        raise RuntimeError(f"non-measurement identity mismatch for {context}/{pid}/{col}")
+    possible_ids = set(expected_perturbation_ids) - impossible_ids
+    if possible_ids:
+        _validate_measured_feature_frame(
+            measured, possible_ids, context, expected_source_identity=expected_source_identity,
+        )
+    elif not measured.empty:
+        raise RuntimeError(f"unexpected measured conditions for {context}")
+
+
+def _validate_measured_feature_frame(
     frame: pd.DataFrame,
     expected_perturbation_ids: set[str],
     context: str,
@@ -1273,6 +1369,7 @@ def extract_features_for_masks(
                         "image_path": str(image_path),
                         "mask_path": str(mask_path),
                         "roi_name": f"{structure_name}/{perturbation_id}",
+                        "robustness_perturbation_id": perturbation_id,
                         "dual_arm_ct": True,
                         "roi_class_decision": {
                             "roi_class": decision.roi_class,
@@ -1300,13 +1397,31 @@ def extract_features_for_masks(
                     str(params_path) if params_path else None,
                     timeout_per_roi=120,
                 )
-                for task, result in zip(batch_tasks, batch_results):
+                indexed_results = {}
+                for result in batch_results:
+                    if not isinstance(result, dict):
+                        raise RuntimeError("robustness conda worker returned no result")
+                    index = result.get("__task_index__")
+                    if not isinstance(index, int) or index in indexed_results:
+                        raise RuntimeError("robustness conda result has missing or duplicate task identity")
+                    indexed_results[index] = result
+                if set(indexed_results) != set(range(len(batch_tasks))):
+                    raise RuntimeError("incomplete robustness conda task results")
+                for index, task in enumerate(batch_tasks):
+                    result = indexed_results[index]
                     if result.get("__status__") != "success":
                         raise RuntimeError(
                             f"robustness extraction failed for {task['roi_name']}: "
                             f"{result.get('__error__', result.get('__reason__', 'unknown error'))}"
                         )
-                    perturbation_id = task["roi_name"].split("/", 1)[1]
+                    perturbation_id = task["robustness_perturbation_id"]
+                    if "__nonmeasurement__" in result:
+                        outcome = GeometricNonmeasurement(**result["__nonmeasurement__"])
+                        rows.extend(nonmeasurement_rows(
+                            outcome, source_identity.as_dict(), perturbation_id,
+                            shared_run_id, mask_identity=perturbed_mask_identities[perturbation_id],
+                        ))
+                        continue
                     try:
                         _append_records(result["__records__"], perturbation_id)
                     except RobustnessIdentityError as exc:
@@ -1333,22 +1448,33 @@ def extract_features_for_masks(
                     perturbed_images.get(perturbation_id, image)
                     if perturbed_images else image
                 )
-                records = extract_ct_roi_arms(
-                    current_image,
-                    mask,
-                    factory=_factory,
-                    decision=decision,
-                    common_metadata={
-                        **source_identity.as_dict(),
-                        "roi_name": structure_name,
-                        "modality": "CT",
-                    },
-                    run_identifier=shared_run_id,
-                    code_revision=current_code_revision(),
-                    native_voxel_count=int(np.count_nonzero(sitk.GetArrayViewFromImage(mask))),
-                    required=False,
-                    configured_parameter_hashes=configured_hashes,
-                )
+                try:
+                    records = extract_ct_roi_arms(
+                        current_image, mask, factory=_factory, decision=decision,
+                        common_metadata={**source_identity.as_dict(), "roi_name": structure_name, "modality": "CT"},
+                        run_identifier=shared_run_id, code_revision=current_code_revision(),
+                        native_voxel_count=int(np.count_nonzero(sitk.GetArrayViewFromImage(mask))),
+                        required=False, configured_parameter_hashes=configured_hashes,
+                    )
+                except (TimeoutError, MemoryError):
+                    raise
+                except Exception:
+                    outcome = extraction_nonmeasurement(current_image, mask, _factory)
+                    if outcome is None:
+                        raise
+                    rows.extend(nonmeasurement_rows(
+                        outcome, source_identity.as_dict(), perturbation_id,
+                        shared_run_id, mask_identity=perturbed_mask_identities[perturbation_id],
+                    ))
+                    continue
+                from .radiomics_robustness_outcomes import returned_geometry_nonmeasurement
+                outcome = returned_geometry_nonmeasurement(records, current_image, mask, _factory)
+                if outcome is not None:
+                    rows.extend(nonmeasurement_rows(
+                        outcome, source_identity.as_dict(), perturbation_id,
+                        shared_run_id, mask_identity=perturbed_mask_identities[perturbation_id],
+                    ))
+                    continue
                 try:
                     _append_records(records, perturbation_id)
                 except RobustnessIdentityError as exc:
@@ -1670,6 +1796,13 @@ def summarize_feature_stability(
     Returns:
         DataFrame with one row per (structure, segmentation_source, feature_name) containing metrics and robustness label
     """
+    if "robustness_status" in df_long and df_long.robustness_status.eq("technical_failure").any():
+        raise RuntimeError("technical robustness failures require recovery before aggregation")
+    if "robustness_status" in df_long and df_long["robustness_status"].eq("geometrically_impossible").any():
+        raise ValueError(
+            "geometric non-measurements require an explicit comparable-condition analysis; "
+            "do not drop subjects, impute values, or pool varying condition sets into fixed-grid ICC"
+        )
     rows = []
 
     if group_columns is None:
@@ -2669,6 +2802,7 @@ def robustness_for_course(
         logger.info("Parallel radiomics disabled via RTPIPELINE_DISABLE_PARALLEL_RADIOMICS=%s", disable_parallel)
         has_parallel = False
     all_features = []
+    generated_nonmeasurement_keys = set()
     from .radiomics_ct_contract import CT_EXTRACTION_ARMS, new_run_identifier
     robustness_run_identifier = new_run_identifier()
     expected_perturbations: Dict[Tuple[str, str], set[str]] = {}
@@ -2724,6 +2858,18 @@ def robustness_for_course(
                     f"generated {len(perturbed_masks)}"
                 )
             expected_perturbations[(roi_name, source)] = set(perturbed_masks)
+            for pert_id, outcome in list(perturbed_masks.items()):
+                if isinstance(outcome, GeometricNonmeasurement):
+                    all_features.append(pd.DataFrame(nonmeasurement_rows(
+                        outcome, identity_catalog[(source, roi_name)].as_dict(),
+                        pert_id, robustness_run_identifier,
+                    )))
+                    generated_nonmeasurement_keys.update(
+                        (roi_name, source, pert_id, arm) for arm in CT_EXTRACTION_ARMS
+                    )
+                    del perturbed_masks[pert_id]
+            if not perturbed_masks:
+                continue
 
             if has_parallel:
                 # Prepare parallel tasks
@@ -2801,64 +2947,49 @@ def robustness_for_course(
             course_timeout = int(os.environ.get("RTPIPELINE_ROBUSTNESS_COURSE_TIMEOUT", "14400"))  # 4 hour default
             progress_timeout = int(os.environ.get("RTPIPELINE_ROBUSTNESS_PROGRESS_TIMEOUT", "300"))  # 5 min default
 
-            with ctx.Pool(max_workers) as pool:
+            from .robustness_watchdog import SupervisedResults, technical_rows
+            with SupervisedResults(
+                ctx, _isolated_radiomics_extraction_with_retry, tasks, max_workers,
+                course_timeout=course_timeout, progress_timeout=progress_timeout,
+            ) as results_iter:
                 completed_count = 0
                 total_count = len(tasks)
-                successful_task_keys: set[Tuple[str, str, str, str]] = set()
-                start_time = time.time()
-                last_progress_time = time.time()
+                successful_task_keys: set[Tuple[str, str, str, str]] = set(generated_nonmeasurement_keys)
+                start_time = time.monotonic()
                 timed_out = False
-
-                # Use imap_unordered with watchdog timeout
-                results_iter = pool.imap_unordered(_isolated_radiomics_extraction_with_retry, tasks)
-
-                while completed_count < total_count and not timed_out:
+                returned_indices = set()
+                while completed_count < total_count:
                     try:
-                        # Poll for results with a short timeout
-                        result = results_iter.next(timeout=10)  # 10 second poll interval
-                        completed_count += 1
-                        last_progress_time = time.time()
-
-                        if completed_count % 10 == 0 or completed_count == total_count:
-                            elapsed = time.time() - start_time
-                            rate = completed_count / elapsed if elapsed > 0 else 0
-                            eta = (total_count - completed_count) / rate if rate > 0 else 0
-                            logger.info("Robustness progress: %d/%d (%.1f%%), ETA: %.1fs",
-                                       completed_count, total_count,
-                                       100 * completed_count / total_count, eta)
+                        result = results_iter.next(timeout=10)
+                    except MPTimeoutError:
+                        continue
                     except StopIteration:
-                        # All results processed
                         break
-                    except (TimeoutError, MPTimeoutError):
-                        # Check watchdog conditions
-                        elapsed = time.time() - start_time
-                        no_progress_time = time.time() - last_progress_time
-
-                        if elapsed > course_timeout:
-                            logger.error(
-                                "Robustness analysis exceeded course timeout (%ds), terminating pool",
-                                course_timeout
-                            )
-                            pool.terminate()
-                            timed_out = True
-                            break
-                        elif no_progress_time > progress_timeout:
-                            logger.error(
-                                "No progress for %ds (threshold: %ds), likely hung worker - terminating pool",
-                                int(no_progress_time), progress_timeout
-                            )
-                            pool.terminate()
-                            timed_out = True
-                            break
-                        else:
-                            # Continue waiting
-                            continue
-                    except Exception as iter_err:
-                        # Worker raised an exception — count it as completed (failed) to avoid
-                        # spinning until course timeout when some tasks fail
-                        completed_count += 1
-                        last_progress_time = time.time()
-                        logger.warning("Worker error on task %d/%d: %s", completed_count, total_count, iter_err)
+                    index = result.get("__task_index__")
+                    if not isinstance(index, int) or index in returned_indices or not 0 <= index < total_count:
+                        raise RuntimeError("duplicate or invalid robustness task result identity")
+                    returned_indices.add(index)
+                    task_params = tasks[index][1]
+                    if any(str(result.get(key, "")) != str(task_params.get(key, ""))
+                           for key in ("roi_name", "segmentation_source")) or (
+                        result.get("perturbation_id") != task_params.get("extra_metadata", {}).get("perturbation_id")
+                    ):
+                        raise RuntimeError("robustness result does not match submitted condition")
+                    completed_count += 1
+                    if completed_count % 10 == 0 or completed_count == total_count:
+                        elapsed = time.monotonic() - start_time
+                        eta = (total_count-completed_count)*elapsed/completed_count
+                        logger.info("Robustness progress: %d/%d (%.1f%%), ETA: %.1fs",
+                                    completed_count, total_count, 100*completed_count/total_count, eta)
+                    if "__technical_failure__" in result:
+                        roi_name, source, perturbation_id = (
+                            result["roi_name"], result["segmentation_source"], result["perturbation_id"])
+                        failed_rows = technical_rows(
+                            result, identity_catalog[(source, roi_name)].as_dict(),
+                            robustness_run_identifier, task_params["perturbed_mask_identity"], task_params,
+                        )
+                        all_features.append(pd.DataFrame(failed_rows))
+                        successful_task_keys.update((roi_name, source, perturbation_id, arm) for arm in CT_EXTRACTION_ARMS)
                         continue
 
                     # Process result if we got one
@@ -2964,8 +3095,14 @@ def robustness_for_course(
 
     # Combine all features
     combined_df = pd.concat(all_features, ignore_index=True)
+    if "robustness_status" not in combined_df:
+        combined_df["robustness_status"] = "measured"
+    else:
+        combined_df["robustness_status"] = combined_df["robustness_status"].fillna("measured")
     if "roi_name" in combined_df.columns and "structure" not in combined_df.columns:
         combined_df.rename(columns={"roi_name": "structure"}, inplace=True)
+    if "roi_name" in combined_df and "structure" in combined_df:
+        combined_df["structure"] = combined_df["structure"].fillna(combined_df["roi_name"])
     if identity_failed_perturbations:
         failed_keys = set(identity_failed_perturbations)
         combined_df = combined_df.loc[
@@ -2992,10 +3129,35 @@ def robustness_for_course(
             expected_source_identity=identity_catalog[(source, roi_name)],
         )
 
+    for (roi_name, source), requested_ids in expected_perturbations.items():
+        selected = ((combined_df["structure"] == roi_name)
+                    & (combined_df["segmentation_source"] == source))
+        impossible_ids = sorted(set(combined_df.loc[
+            selected & combined_df["robustness_status"].eq("geometrically_impossible"),
+            "perturbation_id",
+        ]))
+        combined_df.loc[selected, "requested_condition_ids"] = json.dumps(sorted(requested_ids))
+        combined_df.loc[selected, "impossible_condition_ids"] = json.dumps(impossible_ids)
+        combined_df.loc[selected, "possible_condition_count"] = len(requested_ids) - len(impossible_ids)
+
+    # Preserve validated measurements and the exact failed-condition inventory.
+    # A technical failure remains a failed stage, so the CLI never creates a
+    # success sentinel and aggregation cannot silently use an incomplete grid.
+    technical_failure_count = int(combined_df["robustness_status"].eq("technical_failure").sum())
     # Save raw feature values for aggregation stage
     try:
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        combined_df.to_parquet(output_path, index=False)
+        temporary_output = output_path.with_name(output_path.name + ".tmp")
+        try:
+            combined_df.to_parquet(temporary_output, index=False)
+            os.replace(temporary_output, output_path)
+        finally:
+            temporary_output.unlink(missing_ok=True)
+        if technical_failure_count:
+            raise RuntimeError(
+                f"incomplete robustness extraction: published partial results to {output_path}; "
+                f"technical_failure_arm_rows={technical_failure_count}; see exact conditions and evidence in parquet"
+            )
         logger.info(
             "Saved robustness feature values to %s (%d rows, %d unique perturbations)",
             output_path,
@@ -3004,6 +3166,8 @@ def robustness_for_course(
         )
         return output_path
     except Exception as e:
+        if technical_failure_count and output_path.exists() and "published partial results" in str(e):
+            raise
         raise RuntimeError(f"failed to save robustness results to {output_path}: {e}") from e
 
 
@@ -3044,6 +3208,8 @@ def aggregate_robustness_results(
     if "roi_name" in combined_raw.columns and "structure" not in combined_raw.columns:
         combined_raw.rename(columns={"roi_name": "structure"}, inplace=True)
 
+    if "robustness_status" in combined_raw and combined_raw.robustness_status.eq("technical_failure").any():
+        raise RuntimeError("technical robustness failures require recovery before aggregation")
     _validate_cohort_feature_sets(combined_raw)
     per_structure_summary = summarize_feature_stability(combined_raw, rob_config)
     # Keep the historical sheet name for compatibility, but never pool raw

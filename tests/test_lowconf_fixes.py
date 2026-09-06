@@ -282,6 +282,9 @@ def _mk_dose_dataset(
     ds.DoseUnits = "GY"
     ds.DoseType = "PHYSICAL"
     ds.DoseSummationType = "PLAN"
+    reference = Dataset()
+    reference.ReferencedSOPInstanceUID = "1.2.3.99"
+    ds.ReferencedRTPlanSequence = [reference]
     ds.Rows = rows
     ds.Columns = cols
     ds.NumberOfFrames = frames
@@ -339,6 +342,14 @@ def test_dose_geometry_rejects_nonphysical_dose(tmp_path: Path) -> None:
         _validated_dose_grid_geometry(dataset, path)
 
 
+def _approved_geometry_plan():
+    plan = Dataset()
+    plan.SOPClassUID = RTPlanStorage
+    plan.SOPInstanceUID = "1.2.3.99"
+    plan.ApprovalStatus = "APPROVED"
+    return plan
+
+
 def test_sum_doses_with_resample_handles_oblique_reference_in_plane_rotation(tmp_path: Path) -> None:
     """Reference grid is in-plane rotated 90 degrees:
       row_cosines_ref (u) = [0, 1, 0]   -> column index increases along +Y
@@ -383,7 +394,7 @@ def test_sum_doses_with_resample_handles_oblique_reference_in_plane_rotation(tmp
     plan_sum.SOPClassUID = RTPlanStorage
     plan_sum.SOPInstanceUID = generate_uid()
 
-    new_ds, _, _ = _sum_doses_with_resample([ref_path, src_path], plan_sum, [])
+    new_ds, _, _ = _sum_doses_with_resample([ref_path, src_path], plan_sum, [_approved_geometry_plan()])
 
     result = new_ds.pixel_array.astype("float64") * float(new_ds.DoseGridScaling)
 
@@ -439,7 +450,7 @@ def test_sum_doses_applies_delivered_fraction_weights(tmp_path: Path) -> None:
     plan_sum.SOPInstanceUID = generate_uid()
 
     output, _, _ = _sum_doses_with_resample(
-        [first, second], plan_sum, [], dose_weights=[0.5, 0.25]
+        [first, second], plan_sum, [_approved_geometry_plan()], dose_weights=[0.5, 0.25]
     )
 
     physical = output.pixel_array.astype(float) * float(output.DoseGridScaling)
@@ -479,7 +490,7 @@ def test_sum_doses_uses_union_extent_without_dropping_disjoint_source(
     new_ds, _, source_uids = _sum_doses_with_resample(
         [first, second],
         plan_sum,
-        [],
+        [_approved_geometry_plan()],
     )
 
     result = new_ds.pixel_array.astype("float64") * float(new_ds.DoseGridScaling)
@@ -522,7 +533,7 @@ def test_sum_doses_rejects_different_frames_of_reference(tmp_path: Path) -> None
     plan_sum.SOPInstanceUID = generate_uid()
 
     with pytest.raises(ValueError, match="FrameOfReferenceUID"):
-        _sum_doses_with_resample([first, second], plan_sum, [])
+        _sum_doses_with_resample([first, second], plan_sum, [_approved_geometry_plan()])
 
 
 # ---------------------------------------------------------------------------

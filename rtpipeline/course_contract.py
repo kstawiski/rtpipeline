@@ -46,6 +46,7 @@ from .clinical_prescription import (
     confirm_two_phase_fractionation,
     parse_kopernik_treatment_description,
 )
+from .plan_approval import approval_status, approval_audit, approved_plan_paths
 from .prescription import (
     PRESCRIPTION_GROUP_FIELDS,
     aggregate_course_prescription_values,
@@ -1390,6 +1391,8 @@ def validate_course_contract(contract: CourseContract) -> CourseContract:
         plan_path = _validate_dicom_identity(
             contract, item, field, role="RTPLAN_SOURCE"
         )
+        if approval_status(_read_header(plan_path, f"{field}.path")) != "APPROVED":
+            raise CourseContractError(f"{field}: authoritative RTPLAN is not APPROVED")
         treatment_plan_paths.append(plan_path)
         _validate_plan_prescription(
             item,
@@ -1557,6 +1560,14 @@ def validate_course_contract(contract: CourseContract) -> CourseContract:
         for uid in data["dose_classification"].get("prescription_plan_uids", [])
         if str(uid).strip()
     }
+    approved_context_uids = {
+        str(item.get("plan_sop_uid") or "") for item in per_plan
+        if approved_plan_paths([contract.resolve_path(item.get("plan_path"), "delivery.per_plan.plan_path")])
+    }
+    if not prescription_plan_uids <= approved_context_uids:
+        raise CourseContractError("prescription references a plan that is not APPROVED")
+    if not selected_plans and data.get("clinical_prescription_evidence") is not None:
+        raise CourseContractError("clinical prescription requires an eligible selected RTPLAN")
     course_source_doses = selected_source_doses
     course_resolved_doses = selected_resolved_doses
     if prescription_plan_uids:
@@ -1598,7 +1609,9 @@ def validate_course_contract(contract: CourseContract) -> CourseContract:
         dicom_resolved_total_gy=dicom_resolved,
         dicom_prescribed_scope=dicom_scope,
         prescribed_scope=prescribed_scope,
-        per_plan_delivery=per_plan,
+        per_plan_delivery=[item for item in per_plan if approved_plan_paths([
+            contract.resolve_path(item.get("plan_path"), "delivery.per_plan.plan_path")
+        ])],
     )
 
     def _course_value(values: list[float | None]) -> float | None:
@@ -1725,6 +1738,22 @@ def validate_course_contract(contract: CourseContract) -> CourseContract:
     ]
     if len(per_plan_uids) != len(set(per_plan_uids)):
         raise CourseContractError("delivery.per_plan contains duplicate RTPLAN SOPInstanceUIDs")
+    approval = approval_audit([
+        contract.resolve_path(item.get("plan_path"), "delivery.per_plan.plan_path")
+        for item in per_plan
+    ])
+    serialized_approval = data["dose_classification"].get("plan_approval")
+    if approval["approved_plan_count"] != len(per_plan) or serialized_approval is not None:
+        # Order is not clinical evidence. Compare the exact records by SOP identity.
+        def ordered_audit(value):
+            if not isinstance(value, dict):
+                return value
+            return {**value, "plans": sorted(value.get("plans", []), key=lambda p: p["sop_instance_uid"])}
+        if ordered_audit(approval) != ordered_audit(serialized_approval):
+            raise CourseContractError("stale or missing plan approval disposition; rerun organize")
+        if not approval["approved_plan_count"]:
+            if selected_plans or selected_doses or prescribed is not None or resolved_prescribed is not None:
+                raise CourseContractError("no approved plan permits no prescription or dose authority")
     for index, (uid, item) in enumerate(zip(per_plan_uids, per_plan)):
         field = f"delivery.per_plan[{index}]"
         plan_path = contract.resolve_path(item.get("plan_path"), f"{field}.plan_path")

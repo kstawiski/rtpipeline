@@ -65,6 +65,7 @@ docker_run*/
 *.log
 !package.json
 !tsconfig.json
+!tests/fixtures/*.json
 !pyproject.toml
 
 # Medical imaging data

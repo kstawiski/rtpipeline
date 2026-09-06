@@ -12,6 +12,8 @@ import json
 import math
 import os
 import tempfile
+
+from .rtstruct_geometry import contour_geometry, roi_geometry_code, NONVOLUMETRIC_CODES
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -24,10 +26,19 @@ class Requiredness(str, Enum):
     ANALYSIS_REQUIRED = "analysis_required"
 
 
-TAXONOMY_CODES = frozenset({
+TAXONOMY_CODES = NONVOLUMETRIC_CODES | frozenset({
+    "ROI_UNRESOLVED_SOURCE_SCOPE",
+    "ROI_MULTISERIES_SOURCE_SCOPE",
+    "ROI_CONTOUR_MIXED_GEOMETRY",
     "ROI_DECLARED_NO_CONTOUR_ITEM",
     "ROI_DECLARED_EMPTY_CONTOUR_SEQUENCE",
     "ROI_CONTOUR_UNPARSEABLE",
+    "ROI_NONVOLUMETRIC_POINT",
+    "ROI_NONVOLUMETRIC_CONTOUR",
+    "ROI_MALFORMED_IDENTITY",
+    "ROI_PREDICTED_MEMORY_EXCEEDS_LIMIT",
+    "CONFIGURED_SKIP",
+    "CONFIGURED_SOURCE_SCOPE_SKIP",
     "ROI_CONTOUR_PARTIALLY_UNPARSEABLE",
     "ROI_CONTOUR_ORPHAN_REFERENCE",
     "ROI_MASK_EMPTY_AFTER_RASTERIZATION",
@@ -262,6 +273,9 @@ class DenominatorLedger:
             counts = per_roi.setdefault(name, {
                 "extracted": 0, "excluded_anatomy": 0, "excluded_technical": 0,
             })
+            guard_code = row.get("resource_guard_reason_code")
+            if guard_code in {"ROI_RESOURCE_BBOX_ADMITTED", "ROI_RESOURCE_MEMORY_ADMITTED"}:
+                counts[guard_code] = counts.get(guard_code, 0) + 1
             reason = str(row.get("reason_code", ""))
             if reason == "extracted" or row.get("disposition") == "extracted":
                 counts["extracted"] += 1
@@ -479,6 +493,7 @@ def inspect_rtstruct(path: Optional[Path], dataset: Any = None) -> RTStructInven
     contour_item_present: set[int] = set()
     contour_sequence_present: set[int] = set()
     contour_sequence_nonempty: set[int] = set()
+    geometry_contours: dict[int, list] = {}
     for item in contours:
         ref = _number(getattr(item, "ReferencedROINumber", None))
         if ref is None or ref not in by_number:
@@ -493,14 +508,9 @@ def inspect_rtstruct(path: Optional[Path], dataset: Any = None) -> RTStructInven
         sequence_items = list(sequence or [])
         if sequence_items:
             contour_sequence_nonempty.add(ref)
+        geometry_contours.setdefault(ref, []).extend(sequence_items)
         for contour in sequence_items:
-            data = getattr(contour, "ContourData", None) if "ContourData" in contour else None
-            valid = False
-            try:
-                values = [float(value) for value in (data or ())]
-                valid = len(values) >= 6 and len(values) % 3 == 0 and all(math.isfinite(v) for v in values)
-            except (TypeError, ValueError):
-                valid = False
+            _, valid = contour_geometry(contour)
             if valid:
                 valid_counts[ref] = valid_counts.get(ref, 0) + 1
             else:
@@ -520,7 +530,7 @@ def inspect_rtstruct(path: Optional[Path], dataset: Any = None) -> RTStructInven
         elif invalid_counts.get(number, 0):
             code = "ROI_CONTOUR_UNPARSEABLE"
         else:
-            code = None
+            code = roi_geometry_code(geometry_contours.get(number, []))
         if code:
             codes.append(code)
         final.append(ROIObservation(

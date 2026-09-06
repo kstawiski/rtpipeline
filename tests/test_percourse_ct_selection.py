@@ -171,28 +171,28 @@ def test_selection_unresolved_reference_fails_closed(tmp_path):
     assert series is None
 
 
-def test_selection_multiple_resolved_deterministic_tiebreak(tmp_path):
-    """T6: multiple referenced series resolve -> deterministic tie-break (most slices, then lowest uid)."""
+def test_selection_multiple_resolved_requires_geometric_scope(tmp_path):
+    """D03: multiple series without contour evidence cannot be ranked by size."""
     study = "ST"
     a, b = "SER_A", "SER_B"
     ct_index = {"PT1": {study: {a: _ct_instances(60, series=a), b: _ct_instances(120, series=b)}}}
     rs = tmp_path / "rs.dcm"
     _mk_rtstruct(rs, patient="PT1", study="rstudy", series=generate_uid(), referenced_ct_series=[a, b])
     series, status = org.select_course_ct_series(ct_index, "PT1", rs, study)
-    assert status == "referenced_multi"
-    assert series[0].series_uid == b and len(series) == 120  # most slices wins
+    assert status == "unresolved_multiseries_scope"
+    assert series is None  # Slice count does not establish source scope.
 
 
-def test_selection_tiebreak_equal_slices_lowest_uid(tmp_path):
-    """T6b: equal slice counts -> deterministic tie-break picks the LOWEST series_uid."""
+def test_selection_equal_slices_without_geometry_is_unresolved(tmp_path):
+    """D03: equal slice counts and lexical UID order do not resolve geometry."""
     study = "ST"
     hi, lo = "SER_ZZZ", "SER_AAA"  # equal sizes; 'SER_AAA' < 'SER_ZZZ'
     ct_index = {"PT1": {study: {hi: _ct_instances(80, series=hi), lo: _ct_instances(80, series=lo)}}}
     rs = tmp_path / "rs.dcm"
     _mk_rtstruct(rs, patient="PT1", study="rstudy", series=generate_uid(), referenced_ct_series=[hi, lo])
     series, status = org.select_course_ct_series(ct_index, "PT1", rs, study)
-    assert status == "referenced_multi"
-    assert series[0].series_uid == lo, "equal slice counts -> lowest series_uid wins"
+    assert status == "unresolved_multiseries_scope"
+    assert series is None  # Lexical UID order is not geometry evidence.
 
 
 def test_selection_searches_across_studies(tmp_path):

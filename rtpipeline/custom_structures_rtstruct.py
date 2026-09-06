@@ -23,13 +23,14 @@ import numpy as np
 import pydicom
 import SimpleITK as sitk
 
+from .rtstruct_identity import assign_derived_identity, require_rtstruct_identity, validate_rtstruct_identity
 from .layout import build_course_dirs
 from .course_contract import CourseContractError, load_course_contract
 from .utils import mask_is_cropped, sanitize_rtstruct
 
 logger = logging.getLogger(__name__)
 
-_RS_CUSTOM_META_VERSION = 2
+_RS_CUSTOM_META_VERSION = 3
 _RTSTRUCT_SOP_CLASS_UID = "1.2.840.10008.5.1.4.1.1.481.3"
 
 
@@ -44,14 +45,11 @@ def load_rs_custom_outcomes(course_dir: Path) -> Dict[str, Dict[str, object]]:
     try:
         payload = json.loads(metadata_path.read_text(encoding="utf-8"))
         expected_uid = str(payload.get("rs_custom_sop_instance_uid") or "").strip()
-        actual_uid = str(
-            getattr(
-                pydicom.dcmread(str(rs_custom), stop_before_pixels=True),
-                "SOPInstanceUID",
-                "",
-            )
-            or ""
-        ).strip()
+        published = pydicom.dcmread(str(rs_custom), stop_before_pixels=True)
+        actual_uid = validate_rtstruct_identity(published)
+        expected_hash = str(payload.get("rs_custom_sha256") or "")
+        if expected_hash and hashlib.sha256(rs_custom.read_bytes()).hexdigest() != expected_hash:
+            return {}
         outcomes = payload.get("custom_structure_outcomes")
     except (OSError, ValueError, TypeError, json.JSONDecodeError):
         return {}
@@ -99,6 +97,7 @@ def _rtstruct_builder_source(
 
     ct_uids: set[str] = set()
     ct_series_uids: set[str] = set()
+    ct_images = []
     for path in Path(ct_dir).rglob("*"):
         if not path.is_file():
             continue
@@ -110,6 +109,7 @@ def _rtstruct_builder_source(
         series_uid = str(getattr(dataset, "SeriesInstanceUID", "")).strip()
         if sop_uid:
             ct_uids.add(sop_uid)
+            ct_images.append(dataset)
         if series_uid:
             ct_series_uids.add(series_uid)
     if not ct_uids or len(ct_series_uids) != 1:
@@ -139,6 +139,18 @@ def _rtstruct_builder_source(
         for contour in getattr(roi_contour, "ContourSequence", []) or []
         if not (getattr(contour, "ContourImageSequence", None) or [])
     ]
+    from .rtstruct_geometry import resolve_roi_scopes, NONVOLUMETRIC_CODES
+    scopes = resolve_roi_scopes(dataset, ct_images)
+    unresolved = [r for r in scopes.values() if r.code and r.code not in NONVOLUMETRIC_CODES
+                  and r.code != "ROI_DECLARED_EMPTY_CONTOUR_SEQUENCE"]
+    if unresolved:
+        raise ValueError("RTSTRUCT retained ROI geometry is unresolved: " + unresolved[0].code)
+    needs_binding = bool(unbound_contours)
+    for item in getattr(dataset, "ROIContourSequence", []) or []:
+        result = scopes.get(int(item.ReferencedROINumber))
+        if result is not None and result.code is None:
+            item.ContourSequence = pydicom.sequence.Sequence(result.contours)
+    unbound_contours = []  # Every retained volumetric contour was bound above.
     referenced_images = {
         str(image.ReferencedSOPInstanceUID)
         for frame in getattr(dataset, "ReferencedFrameOfReferenceSequence", []) or []
@@ -147,7 +159,7 @@ def _rtstruct_builder_source(
         for image in getattr(series, "ContourImageSequence", []) or []
         if getattr(image, "ReferencedSOPInstanceUID", None)
     }
-    if referenced_images <= ct_uids:
+    if referenced_images <= ct_uids and not needs_binding:
         return Path(source), None
     if unbound_contours:
         raise ValueError(
@@ -204,6 +216,7 @@ def _rtstruct_builder_source(
     os.close(handle)
     temporary = Path(name)
     try:
+        assign_derived_identity(dataset, str(dataset.SOPInstanceUID), str(dataset.SOPClassUID))
         pydicom.dcmwrite(temporary, dataset, write_like_original=False)
     except Exception:
         temporary.unlink(missing_ok=True)
@@ -367,6 +380,8 @@ def _is_rs_custom_stale(
 
     try:
         course_dir = rs_custom_path.parent
+        if not allow_contractless:
+            require_rtstruct_identity(rs_custom_path, require_derived=True)
         contract = None
         if not allow_contractless:
             try:
@@ -391,7 +406,9 @@ def _is_rs_custom_stale(
                 source_series_uids = _seg_source_series_uids(rs_custom_path)
             except Exception:
                 source_series_uids = set()
-            if source_series_uids != {planning_series_uid}:
+            # Derived publication retains complete source-series provenance,
+            # including unresolved ROIs. Identity validation above is mandatory.
+            if planning_series_uid not in source_series_uids:
                 logger.warning(
                     "RS_custom.dcm at %s does not reference planning CT series %s; regenerating",
                     rs_custom_path,
@@ -533,17 +550,12 @@ def _create_custom_structures_rtstruct_unlocked(
         # rt-utils rejects any cross-series image reference, even an unused
         # historical series. Restrict only a temporary copy and only when every
         # surviving contour is already bound to the contracted planning CT.
-        builder_source, temporary_source = _rtstruct_builder_source(
-            base_rs,
-            ct_dir,
-            None,
-        )
-        if temporary_source is not None:
-            temporary_sources.append(temporary_source)
-        rtstruct = RTStructBuilder.create_from(
-            dicom_series_path=str(ct_dir),
-            rt_struct_path=str(builder_source),
-        )
+        from .rtstruct_geometry import create_scoped_rtstruct, ROIContourDisposition
+        rtstruct = create_scoped_rtstruct(ct_dir, base_rs)
+        source_scope_outcomes = {
+            result.roi_name: {"code": result.code, "source_series_uids": list(result.source_series_uids), "detail": result.detail}
+            for result in rtstruct.scopes.values() if result.code
+        }
 
         existing_names: set[str] = set()
         available_masks: Dict[str, np.ndarray] = {}
@@ -728,6 +740,10 @@ def _create_custom_structures_rtstruct_unlocked(
                 try:
                     mask = builder.get_roi_mask_by_name(roi_name)
                 except Exception as exc:  # pragma: no cover - defensive
+                    if isinstance(exc, ROIContourDisposition):
+                        # An unbound target is not an empty mask and cannot be
+                        # substituted with an unrelated automatic segmentation.
+                        continue
                     logger.debug("Failed to fetch mask for %s from %s: %s", roi_name, label, exc)
                     mask = None
                 if mask is None or not np.any(mask):
@@ -792,6 +808,11 @@ def _create_custom_structures_rtstruct_unlocked(
 
         processor.spacing = spacing
 
+        unresolved_names = {name for name, outcome in source_scope_outcomes.items()
+                            if outcome["code"] not in {"ROI_DECLARED_EMPTY_CONTOUR_SEQUENCE"}}
+        for custom_config in processor.custom_configs:
+            if unresolved_names.intersection(custom_config.source_structures):
+                raise ValueError("CUSTOM_SOURCE_GEOMETRY_UNRESOLVED: " + custom_config.name)
         custom_masks = processor.process_all_custom_structures(available_masks)
         partial_map = getattr(processor, "partial_structures", {})
         structure_outcomes = {
@@ -875,6 +896,10 @@ def _create_custom_structures_rtstruct_unlocked(
             if not getattr(dataset, "StructureSetROISequence", None):
                 raise ValueError(f"temporary RS_custom has no named ROIs: {path}")
             _assert_unique_roi_numbers(dataset, f"temporary RS_custom for {course_dir}")
+            parent = pydicom.dcmread(base_rs, stop_before_pixels=True)
+            assign_derived_identity(dataset, str(parent.SOPInstanceUID), str(parent.SOPClassUID))
+            pydicom.dcmwrite(path, dataset, write_like_original=False)
+            require_rtstruct_identity(path, require_derived=True)
 
         _write_rtstruct_atomic(
             out_path,
@@ -893,6 +918,9 @@ def _create_custom_structures_rtstruct_unlocked(
             meta_payload = {
                 "version": _RS_CUSTOM_META_VERSION,
                 "base_source": base_source,
+                "parent_sop_instance_uid": str(published_dataset.PredecessorStructureSetSequence[0].ReferencedSOPInstanceUID),
+                "rs_custom_sha256": hashlib.sha256(out_path.read_bytes()).hexdigest(),
+                "identity_scheme": "rtpipeline-rtstruct-sha256-v1",
                 "base_rtstruct": str(base_rs.name if base_rs else ""),
                 "rs_manual_present": bool(rs_manual and Path(rs_manual).exists()),
                 "rs_auto_present": bool(rs_auto and Path(rs_auto).exists()),
@@ -904,6 +932,7 @@ def _create_custom_structures_rtstruct_unlocked(
                 ),
                 "custom_config_sha256": config_sha256,
                 "custom_structure_outcomes": structure_outcomes,
+                "source_roi_scope_outcomes": source_scope_outcomes,
                 "note": "Generated in CT DICOM coordinates; do not rely on RS_auto_cropped.dcm for radiomics",
             }
             (meta_dir / "rs_custom_meta.json").write_text(json.dumps(meta_payload, indent=2), encoding="utf-8")

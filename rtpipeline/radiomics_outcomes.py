@@ -187,6 +187,7 @@ def extraction_status_is_nonfatal_for_required(status: Any) -> bool:
     return str(status).strip().casefold() in {
         "below_minimum_voxels",
         "declared_skip",
+        "nonvolumetric_nonmeasurement",
     }
 
 
@@ -262,7 +263,7 @@ def outcome_from_output(
         )
         if bool(pd.isna(status)):
             status = None
-        if status == "declared_skip":
+        if status in {"declared_skip", "nonvolumetric_nonmeasurement"}:
             continue
         source_counts = counts.setdefault(source, {"attempted": 0, "extracted": 0, "failed": 0})
         source_counts["attempted"] += 1

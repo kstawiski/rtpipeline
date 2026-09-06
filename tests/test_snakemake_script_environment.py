@@ -10,6 +10,7 @@ from course_contract_test_utils import write_minimal_course_contract
 from rtpipeline.config_dependencies import materialize_stage_dependency
 from rtpipeline.organize_ledger import write_organize_ledger
 from rtpipeline.stage_completion import write_stage_completion_sentinel
+from source_plan_disposition_test_utils import empty_source_history
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -132,6 +133,7 @@ def test_manifest_resume_runs_with_dicom_dependencies_blocked_in_outer_interpret
                 "quarantine_path": None,
             }
         ],
+        source_plan_dispositions=empty_source_history(tmp_path / "input"),
     )
     configuration_path = materialize_stage_dependency(
         tmp_path / "dependencies", "organize", {"test": True}
@@ -163,6 +165,7 @@ def test_manifest_resume_runs_with_dicom_dependencies_blocked_in_outer_interpret
                     }
                 ],
                 "technical_quarantines": [],
+                "source_plan_dispositions": ledger["source_plan_dispositions"],
             }
         ),
         encoding="utf-8",

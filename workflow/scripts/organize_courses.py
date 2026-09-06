@@ -94,7 +94,7 @@ def _revoke_all_organized_flags(output_dir: Path) -> None:
 
 
 def _manifest_payload(ledger: dict, courses: list[dict]) -> dict:
-    return {
+    payload = {
         "schema": MANIFEST_SCHEMA,
         "cohort_status": ledger["status"],
         "intended_course_count": ledger["intended_course_count"],
@@ -105,6 +105,9 @@ def _manifest_payload(ledger: dict, courses: list[dict]) -> dict:
         "courses": courses,
         "technical_quarantines": ledger["technical_quarantines"],
     }
+    if "source_plan_dispositions" in ledger:
+        payload["source_plan_dispositions"] = ledger["source_plan_dispositions"]
+    return payload
 
 
 def _delegate_validation(
@@ -196,6 +199,17 @@ def _existing_manifest_is_valid(
         return False
     if manifest.get("schema") != MANIFEST_SCHEMA or invalid:
         return False
+    if "source_plan_dispositions" not in ledger:
+        # Legacy course-only ledgers cannot establish a source-complete history.
+        return False
+    if "source_plan_dispositions" in ledger:
+        source = ledger["source_plan_dispositions"]
+        if manifest.get("source_plan_dispositions") != source:
+            return False
+        if not ledger.get("source_history_current"):
+            return False
+        if source.get("source_root") != str(Path(workflow.params.dicom_root).resolve()):
+            return False
     if ledger["technical_quarantine_count"]:
         return False
     for field in (

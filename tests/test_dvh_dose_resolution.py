@@ -99,6 +99,7 @@ def _mk_plan(
 ) -> Path:
     ds = _file_dataset(path, RTPlanStorage, plan_uid)
     ds.Modality = "RTPLAN"
+    ds.ApprovalStatus = "APPROVED"
     ds.RTPlanLabel = label
     ds.RTPlanName = label
     ds.RTPlanDate = "20240101"

@@ -46,6 +46,7 @@ class PlanInfo:
     plan_date: str | None
     frame_of_reference_uid: str | None
     referenced_struct_sop: str | None = None
+    approval_status: str | None = None
 
 
 @dataclass
@@ -69,8 +70,16 @@ class StructInfo:
     roi_names: List[str]
 
 
-def is_target_volume_name(name: object) -> bool:
-    """Return whether an ROI name denotes a target rather than a helper or crop."""
+def is_target_volume_candidate(name: object) -> bool:
+    """Return a broad name candidate for organizer and dose-coverage screening.
+
+    This is NOT the governed CT radiomics tissue/feature class. Keep raw spelling
+    and the left-token/separator boundary here: PTV1-jelita is a candidate, while
+    Pecherz - PTV is not. Qualified targets must not disappear from geometry QC
+    merely because their feature class is pending human adjudication.
+    CT feature admission is authoritative only through classify_ct_roi and its
+    versioned class map. Candidate detection cannot override a pending entry.
+    """
     text = str(name or "").strip()
     if not text:
         return False
@@ -83,8 +92,13 @@ def is_target_volume_name(name: object) -> bool:
     return False
 
 
+def is_target_volume_name(name: object) -> bool:
+    """Compatibility spelling of name candidacy, not CT feature-class authority."""
+    return is_target_volume_candidate(name)
+
+
 def target_volume_names(roi_names: List[str]) -> List[str]:
-    """Return left-token-bounded GTV, CTV, and PTV names after helper exclusions."""
+    """Return screening candidates; never use this list to authorize features."""
     return [name for name in roi_names if is_target_volume_name(name)]
 
 
@@ -238,6 +252,7 @@ def extract_rt_with_records(
                     plan_label=get(ds, (0x300A, 0x0002)),
                     plan_name=get(ds, (0x300A, 0x0003)),
                     plan_date=get(ds, (0x300A, 0x0006)),
+                    approval_status=get(ds, (0x300E, 0x0002)),
                     frame_of_reference_uid=_frame_uid(ds),
                     referenced_struct_sop=ref_structs[0] if ref_structs else None,
                 )

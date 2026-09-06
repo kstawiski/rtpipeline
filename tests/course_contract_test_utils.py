@@ -202,6 +202,7 @@ def write_synthetic_plan_and_dose(
     plan_uid = generate_uid()
     plan = _file_dataset(plan_path, RTPlanStorage, plan_uid)
     plan.Modality = "RTPLAN"
+    plan.ApprovalStatus = "APPROVED"
     plan.PatientID = course_dir.parent.name
     dose_reference = Dataset()
     dose_reference.DoseReferenceNumber = 1

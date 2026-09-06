@@ -112,6 +112,7 @@ def test_brachy_relative_metrics_are_suppressed_with_a_reason() -> None:
     annotated = annotate_dvh_metrics(
         metrics,
         technique="BRACHYTHERAPY",
+        grid_coverage={"status": "fully_covered", "fraction": 1.0},
         structure_name="PTV",
         rtstruct_sop_instance_uid="1.2.3",
         rtstruct_path=Path("RS.dcm"),
@@ -134,6 +135,7 @@ def test_dose_response_ineligible_course_suppresses_relative_endpoints() -> None
     annotated = annotate_dvh_metrics(
         metrics,
         technique="EBRT",
+        grid_coverage={"status": "fully_covered", "fraction": 1.0},
         structure_name="PTV",
         prescription_resolved=False,
         dose_response_eligible=False,
@@ -149,18 +151,22 @@ def test_dose_response_ineligible_course_suppresses_relative_endpoints() -> None
     assert annotated["HI_status"] == "excluded_dose_response_ineligible"
 
 
-def test_non_target_homogeneity_is_explicitly_not_applicable() -> None:
+def test_non_target_homogeneity_is_explicitly_not_applicable(tmp_path) -> None:
+    import SimpleITK as sitk
+    source = tmp_path / "bladder.nii.gz"
+    sitk.WriteImage(sitk.Image([2, 2, 2], sitk.sitkUInt8), str(source))
     metrics = {"HI%": 3.0}
 
     annotated = annotate_dvh_metrics(
         metrics,
         technique="EBRT",
+        grid_coverage={"status": "fully_covered", "fraction": 1.0},
         structure_name="BLADDER",
         prescription_resolved=True,
         rtstruct_sop_instance_uid=None,
         rtstruct_path=None,
         structure_provenance_type="NIFTI_MASK",
-        structure_provenance_path=Path("Segmentation/bladder.nii.gz"),
+        structure_provenance_path=source,
         zero_dose_status="not_zero",
         zero_dose_reason="DmaxGy is positive.",
     )
@@ -169,7 +175,7 @@ def test_non_target_homogeneity_is_explicitly_not_applicable() -> None:
     assert annotated["HI_status"] == "not_applicable_non_target"
     assert annotated["HI_reason"]
     assert annotated["structure_provenance_status"] == "traceable"
-    assert annotated["structure_provenance_path"] == "Segmentation/bladder.nii.gz"
+    assert annotated["structure_provenance_path"] == str(source)
     assert annotated["rtstruct_provenance_status"] == "not_applicable"
 
 
@@ -250,6 +256,7 @@ def test_outside_grid_dose_values_become_null_nonmeasurements() -> None:
         rtstruct_path=None,
         zero_dose_status="zero_dose_outside_dose_grid",
         zero_dose_reason="Outside grid.",
+        grid_coverage={"status": "outside_grid", "fraction": 0.0},
         zero_dose_trigger_metric="DmaxGy",
         zero_dose_trigger_value_gy=0.0,
     )
@@ -262,7 +269,7 @@ def test_outside_grid_dose_values_become_null_nonmeasurements() -> None:
     assert annotated["V1Gy (cm³)"] is None
     assert annotated["IntegralDose_Gycm3"] is None
     assert annotated["zero_dose_trigger_value_gy"] == 0.0
-    assert annotated["dose_metric_status"] == "not_measurable_outside_dose_grid"
+    assert annotated["dose_metric_status"] == "outside_grid"
     assert annotated["dose_metric_usable_for_dose_response"] is False
 
 

@@ -30,6 +30,7 @@ def _write_plan(path: Path, *, brachy: bool, ebrt: bool) -> Path:
     plan.SOPClassUID = sop_class
     plan.SOPInstanceUID = sop_uid
     plan.Modality = "RTPLAN"
+    plan.ApprovalStatus = "APPROVED"
     plan.PatientID = "P1"
     plan.StudyInstanceUID = generate_uid()
     plan.SeriesInstanceUID = generate_uid()

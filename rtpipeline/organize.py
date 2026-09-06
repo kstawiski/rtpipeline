@@ -35,6 +35,14 @@ from .clinical_prescription import (
     record_clinical_evidence_regeneration,
 )
 from .plan_profiles import is_private_plan_profile, plan_profile_name
+from .plan_disposition import (
+    build_source_plan_dispositions, summarize_dispositions,
+    write_source_plan_dispositions, source_scope_fingerprint,
+)
+from .plan_approval import (
+    approval_status, approval_audit, approved_plan_paths, eligible_dose_paths,
+    approved_course_start,
+)
 from .prescription import (
     PRESCRIPTION_GROUP_FIELDS,
     aggregate_course_prescription_values,
@@ -551,12 +559,16 @@ def infer_plan_rx_gy(ds_plan: Dataset) -> float | None:
     must use ``resolved_plan_rx_total_gy`` instead.
     """
 
+    if approval_status(ds_plan) != "APPROVED":
+        return None
     return source_plan_prescribed_dose_gy(resolve_plan_prescriptions(ds_plan))
 
 
 def resolved_plan_rx_total_gy(ds_plan: Dataset) -> float | None:
     """Return the BeamDose-confirmed total for one resolvable FractionGroup."""
 
+    if approval_status(ds_plan) != "APPROVED":
+        return None
     return resolved_plan_total_gy(resolve_plan_prescriptions(ds_plan))
 
 
@@ -924,7 +936,12 @@ def validate_course_target_qc(
     dose_paths: List[Path],
     struct_path: Optional[Path],
 ) -> List[str]:
-    """Require GTV, CTV, or PTV for every course carrying plan and dose."""
+    """Require a target-name candidate for courses carrying plan and dose.
+
+    This presence/geometry screen is not clinical target adjudication and cannot
+    authorize CT features. Qualified candidates remain subject to the stricter
+    versioned radiomics class map, including its explicit pending decisions.
+    """
     if not plan_paths or not dose_paths:
         return []
     if struct_path is None:
@@ -1169,7 +1186,7 @@ def _earliest_dated_plan_path(items_sorted: List[LinkedSet], plan_paths: List[Pa
     ``plan_paths[0]`` (the prior behavior) in that edge case.
     """
     for it in items_sorted:
-        if it.plan.plan_date:
+        if it.plan.path in plan_paths and it.plan.plan_date:
             return it.plan.path
     return plan_paths[0]
 
@@ -1183,6 +1200,8 @@ def _plan_paths_for_doses(plan_paths: List[Path], dose_paths: List[Path]) -> Lis
     could not be resolved), so callers don't silently substitute every plan
     in the course - which would defeat ITT replan exclusion.
     """
+    plan_paths = approved_plan_paths(plan_paths)
+    dose_paths = eligible_dose_paths(plan_paths, dose_paths)
     ref_uids: set[str] = set()
     for dose_path in dose_paths:
         ref_uids.update(_extract_dose_metadata(dose_path).get("referenced_plan_uids", []))
@@ -1426,6 +1445,7 @@ def _calculate_delivery_summary(
             )
         )
     )
+    selected = approved_plan_paths(selected)
     records = list(dict.fromkeys(Path(p) for p in record_paths))
     all_meta = {
         Path(meta["path"]): meta for meta in (_plan_evidence(path) for path in all_plans)
@@ -2021,6 +2041,38 @@ def _replacement_partition(plans: List[dict]) -> tuple[int, tuple[int, ...]] | N
 
 
 def _classify_doses(
+    plan_paths: List[Path],
+    dose_paths: List[Path],
+    max_total_dose_gy: float = DEFAULT_MAX_TOTAL_DOSE_GY,
+    treatment_record_paths: Optional[Iterable[Path]] = None,
+) -> DoseClassification:
+    """Apply approval eligibility before any revision, prescription or dose ranking."""
+    plan_paths = list(dict.fromkeys(Path(p) for p in plan_paths))
+    dose_paths = list(dict.fromkeys(Path(p) for p in dose_paths))
+    audit = approval_audit(plan_paths)
+    eligible_plans = approved_plan_paths(plan_paths)
+    eligible_doses = eligible_dose_paths(eligible_plans, dose_paths)
+    if plan_paths and not eligible_plans:
+        return DoseClassification(
+            classification=audit["disposition"], selected_plans=[], selected_doses=[],
+            excluded_doses=dose_paths, should_sum=False,
+            warnings=["No approved RTPLAN. Archived plans are context, not treatment authority."],
+            reason=audit["disposition"],
+        )
+    result = _classify_approved_doses(
+        eligible_plans, eligible_doses, max_total_dose_gy, treatment_record_paths
+    )
+    excluded = [p for p in dose_paths if p not in eligible_doses]
+    if dose_paths and not eligible_doses and len(eligible_plans) == len(plan_paths):
+        result.classification = "unresolved_reference_excluded"
+        result.selected_plans = []
+    if excluded or len(eligible_plans) != len(plan_paths):
+        result.excluded_doses = list(dict.fromkeys(result.excluded_doses + excluded))
+        result.warnings.append("Only APPROVED RTPLAN sources and their exact linked dose grids are eligible.")
+    return result
+
+
+def _classify_approved_doses(
     plan_paths: List[Path],
     dose_paths: List[Path],
     max_total_dose_gy: float = DEFAULT_MAX_TOTAL_DOSE_GY,
@@ -2754,6 +2806,8 @@ def _create_summed_plan(plan_files: List[Path], total_dose_gy: float | None = No
         for path in plan_files
     ]
 
+    if any(approval_status(ds) != "APPROVED" for ds in plan_datasets):
+        raise ValueError("Plan accumulation requires APPROVED source RTPLANs")
     base_plan = plan_datasets[0]
     plan_sum = copy.deepcopy(base_plan)
 
@@ -3005,6 +3059,13 @@ def _sum_doses_with_resample(
     if not dose_files:
         raise ValueError("No dose files to sum")
 
+    if not plan_datasets or any(approval_status(ds) != "APPROVED" for ds in plan_datasets):
+        raise ValueError("Dose accumulation requires APPROVED source RTPLANs")
+    approved_uids = {str(getattr(ds, "SOPInstanceUID", "") or "") for ds in plan_datasets}
+    for path in dose_files:
+        refs = set(_extract_dose_metadata(path)["referenced_plan_uids"])
+        if not refs or not refs <= approved_uids:
+            raise ValueError("Dose accumulation includes a non-approved or unresolved plan reference")
     explicit_delivered_weights = dose_weights is not None
     if dose_weights is None:
         dose_weights = [1.0] * len(dose_files)
@@ -3448,8 +3509,9 @@ def select_course_ct_series(
     CTs are frequently smaller than the largest series). Resolution order:
 
       - references resolve to exactly one indexed CT series -> that series ("referenced")
-      - references resolve to several indexed CT series -> deterministic tie-break:
-        largest by slice count, then lowest series_uid ("referenced_multi")
+      - references resolve to several indexed CT series -> resolve every contour
+        geometrically and select only a unique complete ROI series scope; otherwise
+        report unresolved_multiseries_scope without choosing an arbitrary grid
       - RTSTRUCT HAS references but none resolve to an indexed CT series -> FAIL CLOSED:
         (None, "unresolved_reference"); the caller skips per-course CT so we never silently
         segment the wrong/largest CT against mismatched structures/dose
@@ -3477,8 +3539,19 @@ def select_course_ct_series(
         if len(resolved) == 1:
             return resolved[0][1], "referenced"
         if len(resolved) > 1:
-            resolved.sort(key=lambda kv: (-len(kv[1]), kv[0]))
-            return resolved[0][1], "referenced_multi"
+            from .rtstruct_geometry import resolve_roi_scopes
+            dataset = pydicom.dcmread(struct_source_path, stop_before_pixels=True)
+            if not getattr(dataset, "ROIContourSequence", None):
+                return None, "unresolved_multiseries_scope"
+            images = [pydicom.dcmread(item.path, stop_before_pixels=True)
+                      for _, instances in resolved for item in instances]
+            scopes = resolve_roi_scopes(dataset, images)
+            complete = {uid for result in scopes.values() if result.code is None
+                        for uid in result.source_series_uids}
+            if len(complete) == 1:
+                uid = next(iter(complete))
+                return next(instances for candidate, instances in resolved if candidate == uid), "referenced_geometry_scope"
+            return None, "unresolved_multiseries_scope"
         return None, "unresolved_reference"
 
     if struct_source_path and require_reference:
@@ -3679,52 +3752,6 @@ def organize_and_merge(
     if scope_ids:
         logger.info("Organize discovery scoped to %d cohort patient(s)", len(scope_ids))
 
-    resumed_patients: Dict[str, List[dict]] = {}
-    if getattr(config, "resume", False):
-        checkpoint_candidates = _completed_patients(config)
-        for checkpoint_patient, checkpoint_entries in checkpoint_candidates.items():
-            valid = True
-            for checkpoint_entry in checkpoint_entries:
-                checkpoint_dir = Path(str(checkpoint_entry.get("course_dir") or ""))
-                checkpoint_key = str(checkpoint_entry.get("course_key") or checkpoint_dir.name)
-                hydrated_checkpoint = (
-                    _hydrate_existing_course(
-                        checkpoint_patient,
-                        checkpoint_key,
-                        checkpoint_dir,
-                    )
-                    if checkpoint_dir.is_dir()
-                    else None
-                )
-                if hydrated_checkpoint is None or not clinical_evidence_matches_source(
-                    hydrated_checkpoint.course_contract,
-                    clinical_record_index,
-                ):
-                    valid = False
-                    break
-            if valid:
-                resumed_patients[checkpoint_patient] = checkpoint_entries
-            else:
-                logger.info(
-                    "Organize resume: checkpoint for patient %s is incomplete under current output invariants; reprocessing.",
-                    checkpoint_patient,
-                )
-        if resumed_patients:
-            if scope_ids is None:
-                try:
-                    all_ids = [d.name for d in config.dicom_root.iterdir() if d.is_dir()]
-                except OSError:
-                    all_ids = []
-                scope_ids = all_ids or None
-            if scope_ids is not None:
-                remaining = [pid for pid in scope_ids if pid not in resumed_patients]
-                logger.info(
-                    "Organize resume: %d patient(s) already complete, %d remaining; "
-                    "their DICOM headers will not be re-read.",
-                    len(resumed_patients),
-                    len(remaining),
-                )
-                scope_ids = remaining
 
     index_workers = min(config.effective_workers(), DEFAULT_INDEX_WORKERS)
     logger.info("Organize source-header scan using %d thread worker(s)", index_workers)
@@ -3747,6 +3774,7 @@ def organize_and_merge(
             series_meta,
         )
 
+    source_fingerprint = source_scope_fingerprint(config.dicom_root, scope_ids)
     discovery = extract_rt_with_records(
         config.dicom_root,
         scope_ids,
@@ -3789,7 +3817,7 @@ def organize_and_merge(
     )
     linked_sets = link_rt_sets(plans, doses, structs)
     courses = group_by_course(linked_sets, config.merge_criteria, config.max_days_between_plans)
-    if not courses and not (resumed_patients and scope_ids == []):
+    if not courses:
         _raise_if_empty_organize_discovery(config, ct_index, plans, doses, structs)
 
     planned_struct_uids = {
@@ -3814,6 +3842,7 @@ def organize_and_merge(
         )
 
     target_valid_courses: Dict[Tuple[str, str], List[LinkedSet]] = {}
+    decline_reasons: dict[tuple[str, str], str] = {}
     for course_identity, items in courses.items():
         patient_id, course_key = course_identity
         plan_paths = list(dict.fromkeys(item.plan.path for item in items))
@@ -3824,6 +3853,8 @@ def organize_and_merge(
             struct_path = _authoritative_structure_source(items)
         except CourseTargetQCError as exc:
             logger.error("COURSE TARGET QC GATE: %s. Excluding this invalid course.", exc)
+            for item in items:
+                decline_reasons[(str(patient_id), item.plan.sop_instance_uid)] = "AUTHORITATIVE_RTSTRUCT_CONFLICT"
             continue
         exact_struct = next(
             (
@@ -3835,6 +3866,12 @@ def organize_and_merge(
         )
         targets = target_volume_names(exact_struct.roi_names if exact_struct is not None else [])
         if not targets:
+            for item in items:
+                decline_reasons[(str(patient_id), item.plan.sop_instance_uid)] = (
+                    "NO_RTSTRUCT_REFERENCE" if not item.plan.referenced_struct_sop
+                    else "REFERENCED_RTSTRUCT_MISSING" if exact_struct is None
+                    else "AUTHORITATIVE_RTSTRUCT_WITHOUT_TARGET"
+                )
             if dose_paths:
                 try:
                     validate_course_target_qc(
@@ -3868,19 +3905,21 @@ def organize_and_merge(
         target_valid_courses[course_identity] = items
     courses = target_valid_courses
 
+    source_dispositions = build_source_plan_dispositions(
+        plans, rt_file_index, courses, decline_reasons,
+    )
+    source_dispositions["discovery_scope_patient_ids"] = scope_ids
+    source_dispositions["source_root"] = str(config.dicom_root.resolve())
+    source_dispositions["source_scope_fingerprint"] = source_fingerprint
+    source_dispositions["course_publication_status"] = "pending"
+    write_source_plan_dispositions(config.output_root, source_dispositions)
+
     outputs: List[CourseOutput] = []
 
     existing_names: Dict[str, set[str]] = defaultdict(set)
 
     def _course_start(items: List[LinkedSet]) -> Optional[datetime.datetime]:
-        dates: List[datetime.datetime] = []
-        for it in items:
-            dt = parse_date(it.plan.plan_date)
-            if dt is not None:
-                dates.append(dt)
-        if not dates:
-            return None
-        return min(dates)
+        return approved_course_start(items)
 
     raw_entries: List[Tuple[str, str, List[LinkedSet], Optional[datetime.datetime]]] = []
     for (pid, raw_key), items in courses.items():
@@ -3933,7 +3972,16 @@ def organize_and_merge(
         if config.resume and course_dir.exists():
             hydrated = _hydrate_existing_course(patient_id, course_key, course_dir, meta)
             if hydrated:
-                return hydrated
+                source_audit = approval_audit(dict.fromkeys(item.plan.path for item in items))
+                archived_audit = approval_audit([
+                    course_dir / str(item["plan_path"])
+                    for item in hydrated.course_contract.get("delivery", {}).get("per_plan", [])
+                ])
+                def approval_records(audit):
+                    return sorted(audit["plans"], key=lambda item: item["sop_instance_uid"])
+                if approval_records(source_audit) == approval_records(archived_audit):
+                    return hydrated
+                logger.warning("Source approval authority changed. Rebuilding %s/%s", patient_id, course_id)
 
         primary_nifti: Optional[Path] = None
         related_outputs: List[Path] = []
@@ -3978,6 +4026,17 @@ def organize_and_merge(
                 src, course_dirs.dicom_related / "RTRECORD", copy_manager=copy_manager
             )
 
+        all_plan_paths = list(plan_paths)
+        all_dose_paths = list(dose_paths)
+        plan_approval_audit = approval_audit(all_plan_paths)
+        plan_paths = approved_plan_paths(all_plan_paths)
+        dose_paths = eligible_dose_paths(plan_paths, all_dose_paths)
+        approval_blocked = bool(all_plan_paths and not plan_paths)
+        if len(plan_paths) != len(all_plan_paths):
+            for artifact in (rp_dst, rd_dst):
+                if artifact.exists():
+                    artifact.unlink()
+
         source_rx: float | None = None
         total_rx: float | None = None
         plan_sop_uid: Optional[str] = None
@@ -3991,7 +4050,14 @@ def organize_and_merge(
         selected_plans: list[Path] = []
         selected_doses: list[Path] = []
 
-        if plan_paths and dose_paths:
+        if approval_blocked:
+            dose_classification_info = {
+                "classification": plan_approval_audit["disposition"],
+                "reason": "No approved RTPLAN. No authoritative plan, prescription or dose.",
+                "selected_doses": [], "excluded_doses": [str(p) for p in all_dose_paths],
+                "should_sum": False, "warnings": [],
+            }
+        elif plan_paths and dose_paths:
             treatment_record_paths = rt_file_index.get(patient_id, [])
             if treatment_record_paths:
                 dose_classification = _classify_doses(
@@ -4245,6 +4311,9 @@ def organize_and_merge(
                 if dose_sop_uid:
                     source_dose_uids.append(dose_sop_uid)
 
+        if len(plan_paths) != len(all_plan_paths):
+            dose_classification_info["plan_approval"] = plan_approval_audit
+
         if rp_dst.exists():
             try:
                 artifact_plan = pydicom.dcmread(str(rp_dst), stop_before_pixels=True)
@@ -4404,14 +4473,14 @@ def organize_and_merge(
                 logger.debug("Failed converting related series %s: %s", series_subdir, exc)
 
         delivery_summary = _calculate_delivery_summary(
-            plan_paths,
+            all_plan_paths,
             rt_file_index.get(patient_id, []),
             selected_plan_paths=delivery_plan_paths,
             selected_dose_paths=delivery_dose_paths,
             reference_audit=delivery_reference_audit_by_patient.get(patient_id),
         )
         per_plan_delivery = _per_plan_delivery_contract(
-            plan_paths,
+            all_plan_paths,
             rt_file_index.get(patient_id, []),
             selected_plans,
             copied_plan_paths,
@@ -4971,18 +5040,6 @@ def organize_and_merge(
             if res:
                 outputs.append(res)
 
-    if resumed_patients:
-        _rehydrated = 0
-        for _pid, _entries in resumed_patients.items():
-            for _entry in _entries:
-                _cdir = Path(str(_entry.get("course_dir") or ""))
-                if not _cdir.is_dir():
-                    continue
-                _co = _hydrate_existing_course(_pid, str(_entry.get("course_key") or _cdir.name), _cdir)
-                if _co is not None:
-                    outputs.append(_co)
-                    _rehydrated += 1
-        logger.info("Organize resume: re-admitted %d course(s) from complete patients", _rehydrated)
 
     if getattr(config, "do_segment_all_series", False):
         if not getattr(config, "inventory_db_path", None):
@@ -5614,10 +5671,15 @@ def organize_and_merge(
                     current_contract=co.course_contract,
                 )
             )
-            if clinical_record_index is not None:
+            if clinical_record_index is not None and selected_plan_contract:
                 plan_dates: set[str] = set()
                 treatment_dates: set[str] = set()
+                eligible_clinical_plans = []
                 for item in co.per_plan_delivery_contract:
+                    path = Path(str(item.get("plan_path") or ""))
+                    if not approved_plan_paths([path]):
+                        continue
+                    eligible_clinical_plans.append(item)
                     treatment_dates.update(
                         str(value)
                         for value in item.get("treatment_dates", []) or []
@@ -5661,7 +5723,7 @@ def organize_and_merge(
                         co.dose_classification.get("classification") or ""
                     )
                     or None,
-                    per_plan_delivery=co.per_plan_delivery_contract,
+                    per_plan_delivery=eligible_clinical_plans,
                 )
                 clinical_prescription_evidence["dicom"]["delivery_status"] = (
                     co.delivery_status
@@ -6463,7 +6525,32 @@ def organize_and_merge(
             }
         )
 
-    organize_ledger = write_organize_ledger(config.output_root, organize_entries)
+    published_plans = {
+        (str(co.patient_id), str(uid)): str(co.course_id)
+        for co in validated_outputs for uid in (co.source_plan_uids or [])
+    }
+    for row in source_dispositions["plans"]:
+        if row["disposition_type"] == "course_member":
+            identity = (row["patient"], row["plan_uid"])
+            if identity in published_plans:
+                row["course_id"] = published_plans[identity]
+            else:
+                row["disposition_type"] = "technical_hold"
+                row["reason_code"] = "COURSE_NOT_PUBLISHED"
+                row["clinical_exclusion"] = False
+    source_dispositions = summarize_dispositions(
+        source_dispositions["plans"],
+        record_errors=source_dispositions["record_read_errors"],
+        unresolved_record_plans=source_dispositions["unresolved_record_plans"],
+    )
+    source_dispositions["discovery_scope_patient_ids"] = scope_ids
+    source_dispositions["source_root"] = str(config.dicom_root.resolve())
+    source_dispositions["source_scope_fingerprint"] = source_fingerprint
+    source_dispositions["course_publication_status"] = "complete"
+    write_source_plan_dispositions(config.output_root, source_dispositions)
+    organize_ledger = write_organize_ledger(
+        config.output_root, organize_entries, source_plan_dispositions=source_dispositions,
+    )
     logger.info(
         "Organize contract ledger: attempted=%d validated=%d technical_quarantines=%d",
         organize_ledger["attempted_course_count"],

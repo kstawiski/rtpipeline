@@ -560,6 +560,12 @@ def sanitize_rtstruct(rtstruct_path: Path | str, *, minimum_points: int = 3) -> 
 
         filtered = []
         for contour in contour_seq:
+            # Typed geometry is never silently deleted or repaired. Valid POINT
+            # and open curves are non-measurements; malformed closed contours
+            # must remain available to the explicit geometry disposition gate.
+            if getattr(contour, "ContourGeometricType", None):
+                filtered.append(contour)
+                continue
             try:
                 data = list(contour.ContourData)
             except Exception:

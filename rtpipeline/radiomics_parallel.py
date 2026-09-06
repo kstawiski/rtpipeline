@@ -20,7 +20,10 @@ High-level design
 
 from __future__ import annotations
 
+from .rtstruct_geometry import NONVOLUMETRIC_CODES
+
 import logging
+import json
 import math
 import os
 import signal
@@ -63,6 +66,7 @@ from .radiomics_outcomes import (
     resume_identity_pairs as _resume_identity_pairs,
     write_excel_atomic as _write_excel_atomic,
 )
+from .radiomics_memory import permits_second_stage, legacy_rejection
 from .radiomics_resource_guard import (
     RESAMPLED_BBOX_LIMIT_CODE,
     estimate_resampled_bounding_box,
@@ -273,6 +277,7 @@ class _RoiTask:
     configured_parameter_hashes: Dict[str, str] = field(compare=False, hash=False)
     effective_parameter_hashes: Dict[str, str] = field(compare=False, hash=False)
     required: Optional[bool] = None
+    structural_code: Optional[str] = None
 
 
 _WORKER_STATE: Dict[str, Any] = {}
@@ -316,7 +321,9 @@ def _worker_init(
 
 def _get_builder(rs_path: Path):
     builders: Dict[str, Any] = _WORKER_STATE.setdefault("builders", {})
-    key = str(rs_path)
+    # A path alone is not an immutable object identity.
+    stat = rs_path.stat()
+    key = (str(rs_path), stat.st_mtime_ns, stat.st_size)
     if key in builders:
         return builders[key]
 
@@ -333,7 +340,8 @@ def _get_builder(rs_path: Path):
         return None
 
     try:
-        builder = RTStructBuilder.create_from(dicom_series_path=str(ct_dir), rt_struct_path=str(rs_path))
+        from .rtstruct_geometry import create_scoped_rtstruct
+        builder = create_scoped_rtstruct(ct_dir, rs_path)
     except Exception as exc:
         logger.debug("RTStructBuilder create_from failed for %s: %s", rs_path, exc)
         builder = None
@@ -416,7 +424,7 @@ def _write_parallel_roi_ledger(
             FAILED_RADIOMICS_FEATURE_COMPLETENESS
             if completeness == "incomplete"
             else FAILED_RADIOMICS_RESOURCE_LIMIT
-            if detail_code == RESAMPLED_BBOX_LIMIT_CODE
+            if detail_code in {RESAMPLED_BBOX_LIMIT_CODE, "ROI_PREDICTED_MEMORY_EXCEEDS_LIMIT"}
             else detail_code
             or (
                 "extracted"
@@ -437,7 +445,9 @@ def _write_parallel_roi_ledger(
                 else row.get("extraction_status_detail")
                 or ""
             ),
-            estimated_resampled_bbox_voxel_count=row.get(
+            **({"resource_guard_reason_code": row["resource_guard_reason_code"]}
+                   if row.get("resource_guard_reason_code") in {"ROI_RESOURCE_BBOX_ADMITTED", "ROI_RESOURCE_MEMORY_ADMITTED"} else {}),
+                estimated_resampled_bbox_voxel_count=row.get(
                 "estimated_resampled_bbox_voxel_count"
             ),
             max_resampled_bbox_voxel_count=row.get(
@@ -498,6 +508,9 @@ def _write_parallel_roi_ledger(
         )
     ledger.record_course(course_id, patient_id, screened=True, in_scope=True, out_of_scope=False, adequate_coverage=bool(rows), insufficient_coverage=not bool(rows), valid_derivation=any(item.reason_code == "extracted" for item in applicability), technical_exclusion=technical, indeterminate=indeterminate or any(item.reason_code == "indeterminate_applicability" for item in applicability), extracted=extracted, reason_code="extracted" if extracted else ("indeterminate_applicability" if indeterminate else "failed_radiomics_extraction"))
     write_modality_ledger(Path(course_dir) / "metadata", ledger, "CT")
+    if tasks:
+        from .radiomics_source_inventory import write_source_ledger
+        write_source_ledger(Path(course_dir), tasks, rows)
 
 
 def _status_records(
@@ -565,7 +578,7 @@ def _record_roi_outcome(
             status = None
     except (TypeError, ValueError):
         pass
-    if status == "declared_skip":
+    if status in {"declared_skip", "nonvolumetric_nonmeasurement"}:
         return
     counts = source_counts.setdefault(
         task.source,
@@ -617,12 +630,44 @@ def _resume_outcome(
 
 
 def _extract_one(task: _RoiTask) -> List[Dict[str, Any]]:
+    # Classify before policy, resource admission, or a volumetric builder. Preserve both arm identities
+    # for legitimate non-measurements and reject task references to old bytes.
+    rs_path = Path(task.rs_path)
+    from .rtstruct_identity import require_rtstruct_identity
+    if rs_path.is_file():
+        if pydicom.uid.UID(task.mask_identity).is_valid:
+            require_rtstruct_identity(rs_path, task.mask_identity)
+        inventory = inspect_rtstruct(rs_path)
+        observations = [r for r in inventory.named_rois if r.name == task.roi_name]
+        if len(observations) == 1 and observations[0].structural_code:
+            code = observations[0].structural_code
+            nonvolume = code in NONVOLUMETRIC_CODES
+            return _status_records(task,
+                "nonvolumetric_nonmeasurement" if nonvolume else "invalid_contour_geometry",
+                code, failure_kind="nonvolumetric_geometry" if nonvolume else "invalid_contour_geometry",
+                metadata={"roi_structural_code": code})
+
+    if task.structural_code:
+        from .radiomics_source_inventory import structural_disposition
+        return _status_records(
+            task, structural_disposition(task.structural_code),
+            f"Source ROI terminal disposition: {task.structural_code}",
+            failure_kind="source_geometry",
+            metadata={"roi_structural_code": task.structural_code},
+        )
     skip_rois: Set[str] = _WORKER_STATE.get("skip_rois", set())
     if _norm(task.roi_name) in skip_rois:
         return _status_records(
-            task,
-            "declared_skip",
-            "ROI is listed in radiomics_skip_rois",
+            task, "declared_skip", "ROI is listed in radiomics_skip_rois",
+            failure_kind="declared_ineligible",
+            metadata={"roi_structural_code": "CONFIGURED_SKIP"},
+        )
+    from .radiomics_ct_contract import FEATURE_POLICY_INVENTORY_ONLY
+    if task.decision.feature_publication_policy == FEATURE_POLICY_INVENTORY_ONLY:
+        return _status_records(
+            task, task.decision.primary_intensity_texture_disposition,
+            f"ROI class {task.decision.roi_class} is retained for inventory only. "
+            "Radiomic feature publication is prohibited.",
             failure_kind="declared_ineligible",
         )
 
@@ -645,6 +690,12 @@ def _extract_one(task: _RoiTask) -> List[Dict[str, Any]]:
     try:
         mask = builder.get_roi_mask_by_name(task.roi_name)
     except Exception as exc:
+        from .rtstruct_geometry import ROIContourDisposition
+        if isinstance(exc, ROIContourDisposition):
+            result = exc.result
+            return _status_records(task, "unresolved_source_scope", str(exc),
+                failure_kind="unresolved_source_scope",
+                metadata={"roi_structural_code": result.code, "source_series_uids": json.dumps(result.source_series_uids)})
         raise RadiomicsRegionExtractionError(
             f"ROI {task.roi_name} mask could not be read from {rs_path}: {exc}"
         ) from exc
@@ -703,7 +754,12 @@ def _extract_one(task: _RoiTask) -> List[Dict[str, Any]]:
     max_bbox_voxels = resolve_max_resampled_bbox_voxels(
         _WORKER_STATE.get("config")
     )
-    if work_estimate.estimated_resampled_bbox_voxels > max_bbox_voxels:
+    if (work_estimate.estimated_resampled_bbox_voxels > max_bbox_voxels
+            and not permits_second_stage(
+                work_estimate, mask_bool, native_spacing_xyz=spacing,
+                array_axis_to_xyz=(1, 0, 2), settings=ext.settings,
+                image_types=getattr(ext, "enabledImagetypes", {}),
+                limit=max_bbox_voxels)):
         detail = (
             f"ROI {task.roi_name} requires an estimated padded resampled bounding "
             f"box of {work_estimate.estimated_resampled_bbox_voxels} voxels "
@@ -779,7 +835,8 @@ def _extract_one(task: _RoiTask) -> List[Dict[str, Any]]:
             mask_img,
             factory=_factory,
             decision=task.decision,
-            common_metadata=common_metadata,
+            common_metadata={**common_metadata, "_resource_guard_legacy":
+                             legacy_rejection(work_estimate, max_bbox_voxels, task.roi_name)},
             run_identifier=task.run_identifier,
             code_revision=task.code_revision,
             native_voxel_count=voxel_count,
@@ -1282,8 +1339,15 @@ def parallel_radiomics_for_course(
         roi_name: str,
         *,
         required: bool,
+        observation: Any = None,
+        declaration_ordinal: Optional[int] = None,
     ) -> _RoiTask:
         sop_uid, roi_number = stable_rtstruct_roi_identity(rs_path, roi_name)
+        if observation is not None:
+            roi_number = observation.roi_number
+        malformed_identity = observation is not None and observation.structural_code == "ROI_MALFORMED_IDENTITY"
+        if malformed_identity and not roi_name:
+            roi_name = f"unnamed_roi_declaration_{declaration_ordinal}"
         decision = classify_ct_roi(
             source,
             roi_name,
@@ -1312,7 +1376,8 @@ def parallel_radiomics_for_course(
             course_dir=str(course_dir),
             series_uid=series_uid,
             mask_identity=sop_uid,
-            stable_roi_identifier=f"rtstruct_roi_number:{roi_number}",
+            stable_roi_identifier=(f"rtstruct_declaration:{declaration_ordinal}" if malformed_identity
+                                   else f"rtstruct_roi_number:{roi_number}"),
             decision=decision,
             run_identifier=run_identifier,
             code_revision=code_revision,
@@ -1321,9 +1386,10 @@ def parallel_radiomics_for_course(
                 _factory, decision
             ),
             required=required,
+            structural_code=observation.structural_code if observation is not None else None,
         )
 
-    # Enumerate every current non-skipped identity before accepting a resume
+    # Enumerate every current source identity before accepting a resume
     # workbook. BODY-only top-ups can miss ordinary Manual/AutoRTS/model ROIs.
     tasks: List[_RoiTask] = []
     required_contract = requirements_from_contract(
@@ -1333,6 +1399,7 @@ def parallel_radiomics_for_course(
         from .radiomics import _roi_requiredness
         analysis_config = getattr(config, "radiomics_analysis_contract", {}) or {}
         for source, rs_path, expected_rois in sources:
+            observations = []
             if expected_rois:
                 roi_names = list(expected_rois)
             else:
@@ -1363,30 +1430,12 @@ def parallel_radiomics_for_course(
                                 f"Required ROI {match.requirement.canonical_name!r} has ambiguous identity in {rs_path} "
                                 "[REQUIRED_ROI_AMBIGUOUS_MATCH]"
                             )
-                    for observation in inventory.named_rois:
-                        requiredness = _roi_requiredness(config, source, observation.name)
-                        if observation.structural_code and requiredness == Requiredness.ANALYSIS_REQUIRED:
-                            raise RadiomicsCourseExtractionError(
-                                f"Required ROI {observation.name!r} in {rs_path} has "
-                                f"{observation.structural_code}"
-                            )
-                    roi_names = [
-                        observation.name for observation in inventory.named_rois
-                        if not observation.structural_code
-                    ]
-                    if not roi_names:
-                        try:
-                            roi_names = list(_list_roi_names(rs_path))
-                        except Exception:
-                            roi_names = []
-                    if inventory.named_rois:
-                        valid_names = {observation.name for observation in inventory.named_rois if not observation.structural_code}
-                        roi_names = [name for name in roi_names if name in valid_names]
-                    if not roi_names and "RTSTRUCT_NO_NAMED_ROIS" in inventory.structural_codes:
-                        logger.info("RTSTRUCT has no named ROIs and contributes no inventory: %s", rs_path)
-            for roi_name in roi_names:
-                if _norm(roi_name) in skip_rois:
-                    continue
+                    # Keep every declaration. Enforce required failures after
+                    # publishing their identity-bound terminal dispositions.
+                    from .radiomics_source_inventory import source_observations
+                    observations = source_observations(rs_path)
+                    roi_names = [observation.name for observation in observations]
+            for roi_index, roi_name in enumerate(roi_names):
                 selected_model = source.startswith("CustomModel:")
                 requiredness = _roi_requiredness(
                     config, source, roi_name, selected_model=selected_model
@@ -1405,6 +1454,8 @@ def parallel_radiomics_for_course(
                         rs_path,
                         roi_name,
                         required=requiredness == Requiredness.ANALYSIS_REQUIRED,
+                        observation=observations[roi_index] if observations else None,
+                        declaration_ordinal=roi_index,
                     )
                 )
     except Exception:
@@ -1461,9 +1512,9 @@ def parallel_radiomics_for_course(
                     f"Required configured custom ROI(s) missing from {rs_custom}: "
                     + ", ".join(missing_custom)
                 )
+            from .radiomics_source_inventory import source_observations
+            custom_observations = {item.name: item for item in source_observations(rs_custom)}
             for roi_name in wanted:
-                if _norm(roi_name) in skip_rois:
-                    continue
                 required_custom = _roi_requiredness(config, "Custom", roi_name) == Requiredness.ANALYSIS_REQUIRED
                 if required_custom:
                     for requirement in required_contract:
@@ -1479,6 +1530,7 @@ def parallel_radiomics_for_course(
                         rs_custom,
                         roi_name,
                         required=required_custom,
+                        observation=custom_observations.get(roi_name),
                     )
                 )
         except Exception as exc:
@@ -2009,6 +2061,28 @@ def _prepare_radiomics_task(
 
 
 def _isolated_radiomics_extraction_with_retry(task) -> Optional[Dict[str, Any]]:
+    """Retry an exception on the identical immutable condition, never substitute it.
+
+    Process death is handled by the parent watchdog. Timeouts and memory errors
+    are fatal immediately. Exhausted retries raise with all attempt diagnostics.
+    """
+    errors = []
+    for attempt in range(3):
+        try:
+            result = _isolated_radiomics_extraction(task)
+            if errors:
+                result["robustness_retry_errors"] = list(errors)
+                result["robustness_attempts"] = attempt + 1
+            return result
+        except (TimeoutError, MemoryError):
+            raise
+        except Exception as exc:
+            errors.append(f"{type(exc).__name__}: {exc}")
+            logger.warning("Robustness exact-condition attempt %d failed: %s", attempt + 1, exc)
+    raise RuntimeError(f"robustness extraction exhausted identical-condition retries: {errors}")
+
+
+def _isolated_radiomics_extraction(task) -> Optional[Dict[str, Any]]:
     """Extract radiomics features from pre-saved image/mask files.
 
     Designed for ``multiprocessing.Pool.imap_unordered()``.
@@ -2020,6 +2094,8 @@ def _isolated_radiomics_extraction_with_retry(task) -> Optional[Dict[str, Any]]:
     """
     _apply_thread_limit(1)
 
+    from .robustness_mcc import install_mcc_contraction
+    install_mcc_contraction()
     _mask_path, task_params = task
     params_file = task_params.get("params_file")
     large_roi = task_params.get("large_roi", False)
@@ -2046,7 +2122,8 @@ def _isolated_radiomics_extraction_with_retry(task) -> Optional[Dict[str, Any]]:
             candidate.enableFeatureClassByName("firstorder")
             candidate.enableFeatureClassByName("shape")
             candidate.settings["resampledPixelSpacing"] = [2.0, 2.0, 2.0]
-        return candidate
+        from .robustness_watchdog import observed_extractor
+        return observed_extractor(candidate)
 
     try:
         decision = RoiClassDecision(**task_params["roi_class_decision"])
@@ -2077,6 +2154,21 @@ def _isolated_radiomics_extraction_with_retry(task) -> Optional[Dict[str, Any]]:
             required=False,
             configured_parameter_hashes=task_params["configured_parameter_hashes"],
         )
+        from .radiomics_robustness_outcomes import returned_geometry_nonmeasurement, nonmeasurement_rows
+        outcome = returned_geometry_nonmeasurement(
+            records, task_params["image_path"], task_params["mask_path"], _factory,
+        )
+        if outcome is not None:
+            from .radiomics_robustness import ROBUSTNESS_SOURCE_IDENTITY_COLUMNS
+            identity = {column: task_params[column] for column in ROBUSTNESS_SOURCE_IDENTITY_COLUMNS}
+            return {
+                "__nonmeasurement_rows__": nonmeasurement_rows(
+                    outcome, identity, extra_metadata["perturbation_id"],
+                    task_params["run_identifier"], mask_identity=task_params["perturbed_mask_identity"],
+                ),
+                "segmentation_source": task_params["segmentation_source"],
+                "roi_name": task_params["roi_name"], **extra_metadata,
+            }
         return {
             "__records__": records,
             "segmentation_source": task_params.get("segmentation_source", ""),
@@ -2086,11 +2178,30 @@ def _isolated_radiomics_extraction_with_retry(task) -> Optional[Dict[str, Any]]:
             **extra_metadata,
         }
 
+    except (TimeoutError, MemoryError):
+        raise
     except Exception as e:
-        logger.debug(
-            "Isolated extraction failed for %s/%s: %s",
-            task_params.get("roi_name"),
-            extra_metadata.get("perturbation_id", "?"),
-            e,
+        from .radiomics_robustness_outcomes import (
+            extraction_nonmeasurement, nonmeasurement_rows, GeometricAdmissionContractError,
         )
-        return None
+        if isinstance(e, GeometricAdmissionContractError):
+            raise
+        from .radiomics_robustness import ROBUSTNESS_SOURCE_IDENTITY_COLUMNS
+        outcome = extraction_nonmeasurement(
+            task_params["image_path"], task_params["mask_path"], _factory,
+        )
+        if outcome is not None:
+            identity = {column: task_params[column] for column in ROBUSTNESS_SOURCE_IDENTITY_COLUMNS}
+            return {
+                "__nonmeasurement_rows__": nonmeasurement_rows(
+                    outcome, identity, extra_metadata["perturbation_id"],
+                    task_params["run_identifier"], mask_identity=task_params["perturbed_mask_identity"],
+                ),
+                "segmentation_source": task_params["segmentation_source"],
+                "roi_name": task_params["roi_name"], **extra_metadata,
+            }
+        raise RuntimeError(
+            f"robustness worker failed for {task_params.get('segmentation_source')}/"
+            f"{task_params.get('roi_name')}/{extra_metadata.get('perturbation_id')}: "
+            f"{type(e).__name__}: {e}"
+        ) from e

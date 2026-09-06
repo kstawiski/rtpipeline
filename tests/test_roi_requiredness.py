@@ -427,9 +427,22 @@ def test_parallel_ledger_records_configured_roi_realized_by_partial_alias(tmp_pa
 def test_every_declared_taxonomy_code_is_registered():
     assert TAXONOMY_CODES == frozenset(
         {
+            "ROI_NONVOLUMETRIC_POINT",
+            "ROI_NONVOLUMETRIC_OPEN_NONPLANAR",
+            "ROI_NONVOLUMETRIC_OPEN_PLANAR",
+            "ROI_NONVOLUMETRIC_MIXED",
+            "ROI_UNRESOLVED_SOURCE_SCOPE",
+            "ROI_MULTISERIES_SOURCE_SCOPE",
+            "ROI_CONTOUR_MIXED_GEOMETRY",
             "ROI_DECLARED_NO_CONTOUR_ITEM",
             "ROI_DECLARED_EMPTY_CONTOUR_SEQUENCE",
             "ROI_CONTOUR_UNPARSEABLE",
+            "ROI_NONVOLUMETRIC_POINT",
+            "ROI_NONVOLUMETRIC_CONTOUR",
+            "ROI_MALFORMED_IDENTITY",
+            "ROI_PREDICTED_MEMORY_EXCEEDS_LIMIT",
+            "CONFIGURED_SKIP",
+            "CONFIGURED_SOURCE_SCOPE_SKIP",
             "ROI_CONTOUR_PARTIALLY_UNPARSEABLE",
             "ROI_CONTOUR_ORPHAN_REFERENCE",
             "ROI_MASK_EMPTY_AFTER_RASTERIZATION",

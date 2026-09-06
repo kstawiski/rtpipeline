@@ -95,6 +95,8 @@ RADIOMICS_TEXT_COLUMNS = frozenset(
         # from the guard's own payload so a newly added field cannot slip
         # through the allowlist the same way a third time.
         "roi_structural_code",
+        "resource_guard_reason_code",
+        "admissibility_grid",
         "native_mask_bbox_shape",
         "estimated_resampled_bbox_shape",
     }

@@ -17,7 +17,9 @@ import pydicom
 import SimpleITK as sitk
 
 logger = logging.getLogger(__name__)
-DVH_METRIC_VERSION = "2026-09-01-target-coverage-v4"
+DVH_METRIC_VERSION = "2026-09-05-grid-support-derived-mask-d003-v5"
+from .dvh_support import (rtstruct_grid_coverage, resample_grid_support, mask_grid_coverage,
+                          nifti_identity, publish_derived_mask, validate_derived_mask, sha256_file)
 NEAR_ZERO_TARGET_D95_GY = 0.1
 
 RELATIVE_DVH_METRIC_COLUMNS = (
@@ -44,15 +46,19 @@ _UNSPECIFIED_ROI_INTERPRETED_TYPES = frozenset({"", "UNKNOWN", "UNDEFINED"})
 def _is_target_structure(
     name: object, interpreted_type: object | None = None
 ) -> bool:
-    """Use DICOM target semantics first and names only when type is absent."""
-    from .rt_details import is_target_volume_name
+    """Route target-like DVH checks using DICOM type, then broad name candidacy.
+
+    This is dose/QC routing, not a governed CT radiomics tissue-class decision.
+    A name candidate never overrides coverage, provenance, or prescription gates.
+    """
+    from .rt_details import is_target_volume_candidate
 
     roi_type = str(interpreted_type or "").strip().upper()
     if roi_type in TARGET_ROI_INTERPRETED_TYPES:
         return True
     if roi_type not in _UNSPECIFIED_ROI_INTERPRETED_TYPES:
         return False
-    return is_target_volume_name(name)
+    return is_target_volume_candidate(name)
 
 
 def _is_target_structure_name(name: object) -> bool:
@@ -406,6 +412,7 @@ def _is_dose_derived_metric_column(column: object) -> bool:
         "D50Gy",
         "D1ccGy",
         "D0.1ccGy",
+        "D0.03ccGy",
         "HI",
         "SpreadGy",
         "IntegralDose_Gycm3",
@@ -454,6 +461,8 @@ def annotate_dvh_metrics(
     zero_dose_trigger_value_gy: float | None = None,
     dose_response_ineligibility_reason: str | None = None,
     quarantine_near_zero: bool = False,
+    grid_coverage: Mapping[str, object] | None = None,
+    covered_metrics: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     """Attach technique, provenance, missingness, and near-zero semantics."""
     output = dict(metrics)
@@ -576,9 +585,18 @@ def annotate_dvh_metrics(
         provenance_reason = "ROI is traceable to the contracted RTSTRUCT SOP instance and path."
         rtstruct_provenance_status = "traceable"
         rtstruct_provenance_reason = provenance_reason
-    elif provenance_type == "NIFTI_MASK" and structure_provenance_path:
-        provenance_status = "traceable"
-        provenance_reason = "ROI is traceable to its source NIfTI mask path."
+    elif provenance_type in {"NIFTI_MASK", "DERIVED_NIFTI_MASK"} and structure_provenance_path:
+        try:
+            identity = (nifti_identity(structure_provenance_path)
+                        if provenance_type == "NIFTI_MASK"
+                        else validate_derived_mask(structure_provenance_path))
+            output["structure_provenance_sha256"] = identity["sha256"]
+            provenance_status = "traceable"
+            provenance_reason = "Source bytes and mask identity were validated."
+        except (OSError, ValueError, KeyError, RuntimeError) as exc:
+            provenance_status = "invalid_mask_provenance"
+            provenance_reason = str(exc)
+            geometry_usable_for_dose_response = False
         rtstruct_provenance_status = "not_applicable"
         rtstruct_provenance_reason = (
             "ROI was computed from a NIfTI mask, so RTSTRUCT identity is not applicable."
@@ -588,6 +606,34 @@ def annotate_dvh_metrics(
         provenance_reason = "ROI lacks a usable source structure identity and path."
         rtstruct_provenance_status = "unresolved"
         rtstruct_provenance_reason = provenance_reason
+    if grid_coverage is None:
+        grid_coverage = {"status": "coverage_unresolved", "fraction": None, "method": "not_evaluated"}
+    if grid_coverage is not None:
+        coverage_status = str(grid_coverage["status"])
+        output["dose_grid_coverage_status"] = coverage_status
+        output["dose_grid_coverage_fraction"] = grid_coverage.get("fraction")
+        output["dose_grid_coverage_method"] = grid_coverage.get("method")
+        output["dose_grid_covered_volume_cm3"] = grid_coverage.get("covered_volume_cm3")
+        output["dose_grid_roi_volume_cm3"] = grid_coverage.get("roi_volume_cm3")
+        if coverage_status != "fully_covered":
+            # Legacy values may contain zero padding. Never label them covered-volume
+            # or whole-ROI measurements. True covered diagnostics have separate keys.
+            for column in tuple(output):
+                if _is_dose_derived_metric_column(column):
+                    output["diagnostic_legacy_" + column] = output[column]
+                    output[column] = None
+            for column, value in (covered_metrics or {}).items():
+                output["covered_" + column] = value
+            output["covered_metric_status"] = ("computed" if covered_metrics else "unavailable")
+            output["D0.03cc_status"] = coverage_status
+            dose_metric_status = coverage_status
+            dose_metric_reason = "Whole-ROI metrics require complete independent dose-grid support."
+            relative_status = "unavailable_" + coverage_status
+            relative_reason = dose_metric_reason
+            if target_structure:
+                output["HI_status"] = "unavailable_" + coverage_status
+                output["HI_reason"] = dose_metric_reason
+            geometry_usable_for_dose_response = False
     output.update(
         {
             "dose_response_eligible": bool(dose_response_eligible),
@@ -1066,6 +1112,9 @@ def _iter_dicom_files(subdir: Path) -> List[Path]:
 
 def _sop_uid(path: Path) -> str:
     ds = _read_header(path)
+    if ds is not None and str(getattr(ds, "Modality", "")) == "RTSTRUCT":
+        from .rtstruct_identity import validate_rtstruct_identity
+        return validate_rtstruct_identity(ds)
     return str(getattr(ds, "SOPInstanceUID", "") or "") if ds is not None else ""
 
 
@@ -1441,6 +1490,17 @@ def _get_volume_at_threshold(bins, cumulative, threshold: float) -> float:
     return y0 + (y1 - y0) * (threshold - x0) / (x1 - x0)
 
 
+def _small_volume_dose(bins, cumulative, volume_cm3, minimum, maximum, requested_cm3):
+    """Same cumulative interpolation and min/max clamp as D1cc and D0.1cc.
+
+    The exact volume boundary is inclusive. No tolerance promotes a smaller ROI.
+    """
+    if volume_cm3 < requested_cm3:
+        return None, "roi_below_0.03cc"
+    value = _bounded_dose_at_fraction(bins, cumulative, requested_cm3 / volume_cm3, minimum, maximum)
+    return (value, "available") if np.isfinite(value) else (None, "not_computable")
+
+
 def _compute_metrics(abs_dvh, rx_dose: Optional[float]) -> Optional[Dict[str, float]]:
     bins_abs = abs_dvh.bincenters
     cum_abs = abs_dvh.counts
@@ -1482,6 +1542,10 @@ def _compute_metrics(abs_dvh, rx_dose: Optional[float]) -> Optional[Dict[str, fl
                 )
     except Exception as exc:
         logger.debug("Failed computing D1cc/D0.1cc metrics: %s", exc)
+
+    D0_03ccGy, D0_03cc_status = _small_volume_dose(
+        bins_abs, cum_abs, V_total, DminGy, DmaxGy, 0.03
+    )
 
     # Coverage at 95% and 100% of Rx dose
     V95Rx_cc = None
@@ -1533,6 +1597,8 @@ def _compute_metrics(abs_dvh, rx_dose: Optional[float]) -> Optional[Dict[str, fl
         "SpreadGy": SpreadGy,
         "D1ccGy": D1ccGy,
         "D0.1ccGy": D0_1ccGy,
+        "D0.03ccGy": D0_03ccGy,
+        "D0.03cc_status": D0_03cc_status,
         "Dmean%": Dmean_pct,
         "Dmax%": Dmax_pct,
         "Dmin%": Dmin_pct,
@@ -1571,7 +1637,7 @@ def _compute_metrics_from_arrays(
         return None
 
     V_total = float(dose_values.size) * voxel_vol_cm3
-    if V_total < 0.001:
+    if V_total <= 0:
         return None
 
     DmeanGy = float(np.mean(dose_values))
@@ -1618,6 +1684,10 @@ def _compute_metrics_from_arrays(
     except Exception:
         pass
 
+    D0_03ccGy, D0_03cc_status = _small_volume_dose(
+        bin_centers, cumulative_vol, V_total, DminGy, DmaxGy, 0.03
+    )
+
     V95Rx_cc = V95Rx_pct = V100Rx_cc = V100Rx_pct = None
     Dmean_pct = Dmax_pct = Dmin_pct = D95_pct = D98_pct = D2_pct = D50_pct = None
     HI_pct = Spread_pct = None
@@ -1662,6 +1732,8 @@ def _compute_metrics_from_arrays(
         "SpreadGy": SpreadGy,
         "D1ccGy": D1ccGy,
         "D0.1ccGy": D0_1ccGy,
+        "D0.03ccGy": D0_03ccGy,
+        "D0.03cc_status": D0_03cc_status,
         "Dmean%": Dmean_pct,
         "Dmax%": Dmax_pct,
         "Dmin%": Dmin_pct,
@@ -2077,6 +2149,8 @@ def _is_dvh_up_to_date(
             return False
         parquet_frame = pd.read_parquet(parquet_path)
         required_columns = {
+            "D0.03ccGy", "D0.03cc_status",
+            "dose_grid_coverage_fraction", "dose_grid_coverage_status",
             "dose_response_eligible",
             "dose_metric_usable_for_dose_response",
             "dose_metric_status",
@@ -2095,6 +2169,21 @@ def _is_dvh_up_to_date(
         if not required_columns.issubset(parquet_frame.columns):
             logger.info("Typed DVH Parquet sidecar has an old schema; regenerating")
             return False
+
+        for row in parquet_frame.to_dict("records"):
+            kind = row.get("structure_provenance_type")
+            if kind in {"NIFTI_MASK", "DERIVED_NIFTI_MASK"}:
+                try:
+                    source = row["structure_provenance_path"]
+                    expected = row.get("structure_provenance_sha256")
+                    if not isinstance(expected, str) or len(expected) != 64:
+                        return False
+                    identity = (nifti_identity(source) if kind == "NIFTI_MASK"
+                                else validate_derived_mask(source, expected))
+                    if identity["sha256"] != expected:
+                        return False
+                except (OSError, ValueError, KeyError, RuntimeError):
+                    return False
 
         expected_custom = _expected_custom_structure_names(custom_structures_config)
         if expected_custom and not _dvh_has_expected_custom_structures(dvh_path, expected_custom):
@@ -2480,6 +2569,7 @@ def _compute_nifti_based_dvh(
     prescription_resolved: bool = False,
     dose_response_eligible: bool = True,
     dose_response_ineligibility_reason: str | None = None,
+    derived_mask_output_dir: Path | None = None,
 ) -> List[Dict]:
     """Compute DVH for TotalSegmentator and custom composite structures directly from NIfTI masks.
 
@@ -2543,6 +2633,7 @@ def _compute_nifti_based_dvh(
         sitk.Transform(), sitk.sitkLinear,
         0.0, dose_sitk.GetPixelID(),
     )
+    grid_support_ct = resample_grid_support(dose_sitk, ct_image)
     dose_ct_arr = sitk.GetArrayFromImage(dose_in_ct).astype(np.float64) * dose_grid_scaling
     max_dose_gy = float(np.max(dose_ct_arr)) if dose_ct_arr.size > 0 else 0.0
     ct_voxel_vol_cm3 = (ct_spacing[0] * ct_spacing[1] * ct_spacing[2]) / 1000.0
@@ -2607,6 +2698,7 @@ def _compute_nifti_based_dvh(
     # --- Compute DVH for each mask ---
     for name, mask_zyx in masks_to_compute.items():
         try:
+            coverage = mask_grid_coverage(mask_zyx, grid_support_ct, ct_voxel_vol_cm3)
             dose_values = dose_ct_arr[mask_zyx]
             if dose_values.size == 0:
                 continue
@@ -2625,13 +2717,25 @@ def _compute_nifti_based_dvh(
                 roi_number=None,
                 dose_ds=None,
             )
+            covered_values = dose_ct_arr[mask_zyx & grid_support_ct]
+            covered = (_compute_metrics_from_arrays(covered_values, ct_voxel_vol_cm3, max_dose_gy, rx_est)
+                       if coverage["status"] == "partial_grid" else None)
+            if zero_qc["trigger_metric"] is not None:
+                zero_qc["status"] = {"fully_covered": "zero_dose_in_grid",
+                                     "partial_grid": "zero_dose_partly_inside_dose_grid",
+                                     "outside_grid": "zero_dose_outside_dose_grid"}.get(coverage["status"], "zero_dose_geometry_unresolved")
+                zero_qc["reason"] = "Independent resampled RTDOSE support was measured for the ROI."
             source_path = ts_mask_paths.get(name)
-            if source_path is None:
-                source_path = (
-                    Path(custom_structures_config)
-                    if custom_structures_config and name in custom_masks_zyx
-                    else seg_root
+            provenance_type = "NIFTI_MASK"
+            if name in custom_masks_zyx:
+                from dataclasses import asdict
+                source_path = publish_derived_mask(
+                    derived_mask_output_dir or course_dir / "metadata" / "dvh_derived_masks",
+                    name, mask_zyx, ct_image, list(ts_mask_paths.values()), custom_structures_config,
+                    [asdict(cfg) for cfg in processor.custom_configs], processor.structure_outcomes,
+                    dicom_files,
                 )
+                provenance_type = "DERIVED_NIFTI_MASK"
             metrics = annotate_dvh_metrics(
                 metrics,
                 technique=technique,
@@ -2647,7 +2751,9 @@ def _compute_nifti_based_dvh(
                 ),
                 rtstruct_sop_instance_uid=None,
                 rtstruct_path=None,
-                structure_provenance_type="NIFTI_MASK",
+                structure_provenance_type=provenance_type,
+                grid_coverage=coverage,
+                covered_metrics=covered,
                 structure_provenance_path=source_path,
                 zero_dose_status=str(zero_qc["status"]),
                 zero_dose_reason=str(zero_qc["reason"]),
@@ -2683,7 +2789,7 @@ def _compute_nifti_based_dvh(
                 bin_edges = np.linspace(0, n_bins * bin_width, n_bins + 1)
                 hist, _ = np.histogram(dose_values, bins=bin_edges)
                 cum_counts = np.cumsum(hist[::-1])[::-1]
-                if cum_counts[0] > 0:
+                if cum_counts[0] > 0 and coverage["status"] == "fully_covered":
                     vol_pct = cum_counts.astype(float) / cum_counts[0] * 100.0
                     centers = (bin_edges[:-1] + bin_edges[1:]) / 2.0
                     for d, v in zip(centers, vol_pct):
@@ -2701,7 +2807,7 @@ def _compute_nifti_based_dvh(
             })
             results.append(metrics)
             logger.debug(
-                "NIfTI DVH: %s -> Dmean=%.2f Gy, Vol=%.1f cm³",
+                "NIfTI DVH: %s -> Dmean=%s Gy, Vol=%.1f cm³",
                 name, metrics["DmeanGy"], metrics["Volume (cm³)"],
             )
 
@@ -2797,6 +2903,8 @@ def dvh_for_course(
         logger.info("DVH up-to-date for %s; reusing existing results", course_dir.name)
         return out_xlsx
 
+    # A rejected cached measurement must not remain visible after a failed rebuild.
+    _invalidate_dvh_outputs(course_dir)
     planning_ct_dir = contract.planning_ct_dir
     rs_auto = course_dir / "RS_auto.dcm"
 
@@ -2885,12 +2993,24 @@ def dvh_for_course(
             rtstruct_sop_uid,
             rtstruct_path,
         ) = task
+        coverage = rtstruct_grid_coverage(geometry_rtstruct_ds, int(roi_number), rtdose)
         try:
             abs_dvh = dvhcalc.get_dvh(rtstruct_ds, rtdose, roi_number)
         except Exception as exc:
-            logger.debug("DVH failed for ROI %s: %s", roi_name, exc)
-            return None
-        if abs_dvh.volume == 0:
+            logger.error("DVH failed for ROI %s: %s", roi_name, exc)
+            failed = annotate_dvh_metrics(
+                {"DmeanGy": None, "DmaxGy": None, "DminGy": None,
+                 "D0.03ccGy": None, "D0.03cc_status": "dvh_computation_failed"},
+                technique=treatment_technique, structure_name=roi_name,
+                rtstruct_sop_instance_uid=rtstruct_sop_uid, rtstruct_path=rtstruct_path,
+                grid_coverage=coverage if coverage["status"] != "fully_covered" else
+                    {**coverage, "status": "dvh_computation_failed"},
+            )
+            failed.update({"ROI_Number": int(roi_number), "ROI_Name": roi_name,
+                           "ROI_OriginalName": roi_name, "Segmentation_Source": source_label,
+                           "dvh_computation_error": str(exc), "_curve_data": []})
+            return failed
+        if abs_dvh.volume == 0 and coverage["status"] == "fully_covered":
             return None
         if abs_dvh.volume < 1.0:
             logger.warning(
@@ -2900,7 +3020,13 @@ def dvh_for_course(
             )
         metrics = _compute_metrics(abs_dvh, rx_value)
         if metrics is None:
-            return None
+            metrics = {"DmeanGy": None, "DmaxGy": None, "DminGy": None,
+                       "D0.03ccGy": None, "D0.03cc_status": "not_computable",
+                       "Volume (cm³)": coverage.get("roi_volume_cm3")}
+        covered = None
+        if coverage["status"] == "partial_grid":
+            covered_dvh = dvhcalc.get_dvh(rtstruct_ds, rtdose, roi_number, calculate_full_volume=False)
+            covered = _compute_metrics(covered_dvh, rx_value)
         target_like = _is_target_structure(roi_name, roi_interpreted_type)
         zero_qc = _near_zero_dose_geometry_qc(
             metrics,
@@ -2925,6 +3051,8 @@ def dvh_for_course(
             ),
             rtstruct_sop_instance_uid=rtstruct_sop_uid,
             rtstruct_path=rtstruct_path,
+            grid_coverage=coverage,
+            covered_metrics=covered,
             zero_dose_status=str(zero_qc["status"]),
             zero_dose_reason=str(zero_qc["reason"]),
             zero_dose_trigger_metric=zero_qc["trigger_metric"],
@@ -2949,8 +3077,7 @@ def dvh_for_course(
             # but we can skip zero-volume tails
             if (
                 abs_dvh.counts[0] > 0
-                and metrics.get("dose_metric_status")
-                != "not_measurable_outside_dose_grid"
+                and coverage["status"] == "fully_covered"
             ):
                 # Normalize to percent volume
                 vol_pct = (abs_dvh.counts / abs_dvh.counts[0]) * 100.0
@@ -2976,6 +3103,8 @@ def dvh_for_course(
 
     def process_struct(rs_source: DVHRTStructSource, rx_dose: Optional[float]) -> None:
         rs_path = rs_source.path
+        from .rtstruct_identity import require_rtstruct_identity
+        require_rtstruct_identity(rs_path, rs_source.sop_instance_uid)
         try:
             rtstruct = pydicom.dcmread(str(rs_path))
         except Exception as e:
@@ -3181,6 +3310,8 @@ def dvh_for_course(
                 "volume_cm3": res.get("Volume (cm³)", 0),
                 "dose_metric_status": res.get("dose_metric_status"),
                 "zero_dose_status": res.get("zero_dose_status"),
+                "dose_grid_coverage_status": res.get("dose_grid_coverage_status"),
+                "measurement_scope": "whole_roi",
                 "data": points,
             })
 
