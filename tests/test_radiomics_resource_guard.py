@@ -111,7 +111,7 @@ def test_parallel_worker_records_oversized_crop_without_extraction(
         series_uid="series",
         mask_identity="mask",
         stable_roi_identifier="roi",
-        decision=classify_ct_roi("Manual", "m3"),
+        decision=classify_ct_roi("Manual", "PTV"),
         run_identifier="run",
         code_revision="revision",
         configured_parameter_hashes={

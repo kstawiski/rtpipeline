@@ -39,9 +39,10 @@ def _write_contract(
     rtstruct: Path | None = None,
     no_ct: bool = False,
     planning_nifti: Path | None = None,
+    roi_names=None,
 ) -> None:
     if rtstruct is not None:
-        write_synthetic_rtstruct(rtstruct)
+        write_synthetic_rtstruct(rtstruct, roi_names=roi_names)
     ct_dir = None if no_ct else write_synthetic_planning_ct(course)
     write_minimal_course_contract(
         course,
@@ -1152,7 +1153,7 @@ def test_parallel_backend_publication_failure_invalidates_stale_outputs(
     dirs.dicom_rtstruct.mkdir(parents=True)
     (dirs.dicom_ct / "slice.dcm").write_bytes(b"present")
     (dirs.dicom_rtstruct / "RS.dcm").write_bytes(b"present")
-    _write_contract(course, rtstruct=dirs.dicom_rtstruct / "RS.dcm")
+    _write_contract(course, rtstruct=dirs.dicom_rtstruct / "RS.dcm", roi_names=("PTV",))
     stale = course / "radiomics_ct.xlsx"
     stale.write_bytes(b"stale")
     stale.with_suffix(".parquet").write_bytes(b"stale")
@@ -1358,7 +1359,7 @@ def test_parallel_resume_missing_autorts_roi_forces_full_rerun(tmp_path, monkeyp
     manual_rs = dirs.dicom_rtstruct / "RS.dcm"
     manual_rs.write_bytes(b"present")
     auto_rs = course / "RS_auto.dcm"
-    _write_contract(course, rtstruct=manual_rs)
+    _write_contract(course, rtstruct=manual_rs, roi_names=("PTV",))
     _write_current_auto_rtstruct(course, roi_names=("urinary_bladder",))
     output = course / "radiomics_ct.xlsx"
     pd.DataFrame(
@@ -1669,7 +1670,7 @@ def _parallel_course_with_fake_roi_results(tmp_path, monkeypatch, results_by_sou
     # fixture must carry one, built from synthetic DICOM exactly as a real course
     # is. The Manual source is only reached when the contract names an
     # authoritative RTSTRUCT, so pass it rather than leaving it unset.
-    _write_contract(course, rtstruct=dirs.dicom_rtstruct / "RS.dcm")
+    _write_contract(course, rtstruct=dirs.dicom_rtstruct / "RS.dcm", roi_names=("PTV",))
     _write_current_auto_rtstruct(course, roi_names=("vertebrae_T8", "lung_left"))
 
     monkeypatch.setattr(radiomics, "_load_series_image", lambda *_a, **_k: object())
@@ -1750,7 +1751,7 @@ def test_parallel_required_roi_failure_still_fails_course(tmp_path, monkeypatch,
         dirs.dicom_rtstruct.mkdir(parents=True)
         rtstruct_for_contract = dirs.dicom_rtstruct / "RS.dcm"
     else:
-        (course / "RS_custom.dcm").write_bytes(b"present")
+        write_synthetic_rtstruct(course / "RS_custom.dcm", roi_names=("bowel_bag",))
         custom_config = tmp_path / "custom.yaml"
         custom_config.write_text(
             "custom_structures:\n"
@@ -1761,7 +1762,7 @@ def test_parallel_required_roi_failure_still_fails_course(tmp_path, monkeypatch,
         )
     # Every course now needs the authoritative contract; it also supplies the
     # planning CT series, so the placeholder slice above is no longer written.
-    _write_contract(course, rtstruct=rtstruct_for_contract)
+    _write_contract(course, rtstruct=rtstruct_for_contract, roi_names=("PTV",))
     _write_current_auto_rtstruct(course)
     monkeypatch.setattr(radiomics, "_load_series_image", lambda *_a, **_k: object())
     monkeypatch.setattr(radiomics, "_extractor", lambda *_a, **_k: _FakeExtractor())

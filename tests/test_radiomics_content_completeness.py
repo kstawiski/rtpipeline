@@ -283,6 +283,8 @@ def test_optional_incomplete_vector_is_recorded_in_roi_ledger(
     tmp_path: Path,
 ) -> None:
     course = _course_with_inputs(tmp_path)
+    from course_contract_test_utils import write_synthetic_rtstruct
+    write_synthetic_rtstruct(course / "RS_orig.dcm", roi_names=("bladder",))
     rows = _rows(required=False)
     rows[0]["original_firstorder_Mean"] = float("nan")
     parquet = _publish(course, rows)

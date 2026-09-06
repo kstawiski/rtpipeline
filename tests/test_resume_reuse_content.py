@@ -255,6 +255,10 @@ def test_current_rs_auto_and_rs_custom_are_reused_without_model_or_rebuild(monke
     _write_rtstruct(rs_auto, series_uid)
     original_rs_auto = rs_auto.read_bytes()
     _write_rtstruct(course / "RS_custom.dcm", series_uid)
+    from rtpipeline.rtstruct_identity import assign_derived_identity
+    custom_ds = pydicom.dcmread(course / "RS_custom.dcm")
+    assign_derived_identity(custom_ds, str(custom_ds.SOPInstanceUID), str(custom_ds.SOPClassUID))
+    custom_ds.save_as(course / "RS_custom.dcm")
     calls = _model_run_spy(monkeypatch)
 
     segmentation.segment_course(

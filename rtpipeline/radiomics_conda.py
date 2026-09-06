@@ -55,6 +55,7 @@ from .radiomics_outcomes import (
     invalidate_radiomics_outputs as _invalidate_radiomics_outputs,
     remove_artifact_strict as _remove_artifact_strict,
 )
+from .radiomics_memory import permits_second_stage, legacy_rejection
 from .radiomics_resource_guard import (
     RESAMPLED_BBOX_LIMIT_CODE,
     configured_grid_settings,
@@ -149,7 +150,7 @@ def _write_conda_roi_ledger(
             reason = FAILED_RADIOMICS_FEATURE_COMPLETENESS
         elif status == "below_minimum_voxels":
             reason = "ROI_MASK_BELOW_MIN_VOXELS"
-        elif reason == RESAMPLED_BBOX_LIMIT_CODE:
+        elif reason in {RESAMPLED_BBOX_LIMIT_CODE, "ROI_PREDICTED_MEMORY_EXCEEDS_LIMIT"}:
             reason = FAILED_RADIOMICS_RESOURCE_LIMIT
         ledger.record_roi(
             course_id,
@@ -164,7 +165,9 @@ def _write_conda_roi_ledger(
                 else row.get("extraction_status_detail")
                 or ""
             ),
-            estimated_resampled_bbox_voxel_count=row.get(
+            **({"resource_guard_reason_code": row["resource_guard_reason_code"]}
+                   if row.get("resource_guard_reason_code") in {"ROI_RESOURCE_BBOX_ADMITTED", "ROI_RESOURCE_MEMORY_ADMITTED"} else {}),
+                estimated_resampled_bbox_voxel_count=row.get(
                 "estimated_resampled_bbox_voxel_count"
             ),
             max_resampled_bbox_voxel_count=row.get(
@@ -176,7 +179,7 @@ def _write_conda_roi_ledger(
         if name and (course_id, name) not in {(row.get("course_id"), row.get("roi_name")) for row in ledger.roi_rows}:
             failure = task.get("precomputed_failure") or {}
             reason = str(failure.get("reason_code") or "failed_radiomics_extraction")
-            if reason == RESAMPLED_BBOX_LIMIT_CODE:
+            if reason in {RESAMPLED_BBOX_LIMIT_CODE, "ROI_PREDICTED_MEMORY_EXCEEDS_LIMIT"}:
                 reason = FAILED_RADIOMICS_RESOURCE_LIMIT
             if reason not in REASON_CODES and reason not in TAXONOMY_CODES:
                 reason = "failed_radiomics_extraction"
@@ -1184,18 +1187,39 @@ for task in tasks:
             def factory():
                 return make_extractor(params_file, large_roi)
 
+            if task.get("robustness_perturbation_id"):
+                from rtpipeline.radiomics_robustness_outcomes import extraction_nonmeasurement
+                outcome = extraction_nonmeasurement(image_path, mask_path, factory)
+                if outcome is not None:
+                    print(json.dumps({
+                        "__status__": "success", "__roi_name__": roi_name,
+                        "__task_index__": task_index,
+                        "__nonmeasurement__": {"reason_code": outcome.reason_code, "evidence": dict(outcome.evidence)},
+                    }), flush=True)
+                    continue
             records = extract_ct_roi_arms(
                 image_path,
                 mask_path,
                 factory=factory,
                 decision=decision,
-                common_metadata=task["metadata"],
+                common_metadata={**task["metadata"],
+                                 "_resource_guard_legacy": task.get("resource_guard_legacy")},
                 run_identifier=task["run_identifier"],
                 code_revision=task["code_revision"],
                 native_voxel_count=int(task["native_voxel_count"]),
                 required=bool(task["required"]),
                 configured_parameter_hashes=task.get("configured_parameter_hashes"),
             )
+            if task.get("robustness_perturbation_id"):
+                from rtpipeline.radiomics_robustness_outcomes import returned_geometry_nonmeasurement
+                outcome = returned_geometry_nonmeasurement(records, image_path, mask_path, factory)
+                if outcome is not None:
+                    print(json.dumps({
+                        "__status__": "success", "__roi_name__": roi_name,
+                        "__task_index__": task_index,
+                        "__nonmeasurement__": {"reason_code": outcome.reason_code, "evidence": dict(outcome.evidence)},
+                    }), flush=True)
+                    continue
             print(
                 json.dumps(
                     {
@@ -2354,7 +2378,11 @@ def radiomics_for_course_ct_nifti_fallback(
                 pad_distance=pad_distance,
             )
             max_bbox_voxels = resolve_max_resampled_bbox_voxels(config)
-            if work_estimate.estimated_resampled_bbox_voxels > max_bbox_voxels:
+            if (work_estimate.estimated_resampled_bbox_voxels > max_bbox_voxels
+                    and not permits_second_stage(
+                        work_estimate, mask_bool, native_spacing_xyz=mask_spacing,
+                        array_axis_to_xyz=(2, 1, 0), params_file=parameter_path,
+                        limit=max_bbox_voxels)):
                 detail = (
                     f"ROI {roi_name} requires an estimated padded resampled bounding "
                     f"box of {work_estimate.estimated_resampled_bbox_voxels} voxels "
@@ -2435,6 +2463,9 @@ def radiomics_for_course_ct_nifti_fallback(
                     nifti_path_str,
                 ),
             })
+
+            tasks[-1]["resource_guard_legacy"] = legacy_rejection(
+                work_estimate, max_bbox_voxels, roi_name)
 
     for failure in preparation_failures:
         tasks.append(
@@ -3115,7 +3146,11 @@ def radiomics_for_course(
                     pad_distance=pad_distance,
                 )
                 max_bbox_voxels = resolve_max_resampled_bbox_voxels(config)
-                if work_estimate.estimated_resampled_bbox_voxels > max_bbox_voxels:
+                if (work_estimate.estimated_resampled_bbox_voxels > max_bbox_voxels
+                        and not permits_second_stage(
+                            work_estimate, mask_bool, native_spacing_xyz=spacing,
+                            array_axis_to_xyz=(1, 0, 2), params_file=parameter_path,
+                            limit=max_bbox_voxels)):
                     detail = (
                         f"ROI {roi_name} requires an estimated padded resampled "
                         f"bounding box of "
@@ -3197,6 +3232,9 @@ def radiomics_for_course(
                     "cleanup": True,
                     "ct_info": ct_info,
                 })
+
+                tasks[-1]["resource_guard_legacy"] = legacy_rejection(
+                    work_estimate, max_bbox_voxels, roi_name)
 
         for failure in preparation_failures:
             tasks.append(

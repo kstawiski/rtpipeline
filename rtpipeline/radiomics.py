@@ -66,6 +66,7 @@ from .radiomics_outcomes import (
     roi_source_is_required,
     resume_identity_pairs as _resume_identity_pairs,
 )
+from .radiomics_memory import permits_second_stage, legacy_rejection
 from .radiomics_resource_guard import (
     RESAMPLED_BBOX_LIMIT_CODE,
     estimate_resampled_bounding_box,
@@ -928,6 +929,19 @@ def _rtstruct_masks(
         if not observation.structural_code
     }
     for observation in inventory_observations.values():
+        from .rtstruct_geometry import NONVOLUMETRIC_CODES
+        if observation.structural_code in NONVOLUMETRIC_CODES:
+            if failure_outcomes is None:
+                raise ValueError("non-volumetric ROI dispositions require an outcome sink")
+            from .rtstruct_identity import require_rtstruct_identity
+            failure_outcomes.append({
+                "roi_name": observation.name, "status": "nonvolumetric_nonmeasurement",
+                "failure_kind": "nonvolumetric_geometry", "reason": observation.structural_code,
+                "structural_code": observation.structural_code,
+                "rtstruct_sop_instance_uid": require_rtstruct_identity(rs_path),
+                "roi_number": str(observation.roi_number), "source_path": str(rs_path),
+            })
+            continue
         if observation.structural_code:
             if (
                 observation.structural_code in {
@@ -1287,6 +1301,8 @@ def radiomics_for_course(
                     if reason == FAILED_RADIOMICS_FEATURE_COMPLETENESS
                     else str(row.get("extraction_status_detail") or "")
                 ),
+                **({"resource_guard_reason_code": row["resource_guard_reason_code"]}
+                   if row.get("resource_guard_reason_code") in {"ROI_RESOURCE_BBOX_ADMITTED", "ROI_RESOURCE_MEMORY_ADMITTED"} else {}),
                 estimated_resampled_bbox_voxel_count=row.get(
                     "estimated_resampled_bbox_voxel_count"
                 ),
@@ -2009,7 +2025,12 @@ def radiomics_for_course(
                 pad_distance=pad_distance,
             )
             max_bbox_voxels = resolve_max_resampled_bbox_voxels(config)
-            if work_estimate.estimated_resampled_bbox_voxels > max_bbox_voxels:
+            if (work_estimate.estimated_resampled_bbox_voxels > max_bbox_voxels
+                    and not permits_second_stage(
+                        work_estimate, task.mask, native_spacing_xyz=spacing,
+                        array_axis_to_xyz=(1, 0, 2), settings=extractor.settings,
+                        image_types=getattr(extractor, "enabledImagetypes", {}),
+                        limit=max_bbox_voxels)):
                 detail = (
                     f"ROI {task.roi_name} requires an estimated padded resampled "
                     f"bounding box of "
@@ -2062,7 +2083,9 @@ def radiomics_for_course(
                 mask_image,
                 factory=_factory,
                 decision=task.decision,
-                common_metadata=_common_metadata(task),
+                common_metadata={**_common_metadata(task),
+                                 "_resource_guard_legacy": legacy_rejection(
+                                     work_estimate, max_bbox_voxels, task.roi_name)},
                 run_identifier=run_identifier,
                 code_revision=code_revision,
                 native_voxel_count=voxel_count,

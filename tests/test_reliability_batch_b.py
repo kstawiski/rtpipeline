@@ -992,6 +992,8 @@ def test_conda_delegation_failure_is_not_converted_to_nothing_to_do(tmp_path, mo
 
 
 def test_parallel_status_rows_are_not_written_as_feature_rows(tmp_path, monkeypatch):
+    import json
+    import pandas as pd
     course_dir = tmp_path / "course"
     course_dirs = build_course_dirs(course_dir)
     course_dirs.dicom_ct.mkdir(parents=True, exist_ok=True)
@@ -1020,14 +1022,20 @@ def test_parallel_status_rows_are_not_written_as_feature_rows(tmp_path, monkeypa
         rp,
         "ProcessPoolExecutor",
         lambda **_kwargs: _SyncExecutor(
-            result_fn=lambda task: rp._status_record(task, "declared_skip", "configured")
+            result_fn=lambda task: rp._status_records(task, "declared_skip", "configured",
+                failure_kind="declared_ineligible", metadata={"roi_structural_code": "CONFIGURED_SKIP"})
         ),
     )
 
     outcome = rp.parallel_radiomics_for_course(config, course_dir, max_workers=1)
 
-    assert outcome.status is RadiomicsCourseStatus.NOTHING_TO_DO
-    assert not (course_dir / "radiomics_ct.xlsx").exists()
+    # D06 retains configured skips as paired terminal rows, never feature rows.
+    published = pd.read_parquet(course_dir / "radiomics_ct.parquet")
+    assert published["extraction_status"].tolist() == ["declared_skip", "declared_skip"]
+    assert not any(column.startswith(("original_", "wavelet-", "log-sigma-")) for column in published)
+    source_ledger = json.loads((course_dir / "metadata/radiomics_ct_source_roi_ledger.json").read_text())
+    assert len(source_ledger) == 1
+    assert source_ledger[0]["reason_code"] == "CONFIGURED_SKIP"
 
 
 def test_parallel_radiomics_backfill_submit_guarded_source_guard():

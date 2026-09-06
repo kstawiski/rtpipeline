@@ -190,6 +190,7 @@ def test_near_zero_is_quarantined_without_zero_assignment() -> None:
         rtstruct_sop_instance_uid=None,
         rtstruct_path=None,
         zero_dose_status="zero_dose_in_grid",
+        grid_coverage={"status": "fully_covered", "fraction": 1.0, "method": "test_fixture"},
         zero_dose_reason="target-like ROI has near-zero dose in grid",
         zero_dose_trigger_metric="D95Gy",
         zero_dose_trigger_value_gy=0.01,

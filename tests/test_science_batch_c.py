@@ -79,6 +79,7 @@ def _mk_plan(path: Path, plan_uid: str, *, label: str = "plan", plan_date: str =
              rx_gy: float | None = None) -> Path:
     ds = _file_dataset(path, RTPlanStorage, plan_uid)
     ds.Modality = "RTPLAN"
+    ds.ApprovalStatus = "APPROVED"
     ds.RTPlanLabel = label
     ds.RTPlanName = label
     ds.RTPlanDate = plan_date
@@ -741,6 +742,9 @@ def test_custom_builder_prunes_only_unused_cross_series_references(tmp_path):
     referenced_series.append(stale_series)
     dataset.save_as(source, write_like_original=False)
     source_with_stale_reference = source.read_bytes()
+    # Geometry discovery must accept readable extensionless CT instances too.
+    ct_file = next(ct_dir.glob('*.dcm'))
+    ct_file.rename(ct_file.with_suffix(''))
 
     with pytest.raises(Exception, match="not contained in input series data"):
         RTStructBuilder.create_from(str(ct_dir), str(source))

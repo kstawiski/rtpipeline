@@ -151,6 +151,12 @@ def validate_organize_ledger(payload: object) -> dict[str, Any]:
     result = dict(payload)
     result["courses"] = rebuilt["courses"]
     result["technical_quarantines"] = rebuilt["technical_quarantines"]
+    if "source_plan_dispositions" in payload:
+        from .plan_disposition import validate_source_plan_dispositions
+        try:
+            validate_source_plan_dispositions(payload["source_plan_dispositions"])
+        except (ValueError, KeyError, TypeError) as exc:
+            raise OrganizeLedgerError(f"invalid source plan dispositions: {exc}") from exc
     return result
 
 
@@ -166,9 +172,32 @@ def read_organize_ledger(output_root: Path | str) -> dict[str, Any]:
 
 
 def write_organize_ledger(
-    output_root: Path | str, entries: Iterable[dict[str, Any]]
+    output_root: Path | str, entries: Iterable[dict[str, Any]],
+    *, source_plan_dispositions: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     payload = build_organize_ledger(entries)
+    if source_plan_dispositions is not None:
+        from copy import deepcopy
+        from .plan_disposition import summarize_dispositions, write_source_plan_dispositions
+        source_plan_dispositions = deepcopy(source_plan_dispositions)
+        valid_courses = {
+            (r["patient"], r["course"]) for r in payload["courses"]
+            if r["status"] == STATUS_VALIDATED
+        }
+        for row in source_plan_dispositions["plans"]:
+            if row["disposition_type"] == "course_member" and (row["patient"], row.get("course_id")) not in valid_courses:
+                row.update(disposition_type="technical_hold", reason_code="COURSE_NOT_PUBLISHED", clinical_exclusion=False)
+        authoritative = {(r["patient"], r["plan_uid"]) for r in source_plan_dispositions["plans"] if r["disposition_type"] == "course_member"}
+        for row in source_plan_dispositions["plans"]:
+            if row["disposition_type"] == "recorded_beam_variant" and (row["patient"], row["authoritative_plan_uid"]) not in authoritative:
+                row.update(disposition_type="non_measurable_delivery", reason_code="VARIANT_AUTHORITY_COURSE_NOT_PUBLISHED", authoritative_plan_uid=None, additional_clinical_course_count=None)
+        source_plan_dispositions.update(summarize_dispositions(
+            source_plan_dispositions["plans"], record_errors=source_plan_dispositions["record_read_errors"],
+            unresolved_record_plans=source_plan_dispositions["unresolved_record_plans"],
+        ))
+        write_source_plan_dispositions(output_root, source_plan_dispositions)
+        payload["source_plan_dispositions"] = source_plan_dispositions
+        validate_organize_ledger(payload)
     _write_json_atomic(ledger_path(output_root), payload)
     return payload
 

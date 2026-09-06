@@ -266,6 +266,13 @@ def rollup(output_dir: Path) -> dict:
             }
         )
 
+    if organize_ledger is not None and "source_plan_dispositions" in organize_ledger:
+        # Keep the treatment-history denominator separate from imaging courses.
+        # Detached delivery is never converted to a fabricated course or dose.
+        source = organize_ledger["source_plan_dispositions"]
+        summary["source_plan_dispositions"] = source
+        summary["treatment_history_status"] = source["status"]
+
     target_dir = ledger_dir(output_dir)
     target_dir.mkdir(parents=True, exist_ok=True)
 

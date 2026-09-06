@@ -134,7 +134,10 @@ def _validate_organize(
         )
 
     if quarantine_invalid:
-        ledger = write_organize_ledger(output_dir, entries)
+        ledger = write_organize_ledger(
+            output_dir, entries,
+            source_plan_dispositions=ledger.get("source_plan_dispositions"),
+        )
         if ledger["validated_course_count"] != len(validated_courses):
             raise RuntimeError(
                 "validated organize-ledger count does not match "
@@ -146,6 +149,10 @@ def _validate_organize(
                 "validating the complete ledger: " + " | ".join(quarantine_failures)
             )
 
+    if "source_plan_dispositions" in ledger:
+        from .plan_disposition import source_dispositions_match_source
+        source = ledger["source_plan_dispositions"]
+        ledger["source_history_current"] = source_dispositions_match_source(source, source.get("source_root", ""))
     return {
         "mode": "quarantine" if quarantine_invalid else "check",
         "ledger": ledger,
