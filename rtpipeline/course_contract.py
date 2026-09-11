@@ -46,6 +46,23 @@ from .clinical_prescription import (
     confirm_two_phase_fractionation,
     parse_kopernik_treatment_description,
 )
+
+# Every value of delivery.prescribed_dose_scope the contract accepts. Scopes
+# beginning with ``UNRESOLVED_`` withhold course prescription and delivered Gy.
+# ``UNRESOLVED_INDEPENDENT_DELIVERY`` marks several independently delivered
+# plans retained as membership whose relation (replacement chain, concurrent
+# targets, or sequential phases) has not been reconciled; it is distinct from
+# ``UNRESOLVED_REPLACEMENT_CHAIN``, which names a recognised replacement chain.
+ALLOWED_PRESCRIBED_DOSE_SCOPES = frozenset(
+    {
+        "SINGLE_PLAN_TOTAL",
+        "COURSE_TOTAL_SUMMED",
+        CLINICAL_RESOLVED_SCOPE,
+        "UNRESOLVED_COMPONENT",
+        "UNRESOLVED_REPLACEMENT_CHAIN",
+        "UNRESOLVED_INDEPENDENT_DELIVERY",
+    }
+)
 from .plan_approval import approval_status, approval_audit, approved_plan_paths
 from .prescription import (
     PRESCRIPTION_GROUP_FIELDS,
@@ -1620,13 +1637,7 @@ def validate_course_contract(contract: CourseContract) -> CourseContract:
         return _course_value_for_scope(values, prescribed_scope)
 
     if prescribed_scope:
-        allowed_scopes = {
-            "SINGLE_PLAN_TOTAL",
-            "COURSE_TOTAL_SUMMED",
-            CLINICAL_RESOLVED_SCOPE,
-            "UNRESOLVED_COMPONENT",
-            "UNRESOLVED_REPLACEMENT_CHAIN",
-        }
+        allowed_scopes = ALLOWED_PRESCRIBED_DOSE_SCOPES
         if prescribed_scope not in allowed_scopes:
             raise CourseContractError(
                 f"unknown delivery.prescribed_dose_scope {prescribed_scope!r}"

@@ -36,7 +36,7 @@ from .clinical_prescription import (
 )
 from .plan_profiles import is_private_plan_profile, plan_profile_name
 from .plan_disposition import (
-    build_source_plan_dispositions, summarize_dispositions,
+    build_source_plan_dispositions, compare_plan_variant, summarize_dispositions,
     write_source_plan_dispositions, source_scope_fingerprint,
 )
 from .plan_approval import (
@@ -109,6 +109,9 @@ from .segmentation import (
 logger = logging.getLogger(__name__)
 
 
+COURSE_FRACTION_TOTALS_SUMMED_BASIS = "selected_membership_sum"
+COURSE_FRACTION_TOTALS_WITHHELD_BASIS = "withheld_independent_delivery_unreconciled"
+
 @dataclass
 class CourseOutput:
     patient_id: str
@@ -134,8 +137,10 @@ class CourseOutput:
     delivered_dose_value_methods: list[str] = field(default_factory=list)
     physical_delivered_dose_grid_available: bool = False
     delivered_record_count: int = 0
-    delivered_fraction_count: int = 0
+    delivered_fraction_count: int | None = 0
     planned_fraction_count: int | None = None
+    course_fraction_totals_basis: str = COURSE_FRACTION_TOTALS_SUMMED_BASIS
+    course_fraction_totals_reason: str | None = None
     delivery_plan_details: list[dict[str, object]] = field(default_factory=list)
     delivery_warnings: list[str] = field(default_factory=list)
     unresolved_record_plan_uids: list[str] = field(default_factory=list)
@@ -721,6 +726,11 @@ def _hydrate_existing_course(
         int(item.get("planned_fraction_count") or 0) for item in selected_delivery
     )
     planned_fraction_count = planned_total or None
+    course_fraction_totals = _course_fraction_totals(
+        str(dose_classification.get("classification") or ""),
+        delivered_fraction_count,
+        planned_fraction_count,
+    )
     unresolved_record_plan_uids = list(
         delivery_contract.get("unresolved_record_plan_uids") or []
     )
@@ -817,8 +827,10 @@ def _hydrate_existing_course(
             delivery_contract.get("physical_delivered_dose_grid_available", False)
         ),
         delivered_record_count=delivered_record_count,
-        delivered_fraction_count=delivered_fraction_count,
-        planned_fraction_count=planned_fraction_count,
+        delivered_fraction_count=course_fraction_totals["delivered_fraction_count"],
+        planned_fraction_count=course_fraction_totals["planned_fraction_count"],
+        course_fraction_totals_basis=str(course_fraction_totals["basis"]),
+        course_fraction_totals_reason=course_fraction_totals["reason"],
         delivery_plan_details=contract_per_plan,
         delivery_warnings=[str(item) for item in delivery_warnings],
         unresolved_record_plan_uids=unresolved_record_plan_uids,
@@ -2040,6 +2052,195 @@ def _replacement_partition(plans: List[dict]) -> tuple[int, tuple[int, ...]] | N
     return None
 
 
+INDEPENDENT_DELIVERY_UNRECONCILED = "independent_delivered_plans_unreconciled"
+INDEPENDENT_DELIVERY_UNRESOLVED_SCOPE = "UNRESOLVED_INDEPENDENT_DELIVERY"
+
+
+def _course_fraction_totals(
+    classification: str | None,
+    delivered_fraction_count: int | None,
+    planned_fraction_count: int | None,
+) -> dict[str, object]:
+    """Decide whether course fraction totals may be published.
+
+    Summing sessions over selected membership is only a course total when the
+    membership is one course. Independently delivered plans retained under
+    ``independent_delivered_plans_unreconciled`` may be concurrent targets, a
+    replacement chain or phases; adding their fractions would state a patient
+    fraction total that no evidence supports, and a union of treatment dates is
+    not an authoritative fraction count either. Per-plan counts stay exact.
+    """
+    if str(classification or "") == INDEPENDENT_DELIVERY_UNRECONCILED:
+        return {
+            "delivered_fraction_count": None,
+            "planned_fraction_count": None,
+            "basis": COURSE_FRACTION_TOTALS_WITHHELD_BASIS,
+            "reason": (
+                "Course fraction totals are withheld: independently delivered "
+                "plans share membership without reconciled course semantics, so "
+                "their per-plan fraction counts are not additive and no "
+                "authoritative course fraction count exists; see "
+                "delivery_plan_details for exact per-plan counts"
+            ),
+        }
+    return {
+        "delivered_fraction_count": delivered_fraction_count,
+        "planned_fraction_count": planned_fraction_count,
+        "basis": COURSE_FRACTION_TOTALS_SUMMED_BASIS,
+        "reason": None,
+    }
+
+
+def _strict_plan_equivalence(candidate: dict, representative: dict) -> tuple[bool, str]:
+    """Source-bound proof that ``candidate`` is physically the ``representative``.
+
+    Record coverage alone never proves two plans equivalent: one RTRECORD may
+    name two plans whose targets differ. Discarding an alternate-UID plan in
+    favour of a representative therefore requires the strict beam-variant
+    proof from ``plan_disposition.compare_plan_variant`` (complete TARGET dose
+    references with equal UIDs and prescriptions, equal fraction groups, a
+    named machine, positive meterset and beam dose per beam and byte-equal
+    control-point trajectories including isocentres) plus an identical frame
+    of reference and identical referenced structure sets. A same-UID entry
+    counts only when its bytes are identical. Prescription, fraction count,
+    date, frame of reference, structure set or shared records alone are not
+    accepted, and unreadable or incomplete sources are not proof.
+    """
+    candidate_path = Path(candidate.get("path"))
+    representative_path = Path(representative.get("path"))
+    candidate_uid = str(candidate.get("sop_uid") or "")
+    representative_uid = str(representative.get("sop_uid") or "")
+    try:
+        if candidate_uid and candidate_uid == representative_uid:
+            same_bytes = (
+                hashlib.sha256(candidate_path.read_bytes()).hexdigest()
+                == hashlib.sha256(representative_path.read_bytes()).hexdigest()
+            )
+            if same_bytes:
+                return True, "byte-identical duplicate of one SOPInstanceUID"
+            return False, "same SOPInstanceUID with different source bytes"
+        candidate_ds = pydicom.dcmread(str(candidate_path), stop_before_pixels=True, force=True)
+        representative_ds = pydicom.dcmread(
+            str(representative_path), stop_before_pixels=True, force=True
+        )
+    except Exception as exc:
+        return False, f"plan source unreadable ({type(exc).__name__})"
+
+    def frame(ds) -> str:
+        return str(getattr(ds, "FrameOfReferenceUID", "") or "").strip()
+
+    def structure_sets(ds) -> set[str]:
+        return {
+            str(getattr(ref, "ReferencedSOPInstanceUID", "") or "").strip()
+            for ref in getattr(ds, "ReferencedStructureSetSequence", []) or []
+        } - {""}
+
+    if not frame(candidate_ds) or frame(candidate_ds) != frame(representative_ds):
+        return False, "frame of reference missing or different"
+    if not structure_sets(candidate_ds) or structure_sets(candidate_ds) != structure_sets(
+        representative_ds
+    ):
+        return False, "referenced structure set missing or different"
+    try:
+        comparison = compare_plan_variant(candidate_ds, representative_ds)
+    except Exception as exc:
+        return False, f"strict comparison failed ({type(exc).__name__})"
+    if comparison is None:
+        return False, (
+            "target dose references, fraction groups, machine, meterset, beam dose "
+            "or control points are incomplete or different"
+        )
+    if not comparison.get("strict_beam_equivalence"):
+        return False, "beam geometry or control points differ"
+    return True, "strict identical-beam variant with identical target references"
+
+
+def _independent_delivery_clusters(
+    plans: List[dict], delivery: Dict[str, dict], notes: Optional[List[str]] = None
+) -> List[List[dict]]:
+    """Cluster plans with validated RTRECORD sessions by nested record evidence.
+
+    A record that references two plans does not by itself prove that the plans
+    are clinically equivalent. Revision de-duplication may collapse plans only
+    when it discards no delivery evidence and no distinct plan: plan B joins
+    plan A's cluster only when every record instance naming B also names A
+    (B's instances are a subset of A's), or the reverse, and the plan whose
+    instances cover the whole cluster represents it. Every other member is
+    then kept in the cluster only with source-bound strict physical proof
+    against that representative (``_strict_plan_equivalence``); a member with
+    missing, incomplete or failed proof becomes its own cluster so it stays
+    membership under the unreconciled hold. Plans that share some records but
+    each also carry exclusive instances are not proven equivalent and are
+    returned as separate clusters, as are disjoint instance sets. The result
+    does not depend on plan or record order. Plans without validated sessions
+    are not clustered. ``notes`` receives one line per plan withheld from a
+    collapse.
+    """
+
+    def evidence(plan: dict) -> dict:
+        return delivery.get(str(plan.get("sop_uid") or ""), {})
+
+    def rank(index: int) -> tuple:
+        plan = delivered[index]
+        return (
+            len(instances_of[index]),
+            str(plan.get("plan_date") or ""),
+            str(plan.get("plan_time") or ""),
+            str(plan.get("sop_uid") or ""),
+        )
+
+    delivered = [plan for plan in plans if evidence(plan).get("sessions", set())]
+    instances_of = {
+        index: set(evidence(plan).get("instances", set()))
+        for index, plan in enumerate(delivered)
+    }
+    parent = list(range(len(delivered)))
+
+    def find(index: int) -> int:
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    for left in range(len(delivered)):
+        for right in range(left + 1, len(delivered)):
+            left_set, right_set = instances_of[left], instances_of[right]
+            if left_set <= right_set or right_set <= left_set:
+                parent[find(left)] = find(right)
+
+    grouped: Dict[int, List[int]] = defaultdict(list)
+    for index in range(len(delivered)):
+        grouped[find(index)].append(index)
+
+    clusters: List[List[dict]] = []
+    for member_indices in grouped.values():
+        union = set().union(*(instances_of[index] for index in member_indices))
+        covering = [index for index in member_indices if instances_of[index] == union]
+        if not covering:
+            clusters.extend([delivered[index]] for index in member_indices)
+            continue
+        representative_index = max(covering, key=rank)
+        proven = [representative_index]
+        for index in member_indices:
+            if index == representative_index:
+                continue
+            equivalent, reason = _strict_plan_equivalence(
+                delivered[index], delivered[representative_index]
+            )
+            if equivalent:
+                proven.append(index)
+            else:
+                clusters.append([delivered[index]])
+                if notes is not None:
+                    notes.append(
+                        f"plan {delivered[index].get('sop_uid')} shares delivery records "
+                        f"with plan {delivered[representative_index].get('sop_uid')} but "
+                        f"is not proven physically equivalent ({reason})"
+                    )
+        clusters.append([delivered[index] for index in sorted(proven)])
+    return clusters
+
+
 def _classify_doses(
     plan_paths: List[Path],
     dose_paths: List[Path],
@@ -2081,9 +2282,14 @@ def _classify_approved_doses(
     """Select dose evidence without using free-text plan labels.
 
     Explicit dose-to-plan references establish membership. Equal prescription
-    and fraction signatures are revisions and contribute once. A complete plan
+    and fraction signatures are revisions and contribute once only when at most
+    one of them was delivered, or when their treatment records name both plans.
+    Equal-signature plans that each carry disjoint RTRECORD sessions, and
+    supported plans whose treatment dates are strictly contained in another
+    supported plan's dates, are retained as membership without a course dose
+    grid under ``independent_delivered_plans_unreconciled``. A complete plan
     whose prescription equals partial plans is a replacement course total and
-    is not added to those parts. Distinct phases are summed only after those two
+    is not added to those parts. Distinct phases are summed only after those
     de-duplication steps. RT treatment records choose among revisions and can
     distinguish a completed sequential phase from an incompletely delivered
     course-total plan.
@@ -2341,11 +2547,76 @@ def _classify_approved_doses(
             )
         return max(group, key=rank)
 
-    representatives = [representative(group) for group in signature_groups]
-    duplicate_count = sum(len(group) - 1 for group in signature_groups)
+    def plan_sessions(plan: dict) -> set[str]:
+        return set(delivery.get(str(plan.get("sop_uid") or ""), {}).get("sessions", set()))
+
+    def unreconciled(retained: List[dict], basis: str) -> DoseClassification:
+        """Retain independently delivered membership without a course dose grid.
+
+        Shared prescription, structure set, frame of reference or treatment
+        dates do not prove equivalent delivery, and geometrically distinct
+        plans do not by themselves establish additional courses. Neither a
+        representative grid nor a summed grid is emitted, and the course
+        prescription scope stays unresolved until explicitly reconciled.
+        """
+        warnings.append(
+            f"Retained {len(retained)} independently delivered plan(s) as course "
+            f"membership without a course dose grid because {basis}; equal or "
+            "overlapping delivery does not prove a replacement chain, so course "
+            "prescription scope and dose accumulation require explicit reconciliation"
+        )
+        return DoseClassification(
+            classification=INDEPENDENT_DELIVERY_UNRECONCILED,
+            selected_doses=[],
+            selected_plans=list(dict.fromkeys(plan["path"] for plan in retained)),
+            excluded_doses=list(
+                dict.fromkeys(dose_for_plan[str(plan["sop_uid"])]["path"] for plan in paired_plans)
+            ),
+            should_sum=False,
+            warnings=warnings,
+            reason=(
+                "Independently delivered plans retained as membership without a "
+                "representative or summed course dose; membership semantics require reconciliation"
+            ),
+        )
+
+    representatives: List[dict] = []
+    independent_groups: List[List[dict]] = []
+    unproven_equivalence: List[str] = []
+    duplicate_count = 0
+    for group in signature_groups:
+        clusters = _independent_delivery_clusters(group, delivery, unproven_equivalence)
+        if len(clusters) > 1:
+            cluster_representatives = [representative(cluster) for cluster in clusters]
+            independent_groups.append(cluster_representatives)
+            representatives.extend(cluster_representatives)
+            duplicate_count += len(group) - len(cluster_representatives)
+        else:
+            representatives.append(representative(group))
+            duplicate_count += len(group) - 1
     if duplicate_count:
         warnings.append(
             f"De-duplicated {duplicate_count} revision plan(s) with equivalent prescription and fraction signatures"
+        )
+    if independent_groups:
+        for group in independent_groups:
+            warnings.append(
+                "Equal prescription and fraction signatures with separate RTRECORD "
+                "delivery are not proven revisions: "
+                + ", ".join(str(plan.get("sop_uid") or "") for plan in group)
+            )
+        for note in unproven_equivalence:
+            warnings.append("Shared delivery records are not physical equivalence: " + note)
+        retained = [plan for plan in representatives if plan_sessions(plan)]
+        for plan in representatives:
+            if plan not in retained:
+                warnings.append(
+                    f"Excluded plan {plan.get('sop_uid')} because it has zero delivery records"
+                )
+        return unreconciled(
+            retained,
+            "equal-signature plans each carry their own delivery records without "
+            "source-bound proof of physical equivalence",
         )
 
     if record_paths and not any(
@@ -2431,6 +2702,7 @@ def _classify_approved_doses(
             delivery,
         )
         supported: List[dict] = []
+        contained_delivery: List[str] = []
         if remainder_chain is None:
             for plan in supported_candidates:
                 dates = plan_dates(plan)
@@ -2443,11 +2715,10 @@ def _classify_approved_doses(
                     None,
                 )
                 if covering is not None:
-                    warnings.append(
-                        f"Excluded plan {plan.get('sop_uid')} because its treatment dates are a strict subset of plan {covering.get('sop_uid')}"
+                    contained_delivery.append(
+                        f"plan {plan.get('sop_uid')} treatment dates are a strict subset of plan {covering.get('sop_uid')}"
                     )
-                else:
-                    supported.append(plan)
+                supported.append(plan)
 
         largest = max(
             representatives,
@@ -2465,6 +2736,18 @@ def _classify_approved_doses(
             warnings.append(
                 "Delivered remainder or adaptation plans retain separate RTDOSE "
                 "membership for RTRECORD fraction-weighted course accumulation"
+            )
+        elif contained_delivery:
+            for plan in representatives:
+                if plan not in supported_candidates:
+                    warnings.append(
+                        f"Excluded plan {plan.get('sop_uid')} because it has zero delivery records"
+                    )
+            return unreconciled(
+                supported_candidates,
+                "concurrent delivery has contained treatment dates ("
+                + "; ".join(contained_delivery)
+                + ")",
             )
         elif supported:
             selected_representatives = list(supported)
@@ -3710,6 +3993,36 @@ def _completed_patients(config: PipelineConfig) -> Dict[str, List[dict]]:
     return complete
 
 
+def _reconcile_published_plan_dispositions(validated_outputs, source_dispositions):
+    """Return reconciled rows without mutating inputs or artifact provenance."""
+    source_dispositions = dict(source_dispositions)
+    source_dispositions["plans"] = [dict(row) for row in source_dispositions["plans"]]
+    published_plans = {}
+    ambiguous = set()
+    for co in validated_outputs:
+        for item in co.selected_plan_contract or []:
+            identity = (str(co.patient_id), str(item.get("sop_instance_uid") or ""))
+            if not identity[1]:
+                continue
+            if identity in published_plans and published_plans[identity] != str(co.course_id):
+                ambiguous.add(identity)
+            else:
+                published_plans[identity] = str(co.course_id)
+    for row in source_dispositions["plans"]:
+        if row["disposition_type"] != "course_member":
+            continue
+        identity = (row["patient"], row["plan_uid"])
+        if identity in ambiguous:
+            row.pop("course_id", None)
+            row.update(disposition_type="technical_hold", reason_code="COURSE_PUBLICATION_AMBIGUOUS", clinical_exclusion=False)
+        elif identity in published_plans:
+            row["course_id"] = published_plans[identity]
+        else:
+            row.pop("course_id", None)
+            row.update(disposition_type="technical_hold", reason_code="COURSE_NOT_PUBLISHED", clinical_exclusion=False)
+    return source_dispositions
+
+
 def organize_and_merge(
     config: PipelineConfig,
     *,
@@ -4122,7 +4435,14 @@ def organize_and_merge(
                     prescription_plans,
                     sum_all=prescription_sum,
                 )
-                if total_rx is None:
+                if (
+                    dose_classification.classification
+                    == INDEPENDENT_DELIVERY_UNRECONCILED
+                ):
+                    source_rx = None
+                    total_rx = None
+                    prescription_scope = INDEPENDENT_DELIVERY_UNRESOLVED_SCOPE
+                elif total_rx is None:
                     prescription_scope = "UNRESOLVED_COMPONENT"
                 elif sum_selected:
                     prescription_scope = "COURSE_TOTAL_SUMMED"
@@ -4530,6 +4850,11 @@ def organize_and_merge(
                     "referenced_plan_uids": list(meta_dose.get("referenced_plan_uids") or []),
                 }
             )
+        course_fraction_totals = _course_fraction_totals(
+            str(dose_classification_info.get("classification") or ""),
+            int(delivery_summary["delivered_fraction_count"]),
+            delivery_summary["planned_fraction_count"],
+        )
         dose_threshold_gy = float(config.max_total_dose_gy)
         dose_plausibility = _dose_plausibility(
             float(total_rx) if total_rx is not None else None,
@@ -4578,8 +4903,10 @@ def organize_and_merge(
                 delivery_summary.get("physical_delivered_dose_grid_available", False)
             ),
             delivered_record_count=int(delivery_summary["delivered_record_count"]),
-            delivered_fraction_count=int(delivery_summary["delivered_fraction_count"]),
-            planned_fraction_count=delivery_summary["planned_fraction_count"],
+            delivered_fraction_count=course_fraction_totals["delivered_fraction_count"],
+            planned_fraction_count=course_fraction_totals["planned_fraction_count"],
+            course_fraction_totals_basis=str(course_fraction_totals["basis"]),
+            course_fraction_totals_reason=course_fraction_totals["reason"],
             delivery_plan_details=delivery_summary["delivery_plan_details"],
             delivery_warnings=delivery_summary["delivery_warnings"],
             unresolved_record_plan_uids=delivery_summary["unresolved_record_plan_uids"],
@@ -5088,6 +5415,14 @@ def organize_and_merge(
             for uid in co.source_plan_uids or []:
                 if uid:
                     plan_uids.add(str(uid))
+            course_fraction_totals_withheld = (
+                co.course_fraction_totals_basis == COURSE_FRACTION_TOTALS_WITHHELD_BASIS
+            )
+            if course_fraction_totals_withheld:
+                for item in co.selected_plan_contract:
+                    uid = str(item.get("sop_instance_uid") or "")
+                    if uid:
+                        plan_uids.add(uid)
             items_sorted = []
             try:
                 rp_path = patient_dir / "RP.dcm"
@@ -6154,6 +6489,8 @@ def organize_and_merge(
                 "delivered_record_count": co.delivered_record_count,
                 "delivered_fraction_count": co.delivered_fraction_count,
                 "planned_fraction_count": co.planned_fraction_count,
+                "course_fraction_totals_basis": co.course_fraction_totals_basis,
+                "course_fraction_totals_reason": co.course_fraction_totals_reason,
                 "delivery_plan_details": co.delivery_plan_details,
                 "delivery_warnings": co.delivery_warnings,
                 "unresolved_record_plan_uids": co.unresolved_record_plan_uids,
@@ -6162,7 +6499,9 @@ def organize_and_merge(
                 **dose_plausibility,
                 "course_start_date": (start_date.isoformat() if start_date else (co.course_start or "")),
                 "course_end_date": end_date.isoformat() if end_date else "",
-                "fractions_count": fractions_count,
+                "fractions_count": (
+                    None if course_fraction_totals_withheld else fractions_count
+                ),
                 "fractions_file": str(fractions_path) if fractions_details else "",
                 "dose_grid": dose_grid,
                 "dose_grid_semantics": (
@@ -6525,19 +6864,9 @@ def organize_and_merge(
             }
         )
 
-    published_plans = {
-        (str(co.patient_id), str(uid)): str(co.course_id)
-        for co in validated_outputs for uid in (co.source_plan_uids or [])
-    }
-    for row in source_dispositions["plans"]:
-        if row["disposition_type"] == "course_member":
-            identity = (row["patient"], row["plan_uid"])
-            if identity in published_plans:
-                row["course_id"] = published_plans[identity]
-            else:
-                row["disposition_type"] = "technical_hold"
-                row["reason_code"] = "COURSE_NOT_PUBLISHED"
-                row["clinical_exclusion"] = False
+    source_dispositions = _reconcile_published_plan_dispositions(
+        validated_outputs, source_dispositions,
+    )
     source_dispositions = summarize_dispositions(
         source_dispositions["plans"],
         record_errors=source_dispositions["record_read_errors"],

@@ -259,6 +259,24 @@ def test_current_rs_auto_and_rs_custom_are_reused_without_model_or_rebuild(monke
     custom_ds = pydicom.dcmread(course / "RS_custom.dcm")
     assign_derived_identity(custom_ds, str(custom_ds.SOPInstanceUID), str(custom_ds.SOPClassUID))
     custom_ds.save_as(course / "RS_custom.dcm")
+    # The generator records the publication it wrote, and a publication with no
+    # current generator record is regenerated regardless of mtimes (see
+    # tests/test_custom_structures_generator_epoch.py). Reuse is therefore a
+    # claim about a recorded publication, so the fixture records this one the
+    # way the producer does instead of leaving the record absent.
+    published_custom = pydicom.dcmread(course / "RS_custom.dcm", stop_before_pixels=True)
+    meta_dir = course / "metadata"
+    meta_dir.mkdir(parents=True, exist_ok=True)
+    (meta_dir / "rs_custom_meta.json").write_text(
+        json.dumps(
+            {
+                "version": custom_structures_rtstruct._RS_CUSTOM_META_VERSION,
+                "rs_custom_sop_instance_uid": str(published_custom.SOPInstanceUID),
+                "planning_ct_series_instance_uid": series_uid,
+            }
+        ),
+        encoding="utf-8",
+    )
     calls = _model_run_spy(monkeypatch)
 
     segmentation.segment_course(

@@ -722,12 +722,14 @@ def _extract_one(task: _RoiTask) -> List[Dict[str, Any]]:
             voxel_count=voxel_count,
             failure_kind="degenerate_mask",
         )
-    # Decide "large ROI" using an estimate at the extractor resampled spacing.
+    # Estimate the workload at the extractor resampled spacing.
     #
     # Rationale: voxel_count is measured at native CT spacing (often 1×1×3mm). The
     # default CT radiomics config resamples to 1mm isotropic, which can inflate the
-    # effective voxel count ~3× and cause timeouts for big ROIs (especially BODY)
-    # even when native voxel_count is below the threshold.
+    # effective voxel count ~3× for big ROIs (especially BODY) even when native
+    # voxel_count is below the threshold. The estimate scales the timeout budget
+    # and selects the compatibility large-ROI extractor, which applies the same
+    # configured method; feasibility is enforced by the resource guards.
     is_body = _norm(task.roi_name).startswith("body")
     try:
         spacing = tuple(float(x) for x in img.GetSpacing())
@@ -2098,7 +2100,9 @@ def _isolated_radiomics_extraction(task) -> Optional[Dict[str, Any]]:
     install_mcc_contraction()
     _mask_path, task_params = task
     params_file = task_params.get("params_file")
-    large_roi = task_params.get("large_roi", False)
+    # ``task_params["large_roi"]`` is retained for task identity only. It never
+    # selects a pruned method: the configured image types, feature classes and
+    # resampled spacing apply to every ROI regardless of size or name.
     extra_metadata = task_params.get("extra_metadata", {})
 
     import warnings
@@ -2115,13 +2119,6 @@ def _isolated_radiomics_extraction(task) -> Optional[Dict[str, Any]]:
             if params_file
             else featureextractor.RadiomicsFeatureExtractor()
         )
-        if large_roi:
-            candidate.disableAllImageTypes()
-            candidate.enableImageTypeByName("Original")
-            candidate.disableAllFeatures()
-            candidate.enableFeatureClassByName("firstorder")
-            candidate.enableFeatureClassByName("shape")
-            candidate.settings["resampledPixelSpacing"] = [2.0, 2.0, 2.0]
         from .robustness_watchdog import observed_extractor
         return observed_extractor(candidate)
 

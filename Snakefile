@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import tempfile
 from pathlib import Path
 
 from rtpipeline.config_dependencies import (
@@ -41,29 +42,54 @@ def _coerce_positive_int(value):
         return None
     return ivalue if ivalue > 0 else None
 
-def _ensure_writable_dir(candidate: Path, fallback_name: str) -> Path:
-    fallback = ROOT_DIR / fallback_name
+def _ensure_writable_dir(candidate: Path) -> Path:
+    """Ensure a configured destination exists and is writable, failing closed.
+
+    A unique temporary probe file (``tempfile.mkstemp``) verifies writability,
+    so pre-existing user files — including a file named ``.write_test`` — are
+    never overwritten or deleted. Any failure aborts startup with the original
+    error preserved instead of silently redirecting output to a fallback
+    directory.
+    """
+    probe_path = None
     try:
         candidate.mkdir(parents=True, exist_ok=True)
-        probe = candidate / ".write_test"
-        probe.write_text("", encoding="utf-8")
-        probe.unlink(missing_ok=True)
-        return candidate
-    except OSError as exc:
-        sys.stderr.write(
-            f"[rtpipeline] Warning: unable to write to {candidate}: {exc}. "
-            f"Using fallback {fallback}\n"
+        probe_fd, probe_name = tempfile.mkstemp(
+            prefix=".rtpipeline-write-probe-", dir=candidate
         )
-        fallback.mkdir(parents=True, exist_ok=True)
-        probe = fallback / ".write_test"
-        probe.write_text("", encoding="utf-8")
-        probe.unlink(missing_ok=True)
-        return fallback
+        probe_path = Path(probe_name)
+        try:
+            payload = b"rtpipeline write probe"
+            if os.write(probe_fd, payload) != len(payload):
+                raise OSError("Incomplete configured-directory write probe")
+        except OSError:
+            try:
+                os.close(probe_fd)
+            except OSError:
+                # Preserve the write error if closing the probe also fails.
+                pass
+            raise
+        else:
+            os.close(probe_fd)
+        probe_path.unlink()
+    except OSError as exc:
+        if probe_path is not None:
+            try:
+                probe_path.unlink(missing_ok=True)
+            except OSError:
+                # A failed cleanup must not mask the primary error.
+                pass
+        raise RuntimeError(
+            f"Cannot start rtpipeline: configured directory {candidate} is "
+            f"not writable; refusing to redirect output to a fallback "
+            f"location. Fix the path or its permissions and rerun."
+        ) from exc
+    return candidate
 
 
 DICOM_ROOT = (ROOT_DIR / config.get("dicom_root", "Example_data")).resolve()
-OUTPUT_DIR = _ensure_writable_dir((ROOT_DIR / config.get("output_dir", "Data_Snakemake")).resolve(), "Data_Snakemake_fallback")
-LOGS_DIR = _ensure_writable_dir((ROOT_DIR / config.get("logs_dir", "Logs_Snakemake")).resolve(), "Logs_Snakemake_fallback")
+OUTPUT_DIR = _ensure_writable_dir((ROOT_DIR / config.get("output_dir", "Data_Snakemake")).resolve())
+LOGS_DIR = _ensure_writable_dir((ROOT_DIR / config.get("logs_dir", "Logs_Snakemake")).resolve())
 RESULTS_DIR = OUTPUT_DIR / "_RESULTS"
 
 _clinical_prescription_config = config.get("clinical_prescription_records")
@@ -100,7 +126,12 @@ def _workflow_configfiles() -> list[Path]:
 
 
 def _materialize_effective_config() -> Path:
-    """Persist the merged Snakemake config for subprocess stages."""
+    """Persist the merged Snakemake config for subprocess stages.
+
+    Subprocess stages must run with the fully merged configuration; silently
+    substituting a single source config file would change their behavior, so
+    any persistence failure aborts startup with the original error.
+    """
     target = LOGS_DIR / "_workflow" / "effective_config.yaml"
     try:
         import yaml
@@ -108,15 +139,13 @@ def _materialize_effective_config() -> Path:
         target.parent.mkdir(parents=True, exist_ok=True)
         with target.open("w", encoding="utf-8") as handle:
             yaml.safe_dump(config, handle, sort_keys=False)
-        return target.resolve()
     except Exception as exc:
-        configfiles = _workflow_configfiles()
-        fallback = configfiles[-1] if configfiles else (ROOT_DIR / "config.yaml").resolve()
-        sys.stderr.write(
-            f"[rtpipeline] Warning: unable to write merged config to {target}: {exc}. "
-            f"Falling back to {fallback}\n"
-        )
-        return fallback
+        raise RuntimeError(
+            f"Cannot start rtpipeline: unable to write merged workflow "
+            f"config to {target}; subprocess stages require the merged "
+            f"configuration, so no source config fallback is used."
+        ) from exc
+    return target.resolve()
 
 
 EFFECTIVE_CONFIGFILE = _materialize_effective_config()
@@ -1317,6 +1346,9 @@ if config.get("container_mode", False):
             mkdir -p $(dirname {log})
 
             if [ "{params.enabled}" = "False" ]; then
+                # The receipt was removed above, so a course whose robustness
+                # was switched off retains no earlier success. The "disabled"
+                # marker certifies no outcome, and every consumer refuses it.
                 echo "disabled" > {output.sentinel}
                 exit 0
             fi
@@ -1335,12 +1367,20 @@ if config.get("container_mode", False):
             export MKL_NUM_THREADS=1
             export OPENBLAS_NUM_THREADS=1
 
+            # The CLI writes the completion receipt itself, bound to the course,
+            # the run, the exact outcome, the exact output and the sidecar digest.
+            # No "ok" token is echoed here: a shell exit status cannot certify
+            # which course, run or outcome the step actually reached.
             if "{params.python}" -m rtpipeline.cli radiomics-robustness \
                 --course-dir "{params.course_dir}" \
                 --config "{params.config}" \
                 --output "{params.parquet}" \
+                --sentinel "{output.sentinel}" \
                 --max-workers {threads} > {log} 2>&1; then
-                echo "ok" > {output.sentinel}
+                if [ ! -f "{output.sentinel}" ]; then
+                    echo "Radiomics robustness returned success without a completion receipt: {output.sentinel}" >&2
+                    exit 1
+                fi
             else
                 rm -f {output.sentinel}
                 echo "Radiomics robustness failed; see {log}" >&2
@@ -1377,6 +1417,9 @@ else:
             mkdir -p $(dirname {log})
 
             if [ "{params.enabled}" = "False" ]; then
+                # The receipt was removed above, so a course whose robustness
+                # was switched off retains no earlier success. The "disabled"
+                # marker certifies no outcome, and every consumer refuses it.
                 echo "disabled" > {output.sentinel}
                 exit 0
             fi
@@ -1396,12 +1439,20 @@ else:
             export OPENBLAS_NUM_THREADS=1
 
             export PATH="{params.python_bin}:$PATH"
+            # The CLI writes the completion receipt itself, bound to the course,
+            # the run, the exact outcome, the exact output and the sidecar digest.
+            # No "ok" token is echoed here: a shell exit status cannot certify
+            # which course, run or outcome the step actually reached.
             if "{params.python}" -m rtpipeline.cli radiomics-robustness \
                 --course-dir "{params.course_dir}" \
                 --config "{params.config}" \
                 --output "{params.parquet}" \
+                --sentinel "{output.sentinel}" \
                 --max-workers {threads} > {log} 2>&1; then
-                echo "ok" > {output.sentinel}
+                if [ ! -f "{output.sentinel}" ]; then
+                    echo "Radiomics robustness returned success without a completion receipt: {output.sentinel}" >&2
+                    exit 1
+                fi
             else
                 rm -f {output.sentinel}
                 echo "Radiomics robustness failed; see {log}" >&2
@@ -1427,6 +1478,14 @@ rule aggregate_radiomics_robustness:
         root_dir=lambda w, input: str(ROOT_DIR),
         configfile=str(EFFECTIVE_CONFIGFILE),
         robustness_enabled=ROBUSTNESS_ENABLED,
+        # The nominal cohort result is a pair. Its raw-value name is bound to
+        # rtpipeline.radiomics_robustness.robustness_cohort_output_paths, which
+        # is not imported here: this rule must stay parseable in the main
+        # environment, so a test keeps the two names in step instead.
+        raw_values=lambda w, output: str(
+            Path(output.summary).parent
+            / (Path(output.summary).stem + "_raw_values.parquet")
+        ),
         python=PYTHON_MAIN,
         python_bin=PYTHON_MAIN_BIN
     conda:
@@ -1439,38 +1498,30 @@ rule aggregate_radiomics_robustness:
 
         export PATH="{params.python_bin}:$PATH"
         if [ "{params.robustness_enabled}" != "True" ]; then
-            # Create empty output if robustness is disabled
-            "{params.python}" -c "import pandas as pd; pd.DataFrame().to_excel('{output.summary}', index=False)"
-            echo "Robustness disabled - empty output created" > {log}
-            exit 0
-        fi
-
-        # Every successful sentinel must bind to a readable course parquet.
-        PARQUET_FILES=()
-        while IFS= read -r -d '' sentinel; do
-            if head -1 "$sentinel" 2>/dev/null | grep -q "^ok"; then
-                course_dir=$(dirname "$sentinel")
-                pf="$course_dir/radiomics_robustness_ct.parquet"
-                if [ -f "$pf" ]; then
-                    PARQUET_FILES+=("$pf")
-                else
-                    echo "Successful robustness sentinel has no parquet: $sentinel" > {log}
-                    exit 1
-                fi
-            else
-                echo "Non-success robustness sentinel encountered: $sentinel" > {log}
-                exit 1
-            fi
-        done < <(find {params.output_dir} -name ".radiomics_robustness_done" -type f -print0 2>/dev/null)
-
-        if [ "${{#PARQUET_FILES[@]}}" -eq 0 ]; then
-            echo "Robustness is enabled but no complete course parquets were found" > {log}
+            # A disabled robustness configuration produces no cohort result.
+            # Writing a blank workbook here published an empty *successful*
+            # summary for an analysis that never ran, and left the previous
+            # attempt's raw Parquet standing beside it. Asking for this target
+            # explicitly while robustness is off is a request the workflow
+            # cannot honour, so it fails and withdraws the nominal pair.
+            #
+            # A normal full-workflow run with robustness disabled never reaches
+            # this branch: rule all takes its inputs from AGG_OUTPUTS, which
+            # carries "radiomics_robustness" only when ROBUSTNESS_ENABLED.
+            rm -f "{output.summary}" "{params.raw_values}"
+            echo "Radiomics robustness is disabled; refusing to publish a cohort summary for an analysis that did not run" > {log}
+            cat {log} >&2
             exit 1
         fi
 
-        # Run the aggregation CLI command with the conda environment's Python
+        # The manifest is the authority for which courses exist. Nothing here
+        # discovers a course by scanning the output tree: a directory no
+        # manifest entry names was never validated, and a manifest course whose
+        # receipt is missing is a missing course, not an absent one. The CLI
+        # revalidates every receipt, sidecar and table digest itself.
         PYTHONPATH="{params.root_dir}:${{PYTHONPATH:-}}" "{params.python}" -m rtpipeline.cli radiomics-robustness-aggregate \
-            --inputs "${{PARQUET_FILES[@]}}" \
+            --manifest {input.manifest} \
+            --output-root {params.output_dir} \
             --output {output.summary} \
             --config {params.configfile} \
             > {log} 2>&1

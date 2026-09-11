@@ -42,7 +42,7 @@ import os
 import shutil
 import tempfile
 import time
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, is_dataclass
 from multiprocessing import get_context
 from multiprocessing import TimeoutError as MPTimeoutError
 from pathlib import Path
@@ -268,6 +268,824 @@ def _write_robustness_identity_ledger(
             pass
         raise
     return path
+
+
+# ============================================================================
+# Robustness source dispositions: terminal, non-technical RTSTRUCT source
+# outcomes observed while the robustness pass collected masks.
+# ============================================================================
+
+ROBUSTNESS_SOURCE_DISPOSITIONS_FILENAME = "radiomics_robustness_source_dispositions.json"
+ROBUSTNESS_SOURCE_DISPOSITIONS_KIND = "robustness_source_dispositions"
+ROBUSTNESS_SOURCE_DISPOSITIONS_SCHEMA_VERSION = 1
+
+# Only terminal, non-technical source dispositions may ever be published here.
+# A technical read failure fails the course, so a row claiming a measurement
+# ("success"/"measured") or an unresolved technical failure ("failed") is a
+# corrupt artifact, not a weaker but acceptable record.
+ROBUSTNESS_SOURCE_DISPOSITION_STATUSES = frozenset({"nonvolumetric_nonmeasurement"})
+ROBUSTNESS_SOURCE_DISPOSITION_ROW_FIELDS = (
+    "segmentation_source",
+    "source_path",
+    "rtstruct_sop_instance_uid",
+    "roi_name",
+    "roi_number",
+    "status",
+    "failure_kind",
+    "structural_code",
+    "reason",
+)
+# One published row per ROI identity within one RTSTRUCT source.
+ROBUSTNESS_SOURCE_DISPOSITION_ROW_IDENTITY = (
+    "segmentation_source",
+    "source_path",
+    "rtstruct_sop_instance_uid",
+    "roi_number",
+    "roi_name",
+)
+ROBUSTNESS_SOURCE_BINDING_FIELDS = (
+    "segmentation_source",
+    "source_path",
+    "rtstruct_sop_instance_uid",
+    "sha256",
+)
+ROBUSTNESS_MEASURED_OUTCOME = "measured"
+# A source ROI that the run actually selected exists and is non-volumetric.
+ROBUSTNESS_SOURCE_ONLY_OUTCOME = "source_only_nonvolumetric"
+# Nothing in the sources matched the requested selection, or nothing was
+# requested. That is an accounting fact about the request; it says nothing
+# about the anatomy of a name that was never found, and it is not a clinical
+# exclusion of anything.
+ROBUSTNESS_UNMATCHED_SELECTION_OUTCOME = "selection_matched_no_source_structure"
+ROBUSTNESS_NONMEASURED_OUTCOMES = frozenset(
+    {ROBUSTNESS_SOURCE_ONLY_OUTCOME, ROBUSTNESS_UNMATCHED_SELECTION_OUTCOME}
+)
+ROBUSTNESS_SOURCE_DISPOSITION_OUTCOMES = (
+    frozenset({ROBUSTNESS_MEASURED_OUTCOME}) | ROBUSTNESS_NONMEASURED_OUTCOMES
+)
+
+# Modules whose bytes decide which source ROIs become dispositions rather than
+# measurements, plus the modules that directly execute the measurement of
+# every admitted robustness row. Paths are relative to the package directory.
+#
+# This identity is the only code binding re-checked on every admission of a
+# robustness artifact (course reuse, aggregation input, manifest cohort
+# admission), so it must cover each module that computes or selects a measured
+# value on the robustness path, not only the disposition deciders:
+#
+# - radiomics_parallel.py: the isolated per-condition extractor that produces
+#   the perturbation rows in the default parallel mode.
+# - radiomics_ct_contract.py: CT ROI arm classification and per-arm extraction,
+#   executed in both the parallel and the sequential mode.
+# - robustness_mcc.py: the MCC computation installed into PyRadiomics inside
+#   the extraction worker.
+# - radiomics_conda.py: the helper-environment batch extraction used by the
+#   sequential path when PyRadiomics is not importable natively.
+#
+# Deliberately excluded: robustness_watchdog.py (progress instrumentation and
+# supervision; it returns extractor results unchanged and its technical-row
+# typing only describes runs that never publish a sidecar) and
+# radiomics_resource_guard.py (admission/failure classification that produces
+# no admitted value). This list binds on-disk content only; it does not prove
+# which bytes the interpreter executed.
+ROBUSTNESS_DISPOSITION_CODE_SOURCES = (
+    "radiomics_robustness.py",
+    "radiomics_robustness_outcomes.py",
+    "radiomics.py",
+    "rtstruct_geometry.py",
+    "radiomics_parallel.py",
+    "radiomics_ct_contract.py",
+    "robustness_mcc.py",
+    "radiomics_conda.py",
+)
+
+
+def _current_robustness_code_identity() -> Dict[str, Any]:
+    """Content identity of the deciding modules *as they are on disk now*.
+
+    A Git revision alone cannot certify a dirty worktree, so the binding is the
+    actual file content. Nothing is memoized: a value cached on first use cannot
+    notice a module that changed afterwards, and would let a stale artifact keep
+    passing in an interpreter that has since seen the code change.
+    """
+    package_root = Path(__file__).resolve().parent
+    sources = []
+    for relative in sorted(set(ROBUSTNESS_DISPOSITION_CODE_SOURCES)):
+        source = package_root / relative
+        if not source.is_file():
+            raise RuntimeError(
+                f"robustness disposition code source is absent: {source}"
+            )
+        sources.append({"path": relative, "sha256": _file_sha256(source)})
+    return {
+        "pipeline_version": str(_pipeline_version()),
+        "sources": sources,
+        "sources_sha256": _content_sha256(sources),
+    }
+
+
+def _capture_robustness_code_identity() -> Dict[str, Any]:
+    """Capture the deciding modules once, before a run processes anything.
+
+    The captured value is this run's own record. It is re-verified against the
+    current on-disk content before anything is published, so a module edited
+    while the run was working can never be cited as the code that decided it.
+
+    Assurance and its limit. This binds the *on-disk* content of the deciding
+    modules from before processing to publication, and rechecks it on load. It
+    does not prove which bytes the interpreter executed: modules already
+    imported, reloaded or shadowed can differ from the files on disk. Exact
+    executed-code proof needs a frozen execution environment, which is outside
+    this module.
+    """
+    return _current_robustness_code_identity()
+
+
+def _verify_robustness_code_identity(
+    captured: Mapping[str, Any], *, context: str
+) -> Dict[str, Any]:
+    """Fail closed when the deciding code changed since it was captured."""
+    current = _current_robustness_code_identity()
+    recorded_digest = str(captured.get("sources_sha256") or "")
+    if recorded_digest != current["sources_sha256"]:
+        raise RuntimeError(
+            f"{context}: the deciding code changed on disk during this run "
+            f"(captured {recorded_digest!r}, current "
+            f"{current['sources_sha256']!r}); nothing this run produced can "
+            "cite code that was not on disk while it ran"
+        )
+    return current
+
+
+def _pipeline_version() -> str:
+    from . import __version__
+
+    return __version__
+
+
+def _file_sha256(path: Path) -> str:
+    from .stage_completion import file_sha256
+
+    return file_sha256(Path(path))
+
+
+def _content_sha256(value: Any) -> str:
+    from .stage_completion import content_sha256
+
+    return content_sha256(value)
+
+
+def _bind_configuration_values(value: Any) -> Any:
+    """Bind a configuration value to whatever actually governs a disposition.
+
+    ``RobustnessConfig`` declares no path-valued setting today (its fields are
+    flags, counts, magnitudes, names and thresholds), but this snapshot also
+    accepts foreign configuration objects. For those, a file path is not the
+    setting: two runs can name the same file and be governed by different bytes.
+    A path is therefore recorded together with the content digest of the file it
+    currently names, and an absent or non-file path is recorded as such rather
+    than passing as content. Any other non-JSON value keeps its qualified type
+    so that two different objects cannot collapse into one string.
+    """
+    if value is None or isinstance(value, (str, bool, int, float)):
+        return value
+    if isinstance(value, Mapping):
+        return {
+            str(key): _bind_configuration_values(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, (set, frozenset)):
+        return sorted(
+            (_bind_configuration_values(item) for item in value), key=repr
+        )
+    if isinstance(value, (list, tuple)):
+        return [_bind_configuration_values(item) for item in value]
+    if isinstance(value, os.PathLike):
+        path = Path(value)
+        if path.is_file():
+            return {
+                "__path__": str(path),
+                "content_state": "file",
+                "sha256": _file_sha256(path),
+            }
+        return {
+            "__path__": str(path),
+            "content_state": "directory" if path.is_dir() else "absent",
+            "sha256": None,
+        }
+    return {
+        "__type__": f"{type(value).__module__}.{type(value).__qualname__}",
+        "repr": repr(value),
+    }
+
+
+def effective_robustness_configuration(
+    rob_config: "RobustnessConfig",
+    *,
+    output_name: str,
+) -> Dict[str, Any]:
+    """Normalized snapshot of the configuration that governs one robustness run.
+
+    The measured table and the disposition sidecar are only comparable across
+    runs when the perturbation grid, thresholds and output identity are the
+    same, so the snapshot is bound into the artifact and rechecked on load.
+    """
+    if is_dataclass(rob_config) and not isinstance(rob_config, type):
+        declared = asdict(rob_config)
+    else:
+        declared = {
+            key: value
+            for key, value in vars(rob_config).items()
+            if not key.startswith("_")
+        }
+    payload = {
+        "measurement_type": ROBUSTNESS_MEASUREMENT_TYPE,
+        "output_name": str(output_name),
+        "robustness": _bind_configuration_values(declared),
+    }
+    # Normalize through JSON so the digest is stable for equal configurations
+    # expressed with different (but equivalent) container types. No ``default``
+    # coercion: a value that only survives as ``str(value)`` would let two
+    # different settings share one fingerprint.
+    return json.loads(json.dumps(payload, sort_keys=True))
+
+
+def _rtstruct_source_binding(segmentation_source: str, rtstruct_path: Path) -> Dict[str, str]:
+    """Capture RTSTRUCT identity and content *before* its masks are read."""
+    from .rtstruct_identity import require_rtstruct_identity
+
+    path = Path(rtstruct_path)
+    return {
+        "segmentation_source": str(segmentation_source),
+        "source_path": str(path),
+        "rtstruct_sop_instance_uid": str(require_rtstruct_identity(path)),
+        "sha256": _file_sha256(path),
+    }
+
+
+def _verify_rtstruct_source_bindings(
+    bindings: List[Dict[str, str]],
+    *,
+    error: type[Exception],
+    context: str,
+) -> None:
+    """Fail closed when a captured RTSTRUCT source no longer has its bytes."""
+    for binding in bindings:
+        path = Path(str(binding.get("source_path") or ""))
+        if not path.is_file():
+            raise error(
+                f"{context}: RTSTRUCT source {path} recorded for "
+                f"{binding.get('segmentation_source')!r} is no longer readable"
+            )
+        current = _file_sha256(path)
+        if current != str(binding.get("sha256") or ""):
+            raise error(
+                f"{context}: RTSTRUCT source {path} content changed "
+                f"(recorded sha256 {binding.get('sha256')!r}, current {current!r}); "
+                "an unchanged SOPInstanceUID does not certify unchanged content"
+            )
+
+
+def _present(value: Any) -> bool:
+    """A required identity field is present when it carries readable text."""
+    return value is not None and bool(str(value).strip())
+
+
+def _validate_source_disposition_rows(
+    rows: Any,
+    *,
+    bindings: List[Dict[str, str]],
+    error: type[Exception],
+) -> List[Dict[str, Any]]:
+    """Validate row type, required identity, status and uniqueness."""
+    if not isinstance(rows, list):
+        raise error("robustness source disposition rows must be a list")
+    bound_sources = {
+        (
+            str(binding.get("segmentation_source")),
+            str(binding.get("source_path")),
+            str(binding.get("rtstruct_sop_instance_uid")),
+        )
+        for binding in bindings
+    }
+    from .rtstruct_geometry import NONVOLUMETRIC_CODES
+
+    seen: set[Tuple[str, ...]] = set()
+    validated: List[Dict[str, Any]] = []
+    for index, row in enumerate(rows):
+        if not isinstance(row, dict):
+            raise error(
+                f"robustness source disposition row {index} is "
+                f"{type(row).__name__}, not a record"
+            )
+        missing = [
+            field_name
+            for field_name in ROBUSTNESS_SOURCE_DISPOSITION_ROW_FIELDS
+            if not _present(row.get(field_name))
+        ]
+        if missing:
+            raise error(
+                f"robustness source disposition row {index} is missing required "
+                f"identity: {', '.join(sorted(missing))}"
+            )
+        status = str(row["status"])
+        if status not in ROBUSTNESS_SOURCE_DISPOSITION_STATUSES:
+            raise error(
+                f"robustness source disposition row {index} has status {status!r}, "
+                f"which is not a terminal source disposition "
+                f"({', '.join(sorted(ROBUSTNESS_SOURCE_DISPOSITION_STATUSES))})"
+            )
+        if str(row["structural_code"]) not in NONVOLUMETRIC_CODES:
+            raise error(
+                f"robustness source disposition row {index} has structural code "
+                f"{row['structural_code']!r}, which is not a non-volumetric geometry"
+            )
+        origin = (
+            str(row["segmentation_source"]),
+            str(row["source_path"]),
+            str(row["rtstruct_sop_instance_uid"]),
+        )
+        if origin not in bound_sources:
+            raise error(
+                f"robustness source disposition row {index} cites unbound source "
+                f"{origin!r}"
+            )
+        identity = tuple(
+            str(row[field_name])
+            for field_name in ROBUSTNESS_SOURCE_DISPOSITION_ROW_IDENTITY
+        )
+        if identity in seen:
+            raise error(
+                "duplicate robustness source disposition for "
+                f"{identity!r}; one ROI identity has exactly one disposition"
+            )
+        seen.add(identity)
+        validated.append(row)
+    return validated
+
+
+def _write_robustness_source_dispositions(
+    course_dir: Path,
+    *,
+    run_identifier: str,
+    rows: List[Dict[str, Any]],
+    source_bindings: List[Dict[str, str]],
+    effective_configuration: Dict[str, Any],
+    code_identity: Mapping[str, Any],
+    output_path: Path,
+    measured_output: Optional[Path],
+    nonmeasured_outcome: str = ROBUSTNESS_SOURCE_ONLY_OUTCOME,
+    source_only_basis: Optional[Dict[str, Any]] = None,
+) -> Path:
+    """Atomically publish the terminal RTSTRUCT source dispositions of one run.
+
+    The sidecar preserves explicit source/ROI/RTSTRUCT identity for structural
+    dispositions (e.g. non-volumetric ROIs) observed while robustness collected
+    masks. It is distinct from the 81-condition measurement table: it carries no
+    voxel or feature values and never claims a measurement. It is published only
+    after the run reached a terminal, non-technical outcome, and it is bound to
+    the run identifier, the source bytes, the deciding code, the effective
+    configuration and the measured output (when one exists).
+    """
+    for binding in source_bindings:
+        missing = [
+            field_name
+            for field_name in ROBUSTNESS_SOURCE_BINDING_FIELDS
+            if not _present(binding.get(field_name))
+        ]
+        if missing:
+            raise RuntimeError(
+                "robustness source binding is incomplete: " + ", ".join(sorted(missing))
+            )
+    # Re-read the sources now: masks were read from these bytes, and a source
+    # that changed during the run cannot certify the dispositions it produced.
+    _verify_rtstruct_source_bindings(
+        source_bindings,
+        error=RuntimeError,
+        context="refusing to publish robustness source dispositions",
+    )
+    _validate_source_disposition_rows(
+        rows, bindings=source_bindings, error=RuntimeError
+    )
+    # The code captured before processing must still be the code on disk.
+    _verify_robustness_code_identity(
+        code_identity,
+        context="refusing to publish robustness source dispositions",
+    )
+
+    if measured_output is not None:
+        outcome = ROBUSTNESS_MEASURED_OUTCOME
+    else:
+        outcome = str(nonmeasured_outcome)
+        if outcome not in ROBUSTNESS_NONMEASURED_OUTCOMES:
+            raise RuntimeError(
+                f"refusing to publish robustness outcome {outcome!r}, which is "
+                "not a terminal non-measured outcome "
+                f"({', '.join(sorted(ROBUSTNESS_NONMEASURED_OUTCOMES))})"
+            )
+        if outcome == ROBUSTNESS_SOURCE_ONLY_OUTCOME and not rows:
+            raise RuntimeError(
+                "refusing to publish a non-volumetric source-only robustness "
+                "outcome with no source disposition to evidence it"
+            )
+    output_entry: Optional[Dict[str, Any]] = None
+    if measured_output is not None:
+        measured_output = Path(measured_output)
+        if not measured_output.is_file():
+            raise RuntimeError(
+                "refusing to publish robustness source dispositions: measured "
+                f"output {measured_output} is absent"
+            )
+        output_entry = {
+            "path": measured_output.name,
+            "sha256": _file_sha256(measured_output),
+            "size_bytes": int(measured_output.stat().st_size),
+        }
+    elif Path(output_path).exists():
+        # A source-only outcome measured nothing, so no table may stand for it.
+        raise RuntimeError(
+            "refusing to publish a source-only robustness disposition beside an "
+            f"existing measurement table {output_path}"
+        )
+
+    path = Path(course_dir) / "metadata" / ROBUSTNESS_SOURCE_DISPOSITIONS_FILENAME
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "schema_version": ROBUSTNESS_SOURCE_DISPOSITIONS_SCHEMA_VERSION,
+        "artifact_kind": ROBUSTNESS_SOURCE_DISPOSITIONS_KIND,
+        "patient_id": course_dir.parent.name,
+        "course_id": course_dir.name,
+        "measurement_type": ROBUSTNESS_MEASUREMENT_TYPE,
+        "robustness_run_identifier": str(run_identifier),
+        "measurement_outcome": outcome,
+        "row_count": len(rows),
+        "rows": rows,
+        "rows_sha256": _content_sha256(rows),
+        "source_bindings": source_bindings,
+        "code_identity": dict(code_identity),
+        "effective_configuration": effective_configuration,
+        "effective_configuration_sha256": _content_sha256(effective_configuration),
+        "output_path": Path(output_path).name,
+        "measured_output": output_entry,
+        "source_only_basis": source_only_basis,
+    }
+    fd, temp_name = tempfile.mkstemp(
+        dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_name, path)
+    except BaseException:
+        try:
+            os.unlink(temp_name)
+        except FileNotFoundError:
+            pass
+        raise
+    return path
+
+
+def robustness_source_dispositions_path(course_dir: Path) -> Path:
+    return Path(course_dir) / "metadata" / ROBUSTNESS_SOURCE_DISPOSITIONS_FILENAME
+
+
+def invalidate_robustness_source_dispositions(course_dir: Path) -> None:
+    """Drop a previous run's sidecar so it can never describe a later run."""
+    robustness_source_dispositions_path(course_dir).unlink(missing_ok=True)
+
+
+@dataclass(frozen=True)
+class RobustnessSourceDispositionInspection:
+    """What one disposition sidecar says, and how far that was verified.
+
+    This is an inspection result, not an admission decision. ``rows`` are the
+    recorded dispositions after every run, source, code, digest, outcome and
+    output check; ``configuration_verified`` says whether they were also
+    checked against a caller-supplied current configuration. A result with
+    ``configuration_verified`` false has only been shown to be internally
+    consistent, and must not be used as if the current run's perturbation grid
+    and thresholds had been confirmed.
+    """
+
+    course_dir: Path
+    run_identifier: str
+    measurement_outcome: str
+    configuration_verified: bool
+    rows: List[Dict[str, Any]]
+
+
+def _read_robustness_source_dispositions(
+    course_dir: Path,
+    *,
+    run_identifier: str,
+    rob_config: Optional["RobustnessConfig"],
+    output_name: Optional[str],
+    snapshot: Optional[bytes] = None,
+) -> RobustnessSourceDispositionInspection:
+    """Read the run-bound disposition sidecar, rejecting stale or foreign bytes.
+
+    Every binding except the current configuration is checked unconditionally.
+    ``rob_config``, when supplied, additionally requires the recorded effective
+    configuration to equal the one the caller is acting under, which detects a
+    sidecar produced under a different perturbation grid or thresholds.
+    ``output_name`` defaults to the recorded output name.
+    """
+    from .course_manifest import require_no_output_symlinks
+
+    course_dir = Path(course_dir)
+    path = robustness_source_dispositions_path(course_dir)
+    require_no_output_symlinks(path)
+    if not path.exists():
+        raise FileNotFoundError(
+            f"no robustness source dispositions artifact in {course_dir}"
+        )
+    payload = json.loads(path.read_bytes() if snapshot is None else snapshot)
+    if not isinstance(payload, dict):
+        raise ValueError(
+            "robustness source dispositions artifact is not a record: "
+            f"{type(payload).__name__}"
+        )
+    if payload.get("artifact_kind") != ROBUSTNESS_SOURCE_DISPOSITIONS_KIND:
+        raise ValueError(
+            "unexpected robustness source dispositions artifact kind: "
+            f"{payload.get('artifact_kind')!r}"
+        )
+    version = payload.get("schema_version")
+    if isinstance(version, bool) or not isinstance(version, int):
+        raise ValueError(
+            "robustness source dispositions schema version must be an integer, "
+            f"not {version!r}"
+        )
+    if version != ROBUSTNESS_SOURCE_DISPOSITIONS_SCHEMA_VERSION:
+        raise ValueError(
+            f"unsupported robustness source dispositions schema version {version!r}; "
+            f"this build reads version {ROBUSTNESS_SOURCE_DISPOSITIONS_SCHEMA_VERSION}"
+        )
+    if (
+        payload.get("patient_id") != course_dir.parent.name
+        or payload.get("course_id") != course_dir.name
+    ):
+        raise ValueError(
+            "robustness source dispositions artifact does not belong to this course"
+        )
+    if payload.get("measurement_type") != ROBUSTNESS_MEASUREMENT_TYPE:
+        raise ValueError(
+            "robustness source dispositions artifact has measurement type "
+            f"{payload.get('measurement_type')!r}"
+        )
+    if str(payload.get("robustness_run_identifier")) != str(run_identifier):
+        raise ValueError(
+            "stale robustness source dispositions artifact: run identifier "
+            f"{payload.get('robustness_run_identifier')!r} does not match "
+            f"current run {run_identifier!r}"
+        )
+
+    bindings = payload.get("source_bindings")
+    if not isinstance(bindings, list) or not all(
+        isinstance(binding, dict) for binding in bindings
+    ):
+        raise ValueError(
+            "robustness source dispositions artifact has no readable source bindings"
+        )
+    for binding in bindings:
+        missing = [
+            field_name
+            for field_name in ROBUSTNESS_SOURCE_BINDING_FIELDS
+            if not _present(binding.get(field_name))
+        ]
+        if missing:
+            raise ValueError(
+                "robustness source binding is incomplete: " + ", ".join(sorted(missing))
+            )
+    _verify_rtstruct_source_bindings(
+        bindings,
+        error=ValueError,
+        context="robustness source dispositions do not describe the current sources",
+    )
+
+    rows = payload.get("rows")
+    if not isinstance(rows, list) or payload.get("row_count") != len(rows):
+        raise ValueError(
+            "corrupt robustness source dispositions artifact: row_count "
+            f"{payload.get('row_count')!r} does not match the recorded rows"
+        )
+    _validate_source_disposition_rows(rows, bindings=bindings, error=ValueError)
+    recorded_rows_digest = str(payload.get("rows_sha256") or "")
+    if recorded_rows_digest != _content_sha256(rows):
+        raise ValueError(
+            "robustness source disposition rows do not match their recorded digest"
+        )
+
+    recorded_code = payload.get("code_identity")
+    current_code = _current_robustness_code_identity()
+    if isinstance(recorded_code, dict):
+        recorded_sources = recorded_code.get("sources")
+        if not isinstance(recorded_sources, list) or _content_sha256(
+            recorded_sources
+        ) != str(recorded_code.get("sources_sha256") or ""):
+            raise ValueError(
+                "robustness code identity does not match its own per-file digests"
+            )
+    if not isinstance(recorded_code, dict) or recorded_code.get(
+        "sources_sha256"
+    ) != current_code["sources_sha256"]:
+        raise ValueError(
+            "robustness source dispositions were produced by different code "
+            f"(recorded {(recorded_code or {}).get('sources_sha256')!r}, current "
+            f"{current_code['sources_sha256']!r}); a matching revision does not "
+            "certify a dirty worktree"
+        )
+
+    recorded_configuration = payload.get("effective_configuration")
+    if not isinstance(recorded_configuration, dict):
+        raise ValueError(
+            "robustness source dispositions artifact records no effective configuration"
+        )
+    if str(payload.get("effective_configuration_sha256") or "") != _content_sha256(
+        recorded_configuration
+    ):
+        raise ValueError(
+            "robustness effective configuration does not match its recorded digest"
+        )
+    configuration_verified = False
+    if rob_config is not None:
+        expected = effective_robustness_configuration(
+            rob_config,
+            output_name=str(
+                output_name
+                or recorded_configuration.get("output_name")
+                or payload.get("output_path")
+                or ""
+            ),
+        )
+        if _content_sha256(expected) != _content_sha256(recorded_configuration):
+            raise ValueError(
+                "robustness source dispositions were produced under a different "
+                "effective configuration than the one requested"
+            )
+        configuration_verified = True
+
+    outcome = payload.get("measurement_outcome")
+    if outcome not in ROBUSTNESS_SOURCE_DISPOSITION_OUTCOMES:
+        raise ValueError(
+            f"unknown robustness measurement outcome {outcome!r}"
+        )
+    # A source-only completion is admissible only when this same canonical
+    # sidecar carries non-empty, explicitly non-volumetric dispositions.  Do
+    # not let an integrity-valid zero-row or unrelated-outcome sidecar certify
+    # a course merely because its receipt names the source artifact.
+    if outcome == ROBUSTNESS_SOURCE_ONLY_OUTCOME:
+        if not rows:
+            raise ValueError(
+                "source-only robustness dispositions must contain at least one "
+                "disposition row"
+            )
+    if outcome in ROBUSTNESS_NONMEASURED_OUTCOMES:
+        from fnmatch import fnmatch
+
+        selection = recorded_configuration.get("robustness", {}).get(
+            "perturbation", {}
+        ).get("apply_to_structures")
+        if not isinstance(selection, list) or not all(isinstance(p, str) for p in selection):
+            raise ValueError("robustness dispositions record no readable requested selection")
+        matched = sum(
+            any(fnmatch(str(row["roi_name"]).upper(), pattern.upper()) for pattern in selection)
+            for row in rows
+        )
+        if outcome == ROBUSTNESS_SOURCE_ONLY_OUTCOME and not matched:
+            raise ValueError(
+                "source-only robustness selection matched no source disposition; "
+                "an unmatched request is not non-volumetric anatomy"
+            )
+        basis = payload.get("source_only_basis")
+        if basis is not None:
+            if not isinstance(basis, dict):
+                raise ValueError("robustness source-only basis must be a record")
+            expected_basis = {
+                "source_disposition_count": len(rows),
+                "selection_matched_nonvolumetric_count": matched,
+                "requested_selection": sorted(selection),
+            }
+            for key, expected_value in expected_basis.items():
+                if key in basis and (
+                    basis[key] != expected_value
+                    or (isinstance(expected_value, int) and type(basis[key]) is not int)
+                ):
+                    raise ValueError(f"robustness source-only basis {key} does not reconcile")
+    recorded_output_name = str(payload.get("output_path") or "").strip()
+    if not recorded_output_name:
+        raise ValueError(
+            "robustness source dispositions artifact records no output identity"
+        )
+    if Path(recorded_output_name).name != recorded_output_name or recorded_output_name in {".", ".."}:
+        raise ValueError("robustness output identity must be a plain filename")
+    if output_name is not None and recorded_output_name != output_name:
+        raise ValueError("robustness sidecar output identity differs from requested output")
+    require_no_output_symlinks(course_dir / recorded_output_name)
+    measured_output = payload.get("measured_output")
+    if outcome == ROBUSTNESS_MEASURED_OUTCOME:
+        if not isinstance(measured_output, dict):
+            raise ValueError(
+                "measured robustness dispositions record no measured output binding"
+            )
+        output_path = course_dir / str(measured_output.get("path") or "")
+        if str(measured_output.get("path") or "") != recorded_output_name:
+            raise ValueError(
+                "robustness measured output binding does not match the recorded "
+                f"output identity {recorded_output_name!r}"
+            )
+        if not output_path.is_file():
+            raise ValueError(
+                f"measured robustness output {output_path} is absent; its source "
+                "dispositions no longer describe a published measurement"
+            )
+        current_digest = _file_sha256(output_path)
+        if current_digest != str(measured_output.get("sha256") or ""):
+            raise ValueError(
+                f"measured robustness output {output_path} changed after publication "
+                f"(recorded sha256 {measured_output.get('sha256')!r}, current "
+                f"{current_digest!r})"
+            )
+    else:
+        if measured_output is not None:
+            raise ValueError(
+                "source-only robustness dispositions must not bind a measured output"
+            )
+        if (course_dir / recorded_output_name).exists():
+            raise ValueError(
+                "source-only robustness dispositions stand beside an existing "
+                f"measurement table {course_dir / recorded_output_name}"
+            )
+    return RobustnessSourceDispositionInspection(
+        course_dir=course_dir,
+        run_identifier=str(run_identifier),
+        measurement_outcome=str(outcome),
+        configuration_verified=configuration_verified,
+        rows=list(rows),
+    )
+
+
+def inspect_robustness_source_dispositions(
+    course_dir: Path,
+    *,
+    run_identifier: str,
+    rob_config: Optional["RobustnessConfig"] = None,
+    output_name: Optional[str] = None,
+) -> RobustnessSourceDispositionInspection:
+    """Inspect a disposition sidecar for integrity, without admitting its rows.
+
+    Use this to look at an artifact (diagnostics, audits, reporting) when the
+    caller has no current configuration to check it against. The typed result
+    states how far verification went, so an integrity-only read can never be
+    mistaken for the validated admission :func:`load_robustness_source_dispositions`
+    performs.
+    """
+    return _read_robustness_source_dispositions(
+        course_dir,
+        run_identifier=run_identifier,
+        rob_config=rob_config,
+        output_name=output_name,
+    )
+
+
+def load_robustness_source_dispositions(
+    course_dir: Path,
+    *,
+    run_identifier: str,
+    rob_config: "RobustnessConfig",
+    output_name: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Admit a run's source dispositions into the caller's current context.
+
+    ``rob_config`` is required. Admission means "these dispositions describe the
+    run I am acting under", and that cannot be established without the
+    configuration the caller is acting under: identical rows read under a
+    different perturbation grid or thresholds are not the same evidence. Callers
+    that only want to check an artifact's integrity use
+    :func:`inspect_robustness_source_dispositions`, whose typed result cannot be
+    confused with an admitted row list.
+    """
+    if rob_config is None:
+        raise TypeError(
+            "load_robustness_source_dispositions() requires the current "
+            "rob_config; use inspect_robustness_source_dispositions() for an "
+            "explicitly integrity-only read"
+        )
+    inspection = _read_robustness_source_dispositions(
+        course_dir,
+        run_identifier=run_identifier,
+        rob_config=rob_config,
+        output_name=output_name,
+    )
+    if not inspection.configuration_verified:
+        raise RuntimeError(
+            "robustness source dispositions were not verified against the "
+            "current configuration"
+        )
+    return inspection.rows
 
 
 # ============================================================================
@@ -1930,7 +2748,12 @@ def summarize_feature_stability(
             "n_subjects": n_subjects,
             "n_subjects_complete": n_subjects,
             "n_subjects_dropped": 0,
-            "n_courses": group["course_id"].nunique() if "course_id" in group.columns else np.nan,
+            # Course labels repeat across patients. Count the full identity,
+            # consistent with the subject key used for the statistics above.
+            "n_courses": (
+                len(group[["patient_id", "course_id"]].astype(str).drop_duplicates())
+                if "course_id" in group.columns else np.nan
+            ),
             "n_perturbations": n_raters,
             "icc": icc,
             "icc_ci95_low": icc_ci_low,
@@ -2444,12 +3267,23 @@ def robustness_for_course(
 
     logger.info("Running radiomics robustness analysis for %s", course_dir.name)
 
-    contract = load_course_contract(course_dir)
-    course_dirs = build_course_dirs(course_dir)
     if output_path is None:
         output_path = course_dir / "radiomics_robustness_ct.parquet"
-    # Never allow a stale successful parquet to survive a failed rerun.
+    # Invalidate the previous run's published artifacts before anything the
+    # current run can fail on, including course-contract validation. A stale
+    # parquet must never survive a failed rerun, and a stale sidecar must never
+    # be left claiming source dispositions for a course whose current contract
+    # no longer validates.
     output_path.unlink(missing_ok=True)
+    invalidate_robustness_source_dispositions(course_dir)
+
+    # Capture the deciding code before any source is read, so the binding
+    # describes the code this run started under rather than whatever the files
+    # happen to contain by the time it publishes.
+    run_code_identity = _capture_robustness_code_identity()
+
+    contract = load_course_contract(course_dir)
+    course_dirs = build_course_dirs(course_dir)
 
     # Load CT image
     from .radiomics import _load_series_image
@@ -2489,11 +3323,64 @@ def robustness_for_course(
     # ========================================================================
     from .radiomics import _rtstruct_masks, _standard_rtstruct_sources
     from .custom_models import list_custom_model_outputs
+    from .radiomics_ct_contract import new_run_identifier
     from fnmatch import fnmatch
+
+    # One run identifier for the whole course robustness run: the published
+    # table and the source-disposition sidecar are bound to the same value, so
+    # a sidecar from a previous (or failed) run is rejected as stale.
+    robustness_run_identifier = new_run_identifier()
 
     # Dictionary: {(roi_name, source): mask_array}
     all_masks: Dict[Tuple[str, str], np.ndarray] = {}
     unresolved_selected_identities: Dict[Tuple[str, str], Dict[str, str]] = {}
+    # Terminal RTSTRUCT source dispositions recorded while collecting masks
+    # (e.g. non-volumetric source ROIs), identity-bound and persisted to the
+    # run-bound sidecar only once the run reaches a terminal, non-technical
+    # outcome. Technical extraction failures raise before any publication.
+    source_disposition_rows: List[Dict[str, Any]] = []
+    rtstruct_source_bindings: List[Dict[str, str]] = []
+
+    def _bind_rtstruct_source(
+        source: str, rtstruct_path: Path
+    ) -> Optional[Dict[str, str]]:
+        """Capture source identity and content before its masks are read.
+
+        A path that is not a readable file cannot certify anything; the mask
+        reader remains responsible for failing closed on it, and an unbound
+        source is not allowed to contribute published dispositions.
+        """
+        if not Path(rtstruct_path).is_file():
+            return None
+        binding = _rtstruct_source_binding(source, rtstruct_path)
+        rtstruct_source_bindings.append(binding)
+        return binding
+
+    def _record_source_dispositions(
+        binding: Optional[Dict[str, str]], sink: List[Dict[str, Any]]
+    ) -> None:
+        """Bind reader-recorded source dispositions to the source that produced them."""
+        if sink and binding is None:
+            raise RuntimeError(
+                f"robustness read source dispositions from an unbound RTSTRUCT in "
+                f"{course_dir}; refusing to publish uncertified dispositions"
+            )
+        for outcome in sink:
+            outcome["segmentation_source"] = binding["segmentation_source"]
+            # The reader records the source it read; the robustness pass binds
+            # the exact bytes it read them from. A disagreement means the two
+            # did not observe the same source, which nothing may paper over.
+            for column in ("source_path", "rtstruct_sop_instance_uid"):
+                recorded = outcome.get(column)
+                if recorded is not None and str(recorded) != binding[column]:
+                    raise RuntimeError(
+                        f"robustness source disposition for "
+                        f"{outcome.get('roi_name')!r} reports {column}="
+                        f"{recorded!r}, but the bound source is "
+                        f"{binding[column]!r}"
+                    )
+                outcome[column] = binding[column]
+            source_disposition_rows.append(outcome)
 
     def _matches_robustness_pattern(roi_name: str) -> bool:
         return any(
@@ -2591,7 +3478,12 @@ def robustness_for_course(
         for source, rtstruct_path, expected_rois in _standard_rtstruct_sources(
             contract, course_dir
         ):
-            source_masks = _rtstruct_masks(ct_dir, rtstruct_path)
+            source_sink: List[Dict[str, Any]] = []
+            source_binding = _bind_rtstruct_source(source, rtstruct_path)
+            source_masks = _rtstruct_masks(
+                ct_dir, rtstruct_path, failure_outcomes=source_sink
+            )
+            _record_source_dispositions(source_binding, source_sink)
             allowed_names = set(expected_rois) if expected_rois else None
             loaded = 0
             for roi_name, mask_array in source_masks.items():
@@ -2609,7 +3501,12 @@ def robustness_for_course(
         # published as Custom by the main path are independent Custom ROIs.
         rs_custom = course_dir / "RS_custom.dcm"
         if rs_custom.exists():
-            custom_masks = _rtstruct_masks(ct_dir, rs_custom)
+            custom_sink: List[Dict[str, Any]] = []
+            custom_binding = _bind_rtstruct_source("Custom", rs_custom)
+            custom_masks = _rtstruct_masks(
+                ct_dir, rs_custom, failure_outcomes=custom_sink
+            )
+            _record_source_dispositions(custom_binding, custom_sink)
             loaded = 0
             for roi_name, mask_array in custom_masks.items():
                 if _register_mask(
@@ -2628,25 +3525,29 @@ def robustness_for_course(
             logger.debug("RS_custom.dcm not found")
 
     # Custom models (DICOM path, skipped in NIfTI mode and handled above).
+    # Technical extraction failures propagate (fail-closed); non-volumetric
+    # source ROIs are recorded as geometric dispositions in the sink.
     if not _use_nifti_masks:
-        try:
-            for model_name, model_dir in list_custom_model_outputs(course_dir):
-                rs_model = model_dir / "rtstruct.dcm"
-                if rs_model.exists():
-                    assert ct_dir is not None
-                    model_masks = _rtstruct_masks(ct_dir, rs_model)
-                    source_label = f"CustomModel:{model_name}"
-                    loaded = 0
-                    for roi_name, mask_array in model_masks.items():
-                        if _register_mask(roi_name, source_label, mask_array):
-                            loaded += 1
-                    logger.info(
-                        "Loaded %d identity-matched structures from custom model '%s'",
-                        loaded,
-                        model_name,
-                    )
-        except Exception as e:
-            logger.debug("Failed to load custom model outputs: %s", e)
+        for model_name, model_dir in list_custom_model_outputs(course_dir):
+            rs_model = model_dir / "rtstruct.dcm"
+            if rs_model.exists():
+                assert ct_dir is not None
+                model_sink: List[Dict[str, Any]] = []
+                source_label = f"CustomModel:{model_name}"
+                model_binding = _bind_rtstruct_source(source_label, rs_model)
+                model_masks = _rtstruct_masks(
+                    ct_dir, rs_model, failure_outcomes=model_sink
+                )
+                _record_source_dispositions(model_binding, model_sink)
+                loaded = 0
+                for roi_name, mask_array in model_masks.items():
+                    if _register_mask(roi_name, source_label, mask_array):
+                        loaded += 1
+                logger.info(
+                    "Loaded %d identity-matched structures from custom model '%s'",
+                    loaded,
+                    model_name,
+                )
 
     # NIfTI fallback: if DICOM-based mask loading returned 0 masks, try NIfTI
     if not all_masks and not _use_nifti_masks:
@@ -2761,16 +3662,101 @@ def robustness_for_course(
             rows=identity_ledger_rows,
         )
 
+    def _publish_source_dispositions(
+        measured_output: Optional[Path],
+        *,
+        nonmeasured_outcome: str = ROBUSTNESS_SOURCE_ONLY_OUTCOME,
+        source_only_basis: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Publish this run's terminal source dispositions, or nothing at all.
+
+        The sidecar is written only once the run has reached a terminal,
+        non-technical outcome: either a published measurement table, or a
+        source-only course that measured nothing and therefore has no table.
+        A technical failure raises before reaching either call site, so a
+        completed sidecar is never exposed for a failed run.
+        """
+        _write_robustness_source_dispositions(
+            course_dir,
+            run_identifier=robustness_run_identifier,
+            rows=source_disposition_rows,
+            source_bindings=rtstruct_source_bindings,
+            effective_configuration=effective_robustness_configuration(
+                rob_config, output_name=output_path.name
+            ),
+            code_identity=run_code_identity,
+            output_path=output_path,
+            measured_output=measured_output,
+            nonmeasured_outcome=nonmeasured_outcome,
+            source_only_basis=source_only_basis,
+        )
+        logger.info(
+            "Recorded %d RTSTRUCT source disposition(s) for robustness in %s (%s)",
+            len(source_disposition_rows),
+            course_dir,
+            "measured" if measured_output is not None else "source-only",
+        )
+
     if not selected_structures:
         if unresolved_selected_identities:
             logger.warning(
                 "No robustness ROI has publishable identity for %s",
                 course_dir,
             )
+            # An unresolved identity is not a terminal source disposition: the
+            # source picture is incomplete, so nothing is published for it.
+            logger.warning(
+                "Not publishing robustness source dispositions for %s: %d selected "
+                "ROI identities are unresolved",
+                course_dir,
+                len(unresolved_selected_identities),
+            )
         else:
             logger.info(
                 "No structures matched robustness patterns; skipping %s",
                 course_dir,
+            )
+            # Two different terminal outcomes hide behind "nothing was
+            # selected". Only a source ROI that the selection actually matched
+            # and that turned out to be non-volumetric is evidence about
+            # anatomy; a requested name that no source carries (or no request
+            # at all) is a fact about the request, and an unrelated
+            # non-volumetric ROI elsewhere in the source does not upgrade it.
+            selection_matched_dispositions = [
+                row
+                for row in source_disposition_rows
+                if _matches_robustness_pattern(str(row.get("roi_name") or ""))
+            ]
+            if selection_matched_dispositions:
+                nonmeasured_outcome = ROBUSTNESS_SOURCE_ONLY_OUTCOME
+                reason = (
+                    "every source ROI matching the robustness selection is "
+                    "non-volumetric"
+                )
+            else:
+                nonmeasured_outcome = ROBUSTNESS_UNMATCHED_SELECTION_OUTCOME
+                reason = (
+                    "no source ROI matched the requested robustness selection; "
+                    "an unmatched selection is not evidence of non-volumetric "
+                    "anatomy and excludes nothing"
+                )
+            _publish_source_dispositions(
+                None,
+                nonmeasured_outcome=nonmeasured_outcome,
+                source_only_basis={
+                    "selected_structure_count": 0,
+                    "unresolved_identity_count": 0,
+                    "collected_mask_count": len(all_masks),
+                    "source_disposition_count": len(source_disposition_rows),
+                    "selection_matched_nonvolumetric_count": len(
+                        selection_matched_dispositions
+                    ),
+                    "requested_selection": sorted(
+                        str(pattern)
+                        for pattern in rob_config.perturbation.apply_to_structures
+                    ),
+                    "reason": reason,
+                },
             )
         return None
 
@@ -2803,8 +3789,9 @@ def robustness_for_course(
         has_parallel = False
     all_features = []
     generated_nonmeasurement_keys = set()
-    from .radiomics_ct_contract import CT_EXTRACTION_ARMS, new_run_identifier
-    robustness_run_identifier = new_run_identifier()
+    from .radiomics_ct_contract import CT_EXTRACTION_ARMS
+    # robustness_run_identifier was generated before mask collection so the
+    # source-disposition sidecar and the published table share one identity.
     expected_perturbations: Dict[Tuple[str, str], set[str]] = {}
     identity_failed_perturbations: Dict[Tuple[str, str, str], str] = {}
     
@@ -3140,10 +4127,40 @@ def robustness_for_course(
         combined_df.loc[selected, "impossible_condition_ids"] = json.dumps(impossible_ids)
         combined_df.loc[selected, "possible_condition_count"] = len(requested_ids) - len(impossible_ids)
 
+    # Bind the published rows to the run that produced them: a table carrying a
+    # foreign run identifier cannot be certified by this run's dispositions.
+    if "run_identifier" in combined_df.columns:
+        published_runs = {
+            str(value)
+            for value in combined_df["run_identifier"].dropna().unique()
+        }
+        foreign_runs = sorted(published_runs - {str(robustness_run_identifier)})
+        if foreign_runs:
+            raise RuntimeError(
+                f"robustness rows for {course_dir} carry run identifiers "
+                f"{foreign_runs} that are not this run "
+                f"({robustness_run_identifier})"
+            )
+
     # Preserve validated measurements and the exact failed-condition inventory.
     # A technical failure remains a failed stage, so the CLI never creates a
     # success sentinel and aggregation cannot silently use an incomplete grid.
     technical_failure_count = int(combined_df["robustness_status"].eq("technical_failure").sum())
+
+    # Verify provenance *before* publishing, not after: a table that nothing
+    # can certify must never exist, not even briefly. The masks were read from
+    # these RTSTRUCT bytes and decided by this code, so a source or a deciding
+    # module that changed while the run worked invalidates the run itself.
+    _verify_rtstruct_source_bindings(
+        rtstruct_source_bindings,
+        error=RuntimeError,
+        context="refusing to publish robustness measurements",
+    )
+    _verify_robustness_code_identity(
+        run_code_identity,
+        context="refusing to publish robustness measurements",
+    )
+
     # Save raw feature values for aggregation stage
     try:
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -3154,21 +4171,542 @@ def robustness_for_course(
         finally:
             temporary_output.unlink(missing_ok=True)
         if technical_failure_count:
+            # The partial table stays published as failed-stage evidence, but a
+            # failed run never gets a completed source-disposition sidecar.
             raise RuntimeError(
                 f"incomplete robustness extraction: published partial results to {output_path}; "
                 f"technical_failure_arm_rows={technical_failure_count}; see exact conditions and evidence in parquet"
             )
-        logger.info(
-            "Saved robustness feature values to %s (%d rows, %d unique perturbations)",
-            output_path,
-            len(combined_df),
-            combined_df["perturbation_id"].nunique(),
-        )
-        return output_path
     except Exception as e:
         if technical_failure_count and output_path.exists() and "published partial results" in str(e):
             raise
         raise RuntimeError(f"failed to save robustness results to {output_path}: {e}") from e
+
+    try:
+        _publish_source_dispositions(output_path)
+    except BaseException:
+        # The nominal completed table was never certified, so it is withdrawn
+        # rather than left looking like a measured result. The deliberately
+        # partial technical_failure table is a different case: it raises above,
+        # before this point, and its failed-condition evidence stays published.
+        output_path.unlink(missing_ok=True)
+        raise
+    logger.info(
+        "Saved robustness feature values to %s (%d rows, %d unique perturbations)",
+        output_path,
+        len(combined_df),
+        combined_df["perturbation_id"].nunique(),
+    )
+    return output_path
+
+
+# ============================================================================
+# Typed course outcome: what one robustness course step actually established
+# ============================================================================
+
+
+class RobustnessNotRequestedError(RuntimeError):
+    """Robustness (or its perturbation mode) is switched off for this course.
+
+    A disabled stage is a configuration state, not a course outcome. It is its
+    own error type so a caller must branch on it explicitly instead of reading
+    a ``None`` as either success or failure, and so a disabled run can never
+    reach the admission path and adopt a previous run's sidecar.
+    """
+
+
+class RobustnessSelectionUnmatchedError(RuntimeError):
+    """No source ROI matched the requested robustness selection.
+
+    This is a blocking selection/configuration outcome. Nothing was measured
+    and nothing was found to be non-volumetric, so the course has no anatomical
+    finding to publish: an unfound name excludes no anatomy, and no technical
+    geometry may be fabricated to stand in for it. The run's sidecar evidence
+    is preserved, but the course completes nothing and enters no cohort.
+    """
+
+
+# A measured course and a course whose selected source ROIs are all
+# non-volumetric both reached a terminal, non-technical answer. An unmatched
+# selection did not: it stays blocking.
+ROBUSTNESS_STEP_COMPLETING_OUTCOMES = frozenset(
+    {ROBUSTNESS_MEASURED_OUTCOME, ROBUSTNESS_SOURCE_ONLY_OUTCOME}
+)
+
+
+@dataclass(frozen=True)
+class RobustnessCourseOutcome:
+    """One course's terminal, admitted robustness outcome.
+
+    Produced only by :func:`run_robustness_course`, and only from evidence the
+    current run published: the outcome, the run identifier, the exact output
+    name, the disposition sidecar and its digest, and (for a measured course)
+    the exact table bytes. ``None`` alone never produces one of these.
+    """
+
+    course_dir: Path
+    patient_id: str
+    course_id: str
+    run_identifier: str
+    measurement_outcome: str
+    output_name: str
+    dispositions_path: Path
+    dispositions_sha256: str
+    source_disposition_count: int
+    effective_configuration_sha256: str
+    measured_output: Optional[Path] = None
+    measured_output_sha256: Optional[str] = None
+
+    @property
+    def measured(self) -> bool:
+        return self.measurement_outcome == ROBUSTNESS_MEASURED_OUTCOME
+
+    @property
+    def completes_step(self) -> bool:
+        """Measured and source-only are terminal completions; nothing else is."""
+        return self.measurement_outcome in ROBUSTNESS_STEP_COMPLETING_OUTCOMES
+
+
+def _require_course_output_path(course_dir: Path, output_path: Path) -> Path:
+    """The output must be one named file inside the course being processed."""
+    from .course_manifest import require_no_output_symlinks
+
+    course_dir = Path(course_dir)
+    output_path = Path(output_path)
+    require_no_output_symlinks(course_dir)
+    require_no_output_symlinks(output_path)
+    require_no_output_symlinks(robustness_source_dispositions_path(course_dir))
+    if output_path.name != str(output_path.name).strip() or not output_path.name:
+        raise ValueError(f"robustness output name {output_path.name!r} is unusable")
+    if output_path.parent.resolve(strict=False) != course_dir.resolve(strict=False):
+        raise ValueError(
+            f"robustness output {output_path} is not inside course {course_dir}"
+        )
+    return output_path
+
+
+def _admit_source_only_course_outcome(
+    course_dir: Path,
+    *,
+    rob_config: "RobustnessConfig",
+    output_name: str,
+) -> Tuple[str, str, List[Dict[str, Any]]]:
+    """Read this run's sidecar for a course that published no table.
+
+    The run identifier comes from the sidecar because no table exists to
+    declare one; every other binding (sources, code, configuration, digests,
+    outcome, and the absence of a table) is re-checked by the loader, and the
+    caller has already established that the sidecar is this run's own.
+    """
+    path = robustness_source_dispositions_path(course_dir)
+    if not path.is_file():
+        raise RuntimeError(
+            f"robustness for {course_dir} produced no measurement table and no "
+            "source-disposition evidence; an absent answer is a failure, not a "
+            "completed course"
+        )
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError(
+            f"robustness source dispositions {path} are not a record: "
+            f"{type(payload).__name__}"
+        )
+    run_identifier = str(payload.get("robustness_run_identifier") or "").strip()
+    if not run_identifier:
+        raise ValueError(
+            f"robustness source dispositions {path} record no run identity"
+        )
+    outcome = str(payload.get("measurement_outcome") or "")
+    rows = load_robustness_source_dispositions(
+        course_dir,
+        run_identifier=run_identifier,
+        rob_config=rob_config,
+        output_name=output_name,
+    )
+    return run_identifier, outcome, rows
+
+
+def run_robustness_course(
+    config: PipelineConfig,
+    rob_config: "RobustnessConfig",
+    course_dir: Path,
+    *,
+    output_path: Path,
+) -> RobustnessCourseOutcome:
+    """Run one course's robustness pass and admit exactly what it published.
+
+    This is the consumer adapter for :func:`robustness_for_course`, whose
+    ``Optional[Path]`` return is deliberately unchanged. That return value
+    cannot distinguish a course that legitimately measured nothing from one
+    that found no CT or extracted nothing, so this function never reads it as
+    an outcome on its own: it requires evidence this call produced, under the
+    caller's current configuration and for the exact output name requested.
+
+    Raises:
+        RobustnessNotRequestedError: robustness or its mode is disabled.
+        RobustnessSelectionUnmatchedError: the selection matched no source ROI.
+        Exception: any technical failure of the run, unchanged and unswallowed.
+    """
+    course_dir = Path(course_dir)
+    output_path = _require_course_output_path(course_dir, output_path)
+    output_name = output_path.name
+
+    if not rob_config.enabled:
+        raise RobustnessNotRequestedError(
+            "radiomics robustness is disabled in the effective configuration"
+        )
+    if ROBUSTNESS_MEASUREMENT_TYPE not in rob_config.modes:
+        raise RobustnessNotRequestedError(
+            f"robustness mode {ROBUSTNESS_MEASUREMENT_TYPE!r} is not enabled in "
+            f"the effective configuration (modes={list(rob_config.modes)})"
+        )
+
+    # Drop any previous run's sidecar before this run starts. The producer does
+    # the same, but doing it here as well is what lets the admission below say
+    # that whatever it finds afterwards was written by *this* call, so an
+    # unexpected ``None`` can never be certified by an older run's evidence.
+    invalidate_robustness_source_dispositions(course_dir)
+
+    produced = robustness_for_course(
+        config, rob_config, course_dir, output_path=output_path
+    )
+
+    if produced is not None:
+        produced = Path(produced)
+        if produced.resolve(strict=False) != output_path.resolve(strict=False):
+            raise RuntimeError(
+                f"robustness published {produced}, not the requested output "
+                f"{output_path}"
+            )
+        admitted = _admit_robustness_aggregation_input(output_path, rob_config)
+        dispositions_path = robustness_source_dispositions_path(course_dir)
+        return RobustnessCourseOutcome(
+            course_dir=course_dir,
+            patient_id=admitted.patient_id,
+            course_id=admitted.course_id,
+            run_identifier=admitted.run_identifier,
+            measurement_outcome=ROBUSTNESS_MEASURED_OUTCOME,
+            output_name=output_name,
+            dispositions_path=dispositions_path,
+            dispositions_sha256=_file_sha256(dispositions_path),
+            source_disposition_count=len(admitted.source_dispositions),
+            effective_configuration_sha256=_content_sha256(
+                effective_robustness_configuration(
+                    rob_config, output_name=output_name
+                )
+            ),
+            measured_output=output_path,
+            measured_output_sha256=admitted.table_sha256,
+        )
+
+    run_identifier, outcome, rows = _admit_source_only_course_outcome(
+        course_dir, rob_config=rob_config, output_name=output_name
+    )
+    if outcome == ROBUSTNESS_MEASURED_OUTCOME:
+        raise RuntimeError(
+            f"robustness for {course_dir} published no table but its source "
+            "dispositions claim a measured outcome"
+        )
+    if outcome == ROBUSTNESS_UNMATCHED_SELECTION_OUTCOME:
+        raise RobustnessSelectionUnmatchedError(
+            f"robustness for {course_dir} matched no source structure for the "
+            f"requested selection "
+            f"{sorted(str(p) for p in rob_config.perturbation.apply_to_structures)}; "
+            "this is a selection/configuration outcome, not an anatomical "
+            "finding, and it completes no course"
+        )
+    if outcome != ROBUSTNESS_SOURCE_ONLY_OUTCOME:
+        raise RuntimeError(
+            f"robustness for {course_dir} recorded outcome {outcome!r}, which is "
+            "not a terminal course outcome"
+        )
+    dispositions_path = robustness_source_dispositions_path(course_dir)
+    return RobustnessCourseOutcome(
+        course_dir=course_dir,
+        patient_id=course_dir.parent.name,
+        course_id=course_dir.name,
+        run_identifier=run_identifier,
+        measurement_outcome=outcome,
+        output_name=output_name,
+        dispositions_path=dispositions_path,
+        dispositions_sha256=_file_sha256(dispositions_path),
+        source_disposition_count=len(rows),
+        effective_configuration_sha256=_content_sha256(
+            effective_robustness_configuration(rob_config, output_name=output_name)
+        ),
+    )
+
+
+@dataclass(frozen=True)
+class _AdmittedRobustnessInput:
+    """One per-course table that the current context is allowed to aggregate.
+
+    ``frame`` was parsed from ``table_sha256``'s exact bytes, so everything the
+    cohort summary says is bound to the bytes admission certified. Re-reading
+    the file later would reopen the gap this closes.
+    """
+
+    path: Path
+    course_dir: Path
+    patient_id: str
+    course_id: str
+    run_identifier: str
+    table_sha256: str
+    frame: pd.DataFrame
+    source_dispositions: List[Dict[str, Any]]
+
+
+def _read_robustness_input_bytes(path: Path) -> Tuple[str, pd.DataFrame]:
+    """Read one aggregation input exactly once and hash what was read."""
+    from io import BytesIO
+
+    if not path.exists():
+        raise FileNotFoundError(f"robustness input parquet does not exist: {path}")
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"robustness input parquet does not exist as a readable file: {path}"
+        )
+    data = path.read_bytes()
+    try:
+        frame = pd.read_parquet(BytesIO(data))
+    except Exception as e:
+        raise RuntimeError(f"failed to read robustness input {path}: {e}") from e
+    return hashlib.sha256(data).hexdigest(), frame
+
+
+def _admitted_table_identity(
+    frame: pd.DataFrame, path: Path
+) -> Tuple[str, str, str]:
+    """The patient, course and run identity the table itself declares.
+
+    A table with no readable run identity cannot be matched to the run-bound
+    disposition sidecar at all, and a table carrying several runs is not one
+    run's product; neither may be admitted on the strength of its filename.
+    """
+
+    def _readable(column: str) -> set[str]:
+        if column not in frame.columns:
+            raise RuntimeError(
+                f"robustness input {path} has no {column} column; a table that "
+                "does not declare its own identity cannot be admitted"
+            )
+        return {
+            text
+            for text in frame[column].dropna().astype(str).str.strip().unique()
+            if text and text.lower() not in {"nan", "none", "<na>"}
+        }
+
+    runs = _readable("run_identifier")
+    if not runs:
+        raise RuntimeError(
+            f"robustness input {path} carries no readable robustness run identity"
+        )
+    if len(runs) > 1:
+        raise RuntimeError(
+            f"robustness input {path} carries {len(runs)} robustness run "
+            f"identities {sorted(runs)}; one course table is the product of "
+            "exactly one run"
+        )
+    patients = _readable("patient_id")
+    courses = _readable("course_id")
+    if len(patients) != 1 or len(courses) != 1:
+        raise RuntimeError(
+            f"robustness input {path} carries {len(patients)} patient and "
+            f"{len(courses)} course identities; one course table describes "
+            "exactly one course"
+        )
+    return patients.pop(), courses.pop(), runs.pop()
+
+
+def _verify_admitted_table_bytes(
+    course_dir: Path, path: Path, table_sha256: str
+) -> None:
+    """Bind the bytes this aggregation parsed to the certified measured output.
+
+    The disposition loader re-hashes whatever is on disk when it runs. This
+    additionally requires the certified digest to equal the digest of the bytes
+    that were actually read for the summary, so an input replaced between the
+    two reads cannot be summarised as if it had been certified.
+    """
+    payload = json.loads(
+        robustness_source_dispositions_path(course_dir).read_text(encoding="utf-8")
+    )
+    outcome = payload.get("measurement_outcome")
+    if outcome != ROBUSTNESS_MEASURED_OUTCOME:
+        raise ValueError(
+            f"robustness source dispositions for {course_dir} record outcome "
+            f"{outcome!r}, which certifies no measurement table"
+        )
+    measured_output = payload.get("measured_output")
+    if not isinstance(measured_output, dict):
+        raise ValueError(
+            f"robustness source dispositions for {course_dir} bind no measured output"
+        )
+    if str(measured_output.get("path") or "") != path.name:
+        raise ValueError(
+            f"robustness source dispositions for {course_dir} certify "
+            f"{measured_output.get('path')!r}, not the aggregated {path.name!r}"
+        )
+    recorded = str(measured_output.get("sha256") or "")
+    if recorded != table_sha256:
+        raise ValueError(
+            f"robustness input {path} changed after publication (recorded sha256 "
+            f"{recorded!r}, aggregated {table_sha256!r})"
+        )
+
+
+def _admit_robustness_aggregation_input(
+    parquet_path: Path, rob_config: RobustnessConfig
+) -> _AdmittedRobustnessInput:
+    """Admit one per-course table into this aggregation's current context.
+
+    Admission is the same run/source/code/configuration binding the course
+    published under, re-checked against the code and configuration now on
+    disk, plus the filename and byte identity of this specific input. A course
+    whose sidecar is missing, unreadable, stale, foreign or bound to a
+    different table is rejected; it is not silently summarised.
+
+    Assurance and its limit. This certifies which bytes were aggregated and
+    which recorded code and configuration decided them. It does not certify the
+    code the interpreter executed, nor the DICOM to NIfTI derivation upstream
+    of the table; those remain open provenance gaps outside this module.
+    """
+    path = Path(parquet_path)
+    table_sha256, frame = _read_robustness_input_bytes(path)
+
+    # A table that declares its own technical failures is rejected on its own
+    # evidence first, so the failed course is named rather than the sidecar it
+    # was never allowed to publish.
+    if (
+        "robustness_status" in frame
+        and frame["robustness_status"].eq("technical_failure").any()
+    ):
+        raise RuntimeError(
+            "technical robustness failures require recovery before aggregation: "
+            f"{path}"
+        )
+
+    patient_id, course_id, run_identifier = _admitted_table_identity(frame, path)
+    course_dir = path.parent
+    if (patient_id, course_id) != (course_dir.parent.name, course_dir.name):
+        raise RuntimeError(
+            f"robustness input {path} declares {patient_id}/{course_id} and "
+            f"does not belong to course {course_dir.parent.name}/{course_dir.name}"
+        )
+
+    source_dispositions = load_robustness_source_dispositions(
+        course_dir,
+        run_identifier=run_identifier,
+        rob_config=rob_config,
+        output_name=path.name,
+    )
+    _verify_admitted_table_bytes(course_dir, path, table_sha256)
+
+    return _AdmittedRobustnessInput(
+        path=path,
+        course_dir=course_dir,
+        patient_id=patient_id,
+        course_id=course_id,
+        run_identifier=run_identifier,
+        table_sha256=table_sha256,
+        frame=frame,
+        source_dispositions=source_dispositions,
+    )
+
+
+def _admit_robustness_aggregation_inputs(
+    input_parquets: List[Path], rob_config: RobustnessConfig
+) -> List[_AdmittedRobustnessInput]:
+    """Admit every input, refusing to count one course twice."""
+    admitted: List[_AdmittedRobustnessInput] = []
+    seen_paths: Dict[str, Path] = {}
+    seen_courses: Dict[Tuple[str, str], Path] = {}
+    seen_tables: Dict[str, Path] = {}
+    for parquet_path in input_parquets:
+        entry = _admit_robustness_aggregation_input(parquet_path, rob_config)
+        for registry, key, repeated in (
+            (seen_paths, str(entry.path.resolve()), "input path"),
+            (seen_courses, (entry.patient_id, entry.course_id), "course identity"),
+            (seen_tables, entry.table_sha256, "table content"),
+        ):
+            previous = registry.get(key)
+            if previous is not None:
+                raise RuntimeError(
+                    f"duplicate robustness aggregation input: {entry.path} repeats "
+                    f"the {repeated} of {previous}; one course contributes to the "
+                    "cohort exactly once"
+                )
+            registry[key] = entry.path
+        admitted.append(entry)
+
+    if not admitted:
+        raise RuntimeError("no robustness results were supplied for aggregation")
+    return admitted
+
+
+def _publish_robustness_cohort_outputs(
+    *,
+    output_excel: Path,
+    raw_parquet_path: Path,
+    raw_frame: pd.DataFrame,
+    sheets: List[Tuple[str, pd.DataFrame]],
+    verify_evidence=None,
+) -> None:
+    """Publish the workbook and the raw values as one cohort result.
+
+    Both files are built beside their destinations and only then moved into
+    place, so an aggregation that fails in this process leaves neither a
+    nominal-looking workbook nor a nominal raw Parquet that no summary
+    certifies. Any output that cannot be withdrawn is named in the log rather
+    than passed over.
+
+    Limit, stated rather than implied: two files cannot be moved into place by
+    one atomic operation. A process killed between the two ``os.replace`` calls
+    can leave a current raw Parquet beside an absent or previous workbook.
+    Aggregation deletes both destinations before it starts, so the next run
+    cannot inherit that state silently, but a crash in this window is real
+    residue and not something this function can prevent.
+    """
+    temporary_raw = raw_parquet_path.with_name(raw_parquet_path.name + ".tmp")
+    temporary_excel = output_excel.with_name(output_excel.name + ".tmp")
+    from .course_manifest import require_no_output_symlinks
+    for path in (output_excel, raw_parquet_path, temporary_raw, temporary_excel):
+        require_no_output_symlinks(path)
+    try:
+        # Raw values go to parquet (no row limit, unlike Excel's 1,048,576).
+        raw_frame.to_parquet(temporary_raw, index=False)
+
+        with pd.ExcelWriter(temporary_excel, engine="openpyxl") as writer:
+            for sheet_name, frame in sheets:
+                frame.to_excel(writer, sheet_name=sheet_name, index=False)
+            # Note: Raw values saved to parquet file (see caller's log)
+            # Excel has 1,048,576 row limit; large datasets exceed this
+
+        if verify_evidence is not None:
+            verify_evidence()
+        for path in (output_excel, raw_parquet_path, temporary_raw, temporary_excel):
+            require_no_output_symlinks(path)
+        os.replace(temporary_raw, raw_parquet_path)
+        os.replace(temporary_excel, output_excel)
+    except BaseException as e:
+        residual = []
+        for withdrawn in (
+            temporary_raw,
+            temporary_excel,
+            raw_parquet_path,
+            output_excel,
+        ):
+            try:
+                withdrawn.unlink(missing_ok=True)
+            except OSError as unlink_error:
+                residual.append(f"{withdrawn} ({unlink_error})")
+        logger.error("Failed to write aggregated results: %s", e)
+        if residual:
+            logger.error(
+                "Residual cohort output(s) could not be withdrawn: %s",
+                ", ".join(residual),
+            )
+        raise
 
 
 def aggregate_robustness_results(
@@ -3179,30 +4717,35 @@ def aggregate_robustness_results(
     """
     Aggregate per-course robustness results into cohort-level summary.
 
+    Only tables admitted by :func:`_admit_robustness_aggregation_input` are
+    summarised: each input must still be the run-bound, code-bound,
+    configuration-bound and byte-bound measurement its course published. A
+    course that cannot be admitted fails the cohort; it is never turned into a
+    clinical exclusion and never shrinks the denominator silently.
+
     Args:
         input_parquets: List of per-course parquet files
         output_excel: Output Excel file path
         rob_config: Robustness configuration
     """
     logger.info("Aggregating robustness results from %d courses", len(input_parquets))
-    output_excel.unlink(missing_ok=True)
+    output_excel = Path(output_excel)
+    withdraw_robustness_cohort_outputs(output_excel)
     raw_parquet_path = output_excel.parent / (output_excel.stem + "_raw_values.parquet")
-    raw_parquet_path.unlink(missing_ok=True)
 
-    all_dfs = []
-    for parquet_path in input_parquets:
-        if not parquet_path.exists():
-            raise FileNotFoundError(f"robustness input parquet does not exist: {parquet_path}")
-        try:
-            df = pd.read_parquet(parquet_path)
-            all_dfs.append(df)
-        except Exception as e:
-            raise RuntimeError(f"failed to read robustness input {parquet_path}: {e}") from e
+    admitted = _admit_robustness_aggregation_inputs(input_parquets, rob_config)
+    logger.info(
+        "Admitted %d certified robustness course table(s): %s",
+        len(admitted),
+        ", ".join(
+            f"{entry.patient_id}/{entry.course_id}@{entry.run_identifier}"
+            for entry in admitted
+        ),
+    )
 
-    if not all_dfs:
-        raise RuntimeError("no robustness results were supplied for aggregation")
-
-    combined_raw = pd.concat(all_dfs, ignore_index=True)
+    combined_raw = pd.concat(
+        [entry.frame for entry in admitted], ignore_index=True
+    )
 
     # Normalize column names
     if "roi_name" in combined_raw.columns and "structure" not in combined_raw.columns:
@@ -3243,53 +4786,658 @@ def aggregate_robustness_results(
 
     output_excel.parent.mkdir(parents=True, exist_ok=True)
 
-    # Save raw values to parquet (no row limit, unlike Excel's 1,048,576)
-    try:
-        combined_raw.to_parquet(raw_parquet_path, index=False)
+    sheets: List[Tuple[str, pd.DataFrame]] = [("global_summary", global_summary)]
+    if per_source_summary is not None:
+        sheets.append(("per_source_summary", per_source_summary))
+    sheets.append(("per_structure_source", per_structure_summary))
+    sheets.append(("robust_features", robust_features))
+    sheets.append(("acceptable_features", acceptable_features))
+    if robust_per_source is not None:
+        sheets.append(("robust_features_per_source", robust_per_source))
+    _publish_robustness_cohort_outputs(
+        output_excel=output_excel,
+        raw_parquet_path=raw_parquet_path,
+        raw_frame=combined_raw,
+        sheets=sheets,
+    )
+
+    logger.info(
+        "Saved raw robustness values to %s (%d rows)",
+        raw_parquet_path,
+        len(combined_raw),
+    )
+    logger.info(
+        "Saved aggregated robustness results to %s (features=%d, structures=%d)",
+        output_excel,
+        len(global_summary),
+        len(per_structure_summary),
+    )
+    if not global_summary.empty:
         logger.info(
-            "Saved raw robustness values to %s (%d rows)",
-            raw_parquet_path,
-            len(combined_raw),
+            "Global summary: %d robust, %d acceptable",
+            len(robust_features),
+            len(acceptable_features),
         )
-    except Exception as e:
-        logger.error("Failed to write raw values parquet: %s", e)
-        raise
-
-    try:
-        with pd.ExcelWriter(output_excel, engine="openpyxl") as writer:
-            global_summary.to_excel(writer, sheet_name="global_summary", index=False)
-
-            if per_source_summary is not None:
-                per_source_summary.to_excel(writer, sheet_name="per_source_summary", index=False)
-
-            per_structure_summary.to_excel(writer, sheet_name="per_structure_source", index=False)
-
-            robust_features.to_excel(writer, sheet_name="robust_features", index=False)
-            acceptable_features.to_excel(writer, sheet_name="acceptable_features", index=False)
-
-            if robust_per_source is not None:
-                robust_per_source.to_excel(writer, sheet_name="robust_features_per_source", index=False)
-
-            # Note: Raw values saved to parquet file (see log above)
-            # Excel has 1,048,576 row limit; large datasets exceed this
-
+    if per_source_summary is not None:
         logger.info(
-            "Saved aggregated robustness results to %s (features=%d, structures=%d)",
+            "Per-source summary: %d combinations",
+            len(per_source_summary),
+        )
+
+
+# ============================================================================
+# Manifest-driven cohort consumption
+#
+# The measured-table entry point above answers "summarise these tables". This
+# section answers the question an all-patient cohort actually asks: "account
+# for every course organize validated". The manifest is the authority for that
+# denominator, so every course it names must produce a revalidated receipt, and
+# a course that measured nothing is carried as an explicit accounting record
+# rather than disappearing from the cohort.
+# ============================================================================
+
+# The canonical raw robustness value schema. It is written even when a cohort
+# measured nothing, so a consumer of the raw Parquet always meets the same
+# columns and can tell "no measurements" from "a different artifact".
+ROBUSTNESS_RAW_VALUE_COLUMNS: Tuple[str, ...] = (
+    *ROBUSTNESS_SOURCE_IDENTITY_COLUMNS,
+    "structure",
+    "modality",
+    *ROBUSTNESS_PERTURBATION_IDENTITY_COLUMNS,
+    "extraction_arm",
+    "run_identifier",
+    "feature_name",
+    "value",
+    "robustness_status",
+)
+_ROBUSTNESS_RAW_FLOAT_COLUMNS = frozenset({"value"})
+
+# The columns :func:`summarize_feature_stability` produces for a non-empty
+# cohort, used to keep an empty summary sheet readable instead of blank.
+ROBUSTNESS_SUMMARY_COLUMNS: Tuple[str, ...] = (
+    "structure",
+    "segmentation_source",
+    "extraction_arm",
+    "feature_name",
+    "n_subjects",
+    "n_subjects_complete",
+    "n_subjects_dropped",
+    "n_courses",
+    "n_perturbations",
+    "icc",
+    "icc_ci95_low",
+    "icc_ci95_high",
+    "cov_pct",
+    "cov_pct_q1",
+    "cov_pct_q3",
+    "n_subjects_cov",
+    "cov_status",
+    "qcd",
+    "qcd_q1",
+    "qcd_q3",
+    "n_subjects_qcd",
+    "qcd_status",
+    "robustness_label",
+    "pass_seg_perturb",
+)
+
+ROBUSTNESS_COURSE_OUTCOME_COLUMNS: Tuple[str, ...] = (
+    "patient_id",
+    "course_id",
+    "measurement_outcome",
+    "robustness_run_identifier",
+    "output_path",
+    "table_present",
+    "table_sha256",
+    "table_row_count",
+    "measured_value_row_count",
+    "geometric_nonmeasurement_row_count",
+    "other_status_row_count",
+    "contributes_measurements",
+    "source_disposition_count",
+    "source_dispositions_sha256",
+    "effective_configuration_sha256",
+)
+
+
+@dataclass(frozen=True)
+class RobustnessCohortCourse:
+    """One manifest course, admitted with everything its receipt binds.
+
+    ``frame`` is present only for a measured course, and holds the exact bytes
+    admission certified. A source-only course carries its dispositions and no
+    frame: it measured nothing, and nothing here may invent perturbations,
+    voxels or features for it.
+    """
+
+    patient_id: str
+    course_id: str
+    course_dir: Path
+    run_identifier: str
+    measurement_outcome: str
+    output_name: str
+    source_dispositions: List[Dict[str, Any]]
+    dispositions_sha256: str
+    effective_configuration_sha256: str
+    measured_output: Optional[Path] = None
+    measured_output_sha256: Optional[str] = None
+    frame: Optional[pd.DataFrame] = None
+    sidecar_snapshot: bytes = b""
+    receipt_snapshot: bytes = b""
+    table_snapshot: Optional[bytes] = None
+
+    @property
+    def measured(self) -> bool:
+        return self.measurement_outcome == ROBUSTNESS_MEASURED_OUTCOME
+
+
+def admit_robustness_cohort_course(
+    course_dir: Path,
+    *,
+    patient_id: str,
+    course_id: str,
+    rob_config: RobustnessConfig,
+) -> RobustnessCohortCourse:
+    """Admit one manifest course from its completion receipt.
+
+    Every binding the course published is re-checked here against the current
+    configuration and the artifacts on disk: the receipt's own identity and
+    digests, the disposition sidecar under the current perturbation grid and
+    thresholds, and — for a measured course — the table bytes, its declared
+    run/patient/course identity and the sidecar's certification of exactly
+    that file. A legacy ``ok`` sentinel is rejected, not migrated.
+    """
+    from .robustness_completion import (
+        read_robustness_completion_sentinel,
+        robustness_completion_sentinel_path,
+        RobustnessCompletionError,
+    )
+
+    from .course_manifest import require_no_output_symlinks
+
+    course_dir = Path(course_dir)
+    require_no_output_symlinks(course_dir)
+    require_no_output_symlinks(robustness_source_dispositions_path(course_dir))
+    require_no_output_symlinks(robustness_completion_sentinel_path(course_dir))
+    try:
+        receipt_snapshot = robustness_completion_sentinel_path(course_dir).read_bytes()
+    except FileNotFoundError as exc:
+        raise RobustnessCompletionError(
+            f"no robustness completion receipt at {robustness_completion_sentinel_path(course_dir)}"
+        ) from exc
+    receipt = read_robustness_completion_sentinel(
+        robustness_completion_sentinel_path(course_dir), course_dir=course_dir
+    )
+    if (receipt.patient_id, receipt.course_id) != (str(patient_id), str(course_id)):
+        raise RuntimeError(
+            f"robustness completion receipt in {course_dir} certifies "
+            f"{receipt.patient_id}/{receipt.course_id}, not the manifest course "
+            f"{patient_id}/{course_id}"
+        )
+    expected_configuration = _content_sha256(
+        effective_robustness_configuration(
+            rob_config, output_name=receipt.output_name
+        )
+    )
+    if receipt.effective_configuration_sha256 != expected_configuration:
+        raise RuntimeError(
+            f"robustness completion receipt in {course_dir} was recorded under "
+            f"effective configuration {receipt.effective_configuration_sha256!r}, "
+            f"not the current {expected_configuration!r}"
+        )
+    if rob_config is None:
+        raise TypeError("cohort admission requires the current rob_config")
+    canonical_path = robustness_source_dispositions_path(course_dir)
+    if receipt.dispositions_path != canonical_path:
+        raise ValueError("completion receipt must bind the canonical disposition sidecar")
+    snapshot = canonical_path.read_bytes()
+    if hashlib.sha256(snapshot).hexdigest() != receipt.dispositions_sha256:
+        raise ValueError("canonical disposition sidecar changed after receipt validation")
+    inspection = _read_robustness_source_dispositions(
+        course_dir,
+        run_identifier=receipt.run_identifier,
+        rob_config=rob_config,
+        output_name=receipt.output_name,
+        snapshot=snapshot,
+    )
+    if inspection.measurement_outcome != receipt.measurement_outcome:
+        raise ValueError("canonical disposition sidecar outcome differs from completion receipt")
+    rows = inspection.rows
+    if len(rows) != receipt.source_disposition_count:
+        raise RuntimeError(
+            f"robustness completion receipt in {course_dir} counts "
+            f"{receipt.source_disposition_count} source disposition(s), but the "
+            f"sidecar carries {len(rows)}"
+        )
+
+    if not receipt.measured:
+        return RobustnessCohortCourse(
+            patient_id=receipt.patient_id,
+            course_id=receipt.course_id,
+            course_dir=course_dir,
+            run_identifier=receipt.run_identifier,
+            measurement_outcome=receipt.measurement_outcome,
+            output_name=receipt.output_name,
+            source_dispositions=rows,
+            dispositions_sha256=receipt.dispositions_sha256,
+            effective_configuration_sha256=expected_configuration,
+            sidecar_snapshot=snapshot,
+            receipt_snapshot=receipt_snapshot,
+        )
+
+    table_path = course_dir / receipt.output_name
+    require_no_output_symlinks(table_path)
+    admitted = _admit_robustness_aggregation_input(table_path, rob_config)
+    if admitted.run_identifier != receipt.run_identifier:
+        raise RuntimeError(
+            f"robustness table {table_path} declares run "
+            f"{admitted.run_identifier!r}, but its completion receipt certifies "
+            f"{receipt.run_identifier!r}"
+        )
+    if admitted.table_sha256 != receipt.measured_output_sha256:
+        raise RuntimeError(
+            f"robustness table {table_path} does not carry the bytes its "
+            f"completion receipt certified (receipt "
+            f"{receipt.measured_output_sha256!r}, aggregated "
+            f"{admitted.table_sha256!r})"
+        )
+    if (admitted.patient_id, admitted.course_id) != (
+        receipt.patient_id,
+        receipt.course_id,
+    ):
+        raise RuntimeError(
+            f"robustness table {table_path} declares "
+            f"{admitted.patient_id}/{admitted.course_id}, not the certified "
+            f"{receipt.patient_id}/{receipt.course_id}"
+        )
+    table_snapshot = table_path.read_bytes()
+    if hashlib.sha256(table_snapshot).hexdigest() != admitted.table_sha256:
+        raise ValueError("measurement table changed during admission")
+    if admitted.source_dispositions != rows:
+        raise ValueError("disposition rows changed during admission")
+    return RobustnessCohortCourse(
+        patient_id=receipt.patient_id,
+        course_id=receipt.course_id,
+        course_dir=course_dir,
+        run_identifier=receipt.run_identifier,
+        measurement_outcome=receipt.measurement_outcome,
+        output_name=receipt.output_name,
+        source_dispositions=admitted.source_dispositions,
+        dispositions_sha256=receipt.dispositions_sha256,
+        effective_configuration_sha256=expected_configuration,
+        measured_output=table_path,
+        measured_output_sha256=admitted.table_sha256,
+        frame=admitted.frame,
+        sidecar_snapshot=snapshot,
+        receipt_snapshot=receipt_snapshot,
+        table_snapshot=table_snapshot,
+    )
+
+
+def _verify_cohort_snapshot(courses, cohort, rob_config):
+    """Revalidate source evidence and public views without replacing certified data."""
+    from io import BytesIO
+    from .course_manifest import parse_course_manifest, require_no_output_symlinks
+    from .robustness_completion import robustness_completion_sentinel_path
+
+    snapshot = cohort.get("manifest_snapshot")
+    if not isinstance(snapshot, bytes):
+        raise ValueError("cohort requires a current-schema manifest snapshot")
+    manifest = Path(cohort["manifest_path"])
+    require_no_output_symlinks(manifest)
+    if manifest.read_bytes() != snapshot:
+        raise ValueError("course manifest changed after admission")
+    entries, current = parse_course_manifest(
+        json.loads(snapshot), output_dir=Path(cohort["output_root"]),
+        manifest_path=manifest, require_current_schema=True,
+    )
+    if current != dict(cohort):
+        raise ValueError("cohort manifest metadata was mutated")
+    actual = {(c.patient_id, c.course_id, c.course_dir.absolute()) for c in courses}
+    expected = {(p, c, d.absolute()) for p, c, d in entries}
+    if actual != expected or len(courses) != len(entries):
+        raise ValueError("admitted courses differ from exact manifest membership")
+    for course in courses:
+        for path in (course.course_dir, robustness_source_dispositions_path(course.course_dir),
+                     robustness_completion_sentinel_path(course.course_dir),
+                     course.course_dir / course.output_name):
+            require_no_output_symlinks(path)
+        if robustness_completion_sentinel_path(course.course_dir).read_bytes() != course.receipt_snapshot:
+            raise ValueError("completion receipt changed after admission")
+        if robustness_source_dispositions_path(course.course_dir).read_bytes() != course.sidecar_snapshot:
+            raise ValueError("canonical sidecar changed after admission")
+        fresh = admit_robustness_cohort_course(
+            course.course_dir, patient_id=course.patient_id, course_id=course.course_id,
+            rob_config=rob_config,
+        )
+        for field in ("run_identifier", "measurement_outcome", "output_name",
+                      "dispositions_sha256", "effective_configuration_sha256",
+                      "measured_output", "measured_output_sha256", "table_snapshot"):
+            if getattr(fresh, field) != getattr(course, field):
+                raise ValueError(f"admitted course snapshot changed: {field}")
+        if fresh.source_dispositions != course.source_dispositions:
+            raise ValueError("admitted disposition view was mutated")
+        if course.table_snapshot is None:
+            if course.frame is not None:
+                raise ValueError("source-only course acquired a measurement frame")
+        elif course.frame is None or not course.frame.equals(pd.read_parquet(BytesIO(course.table_snapshot))):
+            raise ValueError("admitted measurement frame was mutated")
+
+
+def _empty_robustness_raw_frame() -> pd.DataFrame:
+    """The raw value schema with no rows: an explicit zero, not a blank file."""
+    return pd.DataFrame(
+        {
+            column: pd.Series(
+                dtype="float64" if column in _ROBUSTNESS_RAW_FLOAT_COLUMNS else "object"
+            )
+            for column in ROBUSTNESS_RAW_VALUE_COLUMNS
+        }
+    )
+
+
+def _robustness_course_outcome_rows(
+    courses: List[RobustnessCohortCourse],
+) -> pd.DataFrame:
+    """One row per admitted manifest course: the cohort's fixed denominator.
+
+    A table-bearing course and a measured value are counted separately, because
+    a published table can also carry geometric non-measurement rows. Collapsing
+    the two would let a course that measured nothing be reported as measured.
+    """
+    rows: List[Dict[str, Any]] = []
+    for course in courses:
+        table_rows = 0
+        measured_rows = 0
+        geometric_rows = 0
+        other_rows = 0
+        if course.frame is not None:
+            frame = course.frame
+            table_rows = int(len(frame))
+            if "robustness_status" in frame.columns:
+                status = frame["robustness_status"].astype("string").fillna("measured")
+            else:
+                status = pd.Series(
+                    ["measured"] * table_rows, index=frame.index, dtype="string"
+                )
+            is_measured = status.eq(ROBUSTNESS_MEASURED_OUTCOME)
+            if "value" in frame.columns:
+                is_measured &= frame["value"].notna()
+            measured_rows = int(is_measured.sum())
+            geometric_rows = int(status.eq("geometrically_impossible").sum())
+            other_rows = int(table_rows - measured_rows - geometric_rows)
+        rows.append(
+            {
+                "patient_id": course.patient_id,
+                "course_id": course.course_id,
+                "measurement_outcome": course.measurement_outcome,
+                "robustness_run_identifier": course.run_identifier,
+                "output_path": course.output_name,
+                "table_present": course.frame is not None,
+                "table_sha256": course.measured_output_sha256,
+                "table_row_count": table_rows,
+                "measured_value_row_count": measured_rows,
+                "geometric_nonmeasurement_row_count": geometric_rows,
+                "other_status_row_count": other_rows,
+                "contributes_measurements": bool(measured_rows),
+                "source_disposition_count": len(course.source_dispositions),
+                "source_dispositions_sha256": course.dispositions_sha256,
+                "effective_configuration_sha256": course.effective_configuration_sha256,
+            }
+        )
+    return pd.DataFrame(rows, columns=list(ROBUSTNESS_COURSE_OUTCOME_COLUMNS))
+
+
+def _robustness_source_disposition_rows(
+    courses: List[RobustnessCohortCourse],
+) -> pd.DataFrame:
+    """Every admitted course's source dispositions, including measured courses.
+
+    A non-volumetric source ROI in a course that also measured something is the
+    same kind of fact as one in a course that measured nothing. Publishing only
+    the second would make a mixed course look like it had no such ROI.
+    """
+    rows: List[Dict[str, Any]] = []
+    for course in courses:
+        for disposition in course.source_dispositions:
+            row = {
+                "patient_id": course.patient_id,
+                "course_id": course.course_id,
+                "robustness_run_identifier": course.run_identifier,
+                "course_measurement_outcome": course.measurement_outcome,
+            }
+            row.update({key: disposition.get(key) for key in disposition})
+            rows.append(row)
+    columns = [
+        "patient_id",
+        "course_id",
+        "robustness_run_identifier",
+        "course_measurement_outcome",
+        *ROBUSTNESS_SOURCE_DISPOSITION_ROW_FIELDS,
+    ]
+    if not rows:
+        return pd.DataFrame(columns=columns)
+    frame = pd.DataFrame(rows)
+    ordered = [column for column in columns if column in frame.columns]
+    remaining = [column for column in frame.columns if column not in ordered]
+    return frame[ordered + remaining]
+
+
+def robustness_cohort_output_paths(output_excel: Path) -> Tuple[Path, Path]:
+    """The workbook and the raw-value Parquet that form one cohort result."""
+    output_excel = Path(output_excel)
+    return output_excel, output_excel.parent / (
+        output_excel.stem + "_raw_values.parquet"
+    )
+
+
+def withdraw_robustness_cohort_outputs(output_excel: Path) -> None:
+    """Remove any nominal cohort outputs, whatever produced them.
+
+    A cohort attempt that cannot be completed must not leave the previous
+    attempt's workbook standing where a reader would take it for this one.
+    """
+    from .course_manifest import require_no_output_symlinks
+
+    paths = robustness_cohort_output_paths(output_excel)
+    for path in paths:
+        require_no_output_symlinks(path)
+    for path in paths:
+        path.unlink(missing_ok=True)
+
+
+def _require_no_unresolved_quarantine(
+    cohort: Mapping[str, Any], output_excel: Path
+) -> None:
+    """An unresolved technical quarantine blocks the nominal cohort output.
+
+    This mode reports every course organize validated. A course organize could
+    not validate is a technical failure awaiting repair, not a smaller cohort,
+    so the nominal workbook is withheld while any remain. The manifest keeps
+    the quarantine evidence either way; nothing here rewrites or clears it.
+    """
+    quarantines = cohort.get("technical_quarantines") or []
+    count = int(cohort.get("technical_quarantine_count") or 0)
+    if not count and not quarantines:
+        return
+    named = ", ".join(
+        f"{entry.get('patient')}/{entry.get('course')}: {entry.get('reason')}"
+        for entry in quarantines
+        if isinstance(entry, Mapping)
+    )
+    raise RuntimeError(
+        f"refusing to publish {output_excel}: the course manifest still records "
+        f"{count} unresolved technical quarantine(s) [{named}]; a technically "
+        "quarantined course is unfinished work, not a cohort exclusion"
+    )
+
+
+def aggregate_robustness_cohort(
+    courses: List[RobustnessCohortCourse],
+    output_excel: Path,
+    rob_config: RobustnessConfig,
+    *,
+    cohort: Mapping[str, Any],
+) -> None:
+    """Publish the cohort robustness result for every admitted manifest course.
+
+    Measured courses go through the same summary path as the explicit-input
+    aggregation: identical admission, identical ICC/CoV/QCD, identical fixed
+    per-course denominator and identity linkage. Source-only courses are
+    accounted for in ``course_outcomes`` and ``source_dispositions`` and never
+    enter the measurement path, so no perturbation, voxel or feature is ever
+    fabricated for a course that measured nothing.
+
+    A cohort in which every course is source-only is a completed accounting
+    artifact with an explicit zero: empty, schema-preserving raw values and no
+    ICC estimates. That is a statement about what the sources contained; it is
+    not analysis-ready stability evidence, and nothing here converts it into
+    one.
+    """
+    output_excel, raw_parquet_path = robustness_cohort_output_paths(output_excel)
+    withdraw_robustness_cohort_outputs(output_excel)
+
+    if not courses:
+        raise RuntimeError(
+            "the course manifest names no course; a cohort robustness summary "
+            "requires at least one accounted course"
+        )
+    _require_no_unresolved_quarantine(cohort, output_excel)
+    _verify_cohort_snapshot(courses, cohort, rob_config)
+
+    validated = cohort.get("validated_course_count")
+    if validated is not None and int(validated) != len(courses):
+        raise RuntimeError(
+            f"admitted {len(courses)} course(s) for a manifest that validated "
+            f"{int(validated)}; the cohort denominator is fixed by the manifest"
+        )
+
+    seen_courses: Dict[Tuple[str, str], Path] = {}
+    seen_tables: Dict[str, Path] = {}
+    for course in courses:
+        key = (course.patient_id, course.course_id)
+        previous = seen_courses.get(key)
+        if previous is not None:
+            raise RuntimeError(
+                f"duplicate robustness cohort course {course.patient_id}/"
+                f"{course.course_id}: {course.course_dir} repeats {previous}"
+            )
+        seen_courses[key] = course.course_dir
+        if course.measured_output_sha256 is not None:
+            previous_table = seen_tables.get(course.measured_output_sha256)
+            if previous_table is not None:
+                raise RuntimeError(
+                    f"duplicate robustness measurement table content: "
+                    f"{course.measured_output} repeats {previous_table}; one "
+                    "course contributes to the cohort exactly once"
+                )
+            seen_tables[course.measured_output_sha256] = course.measured_output
+
+    measured = [course for course in courses if course.frame is not None]
+    course_outcomes = _robustness_course_outcome_rows(courses)
+    source_dispositions = _robustness_source_disposition_rows(courses)
+
+    logger.info(
+        "Accounting for %d manifest course(s): %d measured, %d source-only",
+        len(courses),
+        len(measured),
+        len(courses) - len(measured),
+    )
+
+    per_source_summary: Optional[pd.DataFrame] = None
+    robust_per_source: Optional[pd.DataFrame] = None
+    if measured:
+        combined_raw = pd.concat(
+            [course.frame for course in measured], ignore_index=True
+        )
+        if "roi_name" in combined_raw.columns and "structure" not in combined_raw.columns:
+            combined_raw.rename(columns={"roi_name": "structure"}, inplace=True)
+        if (
+            "robustness_status" in combined_raw
+            and combined_raw.robustness_status.eq("technical_failure").any()
+        ):
+            raise RuntimeError(
+                "technical robustness failures require recovery before aggregation"
+            )
+        _validate_cohort_feature_sets(combined_raw)
+        per_structure_summary = summarize_feature_stability(combined_raw, rob_config)
+        global_summary = per_structure_summary.copy()
+        if "segmentation_source" in combined_raw.columns:
+            per_source_columns = ["segmentation_source", "structure"]
+            if "extraction_arm" in combined_raw.columns:
+                per_source_columns.append("extraction_arm")
+            per_source_columns.append("feature_name")
+            per_source_summary = summarize_feature_stability(
+                combined_raw, rob_config, group_columns=per_source_columns
+            )
+        if global_summary.empty:
+            robust_features = pd.DataFrame(columns=global_summary.columns)
+            acceptable_features = pd.DataFrame(columns=global_summary.columns)
+        else:
+            robust_features = global_summary[
+                global_summary["robustness_label"] == "robust"
+            ]
+            acceptable_features = global_summary[global_summary["pass_seg_perturb"]]
+        if per_source_summary is not None and not per_source_summary.empty:
+            robust_per_source = per_source_summary[
+                per_source_summary["robustness_label"] == "robust"
+            ]
+    else:
+        # Nothing measured anywhere. The raw values keep their schema and stay
+        # empty, and no summary row is invented for an estimate nobody made.
+        combined_raw = _empty_robustness_raw_frame()
+        empty_summary = pd.DataFrame(columns=list(ROBUSTNESS_SUMMARY_COLUMNS))
+        per_structure_summary = empty_summary
+        global_summary = empty_summary.copy()
+        robust_features = empty_summary.copy()
+        acceptable_features = empty_summary.copy()
+
+    sheets: List[Tuple[str, pd.DataFrame]] = [("global_summary", global_summary)]
+    if per_source_summary is not None:
+        sheets.append(("per_source_summary", per_source_summary))
+    sheets.append(("per_structure_source", per_structure_summary))
+    sheets.append(("robust_features", robust_features))
+    sheets.append(("acceptable_features", acceptable_features))
+    if robust_per_source is not None:
+        sheets.append(("robust_features_per_source", robust_per_source))
+    sheets.append(("course_outcomes", course_outcomes))
+    sheets.append(("source_dispositions", source_dispositions))
+
+    # Recheck after summarization, immediately before publication. Filesystem
+    # changes after this check and multi-file crash atomicity remain unavoidable
+    # without external locking/transactional storage.
+    _verify_cohort_snapshot(courses, cohort, rob_config)
+    from .course_manifest import require_no_output_symlinks
+    require_no_output_symlinks(output_excel)
+    require_no_output_symlinks(raw_parquet_path)
+    output_excel.parent.mkdir(parents=True, exist_ok=True)
+    _publish_robustness_cohort_outputs(
+        output_excel=output_excel,
+        raw_parquet_path=raw_parquet_path,
+        raw_frame=combined_raw,
+        sheets=sheets,
+        verify_evidence=lambda: _verify_cohort_snapshot(courses, cohort, rob_config),
+    )
+
+    logger.info(
+        "Saved raw robustness values to %s (%d rows)",
+        raw_parquet_path,
+        len(combined_raw),
+    )
+    logger.info(
+        "Saved cohort robustness accounting to %s (courses=%d, measured courses=%d, "
+        "measured value rows=%d, source dispositions=%d, summary rows=%d)",
+        output_excel,
+        len(course_outcomes),
+        len(measured),
+        int(course_outcomes["measured_value_row_count"].sum()),
+        len(source_dispositions),
+        len(global_summary),
+    )
+    if not measured:
+        logger.warning(
+            "No manifest course published a robustness measurement: %s is a "
+            "completed accounting artifact with zero measurements and no ICC "
+            "estimates, not analysis-ready stability evidence",
             output_excel,
-            len(global_summary),
-            len(per_structure_summary),
         )
-        if not global_summary.empty:
-            logger.info(
-                "Global summary: %d robust, %d acceptable",
-                len(robust_features),
-                len(acceptable_features),
-            )
-        if per_source_summary is not None:
-            logger.info(
-                "Per-source summary: %d combinations",
-                len(per_source_summary),
-            )
-    except Exception as e:
-        logger.error("Failed to write aggregated results: %s", e)
-        raise

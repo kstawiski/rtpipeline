@@ -19,7 +19,11 @@ from rtpipeline.plan_disposition import (
     validate_source_plan_dispositions, write_source_plan_dispositions,
 )
 from rtpipeline.organize_ledger import read_organize_ledger, OrganizeLedgerError, validate_organize_ledger
-from test_course_identity_reference_chains import _mk_plan, _mk_record, _mk_struct
+from synthetic_rt_fixtures import (
+    make_plan as _mk_plan,
+    make_record as _mk_record,
+    make_struct as _mk_struct,
+)
 
 
 def plan(root, *, structured=False, status="APPROVED", intent="", label="synthetic"):
@@ -344,7 +348,7 @@ def test_workflow_manifest_and_campaign_rollup_preserve_nonmeasurement_denominat
 
 def test_legacy_course_only_manifest_does_not_skip_source_census(tmp_path, monkeypatch):
     import runpy
-    from test_organize_course_quarantine import _organize_workflow
+    from synthetic_rt_fixtures import organize_workflow as _organize_workflow
     script = Path(__file__).resolve().parents[1] / "workflow/scripts/organize_courses.py"
     module = runpy.run_path(str(script))
     out = tmp_path / "out"

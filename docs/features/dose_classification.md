@@ -10,7 +10,7 @@ Free-text plan labels are not classification evidence. Dose-response analyses sh
 
 The classifier links radiation therapy dose (RTDOSE) objects to radiation therapy plan (RTPLAN) objects through `ReferencedRTPlanSequence`. It uses DICOM reference chains, prescription and fraction signatures, treatment-record support, dose summation type, frame of reference, and dose-grid geometry.
 
-A `PLAN_SUM` object may represent a treatment planning system sum. Equivalent plan revisions are deduplicated by reference and prescription evidence. Distinct sequential phases remain separate and may be summed when the reference chain supports that interpretation.
+A `PLAN_SUM` object may represent a treatment planning system sum. When delivered plans share records, revision deduplication requires both complete record coverage and strict plan equivalence from the exported source files. Prescription, fraction count and shared records alone are insufficient. Unproven plans retain membership without a selected or summed course dose. Distinct sequential phases remain separate and may be summed when the reference chain supports that interpretation.
 
 Doses in incompatible frames or nonoverlapping grids are not silently combined. Ambiguous linkage fails closed or emits a warning for clinical review.
 
@@ -24,17 +24,22 @@ The estimator first uses the latest target-bound cumulative dose-to-reference va
 
 `delivered_dose_gy` is null when the records cannot support an estimate. Unknown delivery is never converted to 0.0 Gy or to the prescription.
 
+For `independent_delivered_plans_unreconciled`, the course keeps its plan membership under `UNRESOLVED_INDEPENDENT_DELIVERY`. Course dose and fraction totals are withheld, and dose-response eligibility remains false. Two concurrently treated five-fraction targets must not become a ten-fraction patient course. Per-plan counts remain in `delivery_plan_details`, with plan-tagged records in `fractions.xlsx` and `metadata/fractions_raw.xlsx`. The same withholding applies on resume. Downstream analyses must preserve these nulls rather than replace them with zero, a plan sum or a count of distinct dates.
+
 ## Output fields
 
 | Field | Meaning |
 |---|---|
 | `total_prescription_gy` | Selected treatment intent in Gy |
 | `delivered_dose_gy` | Treatment-record estimate of delivered dose in Gy |
-| `delivery_status` | `fully_delivered`, `partially_delivered`, `delivered_but_records_absent`, or `no_records_at_all` |
+| `delivery_status` | `fully_delivered`, `partially_delivered`, `delivery_unresolved`, `delivered_but_records_absent`, or `no_records_at_all`. |
 | `delivery_method` | `cumulative_dose_reference`, `calculated_dose_reference`, `record_fraction_weighted_prescription`, mixed method, or unknown |
-| `delivered_record_count` | Unique linked RTRECORD instances |
-| `delivered_fraction_count` | Distinct treatment sessions inferred from the records |
-| `planned_fraction_count` | Planned fractions across selected plans |
+| `delivered_record_count` | Sum of per-plan linked RTRECORD counts. A record naming multiple membership plans can contribute more than once. This is not a patient fraction count. |
+| `delivered_fraction_count` | Selected-membership sum of per-plan sessions, or null when independent delivery is unreconciled. |
+| `planned_fraction_count` | Selected-membership sum of per-plan planned fractions, or null when independent delivery is unreconciled. |
+| `fractions_count` | Legacy fraction-table count, withheld as null when independent delivery is unreconciled. |
+| `course_fraction_totals_basis` | `selected_membership_sum` or `withheld_independent_delivery_unreconciled`. |
+| `course_fraction_totals_reason` | Explanation for withheld course totals, otherwise null. |
 | `delivery_plan_details` | Plan-level prescription, delivery, method, and status |
 | `delivery_warnings` | Plan-level dose mismatch or delivered-above-prescription warnings |
 | `unresolved_record_plan_uids` | Referenced plan UIDs absent from the indexed export |

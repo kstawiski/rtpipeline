@@ -279,6 +279,10 @@ class DenominatorLedger:
             reason = str(row.get("reason_code", ""))
             if reason == "extracted" or row.get("disposition") == "extracted":
                 counts["extracted"] += 1
+            elif reason in NONVOLUMETRIC_CODES:
+                counts["nonmeasurement"] = counts.get("nonmeasurement", 0) + 1
+            elif reason in {"CONFIGURED_SKIP", "CONFIGURED_SOURCE_SCOPE_SKIP"}:
+                counts["declared_skip"] = counts.get("declared_skip", 0) + 1
             elif reason in {"not_applicable_modality", "not_applicable_scope", "not_applicable_anatomy", "insufficient_fov",
                             "not_computed_valid_empty_scope"}:
                 counts["excluded_anatomy"] += 1
@@ -317,7 +321,21 @@ def write_modality_ledger(directory: Path, ledger: DenominatorLedger, modality: 
 
     course_groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
     roi_rows: list[dict[str, Any]] = []
-    roi_seen: set[tuple[str, str, str, str, str]] = set()
+    roi_seen: set[tuple[Any, ...]] = set()
+    # A modality ledger already keeps the source identity that makes two
+    # same-named ROI outcomes distinct, so two MR series measuring the same ROI
+    # from the same segmentation source are two accounted outcomes here too.
+    # Each component joins the key only when the row carries it, so a row that
+    # never held these fields -- every CT row -- keeps the key it had before,
+    # and a row repeated verbatim still collapses. The field name is part of the
+    # key so two different fields holding the same value stay distinguishable.
+    source_identity_fields = (
+        "series_uid",
+        "nifti_path",
+        "source_content_sha256",
+        "mask_path_source",
+        "mask_identity",
+    )
     for candidate_modality in ("ct", "mr"):
         path = directory / f"radiomics_{candidate_modality}_roi_ledger.json"
         if not path.exists():
@@ -338,6 +356,10 @@ def write_modality_ledger(directory: Path, ledger: DenominatorLedger, modality: 
                 str(normalized.get("modality", "")),
                 str(normalized.get("roi_name", "")),
                 str(normalized.get("segmentation_source", normalized.get("source", ""))),
+            ) + tuple(
+                (name, str(normalized[name]))
+                for name in source_identity_fields
+                if normalized.get(name) not in (None, "")
             )
             if key in roi_seen:
                 continue
