@@ -111,6 +111,15 @@ logger = logging.getLogger(__name__)
 
 COURSE_FRACTION_TOTALS_SUMMED_BASIS = "selected_membership_sum"
 COURSE_FRACTION_TOTALS_WITHHELD_BASIS = "withheld_independent_delivery_unreconciled"
+COURSE_FRACTION_TOTALS_REPLACEMENT_WITHHELD_BASIS = (
+    "withheld_replacement_denominator_unadjudicated"
+)
+COURSE_FRACTION_TOTALS_WITHHELD_BASES = frozenset(
+    {
+        COURSE_FRACTION_TOTALS_WITHHELD_BASIS,
+        COURSE_FRACTION_TOTALS_REPLACEMENT_WITHHELD_BASIS,
+    }
+)
 
 @dataclass
 class CourseOutput:
@@ -1131,6 +1140,124 @@ def _extract_dose_metadata(dose_path: Path) -> dict:
         }
 
 
+def _plan_dose_references(ds: Dataset) -> list[dict[str, object]]:
+    """Describe every DoseReference item without selecting a target.
+
+    The reference type is retained verbatim. A reference typed ORGAN_AT_RISK or
+    lacking TargetPrescriptionDose is never promoted to a target here; callers
+    use this list only to bind RTRECORD reference numbers to plan semantics.
+    """
+    items: list[dict[str, object]] = []
+    for index, item in enumerate(getattr(ds, "DoseReferenceSequence", None) or []):
+        items.append(
+            {
+                "index": index,
+                "reference_number": str(getattr(item, "DoseReferenceNumber", "") or "").strip() or None,
+                "reference_uid": str(getattr(item, "DoseReferenceUID", "") or "").strip() or None,
+                "reference_type": str(getattr(item, "DoseReferenceType", "") or "").strip().upper() or None,
+                "structure_type": str(getattr(item, "DoseReferenceStructureType", "") or "").strip().upper() or None,
+                "description": str(getattr(item, "DoseReferenceDescription", "") or "").strip() or None,
+                "target_prescription_dose_gy": _finite_nonnegative(
+                    getattr(item, "TargetPrescriptionDose", None)
+                ),
+                "delivery_maximum_dose_gy": _finite_nonnegative(
+                    getattr(item, "DeliveryMaximumDose", None)
+                ),
+                "organ_at_risk_maximum_dose_gy": _finite_nonnegative(
+                    getattr(item, "OrganAtRiskMaximumDose", None)
+                ),
+            }
+        )
+    return items
+
+
+def _therapeutic_beam_dose_bindings(ds: Dataset) -> list[dict[str, object]]:
+    """Return beam number, ReferencedDoseReferenceUID and BeamDose of every BeamDose-bearing therapeutic beam.
+
+    An empty UID marks a therapeutic beam whose BeamDose carries no reference
+    UID, so callers can tell 'all bound to one UID' from 'unbound'.
+    """
+    delivery_types: dict[str, str] = {}
+    for beam in getattr(ds, "BeamSequence", None) or []:
+        number = str(getattr(beam, "BeamNumber", "") or "").strip()
+        delivery_types[number] = str(
+            getattr(beam, "TreatmentDeliveryType", "") or ""
+        ).strip().upper()
+    bindings: list[dict[str, object]] = []
+    for group in getattr(ds, "FractionGroupSequence", None) or []:
+        for reference in getattr(group, "ReferencedBeamSequence", None) or []:
+            number = str(getattr(reference, "ReferencedBeamNumber", "") or "").strip()
+            delivery_type = delivery_types.get(number, "")
+            if delivery_type not in {"TREATMENT", "CONTINUATION", ""}:
+                continue
+            beam_dose = _finite_nonnegative(getattr(reference, "BeamDose", None))
+            if beam_dose is None:
+                continue
+            bindings.append(
+                {
+                    "beam_number": number,
+                    "reference_uid": str(
+                        getattr(reference, "ReferencedDoseReferenceUID", "") or ""
+                    ).strip(),
+                    "beam_dose_gy": beam_dose,
+                }
+            )
+    return bindings
+
+
+_THERAPEUTIC_DELIVERY_TYPES = frozenset({"TREATMENT", "CONTINUATION"})
+
+
+def _delivery_item_number(value: object) -> str:
+    """Normalize a beam or application setup number so plan and record items compare."""
+    text = str(value if value is not None else "").strip()
+    if not text:
+        return ""
+    try:
+        parsed = float(text)
+    except ValueError:
+        return text
+    if np.isfinite(parsed) and parsed == int(parsed):
+        return str(int(parsed))
+    return text
+
+
+def _plan_expected_delivery_items(ds: Dataset) -> dict[str, object]:
+    """List the therapeutic beams or application setups one fraction delivers.
+
+    Only a plan with exactly one FractionGroup defines what a single session
+    must deliver. With several groups a session may deliver any one of them, so
+    the status stays unadjudicated instead of guessing a membership.
+    """
+    groups = list(getattr(ds, "FractionGroupSequence", None) or [])
+    if len(groups) != 1:
+        return {"status": "UNADJUDICATED_FRACTION_GROUP_COUNT", "items": []}
+    delivery_types: dict[str, str] = {}
+    for sequence_name in ("BeamSequence", "IonBeamSequence"):
+        for beam in getattr(ds, sequence_name, None) or []:
+            number = _delivery_item_number(getattr(beam, "BeamNumber", None))
+            delivery_types[number] = str(
+                getattr(beam, "TreatmentDeliveryType", "") or ""
+            ).strip().upper()
+    items: set[tuple[str, str]] = set()
+    for reference in getattr(groups[0], "ReferencedBeamSequence", None) or []:
+        number = _delivery_item_number(getattr(reference, "ReferencedBeamNumber", None))
+        if not number:
+            return {"status": "UNADJUDICATED_BEAM_NUMBER_MISSING", "items": []}
+        if delivery_types.get(number, "") in _THERAPEUTIC_DELIVERY_TYPES | {""}:
+            items.add(("beam", number))
+    for reference in getattr(groups[0], "ReferencedBrachyApplicationSetupSequence", None) or []:
+        number = _delivery_item_number(
+            getattr(reference, "ReferencedBrachyApplicationSetupNumber", None)
+        )
+        if not number:
+            return {"status": "UNADJUDICATED_SETUP_NUMBER_MISSING", "items": []}
+        items.add(("application_setup", number))
+    if not items:
+        return {"status": "UNADJUDICATED_NO_THERAPEUTIC_ITEM", "items": []}
+    return {"status": "DEFINED_SINGLE_FRACTION_GROUP", "items": sorted(items)}
+
+
 def _extract_plan_metadata(plan_path: Path) -> dict:
     """Extract relevant metadata from a plan file for classification."""
     try:
@@ -1152,6 +1279,17 @@ def _extract_plan_metadata(plan_path: Path) -> dict:
         prescription_groups = resolve_plan_prescriptions(ds)
         source_rx = source_plan_prescribed_dose_gy(prescription_groups)
         resolved_total_rx = resolved_plan_total_gy(prescription_groups)
+        dose_references = _plan_dose_references(ds)
+        beam_dose_bindings = _therapeutic_beam_dose_bindings(ds)
+        beam_dose_reference_uids = [item["reference_uid"] for item in beam_dose_bindings]
+        therapeutic_beam_numbers = [item["beam_number"] for item in beam_dose_bindings]
+        therapeutic_beam_dose_sum = (
+            float(sum(float(item["beam_dose_gy"]) for item in beam_dose_bindings))
+            if beam_dose_bindings
+            and len(getattr(ds, "FractionGroupSequence", None) or []) == 1
+            else None
+        )
+        expected_delivery = _plan_expected_delivery_items(ds)
 
         plan_date = str(getattr(ds, "RTPlanDate", "") or getattr(ds, "InstanceCreationDate", ""))
         plan_time = str(getattr(ds, "RTPlanTime", "") or getattr(ds, "InstanceCreationTime", ""))
@@ -1166,6 +1304,12 @@ def _extract_plan_metadata(plan_path: Path) -> dict:
             "source_rx_gy": source_rx,
             "resolved_total_rx_gy": resolved_total_rx,
             "prescription_groups": prescription_groups,
+            "dose_references": dose_references,
+            "beam_dose_reference_uids": beam_dose_reference_uids,
+            "therapeutic_beam_numbers": therapeutic_beam_numbers,
+            "therapeutic_beam_dose_sum_gy": therapeutic_beam_dose_sum,
+            "expected_delivery_items": list(expected_delivery["items"]),
+            "expected_delivery_items_status": expected_delivery["status"],
             "total_rx_gy": resolved_total_rx or 0.0,
         }
     except Exception as e:
@@ -1180,6 +1324,12 @@ def _extract_plan_metadata(plan_path: Path) -> dict:
             "source_rx_gy": None,
             "resolved_total_rx_gy": None,
             "prescription_groups": [],
+            "dose_references": [],
+            "beam_dose_reference_uids": [],
+            "therapeutic_beam_numbers": [],
+            "therapeutic_beam_dose_sum_gy": None,
+            "expected_delivery_items": [],
+            "expected_delivery_items_status": "UNADJUDICATED_PLAN_UNREADABLE",
             "total_rx_gy": 0.0,
         }
 
@@ -1269,6 +1419,14 @@ def _record_session_dose_components(ds: Dataset) -> list[dict[str, object]]:
                 identity = identity or getattr(session_item, "BeamName", None)
                 kind = "beam"
             identity_text = str(identity or f"index:{item_index}").strip()
+            delivery_type = str(
+                getattr(session_item, "TreatmentDeliveryType", "") or ""
+            ).strip().upper()
+            termination_status = str(
+                getattr(session_item, "TreatmentTerminationStatus", "") or ""
+            ).strip().upper()
+            event_time = _session_item_event_time(ds, session_item)
+            delivered_meterset = _session_item_delivered_meterset(session_item)
             dose_sequence = getattr(session_item, "ReferencedCalculatedDoseReferenceSequence", None) or []
             for reference_index, reference_item in enumerate(dose_sequence):
                 dose = _finite_nonnegative(
@@ -1278,10 +1436,25 @@ def _record_session_dose_components(ds: Dataset) -> list[dict[str, object]]:
                     continue
                 components.append(
                     {
-                        "component_key": (kind, sequence_name, identity_text),
+                        # One delivery event of one beam. A machine-interrupted
+                        # TREATMENT event and its CONTINUATION event are distinct
+                        # additive events; a re-exported duplicate record repeats
+                        # the same event and collapses on this key.
+                        "component_key": (
+                            kind,
+                            sequence_name,
+                            identity_text,
+                            delivery_type,
+                            termination_status,
+                            event_time,
+                        ),
                         "reference_number": _dose_reference_number(reference_item),
                         "dose_gy": dose,
                         "reference_index": reference_index,
+                        "delivery_type": delivery_type,
+                        "termination_status": termination_status,
+                        "event_time": event_time,
+                        "delivered_meterset": delivered_meterset,
                     }
                 )
 
@@ -1302,6 +1475,122 @@ def _record_session_dose_components(ds: Dataset) -> list[dict[str, object]]:
                 }
             )
     return components
+
+
+def _session_item_event_time(ds: Dataset, session_item: Dataset) -> str:
+    """Identify when a session beam event started, falling back to the record time."""
+    control_points = getattr(session_item, "ControlPointDeliverySequence", None) or []
+    if control_points:
+        first = control_points[0]
+        date = str(getattr(first, "TreatmentControlPointDate", "") or "").strip()
+        time = str(getattr(first, "TreatmentControlPointTime", "") or "").strip()
+        if date or time:
+            return f"{date}T{time}"
+    date = str(getattr(ds, "TreatmentDate", "") or "").strip()
+    time = str(getattr(ds, "TreatmentTime", "") or "").strip()
+    return f"{date}T{time}"
+
+
+def _session_item_delivered_meterset(session_item: Dataset) -> float | None:
+    """Read the delivered meterset of a session beam event when the record carries it."""
+    control_points = getattr(session_item, "ControlPointDeliverySequence", None) or []
+    if control_points:
+        value = _finite_nonnegative(getattr(control_points[-1], "DeliveredMeterset", None))
+        if value is not None:
+            return value
+    return _finite_nonnegative(getattr(session_item, "DeliveredPrimaryMeterset", None))
+
+
+def _record_session_delivery_events(ds: Dataset) -> list[dict[str, object]]:
+    """Read every therapeutic delivery event of one record, with or without dose.
+
+    An event is one TREATMENT or CONTINUATION item of a session beam or
+    application setup sequence. SETUP and portal-film items deliver no
+    therapeutic dose and are not events. Each event keeps every nested
+    ``CalculatedDoseReferenceDoseValue`` with its reference number; per PS3.3
+    that value is calculated for the delivered meterset, not measured. A value
+    that is present but not finite and non-negative stays visible as invalid.
+    """
+    events: list[dict[str, object]] = []
+    for sequence_name in _SESSION_DOSE_SEQUENCE_NAMES:
+        for item_index, session_item in enumerate(getattr(ds, sequence_name, None) or []):
+            delivery_type = str(
+                getattr(session_item, "TreatmentDeliveryType", "") or ""
+            ).strip().upper()
+            if delivery_type not in _THERAPEUTIC_DELIVERY_TYPES:
+                continue
+            if sequence_name == "TreatmentSessionApplicationSetupSequence":
+                kind = "application_setup"
+                number = _delivery_item_number(
+                    getattr(session_item, "ReferencedBrachyApplicationSetupNumber", None)
+                )
+                name = str(getattr(session_item, "ApplicationSetupName", "") or "").strip()
+            else:
+                kind = "beam"
+                number = _delivery_item_number(getattr(session_item, "ReferencedBeamNumber", None))
+                name = str(getattr(session_item, "BeamName", "") or "").strip()
+            identity = number or (f"name:{name}" if name else f"index:{item_index}")
+            termination_status = str(
+                getattr(session_item, "TreatmentTerminationStatus", "") or ""
+            ).strip().upper()
+            event_time = _session_item_event_time(ds, session_item)
+            dose_references = []
+            for reference_item in (
+                getattr(session_item, "ReferencedCalculatedDoseReferenceSequence", None) or []
+            ):
+                raw_value = getattr(reference_item, "CalculatedDoseReferenceDoseValue", None)
+                dose_references.append(
+                    {
+                        "reference_number": _dose_reference_number(reference_item),
+                        "dose_gy": _finite_nonnegative(raw_value),
+                        "value_present": raw_value not in (None, ""),
+                    }
+                )
+            events.append(
+                {
+                    "event_key": (
+                        kind,
+                        sequence_name,
+                        identity,
+                        delivery_type,
+                        termination_status,
+                        event_time,
+                    ),
+                    "kind": kind,
+                    "identity": identity,
+                    "delivery_type": delivery_type,
+                    "termination_status": termination_status,
+                    "event_time": event_time,
+                    "delivered_meterset": _session_item_delivered_meterset(session_item),
+                    "dose_references": dose_references,
+                }
+            )
+    return events
+
+
+def _record_any_treatment_fraction_number(ds: Dataset) -> int | None:
+    """Return the single CurrentFractionNumber of any treatment-bearing session item.
+
+    Unlike validated-session evidence this accepts interrupted items, so a
+    partial-delivery record joins the session key of the fraction it belongs to
+    instead of degrading to a date-only key.
+    """
+    numbers: set[int] = set()
+    for sequence_name in _SESSION_DOSE_SEQUENCE_NAMES:
+        for item in getattr(ds, sequence_name, None) or []:
+            delivery_type = str(
+                getattr(item, "TreatmentDeliveryType", "") or ""
+            ).strip().upper()
+            if delivery_type not in {"TREATMENT", "CONTINUATION"}:
+                continue
+            text = str(getattr(item, "CurrentFractionNumber", "") or "").strip()
+            try:
+                parsed = int(text, 10)
+            except ValueError:
+                continue
+            if parsed >= 0:
+                numbers.add(parsed)
+    return next(iter(numbers)) if len(numbers) == 1 else None
 
 
 def _record_cumulative_dose_references(ds: Dataset) -> list[dict[str, object]]:
@@ -1325,11 +1614,21 @@ def _record_dose_reference(ds: Dataset) -> tuple[float | None, str | None]:
     This compatibility helper intentionally exposes only the real DICOM
     ``CalculatedDoseReferenceDoseValue`` keyword. Course estimation performs
     plan-reference binding and session de-duplication before using these values.
+    Only therapeutic delivery events count, and a record whose values refer to
+    more than one dose reference returns no value: calculated doses at
+    different reference points do not add.
     """
-    components = _record_session_dose_components(ds)
-    if not components:
+    values: list[float] = []
+    reference_numbers: set[str] = set()
+    for event in _record_session_delivery_events(ds):
+        for reference in event["dose_references"]:
+            if reference["dose_gy"] is None:
+                continue
+            values.append(float(reference["dose_gy"]))
+            reference_numbers.add(str(reference["reference_number"] or ""))
+    if not values or len(reference_numbers) != 1:
         return None, None
-    return float(sum(float(item["dose_gy"]) for item in components)), "calculated_dose_reference"
+    return float(sum(values)), "calculated_dose_reference"
 
 
 def _record_delivery_evidence(record_paths: Iterable[Path]) -> Dict[str, dict]:
@@ -1349,6 +1648,8 @@ def _record_delivery_evidence(record_paths: Iterable[Path]) -> Dict[str, dict]:
         session_validated, nested_fraction_number, session_reason = (
             _record_delivery_session_evidence(ds)
         )
+        if not session_validated and nested_fraction_number is None:
+            nested_fraction_number = _record_any_treatment_fraction_number(ds)
         session_key = _record_delivery_session_key(
             ds,
             record_uid,
@@ -1356,10 +1657,10 @@ def _record_delivery_evidence(record_paths: Iterable[Path]) -> Dict[str, dict]:
         )
         fraction_value = int(session_key[2]) if session_key[0] == "fraction" else None
         components = _record_session_dose_components(ds)
+        delivery_events = _record_session_delivery_events(ds)
         cumulative_references = _record_cumulative_dose_references(ds)
         is_summary_record = _is_treatment_summary_record(ds)
-        dose_gy = float(sum(float(item["dose_gy"]) for item in components)) if components else None
-        dose_method = "calculated_dose_reference" if dose_gy is not None else None
+        dose_gy, dose_method = _record_dose_reference(ds)
         for ref in getattr(ds, "ReferencedRTPlanSequence", []) or []:
             plan_uid = str(getattr(ref, "ReferencedSOPInstanceUID", "") or "")
             if not plan_uid:
@@ -1386,6 +1687,7 @@ def _record_delivery_evidence(record_paths: Iterable[Path]) -> Dict[str, dict]:
                     "session_key": session_key,
                     "is_summary_record": is_summary_record,
                     "session_components": components,
+                    "delivery_events": delivery_events,
                     "cumulative_dose_references": cumulative_references,
                 }
             )
@@ -1438,6 +1740,323 @@ def _delivery_reference_audit(
     }
 
 
+def _delivered_dose_close(left: float, right: float) -> bool:
+    return abs(left - right) <= max(0.1, 0.05 * max(abs(right), 1.0))
+
+
+def _adjudicate_plan_record_delivery(
+    records_for_plan: list[dict[str, object]],
+    *,
+    validated_sessions: set[object],
+    expected_items: Iterable[Iterable[str]],
+    expected_items_status: str,
+    reference_numbers: set[str],
+    per_fraction_reference_gy: float | None,
+) -> dict[str, object]:
+    """Adjudicate what the RTRECORD delivery events of one plan prove.
+
+    One NORMAL item validates a session for fraction counting. A session is
+    complete here only when every therapeutic beam or application setup of the
+    plan's single FractionGroup has events in that session that start with a
+    TREATMENT event, are not repeated after a NORMAL termination, and end
+    NORMAL. A machine-interrupted event and its CONTINUATION are one delivery.
+    A session that never validated but holds therapeutic events whose
+    meterset is not proven zero is an abandoned partial delivery; no delivered
+    estimate accounts for it, so it is reported and blocks the plan.
+
+    Calculated dose values are summed per event over the bound reference
+    numbers. Exact copies of one event from re-exported records count once, and
+    copies that differ in any bound value contradict each other. Validated
+    sessions whose events carry no bound value are absent evidence. A session
+    where only some events carry one, or whose sum is outside tolerance of the
+    plan's per-fraction reference dose, contradicts the plan.
+    """
+
+    expected = {tuple(str(part) for part in item) for item in expected_items}
+    rows_by_session: dict[object, list[dict[str, object]]] = defaultdict(list)
+    for row in records_for_plan:
+        if not row.get("is_summary_record"):
+            rows_by_session[row.get("session_key")].append(row)
+
+    completeness_reasons: list[str] = []
+    dose_reasons: list[str] = []
+    abandoned_sessions = 0
+    abandoned_unquantified = 0
+    abandoned_dose = 0.0
+    zero_delivery_sessions = 0
+    session_doses: dict[object, float] = {}
+    absent_sessions: list[object] = []
+
+    for session_key in sorted(rows_by_session, key=repr):
+        events: dict[tuple, dict[str, object]] = {}
+        signatures: dict[tuple, set[tuple]] = defaultdict(set)
+        record_level_value = False
+        for row in rows_by_session[session_key]:
+            for event in row.get("delivery_events") or []:
+                event_key = tuple(event.get("event_key") or ())
+                bound = tuple(
+                    sorted(
+                        (
+                            str(reference.get("reference_number") or "").strip(),
+                            reference.get("dose_gy") is None,
+                            float(reference.get("dose_gy") or 0.0),
+                            bool(reference.get("value_present")),
+                        )
+                        for reference in event.get("dose_references") or []
+                        if str(reference.get("reference_number") or "").strip()
+                        in reference_numbers
+                    )
+                )
+                signatures[event_key].add(bound)
+                events.setdefault(event_key, event)
+            for component in row.get("session_components") or []:
+                component_key = tuple(component.get("component_key") or ())
+                if (
+                    component_key[:1] == ("record",)
+                    and str(component.get("reference_number") or "").strip()
+                    in reference_numbers
+                ):
+                    record_level_value = True
+
+        values: dict[tuple, float] = {}
+        unbound_events = 0
+        session_contradicted = False
+        for event_key in sorted(events, key=repr):
+            if len(signatures[event_key]) > 1:
+                dose_reasons.append(
+                    f"session {session_key!r}: copies of delivery event {event_key!r} "
+                    "disagree in bound calculated dose"
+                )
+                session_contradicted = True
+                continue
+            bound = next(iter(signatures[event_key]))
+            if any(missing and present for _number, missing, _value, present in bound):
+                dose_reasons.append(
+                    f"session {session_key!r}: delivery event {event_key!r} carries a "
+                    "bound calculated dose that is not finite and non-negative"
+                )
+                session_contradicted = True
+                continue
+            numeric = {value for _number, missing, value, _present in bound if not missing}
+            if not numeric:
+                unbound_events += 1
+                continue
+            if len(numeric) > 1:
+                dose_reasons.append(
+                    f"session {session_key!r}: delivery event {event_key!r} carries "
+                    "different values for its bound dose references"
+                )
+                session_contradicted = True
+                continue
+            values[event_key] = next(iter(numeric))
+
+        if session_key not in validated_sessions:
+            if not events:
+                continue
+            if all(
+                event.get("delivered_meterset") == 0.0 for event in events.values()
+            ) and all(value == 0.0 for value in values.values()):
+                zero_delivery_sessions += 1
+                continue
+            abandoned_sessions += 1
+            if values:
+                abandoned_dose += float(sum(values.values()))
+            else:
+                abandoned_unquantified += 1
+            continue
+
+        if expected_items_status != "DEFINED_SINGLE_FRACTION_GROUP":
+            completeness_reasons.append(
+                f"session {session_key!r}: plan therapeutic membership is "
+                f"unadjudicated ({expected_items_status})"
+            )
+        else:
+            by_item: dict[tuple[str, str], list[dict[str, object]]] = defaultdict(list)
+            for event in events.values():
+                by_item[(str(event.get("kind")), str(event.get("identity")))].append(event)
+            unexpected = sorted(set(by_item) - expected)
+            if unexpected:
+                completeness_reasons.append(
+                    f"session {session_key!r}: therapeutic events for {unexpected} "
+                    "are not in the plan FractionGroup"
+                )
+            for item in sorted(expected):
+                label = f"{item[0]} {item[1]}"
+                item_events = sorted(
+                    by_item.get(item, []), key=lambda event: str(event.get("event_time") or "")
+                )
+                if not item_events:
+                    completeness_reasons.append(
+                        f"session {session_key!r}: no delivery event for {label}"
+                    )
+                    continue
+                times = [str(event.get("event_time") or "") for event in item_events]
+                if len(set(times)) != len(times):
+                    completeness_reasons.append(
+                        f"session {session_key!r}: delivery events for {label} share a "
+                        "start time and cannot be ordered"
+                    )
+                    continue
+                if item_events[0].get("delivery_type") != "TREATMENT":
+                    completeness_reasons.append(
+                        f"session {session_key!r}: {label} starts with a CONTINUATION "
+                        "whose interrupted TREATMENT is not in this session"
+                    )
+                if any(event.get("delivery_type") == "TREATMENT" for event in item_events[1:]):
+                    completeness_reasons.append(
+                        f"session {session_key!r}: {label} restarts with a new TREATMENT event"
+                    )
+                if any(
+                    event.get("termination_status") == "NORMAL" for event in item_events[:-1]
+                ):
+                    completeness_reasons.append(
+                        f"session {session_key!r}: {label} is delivered again after a "
+                        "NORMAL termination"
+                    )
+                final_status = str(item_events[-1].get("termination_status") or "")
+                if final_status != "NORMAL":
+                    completeness_reasons.append(
+                        f"session {session_key!r}: last delivery event for {label} ended "
+                        f"{final_status or 'without a termination status'}"
+                    )
+
+        if not reference_numbers or session_contradicted:
+            continue
+        if record_level_value and not values:
+            dose_reasons.append(
+                f"session {session_key!r}: calculated dose is recorded outside any "
+                "delivery event and cannot be attributed to one"
+            )
+            continue
+        if not values:
+            absent_sessions.append(session_key)
+            continue
+        if unbound_events:
+            dose_reasons.append(
+                f"session {session_key!r}: {unbound_events} delivery event(s) carry no "
+                "bound calculated dose while others do"
+            )
+            continue
+        session_doses[session_key] = float(sum(values.values()))
+
+    if not validated_sessions:
+        completeness_status = "NO_VALIDATED_SESSIONS"
+    elif completeness_reasons:
+        completeness_status = "INCOMPLETE"
+    else:
+        completeness_status = "ALL_SESSIONS_COMPLETE"
+
+    record_dose: float | None = None
+    if not reference_numbers:
+        record_status = "NOT_BOUND"
+    elif dose_reasons:
+        record_status = "CONTRADICTED"
+    elif len(absent_sessions) == len(validated_sessions):
+        record_status = "ABSENT"
+    elif absent_sessions:
+        record_status = "CONTRADICTED"
+        dose_reasons.append(
+            f"bound calculated dose is missing in {len(absent_sessions)} of "
+            f"{len(validated_sessions)} validated sessions"
+        )
+    elif per_fraction_reference_gy is None:
+        record_status = "CONTRADICTED"
+        dose_reasons.append(
+            "no plan per-fraction reference dose is available to check session doses against"
+        )
+    else:
+        for session_key in sorted(session_doses, key=repr):
+            value = session_doses[session_key]
+            if not _delivered_dose_close(value, float(per_fraction_reference_gy)):
+                dose_reasons.append(
+                    f"session {session_key!r} calculated dose {value:.6g} Gy disagrees with "
+                    f"the plan per-fraction reference dose {float(per_fraction_reference_gy):.6g} Gy"
+                )
+        if dose_reasons:
+            record_status = "CONTRADICTED"
+        else:
+            record_status = "COMPLETE"
+            record_dose = float(sum(session_doses.values()))
+
+    return {
+        "completeness_status": completeness_status,
+        "completeness_reasons": completeness_reasons,
+        "abandoned_partial_session_count": abandoned_sessions,
+        "abandoned_partial_dose_gy": abandoned_dose,
+        "abandoned_partial_unquantified_session_count": abandoned_unquantified,
+        "zero_delivery_unvalidated_session_count": zero_delivery_sessions,
+        "record_dose_status": record_status,
+        "record_dose_reasons": dose_reasons,
+        "record_dose_gy": record_dose,
+        "session_count_with_record_dose": len(session_doses),
+    }
+
+
+def _record_reference_binding(
+    meta: dict, target_numbers: set[str]
+) -> dict[str, object]:
+    """Bind RTRECORD reference numbers to plan DoseReference semantics.
+
+    CONTRACTED_TARGET: the prescription resolver established a target reference.
+    SINGLE_NON_TARGET_REFERENCE_BEAMDOSE_BOUND: the plan has exactly one
+    DoseReference, it carries no TargetPrescriptionDose, and every therapeutic
+    BeamDose is bound to its UID. Record values at that reference are a
+    calculated reference-point dose for the delivered meterset; they are not a
+    target prescription and are never promoted to one here. Its per-fraction
+    BeamDose sum is returned so session values can be checked against it.
+    UNBOUND: nothing ties record reference numbers to a plan reference.
+    """
+    references = list(meta.get("dose_references") or [])
+    beam_uids = list(meta.get("beam_dose_reference_uids") or [])
+    by_number = {
+        str(item.get("reference_number") or ""): item
+        for item in references
+        if item.get("reference_number")
+    }
+    if target_numbers:
+        bound = [by_number[number] for number in sorted(target_numbers) if number in by_number]
+        return {
+            "binding": "CONTRACTED_TARGET",
+            "numbers": set(target_numbers),
+            "reference_uids": sorted({str(item.get("reference_uid") or "") for item in bound}),
+            "reference_types": sorted({str(item.get("reference_type") or "") for item in bound}),
+            "descriptions": sorted({str(item.get("description") or "") for item in bound}),
+            "beam_dose_sum_gy": None,
+        }
+    if len(references) == 1:
+        only = references[0]
+        uid = str(only.get("reference_uid") or "")
+        number = str(only.get("reference_number") or "")
+        if (
+            number
+            and uid
+            and beam_uids
+            and all(value == uid for value in beam_uids)
+            and only.get("target_prescription_dose_gy") is None
+        ):
+            return {
+                "binding": "SINGLE_NON_TARGET_REFERENCE_BEAMDOSE_BOUND",
+                "numbers": {number},
+                "reference_uids": [uid],
+                "reference_types": [str(only.get("reference_type") or "")],
+                "descriptions": [str(only.get("description") or "")],
+                "beam_dose_sum_gy": meta.get("therapeutic_beam_dose_sum_gy"),
+            }
+    return {
+        "binding": "UNBOUND",
+        "numbers": set(),
+        "reference_uids": [],
+        "reference_types": [],
+        "descriptions": [],
+        "beam_dose_sum_gy": None,
+    }
+
+
+_RECORD_LINKED_DOSE_METHODS = frozenset(
+    {"calculated_dose_reference", "cumulative_dose_reference"}
+)
+
+
 def _calculate_delivery_summary(
     plan_paths: Iterable[Path],
     record_paths: Iterable[Path],
@@ -1445,8 +2064,21 @@ def _calculate_delivery_summary(
     selected_plan_paths: Iterable[Path] | None = None,
     selected_dose_paths: Iterable[Path] | None = None,
     reference_audit: dict[str, object] | None = None,
+    classification: str | None = None,
 ) -> dict[str, object]:
-    """Estimate delivered dose only after prescription scope is resolved."""
+    """Estimate delivered dose only from adjudicated delivery evidence.
+
+    A plan contributes a dose only when its validated sessions are complete, no
+    abandoned partial delivery is left out, and neither record values nor the
+    fraction-weighted prescription contradict the plan. The course scalar also
+    requires a prescription cross-check for every contributing plan, one
+    DoseReferenceUID identity whenever RTRECORD dose values are summed across
+    plans, no sum over distinct or unbound references treated on shared or
+    undated sessions, and a membership whose fraction denominator is additive.
+    ``classification`` is the organizer's dose classification; memberships it
+    marks as unreconciled independent delivery or as a delivered remainder
+    chain never yield a course scalar here. Per-plan evidence is always kept.
+    """
 
     all_plans = list(dict.fromkeys(Path(p) for p in plan_paths))
     selected = list(
@@ -1478,12 +2110,11 @@ def _calculate_delivery_summary(
     delivered_fractions = 0
     estimable = True
     all_fully_delivered = True
+    contributions: list[dict[str, object]] = []
+    plan_hold_methods: set[str] = set()
     any_matching_records = False
     methods: set[str] = set()
     delivery_warnings: list[str] = []
-
-    def _dose_close(left: float, right: float) -> bool:
-        return abs(left - right) <= max(0.1, 0.05 * max(abs(right), 1.0))
 
     for path in selected:
         meta = plan_meta[path]
@@ -1553,16 +2184,126 @@ def _calculate_delivery_summary(
         plan_warnings: list[str] = []
         dose: float | None = None
         method = "unknown"
+        binding = _record_reference_binding(meta, target_numbers)
+        validated_sessions = set(plan_evidence.get("sessions", set()))
+        beam_dose_sum_value = group.get("beam_dose_sum_per_fraction_gy") if group else None
+        beam_dose_sum = (
+            float(beam_dose_sum_value) if beam_dose_sum_value is not None else None
+        )
+        target_uid_bound = bool(
+            group and group.get("beam_dose_target_binding") == "DOSE_REFERENCE_UID_BOUND"
+        )
+        adjudication = _adjudicate_plan_record_delivery(
+            records_for_plan,
+            validated_sessions=validated_sessions,
+            expected_items=meta.get("expected_delivery_items") or [],
+            expected_items_status=str(
+                meta.get("expected_delivery_items_status") or "UNADJUDICATED_PLAN_METADATA"
+            ),
+            reference_numbers=set(binding["numbers"]),
+            per_fraction_reference_gy=(
+                resolved_per_fraction
+                if scope_resolved
+                else beam_dose_sum
+                if beam_dose_sum is not None
+                else binding["beam_dose_sum_gy"]
+            ),
+        )
+        record_status = str(adjudication["record_dose_status"])
+        record_reference_dose: float | None = None
+        record_reference_status = record_status.lower()
+        prescription_cross_check = "resolved_prescription" if scope_resolved else "unavailable_unresolved_scope"
+
+        completeness_holds = list(adjudication["completeness_reasons"])
+        abandoned_count = int(adjudication["abandoned_partial_session_count"])
+        if abandoned_count:
+            abandoned_dose = float(adjudication["abandoned_partial_dose_gy"])
+            completeness_holds.append(
+                f"{abandoned_count} unvalidated session(s) hold therapeutic delivery events "
+                "without a NORMAL termination"
+                + (
+                    f" carrying {abandoned_dose:.6g} Gy of bound calculated dose"
+                    if abandoned_dose > 0
+                    else ""
+                )
+                + "; no delivered estimate accounts for that delivery"
+            )
 
         if not scope_resolved:
-            estimable = False
-            method = "unresolved_prescription_scope"
             reason = (
                 f"RTPLAN {uid} prescription scope is unresolved "
                 f"({resolution_status or 'UNRESOLVED'})"
             )
             plan_warnings.append(reason)
             delivery_warnings.append(reason)
+
+        if completeness_holds:
+            estimable = False
+            method = "delivery_completeness_unresolved"
+            record_reference_status = "held_delivery_incomplete"
+            plan_warnings.extend(f"RTPLAN {uid}: {item}" for item in completeness_holds)
+            delivery_warnings.append(
+                f"RTPLAN {uid}: delivery completeness is unresolved "
+                f"({len(completeness_holds)} finding(s)); no delivered dose is estimated for this plan"
+            )
+        elif not scope_resolved:
+            if (
+                record_status == "COMPLETE"
+                and binding["binding"] == "CONTRACTED_TARGET"
+                and target_uid_bound
+            ):
+                # The record values are calculated doses at the plan's own target
+                # reference, to which every therapeutic BeamDose is UID-bound and
+                # against whose BeamDose sum every session was checked. Without a
+                # resolved prescription the value stays plan evidence; the course
+                # guards below keep it out of any course scalar.
+                dose = float(adjudication["record_dose_gy"])
+                method = "calculated_dose_reference"
+                methods.add(method)
+                record_reference_dose = dose
+                record_reference_status = "target_bound_record_dose_without_prescription_cross_check"
+                note = (
+                    f"RTPLAN {uid}: delivered dose {dose:.6g} Gy taken from target-bound "
+                    "RTRECORD calculated dose reference values over "
+                    f"{fraction_count} complete validated sessions; prescription scope unresolved, "
+                    "so no fraction-weighted cross-check was possible"
+                )
+                plan_warnings.append(note)
+                delivery_warnings.append(note)
+            elif (
+                record_status == "COMPLETE"
+                and binding["binding"] == "SINGLE_NON_TARGET_REFERENCE_BEAMDOSE_BOUND"
+            ):
+                estimable = False
+                method = "record_reference_dose_non_target_hold"
+                record_reference_dose = float(adjudication["record_dose_gy"])
+                record_reference_status = "non_target_reference_dose_held"
+                note = (
+                    f"RTPLAN {uid}: the only DoseReference "
+                    f"{sorted(binding['numbers'])[0]} ({'/'.join(binding['reference_types'])}, "
+                    f"{'/'.join(binding['descriptions'])!r}) has no TargetPrescriptionDose; "
+                    f"RTRECORD calculated dose at that reference sums to {record_reference_dose:.6g} Gy "
+                    f"over {fraction_count} complete validated sessions and is retained as an observation. "
+                    "A target binding decision is required before it can be a course dose."
+                )
+                plan_warnings.append(note)
+                delivery_warnings.append(note)
+            else:
+                estimable = False
+                method = "unresolved_prescription_scope"
+                record_reference_status = f"held_{record_status.lower()}"
+                plan_warnings.extend(
+                    f"RTPLAN {uid}: {item}" for item in adjudication["record_dose_reasons"]
+                )
+                if (
+                    record_status == "COMPLETE"
+                    and binding["binding"] == "CONTRACTED_TARGET"
+                    and not target_uid_bound
+                ):
+                    plan_warnings.append(
+                        f"RTPLAN {uid}: therapeutic BeamDose is not bound by UID to the "
+                        "target reference, so record values at that reference are not used"
+                    )
         else:
             cumulative_candidates: list[tuple[tuple[object, ...], float]] = []
             if target_numbers:
@@ -1591,7 +2332,7 @@ def _calculate_delivery_summary(
                 dose = cumulative_dose
                 method = "cumulative_dose_reference"
                 methods.add(method)
-                if fallback_dose is not None and not _dose_close(
+                if fallback_dose is not None and not _delivered_dose_close(
                     cumulative_dose, fallback_dose
                 ):
                     reason = (
@@ -1606,90 +2347,43 @@ def _calculate_delivery_summary(
                         reason,
                     )
 
+            record_contradicted = False
             if dose is None and records_for_plan:
-                session_rows: dict[object, list[dict[str, object]]] = defaultdict(list)
-                for row in records_for_plan:
-                    if (
-                        not row.get("is_summary_record")
-                        and row.get("delivery_session_validated")
-                    ):
-                        session_rows[row.get("session_key")].append(row)
-                explicit_session_doses: list[float] = []
-                explicit_failure: str | None = None
-                if target_numbers and session_rows:
-                    for session_key, rows in session_rows.items():
-                        components_by_key: dict[object, float] = {}
-                        for row in rows:
-                            raw_components = row.get("session_components", [])
-                            components = raw_components if isinstance(raw_components, list) else []
-                            for component in components:
-                                reference_number = str(
-                                    component.get("reference_number") or ""
-                                ).strip()
-                                value = _finite_nonnegative(component.get("dose_gy"))
-                                if reference_number not in target_numbers or value is None:
-                                    continue
-                                component_key = tuple(
-                                    component.get("component_key") or ()
-                                )
-                                if component_key in components_by_key:
-                                    if not _dose_close(
-                                        components_by_key[component_key], value
-                                    ):
-                                        explicit_failure = (
-                                            "conflicting values for component "
-                                            f"{component_key!r} in session {session_key!r}"
-                                        )
-                                        break
-                                    continue
-                                components_by_key[component_key] = value
-                            if explicit_failure:
-                                break
-                        if explicit_failure:
-                            break
-                        if not components_by_key:
-                            explicit_failure = (
-                                "no target-referenced per-session dose value in "
-                                f"session {session_key!r}"
-                            )
-                            break
-                        session_dose = float(sum(components_by_key.values()))
-                        if resolved_per_fraction is not None and not _dose_close(
-                            session_dose, resolved_per_fraction
-                        ):
-                            reason = (
-                                f"per-session dose {session_dose:.6g} Gy disagrees with "
-                                "resolved prescribed per-fraction dose "
-                                f"{resolved_per_fraction:.6g} Gy"
-                            )
-                            plan_warnings.append(reason)
-                            delivery_warnings.append(f"RTPLAN {uid}: {reason}")
-                            logger.warning(
-                                "RTPLAN %s: %s; retaining stronger record-linked dose",
-                                uid,
-                                reason,
-                            )
-                        explicit_session_doses.append(session_dose)
-                if explicit_failure:
-                    plan_warnings.append(explicit_failure)
-                    logger.warning(
-                        "RTPLAN %s: %s; using fraction-weighted prescription when available",
-                        uid,
-                        explicit_failure,
-                    )
-                elif explicit_session_doses and len(explicit_session_doses) == len(
-                    session_rows
-                ):
-                    dose = float(sum(explicit_session_doses))
+                if record_status == "COMPLETE":
+                    dose = float(adjudication["record_dose_gy"])
                     method = "calculated_dose_reference"
                     methods.add(method)
+                    record_reference_dose = dose
+                    record_reference_status = "target_bound_record_dose_with_prescription_cross_check"
+                elif record_status == "CONTRADICTED":
+                    record_contradicted = True
+                    method = "record_dose_contradiction_hold"
+                    record_reference_status = "held_contradicted"
+                    plan_warnings.extend(
+                        f"RTPLAN {uid}: {item}" for item in adjudication["record_dose_reasons"]
+                    )
+                    delivery_warnings.append(
+                        f"RTPLAN {uid}: RTRECORD calculated dose contradicts the plan; "
+                        "no fraction-weighted substitute is used"
+                    )
+                    logger.warning(
+                        "RTPLAN %s: record dose contradicts the plan (%s); holding delivered dose",
+                        uid,
+                        "; ".join(str(item) for item in adjudication["record_dose_reasons"]),
+                    )
 
-            if dose is None and fallback_dose is not None:
+            if dose is None and fallback_dose is not None and not record_contradicted:
                 dose = float(fallback_dose)
                 method = "record_fraction_weighted_prescription"
                 methods.add(method)
             elif dose is None:
                 estimable = False
+
+        if dose is None and method in {
+            "delivery_completeness_unresolved",
+            "record_dose_contradiction_hold",
+        }:
+            plan_hold_methods.add(method)
 
         fully = planned_fx > 0 and fraction_count >= planned_fx
         all_fully_delivered = all_fully_delivered and fully
@@ -1743,12 +2437,147 @@ def _calculate_delivery_summary(
                 "status": plan_status,
                 "warning_messages": plan_warnings,
                 "record_paths": [str(row["path"]) for row in records_for_plan],
+                "record_reference_binding": binding["binding"],
+                "record_reference_numbers": sorted(binding["numbers"]),
+                "record_reference_uids": list(binding["reference_uids"]),
+                "record_reference_types": list(binding["reference_types"]),
+                "record_reference_descriptions": list(binding["descriptions"]),
+                "record_reference_dose_gy": record_reference_dose,
+                "record_reference_dose_status": record_reference_status,
+                "record_dose_adjudication_status": record_status,
+                "record_dose_adjudication_reasons": list(adjudication["record_dose_reasons"]),
+                "prescription_scope_cross_check": prescription_cross_check,
+                "delivery_completeness_status": adjudication["completeness_status"],
+                "delivery_completeness_reasons": list(adjudication["completeness_reasons"]),
+                "expected_delivery_items": [
+                    f"{kind}:{number}" for kind, number in (meta.get("expected_delivery_items") or [])
+                ],
+                "expected_delivery_items_status": meta.get("expected_delivery_items_status"),
+                "abandoned_partial_session_count": abandoned_count,
+                "abandoned_partial_session_dose_gy": float(adjudication["abandoned_partial_dose_gy"]),
+                "abandoned_partial_unquantified_session_count": int(
+                    adjudication["abandoned_partial_unquantified_session_count"]
+                ),
+                "zero_delivery_unvalidated_session_count": int(
+                    adjudication["zero_delivery_unvalidated_session_count"]
+                ),
             }
         )
+        if dose is not None and matching:
+            contributions.append(
+                {
+                    "plan_sop_uid": uid,
+                    "method": method,
+                    "reference_uids": frozenset(
+                        str(value) for value in binding["reference_uids"] if str(value)
+                    ),
+                    "treatment_dates": frozenset(
+                        str(value) for value in plan_evidence.get("dates", set()) if str(value).strip()
+                    ),
+                    "prescription_cross_checked": bool(scope_resolved),
+                }
+            )
 
     if not selected:
         all_fully_delivered = False
         estimable = False
+
+    course_holds: list[dict[str, str]] = []
+    unchecked = sorted(
+        str(item["plan_sop_uid"])
+        for item in contributions
+        if not item["prescription_cross_checked"]
+    )
+    if unchecked:
+        course_holds.append(
+            {
+                "reason_code": "COURSE_DOSE_PRESCRIPTION_CROSS_CHECK_UNAVAILABLE",
+                "reason": (
+                    f"RTPLAN {', '.join(unchecked)} contributes RTRECORD dose without a "
+                    "resolved prescription scope, so the course total has no prescription cross-check"
+                ),
+            }
+        )
+    reference_identity = "SINGLE_CONTRIBUTING_PLAN"
+    if len(contributions) > 1:
+        identities = {item["reference_uids"] for item in contributions}
+        if len(identities) == 1 and frozenset() not in identities:
+            reference_identity = "IDENTICAL_DOSE_REFERENCE_UIDS"
+        else:
+            reference_identity = "DISTINCT_OR_UNBOUND_DOSE_REFERENCE_UIDS"
+            record_linked = sorted(
+                str(item["plan_sop_uid"])
+                for item in contributions
+                if item["method"] in _RECORD_LINKED_DOSE_METHODS
+            )
+            if record_linked:
+                course_holds.append(
+                    {
+                        "reason_code": "COURSE_DOSE_REFERENCE_UID_MISMATCH",
+                        "reason": (
+                            "RTRECORD calculated dose from RTPLAN "
+                            f"{', '.join(record_linked)} would be summed with plans whose bound "
+                            "DoseReferenceUIDs differ or are absent; doses at different "
+                            "reference points do not add"
+                        ),
+                    }
+                )
+            shared_sessions = any(
+                not left["treatment_dates"]
+                or not right["treatment_dates"]
+                or bool(left["treatment_dates"] & right["treatment_dates"])
+                for left, right in combinations(contributions, 2)
+                if left["reference_uids"] != right["reference_uids"]
+                or not left["reference_uids"]
+                or not right["reference_uids"]
+            )
+            if shared_sessions:
+                course_holds.append(
+                    {
+                        "reason_code": "COURSE_DOSE_CONCURRENT_DISTINCT_REFERENCES",
+                        "reason": (
+                            "plans with distinct or absent DoseReferenceUIDs were treated on "
+                            "shared or undated session dates; their doses may belong to "
+                            "concurrent targets and are not summed"
+                        ),
+                    }
+                )
+            elif not record_linked:
+                note = (
+                    "course delivered dose sums fraction-weighted prescriptions of plans with "
+                    "distinct DoseReferenceUIDs treated on separate dates; it is a nominal "
+                    "sequential total, not a dose at one reference point"
+                )
+                delivery_warnings.append(note)
+    if classification == INDEPENDENT_DELIVERY_UNRECONCILED:
+        course_holds.append(
+            {
+                "reason_code": "COURSE_INDEPENDENT_DELIVERY_UNRECONCILED",
+                "reason": (
+                    "independently delivered plans share membership without reconciled "
+                    "course semantics; possibly concurrent target doses are never summed"
+                ),
+            }
+        )
+    elif classification == DELIVERED_REMAINDER_CHAIN and len(selected) > 1:
+        course_holds.append(
+            {
+                "reason_code": "COURSE_REPLACEMENT_DENOMINATOR_UNADJUDICATED",
+                "reason": (
+                    "the membership is a delivered remainder or replacement chain whose "
+                    "per-plan planned fractions are not additive, so course completion and "
+                    "its fraction denominator are unadjudicated"
+                ),
+            }
+        )
+    plans_estimable = estimable
+    for hold in course_holds:
+        message = f"course delivered dose withheld ({hold['reason_code']}): {hold['reason']}"
+        delivery_warnings.append(message)
+        logger.warning("Dose delivery hold: %s", message)
+    if course_holds:
+        estimable = False
+
     if not records:
         status = "no_records_at_all"
     elif not any_matching_records:
@@ -1761,7 +2590,14 @@ def _calculate_delivery_summary(
         status = "partially_delivered"
     dose_value = float(total_delivered) if any_matching_records and estimable else None
     if status == "delivery_unresolved":
-        method = "unresolved_prescription_scope"
+        if "delivery_completeness_unresolved" in plan_hold_methods:
+            method = "delivery_completeness_unresolved"
+        elif "record_dose_contradiction_hold" in plan_hold_methods:
+            method = "record_dose_contradiction_hold"
+        elif plans_estimable and course_holds:
+            method = "course_dose_adjudication_hold"
+        else:
+            method = "unresolved_prescription_scope"
     elif not methods and any_matching_records:
         method = "unknown"
     elif len(methods) == 1:
@@ -1791,6 +2627,8 @@ def _calculate_delivery_summary(
         "planned_fraction_count": total_planned_fx or None,
         "delivery_plan_details": plan_details,
         "delivery_warnings": delivery_warnings,
+        "delivery_course_holds": course_holds,
+        "course_dose_reference_identity": reference_identity,
         "unresolved_record_plan_uids": unresolved["unresolved_plan_uids"],
         "unresolved_record_count": unresolved["unresolved_record_count"],
         "unresolved_reference_count": unresolved["unresolved_reference_count"],
@@ -2054,6 +2892,7 @@ def _replacement_partition(plans: List[dict]) -> tuple[int, tuple[int, ...]] | N
 
 INDEPENDENT_DELIVERY_UNRECONCILED = "independent_delivered_plans_unreconciled"
 INDEPENDENT_DELIVERY_UNRESOLVED_SCOPE = "UNRESOLVED_INDEPENDENT_DELIVERY"
+DELIVERED_REMAINDER_CHAIN = "delivered_remainder_plan_doses_accumulated"
 
 
 def _course_fraction_totals(
@@ -2068,8 +2907,23 @@ def _course_fraction_totals(
     ``independent_delivered_plans_unreconciled`` may be concurrent targets, a
     replacement chain or phases; adding their fractions would state a patient
     fraction total that no evidence supports, and a union of treatment dates is
-    not an authoritative fraction count either. Per-plan counts stay exact.
+    not an authoritative fraction count either. A delivered remainder chain
+    holds an interrupted plan and the plans that finished it, so their planned
+    fractions overlap and their sum is no course denominator. Per-plan counts
+    stay exact.
     """
+    if str(classification or "") == DELIVERED_REMAINDER_CHAIN:
+        return {
+            "delivered_fraction_count": None,
+            "planned_fraction_count": None,
+            "basis": COURSE_FRACTION_TOTALS_REPLACEMENT_WITHHELD_BASIS,
+            "reason": (
+                "Course fraction totals are withheld: the membership is a delivered "
+                "remainder or replacement chain, whose per-plan planned fractions "
+                "overlap, and no adjudicated course fraction denominator exists; see "
+                "delivery_plan_details for exact per-plan counts"
+            ),
+        }
     if str(classification or "") == INDEPENDENT_DELIVERY_UNRECONCILED:
         return {
             "delivered_fraction_count": None,
@@ -2731,7 +3585,7 @@ def _classify_approved_doses(
         if remainder_chain is not None:
             anchor, later, prescription_components, represented_fractions = remainder_chain
             selected_representatives = list(supported_candidates)
-            classification = "delivered_remainder_plan_doses_accumulated"
+            classification = DELIVERED_REMAINDER_CHAIN
             should_sum = len(selected_representatives) > 1
             warnings.append(
                 "Delivered remainder or adaptation plans retain separate RTDOSE "
@@ -2822,7 +3676,7 @@ def _classify_approved_doses(
         reason=(
             "Delivered remainder or adaptation plans retain one course-level "
             "dose after spatial accumulation with RTRECORD fraction weights"
-            if classification == "delivered_remainder_plan_doses_accumulated"
+            if classification == DELIVERED_REMAINDER_CHAIN
             else
             "Distinct prescription phases remain after revision and replacement-plan de-duplication"
             if should_sum
@@ -4798,6 +5652,7 @@ def organize_and_merge(
             selected_plan_paths=delivery_plan_paths,
             selected_dose_paths=delivery_dose_paths,
             reference_audit=delivery_reference_audit_by_patient.get(patient_id),
+            classification=str(dose_classification_info.get("classification") or "") or None,
         )
         per_plan_delivery = _per_plan_delivery_contract(
             all_plan_paths,
@@ -5416,7 +6271,7 @@ def organize_and_merge(
                 if uid:
                     plan_uids.add(str(uid))
             course_fraction_totals_withheld = (
-                co.course_fraction_totals_basis == COURSE_FRACTION_TOTALS_WITHHELD_BASIS
+                co.course_fraction_totals_basis in COURSE_FRACTION_TOTALS_WITHHELD_BASES
             )
             if course_fraction_totals_withheld:
                 for item in co.selected_plan_contract:
