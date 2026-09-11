@@ -20,6 +20,7 @@ from rtpipeline.acquisition_scale import (
 )
 from rtpipeline.config import PipelineConfig
 from rtpipeline.layout import build_course_dirs
+from rtpipeline.organize_ledger import write_organize_ledger
 from rtpipeline.radiomics_outcomes import (
     RadiomicsCourseExtractionError,
     RadiomicsCourseOutcome,
@@ -725,6 +726,9 @@ def test_unreadable_expected_course_workbook_blocks_and_invalidates_aggregate(
     aggregate = config.output_root / "Data" / "radiomics_all.xlsx"
     aggregate.parent.mkdir(parents=True)
     aggregate.write_bytes(b"stale aggregate")
+    write_organize_ledger(config.output_root, [
+        {"patient": "P1", "course": "C1", "status": "validated"},
+    ])
 
     monkeypatch.setattr(radiomics, "_have_pyradiomics", lambda: True)
     import rtpipeline.radiomics_parallel as parallel
@@ -800,7 +804,8 @@ def test_failed_course_preserves_prior_valid_provenanced_aggregate(
     assert aggregate.with_suffix(".parquet").read_bytes() == parquet_bytes
 
 
-def test_cohort_aggregate_carries_course_source_counts(tmp_path, monkeypatch):
+@pytest.mark.parametrize("with_ledger", [True, False])
+def test_cohort_aggregate_carries_course_source_counts(tmp_path, monkeypatch, with_ledger):
     course_root = tmp_path / "P1" / "C1"
     course_root.mkdir(parents=True)
     workbook = course_root / "radiomics_ct.xlsx"
@@ -827,6 +832,10 @@ def test_cohort_aggregate_carries_course_source_counts(tmp_path, monkeypatch):
         dirs=SimpleNamespace(root=course_root),
     )
     config = _config(tmp_path)
+    if with_ledger:
+        write_organize_ledger(config.output_root, [
+            {"patient": "P1", "course": "C1", "status": "validated"},
+        ])
     outcome = RadiomicsCourseOutcome.extracted(
         workbook,
         roi_counts={
@@ -856,6 +865,13 @@ def test_cohort_aggregate_carries_course_source_counts(tmp_path, monkeypatch):
     monkeypatch.setattr(radiomics, "radiomics_for_course_mr", lambda *_a, **_k: None)
 
     radiomics.run_radiomics(config, [course])
+
+    if not with_ledger:
+        assert workbook.exists()
+        assert workbook.with_suffix(".parquet").exists()
+        assert not (config.output_root / "Data" / "radiomics_all.xlsx").exists()
+        assert not (config.output_root / "Data" / "radiomics_all.parquet").exists()
+        return
 
     aggregate = pd.read_excel(
         config.output_root / "Data" / "radiomics_all.xlsx",
@@ -1346,6 +1362,114 @@ def test_direct_invalid_resume_is_rebuilt_with_every_current_roi_arm(
         ("Manual", "GTV"),
         ("AutoRTS_total", "urinary_bladder"),
     }
+
+
+@pytest.mark.parametrize("large_roi", [False, True])
+@pytest.mark.parametrize("change", ["unchanged", "source_bytes", "code", "effective_settings", "native_minimum", "missing_fingerprint", "fingerprint_error", "during_masks", "during_extraction"])
+def test_direct_measured_resume_binds_current_source_and_execution(
+    tmp_path, monkeypatch, large_roi, change
+):
+    """Synthetic extraction plumbing only, not real PyRadiomics execution."""
+    import hashlib
+    import pydicom
+    from rtpipeline.radiomics_ct_contract import write_ct_publication_atomic
+
+    course = tmp_path / "P1" / "C1"
+    _write_contract(course)
+    source = _write_current_auto_rtstruct(course, roi_names=("urinary_bladder",))
+    original_uid = str(pydicom.dcmread(source).SOPInstanceUID)
+    state = {"revision": "code-A", "bin_width": 25, "calls": 0}
+
+    class Extractor(_FakeExtractor):
+        def __init__(self, large=False):
+            super().__init__()
+            self.settings["binWidth"] = state["bin_width"] * (2 if large else 1)
+
+        def execute(self, image, mask):
+            state["calls"] += 1
+            if state.pop("mutate_source", False):
+                dataset = pydicom.dcmread(source)
+                dataset.StructureSetLabel = "MUTATED"
+                dataset.save_as(source, enforce_file_format=True)
+            return super().execute(image, mask)
+
+    monkeypatch.setattr(radiomics, "current_code_revision", lambda: state["revision"])
+    monkeypatch.setattr(radiomics, "_load_series_image", lambda *_a, **_k: _Image())
+    monkeypatch.setattr(radiomics, "_extractor", lambda *_a, **_k: Extractor())
+    monkeypatch.setattr(radiomics, "_extractor_large_roi", lambda *_a, **_k: Extractor(large=True))
+    monkeypatch.setattr(radiomics, "_mask_from_array_like", lambda *_a, **_k: object())
+    monkeypatch.setattr(radiomics, "_rtstruct_masks", lambda *_a, **_k: {
+        "urinary_bladder": np.ones((2, 2, 2), dtype=bool),
+    })
+    monkeypatch.setattr(radiomics, "list_custom_model_outputs", lambda *_: [])
+    monkeypatch.setattr(radiomics, "run_tasks_with_adaptive_workers", lambda _label, tasks, function, **_k: [function(task) for task in tasks])
+    config = _config(tmp_path, resume=True, radiomics_max_voxels=1 if large_roi else 1000)
+    output = course / "radiomics_ct.xlsx"
+    radiomics.radiomics_for_course(config, course)
+    before = radiomics.read_authoritative_ct_publication(output.with_suffix(".parquet"))
+    before_bytes = output.with_suffix(".parquet").read_bytes()
+    assert state["calls"] == 3  # Separate shape, raw, and resegmented extractors.
+    assert set(before.extraction_status) == {"success"}
+
+    if change == "source_bytes":
+        dataset = pydicom.dcmread(source)
+        dataset.StructureSetLabel = "CHANGED"
+        dataset.save_as(source, enforce_file_format=True)
+        assert str(pydicom.dcmread(source).SOPInstanceUID) == original_uid
+    elif change == "code":
+        state["revision"] = "code-B"
+    elif change == "effective_settings":
+        state["bin_width"] = 50
+    elif change == "native_minimum":
+        config.radiomics_min_voxels = 10
+    elif change == "missing_fingerprint":
+        write_ct_publication_atomic(before.drop(columns=["source_content_sha256"], errors="ignore"), output)
+    elif change in {"during_masks", "during_extraction"}:
+        if change == "during_masks":
+            def changing_masks(*_a, **_k):
+                dataset = pydicom.dcmread(source)
+                dataset.StructureSetLabel = "MUTATED"
+                dataset.save_as(source, enforce_file_format=True)
+                return {"urinary_bladder": np.ones((2, 2, 2), dtype=bool)}
+
+            monkeypatch.setattr(radiomics, "_rtstruct_masks", changing_masks)
+        else:
+            config.resume = False
+            state["mutate_source"] = True
+        with pytest.raises(RadiomicsCourseExtractionError, match="changed|fingerprint"):
+            radiomics.radiomics_for_course(config, course)
+        assert not output.exists()
+        assert not output.with_suffix(".parquet").exists()
+        assert state["calls"] == (3 if change == "during_masks" else 6)
+        return
+    elif change == "fingerprint_error":
+        original_read = Path.read_bytes
+
+        def fail_source_read(path):
+            if path == source:
+                raise OSError("synthetic fingerprint read failure")
+            return original_read(path)
+
+        monkeypatch.setattr(Path, "read_bytes", fail_source_read)
+        with pytest.raises(RadiomicsCourseExtractionError, match="fingerprint"):
+            radiomics.radiomics_for_course(config, course)
+        assert not output.exists()
+        assert not output.with_suffix(".parquet").exists()
+        assert state["calls"] == 3
+        return
+
+    radiomics.radiomics_for_course(config, course)
+    after = radiomics.read_authoritative_ct_publication(output.with_suffix(".parquet"))
+    assert state["calls"] == (3 if change in {"unchanged", "native_minimum"} else 6)
+    assert set(after.extraction_status) == ({"below_minimum_voxels"} if change == "native_minimum" else {"success"})
+    assert set(after.source_content_sha256) == {hashlib.sha256(source.read_bytes()).hexdigest()}
+    assert set(after.code_revision) == {state["revision"]}
+    if change == "unchanged":
+        assert output.with_suffix(".parquet").read_bytes() == before_bytes
+    else:
+        assert set(after.run_identifier).isdisjoint(set(before.run_identifier))
+    if change == "effective_settings":
+        assert set(after.effective_parameter_hash).isdisjoint(set(before.effective_parameter_hash))
 
 
 def test_parallel_resume_missing_autorts_roi_forces_full_rerun(tmp_path, monkeypatch):

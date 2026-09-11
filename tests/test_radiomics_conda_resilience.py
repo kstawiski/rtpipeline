@@ -633,16 +633,19 @@ def test_env_probe_timeout_survives_robustness_subcommand(monkeypatch, tmp_path,
     )
     config_path = tmp_path / "config.yaml"
     config_path.write_text("radiomics_robustness:\n  enabled: true\n", encoding="utf-8")
+    # The published table lives inside the course it describes; the consumer
+    # adapter now requires that before it runs anything.
+    course_dir = tmp_path / "course"
 
     assert cli.console_main(
         [
             "radiomics-robustness",
             "--course-dir",
-            str(tmp_path / "course"),
+            str(course_dir),
             "--config",
             str(config_path),
             "--output",
-            str(tmp_path / "result.parquet"),
+            str(course_dir / "result.parquet"),
         ]
     ) == 3
     emitted = json.loads(capsys.readouterr().err)
@@ -661,14 +664,24 @@ def test_robustness_subcommand_accepts_env_probe_timeout(monkeypatch, tmp_path):
     monkeypatch.setattr(radiomics_robustness, "robustness_for_course", fake_robustness)
     config_path = tmp_path / "config.yaml"
     config_path.write_text("radiomics_robustness:\n  enabled: true\n", encoding="utf-8")
+    course_dir = tmp_path / "course"
+    course_dir.mkdir()
+    sentinel = course_dir / ".radiomics_robustness_done"
 
+    # The configured probe timeout still reaches the pipeline configuration.
+    # The exit status is now 1 rather than 0 because a returned path is no
+    # longer a completion on its own: this stub publishes no table and no
+    # source dispositions, so there is nothing for the consumer to admit, and
+    # no completion receipt may be written for it.
     assert cli.console_main(
         [
             "radiomics-robustness",
-            "--course-dir", str(tmp_path / "course"),
+            "--course-dir", str(course_dir),
             "--config", str(config_path),
-            "--output", str(tmp_path / "result.parquet"),
+            "--output", str(course_dir / "result.parquet"),
+            "--sentinel", str(sentinel),
             "--radiomics-env-probe-timeout", "654",
         ]
-    ) == 0
+    ) == 1
     assert seen == [654]
+    assert not sentinel.exists()

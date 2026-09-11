@@ -44,6 +44,7 @@ RADIOMICS_TEXT_COLUMNS = frozenset(
         "mask_path_source",
         "mask_identity",
         "rtstruct_sop_instance_uid",
+        "source_content_sha256",
         "stable_roi_identifier",
         "extraction_arm",
         "roi_class",

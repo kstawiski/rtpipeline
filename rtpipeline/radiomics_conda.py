@@ -15,7 +15,9 @@ import time
 import threading
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional, Tuple, Sequence, Set, TYPE_CHECKING
+from typing import (
+    Any, Callable, Dict, List, Mapping, Optional, Tuple, Sequence, Set, TYPE_CHECKING,
+)
 
 if TYPE_CHECKING:
     pass  # For future type hints
@@ -39,6 +41,7 @@ from .roi_requiredness import (
     DenominatorLedger,
     FAILED_RADIOMICS_FEATURE_COMPLETENESS,
     FAILED_RADIOMICS_RESOURCE_LIMIT,
+    NONVOLUMETRIC_CODES,
     REASON_CODES,
     Requiredness,
     TAXONOMY_CODES,
@@ -81,6 +84,7 @@ from .radiomics_ct_contract import (
     configured_parameter_hash,
     current_code_revision,
     disposition_rows_for_arms,
+    effective_parameter_hash,
     file_sha256,
     load_custom_structure_provenance,
     new_run_identifier,
@@ -95,6 +99,51 @@ from .utils import mask_is_cropped, radiomics_mp_context
 logger = logging.getLogger(__name__)
 
 
+_NON_TECHNICAL_LEDGER_REASONS = frozenset({
+    "extracted",
+    "not_applicable_modality",
+    "not_applicable_scope",
+    "not_applicable_anatomy",
+    "insufficient_fov",
+    "not_computed_valid_empty_scope",
+    "CONFIGURED_SKIP",
+    "CONFIGURED_SOURCE_SCOPE_SKIP",
+}) | NONVOLUMETRIC_CODES
+
+
+def _ledger_row_is_technical(row: Mapping[str, Any]) -> bool:
+    """True for a ROI outcome ``DenominatorLedger.summary`` counts as technical.
+
+    Modality absence, anatomy, declared skips and valid-but-empty nonmeasurements
+    are not technical exclusions. Keeping those classes apart is the whole point
+    of the reason codes, so this reuses the ledger's own classification.
+    """
+    if str(row.get("disposition", "")) == "extracted":
+        return False
+    return str(row.get("reason_code", "")) not in _NON_TECHNICAL_LEDGER_REASONS
+
+
+def _ledger_identity_key(
+    entry: Mapping[str, Any], identity_fields: Sequence[str]
+) -> Tuple[str, ...]:
+    """Source-identity values that make two same-named ROI outcomes distinct.
+
+    A task carries its identity under ``metadata``; a published row carries it at
+    the top level. Without this, one ROI name measured from two series collapses
+    into a single ledger row and the failed series hides behind the good one.
+    """
+    metadata = entry.get("metadata")
+    if not isinstance(metadata, Mapping):
+        metadata = {}
+    values: List[str] = []
+    for field in identity_fields:
+        value = entry.get(field)
+        if value is None or value == "":
+            value = metadata.get(field)
+        values.append("" if value is None else str(value))
+    return tuple(values)
+
+
 def _write_conda_roi_ledger(
     course_dir: Path,
     tasks: Sequence[Mapping[str, Any]],
@@ -105,6 +154,9 @@ def _write_conda_roi_ledger(
     missing_reason: str = "failed_radiomics_extraction",
     in_scope: bool = True,
     modality: str = "CT",
+    identity_fields: Sequence[str] = (),
+    missing_reason_for: Optional[Callable[[str], str]] = None,
+    derive_course_states: bool = False,
 ) -> None:
     ledger = DenominatorLedger()
     course_id, patient_id = Path(course_dir).name, Path(course_dir).parent.name
@@ -112,17 +164,20 @@ def _write_conda_roi_ledger(
         ledger.expect_course_roi(course_id, str(task.get("roi_name", "")))
     for name in expected_names:
         ledger.expect_course_roi(course_id, str(name))
-    rows_by_roi: Dict[str, List[Mapping[str, Any]]] = {}
+    rows_by_identity: Dict[Tuple[str, ...], List[Mapping[str, Any]]] = {}
     for row in rows:
         name = str(row.get("roi_original_name", row.get("roi_name", "")))
         if name:
-            rows_by_roi.setdefault(name, []).append(row)
+            key = (name,) + _ledger_identity_key(row, identity_fields)
+            rows_by_identity.setdefault(key, []).append(row)
     has_incomplete = any(
         str(row.get(RADIOMICS_FEATURE_COMPLETENESS_COLUMN) or "")
         == "incomplete"
         for row in rows
     )
-    for name, candidates in rows_by_roi.items():
+    for identity, candidates in rows_by_identity.items():
+        name = identity[0]
+        identity_values = dict(zip(identity_fields, identity[1:]))
         row = next(
             (
                 item
@@ -165,6 +220,7 @@ def _write_conda_roi_ledger(
                 else row.get("extraction_status_detail")
                 or ""
             ),
+            **identity_values,
             **({"resource_guard_reason_code": row["resource_guard_reason_code"]}
                    if row.get("resource_guard_reason_code") in {"ROI_RESOURCE_BBOX_ADMITTED", "ROI_RESOURCE_MEMORY_ADMITTED"} else {}),
                 estimated_resampled_bbox_voxel_count=row.get(
@@ -174,9 +230,18 @@ def _write_conda_roi_ledger(
                 "max_resampled_bbox_voxel_count"
             ),
         )
+    recorded_identities = {
+        (str(row.get("course_id", "")), str(row.get("roi_name", "")))
+        + _ledger_identity_key(row, identity_fields)
+        for row in ledger.roi_rows
+    }
     for task in tasks:
         name = str(task.get("roi_name", ""))
-        if name and (course_id, name) not in {(row.get("course_id"), row.get("roi_name")) for row in ledger.roi_rows}:
+        identity_values = dict(
+            zip(identity_fields, _ledger_identity_key(task, identity_fields))
+        )
+        identity = (course_id, name) + tuple(identity_values.values())
+        if name and identity not in recorded_identities:
             failure = task.get("precomputed_failure") or {}
             reason = str(failure.get("reason_code") or "failed_radiomics_extraction")
             if reason in {RESAMPLED_BBOX_LIMIT_CODE, "ROI_PREDICTED_MEMORY_EXCEEDS_LIMIT"}:
@@ -192,6 +257,7 @@ def _write_conda_roi_ledger(
                 disposition="excluded",
                 detail_code=failure_metadata.get("roi_structural_code"),
                 detail=str(failure.get("reason") or ""),
+                **identity_values,
                 estimated_resampled_bbox_voxel_count=failure_metadata.get(
                     "estimated_resampled_bbox_voxel_count"
                 ),
@@ -199,10 +265,38 @@ def _write_conda_roi_ledger(
                     "max_resampled_bbox_voxel_count"
                 ),
             )
+            recorded_identities.add(identity)
     present_names = {str(row.get("roi_name", "")) for row in ledger.roi_rows}
     for name in expected_names:
         if str(name) not in present_names:
-            ledger.record_roi(course_id, patient_id, str(name), reason_code=missing_reason, disposition="excluded")
+            reason = (
+                missing_reason_for(str(name))
+                if missing_reason_for is not None
+                else missing_reason
+            )
+            ledger.record_roi(course_id, patient_id, str(name), reason_code=reason, disposition="excluded")
+    technical_exclusion = not extracted or has_incomplete
+    course_reason = "extracted" if extracted else "failed_radiomics_extraction"
+    if derive_course_states:
+        # A published workbook is not proof that every ROI was measured, and a
+        # course that only ever held nonmeasurements was not excluded by a
+        # technical failure. Both directions are read from the recorded outcomes.
+        technical_exclusion = has_incomplete or any(
+            _ledger_row_is_technical(row) for row in ledger.roi_rows
+        )
+        if extracted:
+            course_reason = "extracted"
+        elif technical_exclusion:
+            course_reason = "failed_radiomics_extraction"
+        else:
+            remaining = {
+                str(row.get("reason_code", ""))
+                for row in ledger.roi_rows
+                if str(row.get("reason_code", "")) != "extracted"
+            }
+            course_reason = (
+                remaining.pop() if len(remaining) == 1 else "not_applicable_modality"
+            )
     ledger.record_course(
         course_id,
         patient_id,
@@ -212,10 +306,10 @@ def _write_conda_roi_ledger(
         adequate_coverage=bool(rows),
         insufficient_coverage=not bool(rows),
         valid_derivation=False,
-        technical_exclusion=not extracted or has_incomplete,
+        technical_exclusion=technical_exclusion,
         indeterminate=False,
         extracted=extracted,
-        reason_code="extracted" if extracted else "failed_radiomics_extraction",
+        reason_code=course_reason,
     )
     write_modality_ledger(Path(course_dir) / "metadata", ledger, modality)
 
@@ -804,13 +898,7 @@ def factory():
         if params_file
         else featureextractor.RadiomicsFeatureExtractor()
     )
-    if payload.get("large_roi"):
-        extractor.disableAllImageTypes()
-        extractor.enableImageTypeByName("Original")
-        extractor.disableAllFeatures()
-        extractor.enableFeatureClassByName("firstorder")
-        extractor.enableFeatureClassByName("shape")
-        extractor.settings["resampledPixelSpacing"] = [2.0, 2.0, 2.0]
+    # The legacy size flag is not authority to change the configured method.
     return extractor
 
 decision = RoiClassDecision(**payload["decision"])
@@ -932,6 +1020,8 @@ def extract_radiomics_with_conda(
         mask_path: Path to mask file (NRRD format)
         params_file: Optional path to radiomics parameters YAML file
         label: Optional label value for the mask
+        large_roi: Compatibility flag. Does not change configured features,
+            image types or resampling. Resource failures are not method overrides.
 
     Returns:
         Dictionary of extracted features
@@ -1016,29 +1106,26 @@ params_file = params.get('params_file')
 label = params.get('label')
 large_roi = bool(params.get('large_roi'))
 
+
+def observed_extractor_state(instance):
+    # Only this interpreter can see the settings PyRadiomics really used, so
+    # they travel back with the features rather than being reconstructed from
+    # the configuration the caller intended.
+    state = {{
+        'settings': dict(getattr(instance, 'settings', {{}}) or {{}}),
+        'image_types': dict(getattr(instance, 'enabledImagetypes', {{}}) or {{}}),
+        'features': dict(getattr(instance, 'enabledFeatures', {{}}) or {{}}),
+    }}
+    return json.loads(json.dumps(state, default=str))
+
 # Create extractor
 if params_file:
     extractor = featureextractor.RadiomicsFeatureExtractor(params_file)
 else:
     extractor = featureextractor.RadiomicsFeatureExtractor()
 
-# Reduced settings for very large ROIs (feasibility)
-if large_roi:
-    try:
-        extractor.disableAllImageTypes()
-        extractor.enableImageTypeByName('Original')
-    except Exception:
-        pass
-    try:
-        extractor.disableAllFeatures()
-        extractor.enableFeatureClassByName('firstorder')
-        extractor.enableFeatureClassByName('shape')
-    except Exception:
-        pass
-    try:
-        extractor.settings['resampledPixelSpacing'] = [2.0, 2.0, 2.0]
-    except Exception:
-        pass
+# Preserve configured features, image types and spacing for every ROI size.
+# Resource failures are accounted by callers, never hidden by a reduced method.
 
 # Execute extraction
 if label is not None:
@@ -1048,6 +1135,7 @@ else:
 
 # Normalize feature scalars before JSON transport; invalid features fail closed.
 output = normalize_radiomics_result(features)
+output['__effective_extractor_state__'] = observed_extractor_state(extractor)
 
 # Output as JSON
 print(json.dumps(output))
@@ -1162,13 +1250,7 @@ def make_extractor(params_file, large_roi):
         if params_file
         else featureextractor.RadiomicsFeatureExtractor()
     )
-    if large_roi:
-        candidate.disableAllImageTypes()
-        candidate.enableImageTypeByName("Original")
-        candidate.disableAllFeatures()
-        candidate.enableFeatureClassByName("firstorder")
-        candidate.enableFeatureClassByName("shape")
-        candidate.settings["resampledPixelSpacing"] = [2.0, 2.0, 2.0]
+    # large_roi is retained for compatibility, not as a method override.
     return candidate
 
 
@@ -1384,6 +1466,37 @@ def _ensure_mask_has_three_dimensions(mask_path: str, ct_info: Dict[str, Any]) -
 
     sitk.WriteImage(img3d, mask_path, useCompression=True)
     return True
+
+
+class _ObservedExtractorState:
+    """The extractor settings an isolated helper reported having actually used."""
+
+    def __init__(self, state: Mapping[str, Any]) -> None:
+        self.settings = dict(state.get("settings") or {})
+        self.enabledImagetypes = dict(state.get("image_types") or {})
+        self.enabledFeatures = dict(state.get("features") or {})
+
+
+def _bind_effective_parameter_hash(
+    features: Dict[str, Any], task: Mapping[str, Any]
+) -> Dict[str, Any]:
+    """Bind a per-ROI helper result to the arm whose parameters it ran under.
+
+    ``extract_radiomics_batch_with_conda`` knows the arm and hashes the settings
+    inside the helper. The per-ROI route takes the same settings the same way --
+    observed in the interpreter that ran the extraction -- and hashes them here,
+    so a row measured by either route carries the same provenance instead of
+    none. A result that already carries the hash keeps it untouched.
+    """
+    arm = task.get("parameter_provenance_arm")
+    if not arm or features.get("__effective_parameter_hash__"):
+        return features
+    state = features.get("__effective_extractor_state__")
+    if isinstance(state, Mapping):
+        features["__effective_parameter_hash__"] = effective_parameter_hash(
+            _ObservedExtractorState(state), arm=str(arm), window=None
+        )
+    return features
 
 
 def _combine_feature_record(features: Dict[str, Any], metadata: Dict[str, Any]) -> Dict[str, Any]:
@@ -1615,7 +1728,9 @@ def process_radiomics_batch(
                 return {'__status__': 'error', '__error__': str(exc)}
 
         metadata.setdefault('modality', 'CT')
-        return _combine_feature_record(features, metadata)
+        return _combine_feature_record(
+            _bind_effective_parameter_hash(features, task), metadata
+        )
 
     results: List[Dict[str, Any]] = []
     failures: List[str] = []
@@ -2415,7 +2530,7 @@ def radiomics_for_course_ct_nifti_fallback(
             large_roi = norm_key.startswith("body") or (estimated_voxels > float(max_voxels_limit))
             if large_roi:
                 logger.info(
-                    "CT fallback ROI %s is large (native=%d voxels, est@1mm=%.0f voxels, cap=%d); using reduced radiomics settings",
+                    "CT fallback ROI %s is large (native=%d voxels, est@1mm=%.0f voxels, cap=%d); preserving full configured radiomics settings",
                     roi_name,
                     voxel_count,
                     estimated_voxels,
@@ -3185,7 +3300,7 @@ def radiomics_for_course(
                 if large_roi:
                     logger.info(
                         "ROI %s/%s is large (native=%d voxels, est@1mm=%.0f voxels, "
-                        "cap=%d); using reduced radiomics settings",
+                        "cap=%d); preserving full configured radiomics settings",
                         segmentation_source,
                         roi_name,
                         voxel_count,
@@ -3340,6 +3455,666 @@ def radiomics_for_course(
         Path(ct_image_path).unlink(missing_ok=True)
 
 
+# ---------------------------------------------------------------------------
+# MR course radiomics: source identity, mask inventory and ledger (MR-private)
+# ---------------------------------------------------------------------------
+
+_MR_MODEL = "total_mr"
+_MR_SEGMENTATION_SOURCE = "AutoTS_total_mr"
+# ``segmentation._materialize_masks`` copies TotalSegmentator's aggregate label
+# volume next to the per-ROI masks under the same ``<model>--`` prefix. It is a
+# labelmap, not an ROI; ``auto_rtstruct`` excludes the same two names when it
+# enumerates ROI masks. Measuring it publishes features of the union of every
+# structure under the ROI name "multilabel".
+_MR_NON_ROI_MASK_NAMES = frozenset({"multilabel", "segmentations"})
+# Used where an identity field is genuinely unavailable, so a publication key
+# never carries a blank field and a missing value is never mistaken for a real
+# digest. Mirrors the CT contract's own "unavailable" marker.
+_MR_UNAVAILABLE = "unavailable"
+# Source-identity fields every MR ledger row keeps, so one ROI name measured
+# from two series stays two accounted outcomes. All six are also verified
+# against the current tasks by ``_mr_publication_drift`` before publication.
+_MR_LEDGER_IDENTITY_FIELDS = (
+    "segmentation_source",
+    "series_uid",
+    "nifti_path",
+    "source_content_sha256",
+    "mask_path_source",
+    "mask_identity",
+)
+# Fields every published MR row must still agree with after extraction.
+_MR_BINDING_FIELDS = (
+    "segmentation_source",
+    "series_uid",
+    "nifti_path",
+    "source_content_sha256",
+    "mask_path_source",
+    "mask_identity",
+    "configured_parameter_hash",
+    "code_revision",
+)
+
+
+class _MrSourceError(Exception):
+    """A discovered MR series cannot be bound to one readable current source."""
+
+    def __init__(self, reason_code: str, detail: str) -> None:
+        super().__init__(detail)
+        self.reason_code = reason_code
+        self.detail = detail
+
+
+def _mr_sidecar_candidates(nifti_path: Path) -> List[Path]:
+    """Return the sidecar names the real producers write for one MR NIfTI.
+
+    ``organize._convert_related_series`` writes ``<base>.metadata.json`` while
+    ``segmentation`` writes ``<base>.nii.metadata.json`` (``Path.stem`` keeps the
+    inner ``.nii`` of ``.nii.gz``). A reader that knows only one spelling loses
+    the identity of every series the other producer converted.
+    """
+    names = dict.fromkeys(
+        (
+            f"{_strip_nii_suffix(nifti_path)}.metadata.json",
+            f"{nifti_path.stem}.metadata.json",
+        )
+    )
+    return [nifti_path.with_name(name) for name in names]
+
+
+def _mr_is_nifti(path: Path) -> bool:
+    """True only for a NIfTI volume. ``*.nii*`` also matches ``*.nii.metadata.json``."""
+    return path.name.endswith((".nii", ".nii.gz"))
+
+
+def _mr_read_sidecar(path: Path) -> Dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise _MrSourceError(
+            "failed_source_read",
+            f"MR metadata sidecar {path.name} is unreadable: {exc}",
+        ) from exc
+    if not isinstance(payload, dict):
+        raise _MrSourceError(
+            "failed_source_read",
+            f"MR metadata sidecar {path.name} is not a JSON object",
+        )
+    return payload
+
+
+def _mr_dicom_files(dicom_dir: Path, series_root: Path) -> List[Path]:
+    """Return the series' DICOM instances without walking sibling derived output."""
+    flat = sorted(path for path in dicom_dir.glob("*.dcm") if path.is_file())
+    try:
+        is_series_root = dicom_dir.resolve() == series_root.resolve()
+    except OSError:
+        is_series_root = dicom_dir == series_root
+    if flat or is_series_root:
+        # A series root also holds NIFTI/ and Segmentation_TotalSegmentator/, and
+        # the segmentation RTSTRUCT there is a different DICOM series.
+        return flat
+    return sorted(path for path in dicom_dir.rglob("*.dcm") if path.is_file())
+
+
+def _mr_dicom_identity(dicom_dir: Path, series_root: Path) -> Dict[str, Any]:
+    """Return one unambiguous readable MR series identity, or fail closed."""
+    files = _mr_dicom_files(dicom_dir, series_root)
+    if not files:
+        raise _MrSourceError(
+            "failed_source_read", f"MR series has no DICOM instance under {dicom_dir}"
+        )
+    series_uids: Set[str] = set()
+    study_uids: Set[str] = set()
+    modalities: Set[str] = set()
+    sop_uids: List[str] = []
+    for path in files:
+        try:
+            ds = pydicom.dcmread(str(path), stop_before_pixels=True)
+        except Exception as exc:
+            raise _MrSourceError(
+                "failed_source_read",
+                f"MR DICOM instance {path.name} is unreadable: {exc}",
+            ) from exc
+        series_uids.add(str(getattr(ds, "SeriesInstanceUID", "") or "").strip())
+        study_uids.add(str(getattr(ds, "StudyInstanceUID", "") or "").strip())
+        modalities.add(str(getattr(ds, "Modality", "") or "").strip().upper())
+        sop_uid = str(getattr(ds, "SOPInstanceUID", "") or "").strip()
+        if not sop_uid:
+            raise _MrSourceError(
+                "failed_source_read",
+                f"MR DICOM instance {path.name} declares no SOPInstanceUID",
+            )
+        sop_uids.append(sop_uid)
+    if len(series_uids) != 1 or not next(iter(series_uids)):
+        raise _MrSourceError(
+            "failed_source_read",
+            f"{dicom_dir} holds {len(series_uids)} SeriesInstanceUID value(s): "
+            f"{sorted(series_uids)}",
+        )
+    if len(study_uids) != 1 or not next(iter(study_uids)):
+        # Collapsing a mixed or absent study identity to a blank field would let
+        # instances from two studies publish as one measured series.
+        raise _MrSourceError(
+            "failed_source_read",
+            f"{dicom_dir} holds {len(study_uids)} StudyInstanceUID value(s): "
+            f"{sorted(study_uids)}",
+        )
+    if modalities != {"MR"}:
+        raise _MrSourceError(
+            "failed_source_read",
+            f"{dicom_dir} holds non-MR modality {sorted(modalities)}",
+        )
+    if len(sop_uids) != len(set(sop_uids)):
+        raise _MrSourceError(
+            "failed_source_read", f"{dicom_dir} holds duplicate SOPInstanceUID values"
+        )
+    return {
+        "series_instance_uid": next(iter(series_uids)),
+        "study_instance_uid": next(iter(study_uids)),
+        "sop_uids": frozenset(sop_uids),
+        "instance_count": len(sop_uids),
+    }
+
+
+def _mr_resolve_series_source(series_root: Path) -> Dict[str, Any]:
+    """Bind one MR series to exactly one current, readable, self-consistent source.
+
+    Selection, metadata and DICOM identity are one decision: the chosen image is
+    the one its own producer sidecar names, that sidecar declares MR, and the
+    DICOM series it points at is readable, unambiguous, and unchanged since the
+    sidecar was written.
+    """
+    nifti_dir = series_root / "NIFTI"
+    nifti_files = sorted(
+        path
+        for path in nifti_dir.glob("*.nii*")
+        if path.is_file() and _mr_is_nifti(path) and not path.name.startswith(".")
+    )
+    if not nifti_files:
+        raise _MrSourceError("failed_source_read", "MR series has no NIfTI image")
+
+    candidates: List[Tuple[Path, Path, Dict[str, Any]]] = []
+    contradictions: List[str] = []
+    for nifti_path in nifti_files:
+        present = [path for path in _mr_sidecar_candidates(nifti_path) if path.is_file()]
+        if not present:
+            contradictions.append(f"{nifti_path.name} has no producer metadata sidecar")
+            continue
+        if len(present) > 1:
+            contradictions.append(
+                f"{nifti_path.name} has {len(present)} competing metadata sidecars"
+            )
+            continue
+        sidecar = present[0]
+        meta = _mr_read_sidecar(sidecar)
+        recorded_name = Path(str(meta.get("nifti_path") or "")).name
+        if recorded_name and recorded_name != nifti_path.name:
+            contradictions.append(
+                f"{sidecar.name} describes {recorded_name}, not {nifti_path.name}"
+            )
+            continue
+        modality = str(meta.get("modality") or "").strip().upper()
+        if modality != "MR":
+            contradictions.append(
+                f"{nifti_path.name} is declared modality {modality or 'unset'}"
+            )
+            continue
+        candidates.append((nifti_path, sidecar, meta))
+
+    if len(candidates) != 1 or contradictions:
+        detail = (
+            f"MR series does not resolve to exactly one identity-linked MR image "
+            f"({len(candidates)} of {len(nifti_files)} NIfTI file(s))"
+        )
+        if contradictions:
+            detail = f"{detail}: " + "; ".join(contradictions)
+        raise _MrSourceError("failed_source_read", detail)
+
+    nifti_path, sidecar, meta = candidates[0]
+
+    dicom_dir = series_root / "DICOM" if (series_root / "DICOM").is_dir() else series_root
+    recorded_dir = str(meta.get("source_directory") or "").strip()
+    if recorded_dir:
+        # Only an in-course source directory is honored. A recorded absolute path
+        # that now resolves outside this course would silently measure another
+        # copy of the series after the course was moved or duplicated.
+        candidate_dir = Path(recorded_dir)
+        try:
+            inside = candidate_dir.resolve().is_relative_to(series_root.resolve())
+        except (OSError, ValueError):
+            inside = False
+        if inside and candidate_dir.is_dir():
+            dicom_dir = candidate_dir
+
+    identity = _mr_dicom_identity(dicom_dir, series_root)
+
+    sidecar_series_uid = str(meta.get("series_instance_uid") or "").strip()
+    if not sidecar_series_uid:
+        raise _MrSourceError(
+            "failed_source_read", f"{sidecar.name} records no SeriesInstanceUID"
+        )
+    if sidecar_series_uid != identity["series_instance_uid"]:
+        raise _MrSourceError(
+            "failed_source_read",
+            f"{sidecar.name} names series {sidecar_series_uid} but {dicom_dir} holds "
+            f"{identity['series_instance_uid']}",
+        )
+
+    try:
+        image_digest = file_sha256(nifti_path)
+    except OSError as exc:
+        raise _MrSourceError(
+            "failed_source_read", f"MR image {nifti_path.name} is unreadable: {exc}"
+        ) from exc
+    recorded_digest = str(meta.get("nifti_sha256") or "").strip()
+    if recorded_digest and recorded_digest != image_digest:
+        raise _MrSourceError(
+            "failed_source_read",
+            f"MR image {nifti_path.name} changed after {sidecar.name} recorded its content",
+        )
+
+    recorded_instances = meta.get("instances")
+    if isinstance(recorded_instances, (list, tuple)) and recorded_instances:
+        if {str(value) for value in recorded_instances} != set(identity["sop_uids"]):
+            raise _MrSourceError(
+                "failed_source_read",
+                f"MR DICOM instances changed after {sidecar.name} recorded them "
+                f"({len(recorded_instances)} recorded, {identity['instance_count']} present)",
+            )
+
+    study_uid = str(meta.get("study_instance_uid") or "").strip()
+    if study_uid and identity["study_instance_uid"] and study_uid != identity["study_instance_uid"]:
+        raise _MrSourceError(
+            "failed_source_read",
+            f"{sidecar.name} names study {study_uid} but {dicom_dir} holds "
+            f"{identity['study_instance_uid']}",
+        )
+
+    return {
+        "nifti_path": nifti_path,
+        "sidecar": sidecar,
+        "dicom_dir": dicom_dir,
+        "series_uid": identity["series_instance_uid"],
+        "study_uid": study_uid or identity["study_instance_uid"],
+        "image_digest": image_digest,
+    }
+
+
+def _mr_roi_masks(seg_dir: Path) -> List[Tuple[str, Path]]:
+    """Return every discovered per-ROI ``total_mr`` mask, aggregates excluded."""
+    masks: List[Tuple[str, Path]] = []
+    for mask_path in sorted(seg_dir.glob(f"{_MR_MODEL}--*.nii*")):
+        if not mask_path.is_file() or not _mr_is_nifti(mask_path):
+            continue
+        roi_name = _totalseg_roi_name(mask_path)
+        if not roi_name or roi_name in _MR_NON_ROI_MASK_NAMES:
+            logger.debug("Ignoring non-ROI MR segmentation artifact %s", mask_path)
+            continue
+        masks.append((roi_name, mask_path))
+    return masks
+
+
+def _mr_source_digest(path: Path) -> str:
+    """Digest one source file, recording a read failure instead of raising."""
+    try:
+        return file_sha256(path)
+    except OSError as exc:
+        return f"unreadable:{type(exc).__name__}"
+
+
+def _mr_series_fingerprint(series_root: Path) -> Dict[str, str]:
+    """Digest every current source byte one MR series measurement depends on.
+
+    Covers the converted image, its producer metadata sidecar, the ROI mask
+    inventory and the raw DICOM instances, keyed by path so an arrival or a
+    removal is as visible as a content change. Recorded UIDs cannot show any of
+    that: a header can be rewritten and a mask replaced while every identifier
+    on the row stays the same.
+    """
+    entries: Dict[str, str] = {}
+
+    def _record(candidates: Any) -> None:
+        for path in sorted(candidates):
+            if not path.is_file():
+                continue
+            try:
+                key = str(path.relative_to(series_root))
+            except ValueError:
+                key = str(path)
+            entries[key] = _mr_source_digest(path)
+
+    _record((series_root / "NIFTI").glob("*"))
+    _record((series_root / "Segmentation_TotalSegmentator").glob("*.nii*"))
+    _record(series_root.rglob("*.dcm"))
+    return entries
+
+
+def _mr_source_inventory(mr_root: Path) -> Dict[str, Dict[str, str]]:
+    """Fingerprint every MR series directory currently under the course."""
+    try:
+        series_dirs = sorted(path for path in mr_root.iterdir() if path.is_dir())
+    except OSError:
+        return {}
+    return {path.name: _mr_series_fingerprint(path) for path in series_dirs}
+
+
+def _mr_source_drift(
+    before: Mapping[str, Mapping[str, str]], after: Mapping[str, Mapping[str, str]]
+) -> Optional[str]:
+    """Return the first live MR source change observed since ``before``."""
+    for series in sorted(set(before) | set(after)):
+        original = before.get(series)
+        current = after.get(series)
+        if original is None:
+            return f"MR series directory {series} appeared during extraction"
+        if current is None:
+            return f"MR series directory {series} disappeared during extraction"
+        for name in sorted(set(original) | set(current)):
+            if name not in original:
+                return f"MR source {series}/{name} appeared during extraction"
+            if name not in current:
+                return f"MR source {series}/{name} disappeared during extraction"
+            if original[name] != current[name]:
+                return f"MR source {series}/{name} changed during extraction"
+    return None
+
+
+def _mr_geometry_matches(image: "sitk.Image", mask: "sitk.Image") -> bool:
+    if tuple(image.GetSize()) != tuple(mask.GetSize()):
+        return False
+    for left, right in (
+        (image.GetSpacing(), mask.GetSpacing()),
+        (image.GetOrigin(), mask.GetOrigin()),
+        (image.GetDirection(), mask.GetDirection()),
+    ):
+        if len(left) != len(right):
+            return False
+        if any(abs(float(a) - float(b)) > 1e-4 for a, b in zip(left, right)):
+            return False
+    return True
+
+
+def _mr_row_identity(
+    course_dir: Path,
+    *,
+    roi_name: str,
+    series_uid: str,
+    study_uid: str,
+    dicom_dir: str,
+    nifti_path: str,
+    image_digest: str,
+    mask_path: str,
+    mask_identity: str,
+    parameter_arm: str,
+    configured_parameter_hash_value: str,
+    run_identifier: str,
+    code_revision: str,
+) -> Dict[str, Any]:
+    """Every field a published MR row needs to name its own current source.
+
+    All names are declared publication columns in ``radiomics_schema``; this adds
+    no new column to the table.
+    """
+    return {
+        "modality": "MR",
+        "image_modality": "MR",
+        "segmentation_source": _MR_SEGMENTATION_SOURCE,
+        "patient_id": course_dir.parent.name,
+        "course_id": course_dir.name,
+        "course_dir": str(course_dir),
+        "series_uid": series_uid,
+        "study_uid": study_uid,
+        "series_dir": dicom_dir,
+        "nifti_path": nifti_path,
+        "source_content_sha256": image_digest,
+        "mask_path_source": mask_path,
+        "mask_identity": mask_identity,
+        "roi_name": roi_name,
+        "roi_original_name": roi_name,
+        "stable_roi_identifier": roi_name,
+        "extraction_arm": parameter_arm,
+        "configured_parameter_hash": configured_parameter_hash_value,
+        "run_identifier": run_identifier,
+        "code_revision": code_revision,
+    }
+
+
+def _mr_disposition_task(
+    disposition: Mapping[str, Any], params_file: Optional[Path]
+) -> Dict[str, Any]:
+    """Turn a non-measurement outcome into a durable published failure row.
+
+    Mirrors the CT NIfTI fallback: a disposition travels through
+    ``process_radiomics_batch`` so it is counted in the course diagnostics, lands
+    in the workbook, and fails the course closed when the ROI is required.
+    """
+    metadata = dict(disposition["metadata"])
+    metadata["roi_structural_code"] = disposition["reason_code"]
+    return {
+        "image_path": "mr-source-disposition",
+        "mask_path": None,
+        "roi_name": str(metadata["roi_original_name"]),
+        "params_file": str(params_file) if params_file else None,
+        "label": None,
+        "cleanup": False,
+        "required": bool(disposition["required"]),
+        "metadata": metadata,
+        "precomputed_failure": {
+            "reason": disposition["detail"],
+            "status": disposition["status"],
+            "failure_kind": disposition["failure_kind"],
+            "reason_code": disposition["reason_code"],
+            "metadata": {"roi_structural_code": disposition["reason_code"]},
+        },
+    }
+
+
+def _mr_ledger_rows(dispositions: Sequence[Mapping[str, Any]]) -> List[Dict[str, Any]]:
+    """Ledger-only rows for a course that publishes no workbook.
+
+    The full source identity travels with the outcome: a course that published
+    nothing must still say which series and which mask bytes it accounted for.
+    """
+    rows: List[Dict[str, Any]] = []
+    for disposition in dispositions:
+        row = dict(disposition["metadata"])
+        row.update(
+            {
+                "reason_code": disposition["reason_code"],
+                "roi_structural_code": disposition["reason_code"],
+                "extraction_status": disposition["status"],
+                "extraction_status_detail": disposition["detail"],
+            }
+        )
+        rows.append(row)
+    return rows
+
+
+def _mr_expected_bindings(tasks: Sequence[Mapping[str, Any]]) -> Dict[str, Dict[str, str]]:
+    bindings: Dict[str, Dict[str, str]] = {}
+    for task in tasks:
+        metadata = task.get("metadata") or {}
+        bindings[_roi_instance_key(task)] = {
+            field: str(metadata.get(field) or "") for field in _MR_BINDING_FIELDS
+        }
+    return bindings
+
+
+def _mr_reject_stale_checkpoint(
+    checkpoint_path: Path, tasks: Sequence[Mapping[str, Any]], out_path: Path
+) -> None:
+    """Delete a checkpoint that no longer describes the current MR sources.
+
+    ``RadiomicsCheckpoint`` only compares identities, and its configured-parameter
+    check is CT-only, so a resumed MR course could otherwise republish rows
+    measured from replaced image or mask bytes.
+    """
+    checkpoint_path = Path(checkpoint_path)
+    if not checkpoint_path.exists():
+        return
+    stale: Optional[str] = None
+    try:
+        records = pd.read_parquet(checkpoint_path).to_dict("records")
+        expected = _mr_expected_bindings(tasks)
+    except Exception as exc:
+        stale = f"checkpoint is unreadable or the current inventory is invalid: {exc}"
+        records, expected = [], {}
+    for record in records:
+        if stale:
+            break
+        try:
+            key = _roi_instance_key(record)
+        except ValueError as exc:
+            stale = f"checkpoint row has no usable identity: {exc}"
+            break
+        binding = expected.get(key)
+        if binding is None:
+            stale = "checkpoint row is outside the current MR task inventory"
+            break
+        for field, value in binding.items():
+            if _identity_value(record, field) != value:
+                stale = f"checkpoint {field} no longer matches the current source"
+                break
+    if stale:
+        logger.warning("Rejecting stale MR radiomics checkpoint %s: %s", checkpoint_path, stale)
+        _remove_artifact_strict(
+            checkpoint_path, context="rejecting stale MR radiomics checkpoint"
+        )
+        _invalidate_radiomics_outputs(out_path)
+
+
+def _mr_publication_drift(
+    rows: Sequence[Mapping[str, Any]], tasks: Sequence[Mapping[str, Any]]
+) -> Optional[str]:
+    """Return the first published row that is not bound to a current MR source."""
+    expected = _mr_expected_bindings(tasks)
+    for row in rows:
+        try:
+            key = _roi_instance_key(row)
+        except ValueError as exc:
+            return f"published row has no usable identity: {exc}"
+        binding = expected.get(key)
+        if binding is None:
+            return (
+                "published row "
+                f"{_identity_value(row, 'roi_original_name', fallback='roi_name')!r} "
+                "is not part of the current MR task inventory"
+            )
+        for field, value in binding.items():
+            if _identity_value(row, field) != value:
+                return (
+                    f"published {field} for "
+                    f"{_identity_value(row, 'roi_original_name', fallback='roi_name')!r} "
+                    "does not match its current source"
+                )
+    return None
+
+
+def _mr_unmet_requirements(
+    requirements: Sequence[Any], rows: Sequence[Mapping[str, Any]]
+) -> List[str]:
+    """Required ROIs that no row actually measured from an accepted source.
+
+    A row only satisfies a requirement when its source matches, its name matches
+    an accepted alias, and its outcome is a measurement (or one of the
+    dispositions the CT gate has always treated as non-fatal). A failure row
+    carrying the required name no longer discharges the requirement.
+    """
+    measured: Set[Tuple[str, str]] = set()
+    for row in rows:
+        status = _identity_value(row, "extraction_status") or "success"
+        if status != "success" and not extraction_status_is_nonfatal_for_required(status):
+            continue
+        roi_name = _identity_value(row, "roi_original_name", fallback="roi_name")
+        if not roi_name:
+            continue
+        measured.add(
+            (
+                _norm_roi_key(_identity_value(row, "segmentation_source")),
+                _norm_roi_key(roi_name),
+            )
+        )
+    unmet: List[str] = []
+    for requirement in requirements:
+        if requirement.requiredness != Requiredness.ANALYSIS_REQUIRED:
+            continue
+        wanted_source = _norm_roi_key(requirement.source) if requirement.source else None
+        accepted = {_norm_roi_key(alias) for alias in requirement.accepted_names}
+        if not any(
+            roi in accepted and (wanted_source is None or wanted_source == source)
+            for source, roi in measured
+        ):
+            unmet.append(requirement.canonical_name)
+    return unmet
+
+
+def _mr_published_rows(result: Optional[Path]) -> List[Dict[str, Any]]:
+    """Read back what was actually published; a read failure is not an empty course."""
+    if result is None:
+        return []
+    parquet_path = Path(result).with_suffix(".parquet")
+    try:
+        return pd.read_parquet(parquet_path).to_dict("records")
+    except Exception as exc:
+        raise RadiomicsCourseExtractionError(
+            f"Published MR radiomics table {parquet_path} cannot be read back: {exc}"
+        ) from exc
+
+
+def _withdraw_mr_ledger(course_dir: Path, *, context: str) -> None:
+    """Retract a superseded MR ledger, including the combined view of it.
+
+    ``invalidate_radiomics_outputs`` removes a workbook and its Parquet sidecar
+    and nothing else, so an earlier successful run's ledger outlives the
+    measurements it describes. That ledger is what the cohort denominator is
+    built from: ``workflow_aggregate._write_radiomics_denominator_aggregate``
+    reads the combined ``radiomics_roi_ledger.json`` that ``write_modality_ledger``
+    rebuilds out of the per-modality files, so both have to go. A course whose
+    live sources changed under it cannot replace the ledger with a current-source
+    statement about bytes that are no longer there, so it publishes nothing for MR.
+    """
+    metadata_dir = Path(course_dir) / "metadata"
+    superseded = [
+        metadata_dir / f"radiomics_mr_{name}.json"
+        for name in ("roi_ledger", "denominators", "patient_ledger")
+    ]
+    # Withdraw the consumer-facing view first, even if a previous interrupted
+    # cleanup already removed all modality files. A failed CT read or rebuild
+    # must not leave the combined ledger advertising superseded MR success.
+    for name in ("roi_ledger", "denominators", "patient_ledger"):
+        _remove_artifact_strict(
+            metadata_dir / f"radiomics_{name}.json", context=context
+        )
+    for path in superseded:
+        _remove_artifact_strict(path, context=context)
+    surviving = metadata_dir / "radiomics_ct_roi_ledger.json"
+    if not surviving.exists():
+        return
+    try:
+        payload = json.loads(surviving.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict) or any(
+            not isinstance(payload.get(name), list)
+            or any(not isinstance(row, dict) for row in payload[name])
+            for name in ("course", "course_roi")
+        ):
+            raise ValueError("CT ledger must contain course and course_roi row lists")
+    except (OSError, ValueError) as exc:
+        raise RadiomicsCourseExtractionError(
+            f"Surviving CT ledger {surviving} is unreadable while {context}: {exc}"
+        ) from exc
+    # Re-emitting the surviving CT ledger unchanged is how the combined view is
+    # rebuilt from the modality ledgers still on disk. That merge belongs to
+    # ``write_modality_ledger`` and is not restated here.
+    write_modality_ledger(
+        metadata_dir,
+        DenominatorLedger(
+            course_rows=[dict(row) for row in payload.get("course", ())],
+            roi_rows=[dict(row) for row in payload.get("course_roi", ())],
+        ),
+        "CT",
+    )
+
+
 def radiomics_for_course_mr(
     course_dir: Path,
     config: Any,
@@ -3348,9 +4123,11 @@ def radiomics_for_course_mr(
     """
     Extract MR radiomics features using conda environment.
 
-    Processes all MR series in the course directory that have:
-    - NIFTI/ subdirectory with .nii.gz files
-    - Segmentation_TotalSegmentator/ subdirectory with total_mr--*.nii.gz masks
+    Every MR series directory is accounted for. A series is measured only when
+    exactly one NIfTI image, its own producer metadata sidecar, and one readable
+    unambiguous MR DICOM series agree, and the recorded content still matches the
+    bytes on disk. Every other discovered series or mask keeps an explicit
+    disposition instead of disappearing.
 
     Args:
         course_dir: Path to course directory
@@ -3364,32 +4141,91 @@ def radiomics_for_course_mr(
     mr_root = course_dir / "MR"
     out_path = mr_root / "radiomics_mr.xlsx"
     configured_mr_params = getattr(config, 'radiomics_params_file_mr', None) if config is not None else None
-    mr_required = any(
-        requirement.requiredness == Requiredness.ANALYSIS_REQUIRED
-        for requirement in requirements_from_contract(getattr(config, "radiomics_analysis_contract", {}) or {}, "MR")
-    )
-    mr_requirements = requirements_from_contract(getattr(config, "radiomics_analysis_contract", {}) or {}, "MR")
-    mr_expected_names = [requirement.canonical_name for requirement in mr_requirements if requirement.requiredness != Requiredness.INVENTORY_ONLY]
-    mr_failures: list[dict[str, str]] = []
-    def _norm_mr(value: Any) -> str:
-        return "".join(ch for ch in str(value or "").casefold() if ch.isalnum())
+    analysis_contract = getattr(config, "radiomics_analysis_contract", {}) or {}
+    mr_requirements = requirements_from_contract(analysis_contract, "MR")
+    mr_required_names = {
+        requirement.canonical_name
+        for requirement in mr_requirements
+        if requirement.requiredness == Requiredness.ANALYSIS_REQUIRED
+    }
+    mr_required = bool(mr_required_names)
+    mr_expected_names = [
+        requirement.canonical_name
+        for requirement in mr_requirements
+        if requirement.requiredness != Requiredness.INVENTORY_ONLY
+    ]
+
+    def _mr_missing_reason(default: str) -> Optional[Callable[[str], str]]:
+        """A required ROI whose whole modality is absent is a technical failure.
+
+        An optional ROI keeps ``not_applicable_modality``; a required one cannot
+        be discharged by the same not-applicable skip.
+        """
+        if default != "not_applicable_modality" or not mr_required_names:
+            return None
+        return lambda name: (
+            "failed_source_read" if name in mr_required_names else default
+        )
+
+    def _roi_is_required(roi_name: str) -> bool:
+        return requiredness_for(
+            _MR_SEGMENTATION_SOURCE,
+            roi_name,
+            contract=analysis_contract,
+            modality="MR",
+        ) == Requiredness.ANALYSIS_REQUIRED
+
+    def _account_unbound_configuration(context: str) -> None:
+        """Withdraw everything produced under a binding this run cannot resolve.
+
+        The workbook, the checkpoint and the ledger all describe measurements
+        made under a configured parameter binding that is no longer resolvable,
+        so none of them may keep standing; the course is left saying only that
+        its MR radiomics failed technically.
+        """
+        _invalidate_radiomics_outputs(out_path)
+        _remove_artifact_strict(
+            mr_root / "radiomics_mr_checkpoint.parquet", context=context
+        )
+        _write_conda_roi_ledger(
+            course_dir,
+            [],
+            [],
+            extracted=False,
+            expected_names=mr_expected_names,
+            missing_reason="failed_radiomics_extraction",
+            identity_fields=_MR_LEDGER_IDENTITY_FIELDS,
+            modality="MR",
+        )
 
     if params_file is None and configured_mr_params is not None:
         params_file = Path(configured_mr_params)
     if params_file is not None and not Path(params_file).exists():
-        _invalidate_radiomics_outputs(out_path)
+        _account_unbound_configuration(
+            "discarding the MR checkpoint for a missing configured parameter file"
+        )
         raise RadiomicsCourseExtractionError(
             f"Configured required MR radiomics parameter path is missing: {params_file}"
         )
     mr_parameter_arm = "mr_configured"
-    mr_run_identifier = new_run_identifier()
-    mr_code_revision = current_code_revision()
-    mr_configured_parameter_hash = configured_parameter_hash(
-        Path(params_file) if params_file is not None else None,
-        arm=mr_parameter_arm,
-        window=None,
-        large_roi=False,
-    )
+    try:
+        mr_run_identifier = new_run_identifier()
+        mr_code_revision = current_code_revision()
+        mr_configured_parameter_hash = configured_parameter_hash(
+            Path(params_file) if params_file is not None else None,
+            arm=mr_parameter_arm,
+            window=None,
+            large_roi=False,
+        )
+    except Exception as exc:
+        # Nothing may survive under a parameter binding this run could not
+        # resolve: the workbook on disk would keep describing itself as current.
+        _account_unbound_configuration(
+            "discarding the MR checkpoint after a configuration binding failure"
+        )
+        raise RadiomicsCourseExtractionError(
+            f"MR radiomics configuration binding failed for {course_dir}: {exc}"
+        ) from exc
 
     if not mr_root.exists():
         logger.debug("No MR directory in %s", course_dir)
@@ -3401,52 +4237,143 @@ def radiomics_for_course_mr(
             extracted=False,
             expected_names=mr_expected_names,
             missing_reason="not_applicable_modality",
+            missing_reason_for=_mr_missing_reason("not_applicable_modality"),
+            identity_fields=_MR_LEDGER_IDENTITY_FIELDS,
+            derive_course_states=True,
             modality="MR",
         )
+        if mr_required_names:
+            raise RadiomicsCourseExtractionError(
+                f"MR radiomics is required but {course_dir} has no MR directory; "
+                "required ROI(s) were not measured: "
+                + ", ".join(sorted(mr_required_names))
+            )
         return None
 
     tasks: List[Dict[str, Any]] = []
+    dispositions: List[Dict[str, Any]] = []
     temp_files: List[Path] = []
     min_voxels_limit, _ = _ct_voxel_limits(config)
+    series_dirs = sorted(path for path in mr_root.iterdir() if path.is_dir())
+    # Bind the live source bytes before anything is read, resolved or prepared,
+    # so a source replaced while this course is being measured cannot publish.
+    source_inventory = _mr_source_inventory(mr_root)
 
-    for series_root in sorted(p for p in mr_root.iterdir() if p.is_dir()):
+    def _record_disposition(
+        roi_name: str,
+        *,
+        reason_code: str,
+        detail: str,
+        status: str = "failed",
+        failure_kind: str = "source_read_error",
+        series_uid: str,
+        study_uid: str = "",
+        dicom_dir: str = "",
+        nifti_path: str = "",
+        image_digest: str = _MR_UNAVAILABLE,
+        mask_path: str = "",
+        mask_identity: str = _MR_UNAVAILABLE,
+    ) -> None:
+        dispositions.append(
+            {
+                "reason_code": reason_code,
+                "detail": detail,
+                "status": status,
+                "failure_kind": failure_kind,
+                "required": _roi_is_required(roi_name),
+                "metadata": _mr_row_identity(
+                    course_dir,
+                    roi_name=roi_name,
+                    series_uid=series_uid,
+                    study_uid=study_uid,
+                    dicom_dir=dicom_dir,
+                    nifti_path=nifti_path,
+                    image_digest=image_digest,
+                    mask_path=mask_path,
+                    mask_identity=mask_identity,
+                    parameter_arm=mr_parameter_arm,
+                    configured_parameter_hash_value=mr_configured_parameter_hash,
+                    run_identifier=mr_run_identifier,
+                    code_revision=mr_code_revision,
+                ),
+            }
+        )
+        logger.warning(
+            "MR radiomics did not measure %s (%s): %s", roi_name, reason_code, detail
+        )
+
+    for series_root in series_dirs:
+        series_label = series_root.name
         nifti_dir = series_root / "NIFTI"
         seg_dir = series_root / "Segmentation_TotalSegmentator"
 
-        if not nifti_dir.exists() or not seg_dir.exists():
-            mr_failures.append({
-                "roi_name": series_root.name,
-                "reason_code": "failed_source_segmentation",
-                "detail": "MR segmentation or NIfTI output is missing",
-            })
+        if not nifti_dir.is_dir() or not seg_dir.is_dir():
+            _record_disposition(
+                series_label,
+                reason_code="failed_source_segmentation",
+                detail="MR series has no NIfTI conversion or TotalSegmentator output",
+                series_uid=series_label,
+            )
             continue
 
-        # Find MR NIfTI file
-        nifti_files = sorted(nifti_dir.glob("*.nii.gz"))
-        if not nifti_files:
-            mr_failures.append({
-                "roi_name": series_root.name,
-                "reason_code": "failed_source_read",
-                "detail": "MR series has no readable NIfTI image",
-            })
-            continue
+        roi_masks = _mr_roi_masks(seg_dir)
 
-        mr_nifti = nifti_files[0]
-
-        # Check metadata for modality
-        meta_files = sorted(nifti_dir.glob("*.metadata.json"))
-        if meta_files:
-            try:
-                import json
-                meta = json.loads(meta_files[0].read_text(encoding='utf-8'))
-                if str(meta.get('modality', '')).upper() != 'MR':
-                    continue
-            except Exception:
-                pass
-
-        # Convert MR NIfTI to NRRD for radiomics
         try:
-            mr_img = sitk.ReadImage(str(mr_nifti))
+            source = _mr_resolve_series_source(series_root)
+        except _MrSourceError as exc:
+            # Every discovered mask keeps its own row, so a required ROI cannot
+            # vanish with the series that carried it.
+            if roi_masks:
+                for roi_name, mask_path in roi_masks:
+                    _record_disposition(
+                        roi_name,
+                        reason_code=exc.reason_code,
+                        detail=exc.detail,
+                        series_uid=series_label,
+                        mask_path=str(mask_path),
+                    )
+            else:
+                _record_disposition(
+                    series_label,
+                    reason_code=exc.reason_code,
+                    detail=exc.detail,
+                    series_uid=series_label,
+                )
+            continue
+
+        series_uid = str(source["series_uid"])
+        study_uid = str(source["study_uid"])
+        dicom_dir = str(source["dicom_dir"])
+        nifti_path = str(source["nifti_path"])
+        image_digest = str(source["image_digest"])
+
+        if not roi_masks:
+            _record_disposition(
+                series_label,
+                reason_code="failed_source_segmentation",
+                detail=f"MR segmentation produced no {_MR_MODEL} ROI mask in {seg_dir}",
+                series_uid=series_uid,
+                study_uid=study_uid,
+                dicom_dir=dicom_dir,
+                nifti_path=nifti_path,
+                image_digest=image_digest,
+            )
+            continue
+
+        def _series_disposition(roi_name: str, mask_path: Path, **kwargs: Any) -> None:
+            _record_disposition(
+                roi_name,
+                series_uid=series_uid,
+                study_uid=study_uid,
+                dicom_dir=dicom_dir,
+                nifti_path=nifti_path,
+                image_digest=image_digest,
+                mask_path=str(mask_path),
+                **kwargs,
+            )
+
+        try:
+            mr_img = sitk.ReadImage(nifti_path)
             mr_nrrd = tempfile.NamedTemporaryFile(
                 suffix=".nrrd", delete=False, prefix="mr_image_"
             )
@@ -3455,61 +4382,77 @@ def radiomics_for_course_mr(
             temp_files.append(Path(mr_nrrd.name))
             mr_image_path = mr_nrrd.name
         except Exception as exc:
-            mr_failures.append({
-                "roi_name": series_root.name,
-                "reason_code": "failed_source_read",
-                "detail": str(exc),
-            })
+            for roi_name, mask_path in roi_masks:
+                _series_disposition(
+                    roi_name,
+                    mask_path,
+                    reason_code="failed_source_read",
+                    detail=f"MR image {nifti_path} could not be prepared: {exc}",
+                    mask_identity=_MR_UNAVAILABLE,
+                )
             continue
 
-        series_uid = series_root.name
-
-        # Process each mask in Segmentation_TotalSegmentator
-        for mask_path in sorted(seg_dir.glob("total_mr--*.nii.gz")):
-            mask_name = mask_path.name
-            roi_name = mask_name[10:] if mask_name.startswith("total_mr--") else mask_name
-            if roi_name.endswith(".nii.gz"):
-                roi_name = roi_name[:-7]
+        for roi_name, mask_path in roi_masks:
             try:
+                mask_identity = file_sha256(mask_path)
                 mask_img = sitk.ReadImage(str(mask_path))
                 mask_arr = sitk.GetArrayFromImage(mask_img)
             except Exception as exc:
-                mr_failures.append({
-                    "roi_name": roi_name,
-                    "reason_code": "failed_source_read",
-                    "detail": str(exc),
-                })
+                _series_disposition(
+                    roi_name,
+                    mask_path,
+                    reason_code="failed_source_read",
+                    detail=f"MR mask {mask_path.name} is unreadable: {exc}",
+                )
+                continue
+
+            if not _mr_geometry_matches(mr_img, mask_img):
+                _series_disposition(
+                    roi_name,
+                    mask_path,
+                    reason_code="failed_source_read",
+                    detail=(
+                        f"MR mask {mask_path.name} geometry "
+                        f"{tuple(mask_img.GetSize())} does not match its image "
+                        f"{tuple(mr_img.GetSize())}"
+                    ),
+                    failure_kind="source_geometry",
+                    mask_identity=mask_identity,
+                )
                 continue
 
             mask_bool = mask_arr > 0
-            if not mask_bool.any():
-                mr_failures.append({
-                    "roi_name": roi_name,
-                    "reason_code": "not_computed_valid_empty_scope",
-                    "detail": "MR mask is valid but empty",
-                })
+            voxel_count = int(mask_bool.sum())
+            if voxel_count == 0:
+                _series_disposition(
+                    roi_name,
+                    mask_path,
+                    reason_code="not_computed_valid_empty_scope",
+                    detail=f"MR mask {mask_path.name} is valid but empty",
+                    failure_kind="degenerate_mask",
+                    mask_identity=mask_identity,
+                )
                 continue
-            if int(mask_bool.sum()) < min_voxels_limit:
+            if voxel_count < min_voxels_limit:
                 logger.info(
                     "Skipping MR mask %s: %d voxels below minimum %d",
                     mask_path,
-                    int(mask_bool.sum()),
+                    voxel_count,
                     min_voxels_limit,
                 )
-                mr_failures.append({
-                    "roi_name": roi_name,
-                    "reason_code": "ROI_MASK_BELOW_MIN_VOXELS",
-                    "detail": f"mask contains {int(mask_bool.sum())} voxels",
-                })
+                _series_disposition(
+                    roi_name,
+                    mask_path,
+                    reason_code="ROI_MASK_BELOW_MIN_VOXELS",
+                    detail=(
+                        f"mask contains {voxel_count} voxels; configured minimum is "
+                        f"{min_voxels_limit}"
+                    ),
+                    status="below_minimum_voxels",
+                    failure_kind="degenerate_mask",
+                    mask_identity=mask_identity,
+                )
                 continue
-
-            mask_name = mask_path.name
-            if mask_name.startswith("total_mr--"):
-                roi_name = mask_name[10:]
-            else:
-                roi_name = mask_name
-            if roi_name.endswith(".nii.gz"):
-                roi_name = roi_name[:-7]
 
             try:
                 mask_nrrd = tempfile.NamedTemporaryFile(
@@ -3519,11 +4462,14 @@ def radiomics_for_course_mr(
                 sitk.WriteImage(mask_img, mask_nrrd.name)
                 temp_files.append(Path(mask_nrrd.name))
             except Exception as exc:
-                mr_failures.append({
-                    "roi_name": roi_name,
-                    "reason_code": "failed_radiomics_extraction",
-                    "detail": str(exc),
-                })
+                _series_disposition(
+                    roi_name,
+                    mask_path,
+                    reason_code="failed_radiomics_extraction",
+                    detail=f"MR mask {mask_path.name} could not be prepared: {exc}",
+                    failure_kind="extraction_error",
+                    mask_identity=mask_identity,
+                )
                 continue
 
             tasks.append({
@@ -3533,61 +4479,87 @@ def radiomics_for_course_mr(
                 'params_file': str(params_file) if params_file else None,
                 'parameter_provenance_arm': mr_parameter_arm,
                 'cleanup': False,
-                'metadata': {
-                    'modality': 'MR',
-                    'series_uid': series_uid,
-                    'segmentation_source': 'AutoTS_total_mr',
-                    'patient_id': course_dir.parent.name,
-                    'course_id': course_dir.name,
-                    'extraction_arm': mr_parameter_arm,
-                    'configured_parameter_hash': mr_configured_parameter_hash,
-                    'run_identifier': mr_run_identifier,
-                    'code_revision': mr_code_revision,
-                }
+                'required': _roi_is_required(roi_name),
+                'metadata': _mr_row_identity(
+                    course_dir,
+                    roi_name=roi_name,
+                    series_uid=series_uid,
+                    study_uid=study_uid,
+                    dicom_dir=dicom_dir,
+                    nifti_path=nifti_path,
+                    image_digest=image_digest,
+                    mask_path=str(mask_path),
+                    mask_identity=mask_identity,
+                    parameter_arm=mr_parameter_arm,
+                    configured_parameter_hash_value=mr_configured_parameter_hash,
+                    run_identifier=mr_run_identifier,
+                    code_revision=mr_code_revision,
+                ),
             })
+
+    def _cleanup_temp_files() -> None:
+        for temp_file in temp_files:
+            try:
+                temp_file.unlink()
+            except OSError as exc:
+                logger.debug("Failed to clean MR temporary file %s: %s", temp_file, exc)
 
     if not tasks:
         logger.debug("No eligible MR radiomics tasks for %s", course_dir)
-        for tf in temp_files:
-            try:
-                tf.unlink()
-            except OSError as exc:
-                logger.debug("Failed to clean MR temporary file %s: %s", tf, exc)
+        _cleanup_temp_files()
         _invalidate_radiomics_outputs(out_path)
+        # A course that measures nothing still publishes a ledger, and that ledger
+        # is evidence about specific source bytes. Re-read the live inventory
+        # before publishing it: a series or mask that arrived, changed or vanished
+        # while this course was screened would otherwise be described by a
+        # disposition that no longer matches anything on disk.
+        screening_drift = _mr_source_drift(source_inventory, _mr_source_inventory(mr_root))
+        if screening_drift is not None:
+            _remove_artifact_strict(
+                mr_root / "radiomics_mr_checkpoint.parquet",
+                context="discarding the MR checkpoint for a source changed during screening",
+            )
+            _withdraw_mr_ledger(
+                course_dir,
+                context="withdrawing the MR ledger for a source changed during screening",
+            )
+            raise RadiomicsCourseExtractionError(
+                "MR radiomics sources changed while the course was being screened, "
+                f"so its dispositions may not be published: {screening_drift}"
+            )
+        ledger_rows = _mr_ledger_rows(dispositions)
         missing_reason = (
-            "not_applicable_modality"
-            if not any(path.is_dir() for path in mr_root.iterdir())
-            else mr_failures[0].get("reason_code", "not_computed_valid_empty_scope")
-            if mr_failures
-            else "not_computed_valid_empty_scope"
+            "not_applicable_modality" if not series_dirs else "failed_source_segmentation"
         )
-        failure_rows = [
-            {"roi_name": failure.get("roi_name", ""), "reason_code": failure.get("reason_code"), "extraction_status": "failed"}
-            for failure in mr_failures
-        ]
         _write_conda_roi_ledger(
             course_dir,
             [],
-            failure_rows,
+            ledger_rows,
             extracted=False,
             expected_names=mr_expected_names,
             missing_reason=missing_reason,
+            missing_reason_for=_mr_missing_reason(missing_reason),
+            identity_fields=_MR_LEDGER_IDENTITY_FIELDS,
+            derive_course_states=True,
             modality="MR",
         )
-        present = {_norm_mr(row.get("roi_name", "")) for row in failure_rows}
-        missing_required = [
-            requirement.canonical_name
-            for requirement in mr_requirements
-            if requirement.requiredness == Requiredness.ANALYSIS_REQUIRED
-            and not any(_norm_mr(alias) in present for alias in requirement.accepted_names)
-        ]
-        if missing_required:
+        unmet = _mr_unmet_requirements(mr_requirements, ledger_rows)
+        if unmet:
             raise RadiomicsCourseExtractionError(
-                "Required MR ROI(s) are absent: " + ", ".join(missing_required)
+                "Required MR ROI(s) were not measured: " + ", ".join(unmet)
             )
         return None
 
-    logger.info("Processing %d MR radiomics tasks for %s", len(tasks), course_dir.name)
+    all_tasks = tasks + [
+        _mr_disposition_task(disposition, params_file) for disposition in dispositions
+    ]
+    logger.info(
+        "Processing %d MR radiomics tasks (%d measurements, %d dispositions) for %s",
+        len(all_tasks),
+        len(tasks),
+        len(dispositions),
+        course_dir.name,
+    )
 
     # Determine worker count - same logic as CT radiomics
     max_workers = None
@@ -3601,49 +4573,108 @@ def radiomics_for_course_mr(
             pass
     if max_workers is None:
         # Conservative default when no budget is set
-        max_workers = min(4, len(tasks))
+        max_workers = min(4, len(all_tasks))
 
     logger.info("MR radiomics using %d workers", max_workers)
 
     # Enable checkpointing for resumable extraction
     checkpoint_path = mr_root / "radiomics_mr_checkpoint.parquet"
+    _mr_reject_stale_checkpoint(checkpoint_path, all_tasks, out_path)
 
-    try:
-        result = process_radiomics_batch(
-            tasks,
-            out_path,
-            sequential=False,
-            max_workers=max_workers,
-            checkpoint_path=checkpoint_path,
-            enable_heartbeat=True,
-            env_probe_timeout=getattr(config, "radiomics_env_probe_timeout", None),
-        )
-        result_rows = []
-        if result is not None:
-            try:
-                import pandas as pd
-                result_rows = pd.read_parquet(Path(result).with_suffix(".parquet")).to_dict("records")
-            except Exception:
-                result_rows = []
+    def _account_rejected_publication(context: str) -> None:
+        """Withdraw a rejected MR publication and account every attempted ROI.
+
+        Removing the workbook says nothing about the ROIs this course attempted,
+        and it leaves any earlier successful ledger standing for the cohort
+        denominator to keep counting. Each independently recorded nonmeasurement
+        keeps its own reason; everything that was being measured is accounted as
+        the technical failure it turned out to be.
+        """
+        _invalidate_radiomics_outputs(out_path)
+        _remove_artifact_strict(checkpoint_path, context=context)
         _write_conda_roi_ledger(
             course_dir,
-            tasks,
-            list(result_rows) + mr_failures,
-            extracted=result is not None,
+            all_tasks,
+            [],
+            extracted=False,
             expected_names=mr_expected_names,
+            missing_reason="failed_radiomics_extraction",
+            identity_fields=_MR_LEDGER_IDENTITY_FIELDS,
+            derive_course_states=True,
             modality="MR",
         )
-        present = {_norm_mr(row.get("roi_original_name", row.get("roi_name", ""))) for row in list(result_rows) + mr_failures}
-        missing_required = [
-            requirement.canonical_name
-            for requirement in mr_requirements
-            if requirement.requiredness == Requiredness.ANALYSIS_REQUIRED
-            and not any(_norm_mr(alias) in present for alias in requirement.accepted_names)
-        ]
-        if missing_required:
+
+    try:
+        try:
+            result = process_radiomics_batch(
+                all_tasks,
+                out_path,
+                sequential=False,
+                max_workers=max_workers,
+                checkpoint_path=checkpoint_path,
+                enable_heartbeat=True,
+                env_probe_timeout=getattr(config, "radiomics_env_probe_timeout", None),
+            )
+        except Exception as exc:
+            # Typed and unexpected extraction failures both owe a course ledger.
+            # Lower-level publication withdrawal alone does not account the ROIs
+            # that were attempted.
+            _account_rejected_publication(
+                "discarding the MR checkpoint after an unaccounted extraction failure"
+            )
+            if isinstance(exc, RadiomicsCourseExtractionError):
+                # Keep the original typed error and traceback after accounting it.
+                raise
+            raise RadiomicsCourseExtractionError(
+                f"MR radiomics extraction failed for {course_dir}: "
+                f"{type(exc).__name__}: {exc}"
+            ) from exc
+        source_drift = _mr_source_drift(source_inventory, _mr_source_inventory(mr_root))
+        if source_drift is not None:
+            _invalidate_radiomics_outputs(out_path)
+            _remove_artifact_strict(
+                checkpoint_path,
+                context="discarding the MR checkpoint for a source changed during extraction",
+            )
+            _withdraw_mr_ledger(
+                course_dir,
+                context="withdrawing the MR ledger for a source changed during extraction",
+            )
+            raise RadiomicsCourseExtractionError(
+                "MR radiomics sources changed while the course was being measured, "
+                f"so nothing measured from them may be published: {source_drift}"
+            )
+        try:
+            result_rows = _mr_published_rows(result)
+        except RadiomicsCourseExtractionError:
+            _account_rejected_publication(
+                "discarding MR checkpoint for an unreadable publication"
+            )
+            raise
+        drift = _mr_publication_drift(result_rows, all_tasks)
+        if drift is not None:
+            _account_rejected_publication(
+                "discarding MR checkpoint with drifted sources"
+            )
+            raise RadiomicsCourseExtractionError(
+                f"MR radiomics publication is not bound to its current sources: {drift}"
+            )
+        _write_conda_roi_ledger(
+            course_dir,
+            all_tasks,
+            result_rows,
+            extracted=result is not None,
+            expected_names=mr_expected_names,
+            missing_reason="failed_source_segmentation",
+            identity_fields=_MR_LEDGER_IDENTITY_FIELDS,
+            derive_course_states=True,
+            modality="MR",
+        )
+        unmet = _mr_unmet_requirements(mr_requirements, result_rows)
+        if unmet:
             _invalidate_radiomics_outputs(out_path)
             raise RadiomicsCourseExtractionError(
-                "Required MR ROI(s) are absent from extracted rows: " + ", ".join(missing_required)
+                "Required MR ROI(s) were not measured: " + ", ".join(unmet)
             )
         if result is None and mr_required:
             _invalidate_radiomics_outputs(out_path)
@@ -3652,8 +4683,4 @@ def radiomics_for_course_mr(
             )
         return result
     finally:
-        for tf in temp_files:
-            try:
-                tf.unlink()
-            except OSError as exc:
-                logger.debug("Failed to clean MR temporary file %s: %s", tf, exc)
+        _cleanup_temp_files()

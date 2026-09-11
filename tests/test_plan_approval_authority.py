@@ -13,7 +13,12 @@ from rtpipeline import organize as org
 from rtpipeline.config import PipelineConfig
 from rtpipeline.course_contract import CourseContractError, load_course_contract
 from rtpipeline.plan_approval import approval_audit, approved_course_start
-from test_course_identity_reference_chains import _mk_plan, _mk_dose, _mk_struct, _extract_linked
+from synthetic_rt_fixtures import (
+    extract_linked as _extract_linked,
+    make_dose as _mk_dose,
+    make_plan as _mk_plan,
+    make_struct as _mk_struct,
+)
 
 
 def sources(tmp_path, statuses):

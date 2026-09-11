@@ -255,6 +255,48 @@ def _stable_subject_frame() -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def _publish_course_tables(
+    root: Path, frame: pd.DataFrame, rob_config: RobustnessConfig
+) -> list[Path]:
+    """Publish the per-course tables a cohort aggregation is allowed to admit.
+
+    Aggregation admits only run-bound, code-bound, configuration-bound and
+    byte-bound course tables, so a subject frame is split into one table per
+    patient/course, each under its own run identifier and each certified by the
+    shipped disposition writer using the code and effective configuration in
+    force now. The measured values stay the synthetic ones these tests reason
+    about, and the sidecars bind no RTSTRUCT sources because these frames have
+    none: this fixture certifies the aggregation binding, not source
+    provenance, and it is not clinical evidence. The real publication path is
+    exercised in ``tests/test_robustness_aggregation_admission.py``.
+    """
+    output_name = "radiomics_robustness_ct.parquet"
+    tables: list[Path] = []
+    for patient_id, patient_frame in frame.groupby("patient_id", sort=True):
+        for course_id, course_frame in patient_frame.groupby("course_id", sort=True):
+            course_dir = root / str(patient_id) / str(course_id)
+            course_dir.mkdir(parents=True)
+            run_identifier = f"run-{patient_id}-{course_id}"
+            table = course_dir / output_name
+            course_frame.assign(run_identifier=run_identifier).to_parquet(
+                table, index=False
+            )
+            robustness._write_robustness_source_dispositions(
+                course_dir,
+                run_identifier=run_identifier,
+                rows=[],
+                source_bindings=[],
+                effective_configuration=robustness.effective_robustness_configuration(
+                    rob_config, output_name=output_name
+                ),
+                code_identity=robustness._current_robustness_code_identity(),
+                output_path=table,
+                measured_output=table,
+            )
+            tables.append(table)
+    return tables
+
+
 def test_cov_is_computed_within_subject_not_across_subjects():
     summary = robustness.summarize_feature_stability(
         _stable_subject_frame(), RobustnessConfig(enabled=True)
@@ -305,13 +347,15 @@ def test_aggregate_keeps_structure_source_rows_separate(tmp_path):
     second = first.copy()
     second["structure"] = "OTHER_ROI"
     second["value"] = second["value"] * 10
-    input_path = tmp_path / "course.parquet"
-    pd.concat([first, second], ignore_index=True).to_parquet(input_path, index=False)
+    rob_config = RobustnessConfig(enabled=True)
+    tables = _publish_course_tables(
+        tmp_path / "courses",
+        pd.concat([first, second], ignore_index=True),
+        rob_config,
+    )
     output_path = tmp_path / "summary.xlsx"
 
-    robustness.aggregate_robustness_results(
-        [input_path], output_path, RobustnessConfig(enabled=True)
-    )
+    robustness.aggregate_robustness_results(tables, output_path, rob_config)
 
     summary = pd.read_excel(output_path, sheet_name="global_summary")
     assert set(summary["structure"]) == {"ROI", "OTHER_ROI"}
@@ -339,14 +383,14 @@ def test_aggregate_rejects_feature_missing_from_one_subject(tmp_path):
             & (combined["feature_name"] == "second_feature")
         )
     ]
-    input_path = tmp_path / "course.parquet"
-    combined.to_parquet(input_path, index=False)
+    rob_config = RobustnessConfig(enabled=True)
+    tables = _publish_course_tables(tmp_path / "courses", combined, rob_config)
 
     with pytest.raises(ValueError, match="inconsistent feature sets across subjects"):
         robustness.aggregate_robustness_results(
-            [input_path],
+            tables,
             tmp_path / "summary.xlsx",
-            RobustnessConfig(enabled=True),
+            rob_config,
         )
 
 
@@ -378,7 +422,23 @@ def test_robustness_workflow_failure_is_not_converted_to_success():
     assert "Don't fail the pipeline for robustness" not in snakefile
     assert snakefile.count("Radiomics robustness failed; see") == 2
     assert snakefile.count("upstream radiomics failed") == 2
-    assert "Non-success robustness sentinel encountered" in snakefile
+    # A non-completing course is now excluded by evidence rather than by a
+    # shell test on a sentinel's first line: the course step writes a bound
+    # completion receipt only for an admitted terminal outcome, the rule fails
+    # when a "successful" run leaves none, and cohort aggregation revalidates
+    # every manifest course's receipt instead of scanning for sentinels.
+    assert snakefile.count('--sentinel "{output.sentinel}"') == 2
+    assert snakefile.count(
+        'Radiomics robustness returned success without a completion receipt'
+    ) == 2
+    assert 'echo "ok" > {output.sentinel}' not in snakefile
+    aggregate_rule = snakefile[
+        snakefile.index("rule aggregate_radiomics_robustness:") : snakefile.index(
+            "rule aggregate_results:"
+        )
+    ]
+    assert "--manifest {input.manifest}" in aggregate_rule
+    assert "find " not in aggregate_rule
 
 
 def test_dual_environment_contract_is_enforced_in_packaging_and_receipt():

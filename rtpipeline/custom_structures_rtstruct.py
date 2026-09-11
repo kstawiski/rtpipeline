@@ -30,8 +30,39 @@ from .utils import mask_is_cropped, sanitize_rtstruct
 
 logger = logging.getLogger(__name__)
 
-_RS_CUSTOM_META_VERSION = 3
+_RS_CUSTOM_META_VERSION = 4
 _RTSTRUCT_SOP_CLASS_UID = "1.2.840.10008.5.1.4.1.1.481.3"
+
+# No ROI disposition may be replaced by a segmentation mask here.
+#
+# A D16 disposition (a contour-encoding defect in RS_auto on an ROI this
+# pipeline itself derived from a TotalSegmentator mask) is the one case where the
+# mask really is the ROI's source rather than a substitute for it -- but only if
+# the exact mask and the exact bytes can be identified. Neither producer records
+# that link:
+#
+#   * ``segmentation.py`` writes ``manifest.json`` with the planning CT series
+#     UID, ``source_nifti_sha256``, ``source_ct_sop_hash`` and a list of mask
+#     *file names*. No per-mask content hash is recorded, so no manifest can
+#     certify which bytes a named mask held when RS_auto was published.
+#   * ``auto_rtstruct.build_auto_rtstruct`` publishes RS_auto's ROIs from the
+#     multilabel labelmap (``*--total.dcm`` / ``*_total_multilabel.nii.gz``) with
+#     names from ``*_total_segmentations.json``; the per-ROI ``total--<roi>``
+#     masks are only its fallback source. Names additionally pass through
+#     ``_unique_roi_name``, which renames a collision to ``<name>_dup``.
+#   * ``_record_auto_resume_decision`` records RS_auto as a whole -- action,
+#     reason, artefact, planning CT series UID. Nothing binds an ROI to a mask
+#     file, a run directory, or a byte range.
+#
+# Matching the planning CT series, the derived ROI name and the physical space
+# therefore shows only that *some* mask currently on disk carries that name on
+# this CT. A re-segmentation of the same CT, or any rewrite of the mask bytes,
+# passes the same checks. Until a producer emits a real per-ROI derivation
+# record, a D16 ROI stays unavailable and its source must be regenerated.
+_UNRECOVERABLE_REMEDIATION = (
+    "no producer records which segmentation mask or bytes this ROI was published "
+    "from; regenerate the source segmentation and automatic RTSTRUCT"
+)
 
 
 def load_rs_custom_outcomes(course_dir: Path) -> Dict[str, Dict[str, object]]:
@@ -421,14 +452,79 @@ def _is_rs_custom_stale(
         # force a one-time regeneration (tracked via a small metadata file) when
         # a cropped auto RTSTRUCT is present.
         rs_custom_meta = course_dir / "metadata" / "rs_custom_meta.json"
-        if (course_dir / "RS_auto_cropped.dcm").exists():
+        # Preserve the utility mode's historical cropped-geometry threshold;
+        # authoritative reuse below requires the exact current generator epoch.
+        if allow_contractless and (course_dir / "RS_auto_cropped.dcm").exists():
             try:
                 meta = json.loads(rs_custom_meta.read_text(encoding="utf-8")) if rs_custom_meta.exists() else {}
-                if int(meta.get("version", 0) or 0) < _RS_CUSTOM_META_VERSION:
+                if int(meta.get("version", 0) or 0) < 3:
                     logger.info("RS_custom meta missing/outdated in %s; regenerating to avoid cropped-geometry issues", course_dir)
                     return True
             except Exception:
                 logger.info("Failed to read rs_custom_meta.json in %s; regenerating", course_dir)
+                return True
+
+        # A publication whose own record says an ROI was taken from a
+        # segmentation mask instead of a contour cannot be reused. That
+        # substitution was never verifiable -- no producer records which mask,
+        # run, or bytes an ROI was published from -- and nothing else in this
+        # function looks at the claim, so an mtime comparison would keep the
+        # affected RS_custom forever. The record is read only when it identifies
+        # this exact publication; a record describing some other instance says
+        # nothing about these bytes and is itself a reason to regenerate.
+        if not allow_contractless and not rs_custom_meta.exists():
+            logger.info("RS_custom generator metadata missing in %s; regenerating", course_dir)
+            return True
+        if rs_custom_meta.exists():
+            try:
+                recorded = json.loads(rs_custom_meta.read_text(encoding="utf-8"))
+            except Exception:
+                logger.info(
+                    "rs_custom_meta.json in %s is unreadable; regenerating RS_custom.dcm",
+                    course_dir,
+                )
+                return True
+            if not isinstance(recorded, dict):
+                logger.info(
+                    "rs_custom_meta.json in %s is not an object; regenerating RS_custom.dcm",
+                    course_dir,
+                )
+                return True
+            if not allow_contractless:
+                # The producer writes an integer epoch. Do not coerce malformed
+                # values or accept unknown future semantics. Older publications
+                # can contain manual-mask substitutions with no fallback field,
+                # even when no cropped RTSTRUCT exists.
+                version = recorded.get("version")
+                if type(version) is not int or version != _RS_CUSTOM_META_VERSION:
+                    logger.info("RS_custom generator epoch missing/unsupported in %s; regenerating", course_dir)
+                    return True
+            recorded_uid = str(recorded.get("rs_custom_sop_instance_uid") or "").strip()
+            published_uid = str(
+                getattr(
+                    pydicom.dcmread(str(rs_custom_path), stop_before_pixels=True),
+                    "SOPInstanceUID",
+                    "",
+                )
+                or ""
+            ).strip()
+            if recorded_uid and recorded_uid != published_uid:
+                logger.warning(
+                    "rs_custom_meta.json in %s describes %s, not the published %s; regenerating",
+                    course_dir,
+                    recorded_uid,
+                    published_uid,
+                )
+                return True
+            substituted = recorded.get("totalseg_fallback_sources")
+            if isinstance(substituted, dict) and substituted:
+                logger.warning(
+                    "RS_custom.dcm in %s records ROI(s) %s taken from segmentation masks "
+                    "rather than contours; that source binding is not verifiable, so the "
+                    "publication is rejected and must be rebuilt",
+                    course_dir,
+                    ", ".join(sorted(str(name) for name in substituted)),
+                )
                 return True
 
         rs_custom_mtime = rs_custom_path.stat().st_mtime
@@ -545,11 +641,11 @@ def _create_custom_structures_rtstruct_unlocked(
     processor = CustomStructureProcessor()
     if config_path:
         processor.load_config(config_path)
-    temporary_sources: list[Path] = []
     try:
         # rt-utils rejects any cross-series image reference, even an unused
-        # historical series. Restrict only a temporary copy and only when every
-        # surviving contour is already bound to the contracted planning CT.
+        # historical series. The scoped reader resolves each ROI against the
+        # contracted planning CT on a copy, leaving the source bytes untouched and
+        # dispositioning only the ROIs whose own geometry cannot be bound.
         from .rtstruct_geometry import create_scoped_rtstruct, ROIContourDisposition
         rtstruct = create_scoped_rtstruct(ct_dir, base_rs)
         source_scope_outcomes = {
@@ -558,10 +654,14 @@ def _create_custom_structures_rtstruct_unlocked(
         }
 
         existing_names: set[str] = set()
+        manual_roi_names: set[str] = set()
         available_masks: Dict[str, np.ndarray] = {}
-        totalseg_mask_cache: Dict[str, Optional[np.ndarray]] = {}
         custom_model_mask_cache: Dict[str, Optional[np.ndarray]] = {}
         ct_image: Optional[sitk.Image] = None
+        # Every ROI an integration source offered but this stage could not read,
+        # with the reason. These stay unavailable: recording them is what keeps a
+        # degraded structure honestly partial instead of silently automatic.
+        unread_source_rois: Dict[str, Dict[str, str]] = {}
 
         def _ensure_ct_image() -> Optional[sitk.Image]:
             nonlocal ct_image
@@ -580,64 +680,6 @@ def _create_custom_structures_rtstruct_unlocked(
                 logger.warning("Failed to load CT series for %s: %s", course_dir, exc)
                 ct_image = None
             return ct_image
-
-        def _totalseg_mask(roi_name: str) -> Optional[np.ndarray]:
-            key = roi_name.strip().lower()
-            if key in totalseg_mask_cache:
-                return totalseg_mask_cache[key]
-            seg_root = course_dir / "Segmentation_TotalSegmentator"
-            if not seg_root.exists():
-                totalseg_mask_cache[key] = None
-                return None
-            mask_path: Optional[Path] = None
-            for subdir in seg_root.iterdir():
-                if not subdir.is_dir():
-                    continue
-                manifest_path = subdir / "manifest.json"
-                if not manifest_path.exists():
-                    continue
-                try:
-                    data = json.loads(manifest_path.read_text(encoding="utf-8"))
-                except Exception:
-                    continue
-                for model in data.get("models", []):
-                    for mask_file in model.get("masks", []):
-                        if "--" not in mask_file:
-                            continue
-                        _, roi_part = mask_file.split("--", 1)
-                        roi_base = roi_part.replace(".nii.gz", "").strip().lower()
-                        if roi_base == key:
-                            candidate = subdir / mask_file
-                            if candidate.exists():
-                                mask_path = candidate
-                                break
-                    if mask_path:
-                        break
-                if mask_path:
-                    break
-            if not mask_path:
-                totalseg_mask_cache[key] = None
-                return None
-            try:
-                img = sitk.ReadImage(str(mask_path))
-                reference_ct = _ensure_ct_image()
-                if reference_ct is not None:
-                    img = sitk.Resample(
-                        img,
-                        reference_ct,
-                        sitk.Transform(),
-                        sitk.sitkNearestNeighbor,
-                        0,
-                        img.GetPixelID(),
-                    )
-                arr = sitk.GetArrayFromImage(img)
-                mask = np.moveaxis(arr.astype(bool), 0, -1)
-            except Exception as exc:
-                logger.debug("TotalSegmentator fallback failed for %s: %s", roi_name, exc)
-                totalseg_mask_cache[key] = None
-                return None
-            totalseg_mask_cache[key] = mask
-            return mask
 
         def _custom_model_mask(roi_name: str, model_name: str) -> Optional[np.ndarray]:
             """Load a mask from Segmentation_CustomModels/<model_name>/<mask_name>.nii.gz"""
@@ -734,25 +776,69 @@ def _create_custom_structures_rtstruct_unlocked(
                     except Exception as exc:
                         logger.warning("Failed to add CustomModel ROI %s: %s", prefixed_name, exc)
 
-        def _harvest_masks(builder: "RTStructBuilder", label: str, add_missing: bool = False) -> None:
+        def _record_unread(roi_name: str, label: str, code: str, detail: str) -> None:
+            """Keep the first reason an ROI could not be read from a source."""
+            if roi_name in available_masks or roi_name in unread_source_rois:
+                return
+            unread_source_rois[roi_name] = {
+                "label": label,
+                "code": code,
+                "detail": detail,
+                "remediation": _UNRECOVERABLE_REMEDIATION,
+            }
+
+        def _harvest_masks(
+            builder: "RTStructBuilder",
+            label: str,
+            add_missing: bool = False,
+        ) -> None:
             nonlocal existing_names, available_masks
-            for roi_name in builder.get_roi_names():
+            roi_names = builder.get_roi_names()
+            if label in {"base:manual", "manual"}:
+                # Authority follows the declared manual ROI, not whether its
+                # rasterisation succeeds. Reserve names before reading masks.
+                manual_roi_names.update(roi_names)
+            for roi_name in roi_names:
+                if label in {"base:auto", "auto"} and roi_name in manual_roi_names:
+                    # Keep the manual mask or its unread disposition; a healthy
+                    # same-name automatic contour cannot replace either one.
+                    continue
                 try:
                     mask = builder.get_roi_mask_by_name(roi_name)
-                except Exception as exc:  # pragma: no cover - defensive
+                except Exception as exc:
+                    # A disposition is a statement about this ROI's own geometry
+                    # and an unexpected error is a failure to read it. Neither is
+                    # an empty structure, and neither may be replaced by a
+                    # segmentation mask that merely shares the ROI's name: no
+                    # producer records which mask, run or bytes an ROI was
+                    # published from (see _UNRECOVERABLE_REMEDIATION).
                     if isinstance(exc, ROIContourDisposition):
-                        # An unbound target is not an empty mask and cannot be
-                        # substituted with an unrelated automatic segmentation.
-                        continue
-                    logger.debug("Failed to fetch mask for %s from %s: %s", roi_name, label, exc)
-                    mask = None
+                        _record_unread(roi_name, label, str(exc.result.code), str(exc.result.detail))
+                    else:
+                        logger.warning(
+                            "Failed to fetch mask for %s from %s; leaving it unavailable: %s",
+                            roi_name, label, exc,
+                        )
+                        _record_unread(
+                            roi_name, label, "ROI_MASK_READ_FAILED",
+                            f"{type(exc).__name__}: {exc}",
+                        )
+                    continue
                 if mask is None or not np.any(mask):
-                    fallback = _totalseg_mask(roi_name)
-                    if fallback is None or not np.any(fallback):
-                        continue
-                    mask_bool = fallback.astype(bool)
-                else:
-                    mask_bool = mask.astype(bool)
+                    # An empty rasterisation of a bound contour is an unread ROI,
+                    # not a measured absence, so it is reported rather than filled
+                    # in from a same-name automatic mask.
+                    logger.warning(
+                        "ROI %s from %s rasterised to no voxels; leaving it unavailable",
+                        roi_name, label,
+                    )
+                    _record_unread(
+                        roi_name, label, "ROI_RASTERISED_EMPTY",
+                        "the bound contour produced no voxels on the planning CT grid",
+                    )
+                    continue
+                mask_bool = mask.astype(bool)
+                unread_source_rois.pop(roi_name, None)
                 available_masks.setdefault(roi_name, mask_bool)
                 already_present = roi_name in existing_names
                 if add_missing and not already_present:
@@ -767,33 +853,21 @@ def _create_custom_structures_rtstruct_unlocked(
         # Harvest base masks first (manual preferred)
         _harvest_masks(rtstruct, f"base:{base_source}")
 
-        # Integrate additional sources to enable custom ops that reference them
+        # Integrate additional sources to enable custom ops that reference them.
+        # These use the same per-ROI-scoped reader as the base harvest: one ROI
+        # whose geometry cannot be resolved holds back that ROI alone, never the
+        # whole structure set. An all-or-nothing reader here silently discarded
+        # every clean dependency contour in the same RTSTRUCT.
         if rs_manual and Path(rs_manual).exists() and base_source != "manual":
             try:
-                manual_source, manual_temporary = _rtstruct_builder_source(
-                    Path(rs_manual), ct_dir, None
-                )
-                if manual_temporary is not None:
-                    temporary_sources.append(manual_temporary)
-                manual_builder = RTStructBuilder.create_from(
-                    dicom_series_path=str(ct_dir),
-                    rt_struct_path=str(manual_source),
-                )
+                manual_builder = create_scoped_rtstruct(ct_dir, Path(rs_manual))
                 _harvest_masks(manual_builder, "manual", add_missing=True)
             except Exception as exc:
                 logger.warning("Failed to integrate manual structures: %s", exc)
 
         if rs_auto and Path(rs_auto).exists() and base_source != "auto":
             try:
-                auto_source, auto_temporary = _rtstruct_builder_source(
-                    Path(rs_auto), ct_dir, None
-                )
-                if auto_temporary is not None:
-                    temporary_sources.append(auto_temporary)
-                auto_builder = RTStructBuilder.create_from(
-                    dicom_series_path=str(ct_dir),
-                    rt_struct_path=str(auto_source),
-                )
+                auto_builder = create_scoped_rtstruct(ct_dir, Path(rs_auto))
                 _harvest_masks(auto_builder, "auto", add_missing=True)
             except Exception as exc:
                 logger.warning("Failed to integrate auto structures: %s", exc)
@@ -933,6 +1007,7 @@ def _create_custom_structures_rtstruct_unlocked(
                 "custom_config_sha256": config_sha256,
                 "custom_structure_outcomes": structure_outcomes,
                 "source_roi_scope_outcomes": source_scope_outcomes,
+                "unread_source_rois": unread_source_rois,
                 "note": "Generated in CT DICOM coordinates; do not rely on RS_auto_cropped.dcm for radiomics",
             }
             (meta_dir / "rs_custom_meta.json").write_text(json.dumps(meta_payload, indent=2), encoding="utf-8")
@@ -974,9 +1049,6 @@ def _create_custom_structures_rtstruct_unlocked(
         error = CustomStructureRTStructError(course_dir, roi_names, exc)
         logger.error("Failed to create custom structures RTSTRUCT: %s", error)
         raise error from exc
-    finally:
-        for temporary_source in temporary_sources:
-            temporary_source.unlink(missing_ok=True)
 
 
 def _create_custom_structures_rtstruct(

@@ -10,6 +10,7 @@ from typing import Any
 
 import pandas as pd  # type: ignore
 
+from rtpipeline.course_manifest import read_course_manifest
 from rtpipeline.dvh_aggregate import build_dvh_aggregate, write_dvh_aggregate
 from rtpipeline.radiomics_cohort import (
     attach_radiomics_cohort_provenance,
@@ -37,120 +38,14 @@ AGGREGATION_THREADS = (
 
 
 def _manifest_courses():
-    manifest_path = Path(snakemake.input.manifest)  # type: ignore[name-defined]
-    try:
-        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except Exception as exc:
-        raise RuntimeError(f"Course manifest is unreadable: {manifest_path}: {exc}") from exc
-    if not isinstance(payload, dict) or not isinstance(payload.get("courses"), list):
-        raise RuntimeError(
-            f"Course manifest is malformed: {manifest_path} must contain a courses list"
-        )
+    """The authoritative course list and organize denominator for this cohort.
 
-    courses = []
-    seen = set()
-    for index, entry in enumerate(payload["courses"], start=1):
-        if not isinstance(entry, dict):
-            raise RuntimeError(
-                f"Course manifest is malformed: entry {index} is not a mapping"
-            )
-        patient_id = entry.get("patient")
-        course_id = entry.get("course")
-        if not isinstance(patient_id, str) or not patient_id.strip():
-            raise RuntimeError(
-                f"Course manifest is malformed: entry {index} has no patient identifier"
-            )
-        if not isinstance(course_id, str) or not course_id.strip():
-            raise RuntimeError(
-                f"Course manifest is malformed: entry {index} has no course identifier"
-            )
-        key = (patient_id, course_id)
-        if key in seen:
-            raise RuntimeError(
-                f"Course manifest is malformed: duplicate course {patient_id}/{course_id}"
-            )
-        seen.add(key)
-        courses.append((patient_id, course_id, OUTPUT_DIR / patient_id / course_id))
-    if payload.get("schema") == "rtpipeline-organized-course-manifest-v2":
-        quarantine_entries = payload.get("technical_quarantines")
-        if not isinstance(quarantine_entries, list):
-            raise RuntimeError(
-                "Course manifest is malformed: technical_quarantines must be a list"
-            )
-        try:
-            attempted = int(payload["attempted_course_count"])
-            intended = int(payload["intended_course_count"])
-            validated = int(payload["validated_course_count"])
-            quarantined = int(payload["technical_quarantine_count"])
-        except (KeyError, TypeError, ValueError) as exc:
-            raise RuntimeError(
-                "Course manifest is malformed: organize denominator fields are invalid"
-            ) from exc
-        if intended != attempted:
-            raise RuntimeError(
-                "Course manifest is malformed: intended and attempted course counts disagree"
-            )
-        if validated != len(courses):
-            raise RuntimeError(
-                "Course manifest is malformed: validated count does not match courses"
-            )
-        if quarantined != len(quarantine_entries):
-            raise RuntimeError(
-                "Course manifest is malformed: technical quarantine count does not match records"
-            )
-        if attempted != validated + quarantined:
-            raise RuntimeError(
-                "Course manifest is malformed: attempted count does not reconcile with "
-                "validated and technically quarantined courses"
-            )
-        quarantine_ids = set()
-        for index, entry in enumerate(quarantine_entries, start=1):
-            if not isinstance(entry, dict):
-                raise RuntimeError(
-                    f"Course manifest is malformed: technical quarantine {index} is not a mapping"
-                )
-            patient_id = str(entry.get("patient") or "").strip()
-            course_id = str(entry.get("course") or "").strip()
-            reason = str(entry.get("reason") or "").strip()
-            if not patient_id or not course_id or not reason:
-                raise RuntimeError(
-                    f"Course manifest is malformed: technical quarantine {index} lacks "
-                    "patient, course, or exact reason"
-                )
-            if (
-                entry.get("disposition_type") != "technical_quarantine"
-                or entry.get("clinical_exclusion") is not False
-            ):
-                raise RuntimeError(
-                    f"Course manifest is malformed: technical quarantine {index} "
-                    "is not explicitly separated from clinical exclusion"
-                )
-            key = (patient_id, course_id)
-            if key in seen or key in quarantine_ids:
-                raise RuntimeError(
-                    f"Course manifest is malformed: duplicate disposition for "
-                    f"{patient_id}/{course_id}"
-                )
-            quarantine_ids.add(key)
-        cohort = {
-            "intended_course_count": intended,
-            "attempted_course_count": attempted,
-            "validated_course_count": validated,
-            "technical_quarantine_count": quarantined,
-            "technical_quarantines": quarantine_entries,
-        }
-    else:
-        # Legacy manifests did not carry an organize denominator. The current
-        # writer always emits v2, but retain deterministic compatibility for
-        # historical unit artifacts by treating their explicit list as intended.
-        cohort = {
-            "intended_course_count": len(courses),
-            "attempted_course_count": len(courses),
-            "validated_course_count": len(courses),
-            "technical_quarantine_count": 0,
-            "technical_quarantines": [],
-        }
-    return courses, cohort
+    Parsing lives in :mod:`rtpipeline.course_manifest` so a consumer outside
+    this Snakemake script can apply the identical rules without importing a
+    module that requires the ``snakemake`` global at import time.
+    """
+    manifest_path = Path(snakemake.input.manifest)  # type: ignore[name-defined]
+    return read_course_manifest(manifest_path, output_dir=OUTPUT_DIR)
 
 
 def _read_prefer_parquet(xlsx_path: Path) -> pd.DataFrame | None:

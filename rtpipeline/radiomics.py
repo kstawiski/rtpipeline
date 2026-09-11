@@ -81,6 +81,7 @@ from .radiomics_schema import (
     write_radiomics_feature_table_atomic,
 )
 from .roi_requiredness import (
+    _norm as _normalize_required_roi_name,
     DenominatorLedger,
     FAILED_RADIOMICS_FEATURE_COMPLETENESS,
     FAILED_RADIOMICS_RESOURCE_LIMIT,
@@ -301,7 +302,6 @@ def _write_course_roi_ledger(course_dir: Path, ledger: DenominatorLedger) -> Non
 
 _DEFAULT_MIN_VOXELS = 120
 _DEFAULT_MAX_VOXELS_FULL = 15_000_000
-_LARGE_ROI_RESAMPLED_SPACING_MM = (2.0, 2.0, 2.0)
 
 
 _PARAM_CACHE_LOCK = threading.Lock()
@@ -680,33 +680,14 @@ def _derive_voxel_limits(config: PipelineConfig) -> tuple[int, int]:
 
 
 def _extractor_large_roi(config: PipelineConfig, modality: str = "CT") -> Optional["featureextractor.RadiomicsFeatureExtractor"]:
-    """Reduced extractor for very large ROIs (e.g., BODY).
+    """Compatibility wrapper: a large or BODY-named ROI keeps the configured method.
 
-    Uses:
-    - Original image only (no LoG/Wavelet)
-    - shape + firstorder only
-    - coarser isotropic resampling (default 2mm) for feasibility
+    ROI size and name never select a different extraction method. Feasibility is
+    governed by the resource bounding-box, memory, and timeout guards, which
+    reject an infeasible ROI as a non-measurement instead of silently pruning
+    image types, feature classes, or resampled spacing.
     """
-    ext = _extractor(config, modality)
-    if ext is None:
-        return None
-    try:
-        ext.disableAllImageTypes()
-        ext.enableImageTypeByName("Original")
-    except Exception:
-        pass
-    try:
-        ext.disableAllFeatures()
-        ext.enableFeatureClassByName("firstorder")
-        ext.enableFeatureClassByName("shape")
-    except Exception:
-        pass
-    try:
-        # Coarser resampling dramatically reduces runtime/memory for large ROIs.
-        ext.settings["resampledPixelSpacing"] = list(_LARGE_ROI_RESAMPLED_SPACING_MM)
-    except Exception:
-        pass
-    return ext
+    return _extractor(config, modality)
 
 
 def _custom_roi_names_from_config(path: Path) -> set[str]:
@@ -920,6 +901,31 @@ def _rtstruct_masks(
                 raise RadiomicsCourseExtractionError(
                     f"Failed to inspect RTSTRUCT {rs_path}: {exc}"
                 ) from exc
+    def _validate_expected_inventory(names: List[str]) -> None:
+        if expected_rois is None:
+            return
+        if len(names) != len(set(names)):
+            raise RadiomicsCourseExtractionError(
+                f"Required RTSTRUCT has duplicate ROI identities: {rs_path}"
+            )
+        missing = sorted(set(expected_rois) - set(names))
+        unexpected = sorted(set(names) - set(expected_rois))
+        if missing or unexpected:
+            details: list[str] = []
+            if missing:
+                details.append("missing " + ", ".join(missing))
+            if unexpected:
+                details.append("unexpected " + ", ".join(unexpected))
+            raise RadiomicsCourseExtractionError(
+                f"Required RTSTRUCT inventory does not exactly match the "
+                f"prespecified expectation ({'; '.join(details)}): {rs_path}"
+            )
+
+    # Validate before any non-volumetric early return or name-keyed collapse.
+    if structural_inventory is not None:
+        _validate_expected_inventory([
+            observation.name for observation in structural_inventory.named_rois
+        ])
     inventory_observations = {
         observation.name: observation
         for observation in getattr(structural_inventory, "named_rois", ())
@@ -931,6 +937,10 @@ def _rtstruct_masks(
     for observation in inventory_observations.values():
         from .rtstruct_geometry import NONVOLUMETRIC_CODES
         if observation.structural_code in NONVOLUMETRIC_CODES:
+            if ''.join(ch for ch in observation.name.lower() if ch.isalnum()) in normalized_skips:
+                # The caller publishes the declared-skip arm rows. Do not also
+                # publish a second disposition for the same ROI-arm identity.
+                continue
             if failure_outcomes is None:
                 raise ValueError("non-volumetric ROI dispositions require an outcome sink")
             from .rtstruct_identity import require_rtstruct_identity
@@ -1009,27 +1019,12 @@ def _rtstruct_masks(
             f"Failed to read expected ROI names from {rs_path}: {exc}"
         ) from exc
 
-    roi_names = available_roi_names
+    _validate_expected_inventory(available_roi_names)
+    roi_names = list(expected_rois) if expected_rois is not None else available_roi_names
     if structural_inventory is not None:
+        # Expected declarations include points and open contours, but only
+        # volumetric identities may reach the mask reader.
         roi_names = [name for name in roi_names if name in structurally_extractable]
-    if expected_rois is not None:
-        if len(available_roi_names) != len(set(available_roi_names)):
-            raise RadiomicsCourseExtractionError(
-                f"Required RTSTRUCT has duplicate ROI identities: {rs_path}"
-            )
-        missing = sorted(set(expected_rois) - set(available_roi_names))
-        unexpected = sorted(set(available_roi_names) - set(expected_rois))
-        if missing or unexpected:
-            details: list[str] = []
-            if missing:
-                details.append("missing " + ", ".join(missing))
-            if unexpected:
-                details.append("unexpected " + ", ".join(unexpected))
-            raise RadiomicsCourseExtractionError(
-                f"Required RTSTRUCT inventory does not exactly match the "
-                f"prespecified expectation ({'; '.join(details)}): {rs_path}"
-            )
-        roi_names = list(expected_rois)
 
     out: Dict[str, np.ndarray] = {}
     for name in roi_names:
@@ -1110,6 +1105,7 @@ class _DirectCtTask:
     cropped: bool
     mask_identity: str
     stable_roi_identifier: str
+    source_content_sha256: str
     decision: Any
     required: bool
     configured_parameter_hashes: Dict[str, str]
@@ -1267,6 +1263,15 @@ def radiomics_for_course(
                 reason = FAILED_RADIOMICS_FEATURE_COMPLETENESS
             elif statuses == {"success"}:
                 reason = "extracted"
+            elif statuses == {"nonvolumetric_nonmeasurement"}:
+                from .rtstruct_geometry import NONVOLUMETRIC_CODES
+                if detail_code not in NONVOLUMETRIC_CODES:
+                    raise RadiomicsCourseExtractionError(
+                        "Non-volumetric disposition lacks a valid structural reason"
+                    )
+                reason = detail_code
+            elif statuses == {"declared_skip"}:
+                reason = "CONFIGURED_SKIP"
             elif "below_minimum_voxels" in statuses:
                 reason = "ROI_MASK_BELOW_MIN_VOXELS"
             elif detail_code == RESAMPLED_BBOX_LIMIT_CODE:
@@ -1293,7 +1298,10 @@ def radiomics_for_course(
                 ledger_patient_id,
                 name,
                 reason_code=reason,
-                disposition="extracted" if reason == "extracted" else "excluded",
+                disposition=(
+                    "nonmeasurement" if statuses == {"nonvolumetric_nonmeasurement"}
+                    else "extracted" if reason == "extracted" else "excluded"
+                ),
                 segmentation_source=key[0],
                 detail_code=detail_code or None,
                 detail=(
@@ -1312,40 +1320,72 @@ def radiomics_for_course(
             )
         for failure in roi_failures:
             name = str(failure.get("roi_name", ""))
-            if name:
+            source = str(failure.get("source", ""))
+            if name and (source, name) not in rows_by_roi:
                 reason = str(failure.get("structural_code") or failure.get("reason_code") or "failed_radiomics_extraction")
                 if reason not in REASON_CODES and reason not in TAXONOMY_CODES:
                     reason = "failed_radiomics_extraction"
-                roi_ledger.record_roi(ledger_course_id, ledger_patient_id, name, reason_code=reason, disposition="excluded", source=failure.get("source", ""))
+                roi_ledger.record_roi(ledger_course_id, ledger_patient_id, name, reason_code=reason, disposition="excluded", segmentation_source=source)
         present_names = {str(row.get("roi_name", "")) for row in roi_ledger.roi_rows}
         for assessment in custom_applicability:
             roi_ledger.expect_course_roi(ledger_course_id, assessment.roi_name)
             if assessment.reason_code == "extracted" and assessment.roi_name in present_names:
                 continue
             roi_ledger.record_roi(ledger_course_id, ledger_patient_id, assessment.roi_name, reason_code=assessment.reason_code, disposition="extracted" if assessment.reason_code == "extracted" else "excluded", detail=assessment.detail)
+        observed_rows = list(roi_ledger.roi_rows)
         for requirement in requirements_from_contract(_analysis_contract(config), "CT"):
             if requirement.requiredness == Requiredness.INVENTORY_ONLY:
                 continue
-            if requirement.canonical_name in present_names:
+            aliases = {_normalize_required_roi_name(name) for name in requirement.accepted_names}
+            matches = [
+                row for row in observed_rows
+                if _normalize_required_roi_name(row.get("roi_name")) in aliases
+                and (
+                    not requirement.source
+                    or _normalize_required_roi_name(row.get("segmentation_source", row.get("source")))
+                    == _normalize_required_roi_name(requirement.source)
+                )
+            ]
+            if any(row.get("roi_name") == requirement.canonical_name for row in matches):
                 continue
-            aliases = set(requirement.accepted_names)
-            if any(name in aliases for name in present_names):
-                roi_ledger.record_roi(ledger_course_id, ledger_patient_id, requirement.canonical_name, reason_code="extracted", disposition="extracted", alias_used=True)
+            if len(matches) == 1:
+                matched = matches[0]
+                # An accepted name is an identity bridge, not proof of extraction.
+                roi_ledger.record_roi(
+                    ledger_course_id, ledger_patient_id, requirement.canonical_name,
+                    reason_code=matched["reason_code"], disposition=matched["disposition"],
+                    segmentation_source=matched.get("segmentation_source", matched.get("source", "")),
+                    alias_used=True, alias_name=matched["roi_name"],
+                    detail_code=matched.get("detail_code"), detail=matched.get("detail", ""),
+                )
             else:
-                roi_ledger.record_roi(ledger_course_id, ledger_patient_id, requirement.canonical_name, reason_code="REQUIRED_ROI_NOT_DECLARED", disposition="excluded")
+                roi_ledger.record_roi(
+                    ledger_course_id, ledger_patient_id, requirement.canonical_name,
+                    reason_code=("REQUIRED_ROI_AMBIGUOUS_MATCH" if matches else "REQUIRED_ROI_NOT_DECLARED"),
+                    disposition="excluded", segmentation_source=requirement.source or "",
+                )
+        all_nonvolumetric = bool(rows) and all(
+            row.get("extraction_status") == "nonvolumetric_nonmeasurement"
+            for row in rows
+        )
         roi_ledger.record_course(
             ledger_course_id,
             ledger_patient_id,
             screened=True,
             in_scope=True,
             out_of_scope=False,
-            adequate_coverage=bool(rows),
+            adequate_coverage=bool(rows) and not all_nonvolumetric,
             insufficient_coverage=not bool(rows),
             valid_derivation=any(item.reason_code == "extracted" for item in custom_applicability),
             technical_exclusion=technical,
             indeterminate=indeterminate,
             extracted=extracted,
-            reason_code="extracted" if extracted else ("indeterminate_applicability" if indeterminate else "failed_radiomics_extraction"),
+            reason_code=(
+                "extracted" if extracted else
+                "nonvolumetric_nonmeasurement" if all_nonvolumetric else
+                "indeterminate_applicability" if indeterminate else
+                "failed_radiomics_extraction"
+            ),
         )
         _write_course_roi_ledger(course_dir, roi_ledger)
     # A configured skip is an explicit ineligibility decision, not a failed mask.
@@ -1381,7 +1421,39 @@ def radiomics_for_course(
         ledger_expected_names.update(_custom_roi_names_from_config(configured_custom_path))
     custom_provenance = load_custom_structure_provenance(configured_custom_path)
     parameter_path = _get_params_file(config, "CT")
-    identity_cache: Dict[str, Dict[str, tuple[str, str]]] = {}
+    source_content_hashes: Dict[Path, str] = {}
+
+    def _source_fingerprint(rs_path: Path) -> str:
+        if rs_path not in source_content_hashes:
+            try:
+                source_content_hashes[rs_path] = hashlib.sha256(rs_path.read_bytes()).hexdigest()
+            except Exception as exc:
+                _invalidate_radiomics_outputs(out_path)
+                raise RadiomicsCourseExtractionError(
+                    f"Failed to fingerprint RTSTRUCT source {rs_path}: {exc}"
+                ) from exc
+        return source_content_hashes[rs_path]
+
+    def _verify_source_fingerprints() -> None:
+        try:
+            for rs_path, expected in source_content_hashes.items():
+                if hashlib.sha256(rs_path.read_bytes()).hexdigest() != expected:
+                    raise ValueError(f"RTSTRUCT source changed during radiomics: {rs_path}")
+        except Exception as exc:
+            _invalidate_radiomics_outputs(out_path)
+            raise RadiomicsCourseExtractionError(
+                f"Cannot publish or reuse CT radiomics with changed or unreadable source fingerprints: {exc}"
+            ) from exc
+
+    def _uses_large_extractor(roi_name: str, mask: np.ndarray) -> bool:
+        _, max_voxels_full = _derive_voxel_limits(config)
+        try:
+            spacing = tuple(float(value) for value in img.GetSpacing())
+        except Exception:
+            spacing = (1.0, 1.0, 1.0)
+        native_voxel_mm3 = float(spacing[0]) * float(spacing[1]) * float(spacing[2])
+        physical_volume_mm3 = float(np.asarray(mask).astype(bool).sum()) * max(1e-9, native_voxel_mm3)
+        return roi_name.strip().lower().startswith("body") or physical_volume_mm3 > float(max_voxels_full)
 
     def _effective_hashes(decision: Any, *, large_roi: bool = False) -> Dict[str, str]:
         def _factory() -> Any:
@@ -1429,10 +1501,13 @@ def radiomics_for_course(
             cropped=mask_is_cropped(mask),
             mask_identity=sop_uid,
             stable_roi_identifier=f"rtstruct_roi_number:{roi_number}",
+            source_content_sha256=_source_fingerprint(rs_path),
             decision=decision,
             required=required,
             configured_parameter_hashes=configured_hashes,
-            effective_parameter_hashes=_effective_hashes(decision),
+            effective_parameter_hashes=_effective_hashes(
+                decision, large_roi=_uses_large_extractor(roi_name, mask)
+            ),
         )
 
     def _common_metadata(task: _DirectCtTask) -> Dict[str, Any]:
@@ -1453,6 +1528,8 @@ def radiomics_for_course(
             "mask_identity": task.mask_identity,
             "rtstruct_sop_instance_uid": task.mask_identity,
             "stable_roi_identifier": task.stable_roi_identifier,
+            "source_content_sha256": task.source_content_sha256,
+            "configured_minimum_native_voxel_count": _derive_voxel_limits(config)[0],
             "structure_cropped": bool(task.cropped),
         }
 
@@ -1497,6 +1574,7 @@ def radiomics_for_course(
     for source, rs_path, source_roi_names in sources:
         if not rs_path.exists():
             continue
+        _source_fingerprint(rs_path)
         try:
             source_inventory = inspect_rtstruct(rs_path)
             source_roi_names = list(source_inventory.named_rois[i].name for i in range(len(source_inventory.named_rois)))
@@ -1564,26 +1642,37 @@ def radiomics_for_course(
                 )
                 rows.extend(
                     disposition_rows_for_arms(
-                        {**_common_metadata(failed_task), "roi_structural_code": failure.get("structural_code")},
+                        {**_common_metadata(failed_task),
+                         "roi_structural_code": failure.get("structural_code")},
                         decision=failed_task.decision,
                         disposition=failure["status"],
                         detail=failure["reason"],
                         failure_kind=failure["failure_kind"],
                         run_identifier=run_identifier,
                         code_revision=code_revision,
-                        native_voxel_count=0,
+                        native_voxel_count=(
+                            None if failure["status"] == "nonvolumetric_nonmeasurement" else 0
+                        ),
                         required=failed_task.required,
                         effective_hashes=failed_task.effective_parameter_hashes,
                         configured_parameter_hashes=failed_task.configured_parameter_hashes,
                     )
                 )
-            roi_failures.extend(source_failures)
-            source_counts.setdefault(source, {"attempted": 0, "extracted": 0, "failed": 0})["failed"] += len(source_failures)
-            source_counts[source]["attempted"] += len(source_failures)
-        except RadiomicsCourseExtractionError:
-            _finalize_ct_ledger(extracted=False, technical=True)
+            extraction_failures = [
+                item for item in source_failures
+                if item["status"] != "nonvolumetric_nonmeasurement"
+            ]
+            roi_failures.extend(extraction_failures)
+            source_counts.setdefault(source, {"attempted": 0, "extracted": 0, "failed": 0})["failed"] += len(extraction_failures)
+            source_counts[source]["attempted"] += len(extraction_failures)
+        except Exception as exc:
             _invalidate_radiomics_outputs(out_path)
-            raise
+            _finalize_ct_ledger(extracted=False, technical=True)
+            if isinstance(exc, RadiomicsCourseExtractionError):
+                raise
+            raise RadiomicsCourseExtractionError(
+                f"Failed to prepare RTSTRUCT source {source} for {course_dir}: {exc}"
+            ) from exc
         for roi, mask in masks.items():
             tasks.append(
                 _make_task(
@@ -1751,6 +1840,7 @@ def radiomics_for_course(
                     f"Required custom RTSTRUCT is missing for configured ROIs in {course_dir}"
                 )
 
+            _source_fingerprint(rs_custom)
             # Resolve every declared ROI (base vs base__partial). A configured
             # source-applicable ROI gets one governed rebuild attempt before a
             # missing outcome is treated as a technical generation failure.
@@ -1878,16 +1968,58 @@ def radiomics_for_course(
         rs_path = model_course_dir / "rtstruct.dcm"
         if not rs_path.exists():
             continue
+        model_dispositions: List[Dict[str, str]] = []
+        source = f"CustomModel:{model_name}"
         try:
+            _source_fingerprint(rs_path)
             masks = _rtstruct_masks(
                 contracted_ct_dir,
                 rs_path,
                 skip_rois=configured_skip_rois,
                 expected_rois=custom_model_expected_rois[model_name],
+                failure_outcomes=model_dispositions,
+                requiredness_by_roi={
+                    name: Requiredness.ANALYSIS_REQUIRED
+                    for name in custom_model_expected_rois[model_name]
+                },
             )
-        except RadiomicsCourseExtractionError:
+            for disposition in model_dispositions:
+                disposition["source"] = source
+                task = _make_task(
+                    source, rs_path, disposition["roi_name"],
+                    np.zeros((0, 0, 0), dtype=bool), required=True,
+                )
+                rows.extend(disposition_rows_for_arms(
+                    {**_common_metadata(task),
+                     "roi_structural_code": disposition.get("structural_code")},
+                    decision=task.decision,
+                    disposition=disposition["status"],
+                    detail=disposition["reason"],
+                    failure_kind=disposition["failure_kind"],
+                    run_identifier=run_identifier,
+                    code_revision=code_revision,
+                    native_voxel_count=None,
+                    required=task.required,
+                    effective_hashes=task.effective_parameter_hashes,
+                    configured_parameter_hashes=task.configured_parameter_hashes,
+                ))
+            extraction_failures = [
+                item for item in model_dispositions
+                if item["status"] != "nonvolumetric_nonmeasurement"
+            ]
+            roi_failures.extend(extraction_failures)
+            counts = source_counts.setdefault(
+                source, {"attempted": 0, "extracted": 0, "failed": 0}
+            )
+            counts["attempted"] += len(extraction_failures)
+            counts["failed"] += len(extraction_failures)
+        except Exception as exc:
             _invalidate_radiomics_outputs(out_path)
-            raise
+            if isinstance(exc, RadiomicsCourseExtractionError):
+                raise
+            raise RadiomicsCourseExtractionError(
+                f"Failed to prepare custom-model RTSTRUCT masks for {course_dir}: {exc}"
+            ) from exc
         for roi_name in custom_model_expected_rois[model_name]:
             if ''.join(ch for ch in roi_name.lower() if ch.isalnum()) in normalized_skip_rois:
                 _append_declared_skip(
@@ -1918,6 +2050,7 @@ def radiomics_for_course(
             "[REQUIRED_ROI_NOT_DECLARED]: " + ", ".join(sorted(missing_required))
         )
 
+    _verify_source_fingerprints()
     expected_keys = expected_publication_keys(
         [*(_common_metadata(task) for task in tasks), *rows]
     )
@@ -1948,17 +2081,43 @@ def radiomics_for_course(
                     for record in rows
                 }
             )
+            current_dispositions = {
+                publication_key(record): record for record in rows
+            }
             for record in existing_df.to_dict("records"):
                 key = publication_key(record)
                 if str(record.get("configured_parameter_hash") or "") != str(
                     expected_config_hashes.get(key) or ""
                 ):
                     raise ValueError("configured radiomics parameter hash is stale")
+                task = task_by_base.get(key[:-1])
+                if task is not None:
+                    if record.get("configured_minimum_native_voxel_count") != _derive_voxel_limits(config)[0]:
+                        raise ValueError("configured native-mask minimum is stale")
+                    expected_execution = {
+                        "source_content_sha256": task.source_content_sha256,
+                        "code_revision": code_revision,
+                        "effective_parameter_hash": task.effective_parameter_hashes[key[-1]],
+                    }
+                    for field, expected in expected_execution.items():
+                        if str(record.get(field) or "") != str(expected):
+                            raise ValueError(f"current measured source {field} is stale")
+                current = current_dispositions.get(key)
+                if current is not None:
+                    for field in (
+                        "source_content_sha256", "extraction_status",
+                        "roi_structural_code", "code_revision",
+                        "effective_parameter_hash",
+                    ):
+                        if current.get(field) is None:
+                            continue
+                        if str(record.get(field) or "") != str(current[field]):
+                            raise ValueError(f"current source disposition {field} is stale")
         except ValueError as exc:
             resume_error = exc
             existing_keys = set()
         if resume_error is None and expected_keys and existing_keys == expected_keys:
-            return outcome_from_output(
+            outcome = outcome_from_output(
                 out_path,
                 required_by_identity={
                     (*base, arm): task.required
@@ -1966,6 +2125,19 @@ def radiomics_for_course(
                     for arm in CT_EXTRACTION_ARMS
                 },
             )
+            # Reconstruct denominators from the admitted table, not the presence
+            # of an earlier ledger or newly prepared task placeholders.
+            rows[:] = existing_df.to_dict("records")
+            roi_failures[:] = list(outcome.roi_failures)
+            try:
+                _finalize_ct_ledger(
+                    extracted=outcome.extracted_count > 0,
+                    technical=bool(roi_failures),
+                )
+            except Exception:
+                _invalidate_radiomics_outputs(out_path)
+                raise
+            return outcome
         logger.warning(
             "Invalidating incomplete or stale resume publication for %s: expected %d "
             "full ROI-arm identities, found %d%s",
@@ -1979,7 +2151,7 @@ def radiomics_for_course(
     def _do_ct_task(task: _DirectCtTask) -> List[Dict[str, Any]]:
         effective_hashes = task.effective_parameter_hashes
         try:
-            min_voxels, max_voxels_full = _derive_voxel_limits(config)
+            min_voxels, _ = _derive_voxel_limits(config)
             voxel_count = int(np.asarray(task.mask).astype(bool).sum())
             if voxel_count < min_voxels:
                 return disposition_rows_for_arms(
@@ -2056,14 +2228,7 @@ def radiomics_for_course(
                     effective_hashes=effective_hashes,
                     configured_parameter_hashes=task.configured_parameter_hashes,
                 )
-            native_voxel_mm3 = float(spacing[0]) * float(spacing[1]) * float(spacing[2])
-            physical_volume_mm3 = float(voxel_count) * max(1e-9, native_voxel_mm3)
-            estimated_voxels = physical_volume_mm3
-            use_large = task.roi_name.strip().lower().startswith("body") or (
-                estimated_voxels > float(max_voxels_full)
-            )
-            if use_large:
-                effective_hashes = _effective_hashes(task.decision, large_roi=True)
+            use_large = _uses_large_extractor(task.roi_name, task.mask)
 
             def _factory():
                 candidate = (
@@ -2245,6 +2410,7 @@ def radiomics_for_course(
     diagnostics = course_diagnostic_columns(outcome)
     for row in rows:
         row.update(diagnostics)
+    _verify_source_fingerprints()
     try:
         attach_acquisition_descriptor(
             rows,
@@ -2257,7 +2423,7 @@ def radiomics_for_course(
             out_path.with_suffix(".parquet")
         ).to_dict("records")
         _finalize_ct_ledger(
-            extracted=True,
+            extracted=outcome.extracted_count > 0,
             technical=bool(roi_failures),
             indeterminate=False,
         )
@@ -2780,7 +2946,21 @@ def _mr_parameter_provenance(
 def _mr_resume_parameter_provenance_is_current(
     dataframe: Any,
     params_path: Optional[Path],
+    *,
+    expected_arm: Optional[str] = None,
+    expected_effective_parameter_hash: Optional[str] = None,
+    expected_code_revision: Optional[str] = None,
+    expected_sources: Optional[set[tuple[str, str]]] = None,
 ) -> bool:
+    """Return whether a stored MR table still carries the current identity.
+
+    Without keywords this only asserts the parameter-provenance contract the DAG
+    parameter manifest checks. The keyword expectations bind the decision to what
+    is observed *now*: the extraction arm, the effective extractor configuration,
+    the code revision, and the exact source inventory. A table written by another
+    revision, by a differently configured extractor, or from different source
+    bytes is therefore never reusable, even when every UID is unchanged.
+    """
     required = {
         "extraction_arm",
         "configured_parameter_hash",
@@ -2788,11 +2968,17 @@ def _mr_resume_parameter_provenance_is_current(
         "run_identifier",
         "code_revision",
     }
-    if dataframe.empty or not required.issubset({str(column) for column in dataframe.columns}):
+    if expected_sources is not None:
+        required |= {"mask_path_source", "source_content_sha256"}
+    columns = {str(column) for column in dataframe.columns}
+    if dataframe.empty or not required.issubset(columns):
         return False
+    observed_sources: set[tuple[str, str]] = set()
     for row in dataframe.to_dict("records"):
         arm = str(row.get("extraction_arm") or "")
         if arm not in {"mr_configured", "mr_normalized", "mr_native_intensity"}:
+            return False
+        if expected_arm is not None and arm != expected_arm:
             return False
         expected = configured_parameter_hash(
             params_path,
@@ -2805,22 +2991,278 @@ def _mr_resume_parameter_provenance_is_current(
         for field in ("effective_parameter_hash", "run_identifier", "code_revision"):
             if not str(row.get(field) or "").strip():
                 return False
+        if (
+            expected_effective_parameter_hash is not None
+            and str(row.get("effective_parameter_hash")) != expected_effective_parameter_hash
+        ):
+            return False
+        if (
+            expected_code_revision is not None
+            and str(row.get("code_revision")) != expected_code_revision
+        ):
+            return False
+        if expected_sources is not None:
+            source_path = str(row.get("mask_path_source") or "").strip()
+            source_digest = str(row.get("source_content_sha256") or "").strip()
+            if not source_path or not source_digest:
+                return False
+            observed_sources.add((source_path, source_digest))
+    # Set equality, not containment: a changed or removed source drops out of the
+    # current inventory, and a newly appeared source is absent from the stored
+    # table. Both must force re-extraction.
+    if expected_sources is not None and observed_sources != expected_sources:
+        return False
     return True
 
 
+@dataclass(frozen=True)
+class _MRMaskSource:
+    """One MR mask source, bound to the exact bytes that define it."""
+
+    kind: str  # "manual" | "auto_dicom_seg" | "auto_nifti"
+    path: Path
+    files: tuple[Path, ...]
+    content_sha256: str
+
+    @property
+    def identity(self) -> tuple[str, str]:
+        return (str(self.path), self.content_sha256)
+
+
+def _mr_content_digest(files: Iterable[Path]) -> str:
+    """Digest the exact current bytes of the files defining one mask source.
+
+    A single-file source keeps the plain content SHA-256 of that file, which is
+    the fingerprint every other radiomics publication records. A multi-file
+    source (a NIfTI segmentation directory) folds each member's name and content
+    digest in deterministic order, so adding, removing, or editing any member
+    changes the source identity.
+    """
+    members = sorted((Path(path) for path in files), key=lambda item: str(item))
+    if len(members) == 1:
+        return hashlib.sha256(members[0].read_bytes()).hexdigest()
+    digest = hashlib.sha256()
+    for path in members:
+        digest.update(path.name.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(hashlib.sha256(path.read_bytes()).hexdigest().encode("ascii"))
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def _mr_nifti_seg_files(seg_dir: Path) -> tuple[Path, ...]:
+    """Return every file the NIfTI segmentation loader may consume."""
+    candidates: set[Path] = set()
+    for pattern in ("*.nii", "*.nii.gz", "*.json"):
+        candidates.update(path for path in seg_dir.glob(pattern) if path.is_file())
+    return tuple(sorted(candidates, key=lambda item: str(item)))
+
+
+def _mr_mask_sources(
+    config: PipelineConfig, series: MRSeries, out_root: Path, *, for_uid: str
+) -> tuple[_MRMaskSource, ...]:
+    """Fingerprint every mask source this series will actually be read from.
+
+    The auto source is chosen by presence, not by yield: when the DICOM-SEG file
+    exists it is authoritative and the NIfTI directory is not a second source.
+    That keeps the inventory decidable from the filesystem alone, so a resume
+    decision can be compared against it before anything is decoded, and it stops
+    the same TotalSegmentator label being published twice from two encodings.
+    """
+    sources: list[_MRMaskSource] = []
+    seen: set[Path] = set()
+    for rs in _find_mr_manual_rs(config.dicom_root, series.patient_id, for_uid):
+        resolved = Path(rs)
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        try:
+            digest = _mr_content_digest([resolved])
+        except OSError as exc:
+            raise RadiomicsCourseExtractionError(
+                f"Cannot fingerprint MR manual RTSTRUCT {resolved}: {exc}"
+            ) from exc
+        sources.append(
+            _MRMaskSource("manual", resolved, (resolved,), digest)
+        )
+
+    seg_dicom = out_root / 'TotalSegmentator_total_mr_DICOM' / 'segmentations.dcm'
+    seg_nifti_dir = out_root / 'TotalSegmentator_total_mr_NIFTI'
+    if seg_dicom.exists():
+        try:
+            digest = _mr_content_digest([seg_dicom])
+        except OSError as exc:
+            raise RadiomicsCourseExtractionError(
+                f"Cannot fingerprint MR DICOM-SEG source {seg_dicom}: {exc}"
+            ) from exc
+        sources.append(
+            _MRMaskSource("auto_dicom_seg", seg_dicom, (seg_dicom,), digest)
+        )
+    elif seg_nifti_dir.is_dir():
+        files = _mr_nifti_seg_files(seg_nifti_dir)
+        if files:
+            try:
+                digest = _mr_content_digest(files)
+            except OSError as exc:
+                raise RadiomicsCourseExtractionError(
+                    f"Cannot fingerprint MR NIfTI segmentation source {seg_nifti_dir}: {exc}"
+                ) from exc
+            sources.append(
+                _MRMaskSource("auto_nifti", seg_nifti_dir, files, digest)
+            )
+    return tuple(sources)
+
+
+def _mr_verify_mask_sources(sources: Iterable[_MRMaskSource]) -> None:
+    """Fail when any mask source changed after it was read for this run."""
+    for source in sources:
+        if source.kind == "auto_nifti":
+            current_files = _mr_nifti_seg_files(source.path)
+        else:
+            current_files = source.files
+        if set(current_files) != set(source.files):
+            raise RadiomicsCourseExtractionError(
+                f"MR mask source inventory changed during radiomics: {source.path}"
+            )
+        try:
+            current_digest = _mr_content_digest(current_files)
+        except OSError as exc:
+            raise RadiomicsCourseExtractionError(
+                f"MR mask source became unreadable during radiomics: {source.path}: {exc}"
+            ) from exc
+        if current_digest != source.content_sha256:
+            raise RadiomicsCourseExtractionError(
+                f"MR mask source changed during radiomics: {source.path}"
+            )
+
+
+def _mr_required_coverage_failures(
+    requirements: Iterable[Any], rows: Iterable[Mapping[str, Any]]
+) -> list[str]:
+    """Report every required MR ROI that the given rows do not actually cover.
+
+    A required ROI is covered only by its own row. Another ROI extracting
+    successfully never substitutes for it, and a row that records a technical
+    failure for it does not count as coverage either.
+    """
+    materialized = list(rows)
+    failures: list[str] = []
+    for requirement in requirements:
+        accepted = {
+            _normalize_required_roi_name(name) for name in requirement.accepted_names
+        }
+        matches = [
+            row
+            for row in materialized
+            if _normalize_required_roi_name(str(row.get("roi_name", ""))) in accepted
+            and (
+                not requirement.source
+                or _normalize_required_roi_name(str(row.get("segmentation_source", "")))
+                == _normalize_required_roi_name(requirement.source)
+            )
+        ]
+        if not matches:
+            failures.append(
+                f"{requirement.canonical_name} [REQUIRED_ROI_NOT_DECLARED]"
+            )
+            continue
+        if len(matches) > 1:
+            failures.append(
+                f"{requirement.canonical_name} [REQUIRED_ROI_AMBIGUOUS_MATCH]"
+            )
+            continue
+        status = str(matches[0].get("extraction_status") or "").strip()
+        if status != "success" and not extraction_status_is_nonfatal_for_required(status):
+            detail = str(matches[0].get("extraction_status_detail") or "").strip()
+            failures.append(
+                f"{requirement.canonical_name} [{status or 'unknown_status'}]"
+                + (f": {detail}" if detail else "")
+            )
+    return failures
+
+
+def _mr_publication_identity_conflicts(rows: Iterable[Mapping[str, Any]]) -> list[str]:
+    """Report rows that share one full publication identity."""
+    seen: Dict[tuple[str, ...], int] = {}
+    for row in rows:
+        key = tuple(
+            str(row.get(column) or "")
+            for column in (
+                "segmentation_source",
+                "roi_name",
+                "stable_roi_identifier",
+                "source_content_sha256",
+            )
+        )
+        seen[key] = seen.get(key, 0) + 1
+    return [
+        f"{key[0]}/{key[1]} appears {count} times for one source identity"
+        for key, count in sorted(seen.items())
+        if count > 1
+    ]
+
+
 def radiomics_for_mr_series(config: PipelineConfig, series: MRSeries) -> Optional[Path]:
+    """Extract MR radiomics for one directly addressed series.
+
+    Every published row names the source bytes it came from, the effective
+    extractor configuration that produced it, and the code revision of the run.
+    Resume reuses a stored table only while all three still match the current
+    observation and the current required-ROI contract is genuinely covered.
+    Publication is refused when a source changes while the series is processed.
+
+    Provenance limit: ``current_code_revision`` resolves the committed Git
+    revision (or ``RTPIPELINE_CODE_REVISION``). It does not fingerprint
+    uncommitted working-tree edits, so an unchanged revision does not by itself
+    prove the executed code content was unchanged.
+    """
     # Determine weighting to toggle normalization: T2 -> False, T1 -> True, else default False
     wt = _infer_mr_weighting(series.dir, series.series_uid)
     normalize_override = True if wt == 'T1' else False if wt == 'T2' else False
+    out_root = config.output_root / series.patient_id / f"MR_{series.series_uid}"
+    out_feat = out_root / 'radiomics_features_MR.xlsx'
     extractor = _extractor(config, 'MR', normalize_override=normalize_override)
     if extractor is None:
+        _invalidate_radiomics_outputs(out_feat)
+        if _mr_radiomics_required(config):
+            raise RadiomicsCourseExtractionError(
+                f"MR radiomics extraction is unavailable for {series.patient_id}/{series.series_uid}: "
+                "extractor could not be constructed"
+            )
+        logger.warning("MR radiomics extraction unavailable for %s; stale outputs invalidated", series.dir)
         return None
     img = _load_series_image(series.dir, series.series_uid)
     if img is None:
-        logger.info("No MR image for radiomics in %s", series.dir)
+        _invalidate_radiomics_outputs(out_feat)
+        if _mr_radiomics_required(config):
+            raise RadiomicsCourseExtractionError(
+                f"MR radiomics required but no MR image could be loaded for "
+                f"{series.patient_id}/{series.series_uid}: {series.dir}"
+            )
+        logger.warning("No MR image for radiomics in %s; stale outputs invalidated", series.dir)
         return None
-    out_root = config.output_root / series.patient_id / f"MR_{series.series_uid}"
-    out_feat = out_root / 'radiomics_features_MR.xlsx'
+
+    arm = _mr_parameter_arm(normalize_override)
+    params_path = _get_params_file(config, "MR")
+    code_revision = current_code_revision()
+    required_contract = tuple(
+        requirement
+        for requirement in requirements_from_contract(_analysis_contract(config), "MR")
+        if requirement.requiredness == Requiredness.ANALYSIS_REQUIRED
+    )
+    for_uid = _mr_series_for_uid(series.dir, series.series_uid) or ''
+    try:
+        current_effective_hash = effective_parameter_hash(extractor, arm=arm, window=None)
+        sources = _mr_mask_sources(config, series, out_root, for_uid=for_uid)
+    except Exception as exc:
+        _invalidate_radiomics_outputs(out_feat)
+        if isinstance(exc, RadiomicsCourseExtractionError):
+            raise
+        raise RadiomicsCourseExtractionError(
+            f"Cannot establish MR radiomics execution or source identity for "
+            f"{series.patient_id}/{series.series_uid}: {exc}"
+        ) from exc
+
     if getattr(config, 'resume', False) and out_feat.exists():
         try:
             import pandas as pd
@@ -2829,163 +3271,361 @@ def radiomics_for_mr_series(config: PipelineConfig, series: MRSeries) -> Optiona
             assert_radiomics_arrow_schema(parquet_path)
             existing = pd.read_parquet(parquet_path, engine="pyarrow")
             if not _mr_resume_parameter_provenance_is_current(
-                existing, _get_params_file(config, "MR")
+                existing,
+                params_path,
+                expected_arm=arm,
+                expected_effective_parameter_hash=current_effective_hash,
+                expected_code_revision=code_revision,
+                expected_sources={source.identity for source in sources},
             ):
-                raise ValueError("MR parameter provenance is absent or stale")
+                raise ValueError(
+                    "MR execution identity, parameter provenance or source inventory is stale"
+                )
+            unmet = _mr_required_coverage_failures(
+                required_contract, existing.to_dict("records")
+            )
+            if unmet:
+                raise ValueError(
+                    "stored MR table does not cover the current required ROI contract: "
+                    + "; ".join(unmet)
+                )
         except Exception as exc:
             logger.info("Rejecting non-conforming MR radiomics resume output %s: %s", out_feat, exc)
             _invalidate_radiomics_outputs(out_feat)
         else:
             return out_feat
+
     out_root.mkdir(parents=True, exist_ok=True)
     rows: List[Dict] = []
     run_identifier = new_run_identifier()
-    code_revision = current_code_revision()
-    # Manual MR RS (if any)
-    for_uid = _mr_series_for_uid(series.dir, series.series_uid) or ''
-    for rs in _find_mr_manual_rs(config.dicom_root, series.patient_id, for_uid):
-        masks = _rtstruct_masks(series.dir, rs)
-        for roi, mask in masks.items():
-            try:
-                m_img = _mask_from_array_like(img, mask)
-                res = extractor.execute(img, m_img)
-                rec = normalize_radiomics_result(res)
-                rec.update({
-                    'modality': 'MR',
-                    'segmentation_source': 'Manual',
-                    'roi_name': roi,
-                    'series_dir': str(series.dir),
-                    'series_uid': series.series_uid,
-                    **_mr_parameter_provenance(
+    parameter_provenance = _mr_parameter_provenance(
+        config,
+        extractor,
+        normalize_override=normalize_override,
+        run_identifier=run_identifier,
+        code_revision=code_revision,
+    )
+
+    try:
+        for source in sources:
+            if source.kind == "manual":
+                rows.extend(
+                    _mr_manual_rows(
                         config,
+                        series,
+                        img,
                         extractor,
-                        normalize_override=normalize_override,
-                        run_identifier=run_identifier,
-                        code_revision=code_revision,
-                    ),
-                })
-                rows.append(rec)
-            except RadiomicsFeatureTypeError:
-                raise
-            except Exception as e:
-                logger.debug("Radiomics MR manual failed for %s: %s", roi, e)
-                continue
-    # Auto total_mr segmentation (DICOM-SEG/NIfTI) if present
-    try:
-        from .auto_rtstruct import _load_seg_dicom, _load_seg_nifti  # type: ignore
-    except Exception:
-        _load_seg_dicom = _load_seg_nifti = None  # type: ignore
-    # DICOM-SEG
-    if _load_seg_dicom is not None:
-        seg_dicom = out_root / 'TotalSegmentator_total_mr_DICOM' / 'segmentations.dcm'
-        if seg_dicom.exists():
-            seg_img, label_map = _load_seg_dicom(seg_dicom)
-            if seg_img is not None:
-                seg_img = _resample_to_reference(seg_img, img, nn=True)
-                arr = sitk.GetArrayFromImage(seg_img)
-                labels = [int(v) for v in np.unique(arr) if int(v) != 0]
-
-                def _do_lab(lab: int) -> Optional[Dict[str, Any]]:
-                    try:
-                        mask = (arr == lab)
-                        if not mask.any():
-                            return None
-                        ext = _extractor(config, 'MR', normalize_override=normalize_override)
-                        m_img = _mask_from_array_like(img, mask)
-                        res = ext.execute(img, m_img)
-                        rec = normalize_radiomics_result(res)
-                        rec.update({
-                            'modality': 'MR',
-                            'segmentation_source': 'AutoTS_total_mr',
-                            'roi_name': label_map.get(lab, f'Segment_{lab}'),
-                            'series_dir': str(series.dir),
-                            'series_uid': series.series_uid,
-                            **_mr_parameter_provenance(
-                                config,
-                                ext,
-                                normalize_override=normalize_override,
-                                run_identifier=run_identifier,
-                                code_revision=code_revision,
-                            ),
-                        })
-                        return rec
-                    except RadiomicsFeatureTypeError:
-                        raise
-                    except Exception as e:
-                        logger.debug("Radiomics MR total_mr failed for label %s: %s", lab, e)
-                        return None
-
-                dicom_results = run_tasks_with_adaptive_workers(
-                    "Radiomics MR (TotalSegmentator DICOM)",
-                    labels,
-                    _do_lab,
-                    max_workers=config.effective_workers(),
-                    logger=logger,
+                        source,
+                        parameter_provenance=parameter_provenance,
+                    )
                 )
-                for rec in dicom_results:
-                    if rec:
-                        rows.append(rec)
-    # NIfTI fallback
-    if _load_seg_nifti is not None:
-        seg_nifti_dir = out_root / 'TotalSegmentator_total_mr_NIFTI'
-        seg_img, label_map = _load_seg_nifti(seg_nifti_dir)
-        if seg_img is not None:
-            seg_img = _resample_to_reference(seg_img, img, nn=True)
-            arr = sitk.GetArrayFromImage(seg_img)
-            labels = [int(v) for v in np.unique(arr) if int(v) != 0]
+            else:
+                rows.extend(
+                    _mr_auto_rows(
+                        config,
+                        series,
+                        img,
+                        source,
+                        normalize_override=normalize_override,
+                        parameter_provenance=parameter_provenance,
+                        expected_effective_parameter_hash=current_effective_hash,
+                    )
+                )
 
-            def _do_lab_nifti(lab: int) -> Optional[Dict[str, Any]]:
-                try:
-                    mask = (arr == lab)
-                    if not mask.any():
-                        return None
-                    ext = _extractor(config, 'MR', normalize_override=normalize_override)
-                    m_img = _mask_from_array_like(img, mask)
-                    res = ext.execute(img, m_img)
-                    rec = normalize_radiomics_result(res)
-                    rec.update({
-                        'modality': 'MR',
-                        'segmentation_source': 'AutoTS_total_mr',
-                        'roi_name': label_map.get(lab, f'Segment_{lab}'),
-                        'series_dir': str(series.dir),
-                        'series_uid': series.series_uid,
-                        **_mr_parameter_provenance(
-                            config,
-                            ext,
-                            normalize_override=normalize_override,
-                            run_identifier=run_identifier,
-                            code_revision=code_revision,
-                        ),
-                    })
-                    return rec
-                except RadiomicsFeatureTypeError:
-                    raise
-                except Exception as e:
-                    logger.debug("Radiomics MR total_mr (NIfTI) failed for label %s: %s", lab, e)
-                    return None
+        if not rows:
+            _invalidate_radiomics_outputs(out_feat)
+            if _mr_radiomics_required(config):
+                raise RadiomicsCourseExtractionError(
+                    f"MR radiomics required but produced no rows for "
+                    f"{series.patient_id}/{series.series_uid}"
+                )
+            logger.warning("MR radiomics produced no rows for %s/%s; stale outputs invalidated",
+                           series.patient_id, series.series_uid)
+            return None
 
-            nifti_results = run_tasks_with_adaptive_workers(
-                "Radiomics MR (TotalSegmentator NIfTI)",
-                labels,
-                _do_lab_nifti,
-                max_workers=config.effective_workers(),
-                logger=logger,
+        conflicts = _mr_publication_identity_conflicts(rows)
+        if conflicts:
+            raise RadiomicsCourseExtractionError(
+                f"MR radiomics rows for {series.patient_id}/{series.series_uid} are not "
+                "uniquely identified: " + "; ".join(conflicts)
             )
-            for rec in nifti_results:
-                if rec:
-                    rows.append(rec)
-    if not rows:
-        return None
-    try:
+        divergent = {
+            tuple(str(row.get(field) or "") for field in parameter_provenance)
+            for row in rows
+        }
+        if divergent != {tuple(str(parameter_provenance[field]) for field in parameter_provenance)}:
+            raise RadiomicsCourseExtractionError(
+                f"MR radiomics rows for {series.patient_id}/{series.series_uid} do not share "
+                "one execution identity"
+            )
+        unmet = _mr_required_coverage_failures(required_contract, rows)
+        if unmet:
+            raise RadiomicsCourseExtractionError(
+                "Required MR ROI(s) are not covered for "
+                f"{series.patient_id}/{series.series_uid}: " + "; ".join(unmet)
+            )
+        _mr_verify_mask_sources(sources)
+
         import pandas as pd
         df = pd.DataFrame(rows)
         write_radiomics_feature_table_atomic(df, out_feat)
         return out_feat
-    except Exception as e:
+    except RadiomicsFeatureTypeError:
+        _invalidate_radiomics_outputs(out_feat)
+        raise
+    except RadiomicsCourseExtractionError:
+        _invalidate_radiomics_outputs(out_feat)
+        raise
+    except Exception as exc:
         _invalidate_radiomics_outputs(out_feat)
         raise RadiomicsCourseExtractionError(
-            f"Failed to write MR radiomics for {series.patient_id}/{series.series_uid}: {e}"
-        ) from e
+            f"Failed to write MR radiomics for {series.patient_id}/{series.series_uid}: {exc}"
+        ) from exc
+
+
+def _mr_manual_rows(
+    config: PipelineConfig,
+    series: MRSeries,
+    img: Any,
+    extractor: Any,
+    source: _MRMaskSource,
+    *,
+    parameter_provenance: Mapping[str, str],
+) -> List[Dict[str, Any]]:
+    """Rows for one manual MR RTSTRUCT, each bound to its source and ROI identity.
+
+    A required ROI that cannot be extracted raises here. The caller invalidates
+    the stored workbook and Parquet for every raised failure, so no partially
+    accounted table survives.
+    """
+    from .rtstruct_identity import require_rtstruct_identity
+
+    rs = source.path
+    try:
+        sop_uid = require_rtstruct_identity(rs)
+    except Exception as exc:
+        raise RadiomicsCourseExtractionError(
+            f"MR manual RTSTRUCT {rs} has no usable identity: {exc}"
+        ) from exc
+    try:
+        roi_numbers = {
+            observation.name: str(observation.roi_number)
+            for observation in inspect_rtstruct(rs).named_rois
+        }
+    except Exception as exc:
+        raise RadiomicsCourseExtractionError(
+            f"Cannot read the ROI inventory of MR manual RTSTRUCT {rs}: {exc}"
+        ) from exc
+
+    def _manual_row(roi: str, *, status: str, failure_kind: Optional[str] = None,
+                    detail: str = '', structural_code: Optional[str] = None,
+                    row_sop_uid: Optional[str] = None,
+                    roi_number: Optional[str] = None,
+                    measurements: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
+        number = roi_number if roi_number is not None else roi_numbers.get(roi)
+        rec: Dict[str, Any] = dict(measurements or {})
+        rec.update({
+            'modality': 'MR',
+            'segmentation_source': 'Manual',
+            'roi_name': roi,
+            'series_dir': str(series.dir),
+            'series_uid': series.series_uid,
+            'mask_path_source': str(rs),
+            'source_content_sha256': source.content_sha256,
+            'rtstruct_sop_instance_uid': row_sop_uid or sop_uid,
+            'stable_roi_identifier': (
+                f"rtstruct_roi_number:{number}" if number is not None else None
+            ),
+            'extraction_status': status,
+            **parameter_provenance,
+        })
+        if structural_code:
+            rec['roi_structural_code'] = structural_code
+        if failure_kind:
+            rec['extraction_failure_kind'] = failure_kind
+            rec['extraction_status_detail'] = detail
+        return rec
+
+    def _fail_closed_required(roi: str, detail: str) -> None:
+        if _roi_requiredness(config, 'Manual', roi, modality='MR') == Requiredness.ANALYSIS_REQUIRED:
+            raise RadiomicsCourseExtractionError(
+                f"Required MR ROI {roi!r} in {rs} could not be extracted: {detail}"
+            )
+
+    rows: List[Dict[str, Any]] = []
+    sink: List[Dict] = []
+    masks = _rtstruct_masks(series.dir, rs, best_effort=True, failure_outcomes=sink)
+    for entry in sink:
+        reason = str(entry.get("reason", ""))
+        if entry.get("status") == "nonvolumetric_nonmeasurement":
+            # POINT and other open geometry is a nonmeasurement with null
+            # measurements, not a technical extraction failure.
+            rows.append(_manual_row(
+                entry["roi_name"], status='nonvolumetric_nonmeasurement',
+                failure_kind='nonvolumetric_geometry',
+                detail=reason,
+                structural_code=str(entry.get("structural_code", "")) or None,
+                row_sop_uid=entry.get("rtstruct_sop_instance_uid"),
+                roi_number=entry.get("roi_number"),
+            ))
+            continue
+        rows.append(_manual_row(
+            entry["roi_name"], status='failed',
+            failure_kind=str(entry.get("failure_kind", "extraction_error")),
+            detail=reason,
+            structural_code=entry.get("structural_code"),
+            row_sop_uid=entry.get("rtstruct_sop_instance_uid"),
+            roi_number=entry.get("roi_number"),
+        ))
+        _fail_closed_required(entry["roi_name"], reason)
+    for roi, mask in masks.items():
+        try:
+            m_img = _mask_from_array_like(img, mask)
+            res = extractor.execute(img, m_img)
+            rows.append(_manual_row(
+                roi, status='success', measurements=normalize_radiomics_result(res),
+            ))
+        except RadiomicsFeatureTypeError:
+            raise
+        except Exception as e:
+            logger.warning("Radiomics MR manual failed for %s: %s", roi, e)
+            rows.append(_manual_row(
+                roi, status='failed', failure_kind='extraction_error', detail=str(e),
+            ))
+            _fail_closed_required(roi, str(e))
+    return rows
+
+
+def _mr_auto_rows(
+    config: PipelineConfig,
+    series: MRSeries,
+    img: Any,
+    source: _MRMaskSource,
+    *,
+    normalize_override: Optional[bool],
+    parameter_provenance: Mapping[str, str],
+    expected_effective_parameter_hash: str,
+) -> List[Dict[str, Any]]:
+    """Rows for one TotalSegmentator MR source, accounting for every label.
+
+    Every submitted label produces exactly one row. A label whose result the
+    worker pool cannot return, and a schema violation raised inside a worker,
+    both fail the series instead of silently shrinking the publication.
+    """
+    def _source_row(roi: str, *, status: str, failure_kind: Optional[str] = None,
+                    detail: str = '', stable_identifier: str,
+                    measurements: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
+        rec: Dict[str, Any] = dict(measurements or {})
+        rec.update({
+            'modality': 'MR',
+            'segmentation_source': MR_AUTO_SOURCE,
+            'roi_name': roi,
+            'series_dir': str(series.dir),
+            'series_uid': series.series_uid,
+            'mask_path_source': str(source.path),
+            'source_content_sha256': source.content_sha256,
+            'stable_roi_identifier': stable_identifier,
+            'extraction_status': status,
+            **parameter_provenance,
+        })
+        if failure_kind:
+            rec['extraction_failure_kind'] = failure_kind
+            rec['extraction_status_detail'] = detail
+        return rec
+
+    def _unusable_source_row(detail: str) -> Dict[str, Any]:
+        return _source_row(
+            source.path.name, status='failed', failure_kind='source_read_error',
+            detail=detail, stable_identifier=f"total_mr_source:{source.content_sha256}",
+        )
+
+    try:
+        from .auto_rtstruct import _load_seg_dicom, _load_seg_nifti  # type: ignore
+    except Exception as exc:  # noqa: BLE001 - an unusable decoder is a durable disposition
+        return [_unusable_source_row(f"segmentation decoders are unavailable: {exc}")]
+    if source.kind == "auto_dicom_seg":
+        if _load_seg_dicom is None:
+            return [_unusable_source_row("DICOM-SEG decoder is unavailable")]
+        seg_img, label_map = _load_seg_dicom(source.path)
+    else:
+        if _load_seg_nifti is None:
+            return [_unusable_source_row("NIfTI segmentation reader is unavailable")]
+        seg_img, label_map = _load_seg_nifti(source.path, None)
+    if seg_img is None:
+        return [_unusable_source_row("segmentation source could not be decoded")]
+
+    seg_img = _resample_to_reference(seg_img, img, nn=True)
+    arr = sitk.GetArrayFromImage(seg_img)
+    labels = [int(value) for value in np.unique(arr) if int(value) != 0]
+    if not labels:
+        return [_source_row(
+            source.path.name, status='failed', failure_kind='degenerate_mask',
+            detail='segmentation source declares no foreground label',
+            stable_identifier=f"total_mr_source:{source.content_sha256}",
+        )]
+
+    label_map = dict(label_map or {})
+    schema_failures: List[BaseException] = []
+
+    def _do_lab(lab: int) -> Optional[Dict[str, Any]]:
+        roi = label_map.get(lab, f'Segment_{lab}')
+        identifier = f"total_mr_label:{lab}"
+        try:
+            mask = (arr == lab)
+            if not mask.any():
+                logger.warning("Radiomics MR total_mr label %s has an empty mask", lab)
+                return _source_row(roi, status='failed', failure_kind='degenerate_mask',
+                                   detail='empty mask', stable_identifier=identifier)
+            ext = _extractor(config, 'MR', normalize_override=normalize_override)
+            if ext is None:
+                return _source_row(roi, status='failed', failure_kind='extraction_error',
+                                   detail='no MR extractor could be constructed',
+                                   stable_identifier=identifier)
+            observed = effective_parameter_hash(
+                ext, arm=str(parameter_provenance['extraction_arm']), window=None
+            )
+            if observed != expected_effective_parameter_hash:
+                return _source_row(
+                    roi, status='failed', failure_kind='extraction_error',
+                    detail=(
+                        "task extractor configuration does not match the run's "
+                        f"effective parameter identity ({observed})"
+                    ),
+                    stable_identifier=identifier,
+                )
+            m_img = _mask_from_array_like(img, mask)
+            res = ext.execute(img, m_img)
+            return _source_row(roi, status='success', stable_identifier=identifier,
+                               measurements=normalize_radiomics_result(res))
+        except RadiomicsFeatureTypeError as exc:
+            # The pool converts a raised exception into a dropped result. Carry
+            # the schema violation out explicitly so it fails the series.
+            schema_failures.append(exc)
+            return None
+        except Exception as e:
+            logger.warning("Radiomics MR total_mr failed for label %s: %s", lab, e)
+            return _source_row(roi, status='failed', failure_kind='extraction_error',
+                               detail=str(e), stable_identifier=identifier)
+
+    results = run_tasks_with_adaptive_workers(
+        f"Radiomics MR (TotalSegmentator {'DICOM' if source.kind == 'auto_dicom_seg' else 'NIfTI'})",
+        labels,
+        _do_lab,
+        max_workers=config.effective_workers(),
+        logger=logger,
+    )
+    if schema_failures:
+        raise schema_failures[0]
+    unaccounted = [
+        lab for lab, rec in zip(labels, list(results) + [None] * (len(labels) - len(results)))
+        if not isinstance(rec, dict)
+    ]
+    if unaccounted:
+        raise RadiomicsCourseExtractionError(
+            f"MR radiomics did not account for TotalSegmentator label(s) "
+            f"{', '.join(str(lab) for lab in unaccounted)} from {source.path}"
+        )
+    return [rec for rec in results if isinstance(rec, dict)]
 
 
 def _radiomics_course_identity(course: Any) -> tuple[str, str]:
@@ -3002,21 +3642,20 @@ def _full_organize_cohort(
 ) -> Optional[dict[str, Any]]:
     """Return the organize ledger only for a complete validated-course invocation."""
 
-    from .organize_ledger import OrganizeLedgerError, ledger_path, read_organize_ledger
+    from .organize_ledger import OrganizeLedgerError, ledger_path, validate_organize_ledger
 
     path = ledger_path(config.output_root)
     supplied = {_radiomics_course_identity(course) for course in courses}
+    if len(supplied) != len(courses):
+        raise RuntimeError("Radiomics invocation contains duplicate patient/course identities")
     if not path.exists():
-        source_bytes = json.dumps(sorted(supplied), separators=(",", ":")).encode()
-        return {
-            "intended_course_count": len(courses),
-            "validated_course_count": len(courses),
-            "technical_quarantines": [],
-            "denominator_source_sha256": hashlib.sha256(source_bytes).hexdigest(),
-        }
+        # A caller's course list cannot establish the intended source census or
+        # prove that quarantined courses were retained in the denominator.
+        return None
     try:
-        ledger = read_organize_ledger(config.output_root)
-    except OrganizeLedgerError as exc:
+        source_bytes = path.read_bytes()
+        ledger = validate_organize_ledger(json.loads(source_bytes))
+    except (OrganizeLedgerError, OSError, ValueError) as exc:
         raise RuntimeError(f"Radiomics organize ledger is invalid: {exc}") from exc
     expected = {
         (entry["patient"], entry["course"])
@@ -3025,7 +3664,7 @@ def _full_organize_cohort(
     }
     if supplied != expected:
         return None
-    source_sha256 = hashlib.sha256(path.read_bytes()).hexdigest()
+    source_sha256 = hashlib.sha256(source_bytes).hexdigest()
     ledger["technical_quarantines"] = [
         {**entry, "source_record_sha256": source_sha256}
         for entry in ledger["technical_quarantines"]
@@ -3173,8 +3812,8 @@ def run_radiomics(config: PipelineConfig, courses: List["object"], custom_struct
     if organize_cohort is None:
         _invalidate_unprovenanced_radiomics_cohort(aggregate_path)
         logger.info(
-            "Skipping cohort radiomics publication because this invocation does not "
-            "contain every organize-validated course"
+            "Skipping cohort radiomics publication because an authoritative organize "
+            "ledger is absent or the invocation does not match its validated courses"
         )
         return
 

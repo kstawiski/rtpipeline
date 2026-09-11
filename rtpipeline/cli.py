@@ -978,6 +978,304 @@ def _validate(argv: list[str]) -> int:
         return 0
 
 
+# --- The robustness request contract ---------------------------------------
+#
+# A robustness step runs only because a configuration asked for it. Both CLI
+# entry points used to replace an absent, unreadable or non-mapping config with
+# ``{}``, and ``RobustnessConfig.from_dict({})`` returns the shipped defaults
+# with ``enabled=True``. A run whose configuration never arrived therefore
+# perturbed, measured and published under a policy nobody requested. Nothing is
+# defaulted below: the file must exist, parse to a mapping, and carry an
+# explicit ``radiomics_robustness`` mapping whose ``enabled`` is a real boolean.
+#
+# Values inside an explicitly enabled section keep their documented defaults
+# when they are absent. What is refused is a value that is *present* and
+# unusable, because ``from_dict`` reads every one of them with ``.get(key,
+# default)``: an unusable grid, metric or threshold does not fail there, it
+# silently substitutes a different analysis for the requested one.
+
+
+class _RobustnessRequestError(ValueError):
+    """The requested robustness policy is absent, unusable, or disabled."""
+
+
+class _UnsafeStudyPathError(ValueError):
+    """A study path is reached through a symlink, so nothing is written to it."""
+
+
+_ROBUSTNESS_SECTION_KEYS = frozenset(
+    {"enabled", "modes", "segmentation_perturbation", "metrics", "thresholds"}
+)
+_PERTURBATION_KEYS = frozenset(
+    {
+        "apply_to_structures",
+        "small_volume_changes",
+        "large_volume_changes",
+        "n_random_contour_realizations",
+        "max_translation_mm",
+        "contour_randomization_mm",
+        "noise_levels",
+        "intensity",
+    }
+)
+_METRICS_KEYS = frozenset({"icc", "cov", "qcd"})
+_ICC_KEYS = frozenset({"implementation", "icc_type", "ci"})
+_TOGGLE_KEYS = frozenset({"enabled"})
+_THRESHOLDS_KEYS = frozenset({"icc", "cov"})
+_ICC_THRESHOLD_KEYS = frozenset({"robust", "acceptable"})
+_COV_THRESHOLD_KEYS = frozenset({"robust_pct", "acceptable_pct"})
+# The extraction settings the robustness course step reads for itself. The
+# wider 'radiomics' section carries keys other stages own, so only these are
+# checked here - but they are checked, because each one silently becomes "no
+# limit" or "no timeout" when it cannot be read.
+_RADIOMICS_COUNT_KEYS = ("max_voxels", "max_resampled_bbox_voxels", "min_voxels")
+
+
+def _require_mapping(value: Any, label: str) -> dict:
+    if not isinstance(value, dict):
+        raise _RobustnessRequestError(
+            f"{label} must be a mapping, not {type(value).__name__}"
+        )
+    return value
+
+
+def _require_known_keys(section: dict, known: frozenset[str], label: str) -> None:
+    """Refuse a setting this pipeline would never read.
+
+    A misspelt key is the quietest way to lose a requested setting: the run
+    proceeds on the shipped default and reports nothing.
+    """
+    unknown = sorted(str(key) for key in section if str(key) not in known)
+    if unknown:
+        raise _RobustnessRequestError(
+            f"{label} carries setting(s) this pipeline does not read: "
+            f"{', '.join(unknown)}; an unread setting would silently leave the "
+            "default policy in force instead of the requested one"
+        )
+
+
+def _require_bool(value: Any, label: str) -> bool:
+    if not isinstance(value, bool):
+        raise _RobustnessRequestError(
+            f"{label} must be a YAML boolean (true/false), not {value!r}"
+        )
+    return value
+
+
+def _require_name(value: Any, label: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise _RobustnessRequestError(
+            f"{label} must be a non-empty string, not {value!r}"
+        )
+    return value
+
+
+def _require_number(value: Any, label: str, *, minimum: float | None = None) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise _RobustnessRequestError(f"{label} must be a number, not {value!r}")
+    number = float(value)
+    if not math.isfinite(number):
+        raise _RobustnessRequestError(
+            f"{label} must be a finite number, not {value!r}"
+        )
+    if minimum is not None and number < minimum:
+        raise _RobustnessRequestError(
+            f"{label} must be at least {minimum}, not {number}"
+        )
+    return number
+
+
+def _require_count(value: Any, label: str, *, minimum: int = 0) -> int:
+    if isinstance(value, bool) or (isinstance(value, float) and not value.is_integer()):
+        raise _RobustnessRequestError(
+            f"{label} must be a whole number, not {value!r}"
+        )
+    try:
+        count = int(value)
+    except (TypeError, ValueError):
+        raise _RobustnessRequestError(
+            f"{label} must be a whole number, not {value!r}"
+        ) from None
+    if count < minimum:
+        raise _RobustnessRequestError(
+            f"{label} must be at least {minimum}, not {count}"
+        )
+    return count
+
+
+def _require_number_list(value: Any, label: str) -> None:
+    if not isinstance(value, list) or not value:
+        raise _RobustnessRequestError(
+            f"{label} must be a non-empty list of numbers, not {value!r}; an "
+            "empty or unusable list silently shrinks the perturbation grid"
+        )
+    for index, item in enumerate(value):
+        _require_number(item, f"{label}[{index}]")
+
+
+def _require_name_list(value: Any, label: str) -> None:
+    if not isinstance(value, list) or not value:
+        raise _RobustnessRequestError(
+            f"{label} must be a non-empty list of names, not {value!r}"
+        )
+    for index, item in enumerate(value):
+        _require_name(item, f"{label}[{index}]")
+
+
+def _validate_robustness_section(section: dict) -> None:
+    """Check every value RobustnessConfig.from_dict would read from this section."""
+    _require_known_keys(section, _ROBUSTNESS_SECTION_KEYS, "radiomics_robustness")
+
+    if "modes" in section:
+        modes = section["modes"]
+        _require_name_list(
+            [modes] if isinstance(modes, str) else modes, "radiomics_robustness.modes"
+        )
+
+    label = "radiomics_robustness.segmentation_perturbation"
+    perturbation = _require_mapping(section.get("segmentation_perturbation", {}), label)
+    _require_known_keys(perturbation, _PERTURBATION_KEYS, label)
+    if "apply_to_structures" in perturbation:
+        _require_name_list(
+            perturbation["apply_to_structures"], f"{label}.apply_to_structures"
+        )
+    for key in ("small_volume_changes", "large_volume_changes", "noise_levels"):
+        if key in perturbation:
+            _require_number_list(perturbation[key], f"{label}.{key}")
+    if "n_random_contour_realizations" in perturbation:
+        _require_count(
+            perturbation["n_random_contour_realizations"],
+            f"{label}.n_random_contour_realizations",
+        )
+    for key in ("max_translation_mm", "contour_randomization_mm"):
+        if key in perturbation:
+            _require_number(perturbation[key], f"{label}.{key}", minimum=0.0)
+    if "intensity" in perturbation:
+        _require_name(perturbation["intensity"], f"{label}.intensity")
+
+    metrics = _require_mapping(
+        section.get("metrics", {}), "radiomics_robustness.metrics"
+    )
+    _require_known_keys(metrics, _METRICS_KEYS, "radiomics_robustness.metrics")
+    icc = _require_mapping(metrics.get("icc", {}), "radiomics_robustness.metrics.icc")
+    _require_known_keys(icc, _ICC_KEYS, "radiomics_robustness.metrics.icc")
+    for key in ("implementation", "icc_type"):
+        if key in icc:
+            _require_name(icc[key], f"radiomics_robustness.metrics.icc.{key}")
+    if "ci" in icc:
+        _require_bool(icc["ci"], "radiomics_robustness.metrics.icc.ci")
+    for key in ("cov", "qcd"):
+        toggle_label = f"radiomics_robustness.metrics.{key}"
+        toggle = _require_mapping(metrics.get(key, {}), toggle_label)
+        _require_known_keys(toggle, _TOGGLE_KEYS, toggle_label)
+        if "enabled" in toggle:
+            _require_bool(toggle["enabled"], f"{toggle_label}.enabled")
+
+    thresholds = _require_mapping(
+        section.get("thresholds", {}), "radiomics_robustness.thresholds"
+    )
+    _require_known_keys(thresholds, _THRESHOLDS_KEYS, "radiomics_robustness.thresholds")
+    for key, allowed in (("icc", _ICC_THRESHOLD_KEYS), ("cov", _COV_THRESHOLD_KEYS)):
+        group_label = f"radiomics_robustness.thresholds.{key}"
+        group = _require_mapping(thresholds.get(key, {}), group_label)
+        _require_known_keys(group, allowed, group_label)
+        for name in sorted(allowed):
+            if name in group:
+                _require_number(group[name], f"{group_label}.{name}")
+
+
+def _load_requested_robustness_config(config_path: Path) -> tuple[dict, dict]:
+    """Return the whole config and the enabled robustness section, or fail closed."""
+    import yaml
+
+    if not config_path.is_file():
+        raise _RobustnessRequestError(
+            f"the requested configuration {config_path} does not exist; this "
+            "step has no policy to execute and will not assume one"
+        )
+    try:
+        document = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise _RobustnessRequestError(
+            f"the requested configuration {config_path} is unreadable: {exc}"
+        ) from exc
+    yaml_config = _require_mapping(document, f"the configuration {config_path}")
+    if "radiomics_robustness" not in yaml_config:
+        raise _RobustnessRequestError(
+            f"{config_path} declares no radiomics_robustness section; an absent "
+            "section is not a request to run the default perturbation policy"
+        )
+    section = _require_mapping(
+        yaml_config["radiomics_robustness"], "radiomics_robustness"
+    )
+    if "enabled" not in section:
+        raise _RobustnessRequestError(
+            f"{config_path} sets no radiomics_robustness.enabled; robustness "
+            "runs on an explicit request, never on an absent one"
+        )
+    if not _require_bool(section["enabled"], "radiomics_robustness.enabled"):
+        raise _RobustnessRequestError(
+            "radiomics_robustness is disabled in "
+            f"{config_path}; enable it with 'radiomics_robustness.enabled: true' "
+            "before requesting this step"
+        )
+    _validate_robustness_section(section)
+    return yaml_config, section
+
+
+def _require_course_radiomics_section(yaml_config: dict) -> dict:
+    """The extraction settings the robustness course step reads must be usable."""
+    radiomics_cfg = _require_mapping(yaml_config.get("radiomics", {}), "radiomics")
+    for key in ("params_file", "mr_params_file"):
+        if radiomics_cfg.get(key) is not None:
+            _require_name(radiomics_cfg[key], f"radiomics.{key}")
+    skip_rois = radiomics_cfg.get("skip_rois")
+    if skip_rois is not None and not isinstance(skip_rois, str):
+        if not isinstance(skip_rois, list):
+            raise _RobustnessRequestError(
+                "radiomics.skip_rois must be a string or a list of names, not "
+                f"{type(skip_rois).__name__}"
+            )
+        for index, item in enumerate(skip_rois):
+            _require_name(item, f"radiomics.skip_rois[{index}]")
+    for key in _RADIOMICS_COUNT_KEYS:
+        if radiomics_cfg.get(key) is not None:
+            _require_count(radiomics_cfg[key], f"radiomics.{key}", minimum=1)
+    if radiomics_cfg.get("env_probe_timeout") is not None:
+        _require_count(
+            radiomics_cfg["env_probe_timeout"],
+            "radiomics.env_probe_timeout",
+            minimum=1,
+        )
+    return radiomics_cfg
+
+
+def _absolute_without_resolving(raw: str) -> Path:
+    """Make a path absolute while keeping every symlink it names."""
+    candidate = Path(raw)
+    return candidate if candidate.is_absolute() else Path.cwd() / candidate
+
+
+def _reject_symlinked_study_path(raw: str, label: str) -> Path:
+    """Return the unnormalized absolute path, or refuse a symlinked one.
+
+    Study outputs are never written through a symlinked directory. The check
+    has to run on the path exactly as given, and before anything is created,
+    overwritten or deleted there: ``Path.resolve()`` erases the evidence the
+    policy is stated in, and acting first would follow the link off the study
+    tree. Every existing ancestor is inspected, not just the leaf.
+    """
+    candidate = _absolute_without_resolving(raw)
+    for ancestor in (candidate, *candidate.parents):
+        if ancestor.is_symlink():
+            raise _UnsafeStudyPathError(
+                f"refusing to use {candidate} as the {label}: it is reached "
+                f"through the symlink {ancestor}, and study outputs are never "
+                "written or removed through a symlinked path"
+            )
+    return candidate
+
+
 def _radiomics_robustness_course(argv: list[str]) -> int:
     """Run radiomics robustness analysis for a single course."""
     p = argparse.ArgumentParser(
@@ -987,6 +1285,15 @@ def _radiomics_robustness_course(argv: list[str]) -> int:
     p.add_argument("--course-dir", required=True, help="Course directory path")
     p.add_argument("--config", default="config.yaml", help="Path to config YAML")
     p.add_argument("--output", required=True, help="Output parquet file path")
+    p.add_argument(
+        "--sentinel",
+        default=None,
+        help=(
+            "Optional path to this course's .radiomics_robustness_done completion "
+            "receipt. It is invalidated before any work and rewritten only after "
+            "the run's own outcome is admitted."
+        ),
+    )
     p.add_argument("--max-workers", type=int, default=None, help="Override automatic worker budget (cores-1)")
     p.add_argument(
         "--radiomics-env-probe-timeout",
@@ -1000,30 +1307,73 @@ def _radiomics_robustness_course(argv: list[str]) -> int:
     level = logging.DEBUG if args.verbose else logging.INFO
     logging.basicConfig(level=level, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
-    # Load config
-    course_dir = Path(args.course_dir).resolve()
-    output_path = Path(args.output).resolve()
+    # Every path this step would create, overwrite or delete is inspected as
+    # written, before anything is resolved and before any receipt is dropped.
+    try:
+        raw_course_dir = _reject_symlinked_study_path(args.course_dir, "course directory")
+        raw_output = _reject_symlinked_study_path(args.output, "robustness output")
+        raw_sentinel = (
+            _reject_symlinked_study_path(
+                args.sentinel, "robustness completion receipt"
+            )
+            if args.sentinel
+            else None
+        )
+    except _UnsafeStudyPathError as e:
+        logger.error("%s", e)
+        return 1
+
+    course_dir = raw_course_dir.resolve()
+    output_path = raw_output.resolve()
     config_path = Path(args.config)
 
-    # Parse config.yaml for robustness and radiomics settings
-    import yaml
-    rob_config_data = {}
-    yaml_config: dict[str, Any] = {}
-    root_dir = config_path.parent.resolve()
-    if config_path.exists():
-        try:
-            with open(config_path) as f:
-                yaml_config = yaml.safe_load(f) or {}
-            rob_config_data = yaml_config.get("radiomics_robustness", {})
-        except Exception as e:
-            logger.warning("Failed to parse config.yaml: %s", e)
+    from .robustness_completion import (
+        ROBUSTNESS_COMPLETION_SENTINEL_NAME,
+        invalidate_robustness_completion_sentinel,
+        write_robustness_completion_sentinel,
+    )
 
-    from .radiomics_robustness import RobustnessConfig, robustness_for_course
-    rob_config = RobustnessConfig.from_dict(rob_config_data)
+    sentinel_path: Path | None = None
+    if raw_sentinel is not None:
+        sentinel_path = raw_sentinel.resolve()
+        if sentinel_path.name != ROBUSTNESS_COMPLETION_SENTINEL_NAME:
+            logger.error(
+                "Refusing to use %s as a robustness completion receipt: the "
+                "receipt is named %s",
+                sentinel_path,
+                ROBUSTNESS_COMPLETION_SENTINEL_NAME,
+            )
+            return 1
+        if sentinel_path.parent != course_dir:
+            logger.error(
+                "Refusing to write a robustness completion receipt at %s, which "
+                "is not inside the course %s it would certify",
+                sentinel_path,
+                course_dir,
+            )
+            return 1
+        # Invalidate before any work: a receipt that outlives the start of a
+        # new attempt could certify this attempt with the previous one's
+        # evidence. This runs before the enabled/disabled branch as well, so a
+        # course whose robustness was switched off keeps no success receipt.
+        invalidate_robustness_completion_sentinel(sentinel_path)
 
-    if not rob_config.enabled:
-        logger.warning("Radiomics robustness is disabled in config; enable with 'radiomics_robustness.enabled: true'")
+    # The requested policy, or nothing at all. This runs before the producer
+    # and before admission, so a missing, malformed, non-mapping or disabled
+    # configuration never reaches perturbation, measurement or publication.
+    # The receipt above has already been invalidated, so a failure here leaves
+    # no earlier success standing for this course.
+    try:
+        yaml_config, rob_config_data = _load_requested_robustness_config(config_path)
+        radiomics_cfg = _require_course_radiomics_section(yaml_config)
+    except _RobustnessRequestError as e:
+        logger.error("Refusing to run radiomics robustness: %s", e)
         return 1
+
+    root_dir = config_path.parent.resolve()
+
+    from .radiomics_robustness import RobustnessConfig
+    rob_config = RobustnessConfig.from_dict(rob_config_data)
 
     def _resolve_path(raw: Any, default_name: str) -> Path:
         candidate = Path(str(raw)) if raw else Path(default_name)
@@ -1034,8 +1384,6 @@ def _radiomics_robustness_course(argv: list[str]) -> int:
     dicom_root = _resolve_path(yaml_config.get("dicom_root", "Example_data"), "Example_data")
     output_root = _resolve_path(yaml_config.get("output_dir", "Data_Snakemake"), "Data_Snakemake")
     logs_root = _resolve_path(yaml_config.get("logs_dir", "Logs_Snakemake"), "Logs_Snakemake")
-
-    radiomics_cfg = yaml_config.get("radiomics", {}) or {}
 
     def _coerce_int(value: Any) -> int | None:
         if value is None:
@@ -1097,28 +1445,104 @@ def _radiomics_robustness_course(argv: list[str]) -> int:
     worker_budget = pipeline_config.effective_workers()
     pipeline_config.radiomics_thread_limit = _derive_radiomics_thread_limit(worker_budget)
 
-    # Run robustness analysis
+    # Run robustness analysis. The typed adapter decides the outcome from the
+    # evidence this run published: an absent parquet on its own is never read
+    # as success, and never as a completed course either.
+    from .radiomics_robustness import (
+        RobustnessNotRequestedError,
+        RobustnessSelectionUnmatchedError,
+        run_robustness_course,
+    )
+
     try:
-        result = robustness_for_course(pipeline_config, rob_config, course_dir, output_path=output_path)
-        if result is None:
-            logger.warning("Robustness analysis produced no output")
-            return 1
-        logger.info("Robustness analysis complete: %s", result)
-        return 0
+        outcome = run_robustness_course(
+            pipeline_config, rob_config, course_dir, output_path=output_path
+        )
+    except RobustnessNotRequestedError as e:
+        logger.error("Robustness was requested for a disabled configuration: %s", e)
+        return 1
+    except RobustnessSelectionUnmatchedError as e:
+        # The sidecar evidence stays on disk, but an unmatched selection is a
+        # selection/configuration outcome: it excludes no anatomy, publishes no
+        # success receipt, and this course enters no cohort.
+        logger.error("Robustness selection matched no source structure: %s", e)
+        return 1
     except Exception as e:
         if getattr(e, "code", None) == "RADIOMICS_ENV_PROBE_TIMEOUT":
             raise
         logger.error("Robustness analysis failed: %s", e, exc_info=True)
         return 1
 
+    if not outcome.completes_step:
+        logger.error(
+            "Robustness outcome %r does not complete the course step",
+            outcome.measurement_outcome,
+        )
+        return 1
+
+    if sentinel_path is not None:
+        try:
+            write_robustness_completion_sentinel(
+                sentinel_path,
+                course_dir,
+                patient_id=outcome.patient_id,
+                course_id=outcome.course_id,
+                run_identifier=outcome.run_identifier,
+                measurement_outcome=outcome.measurement_outcome,
+                output_name=outcome.output_name,
+                dispositions_path=outcome.dispositions_path,
+                measured_output=outcome.measured_output,
+                source_disposition_count=outcome.source_disposition_count,
+                effective_configuration_sha256=outcome.effective_configuration_sha256,
+            )
+        except Exception as e:
+            logger.error(
+                "Failed to record the robustness completion receipt at %s: %s",
+                sentinel_path,
+                e,
+                exc_info=True,
+            )
+            return 1
+
+    logger.info(
+        "Robustness analysis complete for %s/%s: outcome=%s run=%s output=%s",
+        outcome.patient_id,
+        outcome.course_id,
+        outcome.measurement_outcome,
+        outcome.run_identifier,
+        outcome.measured_output if outcome.measured else "(no measurement table)",
+    )
+    return 0
+
 
 def _radiomics_robustness_aggregate(argv: list[str]) -> int:
-    """Aggregate radiomics robustness results from multiple courses."""
+    """Aggregate radiomics robustness results across a cohort.
+
+    Two mutually exclusive modes. ``--inputs`` keeps the historical contract:
+    the caller names the measured per-course tables and gets the measured-only
+    summary. ``--manifest`` with ``--output-root`` consumes the authoritative
+    organized-course manifest instead, accounts for every course it names from
+    that course's own completion receipt, and never discovers a course by
+    scanning the output tree.
+    """
     p = argparse.ArgumentParser(
         prog="rtpipeline radiomics-robustness-aggregate",
         description="Aggregate radiomics robustness results",
     )
-    p.add_argument("--inputs", nargs="+", required=True, help="Input parquet files")
+    source = p.add_mutually_exclusive_group(required=True)
+    source.add_argument("--inputs", nargs="+", help="Input parquet files")
+    source.add_argument(
+        "--manifest",
+        help=(
+            "Authoritative organized-course manifest. Every course it names is "
+            "accounted for from its own completion receipt."
+        ),
+    )
+    p.add_argument(
+        "--output-root",
+        default=None,
+        help="Cohort output root that the manifest's course identifiers name",
+    )
     p.add_argument("--output", required=True, help="Output Excel file")
     p.add_argument("--config", default="config.yaml", help="Path to config YAML")
     p.add_argument("-v", "--verbose", action="store_true", help="Verbose logging")
@@ -1127,32 +1551,106 @@ def _radiomics_robustness_aggregate(argv: list[str]) -> int:
     level = logging.DEBUG if args.verbose else logging.INFO
     logging.basicConfig(level=level, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
-    # Load config
-    input_paths = [Path(p) for p in args.inputs]
-    output_path = Path(args.output).resolve()
+    # The nominal pair is only ever removed through a path this command may
+    # write, so the symlink gate runs first and refuses without touching disk.
+    try:
+        raw_output = _reject_symlinked_study_path(
+            args.output, "cohort robustness output"
+        )
+        raw_output_root = (
+            _reject_symlinked_study_path(args.output_root, "cohort output root")
+            if args.output_root
+            else None
+        )
+    except _UnsafeStudyPathError as e:
+        logger.error("%s", e)
+        return 1
+
+    output_path = raw_output.resolve()
     config_path = Path(args.config)
 
-    # Parse config.yaml for robustness settings
-    import yaml
-    rob_config_data = {}
-    if config_path.exists():
-        try:
-            with open(config_path) as f:
-                yaml_config = yaml.safe_load(f) or {}
-            rob_config_data = yaml_config.get("radiomics_robustness", {})
-        except Exception as e:
-            logger.warning("Failed to parse config.yaml: %s", e)
+    from .radiomics_robustness import (
+        RobustnessConfig,
+        admit_robustness_cohort_course,
+        aggregate_robustness_cohort,
+        aggregate_robustness_results,
+        withdraw_robustness_cohort_outputs,
+    )
 
-    from .radiomics_robustness import RobustnessConfig, aggregate_robustness_results
+    def _refuse(message: str, *arguments: Any) -> int:
+        """Fail, having withdrawn the nominal pair this attempt would replace.
+
+        A workbook and raw table left standing beside a failed attempt read as
+        that attempt's cohort result. They are withdrawn for every rejection,
+        not only for the ones discovered after the configuration parsed.
+        """
+        withdraw_robustness_cohort_outputs(output_path)
+        logger.error(message, *arguments)
+        return 1
+
+    if args.manifest and not args.output_root:
+        return _refuse(
+            "--manifest requires --output-root: the manifest names courses "
+            "relative to a cohort output root, and this command does not guess it"
+        )
+    if args.inputs and args.output_root:
+        return _refuse(
+            "--output-root belongs to manifest mode; --inputs names its tables "
+            "explicitly and is not combined with a scanned root"
+        )
+
+    # The requested policy, or nothing at all: both modes publish a cohort
+    # result, and neither may publish one under an assumed configuration.
+    try:
+        _, rob_config_data = _load_requested_robustness_config(config_path)
+    except _RobustnessRequestError as e:
+        return _refuse("Refusing to aggregate radiomics robustness: %s", e)
+
     rob_config = RobustnessConfig.from_dict(rob_config_data)
 
-    # Run aggregation
+    if args.inputs:
+        # Historical contract, unchanged: the caller's tables, measured only.
+        input_paths = [Path(item) for item in args.inputs]
+        try:
+            aggregate_robustness_results(input_paths, output_path, rob_config)
+            logger.info("Aggregation complete: %s", output_path)
+            return 0
+        except Exception as e:
+            withdraw_robustness_cohort_outputs(output_path)
+            logger.error("Aggregation failed: %s", e, exc_info=True)
+            return 1
+
+    from .course_manifest import read_course_manifest
+
+    output_root = raw_output_root.resolve()
+    # Withdraw any earlier cohort outputs before admission, so a run that
+    # cannot admit its courses leaves no nominal workbook behind it.
+    withdraw_robustness_cohort_outputs(output_path)
     try:
-        aggregate_robustness_results(input_paths, output_path, rob_config)
-        logger.info("Aggregation complete: %s", output_path)
+        courses, cohort = read_course_manifest(
+            Path(args.manifest), output_dir=output_root, require_current_schema=True
+        )
+        admitted = [
+            admit_robustness_cohort_course(
+                course_dir,
+                patient_id=patient_id,
+                course_id=course_id,
+                rob_config=rob_config,
+            )
+            for patient_id, course_id, course_dir in courses
+        ]
+        aggregate_robustness_cohort(
+            admitted, output_path, rob_config, cohort=cohort
+        )
+        logger.info(
+            "Cohort robustness accounting complete for %d manifest course(s): %s",
+            len(admitted),
+            output_path,
+        )
         return 0
     except Exception as e:
-        logger.error("Aggregation failed: %s", e, exc_info=True)
+        withdraw_robustness_cohort_outputs(output_path)
+        logger.error("Cohort robustness aggregation failed: %s", e, exc_info=True)
         return 1
 
 
