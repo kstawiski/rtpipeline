@@ -11,6 +11,7 @@ from typing import Any
 import pandas as pd  # type: ignore
 
 from rtpipeline.course_manifest import read_course_manifest
+from rtpipeline.missing_values import text_or
 from rtpipeline.dvh_aggregate import build_dvh_aggregate, write_dvh_aggregate
 from rtpipeline.radiomics_cohort import (
     attach_radiomics_cohort_provenance,
@@ -326,11 +327,11 @@ def _write_radiomics_denominator_aggregate(courses) -> None:
                 legacy_rows = frame.to_dict("records")
             except Exception as exc:
                 raise RuntimeError(f"Radiomics denominator ledger is missing and publication is unreadable for {patient_id}/{course_id}: {exc}") from exc
-            course_rows.append({"entity": "COURSE", "course_id": str(course_id), "patient_id": str(patient_id), "screened": 1, "in_scope": 1, "out_of_scope": 0, "adequate_coverage": int(bool(legacy_rows)), "insufficient_coverage": int(not bool(legacy_rows)), "valid_derivation": 0, "technical_exclusion": int(any(str(row.get("extraction_status", "success")) != "success" for row in legacy_rows)), "indeterminate": 0, "extracted": int(bool(legacy_rows)), "reason_code": "extracted" if legacy_rows else "failed_radiomics_extraction"})
+            course_rows.append({"entity": "COURSE", "course_id": str(course_id), "patient_id": str(patient_id), "screened": 1, "in_scope": 1, "out_of_scope": 0, "adequate_coverage": int(bool(legacy_rows)), "insufficient_coverage": int(not bool(legacy_rows)), "valid_derivation": 0, "technical_exclusion": int(any(text_or(row, "extraction_status", "success") != "success" for row in legacy_rows)), "indeterminate": 0, "extracted": int(bool(legacy_rows)), "reason_code": "extracted" if legacy_rows else "failed_radiomics_extraction"})
             for row in legacy_rows:
-                roi = str(row.get("roi_original_name", row.get("roi_name", "")))
+                roi = text_or(row, "roi_original_name") or text_or(row, "roi_name")
                 if roi:
-                    course_roi_rows.append({"entity": "COURSE_ROI", "course_id": str(course_id), "patient_id": str(patient_id), "roi_name": roi, "disposition": "extracted" if str(row.get("extraction_status", "success")) == "success" else "excluded", "reason_code": "extracted" if str(row.get("extraction_status", "success")) == "success" else "failed_radiomics_extraction"})
+                    course_roi_rows.append({"entity": "COURSE_ROI", "course_id": str(course_id), "patient_id": str(patient_id), "roi_name": roi, "disposition": "extracted" if text_or(row, "extraction_status", "success") == "success" else "excluded", "reason_code": "extracted" if text_or(row, "extraction_status", "success") == "success" else "failed_radiomics_extraction"})
             continue
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))

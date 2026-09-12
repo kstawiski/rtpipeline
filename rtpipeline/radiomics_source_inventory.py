@@ -12,6 +12,7 @@ from pathlib import Path
 import math
 import pydicom
 import numpy as np
+from .missing_values import value_or
 from .roi_requiredness import ROIObservation, _atomic_json
 from .rtstruct_geometry import contour_geometry, roi_geometry_code
 
@@ -98,8 +99,12 @@ def source_ledger_rows(sources, tasks, rows, *, datasets=None):
             elif matched:
                 failures = [r for r in matched if r.get("extraction_status") != "success"]
                 selected = failures[0] if failures else matched[0]
-                disposition = str(selected.get("extraction_status", "failed"))
-                reason = str(selected.get("roi_structural_code") or disposition)
+                disposition = str(value_or(selected.get("extraction_status"), "failed"))
+                if disposition == "nan":
+                    disposition = "failed"
+                reason = str(
+                    value_or(selected.get("roi_structural_code"), "") or disposition
+                )
                 if disposition == "success":
                     reason = disposition = "extracted"
                 elif disposition == "declared_skip":

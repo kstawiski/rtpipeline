@@ -95,6 +95,7 @@ from .roi_requiredness import (
     requiredness_for,
     write_modality_ledger,
 )
+from .missing_values import text_or, value_or
 from .radiomics_ct_contract import (
     CT_EXTRACTION_ARMS,
     PRIMARY_ARM,
@@ -1233,7 +1234,7 @@ def radiomics_for_course(
 
     def _finalize_ct_ledger(*, extracted: bool, technical: bool = False, indeterminate: bool = False) -> None:
         technical = technical or any(
-            str(row.get(RADIOMICS_FEATURE_COMPLETENESS_COLUMN) or "")
+            text_or(row, RADIOMICS_FEATURE_COMPLETENESS_COLUMN)
             == "incomplete"
             for row in rows
         )
@@ -1251,14 +1252,14 @@ def radiomics_for_course(
             row = pair_rows[0]
             name = key[1]
             statuses = {
-                str(item.get("extraction_status") or "success")
+                text_or(item, "extraction_status", "success")
                 for item in pair_rows
             }
             completeness = {
-                str(item.get(RADIOMICS_FEATURE_COMPLETENESS_COLUMN) or "")
+                text_or(item, RADIOMICS_FEATURE_COMPLETENESS_COLUMN)
                 for item in pair_rows
             }
-            detail_code = str(row.get("roi_structural_code") or "")
+            detail_code = text_or(row, "roi_structural_code")
             if "incomplete" in completeness:
                 reason = FAILED_RADIOMICS_FEATURE_COMPLETENESS
             elif statuses == {"success"}:
@@ -1280,14 +1281,9 @@ def radiomics_for_course(
                 reason = "failed_radiomics_extraction"
             completeness_detail = next(
                 (
-                    str(
-                        item.get(RADIOMICS_FEATURE_COMPLETENESS_REASON_COLUMN)
-                        or ""
-                    )
+                    text_or(item, RADIOMICS_FEATURE_COMPLETENESS_REASON_COLUMN)
                     for item in pair_rows
-                    if str(
-                        item.get(RADIOMICS_FEATURE_COMPLETENESS_COLUMN) or ""
-                    )
+                    if text_or(item, RADIOMICS_FEATURE_COMPLETENESS_COLUMN)
                     == "incomplete"
                 ),
                 "",
@@ -1307,7 +1303,7 @@ def radiomics_for_course(
                 detail=(
                     completeness_detail
                     if reason == FAILED_RADIOMICS_FEATURE_COMPLETENESS
-                    else str(row.get("extraction_status_detail") or "")
+                    else text_or(row, "extraction_status_detail")
                 ),
                 **({"resource_guard_reason_code": row["resource_guard_reason_code"]}
                    if row.get("resource_guard_reason_code") in {"ROI_RESOURCE_BBOX_ADMITTED", "ROI_RESOURCE_MEMORY_ADMITTED"} else {}),
@@ -1322,7 +1318,10 @@ def radiomics_for_course(
             name = str(failure.get("roi_name", ""))
             source = str(failure.get("source", ""))
             if name and (source, name) not in rows_by_roi:
-                reason = str(failure.get("structural_code") or failure.get("reason_code") or "failed_radiomics_extraction")
+                reason = (
+                    value_or(failure.get("structural_code"), "")
+                    or text_or(failure, "reason_code", "failed_radiomics_extraction")
+                )
                 if reason not in REASON_CODES and reason not in TAXONOMY_CODES:
                     reason = "failed_radiomics_extraction"
                 roi_ledger.record_roi(ledger_course_id, ledger_patient_id, name, reason_code=reason, disposition="excluded", segmentation_source=source)
@@ -2344,7 +2343,7 @@ def radiomics_for_course(
             if failing_record is not None:
                 counts["failed"] += 1
                 status = failing_record.get("extraction_status")
-                detail = str(failing_record.get("extraction_status_detail", "unknown error"))
+                detail = text_or(failing_record, "extraction_status_detail", "unknown error")
                 if task.required and not extraction_status_is_nonfatal_for_required(status):
                     _invalidate_radiomics_outputs(out_path)
                     raise RadiomicsCourseExtractionError(
@@ -2462,9 +2461,9 @@ def _write_mr_ledger(course_dirs: Any, *, course_state: Mapping[str, Any], roi_r
         ledger.record_roi(
             course_id,
             patient_id,
-            str(row.get("roi_name", "")),
-            reason_code=str(row.get("reason_code", "failed_radiomics_extraction")),
-            disposition=str(row.get("disposition", "excluded")),
+            text_or(row, "roi_name"),
+            reason_code=text_or(row, "reason_code", "failed_radiomics_extraction"),
+            disposition=text_or(row, "disposition", "excluded"),
             **{key: value for key, value in row.items() if key not in {"roi_name", "reason_code", "disposition"}},
         )
     try:
@@ -2720,8 +2719,9 @@ def radiomics_for_course_mr(config: PipelineConfig, course) -> Optional[Path]:
     if not rows:
         _invalidate_radiomics_outputs(out_path)
         reason_code = (
-            str(mr_failures[0].get("reason_code"))
-            if mr_failures else "not_computed_valid_empty_scope"
+            text_or(mr_failures[0], "reason_code", "failed_radiomics_extraction")
+            if mr_failures and text_or(mr_failures[0], "reason_code")
+            else ("not_computed_valid_empty_scope" if not mr_failures else "failed_radiomics_extraction")
         )
         _write_mr_ledger(
             course_dirs,
@@ -2729,12 +2729,12 @@ def radiomics_for_course_mr(config: PipelineConfig, course) -> Optional[Path]:
                 "in_scope": True, "out_of_scope": False,
                 "adequate_coverage": False,
                 "insufficient_coverage": any(
-                    str(row.get("reason_code")) in {"failed_source_read", "failed_source_segmentation"}
+                    text_or(row, "reason_code") in {"failed_source_read", "failed_source_segmentation"}
                     for row in mr_failures
                 ),
                 "valid_derivation": False,
                 "technical_exclusion": any(
-                    str(row.get("reason_code")) not in {
+                    text_or(row, "reason_code") not in {
                         "not_computed_valid_empty_scope", "not_applicable_scope", "not_applicable_anatomy"
                     }
                     for row in mr_failures
