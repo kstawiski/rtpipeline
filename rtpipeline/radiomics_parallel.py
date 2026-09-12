@@ -20,6 +20,7 @@ High-level design
 
 from __future__ import annotations
 
+from .missing_values import text_or, value_or
 from .rtstruct_geometry import NONVOLUMETRIC_CODES
 
 import logging
@@ -387,12 +388,11 @@ def _write_parallel_roi_ledger(
         ledger.expect_course_roi(course_id, task.roi_name)
     rows_by_roi: Dict[str, List[Mapping[str, Any]]] = {}
     for row in rows:
-        name = str(row.get("roi_original_name", row.get("roi_name", "")))
+        name = text_or(row, "roi_original_name") or text_or(row, "roi_name")
         if name:
             rows_by_roi.setdefault(name, []).append(row)
     technical = technical or any(
-        str(row.get(RADIOMICS_FEATURE_COMPLETENESS_COLUMN) or "")
-        == "incomplete"
+        text_or(row, RADIOMICS_FEATURE_COMPLETENESS_COLUMN) == "incomplete"
         for row in rows
     )
     for name, roi_rows in rows_by_roi.items():
@@ -400,8 +400,8 @@ def _write_parallel_roi_ledger(
             (
                 candidate
                 for candidate in roi_rows
-                if str(
-                    candidate.get(RADIOMICS_FEATURE_COMPLETENESS_COLUMN) or ""
+                if text_or(
+                    candidate, RADIOMICS_FEATURE_COMPLETENESS_COLUMN
                 )
                 == "incomplete"
             ),
@@ -409,17 +409,15 @@ def _write_parallel_roi_ledger(
                 (
                     candidate
                     for candidate in roi_rows
-                    if str(candidate.get("extraction_status") or "success")
+                    if text_or(candidate, "extraction_status", "success")
                     not in {"success", "declared_skip"}
                 ),
                 roi_rows[0],
             ),
         )
-        status = str(row.get("extraction_status") or "success")
-        detail_code = str(row.get("roi_structural_code") or "")
-        completeness = str(
-            row.get(RADIOMICS_FEATURE_COMPLETENESS_COLUMN) or ""
-        )
+        status = text_or(row, "extraction_status", "success")
+        detail_code = text_or(row, "roi_structural_code")
+        completeness = text_or(row, RADIOMICS_FEATURE_COMPLETENESS_COLUMN)
         reason = (
             FAILED_RADIOMICS_FEATURE_COMPLETENESS
             if completeness == "incomplete"
@@ -439,11 +437,10 @@ def _write_parallel_roi_ledger(
             reason_code=reason,
             disposition="extracted" if reason == "extracted" else "excluded",
             detail_code=detail_code or None,
-            detail=str(
-                row.get("radiomics_feature_completeness_reason")
+            detail=(
+                text_or(row, "radiomics_feature_completeness_reason")
                 if completeness == "incomplete"
-                else row.get("extraction_status_detail")
-                or ""
+                else text_or(row, "extraction_status_detail")
             ),
             **({"resource_guard_reason_code": row["resource_guard_reason_code"]}
                    if row.get("resource_guard_reason_code") in {"ROI_RESOURCE_BBOX_ADMITTED", "ROI_RESOURCE_MEMORY_ADMITTED"} else {}),
@@ -495,7 +492,7 @@ def _write_parallel_roi_ledger(
             # Keep the expectation unresolved. ensure_expected_pairs must expose a
             # missing extraction task rather than accepting an invented disposition.
             continue
-        reason = str(realized.get("reason_code") or "failed_radiomics_extraction")
+        reason = text_or(realized, "reason_code", "failed_radiomics_extraction")
         ledger.record_roi(
             course_id,
             patient_id,
@@ -597,9 +594,9 @@ def _record_roi_outcome(
         {
             "roi_name": task.roi_name,
             "source": task.source,
-            "status": str(status),
-            "failure_kind": str(failure_record.get("extraction_failure_kind", "extraction_error")),
-            "reason": str(failure_record.get("extraction_status_detail", "unknown error")),
+            "status": text_or(failure_record, "extraction_status", "failed"),
+            "failure_kind": text_or(failure_record, "extraction_failure_kind", "extraction_error"),
+            "reason": text_or(failure_record, "extraction_status_detail", "unknown error"),
         }
     )
 

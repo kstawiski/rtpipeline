@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping, Optional, Sequence, Tuple
+from .missing_values import text_or
 
 
 def remove_artifact_strict(candidate: Path, *, context: str) -> None:
@@ -280,8 +281,8 @@ def outcome_from_output(
                     "roi_name": roi_name,
                     "source": source,
                     "status": str(status),
-                    "failure_kind": str(failure_row.get("extraction_failure_kind", "extraction_error")),
-                    "reason": str(failure_row.get("extraction_status_detail", "unknown error")),
+                    "failure_kind": text_or(failure_row, "extraction_failure_kind", "extraction_error"),
+                    "reason": text_or(failure_row, "extraction_status_detail", "unknown error"),
                 }
             )
             required = any(
@@ -291,7 +292,7 @@ def outcome_from_output(
             if required and not extraction_status_is_nonfatal_for_required(status):
                 fatal_failures.append(
                     f"required ROI {source}/{roi_name} has persisted status {status}: "
-                    f"{failure_row.get('extraction_status_detail', 'unknown error')}"
+                    f"{text_or(failure_row, 'extraction_status_detail', 'unknown error')}"
                 )
     for identity, required in required_map.items():
         if required and identity not in observed_identities:

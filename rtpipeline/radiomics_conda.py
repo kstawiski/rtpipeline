@@ -37,6 +37,7 @@ from .custom_models import (
 )
 from .layout import build_course_dirs
 from .course_contract import ALL_SERIES_RADIOMICS_TEMP_SCOPE, load_course_contract
+from .missing_values import text_or, value_or
 from .roi_requiredness import (
     DenominatorLedger,
     FAILED_RADIOMICS_FEATURE_COMPLETENESS,
@@ -138,9 +139,10 @@ def _ledger_identity_key(
     values: List[str] = []
     for field in identity_fields:
         value = entry.get(field)
-        if value is None or value == "":
+        if value_or(value, "") == "":
             value = metadata.get(field)
-        values.append("" if value is None else str(value))
+        value = value_or(value, "")
+        values.append("" if value == "" else str(value))
     return tuple(values)
 
 
@@ -166,13 +168,12 @@ def _write_conda_roi_ledger(
         ledger.expect_course_roi(course_id, str(name))
     rows_by_identity: Dict[Tuple[str, ...], List[Mapping[str, Any]]] = {}
     for row in rows:
-        name = str(row.get("roi_original_name", row.get("roi_name", "")))
+        name = text_or(row, "roi_original_name") or text_or(row, "roi_name")
         if name:
             key = (name,) + _ledger_identity_key(row, identity_fields)
             rows_by_identity.setdefault(key, []).append(row)
     has_incomplete = any(
-        str(row.get(RADIOMICS_FEATURE_COMPLETENESS_COLUMN) or "")
-        == "incomplete"
+        text_or(row, RADIOMICS_FEATURE_COMPLETENESS_COLUMN) == "incomplete"
         for row in rows
     )
     for identity, candidates in rows_by_identity.items():
@@ -182,18 +183,16 @@ def _write_conda_roi_ledger(
             (
                 item
                 for item in candidates
-                if str(item.get(RADIOMICS_FEATURE_COMPLETENESS_COLUMN) or "")
+                if text_or(item, RADIOMICS_FEATURE_COMPLETENESS_COLUMN)
                 == "incomplete"
             ),
             candidates[0],
         )
-        status = str(row.get("extraction_status") or "success")
-        detail_code = str(row.get("roi_structural_code") or "")
-        completeness = str(
-            row.get(RADIOMICS_FEATURE_COMPLETENESS_COLUMN) or ""
-        )
-        reason = str(
-            row.get("reason_code")
+        status = text_or(row, "extraction_status", "success")
+        detail_code = text_or(row, "roi_structural_code")
+        completeness = text_or(row, RADIOMICS_FEATURE_COMPLETENESS_COLUMN)
+        reason = (
+            value_or(row.get("reason_code"), "")
             or detail_code
             or (
                 "extracted"
@@ -201,6 +200,7 @@ def _write_conda_roi_ledger(
                 else "failed_radiomics_extraction"
             )
         )
+        reason = "extracted" if reason == "extracted" else str(reason)
         if completeness == "incomplete":
             reason = FAILED_RADIOMICS_FEATURE_COMPLETENESS
         elif status == "below_minimum_voxels":
@@ -214,11 +214,10 @@ def _write_conda_roi_ledger(
             reason_code=reason,
             disposition="extracted" if reason == "extracted" else "excluded",
             detail_code=detail_code or None,
-            detail=str(
-                row.get(RADIOMICS_FEATURE_COMPLETENESS_REASON_COLUMN)
+            detail=(
+                text_or(row, RADIOMICS_FEATURE_COMPLETENESS_REASON_COLUMN)
                 if completeness == "incomplete"
-                else row.get("extraction_status_detail")
-                or ""
+                else text_or(row, "extraction_status_detail")
             ),
             **identity_values,
             **({"resource_guard_reason_code": row["resource_guard_reason_code"]}
@@ -242,13 +241,13 @@ def _write_conda_roi_ledger(
         )
         identity = (course_id, name) + tuple(identity_values.values())
         if name and identity not in recorded_identities:
-            failure = task.get("precomputed_failure") or {}
-            reason = str(failure.get("reason_code") or "failed_radiomics_extraction")
+            failure = value_or(task.get("precomputed_failure"), {}) or {}
+            reason = text_or(failure, "reason_code", "failed_radiomics_extraction")
             if reason in {RESAMPLED_BBOX_LIMIT_CODE, "ROI_PREDICTED_MEMORY_EXCEEDS_LIMIT"}:
                 reason = FAILED_RADIOMICS_RESOURCE_LIMIT
             if reason not in REASON_CODES and reason not in TAXONOMY_CODES:
                 reason = "failed_radiomics_extraction"
-            failure_metadata = dict(failure.get("metadata") or {})
+            failure_metadata = dict(value_or(failure.get("metadata"), {}) or {})
             ledger.record_roi(
                 course_id,
                 patient_id,
@@ -256,7 +255,7 @@ def _write_conda_roi_ledger(
                 reason_code=reason,
                 disposition="excluded",
                 detail_code=failure_metadata.get("roi_structural_code"),
-                detail=str(failure.get("reason") or ""),
+                detail=text_or(failure, "reason"),
                 **identity_values,
                 estimated_resampled_bbox_voxel_count=failure_metadata.get(
                     "estimated_resampled_bbox_voxel_count"
@@ -2142,8 +2141,8 @@ def process_radiomics_batch(
             else rows
         )
         for row in count_rows:
-            source = str(row.get("segmentation_source", "unknown"))
-            status = row.get("extraction_status")
+            source = text_or(row, "segmentation_source", "unknown")
+            status = value_or(row.get("extraction_status"), None)
             try:
                 if status != status:
                     status = None
@@ -2157,11 +2156,11 @@ def process_radiomics_batch(
                 counts["failed"] += 1
                 roi_failures.append(
                     {
-                        "roi_name": str(row.get("roi_original_name", row.get("roi_name", "unknown"))),
+                        "roi_name": text_or(row, "roi_original_name") or text_or(row, "roi_name", "unknown"),
                         "source": source,
-                        "status": str(status),
-                        "failure_kind": str(row.get("extraction_failure_kind", "extraction_error")),
-                        "reason": str(row.get("extraction_status_detail", "unknown error")),
+                        "status": text_or(row, "extraction_status", "failed"),
+                        "failure_kind": text_or(row, "extraction_failure_kind", "extraction_error"),
+                        "reason": text_or(row, "extraction_status_detail", "unknown error"),
                     }
                 )
         outcome = RadiomicsCourseOutcome.extracted(

@@ -79,6 +79,37 @@ def test_screening_candidacy_cannot_override_governed_feature_class(name, candid
         assert decision.primary_intensity_texture_disposition == 'unclassified_roi'
 
 
+def _resolve_radiomics_interpreter():
+    """Resolve the radiomics env python the same way the release does.
+
+    ``RTPIPELINE_CONDA_EXE`` names the conda-compatible executable and
+    ``MAMBA_ROOT_PREFIX`` (or ``RTPIPELINE_RADIOMICS_ENV``) locates the env,
+    mirroring ``runtime.env`` and ``radiomics_conda._conda_executable``. When
+    no radiomics env is available the test skips instead of failing.
+    """
+    import os
+    import shutil
+    from pathlib import Path
+    env_name = os.environ.get("RTPIPELINE_RADIOMICS_ENV", "rtpipeline-radiomics")
+    root = os.environ.get("MAMBA_ROOT_PREFIX")
+    if root:
+        candidate = Path(root) / "envs" / env_name / "bin" / "python"
+        if candidate.exists():
+            return str(candidate)
+    exe = os.environ.get("RTPIPELINE_CONDA_EXE") or shutil.which("micromamba") or shutil.which("mamba") or shutil.which("conda")
+    if exe:
+        import subprocess as _subprocess
+        try:
+            probe = _subprocess.run([exe, "run", "-n", env_name, "python", "-c", "import sys; print(sys.executable)"],
+                capture_output=True, text=True, timeout=120)
+            interpreter = (probe.stdout or "").strip().splitlines()
+            if probe.returncode == 0 and interpreter:
+                return interpreter[-1]
+        except Exception:
+            pass
+    return None
+
+
 @pytest.mark.parametrize('route', ['native_worker', 'serial', 'conda'])
 def test_returned_grid_admission_remains_typed_robustness(tmp_path, monkeypatch, route):
     import os
@@ -87,11 +118,16 @@ def test_returned_grid_admission_remains_typed_robustness(tmp_path, monkeypatch,
     try:
         from radiomics import featureextractor
     except ImportError:
-        interpreter = '/home/konrad/micromamba/envs/rtpipeline-radiomics/bin/python'
+        interpreter = _resolve_radiomics_interpreter()
+        if interpreter is None:
+            pytest.skip("radiomics env is unavailable (RTPIPELINE_CONDA_EXE/MAMBA_ROOT_PREFIX do not resolve it)")
         node = str(Path(__file__)) + '::test_returned_grid_admission_remains_typed_robustness[' + route + ']'
+        probe = subprocess.run([interpreter, '-B', '-m', 'pytest', '--version'],
+            capture_output=True, text=True, timeout=120)
+        if probe.returncode != 0:
+            pytest.skip(f"radiomics env has no pytest runner: {interpreter}")
         result = subprocess.run([interpreter, '-B', '-m', 'pytest', '-q', '-p', 'no:cacheprovider',
-            '--basetemp=' + str(tmp_path/'native'), node], capture_output=True, text=True, timeout=120,
-            env=dict(os.environ, LD_LIBRARY_PATH='/home/konrad/micromamba/envs/rtpipeline-radiomics/lib'))
+            '--basetemp=' + str(tmp_path/'native'), node], capture_output=True, text=True, timeout=120)
         assert result.returncode == 0, result.stdout + result.stderr
         return
     import numpy as np
@@ -125,8 +161,10 @@ def test_returned_grid_admission_remains_typed_robustness(tmp_path, monkeypatch,
                 if len(argv) > 6 and argv[1:3] == ['run', '-n']:
                     # Replace only environment-manager discovery. Execute the
                     # actual generated batch script and parse its real output.
-                    argv = ['/home/konrad/micromamba/envs/rtpipeline-radiomics/bin/python', '-B', *argv[5:]]
-                    kwargs['env'] = dict(kwargs['env'], LD_LIBRARY_PATH='/home/konrad/micromamba/envs/rtpipeline-radiomics/lib')
+                    interpreter = _resolve_radiomics_interpreter()
+                    if interpreter is None:
+                        pytest.skip("radiomics env is unavailable (RTPIPELINE_CONDA_EXE/MAMBA_ROOT_PREFIX do not resolve it)")
+                    argv = [interpreter, '-B', *argv[5:]]
                 return real_run(argv, **kwargs)
             monkeypatch.setattr(rc.subprocess, 'run', direct_interpreter)
         frame = rr.extract_features_for_masks(image, {'ntcv_v0':mask}, cfg, structure_name='urinary_bladder',
