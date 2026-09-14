@@ -228,11 +228,15 @@ def adopt_legacy_snakemake_inputs(
         updated_record = dict(record)
         updated_record["input"] = sorted([*stored_inputs, dependency_text])
         record_path.parent.mkdir(parents=True, exist_ok=True)
+        # Fixed short temp prefix by design: prefixing with the (possibly
+        # near-NAME_MAX) record name overflowed the filename limit (D15).
+        # mkstemp randomness already guarantees uniqueness; atomicity via
+        # same-directory os.replace below is unchanged.
         with tempfile.NamedTemporaryFile(
             mode="w",
             encoding="utf-8",
             dir=record_path.parent,
-            prefix=f".{record_path.name}.",
+            prefix=".adopt-legacy.",
             suffix=".tmp",
             delete=False,
         ) as handle:

@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import os
 import runpy
-from base64 import urlsafe_b64encode
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -13,6 +12,7 @@ import pytest
 
 from rtpipeline import radiomics_ct_contract as contract
 from rtpipeline.config_dependencies import (
+    _snakemake_record_path,
     adopt_legacy_snakemake_inputs,
     advance_dependency_past_unbound_outputs,
     materialize_stage_dependency,
@@ -92,8 +92,11 @@ def test_input_inventory_migration_preserves_other_metadata(tmp_path):
     metadata.mkdir(parents=True)
 
     def _record(path: Path) -> Path:
-        encoded = urlsafe_b64encode(str(path).encode()).decode()
-        record = metadata / encoded
+        # Plant through the product helper: hand-rolled unchunked base64
+        # names exceed NAME_MAX on deep paths (D15) and diverge from the
+        # layout adopt_legacy_snakemake_inputs actually manages.
+        record = _snakemake_record_path(metadata, path)
+        record.parent.mkdir(parents=True, exist_ok=True)
         record.write_text(
             '{"code":"preserve-me","input":["existing-input"]}\n',
             encoding="utf-8",
@@ -104,7 +107,9 @@ def test_input_inventory_migration_preserves_other_metadata(tmp_path):
     unrelated_record = _record(unrelated)
     incomplete = tmp_path / ".snakemake" / "incomplete"
     incomplete.mkdir(parents=True)
-    incomplete_record = incomplete / urlsafe_b64encode(str(affected).encode()).decode()
+    # The incomplete dir is never read by the migration; this sentinel only
+    # proves non-interference, so it keeps a short fixed name by design.
+    incomplete_record = incomplete / "sentinel"
     incomplete_record.write_text("{}\n", encoding="utf-8")
 
     dependency = tmp_path / "dependencies" / "radiomics.json"
