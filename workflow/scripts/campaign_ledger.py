@@ -74,6 +74,50 @@ def _write_atomic(path: Path, payload: str) -> None:
         raise
 
 
+UPSTREAM_RADIOMICS_FAILED = "upstream_radiomics_failed"
+
+
+def _publish_failed_sentinel(path: Path) -> None:
+    """Write a plain failed token, matching run_course_stage.close_course."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.tmp")
+    temporary.unlink(missing_ok=True)
+    try:
+        temporary.write_text(f"{STATUS_FAILED}\n", encoding="utf-8")
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def close_robustness_upstream_failure(
+    output_dir: Path,
+    patient: str,
+    course: str,
+    sentinel_path: Path,
+    *,
+    log_path: str | None = None,
+) -> Path:
+    """Close robustness in campaign mode when upstream radiomics already failed.
+
+    Records a failed radiomics_robustness ledger row with reason
+    ``upstream_radiomics_failed``, publishes a failed sentinel, and leaves
+    the caller to exit 0. Outside campaign mode the Snakefile still exits 1.
+    """
+    record_path = record(
+        Path(output_dir),
+        patient,
+        course,
+        "radiomics_robustness",
+        STATUS_FAILED,
+        returncode=1,
+        log_path=log_path,
+        detail=UPSTREAM_RADIOMICS_FAILED,
+    )
+    _publish_failed_sentinel(Path(sentinel_path))
+    return record_path
+
+
 def record(
     output_dir: Path,
     patient: str,
@@ -322,6 +366,16 @@ def main(argv: list[str] | None = None) -> int:
     rec.add_argument("--log-path", default=None)
     rec.add_argument("--detail", default=None)
 
+    close = sub.add_parser(
+        "close-robustness-upstream",
+        help="campaign-mode robustness closure when upstream radiomics failed",
+    )
+    close.add_argument("--output-dir", required=True)
+    close.add_argument("--patient", required=True)
+    close.add_argument("--course", required=True)
+    close.add_argument("--sentinel", required=True)
+    close.add_argument("--log-path", default=None)
+
     roll = sub.add_parser("rollup", help="rebuild campaign ledger and summary")
     roll.add_argument("--output-dir", required=True)
 
@@ -337,6 +391,17 @@ def main(argv: list[str] | None = None) -> int:
             returncode=args.returncode,
             log_path=args.log_path,
             detail=args.detail,
+        )
+        print(path)
+        return 0
+
+    if args.command == "close-robustness-upstream":
+        path = close_robustness_upstream_failure(
+            Path(args.output_dir),
+            args.patient,
+            args.course,
+            Path(args.sentinel),
+            log_path=args.log_path,
         )
         print(path)
         return 0

@@ -845,11 +845,22 @@ def taxonomy_is_fatal(code: Optional[str], requiredness: Requiredness) -> bool:
     return requiredness == Requiredness.ANALYSIS_REQUIRED and code in TAXONOMY_CODES
 
 
+def indeterminate_custom_roi_fails_course(requiredness: Requiredness) -> bool:
+    """Configured custom ROI indeterminacy is course-fatal only when required.
+
+    ``assess_custom_applicability`` still marks the ROI fatal as evidence.
+    Extraction must not abort the whole course for an inventory-only or
+    analysis-optional configured custom ROI.
+    """
+    return requiredness == Requiredness.ANALYSIS_REQUIRED
+
+
 __all__ = [
     "CUSTOM_DEPENDENCY_GRAPH", "CustomApplicability", "DenominatorLedger",
     "REASON_CODES", "RTStructInventory", "ROIObservation", "RequiredROI",
     "Requiredness", "RequirementMatch", "TAXONOMY_CODES", "assess_custom_applicability",
     "classify_rasterized_mask",
     "inspect_rtstruct", "match_requirements", "requirements_from_contract",
-    "requiredness_for", "taxonomy_is_fatal", "write_modality_ledger",
+    "requiredness_for", "taxonomy_is_fatal", "indeterminate_custom_roi_fails_course",
+    "write_modality_ledger",
 ]

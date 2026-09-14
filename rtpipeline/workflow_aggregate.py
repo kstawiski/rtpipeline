@@ -427,6 +427,7 @@ def _campaign_failure_stage_aliases(error: str) -> set[str]:
         ((".qc_done",), {"qc"}),
         ((".custom_models_done",), {"custom_models", "segmentation_custom"}),
         ((".radiomics_done", "radiomics_ct.parquet"), {"radiomics"}),
+        ((".radiomics_robustness_done",), {"radiomics_robustness"}),
     )
     for tokens, aliases in mappings:
         if any(token in error for token in tokens):

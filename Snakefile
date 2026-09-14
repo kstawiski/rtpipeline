@@ -1333,8 +1333,11 @@ if config.get("container_mode", False):
             "envs/rtpipeline-radiomics.yaml"
         params:
             enabled=str(ROBUSTNESS_ENABLED),
+            campaign_mode=CAMPAIGN_MODE,
             config=str(EFFECTIVE_CONFIGFILE),
             python=CONTAINER_RADIOMICS_PYTHON,
+            root_dir=lambda w: str(ROOT_DIR),
+            output_dir=lambda w, output: str(Path(output.sentinel).parents[2]),
             course_dir=lambda w, output: str(Path(output.sentinel).parent),
             parquet=lambda w, output: str(
                 Path(output.sentinel).parent / "radiomics_robustness_ct.parquet"
@@ -1354,6 +1357,20 @@ if config.get("container_mode", False):
             fi
 
             if [ ! -f "{input.radiomics}" ] || ! grep -Eq '^(ok|\{{.*"status"[[:space:]]*:[[:space:]]*"ok".*\}})$' "{input.radiomics}"; then
+                if [ "{params.campaign_mode}" = "True" ]; then
+                    if ! PYTHONPATH="{params.root_dir}:${{PYTHONPATH:-}}" "{params.python}" "{params.root_dir}/workflow/scripts/campaign_ledger.py" close-robustness-upstream \
+                        --output-dir "{params.output_dir}" \
+                        --patient "{wildcards.patient}" \
+                        --course "{wildcards.course}" \
+                        --sentinel "{output.sentinel}" \
+                        --log-path "{log}"; then
+                        rm -f {output.sentinel}
+                        echo "Campaign-mode robustness closure could not record upstream_radiomics_failed" >&2
+                        exit 1
+                    fi
+                    echo "[campaign-mode] course {wildcards.patient}/{wildcards.course} closed at stage radiomics_robustness; campaign continues and the ledger records the failure." >&2
+                    exit 0
+                fi
                 rm -f {output.sentinel}
                 echo "Radiomics robustness cannot run because upstream radiomics failed or is malformed: {input.radiomics}" >&2
                 exit 1
@@ -1403,9 +1420,12 @@ else:
             "envs/rtpipeline-radiomics.yaml"
         params:
             enabled=str(ROBUSTNESS_ENABLED),
+            campaign_mode=CAMPAIGN_MODE,
             config=str(EFFECTIVE_CONFIGFILE),
             python=PYTHON_RADIOMICS,
             python_bin=PYTHON_RADIOMICS_BIN,
+            root_dir=lambda w: str(ROOT_DIR),
+            output_dir=lambda w, output: str(Path(output.sentinel).parents[2]),
             course_dir=lambda w, output: str(Path(output.sentinel).parent),
             parquet=lambda w, output: str(
                 Path(output.sentinel).parent / "radiomics_robustness_ct.parquet"
@@ -1425,6 +1445,20 @@ else:
             fi
 
             if [ ! -f "{input.radiomics}" ] || ! grep -Eq '^(ok|\{{.*"status"[[:space:]]*:[[:space:]]*"ok".*\}})$' "{input.radiomics}"; then
+                if [ "{params.campaign_mode}" = "True" ]; then
+                    if ! PYTHONPATH="{params.root_dir}:${{PYTHONPATH:-}}" "{params.python}" "{params.root_dir}/workflow/scripts/campaign_ledger.py" close-robustness-upstream \
+                        --output-dir "{params.output_dir}" \
+                        --patient "{wildcards.patient}" \
+                        --course "{wildcards.course}" \
+                        --sentinel "{output.sentinel}" \
+                        --log-path "{log}"; then
+                        rm -f {output.sentinel}
+                        echo "Campaign-mode robustness closure could not record upstream_radiomics_failed" >&2
+                        exit 1
+                    fi
+                    echo "[campaign-mode] course {wildcards.patient}/{wildcards.course} closed at stage radiomics_robustness; campaign continues and the ledger records the failure." >&2
+                    exit 0
+                fi
                 rm -f {output.sentinel}
                 echo "Radiomics robustness cannot run because upstream radiomics failed or is malformed: {input.radiomics}" >&2
                 exit 1

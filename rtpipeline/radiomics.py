@@ -1747,11 +1747,15 @@ def radiomics_for_course(
                 pending_custom_assessments.add(base)
             elif assessment.reason_code == "indeterminate_applicability":
                 custom_applicability.append(assessment)
-                _finalize_ct_ledger(extracted=False, indeterminate=True)
-                _invalidate_radiomics_outputs(out_path)
-                raise RadiomicsCourseExtractionError(
-                    f"Configured custom ROI {base!r} has {assessment.reason_code}: {assessment.detail}"
-                )
+                from .roi_requiredness import indeterminate_custom_roi_fails_course
+                if indeterminate_custom_roi_fails_course(
+                    Requiredness.ANALYSIS_REQUIRED if custom_required else Requiredness.INVENTORY_ONLY
+                ):
+                    _finalize_ct_ledger(extracted=False, indeterminate=True)
+                    _invalidate_radiomics_outputs(out_path)
+                    raise RadiomicsCourseExtractionError(
+                        f"Configured custom ROI {base!r} has {assessment.reason_code}: {assessment.detail}"
+                    )
             else:
                 custom_applicability.append(assessment)
                 if assessment.reason_code in {"not_applicable_anatomy", "not_applicable_scope"}:

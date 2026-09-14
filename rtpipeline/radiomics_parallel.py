@@ -81,6 +81,7 @@ from .roi_requiredness import (
     assess_custom_applicability,
     dependency_state_from_observation,
     inspect_rtstruct,
+    indeterminate_custom_roi_fails_course,
     match_requirements,
     requirements_from_contract,
     write_modality_ledger,
@@ -1194,18 +1195,21 @@ def parallel_radiomics_for_course(
                 pending_custom_assessments.add(base)
             elif assessment.reason_code == "indeterminate_applicability":
                 custom_applicability.append(assessment)
-                _write_parallel_roi_ledger(
-                    course_dir,
-                    (),
-                    (),
-                    custom_applicability,
-                    extracted=False,
-                    indeterminate=True,
-                )
-                _invalidate_radiomics_outputs(out_path)
-                raise RadiomicsCourseExtractionError(
-                    f"Configured custom ROI {base!r} has {assessment.reason_code}: {assessment.detail}"
-                )
+                if indeterminate_custom_roi_fails_course(
+                    Requiredness.ANALYSIS_REQUIRED if required_custom else Requiredness.INVENTORY_ONLY
+                ):
+                    _write_parallel_roi_ledger(
+                        course_dir,
+                        (),
+                        (),
+                        custom_applicability,
+                        extracted=False,
+                        indeterminate=True,
+                    )
+                    _invalidate_radiomics_outputs(out_path)
+                    raise RadiomicsCourseExtractionError(
+                        f"Configured custom ROI {base!r} has {assessment.reason_code}: {assessment.detail}"
+                    )
             else:
                 custom_applicability.append(assessment)
                 if assessment.reason_code in {"not_applicable_anatomy", "not_applicable_scope"}:
