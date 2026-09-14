@@ -77,6 +77,17 @@ def test_fallback_keeps_conda_run_shape(tmp_path, monkeypatch):
     assert command[4:] == ["python", "-c", "print('OK')"]
 
 
+def test_broken_override_makes_probe_return_false(tmp_path, monkeypatch):
+    """NB3: the probe folds a broken override into closed False, not a raise."""
+    from rtpipeline import radiomics_conda as rc
+
+    monkeypatch.setenv(
+        "RTPIPELINE_RADIOMICS_ENV_PREFIX", str(tmp_path / "does-not-exist")
+    )
+    monkeypatch.setattr(rc, "_ENV_CHECK_OK", False)
+    assert rc.check_radiomics_env(timeout=5, retries=0) is False
+
+
 def test_probe_uses_prefix_python_not_conda_run(tmp_path, monkeypatch):
     """The probe command must not route through `conda run -n` when a prefix resolves."""
     prefix = _make_fake_env(tmp_path / "custom")

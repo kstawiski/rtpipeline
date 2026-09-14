@@ -1018,15 +1018,19 @@ def check_radiomics_env(timeout: Optional[int] = None, retries: int = 1) -> bool
         if configured_timeout <= 0:
             configured_timeout = _DEFAULT_ENV_PROBE_TIMEOUT
 
-        command = _radiomics_env_command(
-            "-c",
-            "import radiomics; import numpy; print('OK')",
-        )
+        # Built inside the attempt loop on purpose (NB3): a set-but-broken
+        # override raises ValueError here and folds into a closed False
+        # like any other probe failure, instead of escaping the probe.
+        command: List[str] = []
         attempts = max(1, int(retries) + 1)
         timeout_failures = 0
         last_err: Optional[str] = None
         for attempt in range(attempts):
             try:
+                command = _radiomics_env_command(
+                    "-c",
+                    "import radiomics; import numpy; print('OK')",
+                )
                 result = subprocess.run(
                     command,
                     capture_output=True,
