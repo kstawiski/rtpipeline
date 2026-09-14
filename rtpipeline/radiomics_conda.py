@@ -402,6 +402,14 @@ def _radiomics_env_command(*args: str) -> List[str]:
     prefix = _radiomics_env_prefix()
     if prefix is not None:
         return [str(Path(prefix) / "bin" / "python"), *args]
+    override = os.environ.get("RTPIPELINE_RADIOMICS_ENV_PREFIX")
+    if override:
+        # NB1: an explicit but broken override must fail closed here, not
+        # silently fall back to a possibly different registered env.
+        raise ValueError(
+            "RTPIPELINE_RADIOMICS_ENV_PREFIX is set but has no bin/python: "
+            f"{override}"
+        )
     return [CONDA_EXE, "run", "-n", RADIOMICS_ENV, "python", *args]
 
 # Heartbeat interval for progress logging (seconds)
