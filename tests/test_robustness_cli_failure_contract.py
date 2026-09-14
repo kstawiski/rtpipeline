@@ -998,6 +998,9 @@ def test_every_robustness_rule_body_is_valid_bash(tmp_path):
         "params.root_dir": str(ROOT),
         "params.python": "/nonexistent/python",
         "params.python_bin": str(tmp_path / "bin"),
+        "params.campaign_mode": "True",
+        "wildcards.patient": "P1",
+        "wildcards.course": "C1",
     }
     for index, rule in enumerate([*_course_rules(), _aggregate_rule()]):
         script = tmp_path / f"rule_{index}.sh"
@@ -1070,11 +1073,16 @@ def test_the_disabled_course_branch_keeps_no_success_receipt(tmp_path, variant):
                 "input.radiomics": str(course_dir / ".radiomics_done"),
                 "threads": "1",
                 "params.enabled": "False",
+                "params.campaign_mode": "False",
                 "params.config": str(tmp_path / "config.yaml"),
                 "params.course_dir": str(course_dir),
                 "params.parquet": str(course_dir / OUTPUT_NAME),
                 "params.python": str(stub),
                 "params.python_bin": str(stub.parent),
+                "params.output_dir": str(tmp_path),
+                "params.root_dir": str(ROOT),
+                "wildcards.patient": "P1",
+                "wildcards.course": "C1",
             },
         ),
         encoding="utf-8",

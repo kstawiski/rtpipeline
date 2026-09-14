@@ -47,6 +47,7 @@ from .roi_requiredness import (
     Requiredness,
     TAXONOMY_CODES,
     assess_custom_applicability,
+    indeterminate_custom_roi_fails_course,
     requiredness_for,
     requirements_from_contract,
     write_modality_ledger,
@@ -2728,6 +2729,7 @@ def radiomics_for_course(
     desired_custom: Set[str] = set()
     dependency_states: dict[str, Any] = {}
     pending_custom_assessments: set[str] = set()
+    skipped_custom_dispositions: dict[str, str] = {}
     custom_provenance: dict[str, Any] = {}
     planning_ct_fov: Any = {}
     if custom_cfg_value:
@@ -2794,9 +2796,17 @@ def radiomics_for_course(
                     applicable_custom.add(base)
                     pending_custom_assessments.add(base)
                 elif assessment.reason_code == "indeterminate_applicability":
-                    raise RadiomicsCourseExtractionError(
-                        f"Configured custom ROI {base!r} has {assessment.reason_code}: {assessment.detail}"
+                    required_custom = requiredness_for(
+                        "Custom",
+                        base,
+                        contract=getattr(config, "radiomics_analysis_contract", {}) or {},
+                        modality="CT",
                     )
+                    if indeterminate_custom_roi_fails_course(required_custom):
+                        raise RadiomicsCourseExtractionError(
+                            f"Configured custom ROI {base!r} has {assessment.reason_code}: {assessment.detail}"
+                        )
+                    skipped_custom_dispositions[base] = assessment.reason_code
             desired_custom = applicable_custom
         except RadiomicsCourseExtractionError:
             _invalidate_radiomics_outputs(output_path)
@@ -3448,7 +3458,16 @@ def radiomics_for_course(
                 result_rows = pd.read_parquet(Path(result).with_suffix(".parquet")).to_dict("records")
             except Exception:
                 result_rows = []
-        _write_conda_roi_ledger(course_dir, tasks, result_rows, extracted=result is not None)
+        _write_conda_roi_ledger(
+            course_dir,
+            tasks,
+            result_rows,
+            extracted=result is not None,
+            expected_names=tuple(skipped_custom_dispositions),
+            missing_reason_for=lambda name: skipped_custom_dispositions.get(
+                name, "failed_radiomics_extraction"
+            ),
+        )
         return result
     finally:
         Path(ct_image_path).unlink(missing_ok=True)
