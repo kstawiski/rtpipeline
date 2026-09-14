@@ -351,6 +351,59 @@ def _conda_executable() -> str:
 
 CONDA_EXE = _conda_executable()
 
+
+def _radiomics_env_prefix() -> Optional[str]:
+    """Absolute prefix of the radiomics env without HOME-based name lookup.
+
+    ``conda run -n <name>`` / ``micromamba run -n <name>`` resolve the name
+    under the current HOME, so any isolated, service or container invocation
+    with a different HOME can never find the env even when it exists. The
+    prefix layout is stable, so resolve it directly: an explicit operator
+    override first, then CONDA_PREFIX/MAMBA_ROOT_PREFIX siblings, then the
+    usual user-level roots. Returns None when no prefix carries bin/python.
+    """
+    override = os.environ.get("RTPIPELINE_RADIOMICS_ENV_PREFIX")
+    if override:
+        candidate = Path(override) / "bin" / "python"
+        if candidate.is_file():
+            return str(Path(override))
+        return None
+    candidates: List[Path] = []
+    conda_prefix = os.environ.get("CONDA_PREFIX")
+    if conda_prefix:
+        candidates.append(Path(conda_prefix).parent / RADIOMICS_ENV)
+    mamba_root = os.environ.get("MAMBA_ROOT_PREFIX")
+    if mamba_root:
+        candidates.append(Path(mamba_root) / "envs" / RADIOMICS_ENV)
+    home = Path.home()
+    candidates.extend(
+        [
+            home / "micromamba" / "envs" / RADIOMICS_ENV,
+            home / "miniforge3" / "envs" / RADIOMICS_ENV,
+            home / "miniconda3" / "envs" / RADIOMICS_ENV,
+            Path("/opt/conda/envs") / RADIOMICS_ENV,
+            Path("/opt/micromamba/envs") / RADIOMICS_ENV,
+        ]
+    )
+    for prefix in candidates:
+        if (prefix / "bin" / "python").is_file():
+            return str(prefix)
+    return None
+
+
+def _radiomics_env_command(*args: str) -> List[str]:
+    """Python invocation inside the radiomics env, HOME-independent.
+
+    Prefers the directly resolved ``<prefix>/bin/python`` so the call works
+    under any HOME. Falls back to the historical ``conda run -n`` form only
+    when no prefix resolves, preserving behaviour on machines where named
+    envs are properly registered.
+    """
+    prefix = _radiomics_env_prefix()
+    if prefix is not None:
+        return [str(Path(prefix) / "bin" / "python"), *args]
+    return [CONDA_EXE, "run", "-n", RADIOMICS_ENV, "python", *args]
+
 # Heartbeat interval for progress logging (seconds)
 HEARTBEAT_INTERVAL = 60
 
@@ -905,7 +958,7 @@ decision = RoiClassDecision(**payload["decision"])
 print(json.dumps(effective_parameter_hashes_for_arms(factory, decision)))
 '''
     result = subprocess.run(
-        [CONDA_EXE, "run", "-n", RADIOMICS_ENV, "python", "-c", script, payload],
+        _radiomics_env_command("-c", script, payload),
         capture_output=True,
         text=True,
         timeout=120,
@@ -957,15 +1010,10 @@ def check_radiomics_env(timeout: Optional[int] = None, retries: int = 1) -> bool
         if configured_timeout <= 0:
             configured_timeout = _DEFAULT_ENV_PROBE_TIMEOUT
 
-        command = [
-            CONDA_EXE,
-            "run",
-            "-n",
-            RADIOMICS_ENV,
-            "python",
+        command = _radiomics_env_command(
             "-c",
             "import radiomics; import numpy; print('OK')",
-        ]
+        )
         attempts = max(1, int(retries) + 1)
         timeout_failures = 0
         last_err: Optional[str] = None
@@ -1143,7 +1191,7 @@ print(json.dumps(output))
 
         # Run extraction in conda environment
         result = subprocess.run(
-            [CONDA_EXE, "run", "-n", RADIOMICS_ENV, "python", "-c", extraction_script_with_file],
+            _radiomics_env_command("-c", extraction_script_with_file),
             capture_output=True,
             text=True,
             timeout=900,  # allow up to 15 minutes for large ROIs
@@ -1362,7 +1410,7 @@ for task in tasks:
 
         # Run batch extraction in conda environment
         result = subprocess.run(
-            [CONDA_EXE, "run", "-n", RADIOMICS_ENV, "python", "-c", batch_script, batch_file_path],
+            _radiomics_env_command("-c", batch_script, batch_file_path),
             capture_output=True,
             text=True,
             timeout=total_timeout,
