@@ -95,6 +95,11 @@ RADIOMICS_TEXT_COLUMNS = frozenset(
         # two shape fields then failed 3 more. The regression derives this set
         # from the guard's own payload so a newly added field cannot slip
         # through the allowlist the same way a third time.
+        # Row-level contour-scope provenance attached by the parallel backend
+        # (radiomics_parallel: ROIContourDisposition.source_series_uids as
+        # JSON): omitting it closed live course 422528/2021-07 at
+        # publication after successful extraction — same failure class.
+        "source_series_uids",
         "roi_structural_code",
         "resource_guard_reason_code",
         "admissibility_grid",

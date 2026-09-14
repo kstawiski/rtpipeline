@@ -68,6 +68,23 @@ def test_structural_code_is_publishable(code: str) -> None:
     assert "roi_structural_code" in expected_radiomics_string_columns(df)
 
 
+def test_contour_scope_series_uids_is_publishable() -> None:
+    """Row-level scope provenance must survive publication.
+
+    The parallel backend attaches ROIContourDisposition.source_series_uids
+    (JSON) to unresolved-scope rows. Omitting it from the allowlist closed
+    live course 422528/2021-07 at publication after successful extraction.
+    """
+    import json
+
+    df = pd.DataFrame({
+        "patient_id": ["p"],
+        "roi_structural_code": ["ROI_CONTOUR_PARTIALLY_UNPARSEABLE"],
+        "source_series_uids": [json.dumps(["1.2.3", "1.2.4"])],
+    })
+    assert "source_series_uids" in expected_radiomics_string_columns(df)
+
+
 def test_undeclared_string_column_still_rejected() -> None:
     """The allowlist must not become a blanket permit."""
     df = pd.DataFrame({"patient_id": ["p"], "some_unexpected_text": ["x"]})
