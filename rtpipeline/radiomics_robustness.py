@@ -3480,8 +3480,24 @@ def robustness_for_course(
         ):
             source_sink: List[Dict[str, Any]] = []
             source_binding = _bind_rtstruct_source(source, rtstruct_path)
+            # D22a: structural failures in ROIs outside this step's selection
+            # must not kill the course (per-organ, not per-course: an
+            # unparseable adrenal mask carries no information about the
+            # selected targets). Selected ROIs stay fail-closed via
+            # ANALYSIS_REQUIRED; the rest record into the source sink.
+            from .roi_requiredness import Requiredness
+
+            selection = set(expected_rois) if expected_rois else None
             source_masks = _rtstruct_masks(
-                ct_dir, rtstruct_path, failure_outcomes=source_sink
+                ct_dir,
+                rtstruct_path,
+                failure_outcomes=source_sink,
+                best_effort=selection is not None,
+                requiredness_by_roi=(
+                    {name: Requiredness.ANALYSIS_REQUIRED for name in selection}
+                    if selection is not None
+                    else None
+                ),
             )
             _record_source_dispositions(source_binding, source_sink)
             allowed_names = set(expected_rois) if expected_rois else None
