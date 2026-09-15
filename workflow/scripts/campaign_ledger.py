@@ -118,6 +118,68 @@ def close_robustness_upstream_failure(
     return record_path
 
 
+ROBUSTNESS_EXTRACTION_FAILED = "robustness_extraction_failed"
+ROBUSTNESS_FAILED_RECEIPT_OUTCOME = "failed_extraction"
+
+
+def close_robustness_failed_extraction(
+    output_dir: Path,
+    patient: str,
+    course: str,
+    sentinel_path: Path,
+    *,
+    log_path: str | None = None,
+) -> Path:
+    """Close robustness in campaign mode when its own extraction failed.
+
+    Unlike :func:`close_robustness_upstream_failure`, the CLI has already
+    published a failed-extraction completion receipt at ``sentinel_path``
+    (D22b). This verifies that receipt revalidates and records the ledger
+    row; it never overwrites the receipt, because cohort aggregation
+    admits failed courses from it as declared attrition. A missing or
+    invalid receipt raises, and the caller must fail closed (exit 1) so
+    the workflow stops instead of losing the closure record.
+    """
+    from rtpipeline.robustness_completion import (
+        RobustnessCompletionError,
+        read_robustness_completion_sentinel,
+    )
+
+    sentinel_path = Path(sentinel_path)
+    try:
+        receipt = read_robustness_completion_sentinel(
+            sentinel_path,
+            course_dir=sentinel_path.parent,
+        )
+    except RobustnessCompletionError as exc:
+        raise RuntimeError(
+            f"refusing campaign-mode robustness closure for "
+            f"{patient}/{course}: no revalidatable failure receipt: {exc}"
+        ) from exc
+    if receipt.measurement_outcome != ROBUSTNESS_FAILED_RECEIPT_OUTCOME:
+        raise RuntimeError(
+            f"refusing campaign-mode robustness closure for "
+            f"{patient}/{course}: receipt outcome "
+            f"{receipt.measurement_outcome!r} is not a recorded extraction "
+            "failure"
+        )
+    if (receipt.patient_id, receipt.course_id) != (str(patient), str(course)):
+        raise RuntimeError(
+            f"refusing campaign-mode robustness closure: receipt certifies "
+            f"{receipt.patient_id}/{receipt.course_id}, not {patient}/{course}"
+        )
+    return record(
+        Path(output_dir),
+        patient,
+        course,
+        "radiomics_robustness",
+        STATUS_FAILED,
+        returncode=1,
+        log_path=log_path,
+        detail=ROBUSTNESS_EXTRACTION_FAILED,
+    )
+
+
 def record(
     output_dir: Path,
     patient: str,
@@ -376,6 +438,17 @@ def main(argv: list[str] | None = None) -> int:
     close.add_argument("--sentinel", required=True)
     close.add_argument("--log-path", default=None)
 
+    close_failed = sub.add_parser(
+        "close-robustness-failed",
+        help="campaign-mode robustness closure when its own extraction failed "
+        "(verifies the CLI-published failure receipt, records the ledger)",
+    )
+    close_failed.add_argument("--output-dir", required=True)
+    close_failed.add_argument("--patient", required=True)
+    close_failed.add_argument("--course", required=True)
+    close_failed.add_argument("--sentinel", required=True)
+    close_failed.add_argument("--log-path", default=None)
+
     roll = sub.add_parser("rollup", help="rebuild campaign ledger and summary")
     roll.add_argument("--output-dir", required=True)
 
@@ -397,6 +470,17 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "close-robustness-upstream":
         path = close_robustness_upstream_failure(
+            Path(args.output_dir),
+            args.patient,
+            args.course,
+            Path(args.sentinel),
+            log_path=args.log_path,
+        )
+        print(path)
+        return 0
+
+    if args.command == "close-robustness-failed":
+        path = close_robustness_failed_extraction(
             Path(args.output_dir),
             args.patient,
             args.course,

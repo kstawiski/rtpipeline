@@ -29,8 +29,13 @@ ROBUSTNESS_COMPLETION_SENTINEL_NAME = ".radiomics_robustness_done"
 
 # Outcomes that let the workflow step complete. An outcome outside this set is
 # not a completion, and the course never receives a receipt for it.
+# ``failed_extraction`` is a terminal run outcome, not a measurement: the run
+# attempted and failed technically, and the receipt binds the failure
+# disposition sidecar as evidence. Only ``measured`` counts as measured
+# (see RobustnessCompletionReceipt.measured); failed courses enter cohort
+# accounting with zero measurement contribution.
 ROBUSTNESS_COMPLETING_OUTCOMES = frozenset(
-    {"measured", "source_only_nonvolumetric"}
+    {"measured", "source_only_nonvolumetric", "failed_extraction"}
 )
 
 

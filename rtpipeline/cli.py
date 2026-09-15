@@ -1301,6 +1301,16 @@ def _radiomics_robustness_course(argv: list[str]) -> int:
         default=None,
         help="Seconds allowed for each dedicated radiomics environment import probe",
     )
+    p.add_argument(
+        "--campaign-mode",
+        action="store_true",
+        help=(
+            "Record a failed-extraction completion receipt when the run dies "
+            "technically, so the workflow shell rule can close the course "
+            "with evidence instead of stopping the campaign. Without this "
+            "flag an internal failure leaves no receipt, exactly as before."
+        ),
+    )
     p.add_argument("-v", "--verbose", action="store_true", help="Verbose logging")
     args = p.parse_args(argv)
 
@@ -1471,6 +1481,68 @@ def _radiomics_robustness_course(argv: list[str]) -> int:
         if getattr(e, "code", None) == "RADIOMICS_ENV_PROBE_TIMEOUT":
             raise
         logger.error("Robustness analysis failed: %s", e, exc_info=True)
+        if args.campaign_mode and sentinel_path is not None:
+            # D22b: publish the failure as evidence so the shell rule can
+            # close the course with a ledger record instead of stopping the
+            # campaign. write_robustness_completion_sentinel reads the
+            # receipt back through the consumer path and withdraws it when
+            # that fails, so a receipt the consumers cannot revalidate must
+            # not survive; any error here therefore leaves no receipt and
+            # the caller fails closed exactly as without the flag.
+            try:
+                import json as _json
+
+                from .radiomics_ct_contract import new_run_identifier
+                from .radiomics_robustness import (
+                    ROBUSTNESS_FAILED_OUTCOME,
+                    _content_sha256,
+                    effective_robustness_configuration,
+                    write_robustness_failure_dispositions,
+                )
+
+                failure_run_id = new_run_identifier()
+                dispositions_path = write_robustness_failure_dispositions(
+                    course_dir,
+                    rob_config=rob_config,
+                    output_name=output_path.name,
+                    run_identifier=failure_run_id,
+                )
+                failure_rows = _json.loads(
+                    dispositions_path.read_text(encoding="utf-8")
+                ).get("rows", [])
+                write_robustness_completion_sentinel(
+                    sentinel_path,
+                    course_dir,
+                    patient_id=course_dir.parent.name,
+                    course_id=course_dir.name,
+                    run_identifier=failure_run_id,
+                    measurement_outcome=ROBUSTNESS_FAILED_OUTCOME,
+                    output_name=output_path.name,
+                    dispositions_path=dispositions_path,
+                    measured_output=None,
+                    source_disposition_count=len(failure_rows),
+                    effective_configuration_sha256=_content_sha256(
+                        effective_robustness_configuration(
+                            rob_config, output_name=output_path.name
+                        )
+                    ),
+                )
+                logger.error(
+                    "Robustness failure recorded for %s/%s; shell rule closes "
+                    "the course in campaign mode",
+                    course_dir.parent.name,
+                    course_dir.name,
+                )
+            except Exception as receipt_error:
+                logger.error(
+                    "Could not record the robustness failure receipt: %s",
+                    receipt_error,
+                    exc_info=True,
+                )
+                try:
+                    sentinel_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
         return 1
 
     if not outcome.completes_step:
