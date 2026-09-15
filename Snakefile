@@ -1334,6 +1334,7 @@ if config.get("container_mode", False):
         params:
             enabled=str(ROBUSTNESS_ENABLED),
             campaign_mode=CAMPAIGN_MODE,
+            campaign_mode_flag=("--campaign-mode" if CAMPAIGN_MODE else ""),
             config=str(EFFECTIVE_CONFIGFILE),
             python=CONTAINER_RADIOMICS_PYTHON,
             root_dir=lambda w: str(ROOT_DIR),
@@ -1393,12 +1394,30 @@ if config.get("container_mode", False):
                 --config "{params.config}" \
                 --output "{params.parquet}" \
                 --sentinel "{output.sentinel}" \
-                --max-workers {threads} > {log} 2>&1; then
+                --max-workers {threads} {params.campaign_mode_flag} > {log} 2>&1; then
                 if [ ! -f "{output.sentinel}" ]; then
                     echo "Radiomics robustness returned success without a completion receipt: {output.sentinel}" >&2
                     exit 1
                 fi
             else
+                # D22b: the CLI publishes a failed-extraction receipt before
+                # exiting 1 in campaign mode. That receipt is evidence the
+                # ledger close below revalidates; it must NOT be removed
+                # here. Outside campaign mode there is no receipt by design.
+                if [ "{params.campaign_mode}" = "True" ]; then
+                    if ! PYTHONPATH="{params.root_dir}:${{PYTHONPATH:-}}" "{params.python}" "{params.root_dir}/workflow/scripts/campaign_ledger.py" close-robustness-failed \
+                        --output-dir "{params.output_dir}" \
+                        --patient "{wildcards.patient}" \
+                        --course "{wildcards.course}" \
+                        --sentinel "{output.sentinel}" \
+                        --log-path "{log}"; then
+                        rm -f {output.sentinel}
+                        echo "Campaign-mode robustness closure could not record robustness_extraction_failed" >&2
+                        exit 1
+                    fi
+                    echo "[campaign-mode] course {wildcards.patient}/{wildcards.course} closed at stage radiomics_robustness; campaign continues and the ledger records the failure." >&2
+                    exit 0
+                fi
                 rm -f {output.sentinel}
                 echo "Radiomics robustness failed; see {log}" >&2
                 exit 1
@@ -1421,6 +1440,7 @@ else:
         params:
             enabled=str(ROBUSTNESS_ENABLED),
             campaign_mode=CAMPAIGN_MODE,
+            campaign_mode_flag=("--campaign-mode" if CAMPAIGN_MODE else ""),
             config=str(EFFECTIVE_CONFIGFILE),
             python=PYTHON_RADIOMICS,
             python_bin=PYTHON_RADIOMICS_BIN,
@@ -1482,12 +1502,30 @@ else:
                 --config "{params.config}" \
                 --output "{params.parquet}" \
                 --sentinel "{output.sentinel}" \
-                --max-workers {threads} > {log} 2>&1; then
+                --max-workers {threads} {params.campaign_mode_flag} > {log} 2>&1; then
                 if [ ! -f "{output.sentinel}" ]; then
                     echo "Radiomics robustness returned success without a completion receipt: {output.sentinel}" >&2
                     exit 1
                 fi
             else
+                # D22b: the CLI publishes a failed-extraction receipt before
+                # exiting 1 in campaign mode. That receipt is evidence the
+                # ledger close below revalidates; it must NOT be removed
+                # here. Outside campaign mode there is no receipt by design.
+                if [ "{params.campaign_mode}" = "True" ]; then
+                    if ! PYTHONPATH="{params.root_dir}:${{PYTHONPATH:-}}" "{params.python}" "{params.root_dir}/workflow/scripts/campaign_ledger.py" close-robustness-failed \
+                        --output-dir "{params.output_dir}" \
+                        --patient "{wildcards.patient}" \
+                        --course "{wildcards.course}" \
+                        --sentinel "{output.sentinel}" \
+                        --log-path "{log}"; then
+                        rm -f {output.sentinel}
+                        echo "Campaign-mode robustness closure could not record robustness_extraction_failed" >&2
+                        exit 1
+                    fi
+                    echo "[campaign-mode] course {wildcards.patient}/{wildcards.course} closed at stage radiomics_robustness; campaign continues and the ledger records the failure." >&2
+                    exit 0
+                fi
                 rm -f {output.sentinel}
                 echo "Radiomics robustness failed; see {log}" >&2
                 exit 1

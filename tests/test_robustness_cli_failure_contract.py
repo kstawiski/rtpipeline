@@ -999,10 +999,16 @@ def test_every_robustness_rule_body_is_valid_bash(tmp_path):
         "params.python": "/nonexistent/python",
         "params.python_bin": str(tmp_path / "bin"),
         "params.campaign_mode": "True",
+        "params.campaign_mode_flag": "--campaign-mode",
         "wildcards.patient": "P1",
         "wildcards.course": "C1",
     }
     for index, rule in enumerate([*_course_rules(), _aggregate_rule()]):
+        if index < 2:
+            assert "close-robustness-failed" in rule, (
+                "course robustness rule must close its own extraction "
+                "failures in campaign mode (D22b)"
+            )
         script = tmp_path / f"rule_{index}.sh"
         script.write_text(_render(_shell_body(rule), values), encoding="utf-8")
         syntax = subprocess.run(
@@ -1074,6 +1080,7 @@ def test_the_disabled_course_branch_keeps_no_success_receipt(tmp_path, variant):
                 "threads": "1",
                 "params.enabled": "False",
                 "params.campaign_mode": "False",
+                "params.campaign_mode_flag": "",
                 "params.config": str(tmp_path / "config.yaml"),
                 "params.course_dir": str(course_dir),
                 "params.parquet": str(course_dir / OUTPUT_NAME),

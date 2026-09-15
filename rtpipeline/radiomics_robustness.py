@@ -317,8 +317,18 @@ ROBUSTNESS_SOURCE_ONLY_OUTCOME = "source_only_nonvolumetric"
 # about the anatomy of a name that was never found, and it is not a clinical
 # exclusion of anything.
 ROBUSTNESS_UNMATCHED_SELECTION_OUTCOME = "selection_matched_no_source_structure"
+# The extraction run itself failed technically (exception inside
+# robustness_for_course) after the previous sidecar was invalidated. This is
+# a terminal run outcome, not a measurement: it certifies that the run
+# attempted and failed, so the course can be closed with evidence instead of
+# stopping the workflow. It must never masquerade as measured.
+ROBUSTNESS_FAILED_OUTCOME = "failed_extraction"
 ROBUSTNESS_NONMEASURED_OUTCOMES = frozenset(
-    {ROBUSTNESS_SOURCE_ONLY_OUTCOME, ROBUSTNESS_UNMATCHED_SELECTION_OUTCOME}
+    {
+        ROBUSTNESS_SOURCE_ONLY_OUTCOME,
+        ROBUSTNESS_UNMATCHED_SELECTION_OUTCOME,
+        ROBUSTNESS_FAILED_OUTCOME,
+    }
 )
 ROBUSTNESS_SOURCE_DISPOSITION_OUTCOMES = (
     frozenset({ROBUSTNESS_MEASURED_OUTCOME}) | ROBUSTNESS_NONMEASURED_OUTCOMES
@@ -746,6 +756,79 @@ def _write_robustness_source_dispositions(
             pass
         raise
     return path
+
+
+def write_robustness_failure_dispositions(
+    course_dir: Path,
+    *,
+    rob_config: "RobustnessConfig",
+    output_name: str,
+    run_identifier: Optional[str] = None,
+) -> Path:
+    """Publish a failure disposition sidecar for a run that died technically.
+
+    The producer invalidates the previous sidecar before doing anything that
+    can fail, so when ``robustness_for_course`` raises, no sidecar describes
+    the failed attempt and no completion receipt may cite one. This helper
+    closes that gap for campaign-mode course closure: it binds the sources
+    as they stand, records zero measurement rows under the
+    ``failed_extraction`` outcome, and returns the sidecar path for the
+    completion receipt. It performs no measurement and fabricates none.
+
+    Source bindings are opportunistic: whatever standard sources exist on
+    disk are bound; a course with no readable sources still gets a valid
+    (empty) failure record rather than a second exception obscuring the
+    first. A stale measurement table beside a failure outcome would be
+    evidence confusion, so it is refused here instead of being published
+    around.
+    """
+    from .radiomics_ct_contract import new_run_identifier
+
+    course_dir = Path(course_dir)
+    output_name = str(output_name)
+    if run_identifier is None:
+        run_identifier = new_run_identifier()
+    run_identifier = str(run_identifier)
+
+    output_path = course_dir / output_name
+    if output_path.exists():
+        raise RuntimeError(
+            "refusing to record a robustness failure beside an existing "
+            f"measurement table {output_path}; withdraw it first"
+        )
+
+    contract = load_course_contract(course_dir)
+    from .radiomics import _standard_rtstruct_sources
+
+    source_bindings: List[Dict[str, str]] = []
+    try:
+        resolved = _standard_rtstruct_sources(contract, course_dir)
+    except Exception as exc:
+        logger.warning(
+            "Robustness failure record for %s binds no sources: %s",
+            course_dir,
+            exc,
+        )
+        resolved = []
+    for source, rtstruct_path, _expected in resolved:
+        if Path(rtstruct_path).is_file():
+            source_bindings.append(
+                _rtstruct_source_binding(str(source), Path(rtstruct_path))
+            )
+
+    return _write_robustness_source_dispositions(
+        course_dir,
+        run_identifier=run_identifier,
+        rows=[],
+        source_bindings=source_bindings,
+        effective_configuration=effective_robustness_configuration(
+            rob_config, output_name=output_name
+        ),
+        code_identity=_capture_robustness_code_identity(),
+        output_path=output_path,
+        measured_output=None,
+        nonmeasured_outcome=ROBUSTNESS_FAILED_OUTCOME,
+    )
 
 
 def robustness_source_dispositions_path(course_dir: Path) -> Path:
