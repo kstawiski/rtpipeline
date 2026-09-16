@@ -846,12 +846,19 @@ def _rtstruct_masks(
     failure_outcomes: Optional[List[Dict[str, str]]] = None,
     requiredness_by_roi: Optional[Dict[str, Any]] = None,
     structural_inventory: Any = None,
+    tolerate_unselected: bool = False,
 ) -> Dict[str, np.ndarray]:
     """Convert RTSTRUCT ROIs to boolean masks under an explicit source policy.
 
     Required sources fail closed when an advertised ROI cannot be read or has a
     degenerate mask. For best-effort TotalSegmentator sources, the same failure
     is returned in ``failure_outcomes`` and extraction continues for other ROIs.
+
+    ``tolerate_unselected`` scopes ONLY per-ROI fatality to the
+    ``requiredness_by_roi`` map (a non-required ROI failure is recorded and
+    extraction continues; a required one still raises) without enabling any
+    of ``best_effort``'s wider tolerances (swallowed inspection failures,
+    silent empty returns). Whole-source failures therefore stay fatal.
     """
     normalized_skips = {
         ''.join(ch for ch in str(name).lower() if ch.isalnum())
@@ -879,7 +886,10 @@ def _rtstruct_masks(
         }
         if structural_code:
             outcome["structural_code"] = structural_code
-        fatal = not best_effort or _is_required(name)
+        if tolerate_unselected:
+            fatal = _is_required(name)
+        else:
+            fatal = not best_effort or _is_required(name)
         if fatal:
             if failure_outcomes is not None:
                 failure_outcomes.append(outcome)

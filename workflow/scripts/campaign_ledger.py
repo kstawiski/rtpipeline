@@ -129,6 +129,7 @@ def close_robustness_failed_extraction(
     sentinel_path: Path,
     *,
     log_path: str | None = None,
+    detail: str = ROBUSTNESS_EXTRACTION_FAILED,
 ) -> Path:
     """Close robustness in campaign mode when its own extraction failed.
 
@@ -145,6 +146,13 @@ def close_robustness_failed_extraction(
         read_robustness_completion_sentinel,
     )
 
+    if detail != ROBUSTNESS_EXTRACTION_FAILED and not detail.startswith(
+        ROBUSTNESS_EXTRACTION_FAILED + ":"
+    ):
+        raise RuntimeError(
+            "refusing campaign-mode robustness closure with an "
+            f"unscoped detail {detail!r}"
+        )
     sentinel_path = Path(sentinel_path)
     try:
         receipt = read_robustness_completion_sentinel(
@@ -176,7 +184,7 @@ def close_robustness_failed_extraction(
         STATUS_FAILED,
         returncode=1,
         log_path=log_path,
-        detail=ROBUSTNESS_EXTRACTION_FAILED,
+        detail=detail,
     )
 
 
@@ -448,6 +456,13 @@ def main(argv: list[str] | None = None) -> int:
     close_failed.add_argument("--course", required=True)
     close_failed.add_argument("--sentinel", required=True)
     close_failed.add_argument("--log-path", default=None)
+    close_failed.add_argument(
+        "--detail",
+        default=ROBUSTNESS_EXTRACTION_FAILED,
+        help="ledger detail; the shell passes "
+        "robustness_extraction_failed:<ExceptionClass> when the course log "
+        "names the failure class",
+    )
 
     roll = sub.add_parser("rollup", help="rebuild campaign ledger and summary")
     roll.add_argument("--output-dir", required=True)
@@ -480,12 +495,14 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "close-robustness-failed":
+        detail = str(args.detail or ROBUSTNESS_EXTRACTION_FAILED)
         path = close_robustness_failed_extraction(
             Path(args.output_dir),
             args.patient,
             args.course,
             Path(args.sentinel),
             log_path=args.log_path,
+            detail=detail,
         )
         print(path)
         return 0

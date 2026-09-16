@@ -3317,6 +3317,48 @@ def model_instability_determinants(
 # Main Workflow Functions
 # ============================================================================
 
+def _robustness_selection_requiredness(
+    rtstruct_path: Path, selection: Any
+) -> Optional[Dict[str, Any]]:
+    """Expand the robustness selection to an exact-name requiredness map.
+
+    ``apply_to_structures`` holds fnmatch patterns (``GTV*``), while mask
+    loading decides per exact ROI name, so patterns are expanded here
+    against the source inventory with selected names marked
+    ANALYSIS_REQUIRED and everything else INVENTORY_ONLY. Returns None
+    when the source cannot even be inspected: the caller then loads with
+    no tolerance at all, so whole-source failures stay fatal (B3.2).
+    """
+    from fnmatch import fnmatch
+
+    from .roi_requiredness import Requiredness, inspect_rtstruct
+
+    patterns = [str(p) for p in (selection or [])]
+    if not patterns:
+        # No selection is not a license to tolerate everything: with no
+        # required name, every failure would record instead of raise.
+        return None
+    try:
+        names = [o.name for o in inspect_rtstruct(Path(rtstruct_path)).named_rois]
+    except Exception as exc:
+        logger.warning(
+            "Robustness selection expansion failed for %s: %s; "
+            "loading with no unselected tolerance",
+            rtstruct_path,
+            exc,
+        )
+        return None
+    requiredness: Dict[str, Any] = {}
+    for name in names:
+        if any(
+            fnmatch(str(name).upper(), pattern.upper()) for pattern in patterns
+        ):
+            requiredness[str(name)] = Requiredness.ANALYSIS_REQUIRED
+        else:
+            requiredness[str(name)] = Requiredness.INVENTORY_ONLY
+    return requiredness
+
+
 def robustness_for_course(
     config: PipelineConfig,
     rob_config: RobustnessConfig,
@@ -3563,24 +3605,26 @@ def robustness_for_course(
         ):
             source_sink: List[Dict[str, Any]] = []
             source_binding = _bind_rtstruct_source(source, rtstruct_path)
-            # D22a: structural failures in ROIs outside this step's selection
-            # must not kill the course (per-organ, not per-course: an
-            # unparseable adrenal mask carries no information about the
-            # selected targets). Selected ROIs stay fail-closed via
+            # D22a (corrected): structural failures in ROIs outside this
+            # step's selection must not kill the course (per-organ, not
+            # per-course: an unparseable adrenal mask carries no
+            # information about the selected targets). The resolver yields
+            # expected_rois=None, so the selection is expanded here from
+            # the configured apply_to_structures patterns against the
+            # source inventory. Selected ROIs stay fail-closed via
             # ANALYSIS_REQUIRED; the rest record into the source sink.
-            from .roi_requiredness import Requiredness
-
-            selection = set(expected_rois) if expected_rois else None
+            # best_effort stays False, so whole-source failures
+            # (uninspectable RTSTRUCT, unreadable builder) stay fatal.
+            selection_requiredness = _robustness_selection_requiredness(
+                rtstruct_path,
+                rob_config.perturbation.apply_to_structures,
+            )
             source_masks = _rtstruct_masks(
                 ct_dir,
                 rtstruct_path,
                 failure_outcomes=source_sink,
-                best_effort=selection is not None,
-                requiredness_by_roi=(
-                    {name: Requiredness.ANALYSIS_REQUIRED for name in selection}
-                    if selection is not None
-                    else None
-                ),
+                tolerate_unselected=selection_requiredness is not None,
+                requiredness_by_roi=selection_requiredness,
             )
             _record_source_dispositions(source_binding, source_sink)
             allowed_names = set(expected_rois) if expected_rois else None
@@ -5437,7 +5481,8 @@ def aggregate_robustness_cohort(
     source_dispositions = _robustness_source_disposition_rows(courses)
 
     logger.info(
-        "Accounting for %d manifest course(s): %d measured, %d source-only",
+        "Accounting for %d manifest course(s): %d measured, %d non-measured "
+        "(source-only or failed-extraction attrition)",
         len(courses),
         len(measured),
         len(courses) - len(measured),

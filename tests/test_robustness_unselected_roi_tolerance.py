@@ -1,11 +1,18 @@
-"""Robustness must not die on ROIs outside its selection (D22a).
+"""Robustness must not die on ROIs outside its selection (D22a, corrected).
 
 Production case: course 477918/2025-11 closed its robustness stage (and
 stopped the workflow) because the auto ROI adrenal_gland_right carried
-ROI_CONTOUR_PARTIALLY_UNPARSEABLE, although robustness never selected
-that ROI. Per-organ, not per-course: selected targets stay fail-closed
-via ANALYSIS_REQUIRED; anything else records into the source sink and
-extraction continues.
+ROI_CONTOUR_PARTIALLY_UNPARSEABLE, although the configured
+apply_to_structures selection (GTV*/CTV*/PTV*) never included it.
+Per-organ, not per-course: selected targets stay fail-closed via
+ANALYSIS_REQUIRED; anything else records into the source sink and
+extraction continues, with best_effort left False so whole-source
+failures stay fatal.
+
+Unlike the first version of this file, these tests exercise the
+production wiring (selection expansion + tolerate_unselected call
+shape), not just the pre-existing mask loader in isolation: the
+reviewer showed the first version passed identically without the fix.
 """
 from __future__ import annotations
 
@@ -18,8 +25,11 @@ import pytest
 
 from rtpipeline.radiomics import _rtstruct_masks
 from rtpipeline.radiomics_outcomes import RadiomicsCourseExtractionError
-from rtpipeline.roi_requiredness import inspect_rtstruct, Requiredness
+from rtpipeline.radiomics_robustness import _robustness_selection_requiredness
+from rtpipeline.roi_requiredness import Requiredness, inspect_rtstruct
 from test_science_batch_c import _build_real_rtstruct
+
+SELECTION = ["GTV*", "CTV*", "PTV*"]
 
 
 def _two_roi_rtstruct(tmp_path: Path) -> tuple[Path, Path]:
@@ -48,20 +58,54 @@ def _two_roi_rtstruct(tmp_path: Path) -> tuple[Path, Path]:
     return ct, source
 
 
-def test_unselected_structural_failure_is_recorded_not_raised(tmp_path):
+def _production_call(ct, source, *, requiredness, sink):
+    """The exact call shape robustness_for_course uses (wiring under test)."""
+    return _rtstruct_masks(
+        ct,
+        source,
+        failure_outcomes=sink,
+        tolerate_unselected=requiredness is not None,
+        requiredness_by_roi=requiredness,
+    )
+
+
+def test_selection_expansion_marks_only_selected_required(tmp_path):
+    _, source = _two_roi_rtstruct(tmp_path)
+    requiredness = _robustness_selection_requiredness(source, SELECTION)
+    assert requiredness is not None
+    # PTV is the synthetic target; the adrenal is outside the selection.
+    assert requiredness["PTV"] == Requiredness.ANALYSIS_REQUIRED
+    assert requiredness["adrenal_gland_right"] == Requiredness.INVENTORY_ONLY
+
+
+def test_selection_expansion_is_case_insensitive(tmp_path):
+    _, source = _two_roi_rtstruct(tmp_path)
+    requiredness = _robustness_selection_requiredness(source, ["ptv*"])
+    assert requiredness is not None
+    assert requiredness["PTV"] == Requiredness.ANALYSIS_REQUIRED
+
+
+def test_empty_selection_and_uninspectable_source_fail_closed(tmp_path):
+    _, source = _two_roi_rtstruct(tmp_path)
+    assert _robustness_selection_requiredness(source, []) is None
+    assert _robustness_selection_requiredness(source, None) is None
+    assert (
+        _robustness_selection_requiredness(tmp_path / "absent.dcm", SELECTION)
+        is None
+    )
+
+
+def test_production_wiring_tolerates_unselected_failure(tmp_path):
+    """The reviewer's empirical protocol as a regression test."""
     ct, source = _two_roi_rtstruct(tmp_path)
     codes = {o.name: o.structural_code for o in inspect_rtstruct(source).named_rois}
     assert codes["PTV"] is None
     assert codes["adrenal_gland_right"] == "ROI_CONTOUR_PARTIALLY_UNPARSEABLE"
 
+    requiredness = _robustness_selection_requiredness(source, SELECTION)
+    assert requiredness is not None
     sink: list = []
-    masks = _rtstruct_masks(
-        ct,
-        source,
-        failure_outcomes=sink,
-        best_effort=True,
-        requiredness_by_roi={"PTV": Requiredness.ANALYSIS_REQUIRED},
-    )
+    masks = _production_call(ct, source, requiredness=requiredness, sink=sink)
     assert "PTV" in masks
     assert "adrenal_gland_right" not in masks
     assert [
@@ -69,24 +113,17 @@ def test_unselected_structural_failure_is_recorded_not_raised(tmp_path):
     ] == [("adrenal_gland_right", "ROI_CONTOUR_PARTIALLY_UNPARSEABLE")]
 
 
-def test_unscoped_call_still_fails_closed(tmp_path):
-    """The legacy call shape (no selection scoping) keeps failing closed."""
+def test_production_wiring_selected_failure_stays_fatal(tmp_path):
     ct, source = _two_roi_rtstruct(tmp_path)
+    requiredness = _robustness_selection_requiredness(
+        source, ["PTV", "adrenal_gland_right"]
+    )
     with pytest.raises(RadiomicsCourseExtractionError, match="PARTIALLY_UNPARSEABLE"):
-        _rtstruct_masks(ct, source, failure_outcomes=[])
+        _production_call(ct, source, requiredness=requiredness, sink=[])
 
 
-def test_selected_structural_failure_stays_fatal(tmp_path):
-    """A broken SELECTED ROI still fails the course even when scoped."""
+def test_production_wiring_without_expansion_stays_fatal(tmp_path):
+    """No map, no tolerance: the legacy fail-closed shape is preserved."""
     ct, source = _two_roi_rtstruct(tmp_path)
     with pytest.raises(RadiomicsCourseExtractionError, match="PARTIALLY_UNPARSEABLE"):
-        _rtstruct_masks(
-            ct,
-            source,
-            failure_outcomes=[],
-            best_effort=True,
-            requiredness_by_roi={
-                "PTV": Requiredness.ANALYSIS_REQUIRED,
-                "adrenal_gland_right": Requiredness.ANALYSIS_REQUIRED,
-            },
-        )
+        _production_call(ct, source, requiredness=None, sink=[])
