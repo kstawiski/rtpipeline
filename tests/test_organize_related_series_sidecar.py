@@ -90,10 +90,23 @@ def test_related_conversion_writes_contract_complete_sidecar(tmp_path, monkeypat
     assert payload["series_instance_uid"] == series_uid
 
 
-def _stub_converter(monkeypatch, nifti_bytes: bytes = b"fake-nifti"):
+def _stub_converter(monkeypatch):
+    """Each series converts to a REAL, distinct NIfTI.
+
+    Distinct voxel fills per series name, so an overwrite would show in
+    bytes; a genuine image, so nifti_geometry/sha are truly computed
+    rather than vacuously present.
+    """
+
     def _fake_dcm2niix(config, series_subdir, tmp_out):
+        import SimpleITK as sitk
+
+        fill = sum(bytes(Path(series_subdir).name, encoding="utf-8")) % 200 + 1
+        image = sitk.GetImageFromArray(
+            np.full((2, 4, 4), fill, dtype=np.int16)
+        )
         out = Path(tmp_out) / "stub.nii.gz"
-        out.write_bytes(nifti_bytes)
+        sitk.WriteImage(image, str(out))
         return out
 
     monkeypatch.setattr(organize, "run_dcm2niix", _fake_dcm2niix)
@@ -169,6 +182,32 @@ def test_related_conversion_never_overwrites_foreign_series(
     )
     assert sidecar_is_complete(payload)
     assert payload["series_instance_uid"] == uid_b
+
+
+def test_related_conversion_honours_suffix_and_modality(
+    tmp_path, monkeypatch
+):
+    """The MR-sibling parameters (name suffix, modality default) work."""
+    series, uid = _series(tmp_path, "seriesA")
+    nifti_dir = tmp_path / "NIFTI"
+    nifti_dir.mkdir()
+    _stub_converter(monkeypatch)
+    config = SimpleNamespace(resume=True)
+    target = organize._convert_one_related_series(
+        nifti_dir, series, config, name_suffix="mrsuffix", default_modality="MR"
+    )
+    assert target is not None and target.is_file()
+    assert "mrsuffix" in target.name
+    payload = json.loads(
+        (nifti_dir / f"{target.name.split('.nii')[0]}.metadata.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert sidecar_is_complete(payload)
+    # The DICOM-declared modality wins over the default: these stub
+    # slices declare CT, so the MR default must NOT overwrite it.
+    assert payload["modality"] == "CT"
+    assert payload["series_instance_uid"] == uid
 
 
 def test_related_conversion_skip_returns_none_without_resume(
