@@ -51,6 +51,14 @@ def test_rtstruct_z_partial_has_volume_fraction():
     assert c['fraction']==pytest.approx(.5)
 
 
+def test_rtstruct_grid_coverage_uses_numpy_1_compatibility_fallback(monkeypatch):
+    """The coverage integral remains available in the NumPy 1.x stack."""
+    monkeypatch.setattr(np, 'trapezoid', None, raising=False)
+    rs, dose = boxes(2, 4)
+    coverage = rtstruct_grid_coverage(rs, 1, dose)
+    assert coverage['fraction'] == pytest.approx(1.0)
+
+
 def test_resampled_support_distinguishes_true_zero_from_padding():
     dose=sitk.Image([2,2,2],sitk.sitkFloat32) # genuine zero on entire grid
     reference=sitk.Image([4,2,2],sitk.sitkFloat32)

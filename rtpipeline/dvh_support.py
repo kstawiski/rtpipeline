@@ -10,6 +10,20 @@ import numpy as np
 import SimpleITK as sitk
 
 
+def _trapezoid(y, x):
+    """Integrate with the NumPy API available in the active environment.
+
+    ``numpy.trapezoid`` was added in NumPy 2.0, while the isolated radiomics
+    environment intentionally remains on NumPy 1.x. Both APIs implement the
+    same composite trapezoidal rule, so selecting the available name keeps the
+    DVH grid-coverage calculation numerically identical across both stacks.
+    """
+    integrate = getattr(np, 'trapezoid', None)
+    if integrate is None:
+        integrate = np.trapz
+    return integrate(y, x)
+
+
 def sha256_file(path):
     digest = hashlib.sha256()
     with Path(path).open('rb') as stream:
@@ -143,10 +157,10 @@ def rtstruct_grid_coverage(rtstruct, roi_number, dose):
         inside = covered[0] if offsets.min()-1e-3 <= zs[0] <= offsets.max()+1e-3 else 0.0
         result['method'] = 'single_plane_contour_area_fraction'
     else:
-        total = float(np.trapezoid(totals, zs))
+        total = float(_trapezoid(totals, zs))
         low, high = max(zs[0], offsets.min()), min(zs[-1], offsets.max())
         knots = np.unique(np.r_[low, zs[(zs > low) & (zs < high)], high])
-        inside = float(np.trapezoid(np.interp(knots, zs, covered), knots)) if high > low else 0.0
+        inside = float(_trapezoid(np.interp(knots, zs, covered), knots)) if high > low else 0.0
         result['roi_volume_cm3'] = total / 1000
         result['covered_volume_cm3'] = inside / 1000
     fraction = float(np.clip(inside / total, 0, 1))
