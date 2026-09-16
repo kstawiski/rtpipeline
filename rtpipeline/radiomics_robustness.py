@@ -678,13 +678,14 @@ def _write_robustness_source_dispositions(
     _validate_source_disposition_rows(
         rows, bindings=source_bindings, error=RuntimeError
     )
-    tolerated = [dict(entry) for entry in (tolerated_failures or [])]
-    for index, entry in enumerate(tolerated):
-        if not isinstance(entry, dict):
+    tolerated = []
+    for index, raw in enumerate(tolerated_failures or []):
+        if not isinstance(raw, dict):
             raise RuntimeError(
                 f"robustness tolerated failure {index} is "
-                f"{type(entry).__name__}, not a record"
+                f"{type(raw).__name__}, not a record"
             )
+        entry = dict(raw)
         for field_name in (
             "roi_name",
             "structural_code",
@@ -697,6 +698,20 @@ def _write_robustness_source_dispositions(
                     f"robustness tolerated failure {index} is missing required "
                     f"identity {field_name!r}"
                 )
+        tolerated.append(entry)
+    seen_tolerated: set[Tuple[str, str, str]] = set()
+    for entry in tolerated:
+        key = (
+            str(entry["segmentation_source"]),
+            str(entry["source_path"]),
+            str(entry["roi_name"]),
+        )
+        if key in seen_tolerated:
+            raise RuntimeError(
+                f"duplicate robustness tolerated failure for {key!r}; one ROI "
+                "identity has exactly one tolerated record"
+            )
+        seen_tolerated.add(key)
     # The code captured before processing must still be the code on disk.
     _verify_robustness_code_identity(
         code_identity,
@@ -753,6 +768,7 @@ def _write_robustness_source_dispositions(
         "rows_sha256": _content_sha256(rows),
         "tolerated_source_failures": tolerated,
         "tolerated_source_failure_count": len(tolerated),
+        "tolerated_source_failures_sha256": _content_sha256(tolerated),
         "source_bindings": source_bindings,
         "code_identity": dict(code_identity),
         "effective_configuration": effective_configuration,
@@ -983,6 +999,25 @@ def _read_robustness_source_dispositions(
         raise ValueError(
             "robustness source disposition rows do not match their recorded digest"
         )
+    # The tolerated-failure list is digest-bound like the rows (NB-A): an
+    # artifact whose tolerated records were edited after publication must
+    # not read. Sidecars predating the list carry neither key and pass.
+    tolerated = payload.get("tolerated_source_failures", [])
+    if "tolerated_source_failures" in payload:
+        if not isinstance(tolerated, list) or payload.get(
+            "tolerated_source_failure_count"
+        ) != len(tolerated):
+            raise ValueError(
+                "corrupt robustness tolerated failures: count "
+                f"{payload.get('tolerated_source_failure_count')!r} does not "
+                "match the recorded entries"
+            )
+        if str(payload.get("tolerated_source_failures_sha256") or "") != (
+            _content_sha256(tolerated)
+        ):
+            raise ValueError(
+                "robustness tolerated failures do not match their recorded digest"
+            )
 
     recorded_code = payload.get("code_identity")
     current_code = _current_robustness_code_identity()
@@ -3371,13 +3406,26 @@ def _robustness_selection_requiredness(
         )
         return None
     requiredness: Dict[str, Any] = {}
+    matched_any = False
     for name in names:
         if any(
             fnmatch(str(name).upper(), pattern.upper()) for pattern in patterns
         ):
             requiredness[str(name)] = Requiredness.ANALYSIS_REQUIRED
+            matched_any = True
         else:
             requiredness[str(name)] = Requiredness.INVENTORY_ONLY
+    if not matched_any:
+        # A selection matching nothing (e.g. a typo'd pattern) must fail
+        # fast here, not dissolve into all-tolerated loading whose only
+        # backstop is a downstream unmatched-selection error.
+        logger.warning(
+            "Robustness selection %r matched no ROI in %s; "
+            "loading with no unselected tolerance",
+            patterns,
+            rtstruct_path,
+        )
+        return None
     return requiredness
 
 
@@ -3544,6 +3592,13 @@ def robustness_for_course(
                             "robustness tolerated failure is missing required "
                             f"identity {field_name!r}"
                         )
+                # NB-E: the loader reason is unbounded exception text (it
+                # embeds the absolute source path, already published in
+                # source_path, so nothing is lost by bounding it).
+                reason = outcome.get("reason")
+                if isinstance(reason, str) and len(reason) > 500:
+                    outcome = dict(outcome)
+                    outcome["reason"] = reason[:500] + "…[truncated]"
                 tolerated_source_failures.append(outcome)
             else:
                 source_disposition_rows.append(outcome)
@@ -3881,7 +3936,9 @@ def robustness_for_course(
             len(source_disposition_rows),
             len(tolerated_source_failures),
             course_dir,
-            "measured" if measured_output is not None else "source-only",
+            "measured"
+            if measured_output is not None
+            else str(nonmeasured_outcome),
         )
 
     if not selected_structures:
