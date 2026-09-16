@@ -4815,6 +4815,54 @@ def _remove_course_done(config: PipelineConfig, patient_id: str, course_key: str
     _course_done_path(config, patient_id, course_key).unlink(missing_ok=True)
 
 
+def _convert_one_related_series(
+    nifti_dir: Path, series_subdir: Path, config: PipelineConfig
+) -> Optional[Path]:
+    """Convert one DICOM_related series to NIfTI with a contract-complete sidecar.
+
+    Every NIfTI sidecar must carry the NIfTI-derived provenance the course
+    contract requires (nifti_geometry, nifti_sha256). An earlier inline
+    version of this loop wrote sidecars without those keys, which
+    quarantined multi-series courses at contract validation. Returns the
+    NIfTI path, or None when conversion produced nothing.
+    """
+    target_name = _derive_nifti_name(series_subdir)
+    meta_path = nifti_dir / f"{target_name}.metadata.json"
+    if meta_path.exists() and not config.resume:
+        return nifti_dir / f"{target_name}.nii.gz"
+    tmp_out = nifti_dir / f".tmp_{series_subdir.name}"
+    tmp_out.mkdir(parents=True, exist_ok=True)
+    generated = run_dcm2niix(config, series_subdir, tmp_out)
+    if generated is None:
+        shutil.rmtree(tmp_out, ignore_errors=True)
+        return None
+    target_path = nifti_dir / f"{target_name}.nii.gz"
+    if target_path.exists():
+        target_path.unlink()
+    shutil.move(str(generated), str(target_path))
+    metadata = _collect_series_metadata(series_subdir)
+    metadata.update(
+        {
+            "nifti_path": str(target_path),
+            "source_directory": str(series_subdir),
+            "generated_at": datetime.datetime.utcnow().isoformat() + "Z",
+        }
+    )
+    nifti_provenance.annotate(
+        metadata,
+        target_path,
+        series_subdir,
+        regenerated=True,
+        default_modality="CT",
+    )
+    meta_path.write_text(
+        json.dumps(metadata, indent=2),
+        encoding="utf-8",
+    )
+    shutil.rmtree(tmp_out, ignore_errors=True)
+    return target_path
+
+
 def _completed_patients(config: PipelineConfig) -> Dict[str, List[dict]]:
     """Patients whose every discovered course already has a completion record."""
     root = _organize_checkpoint_dir(config)
@@ -5616,33 +5664,7 @@ def organize_and_merge(
 
         for series_subdir in sorted(p for p in course_dirs.dicom_related.iterdir() if p.is_dir() and p.name != "REG"):
             try:
-                target_name = _derive_nifti_name(series_subdir)
-                meta_path = course_dirs.nifti / f"{target_name}.metadata.json"
-                if meta_path.exists() and not config.resume:
-                    continue
-                tmp_out = course_dirs.nifti / f".tmp_{series_subdir.name}"
-                tmp_out.mkdir(parents=True, exist_ok=True)
-                generated = run_dcm2niix(config, series_subdir, tmp_out)
-                if generated is None:
-                    shutil.rmtree(tmp_out, ignore_errors=True)
-                    continue
-                target_path = course_dirs.nifti / f"{target_name}.nii.gz"
-                if target_path.exists():
-                    target_path.unlink()
-                shutil.move(str(generated), str(target_path))
-                metadata = _collect_series_metadata(series_subdir)
-                metadata.update(
-                    {
-                        "nifti_path": str(target_path),
-                        "source_directory": str(series_subdir),
-                        "generated_at": datetime.datetime.utcnow().isoformat() + "Z",
-                    }
-                )
-                meta_path.write_text(
-                    json.dumps(metadata, indent=2),
-                    encoding="utf-8",
-                )
-                shutil.rmtree(tmp_out, ignore_errors=True)
+                _convert_one_related_series(course_dirs.nifti, series_subdir, config)
             except Exception as exc:
                 logger.debug("Failed converting related series %s: %s", series_subdir, exc)
 
