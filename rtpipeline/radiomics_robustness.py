@@ -646,6 +646,7 @@ def _write_robustness_source_dispositions(
     measured_output: Optional[Path],
     nonmeasured_outcome: str = ROBUSTNESS_SOURCE_ONLY_OUTCOME,
     source_only_basis: Optional[Dict[str, Any]] = None,
+    tolerated_failures: Optional[List[Dict[str, Any]]] = None,
 ) -> Path:
     """Atomically publish the terminal RTSTRUCT source dispositions of one run.
 
@@ -677,6 +678,25 @@ def _write_robustness_source_dispositions(
     _validate_source_disposition_rows(
         rows, bindings=source_bindings, error=RuntimeError
     )
+    tolerated = [dict(entry) for entry in (tolerated_failures or [])]
+    for index, entry in enumerate(tolerated):
+        if not isinstance(entry, dict):
+            raise RuntimeError(
+                f"robustness tolerated failure {index} is "
+                f"{type(entry).__name__}, not a record"
+            )
+        for field_name in (
+            "roi_name",
+            "structural_code",
+            "segmentation_source",
+            "source_path",
+            "rtstruct_sop_instance_uid",
+        ):
+            if not _present(entry.get(field_name)):
+                raise RuntimeError(
+                    f"robustness tolerated failure {index} is missing required "
+                    f"identity {field_name!r}"
+                )
     # The code captured before processing must still be the code on disk.
     _verify_robustness_code_identity(
         code_identity,
@@ -731,6 +751,8 @@ def _write_robustness_source_dispositions(
         "row_count": len(rows),
         "rows": rows,
         "rows_sha256": _content_sha256(rows),
+        "tolerated_source_failures": tolerated,
+        "tolerated_source_failure_count": len(tolerated),
         "source_bindings": source_bindings,
         "code_identity": dict(code_identity),
         "effective_configuration": effective_configuration,
@@ -3464,6 +3486,12 @@ def robustness_for_course(
     # run-bound sidecar only once the run reaches a terminal, non-technical
     # outcome. Technical extraction failures raise before any publication.
     source_disposition_rows: List[Dict[str, Any]] = []
+    # Tolerated loader failures (status "failed"): ROIs outside the selection
+    # whose structural failure was recorded instead of raised (D22a). They
+    # are NOT source dispositions — the disposition contract admits only
+    # non-volumetric rows — so they travel in a separate digest-bound list
+    # that readers validate leniently and aggregation never measures.
+    tolerated_source_failures: List[Dict[str, Any]] = []
     rtstruct_source_bindings: List[Dict[str, str]] = []
 
     def _bind_rtstruct_source(
@@ -3505,7 +3533,20 @@ def robustness_for_course(
                         f"{binding[column]!r}"
                     )
                 outcome[column] = binding[column]
-            source_disposition_rows.append(outcome)
+            if str(outcome.get("status")) == "failed":
+                # A tolerated loader failure (D22a): recorded evidence, not
+                # a disposition. It must not enter the disposition rows,
+                # whose contract admits only non-volumetric measurements-out
+                # rows and would reject it at publication.
+                for field_name in ("roi_name", "structural_code"):
+                    if not _present(outcome.get(field_name)):
+                        raise RuntimeError(
+                            "robustness tolerated failure is missing required "
+                            f"identity {field_name!r}"
+                        )
+                tolerated_source_failures.append(outcome)
+            else:
+                source_disposition_rows.append(outcome)
 
     def _matches_robustness_pattern(roi_name: str) -> bool:
         return any(
@@ -3832,10 +3873,13 @@ def robustness_for_course(
             measured_output=measured_output,
             nonmeasured_outcome=nonmeasured_outcome,
             source_only_basis=source_only_basis,
+            tolerated_failures=tolerated_source_failures,
         )
         logger.info(
-            "Recorded %d RTSTRUCT source disposition(s) for robustness in %s (%s)",
+            "Recorded %d RTSTRUCT source disposition(s) and %d tolerated "
+            "source failure(s) for robustness in %s (%s)",
             len(source_disposition_rows),
+            len(tolerated_source_failures),
             course_dir,
             "measured" if measured_output is not None else "source-only",
         )

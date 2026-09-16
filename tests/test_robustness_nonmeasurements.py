@@ -400,8 +400,39 @@ def test_stale_disposition_sidecar_replaced_on_rerun(tmp_path, monkeypatch):
         rr.load_robustness_source_dispositions(course, run_identifier='STALE', rob_config=rob)
 
 
-def test_technical_extraction_failure_stays_fail_closed(tmp_path, monkeypatch):
+def test_unselected_technical_failure_is_tolerated_and_recorded(
+    tmp_path, monkeypatch
+):
+    """Deliberate policy change (D22a, PI-ratification pending): a
+    structurally-bad ROI outside the configured apply_to_structures
+    selection is recorded, not fatal.
+
+    Rationale: production evidence showed 119/120 Kopernik courses
+    closing over unselected D16-background ROIs, zeroing the robustness
+    arm. An unparseable unselected mask contributes no measurement, so
+    failing the course over it discards only good structures. Selected
+    failures stay fatal (companion test below); whole-source failures
+    stay fatal (no tolerance without an inventory).
+    """
     course, cfg, rob, _ = _real_mixed_course(tmp_path, monkeypatch, add_bad_roi=True)
+    result = rr.robustness_for_course(cfg, rob, course)
+    assert result is not None and Path(result).is_file()
+    art = course / 'metadata' / _ROBUSTNESS_DISPOSITIONS
+    assert art.exists()
+    payload = json.loads(art.read_text())
+    tolerated = payload.get("tolerated_source_failures", [])
+    assert payload.get("tolerated_source_failure_count") == len(tolerated) == 1
+    entry = tolerated[0]
+    assert entry["roi_name"] == "Bad"
+    assert entry["structural_code"] not in (None, "")
+    assert entry["segmentation_source"] == "Manual"
+
+
+def test_selected_technical_failure_stays_fail_closed(tmp_path, monkeypatch):
+    """The same bad ROI inside the selection still fails the course."""
+    course, cfg, rob, _ = _real_mixed_course(
+        tmp_path, monkeypatch, add_bad_roi=True, apply_to_structures=('ROI', 'Bad')
+    )
     with pytest.raises(RadiomicsCourseExtractionError):
         rr.robustness_for_course(cfg, rob, course)
     assert not (course / 'radiomics_robustness_ct.parquet').exists()
