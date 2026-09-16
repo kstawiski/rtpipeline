@@ -4823,31 +4823,50 @@ def _convert_one_related_series(
     Every NIfTI sidecar must carry the NIfTI-derived provenance the course
     contract requires (nifti_geometry, nifti_sha256). An earlier inline
     version of this loop wrote sidecars without those keys, which
-    quarantined multi-series courses at contract validation. Returns the
-    NIfTI path, or None when conversion produced nothing.
+    quarantined multi-series courses at contract validation.
+
+    Derived names collide across distinct series (same description and
+    thickness within one study), so a name owned by a different series is
+    never overwritten: the conversion disambiguates with a numeric suffix,
+    mirroring _ensure_ct_nifti. Overwriting would corrupt the planning-CT
+    artifact and fail the next contract gate with stale provenance instead.
+
+    Returns the NIfTI path, or None when conversion produced nothing (or
+    when a previous sidecar is reused and resume is off).
     """
-    target_name = _derive_nifti_name(series_subdir)
-    meta_path = nifti_dir / f"{target_name}.metadata.json"
-    if meta_path.exists() and not config.resume:
-        return nifti_dir / f"{target_name}.nii.gz"
+    base_name = _derive_nifti_name(series_subdir)
+    series_metadata = _collect_series_metadata(series_subdir)
+    series_uid = series_metadata.get("series_instance_uid")
+    candidate = base_name
+    suffix_counter = 1
+    while True:
+        target = nifti_dir / f"{candidate}.nii.gz"
+        meta_path = nifti_dir / f"{candidate}.metadata.json"
+        if meta_path.exists():
+            try:
+                existing = json.loads(meta_path.read_text(encoding="utf-8"))
+            except Exception:
+                existing = {}
+            if existing.get("series_instance_uid") == series_uid:
+                if not config.resume:
+                    return target if target.exists() else None
+                break
+        if not target.exists():
+            break
+        suffix_counter += 1
+        candidate = f"{base_name}_{suffix_counter}"
+
+    target_path = nifti_dir / f"{candidate}.nii.gz"
     tmp_out = nifti_dir / f".tmp_{series_subdir.name}"
     tmp_out.mkdir(parents=True, exist_ok=True)
     generated = run_dcm2niix(config, series_subdir, tmp_out)
     if generated is None:
         shutil.rmtree(tmp_out, ignore_errors=True)
         return None
-    target_path = nifti_dir / f"{target_name}.nii.gz"
     if target_path.exists():
         target_path.unlink()
     shutil.move(str(generated), str(target_path))
-    metadata = _collect_series_metadata(series_subdir)
-    metadata.update(
-        {
-            "nifti_path": str(target_path),
-            "source_directory": str(series_subdir),
-            "generated_at": datetime.datetime.utcnow().isoformat() + "Z",
-        }
-    )
+    metadata = dict(series_metadata)
     nifti_provenance.annotate(
         metadata,
         target_path,
@@ -4855,6 +4874,7 @@ def _convert_one_related_series(
         regenerated=True,
         default_modality="CT",
     )
+    meta_path = nifti_dir / f"{candidate}.metadata.json"
     meta_path.write_text(
         json.dumps(metadata, indent=2),
         encoding="utf-8",
