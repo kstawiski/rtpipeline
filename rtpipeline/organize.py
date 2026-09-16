@@ -4816,7 +4816,12 @@ def _remove_course_done(config: PipelineConfig, patient_id: str, course_key: str
 
 
 def _convert_one_related_series(
-    nifti_dir: Path, series_subdir: Path, config: PipelineConfig
+    nifti_dir: Path,
+    series_subdir: Path,
+    config: PipelineConfig,
+    *,
+    name_suffix: Optional[str] = None,
+    default_modality: str = "CT",
 ) -> Optional[Path]:
     """Convert one DICOM_related series to NIfTI with a contract-complete sidecar.
 
@@ -4835,6 +4840,8 @@ def _convert_one_related_series(
     when a previous sidecar is reused and resume is off).
     """
     base_name = _derive_nifti_name(series_subdir)
+    if name_suffix and not base_name.endswith(name_suffix):
+        base_name = f"{base_name}_{name_suffix}"
     series_metadata = _collect_series_metadata(series_subdir)
     series_uid = series_metadata.get("series_instance_uid")
     candidate = base_name
@@ -4858,6 +4865,10 @@ def _convert_one_related_series(
 
     target_path = nifti_dir / f"{candidate}.nii.gz"
     tmp_out = nifti_dir / f".tmp_{series_subdir.name}"
+    # NB-4: a leftover staging dir from a crashed run must not influence
+    # converter output selection; clear it as _ensure_ct_nifti does.
+    if tmp_out.exists():
+        shutil.rmtree(tmp_out, ignore_errors=True)
     tmp_out.mkdir(parents=True, exist_ok=True)
     generated = run_dcm2niix(config, series_subdir, tmp_out)
     if generated is None:
@@ -4872,7 +4883,7 @@ def _convert_one_related_series(
         target_path,
         series_subdir,
         regenerated=True,
-        default_modality="CT",
+        default_modality=default_modality,
     )
     meta_path = nifti_dir / f"{candidate}.metadata.json"
     meta_path.write_text(
@@ -6016,37 +6027,16 @@ def organize_and_merge(
                             target_root = course_dirs.nifti
                             sanitized_sid = None
                         target_root.mkdir(parents=True, exist_ok=True)
-                        target_name = _derive_nifti_name(dicom_dir)
-                        if sanitized_sid and not target_name.endswith(sanitized_sid):
-                            target_name = f"{target_name}_{sanitized_sid}"
-                        meta_path = target_root / f"{target_name}.metadata.json"
-                        if meta_path.exists() and not config.resume:
-                            continue
-                        tmp_out = target_root / f".tmp_{series_root.name}"
-                        tmp_out.mkdir(parents=True, exist_ok=True)
-                        generated = run_dcm2niix(config, dicom_dir, tmp_out)
-                        if generated is None:
-                            shutil.rmtree(tmp_out, ignore_errors=True)
-                            continue
-                        target_path = target_root / f"{target_name}.nii.gz"
-                        if target_path.exists():
-                            target_path.unlink()
-                        shutil.move(str(generated), str(target_path))
-                        metadata = _collect_series_metadata(dicom_dir)
-                        if modality_hint and not metadata.get("modality"):
-                            metadata["modality"] = modality_hint
-                        nifti_provenance.annotate(
-                            metadata,
-                            target_path,
+                        # NB-1: same collision-safe, annotated conversion as
+                        # the main related loop (skip-if-current,
+                        # never-overwrite-foreign, contract-complete sidecar).
+                        _convert_one_related_series(
+                            target_root,
                             dicom_dir,
-                            regenerated=True,
+                            config,
+                            name_suffix=sanitized_sid,
                             default_modality=modality_hint or "CT",
                         )
-                        meta_path.write_text(
-                            json.dumps(metadata, indent=2),
-                            encoding="utf-8",
-                        )
-                        shutil.rmtree(tmp_out, ignore_errors=True)
                     except Exception as exc:
                         logger.debug("Failed converting related series %s: %s", series_root, exc)
 
