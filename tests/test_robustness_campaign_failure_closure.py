@@ -114,7 +114,34 @@ def test_failure_sidecar_receipt_admit_attrition(tmp_path, monkeypatch):
 
 
 def test_failed_outcome_never_counts_as_measured():
+    """The receipt may record it, but nothing may read it as measured."""
     assert rr.ROBUSTNESS_FAILED_OUTCOME in rc.ROBUSTNESS_COMPLETING_OUTCOMES
+    receipt = rc.RobustnessCompletionReceipt(
+        path=Path("s"),
+        course_dir=Path("P1/C1"),
+        patient_id="P1",
+        course_id="C1",
+        run_identifier="r",
+        measurement_outcome=rr.ROBUSTNESS_FAILED_OUTCOME,
+        output_name=OUTPUT_NAME,
+        dispositions_path=Path("d"),
+        dispositions_sha256="0" * 64,
+        measured_output=None,
+        measured_output_sha256=None,
+        source_disposition_count=0,
+        effective_configuration_sha256="0" * 64,
+    )
+    assert receipt.measured is False
+
+
+def test_failed_outcome_set_divergence_is_intentional():
+    """The receipt schema admits failed_extraction; the in-process outcome
+    object never carries it (failures raise before an outcome exists)."""
+    assert rr.ROBUSTNESS_FAILED_OUTCOME in rc.ROBUSTNESS_COMPLETING_OUTCOMES
+    assert (
+        rr.ROBUSTNESS_FAILED_OUTCOME
+        not in rr.ROBUSTNESS_STEP_COMPLETING_OUTCOMES
+    )
 
 
 def _run_cli(course_dir: Path, config: Path, *, campaign: bool) -> int:

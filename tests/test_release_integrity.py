@@ -435,7 +435,6 @@ def test_robustness_workflow_failure_is_not_converted_to_success():
     assert snakefile.count('--sentinel "{output.sentinel}"') == 6
     assert snakefile.count("close-robustness-upstream") == 2
     assert snakefile.count("close-robustness-failed") == 2
-    assert snakefile.count("close-robustness-upstream") == 2
     assert snakefile.count(
         'Radiomics robustness returned success without a completion receipt'
     ) == 2

@@ -1481,6 +1481,10 @@ def _radiomics_robustness_course(argv: list[str]) -> int:
         if getattr(e, "code", None) == "RADIOMICS_ENV_PROBE_TIMEOUT":
             raise
         logger.error("Robustness analysis failed: %s", e, exc_info=True)
+        # Machine-readable failure class for the campaign ledger: the
+        # course log carries the traceback, but attrition accounting
+        # needs OOM vs structural vs environment failures told apart.
+        logger.error("ROBUSTNESS_FAILURE_CLASS=%s", type(e).__name__)
         if args.campaign_mode and sentinel_path is not None:
             # D22b: publish the failure as evidence so the shell rule can
             # close the course with a ledger record instead of stopping the

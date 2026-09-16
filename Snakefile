@@ -1405,12 +1405,22 @@ if config.get("container_mode", False):
                 # ledger close below revalidates; it must NOT be removed
                 # here. Outside campaign mode there is no receipt by design.
                 if [ "{params.campaign_mode}" = "True" ]; then
+                    # NB3: carry the exception class into the ledger detail
+                    # so attrition tells OOM apart from structural failures.
+                    # Falls back to the bare constant when the log names no
+                    # class; the anchored token cannot match anything else.
+                    failure_class=$(grep -o 'ROBUSTNESS_FAILURE_CLASS=[A-Za-z_][A-Za-z0-9_]*' "{log}" 2>/dev/null | tail -n 1 | cut -d= -f2 || true)
+                    failure_detail="robustness_extraction_failed"
+                    if [ -n "$failure_class" ]; then
+                        failure_detail="robustness_extraction_failed:$failure_class"
+                    fi
                     if ! PYTHONPATH="{params.root_dir}:${{PYTHONPATH:-}}" "{params.python}" "{params.root_dir}/workflow/scripts/campaign_ledger.py" close-robustness-failed \
                         --output-dir "{params.output_dir}" \
                         --patient "{wildcards.patient}" \
                         --course "{wildcards.course}" \
                         --sentinel "{output.sentinel}" \
-                        --log-path "{log}"; then
+                        --log-path "{log}" \
+                        --detail "$failure_detail"; then
                         rm -f {output.sentinel}
                         echo "Campaign-mode robustness closure could not record robustness_extraction_failed" >&2
                         exit 1
@@ -1513,12 +1523,22 @@ else:
                 # ledger close below revalidates; it must NOT be removed
                 # here. Outside campaign mode there is no receipt by design.
                 if [ "{params.campaign_mode}" = "True" ]; then
+                    # NB3: carry the exception class into the ledger detail
+                    # so attrition tells OOM apart from structural failures.
+                    # Falls back to the bare constant when the log names no
+                    # class; the anchored token cannot match anything else.
+                    failure_class=$(grep -o 'ROBUSTNESS_FAILURE_CLASS=[A-Za-z_][A-Za-z0-9_]*' "{log}" 2>/dev/null | tail -n 1 | cut -d= -f2 || true)
+                    failure_detail="robustness_extraction_failed"
+                    if [ -n "$failure_class" ]; then
+                        failure_detail="robustness_extraction_failed:$failure_class"
+                    fi
                     if ! PYTHONPATH="{params.root_dir}:${{PYTHONPATH:-}}" "{params.python}" "{params.root_dir}/workflow/scripts/campaign_ledger.py" close-robustness-failed \
                         --output-dir "{params.output_dir}" \
                         --patient "{wildcards.patient}" \
                         --course "{wildcards.course}" \
                         --sentinel "{output.sentinel}" \
-                        --log-path "{log}"; then
+                        --log-path "{log}" \
+                        --detail "$failure_detail"; then
                         rm -f {output.sentinel}
                         echo "Campaign-mode robustness closure could not record robustness_extraction_failed" >&2
                         exit 1
