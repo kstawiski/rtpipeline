@@ -426,6 +426,14 @@ def test_unselected_technical_failure_is_tolerated_and_recorded(
     assert entry["roi_name"] == "Bad"
     assert entry["structural_code"] not in (None, "")
     assert entry["segmentation_source"] == "Manual"
+    # NB-B exclusion pins: the tolerated ROI stays out of the admitted
+    # rows, the receipt count, and the measurement table alike.
+    loaded = rr.load_robustness_source_dispositions(
+        course, run_identifier=payload["robustness_run_identifier"], rob_config=rob
+    )
+    assert all(r["roi_name"] != "Bad" for r in loaded)
+    df = pd.read_parquet(result)
+    assert "Bad" not in set(df["structure"].tolist())
 
 
 def test_selected_technical_failure_stays_fail_closed(tmp_path, monkeypatch):
