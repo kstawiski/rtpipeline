@@ -1,0 +1,5 @@
+# Defense in depth: local private workspaces are never source release content.
+/rtpipeline-manuscript export-ignore
+/rtpipeline-manuscript/** export-ignore
+/rtpipeline-manuscripts export-ignore
+/rtpipeline-manuscripts/** export-ignore
