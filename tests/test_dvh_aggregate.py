@@ -117,3 +117,74 @@ def test_dvh_aggregate_preserves_target_geometry_and_null_nonmeasurement() -> No
     assert row["Course_Treatment_Isocenter_Status"] == "multiple_plan_isocenters"
     assert row["Course_Treatment_Isocenter_Count"] == 2.0
     assert row["Course_Treatment_Isocenter_Max_Separation_mm"] == 233.137
+
+
+def _dvh_row(**overrides: object) -> dict[str, object]:
+    base: dict[str, object] = {
+        "patient_id": "P1",
+        "course_id": "C1",
+        "ROI_Number": 79.0,
+        "ROI_Name": "vertebrae_T2",
+        "ROI_OriginalName": "vertebrae_T2",
+        "row_status": "computed",
+        "DmeanGy": 10.0,
+        "DmaxGy": 12.0,
+        "treatment_technique": "EBRT",
+    }
+    base.update(overrides)
+    return base
+
+
+def test_dvh_aggregate_collapses_identical_same_mask_double_measurement() -> None:
+    """A support ROI copied into the published custom set is measured once
+    per source file with identical values (observed: 20 such pairs with
+    458/458 numeric fields identical). The census keeps one row."""
+    auto = _dvh_row(
+        Segmentation_Source="AutoRTS",
+        rtstruct_path="Output/P1/C1/RS_auto.dcm",
+    )
+    merged = _dvh_row(
+        Segmentation_Source="Merged",
+        rtstruct_path="Output/P1/C1/RS_custom.dcm",
+    )
+    aggregate = build_dvh_aggregate(
+        [pd.DataFrame([auto, merged])], [("P1", "C1", Path("P1/C1"))]
+    )
+    kept = aggregate.loc[
+        (aggregate["patient_id"] == "P1") & (aggregate["ROI_Name"] == "vertebrae_T2")
+    ]
+    assert len(kept) == 1
+    assert kept.iloc[0]["Segmentation_Source"] == "Merged"
+    assert kept.iloc[0]["DmeanGy"] == 10.0
+
+
+def test_dvh_aggregate_keeps_same_identity_rows_with_differing_values() -> None:
+    """Pairs whose measured values differ are genuinely different masks and
+    stay for the readiness gate to flag under row identity (fail-closed)."""
+    auto = _dvh_row(Segmentation_Source="AutoRTS", DmeanGy=10.0)
+    merged = _dvh_row(Segmentation_Source="Merged", DmeanGy=11.0)
+    aggregate = build_dvh_aggregate(
+        [pd.DataFrame([auto, merged])], [("P1", "C1", Path("P1/C1"))]
+    )
+    kept = aggregate.loc[
+        (aggregate["patient_id"] == "P1") & (aggregate["ROI_Name"] == "vertebrae_T2")
+    ]
+    assert len(kept) == 2
+
+
+def test_dvh_aggregate_dedup_tolerates_frames_without_identity_columns() -> None:
+    """Aggregate inputs without ROI identity columns (e.g. synthetic or
+    partial course frames) must pass through instead of raising inside
+    the same-mask deduplication (observed AttributeError on scalar NaN)."""
+    frame = pd.DataFrame(
+        [
+            {
+                "patient_id": "P1",
+                "course_id": "C1",
+                "row_status": "computed",
+                "DmeanGy": 1.0,
+            }
+        ]
+    )
+    aggregate = build_dvh_aggregate([frame], [("P1", "C1", Path("P1/C1"))])
+    assert len(aggregate) == 1
