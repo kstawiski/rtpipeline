@@ -636,3 +636,84 @@ def test_conda_batch_requires_and_attaches_ct_descriptor(
     result = pd.read_excel(output, engine="openpyxl")
     assert result.loc[0, "acq_series_instance_uid"] == selected_uid
     assert result.loc[0, "acq_observed_hu_max"] == pytest.approx(7808.0)
+
+
+def _ct_no_thickness(
+    path: Path,
+    *,
+    z: float,
+    series_uid: str,
+    thickness_tag: object = _TAG_ABSENT,
+) -> Path:
+    """Minimal CT slice with controllable SliceThickness tag and position."""
+    from pydicom.uid import generate_uid as _gen
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fm = FileMetaDataset()
+    fm.MediaStorageSOPClassUID = CTImageStorage
+    fm.MediaStorageSOPInstanceUID = _gen()
+    fm.TransferSyntaxUID = ExplicitVRLittleEndian
+    ds = FileDataset(str(path), {}, file_meta=fm, preamble=b"\0" * 128)
+    ds.SOPClassUID = fm.MediaStorageSOPClassUID
+    ds.SOPInstanceUID = fm.MediaStorageSOPInstanceUID
+    ds.Modality = "CT"
+    ds.SeriesInstanceUID = series_uid
+    ds.StudyInstanceUID = _gen()
+    ds.Manufacturer = "Siemens"
+    ds.KVP = 120.0
+    if thickness_tag is not _TAG_ABSENT:
+        ds.SliceThickness = thickness_tag
+    ds.ImagePositionPatient = [0.0, 0.0, z]
+    ds.ImageOrientationPatient = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0]
+    ds.RescaleSlope = 1.0
+    ds.RescaleIntercept = -1024.0
+    ds.Rows = ds.Columns = 4
+    ds.BitsAllocated = 16
+    ds.BitsStored = 16
+    ds.HighBit = 15
+    ds.PixelRepresentation = 0
+    ds.SamplesPerPixel = 1
+    ds.PhotometricInterpretation = "MONOCHROME2"
+    arr = np.zeros((4, 4), dtype=np.uint16)
+    ds.PixelData = arr.tobytes()
+    ds.save_as(path, enforce_file_format=True)
+    return path
+
+
+def test_thickness_falls_back_to_uniform_slice_positions(tmp_path: Path) -> None:
+    """A series lacking the SliceThickness tag (observed: a 2011 head scan)
+    recovers 5.0 mm from regular slice positions and records the derivation."""
+    from pydicom.uid import generate_uid as _gen
+    from rtpipeline.acquisition_scale import describe_planning_ct as _describe
+    uid = _gen()
+    ct = tmp_path / "CT"
+    for index, z in enumerate((0.0, 5.0, 10.0)):
+        _ct_no_thickness(ct / f"s{index}.dcm", z=z, series_uid=uid)
+    descriptor = _describe(ct)
+    assert descriptor["acq_provenance_status"] == "ok"
+    assert descriptor["acq_slice_thickness"] == pytest.approx(5.0)
+    assert "slice-position spacing" in (descriptor["acq_provenance_detail"] or "")
+
+
+def test_thickness_stays_absent_for_irregular_spacing(tmp_path: Path) -> None:
+    """Gapped series must not masquerade spacing as thickness."""
+    from pydicom.uid import generate_uid as _gen
+    from rtpipeline.acquisition_scale import describe_planning_ct as _describe
+    uid = _gen()
+    ct = tmp_path / "CT"
+    for index, z in enumerate((0.0, 5.0, 12.0)):
+        _ct_no_thickness(ct / f"s{index}.dcm", z=z, series_uid=uid)
+    descriptor = _describe(ct)
+    assert descriptor["acq_slice_thickness"] is None
+
+
+def test_thickness_tag_wins_over_positions(tmp_path: Path) -> None:
+    """A present uniform tag is authoritative; no derivation note is added."""
+    from pydicom.uid import generate_uid as _gen
+    from rtpipeline.acquisition_scale import describe_planning_ct as _describe
+    uid = _gen()
+    ct = tmp_path / "CT"
+    for index, z in enumerate((0.0, 5.0, 10.0)):
+        _ct_no_thickness(ct / f"s{index}.dcm", z=z, series_uid=uid, thickness_tag=5.0)
+    descriptor = _describe(ct)
+    assert descriptor["acq_slice_thickness"] == pytest.approx(5.0)
+    assert "slice-position spacing" not in (descriptor["acq_provenance_detail"] or "")

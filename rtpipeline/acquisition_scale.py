@@ -151,6 +151,36 @@ def _uniform(values: Sequence[Any]) -> Any:
     return first if all(value == first for value in values[1:]) else None
 
 
+def _uniform_slice_spacing_from_positions(position_lists: Sequence[Any]) -> Optional[float]:
+    """Reconstruct slice spacing from ImagePositionPatient z values.
+
+    Returns the uniform spacing only when at least two distinct slice
+    positions exist and every consecutive gap agrees within 1% relative
+    tolerance. Returns None for single-slice, duplicate-position, or
+    irregularly spaced series: those must not masquerade as a measured
+    thickness (observed: a 2011 head series lacking the SliceThickness
+    tag whose NIfTI z-spacing is exactly 5.0 mm).
+    """
+    zetas: list[float] = []
+    for positions in position_lists:
+        try:
+            values = list(positions or [])
+            zeta = float(values[2])
+        except (TypeError, ValueError, IndexError):
+            return None
+        if zeta != zeta:
+            return None
+        zetas.append(zeta)
+    ordered = sorted(zetas)
+    gaps = [later - earlier for earlier, later in zip(ordered, ordered[1:])]
+    if not gaps or any(gap <= 0 for gap in gaps):
+        return None
+    first = gaps[0]
+    if any(abs(gap - first) > 0.01 * first for gap in gaps[1:]):
+        return None
+    return first
+
+
 def _unreadable(
     series_instance_uid: Optional[str],
     detail: str,
@@ -380,6 +410,21 @@ def describe_planning_ct(
             detail=detail,
             instance_count=len(datasets),
         )
+        tag_thickness = _uniform(
+            [_number(dataset, "SliceThickness") for dataset in datasets]
+        )
+        if tag_thickness is None:
+            fallback_spacing = _uniform_slice_spacing_from_positions(
+                [getattr(dataset, "ImagePositionPatient", None) for dataset in datasets]
+            )
+            if fallback_spacing is not None:
+                tag_thickness = fallback_spacing
+                note = (
+                    "SliceThickness tag absent; thickness reconstructed from "
+                    "uniform slice-position spacing."
+                )
+                detail = f"{detail}; {note}" if detail else note
+                descriptor["acq_provenance_detail"] = detail
         descriptor.update(
             {
                 "acq_manufacturer": _uniform(
@@ -393,9 +438,7 @@ def describe_planning_ct(
                 "acq_kvp": _uniform(
                     [_number(dataset, "KVP") for dataset in datasets]
                 ),
-                "acq_slice_thickness": _uniform(
-                    [_number(dataset, "SliceThickness") for dataset in datasets]
-                ),
+                "acq_slice_thickness": tag_thickness,
                 "acq_rescale_slope": _uniform(slopes),
                 "acq_rescale_intercept": _uniform(intercepts),
                 "acq_bits_stored": _uniform(bits_values),

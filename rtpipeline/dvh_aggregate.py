@@ -4,10 +4,13 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 DVH_AGGREGATE_SCHEMA_VERSION = "rtpipeline-dvh-aggregate-v2"
 DVH_IDENTIFIER_COLUMNS = (
@@ -209,6 +212,98 @@ def _normalise_types(frame: pd.DataFrame) -> pd.DataFrame:
     return frame
 
 
+def _optional_text_column(frame: pd.DataFrame, column: str) -> pd.Series:
+    if column in frame.columns:
+        return frame[column]
+    return pd.Series([pd.NA] * len(frame), index=frame.index)
+
+
+def _same_mask_group_key(frame: pd.DataFrame) -> pd.Series:
+    numbers = pd.to_numeric(_optional_text_column(frame, "ROI_Number"), errors="coerce")
+    return (
+        _optional_text_column(frame, "patient_id").astype("string").fillna("<NA>").astype(str)
+        + "\x1f"
+        + _optional_text_column(frame, "course_id").astype("string").fillna("<NA>").astype(str)
+        + "\x1f"
+        + numbers.map(lambda v: str(int(v)) if pd.notna(v) else "<NA>")
+        + "\x1f"
+        + _optional_text_column(frame, "ROI_Name").astype("string").fillna("<NA>").astype(str)
+        + "\x1f"
+        + _optional_text_column(frame, "ROI_OriginalName").astype("string").fillna("<NA>").astype(str)
+    )
+
+
+def _deduplicate_same_mask_measurements(combined: pd.DataFrame) -> tuple[pd.DataFrame, int]:
+    """Collapse same-mask double measurements to one census row.
+
+    A support ROI copied from the automatic structure set into the
+    published custom set is measured once per source file, producing two
+    rows with identical values. Keeping both double-counts the ROI in any
+    pooled summary (observed: 20 such pairs with 458/458 numeric fields
+    identical). When every numeric dose column agrees exactly (NaN counts
+    as equal), retain the Merged published-set row and drop the copy;
+    pairs whose values differ are kept so the readiness gate still flags
+    them under row identity. Rows without a usable identity never collapse.
+    Returns the frame and the dropped-row count.
+    """
+    if combined.empty or "row_status" not in combined:
+        return combined, 0
+    measurable = combined["row_status"].astype("string").eq("computed").fillna(False)
+    names = _optional_text_column(combined, "ROI_Name")
+    names_ok = names.notna() & (names.astype(str).str.strip() != "")
+    numbers = pd.to_numeric(_optional_text_column(combined, "ROI_Number"), errors="coerce")
+    numbers_ok = numbers.notna() & (numbers >= 0)
+    eligible = measurable & names_ok & numbers_ok
+    if not bool(eligible.any()):
+        return combined, 0
+    numeric_columns = [
+        column
+        for column in combined.columns
+        if pd.api.types.is_numeric_dtype(combined[column])
+    ]
+    keys = _same_mask_group_key(combined)
+    drop: list[int] = []
+    for _, group in combined[eligible].groupby(keys[eligible], sort=False):
+        if len(group) < 2:
+            continue
+        sources = (
+            _optional_text_column(group, "Segmentation_Source").astype("string").fillna("").tolist()
+        )
+        if len({str(value) for value in sources}) < 2:
+            continue
+        block = group[numeric_columns].to_numpy()
+        first = block[0]
+        identical = True
+        for other in block[1:]:
+            for left, right in zip(first, other):
+                if pd.isna(left) and pd.isna(right):
+                    continue
+                if pd.isna(left) or pd.isna(right) or left != right:
+                    identical = False
+                    break
+            if not identical:
+                break
+        if not identical:
+            continue
+        keep_position = None
+        for position, source in enumerate(sources):
+            if str(source).strip().lower() == "merged":
+                keep_position = position
+                break
+        if keep_position is None:
+            keep_position = 0
+        for position, label in enumerate(group.index):
+            if position != keep_position:
+                drop.append(label)
+    if drop:
+        logger.info(
+            "Dropping %d same-mask double-measurement rows (identical values, one census row kept).",
+            len(drop),
+        )
+        combined = combined.drop(index=drop).reset_index(drop=True)
+    return combined, len(drop)
+
+
 def build_dvh_aggregate(
     frames: Iterable[pd.DataFrame],
     courses: Iterable[tuple[str, str, Path]],
@@ -315,6 +410,7 @@ def build_dvh_aggregate(
             }
         )
     combined = pd.concat([*valid_frames, pd.DataFrame(rows)], ignore_index=True, sort=False)
+    combined, _deduplicated = _deduplicate_same_mask_measurements(combined)
     for column in DVH_REQUIRED_COLUMNS:
         if column not in combined:
             combined[column] = pd.NA
