@@ -380,16 +380,7 @@ def test_exact_crosswalk_uses_defensible_anatomic_classes(name, roi_class):
 @pytest.mark.parametrize(
     "name",
     [
-        "Bronchus_L",
-        "Bronchus_R",
-        "Krtan",
-        "Oskrzele_L",
-        "Oskrzele_R",
         "PBT",
-        "Pluco Suma M",
-        "Pluco Suma M - PTV1",
-        "Pluco Suma M - PTV3",
-        "Rdzen Marg",
     ],
 )
 def test_ambiguous_names_remain_unadjudicated_without_a_governed_class(name):
@@ -397,6 +388,34 @@ def test_ambiguous_names_remain_unadjudicated_without_a_governed_class(name):
 
     assert decision.roi_class == "unresolved_mixed"
     assert decision.adjudication_status == "operator_adjudication_required"
+
+
+@pytest.mark.parametrize(
+    ("name", "roi_class"),
+    [
+        ("Bronchus_L", "solid_soft_tissue_neural"),
+        ("Bronchus_R", "solid_soft_tissue_neural"),
+        ("Krtan", "solid_soft_tissue_neural"),
+        ("Oskrzele_L", "solid_soft_tissue_neural"),
+        ("Oskrzele_R", "solid_soft_tissue_neural"),
+        ("Pluco Suma M", "solid_soft_tissue_neural"),
+        ("Pluco Suma M - PTV1", "planning_helper"),
+        ("Pluco Suma M - PTV3", "planning_helper"),
+        ("Rdzen Marg", "planning_helper"),
+    ],
+)
+def test_single_analyst_adjudicated_names_reach_governed_verdicts(name, roi_class):
+    """Single-analyst adjudication 2026-09-17 moved these names out of the
+    fail-closed set with per-name evidence (analysis/roi_kopernik/
+    adjudication_proposal_20260917.csv). Exact anatomic translations and
+    lung-minus-target booleans resolved through the governed anatomy set."""
+    decision = contract.classify_ct_roi("Manual", name)
+
+    assert decision.roi_class == roi_class
+    assert decision.adjudication_status in {
+        "approved_by_anatomic_equivalence",
+        "approved_non_anatomic_planning_helper",
+    }
 
 
 @pytest.mark.parametrize(
