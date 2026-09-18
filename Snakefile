@@ -1245,7 +1245,6 @@ if config.get("container_mode", False):
             output_dir=lambda w, output: str(Path(output.sentinel).parents[2]),
             logs_dir=str(LOGS_DIR),
             custom_structures="",
-            workflow_threads=SNAKEMAKE_THREADS
         script:
             "workflow/scripts/run_course_stage.py"
 else:
@@ -1275,7 +1274,6 @@ else:
             output_dir=lambda w, output: str(Path(output.sentinel).parents[2]),
             logs_dir=str(LOGS_DIR),
             custom_structures="",
-            workflow_threads=SNAKEMAKE_THREADS
         script:
             "workflow/scripts/run_course_stage.py"
 
