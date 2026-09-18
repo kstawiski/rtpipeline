@@ -3429,6 +3429,43 @@ def _robustness_selection_requiredness(
     return requiredness
 
 
+def robustness_roi_in_publication_base(
+    source: str,
+    roi_name: str,
+    custom_provenance: Any = None,
+) -> tuple[bool, str, str]:
+    """Decide whether a robustness-selected ROI has a baseline to be robust against.
+
+    Returns (keep, roi_class, reason). An ROI the main radiomics path retains
+    for inventory only (e.g. a Boolean planning-helper shell) carries no
+    published measurement, and the isolated worker cannot extract it, so
+    selecting it voids the whole course at the completeness gate. Such ROIs
+    are excluded with a reason instead. A classification failure keeps the
+    ROI (fail-open toward measurement, fail-closed at the gate).
+    """
+    from .radiomics_ct_contract import (
+        FEATURE_POLICY_INVENTORY_ONLY,
+        classify_ct_roi,
+    )
+
+    try:
+        decision = classify_ct_roi(
+            source,
+            roi_name,
+            custom_provenance=custom_provenance if source == "Custom" else None,
+        )
+    except Exception as exc:
+        return True, "", f"no class decision ({exc}); kept for measurement"
+    if decision.feature_publication_policy == FEATURE_POLICY_INVENTORY_ONLY:
+        return (
+            False,
+            str(decision.roi_class),
+            f"ROI class {decision.roi_class} is retained for inventory only "
+            "by main radiomics; robustness measures published measurements only.",
+        )
+    return True, str(decision.roi_class), "published measurement base"
+
+
 def robustness_for_course(
     config: PipelineConfig,
     rob_config: RobustnessConfig,
@@ -3859,8 +3896,50 @@ def robustness_for_course(
             reason_detail,
         )
 
+    from .radiomics_ct_contract import load_custom_structure_provenance
+    custom_structure_provenance = None
+    try:
+        custom_structures_config = getattr(config, "custom_structures_config", None)
+        if custom_structures_config:
+            custom_structure_provenance = load_custom_structure_provenance(
+                Path(custom_structures_config)
+            )
+    except Exception as exc:
+        logger.debug("Robustness selection proceeds without custom provenance: %s", exc)
+        custom_structure_provenance = None
+    inventory_only_excluded = 0
     for roi_name, source in all_masks:
         if not _matches_robustness_pattern(roi_name):
+            continue
+        # Robustness quantifies the stability of PUBLISHED measurements. An
+        # ROI the main radiomics path retains for inventory only (e.g. a
+        # Boolean planning-helper shell with no baseline measurement) has no
+        # baseline to be robust against, and the isolated worker cannot
+        # extract it — observed as 104 voided courses whose missing tasks
+        # were all such shells. Exclude with a ledger row, not a failure.
+        keep, selection_class, selection_reason = robustness_roi_in_publication_base(
+            source, roi_name, custom_provenance=custom_structure_provenance
+        )
+        if not keep:
+            inventory_only_excluded += 1
+            identity_ledger_rows.append(
+                {
+                    "segmentation_source": source,
+                    "roi_original_name": roi_name,
+                    "identity_status": "excluded",
+                    "measurement_type": ROBUSTNESS_MEASUREMENT_TYPE,
+                    "reason_code": "robustness_not_in_publication_base",
+                    "reason_detail": selection_reason,
+                    **identity_catalog[(source, roi_name)].as_dict(),
+                }
+            )
+            logger.info(
+                "Excluding robustness ROI %s/%s: inventory-only class %s, "
+                "no baseline measurement to be robust against",
+                source,
+                roi_name,
+                selection_class,
+            )
             continue
         selected_structures.append((roi_name, source))
         identity = identity_catalog[(source, roi_name)]
@@ -3977,6 +4056,13 @@ def robustness_for_course(
                     "every source ROI matching the robustness selection is "
                     "non-volumetric"
                 )
+            elif inventory_only_excluded:
+                nonmeasured_outcome = ROBUSTNESS_SOURCE_ONLY_OUTCOME
+                reason = (
+                    "every source ROI matching the robustness selection is "
+                    "retained for inventory only by main radiomics; no "
+                    "published measurement exists to be robust against"
+                )
             else:
                 nonmeasured_outcome = ROBUSTNESS_UNMATCHED_SELECTION_OUTCOME
                 reason = (
@@ -3990,6 +4076,7 @@ def robustness_for_course(
                 source_only_basis={
                     "selected_structure_count": 0,
                     "unresolved_identity_count": 0,
+                    "inventory_only_excluded_count": inventory_only_excluded,
                     "collected_mask_count": len(all_masks),
                     "source_disposition_count": len(source_disposition_rows),
                     "selection_matched_nonvolumetric_count": len(
