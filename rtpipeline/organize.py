@@ -7029,6 +7029,48 @@ def organize_and_merge(
                         )
                         if warning not in co.delivery_warnings:
                             co.delivery_warnings.append(warning)
+            elif clinical_record_index is not None:
+                # No selected plan exists for this course (e.g. an undated
+                # plan-less fragment), so the prescription question is
+                # vacuous — but the absence must still be evidenced rather
+                # than silent. Adjudicate with empty plan inputs: the
+                # matcher documents a REFUSED outcome bound to the workbook
+                # identity instead of leaving no evidence record at all.
+                clinical_prescription_evidence = adjudicate_clinical_prescription(
+                    clinical_record_index,
+                    patient_id=co.patient_id,
+                    course_id=co.course_id,
+                    course_start_date=(
+                        start_date.isoformat()
+                        if start_date is not None
+                        else (co.course_start or "")
+                    ),
+                    course_end_date=(
+                        end_date.isoformat() if end_date is not None else ""
+                    ),
+                    plan_dates=[],
+                    treatment_dates=[],
+                    dicom_resolved_total_gy=None,
+                    dicom_prescribed_dose_scope=dicom_prescribed_dose_scope,
+                    dicom_classification=str(
+                        co.dose_classification.get("classification") or ""
+                    )
+                    or None,
+                    per_plan_delivery=[],
+                )
+                clinical_prescription_evidence["dicom"]["delivery_status"] = (
+                    co.delivery_status
+                )
+                clinical_prescription_evidence["dicom"]["delivery_method"] = (
+                    co.delivery_method
+                )
+                clinical_prescription_evidence["dicom"]["delivered_dose_gy"] = (
+                    co.delivered_dose_gy
+                )
+                clinical_prescription_evidence = record_clinical_evidence_regeneration(
+                    clinical_prescription_evidence,
+                    previous_clinical_prescription_evidence,
+                )
             published_dose = _scope_aware_course_dose_publication(
                 prescribed_dose_scope=prescribed_dose_scope,
                 course_prescribed_dose_gy=candidate_prescribed_dose_gy,
