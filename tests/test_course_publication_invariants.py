@@ -35,8 +35,12 @@ BASE_FUNCTION_AST_SHA256 = {
 }
 
 # SHA-256 of supporting modules the adjudication change must leave byte-identical.
+# Updated 2026-09-18: course_contract.py admits plan-absence UNRESOLVED
+# attestations (no effective source) through the plan-less gate; the
+# prohibition on effective-source claims without plans is unchanged and
+# covered by test_plan_absence_contract_gate.py.
 BASE_MODULE_SHA256 = {
-    "course_contract.py": "28c4b43b9b4562ae5dc7343b645ef4f0929088e4acc5635edd2559098295187b",
+    "course_contract.py": "916a75251122e679ffac3df7e6030d0b0b1fd0d5fa6d0d47f4edbb749bed8128",
     "prescription.py": "723c8657c60f48c50b0d31decf0eb458c93d435f597c56724ee748c1b264ce7a",
     "plan_approval.py": "fc213a8ef85e9ec2698c6bfec7bee3877df61b6b7d835257038cd2a470c21aed",
 }
