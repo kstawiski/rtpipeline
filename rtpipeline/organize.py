@@ -3716,6 +3716,89 @@ def _mask_array_to_image(ct_img: sitk.Image, mask: np.ndarray) -> Optional[sitk.
     return img
 
 
+_ORIGINAL_SEGMENTATION_PROVENANCE = "provenance.json"
+_ORIGINAL_PROVENANCE_BOUND_KEYS = (
+    "schema",
+    "source_rtstruct_sha256",
+    "planning_ct_series_instance_uid",
+    "source_ct_sop_hash",
+    "source_nifti_geometry",
+)
+
+
+def _original_segmentation_provenance(
+    rs_path: Path, primary_nifti: Path
+) -> Optional[dict]:
+    """Return the content identity used to rasterize original ROI masks."""
+    sidecar = primary_nifti.parent / f"{_strip_nifti_base(primary_nifti)}.metadata.json"
+    try:
+        data = json.loads(sidecar.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    series_uid = str(data.get("series_instance_uid") or "").strip()
+    sop_hash = str(data.get("sop_hash") or "").strip()
+    geometry = data.get("nifti_geometry")
+    if not series_uid or not sop_hash or not isinstance(geometry, dict) or not geometry:
+        return None
+    try:
+        rtstruct_sha256 = hashlib.sha256(rs_path.read_bytes()).hexdigest()
+    except OSError:
+        return None
+    return {
+        "schema": "rtpipeline-original-segmentation-provenance-v1",
+        "source_rtstruct_sha256": rtstruct_sha256,
+        "planning_ct_series_instance_uid": series_uid,
+        "source_ct_sop_hash": sop_hash,
+        "source_nifti_geometry": geometry,
+        "source_nifti_sha256": str(data.get("nifti_sha256") or ""),
+    }
+
+
+def _original_masks_reusable(
+    target_root: Path,
+    seg_root: Path,
+    manifest: object,
+    provenance: Optional[dict],
+) -> tuple[bool, str]:
+    """Validate an existing original-ROI export before reusing it."""
+    if provenance is None:
+        return False, "planning CT sidecar provenance is unavailable"
+    try:
+        recorded = json.loads(
+            (target_root / _ORIGINAL_SEGMENTATION_PROVENANCE).read_text(encoding="utf-8")
+        )
+    except Exception:
+        return False, "the existing export records no content provenance"
+    if not isinstance(recorded, dict):
+        return False, "recorded provenance is not an object"
+    for key in _ORIGINAL_PROVENANCE_BOUND_KEYS:
+        if recorded.get(key) != provenance[key]:
+            return False, f"recorded {key} does not match the current input"
+    if not isinstance(manifest, dict):
+        return False, "the existing manifest is not an object"
+    structures = manifest.get("structures")
+    if not isinstance(structures, list) or not structures:
+        return False, "the existing manifest lists no structures"
+    root = seg_root.resolve(strict=False)
+    for item in structures:
+        relative = item.get("mask") if isinstance(item, dict) else None
+        if not isinstance(relative, str) or not relative:
+            return False, "the existing manifest has an invalid mask path"
+        mask_path = (seg_root / relative).resolve(strict=False)
+        try:
+            mask_path.relative_to(root)
+        except ValueError:
+            return False, "the existing manifest names a mask outside its export directory"
+        try:
+            if not mask_path.is_file() or mask_path.stat().st_size == 0:
+                return False, f"manifest mask {relative} is missing or empty"
+        except OSError as exc:
+            return False, f"manifest mask {relative} is unreadable: {exc}"
+    return True, f"{len(structures)} original ROI mask(s) match the recorded inputs"
+
+
 def _export_original_segmentation_from_paths(
     *,
     rs_path: Optional[Path],
@@ -3732,11 +3815,23 @@ def _export_original_segmentation_from_paths(
     target_root = seg_root / base_name
     ensure_dir(target_root)
     manifest_path = target_root / "metadata.json"
+    provenance = _original_segmentation_provenance(rs_path, primary_nifti)
     if manifest_path.exists() and not overwrite:
         try:
-            return json.loads(manifest_path.read_text(encoding="utf-8"))
+            existing = json.loads(manifest_path.read_text(encoding="utf-8"))
         except Exception:
-            pass
+            existing = None
+        reusable, reason = _original_masks_reusable(
+            target_root, seg_root, existing, provenance
+        )
+        if reusable:
+            logger.info(
+                "original_segmentation event=reused root=%s reason=%s", log_root, reason
+            )
+            return existing
+        logger.info(
+            "original_segmentation event=re_export root=%s reason=%s", log_root, reason
+        )
     try:
         from rt_utils import RTStructBuilder
     except Exception as exc:
@@ -3798,11 +3893,27 @@ def _export_original_segmentation_from_paths(
         )
 
     if manifest["structures"]:
+        manifest_written = True
         try:
             manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
         except Exception as exc:
+            manifest_written = False
             logger.warning("Failed to write segmentation manifest for %s: %s", log_root, exc)
+        provenance_path = target_root / _ORIGINAL_SEGMENTATION_PROVENANCE
+        if manifest_written and provenance is not None:
+            try:
+                provenance_path.write_text(json.dumps(provenance, indent=2), encoding="utf-8")
+            except Exception as exc:
+                logger.warning(
+                    "Failed to record original-segmentation provenance for %s: %s",
+                    log_root,
+                    exc,
+                )
+                provenance_path.unlink(missing_ok=True)
+        else:
+            provenance_path.unlink(missing_ok=True)
         return manifest
+    (target_root / _ORIGINAL_SEGMENTATION_PROVENANCE).unlink(missing_ok=True)
     return None
 
 
@@ -6293,7 +6404,7 @@ def organize_and_merge(
         (patient_dir / ".organized").unlink(missing_ok=True)
         try:
             manual_manifest = _export_original_segmentation(
-                co, overwrite=bool(config.resume)
+                co, overwrite=not config.resume
             )
             nifti_files = sorted(co.dirs.nifti.glob("*.nii*"))
             plan_uids: set[str] = set()

@@ -322,6 +322,17 @@ def test_original_segmentation_export_reuses_cached_manifest_on_rerun(tmp_path: 
     rs_path.write_text("rs", encoding="utf-8")
     primary_nifti = tmp_path / "ct.nii.gz"
     primary_nifti.write_text("nifti", encoding="utf-8")
+    (tmp_path / "ct.metadata.json").write_text(
+        json.dumps(
+            {
+                "series_instance_uid": "SERIES",
+                "sop_hash": "SOPS",
+                "nifti_geometry": {"shape": [1, 2, 2]},
+                "nifti_sha256": "NIFTI",
+            }
+        ),
+        encoding="utf-8",
+    )
     dicom_ct_dir = tmp_path / "DICOM"
     dicom_ct_dir.mkdir()
     (dicom_ct_dir / "IM_0001.dcm").write_text("ct", encoding="utf-8")
