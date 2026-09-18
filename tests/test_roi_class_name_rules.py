@@ -23,7 +23,7 @@ def test_unqualified_targets_reach_real_class_decision(name):
     assert decision.roi_class == "target"
     assert decision.primary_resegment_range_hu == (-1000, 400)
     assert decision.feature_publication_policy == contract.FEATURE_POLICY_EXTRACT
-    assert decision.map_version == "ct-roi-class-map-2026-09-06-v6"
+    assert decision.map_version == "ct-roi-class-map-2026-09-17-v7"
 
 
 @pytest.mark.parametrize("name", [
