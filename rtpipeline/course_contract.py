@@ -1584,7 +1584,16 @@ def validate_course_contract(contract: CourseContract) -> CourseContract:
     if not prescription_plan_uids <= approved_context_uids:
         raise CourseContractError("prescription references a plan that is not APPROVED")
     if not selected_plans and data.get("clinical_prescription_evidence") is not None:
-        raise CourseContractError("clinical prescription requires an eligible selected RTPLAN")
+        # A plan-less course cannot resolve a prescription, but it may attest
+        # the absence: an UNRESOLVED record with no effective source carries
+        # no prescription claim. Anything claiming a source stays rejected.
+        absence = data.get("clinical_prescription_evidence") or {}
+        if not (
+            absence.get("outcome") == "UNRESOLVED"
+            and absence.get("effective_prescription_source") is None
+            and absence.get("effective_resolved_total_gy") is None
+        ):
+            raise CourseContractError("clinical prescription requires an eligible selected RTPLAN")
     course_source_doses = selected_source_doses
     course_resolved_doses = selected_resolved_doses
     if prescription_plan_uids:
