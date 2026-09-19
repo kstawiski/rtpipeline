@@ -69,11 +69,17 @@ def test_failed_worker_is_loud_and_other_tasks_finish(mode,reason,caplog):
 
 
 def test_deadline_enumerates_running_and_queued_conditions():
-    results=collect(['normal','progress','normal'],budget=.18,stall=1)
+    # The budget must outlast worker start-up but not the blocked task, or the
+    # deadline lands before task 1 is running and both failures read
+    # 'not_started'. A 30 s block against a 2 s budget leaves that margin on a
+    # loaded machine; stall > budget keeps the reason 'course_deadline' rather
+    # than the progress watchdog.
+    results=collect(['normal','hang','normal'],budget=2,stall=20)
     assert results[0]['value']==42
     failures=[r for r in results if '__technical_failure__' in r]
     assert {r['__task_index__'] for r in failures}=={1,2}
     assert {r['__technical_failure__']['evidence']['task_state'] for r in failures}=={'running','not_started'}
+    assert {r['__technical_failure__']['reason_code'] for r in failures}=={'course_deadline'}
 
 
 def test_spawn_normal_course_is_unaffected():
