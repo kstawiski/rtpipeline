@@ -2939,6 +2939,18 @@ def _validate_cohort_feature_sets(df_long: pd.DataFrame) -> None:
     feature would disappear from that subject before feature-wise grouping and
     silently bias the cohort summary.
     """
+    # A non-measurement row -- a geometrically impossible perturbation, a
+    # non-volumetric ROI -- carries no feature name by construction. It is
+    # evidence that a condition could not be measured, not a feature
+    # assignment. Comparing it as one turns a null into the literal string
+    # "None" under astype(str), invents a phantom feature in the union, and
+    # fails the whole cohort because every other subject "lacks" it.
+    if "feature_name" in df_long.columns:
+        named = df_long["feature_name"].notna()
+        if "robustness_status" in df_long.columns:
+            named &= df_long["robustness_status"].astype("string").fillna("") == "measured"
+        df_long = df_long[named]
+
     required = {"patient_id", "structure", "feature_name"}
     missing = sorted(required - set(df_long.columns))
     if missing:
@@ -2967,10 +2979,17 @@ def _validate_cohort_feature_sets(df_long: pd.DataFrame) -> None:
             group_values = group_key if isinstance(group_key, tuple) else (group_key,)
             group_label = dict(zip(comparison_columns, group_values))
             missing_counts = [len(union - features) for features in inconsistent.tolist()]
+            example_subject = inconsistent.index[0]
+            example_missing = sorted(union - inconsistent.iloc[0])
+            shown = ", ".join(example_missing[:5])
+            if len(example_missing) > 5:
+                shown += f", +{len(example_missing) - 5} more"
             raise ValueError(
                 "inconsistent feature sets across subjects for "
                 f"{group_label}: {len(inconsistent)} subject(s) missing "
-                f"{sum(missing_counts)} feature assignment(s)"
+                f"{sum(missing_counts)} feature assignment(s); "
+                f"union has {len(union)} feature(s); e.g. subject {example_subject} "
+                f"lacks: {shown}"
             )
 
 
