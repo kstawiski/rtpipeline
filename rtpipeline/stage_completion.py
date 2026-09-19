@@ -34,6 +34,11 @@ class ArtifactRule:
     role: str
     pattern: str
     binding: str
+    # A filename pattern alone cannot tell a stage's own artifact from a foreign
+    # file that happens to match it. When the stage writes a manifest of what it
+    # produced, name it here and the rule claims only the recorded paths.
+    manifest: str | None = None
+    manifest_key: str | None = None
 
 
 @dataclass(frozen=True)
@@ -121,7 +126,13 @@ _STAGE_DEFINITIONS: dict[str, StageDefinition] = {
         configuration_stage="crop-ct",
         binding_policy="crop-ct-content-v1",
         rules=(
-            ArtifactRule("cropped_image_or_mask", "**/*_cropped.nii.gz", "content_sha256"),
+            ArtifactRule(
+                "cropped_image_or_mask",
+                "**/*_cropped.nii.gz",
+                "content_sha256",
+                manifest="cropping_metadata.json",
+                manifest_key="cropped_files",
+            ),
             ArtifactRule("cropped_rtstruct", "RS_auto_cropped.dcm", "content_sha256"),
             ArtifactRule("cropping_metadata", "cropping_metadata.json", "content_sha256"),
         ),
@@ -326,14 +337,63 @@ def _artifact_entry(course_dir: Path, path: Path, role: str, binding: str) -> di
     return entry
 
 
+def _rule_manifest_paths(root: Path, rule: ArtifactRule) -> set[str] | None:
+    """Course-relative paths a manifest-scoped rule is allowed to claim.
+
+    ``None`` means the rule is not manifest-scoped and its pattern stands alone.
+    An unreadable or absent manifest yields the empty set: a stage that recorded
+    nothing produced nothing, whatever files happen to match the pattern. This
+    is what keeps a clinician ROI named ``zPTV_55_cropped`` -- whose
+    segmentation mask is ``zPTV_55_cropped.nii.gz`` -- from being mistaken for
+    an anatomical-cropping output.
+    """
+    if rule.manifest is None:
+        return None
+    try:
+        payload = json.loads((root / rule.manifest).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return set()
+    recorded: Any = payload
+    if rule.manifest_key is not None:
+        if not isinstance(payload, Mapping):
+            return set()
+        recorded = payload.get(rule.manifest_key)
+    if isinstance(recorded, Mapping):
+        values: Iterable[Any] = recorded.values()
+    elif isinstance(recorded, (list, tuple)):
+        values = recorded
+    else:
+        return set()
+    allowed: set[str] = set()
+    root_resolved = root.resolve(strict=False)
+    for value in values:
+        if not isinstance(value, (str, Path)):
+            continue
+        candidate = Path(value)
+        if not candidate.is_absolute():
+            candidate = root / candidate
+        try:
+            allowed.add(
+                candidate.resolve(strict=False)
+                .relative_to(root_resolved)
+                .as_posix()
+            )
+        except ValueError:
+            continue
+    return allowed
+
+
 def _discover_outputs(course_dir: Path, definition: StageDefinition) -> list[dict[str, Any]]:
     root = Path(course_dir)
     selected: dict[str, tuple[Path, str, str]] = {}
     for rule in definition.rules:
+        allowed = _rule_manifest_paths(root, rule)
         for candidate in sorted(root.glob(rule.pattern)):
             if not (candidate.is_file() or candidate.is_symlink()):
                 continue
             relative = candidate.relative_to(root).as_posix()
+            if allowed is not None and relative not in allowed:
+                continue
             previous = selected.get(relative)
             if previous is None or (
                 previous[2] == "inventory" and rule.binding == "content_sha256"
