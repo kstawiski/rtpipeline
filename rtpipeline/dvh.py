@@ -2818,6 +2818,46 @@ def _compute_nifti_based_dvh(
     return results
 
 
+def _publish_skipped_course_rs_custom(
+    course_dir: Path,
+    custom_structures_config: Optional[Union[str, Path]],
+    rs_manual: Path,
+) -> None:
+    """Publish RS_custom.dcm for a course that emits no dose metrics.
+
+    RS_custom.dcm and metadata/rs_custom_meta.json are bound outputs of the DVH
+    stage. A course without an authoritative dose grid still reaches radiomics,
+    and radiomics rebuilds a missing RS_custom.dcm; that later write lands after
+    the DVH completion sentinel is published and leaves the sentinel declaring
+    an incomplete output set, which blocks cohort aggregation. Publishing here
+    keeps the stage owner and its declared outputs in agreement. The source
+    arguments match the ones radiomics would use, so the published bytes do not
+    depend on which stage got there first.
+    """
+    if not custom_structures_config:
+        return
+    rs_custom = course_dir / "RS_custom.dcm"
+    rs_auto = course_dir / "RS_auto.dcm"
+    from .custom_structures_rtstruct import (
+        _create_custom_structures_rtstruct as _create_governed_rs_custom,
+        _is_rs_custom_stale as _governed_rs_custom_is_stale,
+    )
+
+    if not _governed_rs_custom_is_stale(
+        rs_custom, custom_structures_config, rs_manual, rs_auto
+    ):
+        return
+    try:
+        logger.info(
+            "Publishing RS_custom.dcm for dose-absent course %s", course_dir.name
+        )
+        _create_governed_rs_custom(
+            course_dir, custom_structures_config, rs_manual, rs_auto
+        )
+    except Exception as e:
+        logger.warning("Failed to create custom structures: %s", e)
+
+
 def dvh_for_course(
     course_dir: Path,
     custom_structures_config: Optional[Union[str, Path]] = None,
@@ -2884,6 +2924,9 @@ def dvh_for_course(
         )
         _invalidate_dvh_outputs(course_dir)
         _write_dvh_skip_qc(course_dir, dose_resolution)
+        _publish_skipped_course_rs_custom(
+            course_dir, custom_structures_config, rs_manual
+        )
         return None
 
     dose_plan_scope = classify_dvh_dose_plan_scope(
@@ -2934,6 +2977,9 @@ def dvh_for_course(
         logger.warning("Skipping DVH for %s: %s", course_dir, reason)
         _invalidate_dvh_outputs(course_dir)
         _write_dvh_skip_qc(course_dir, _skip_dose_resolution(reason, "resolved_path_missing"))
+        _publish_skipped_course_rs_custom(
+            course_dir, custom_structures_config, rs_manual
+        )
         return None
     try:
         rtdose = pydicom.dcmread(str(rd))
