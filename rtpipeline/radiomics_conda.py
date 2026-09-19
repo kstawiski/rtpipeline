@@ -85,6 +85,7 @@ from .radiomics_ct_contract import (
     classify_ct_roi,
     configured_parameter_hash,
     current_code_revision,
+    describe_publication_key_difference,
     disposition_rows_for_arms,
     effective_parameter_hash,
     file_sha256,
@@ -2174,7 +2175,9 @@ def process_radiomics_batch(
             checkpoint.discard()
         raise RadiomicsCourseExtractionError(
             "Radiomics publication identity set is incomplete or stale "
-            f"(expected {len(required_publication_keys)}, found {len(publication_keys)})"
+            + describe_publication_key_difference(
+                required_publication_keys, publication_keys
+            )
         )
 
     if not rows:

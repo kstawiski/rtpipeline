@@ -1907,6 +1907,32 @@ def disposition_rows_for_arms(
     return rows
 
 
+def describe_publication_key_difference(
+    expected: set[tuple[str, ...]],
+    found: set[tuple[str, ...]],
+    *,
+    sample: int = 3,
+) -> str:
+    """Say which identities differ, not merely how many there are.
+
+    Two identity sets of equal size can still disagree, and reporting only the
+    counts produces "expected 212, found 212" -- true, useless, and impossible
+    to act on. Name the identities on each side of the difference.
+    """
+    missing = sorted(expected - found)
+    unexpected = sorted(found - expected)
+    parts = [f"(expected {len(expected)}, found {len(found)}"]
+    if missing:
+        shown = ", ".join("/".join(key) for key in missing[:sample])
+        more = f", +{len(missing) - sample} more" if len(missing) > sample else ""
+        parts.append(f"; {len(missing)} expected identity(ies) absent: {shown}{more}")
+    if unexpected:
+        shown = ", ".join("/".join(key) for key in unexpected[:sample])
+        more = f", +{len(unexpected) - sample} more" if len(unexpected) > sample else ""
+        parts.append(f"; {len(unexpected)} unexpected identity(ies): {shown}{more}")
+    return "".join(parts) + ")"
+
+
 def publication_key(row: Mapping[str, Any]) -> tuple[str, ...]:
     return tuple(str(row.get(column) if row.get(column) is not None else "").strip() for column in PUBLICATION_KEY_COLUMNS)
 
@@ -2016,7 +2042,7 @@ def validate_ct_publication(
     if expected_keys is not None and key_set != expected_keys:
         raise ValueError(
             "CT radiomics publication identity set is incomplete or stale "
-            f"(expected {len(expected_keys)}, found {len(key_set)})"
+            + describe_publication_key_difference(expected_keys, key_set)
         )
 
     current_version, current_hash = roi_class_map_identity()
