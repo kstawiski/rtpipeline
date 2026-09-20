@@ -3438,16 +3438,22 @@ def _robustness_selection_requiredness(
         else:
             requiredness[str(name)] = Requiredness.INVENTORY_ONLY
     if not matched_any:
-        # A selection matching nothing (e.g. a typo'd pattern) must fail
-        # fast here, not dissolve into all-tolerated loading whose only
-        # backstop is a downstream unmatched-selection error.
-        logger.warning(
-            "Robustness selection %r matched no ROI in %s; "
-            "loading with no unselected tolerance",
+        # This source holds nothing the selection asks for, so it contributes
+        # no measured structure. That is not a reason to load it with zero
+        # tolerance: doing so makes every flagged ROI fatal, and an organ well
+        # outside the scan -- an adrenal gland, a clavicle -- whose auto-derived
+        # contour is degenerate then voids a course it has no bearing on.
+        # Return the all-INVENTORY_ONLY map so the source is read tolerantly and
+        # yields nothing. A selection that matches nothing in ANY source is
+        # still caught, with evidence, by the downstream unmatched-selection
+        # disposition.
+        logger.info(
+            "Robustness selection %r matched no ROI in %s; this source "
+            "contributes no selected structure and nothing in it is fatal",
             patterns,
             rtstruct_path,
         )
-        return None
+        return requiredness
     return requiredness
 
 
