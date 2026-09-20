@@ -53,7 +53,10 @@ import pandas as pd
 import SimpleITK as sitk
 
 from .config import PipelineConfig
-from .course_contract import load_course_contract
+from .course_contract import (
+    AUTO_RTSTRUCT_SOURCE as _AUTO_RTSTRUCT_SOURCE,
+    load_course_contract,
+)
 from .layout import build_course_dirs
 from .radiomics_ct_contract import read_authoritative_ct_publication
 from .rt_details import DEFAULT_ROI_FAMILY_NAMES
@@ -3777,6 +3780,14 @@ def robustness_for_course(
                 failure_outcomes=source_sink,
                 tolerate_unselected=selection_requiredness is not None,
                 requiredness_by_roi=selection_requiredness,
+                # A selected structure the planner declared and never drew is
+                # an absent ROI, not a failed perturbation target. Without this
+                # an empty placeholder voids the course and takes every other
+                # selected structure with it. A generated source stays fatal:
+                # an empty ROI there means the generator produced nothing.
+                contourless_required_is_absence=(
+                    source != _AUTO_RTSTRUCT_SOURCE
+                ),
             )
             _record_source_dispositions(source_binding, source_sink)
             allowed_names = set(expected_rois) if expected_rois else None
