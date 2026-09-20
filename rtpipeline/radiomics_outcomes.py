@@ -189,6 +189,11 @@ def extraction_status_is_nonfatal_for_required(status: Any) -> bool:
         "below_minimum_voxels",
         "declared_skip",
         "nonvolumetric_nonmeasurement",
+        # A name declared in a planner-authored structure set with no contour
+        # data at all is an ROI that was never drawn, not an extraction that
+        # failed. Callers only assign this status for planner-authored sources;
+        # a generated source that emits an empty ROI stays fatal.
+        "declared_without_contour_data",
     }
 
 

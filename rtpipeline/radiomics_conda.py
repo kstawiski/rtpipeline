@@ -3206,24 +3206,46 @@ def radiomics_for_course(
                 inventory = None
             preflight_excluded = set()
             if inventory is not None:
+                from .course_contract import AUTO_RTSTRUCT_SOURCE
+                from .radiomics import _CONTOURLESS_STRUCTURAL_CODES
+
+                # A planner-authored structure set carries names the planner
+                # declared and never drew. Those are absent ROIs, not failed
+                # measurements, and must not void the course. A generated source
+                # is held to its output: an empty ROI there means the generator
+                # produced nothing, which stays fatal.
+                planner_authored = not (
+                    segmentation_source.startswith("CustomModel:")
+                    or segmentation_source == AUTO_RTSTRUCT_SOURCE
+                )
                 for observation in inventory.named_rois:
                     if observation.structural_code:
-                        if _roi_is_required(observation.name):
+                        contourless = (
+                            observation.structural_code in _CONTOURLESS_STRUCTURAL_CODES
+                        )
+                        undrawn = contourless and planner_authored
+                        if _roi_is_required(observation.name) and not undrawn:
                             raise RadiomicsCourseExtractionError(
                                 f"Required ROI {observation.name!r} in {rs_file} has "
                                 f"{observation.structural_code}"
                             )
                         preflight_excluded.add(observation.name)
-                        if observation.structural_code not in {
-                            "ROI_DECLARED_NO_CONTOUR_ITEM",
-                            "ROI_DECLARED_EMPTY_CONTOUR_SEQUENCE",
-                        }:
+                        if not contourless:
                             _record_preparation_failure(
-                            observation.name,
-                            f"ROI {observation.name!r} in {rs_file} has structural status {observation.structural_code}",
-                            failure_kind="structural_roi_error",
-                            reason_code=observation.structural_code,
-                        )
+                                observation.name,
+                                f"ROI {observation.name!r} in {rs_file} has structural status {observation.structural_code}",
+                                failure_kind="structural_roi_error",
+                                reason_code=observation.structural_code,
+                            )
+                        elif undrawn and _roi_is_required(observation.name):
+                            _record_preparation_failure(
+                                observation.name,
+                                f"required ROI {observation.name!r} in {rs_file} is declared "
+                                f"with no contour data ({observation.structural_code})",
+                                status="declared_without_contour_data",
+                                failure_kind="declared_without_contour_data",
+                                reason_code=observation.structural_code,
+                            )
 
             try:
                 rtstruct = RTStructBuilder.create_from(
