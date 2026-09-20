@@ -46,12 +46,42 @@ def contour_geometry(contour) -> tuple[str, bool]:
         return kind, False
 
 
+def contour_encloses_area(contour) -> bool:
+    """Whether this item can bound any area at all.
+
+    Fewer than three distinct points bounds nothing, whatever the declared
+    geometric type. Converting a segmentation mask to contours emits such items
+    for a stray boundary voxel, and a rasteriser draws nothing from them.
+    """
+    try:
+        data = getattr(contour, 'ContourData', None)
+        if data is None:
+            return False
+        points = np.asarray(data, dtype=float).reshape(-1, 3)
+        if not np.isfinite(points).all():
+            return False
+        return len(np.unique(points, axis=0)) >= 3
+    except (ValueError, TypeError, AttributeError):
+        return False
+
+
 def roi_geometry_code(contours) -> str | None:
+    contours = list(contours)
     items = [contour_geometry(c) for c in contours]
     if not items:
         return 'ROI_DECLARED_EMPTY_CONTOUR_SEQUENCE'
     if not all(valid for _, valid in items):
-        return 'ROI_CONTOUR_PARTIALLY_UNPARSEABLE' if any(v for _, v in items) else 'ROI_CONTOUR_UNPARSEABLE'
+        if not any(v for _, v in items):
+            return 'ROI_CONTOUR_UNPARSEABLE'
+        # An invalid item that bounds no area carries no geometry to lose: it is
+        # a mask-to-contour conversion artifact, and the rasteriser ignores it.
+        # Judging the ROI unparseable because of one would discard a structure
+        # the rest of whose slices describe it completely. Only an invalid item
+        # that *does* bound area means real geometry could not be read.
+        if all(v or not contour_encloses_area(c) for (_, v), c in zip(items, contours)):
+            items = [item for item in items if item[1]]
+        else:
+            return 'ROI_CONTOUR_PARTIALLY_UNPARSEABLE'
     kinds = {kind for kind, _ in items}
     nonvolume = {'POINT', 'OPEN_NONPLANAR', 'OPEN_PLANAR'}
     if kinds <= nonvolume:
