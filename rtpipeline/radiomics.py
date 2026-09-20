@@ -836,6 +836,15 @@ def _list_roi_names_dicom(rs_path: Path, *, allow_empty: bool = False) -> list[s
     return out
 
 
+# An ROI declared in StructureSetROISequence whose ROIContourSequence is absent
+# or empty carries no contour data at all. It is an unused name, not a failed
+# measurement, and nothing can be extracted from it under any tolerance.
+_CONTOURLESS_STRUCTURAL_CODES = frozenset({
+    "ROI_DECLARED_NO_CONTOUR_ITEM",
+    "ROI_DECLARED_EMPTY_CONTOUR_SEQUENCE",
+})
+
+
 def _rtstruct_masks(
     dicom_series_path: Path,
     rs_path: Path,
@@ -847,6 +856,7 @@ def _rtstruct_masks(
     requiredness_by_roi: Optional[Dict[str, Any]] = None,
     structural_inventory: Any = None,
     tolerate_unselected: bool = False,
+    contourless_required_is_absence: bool = False,
 ) -> Dict[str, np.ndarray]:
     """Convert RTSTRUCT ROIs to boolean masks under an explicit source policy.
 
@@ -964,13 +974,44 @@ def _rtstruct_masks(
             })
             continue
         if observation.structural_code:
-            if (
-                observation.structural_code in {
-                    "ROI_DECLARED_NO_CONTOUR_ITEM",
-                    "ROI_DECLARED_EMPTY_CONTOUR_SEQUENCE",
-                }
-                and not _is_required(observation.name)
+            if observation.structural_code in _CONTOURLESS_STRUCTURAL_CODES and (
+                contourless_required_is_absence or not _is_required(observation.name)
             ):
+                # A name declared with no contour data at all is an ROI the
+                # planner never drew, not a measurement that failed. Treating a
+                # required one as fatal lets an unused placeholder void a whole
+                # course: an empty "Pecherz" discarded every other contoured
+                # target and the segmented urinary_bladder alongside it.
+                #
+                # Record the required case as an evidenced absence and keep
+                # measuring what exists. Declaration of required ROIs is still
+                # enforced course-wide by the REQUIRED_ROI_NOT_DECLARED
+                # contract, and a name carrying no contours yields no mask, so
+                # it can never reach the measurement base. A non-required one
+                # stays a silent skip, as before.
+                if _is_required(observation.name):
+                    if failure_outcomes is not None:
+                        from .rtstruct_identity import require_rtstruct_identity
+
+                        failure_outcomes.append({
+                            "roi_name": observation.name,
+                            "status": "structural_nonmeasurement",
+                            "failure_kind": "declared_without_contour_data",
+                            "reason": (
+                                f"required ROI {observation.name!r} in {rs_path} is "
+                                f"declared with no contour data "
+                                f"({observation.structural_code})"
+                            ),
+                            "structural_code": observation.structural_code,
+                            "rtstruct_sop_instance_uid": require_rtstruct_identity(rs_path),
+                            "roi_number": str(observation.roi_number),
+                            "source_path": str(rs_path),
+                        })
+                    logger.warning(
+                        "Required ROI %s in %s is declared without contour data (%s); "
+                        "recording the absence and continuing with the ROIs that carry data",
+                        observation.name, rs_path, observation.structural_code,
+                    )
                 continue
             _record_or_raise(
                 observation.name,
@@ -1636,6 +1677,12 @@ def radiomics_for_course(
                 failure_outcomes=source_failures,
                 requiredness_by_roi=requiredness_by_roi,
                 structural_inventory=source_inventory,
+                # A planner-authored structure set carries names the planner
+                # declared and never drew. Those are absent ROIs, not failed
+                # measurements, so they must not void the course. A generated
+                # source is held to its output: an empty ROI there means the
+                # generator produced nothing and stays fatal.
+                contourless_required_is_absence=(source != AUTO_RTSTRUCT_SOURCE),
             )
             for failure in source_failures:
                 failure["source"] = source
