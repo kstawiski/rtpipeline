@@ -41,6 +41,7 @@ DVH_MEASUREMENT_CODE_SOURCES = (
     "dvh_support.py",
     "prescription.py",
     "rt_details.py",
+    "rtstruct_geometry.py",
     "rtstruct_identity.py",
 )
 

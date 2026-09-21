@@ -41,8 +41,10 @@ def _two_roi_rtstruct(tmp_path: Path) -> tuple[Path, Path]:
     rtstruct.add_roi(mask=mask, name="adrenal_gland_right")
     source = tmp_path / "RS.dcm"
     rtstruct.save(str(source))
-    # Corrupt one adrenal contour (2 points: invalid closed planar) while
-    # leaving a valid contour, so inventory reports PARTIALLY_UNPARSEABLE.
+    # Corrupt one adrenal contour while leaving a valid one, so the inventory
+    # reports PARTIALLY_UNPARSEABLE. The corruption must bound area -- a
+    # non-planar quad -- because an invalid item enclosing nothing is a
+    # mask-to-contour artifact that the shared validator drops.
     ds = pydicom.dcmread(str(source))
     names = [r.ROIName for r in ds.StructureSetROISequence]
     numbers = [r.ROINumber for r in ds.StructureSetROISequence]
@@ -51,8 +53,8 @@ def _two_roi_rtstruct(tmp_path: Path) -> tuple[Path, Path]:
         if names[numbers.index(i.ReferencedROINumber)] == "adrenal_gland_right"
     )
     bad = copy.deepcopy(item.ContourSequence[0])
-    bad.ContourData = [1.0, 1.0, 0.0, 2.0, 2.0, 0.0]
-    bad.NumberOfContourPoints = 2
+    bad.ContourData = [1.0, 1.0, 0.0, 5.0, 1.0, 3.0, 5.0, 5.0, 0.0, 1.0, 5.0, 4.0]
+    bad.NumberOfContourPoints = 4
     item.ContourSequence.append(bad)
     ds.save_as(str(source))
     return ct, source

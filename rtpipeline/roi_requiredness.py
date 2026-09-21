@@ -547,11 +547,10 @@ def inspect_rtstruct(path: Optional[Path], dataset: Any = None) -> RTStructInven
             code = "ROI_DECLARED_NO_CONTOUR_ITEM"
         elif number not in contour_sequence_present or number not in contour_sequence_nonempty:
             code = "ROI_DECLARED_EMPTY_CONTOUR_SEQUENCE"
-        elif invalid_counts.get(number, 0) and valid_counts.get(number, 0):
-            code = "ROI_CONTOUR_PARTIALLY_UNPARSEABLE"
-        elif invalid_counts.get(number, 0):
-            code = "ROI_CONTOUR_UNPARSEABLE"
         else:
+            # Same rule as the source inventory: the shared validator decides,
+            # because an invalid item that bounds no area must not condemn the
+            # ROI. The counts below still report the raw items.
             code = roi_geometry_code(geometry_contours.get(number, []))
         if code:
             codes.append(code)
