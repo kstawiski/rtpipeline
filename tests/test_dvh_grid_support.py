@@ -152,7 +152,8 @@ def test_dvh_cache_rejects_changed_component_bytes(tmp_path, monkeypatch):
     pd.DataFrame([row]).to_parquet(parquet)
     qc = {'status': 'ok', 'course_contract_sha256': sha256_file(contract),
           'metric_version': dvh.DVH_METRIC_VERSION, 'row_count': 1,
-          'rx_relative_metrics_available': True, 'structure_resolution': {'classification': 'bound'}}
+          'rx_relative_metrics_available': True, 'structure_resolution': {'classification': 'bound'},
+          'code_sources_sha256': dvh._current_dvh_measurement_code_sha256()}
     (metadata / 'dvh_qc.json').write_text(json.dumps(qc))
     workbook = tmp_path / 'dvh_metrics.xlsx'
     workbook.write_bytes(b'cache existence fixture')

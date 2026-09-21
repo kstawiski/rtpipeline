@@ -22,6 +22,62 @@ from .dvh_support import (rtstruct_grid_coverage, resample_grid_support, mask_gr
                           nifti_identity, publish_derived_mask, validate_derived_mask, sha256_file)
 NEAR_ZERO_TARGET_D95_GY = 0.1
 
+# Modules whose content determines a DVH measurement. A cached DVH is only
+# reusable if the code that produced it still matches: ``_is_dvh_up_to_date``
+# validated schema, provenance, contract and QC but never the producing code,
+# so a corrected classifier never reached an already-measured course. The stage
+# reused the old numbers and the completion sentinel then stamped the current
+# revision onto them, which asserts a provenance that never happened.
+#
+# Deliberately narrower than the dvh stage's ``code_sources``: those include the
+# Snakefile and cli.py, so editing an unrelated rule would discard every cached
+# measurement in the cohort.
+DVH_MEASUREMENT_CODE_SOURCES = (
+    "auto_rtstruct.py",
+    "course_contract.py",
+    "custom_structures.py",
+    "custom_structures_rtstruct.py",
+    "dvh.py",
+    "dvh_support.py",
+    "prescription.py",
+    "rt_details.py",
+    "rtstruct_identity.py",
+)
+
+_DVH_MEASUREMENT_CODE_SHA256: Optional[str] = None
+_DVH_MEASUREMENT_CODE_RESOLVED = False
+
+
+def _current_dvh_measurement_code_sha256() -> Optional[str]:
+    """Digest of the modules that decide DVH numbers, or ``None`` if unreadable.
+
+    ``None`` means the identity could not be established, which is a broken
+    installation rather than a stale cache; the caller then leaves the existing
+    reuse decision alone instead of regenerating the whole cohort forever.
+    """
+    global _DVH_MEASUREMENT_CODE_SHA256, _DVH_MEASUREMENT_CODE_RESOLVED
+    if _DVH_MEASUREMENT_CODE_RESOLVED:
+        return _DVH_MEASUREMENT_CODE_SHA256
+    from .stage_completion import content_sha256, file_sha256
+
+    package_root = Path(__file__).resolve().parent
+    sources: List[Dict[str, str]] = []
+    digest: Optional[str] = None
+    try:
+        for relative in sorted(set(DVH_MEASUREMENT_CODE_SOURCES)):
+            source = package_root / relative
+            if not source.is_file():
+                raise FileNotFoundError(source)
+            sources.append({"path": relative, "sha256": file_sha256(source)})
+        digest = content_sha256(sources)
+    except (OSError, ValueError) as exc:
+        logger.warning("Cannot establish DVH measurement code identity: %s", exc)
+        digest = None
+    _DVH_MEASUREMENT_CODE_SHA256 = digest
+    _DVH_MEASUREMENT_CODE_RESOLVED = True
+    return digest
+
+
 RELATIVE_DVH_METRIC_COLUMNS = (
     "Dmean%",
     "Dmax%",
@@ -1897,6 +1953,29 @@ def _dvh_has_expected_custom_structures(dvh_path: Path, expected_names: List[str
     return all(_normalize_structure_name(name) in present for name in expected_names)
 
 
+def _insert_course_publication_key(frame: pd.DataFrame, course_dir: Path) -> None:
+    """Carry the publication key in the course's own DVH output.
+
+    ``patient_id``/``course_id`` used to exist only on the aggregate, which the
+    aggregation step inserted while reading each course. A per-course DVH file
+    therefore could not be reconciled against the aggregate rows it produced:
+    every source row was key-unusable, so source-to-aggregate content matching
+    was impossible and no consumer could tell which course a file described.
+
+    The course directory is the authoritative identity. The course manifest
+    confines every course to ``output_dir/<patient>/<course>``, so these are the
+    same two values the aggregation step would have inserted.
+    """
+    course_dir = Path(course_dir)
+    for position, (column, value) in enumerate(
+        (("patient_id", course_dir.parent.name), ("course_id", course_dir.name))
+    ):
+        if column in frame.columns:
+            frame[column] = frame[column].fillna(value)
+        else:
+            frame.insert(position, column, value)
+
+
 def _contract_digest(course_dir: Path) -> str | None:
     path = course_dir / "metadata" / "case_metadata.json"
     try:
@@ -1977,6 +2056,7 @@ def _write_dvh_qc(
     payload = {
         "status": "ok" if not missing_custom else "degraded",
         "metric_version": DVH_METRIC_VERSION,
+        "code_sources_sha256": _current_dvh_measurement_code_sha256(),
         "rx_source": rx_source,
         "rx_relative_metrics_available": bool(
             "relative_metric_status" in df
@@ -2093,6 +2173,7 @@ def _write_dvh_skip_qc(
     payload = {
         "status": "skipped",
         "metric_version": DVH_METRIC_VERSION,
+        "code_sources_sha256": _current_dvh_measurement_code_sha256(),
         "reason": reason or dose_resolution.skip_reason or dose_resolution.reason,
         "course_contract_sha256": _contract_digest(course_dir),
         "dose_resolution": {
@@ -2222,6 +2303,14 @@ def _is_dvh_up_to_date(
             return False
         if qc_data.get("metric_version") != DVH_METRIC_VERSION:
             logger.info("DVH metric version is stale or missing; regenerating")
+            return False
+        current_code = _current_dvh_measurement_code_sha256()
+        if current_code is not None and qc_data.get("code_sources_sha256") != current_code:
+            logger.info(
+                "DVH output was produced by different code (recorded %s, current %s); regenerating",
+                qc_data.get("code_sources_sha256") or "unrecorded",
+                current_code,
+            )
             return False
         if int(qc_data.get("row_count") or 0) <= 0:
             logger.info("DVH QC row count is empty; regenerating")
@@ -3505,6 +3594,7 @@ def dvh_for_course(
         row["Dose_QC_Status"] = dose_resolution.dose_qc_status
 
     df = pd.DataFrame(clean_results)
+    _insert_course_publication_key(df, course_dir)
     df.to_excel(out_xlsx, index=False)
     try:
         df.to_parquet(out_xlsx.with_suffix(".parquet"), index=False)
