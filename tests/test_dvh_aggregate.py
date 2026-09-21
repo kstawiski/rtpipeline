@@ -61,6 +61,28 @@ def test_dvh_aggregate_records_expected_not_computed_course() -> None:
     assert row["Dose_Plan_Scope_Status"] == "not_available"
 
 
+def test_a_not_computed_course_states_its_ineligibility_rather_than_leaving_it_unknown() -> None:
+    """NA claims eligibility is unknown. For a course with no dose grid it is not.
+
+    The two booleans were simply unset, so the schema filled them with NA. A
+    consumer then had to read "unknown" on the one row whose eligibility is
+    least in doubt; in one campaign that was 20 of 122 courses, and it read as
+    40 unresolved eligibility cells rather than 40 settled ones.
+    """
+
+    aggregate = build_dvh_aggregate(
+        [],
+        [("P1", "C1", Path("P1/C1"))],
+        expected_noncomputed={("P1", "C1"): "no authoritative dose grid"},
+    )
+
+    row = aggregate.iloc[0]
+    assert row["dose_response_eligible"] is False or row["dose_response_eligible"] == False  # noqa: E712
+    assert row["dose_metric_usable_for_dose_response"] is False or row["dose_metric_usable_for_dose_response"] == False  # noqa: E712
+    assert not pd.isna(row["dose_response_eligible"])
+    assert not pd.isna(row["dose_metric_usable_for_dose_response"])
+
+
 def test_dvh_aggregate_preserves_target_geometry_and_null_nonmeasurement() -> None:
     frame = pd.DataFrame(
         {

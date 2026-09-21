@@ -407,6 +407,13 @@ def build_dvh_aggregate(
                 "Prescribed_Dose_Reason": "No DVH row exists because the course was not computed.",
                 "Delivered_Dose_Status": "not_available",
                 "Delivered_Dose_Reason": "No DVH row exists because the course was not computed.",
+                # A course that produced no DVH is *known* not to be dose-response
+                # eligible, and its absent metrics are *known* not to be usable.
+                # Leaving these unset made them NA, which claims the opposite --
+                # that eligibility is unknown -- on the one row whose eligibility
+                # is least in doubt.
+                "dose_response_eligible": False,
+                "dose_metric_usable_for_dose_response": False,
             }
         )
     combined = pd.concat([*valid_frames, pd.DataFrame(rows)], ignore_index=True, sort=False)
