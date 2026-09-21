@@ -160,6 +160,14 @@ def resolve_roi_scopes(dataset, ct_images) -> dict[int, ScopeResult]:
         for index, contour in enumerate(result.contours):
             kind, valid = contour_geometry(contour)
             if not kind or not valid:
+                if not contour_encloses_area(contour):
+                    # The same rule roi_geometry_code applies. An invalid item
+                    # bounding no area is a mask-to-contour artifact: it carries
+                    # no geometry, so it can neither define nor contradict a
+                    # source scope. Counting it a failure made the whole ROI
+                    # ROI_UNRESOLVED_SOURCE_SCOPE -- moving the defect one step
+                    # downstream rather than dropping the artifact.
+                    continue
                 failures.append(f'contour {index} has invalid or unspecified geometric type')
                 continue
             points = np.asarray(contour.ContourData, dtype=float).reshape(-1, 3)
