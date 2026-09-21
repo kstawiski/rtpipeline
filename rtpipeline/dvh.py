@@ -114,8 +114,23 @@ def _dose_grid_contour_coordinates(
                 values.size < 3
                 or values.size % 3
                 or not np.isfinite(values).all()
-                or not geometry_supported
             ):
+                unresolved_contour_count += 1
+                continue
+            if not geometry_supported:
+                # A planar item with fewer than three distinct points bounds no
+                # area. Converting a segmentation mask to contours emits one for
+                # a stray boundary voxel, and it contributes nothing a rasteriser
+                # or a coverage test could use. Counting it unresolved made the
+                # whole ROI's dose-grid coverage undeterminable, which suppressed
+                # its prescription-relative metrics. Skip it; judge coverage on
+                # the items that do carry geometry.
+                points = values.reshape((-1, 3))
+                if (
+                    geometric_type in {"CLOSED_PLANAR", "CLOSEDPLANAR_XOR"}
+                    and len(np.unique(points, axis=0)) < 3
+                ):
+                    continue
                 unresolved_contour_count += 1
                 continue
             contours.append(values.reshape((-1, 3)))
