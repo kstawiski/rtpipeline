@@ -271,6 +271,7 @@ def test_current_rs_auto_and_rs_custom_are_reused_without_model_or_rebuild(monke
         json.dumps(
             {
                 "version": custom_structures_rtstruct._RS_CUSTOM_META_VERSION,
+                "generator_code_sha256": custom_structures_rtstruct.rs_custom_generator_sha256(),
                 "rs_custom_sop_instance_uid": str(published_custom.SOPInstanceUID),
                 "planning_ct_series_instance_uid": series_uid,
             }
