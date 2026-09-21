@@ -48,11 +48,13 @@ def source_observations(path, dataset=None):
             code = "ROI_MALFORMED_IDENTITY"
         elif not contour_items:
             code = "ROI_DECLARED_NO_CONTOUR_ITEM"
-        elif not sequence:
-            code = "ROI_DECLARED_EMPTY_CONTOUR_SEQUENCE"
-        elif invalid_count:
-            code = "ROI_CONTOUR_PARTIALLY_UNPARSEABLE" if valid_count else "ROI_CONTOUR_UNPARSEABLE"
         else:
+            # One validator decides the geometry verdict. Counting invalid items
+            # here and calling the ROI partially unparseable bypassed the rule
+            # that an invalid item bounding no area carries no geometry to lose,
+            # so a mask-to-contour artifact of one or two points discarded the
+            # structure whose remaining slices describe it completely. An empty
+            # sequence still yields ROI_DECLARED_EMPTY_CONTOUR_SEQUENCE.
             code = roi_geometry_code(sequence)
         result.append(ROIObservation(roi_number, name, structural_code=code,
             valid_contours=valid_count, invalid_contours=invalid_count,

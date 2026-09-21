@@ -45,6 +45,12 @@ def test_dvh_py_itself_decides_the_identity():
     assert "dvh.py" in DVH_MEASUREMENT_CODE_SOURCES
 
 
+def test_the_geometry_validator_decides_the_identity():
+    """It reaches a DVH number through custom_structures_rtstruct."""
+
+    assert "rtstruct_geometry.py" in DVH_MEASUREMENT_CODE_SOURCES
+
+
 def test_the_snakefile_does_not_decide_the_identity():
     """An unrelated workflow edit must not discard the cohort's measurements."""
 

@@ -72,9 +72,19 @@ def test_structural_taxonomy_covers_all_codes_and_parser_uses_sequence_presence(
     dataset.ROIContourSequence = [_contour_item(1, [[1, 2]])]
     assert "ROI_CONTOUR_UNPARSEABLE" in _inventory(dataset).structural_codes
 
-    dataset.ROIContourSequence = [
-        _contour_item(1, [[0, 0, 0, 1, 1, 1], [1, 2]])
-    ]
+    # Partially unparseable now means what the shared validator means by it: an
+    # invalid item that *bounds area*, so real geometry could not be read. An
+    # invalid item bounding nothing is a mask-to-contour artifact and is dropped.
+    readable = Dataset()
+    readable.ContourGeometricType = "CLOSED_PLANAR"
+    readable.ContourData = [0, 0, 0, 10, 0, 0, 10, 10, 0, 0, 10, 0]
+    unreadable = Dataset()
+    unreadable.ContourGeometricType = "CLOSED_PLANAR"
+    unreadable.ContourData = [0, 0, 0, 10, 0, 5, 10, 10, 0, 0, 10, 9]
+    partially = Dataset()
+    partially.ReferencedROINumber = 1
+    partially.ContourSequence = [readable, unreadable]
+    dataset.ROIContourSequence = [partially]
     assert "ROI_CONTOUR_PARTIALLY_UNPARSEABLE" in _inventory(dataset).structural_codes
 
     dataset.ROIContourSequence = [_contour_item(99, [[0, 0, 0, 1, 1, 1]])]
