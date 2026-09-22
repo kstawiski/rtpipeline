@@ -673,6 +673,10 @@ def _create_custom_structures_rtstruct_unlocked(
             raise CourseContractError(
                 "custom-structure caller RTSTRUCT disagrees with the authoritative course contract"
             )
+    # Keep the caller-provided paths: the contract decides the base, but a
+    # provided non-base RTSTRUCT remains available as fallback evidence.
+    provided_manual = Path(rs_manual) if rs_manual else None
+    provided_auto = Path(rs_auto) if rs_auto else None
     rs_manual = contracted_manual
     try:
         from .custom_structures import CustomStructureProcessor
@@ -937,6 +941,74 @@ def _create_custom_structures_rtstruct_unlocked(
         # Harvest masks from custom models (cardiac_STOPSTORM, etc.) and add to RS_custom
         _harvest_custom_model_masks()
 
+        # Fallback completion for custom sources. A source whose base geometry
+        # verdict says unusable (unparseable or unresolvable contours) may
+        # still be readable from the non-base RTSTRUCT. Harvesting that
+        # segment completes the derived union instead of voiding the course.
+        # This is not the forbidden silent substitution: read failures and
+        # declared-empty (undrawn) sources are never completed, the base
+        # unread disposition is preserved, the fallback mask is never
+        # republished as the base ROI, and the segment origin is recorded per
+        # structure below. On 2026-09-22 one Kopernik course lost all
+        # radiomics because two clinician iliac-vessel contours were partially
+        # unparseable while the automatic same-name contours were clean.
+        custom_source_fallback_origins: Dict[str, Dict[str, str]] = {}
+        _FALLBACK_ELIGIBLE_BASE_CODES = {
+            "ROI_CONTOUR_PARTIALLY_UNPARSEABLE",
+            "ROI_UNRESOLVED_SOURCE_SCOPE",
+        }
+        if base_source == "manual" and provided_auto and provided_auto.exists():
+            fallback_label = "auto"
+            fallback_file: Optional[Path] = provided_auto
+        elif base_source == "auto" and provided_manual and provided_manual.exists():
+            fallback_label = "manual"
+            fallback_file = provided_manual
+        else:
+            fallback_label = ""
+            fallback_file = None
+        if fallback_file is not None:
+            try:
+                fallback_builder = create_scoped_rtstruct(ct_dir, fallback_file)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to open fallback custom-source %s: %s", fallback_label, exc
+                )
+                fallback_builder = None
+            if fallback_builder is not None:
+                needed_sources = {
+                    source
+                    for config in processor.custom_configs
+                    for source in config.source_structures
+                }
+                for source_name in sorted(needed_sources):
+                    if source_name in available_masks:
+                        continue
+                    base_outcome = source_scope_outcomes.get(source_name, {})
+                    if base_outcome.get("code") not in _FALLBACK_ELIGIBLE_BASE_CODES:
+                        continue
+                    try:
+                        fallback_mask = fallback_builder.get_roi_mask_by_name(source_name)
+                    except Exception as exc:
+                        logger.debug(
+                            "Fallback custom source %s unreadable from %s: %s",
+                            source_name, fallback_label, exc,
+                        )
+                        continue
+                    if fallback_mask is None or not np.any(fallback_mask):
+                        continue
+                    available_masks[source_name] = fallback_mask.astype(bool)
+                    custom_source_fallback_origins[source_name] = {
+                        "origin": str(fallback_label),
+                        "base_code": str(base_outcome.get("code") or ""),
+                        "base_detail": str(base_outcome.get("detail") or ""),
+                    }
+                    logger.warning(
+                        "Custom source %s completed from %s segmentation "
+                        "(base %s %s); segment origin recorded",
+                        source_name, fallback_label, base_source,
+                        base_outcome.get("code") or "absent",
+                    )
+
         ct_image = _ensure_ct_image()
         if ct_image is None:
             return None
@@ -947,14 +1019,37 @@ def _create_custom_structures_rtstruct_unlocked(
         unresolved_names = {name for name, outcome in source_scope_outcomes.items()
                             if outcome["code"] not in {"ROI_DECLARED_EMPTY_CONTOUR_SEQUENCE"}}
         for custom_config in processor.custom_configs:
-            if unresolved_names.intersection(custom_config.source_structures):
-                raise ValueError("CUSTOM_SOURCE_GEOMETRY_UNRESOLVED: " + custom_config.name)
+            unavailable = sorted(
+                {
+                    source
+                    for source in custom_config.source_structures
+                    if source in unresolved_names and source not in available_masks
+                }
+            )
+            if unavailable:
+                raise ValueError(
+                    "CUSTOM_SOURCE_GEOMETRY_UNRESOLVED: " + custom_config.name
+                    + " (unavailable in every source: " + ", ".join(unavailable) + ")"
+                )
         custom_masks = processor.process_all_custom_structures(available_masks)
         partial_map = getattr(processor, "partial_structures", {})
         structure_outcomes = {
             str(name): dict(value)
             for name, value in getattr(processor, "structure_outcomes", {}).items()
         }
+        if custom_source_fallback_origins:
+            config_sources = {
+                str(config.name): [str(source) for source in config.source_structures]
+                for config in processor.custom_configs
+            }
+            for custom_name, outcome in structure_outcomes.items():
+                used_fallbacks = {
+                    source: custom_source_fallback_origins[source]
+                    for source in config_sources.get(str(custom_name), [])
+                    if source in custom_source_fallback_origins
+                }
+                if used_fallbacks:
+                    outcome["fallback_segment_origins"] = used_fallbacks
         warning_entries = []
 
         for name, mask in custom_masks.items():
