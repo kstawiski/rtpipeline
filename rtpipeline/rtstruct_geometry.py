@@ -91,6 +91,25 @@ def roi_geometry_code(contours) -> str | None:
     return None
 
 
+def _contour_rasterizable(contour) -> bool:
+    """Whether a contour item may enter the rasterizer copy.
+
+    Mirrors the scope validator's skip rule exactly: a valid item is kept,
+    and an invalid item is kept only when it bounds area (in which case the
+    containing ROI cannot be scope-accepted anyway, so keeping it can only
+    fail loudly, never silently). An invalid area-less item is withheld: it
+    contributes zero voxels in rasterizers that tolerate it and aborts
+    rasterizers that do not.
+    """
+    kind, valid = contour_geometry(contour)
+    if kind and valid:
+        return True
+    try:
+        return bool(contour_encloses_area(contour))
+    except Exception:
+        return False
+
+
 @dataclass
 class ScopeResult:
     roi_number: int
@@ -225,6 +244,13 @@ class ScopedRTStruct:
             self.by_name[result.roi_name] = result
         # Only fully bound volumetric ROIs enter the rasterizer. The full source
         # and every rejected identity remain in ds/scopes, never in a clipped mask.
+        # Area-less contour items (one or two points bounding no area) are also
+        # withheld from the rasterizer copy: the scope validator skips them as
+        # mask-to-contour artifacts carrying no geometry, but some rasterizer
+        # builds reject them outright (cv2 fillPoly assertion) while others
+        # draw nothing from them. Withholding is geometrically neutral -- such
+        # an item contributes zero voxels either way -- and makes the accepted
+        # ROI readable in every environment.
         prepared = copy.deepcopy(dataset)
         accepted = {n for n, r in self.scopes.items() if r.code is None}
         prepared.StructureSetROISequence = Sequence([r for r in prepared.StructureSetROISequence if int(r.ROINumber) in accepted])
@@ -232,7 +258,10 @@ class ScopedRTStruct:
         for number in sorted(accepted):
             item = Dataset()
             item.ReferencedROINumber = number
-            item.ContourSequence = Sequence(self.scopes[number].contours)
+            item.ContourSequence = Sequence(
+                contour for contour in self.scopes[number].contours
+                if _contour_rasterizable(contour)
+            )
             prepared.ROIContourSequence.append(item)
         prepared.RTROIObservationsSequence = Sequence([r for r in getattr(prepared, 'RTROIObservationsSequence', []) if int(r.ReferencedROINumber) in accepted])
         # Rebuild global references only after all retained contours are bound.

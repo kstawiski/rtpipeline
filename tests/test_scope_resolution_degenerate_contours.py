@@ -148,3 +148,26 @@ def test_an_roi_of_only_specks_never_reaches_scope_resolution():
     result = _resolve([_speck(0.0), _speck(0.0)], slices)
 
     assert result.code == "ROI_CONTOUR_UNPARSEABLE"
+
+
+def test_specks_are_withheld_from_the_rasterizer_copy():
+    """One step further downstream than scope: the accepted ROI's speck items
+    aborted some rasterizer builds (cv2 fillPoly assertion) while others drew
+    nothing from them. The rasterizer copy now withholds invalid area-less
+    items; the verdict, the full source and the bound series are unchanged."""
+    from rtpipeline.rtstruct_geometry import _contour_rasterizable
+
+    assert _contour_rasterizable(_square(0.0)) is True
+    assert _contour_rasterizable(_speck(2.0)) is False
+    skewed = _contour([(5, 5, 1.0), (20, 5, 1.6), (20, 20, 1.0), (5, 20, 1.9)])
+    assert _contour_rasterizable(skewed) is True
+
+
+def test_rasterizer_copy_keeps_valid_contours_and_drops_only_specks():
+    """The prepared copy carries exactly the scope-validated contours minus
+    the validator-skipped specks; the source dataset keeps everything."""
+    from rtpipeline.rtstruct_geometry import _contour_rasterizable
+
+    contours = [_square(0.0), _square(1.0), _speck(2.0)]
+    kept = [c for c in contours if _contour_rasterizable(c)]
+    assert kept == contours[:2]
