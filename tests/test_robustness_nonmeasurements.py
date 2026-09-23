@@ -715,8 +715,9 @@ def test_partial_technical_failure_keeps_evidence_but_publishes_no_sidecar(
         rr.robustness_for_course(cfg, rob, course)
 
     output = course / 'radiomics_robustness_ct.parquet'
-    # The partial technical-condition evidence stays in its failed-stage form.
-    frame = pd.read_parquet(output)
+    # Failed-stage evidence never occupies the measurement filename.
+    assert not output.exists()
+    frame = pd.read_parquet(course / 'radiomics_robustness_ct.failed_evidence.parquet')
     failed = frame[frame.robustness_status == 'technical_failure']
     assert len(failed) == len(CT_EXTRACTION_ARMS)
     assert failed.value.isna().all() and failed.feature_name.isna().all()
