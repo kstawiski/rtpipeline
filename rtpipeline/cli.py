@@ -1499,17 +1499,20 @@ def _radiomics_robustness_course(argv: list[str]) -> int:
                 from .radiomics_ct_contract import new_run_identifier
                 from .radiomics_robustness import (
                     ROBUSTNESS_FAILED_OUTCOME,
+                    RobustnessPartialExtractionError,
                     _content_sha256,
                     effective_robustness_configuration,
                     write_robustness_failure_dispositions,
                 )
 
-                failure_run_id = new_run_identifier()
+                partial = e if isinstance(e, RobustnessPartialExtractionError) else None
+                failure_run_id = partial.run_identifier if partial else new_run_identifier()
                 dispositions_path = write_robustness_failure_dispositions(
                     course_dir,
                     rob_config=rob_config,
                     output_name=output_path.name,
                     run_identifier=failure_run_id,
+                    failed_evidence=partial.evidence_path if partial else None,
                 )
                 failure_rows = _json.loads(
                     dispositions_path.read_text(encoding="utf-8")

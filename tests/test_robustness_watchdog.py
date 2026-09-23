@@ -138,7 +138,8 @@ def test_watchdog_course_publishes_completed_and_names_outstanding(tmp_path,monk
     monkeypatch.setenv('RTPIPELINE_ROBUSTNESS_PROGRESS_TIMEOUT','1')
     with caplog.at_level(logging.ERROR), pytest.raises(RuntimeError,match='published partial results'):
         rr.robustness_for_course(cfg,rob,course)
-    path=course/'radiomics_robustness_ct.parquet'; assert path.exists()
+    assert not (course/'radiomics_robustness_ct.parquet').exists()
+    path=course/'radiomics_robustness_ct.failed_evidence.parquet'; assert path.exists()
     df=pd.read_parquet(path)
     assert set(df.robustness_status)=={'measured','geometrically_impossible','technical_failure'}
     assert set(df.loc[df.robustness_status=='measured','value'])=={1.25}
@@ -168,7 +169,8 @@ def test_zero_measured_course_still_publishes_exact_failure_inventory(tmp_path,m
     monkeypatch.setenv('RTPIPELINE_ROBUSTNESS_PROGRESS_TIMEOUT','1')
     with pytest.raises(RuntimeError,match='published partial results'):
         rr.robustness_for_course(cfg,rob,course)
-    df=pd.read_parquet(course/'radiomics_robustness_ct.parquet')
+    assert not (course/'radiomics_robustness_ct.parquet').exists()
+    df=pd.read_parquet(course/'radiomics_robustness_ct.failed_evidence.parquet')
     assert len(df)==6
     assert sum(df.robustness_status=='technical_failure')==4
     assert df.value.isna().all()

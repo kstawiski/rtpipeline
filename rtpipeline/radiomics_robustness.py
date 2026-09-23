@@ -60,6 +60,10 @@ from .course_contract import (
 from .layout import build_course_dirs
 from .radiomics_ct_contract import read_authoritative_ct_publication
 from .rt_details import DEFAULT_ROI_FAMILY_NAMES
+from .robustness_completion import (
+    robustness_failed_evidence_path,
+    validate_robustness_failed_evidence,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +87,15 @@ ROBUSTNESS_PERTURBATION_IDENTITY_COLUMNS = (
 
 class RobustnessIdentityError(RuntimeError):
     """An individual robustness result cannot be traced to its source ROI."""
+
+
+class RobustnessPartialExtractionError(RuntimeError):
+    """A failed run preserved partial rows outside the measurement namespace."""
+
+    def __init__(self, message: str, *, run_identifier: str, evidence_path: Path):
+        super().__init__(message)
+        self.run_identifier = run_identifier
+        self.evidence_path = evidence_path
 
 
 @dataclass(frozen=True)
@@ -664,6 +677,7 @@ def _write_robustness_source_dispositions(
     nonmeasured_outcome: str = ROBUSTNESS_SOURCE_ONLY_OUTCOME,
     source_only_basis: Optional[Dict[str, Any]] = None,
     tolerated_failures: Optional[List[Dict[str, Any]]] = None,
+    failed_evidence: Optional[Path] = None,
 ) -> Path:
     """Atomically publish the terminal RTSTRUCT source dispositions of one run.
 
@@ -770,6 +784,23 @@ def _write_robustness_source_dispositions(
             f"existing measurement table {output_path}"
         )
 
+    failed_entry = None
+    if failed_evidence is not None:
+        failed_evidence = Path(failed_evidence)
+        if failed_evidence != robustness_failed_evidence_path(Path(output_path)):
+            raise RuntimeError("robustness failed evidence has a foreign path")
+        from .course_manifest import require_no_output_symlinks
+
+        require_no_output_symlinks(failed_evidence)
+        failed_entry = {
+            "path": failed_evidence.name,
+            "sha256": _file_sha256(failed_evidence),
+            "size_bytes": failed_evidence.stat().st_size,
+        }
+        validate_robustness_failed_evidence(
+            failed_entry, output_path=Path(output_path), outcome=outcome, error=RuntimeError
+        )
+
     path = Path(course_dir) / "metadata" / ROBUSTNESS_SOURCE_DISPOSITIONS_FILENAME
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
@@ -792,6 +823,7 @@ def _write_robustness_source_dispositions(
         "effective_configuration_sha256": _content_sha256(effective_configuration),
         "output_path": Path(output_path).name,
         "measured_output": output_entry,
+        "failed_evidence": failed_entry,
         "source_only_basis": source_only_basis,
     }
     fd, temp_name = tempfile.mkstemp(
@@ -819,6 +851,7 @@ def write_robustness_failure_dispositions(
     rob_config: "RobustnessConfig",
     output_name: str,
     run_identifier: Optional[str] = None,
+    failed_evidence: Optional[Path] = None,
 ) -> Path:
     """Publish a failure disposition sidecar for a run that died technically.
 
@@ -835,7 +868,9 @@ def write_robustness_failure_dispositions(
     (empty) failure record rather than a second exception obscuring the
     first. A stale measurement table beside a failure outcome would be
     evidence confusion, so it is refused here instead of being published
-    around.
+    around. A partial extraction may instead bind its dedicated failed-evidence
+    file, supplied explicitly by the producer's exception with its run identity.
+    An older file found on disk alone never establishes evidence for this run.
     """
     from .radiomics_ct_contract import new_run_identifier
 
@@ -883,6 +918,7 @@ def write_robustness_failure_dispositions(
         output_path=output_path,
         measured_output=None,
         nonmeasured_outcome=ROBUSTNESS_FAILED_OUTCOME,
+        failed_evidence=failed_evidence,
     )
 
 
@@ -1176,6 +1212,12 @@ def _read_robustness_source_dispositions(
                 "source-only robustness dispositions stand beside an existing "
                 f"measurement table {course_dir / recorded_output_name}"
             )
+    validate_robustness_failed_evidence(
+        payload.get("failed_evidence"),
+        output_path=course_dir / recorded_output_name,
+        outcome=str(outcome),
+        error=ValueError,
+    )
     return RobustnessSourceDispositionInspection(
         course_dir=course_dir,
         run_identifier=str(run_identifier),
@@ -3550,6 +3592,7 @@ def robustness_for_course(
     # no longer validates.
     output_path.unlink(missing_ok=True)
     invalidate_robustness_source_dispositions(course_dir)
+    robustness_failed_evidence_path(output_path).unlink(missing_ok=True)
 
     # Capture the deciding code before any source is read, so the binding
     # describes the code this run started under rather than whatever the files
@@ -4548,26 +4591,32 @@ def robustness_for_course(
         context="refusing to publish robustness measurements",
     )
 
-    # Save raw feature values for aggregation stage
+    # Partial rows are evidence of a failed run, never an aggregation input.
+    publication_path = (
+        robustness_failed_evidence_path(output_path)
+        if technical_failure_count else output_path
+    )
+    from .course_manifest import require_no_output_symlinks
+
+    require_no_output_symlinks(publication_path)
     try:
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        temporary_output = output_path.with_name(output_path.name + ".tmp")
+        publication_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary_output = publication_path.with_name(publication_path.name + ".tmp")
+        require_no_output_symlinks(temporary_output)
         try:
             combined_df.to_parquet(temporary_output, index=False)
-            os.replace(temporary_output, output_path)
+            os.replace(temporary_output, publication_path)
         finally:
             temporary_output.unlink(missing_ok=True)
-        if technical_failure_count:
-            # The partial table stays published as failed-stage evidence, but a
-            # failed run never gets a completed source-disposition sidecar.
-            raise RuntimeError(
-                f"incomplete robustness extraction: published partial results to {output_path}; "
-                f"technical_failure_arm_rows={technical_failure_count}; see exact conditions and evidence in parquet"
-            )
     except Exception as e:
-        if technical_failure_count and output_path.exists() and "published partial results" in str(e):
-            raise
-        raise RuntimeError(f"failed to save robustness results to {output_path}: {e}") from e
+        raise RuntimeError(f"failed to save robustness results to {publication_path}: {e}") from e
+    if technical_failure_count:
+        raise RobustnessPartialExtractionError(
+            f"incomplete robustness extraction: published partial results to {publication_path}; "
+            f"technical_failure_arm_rows={technical_failure_count}; see exact conditions and evidence in parquet",
+            run_identifier=robustness_run_identifier,
+            evidence_path=publication_path,
+        )
 
     try:
         _publish_source_dispositions(output_path)

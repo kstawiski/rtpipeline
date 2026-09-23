@@ -109,6 +109,34 @@ def _require_plain_name(output_name: str) -> str:
     return text
 
 
+def robustness_failed_evidence_path(output_path: Path) -> Path:
+    return output_path.with_name(output_path.stem + ".failed_evidence" + output_path.suffix)
+
+
+def validate_robustness_failed_evidence(
+    entry: Any, *, output_path: Path, outcome: str, error: type[Exception]
+) -> None:
+    """An optional failed-stage attachment can never certify a measurement."""
+    if entry is None:
+        return
+    if outcome != "failed_extraction" or not isinstance(entry, dict):
+        raise error("only failed robustness dispositions may bind failed evidence")
+    path = robustness_failed_evidence_path(output_path)
+    if entry.get("path") != path.name:
+        raise error("robustness failed evidence must use its dedicated filename")
+    from .course_manifest import require_no_output_symlinks
+
+    require_no_output_symlinks(path)
+    if not path.is_file():
+        raise error("robustness failed evidence is absent")
+    if (
+        type(entry.get("size_bytes")) is not int
+        or entry["size_bytes"] != path.stat().st_size
+        or entry.get("sha256") != _file_sha256(path)
+    ):
+        raise error("robustness failed evidence changed after publication")
+
+
 def robustness_completion_payload(
     course_dir: Path,
     *,
@@ -285,13 +313,40 @@ def _validate_payload(
             f"{sentinel_path} are absent"
         )
     recorded_dispositions_digest = str(dispositions.get("sha256") or "")
-    current_dispositions_digest = _file_sha256(dispositions_path)
+    disposition_bytes = dispositions_path.read_bytes()
+    current_dispositions_digest = hashlib.sha256(disposition_bytes).hexdigest()
     if recorded_dispositions_digest != current_dispositions_digest:
         raise RobustnessCompletionError(
             f"robustness source dispositions {dispositions_path} changed after "
             f"completion (recorded sha256 {recorded_dispositions_digest!r}, "
             f"current {current_dispositions_digest!r})"
         )
+
+    # The sidecar digest also binds any failed-stage attachment. Revalidate
+    # that attachment here so the campaign ledger cannot close a course after
+    # its partial evidence was lost or changed. No receipt schema change.
+    try:
+        disposition_payload = json.loads(disposition_bytes)
+    except (ValueError, UnicodeError) as exc:
+        raise RobustnessCompletionError("robustness disposition sidecar is unreadable") from exc
+    if not isinstance(disposition_payload, dict):
+        raise RobustnessCompletionError("robustness disposition sidecar is not a record")
+    if disposition_payload.get("failed_evidence") is not None:
+        for field, expected in (
+            ("measurement_outcome", outcome),
+            ("output_path", output_name),
+            ("robustness_run_identifier", run_identifier),
+        ):
+            if disposition_payload.get(field) != expected:
+                raise RobustnessCompletionError(
+                    f"robustness failed evidence sidecar {field} differs from receipt"
+                )
+    validate_robustness_failed_evidence(
+        disposition_payload.get("failed_evidence"),
+        output_path=course_dir / output_name,
+        outcome=outcome,
+        error=RobustnessCompletionError,
+    )
 
     measured_output_path: Optional[Path] = None
     measured_output_digest: Optional[str] = None
