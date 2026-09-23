@@ -23,7 +23,7 @@ def test_unqualified_targets_reach_real_class_decision(name):
     assert decision.roi_class == "target"
     assert decision.primary_resegment_range_hu == (-1000, 400)
     assert decision.feature_publication_policy == contract.FEATURE_POLICY_EXTRACT
-    assert decision.map_version == "ct-roi-class-map-2026-09-17-v7"
+    assert decision.map_version == "ct-roi-class-map-2026-09-22-v8"
 
 
 @pytest.mark.parametrize("name", [
@@ -43,21 +43,67 @@ def test_definite_crops_margins_and_controls_are_inventory_helpers(name):
 
 
 @pytest.mark.parametrize("name", [
-    "Jelita + PTV1", "Jelita w PTV", "odb and PTV", "PTV1 + PTV2",
-    "PTV1orPTV2", "PTV1-0.5jel", "PTV1-jelita", "GTV1-prostata",
-    "GTV2-pęcherz", "GTVm - lopatka", "GTVn4p", "GTVn_SBRT?",
-    "CTV1_v1", "CTV1-61,6", "CTVN_Prostate", "PTV_20/4_01/2024",
-    "PTV2-PTV1 60/2.4", "PTV3 - PTV2_fiz", "PTV1_2_SUMA", "nPTV1",
-    "NS_GTV1_2", "sl-ptv", "sp-ptv", "zBowel + PTV1", "m3/ptv1",
     "unknown mixed tissue", "bladder-prostate", "PTVunknown", "xPTV1",
     "PTV 1 2", "G TV1", "P T V1", "PTV-1", "PTV+1", "PTV/1",
-    "PTV_1", "PTV1.0", "PTV1,0", "GTVn+1", "PTV1__unknown",
+    "PTV_1", "PTV1.0", "PTV1,0", "GTVn+1", "PTV1__unknown", "PBT",
 ])
 def test_ambiguous_and_mixed_names_fail_closed(name):
     decision = contract.classify_ct_roi("Manual", name)
     assert decision.roi_class == "unresolved_mixed"
     assert decision.adjudication_status == "operator_adjudication_required"
     assert decision.primary_resegment_range_hu is None
+
+
+@pytest.mark.parametrize("name,roi_class,status", [
+    ("GTVn", "target", "approved_by_binding_spec"),
+    ("GTVp", "target", "approved_by_binding_spec"),
+    ("GTV1", "target", "approved_by_binding_spec"),
+    ("GTVm", "target", "approved_by_binding_spec"),
+    ("GTVm1", "target", "approved_by_binding_spec"),
+    ("GTVm2", "target", "approved_by_binding_spec"),
+    ("GTVn1", "target", "approved_by_binding_spec"),
+    ("GTVn2", "target", "approved_by_binding_spec"),
+    ("GTVn7", "target", "approved_by_binding_spec"),
+    ("GTV2", "target", "approved_by_binding_spec"),
+    ("GTV3", "target", "approved_by_binding_spec"),
+    ("CTV4", "target", "approved_by_binding_spec"),
+    ("PTV4", "target", "approved_by_binding_spec"),
+    ("GTVn4p", "target", "approved_by_binding_spec"),
+    ("GTVm - lopatka", "target", "approved_by_binding_spec"),
+    ("GTVn_SBRT?", "target", "approved_by_binding_spec"),
+    ("NS_GTV1_2", "target", "approved_by_binding_spec"),
+    ("GTV2-pęcherz", "target", "approved_by_binding_spec"),
+    ("GTV1-prostata", "target", "approved_by_binding_spec"),
+    ("CTVN_Prostate", "target", "approved_by_binding_spec"),
+    ("CTV1_v1", "target", "approved_by_binding_spec"),
+    ("CTV1-61,6", "target", "approved_by_binding_spec"),
+    ("nPTV1", "target", "approved_by_binding_spec"),
+    ("PTV_20/4_01/2024", "target", "approved_by_binding_spec"),
+    ("PTV1_2_SUMA", "target", "approved_by_binding_spec"),
+    ("PTV1+PTV2", "target", "approved_by_binding_spec"),
+    ("PTV1 + PTV2", "target", "approved_by_binding_spec"),
+    ("ptv1orptv2", "target", "approved_by_binding_spec"),
+    ("PTV1orPTV2", "target", "approved_by_binding_spec"),
+    ("PTV3 - PTV2_fiz", "target", "approved_by_binding_spec"),
+    ("PTV2-PTV1 60/2.4", "target", "approved_by_binding_spec"),
+    ("PTV2-PTV1  60/2.4", "target", "approved_by_binding_spec"),
+    ("PTV1-0.5jel", "target", "approved_by_binding_spec"),
+    ("PTV1-jelita", "target", "approved_by_binding_spec"),
+    ("Jelita + PTV1", "hollow_pelvic_organ", "approved_by_anatomic_equivalence"),
+    ("Jelita w PTV", "hollow_pelvic_organ", "approved_by_anatomic_equivalence"),
+    ("prostate+vs", "solid_soft_tissue_neural", "approved_by_anatomic_equivalence"),
+    ("odb and PTV", "planning_helper", "approved_non_anatomic_planning_helper"),
+    ("m3/ptv1", "planning_helper", "approved_non_anatomic_planning_helper"),
+    ("zBowel + PTV1", "planning_helper", "approved_non_anatomic_planning_helper"),
+    ("sl-ptv", "planning_helper", "approved_non_anatomic_planning_helper"),
+    ("sp-ptv", "planning_helper", "approved_non_anatomic_planning_helper"),
+])
+def test_map_v8_standardized_names_reach_approved_decision(name, roi_class, status):
+    """Map v8 evidence-bound standardization (2026-09-22): dose, prescription
+    and structure-set evidence reviewed per name; PBT stays held."""
+    decision = contract.classify_ct_roi("Manual", name)
+    assert decision.roi_class == roi_class
+    assert decision.adjudication_status == status
 
 
 @pytest.mark.parametrize("left,right", [
@@ -184,7 +230,7 @@ def test_publication_rejects_stale_map_identity(monkeypatch, field, value):
 
 def test_pending_map_entry_still_blocks_required_publication(monkeypatch):
     from test_radiomics_ct_dual_arm import _dual_arm_rows
-    decision = contract.classify_ct_roi("Manual", "PTV1_v1")
+    decision = contract.classify_ct_roi("Manual", "PBT")
     rows = _dual_arm_rows(monkeypatch, decision=decision)
     with pytest.raises(ValueError, match="operator adjudication is required"):
         contract.validate_ct_publication(pd.DataFrame(rows))
