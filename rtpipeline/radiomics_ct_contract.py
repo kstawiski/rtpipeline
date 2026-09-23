@@ -2186,7 +2186,12 @@ def write_ct_publication_atomic(
         parquet_check = pd.read_parquet(parquet_tmp, engine="pyarrow")
         validate_ct_publication(parquet_check, expected_keys=expected_keys)
         publish_df.to_excel(workbook_tmp, index=False)
-        workbook_check = pd.read_excel(workbook_tmp, engine="openpyxl")
+        # pandas reads the text "None", "NA", "null", "nan" and friends back as
+        # missing by default, so a real ROI named "None" failed its own
+        # round-trip identity check. Only a truly empty cell is missing.
+        workbook_check = pd.read_excel(
+            workbook_tmp, engine="openpyxl", keep_default_na=False, na_values=[""]
+        )
         validate_ct_publication(workbook_check, expected_keys=expected_keys)
         os.replace(parquet_tmp, parquet_path)
         os.replace(workbook_tmp, workbook_path)
