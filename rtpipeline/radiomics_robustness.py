@@ -286,7 +286,9 @@ ROBUSTNESS_SOURCE_DISPOSITIONS_SCHEMA_VERSION = 1
 # A technical read failure fails the course, so a row claiming a measurement
 # ("success"/"measured") or an unresolved technical failure ("failed") is a
 # corrupt artifact, not a weaker but acceptable record.
-ROBUSTNESS_SOURCE_DISPOSITION_STATUSES = frozenset({"nonvolumetric_nonmeasurement"})
+ROBUSTNESS_SOURCE_DISPOSITION_STATUSES = frozenset({
+    "nonvolumetric_nonmeasurement", "structural_nonmeasurement",
+})
 ROBUSTNESS_SOURCE_DISPOSITION_ROW_FIELDS = (
     "segmentation_source",
     "source_path",
@@ -581,6 +583,7 @@ def _validate_source_disposition_rows(
         )
         for binding in bindings
     }
+    from .radiomics import _CONTOURLESS_STRUCTURAL_CODES
     from .rtstruct_geometry import NONVOLUMETRIC_CODES
 
     seen: set[Tuple[str, ...]] = set()
@@ -608,7 +611,18 @@ def _validate_source_disposition_rows(
                 f"which is not a terminal source disposition "
                 f"({', '.join(sorted(ROBUSTNESS_SOURCE_DISPOSITION_STATUSES))})"
             )
-        if str(row["structural_code"]) not in NONVOLUMETRIC_CODES:
+        if status == "structural_nonmeasurement":
+            # Mirror the mask reader's evidenced absence, not arbitrary
+            # structural failures or broken contours with some data present.
+            if (
+                row["failure_kind"] != "declared_without_contour_data"
+                or row["structural_code"] not in _CONTOURLESS_STRUCTURAL_CODES
+            ):
+                raise error(
+                    f"robustness source disposition row {index} is not a "
+                    "governed declared-without-contour-data disposition"
+                )
+        elif str(row["structural_code"]) not in NONVOLUMETRIC_CODES:
             raise error(
                 f"robustness source disposition row {index} has structural code "
                 f"{row['structural_code']!r}, which is not a non-volumetric geometry"
@@ -4015,6 +4029,12 @@ def robustness_for_course(
             selected_count=len(identity_ledger_rows),
             rows=identity_ledger_rows,
         )
+
+    # Reject malformed source dispositions before the expensive perturbation
+    # extraction. Publication still revalidates rows and source bindings.
+    _validate_source_disposition_rows(
+        source_disposition_rows, bindings=rtstruct_source_bindings, error=RuntimeError
+    )
 
     def _publish_source_dispositions(
         measured_output: Optional[Path],
