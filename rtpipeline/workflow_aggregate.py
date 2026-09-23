@@ -66,7 +66,9 @@ def _read_prefer_parquet(xlsx_path: Path) -> pd.DataFrame | None:
         except Exception as exc:
             parquet_error = exc
     if xlsx_path.exists():
-        return pd.read_excel(xlsx_path)
+        # Keep text such as an ROI named "None" or "NA" as text; pandas would
+        # otherwise read it back as missing and blank the ROI identity.
+        return pd.read_excel(xlsx_path, keep_default_na=False, na_values=[""])
     if parquet_error is not None:
         raise RuntimeError(f"{parquet_path.name} is unreadable: {parquet_error}")
     return None
@@ -323,7 +325,7 @@ def _write_radiomics_denominator_aggregate(courses) -> None:
             if not publication.exists():
                 raise RuntimeError(f"Radiomics denominator ledger and publication are missing for {patient_id}/{course_id}")
             try:
-                frame = pd.read_parquet(publication) if publication.suffix == ".parquet" else pd.read_excel(publication)
+                frame = pd.read_parquet(publication) if publication.suffix == ".parquet" else pd.read_excel(publication, keep_default_na=False, na_values=[""])
                 legacy_rows = frame.to_dict("records")
             except Exception as exc:
                 raise RuntimeError(f"Radiomics denominator ledger is missing and publication is unreadable for {patient_id}/{course_id}: {exc}") from exc

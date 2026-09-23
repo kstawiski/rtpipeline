@@ -607,3 +607,41 @@ def test_totalsegmentator_vocabulary_hash_is_enforced(tmp_path):
 
     with pytest.raises(ValueError, match="vocabulary hash is stale"):
         contract.load_roi_class_map(str(altered))
+
+
+@pytest.mark.parametrize("roi_name", ["None", "NA", "null", "nan", "N/A"])
+def test_roi_named_like_a_missing_token_survives_atomic_publication(
+    tmp_path, monkeypatch, roi_name
+):
+    # An ROI can legitimately be called "None" or "NA". pandas reads those
+    # words back from a workbook as missing by default, which made the
+    # publication fail its own round-trip identity check and void the course.
+    monkeypatch.setattr(contract, "resampled_mask_qc", _qc)
+    monkeypatch.setattr(contract, "_runtime_versions", _versions)
+    identity = {**_common_identity(), "roi_original_name": roi_name, "roi_name": roi_name}
+    rows = contract.extract_ct_roi_arms(
+        object(),
+        object(),
+        factory=_FakeExtractor,
+        decision=contract.classify_ct_roi("Manual", "PTV"),
+        common_metadata=identity,
+        run_identifier="run-1",
+        code_revision="revision-1",
+        native_voxel_count=120,
+        required=True,
+        configured_parameter_hashes={
+            contract.PRIMARY_ARM: "configured-primary",
+            contract.SENSITIVITY_ARM: "configured-sensitivity",
+        },
+    )
+    expected = {contract.publication_key(row) for row in rows}
+    assert {key[5] for key in expected} == {roi_name}
+
+    workbook = tmp_path / "P1" / "C1" / "radiomics_ct.xlsx"
+    contract.write_ct_publication_atomic(
+        pd.DataFrame(rows), workbook, expected_keys=expected
+    )
+
+    published = pd.read_parquet(workbook.with_suffix(".parquet"))
+    assert set(published["roi_original_name"]) == {roi_name}
+    assert contract.validate_ct_publication(published, expected_keys=expected) == expected
