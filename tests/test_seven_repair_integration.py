@@ -60,7 +60,7 @@ def test_inventory_and_extraction_share_strict_geometry(tmp_path, kind, points, 
 
 
 @pytest.mark.parametrize('name,candidate,roi_class', [
-    ('PTV1-jelita', True, 'unresolved_mixed'),
+    ('PTV1-jelita', True, 'target'),
     ('Pecherz - PTV', False, 'planning_helper'),
     ('PTV2 - PTV1', True, 'planning_helper'),
     ('2cm od PTV2', True, 'planning_helper'),
@@ -73,6 +73,10 @@ def test_screening_candidacy_cannot_override_governed_feature_class(name, candid
     assert decision.roi_class == roi_class
     if roi_class == 'planning_helper':
         assert decision.feature_publication_policy == contract.FEATURE_POLICY_INVENTORY_ONLY
+    elif roi_class == 'target':
+        # Map v8 evidence-bound standardization: treated carved PTV.
+        assert decision.adjudication_status == 'approved_by_binding_spec'
+        assert decision.feature_publication_policy == contract.FEATURE_POLICY_EXTRACT
     elif roi_class == 'unresolved_mixed':
         assert decision.adjudication_status == 'operator_adjudication_required'
         assert decision.primary_resegment_range_hu is None

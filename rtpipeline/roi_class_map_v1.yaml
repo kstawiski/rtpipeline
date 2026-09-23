@@ -1,60 +1,54 @@
-# Versioned CT ROI-class governance map. Conservative rules and exact governance.
 schema_version: 1
-map_version: ct-roi-class-map-2026-09-17-v7
+map_version: ct-roi-class-map-2026-09-22-v8
 name_rules:
   version: ct-roi-name-rules-v1
-  normalization: >-
-    ASCII case folding and whitespace collapse, Unicode hyphen/nonbreaking
-    hyphen/en dash/minus to ASCII hyphen, spaces around plus/minus removed,
-    and one index gap removed only in a complete unqualified target identifier.
-    Other operators, digit strings, underscores, prefixes, suffixes and
-    diacritics are retained. This is class lookup, never contour identity.
+  normalization: ASCII case folding and whitespace collapse, Unicode hyphen/nonbreaking
+    hyphen/en dash/minus to ASCII hyphen, spaces around plus/minus removed, and one
+    index gap removed only in a complete unqualified target identifier. Other operators,
+    digit strings, underscores, prefixes, suffixes and diacritics are retained. This
+    is class lookup, never contour identity.
   collision_policy: unresolved_mixed_on_class_or_adjudication_disagreement
   target_detector: rtpipeline.rt_details.is_target_volume_name
   crop_anatomy_names:
-    - odbytnica
-    - pecherz
-    - pęcherz
-    - nerka l
-    - nerka p
-    - pluco lewe
-    - pluco prawe
-    - pluco suma
-    - plucop
-    - odb
-    - serce
-  crop_anatomy_evidence_basis: >-
-    Polish organ names for rectum, bladder, kidney, lung and heart identify
-    subtraction operands only. They do not adjudicate the organ tissue class.
-    Additional K/M lung qualifiers require review and are not normalized away.
+  - odbytnica
+  - pecherz
+  - pęcherz
+  - nerka l
+  - nerka p
+  - pluco lewe
+  - pluco prawe
+  - pluco suma
+  - plucop
+  - odb
+  - serce
+  crop_anatomy_evidence_basis: Polish organ names for rectum, bladder, kidney, lung
+    and heart identify subtraction operands only. They do not adjudicate the organ
+    tissue class. Additional K/M lung qualifiers require review and are not normalized
+    away.
   rules:
     unqualified_target:
       roi_class: target
       adjudication_status: resolved_by_name_rule
-      evidence_basis: >-
-        Shared target detector plus complete unqualified identifier guard.
-        CTV/PTV/GTV with optional integer index, or GTV with n/p/m and optional
-        integer index, denote clinical/planning/gross target volumes.
-        No other prefix, suffix, operator or tissue name is admitted.
+      evidence_basis: Shared target detector plus complete unqualified identifier
+        guard. CTV/PTV/GTV with optional integer index, or GTV with n/p/m and optional
+        integer index, denote clinical/planning/gross target volumes. No other prefix,
+        suffix, operator or tissue name is admitted.
     boolean_subtraction:
       roi_class: planning_helper
       adjudication_status: resolved_by_name_rule
-      evidence_basis: >-
-        Subtraction between two unqualified targets or an identified organ
-        minus an unqualified target is a Boolean planning crop, not a target.
-        Target-minus-organ can instead be a target's anatomic qualifier and
-        requires review, as do unknown operands and mixed-tissue additions.
+      evidence_basis: Subtraction between two unqualified targets or an identified
+        organ minus an unqualified target is a Boolean planning crop, not a target.
+        Target-minus-organ can instead be a target's anatomic qualifier and requires
+        review, as do unknown operands and mixed-tissue additions.
     distance_margin:
       roi_class: planning_helper
       adjudication_status: resolved_by_name_rule
-      evidence_basis: >-
-        A numeric mm/cm distance followed by Polish od and an unqualified
+      evidence_basis: A numeric mm/cm distance followed by Polish od and an unqualified
         target denotes a planning-distance construct, with optional zz_ prefix.
     optimization_helper:
       roi_class: planning_helper
       adjudication_status: resolved_by_name_rule
-      evidence_basis: >-
-        A z, marg, z_marg or z_min prefix attached to an otherwise unqualified
+      evidence_basis: A z, marg, z_marg or z_min prefix attached to an otherwise unqualified
         target denotes a planning-control contour, never a target.
 mapping_status: partial_pending_operator_adjudication
 approval_basis:
@@ -64,16 +58,16 @@ approval_basis:
 classes:
   target:
     primary_resegment_range_hu:
-      - -1000
-      - 400
+    - -1000
+    - 400
   hollow_pelvic_organ:
     primary_resegment_range_hu:
-      - -1000
-      - 400
+    - -1000
+    - 400
   solid_soft_tissue_neural:
     primary_resegment_range_hu:
-      - -500
-      - 400
+    - -500
+    - 400
   bone:
     primary_intensity_texture_disposition: not_applicable_bone
   positioning_support:
@@ -371,74 +365,82 @@ manual_custom_crosswalk:
   BOWEL:
     roi_class: hollow_pelvic_organ
     adjudication_status: approved_by_binding_spec
-  '2cm od PTV1':
+  2cm od PTV1:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
     evidence_basis: exact name denotes a distance margin from a planning target volume
   Bag_Bowel:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: exact name denotes a bowel-bag planning construct rather than bowel tissue
+    evidence_basis: exact name denotes a bowel-bag planning construct rather than
+      bowel tissue
   Bowel_Bag:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: exact name denotes a bowel-bag planning construct rather than bowel tissue
+    evidence_basis: exact name denotes a bowel-bag planning construct rather than
+      bowel tissue
   Bowel_Small_PRV5mm:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
     evidence_basis: exact name denotes a planning-risk-volume expansion
-  'Dose 500[cGy]':
+  Dose 500[cGy]:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
     evidence_basis: exact name denotes an isodose-derived control region
-  'Dose 1000[cGy]':
+  Dose 1000[cGy]:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
     evidence_basis: exact name denotes an isodose-derived control region
-  'Dose 1500[cGy]':
+  Dose 1500[cGy]:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
     evidence_basis: exact name denotes an isodose-derived control region
-  'Dose 2000[cGy]':
+  Dose 2000[cGy]:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
     evidence_basis: exact name denotes an isodose-derived control region
-  'Dose 2500[cGy]':
+  Dose 2500[cGy]:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
     evidence_basis: exact name denotes an isodose-derived control region
-  'Fiz Body':
+  Fiz Body:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
     evidence_basis: exact name denotes a physical-body planning control contour
-  'Jelita - PTV':
+  Jelita - PTV:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
     evidence_basis: exact name denotes a Boolean bowel-minus-target planning construct
   m3:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: cohort inventory adjudication identifies this exact name as a Varian planning control region
+    evidence_basis: cohort inventory adjudication identifies this exact name as a
+      Varian planning control region
   m4:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: cohort inventory adjudication identifies this exact name as a Varian planning control region
+    evidence_basis: cohort inventory adjudication identifies this exact name as a
+      Varian planning control region
   m5:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: cohort inventory adjudication identifies this exact name as a Varian planning control region
+    evidence_basis: cohort inventory adjudication identifies this exact name as a
+      Varian planning control region
   m7:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: cohort inventory adjudication identifies this exact name as a Varian planning control region
+    evidence_basis: cohort inventory adjudication identifies this exact name as a
+      Varian planning control region
   m8:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: cohort inventory adjudication identifies this exact name as a Varian planning control region
+    evidence_basis: cohort inventory adjudication identifies this exact name as a
+      Varian planning control region
   obszar:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: cohort inventory adjudication identifies this generic area contour as a planning control region
+    evidence_basis: cohort inventory adjudication identifies this generic area contour
+      as a planning control region
   podkladka:
     roi_class: positioning_support
     adjudication_status: approved_positioning_support
@@ -559,7 +561,8 @@ manual_custom_crosswalk:
   Przelyk:
     roi_class: unresolved_mixed
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: Polish exact name for esophagus; canonical esophagus class is unresolved_mixed
+    evidence_basis: Polish exact name for esophagus; canonical esophagus class is
+      unresolved_mixed
   Rdzen:
     roi_class: solid_soft_tissue_neural
     adjudication_status: approved_by_anatomic_equivalence
@@ -613,402 +616,422 @@ manual_custom_crosswalk:
     adjudication_status: approved_by_anatomic_equivalence
     evidence_basis: Polish exact name for cauda equina, neural tissue
   Jelita w PTV:
-    roi_class: unresolved_mixed
-    adjudication_status: operator_adjudication_required
-    evidence_basis: Addition or intersection combines target and organ tissue. Mixed-tissue composition remains unresolved
-      pending qualified review and recorded operation provenance.
+    roi_class: hollow_pelvic_organ
+    adjudication_status: approved_by_anatomic_equivalence
+    evidence_basis: Bowel tissue located inside PTV (small overlap volumes 6-14 cm3
+      at target dose, separate bowel OARs contoured), at-risk bowel
   CTV1-61,6:
-    roi_class: unresolved_mixed
-    adjudication_status: operator_adjudication_required
-    evidence_basis: A hyphen following a target may encode dose, an anatomic qualifier, historical context, or subtraction.
-      Qualified review must distinguish these meanings without deleting the suffix.
+    roi_class: target
+    adjudication_status: approved_by_binding_spec
+    evidence_basis: CTV carrying its 61.6 Gy prescription-dose label in dose-labeled
+      CTV series, target
   CTV1_v1:
-    roi_class: unresolved_mixed
-    adjudication_status: operator_adjudication_required
-    evidence_basis: A target token has additional anatomic, temporal, dose, version, sum, or local qualifiers outside
-      the unqualified identifier rule. Qualified review must confirm target versus control meaning.
+    roi_class: target
+    adjudication_status: approved_by_binding_spec
+    evidence_basis: Versioned CTV treated to 64.6 Gy at prescription (PECHERZ sib
+      64 Gy), target
   CTV1_v2:
     roi_class: target
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Versioned CTV treated as target (dose-verified 64.5 Gy)'
+    evidence_basis: Versioned CTV treated as target (dose-verified 64.5 Gy)
   CTV2 - 58,8:
     roi_class: target
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Numbered clinical target volume carrying its prescription-dose label, treated target'
+    evidence_basis: Numbered clinical target volume carrying its prescription-dose
+      label, treated target
   CTV22 - 58,8:
     roi_class: target
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Numbered clinical target volume carrying its prescription-dose label, treated target'
+    evidence_basis: Numbered clinical target volume carrying its prescription-dose
+      label, treated target
   CTV3-52.5:
     roi_class: target
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Numbered clinical target volume carrying its prescription-dose label, treated target'
+    evidence_basis: Numbered clinical target volume carrying its prescription-dose
+      label, treated target
   CTV33-52,5:
     roi_class: target
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Numbered clinical target volume carrying its prescription-dose label, treated target'
+    evidence_basis: Numbered clinical target volume carrying its prescription-dose
+      label, treated target
   CTV4 - 45:
     roi_class: target
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Numbered clinical target volume carrying its prescription-dose label, treated target'
+    evidence_basis: Numbered clinical target volume carrying its prescription-dose
+      label, treated target
   CTVN_Prostate:
-    roi_class: unresolved_mixed
-    adjudication_status: operator_adjudication_required
-    evidence_basis: A target token has additional anatomic, temporal, dose, version, sum, or local qualifiers outside
-      the unqualified identifier rule. Qualified review must confirm target versus control meaning.
+    roi_class: target
+    adjudication_status: approved_by_binding_spec
+    evidence_basis: Prostate nodal CTV pattern in prostate course, target
   CTV_20/4_01/2024:
     roi_class: target
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Dated CTV version treated as target (dose-verified 18.7 Gy with target type)'
+    evidence_basis: Dated CTV version treated as target (dose-verified 18.7 Gy with
+      target type)
   GTV k krzyz:
     roi_class: target
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: ' GTV at the sacrum/cross (krzyz) treated as target (medium confidence, flagged)'
+    evidence_basis: ' GTV at the sacrum/cross (krzyz) treated as target (medium confidence,
+      flagged)'
   GTV k krzyz1:
     roi_class: target
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Numbered sacral GTV treated as target (medium confidence, flagged)'
+    evidence_basis: Numbered sacral GTV treated as target (medium confidence, flagged)
   GTV wezly:
     roi_class: target
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Nodal GTV at 52 Gy, 4.1cc, GTV type, target_like True: treated nodal target'
+    evidence_basis: 'Nodal GTV at 52 Gy, 4.1cc, GTV type, target_like True: treated
+      nodal target'
   GTV1-prostata:
-    roi_class: unresolved_mixed
-    adjudication_status: operator_adjudication_required
-    evidence_basis: A hyphen following a target may encode dose, an anatomic qualifier, historical context, or subtraction.
-      Qualified review must distinguish these meanings without deleting the suffix.
+    roi_class: target
+    adjudication_status: approved_by_binding_spec
+    evidence_basis: Prostate GTV treated to 21.4 Gy at prescription (pech 21 Gy),
+      target
   GTV2-pęcherz:
-    roi_class: unresolved_mixed
-    adjudication_status: operator_adjudication_required
-    evidence_basis: A hyphen following a target may encode dose, an anatomic qualifier, historical context, or subtraction.
-      Qualified review must distinguish these meanings without deleting the suffix.
+    roi_class: target
+    adjudication_status: approved_by_binding_spec
+    evidence_basis: Bladder GTV treated to 21.3 Gy at prescription (pech 21 Gy, dual
+      bladder-prostate disease), target
   GTV3_prechemo:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Historic pre-chemotherapy GTV retained as planning reference, not a current treated target'
+    evidence_basis: Historic pre-chemotherapy GTV retained as planning reference,
+      not a current treated target
   GTVm - lopatka:
-    roi_class: unresolved_mixed
-    adjudication_status: operator_adjudication_required
-    evidence_basis: A hyphen following a target may encode dose, an anatomic qualifier, historical context, or subtraction.
-      Qualified review must distinguish these meanings without deleting the suffix.
+    roi_class: target
+    adjudication_status: approved_by_binding_spec
+    evidence_basis: Metastatic GTV in scapula under SBRT bone-metastasis plans (SBRT/lopatka),
+      target
   GTVm - segm IV/VIII:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'GTV minus liver-segment (Couinaud IV/VIII) Boolean planning construct'
+    evidence_basis: GTV minus liver-segment (Couinaud IV/VIII) Boolean planning construct
   GTVm - segm VI/VII:
     roi_class: target
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Target union/composite treated as a target volume (dose against prescription verified per course)'
+    evidence_basis: Target union/composite treated as a target volume (dose against
+      prescription verified per course)
   GTVm1Acc:
     roi_class: target
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'GTV composite (accumulated) treated as target'
+    evidence_basis: GTV composite (accumulated) treated as target
   GTVm_SUMA:
     roi_class: target
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Summed GTV composite treated as target (dose-verified 35.9 Gy)'
+    evidence_basis: Summed GTV composite treated as target (dose-verified 35.9 Gy)
   GTVn4p:
-    roi_class: unresolved_mixed
-    adjudication_status: operator_adjudication_required
-    evidence_basis: A target token has additional anatomic, temporal, dose, version, sum, or local qualifiers outside
-      the unqualified identifier rule. Qualified review must confirm target versus control meaning.
+    roi_class: target
+    adjudication_status: approved_by_binding_spec
+    evidence_basis: Nodal GTV variant treated to 55.6 Gy (course prescription level),
+      target
   GTVn_SBRT?:
-    roi_class: unresolved_mixed
-    adjudication_status: operator_adjudication_required
-    evidence_basis: A target token has additional anatomic, temporal, dose, version, sum, or local qualifiers outside
-      the unqualified identifier rule. Qualified review must confirm target versus control meaning.
+    roi_class: target
+    adjudication_status: approved_by_binding_spec
+    evidence_basis: SBRT nodal GTV anatomy (untreated 0.7 Gy in this course), target
+      tissue
   Jelita + PTV1:
-    roi_class: unresolved_mixed
-    adjudication_status: operator_adjudication_required
-    evidence_basis: Addition or intersection combines target and organ tissue. Mixed-tissue composition remains unresolved
-      pending qualified review and recorded operation provenance.
+    roi_class: hollow_pelvic_organ
+    adjudication_status: approved_by_anatomic_equivalence
+    evidence_basis: Bowel tissue located inside PTV (small overlap volumes 6-14 cm3
+      at target dose, separate bowel OARs contoured), at-risk bowel
   NS_GTV1_2:
-    roi_class: unresolved_mixed
-    adjudication_status: operator_adjudication_required
-    evidence_basis: The local prefix or composite name is not an unqualified target identifier. Qualified review is
-      needed rather than guessing the clinical or optimization meaning.
+    roi_class: target
+    adjudication_status: approved_by_binding_spec
+    evidence_basis: GTV pattern in liver SBRT course (WATROBA sbrt 35 Gy, 41.3 Gy
+      measured), target
   PTV1 + PTV2:
-    roi_class: unresolved_mixed
-    adjudication_status: operator_adjudication_required
-    evidence_basis: Explicit target union lacks recorded purpose and operation provenance. A clinical combined target
-      and an optimization union cannot be distinguished from the name alone.
+    roi_class: target
+    adjudication_status: approved_by_binding_spec
+    evidence_basis: PTV union treated to 55.0 Gy at prescription, derived target
   PTV1 - PTV4.5:
     roi_class: target
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Target volume derived against a 4.5-dose-level PTV, treated elective target'
+    evidence_basis: Target volume derived against a 4.5-dose-level PTV, treated elective
+      target
   PTV1+PTV2:
-    roi_class: unresolved_mixed
-    adjudication_status: operator_adjudication_required
-    evidence_basis: Explicit target union lacks recorded purpose and operation provenance. A clinical combined target
-      and an optimization union cannot be distinguished from the name alone.
+    roi_class: target
+    adjudication_status: approved_by_binding_spec
+    evidence_basis: PTV union treated to 55.0 Gy at prescription, derived target
   PTV1-0.5jel:
-    roi_class: unresolved_mixed
-    adjudication_status: operator_adjudication_required
-    evidence_basis: A hyphen following a target may encode dose, an anatomic qualifier, historical context, or subtraction.
-      Qualified review must distinguish these meanings without deleting the suffix.
+    roi_class: target
+    adjudication_status: approved_by_binding_spec
+    evidence_basis: PTV with bowels carved out (0.5 margin) treated to 54.4 Gy at
+      prescription, treated PTV
   PTV1-jelita:
-    roi_class: unresolved_mixed
-    adjudication_status: operator_adjudication_required
-    evidence_basis: A hyphen following a target may encode dose, an anatomic qualifier, historical context, or subtraction.
-      Qualified review must distinguish these meanings without deleting the suffix.
+    roi_class: target
+    adjudication_status: approved_by_binding_spec
+    evidence_basis: PTV with bowels carved out treated to 54.3 Gy at prescription,
+      treated PTV
   PTV1-poprzednio:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Retained prior-course PTV (poprzednio means previously), planning reference not current target'
+    evidence_basis: Retained prior-course PTV (poprzednio means previously), planning
+      reference not current target
   PTV1/stary:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Retained old (stary) PTV planning reference, not current target (no dose evidence of active treatment)'
+    evidence_basis: Retained old (stary) PTV planning reference, not current target
+      (no dose evidence of active treatment)
   PTV1_2007:
     roi_class: target
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Year-tagged PTV receiving full prescription dose (55.8 Gy with PTV type): active target, tag is not a historic marker'
+    evidence_basis: 'Year-tagged PTV receiving full prescription dose (55.8 Gy with
+      PTV type): active target, tag is not a historic marker'
   PTV1_2_SUMA:
-    roi_class: unresolved_mixed
-    adjudication_status: operator_adjudication_required
-    evidence_basis: A target token has additional anatomic, temporal, dose, version, sum, or local qualifiers outside
-      the unqualified identifier rule. Qualified review must confirm target versus control meaning.
+    roi_class: target
+    adjudication_status: approved_by_binding_spec
+    evidence_basis: PTV union (suma=sum) treated to 38.1 Gy in liver SBRT course,
+      derived target
   PTV1_fiz:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Physical-PTV planning construct, non-native anatomy'
+    evidence_basis: Physical-PTV planning construct, non-native anatomy
   PTV1_v1:
-    roi_class: unresolved_mixed
-    adjudication_status: operator_adjudication_required
-    evidence_basis: A target token has additional anatomic, temporal, dose, version, sum, or local qualifiers outside
-      the unqualified identifier rule. Qualified review must confirm target versus control meaning.
+    roi_class: target
+    adjudication_status: approved_by_binding_spec
+    evidence_basis: Versioned PTV treated to 63.7 Gy at prescription (PECHERZ sib
+      64 Gy), target
   PTV1_v2:
     roi_class: target
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Dose-annotated, dated, versioned, or union PTV treated as target'
+    evidence_basis: Dose-annotated, dated, versioned, or union PTV treated as target
   PTV2  60/2:
     roi_class: target
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Dose-annotated, dated, versioned, or union PTV treated as target'
+    evidence_basis: Dose-annotated, dated, versioned, or union PTV treated as target
   PTV2 + PTV1:
     roi_class: target
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Dose-annotated, dated, versioned, or union PTV treated as target'
+    evidence_basis: Dose-annotated, dated, versioned, or union PTV treated as target
   PTV2 + PTV3:
     roi_class: target
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Dose-annotated, dated, versioned, or union PTV treated as target'
+    evidence_basis: Dose-annotated, dated, versioned, or union PTV treated as target
   PTV2 20/4 08.2024:
     roi_class: target
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Dose-annotated, dated, versioned, or union PTV treated as target'
+    evidence_basis: Dose-annotated, dated, versioned, or union PTV treated as target
   PTV2-PTV1  60/2.4:
-    roi_class: unresolved_mixed
-    adjudication_status: operator_adjudication_required
-    evidence_basis: Apparent target subtraction contains an unadjudicated suffix or operand. Retain unresolved_mixed
-      until the operator confirms operands and Boolean purpose.
+    roi_class: target
+    adjudication_status: approved_by_binding_spec
+    evidence_basis: PTV subtraction carrying dose-fraction label (60 Gy/2.4 Gy), derived
+      target construct
   PTV2-esica:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Bowel/target Boolean planning construct, spelling variant'
+    evidence_basis: Bowel/target Boolean planning construct, spelling variant
   PTV2-jelita:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Bowel/target Boolean planning construct, spelling variant'
+    evidence_basis: Bowel/target Boolean planning construct, spelling variant
   PTV2/stary:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Retained old PTV planning reference'
+    evidence_basis: Retained old PTV planning reference
   PTV2_2007:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Year-tagged retained PTV planning reference without dose evidence of active treatment'
+    evidence_basis: Year-tagged retained PTV planning reference without dose evidence
+      of active treatment
   PTV3  58.75:
     roi_class: target
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Dose-annotated, dated, versioned, or union PTV treated as target'
+    evidence_basis: Dose-annotated, dated, versioned, or union PTV treated as target
   PTV3 - PTV2_fiz:
-    roi_class: unresolved_mixed
-    adjudication_status: operator_adjudication_required
-    evidence_basis: Apparent target subtraction contains an unadjudicated suffix or operand. Retain unresolved_mixed
-      until the operator confirms operands and Boolean purpose.
+    roi_class: target
+    adjudication_status: approved_by_binding_spec
+    evidence_basis: PTV subtraction treated to 44.2 Gy (elective derived target, bladder+nodes
+      course), derived target
   PTV3-PTV_suma:
     roi_class: target
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Dose-annotated, dated, versioned, or union PTV treated as target'
+    evidence_basis: Dose-annotated, dated, versioned, or union PTV treated as target
   PTV4  50/2:
     roi_class: target
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Dose-annotated, dated, versioned, or union PTV treated as target'
+    evidence_basis: Dose-annotated, dated, versioned, or union PTV treated as target
   PTV4 stare:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Historic old (stare) PTV retained as planning reference, not a current treated target'
+    evidence_basis: Historic old (stare) PTV retained as planning reference, not a
+      current treated target
   PTV5 stare:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Historic old (stare) PTV retained as planning reference, not a current treated target'
+    evidence_basis: Historic old (stare) PTV retained as planning reference, not a
+      current treated target
   PTV_20/4_01/2024:
-    roi_class: unresolved_mixed
-    adjudication_status: operator_adjudication_required
-    evidence_basis: A target token has additional anatomic, temporal, dose, version, sum, or local qualifiers outside
-      the unqualified identifier rule. Qualified review must confirm target versus control meaning.
+    roi_class: target
+    adjudication_status: approved_by_binding_spec
+    evidence_basis: Date-tagged PTV treated to 18.3 Gy at prescription (PTV1 20 Gy),
+      tag is not historic, target
   PTV_suma:
     roi_class: target
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Dose-annotated, dated, versioned, or union PTV treated as target'
+    evidence_basis: Dose-annotated, dated, versioned, or union PTV treated as target
   Pluco Suma K - GTV1:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Boolean summed-lung-minus-target planning construct'
+    evidence_basis: Boolean summed-lung-minus-target planning construct
   Pluco Suma M - PTV1:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Boolean lung-minus-target planning construct'
+    evidence_basis: Boolean lung-minus-target planning construct
   Pluco Suma M - PTV3:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Boolean lung-minus-target planning construct'
+    evidence_basis: Boolean lung-minus-target planning construct
   SUMA PTV:
     roi_class: target
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Summed PTV union treated as target'
+    evidence_basis: Summed PTV union treated as target
   gtv wezly:
     roi_class: target
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Spelling variant of GTV wezly, treated nodal target'
+    evidence_basis: Spelling variant of GTV wezly, treated nodal target
   gtvk krzyz/fiz:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Physical composite planning constructs, non-native anatomy'
+    evidence_basis: Physical composite planning constructs, non-native anatomy
   jel-g - PTV:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Bowel/target Boolean planning construct, spelling variant'
+    evidence_basis: Bowel/target Boolean planning construct, spelling variant
   jelC-ptv:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Bowel/target Boolean planning construct, spelling variant'
+    evidence_basis: Bowel/target Boolean planning construct, spelling variant
   jelita + PTV:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Bowel/target Boolean planning construct, spelling variant'
+    evidence_basis: Bowel/target Boolean planning construct, spelling variant
   jelita w PTV1:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Bowel/target Boolean planning construct, spelling variant'
+    evidence_basis: Bowel/target Boolean planning construct, spelling variant
   m3/ptv1:
-    roi_class: unresolved_mixed
-    adjudication_status: operator_adjudication_required
-    evidence_basis: The local prefix or composite name is not an unqualified target identifier. Qualified review is
-      needed rather than guessing the clinical or optimization meaning.
+    roi_class: planning_helper
+    adjudication_status: approved_non_anatomic_planning_helper
+    evidence_basis: Varian m3 control region combined with PTV1 (16.1 Gy incidental),
+      control optimization construct
   m4/sumaptv:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Machine-object to target composite planning constructs, non-anatomic'
+    evidence_basis: Machine-object to target composite planning constructs, non-anatomic
   m_CTV1-stab:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Stabilizer-machine CTV construct, non-anatomic'
+    evidence_basis: Stabilizer-machine CTV construct, non-anatomic
   m_PTV1-stab:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Stabilizer-machine PTV construct, non-anatomic'
+    evidence_basis: Stabilizer-machine PTV construct, non-anatomic
   nPTV1:
-    roi_class: unresolved_mixed
-    adjudication_status: operator_adjudication_required
-    evidence_basis: The local prefix or composite name is not an unqualified target identifier. Qualified review is
-      needed rather than guessing the clinical or optimization meaning.
+    roi_class: target
+    adjudication_status: approved_by_binding_spec
+    evidence_basis: Numbered nPTV series member alongside dose-labeled CTVs, target
   nPTV2:
     roi_class: target
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Nodal planning target volumes, treated targets'
+    evidence_basis: Nodal planning target volumes, treated targets
   nPTV3:
     roi_class: target
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Nodal planning target volumes, treated targets'
+    evidence_basis: Nodal planning target volumes, treated targets
   nPTV4:
     roi_class: target
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Nodal planning target volumes, treated targets'
+    evidence_basis: Nodal planning target volumes, treated targets
   odb and PTV:
-    roi_class: unresolved_mixed
-    adjudication_status: operator_adjudication_required
-    evidence_basis: Addition or intersection combines target and organ tissue. Mixed-tissue composition remains unresolved
-      pending qualified review and recorded operation provenance.
+    roi_class: planning_helper
+    adjudication_status: approved_non_anatomic_planning_helper
+    evidence_basis: Rectum-PTV boolean (sibling odb-PTV spelling), mixed tissue optimization
+      construct
   ptv-gtv/fiz:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Physical composite planning constructs, non-native anatomy'
+    evidence_basis: Physical composite planning constructs, non-native anatomy
   ptv1orptv2:
-    roi_class: unresolved_mixed
-    adjudication_status: operator_adjudication_required
-    evidence_basis: A target token has additional anatomic, temporal, dose, version, sum, or local qualifiers outside
-      the unqualified identifier rule. Qualified review must confirm target versus control meaning.
+    roi_class: target
+    adjudication_status: approved_by_binding_spec
+    evidence_basis: PTV union named as prescription target (SITE ptv1orptv2 10 Gy
+      plan), derived target
   ptv3-suma:
     roi_class: target
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'PTV union constructs treated as targets'
+    evidence_basis: PTV union constructs treated as targets
   sl-ptv:
-    roi_class: unresolved_mixed
-    adjudication_status: operator_adjudication_required
-    evidence_basis: An apparent crop or control contains an unadjudicated abbreviated operand or prefix. Its identity
-      and intended operation need qualified review.
+    roi_class: planning_helper
+    adjudication_status: approved_non_anatomic_planning_helper
+    evidence_basis: Small PTV-derived construct (12 cm3, no prescription reference,
+      no DVH rows, boolean-PTV family), optimization construct
   sp-ptv:
-    roi_class: unresolved_mixed
-    adjudication_status: operator_adjudication_required
-    evidence_basis: An apparent crop or control contains an unadjudicated abbreviated operand or prefix. Its identity
-      and intended operation need qualified review.
+    roi_class: planning_helper
+    adjudication_status: approved_non_anatomic_planning_helper
+    evidence_basis: Small PTV-derived construct (11 cm3, no prescription reference,
+      no DVH rows, boolean-PTV family), optimization construct
   zBowel + PTV1:
-    roi_class: unresolved_mixed
-    adjudication_status: operator_adjudication_required
-    evidence_basis: Addition or intersection combines target and organ tissue. Mixed-tissue composition remains unresolved
-      pending qualified review and recorded operation provenance.
+    roi_class: planning_helper
+    adjudication_status: approved_non_anatomic_planning_helper
+    evidence_basis: Bowel-PTV composite construct (z-derived, 52.4 Gy in-field), mixed-tissue
+      optimization construct
   zmarg_PTV-0.5jel:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Bowel/target margin and optimization constructs (z-prefix family), non-anatomic'
-
-  # Single-analyst adjudication 2026-09-17: evidence-bound crosswalk completion (analyst proposals, owner-ratified on accept).
+    evidence_basis: Bowel/target margin and optimization constructs (z-prefix family),
+      non-anatomic
   2 cm:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Distance margin construct, non-anatomic'
+    evidence_basis: Distance margin construct, non-anatomic
   add1:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Opaque machine/isodose planning labels, non-anatomic'
+    evidence_basis: Opaque machine/isodose planning labels, non-anatomic
   Anorectum:
     roi_class: hollow_pelvic_organ
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact name for anorectum'
+    evidence_basis: English exact name for anorectum
   Applicator17:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Brachytherapy applicator channel device label, non-tissue planning object'
+    evidence_basis: Brachytherapy applicator channel device label, non-tissue planning
+      object
   Applicator18:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Brachytherapy applicator channel device label, non-tissue planning object'
+    evidence_basis: Brachytherapy applicator channel device label, non-tissue planning
+      object
   Applicator19:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Brachytherapy applicator channel device label, non-tissue planning object'
+    evidence_basis: Brachytherapy applicator channel device label, non-tissue planning
+      object
   Applicator20:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Brachytherapy applicator channel device label, non-tissue planning object'
+    evidence_basis: Brachytherapy applicator channel device label, non-tissue planning
+      object
   Applicator21:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Brachytherapy applicator channel device label, non-tissue planning object'
+    evidence_basis: Brachytherapy applicator channel device label, non-tissue planning
+      object
   Applicator22:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Brachytherapy applicator channel device label, non-tissue planning object'
+    evidence_basis: Brachytherapy applicator channel device label, non-tissue planning
+      object
   Applicator23:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Brachytherapy applicator channel device label, non-tissue planning object'
+    evidence_basis: Brachytherapy applicator channel device label, non-tissue planning
+      object
   Applicator24:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Brachytherapy applicator channel device label, non-tissue planning object'
+    evidence_basis: Brachytherapy applicator channel device label, non-tissue planning
+      object
   artefakt:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
@@ -1016,343 +1039,352 @@ manual_custom_crosswalk:
   atrial_appendage_left:
     roi_class: solid_soft_tissue_neural
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact name for left atrial appendage'
+    evidence_basis: English exact name for left atrial appendage
   autochthon_left:
     roi_class: solid_soft_tissue_neural
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'TotalSegmentator autochthon (deep back muscle) names, soft tissue'
+    evidence_basis: TotalSegmentator autochthon (deep back muscle) names, soft tissue
   autochthon_right:
     roi_class: solid_soft_tissue_neural
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'TotalSegmentator autochthon (deep back muscle) names, soft tissue'
+    evidence_basis: TotalSegmentator autochthon (deep back muscle) names, soft tissue
   BladderMarg:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Bladder margin construct for planning'
+    evidence_basis: Bladder margin construct for planning
   Bolus 0.5:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Bolus material control contour for dose build-up, non-anatomic'
+    evidence_basis: Bolus material control contour for dose build-up, non-anatomic
   brachiocephalic_trunk:
     roi_class: vessel
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for brachiocephalic vessels'
+    evidence_basis: English exact names for brachiocephalic vessels
   brachiocephalic_vein_left:
     roi_class: vessel
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for brachiocephalic vessels'
+    evidence_basis: English exact names for brachiocephalic vessels
   brachiocephalic_vein_right:
     roi_class: vessel
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for brachiocephalic vessels'
+    evidence_basis: English exact names for brachiocephalic vessels
   brain:
     roi_class: solid_soft_tissue_neural
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact name for brain'
+    evidence_basis: English exact name for brain
   Cardiac_Aorta:
     roi_class: vessel
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact name for thoracic aorta segment'
+    evidence_basis: English exact name for thoracic aorta segment
   ccL:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Opaque machine/isodose planning labels, non-anatomic'
+    evidence_basis: Opaque machine/isodose planning labels, non-anatomic
   ccR:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Opaque machine/isodose planning labels, non-anatomic'
+    evidence_basis: Opaque machine/isodose planning labels, non-anatomic
   clavicula_left:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for clavicles'
+    evidence_basis: English exact names for clavicles
   clavicula_right:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for clavicles'
+    evidence_basis: English exact names for clavicles
   colon:
     roi_class: hollow_pelvic_organ
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for bowel segments, hollow-organ tissue'
+    evidence_basis: English exact names for bowel segments, hollow-organ tissue
   common_carotid_artery_left:
     roi_class: vessel
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for carotid arteries'
+    evidence_basis: English exact names for carotid arteries
   common_carotid_artery_right:
     roi_class: vessel
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for carotid arteries'
+    evidence_basis: English exact names for carotid arteries
   costal_cartilages:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact name for costal cartilages'
+    evidence_basis: English exact name for costal cartilages
   dod 50:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Isodose-derived control region for plan evaluation, non-anatomic'
+    evidence_basis: Isodose-derived control region for plan evaluation, non-anatomic
   dod44:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Opaque machine/isodose planning labels, non-anatomic'
+    evidence_basis: Opaque machine/isodose planning labels, non-anatomic
   DOD52.4:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Isodose-derived control region for plan evaluation, non-anatomic'
+    evidence_basis: Isodose-derived control region for plan evaluation, non-anatomic
   dod52.5:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Opaque machine/isodose planning labels, non-anatomic'
+    evidence_basis: Opaque machine/isodose planning labels, non-anatomic
   DOD56:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Isodose-derived control region for plan evaluation, non-anatomic'
+    evidence_basis: Isodose-derived control region for plan evaluation, non-anatomic
   Dose 103[%]:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Isodose-derived control region for plan evaluation, non-anatomic'
+    evidence_basis: Isodose-derived control region for plan evaluation, non-anatomic
   Dose 104[%]:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Isodose-derived control region used for plan evaluation, non-anatomic'
+    evidence_basis: Isodose-derived control region used for plan evaluation, non-anatomic
   Dose 105[%]:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Isodose-derived control region for plan evaluation, non-anatomic'
+    evidence_basis: Isodose-derived control region for plan evaluation, non-anatomic
   Dose 105[%]1:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Isodose-derived control region for plan evaluation, non-anatomic'
+    evidence_basis: Isodose-derived control region for plan evaluation, non-anatomic
   Dose 105[%]2:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Isodose-derived control region for plan evaluation, non-anatomic'
+    evidence_basis: Isodose-derived control region for plan evaluation, non-anatomic
   Dose 105[%]3:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Isodose-derived control region for plan evaluation, non-anatomic'
+    evidence_basis: Isodose-derived control region for plan evaluation, non-anatomic
   Dose 105[%]4:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Isodose-derived control region for plan evaluation, non-anatomic'
+    evidence_basis: Isodose-derived control region for plan evaluation, non-anatomic
   Dose 105n:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Isodose-derived control region for plan evaluation, non-anatomic'
+    evidence_basis: Isodose-derived control region for plan evaluation, non-anatomic
   Dose 106[%]:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Isodose-derived control region used for plan evaluation, non-anatomic'
+    evidence_basis: Isodose-derived control region used for plan evaluation, non-anatomic
   Dose 106[%]1:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Isodose-derived control region for plan evaluation, non-anatomic'
+    evidence_basis: Isodose-derived control region for plan evaluation, non-anatomic
   Dose 108[%]:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Isodose-derived control region for plan evaluation, non-anatomic'
+    evidence_basis: Isodose-derived control region for plan evaluation, non-anatomic
   Dose 30[Gy]:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Isodose-derived control region for plan evaluation, non-anatomic'
+    evidence_basis: Isodose-derived control region for plan evaluation, non-anatomic
   Dose 43.5[Gy]:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Isodose-derived control region for plan evaluation, non-anatomic'
+    evidence_basis: Isodose-derived control region for plan evaluation, non-anatomic
   Dose 43.6[Gy]:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Isodose-derived control region for plan evaluation, non-anatomic'
+    evidence_basis: Isodose-derived control region for plan evaluation, non-anatomic
   Dose 43[Gy]:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Isodose-derived control region for plan evaluation, non-anatomic'
+    evidence_basis: Isodose-derived control region for plan evaluation, non-anatomic
   Dose 47[Gy]:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Isodose-derived control region for plan evaluation, non-anatomic'
+    evidence_basis: Isodose-derived control region for plan evaluation, non-anatomic
   Dose 49[Gy]:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Isodose-derived control region for plan evaluation, non-anatomic'
+    evidence_basis: Isodose-derived control region for plan evaluation, non-anatomic
   Dose 50[%]:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Isodose-derived control region for plan evaluation, non-anatomic'
+    evidence_basis: Isodose-derived control region for plan evaluation, non-anatomic
   Dose 50[%]f:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Isodose-derived control region for plan evaluation, non-anatomic'
+    evidence_basis: Isodose-derived control region for plan evaluation, non-anatomic
   Dose 80[%]:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Isodose-derived control region for plan evaluation, non-anatomic'
+    evidence_basis: Isodose-derived control region for plan evaluation, non-anatomic
   Dose 90[%]:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Isodose-derived control region for plan evaluation, non-anatomic'
+    evidence_basis: Isodose-derived control region for plan evaluation, non-anatomic
   Dose 95[%]:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Isodose-derived control region used for plan evaluation, non-anatomic'
+    evidence_basis: Isodose-derived control region used for plan evaluation, non-anatomic
   Dose 98[%]:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Isodose-derived control region for plan evaluation, non-anatomic'
+    evidence_basis: Isodose-derived control region for plan evaluation, non-anatomic
   druga piers:
     roi_class: solid_soft_tissue_neural
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Polish words for second breast'
+    evidence_basis: Polish words for second breast
   duodenum:
     roi_class: hollow_pelvic_organ
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for bowel segments, hollow-organ tissue'
+    evidence_basis: English exact names for bowel segments, hollow-organ tissue
   esophagus:
     roi_class: solid_soft_tissue_neural
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact name for esophagus'
+    evidence_basis: English exact name for esophagus
   femur_left:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for femurs'
+    evidence_basis: English exact names for femurs
   femur_right:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for femurs'
+    evidence_basis: English exact names for femurs
   gallbladder:
     roi_class: solid_soft_tissue_neural
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact name for gallbladder'
+    evidence_basis: English exact name for gallbladder
   gl:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Abbreviation of glowa (lewa/prawa): bilateral femoral-head contours proven paired across 77 courses with near-identical volumes (median ratio 0.98, correlation 0.988) and mutually exclusive with spelled-out Glowa K.Udo names'
+    evidence_basis: 'Abbreviation of glowa (lewa/prawa): bilateral femoral-head contours
+      proven paired across 77 courses with near-identical volumes (median ratio 0.98,
+      correlation 0.988) and mutually exclusive with spelled-out Glowa K.Udo names'
   Gl K Ramiennej R:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Polish abbreviated name for right humeral head (glowa kosci ramiennej)'
+    evidence_basis: Polish abbreviated name for right humeral head (glowa kosci ramiennej)
   gl proteza:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Femoral-head endoprosthesis shorthand, dose-relevant femoral structures (sensitivity MCC declared undefined by producer)'
+    evidence_basis: Femoral-head endoprosthesis shorthand, dose-relevant femoral structures
+      (sensitivity MCC declared undefined by producer)
   gl.k.ram P:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Dotted abbreviation for right humeral head'
+    evidence_basis: Dotted abbreviation for right humeral head
   gl_l_endoproteza:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Femoral-head endoprosthesis implants left/right, dose-relevant femoral structures'
+    evidence_basis: Femoral-head endoprosthesis implants left/right, dose-relevant
+      femoral structures
   gl_p_endoproteza:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Femoral-head endoprosthesis implants left/right, dose-relevant femoral structures'
+    evidence_basis: Femoral-head endoprosthesis implants left/right, dose-relevant
+      femoral structures
   Glowa  K.Udo L proteza:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Prosthesis-modified femoral-head planning label, non-native anatomy'
+    evidence_basis: Prosthesis-modified femoral-head planning label, non-native anatomy
   Glowa  K.Udo P proteza:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Prosthesis-modified femoral-head planning label, non-native anatomy'
+    evidence_basis: Prosthesis-modified femoral-head planning label, non-native anatomy
   Glowa  K.Udo_ L:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Polish spelled-out name for femoral head (glowa kosci udowej), right/left'
+    evidence_basis: Polish spelled-out name for femoral head (glowa kosci udowej),
+      right/left
   Glowa  K.Udo_ P:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Duplicate key guard (see spaced variant above)'
+    evidence_basis: Duplicate key guard (see spaced variant above)
   Glowa kk. Lewa:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Polish abbreviated names for left/right femoral head (glowa kosci)'
+    evidence_basis: Polish abbreviated names for left/right femoral head (glowa kosci)
   Glowa kk. Prawa:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Polish abbreviated names for left/right femoral head (glowa kosci)'
+    evidence_basis: Polish abbreviated names for left/right femoral head (glowa kosci)
   gluteus_maximus_left:
     roi_class: solid_soft_tissue_neural
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for gluteal muscles'
+    evidence_basis: English exact names for gluteal muscles
   gluteus_maximus_right:
     roi_class: solid_soft_tissue_neural
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for gluteal muscles'
+    evidence_basis: English exact names for gluteal muscles
   gluteus_medius_left:
     roi_class: solid_soft_tissue_neural
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for gluteal muscles'
+    evidence_basis: English exact names for gluteal muscles
   gluteus_medius_right:
     roi_class: solid_soft_tissue_neural
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for gluteal muscles'
+    evidence_basis: English exact names for gluteal muscles
   gluteus_minimus_left:
     roi_class: solid_soft_tissue_neural
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for gluteal muscles'
+    evidence_basis: English exact names for gluteal muscles
   gp:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Abbreviation of glowa (lewa/prawa): bilateral femoral-head contours proven paired across 77 courses with near-identical volumes (median ratio 0.98, correlation 0.988) and mutually exclusive with spelled-out Glowa K.Udo names'
+    evidence_basis: 'Abbreviation of glowa (lewa/prawa): bilateral femoral-head contours
+      proven paired across 77 courses with near-identical volumes (median ratio 0.98,
+      correlation 0.988) and mutually exclusive with spelled-out Glowa K.Udo names'
   gp proteza:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Femoral-head endoprosthesis shorthand, dose-relevant femoral structures (sensitivity MCC declared undefined by producer)'
+    evidence_basis: Femoral-head endoprosthesis shorthand, dose-relevant femoral structures
+      (sensitivity MCC declared undefined by producer)
   Great Vessels:
     roi_class: vessel
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact name for great vessels'
+    evidence_basis: English exact name for great vessels
   heart:
     roi_class: solid_soft_tissue_neural
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact name for heart'
+    evidence_basis: English exact name for heart
   hip_left:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for hips'
+    evidence_basis: English exact names for hips
   hip_right:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for hips'
+    evidence_basis: English exact names for hips
   humerus_left:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for humeri'
+    evidence_basis: English exact names for humeri
   humerus_right:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for humeri'
+    evidence_basis: English exact names for humeri
   iliac_artery_left:
     roi_class: vessel
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Exact TotalSegmentator-style name for a named iliac vessel'
+    evidence_basis: Exact TotalSegmentator-style name for a named iliac vessel
   iliac_artery_right:
     roi_class: vessel
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Exact TotalSegmentator-style name for a named iliac vessel'
+    evidence_basis: Exact TotalSegmentator-style name for a named iliac vessel
   iliac_vena_left:
     roi_class: vessel
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Exact TotalSegmentator-style name for a named iliac vessel'
+    evidence_basis: Exact TotalSegmentator-style name for a named iliac vessel
   iliac_vena_right:
     roi_class: vessel
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Exact TotalSegmentator-style name for a named iliac vessel'
+    evidence_basis: Exact TotalSegmentator-style name for a named iliac vessel
   iliopsoas_left:
     roi_class: solid_soft_tissue_neural
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Exact TotalSegmentator-style name for iliopsoas muscle, soft tissue'
+    evidence_basis: Exact TotalSegmentator-style name for iliopsoas muscle, soft tissue
   iliopsoas_right:
     roi_class: solid_soft_tissue_neural
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Exact TotalSegmentator-style name for iliopsoas muscle, soft tissue'
+    evidence_basis: Exact TotalSegmentator-style name for iliopsoas muscle, soft tissue
   Ilium_L:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Exact name for left/right ilium bone'
+    evidence_basis: Exact name for left/right ilium bone
   Ilium_R:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Exact name for left/right ilium bone'
+    evidence_basis: Exact name for left/right ilium bone
   iloczyn:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
@@ -1360,855 +1392,889 @@ manual_custom_crosswalk:
   inferior vena cava:
     roi_class: vessel
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for venae cavae'
+    evidence_basis: English exact names for venae cavae
   inferior_vena_cava:
     roi_class: vessel
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for venae cavae'
+    evidence_basis: English exact names for venae cavae
   Jadra:
     roi_class: solid_soft_tissue_neural
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Polish exact name for testicles'
+    evidence_basis: Polish exact name for testicles
   Jel. grube:
     roi_class: hollow_pelvic_organ
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Abbreviated large bowel with margin note, hollow-organ tissue'
+    evidence_basis: Abbreviated large bowel with margin note, hollow-organ tissue
   Jelita SWOG:
     roi_class: hollow_pelvic_organ
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Bowel contour per SWOG atlas convention, hollow-organ tissue'
+    evidence_basis: Bowel contour per SWOG atlas convention, hollow-organ tissue
   Jelita-Esica-JelC-JelG:
     roi_class: hollow_pelvic_organ
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Compound bowel union (intestines-sigmoid-small-large bowel), hollow-organ tissue'
+    evidence_basis: Compound bowel union (intestines-sigmoid-small-large bowel), hollow-organ
+      tissue
   Jelito cienki:
     roi_class: hollow_pelvic_organ
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Polish name for small bowel, inflected spelling'
+    evidence_basis: Polish name for small bowel, inflected spelling
   Jelito_grube:
     roi_class: hollow_pelvic_organ
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Polish exact name for large bowel (underscore spelling)'
+    evidence_basis: Polish exact name for large bowel (underscore spelling)
   Kanal kregowy:
     roi_class: solid_soft_tissue_neural
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Polish exact name for spinal canal, contoured as spinal-cord surrogate'
+    evidence_basis: Polish exact name for spinal canal, contoured as spinal-cord surrogate
   kanal odbytu:
     roi_class: hollow_pelvic_organ
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Polish exact name for anal canal, lowercase spelling'
+    evidence_basis: Polish exact name for anal canal, lowercase spelling
   Kanal odbytu:
     roi_class: hollow_pelvic_organ
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Polish exact name for anal canal'
+    evidence_basis: Polish exact name for anal canal
   kidney_cyst_left:
     roi_class: solid_soft_tissue_neural
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for kidneys (cysts as soft-tissue bucket)'
+    evidence_basis: English exact names for kidneys (cysts as soft-tissue bucket)
   kidney_cyst_right:
     roi_class: solid_soft_tissue_neural
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for kidneys (cysts as soft-tissue bucket)'
+    evidence_basis: English exact names for kidneys (cysts as soft-tissue bucket)
   kidney_left:
     roi_class: hollow_pelvic_organ
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for kidneys'
+    evidence_basis: English exact names for kidneys
   kidney_right:
     roi_class: hollow_pelvic_organ
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for kidneys'
+    evidence_basis: English exact names for kidneys
   Klipsy:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Polish word for surgical clips: implanted markers, non-tissue planning reference'
+    evidence_basis: 'Polish word for surgical clips: implanted markers, non-tissue
+      planning reference'
   konczyna L:
     roi_class: solid_soft_tissue_neural
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Polish exact name for left limb'
+    evidence_basis: Polish exact name for left limb
   konczyna R:
     roi_class: solid_soft_tissue_neural
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Polish exact name for right limb'
+    evidence_basis: Polish exact name for right limb
   kosc biodrowa_L:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Polish exact names for left hip bone'
+    evidence_basis: Polish exact names for left hip bone
   kosc biodrowa_P:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Polish exact names for right hip bone'
+    evidence_basis: Polish exact names for right hip bone
   kosci Th1-Th10:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Polish exact name for thoracic vertebrae range Th1-Th10'
+    evidence_basis: Polish exact name for thoracic vertebrae range Th1-Th10
   LargeBowel:
     roi_class: hollow_pelvic_organ
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact name for large bowel'
+    evidence_basis: English exact name for large bowel
   left adrenal gland:
     roi_class: solid_soft_tissue_neural
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for adrenal glands'
+    evidence_basis: English exact names for adrenal glands
   left common iliac artery:
     roi_class: vessel
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for common iliac vessels'
+    evidence_basis: English exact names for common iliac vessels
   left common iliac vein:
     roi_class: vessel
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for common iliac vessels'
+    evidence_basis: English exact names for common iliac vessels
   liver:
     roi_class: solid_soft_tissue_neural
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact name for liver'
+    evidence_basis: English exact name for liver
   lung_lower_lobe_left:
     roi_class: solid_soft_tissue_neural
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for lung lobes'
+    evidence_basis: English exact names for lung lobes
   lung_lower_lobe_right:
     roi_class: solid_soft_tissue_neural
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for lung lobes'
+    evidence_basis: English exact names for lung lobes
   lung_middle_lobe_right:
     roi_class: solid_soft_tissue_neural
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for lung lobes'
+    evidence_basis: English exact names for lung lobes
   lung_upper_lobe_left:
     roi_class: solid_soft_tissue_neural
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for lung lobes'
+    evidence_basis: English exact names for lung lobes
   lung_upper_lobe_right:
     roi_class: solid_soft_tissue_neural
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for lung lobes'
+    evidence_basis: English exact names for lung lobes
   m:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Opaque single-token machine/optimization labels, non-anatomic planning objects (m3 precedent)'
+    evidence_basis: Opaque single-token machine/optimization labels, non-anatomic
+      planning objects (m3 precedent)
   m4 copy m1:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Explicit copy marker of machine/optimization object m1, non-anatomic'
+    evidence_basis: Explicit copy marker of machine/optimization object m1, non-anatomic
   m6:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Opaque single-token machine/optimization labels, non-anatomic planning objects (m3 precedent)'
+    evidence_basis: Opaque single-token machine/optimization labels, non-anatomic
+      planning objects (m3 precedent)
   m_stabilizator:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Stabilizer machine object, non-anatomic'
+    evidence_basis: Stabilizer machine object, non-anatomic
   MAR:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Optimization or machine label, non-anatomic planning object'
+    evidence_basis: Optimization or machine label, non-anatomic planning object
   mar:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Opaque single-token machine/optimization labels, non-anatomic planning objects (m3 precedent)'
+    evidence_basis: Opaque single-token machine/optimization labels, non-anatomic
+      planning objects (m3 precedent)
   mar1:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Optimization objective or margin label (zMin/zMax dose objectives, margines margin), non-anatomic planning construct'
+    evidence_basis: Optimization objective or margin label (zMin/zMax dose objectives,
+      margines margin), non-anatomic planning construct
   MAR1:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Optimization or machine label, non-anatomic planning object'
+    evidence_basis: Optimization or machine label, non-anatomic planning object
   Marg ProtezaL:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Margin around left prosthesis implant, planning construct'
+    evidence_basis: Margin around left prosthesis implant, planning construct
   Marg ProtezaP:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Margin around right prosthesis implant, planning construct'
+    evidence_basis: Margin around right prosthesis implant, planning construct
   marg1:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Opaque single-token machine/optimization labels, non-anatomic planning objects (m3 precedent)'
+    evidence_basis: Opaque single-token machine/optimization labels, non-anatomic
+      planning objects (m3 precedent)
   margines:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Optimization objective or margin label (zMin/zMax dose objectives, margines margin), non-anatomic planning construct'
+    evidence_basis: Optimization objective or margin label (zMin/zMax dose objectives,
+      margines margin), non-anatomic planning construct
   margR:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Margin label, non-anatomic planning construct'
+    evidence_basis: Margin label, non-anatomic planning construct
   Moczowód L:
     roi_class: hollow_pelvic_organ
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Polish exact name for left ureter'
+    evidence_basis: Polish exact name for left ureter
   Mozdzek:
     roi_class: solid_soft_tissue_neural
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Polish exact name for cerebellum'
+    evidence_basis: Polish exact name for cerebellum
   Mozg:
     roi_class: solid_soft_tissue_neural
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Polish exact name for brain'
+    evidence_basis: Polish exact name for brain
   Naciek prawd:
     roi_class: target
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Probable-infiltration volume dosed at course prescription level (11.4 Gy vs PTV 11.0-12.1 Gy) in a nodally involved course; unreliable CONTROL tag discounted with rationale (medium confidence, flagged)'
+    evidence_basis: Probable-infiltration volume dosed at course prescription level
+      (11.4 Gy vs PTV 11.0-12.1 Gy) in a nodally involved course; unreliable CONTROL
+      tag discounted with rationale (medium confidence, flagged)
   Naczynia:
     roi_class: vessel
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Polish exact name for blood vessels (generic)'
+    evidence_basis: Polish exact name for blood vessels (generic)
   Nerka L:
     roi_class: hollow_pelvic_organ
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Polish exact name for left kidney'
+    evidence_basis: Polish exact name for left kidney
   Nerka P:
     roi_class: hollow_pelvic_organ
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Polish exact name for right kidney'
+    evidence_basis: Polish exact name for right kidney
   Nerka Suma:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Derived kidney-sum union used for planning dose tracking, not native tissue'
+    evidence_basis: Derived kidney-sum union used for planning dose tracking, not
+      native tissue
   Nerw Wzr L Marg:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Polish exact names for left/right optic nerve, margin construct'
+    evidence_basis: Polish exact names for left/right optic nerve, margin construct
   Nerw Wzr P Marg:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Polish exact names for left/right optic nerve, margin construct'
+    evidence_basis: Polish exact names for left/right optic nerve, margin construct
   Nerw Wzrokowy_L:
     roi_class: solid_soft_tissue_neural
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Polish exact names for left/right optic nerve'
+    evidence_basis: Polish exact names for left/right optic nerve
   Nerw Wzrokowy_P:
     roi_class: solid_soft_tissue_neural
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Polish exact names for left/right optic nerve'
+    evidence_basis: Polish exact names for left/right optic nerve
   Normal tissue:
     roi_class: solid_soft_tissue_neural
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Generic normal-tissue contour, non-target soft tissue bucket'
+    evidence_basis: Generic normal-tissue contour, non-target soft tissue bucket
   NS_Control:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Non-structural bowel/control planning labels, non-anatomic'
+    evidence_basis: Non-structural bowel/control planning labels, non-anatomic
   NS_jelit_czwsp:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Non-structural bowel/control planning labels, non-anatomic'
+    evidence_basis: Non-structural bowel/control planning labels, non-anatomic
   NS_jelita:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Non-structural bowel/control planning labels, non-anatomic'
+    evidence_basis: Non-structural bowel/control planning labels, non-anatomic
   NS_watroba:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Whole-liver CONTROL region at low dose (1016cc at 8.6 Gy, target_like False): planning control region (corrected by dose evidence)'
+    evidence_basis: 'Whole-liver CONTROL region at low dose (1016cc at 8.6 Gy, target_like
+      False): planning control region (corrected by dose evidence)'
   o.l.:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Opaque laterality/area planning labels, non-anatomic (low confidence, flagged)'
+    evidence_basis: Opaque laterality/area planning labels, non-anatomic (low confidence,
+      flagged)
   o.p.:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Opaque laterality/area planning labels, non-anatomic (low confidence, flagged)'
+    evidence_basis: Opaque laterality/area planning labels, non-anatomic (low confidence,
+      flagged)
   o1:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Opaque single-letter optimization labels with CONTROL interpreted type, non-anatomic planning objects'
+    evidence_basis: Opaque single-letter optimization labels with CONTROL interpreted
+      type, non-anatomic planning objects
   o2:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Opaque single-letter optimization labels with CONTROL interpreted type, non-anatomic planning objects'
+    evidence_basis: Opaque single-letter optimization labels with CONTROL interpreted
+      type, non-anatomic planning objects
   o3:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Opaque single-letter optimization labels with CONTROL interpreted type, non-anatomic planning objects'
+    evidence_basis: Opaque single-letter optimization labels with CONTROL interpreted
+      type, non-anatomic planning objects
   ob:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Opaque single-letter optimization labels with CONTROL interpreted type, non-anatomic planning objects'
+    evidence_basis: Opaque single-letter optimization labels with CONTROL interpreted
+      type, non-anatomic planning objects
   obszar lewy:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Opaque laterality/area planning labels, non-anatomic (low confidence, flagged)'
+    evidence_basis: Opaque laterality/area planning labels, non-anatomic (low confidence,
+      flagged)
   obszar prawy:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Opaque laterality/area planning labels, non-anatomic (low confidence, flagged)'
+    evidence_basis: Opaque laterality/area planning labels, non-anatomic (low confidence,
+      flagged)
   Odbytnica:
     roi_class: hollow_pelvic_organ
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Polish exact name for rectum'
+    evidence_basis: Polish exact name for rectum
   ode:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Opaque single-letter optimization labels with CONTROL interpreted type, non-anatomic planning objects'
+    evidence_basis: Opaque single-letter optimization labels with CONTROL interpreted
+      type, non-anatomic planning objects
   ODE 50 JELITA:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Non-structural bowel/control planning labels, non-anatomic'
+    evidence_basis: Non-structural bowel/control planning labels, non-anatomic
   ode jel 54:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Bowel-related optimization label with dose annotation, planning object'
+    evidence_basis: Bowel-related optimization label with dose annotation, planning
+      object
   Oko Lewe:
     roi_class: solid_soft_tissue_neural
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Polish exact names for left/right eye'
+    evidence_basis: Polish exact names for left/right eye
   Oko Prawe:
     roi_class: solid_soft_tissue_neural
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Polish exact names for left/right eye'
+    evidence_basis: Polish exact names for left/right eye
   Opuszka Pracia:
     roi_class: solid_soft_tissue_neural
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Polish clinical abbreviation for penile bulb (opuszka pracia), prostate-radiotherapy organ at risk'
+    evidence_basis: Polish clinical abbreviation for penile bulb (opuszka pracia),
+      prostate-radiotherapy organ at risk
   Otrzewna:
     roi_class: solid_soft_tissue_neural
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Polish exact name for peritoneum, soft-tissue bucket'
+    evidence_basis: Polish exact name for peritoneum, soft-tissue bucket
   P3-P2 58.75/2.35:
     roi_class: target
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Dose-level PTV treated as target'
+    evidence_basis: Dose-level PTV treated as target
   P4-P3 50/2:
     roi_class: target
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Dose-level PTV treated as target'
+    evidence_basis: Dose-level PTV treated as target
   pancreas:
     roi_class: solid_soft_tissue_neural
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact name for pancreas'
+    evidence_basis: English exact name for pancreas
   Pecherz:
     roi_class: hollow_pelvic_organ
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Polish exact name for urinary bladder (cystectomy status is course-level and does not change the name denotation)'
+    evidence_basis: Polish exact name for urinary bladder (cystectomy status is course-level
+      and does not change the name denotation)
   Pecherz1:
     roi_class: hollow_pelvic_organ
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Numbered bladder instance, hollow pelvic organ'
+    evidence_basis: Numbered bladder instance, hollow pelvic organ
   Pecherzyk nasienny:
     roi_class: solid_soft_tissue_neural
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Polish exact name for seminal vesicle'
+    evidence_basis: Polish exact name for seminal vesicle
   Pecherzyki_nasienne:
     roi_class: solid_soft_tissue_neural
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Polish exact name for seminal vesicles'
+    evidence_basis: Polish exact name for seminal vesicles
   Pien Mozgu:
     roi_class: solid_soft_tissue_neural
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Polish exact name for brainstem (pien mozgu)'
+    evidence_basis: Polish exact name for brainstem (pien mozgu)
   Pien mozgu:
     roi_class: solid_soft_tissue_neural
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Polish exact name for brainstem (pien mozgu)'
+    evidence_basis: Polish exact name for brainstem (pien mozgu)
   Pien Mozgu marg:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Brainstem margin construct for planning'
+    evidence_basis: Brainstem margin construct for planning
   Piers Lewa:
     roi_class: solid_soft_tissue_neural
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Polish exact names for left breast'
+    evidence_basis: Polish exact names for left breast
   Piers Prawa:
     roi_class: solid_soft_tissue_neural
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Polish exact names for right breast'
+    evidence_basis: Polish exact names for right breast
   Pluco:
     roi_class: solid_soft_tissue_neural
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Polish exact names for lung / summed lung'
+    evidence_basis: Polish exact names for lung / summed lung
   pluco p:
     roi_class: solid_soft_tissue_neural
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Polish abbreviated name for right lung (pluco prawe)'
+    evidence_basis: Polish abbreviated name for right lung (pluco prawe)
   Pluco Suma K:
     roi_class: solid_soft_tissue_neural
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Summed lung with qualifier, soft-tissue bucket'
+    evidence_basis: Summed lung with qualifier, soft-tissue bucket
   Portal vein and splenic vein:
     roi_class: vessel
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for veins'
+    evidence_basis: English exact names for veins
   portal_vein_and_splenic_vein:
     roi_class: vessel
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for veins'
+    evidence_basis: English exact names for veins
   Prostata:
     roi_class: solid_soft_tissue_neural
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Polish exact name for prostate'
+    evidence_basis: Polish exact name for prostate
   prostate:
     roi_class: solid_soft_tissue_neural
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact name for prostate, lowercase spelling'
+    evidence_basis: English exact name for prostate, lowercase spelling
   Przysadka mozgowa:
     roi_class: solid_soft_tissue_neural
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Polish exact name for pituitary gland'
+    evidence_basis: Polish exact name for pituitary gland
   PTV2 60/2:
     roi_class: target
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Dose-fraction annotated PTV treated as target'
+    evidence_basis: Dose-fraction annotated PTV treated as target
   pulmonary_vein:
     roi_class: vessel
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for veins'
+    evidence_basis: English exact names for veins
   Rdzen mar 0.5:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Spinal-cord margin construct (0.5 unit), planning'
+    evidence_basis: Spinal-cord margin construct (0.5 unit), planning
   Rdzen PRV:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Planning organ-at-risk volume of the spinal cord, derived margin'
+    evidence_basis: Planning organ-at-risk volume of the spinal cord, derived margin
   reka L:
     roi_class: solid_soft_tissue_neural
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Polish abbreviated names for left/right hand'
+    evidence_basis: Polish abbreviated names for left/right hand
   reka P:
     roi_class: solid_soft_tissue_neural
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Polish abbreviated names for left/right hand'
+    evidence_basis: Polish abbreviated names for left/right hand
   Rib:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact name for rib'
+    evidence_basis: English exact name for rib
   Rib IX:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for numbered ribs'
+    evidence_basis: English exact names for numbered ribs
   Rib V:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for numbered ribs'
+    evidence_basis: English exact names for numbered ribs
   Rib VI:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for numbered ribs'
+    evidence_basis: English exact names for numbered ribs
   Rib X:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for numbered ribs'
+    evidence_basis: English exact names for numbered ribs
   Rib XI:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for numbered ribs'
+    evidence_basis: English exact names for numbered ribs
   rib_left_1:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for numbered ribs'
+    evidence_basis: English exact names for numbered ribs
   rib_left_10:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for numbered ribs'
+    evidence_basis: English exact names for numbered ribs
   rib_left_11:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for numbered ribs'
+    evidence_basis: English exact names for numbered ribs
   rib_left_12:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for numbered ribs'
+    evidence_basis: English exact names for numbered ribs
   rib_left_2:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for numbered ribs'
+    evidence_basis: English exact names for numbered ribs
   rib_left_3:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for numbered ribs'
+    evidence_basis: English exact names for numbered ribs
   rib_left_4:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for numbered ribs'
+    evidence_basis: English exact names for numbered ribs
   rib_left_5:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for numbered ribs'
+    evidence_basis: English exact names for numbered ribs
   rib_left_6:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for numbered ribs'
+    evidence_basis: English exact names for numbered ribs
   rib_left_7:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for numbered ribs'
+    evidence_basis: English exact names for numbered ribs
   rib_left_8:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for numbered ribs'
+    evidence_basis: English exact names for numbered ribs
   rib_left_9:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for numbered ribs'
+    evidence_basis: English exact names for numbered ribs
   rib_right_1:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for numbered ribs'
+    evidence_basis: English exact names for numbered ribs
   rib_right_10:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for numbered ribs'
+    evidence_basis: English exact names for numbered ribs
   rib_right_11:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for numbered ribs'
+    evidence_basis: English exact names for numbered ribs
   rib_right_12:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for numbered ribs'
+    evidence_basis: English exact names for numbered ribs
   rib_right_2:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for numbered ribs'
+    evidence_basis: English exact names for numbered ribs
   rib_right_3:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for numbered ribs'
+    evidence_basis: English exact names for numbered ribs
   rib_right_4:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for numbered ribs'
+    evidence_basis: English exact names for numbered ribs
   rib_right_5:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for numbered ribs'
+    evidence_basis: English exact names for numbered ribs
   rib_right_6:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for numbered ribs'
+    evidence_basis: English exact names for numbered ribs
   rib_right_7:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for numbered ribs'
+    evidence_basis: English exact names for numbered ribs
   rib_right_8:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for numbered ribs'
+    evidence_basis: English exact names for numbered ribs
   rib_right_9:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for numbered ribs'
+    evidence_basis: English exact names for numbered ribs
   right adrenal gland:
     roi_class: solid_soft_tissue_neural
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for adrenal glands'
+    evidence_basis: English exact names for adrenal glands
   right common iliac artery:
     roi_class: vessel
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for common iliac vessels'
+    evidence_basis: English exact names for common iliac vessels
   right common iliac vein:
     roi_class: vessel
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for common iliac vessels'
+    evidence_basis: English exact names for common iliac vessels
   scapula_left:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for scapulae'
+    evidence_basis: English exact names for scapulae
   scapula_right:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for scapulae'
+    evidence_basis: English exact names for scapulae
   Sciana Pecherza:
     roi_class: hollow_pelvic_organ
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Polish exact name for bladder wall, native bladder tissue'
+    evidence_basis: Polish exact name for bladder wall, native bladder tissue
   Skrzyzow Marg:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Margin around a crossing (skrzyzowanie) construct, planning'
+    evidence_basis: Margin around a crossing (skrzyzowanie) construct, planning
   Skrzyzowanie:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Crossing/junction planning construct, non-anatomic'
+    evidence_basis: Crossing/junction planning construct, non-anatomic
   skull:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact name for skull'
+    evidence_basis: English exact name for skull
   Slinianka Lewa:
     roi_class: solid_soft_tissue_neural
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Polish exact names for left/right salivary glands, head-and-neck sparing anatomy'
+    evidence_basis: Polish exact names for left/right salivary glands, head-and-neck
+      sparing anatomy
   Slinianka Prawa:
     roi_class: solid_soft_tissue_neural
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Polish exact names for left/right salivary glands, head-and-neck sparing anatomy'
+    evidence_basis: Polish exact names for left/right salivary glands, head-and-neck
+      sparing anatomy
   small bowel:
     roi_class: hollow_pelvic_organ
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact name for small bowel, spaced spelling'
+    evidence_basis: English exact name for small bowel, spaced spelling
   small_bowel:
     roi_class: hollow_pelvic_organ
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for bowel segments, hollow-organ tissue'
+    evidence_basis: English exact names for bowel segments, hollow-organ tissue
   small_bowel1:
     roi_class: hollow_pelvic_organ
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Numbered small-bowel instance, hollow-organ tissue'
+    evidence_basis: Numbered small-bowel instance, hollow-organ tissue
   Soczewka L Marg:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Polish exact names for left/right eye lens, margin construct for planning'
+    evidence_basis: Polish exact names for left/right eye lens, margin construct for
+      planning
   Soczewka Lewa:
     roi_class: solid_soft_tissue_neural
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Polish exact names for left/right eye lens'
+    evidence_basis: Polish exact names for left/right eye lens
   Soczewka P Marg:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Polish exact names for left/right eye lens, margin construct for planning'
+    evidence_basis: Polish exact names for left/right eye lens, margin construct for
+      planning
   Soczewka Prawa:
     roi_class: solid_soft_tissue_neural
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Polish exact names for left/right eye lens'
+    evidence_basis: Polish exact names for left/right eye lens
   spinal_cord:
     roi_class: solid_soft_tissue_neural
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact name for spinal cord'
+    evidence_basis: English exact name for spinal cord
   spleen:
     roi_class: solid_soft_tissue_neural
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact name for spleen'
+    evidence_basis: English exact name for spleen
   Splot Barkowy_L:
     roi_class: solid_soft_tissue_neural
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Polish exact names for left/right brachial plexus'
+    evidence_basis: Polish exact names for left/right brachial plexus
   Splot Barkowy_P:
     roi_class: solid_soft_tissue_neural
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Polish exact names for left/right brachial plexus'
+    evidence_basis: Polish exact names for left/right brachial plexus
   spoj fiz:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Junction (spojenie) planning composite in the treated volume at 48.6 Gy with CONTROL type alongside other optimization labels: high-dose planning object'
+    evidence_basis: 'Junction (spojenie) planning composite in the treated volume
+      at 48.6 Gy with CONTROL type alongside other optimization labels: high-dose
+      planning object'
   Spojenie Lonowe:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Polish exact name for pubic symphysis, bony pelvis'
+    evidence_basis: Polish exact name for pubic symphysis, bony pelvis
   sternum:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact name for sternum'
+    evidence_basis: English exact name for sternum
   stomach:
     roi_class: solid_soft_tissue_neural
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact name for stomach'
+    evidence_basis: English exact name for stomach
   subclavian_artery_left:
     roi_class: vessel
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for subclavian arteries'
+    evidence_basis: English exact names for subclavian arteries
   subclavian_artery_right:
     roi_class: vessel
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for subclavian arteries'
+    evidence_basis: English exact names for subclavian arteries
   Suma Pluc:
     roi_class: solid_soft_tissue_neural
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Polish words for summed lungs, reversed word order'
+    evidence_basis: Polish words for summed lungs, reversed word order
   superior_vena_cava:
     roi_class: vessel
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for venae cavae'
+    evidence_basis: English exact names for venae cavae
   Szyjka macicy:
     roi_class: hollow_pelvic_organ
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Polish exact name for uterine cervix'
+    evidence_basis: Polish exact name for uterine cervix
   Testis_L:
     roi_class: solid_soft_tissue_neural
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English abbreviated names for left testis'
+    evidence_basis: English abbreviated names for left testis
   Testis_R:
     roi_class: solid_soft_tissue_neural
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English abbreviated names for right testis'
+    evidence_basis: English abbreviated names for right testis
   thyroid_gland:
     roi_class: solid_soft_tissue_neural
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact name for thyroid gland'
+    evidence_basis: English exact name for thyroid gland
   trachea:
     roi_class: solid_soft_tissue_neural
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact name for trachea'
+    evidence_basis: English exact name for trachea
   Trzustka:
     roi_class: solid_soft_tissue_neural
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Polish exact name for pancreas'
+    evidence_basis: Polish exact name for pancreas
   TVB:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Opaque three-letter planning label, non-anatomic (low confidence, flagged)'
+    evidence_basis: Opaque three-letter planning label, non-anatomic (low confidence,
+      flagged)
   Ucho_L:
     roi_class: solid_soft_tissue_neural
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Polish abbreviated names for left/right ear'
+    evidence_basis: Polish abbreviated names for left/right ear
   Ucho_R:
     roi_class: solid_soft_tissue_neural
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Polish abbreviated names for left/right ear'
+    evidence_basis: Polish abbreviated names for left/right ear
   Ureter_L:
     roi_class: hollow_pelvic_organ
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English abbreviated names for left ureter'
+    evidence_basis: English abbreviated names for left ureter
   Ureter_R:
     roi_class: hollow_pelvic_organ
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English abbreviated names for right ureter'
+    evidence_basis: English abbreviated names for right ureter
   Urethra:
     roi_class: hollow_pelvic_organ
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Exact name for urethra, hollow pelvic organ'
+    evidence_basis: Exact name for urethra, hollow pelvic organ
   urinary bladder:
     roi_class: hollow_pelvic_organ
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for urinary bladder'
+    evidence_basis: English exact names for urinary bladder
   urinary_bladder:
     roi_class: hollow_pelvic_organ
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for urinary bladder'
+    evidence_basis: English exact names for urinary bladder
   Uterus:
     roi_class: hollow_pelvic_organ
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Exact name for uterus'
+    evidence_basis: Exact name for uterus
   vertebrae_C1:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for vertebrae'
+    evidence_basis: English exact names for vertebrae
   vertebrae_C2:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for vertebrae'
+    evidence_basis: English exact names for vertebrae
   vertebrae_C3:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for vertebrae'
+    evidence_basis: English exact names for vertebrae
   vertebrae_C4:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for vertebrae'
+    evidence_basis: English exact names for vertebrae
   vertebrae_C5:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for vertebrae'
+    evidence_basis: English exact names for vertebrae
   vertebrae_C6:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for vertebrae'
+    evidence_basis: English exact names for vertebrae
   vertebrae_C7:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for vertebrae'
+    evidence_basis: English exact names for vertebrae
   vertebrae_L1:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for vertebrae'
+    evidence_basis: English exact names for vertebrae
   vertebrae_L2:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for vertebrae'
+    evidence_basis: English exact names for vertebrae
   vertebrae_L3:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for vertebrae'
+    evidence_basis: English exact names for vertebrae
   vertebrae_L4:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for vertebrae'
+    evidence_basis: English exact names for vertebrae
   vertebrae_L5:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for vertebrae'
+    evidence_basis: English exact names for vertebrae
   vertebrae_S1:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for vertebrae'
+    evidence_basis: English exact names for vertebrae
   vertebrae_T1:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for vertebrae'
+    evidence_basis: English exact names for vertebrae
   vertebrae_T10:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for vertebrae'
+    evidence_basis: English exact names for vertebrae
   vertebrae_T11:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for vertebrae'
+    evidence_basis: English exact names for vertebrae
   vertebrae_T12:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for vertebrae'
+    evidence_basis: English exact names for vertebrae
   vertebrae_T2:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for vertebrae'
+    evidence_basis: English exact names for vertebrae
   vertebrae_T3:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for vertebrae'
+    evidence_basis: English exact names for vertebrae
   vertebrae_T4:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for vertebrae'
+    evidence_basis: English exact names for vertebrae
   vertebrae_T5:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for vertebrae'
+    evidence_basis: English exact names for vertebrae
   vertebrae_T6:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for vertebrae'
+    evidence_basis: English exact names for vertebrae
   vertebrae_T7:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for vertebrae'
+    evidence_basis: English exact names for vertebrae
   vertebrae_T8:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for vertebrae'
+    evidence_basis: English exact names for vertebrae
   vertebrae_T9:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for vertebrae'
+    evidence_basis: English exact names for vertebrae
   Vessels:
     roi_class: vessel
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for vessels'
+    evidence_basis: English exact names for vessels
   Vessels1:
     roi_class: vessel
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'English exact names for vessels'
+    evidence_basis: English exact names for vessels
   wezly:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Large low-dose nodal CONTROL region (145cc at 2.3 Gy, target_like False): planning control region (corrected from target by dose evidence)'
+    evidence_basis: 'Large low-dose nodal CONTROL region (145cc at 2.3 Gy, target_like
+      False): planning control region (corrected from target by dose evidence)'
   Wneka Nerki Lewej:
     roi_class: solid_soft_tissue_neural
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Polish exact names for left/right renal hilum'
+    evidence_basis: Polish exact names for left/right renal hilum
   Wneka Nerki Prawej:
     roi_class: solid_soft_tissue_neural
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Polish exact names for left/right renal hilum'
+    evidence_basis: Polish exact names for left/right renal hilum
   z1D1 95[%]:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Isodose-derived control region used for plan evaluation, non-anatomic'
+    evidence_basis: Isodose-derived control region used for plan evaluation, non-anatomic
   z_marg_Bowel1:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Bowel/target margin and optimization constructs (z-prefix family), non-anatomic'
+    evidence_basis: Bowel/target margin and optimization constructs (z-prefix family),
+      non-anatomic
   z_max:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Optimization or control labels, non-anatomic'
+    evidence_basis: Optimization or control labels, non-anatomic
   z_max_marg_m1:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Bowel/target margin and optimization constructs (z-prefix family), non-anatomic'
+    evidence_basis: Bowel/target margin and optimization constructs (z-prefix family),
+      non-anatomic
   z_min:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Optimization or machine label, non-anatomic planning object'
+    evidence_basis: Optimization or machine label, non-anatomic planning object
   zArtefakty:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
@@ -2216,172 +2282,251 @@ manual_custom_crosswalk:
   zBowel1:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Bowel/target margin and optimization constructs (z-prefix family), non-anatomic'
+    evidence_basis: Bowel/target margin and optimization constructs (z-prefix family),
+      non-anatomic
   zcewka:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Catheter-marker planning label (z cewka, with catheter), non-tissue reference (medium confidence, flagged)'
+    evidence_basis: Catheter-marker planning label (z cewka, with catheter), non-tissue
+      reference (medium confidence, flagged)
   zebra:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Optimization or control labels, non-anatomic'
+    evidence_basis: Optimization or control labels, non-anatomic
   zebro 1:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Polish exact names for numbered ribs (zebro)'
+    evidence_basis: Polish exact names for numbered ribs (zebro)
   zebro 2:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Polish exact names for numbered ribs (zebro)'
+    evidence_basis: Polish exact names for numbered ribs (zebro)
   zebro 3:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Polish exact names for numbered ribs (zebro)'
+    evidence_basis: Polish exact names for numbered ribs (zebro)
   zebro 4:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Polish exact names for numbered ribs (zebro)'
+    evidence_basis: Polish exact names for numbered ribs (zebro)
   zMax:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Maximum/minimum dose optimization objectives (zMax/zMin family, zew=external), non-anatomic'
+    evidence_basis: Maximum/minimum dose optimization objectives (zMax/zMin family,
+      zew=external), non-anatomic
   zMax 105:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Optimization objective or margin label (zMin/zMax dose objectives, margines margin), non-anatomic planning construct'
+    evidence_basis: Optimization objective or margin label (zMin/zMax dose objectives,
+      margines margin), non-anatomic planning construct
   zMax 105[%]:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Maximum/minimum dose optimization objectives (zMax/zMin family, zew=external), non-anatomic'
+    evidence_basis: Maximum/minimum dose optimization objectives (zMax/zMin family,
+      zew=external), non-anatomic
   zMax2 105:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Maximum/minimum dose optimization objectives (zMax/zMin family, zew=external), non-anatomic'
+    evidence_basis: Maximum/minimum dose optimization objectives (zMax/zMin family,
+      zew=external), non-anatomic
   zMax3 105:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Maximum/minimum dose optimization objectives (zMax/zMin family, zew=external), non-anatomic'
+    evidence_basis: Maximum/minimum dose optimization objectives (zMax/zMin family,
+      zew=external), non-anatomic
   zMaxZew:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Maximum/minimum dose optimization objectives (zMax/zMin family, zew=external), non-anatomic'
+    evidence_basis: Maximum/minimum dose optimization objectives (zMax/zMin family,
+      zew=external), non-anatomic
   zMaxZew 41.8Gy:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Maximum/minimum dose optimization objectives (zMax/zMin family, zew=external), non-anatomic'
+    evidence_basis: Maximum/minimum dose optimization objectives (zMax/zMin family,
+      zew=external), non-anatomic
   zMaxZew 45.6[Gy]:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Maximum/minimum dose optimization objectives (zMax/zMin family, zew=external), non-anatomic'
+    evidence_basis: Maximum/minimum dose optimization objectives (zMax/zMin family,
+      zew=external), non-anatomic
   zMaxZew 95:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Maximum/minimum dose optimization objectives (zMax/zMin family, zew=external), non-anatomic'
+    evidence_basis: Maximum/minimum dose optimization objectives (zMax/zMin family,
+      zew=external), non-anatomic
   zMaxZew2 95:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Maximum/minimum dose optimization objectives (zMax/zMin family, zew=external), non-anatomic'
+    evidence_basis: Maximum/minimum dose optimization objectives (zMax/zMin family,
+      zew=external), non-anatomic
   zMaxZew3 95:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Maximum/minimum dose optimization objectives (zMax/zMin family, zew=external), non-anatomic'
+    evidence_basis: Maximum/minimum dose optimization objectives (zMax/zMin family,
+      zew=external), non-anatomic
   zMaxZew4 95:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Maximum/minimum dose optimization objectives (zMax/zMin family, zew=external), non-anatomic'
+    evidence_basis: Maximum/minimum dose optimization objectives (zMax/zMin family,
+      zew=external), non-anatomic
   zmin:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Optimization objective or margin label (zMin/zMax dose objectives, margines margin), non-anatomic planning construct'
+    evidence_basis: Optimization objective or margin label (zMin/zMax dose objectives,
+      margines margin), non-anatomic planning construct
   zMin 45.6[Gy]:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Optimization or control labels, non-anatomic'
+    evidence_basis: Optimization or control labels, non-anatomic
   zMin 57[Gy]:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Optimization or control labels, non-anatomic'
+    evidence_basis: Optimization or control labels, non-anatomic
   zMin 95:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Maximum/minimum dose optimization objectives (zMax/zMin family, zew=external), non-anatomic'
+    evidence_basis: Maximum/minimum dose optimization objectives (zMax/zMin family,
+      zew=external), non-anatomic
   zMin1 41.8Gy:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Optimization objective or margin label (zMin/zMax dose objectives, margines margin), non-anatomic planning construct'
+    evidence_basis: Optimization objective or margin label (zMin/zMax dose objectives,
+      margines margin), non-anatomic planning construct
   zMin1 95:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Optimization objective or margin label (zMin/zMax dose objectives, margines margin), non-anatomic planning construct'
+    evidence_basis: Optimization objective or margin label (zMin/zMax dose objectives,
+      margines margin), non-anatomic planning construct
   zMin1 95[%]:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Maximum/minimum dose optimization objectives (zMax/zMin family, zew=external), non-anatomic'
+    evidence_basis: Maximum/minimum dose optimization objectives (zMax/zMin family,
+      zew=external), non-anatomic
   zMin2 41.8Gy:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Maximum/minimum dose optimization objectives (zMax/zMin family, zew=external), non-anatomic'
+    evidence_basis: Maximum/minimum dose optimization objectives (zMax/zMin family,
+      zew=external), non-anatomic
   zMin2 95:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Optimization objective or margin label (zMin/zMax dose objectives, margines margin), non-anatomic planning construct'
+    evidence_basis: Optimization objective or margin label (zMin/zMax dose objectives,
+      margines margin), non-anatomic planning construct
   zMin3 95:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Maximum/minimum dose optimization objectives (zMax/zMin family, zew=external), non-anatomic'
+    evidence_basis: Maximum/minimum dose optimization objectives (zMax/zMin family,
+      zew=external), non-anatomic
   zMin4 95:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Maximum/minimum dose optimization objectives (zMax/zMin family, zew=external), non-anatomic'
+    evidence_basis: Maximum/minimum dose optimization objectives (zMax/zMin family,
+      zew=external), non-anatomic
   Zuchwa:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Polish exact name for mandible'
+    evidence_basis: Polish exact name for mandible
   zuchwa:
     roi_class: bone
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Polish exact name for mandible'
+    evidence_basis: Polish exact name for mandible
   Zyla Glowna Gorna:
     roi_class: vessel
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Polish exact name for superior vena cava'
+    evidence_basis: Polish exact name for superior vena cava
   zzDose 42.8[Gy]:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Isodose-derived control regions, non-anatomic'
+    evidence_basis: Isodose-derived control regions, non-anatomic
   zzDose 43a[Gy]:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Isodose-derived control regions, non-anatomic'
-  # Single-analyst adjudication 2026-09-17, second tranche (dual-arm positive assertions).
+    evidence_basis: Isodose-derived control regions, non-anatomic
   Bronchus_L:
     roi_class: solid_soft_tissue_neural
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Exact names for left/right bronchus, airway'
+    evidence_basis: Exact names for left/right bronchus, airway
   Bronchus_R:
     roi_class: solid_soft_tissue_neural
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Exact names for left/right bronchus, airway'
+    evidence_basis: Exact names for left/right bronchus, airway
   Krtan:
     roi_class: solid_soft_tissue_neural
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Polish exact name for larynx'
+    evidence_basis: Polish exact name for larynx
   Oskrzele_L:
     roi_class: solid_soft_tissue_neural
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Exact names for left/right bronchus, airway'
+    evidence_basis: Exact names for left/right bronchus, airway
   Oskrzele_R:
     roi_class: solid_soft_tissue_neural
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Exact names for left/right bronchus, airway'
+    evidence_basis: Exact names for left/right bronchus, airway
   Pluco Suma M:
     roi_class: solid_soft_tissue_neural
     adjudication_status: approved_by_anatomic_equivalence
-    evidence_basis: 'Polish exact names for lung / summed lung'
+    evidence_basis: Polish exact names for lung / summed lung
   Rdzen Marg:
     roi_class: planning_helper
     adjudication_status: approved_non_anatomic_planning_helper
-    evidence_basis: 'Polish spinal-cord (rdzen) margin construct for avoidance planning'
+    evidence_basis: Polish spinal-cord (rdzen) margin construct for avoidance planning
+  GTVn:
+    roi_class: target
+    adjudication_status: approved_by_binding_spec
+    evidence_basis: GTV nodal pattern, unqualified target identifier
+  GTVp:
+    roi_class: target
+    adjudication_status: approved_by_binding_spec
+    evidence_basis: GTV primary pattern, unqualified target identifier
+  GTV1:
+    roi_class: target
+    adjudication_status: approved_by_binding_spec
+    evidence_basis: GTV numbered pattern, unqualified target identifier
+  GTVm:
+    roi_class: target
+    adjudication_status: approved_by_binding_spec
+    evidence_basis: GTV metastatic pattern, unqualified target identifier
+  GTVm1:
+    roi_class: target
+    adjudication_status: approved_by_binding_spec
+    evidence_basis: GTV metastatic numbered pattern, unqualified target identifier
+  GTVm2:
+    roi_class: target
+    adjudication_status: approved_by_binding_spec
+    evidence_basis: GTV metastatic numbered pattern, unqualified target identifier
+  GTVn1:
+    roi_class: target
+    adjudication_status: approved_by_binding_spec
+    evidence_basis: GTV nodal numbered pattern, unqualified target identifier
+  GTVn2:
+    roi_class: target
+    adjudication_status: approved_by_binding_spec
+    evidence_basis: GTV nodal numbered pattern, unqualified target identifier
+  GTVn7:
+    roi_class: target
+    adjudication_status: approved_by_binding_spec
+    evidence_basis: GTV nodal numbered pattern, unqualified target identifier
+  GTV2:
+    roi_class: target
+    adjudication_status: approved_by_binding_spec
+    evidence_basis: GTV numbered pattern, unqualified target identifier
+  GTV3:
+    roi_class: target
+    adjudication_status: approved_by_binding_spec
+    evidence_basis: GTV numbered pattern, unqualified target identifier
+  CTV4:
+    roi_class: target
+    adjudication_status: approved_by_binding_spec
+    evidence_basis: CTV numbered pattern, unqualified target identifier
+  PTV4:
+    roi_class: target
+    adjudication_status: approved_by_binding_spec
+    evidence_basis: PTV numbered pattern, unqualified target identifier
+  prostate+vs:
+    roi_class: solid_soft_tissue_neural
+    adjudication_status: approved_by_anatomic_equivalence
+    evidence_basis: Prostate plus seminal vesicles anatomy (bladder prescriptions
+      PECHERZ 55 Gy in both courses), prostate organ
 derived_crosswalk:
   bowel_bag:
     roi_class: hollow_pelvic_organ
@@ -2399,12 +2544,16 @@ derived_crosswalk:
   pelvic_bones_3mm:
     roi_class: planning_helper
     require_provenance: true
-    evidence_basis: nonzero bone expansion includes non-bone tissue for treatment planning
+    evidence_basis: nonzero bone expansion includes non-bone tissue for treatment
+      planning
 governance_notes:
-  - Manual and project-local class lookup uses versioned conservative name_rules before exact fallback.
-  - Normalization never changes contour identity or discards semantic operators.
-  - Explicit pending entries and conflicting normalized entries remain unresolved_mixed.
-  - Unqualified target identifiers reuse rt_details.is_target_volume_name with a full-name qualifier guard.
-  - Mixed expressions, unknown qualifiers and unknown tissue operands require operator adjudication.
-  - Derived entries apply only when operation and base structures are recorded.
-  - A recorded nonzero margin produces a planning helper rather than anatomy.
+- Manual and project-local class lookup uses versioned conservative name_rules before
+  exact fallback.
+- Normalization never changes contour identity or discards semantic operators.
+- Explicit pending entries and conflicting normalized entries remain unresolved_mixed.
+- Unqualified target identifiers reuse rt_details.is_target_volume_name with a full-name
+  qualifier guard.
+- Mixed expressions, unknown qualifiers and unknown tissue operands require operator
+  adjudication.
+- Derived entries apply only when operation and base structures are recorded.
+- A recorded nonzero margin produces a planning helper rather than anatomy.
