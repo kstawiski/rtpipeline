@@ -152,7 +152,7 @@ def _perturbed_mask_identity(mask: sitk.Image) -> str:
         json.dumps(geometry, sort_keys=True, separators=(",", ":")).encode("utf-8")
     )
     digest.update(b"\0")
-    digest.update(array.tobytes(order="C"))
+    digest.update(memoryview(array))
     return f"sha256:{digest.hexdigest()}"
 
 
@@ -1427,6 +1427,70 @@ def _select_largest_scores_deterministically(
     return np.concatenate((strict, ties[:needed]))
 
 
+def _rank_volume_region(mask, arr, target_voxels):
+    """Rank in a bounded region without changing Maurer's voxel coordinates.
+
+    SimpleITK's float distance arithmetic depends on index * spacing. Moving
+    the lower corner changes rounding, even if the physical distances agree.
+    Keep the distance image anchored at index zero; trim only its upper ends.
+    A separate candidate box can have a nonzero lower corner: its flat-index
+    ordering is the same as the full array's ordering, including distance ties.
+    """
+    shape = np.array(arr.shape)
+    spacing = np.array(mask.GetSpacing()[::-1])
+    occupied = [np.flatnonzero(np.any(arr, axis=tuple(j for j in range(3) if j != i)))
+                for i in range(3)]
+    lower = np.array([indices[0] for indices in occupied])
+    upper = np.array([indices[-1] + 1 for indices in occupied])
+    original_voxels = int(np.count_nonzero(arr))
+    erosion = target_voxels < original_voxels
+    # Estimate an initial shell width from the requested added volume and the
+    # bounding-box surface. The acceptance check below, not this estimate,
+    # establishes that all possibly selected exterior voxels are present.
+    extent = (upper - lower) * spacing
+    surface = 2 * (extent[0]*extent[1] + extent[0]*extent[2] + extent[1]*extent[2])
+    width = 0 if erosion else (target_voxels-original_voxels)*np.prod(spacing)/surface
+    margin = np.maximum(1, np.ceil(width / spacing).astype(int) + (not erosion))
+    while True:
+        lo = np.maximum(0, lower - margin)
+        hi = np.minimum(shape, upper + margin)
+        region = tuple(slice(int(a), int(b)) for a, b in zip(lo, hi))
+        distance_mask = (
+            mask if np.array_equal(hi, shape)
+            else mask[:int(hi[2]), :int(hi[1]), :int(hi[0])]
+        )
+        distance = sitk.SignedMaurerDistanceMap(
+            sitk.Cast(distance_mask > 0, sitk.sitkUInt8),
+            insideIsPositive=True, squaredDistance=False, useImageSpacing=True,
+        )
+        local = arr[region]
+        distances = sitk.GetArrayViewFromImage(distance)[region]
+        candidates = np.flatnonzero(local if erosion else ~local)
+        count = target_voxels if erosion else target_voxels-original_voxels
+        if candidates.size >= count:
+            scores = distances.ravel()[candidates]
+            selected = _select_largest_scores_deterministically(candidates, scores, count)
+            # Every omitted voxel is beyond a box face outside the foreground.
+            # Its distance is at least the corresponding gap. Leave one voxel
+            # of slack, plus a float-rounding allowance, and require STRICT
+            # separation so no cutoff tie can occur outside the candidate box.
+            gaps = list(((lower-lo)*spacing)[lo > 0])
+            gaps += list(((hi-upper)*spacing)[hi < shape])
+            rounding = 8*np.finfo(np.float32).eps*float(np.max(shape*spacing))
+            if (
+                erosion or not gaps
+                or -float(np.min(distances.ravel()[selected])) < min(gaps)-rounding
+            ):
+                result = np.zeros_like(local) if erosion else local.copy()
+                result.ravel()[selected] = True
+                return region, result
+            del scores, selected
+        # Release rejected maps before allocating the enlarged one.
+        del distance, distances, distance_mask, candidates, local
+        # Doubling eventually reaches the original full-volume algorithm.
+        margin *= 2
+
+
 def volume_adapt_mask(mask: sitk.Image, tau: float, max_iterations: int = 20) -> Optional[sitk.Image]:
     """Adapt a binary mask to the requested voxel-count volume change.
 
@@ -1450,7 +1514,7 @@ def volume_adapt_mask(mask: sitk.Image, tau: float, max_iterations: int = 20) ->
     if abs(tau) < 1e-6:
         return sitk.Image(mask)
 
-    arr = sitk.GetArrayFromImage(mask).astype(bool)
+    arr = sitk.GetArrayViewFromImage(mask) != 0
     original_voxels = int(arr.sum())
     spacing = mask.GetSpacing()
     voxel_vol_mm3 = float(np.prod(spacing))
@@ -1476,31 +1540,9 @@ def volume_adapt_mask(mask: sitk.Image, tau: float, max_iterations: int = 20) ->
         logger.debug("Requested tau=%.6f rounds to the original voxel count", tau)
         return None
 
-    signed_distance = sitk.SignedMaurerDistanceMap(
-        sitk.Cast(mask > 0, sitk.sitkUInt8),
-        insideIsPositive=True,
-        squaredDistance=False,
-        useImageSpacing=True,
-    )
-    distance_arr = sitk.GetArrayViewFromImage(signed_distance)
-    result_arr = np.zeros_like(arr, dtype=bool)
-
-    if target_voxels < original_voxels:
-        candidates = np.flatnonzero(arr)
-        scores = distance_arr.ravel()[candidates]
-        selected = _select_largest_scores_deterministically(
-            candidates, scores, target_voxels
-        )
-        result_arr.ravel()[selected] = True
-    else:
-        result_arr[...] = arr
-        add_voxels = target_voxels - original_voxels
-        candidates = np.flatnonzero(~arr)
-        scores = distance_arr.ravel()[candidates]
-        selected = _select_largest_scores_deterministically(
-            candidates, scores, add_voxels
-        )
-        result_arr.ravel()[selected] = True
+    region, region_result = _rank_volume_region(mask, arr, target_voxels)
+    result_arr = np.zeros_like(arr, dtype=np.uint8)
+    result_arr[region] = region_result
 
     achieved_voxels = int(result_arr.sum())
     if achieved_voxels != target_voxels:
@@ -1508,7 +1550,7 @@ def volume_adapt_mask(mask: sitk.Image, tau: float, max_iterations: int = 20) ->
             f"volume adaptation produced {achieved_voxels} voxels; expected {target_voxels}"
         )
 
-    result = sitk.GetImageFromArray(result_arr.astype(np.uint8))
+    result = sitk.GetImageFromArray(result_arr)
     result.CopyInformation(mask)
     achieved_tau = (achieved_voxels - original_voxels) / original_voxels
     logger.debug(
@@ -1644,7 +1686,22 @@ def randomize_contour(
     if randomization_mm <= 0:
         raise ValueError("randomization_mm must be positive")
 
-    binary = sitk.Cast(mask > 0, sitk.sitkUInt8)
+    # Keep index zero fixed for bit-identical Maurer rounding (see
+    # _rank_volume_region). The extra voxel puts every omitted point strictly
+    # beyond the largest possible outward offset, including rounding error.
+    array = sitk.GetArrayViewFromImage(mask)
+    occupied = [np.flatnonzero(np.any(array > 0, axis=tuple(j for j in range(3) if j != i)))
+                for i in range(3)]
+    if all(indices.size for indices in occupied):
+        upper = np.array([indices[-1] + 1 for indices in occupied])
+        margin = np.ceil(randomization_mm / np.array(mask.GetSpacing()[::-1])).astype(int) + 1
+        hi = np.minimum(array.shape, upper + margin)
+        region = tuple(slice(0, int(end)) for end in hi)
+        distance_mask = mask[:int(hi[2]), :int(hi[1]), :int(hi[0])]
+    else:
+        region = tuple(slice(None) for _ in array.shape)
+        distance_mask = mask
+    binary = sitk.Cast(distance_mask > 0, sitk.sitkUInt8)
     signed_distance = sitk.SignedMaurerDistanceMap(
         binary,
         insideIsPositive=True,
@@ -1656,7 +1713,11 @@ def randomize_contour(
         result = signed_distance > magnitude_mm
     else:
         result = signed_distance >= -magnitude_mm
-    return sitk.Cast(result, sitk.sitkUInt8)
+    result_array = np.zeros(array.shape, dtype=np.uint8)
+    result_array[region] = sitk.GetArrayViewFromImage(result)
+    full_result = sitk.GetImageFromArray(result_array)
+    full_result.CopyInformation(mask)
+    return full_result
 
 
 def add_noise_to_image(
@@ -1760,6 +1821,8 @@ def generate_ntcv_perturbations(
     original_image: sitk.Image,
     config: PerturbationConfig,
     structure_name: str,
+    *,
+    _noise_cache: Optional[dict] = None,
 ) -> Tuple[Dict[str, sitk.Image], Dict[str, sitk.Image]]:
     """
     Generate NTCV (Noise + Translation + Contour + Volume) perturbation chain.
@@ -1842,6 +1905,11 @@ def generate_ntcv_perturbations(
     # In particular, contour draws are keyed only by translation and contour
     # realization, so changing the noise or volume factor cannot silently
     # change the sampled boundary.
+    # Private course-scoped cache: the input and cached images are immutable
+    # throughout task preparation. Retain the source object to prevent id reuse.
+    if _noise_cache is not None and _noise_cache.get("source") is not original_image:
+        _noise_cache.clear()
+        _noise_cache["source"] = original_image
     noise_images: List[Tuple[str, sitk.Image]] = []
     for noise_std in noise_levels:
         if noise_std > 0:
@@ -1849,7 +1917,12 @@ def generate_ntcv_perturbations(
                 [42, 0, int(round(float(noise_std) * 1000.0))]
             )
             noise_rng = np.random.Generator(np.random.PCG64(noise_seed))
-            noisy_image = add_noise_to_image(original_image, noise_std, rng=noise_rng)
+            if _noise_cache is not None and noise_std in _noise_cache:
+                noisy_image = _noise_cache[noise_std]
+            else:
+                noisy_image = add_noise_to_image(original_image, noise_std, rng=noise_rng)
+                if _noise_cache is not None:
+                    _noise_cache[noise_std] = noisy_image
             noise_suffix = f"_n{int(noise_std)}"
         else:
             noisy_image = original_image
@@ -4234,6 +4307,8 @@ def robustness_for_course(
         # Apply thread limit to main process
         _apply_thread_limit(_resolve_thread_limit(getattr(config, 'radiomics_thread_limit', None)))
     
+    noise_cache = {}
+    image_digest_cache = {}
     try:
         for roi_name, source in selected_structures:
             mask_array = all_masks[(roi_name, source)]
@@ -4253,6 +4328,7 @@ def robustness_for_course(
                     ct_image,
                     rob_config.perturbation,
                     roi_name,
+                    _noise_cache=noise_cache,
                 )
             else:
                 # Legacy mode: volume-only perturbations
@@ -4291,6 +4367,7 @@ def robustness_for_course(
             if has_parallel:
                 # Prepare parallel tasks
                 assert temp_dir is not None
+                preparation_cache = {"images": image_digest_cache}
                 for pert_id, mask in perturbed_masks.items():
                     # Use perturbed image if available
                     current_image = perturbed_images.get(pert_id, ct_image) if perturbed_images else ct_image
@@ -4308,6 +4385,7 @@ def robustness_for_course(
                             False,
                             robustness_run_identifier,
                             identity_catalog[(source, roi_name)].as_dict(),
+                            _cache=preparation_cache,
                         )
                         # Add perturbation-specific metadata to extra_metadata
                         task_params['extra_metadata'] = {'perturbation_id': pert_id}
@@ -4317,6 +4395,7 @@ def robustness_for_course(
                             f"failed to prepare robustness task for "
                             f"{source}/{roi_name}/{pert_id}: {e}"
                         ) from e
+                preparation_cache.clear()
             else:
                 # Sequential fallback
                 features_df = extract_features_for_masks(
@@ -4344,6 +4423,9 @@ def robustness_for_course(
                 if not features_df.empty:
                     features_df["segmentation_source"] = source
                     all_features.append(features_df)
+            # Tasks contain file paths, and sequential extraction has finished.
+            # Release this ROI's voxel buffers before generating the next grid.
+            del perturbed_masks, perturbed_images
 
         # Execute parallel tasks
         if has_parallel and tasks:
