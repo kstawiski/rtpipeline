@@ -10,8 +10,12 @@ the manifest cohort aggregate and the explicit-input aggregate.
 
 Values that identify a run or the deciding code are replaced by placeholders
 before comparison: run identifiers, the code identity and the digests of
-artifacts that embed them. Everything else must match exactly, including row
-order, column order and Arrow types.
+artifacts that embed them. Everything else must match exactly, including
+column order and Arrow types. Since 2026-09-24 course tables are written in
+ROBUSTNESS_TABLE_ROW_ORDER, so Parquet rows are compared in canonical order
+and the table byte size is masked; cohort CoV, which depends on that order
+in its last bits, is checked against the unchanged aggregation of the base
+revision's raw values in the new order.
 
 The inputs cover the paths the fix touches without triggering it: healthy
 RS_custom and custom-model sources, an unselected unparseable Manual ROI
@@ -179,6 +183,10 @@ def _normalize(value, ids, parent=None):
                 out[key] = "<code identity>"
             elif key == "sha256" and parent in {"measured_output", "source_dispositions"}:
                 out[key] = "<digest of run-bound artifact>"
+            elif key == "size_bytes" and parent == "measured_output":
+                # 2026-09-24: course tables are now written in
+                # ROBUSTNESS_TABLE_ROW_ORDER, so their byte size may change.
+                out[key] = "<size of reordered table>"
             else:
                 out[key] = _normalize(item, ids, key)
         return out
@@ -197,7 +205,53 @@ def _normalize_frame(frame: pd.DataFrame, ids) -> pd.DataFrame:
     return frame
 
 
-def _assert_equivalent(base: dict, current: dict) -> None:
+COV_COLUMNS = ["cov_pct", "cov_pct_q1", "cov_pct_q3"]
+SUMMARY_KEYS = ["structure", "segmentation_source", "extraction_arm", "feature_name"]
+
+
+def _with_cov_in_table_order(base_outputs: dict, workbook: str, sheet: str,
+                             frame: pd.DataFrame, rob_config) -> pd.DataFrame:
+    """Base summary with CoV recomputed from base raw values in table row order.
+
+    2026-09-24: per-subject CoV is np.mean/np.std over a subject's rows in
+    table order, so writing course tables in ROBUSTNESS_TABLE_ROW_ORDER moves
+    CoV in the last bits. Aggregation code is unchanged, so the expected CoV is
+    the unchanged summary applied to the base revision's own raw values, each
+    course reordered by that row order. Every other value is the base value.
+    """
+    from rtpipeline import radiomics_robustness as rr
+
+    if not set(COV_COLUMNS) & set(frame.columns) or frame.empty:
+        return frame
+    raw, _ = base_outputs[workbook.replace(".xlsx", "_raw_values.parquet")]
+    ordered = pd.concat(
+        [rr._order_robustness_rows(course) for _, course in
+         raw.groupby(["patient_id", "course_id"], sort=False)],
+        ignore_index=True,
+    )
+    group_columns = (
+        ["segmentation_source", "structure", "extraction_arm", "feature_name"]
+        if sheet.endswith("per_source") or sheet == "per_source_summary" else None
+    )
+    summary = rr.summarize_feature_stability(ordered, rob_config, group_columns=group_columns)
+    cov = [column for column in COV_COLUMNS if column in frame.columns]
+    merged = frame.drop(columns=cov).merge(summary[SUMMARY_KEYS + cov], on=SUMMARY_KEYS,
+                                           how="left", validate="one_to_one")
+    assert len(merged) == len(frame)
+    # Store the recomputed values exactly as the cohort workbook stores values.
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        merged[list(frame.columns)].to_excel(writer, sheet_name=sheet[:31], index=False)
+    buffer.seek(0)
+    return pd.read_excel(buffer, sheet_name=sheet[:31])
+
+
+def _in_row_order(frame: pd.DataFrame) -> pd.DataFrame:
+    order = frame.astype(str).agg("\x1f".join, axis=1).sort_values(kind="stable").index
+    return frame.loc[order].reset_index(drop=True)
+
+
+def _assert_equivalent(base: dict, current: dict, rob_config) -> None:
     assert current["codes"] == base["codes"]
     assert sorted(current["outputs"]) == sorted(base["outputs"])
     base_ids, current_ids = _run_ids(base["outputs"]), _run_ids(current["outputs"])
@@ -207,9 +261,13 @@ def _assert_equivalent(base: dict, current: dict) -> None:
         if isinstance(expected, tuple):
             (expected_frame, expected_schema), (observed_frame, observed_schema) = expected, observed
             assert observed_schema.equals(expected_schema, check_metadata=True), key
+            # 2026-09-24: the course table (and so the raw cohort values
+            # concatenated from it) is written in ROBUSTNESS_TABLE_ROW_ORDER
+            # instead of extraction order. Rows, values, columns and types
+            # must still match exactly; only the row order is not compared.
             pd.testing.assert_frame_equal(
-                _normalize_frame(observed_frame, current_ids),
-                _normalize_frame(expected_frame, base_ids),
+                _in_row_order(_normalize_frame(observed_frame, current_ids)),
+                _in_row_order(_normalize_frame(expected_frame, base_ids)),
                 check_exact=True, obj=key,
             )
         elif isinstance(expected, dict) and expected and all(
@@ -217,6 +275,7 @@ def _assert_equivalent(base: dict, current: dict) -> None:
         ):
             assert list(observed) == list(expected), key
             for sheet, frame in expected.items():
+                frame = _with_cov_in_table_order(base["outputs"], key, sheet, frame, rob_config)
                 pd.testing.assert_frame_equal(
                     _normalize_frame(observed[sheet], current_ids),
                     _normalize_frame(frame, base_ids),
@@ -254,4 +313,7 @@ def test_non_triggering_courses_match_base_revision(tmp_path):
         "firstorder").any()
     p5, _ = base["outputs"]["P5/C1/radiomics_robustness_ct.parquet"]
     assert not p5.feature_name[p5.extraction_arm == "sensitivity_raw"].str.endswith("MCC").any()
-    _assert_equivalent(base, current)
+    from rtpipeline.radiomics_robustness import RobustnessConfig
+
+    rob_config = RobustnessConfig.from_dict(yaml.safe_load(config.read_text())["radiomics_robustness"])
+    _assert_equivalent(base, current, rob_config)

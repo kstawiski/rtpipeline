@@ -316,3 +316,30 @@ def test_fixture_exercises_the_changed_paths(runs):
 @pytest.mark.parametrize("variant", ["current", "current_other_budget", "current_in_process"])
 def test_outputs_match_base_revision(runs, variant):
     _assert_equivalent(runs["base"], runs[variant])
+
+
+def _ordered_table(frame, ids):
+    frame = frame.copy()
+    for column in frame.columns:
+        if frame[column].dtype == object:
+            frame[column] = frame[column].map(lambda v: _normalize_text(v, ids))
+    return frame
+
+
+@pytest.mark.parametrize("variant", ["current_other_budget", "current_in_process"])
+def test_published_order_does_not_depend_on_workers(runs, variant):
+    """Rows, columns and ledger entries come out in one order for any budget."""
+    reference, other = runs["current"]["outputs"], runs[variant]["outputs"]
+    reference_ids, other_ids = _run_ids(reference), _run_ids(other)
+    compared = 0
+    for key, value in reference.items():
+        if isinstance(value, tuple):
+            (frame, schema), (other_frame, other_schema) = value, other[key]
+            assert other_schema.equals(schema, check_metadata=True), key
+            pd.testing.assert_frame_equal(_ordered_table(other_frame, other_ids),
+                                          _ordered_table(frame, reference_ids),
+                                          check_exact=True, obj=key)
+            compared += 1
+        elif key.endswith("radiomics_robustness_identity.json"):
+            assert _normalize(other[key], other_ids) == _normalize(value, reference_ids), key
+    assert compared >= 6

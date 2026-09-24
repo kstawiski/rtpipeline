@@ -84,6 +84,23 @@ ROBUSTNESS_PERTURBATION_IDENTITY_COLUMNS = (
     "perturbed_mask_identity",
 )
 
+# Row order of a published course table (measured or failed evidence). Rows
+# used to follow task completion, so the bytes and the sha256 bound into the
+# sidecar and receipt changed with worker count and timing. They are sorted by
+# the string form of these columns, a missing value after every present one;
+# rows equal on all of them (none are expected) are ordered by their full
+# content. Only the order changes: every row and value is kept.
+ROBUSTNESS_TABLE_ROW_ORDER = (
+    "segmentation_source",
+    "mask_identity",
+    "stable_roi_identifier",
+    "structure",
+    "perturbation_id",
+    "extraction_arm",
+    "measurement_type",
+    "feature_name",
+)
+
 # A feature that one perturbation-arm lacks while other perturbations of the
 # same ROI and arm measure it. Such a gap is published as an explicit row with
 # this status, never as a silently shorter feature set, and only when the CT
@@ -2179,6 +2196,32 @@ def _is_radiomics_feature_key(key: str) -> bool:
             "_glszm_", "_gldm_", "_ngtdm_",
         )
     )
+
+
+def _order_robustness_rows(frame: pd.DataFrame) -> pd.DataFrame:
+    """Return ``frame`` with rows in ROBUSTNESS_TABLE_ROW_ORDER, index reset."""
+    columns = [column for column in ROBUSTNESS_TABLE_ROW_ORDER if column in frame.columns]
+    if frame.empty or not columns:
+        return frame.reset_index(drop=True)
+    keys: Dict[str, Any] = {}
+    for position, column in enumerate(columns):
+        missing = frame[column].isna().to_numpy()
+        keys[f"missing_{position}"] = missing
+        keys[f"value_{position}"] = np.where(missing, "", frame[column].astype(str).to_numpy())
+    ordering = pd.DataFrame(keys, index=frame.index)
+    tied = frame.duplicated(subset=columns, keep=False).to_numpy()
+    if tied.any():
+        content = frame.loc[tied].apply(
+            lambda row: json.dumps(
+                {str(k): row[k] for k in sorted(frame.columns, key=str)},
+                sort_keys=True, default=str,
+            ),
+            axis=1,
+        )
+        ordering["content"] = ""
+        ordering.loc[tied, "content"] = content
+    order = ordering.sort_values(by=list(ordering.columns), kind="mergesort").index
+    return frame.loc[order].reset_index(drop=True)
 
 
 def _feature_rows_from_worker_result(result: Mapping[str, Any]) -> List[Dict[str, Any]]:
@@ -5267,6 +5310,14 @@ def robustness_for_course(
                 start_time = time.monotonic()
                 timed_out = False
                 returned_indices = set()
+                # Results arrive in completion order, which depends on worker
+                # count and timing. Frames, identity failures and producer
+                # declarations are kept by task index and released in task
+                # order below, so the table's column order and the identity
+                # ledger do not depend on scheduling.
+                result_frames: Dict[int, pd.DataFrame] = {}
+                identity_failures: Dict[int, Tuple[str, str, str, str]] = {}
+                declarations_by_task: Dict[int, Dict[Tuple[str, str, str, str], Dict[str, Any]]] = {}
                 while completed_count < total_count:
                     try:
                         result = results_iter.next(timeout=10)
@@ -5297,7 +5348,7 @@ def robustness_for_course(
                             result, identity_catalog[(source, roi_name)].as_dict(),
                             robustness_run_identifier, task_params["perturbed_mask_identity"], task_params,
                         )
-                        all_features.append(pd.DataFrame(failed_rows))
+                        result_frames[index] = pd.DataFrame(failed_rows)
                         successful_task_keys.update((roi_name, source, perturbation_id, arm) for arm in CT_EXTRACTION_ARMS)
                         continue
 
@@ -5326,7 +5377,10 @@ def robustness_for_course(
                                     expected_source_identity=source_identity,
                                 )
                             except RobustnessIdentityError as exc:
-                                _record_identity_failure(
+                                # Recorded in task order after the loop; a
+                                # condition has exactly one task, so nothing
+                                # below consults it before then.
+                                identity_failures[index] = (
                                     source, roi_name, perturbation_id, str(exc)
                                 )
                                 task_key = (roi_name, source, perturbation_id)
@@ -5347,13 +5401,13 @@ def robustness_for_course(
                                         extraction_arm,
                                     )
                                 )
-                            for arm, declaration in _feature_declarations_from_records(
-                                result.get("__records__", [])
-                            ).items():
-                                feature_declarations[
-                                    (roi_name, source, perturbation_id, arm)
-                                ] = declaration
-                            all_features.append(result_frame)
+                            declarations_by_task[index] = {
+                                (roi_name, source, perturbation_id, arm): declaration
+                                for arm, declaration in _feature_declarations_from_records(
+                                    result.get("__records__", [])
+                                ).items()
+                            }
+                            result_frames[index] = result_frame
                         else:
                             logger.error(
                                 "Robustness worker returned no scalar features for %s/%s "
@@ -5362,6 +5416,14 @@ def robustness_for_course(
                                 result.get("roi_name"),
                                 result.get("perturbation_id"),
                             )
+
+                for index in sorted(result_frames):
+                    all_features.append(result_frames[index])
+                for index in sorted(identity_failures):
+                    _record_identity_failure(*identity_failures[index])
+                for index in sorted(declarations_by_task):
+                    feature_declarations.update(declarations_by_task[index])
+                del result_frames
 
                 expected_task_keys = {
                     (roi_name, source, perturbation_id, arm)
@@ -5472,6 +5534,8 @@ def robustness_for_course(
         combined_df.loc[selected, "requested_condition_ids"] = json.dumps(sorted(requested_ids))
         combined_df.loc[selected, "impossible_condition_ids"] = json.dumps(impossible_ids)
         combined_df.loc[selected, "possible_condition_count"] = len(requested_ids) - len(impossible_ids)
+
+    combined_df = _order_robustness_rows(combined_df)
 
     # Bind the published rows to the run that produced them: a table carrying a
     # foreign run identifier cannot be certified by this run's dispositions.
