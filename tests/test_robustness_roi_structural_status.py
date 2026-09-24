@@ -267,6 +267,10 @@ def test_main_radiomics_reader_default_is_unchanged(tmp_path, monkeypatch):
     ("unmeasurable_source_contour", "ROI_MASK_EMPTY_AFTER_RASTERIZATION"),
     ("declared_without_contour_data", "ROI_CONTOUR_UNPARSEABLE"),
     ("structural_roi_error", "ROI_CONTOUR_PARTIALLY_UNPARSEABLE"),
+    # 2026-09-24: the scoped-reader kind admits only the two scope codes.
+    ("unresolved_source_scope", "ROI_CONTOUR_PARTIALLY_UNPARSEABLE"),
+    ("unresolved_source_scope", "ROI_EXTRACTION_FAILED"),
+    ("unmeasurable_source_contour", "ROI_UNRESOLVED_SOURCE_SCOPE"),
 ])
 def test_forged_structural_dispositions_are_rejected(
     tmp_path, monkeypatch, failure_kind, structural_code
