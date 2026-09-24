@@ -514,6 +514,30 @@ def _resample_mask_to_ct_if_equivalent(
     )
 
 
+def apply_course_dose_quarantine(rows: list[dict], reason: str) -> None:
+    """Suppress prescription-relative values when a course becomes ineligible.
+
+    Absolute measurements remain available for reconciliation. Coverage and
+    target-specific quarantine statuses retain their more specific reasons.
+    """
+    for row in rows:
+        row["dose_response_quarantine_status"] = "pending_plan_target_reconciliation"
+        row["dose_response_quarantine_reason"] = reason
+        row["dose_response_eligible"] = False
+        row["dose_metric_usable_for_dose_response"] = False
+        for column in RELATIVE_DVH_METRIC_COLUMNS:
+            row[column] = None
+        status = str(row.get("relative_metric_status") or "")
+        if not (status.startswith("unavailable_") or status in {
+            "quarantined_near_zero_requires_reconciliation", "suppressed_non_ebrt",
+        }):
+            row["relative_metric_status"] = "excluded_dose_response_ineligible"
+            row["relative_metric_reason"] = reason
+        if row.get("HI_status") == "computed":
+            row["HI_status"] = "excluded_dose_response_ineligible"
+            row["HI_reason"] = reason
+
+
 def annotate_dvh_metrics(
     metrics: dict,
     *,
@@ -3478,13 +3502,7 @@ def dvh_for_course(
             "quarantined pending plan-target reconciliation; this is not an automatic "
             "clinical exclusion or dose reassignment."
         )
-        for row in clean_results:
-            row["dose_response_quarantine_status"] = (
-                "pending_plan_target_reconciliation"
-            )
-            row["dose_response_quarantine_reason"] = quarantine_reason
-            row["dose_response_eligible"] = False
-            row["dose_metric_usable_for_dose_response"] = False
+        apply_course_dose_quarantine(clean_results, quarantine_reason)
 
     # Save curve data to JSON
     if curve_data_export:
