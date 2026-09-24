@@ -159,7 +159,27 @@ class _Marks(logging.Handler):
                 self.marks[key] = time.monotonic()
 
 
+def _inject_read_failures():
+    """Make the named ROIs' mask reads raise, per course (inputs.json).
+
+    A technical read failure that neither scope nor area-less contour items
+    explain; both revisions read robustness masks through this function.
+    """
+    reader = rm._rt_utils_indexed_roi_mask
+
+    def failing_reader(rt, name, *, retain):
+        if name in _INJECTED_READ_FAILURES:
+            raise RuntimeError(f"injected read failure for ROI {name!r}")
+        return reader(rt, name, retain=retain)
+
+    rm._rt_utils_indexed_roi_mask = failing_reader
+
+
+_INJECTED_READ_FAILURES: set = set()
+
+
 def main():
+    _inject_read_failures()
     rr.load_course_contract = contract
     rr._load_main_ct_identity_catalog = catalog
     rm._standard_rtstruct_sources = standard_sources
@@ -180,11 +200,13 @@ def main():
 
         rr._prepare_robustness_rois = prepare_with_course_context
     os.environ.update(RTPIPELINE_RADIOMICS_THREAD_LIMIT="1")
-    courses = sorted(p.parent.parent.name for p in OUTPUT_ROOT.glob("P*/C1/inputs.json"))
+    courses = sorted(p.parent.parent.name for p in OUTPUT_ROOT.glob("*/C1/inputs.json"))
     codes, timing = {}, {}
     for patient in courses:
         course = OUTPUT_ROOT / patient / "C1"
         spec = inputs(patient)
+        _INJECTED_READ_FAILURES.clear()
+        _INJECTED_READ_FAILURES.update(spec.get("inject_read_failure_for", ()))
         os.environ["RTPIPELINE_DISABLE_PARALLEL_RADIOMICS"] = "0" if spec.get("parallel") else "1"
         # ROBUSTNESS_DRIVER_WORKERS lets a caller rerun the same inputs with
         # another worker budget.
