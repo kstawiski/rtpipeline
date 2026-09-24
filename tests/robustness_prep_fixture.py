@@ -158,6 +158,8 @@ def apply_defects(ct_dir: Path, rs_path: Path, defects: Sequence[Dict[str, Any]]
     mid_z, mid_uid = slices[len(slices) // 2]
     for defect in defects:
         name, kind = defect["name"], defect["kind"]
+        if kind == "not_dicom":
+            continue
         if kind == "point":
             append_roi(ds, name, [contour("POINT", [0.0, 0.0, mid_z], image_uid=mid_uid)])
         elif kind == "declared_only":
@@ -180,9 +182,39 @@ def apply_defects(ct_dir: Path, rs_path: Path, defects: Sequence[Dict[str, Any]]
             # Valid geometry without ContourImageSequence: the rt_utils reader raises.
             append_roi(ds, name, [contour("CLOSED_PLANAR", [-10.0, -10.0, mid_z, 2.0, -10.0, mid_z,
                                                             2.0, 2.0, mid_z])])
+        elif kind == "foreign_image_reference":
+            # Valid squares on three slices, one of which references an image
+            # outside the CT series, which the file's global reference list
+            # also names: rt_utils refuses the whole file, the scoped reader
+            # finds only this ROI unresolved (ROI_UNRESOLVED_SOURCE_SCOPE).
+            foreign = generate_uid()
+            items = [square_contour(-8.0, -8.0, 10.0, z, uid) for z, uid in slices[6:8]]
+            items.append(square_contour(-8.0, -8.0, 10.0, slices[8][0], foreign))
+            append_roi(ds, name, items)
+            series = ds.ReferencedFrameOfReferenceSequence[0].RTReferencedStudySequence[0] \
+                .RTReferencedSeriesSequence[0]
+            ref = Dataset()
+            ref.ReferencedSOPClassUID = CTImageStorage
+            ref.ReferencedSOPInstanceUID = foreign
+            series.ContourImageSequence.append(ref)
+        elif kind in {"one_point_item", "two_point_item"}:
+            # An area-less CLOSED_PLANAR item added to an existing ROI, as
+            # mask-to-contour conversion emits for a stray boundary voxel.
+            # rt_utils' fillPoly asserts on one point and draws the segment
+            # for two; the scoped reader withholds either.
+            x, y = defect.get("at", (-15.0, -15.0))
+            points = [x, y, mid_z] if kind == "one_point_item" else [x, y, mid_z, x + 3.0, y, mid_z]
+            roi_contours(ds, name).append(contour("CLOSED_PLANAR", points, image_uid=mid_uid))
+        elif kind == "drop_roi_observations":
+            # rt_utils rejects an RTSTRUCT without RTROIObservationsSequence
+            # as a whole; the scoped reader does not explain that.
+            del ds.RTROIObservationsSequence
         else:
             raise ValueError(kind)
     ds.save_as(rs_path)
+    for defect in defects:
+        if defect["kind"] == "not_dicom":
+            rs_path.write_bytes(b"not a DICOM file\n")
 
 
 def build_course(course: Path, spec: Dict[str, Any]) -> None:

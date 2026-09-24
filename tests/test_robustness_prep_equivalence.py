@@ -22,6 +22,14 @@ without image references; a point ROI; a selected ROI with a governed
 structural disposition; small, thin and edge-touching selected ROIs; a
 source-only course; identity failures; producer-declared feature gaps; a
 selected ROI whose mask is empty (course fails); a course with no identity.
+
+Since 2026-09-24 the base is 35af111 and robustness reads selected ROIs
+through the scoped reader of main CT radiomics. Courses S1 (a selected ROI on
+an image outside the CT series), S2 (a selected ROI with a one-point contour
+item) and P7 (a selected ROI beyond the image) fail on the base and complete
+now; S3 (a selected ROI with a two-point item) completes on both with that
+ROI's mask changed to the main path's. Every other course, including the
+negative controls N1-N3, must publish exactly what the base published.
 """
 from __future__ import annotations
 
@@ -39,10 +47,14 @@ import pyarrow.parquet as pq
 import pytest
 import yaml
 
-from robustness_prep_fixture import build_course
+from robustness_prep_fixture import build_course, realistic_rois
 
 ROOT = Path(__file__).resolve().parents[1]
-BASE_REVISION = "a027945"
+# 2026-09-24: the base moves from a027945 to 35af111, whose outputs this
+# harness proved equal to a027945's, because the scoped-reader change is
+# compared with its direct predecessor and the injected read-failure seam
+# (radiomics._rt_utils_indexed_roi_mask) exists only from 8af132e on.
+BASE_REVISION = "35af111"
 DRIVER = Path(__file__).with_name("robustness_prep_driver.py")
 GRID = dict(rows=40, columns=40, slices=16)
 RUN_BOUND_PARENTS = {"measured_output", "source_dispositions", "failed_evidence"}
@@ -129,7 +141,47 @@ COURSES = {
     # No identity at all: the NIfTI fallback is consulted, nothing is selected.
     "P9": dict(GRID, parallel=True, workers=2, seed=9, rois=[
         _roi("Manual", "GTV1", catalog=False), *_organs("Manual", "OAR", 3, catalog=False)]),
+    # Scoped reader, scenario (a): a selected Manual ROI with a contour on an
+    # image outside the CT series, which the global reference list names,
+    # beside a normal selected ROI and an unselected ROI with the same defect.
+    "S1": dict(GRID, parallel=True, workers=2, seed=11, rois=[
+        _roi("Manual", "GTV1"), *_organs("Manual", "OAR", 3),
+        _roi("AutoRTS_total", "urinary_bladder", center=(26, 16, 6), radii=(5, 5, 3)),
+        *_organs("AutoRTS_total", "organ", 3)],
+        defects={"Manual": [{"name": "CTV_oos", "kind": "foreign_image_reference"},
+                            {"name": "oar_oos", "kind": "foreign_image_reference"}]},
+        extra_catalog=[["Manual", "CTV_oos"], ["Manual", "oar_oos"]]),
+    # Scenario (b): a selected AutoRTS ROI with a one-point contour item.
+    "S2": dict(GRID, parallel=True, workers=2, seed=12, rois=[
+        _roi("Manual", "GTV1"), *_organs("Manual", "OAR", 2),
+        _roi("AutoRTS_total", "urinary_bladder", center=(26, 16, 6), radii=(5, 5, 3)),
+        *_organs("AutoRTS_total", "organ", 3)],
+        defects={"AutoRTS_total": [{"name": "urinary_bladder", "kind": "one_point_item"},
+                                   {"name": "organ_01", "kind": "one_point_item"}]}),
+    # A selected ROI with a two-point item: rt_utils draws the segment, the
+    # scoped reader (and main CT radiomics) withholds it. The one deliberate
+    # change for a course that completes on the base revision.
+    "S3": dict(GRID, parallel=True, workers=2, seed=13, rois=[
+        _roi("Manual", "GTV1"), _roi("Manual", "CTV1", radii=(7, 8, 4)),
+        *_organs("Manual", "OAR", 2)],
+        defects={"Manual": [{"name": "GTV1", "kind": "two_point_item"},
+                            {"name": "OAR_00", "kind": "two_point_item"}]}),
+    # Negative controls: whole-source failures and a technical read failure
+    # that scope does not explain stay fatal, identically.
+    "N1": dict(GRID, parallel=True, workers=2, seed=14, rois=[
+        _roi("Manual", "GTV1"), *_organs("Manual", "OAR", 2)],
+        defects={"Manual": [{"name": "", "kind": "drop_roi_observations"}]}),
+    "N2": dict(GRID, parallel=True, workers=2, seed=15, rois=[
+        _roi("Manual", "GTV1"), _roi("Custom", "CTV_eval", center=(16, 24, 9), radii=(5, 4, 3)),
+        *_organs("Custom", "custom", 2)],
+        defects={"Custom": [{"name": "", "kind": "not_dicom"}]}),
+    "N3": dict(GRID, parallel=True, workers=2, seed=16, inject_read_failure_for=["GTV1"], rois=[
+        _roi("Manual", "GTV1"), _roi("Manual", "CTV1", radii=(7, 8, 4)),
+        *_organs("Manual", "OAR", 2)]),
 }
+# Courses whose outputs change on purpose (see test_scoped_reader_* below).
+# Every other course, completed or failed, must publish what the base did.
+CHANGED_COURSES = {"P7", "S1", "S2", "S3"}
 
 
 def _export_base(target: Path) -> Path:
@@ -222,7 +274,14 @@ def canonical_table(frame: pd.DataFrame, ids) -> pd.DataFrame:
     return frame.loc[order].reset_index(drop=True)
 
 
-def _assert_equivalent(base: dict, current: dict) -> None:
+def _course_outputs(run: dict, courses) -> dict:
+    return {"codes": {c: v for c, v in run["codes"].items() if c in courses},
+            "outputs": {k: v for k, v in run["outputs"].items() if k.split("/")[0] in courses}}
+
+
+def _assert_equivalent(base: dict, current: dict, courses=None) -> None:
+    if courses is not None:
+        base, current = _course_outputs(base, courses), _course_outputs(current, courses)
     assert current["codes"] == base["codes"]
     assert sorted(current["outputs"]) == sorted(base["outputs"])
     base_ids, current_ids = _run_ids(base["outputs"]), _run_ids(current["outputs"])
@@ -315,7 +374,7 @@ def test_fixture_exercises_the_changed_paths(runs):
 
 @pytest.mark.parametrize("variant", ["current", "current_other_budget", "current_in_process"])
 def test_outputs_match_base_revision(runs, variant):
-    _assert_equivalent(runs["base"], runs[variant])
+    _assert_equivalent(runs["base"], runs[variant], set(COURSES) - CHANGED_COURSES)
 
 
 def _ordered_table(frame, ids):
@@ -343,3 +402,236 @@ def test_published_order_does_not_depend_on_workers(runs, variant):
         elif key.endswith("radiomics_robustness_identity.json"):
             assert _normalize(other[key], other_ids) == _normalize(value, reference_ids), key
     assert compared >= 6
+
+
+# ---------------------------------------------------------------------------
+# Scoped RTSTRUCT reader (2026-09-24). Robustness reads selected ROIs through
+# the reader of main CT radiomics (rtstruct_geometry.ScopedRTStruct).
+# ---------------------------------------------------------------------------
+
+def _sidecar(outputs, course):
+    return outputs[f"{course}/C1/metadata/radiomics_robustness_source_dispositions.json"]
+
+
+def _dispositions(sidecar):
+    return sorted((r["roi_name"], r["status"], r["failure_kind"], r["structural_code"])
+                  for r in sidecar["rows"])
+
+
+def _tolerated(sidecar):
+    return sorted((r["roi_name"], r["failure_kind"], r["structural_code"])
+                  for r in sidecar["tolerated_source_failures"])
+
+
+def test_scoped_reader_regressions_fail_on_base(runs):
+    base = runs["base"]
+    for course in ("S1", "S2", "P7"):
+        assert base["codes"][course] == 1, course
+        assert _sidecar(base["outputs"], course)["measurement_outcome"] == "failed_extraction"
+    log = base["log"]
+    assert ("/S1/C1/RS.dcm: Loaded RTStruct references image(s) that are not contained "
+            "in input series data") in log
+    assert "Expected ROI 'urinary_bladder' in " in log
+    assert "/S2/C1/RS_auto.dcm could not be read: OpenCV" in log and "fillPoly" in log
+    assert "Expected ROI 'GTV_far' in " in log
+
+
+@pytest.mark.parametrize("variant", ["current", "current_other_budget", "current_in_process"])
+def test_scoped_reader_regressions_pass(runs, variant):
+    run = runs[variant]
+    outputs = run["outputs"]
+    for course in ("S1", "S2", "S3", "P7"):
+        assert run["codes"][course] == 0, course
+        assert _sidecar(outputs, course)["measurement_outcome"] == "measured", course
+
+    # (a) The out-of-scope selected ROI gets the governed disposition the main
+    # path publishes as unresolved_source_scope; the normal ROIs are measured;
+    # the unselected out-of-scope ROI is a tolerated failure.
+    s1 = _sidecar(outputs, "S1")
+    assert _dispositions(s1) == [("CTV_oos", "structural_nonmeasurement",
+                                  "unresolved_source_scope", "ROI_UNRESOLVED_SOURCE_SCOPE")]
+    assert _tolerated(s1) == [("oar_oos", "structural_roi_error", "ROI_UNRESOLVED_SOURCE_SCOPE")]
+    table, _ = outputs["S1/C1/radiomics_robustness_ct.parquet"]
+    assert set(zip(table.segmentation_source, table.structure)) == {
+        ("Manual", "GTV1"), ("AutoRTS_total", "urinary_bladder")}
+
+    # (b) The selected ROI with a one-point item is measured. The unselected
+    # one is read by rt_utils as before and stays a tolerated failure.
+    s2 = _sidecar(outputs, "S2")
+    assert _dispositions(s2) == []
+    assert _tolerated(s2) == [("organ_01", "extraction_error", "ROI_EXTRACTION_FAILED")]
+    table, _ = outputs["S2/C1/radiomics_robustness_ct.parquet"]
+    assert set(zip(table.segmentation_source, table.structure)) == {
+        ("Manual", "GTV1"), ("AutoRTS_total", "urinary_bladder")}
+
+    # A contour beyond the image is out of scope, as in the main path.
+    assert _dispositions(_sidecar(outputs, "P7")) == [
+        ("GTV_far", "structural_nonmeasurement", "unresolved_source_scope",
+         "ROI_UNRESOLVED_SOURCE_SCOPE")]
+    table, _ = outputs["P7/C1/radiomics_robustness_ct.parquet"]
+    assert set(table.structure) == {"GTV1"}
+
+
+def test_scoped_reader_negative_controls_still_fail(runs):
+    for variant in ("base", "current"):
+        run = runs[variant]
+        for course in ("N1", "N2", "N3"):
+            assert run["codes"][course] == 1, (variant, course)
+            assert _sidecar(run["outputs"], course)["measurement_outcome"] == "failed_extraction"
+        log = run["log"]
+        # rt_utils rejects the whole source for a reason other than scope.
+        assert "/N1/C1/RS.dcm: Please check that the existing RTStruct is valid" in log
+        # A technical read failure of a selected in-scope ROI.
+        assert "could not be read: injected read failure for ROI 'GTV1'" in log
+
+
+def test_two_point_item_changes_only_that_selected_roi(runs):
+    """Deliberate: the main path withholds a two-point item that rt_utils draws."""
+    base, current = runs["base"], runs["current"]
+    assert base["codes"]["S3"] == current["codes"]["S3"] == 0
+    for key, value in base["outputs"].items():
+        if key.startswith("S3/") and not key.endswith(".parquet"):
+            assert _normalize(current["outputs"][key], _run_ids(current["outputs"])) == \
+                _normalize(value, _run_ids(base["outputs"])), key
+    key = "S3/C1/radiomics_robustness_ct.parquet"
+    ids = ["segmentation_source", "structure", "perturbation_id", "extraction_arm", "feature_name"]
+    frames = []
+    for run in (base, current):
+        frame = run["outputs"][key][0].drop(columns=["run_identifier"]).astype(str)
+        frames.append(frame.set_index(ids).sort_index())
+    changed = (frames[0] != frames[1])
+    assert frames[0].index.equals(frames[1].index)
+    assert set(changed.columns[changed.any()]) == {"perturbed_mask_identity"}
+    assert set(changed.index[changed.any(axis=1)].get_level_values("structure")) == {"GTV1"}
+
+
+# Mask-level proofs, independent of the course runs.
+
+def _series_and_raw(course, rs_name):
+    import pydicom
+    from rt_utils import image_helper
+    from rt_utils.rtstruct import RTStruct
+
+    series = image_helper.load_sorted_image_series(str(course / "CT"))
+    return series, RTStruct(series, pydicom.dcmread(str(course / rs_name)))
+
+
+def _scoped_masks(course, rs_name):
+    from rtpipeline import radiomics as rm
+    from rtpipeline.roi_requiredness import Requiredness, inspect_rtstruct
+
+    rs = course / rs_name
+    required = {o.name: Requiredness.ANALYSIS_REQUIRED for o in inspect_rtstruct(rs).named_rois}
+    sink = []
+    masks = rm._rtstruct_masks(
+        course / "CT", rs, failure_outcomes=sink, tolerate_unselected=True,
+        requiredness_by_roi=required, unmeasurable_required_is_disposition=True,
+        contourless_required_is_absence=True, retain_mask=lambda _name: True,
+        scoped_reader=True)
+    return masks, sink
+
+
+def _assert_same_bytes(observed, expected):
+    assert observed.dtype == expected.dtype == bool
+    assert observed.shape == expected.shape
+    assert observed.tobytes() == expected.tobytes()
+
+
+def test_scoped_masks_are_byte_identical_for_in_scope_rois(tmp_path):
+    """Every in-scope ROI without area-less items: scoped mask == rt_utils mask."""
+    from rtpipeline.rtstruct_geometry import _contour_rasterizable, create_scoped_rtstruct
+
+    full = tmp_path / "Output" / "B1" / "C1"
+    build_course(full, _full_course(seed=21))
+    realistic = tmp_path / "Output" / "B2" / "C1"
+    build_course(realistic, dict(rows=48, columns=48, slices=20, seed=22,
+                                 rois=realistic_rois(48, 48, 20)))
+    files = [(full, "RS.dcm"), (full, "RS_auto.dcm"), (full, "RS_custom.dcm"),
+             (full, "Segmentation_CustomModels/ModelA/rtstruct.dcm"),
+             (realistic, "RS.dcm"), (realistic, "RS_auto.dcm"), (realistic, "RS_custom.dcm")]
+    compared = withheld = 0
+    for course, rs_name in files:
+        scoped = create_scoped_rtstruct(course / "CT", course / rs_name)
+        masks, _ = _scoped_masks(course, rs_name)
+        _, raw = _series_and_raw(course, rs_name)
+        for name, result in scoped.by_name.items():
+            if result.code:
+                continue
+            if not all(_contour_rasterizable(c) for c in result.contours):
+                withheld += 1
+                continue
+            try:
+                expected = raw.get_roi_mask_by_name(name)
+            except Exception:
+                continue  # rt_utils cannot read it at all (no image reference)
+            _assert_same_bytes(masks[name], expected)
+            _assert_same_bytes(masks[name], scoped.get_roi_mask_by_name(name))
+            compared += 1
+    print(f"byte-identical in-scope ROI masks: {compared}; with withheld items: {withheld}")
+    assert compared >= 120
+
+
+def test_scoped_mask_for_area_less_items_matches_main_path(tmp_path):
+    import copy
+
+    from rt_utils.rtstruct import RTStruct
+    from rtpipeline.rtstruct_geometry import create_scoped_rtstruct
+
+    course = tmp_path / "Output" / "S2" / "C1"
+    build_course(course, COURSES["S2"])
+    series, raw = _series_and_raw(course, "RS_auto.dcm")
+    with pytest.raises(Exception, match="fillPoly"):
+        raw.get_roi_mask_by_name("urinary_bladder")
+    masks, sink = _scoped_masks(course, "RS_auto.dcm")
+    main_path = create_scoped_rtstruct(course / "CT", course / "RS_auto.dcm")
+    _assert_same_bytes(masks["urinary_bladder"], main_path.get_roi_mask_by_name("urinary_bladder"))
+    assert sink == []
+    # Without the one-point item rt_utils gives the same mask.
+    cleaned = copy.deepcopy(raw.ds)
+    for name in ("urinary_bladder",):
+        contours = next(c for c in cleaned.ROIContourSequence if int(c.ReferencedROINumber) == next(
+            int(r.ROINumber) for r in cleaned.StructureSetROISequence if r.ROIName == name))
+        contours.ContourSequence = [c for c in contours.ContourSequence if len(c.ContourData) > 3]
+    _assert_same_bytes(masks["urinary_bladder"],
+                       RTStruct(series, cleaned).get_roi_mask_by_name("urinary_bladder"))
+
+    course = tmp_path / "Output" / "S3" / "C1"
+    build_course(course, COURSES["S3"])
+    _, raw = _series_and_raw(course, "RS.dcm")
+    masks, _ = _scoped_masks(course, "RS.dcm")
+    main_path = create_scoped_rtstruct(course / "CT", course / "RS.dcm")
+    _assert_same_bytes(masks["GTV1"], main_path.get_roi_mask_by_name("GTV1"))
+    drawn = raw.get_roi_mask_by_name("GTV1")
+    # rt_utils draws the two-point segment; the main path does not.
+    assert drawn.sum() > masks["GTV1"].sum() and not (masks["GTV1"] & ~drawn).any()
+
+
+def test_out_of_scope_roi_does_not_void_its_source(tmp_path):
+    from rtpipeline.rtstruct_geometry import create_scoped_rtstruct
+    from rt_utils import RTStructBuilder
+
+    course = tmp_path / "Output" / "S1" / "C1"
+    build_course(course, COURSES["S1"])
+    with pytest.raises(Exception, match="not contained in input series data"):
+        RTStructBuilder.create_from(str(course / "CT"), str(course / "RS.dcm"))
+    masks, sink = _scoped_masks(course, "RS.dcm")
+    assert sorted((o["roi_name"], o["status"], o["structural_code"]) for o in sink) == [
+        ("CTV_oos", "structural_nonmeasurement", "ROI_UNRESOLVED_SOURCE_SCOPE"),
+        ("oar_oos", "structural_nonmeasurement", "ROI_UNRESOLVED_SOURCE_SCOPE")]
+    assert "CTV_oos" not in masks
+    # The in-scope ROIs read exactly as rt_utils reads them per ROI.
+    _, raw = _series_and_raw(course, "RS.dcm")
+    main_path = create_scoped_rtstruct(course / "CT", course / "RS.dcm")
+    for name in ("GTV1", "OAR_00", "OAR_01", "OAR_02"):
+        _assert_same_bytes(masks[name], raw.get_roi_mask_by_name(name))
+        _assert_same_bytes(masks[name], main_path.get_roi_mask_by_name(name))
+
+
+def test_scoped_reader_keeps_whole_source_failures_fatal(tmp_path):
+    from rtpipeline import radiomics as rm
+
+    course = tmp_path / "Output" / "N1" / "C1"
+    build_course(course, COURSES["N1"])
+    with pytest.raises(rm.RadiomicsCourseExtractionError,
+                       match="Failed to construct RTSTRUCT reader .*RTStruct is valid"):
+        _scoped_masks(course, "RS.dcm")
