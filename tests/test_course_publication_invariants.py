@@ -39,8 +39,12 @@ BASE_FUNCTION_AST_SHA256 = {
 # attestations (no effective source) through the plan-less gate; the
 # prohibition on effective-source claims without plans is unchanged and
 # covered by test_plan_absence_contract_gate.py.
+# Updated 2026-09-24: course_contract.py reads RTRECORD headers in contract
+# validation through utils.read_record_header (one cached, no-readahead read
+# per organize run); validation logic is unchanged and its equivalence against
+# 2369fbb is covered by test_organize_io.py.
 BASE_MODULE_SHA256 = {
-    "course_contract.py": "916a75251122e679ffac3df7e6030d0b0b1fd0d5fa6d0d47f4edbb749bed8128",
+    "course_contract.py": "bb017a4770ef6fcabdaad85f96e724633d026543843dccd3a050aae0cfeea399",
     "prescription.py": "723c8657c60f48c50b0d31decf0eb458c93d435f597c56724ee748c1b264ce7a",
     "plan_approval.py": "fc213a8ef85e9ec2698c6bfec7bee3877df61b6b7d835257038cd2a470c21aed",
 }
@@ -230,33 +234,9 @@ def test_publication_and_membership_functions_are_unchanged(source_root: Path, m
 
 @pytest.mark.concern_f
 @pytest.mark.parametrize("module", ["course_contract.py", "prescription.py", "plan_approval.py"])
-def test_supporting_modules_preserve_pinned_source(source_root: Path, module: str) -> None:
-    source = (source_root / "rtpipeline" / module).read_bytes()
-    if module == "course_contract.py":
-        # Keep the original scientific-source pin. Undo only the two literal
-        # organize I/O adapter edits before comparing; every other byte and all
-        # publication/membership AST pins remain protected. Cache behavior is
-        # exercised against 2369fbb by test_organize_io.py.
-        adapters = (
-            (
-                b'def _read_header(path: Path, field: str, *, treatment_record: bool = False):\n'
-                b'    try:\n'
-                b'        if treatment_record:\n'
-                b'            from .utils import read_record_header\n\n'
-                b'            return read_record_header(path)\n',
-                b'def _read_header(path: Path, field: str):\n    try:\n',
-            ),
-            (
-                b'            record = _read_header(\n'
-                b'                record_path, f"{field}.record_paths[{record_index}]", treatment_record=True\n'
-                b'            )',
-                b'            record = _read_header(record_path, f"{field}.record_paths[{record_index}]")',
-            ),
-        )
-        for adapter, original in adapters:
-            assert source.count(adapter) == 1
-            source = source.replace(adapter, original, 1)
-    assert hashlib.sha256(source).hexdigest() == BASE_MODULE_SHA256[module]
+def test_supporting_modules_are_byte_identical(source_root: Path, module: str) -> None:
+    digest = lambda root: hashlib.sha256((root / "rtpipeline" / module).read_bytes()).hexdigest()  # noqa: E731
+    assert digest(source_root) == BASE_MODULE_SHA256[module]
 
 
 @pytest.mark.concern_f
