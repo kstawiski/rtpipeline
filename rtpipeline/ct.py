@@ -250,7 +250,7 @@ def copy_ct_series(
         used_indices.add(file_idx)
         dst = dst_dir / f"CT_{file_idx:05d}.dcm"
         if copy_manager is not None:
-            actual, _copied = copy_manager.copy_dicom(inst.path, dst, skip_if_exists=True)
+            actual, _copied = copy_manager.copy_dicom(inst.path, dst, skip_if_exists=True, materialize=True)
             # SOP dedup may return a copy at a foreign path without placing a file at dst.
             # The per-course CT folder MUST contain real files for dcm2niix, so materialise dst.
             if Path(actual) != dst and not dst.exists():

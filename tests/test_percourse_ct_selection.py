@@ -230,7 +230,8 @@ class _DedupCM:
     def __init__(self, foreign: Path):
         self.foreign = foreign
 
-    def copy_dicom(self, src, dst, skip_if_exists=True):
+    def copy_dicom(self, src, dst, skip_if_exists=True, *, materialize=False):
+        assert materialize
         return self.foreign, False  # deduped elsewhere; does NOT create dst
 
 

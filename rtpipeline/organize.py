@@ -469,7 +469,7 @@ def _safe_copy(
     """
     expected_uid = _sop_instance_uid(src)
     if copy_manager is not None:
-        actual, _copied = copy_manager.copy_dicom(src, dst, skip_if_exists=False)
+        actual, _copied = copy_manager.copy_dicom(src, dst, skip_if_exists=False, materialize=True)
         actual_path = Path(actual)
         if actual_path.is_file() and (
             not expected_uid or _sop_instance_uid(actual_path) == expected_uid
@@ -521,7 +521,7 @@ def _copy_into(
 ) -> Path:
     """Copy src into dst_dir, preserving name and avoiding clashes."""
     if copy_manager is not None:
-        dest, _ = copy_manager.copy_dicom_into(src, dst_dir, prefix)
+        dest, _ = copy_manager.copy_dicom_into(src, dst_dir, prefix, materialize=True)
         dest = Path(dest)
         if dest.parent.resolve() != dst_dir.resolve():
             ensure_dir(dst_dir)
@@ -5796,7 +5796,7 @@ def organize_and_merge(
                 if reg_path.exists() and reg_path not in seen_related:
                     related_outputs.append(_copy_into(reg_path, course_dirs.dicom_related / "REG", copy_manager=copy_manager))
                     seen_related.add(reg_path)
-                for series_uid in reg.get('referenced_series', set()):
+                for series_uid in sorted(reg.get('referenced_series', set())):
                     if series_uid in course_ct_series_uids:
                         continue
                     series_paths = series_index.get((patient_id, series_uid), [])
@@ -5911,7 +5911,7 @@ def organize_and_merge(
             rd_path=rd_dst,
             rs_path=rs_dst if rs_dst.exists() else None,
             primary_nifti=Path(primary_nifti) if primary_nifti else None,
-            related_dicom=related_outputs,
+            related_dicom=sorted(related_outputs, key=str),
             total_prescription_gy=source_rx,
             resolved_prescription_total_gy=total_rx,
             plan_sop_uid=plan_sop_uid,
@@ -6114,7 +6114,7 @@ def organize_and_merge(
                     if reg_path.exists() and reg_path not in seen_related:
                         related_outputs.append(_copy_into(reg_path, course_dirs.dicom_related / "REG", copy_manager=copy_manager))
                         seen_related.add(reg_path)
-                    for series_uid in reg.get('referenced_series', set()):
+                    for series_uid in sorted(reg.get('referenced_series', set())):
                         if series_uid in course_ct_series_uids:
                             continue
                         series_paths = series_index.get((patient_id, series_uid), [])
@@ -6220,7 +6220,7 @@ def organize_and_merge(
                 rd_path=course_dir / "RD.dcm",
                 rs_path=rs_dst,
                 primary_nifti=Path(primary_nifti) if primary_nifti else None,
-                related_dicom=related_outputs,
+                related_dicom=sorted(related_outputs, key=str),
                 total_prescription_gy=None,
                 planning_ct_status=ct_select_status,
                 planning_ct_referenced_series_uids=sorted(
@@ -7491,7 +7491,7 @@ def organize_and_merge(
                 "ct_dir": str(co.dirs.dicom_ct) if co.dirs.dicom_ct.exists() else "",
                 "primary_nifti": str(co.primary_nifti) if co.primary_nifti and Path(co.primary_nifti).exists() else "",
                 "ct_study_uid": ct_summary.get('ct_study_uid', ''),
-                "dicom_related_files": [str(p) for p in co.related_dicom],
+                "dicom_related_files": sorted(str(p) for p in co.related_dicom),
                 "dicom_related_count": len(co.related_dicom),
                 "nifti_files": [str(p) for p in nifti_files],
                 "planned_fractions": planned_fractions,

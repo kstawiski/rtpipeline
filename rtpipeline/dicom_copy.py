@@ -78,7 +78,7 @@ class DicomCopyManager:
         self.output_root = output_root
         self._lock = threading.Lock()
 
-        # SOPInstanceUID -> destination path (for deduplication)
+        # SOPInstanceUID -> lexicographically smallest materialized destination
         self._sop_uid_registry: Dict[str, Path] = {}
 
         # Source path -> SOPInstanceUID cache
@@ -134,7 +134,7 @@ class DicomCopyManager:
                 uid: str(path) for uid, path in self._sop_uid_registry.items()
             }
             self._registry_path.write_text(
-                json.dumps(registry_data, indent=2),
+                json.dumps(registry_data, indent=2, sort_keys=True),
                 encoding="utf-8"
             )
         except Exception as e:
@@ -143,7 +143,7 @@ class DicomCopyManager:
         if self.config.cache_headers:
             try:
                 self._header_cache_path.write_text(
-                    json.dumps(self._header_cache, indent=2),
+                    json.dumps(self._header_cache, indent=2, sort_keys=True),
                     encoding="utf-8"
                 )
             except Exception as e:
@@ -270,6 +270,8 @@ class DicomCopyManager:
         src: Path,
         dst: Path,
         skip_if_exists: bool = True,
+        *,
+        materialize: bool = False,
     ) -> Tuple[Path, bool]:
         """
         Copy a DICOM file with deduplication and verification.
@@ -278,6 +280,8 @@ class DicomCopyManager:
             src: Source DICOM file path
             dst: Destination path
             skip_if_exists: Skip if destination already exists
+            materialize: Copy dst from src independently of other courses, without
+                hardlinking the input (preserve its inventory ctime).
 
         Returns:
             Tuple of (actual destination path, was_copied)
@@ -296,7 +300,7 @@ class DicomCopyManager:
             if sop_uid:
                 with self._lock:
                     existing = self._sop_uid_registry.get(sop_uid)
-                    if existing and existing.exists() and existing != dst:
+                    if not materialize and existing and existing.exists() and existing != dst:
                         self.stats.skipped_duplicate += 1
                         logger.debug(
                             "Skipping duplicate SOP %s: %s already at %s",
@@ -304,11 +308,15 @@ class DicomCopyManager:
                         )
                         return existing, False
 
-        # Try hardlink first
-        if self._try_hardlink(src, dst):
+        # A source hardlink changes source ctime (also when output is removed).
+        # Organize fingerprints that ctime in metadata_export.json. Independent
+        # materialization must preserve the source inventory across runs.
+        if not materialize and self._try_hardlink(src, dst):
             if self.config.dedup_by_sop_uid and sop_uid:
                 with self._lock:
-                    self._sop_uid_registry[sop_uid] = dst
+                    self._sop_uid_registry[sop_uid] = min(
+                        self._sop_uid_registry.get(sop_uid, dst), dst, key=str
+                    )
             return dst, True
 
         # Fall back to regular copy
@@ -319,7 +327,9 @@ class DicomCopyManager:
         with self._lock:
             self.stats.copied += 1
             if self.config.dedup_by_sop_uid and sop_uid:
-                self._sop_uid_registry[sop_uid] = dst
+                self._sop_uid_registry[sop_uid] = min(
+                    self._sop_uid_registry.get(sop_uid, dst), dst, key=str
+                )
 
         # Verify if enabled
         if self.config.verify_checksum:
@@ -335,6 +345,8 @@ class DicomCopyManager:
         src: Path,
         dst_dir: Path,
         prefix: Optional[str] = None,
+        *,
+        materialize: bool = False,
     ) -> Tuple[Path, bool]:
         """
         Copy DICOM into directory, handling name clashes.
@@ -375,7 +387,7 @@ class DicomCopyManager:
                 dest = dst_dir / f"{stem}_{counter}{suffix}"
                 counter += 1
 
-        return self.copy_dicom(src, dest)
+        return self.copy_dicom(src, dest, materialize=materialize)
 
     def is_duplicate(self, src: Path) -> bool:
         """Check if source DICOM was already copied (by SOP UID)."""
