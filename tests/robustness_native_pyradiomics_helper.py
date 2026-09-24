@@ -148,9 +148,136 @@ def case_identical_condition_retry(scratch: Path) -> dict:
     }
 
 
+GAP_PARAMS_YAML = (
+    'imageType:\n  Original: {}\n'
+    'featureClass:\n  shape: []\n  firstorder: []\n  glcm: []\n'
+    'setting:\n  resampledPixelSpacing: [1.0, 1.0, 1.0]\n  binWidth: 25\n'
+    '  minimumROISize: 64\n  minimumROIDimensions: 2\n  label: 1\n'
+)
+GAP_IDENTITY = dict(
+    patient_id='P', course_id='C', series_uid='1.2.3', segmentation_source='Manual',
+    roi_original_name='GTVm', mask_identity='source-mask', stable_roi_identifier='roi-1',
+)
+
+
+def _gtv_over_bone():
+    """Soft tissue (40 HU) above a 1000 HU slab; the GTV straddles the boundary.
+
+    Under the default NTCV grid, only the t0_0_-4/c2/v-15 geometry leaves
+    fewer than 64 voxels inside the primary [-1000, 400] HU window.
+    """
+    array = np.full((40, 40, 40), 40.0, np.float32)
+    array[:20] = 1000.0
+    image = sitk.GetImageFromArray(array)
+    mask_array = np.zeros((40, 40, 40), np.uint8)
+    mask_array[10:28, 14:24, 14:24] = 1
+    mask = sitk.GetImageFromArray(mask_array)
+    mask.CopyInformation(image)
+    return image, mask
+
+
+def _gap_rows(scratch: Path, masks, images, *, nan_mcc_for=()):
+    """Extract every condition with the production worker and flattener."""
+    from rtpipeline import robustness_mcc
+
+    course = scratch / 'P' / 'C'
+    course.mkdir(parents=True, exist_ok=True)
+    temp = scratch / 'tasks'
+    temp.mkdir(exist_ok=True)
+    params = scratch / 'params.yaml'
+    params.write_text(GAP_PARAMS_YAML)
+    cfg = PipelineConfig(scratch, scratch, scratch)
+    cfg.radiomics_params_file = params
+    real_mcc = robustness_mcc.mcc_feature
+    current = {'pid': None}
+
+    def mcc_undefined_for_selected(self):
+        # Injected: PyRadiomics returns NaN MCC for this condition only.
+        return np.nan if current['pid'] in nan_mcc_for else real_mcc(self)
+
+    robustness_mcc.mcc_feature = mcc_undefined_for_selected
+    rows, declarations = [], {}
+    cache = {'images': {}}
+    try:
+        for pid in sorted(masks):
+            current['pid'] = pid
+            mask_path, task = rp._prepare_radiomics_task(
+                images[pid], masks[pid], cfg, 'Manual', 'GTVm', course, temp, False,
+                'run-1', GAP_IDENTITY, _cache=cache,
+            )
+            task['extra_metadata'] = {'perturbation_id': pid}
+            result = rp._isolated_radiomics_extraction((mask_path, task))
+            for arm, declaration in rr._feature_declarations_from_records(
+                result.get('__records__', [])
+            ).items():
+                declarations[(pid, arm)] = declaration
+            rows.extend(rr._feature_rows_from_worker_result(result))
+    finally:
+        robustness_mcc.mcc_feature = real_mcc
+    return rows, declarations
+
+
+def _gap_payload(rows, declarations, expected_ids):
+    import pandas as pd
+
+    frame = pd.DataFrame(rows)
+    counts = frame.groupby(['perturbation_id', 'extraction_arm']).feature_name.nunique()
+    explained = rr._declare_not_evaluable_features(frame, declarations)
+    try:
+        rr._validate_extracted_feature_frame(
+            explained, set(expected_ids), 'Manual/GTVm',
+            expected_source_identity=rr.RobustnessRoiIdentity.from_mapping(GAP_IDENTITY),
+        )
+        validation = 'passed'
+    except Exception as exc:
+        validation = f'{type(exc).__name__}: {exc}'
+    if 'robustness_status' in explained:
+        is_gap = explained['robustness_status'].eq(rr.ROBUSTNESS_FEATURE_NOT_EVALUABLE_STATUS)
+    else:
+        is_gap = pd.Series(False, index=explained.index)
+    gaps, measured = explained[is_gap], explained[~is_gap]
+    return {
+        'perturbation_count': len(expected_ids),
+        'feature_counts': {f'{pid}|{arm}': int(n) for (pid, arm), n in counts.items()},
+        'declared': sorted(f'{pid}|{arm}' for pid, arm in declarations),
+        'not_evaluable': sorted(
+            f'{pid}|{arm}|{name}|{reason}' for pid, arm, name, reason in zip(
+                gaps['perturbation_id'], gaps['extraction_arm'],
+                gaps['feature_name'], gaps['reason_code'] if len(gaps) else [])
+        ),
+        'not_evaluable_values_all_nan': bool(gaps['value'].isna().all()),
+        'measured_values_all_finite': bool(np.isfinite(measured['value'].to_numpy(float)).all()),
+        'validation': validation,
+    }
+
+
+def case_primary_below_minimum_grid(scratch: Path) -> dict:
+    """The production failure: default 81-condition NTCV grid, real extraction."""
+    image, mask = _gtv_over_bone()
+    masks, images = rr.generate_ntcv_perturbations(
+        mask, image, rr.PerturbationConfig(), 'GTVm'
+    )
+    rows, declarations = _gap_rows(scratch, masks, images)
+    return _gap_payload(rows, declarations, masks)
+
+
+def case_undefined_mcc_one_perturbation(scratch: Path) -> dict:
+    """A feature undefined (NaN) in one condition only, on a small grid."""
+    image, mask = _gtv_over_bone()
+    config = rr.PerturbationConfig(
+        small_volume_changes=[0.0, 0.15], max_translation_mm=0.0,
+        n_random_contour_realizations=0, noise_levels=[0.0, 10.0],
+    )
+    masks, images = rr.generate_ntcv_perturbations(mask, image, config, 'GTVm')
+    rows, declarations = _gap_rows(scratch, masks, images, nan_mcc_for={'ntcv_n10_v0'})
+    return _gap_payload(rows, declarations, masks)
+
+
 CASES = {
     'resampled_minimum': case_resampled_minimum,
     'identical_condition_retry': case_identical_condition_retry,
+    'primary_below_minimum_grid': case_primary_below_minimum_grid,
+    'undefined_mcc_one_perturbation': case_undefined_mcc_one_perturbation,
 }
 
 

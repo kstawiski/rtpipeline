@@ -84,6 +84,33 @@ ROBUSTNESS_PERTURBATION_IDENTITY_COLUMNS = (
     "perturbed_mask_identity",
 )
 
+# A feature that one perturbation-arm lacks while other perturbations of the
+# same ROI and arm measure it. Such a gap is published as an explicit row with
+# this status, never as a silently shorter feature set, and only when the CT
+# extractor itself declared the reason for that exact perturbation-arm:
+#
+# - the primary arm fell below minimumROISize/minimumROIDimensions after HU
+#   resegmentation, so the producer returned shape features only; every
+#   missing non-shape feature of that perturbation-arm is then explained;
+# - the extractor returned a non-finite value for a feature with an approved
+#   undefined-value contract (radiomics_ct_contract.ALLOWED_UNDEFINED_FEATURE_SUFFIXES)
+#   and named it in radiomics_undefined_features_json.
+#
+# Any other gap, or a gap in a ROI that also has an unexplained one, is left
+# as it is and fails validation as "feature columns differ across
+# perturbations". The row carries no value, and cohort aggregation reports its
+# ROI-arm-feature as not evaluable instead of estimating over fewer conditions.
+ROBUSTNESS_FEATURE_NOT_EVALUABLE_STATUS = "feature_not_evaluable"
+ROBUSTNESS_PRIMARY_BELOW_MINIMUM_REASONS = {
+    "below_minimum_voxels": "primary_resegmented_below_minimum_voxels",
+    "below_minimum_dimensions": "primary_resegmented_below_minimum_dimensions",
+}
+ROBUSTNESS_UNDEFINED_FEATURE_REASON = "extractor_declared_undefined_feature"
+ROBUSTNESS_FEATURE_NOT_EVALUABLE_REASONS = frozenset(
+    {*ROBUSTNESS_PRIMARY_BELOW_MINIMUM_REASONS.values(), ROBUSTNESS_UNDEFINED_FEATURE_REASON}
+)
+ROBUSTNESS_FEATURE_EVALUABILITY_EVIDENCE_COLUMN = "feature_evaluability_evidence"
+
 
 class RobustnessIdentityError(RuntimeError):
     """An individual robustness result cannot be traced to its source ROI."""
@@ -2149,6 +2176,226 @@ def _feature_rows_from_worker_result(result: Mapping[str, Any]) -> List[Dict[str
     return rows
 
 
+def _feature_declarations_from_records(
+    records: Any,
+) -> Dict[str, Dict[str, Any]]:
+    """Per-arm producer declarations that may explain an absent feature.
+
+    Returns only arms whose record declares something: a primary-arm
+    below-minimum disposition after resegmentation, or undefined features.
+    The long-format rows drop these record fields, so they travel beside the
+    rows to the feature-set check.
+    """
+    from .radiomics_ct_contract import (
+        PRIMARY_ARM,
+        RADIOMICS_UNDEFINED_FEATURES_COLUMN,
+        _parse_feature_name_list,
+    )
+
+    declarations: Dict[str, Dict[str, Any]] = {}
+    for record in records or []:
+        arm = str(record.get("extraction_arm", ""))
+        disposition = str(record.get("intensity_texture_disposition") or "")
+        undefined = sorted(
+            _parse_feature_name_list(record.get(RADIOMICS_UNDEFINED_FEATURES_COLUMN))
+        )
+        below_minimum = (
+            arm == PRIMARY_ARM
+            and str(record.get("extraction_status") or "") == "success"
+            and disposition in ROBUSTNESS_PRIMARY_BELOW_MINIMUM_REASONS
+        )
+        if not below_minimum and not undefined:
+            continue
+        evidence: Dict[str, Any] = {"intensity_texture_disposition": disposition}
+        for column, kind in (
+            ("resegment_after_count", int),
+            ("observed_roi_dimensions_after_resegmentation", int),
+            ("effective_resegment_lower_hu", float),
+            ("effective_resegment_upper_hu", float),
+        ):
+            # The conda transport serializes NumPy scalars as text.
+            try:
+                number = float(record.get(column))
+            except (TypeError, ValueError):
+                continue
+            if np.isfinite(number):
+                evidence[column] = kind(number)
+        declarations[arm] = {
+            "below_minimum": below_minimum,
+            "intensity_texture_disposition": disposition,
+            "undefined_features": undefined,
+            "evidence": evidence,
+        }
+    return declarations
+
+
+def _is_shape_feature_name(name: str) -> bool:
+    from .radiomics_ct_contract import SHAPE_FEATURE_MARKERS
+
+    return any(marker in str(name) for marker in SHAPE_FEATURE_MARKERS)
+
+
+def _declare_not_evaluable_features(
+    frame: pd.DataFrame,
+    declarations: Mapping[Tuple[str, str], Mapping[str, Any]],
+) -> pd.DataFrame:
+    """Publish explained per-perturbation feature gaps as explicit rows.
+
+    ``frame`` holds one ROI's rows; ``declarations`` maps (perturbation_id,
+    extraction_arm) to :func:`_feature_declarations_from_records` output. The
+    reference inventory of an arm is the union of the features its measured
+    perturbations carry. A perturbation-arm missing part of it receives one
+    ``feature_not_evaluable`` row per missing feature, carrying the identity
+    of that perturbation-arm, no value, the reason code and the producer
+    evidence. When any gap in the ROI is not fully explained, nothing is added
+    and the caller's feature-set check fails exactly as before. A frame
+    without gaps is returned unchanged (the same object).
+    """
+    from .radiomics_ct_contract import ALLOWED_UNDEFINED_FEATURE_SUFFIXES
+
+    if frame.empty or not {"extraction_arm", "feature_name"} <= set(frame.columns):
+        return frame
+    if "robustness_status" in frame.columns:
+        status = frame["robustness_status"].astype("string").fillna("measured")
+    else:
+        status = pd.Series("measured", index=frame.index, dtype="string")
+    measured = frame.loc[status.eq("measured") & frame["feature_name"].notna()]
+    if measured.empty:
+        return frame
+    keys = list(zip(
+        measured["perturbation_id"].astype(str), measured["extraction_arm"].astype(str)
+    ))
+    present: Dict[Tuple[str, str], set] = {}
+    templates: Dict[Tuple[str, str], Any] = {}
+    for position, (key, name) in enumerate(zip(keys, measured["feature_name"].astype(str))):
+        present.setdefault(key, set()).add(name)
+        templates.setdefault(key, position)
+    already_declared = frame.loc[status.eq(ROBUSTNESS_FEATURE_NOT_EVALUABLE_STATUS)]
+    for pid, arm, name in zip(
+        already_declared["perturbation_id"].astype(str),
+        already_declared["extraction_arm"].astype(str),
+        already_declared["feature_name"].astype(str),
+    ):
+        present.setdefault((pid, arm), set()).add(name)
+
+    new_rows: List[Dict[str, Any]] = []
+    for arm in sorted({arm for _, arm in present}):
+        reference = set().union(*(names for (_, a), names in present.items() if a == arm))
+        for (pid, key_arm), names in sorted(present.items()):
+            if key_arm != arm or names == reference:
+                continue
+            declaration = declarations.get((pid, arm))
+            if declaration is None:
+                return frame
+            undefined = {
+                name for name in declaration.get("undefined_features", ())
+                if str(name).endswith(ALLOWED_UNDEFINED_FEATURE_SUFFIXES)
+            }
+            if (pid, arm) not in templates:
+                return frame
+            template = dict(measured.iloc[templates[(pid, arm)]])
+            template.pop("value", None)
+            for name in sorted(reference - names):
+                if name in undefined:
+                    reason = ROBUSTNESS_UNDEFINED_FEATURE_REASON
+                    evidence = {"undefined_features": sorted(undefined)}
+                elif declaration.get("below_minimum") and not _is_shape_feature_name(name):
+                    reason = ROBUSTNESS_PRIMARY_BELOW_MINIMUM_REASONS[
+                        declaration["intensity_texture_disposition"]
+                    ]
+                    evidence = dict(declaration.get("evidence") or {})
+                else:
+                    return frame
+                new_rows.append({
+                    **template,
+                    "feature_name": name,
+                    "value": np.nan,
+                    "robustness_status": ROBUSTNESS_FEATURE_NOT_EVALUABLE_STATUS,
+                    "reason_code": reason,
+                    ROBUSTNESS_FEATURE_EVALUABILITY_EVIDENCE_COLUMN: json.dumps(
+                        evidence, sort_keys=True
+                    ),
+                })
+    if not new_rows:
+        return frame
+    logger.warning(
+        "Robustness %s: %d feature value(s) are not evaluable in %d "
+        "perturbation-arm(s) by producer declaration (%s)",
+        ", ".join(sorted({
+            f"{row.get('segmentation_source')}/{row.get('roi_original_name')}"
+            for row in new_rows
+        })),
+        len(new_rows),
+        len({(row["perturbation_id"], row["extraction_arm"]) for row in new_rows}),
+        ", ".join(sorted({row["reason_code"] for row in new_rows})),
+    )
+    return pd.concat([frame, pd.DataFrame(new_rows)], ignore_index=True)
+
+
+def _validate_not_evaluable_feature_rows(
+    not_evaluable: pd.DataFrame,
+    measured: pd.DataFrame,
+    context: str,
+    *,
+    expected_source_identity: Optional["RobustnessRoiIdentity"] = None,
+) -> None:
+    """Admit only well-formed, producer-explained feature gaps."""
+    from .radiomics_ct_contract import ALLOWED_UNDEFINED_FEATURE_SUFFIXES, PRIMARY_ARM
+
+    required = {"perturbation_id", "extraction_arm", "feature_name", "reason_code"}
+    if not required <= set(not_evaluable.columns):
+        raise RuntimeError(f"not-evaluable feature rows lack identity for {context}")
+    if not_evaluable["value"].notna().any():
+        raise RuntimeError(f"not-evaluable feature rows carry values for {context}")
+    if not_evaluable["feature_name"].isna().any():
+        raise RuntimeError(f"not-evaluable feature rows name no feature for {context}")
+    measured_sets: Dict[Tuple[str, str], set] = {}
+    for pid, arm, name in zip(
+        measured["perturbation_id"].astype(str),
+        measured["extraction_arm"].astype(str),
+        measured["feature_name"].astype(str),
+    ):
+        measured_sets.setdefault((pid, arm), set()).add(name)
+    seen: set = set()
+    for row in not_evaluable.to_dict("records"):
+        key = (str(row["perturbation_id"]), str(row["extraction_arm"]))
+        name = str(row["feature_name"])
+        reason = str(row["reason_code"])
+        if key not in measured_sets:
+            raise RuntimeError(
+                f"not-evaluable feature row has no measured perturbation-arm for {context}/{key}"
+            )
+        if name in measured_sets[key] or (*key, name) in seen:
+            raise RuntimeError(
+                f"feature {name} is both measured and not evaluable for {context}/{key}"
+            )
+        seen.add((*key, name))
+        if reason in ROBUSTNESS_PRIMARY_BELOW_MINIMUM_REASONS.values():
+            if (
+                key[1] != PRIMARY_ARM
+                or _is_shape_feature_name(name)
+                or any(not _is_shape_feature_name(m) for m in measured_sets[key])
+            ):
+                raise RuntimeError(
+                    f"below-minimum not-evaluable row is inconsistent for {context}/{key}/{name}"
+                )
+        elif reason == ROBUSTNESS_UNDEFINED_FEATURE_REASON:
+            if not name.endswith(ALLOWED_UNDEFINED_FEATURE_SUFFIXES):
+                raise RuntimeError(
+                    f"feature {name} has no approved undefined-value contract for {context}"
+                )
+        else:
+            raise RuntimeError(f"invalid not-evaluable reason {reason!r} for {context}")
+        if row.get("measurement_type") != ROBUSTNESS_MEASUREMENT_TYPE:
+            raise RuntimeError(f"invalid not-evaluable measurement type for {context}/{key}")
+        if expected_source_identity is not None:
+            for column, value in expected_source_identity.as_dict().items():
+                if str(row.get(column, "")) != value:
+                    raise RuntimeError(
+                        f"not-evaluable identity mismatch for {context}/{key}/{column}"
+                    )
+
+
 def _validate_extracted_feature_frame(
     frame, expected_perturbation_ids, context, *, expected_source_identity=None,
 ):
@@ -2181,10 +2428,18 @@ def _validate_nontechnical_feature_frame(
         )
     from .radiomics_ct_contract import CT_EXTRACTION_ARMS
     statuses = frame["robustness_status"].fillna("measured")
-    if not set(statuses).issubset({"measured", "geometrically_impossible"}):
+    if not set(statuses).issubset({
+        "measured", "geometrically_impossible", ROBUSTNESS_FEATURE_NOT_EVALUABLE_STATUS,
+    }):
         raise RuntimeError(f"invalid robustness status for {context}")
     impossible = frame.loc[statuses == "geometrically_impossible"]
     measured = frame.loc[statuses == "measured"]
+    not_evaluable = frame.loc[statuses == ROBUSTNESS_FEATURE_NOT_EVALUABLE_STATUS]
+    if not not_evaluable.empty:
+        _validate_not_evaluable_feature_rows(
+            not_evaluable, measured, context,
+            expected_source_identity=expected_source_identity,
+        )
     impossible_ids = set(impossible["perturbation_id"].astype(str))
     if not impossible_ids <= expected_perturbation_ids:
         raise RuntimeError(f"unexpected impossible conditions for {context}")
@@ -2209,6 +2464,7 @@ def _validate_nontechnical_feature_frame(
     if possible_ids:
         _validate_measured_feature_frame(
             measured, possible_ids, context, expected_source_identity=expected_source_identity,
+            not_evaluable=not_evaluable,
         )
     elif not measured.empty:
         raise RuntimeError(f"unexpected measured conditions for {context}")
@@ -2220,8 +2476,14 @@ def _validate_measured_feature_frame(
     context: str,
     *,
     expected_source_identity: Optional[RobustnessRoiIdentity] = None,
+    not_evaluable: Optional[pd.DataFrame] = None,
 ) -> None:
-    """Fail closed when any perturbation or feature extraction is incomplete."""
+    """Fail closed when any perturbation or feature extraction is incomplete.
+
+    ``not_evaluable`` holds validated ``feature_not_evaluable`` rows; their
+    feature names count toward the perturbation-arm feature sets compared
+    here, so a producer-explained gap is complete and any other gap is not.
+    """
     if frame.empty:
         raise RuntimeError(f"no radiomics features were extracted for {context}")
     if "extraction_arm" in frame.columns:
@@ -2308,6 +2570,19 @@ def _validate_measured_feature_frame(
     }
     if any(not features for features in feature_sets.values()):
         raise RuntimeError(f"no scalar radiomics features were extracted for {context}")
+    if not_evaluable is not None and not not_evaluable.empty:
+        if "extraction_arm" not in frame.columns:
+            raise RuntimeError(f"not-evaluable feature rows require CT arms for {context}")
+        for key, group in not_evaluable.groupby(group_columns):
+            key = tuple(str(value) for value in key)
+            if key not in feature_sets:
+                raise RuntimeError(
+                    f"not-evaluable feature rows cite an unmeasured perturbation-arm "
+                    f"for {context}: {key}"
+                )
+            feature_sets[key] = feature_sets[key] | frozenset(
+                group["feature_name"].astype(str)
+            )
     mismatched = []
     arms = (
         frame["extraction_arm"].astype(str).unique()
@@ -2430,8 +2705,11 @@ def extract_features_for_masks(
             for arm in CT_EXTRACTION_ARMS
         }
         shared_run_id = run_identifier or new_run_identifier()
+        feature_declarations: Dict[Tuple[str, str], Dict[str, Any]] = {}
 
         def _append_records(records: List[Dict[str, Any]], perturbation_id: str) -> None:
+            for arm, declaration in _feature_declarations_from_records(records).items():
+                feature_declarations[(perturbation_id, arm)] = declaration
             for record in records:
                 for column, expected_value in source_identity.as_dict().items():
                     observed_value = str(record.get(column) or "").strip()
@@ -2609,7 +2887,7 @@ def extract_features_for_masks(
                 for row in rows
                 if str(row.get("perturbation_id", "")) not in identity_failures
             ]
-        frame = pd.DataFrame(rows)
+        frame = _declare_not_evaluable_features(pd.DataFrame(rows), feature_declarations)
         valid_perturbations = set(masks) - set(identity_failures)
         if valid_perturbations:
             _validate_extracted_feature_frame(
@@ -2913,6 +3191,17 @@ def summarize_feature_stability(
 
     Returns:
         DataFrame with one row per (structure, segmentation_source, feature_name) containing metrics and robustness label
+
+    Not-evaluable rule. ICC, CoV and QCD here assume every subject contributes
+    a value under every perturbation. When any subject in a group has a
+    ``feature_not_evaluable`` row (a producer-declared gap, see
+    ROBUSTNESS_FEATURE_NOT_EVALUABLE_STATUS), no metric is computed for that
+    group: subjects are not dropped, values are not imputed, and the
+    perturbation set is not reduced. The group is reported with NaN metrics,
+    ``robustness_label``/``cov_status``/``qcd_status`` = ``not_evaluable``,
+    ``evaluability_reason`` naming the declared reason codes and
+    ``n_subjects_not_evaluable``. Those two columns appear only when at least
+    one group is affected, so summaries without such rows are unchanged.
     """
     if "robustness_status" in df_long and df_long.robustness_status.eq("technical_failure").any():
         raise RuntimeError("technical robustness failures require recovery before aggregation")
@@ -2921,6 +3210,13 @@ def summarize_feature_stability(
             "geometric non-measurements require an explicit comparable-condition analysis; "
             "do not drop subjects, impute values, or pool varying condition sets into fixed-grid ICC"
         )
+    not_evaluable_rows = (
+        df_long["robustness_status"].astype("string").fillna("measured").eq(
+            ROBUSTNESS_FEATURE_NOT_EVALUABLE_STATUS
+        )
+        if "robustness_status" in df_long
+        else pd.Series(False, index=df_long.index)
+    )
     rows = []
 
     if group_columns is None:
@@ -2976,6 +3272,54 @@ def summarize_feature_stability(
                 f"incomplete perturbation grid for {incomplete_subjects} subject(s) "
                 f"in robustness group {row_data}"
             )
+
+        group_not_evaluable = not_evaluable_rows.loc[group.index]
+        if bool(group_not_evaluable.any()):
+            if "reason_code" not in group.columns or group.loc[
+                group_not_evaluable, "reason_code"
+            ].isna().any():
+                raise ValueError(
+                    f"not-evaluable robustness rows carry no reason in group {row_data}"
+                )
+            reasons = sorted(
+                set(group.loc[group_not_evaluable, "reason_code"].astype(str))
+            )
+            n_subjects = icc_df["subject"].nunique()
+            n_not_evaluable = int(
+                icc_df.loc[group_not_evaluable.to_numpy(), "subject"].nunique()
+            )
+            row_data.update({
+                "feature_name": row_data.get("feature_name", group["feature_name"].iloc[0]),
+                "n_subjects": n_subjects,
+                "n_subjects_complete": n_subjects - n_not_evaluable,
+                "n_subjects_dropped": 0,
+                "n_courses": (
+                    len(group[["patient_id", "course_id"]].astype(str).drop_duplicates())
+                    if "course_id" in group.columns else np.nan
+                ),
+                "n_perturbations": icc_df["rater"].nunique(),
+                "icc": np.nan,
+                "icc_ci95_low": np.nan,
+                "icc_ci95_high": np.nan,
+                "cov_pct": np.nan,
+                "cov_pct_q1": np.nan,
+                "cov_pct_q3": np.nan,
+                "n_subjects_cov": 0,
+                "cov_status": "not_evaluable",
+                "qcd": np.nan,
+                "qcd_q1": np.nan,
+                "qcd_q3": np.nan,
+                "n_subjects_qcd": 0,
+                "qcd_status": "not_evaluable",
+                "robustness_label": "not_evaluable",
+                "pass_seg_perturb": False,
+                "evaluability_reason": (
+                    "perturbation_feature_not_evaluable:" + ",".join(reasons)
+                ),
+                "n_subjects_not_evaluable": n_not_evaluable,
+            })
+            rows.append(row_data)
+            continue
 
         # CoV and QCD quantify within-subject perturbation dispersion. Computing
         # them over pooled raw values would confound perturbation instability
@@ -3108,7 +3452,11 @@ def _validate_cohort_feature_sets(df_long: pd.DataFrame) -> None:
     if "feature_name" in df_long.columns:
         named = df_long["feature_name"].notna()
         if "robustness_status" in df_long.columns:
-            named &= df_long["robustness_status"].astype("string").fillna("") == "measured"
+            # A not-evaluable row names a feature of the subject's inventory;
+            # its absent value is reported by the summary, not here.
+            named &= df_long["robustness_status"].astype("string").fillna("").isin(
+                {"measured", ROBUSTNESS_FEATURE_NOT_EVALUABLE_STATUS}
+            )
         df_long = df_long[named]
 
     required = {"patient_id", "structure", "feature_name"}
@@ -4378,7 +4726,10 @@ def robustness_for_course(
     # source-disposition sidecar and the published table share one identity.
     expected_perturbations: Dict[Tuple[str, str], set[str]] = {}
     identity_failed_perturbations: Dict[Tuple[str, str, str], str] = {}
-    
+    # Producer declarations from parallel worker records, keyed by
+    # (roi, source, perturbation, arm); see ROBUSTNESS_FEATURE_NOT_EVALUABLE_STATUS.
+    feature_declarations: Dict[Tuple[str, str, str, str], Dict[str, Any]] = {}
+
     # Prepare tasks for parallel execution
     tasks = []
     temp_dir = None
@@ -4618,6 +4969,12 @@ def robustness_for_course(
                                         extraction_arm,
                                     )
                                 )
+                            for arm, declaration in _feature_declarations_from_records(
+                                result.get("__records__", [])
+                            ).items():
+                                feature_declarations[
+                                    (roi_name, source, perturbation_id, arm)
+                                ] = declaration
                             all_features.append(result_frame)
                         else:
                             logger.error(
@@ -4695,6 +5052,24 @@ def robustness_for_course(
                 axis=1,
             )
         ].reset_index(drop=True)
+    if feature_declarations:
+        explained_rows = []
+        for (roi_name, source), expected_ids in expected_perturbations.items():
+            if not expected_ids:
+                continue
+            group = combined_df[
+                (combined_df["structure"].astype(str) == str(roi_name))
+                & (combined_df["segmentation_source"].astype(str) == str(source))
+            ]
+            explained = _declare_not_evaluable_features(group, {
+                (pid, arm): declaration
+                for (d_roi, d_source, pid, arm), declaration in feature_declarations.items()
+                if (d_roi, d_source) == (roi_name, source)
+            })
+            if explained is not group:
+                explained_rows.append(explained.iloc[len(group):])
+        if explained_rows:
+            combined_df = pd.concat([combined_df, *explained_rows], ignore_index=True)
     for (roi_name, source), expected_ids in expected_perturbations.items():
         if not expected_ids:
             continue
