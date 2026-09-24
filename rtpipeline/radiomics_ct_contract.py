@@ -1140,6 +1140,171 @@ def new_run_identifier() -> str:
     return str(uuid.uuid4())
 
 
+# Only small diagnostic dictionaries survive an ROI call. Content keys also make
+# in-place edits and newly read robustness images safe; no image is retained.
+_IMAGE_DIAGNOSTICS: dict[tuple, dict[str, Any]] = {}
+_OVERHEAD_COUNTS = {"shared_loads": 0, "load_hits": 0, "image_hits": 0, "fallbacks": 0}
+
+
+def _load_settings(settings: Mapping[str, Any]) -> dict[str, Any]:
+    result = dict(settings)
+    for key in ("resegmentRange", "resegmentMode", "resegmentShape"):
+        result.pop(key, None)
+    # loadImage never consults admission thresholds except in the preCrop branch.
+    # Resampling takes precedence over preCrop, including its equal-spacing path.
+    if (result.get("interpolator") is not None and
+            result.get("resampledPixelSpacing") is not None) or not result.get("preCrop", False):
+        for key in ("minimumROISize", "minimumROIDimensions", "preCrop"):
+            result.pop(key, None)
+    return result
+
+
+def _same_load_settings(left: Mapping[str, Any], right: Mapping[str, Any]) -> bool:
+    """Reject type coercion, signed-zero changes, and unknown value equality."""
+    def equal(a, b):
+        if type(a) is not type(b):
+            return False
+        if isinstance(a, dict):
+            return a.keys() == b.keys() and all(equal(a[k], b[k]) for k in a)
+        if isinstance(a, (list, tuple)):
+            return len(a) == len(b) and all(equal(x, y) for x, y in zip(a, b))
+        if isinstance(a, float):
+            return a == a and b == b and a.hex() == b.hex()
+        if isinstance(a, (str, int, bool, type(None))):
+            return a == b
+        # Unusual objects are not compared through potentially coercing __eq__.
+        return a is b
+
+    return equal(_load_settings(left), _load_settings(right))
+
+
+def _original_image_diagnostics(image: Any) -> dict[str, Any]:
+    import SimpleITK as sitk
+    from radiomics.generalinfo import GeneralInfo
+
+    pixels = sitk.GetArrayViewFromImage(image)
+    key = (hashlib.sha256(memoryview(pixels)).digest(), image.GetPixelID(),
+           image.GetSize(), image.GetSpacing(), image.GetOrigin(), image.GetDirection())
+    if key in _IMAGE_DIAGNOSTICS:
+        _OVERHEAD_COUNTS["image_hits"] += 1
+        value = _IMAGE_DIAGNOSTICS.pop(key)
+    else:
+        info = GeneralInfo()
+        info.addImageElements(image)
+        value = {k: v for k, v in info.getGeneralInfo().items()
+                 if k.startswith("diagnostics_Image-original_")}
+    _IMAGE_DIAGNOSTICS[key] = value
+    while len(_IMAGE_DIAGNOSTICS) > 3:
+        del _IMAGE_DIAGNOSTICS[next(iter(_IMAGE_DIAGNOSTICS))]
+    return value
+
+
+class _LoadDiagnostics:
+    """Record loadImage's provenance calls; evaluate only if execute needs them."""
+
+    def __init__(self):
+        self.calls = []
+        self.values = None
+
+    def addImageElements(self, *args):
+        self.calls.append(("addImageElements", args))
+
+    def addMaskElements(self, *args):
+        self.calls.append(("addMaskElements", args))
+
+    def replay(self, destination):
+        from radiomics.generalinfo import GeneralInfo
+        if self.values is None:
+            info = GeneralInfo()
+            info.generalInfo.clear()
+            for method, args in self.calls:
+                if method == "addImageElements" and len(args) == 1:
+                    info.generalInfo.update(_original_image_diagnostics(args[0]))
+                else:
+                    getattr(info, method)(*args)
+            self.values = info.getGeneralInfo()
+            self.calls.clear()
+        destination.generalInfo.update(self.values)
+
+
+class _CTLoadScope:
+    """Own buffers for one ROI call, independently of extractor reference cycles."""
+
+    def __init__(self, image, mask, expected, base):
+        self.image, self.mask = image, mask
+        self.expected, self.base = expected, base
+        self.loaded = None
+        self.diagnostics = _LoadDiagnostics()
+
+    def load(self, original, image, mask, generalInfo, settings):
+        if (image is not self.image or mask is not self.mask or
+                not _same_load_settings(settings, self.expected)):
+            _OVERHEAD_COUNTS["fallbacks"] += 1
+            return original(image, mask, generalInfo, **settings)
+        if self.loaded is None:
+            self.loaded = original(image, mask, self.diagnostics, **settings)
+            _OVERHEAD_COUNTS["shared_loads"] += 1
+        else:
+            _OVERHEAD_COUNTS["load_hits"] += 1
+            if original is not self.base:
+                from .robustness_watchdog import report_progress
+                report_progress("loadImage:")
+        if generalInfo is not None:
+            self.diagnostics.replay(generalInfo)
+        return self.loaded
+
+
+def _share_ct_load(
+    image: Any, mask: Any, extractors: Sequence[Any],
+) -> Optional[_CTLoadScope]:
+    """Share only the audited v3.0.1 loader, without replacing execute or globals.
+
+    Preserve arbitrary factories and preprocessing settings through the old path.
+    QC and extraction share when loadImage's effective inputs are identical.
+    """
+    try:
+        import radiomics
+        from radiomics.featureextractor import RadiomicsFeatureExtractor
+        from .robustness_watchdog import observed_extractor
+    except ImportError:
+        _OVERHEAD_COUNTS["fallbacks"] += 1
+        return None
+    candidates = [e for e in extractors if e is not None]
+    base = getattr(RadiomicsFeatureExtractor, "loadImage", None)
+    observed_codes = [c for c in observed_extractor.__code__.co_consts
+                      if hasattr(c, "co_code")]
+
+    def known_loader(loader):
+        if loader is base:
+            return True
+        defaults = getattr(loader, "__kwdefaults__", None) or {}
+        return (getattr(loader, "__code__", None) in observed_codes and
+                defaults.get("_original") is base and defaults.get("_name") == "loadImage")
+
+    if (getattr(radiomics, "__version__", None) != "v3.0.1" or base is None or not candidates or
+            any(type(e) is not RadiomicsFeatureExtractor or not known_loader(e.loadImage)
+                for e in candidates) or
+            any(not _same_load_settings(e.settings, candidates[0].settings)
+                for e in candidates[1:])):
+        _OVERHEAD_COUNTS["fallbacks"] += 1
+        return None
+    import weakref
+    scope = _CTLoadScope(image, mask, _load_settings(candidates[0].settings), base)
+    scope_ref = weakref.ref(scope)
+
+    def wrap(original):
+        def load(input_image, input_mask, generalInfo=None, **settings):
+            active = scope_ref()
+            if active is None:
+                return original(input_image, input_mask, generalInfo, **settings)
+            return active.load(original, input_image, input_mask, generalInfo, settings)
+        return load
+
+    for extractor in candidates:
+        extractor.loadImage = wrap(extractor.loadImage)
+    return scope
+
+
 def effective_parameter_hash(extractor: Any, *, arm: str, window: Optional[tuple[float, float]]) -> str:
     payload = {
         "arm": arm,
@@ -1678,6 +1843,11 @@ def _extract_ct_roi_arms_impl(
         raw_extractor,
         primary_extractor,
         decision,
+    )
+    # Keep the scope alive only in this frame. Wrappers hold weak references so
+    # texture-guard/extractor cycles cannot retain images between ROI calls.
+    _load_scope = _share_ct_load(
+        image, mask, (shape_extractor, raw_extractor, primary_extractor)
     )
     raw_qc = resampled_mask_qc(image, mask, raw_extractor, None)
     shape_qc = (raw_qc if shape_extractor.settings == raw_extractor.settings else
