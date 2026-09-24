@@ -436,15 +436,25 @@ def test_unselected_technical_failure_is_tolerated_and_recorded(
     assert "Bad" not in set(df["structure"].tolist())
 
 
-def test_selected_technical_failure_stays_fail_closed(tmp_path, monkeypatch):
-    """The same bad ROI inside the selection still fails the course."""
+def test_selected_structural_status_is_disposition_not_course_failure(tmp_path, monkeypatch):
+    """The same bad ROI inside the selection is a governed disposition.
+
+    Changed 2026-09-24 (was test_selected_technical_failure_stays_fail_closed):
+    'Bad' carries the inventory status ROI_CONTOUR_UNPARSEABLE, a property of
+    the source bytes, not a technical failure. It no longer voids the course;
+    the other selected ROI is measured. A genuine technical failure of a
+    selected ROI still fails closed: see
+    test_robustness_roi_structural_status.py::test_selected_technical_failure_*.
+    """
     course, cfg, rob, _ = _real_mixed_course(
         tmp_path, monkeypatch, add_bad_roi=True, apply_to_structures=('ROI', 'Bad')
     )
-    with pytest.raises(RadiomicsCourseExtractionError):
-        rr.robustness_for_course(cfg, rob, course)
-    assert not (course / 'radiomics_robustness_ct.parquet').exists()
-    assert not (course / 'metadata' / _ROBUSTNESS_DISPOSITIONS).exists()
+    result = rr.robustness_for_course(cfg, rob, course)
+    assert set(pd.read_parquet(result).structure) == {'ROI'}
+    payload = json.loads((course / 'metadata' / _ROBUSTNESS_DISPOSITIONS).read_text())
+    row = next(r for r in payload['rows'] if r['roi_name'] == 'Bad')
+    assert (row['status'], row['failure_kind']) == (
+        'structural_nonmeasurement', 'unmeasurable_source_contour')
 
 
 def test_custom_model_technical_failure_propagates_not_swallowed(tmp_path, monkeypatch):

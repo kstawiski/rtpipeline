@@ -596,9 +596,19 @@ def _validate_source_disposition_rows(
         )
         for binding in bindings
     }
-    from .radiomics import _CONTOURLESS_STRUCTURAL_CODES
+    from .radiomics import (
+        _CONTOURLESS_STRUCTURAL_CODES,
+        _UNMEASURABLE_CONTOUR_STRUCTURAL_CODES,
+    )
     from .rtstruct_geometry import NONVOLUMETRIC_CODES
 
+    # The only structural non-measurements the mask reader may record: a name
+    # declared without contour data, or a selected ROI whose contour data the
+    # source inventory found unreadable as one volume.
+    governed_structural = {
+        "declared_without_contour_data": _CONTOURLESS_STRUCTURAL_CODES,
+        "unmeasurable_source_contour": _UNMEASURABLE_CONTOUR_STRUCTURAL_CODES,
+    }
     seen: set[Tuple[str, ...]] = set()
     validated: List[Dict[str, Any]] = []
     for index, row in enumerate(rows):
@@ -625,15 +635,15 @@ def _validate_source_disposition_rows(
                 f"({', '.join(sorted(ROBUSTNESS_SOURCE_DISPOSITION_STATUSES))})"
             )
         if status == "structural_nonmeasurement":
-            # Mirror the mask reader's evidenced absence, not arbitrary
-            # structural failures or broken contours with some data present.
-            if (
-                row["failure_kind"] != "declared_without_contour_data"
-                or row["structural_code"] not in _CONTOURLESS_STRUCTURAL_CODES
+            # Mirror the mask reader's governed structural findings exactly,
+            # never an arbitrary structural or technical failure.
+            if row["structural_code"] not in governed_structural.get(
+                str(row["failure_kind"]), frozenset()
             ):
                 raise error(
                     f"robustness source disposition row {index} is not a "
-                    "governed declared-without-contour-data disposition"
+                    "governed structural disposition (declared without contour "
+                    "data, or unmeasurable source contour)"
                 )
         elif str(row["structural_code"]) not in NONVOLUMETRIC_CODES:
             raise error(
@@ -3822,6 +3832,39 @@ def robustness_for_course(
             for pattern in rob_config.perturbation.apply_to_structures
         )
 
+    def _generated_source_selection_policy(rtstruct_path: Path) -> Dict[str, Any]:
+        """Scope per-ROI fatality in RS_custom and model RTSTRUCTs to the selection.
+
+        These sources were read with no selection map, so any structurally
+        flagged ROI voided the course: an unselected custom structure such as
+        a bowel contour with one unreadable contour item discarded every
+        selected target beside it. With the map, ROIs outside the selection
+        are recorded as tolerated failures, a selected ROI with an unreadable
+        contour becomes a governed structural non-measurement, and technical
+        mask failures of selected ROIs still raise. An uninspectable source
+        yields no map and keeps the old zero-tolerance read.
+
+        Declarations without contour data keep their previous treatment in
+        these sources (a silent skip): they are marked INVENTORY_ONLY here, so
+        a course that completed before completes with the same outputs.
+        """
+        requiredness = _robustness_selection_requiredness(
+            rtstruct_path, rob_config.perturbation.apply_to_structures
+        )
+        if requiredness is None:
+            return {}
+        from .radiomics import _CONTOURLESS_STRUCTURAL_CODES
+        from .roi_requiredness import Requiredness, inspect_rtstruct
+
+        for observation in inspect_rtstruct(Path(rtstruct_path)).named_rois:
+            if observation.structural_code in _CONTOURLESS_STRUCTURAL_CODES:
+                requiredness[str(observation.name)] = Requiredness.INVENTORY_ONLY
+        return {
+            "tolerate_unselected": True,
+            "requiredness_by_roi": requiredness,
+            "unmeasurable_required_is_disposition": True,
+        }
+
     def _register_mask(
         roi_name: str,
         source: str,
@@ -3942,6 +3985,10 @@ def robustness_for_course(
                 contourless_required_is_absence=(
                     source != _AUTO_RTSTRUCT_SOURCE
                 ),
+                # A selected ROI whose contour data the source inventory finds
+                # unreadable is a structural non-measurement of that ROI, not a
+                # reason to discard every other selected structure.
+                unmeasurable_required_is_disposition=True,
             )
             _record_source_dispositions(source_binding, source_sink)
             allowed_names = set(expected_rois) if expected_rois else None
@@ -3964,7 +4011,10 @@ def robustness_for_course(
             custom_sink: List[Dict[str, Any]] = []
             custom_binding = _bind_rtstruct_source("Custom", rs_custom)
             custom_masks = _rtstruct_masks(
-                ct_dir, rs_custom, failure_outcomes=custom_sink
+                ct_dir,
+                rs_custom,
+                failure_outcomes=custom_sink,
+                **_generated_source_selection_policy(rs_custom),
             )
             _record_source_dispositions(custom_binding, custom_sink)
             loaded = 0
@@ -3996,7 +4046,10 @@ def robustness_for_course(
                 source_label = f"CustomModel:{model_name}"
                 model_binding = _bind_rtstruct_source(source_label, rs_model)
                 model_masks = _rtstruct_masks(
-                    ct_dir, rs_model, failure_outcomes=model_sink
+                    ct_dir,
+                    rs_model,
+                    failure_outcomes=model_sink,
+                    **_generated_source_selection_policy(rs_model),
                 )
                 _record_source_dispositions(model_binding, model_sink)
                 loaded = 0
@@ -4240,7 +4293,17 @@ def robustness_for_course(
                 for row in source_disposition_rows
                 if _matches_robustness_pattern(str(row.get("roi_name") or ""))
             ]
-            if selection_matched_dispositions:
+            if any(
+                row.get("failure_kind") == "unmeasurable_source_contour"
+                for row in selection_matched_dispositions
+            ):
+                nonmeasured_outcome = ROBUSTNESS_SOURCE_ONLY_OUTCOME
+                reason = (
+                    "every source ROI matching the robustness selection is "
+                    "non-volumetric or has contour data its source inventory "
+                    "cannot read as one volume"
+                )
+            elif selection_matched_dispositions:
                 nonmeasured_outcome = ROBUSTNESS_SOURCE_ONLY_OUTCOME
                 reason = (
                     "every source ROI matching the robustness selection is "
