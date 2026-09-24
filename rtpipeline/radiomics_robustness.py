@@ -5136,18 +5136,20 @@ def robustness_for_course(
                 image_cache = {"images": image_digest_cache}
                 if use_ntcv:
                     noise_levels = _ntcv_factors(perturbation)[3]
-                    for index, (_, image) in enumerate(
-                        _ntcv_noise_images(ct_image, noise_levels, noise_cache)
-                    ):
-                        image_paths[index] = str(
-                            _radiomics_task_image_path(image, temp_dir, image_cache)
+                    image_paths = {
+                        index: str(_radiomics_task_image_path(image, temp_dir, image_cache))
+                        for index, (_, image) in enumerate(
+                            _ntcv_noise_images(ct_image, noise_levels, noise_cache)
                         )
+                    }
                 else:
                     image_paths["original"] = str(
                         _radiomics_task_image_path(ct_image, temp_dir, image_cache)
                     )
                 noise_cache.clear()
-                image_cache.clear()
+                # The images are on disk; release the CT copies they came from.
+                image_digest_cache.clear()
+                del image_cache
             ct_geometry = (
                 ct_image.GetSize(), ct_image.GetSpacing(),
                 ct_image.GetDirection(), ct_image.GetOrigin(),
