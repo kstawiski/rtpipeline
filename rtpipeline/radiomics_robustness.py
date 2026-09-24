@@ -1491,6 +1491,24 @@ def _rank_volume_region(mask, arr, target_voxels):
         margin *= 2
 
 
+def _robustness_course_timeout(task_count: int, workers: int) -> int:
+    """Return the robustness watchdog's whole-course deadline in seconds.
+
+    An explicit RTPIPELINE_ROBUSTNESS_COURSE_TIMEOUT wins. Otherwise the budget
+    scales with the number of task waves (tasks / workers) at
+    RTPIPELINE_ROBUSTNESS_TASK_BUDGET seconds per wave (default 900), never
+    below the historical 4 h. A fixed 4 h closed large, still-progressing
+    courses (e.g. 1,215 perturbation tasks on 9 workers) as failed extractions;
+    genuine hangs are caught separately by the progress watchdog.
+    """
+    configured = os.environ.get("RTPIPELINE_ROBUSTNESS_COURSE_TIMEOUT", "").strip()
+    if configured:
+        return int(configured)
+    per_wave = int(os.environ.get("RTPIPELINE_ROBUSTNESS_TASK_BUDGET", "900"))
+    waves = -(-max(0, int(task_count)) // max(1, int(workers)))
+    return max(14400, waves * per_wave)
+
+
 def volume_adapt_mask(mask: sitk.Image, tau: float, max_iterations: int = 20) -> Optional[sitk.Image]:
     """Adapt a binary mask to the requested voxel-count volume change.
 
@@ -4443,7 +4461,7 @@ def robustness_for_course(
             ctx = get_context('spawn')
 
             # Timeout configuration for watchdog
-            course_timeout = int(os.environ.get("RTPIPELINE_ROBUSTNESS_COURSE_TIMEOUT", "14400"))  # 4 hour default
+            course_timeout = _robustness_course_timeout(len(tasks), max_workers)
             progress_timeout = int(os.environ.get("RTPIPELINE_ROBUSTNESS_PROGRESS_TIMEOUT", "300"))  # 5 min default
 
             from .robustness_watchdog import SupervisedResults, technical_rows
