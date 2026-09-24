@@ -88,6 +88,10 @@ from .rt_details import (
     target_volume_names,
 )
 from .utils import (
+    read_dicom_header,
+    read_record_header,
+    cached_source_identity,
+    organize_read_cache,
     ensure_dir,
     run_tasks_with_adaptive_workers,
     read_dicom,
@@ -435,8 +439,11 @@ def _plan_checkpoint_is_complete(data: dict[str, object], has_discovered_plan: b
 
 def _sop_instance_uid(path: Path) -> str:
     """Return a file's SOPInstanceUID, or "" when it is absent or unreadable."""
+    identity = cached_source_identity(path)
+    if identity is not None:
+        return identity.sop_instance_uid
     try:
-        dataset = pydicom.dcmread(
+        dataset = read_dicom_header(
             str(path),
             stop_before_pixels=True,
             force=True,
@@ -590,7 +597,7 @@ def _infer_rx_from_plan_paths(plan_paths: List[Path], *, sum_all: bool = False) 
     values: list[float | None] = []
     for plan_path in plan_paths:
         try:
-            ds_plan = pydicom.dcmread(str(plan_path), stop_before_pixels=True)
+            ds_plan = read_dicom_header(str(plan_path), stop_before_pixels=True)
         except Exception:
             values.append(None)
             continue
@@ -605,7 +612,7 @@ def _infer_source_rx_from_plan_paths(
     values: list[float | None] = []
     for plan_path in plan_paths:
         try:
-            ds_plan = pydicom.dcmread(str(plan_path), stop_before_pixels=True)
+            ds_plan = read_dicom_header(str(plan_path), stop_before_pixels=True)
         except Exception:
             values.append(None)
             continue
@@ -971,7 +978,7 @@ def validate_course_target_qc(
             "plan and dose are present but the authoritative structure set is unresolved"
         )
     try:
-        ds = pydicom.dcmread(str(struct_path), stop_before_pixels=True, force=True)
+        ds = read_dicom_header(str(struct_path), stop_before_pixels=True, force=True)
     except Exception as exc:
         raise CourseTargetQCError(
             f"Course target QC failed for patient {patient_id}, course {course_key}: "
@@ -1026,7 +1033,7 @@ def _classify_organize_ct_series(
     for instance in series:
         try:
             datasets.append(
-                pydicom.dcmread(str(instance.path), stop_before_pixels=True, force=True)
+                read_dicom_header(str(instance.path), stop_before_pixels=True, force=True)
             )
         except Exception as exc:
             logger.warning("Could not read CT header for organize classification %s: %s", instance.path, exc)
@@ -1085,7 +1092,7 @@ class DoseClassification:
 def _extract_dose_metadata(dose_path: Path) -> dict:
     """Extract relevant metadata from a dose file for classification."""
     try:
-        ds = pydicom.dcmread(str(dose_path), stop_before_pixels=True)
+        ds = read_dicom_header(str(dose_path), stop_before_pixels=True)
 
         ref_plan_uids = []
         if hasattr(ds, "ReferencedRTPlanSequence") and ds.ReferencedRTPlanSequence:
@@ -1261,7 +1268,7 @@ def _plan_expected_delivery_items(ds: Dataset) -> dict[str, object]:
 def _extract_plan_metadata(plan_path: Path) -> dict:
     """Extract relevant metadata from a plan file for classification."""
     try:
-        ds = pydicom.dcmread(str(plan_path), stop_before_pixels=True)
+        ds = read_dicom_header(str(plan_path), stop_before_pixels=True)
 
         prescriptions = []
         if hasattr(ds, "DoseReferenceSequence") and ds.DoseReferenceSequence:
@@ -1638,7 +1645,7 @@ def _record_delivery_evidence(record_paths: Iterable[Path]) -> Dict[str, dict]:
     )
     for path in dict.fromkeys(Path(p) for p in record_paths):
         try:
-            ds = pydicom.dcmread(str(path), stop_before_pixels=True, force=True)
+            ds = read_record_header(path)
         except Exception as exc:
             logger.warning("Could not read RT treatment record %s: %s", path, exc)
             continue
@@ -1706,7 +1713,7 @@ def _delivery_reference_audit(
     unresolved_records: set[str] = set()
     for path in dict.fromkeys(Path(p) for p in record_paths):
         try:
-            ds = pydicom.dcmread(str(path), stop_before_pixels=True, force=True)
+            ds = read_record_header(path)
         except Exception:
             continue
         record_uid = str(getattr(ds, "SOPInstanceUID", "") or path)
@@ -2747,7 +2754,7 @@ def _plan_evidence(path: Path) -> dict:
     """Read plan identity, prescription, fractions, and deterministic chronology."""
     meta = _extract_plan_metadata(path)
     try:
-        ds = pydicom.dcmread(str(path), stop_before_pixels=True, force=True)
+        ds = read_dicom_header(str(path), stop_before_pixels=True, force=True)
     except Exception:
         meta["fractions_planned"] = 0
         return meta
@@ -2973,8 +2980,8 @@ def _strict_plan_equivalence(candidate: dict, representative: dict) -> tuple[boo
             if same_bytes:
                 return True, "byte-identical duplicate of one SOPInstanceUID"
             return False, "same SOPInstanceUID with different source bytes"
-        candidate_ds = pydicom.dcmread(str(candidate_path), stop_before_pixels=True, force=True)
-        representative_ds = pydicom.dcmread(
+        candidate_ds = read_dicom_header(str(candidate_path), stop_before_pixels=True, force=True)
+        representative_ds = read_dicom_header(
             str(representative_path), stop_before_pixels=True, force=True
         )
     except Exception as exc:
@@ -4331,7 +4338,7 @@ def _sum_doses_with_resample(
     dose_geometries: list[dict[str, object] | None] = []
     for i, path in enumerate(dose_files):
         try:
-            header = pydicom.dcmread(str(path), stop_before_pixels=True)
+            header = read_dicom_header(str(path), stop_before_pixels=True)
             geometry = _validated_dose_grid_geometry(header, path)
             dose_headers.append(header)
             dose_geometries.append(geometry)
@@ -4625,7 +4632,7 @@ def _sum_doses_with_resample(
 def _read_rt_record_identity(path: Path) -> tuple[str, Path] | None:
     """Return ``(PatientID, path)`` for an RTRECORD, otherwise ``None``."""
     try:
-        ds = pydicom.dcmread(
+        ds = read_dicom_header(
             str(path),
             stop_before_pixels=True,
             specific_tags=["PatientID", "Modality"],
@@ -4728,7 +4735,7 @@ def referenced_ct_series_uids(rtstruct_path: "Path | str") -> set:
     """
     uids: set = set()
     try:
-        ds = pydicom.dcmread(str(rtstruct_path), stop_before_pixels=True, force=True)
+        ds = read_dicom_header(str(rtstruct_path), stop_before_pixels=True, force=True)
     except Exception as exc:
         logger.warning("Could not read RTSTRUCT %s for CT reference: %s", rtstruct_path, exc)
         return uids
@@ -4788,10 +4795,10 @@ def select_course_ct_series(
             return resolved[0][1], "referenced"
         if len(resolved) > 1:
             from .rtstruct_geometry import resolve_roi_scopes
-            dataset = pydicom.dcmread(struct_source_path, stop_before_pixels=True)
+            dataset = read_dicom_header(struct_source_path, stop_before_pixels=True)
             if not getattr(dataset, "ROIContourSequence", None):
                 return None, "unresolved_multiseries_scope"
-            images = [pydicom.dcmread(item.path, stop_before_pixels=True)
+            images = [read_dicom_header(item.path, stop_before_pixels=True)
                       for _, instances in resolved for item in instances]
             scopes = resolve_roi_scopes(dataset, images)
             complete = {uid for result in scopes.values() if result.code is None
@@ -5067,6 +5074,7 @@ def _reconcile_published_plan_dispositions(validated_outputs, source_disposition
     return source_dispositions
 
 
+@organize_read_cache
 def organize_and_merge(
     config: PipelineConfig,
     *,
@@ -5110,7 +5118,7 @@ def organize_and_merge(
         logger.info("Organize discovery scoped to %d cohort patient(s)", len(scope_ids))
 
 
-    index_workers = min(config.effective_workers(), DEFAULT_INDEX_WORKERS)
+    index_workers = DEFAULT_INDEX_WORKERS
     logger.info("Organize source-header scan using %d thread worker(s)", index_workers)
     patient_series_layout = _looks_like_patient_series_layout(config.dicom_root)
     if patient_series_layout:
@@ -5578,7 +5586,7 @@ def organize_and_merge(
                 dose_sop_uid = str(dose_sum_ds.SOPInstanceUID)
 
             elif len(selected_doses) == 1:
-                ds_dose_single = pydicom.dcmread(
+                ds_dose_single = read_dicom_header(
                     str(selected_doses[0]),
                     stop_before_pixels=True,
                 )
@@ -5594,7 +5602,7 @@ def organize_and_merge(
                 if len(selected_plans) == 1:
                     _safe_copy(selected_plans[0], rp_dst, copy_manager=copy_manager)
                     try:
-                        ds_plan_single = pydicom.dcmread(str(selected_plans[0]), stop_before_pixels=True)
+                        ds_plan_single = read_dicom_header(str(selected_plans[0]), stop_before_pixels=True)
                         plan_sop_uid = str(getattr(ds_plan_single, "SOPInstanceUID", "") or None)
                     except Exception:
                         plan_sop_uid = None
@@ -5633,7 +5641,7 @@ def organize_and_merge(
                     delivery_dose_paths = []
                     _safe_copy(intent_plan, rp_dst, copy_manager=copy_manager)
                     try:
-                        ds_plan_single = pydicom.dcmread(str(intent_plan), stop_before_pixels=True)
+                        ds_plan_single = read_dicom_header(str(intent_plan), stop_before_pixels=True)
                         plan_sop_uid = str(getattr(ds_plan_single, "SOPInstanceUID", "") or None)
                     except Exception:
                         plan_sop_uid = None
@@ -5647,7 +5655,7 @@ def organize_and_merge(
                 delivery_dose_paths = []
                 _safe_copy(plan_paths[0], rp_dst, copy_manager=copy_manager)
                 try:
-                    ds_plan_single = pydicom.dcmread(str(plan_paths[0]), stop_before_pixels=True)
+                    ds_plan_single = read_dicom_header(str(plan_paths[0]), stop_before_pixels=True)
                     plan_sop_uid = str(getattr(ds_plan_single, "SOPInstanceUID", "") or None)
                 except Exception:
                     plan_sop_uid = None
@@ -5664,7 +5672,7 @@ def organize_and_merge(
                 elif rd_dst.exists():
                     rd_dst.unlink()
                 try:
-                    ds_dose_single = pydicom.dcmread(str(dose_paths[0]), stop_before_pixels=True)
+                    ds_dose_single = read_dicom_header(str(dose_paths[0]), stop_before_pixels=True)
                     dose_sop_uid = (
                         str(getattr(ds_dose_single, "SOPInstanceUID", "") or None)
                         if selected_doses
@@ -5680,7 +5688,7 @@ def organize_and_merge(
 
         if rp_dst.exists():
             try:
-                artifact_plan = pydicom.dcmread(str(rp_dst), stop_before_pixels=True)
+                artifact_plan = read_dicom_header(str(rp_dst), stop_before_pixels=True)
                 if source_rx is None:
                     source_rx = infer_plan_rx_gy(artifact_plan)
                 if total_rx is None:
@@ -5690,13 +5698,13 @@ def organize_and_merge(
 
         if selected_plans and not source_plan_uids:
             source_plan_uids = [
-                str(getattr(pydicom.dcmread(str(path), stop_before_pixels=True), "SOPInstanceUID", ""))
+                str(getattr(read_dicom_header(str(path), stop_before_pixels=True), "SOPInstanceUID", ""))
                 for path in selected_plans
             ]
             source_plan_uids = [uid for uid in source_plan_uids if uid]
         if selected_doses and not source_dose_uids:
             source_dose_uids = [
-                str(getattr(pydicom.dcmread(str(path), stop_before_pixels=True), "SOPInstanceUID", ""))
+                str(getattr(read_dicom_header(str(path), stop_before_pixels=True), "SOPInstanceUID", ""))
                 for path in selected_doses
             ]
             source_dose_uids = [uid for uid in source_dose_uids if uid]
@@ -5714,7 +5722,7 @@ def organize_and_merge(
         authoritative_rtstruct_uid: str | None = None
         if rs_dst.exists():
             try:
-                ds_struct = pydicom.dcmread(str(rs_dst), stop_before_pixels=True, force=True)
+                ds_struct = read_dicom_header(str(rs_dst), stop_before_pixels=True, force=True)
                 authoritative_rtstruct_uid = str(
                     getattr(ds_struct, "SOPInstanceUID", "") or ""
                 ) or None
@@ -5975,7 +5983,7 @@ def organize_and_merge(
         for (pid, raw_key), s_list in rs_groups.items():
             start_dt: Optional[datetime.datetime] = None
             try:
-                ds = pydicom.dcmread(str(s_list[0].path), stop_before_pixels=True)
+                ds = read_dicom_header(str(s_list[0].path), stop_before_pixels=True)
                 raw_date = getattr(ds, "StructureSetDate", None) or getattr(ds, "StudyDate", None)
                 if raw_date:
                     start_dt = parse_date(str(raw_date))
@@ -6030,7 +6038,7 @@ def organize_and_merge(
             _safe_copy(primary_struct, rs_dst, copy_manager=copy_manager)
             authoritative_rtstruct_uid: str | None = None
             try:
-                ds_primary_struct = pydicom.dcmread(
+                ds_primary_struct = read_dicom_header(
                     str(rs_dst), stop_before_pixels=True, force=True
                 )
                 authoritative_rtstruct_uid = str(
@@ -6274,7 +6282,7 @@ def organize_and_merge(
                     start_dt: Optional[datetime.datetime] = None
                     series_number = getattr(first_inst, "series_number", None)
                     try:
-                        ds = pydicom.dcmread(str(first_inst.path), stop_before_pixels=True)
+                        ds = read_dicom_header(str(first_inst.path), stop_before_pixels=True)
                         raw_date = (
                             getattr(ds, "SeriesDate", None)
                             or getattr(ds, "StudyDate", None)
@@ -6425,7 +6433,7 @@ def organize_and_merge(
             try:
                 rp_path = patient_dir / "RP.dcm"
                 if rp_path.exists():
-                    ds_tmp = pydicom.dcmread(str(rp_path), stop_before_pixels=True)
+                    ds_tmp = read_dicom_header(str(rp_path), stop_before_pixels=True)
                     sop_uid = str(getattr(ds_tmp, 'SOPInstanceUID', ''))
                     if sop_uid:
                         plan_uids.add(sop_uid)
@@ -6434,7 +6442,7 @@ def organize_and_merge(
             plan_total_rx = 0.0
             plan_resolved_total_rx: float | None = None
             try:
-                ds_plan = pydicom.dcmread(str(co.rp_path), stop_before_pixels=True)
+                ds_plan = read_dicom_header(str(co.rp_path), stop_before_pixels=True)
             except Exception:
                 ds_plan = None
             if ds_plan is not None:
@@ -6456,7 +6464,7 @@ def organize_and_merge(
             try:
                 rp0 = co.rp_path
                 if rp0.exists():
-                    ds0 = pydicom.dcmread(str(rp0), stop_before_pixels=True)
+                    ds0 = read_dicom_header(str(rp0), stop_before_pixels=True)
                     if hasattr(ds0, 'FractionGroupSequence') and ds0.FractionGroupSequence:
                         fg = ds0.FractionGroupSequence[0]
                         if hasattr(fg, 'NumberOfFractionsPlanned'):
@@ -6481,7 +6489,7 @@ def organize_and_merge(
                 candidate_rt_files = rt_file_index.get(str(co.patient_id), [])
                 for p in candidate_rt_files:
                     try:
-                        ds_rt = pydicom.dcmread(str(p), stop_before_pixels=True)
+                        ds_rt = read_record_header(p, force=False)
                     except Exception:
                         continue
                     if getattr(ds_rt, 'PatientID', None) and str(ds_rt.PatientID).strip() != str(co.patient_id):
@@ -6794,7 +6802,7 @@ def organize_and_merge(
                 if ct_dir_path.exists():
                     ct_files = sorted([p for p in ct_dir_path.iterdir() if p.is_file()])
                     if ct_files:
-                        ds_ct = pydicom.dcmread(str(ct_files[0]), stop_before_pixels=True)
+                        ds_ct = read_dicom_header(str(ct_files[0]), stop_before_pixels=True)
                         ct_summary = {
                             'ct_manufacturer': str(getattr(ds_ct, 'Manufacturer', '')),
                             'ct_model': str(getattr(ds_ct, 'ManufacturerModelName', '')),
@@ -6828,7 +6836,7 @@ def organize_and_merge(
                             else:
                                 positions = []
                                 for ct_file in ct_files[:min(10, len(ct_files))]:
-                                    ds_tmp = pydicom.dcmread(str(ct_file), stop_before_pixels=True)
+                                    ds_tmp = read_dicom_header(str(ct_file), stop_before_pixels=True)
                                     ipp = getattr(ds_tmp, 'ImagePositionPatient', None)
                                     if ipp and len(ipp) == 3:
                                         positions.append(float(ipp[2]))
@@ -7022,7 +7030,7 @@ def organize_and_merge(
                     if not plan_path:
                         continue
                     try:
-                        plan_dataset = pydicom.dcmread(
+                        plan_dataset = read_dicom_header(
                             plan_path, stop_before_pixels=True, force=True
                         )
                     except Exception:
@@ -7555,7 +7563,7 @@ def organize_and_merge(
                 case_meta["segmentation_original_manifest"] = manual_manifest
             try:
                 if co.rp_path.exists():
-                    ds_rp = pydicom.dcmread(str(co.rp_path), stop_before_pixels=True)
+                    ds_rp = read_dicom_header(str(co.rp_path), stop_before_pixels=True)
                     prescriptions = []
                     try:
                         for dr in getattr(ds_rp, 'DoseReferenceSequence', []) or []:
@@ -7672,7 +7680,7 @@ def organize_and_merge(
                     roiname_by_num = {}
                     try:
                         if (patient_dir / "RS.dcm").exists():
-                            ds_rs_map = pydicom.dcmread(str(patient_dir / "RS.dcm"), stop_before_pixels=True)
+                            ds_rs_map = read_dicom_header(str(patient_dir / "RS.dcm"), stop_before_pixels=True)
                             for roi in getattr(ds_rs_map, 'StructureSetROISequence', []) or []:
                                 roiname_by_num[int(getattr(roi, 'ROINumber', -1))] = str(getattr(roi, 'ROIName', ''))
                     except Exception:
@@ -7808,7 +7816,7 @@ def organize_and_merge(
                 pass
             try:
                 if (patient_dir / "RS.dcm").exists():
-                    ds_rs = pydicom.dcmread(str(patient_dir / "RS.dcm"), stop_before_pixels=True)
+                    ds_rs = read_dicom_header(str(patient_dir / "RS.dcm"), stop_before_pixels=True)
                     rois = []
                     for roi in getattr(ds_rs, 'StructureSetROISequence', []) or []:
                         nm = getattr(roi, 'ROIName', None)
@@ -7829,7 +7837,7 @@ def organize_and_merge(
                 case_meta['dose_units'] = None
                 case_meta['dose_type'] = None
                 try:
-                    ds_rd2 = pydicom.dcmread(str(co.rd_path), stop_before_pixels=True)
+                    ds_rd2 = read_dicom_header(str(co.rd_path), stop_before_pixels=True)
                     case_meta['dose_units'] = str(getattr(ds_rd2, 'DoseUnits', ''))
                     case_meta['dose_type'] = str(getattr(ds_rd2, 'DoseType', ''))
                 except Exception:

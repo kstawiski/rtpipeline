@@ -17,6 +17,8 @@ import tempfile
 
 import pydicom
 
+from .utils import read_dicom_header, read_record_header
+
 from .course_contract import _record_delivery_session_evidence, _record_delivery_session_key
 from .organize_ledger import _write_json_atomic
 from .utils import _scoped_walk
@@ -218,7 +220,7 @@ def build_source_plan_dispositions(plans, record_index, accepted_courses, declin
         identity = (str(p.patient_id), p.sop_instance_uid)
         source_paths[identity].append(Path(p.path))
         try:
-            ds = pydicom.dcmread(p.path, stop_before_pixels=True)
+            ds = read_dicom_header(p.path, stop_before_pixels=True)
             if _text(ds, "SOPInstanceUID") != p.sop_instance_uid or _text(ds, "PatientID") != str(p.patient_id):
                 raise ValueError("source plan identity differs from discovery")
             if identity in datasets and _sha(p.path) != _sha(source_paths[identity][0]):
@@ -231,7 +233,7 @@ def build_source_plan_dispositions(plans, record_index, accepted_courses, declin
     for patient, paths in record_index.items():
         for path in dict.fromkeys(paths):
             try:
-                ds = pydicom.dcmread(path, stop_before_pixels=True)
+                ds = read_record_header(path, force=False)
                 uid = _text(ds, "SOPInstanceUID")
                 if _text(ds, "PatientID") != str(patient) or not uid:
                     raise ValueError("delivery record identity differs from discovery")
