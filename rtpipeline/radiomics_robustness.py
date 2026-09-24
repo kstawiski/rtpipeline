@@ -46,7 +46,7 @@ from dataclasses import asdict, dataclass, field, is_dataclass
 from multiprocessing import get_context
 from multiprocessing import TimeoutError as MPTimeoutError
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Mapping, Optional, Tuple
+from typing import Any, Callable, Dict, List, Literal, Mapping, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -3902,7 +3902,7 @@ def model_instability_determinants(
 # ============================================================================
 
 def _robustness_selection_requiredness(
-    rtstruct_path: Path, selection: Any
+    rtstruct_path: Path, selection: Any, *, inspect: Optional[Callable[[Path], Any]] = None
 ) -> Optional[Dict[str, Any]]:
     """Expand the robustness selection to an exact-name requiredness map.
 
@@ -3912,6 +3912,7 @@ def _robustness_selection_requiredness(
     ANALYSIS_REQUIRED and everything else INVENTORY_ONLY. Returns None
     when the source cannot even be inspected: the caller then loads with
     no tolerance at all, so whole-source failures stay fatal (B3.2).
+    ``inspect`` replaces ``inspect_rtstruct`` (e.g. with a per-run memo).
     """
     from fnmatch import fnmatch
 
@@ -3923,7 +3924,7 @@ def _robustness_selection_requiredness(
         # required name, every failure would record instead of raise.
         return None
     try:
-        names = [o.name for o in inspect_rtstruct(Path(rtstruct_path)).named_rois]
+        names = [o.name for o in (inspect or inspect_rtstruct)(Path(rtstruct_path)).named_rois]
     except Exception as exc:
         logger.warning(
             "Robustness selection expansion failed for %s: %s; "
@@ -4097,8 +4098,9 @@ def robustness_for_course(
     # a sidecar from a previous (or failed) run is rejected as stale.
     robustness_run_identifier = new_run_identifier()
 
-    # Dictionary: {(roi_name, source): mask_array}
-    all_masks: Dict[Tuple[str, str], np.ndarray] = {}
+    # Dictionary: {(roi_name, source): mask_array}; None for an ROI whose
+    # array this run cannot use (see _retain_selectable).
+    all_masks: Dict[Tuple[str, str], Optional[np.ndarray]] = {}
     unresolved_selected_identities: Dict[Tuple[str, str], Dict[str, str]] = {}
     # Terminal RTSTRUCT source dispositions recorded while collecting masks
     # (e.g. non-volumetric source ROIs), identity-bound and persisted to the
@@ -4180,6 +4182,33 @@ def robustness_for_course(
             for pattern in rob_config.perturbation.apply_to_structures
         )
 
+    # Each RTSTRUCT used to be inspected two or three times per run (selection
+    # expansion, generated-source policy, mask reader). The inventory is a
+    # pure function of the bound bytes, which publication re-verifies, so it
+    # is computed once and shared. A failed inspection is not cached: every
+    # caller then fails exactly as it did on its own.
+    rtstruct_inventories: Dict[Path, Any] = {}
+
+    def _inspect_rtstruct_once(rtstruct_path: Path) -> Any:
+        from .roi_requiredness import inspect_rtstruct
+
+        key = Path(rtstruct_path)
+        if key not in rtstruct_inventories:
+            rtstruct_inventories[key] = inspect_rtstruct(key)
+        return rtstruct_inventories[key]
+
+    def _retain_selectable(source: str) -> Callable[[str], bool]:
+        """Keep mask arrays only for ROIs this run can select.
+
+        Selection needs a pattern match and a main-radiomics identity. Every
+        other ROI is still read and checked, because its read failures and
+        its presence are recorded, but its array is never used.
+        """
+        return lambda roi_name: (
+            _matches_robustness_pattern(roi_name)
+            and (source, roi_name) in identity_catalog
+        )
+
     def _generated_source_selection_policy(rtstruct_path: Path) -> Dict[str, Any]:
         """Scope per-ROI fatality in RS_custom and model RTSTRUCTs to the selection.
 
@@ -4197,14 +4226,16 @@ def robustness_for_course(
         a course that completed before completes with the same outputs.
         """
         requiredness = _robustness_selection_requiredness(
-            rtstruct_path, rob_config.perturbation.apply_to_structures
+            rtstruct_path,
+            rob_config.perturbation.apply_to_structures,
+            inspect=_inspect_rtstruct_once,
         )
         if requiredness is None:
             return {}
         from .radiomics import _CONTOURLESS_STRUCTURAL_CODES
-        from .roi_requiredness import Requiredness, inspect_rtstruct
+        from .roi_requiredness import Requiredness
 
-        for observation in inspect_rtstruct(Path(rtstruct_path)).named_rois:
+        for observation in _inspect_rtstruct_once(Path(rtstruct_path)).named_rois:
             if observation.structural_code in _CONTOURLESS_STRUCTURAL_CODES:
                 requiredness[str(observation.name)] = Requiredness.INVENTORY_ONLY
         return {
@@ -4216,7 +4247,7 @@ def robustness_for_course(
     def _register_mask(
         roi_name: str,
         source: str,
-        mask_array: np.ndarray,
+        mask_array: Optional[np.ndarray],
         *,
         report_missing_identity: bool = True,
     ) -> bool:
@@ -4318,6 +4349,7 @@ def robustness_for_course(
             selection_requiredness = _robustness_selection_requiredness(
                 rtstruct_path,
                 rob_config.perturbation.apply_to_structures,
+                inspect=_inspect_rtstruct_once,
             )
             source_masks = _rtstruct_masks(
                 ct_dir,
@@ -4337,6 +4369,8 @@ def robustness_for_course(
                 # unreadable is a structural non-measurement of that ROI, not a
                 # reason to discard every other selected structure.
                 unmeasurable_required_is_disposition=True,
+                structural_inventory=rtstruct_inventories.get(Path(rtstruct_path)),
+                retain_mask=_retain_selectable(source),
             )
             _record_source_dispositions(source_binding, source_sink)
             allowed_names = set(expected_rois) if expected_rois else None
@@ -4363,6 +4397,8 @@ def robustness_for_course(
                 rs_custom,
                 failure_outcomes=custom_sink,
                 **_generated_source_selection_policy(rs_custom),
+                structural_inventory=rtstruct_inventories.get(Path(rs_custom)),
+                retain_mask=_retain_selectable("Custom"),
             )
             _record_source_dispositions(custom_binding, custom_sink)
             loaded = 0
@@ -4398,6 +4434,8 @@ def robustness_for_course(
                     rs_model,
                     failure_outcomes=model_sink,
                     **_generated_source_selection_policy(rs_model),
+                    structural_inventory=rtstruct_inventories.get(Path(rs_model)),
+                    retain_mask=_retain_selectable(source_label),
                 )
                 _record_source_dispositions(model_binding, model_sink)
                 loaded = 0
@@ -4744,6 +4782,10 @@ def robustness_for_course(
     try:
         for roi_name, source in selected_structures:
             mask_array = all_masks[(roi_name, source)]
+            if mask_array is None:
+                raise RuntimeError(
+                    f"robustness selected {source}/{roi_name} but did not keep its mask"
+                )
             mask_img = _mask_from_array_like(ct_image, mask_array)
 
             # Check if NTCV mode is enabled (any perturbation beyond volume is configured)

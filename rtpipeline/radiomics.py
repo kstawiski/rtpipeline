@@ -857,6 +857,177 @@ _UNMEASURABLE_CONTOUR_STRUCTURAL_CODES = frozenset({
 })
 
 
+# rt_utils reads one ROI by scanning every contour item once per CT slice and
+# writing each slice into a freshly allocated float64-then-bool volume. A
+# course with a hundred ROIs spends most of its mask collection there. The
+# indexed reader below makes the same attribute accesses, comparisons and
+# rt_utils helper calls in the same order, so it yields the same array and
+# raises the same exception. It is used only while the rt_utils functions it
+# replaces are byte-identical to the rt_utils 1.2.7 source it was checked
+# against; any other rt_utils falls back to the library's own reader.
+_RT_UTILS_REPLICATED_SOURCES = (
+    ("rtstruct", "RTStruct.get_roi_mask_by_name"),
+    ("ds_helper", "get_contour_sequence_by_roi_number"),
+    ("image_helper", "create_series_mask_from_contour_sequence"),
+    ("image_helper", "get_slice_contour_data"),
+    ("image_helper", "create_empty_series_mask"),
+)
+_RT_UTILS_REPLICATED_SHA256 = (
+    "eee4806169ada5794634822fb6738150546493ba40628dc3eef8342f38fd8586"
+)
+
+
+def _rt_utils_replicated_functions() -> Optional[Tuple[Any, ...]]:
+    try:
+        from rt_utils import ds_helper, image_helper, rtstruct
+    except Exception:
+        return None
+    modules = {"rtstruct": rtstruct, "ds_helper": ds_helper, "image_helper": image_helper}
+    functions = []
+    try:
+        for module_name, qualified in _RT_UTILS_REPLICATED_SOURCES:
+            target: Any = modules[module_name]
+            for part in qualified.split("."):
+                target = getattr(target, part)
+            functions.append(target)
+    except AttributeError:
+        return None
+    return tuple(functions)
+
+
+def _rt_utils_replicated_digest(functions: Optional[Tuple[Any, ...]] = None) -> Optional[str]:
+    import inspect
+
+    functions = _rt_utils_replicated_functions() if functions is None else functions
+    if functions is None:
+        return None
+    digest = hashlib.sha256()
+    try:
+        for function in functions:
+            digest.update(inspect.getsource(function).encode("utf-8"))
+    except (OSError, TypeError):
+        return None
+    return digest.hexdigest()
+
+
+# Keyed by the function objects themselves, so a replaced (e.g. patched)
+# rt_utils function is re-checked instead of inheriting an earlier verdict.
+_RT_UTILS_READER_STATE: Dict[Tuple[Any, ...], bool] = {}
+
+
+def _rt_utils_reader_is_replicated(rt: Any) -> bool:
+    """True when ``rt`` is a genuine rt_utils RTStruct whose reader we replicate."""
+    try:
+        from rt_utils.rtstruct import RTStruct
+    except Exception:
+        return False
+    if type(rt) is not RTStruct or hasattr(rt, "get_mask_for_roi") or hasattr(rt, "get_roi_mask"):
+        # _rtstruct_masks prefers those reader names; a reader exposing them
+        # is not the one replicated here.
+        return False
+    functions = _rt_utils_replicated_functions()
+    if functions is None:
+        return False
+    if functions not in _RT_UTILS_READER_STATE:
+        _RT_UTILS_READER_STATE[functions] = (
+            _rt_utils_replicated_digest(functions) == _RT_UTILS_REPLICATED_SHA256
+        )
+    return _RT_UTILS_READER_STATE[functions]
+
+
+def _dict_lookup_matches_equality() -> Tuple[type, ...]:
+    """UID types for which dict lookup agrees exactly with ``==``, or none."""
+    from pydicom.uid import UID
+
+    if UID.__eq__ is not str.__eq__ or UID.__hash__ is not str.__hash__:
+        return ()
+    return (str, UID)
+
+
+def _rt_utils_indexed_roi_mask(rt: Any, name: str, *, retain: bool) -> Any:
+    """rt_utils 1.2.7 ``get_roi_mask_by_name`` with one contour pass per ROI.
+
+    With ``retain`` the rt_utils mask array is returned. Without it only
+    whether that array would contain any voxel is returned (a ``bool``); every
+    step that can raise in rt_utils still runs and raises identically, but no
+    CT-sized volume is allocated.
+    """
+    from rt_utils import ds_helper, image_helper
+
+    for structure_roi in rt.ds.StructureSetROISequence:
+        if structure_roi.ROIName == name:
+            contour_sequence = ds_helper.get_contour_sequence_by_roi_number(
+                rt.ds, structure_roi.ROINumber
+            )
+            return _rt_utils_indexed_series_mask(
+                rt.series_data, contour_sequence, retain=retain
+            )
+    raise type(rt).ROIException(f"ROI of name `{name}` does not exist in RTStruct")
+
+
+def _rt_utils_indexed_series_mask(series_data: Any, contour_sequence: Any, *, retain: bool) -> Any:
+    """Replicate ``image_helper.create_series_mask_from_contour_sequence``.
+
+    rt_utils calls ``get_slice_contour_data`` for every slice. Its call for
+    slice 0 reads every ContourImageSequence item, and the ContourData of the
+    items that reference slice 0, in contour order. That pass runs here
+    unchanged and also indexes each item by its referenced UID. For each later
+    slice the referencing items come from the index in the same order and
+    their ContourData is read where rt_utils reads it. rt_utils reads a later
+    slice's SOPInstanceUID only when some contour item exists; so does this.
+    The index is used only when dict lookup provably agrees with ``==`` for
+    every UID involved; otherwise the rt_utils scan runs for that slice.
+    """
+    from rt_utils import image_helper
+
+    if retain:
+        mask = image_helper.create_empty_series_mask(series_data)
+    else:
+        # The same reads create_empty_series_mask makes, without the volume.
+        reference = series_data[0]
+        scratch = np.zeros((int(reference.Columns), int(reference.Rows)), dtype=bool)
+        present = False
+    transformation_matrix = image_helper.get_patient_to_pixel_transformation_matrix(series_data)
+    lookup_types = _dict_lookup_matches_equality()
+    by_uid: Dict[Any, List[Any]] = {}
+    item_count = 0
+    indexable = bool(lookup_types)
+    for i, series_slice in enumerate(series_data):
+        if i == 0:
+            slice_contour_data = []
+            for contour in contour_sequence:
+                for contour_image in contour.ContourImageSequence:
+                    uid = contour_image.ReferencedSOPInstanceUID
+                    if uid == series_slice.SOPInstanceUID:
+                        slice_contour_data.append(contour.ContourData)
+                    item_count += 1
+                    if indexable and type(uid) in lookup_types:
+                        by_uid.setdefault(uid, []).append(contour)
+                    else:
+                        indexable = False
+        elif not item_count:
+            slice_contour_data = []
+        else:
+            slice_uid = series_slice.SOPInstanceUID
+            if indexable and type(slice_uid) in lookup_types:
+                slice_contour_data = [contour.ContourData for contour in by_uid.get(slice_uid, ())]
+            else:
+                slice_contour_data = image_helper.get_slice_contour_data(
+                    series_slice, contour_sequence
+                )
+        if len(slice_contour_data):
+            slice_mask = image_helper.get_slice_mask_from_slice_contour_data(
+                series_slice, slice_contour_data, transformation_matrix
+            )
+            if retain:
+                mask[:, :, i] = slice_mask
+            else:
+                # Same target shape and casting as mask[:, :, i] = slice_mask.
+                scratch[:, :] = slice_mask
+                present = present or bool(scratch.any())
+    return mask if retain else present
+
+
 def _rtstruct_masks(
     dicom_series_path: Path,
     rs_path: Path,
@@ -870,7 +1041,8 @@ def _rtstruct_masks(
     tolerate_unselected: bool = False,
     contourless_required_is_absence: bool = False,
     unmeasurable_required_is_disposition: bool = False,
-) -> Dict[str, np.ndarray]:
+    retain_mask: Optional[Callable[[str], bool]] = None,
+) -> Dict[str, Optional[np.ndarray]]:
     """Convert RTSTRUCT ROIs to boolean masks under an explicit source policy.
 
     Required sources fail closed when an advertised ROI cannot be read or has a
@@ -888,6 +1060,13 @@ def _rtstruct_masks(
     ``structural_nonmeasurement`` outcome instead of raising. It needs an
     outcome sink. Technical failures of a required ROI (unreadable mask,
     empty rasterization) still raise.
+
+    ``retain_mask`` limits which mask arrays are kept. Every ROI is still read
+    and checked exactly as without it, so each failure, empty mask and
+    recorded outcome is the same, but an ROI for which it returns False maps
+    to ``None`` instead of its array. When the reader is the replicated
+    rt_utils 1.2.7 reader, such an ROI is read without allocating a volume.
+    Without ``retain_mask`` behaviour and return values are unchanged.
     """
     normalized_skips = {
         ''.join(ch for ch in str(name).lower() if ch.isalnum())
@@ -1131,14 +1310,18 @@ def _rtstruct_masks(
         # volumetric identities may reach the mask reader.
         roi_names = [name for name in roi_names if name in structurally_extractable]
 
-    out: Dict[str, np.ndarray] = {}
+    out: Dict[str, Optional[np.ndarray]] = {}
+    indexed_reader = retain_mask is not None and _rt_utils_reader_is_replicated(rt)
     for name in roi_names:
         norm_name = ''.join(ch for ch in str(name).lower() if ch.isalnum())
         if norm_name in normalized_skips:
             logger.debug("Skipping configured radiomics ROI %s in %s", name, rs_path)
             continue
+        retain = retain_mask is None or bool(retain_mask(str(name)))
         try:
-            if hasattr(rt, 'get_mask_for_roi'):
+            if indexed_reader:
+                mask = _rt_utils_indexed_roi_mask(rt, name, retain=retain)
+            elif hasattr(rt, 'get_mask_for_roi'):
                 mask = rt.get_mask_for_roi(name)
             elif hasattr(rt, 'get_roi_mask'):
                 mask = rt.get_roi_mask(name)
@@ -1158,15 +1341,24 @@ def _rtstruct_masks(
                 f"Expected ROI {name!r} in {rs_path} did not provide a mask",
             )
             continue
-        try:
-            mask_bool = np.asarray(mask).astype(bool)
-        except Exception as exc:
-            _record_or_raise(
-                name,
-                f"Expected ROI {name!r} in {rs_path} could not be converted to a mask: {exc}",
-            )
-            continue
-        if not mask_bool.any():
+        if indexed_reader and not retain:
+            # The indexed reader returned whether the rt_utils array (a bool
+            # ndarray, so the conversion below cannot fail) has any voxel.
+            nonempty = bool(mask)
+            mask_bool = None
+        else:
+            try:
+                mask_bool = np.asarray(mask).astype(bool)
+            except Exception as exc:
+                _record_or_raise(
+                    name,
+                    f"Expected ROI {name!r} in {rs_path} could not be converted to a mask: {exc}",
+                )
+                continue
+            nonempty = bool(mask_bool.any())
+            if not retain:
+                mask_bool = None
+        if not nonempty:
             _record_or_raise(
                 name,
                 f"Expected ROI {name!r} in {rs_path} produced an "
