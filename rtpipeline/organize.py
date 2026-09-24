@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .organize_scale import organize_process_resources, prepare_mask_exports
+
 import copy
 import datetime
 import hashlib
@@ -5074,6 +5076,7 @@ def _reconcile_published_plan_dispositions(validated_outputs, source_disposition
     return source_dispositions
 
 
+@organize_process_resources
 @organize_read_cache
 def organize_and_merge(
     config: PipelineConfig,
@@ -6405,15 +6408,12 @@ def organize_and_merge(
     validated_outputs: list[CourseOutput] = []
     organize_entries: list[dict[str, object]] = []
     quarantine_failures: list[str] = []
-    for co in outputs:
+    mask_results = prepare_mask_exports(outputs, overwrite=not config.resume)
+    for co, mask_result in zip(outputs, mask_results):
         patient_dir = co.dirs.root
         meta_dir = co.dirs.metadata
-        meta_dir.mkdir(parents=True, exist_ok=True)
-        (patient_dir / ".organized").unlink(missing_ok=True)
         try:
-            manual_manifest = _export_original_segmentation(
-                co, overwrite=not config.resume
-            )
+            manual_manifest = mask_result.result()
             nifti_files = sorted(co.dirs.nifti.glob("*.nii*"))
             plan_uids: set[str] = set()
             if co.plan_sop_uid:

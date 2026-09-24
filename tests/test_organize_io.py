@@ -103,7 +103,15 @@ def test_cache_invalidates_and_is_scoped(tmp_path, monkeypatch):
     assert utils._organize_reads.get() is None
 
 
-def test_organize_tree_matches_pinned_baseline(tmp_path, monkeypatch, caplog):
+# More than one course worker is scheduling-dependent in the baseline itself (cache key order,
+# SOP-registry owner, related-file order); cross-worker determinism is tested separately.
+@pytest.mark.parametrize('course_workers,processes', [(1, 1), (1, 2)])
+def test_organize_tree_matches_pinned_baseline(tmp_path, monkeypatch, caplog, course_workers, processes):
+    monkeypatch.setenv('RTPIPELINE_INDEX_PROCESSES', str(processes))
+    monkeypatch.setenv('RTPIPELINE_MASK_PROCESSES', str(processes))
+    if processes > 1:
+        from organize_io_fixture import require_process_pool
+        require_process_pool()
     root, out = tmp_path / 'input', tmp_path / 'output'
     records = synthetic(root)
     # XLSX creation times also feed the metadata-cache content hashes. Freeze
@@ -116,7 +124,7 @@ def test_organize_tree_matches_pinned_baseline(tmp_path, monkeypatch, caplog):
             return cls(2024, 1, 1, tzinfo=tz)
     monkeypatch.setattr(xlsxwriter.core, 'datetime', FixedWorkbookTime)
     before = baseline()
-    config = PipelineConfig(root, out, tmp_path / 'logs', max_workers_override=1,
+    config = PipelineConfig(root, out, tmp_path / 'logs', max_workers_override=course_workers,
                             dicom_copy_use_hardlinks=False)
     monkeypatch.setattr(before['organize'], 'run_dcm2niix', lambda *args, **kwargs: None)
     monkeypatch.setattr(organize, 'run_dcm2niix', lambda *args, **kwargs: None)
@@ -174,9 +182,11 @@ def test_organize_tree_matches_pinned_baseline(tmp_path, monkeypatch, caplog):
     assert [asdict(row) for row in snapshot_before['results']] == [asdict(row) for row in snapshot_after['results']]
     assert snapshot_before['candidates'] == snapshot_after['candidates']
     assert [(r.levelno, r.getMessage()) for r in caplog.records] == expected_warnings
-    assert reads == {path: 1 for path in records}
-    assert reuse['helper'] > 0 and reuse['identity'] > 0
-    assert config.effective_workers() == 1
+    assert reads == ({path: 1 for path in records} if processes == 1 else {})
+    assert reuse['identity'] > 0
+    if processes == 1:
+        assert reuse['helper'] > 0
+    assert config.effective_workers() == course_workers
     assert scan_workers == [utils.DEFAULT_INDEX_WORKERS]
 
 

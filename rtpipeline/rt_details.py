@@ -189,6 +189,7 @@ def extract_rt_with_records(
     paths.sort(key=str)
 
     workers = max_workers if max_workers is not None else DEFAULT_INDEX_WORKERS
+    from .organize_scale import discover_sources
     snapshot_results = []
     inventory_accumulator = None
     if metadata_snapshot is not None:
@@ -198,13 +199,9 @@ def extract_rt_with_records(
         )
 
         inventory_accumulator = _SourceInventoryAccumulator(dicom_root, scope_ids)
-        datasets = parallel_map_files(paths, _metadata_source_file, workers)
+        datasets = discover_sources(paths, workers)
     else:
-        datasets = parallel_map_files(
-            paths,
-            read_organize_discovery_dicom,
-            workers,
-        )
+        datasets = discover_sources(paths, workers, source_reads=False)
 
     for p, source_read in zip(paths, datasets):
         if metadata_snapshot is not None:
