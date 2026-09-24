@@ -166,12 +166,13 @@ def test_parquet_read_back_mismatch_refuses_publication(tmp_path, monkeypatch):
     _write_ct(cfg.dicom_root / "CT_1.dcm")
     _write_ct(cfg.dicom_root / "CT_2.dcm")
     monkeypatch.setattr(meta, "_EXCEL_MAX_ROWS", 2)
-    original = meta.pd.read_parquet
+    original = meta._parquet_shape
 
-    def truncated(path, *args, **kwargs):
-        return original(path, *args, **kwargs).head(1)
+    def truncated(path):
+        rows, columns = original(path)
+        return rows - 1, columns
 
-    monkeypatch.setattr(meta.pd, "read_parquet", truncated)
+    monkeypatch.setattr(meta, "_parquet_shape", truncated)
 
     with pytest.raises(meta.MetadataExportError, match="reads back as 1 rows"):
         meta.export_metadata(cfg)

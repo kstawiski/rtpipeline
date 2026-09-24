@@ -898,6 +898,14 @@ def _parquet_ready_frame(frame: pd.DataFrame) -> pd.DataFrame:
     return ready
 
 
+def _parquet_shape(path: Path) -> tuple[int, int]:
+    """Decode every column chunk without building Python objects for each cell."""
+    import pyarrow.parquet as pq
+
+    table = pq.read_table(path)
+    return table.num_rows, table.num_columns
+
+
 def _load_cached_outputs(
     config: PipelineConfig,
     paths: ExportPaths,
@@ -1016,11 +1024,11 @@ def _publish_metadata_frames(
                 )
                 _parquet_ready_frame(frame).to_parquet(staged_path, index=False)
                 # The same minimum check as for a workbook, plus the table shape.
-                parsed = pd.read_parquet(staged_path)
-                if parsed.shape != frame.shape:
+                parsed_rows, parsed_columns = _parquet_shape(staged_path)
+                if (parsed_rows, parsed_columns) != frame.shape:
                     raise MetadataExportError(
-                        f"Staged {staged_path.name} reads back as {parsed.shape[0]} rows x "
-                        f"{parsed.shape[1]} columns, expected {frame.shape[0]} x {frame.shape[1]}"
+                        f"Staged {staged_path.name} reads back as {parsed_rows} rows x "
+                        f"{parsed_columns} columns, expected {frame.shape[0]} x {frame.shape[1]}"
                     )
                 staged[name] = staged_path
                 oversized.add(name)
