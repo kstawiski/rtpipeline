@@ -51,6 +51,8 @@ from pydicom.tag import BaseTag, Tag
 
 from .config import PipelineConfig
 from .utils import (
+    read_dicom_header,
+    read_discovery_header,
     DEFAULT_INDEX_WORKERS,
     ORGANIZE_DISCOVERY_TAGS,
     _scoped_walk,
@@ -251,7 +253,7 @@ def _filename_modality_hint(path: Path) -> str | None:
 def _read_verified_modality(path: Path) -> tuple[Path, str] | None:
     """Read only Modality and report filename hints that contradict the tag."""
     try:
-        ds = pydicom.dcmread(
+        ds = read_dicom_header(
             str(path),
             stop_before_pixels=True,
             specific_tags=[_MODALITY_TAG],
@@ -603,12 +605,7 @@ def _metadata_source_file(path: Path) -> MetadataSourceRead:
     """Read one source header and bind its row to a stable inventory tuple."""
     before = _inventory_stat(path)
     try:
-        dataset = pydicom.dcmread(
-            str(path),
-            stop_before_pixels=True,
-            force=True,
-            specific_tags=ORGANIZE_DISCOVERY_TAGS,
-        )
+        dataset = read_discovery_header(path)
     except Exception as exc:
         verified = _read_verified_modality(path)
         dataset = None
@@ -643,7 +640,7 @@ def _metadata_source_file(path: Path) -> MetadataSourceRead:
 def _read_metadata_file(path: Path) -> MetadataReadResult:
     """Classify and extract one candidate using one normal header read."""
     try:
-        ds = pydicom.dcmread(
+        ds = read_dicom_header(
             str(path),
             stop_before_pixels=True,
             specific_tags=ORGANIZE_DISCOVERY_TAGS,
@@ -984,9 +981,7 @@ def _publish_metadata_frames(
             config.dicom_root,
             list(getattr(config, "discover_patient_ids", []) or []) or None,
             current_paths,
-            max_workers=min(
-                max(1, config.effective_workers()), DEFAULT_INDEX_WORKERS
-            ),
+            max_workers=DEFAULT_INDEX_WORKERS,
         )
         if current_identity != identity:
             raise MetadataExportError(
@@ -1035,7 +1030,8 @@ def export_metadata(
     """Extract metadata in one header pass and reuse verified unchanged exports."""
     paths = _export_dir(config.output_root)
     scope_ids = list(getattr(config, "discover_patient_ids", []) or []) or None
-    workers = min(max(1, config.effective_workers()), DEFAULT_INDEX_WORKERS)
+    workers = DEFAULT_INDEX_WORKERS
+    logger.info("Metadata header scan using %d thread worker(s)", workers)
 
     identity, candidates = _source_inventory_identity(
         config.dicom_root,

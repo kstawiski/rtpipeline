@@ -20,7 +20,7 @@ from typing import Dict, Optional, Set, Tuple
 
 import pydicom
 
-from .utils import ensure_dir, file_md5, read_dicom
+from .utils import ensure_dir, file_md5, read_dicom, cached_source_identity
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +83,7 @@ class DicomCopyManager:
 
         # Source path -> SOPInstanceUID cache
         self._header_cache: Dict[str, dict] = {}
+        self._discovery_cached_paths: Set[str] = set()
 
         # Stats
         self.stats = CopyStats()
@@ -174,10 +175,21 @@ class DicomCopyManager:
         """Get SOPInstanceUID from file, using cache if available."""
         key = str(src.resolve())
 
-        # Check cache first
+        # Keep existing persisted-cache precedence. Only discovery-seeded entries
+        # acquire the new per-run inventory validation.
         cached = self._header_cache.get(key)
-        if cached and cached.get("SOPInstanceUID"):
+        if key not in self._discovery_cached_paths and cached and cached.get("SOPInstanceUID"):
             return cached["SOPInstanceUID"]
+
+        identity = cached_source_identity(src)
+        if identity is not None:
+            if not identity.get("SOPInstanceUID"):
+                return None
+            if self.config.cache_headers:
+                with self._lock:
+                    self._header_cache[key] = identity.copy()
+                    self._discovery_cached_paths.add(key)
+            return identity["SOPInstanceUID"]
 
         # Read from file
         ds = read_dicom(src)

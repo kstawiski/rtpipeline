@@ -287,7 +287,7 @@ def test_snapshot_read_keeps_verified_modality_when_detailed_header_fails(
     original = pydicom.dcmread
 
     def fail_detailed_header(path, *args, **kwargs):
-        if Path(path) == plan and _is_detailed_metadata_read(kwargs):
+        if Path(path.name if hasattr(path, "read") else path) == plan and _is_detailed_metadata_read(kwargs):
             raise InvalidDicomError("synthetic detailed-header failure")
         return original(path, *args, **kwargs)
 
@@ -413,7 +413,7 @@ def test_detected_plans_that_yield_no_rows_fail_loudly(tmp_path, monkeypatch):
     original = pydicom.dcmread
 
     def fail_after_modality_detection(path, *args, **kwargs):
-        if Path(path) == plan and _is_detailed_metadata_read(kwargs):
+        if Path(path.name if hasattr(path, "read") else path) == plan and _is_detailed_metadata_read(kwargs):
             raise InvalidDicomError("synthetic detailed-header failure")
         return original(path, *args, **kwargs)
 
@@ -440,7 +440,7 @@ def test_each_detected_modality_that_yields_no_rows_fails_loudly(
     original = pydicom.dcmread
 
     def fail_after_modality_detection(path, *args, **kwargs):
-        if Path(path) == source and _is_detailed_metadata_read(kwargs):
+        if Path(path.name if hasattr(path, "read") else path) == source and _is_detailed_metadata_read(kwargs):
             raise InvalidDicomError("synthetic detailed-header failure")
         return original(path, *args, **kwargs)
 
@@ -578,7 +578,7 @@ def test_partial_supported_modality_failure_does_not_publish(tmp_path, monkeypat
     original = meta.pydicom.dcmread
 
     def fail_detailed_read(path, *args, **kwargs):
-        if Path(path) == bad and _is_detailed_metadata_read(kwargs):
+        if Path(path.name if hasattr(path, "read") else path) == bad and _is_detailed_metadata_read(kwargs):
             raise InvalidDicomError("synthetic partial detailed-header failure")
         return original(path, *args, **kwargs)
 
