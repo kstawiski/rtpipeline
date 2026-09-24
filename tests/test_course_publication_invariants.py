@@ -39,8 +39,12 @@ BASE_FUNCTION_AST_SHA256 = {
 # attestations (no effective source) through the plan-less gate; the
 # prohibition on effective-source claims without plans is unchanged and
 # covered by test_plan_absence_contract_gate.py.
+# Updated 2026-09-24: course_contract.py reads RTRECORD headers in contract
+# validation through utils.read_record_header (one cached, no-readahead read
+# per organize run); validation logic is unchanged and its equivalence against
+# 2369fbb is covered by test_organize_io.py.
 BASE_MODULE_SHA256 = {
-    "course_contract.py": "916a75251122e679ffac3df7e6030d0b0b1fd0d5fa6d0d47f4edbb749bed8128",
+    "course_contract.py": "bb017a4770ef6fcabdaad85f96e724633d026543843dccd3a050aae0cfeea399",
     "prescription.py": "723c8657c60f48c50b0d31decf0eb458c93d435f597c56724ee748c1b264ce7a",
     "plan_approval.py": "fc213a8ef85e9ec2698c6bfec7bee3877df61b6b7d835257038cd2a470c21aed",
 }
