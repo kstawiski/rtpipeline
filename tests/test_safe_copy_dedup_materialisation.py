@@ -80,7 +80,7 @@ def test_unwritten_destination_fails_closed(tmp_path: Path, monkeypatch: pytest.
     manager = _manager(tmp_path)
     dst = tmp_path / "course" / "RP.dcm"
     monkeypatch.setattr(
-        manager, "copy_dicom", lambda s, d, skip_if_exists=False: (d, False)
+        manager, "copy_dicom", lambda s, d, skip_if_exists=False, materialize=False: (d, False)
     )
     monkeypatch.setattr(organize.os, "link", lambda a, b: None)
     monkeypatch.setattr(organize.shutil, "copy2", lambda a, b: None)
@@ -120,7 +120,7 @@ def test_stale_foreign_dedup_answer_cannot_replace_the_requested_source(
     monkeypatch.setattr(
         manager,
         "copy_dicom",
-        lambda source, destination, skip_if_exists=False: (stale, False),
+        lambda source, destination, skip_if_exists=False, materialize=False: (stale, False),
     )
     destination = tmp_path / "course" / "RP.dcm"
 

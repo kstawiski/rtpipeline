@@ -26,7 +26,7 @@ def baseline():
             return modules[name]
         return builtins.__import__(name, globals, locals, fromlist, level)
 
-    for name in ('utils', 'dicom_copy', 'meta', 'rt_details', 'course_contract', 'plan_disposition', 'organize'):
+    for name in ('utils', 'dicom_copy', 'ct', 'meta', 'rt_details', 'course_contract', 'plan_disposition', 'organize'):
         source = subprocess.check_output(
             ['git', 'show', f'{BASE}:rtpipeline/{name}.py'], cwd=ROOT, text=True
         )
@@ -40,7 +40,7 @@ def baseline():
     return modules
 
 
-def synthetic(root, *, records_per_course=3, ct_slices=2, ct_size=8, roi_names=("BODY", "PTV1"), all_slices=False):
+def synthetic(root, *, records_per_course=3, ct_slices=2, ct_size=8, roi_names=("BODY", "PTV1"), all_slices=False, shared_related=False):
     records = []
     for patient in ('SYNTH_A', 'SYNTH_B'):
         for course in range(2):
@@ -104,6 +104,29 @@ def synthetic(root, *, records_per_course=3, ct_slices=2, ct_size=8, roi_names=(
             duplicate = folder / 'duplicate' / 'plan.dcm'
             duplicate.parent.mkdir()
             duplicate.write_bytes((folder / 'plan.dcm').read_bytes())
+    if shared_related:
+        # One registration references both course frames and two shared series.
+        for patient in ('SYNTH_A', 'SYNTH_B'):
+            reg = _new_dataset('1.2.840.10008.5.1.4.1.1.66.1', generate_uid(), patient_id=patient)
+            reg.Modality = 'REG'
+            reg.SeriesInstanceUID = generate_uid()
+            reg.ReferencedFrameOfReferenceSequence = []
+            refs = []
+            for index in range(2):
+                source = pydicom.dcmread(root / patient / '0' / 'ct0.dcm')
+                source.SOPInstanceUID = generate_uid()
+                source.file_meta.MediaStorageSOPInstanceUID = source.SOPInstanceUID
+                source.SeriesInstanceUID = generate_uid()
+                source.save_as(root / patient / f'shared{index}.dcm', enforce_file_format=True)
+                ref = pydicom.Dataset()
+                ref.SeriesInstanceUID = source.SeriesInstanceUID
+                refs.append(ref)
+            reg.ReferencedSeriesSequence = refs
+            for course in range(2):
+                ref = pydicom.Dataset()
+                ref.FrameOfReferenceUID = pydicom.dcmread(root / patient / str(course) / 'ct0.dcm').FrameOfReferenceUID
+                reg.ReferencedFrameOfReferenceSequence.append(ref)
+            reg.save_as(root / patient / 'registration.dcm', enforce_file_format=True)
     records.append(make_record(root / 'SYNTH_A' / 'unresolved.dcm', generate_uid(),
                                patient_id='SYNTH_A'))
     return records
@@ -112,6 +135,7 @@ def synthetic(root, *, records_per_course=3, ct_slices=2, ct_size=8, roi_names=(
 def tree_bytes(root):
     """Compare every file; normalize only explicitly run-dependent fields.
 
+    NIFTI sidecar generated_at/nifti_generated_at describe conversion time.
     Same output path is reused in sequential runs, so no path substitution is
     needed. Ledger generated_at is a wall-clock timestamp. XLSX ZIP timestamps
     and core created/modified properties are workbook packaging timestamps;
@@ -134,6 +158,8 @@ def tree_bytes(root):
                                          rb'\1TIMESTAMP\2', content)
                     members[name] = content
                 result[relative] = members
+        elif path.name.endswith('.metadata.json') and 'NIFTI' in path.parts:
+            result[relative] = re.sub(rb'("(?:generated_at|nifti_generated_at)": ")[^"]+"', rb'\1TIMESTAMP"', data)
         elif path.name == 'organize_ledger.json':
             # Preserve byte formatting and every other field.
             result[relative] = re.sub(rb'("generated_at": ")[^"]+"', rb'\1TIMESTAMP"', data)
@@ -169,3 +195,17 @@ def require_process_pool():
             assert pool.submit(_ready).result() != os.getpid()
     except (OSError, RuntimeError) as exc:
         pytest.skip(f'process pool unavailable: {exc}')
+
+
+def synthetic_ct_conversion(config, dicom_dir, nifti_out, **kwargs):
+    """Local fixture adapter; real mask export, no external converter launch."""
+    import SimpleITK as sitk
+    paths = sorted(dicom_dir.glob('CT_*.dcm'))
+    if not paths:
+        return None
+    reader = sitk.ImageSeriesReader()
+    reader.SetFileNames([str(path) for path in paths])
+    nifti_out.mkdir(parents=True, exist_ok=True)
+    path = nifti_out / 'synthetic.nii.gz'
+    sitk.WriteImage(reader.Execute(), str(path))
+    return path

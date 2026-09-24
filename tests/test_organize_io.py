@@ -2,6 +2,7 @@
 import collections
 from dataclasses import asdict
 import os
+import json
 import shutil
 from pathlib import Path
 
@@ -13,7 +14,7 @@ from pydicom.uid import ExplicitVRLittleEndian, generate_uid
 from rtpipeline import meta, organize, segmentation, utils
 from rtpipeline.config import PipelineConfig
 from rtpipeline.dicom_copy import DicomCopyConfig, DicomCopyManager
-from organize_io_fixture import baseline, synthetic, tree_bytes, publish_manifest
+from organize_io_fixture import baseline, synthetic, tree_bytes, publish_manifest, synthetic_ct_conversion
 
 
 @pytest.mark.parametrize('modality', ['CT', 'RTSTRUCT', 'RTPLAN', 'RTDOSE', 'RTRECORD'])
@@ -103,8 +104,8 @@ def test_cache_invalidates_and_is_scoped(tmp_path, monkeypatch):
     assert utils._organize_reads.get() is None
 
 
-# More than one course worker is scheduling-dependent in the baseline itself (cache key order,
-# SOP-registry owner, related-file order); cross-worker determinism is tested separately.
+# One course worker, with and without worker processes, against the pinned baseline; the
+# cross-worker determinism tests below cover more than one course worker.
 @pytest.mark.parametrize('course_workers,processes', [(1, 1), (1, 2)])
 def test_organize_tree_matches_pinned_baseline(tmp_path, monkeypatch, caplog, course_workers, processes):
     monkeypatch.setenv('RTPIPELINE_INDEX_PROCESSES', str(processes))
@@ -113,7 +114,7 @@ def test_organize_tree_matches_pinned_baseline(tmp_path, monkeypatch, caplog, co
         from organize_io_fixture import require_process_pool
         require_process_pool()
     root, out = tmp_path / 'input', tmp_path / 'output'
-    records = synthetic(root)
+    records = synthetic(root, shared_related=True, ct_slices=12, all_slices=True)
     # XLSX creation times also feed the metadata-cache content hashes. Freeze
     # that packaging clock so the cache manifest itself is byte comparable.
     import datetime
@@ -126,9 +127,18 @@ def test_organize_tree_matches_pinned_baseline(tmp_path, monkeypatch, caplog, co
     before = baseline()
     config = PipelineConfig(root, out, tmp_path / 'logs', max_workers_override=course_workers,
                             dicom_copy_use_hardlinks=False)
-    monkeypatch.setattr(before['organize'], 'run_dcm2niix', lambda *args, **kwargs: None)
-    monkeypatch.setattr(organize, 'run_dcm2niix', lambda *args, **kwargs: None)
-    monkeypatch.setattr(segmentation, 'run_dcm2niix', lambda *args, **kwargs: None)
+    monkeypatch.setattr(before['organize'], 'run_dcm2niix', synthetic_ct_conversion)
+    monkeypatch.setattr(organize, 'run_dcm2niix', synthetic_ct_conversion)
+    monkeypatch.setattr(segmentation, 'run_dcm2niix', synthetic_ct_conversion)
+    # Apply only the documented list ordering to the baseline publication,
+    # including the XLSX cell; retain and check its original membership.
+    publish = before['organize']._validate_and_publish_case_metadata
+    original_related = {}
+    def sorted_publication(directory, metadata):
+        original_related[str(directory)] = list(metadata['dicom_related_files'])
+        metadata['dicom_related_files'] = sorted(metadata['dicom_related_files'])
+        return publish(directory, metadata)
+    monkeypatch.setattr(before['organize'], '_validate_and_publish_case_metadata', sorted_publication)
     snapshot_before = {}
     courses_before = before['organize'].organize_and_merge(config, metadata_snapshot=snapshot_before)
     before['meta'].export_metadata(config, source_snapshot=snapshot_before)
@@ -176,12 +186,29 @@ def test_organize_tree_matches_pinned_baseline(tmp_path, monkeypatch, caplog, co
     assert {str(p.relative_to(out)): p.read_bytes() for p in out.rglob('*.xlsx')} == expected_workbooks
     assert set(actual) == set(expected)
     for name in expected:
-        assert actual[name] == expected[name], name
+        if name == '_CACHE/dicom_headers.json':
+            assert actual[name] == json.dumps(json.loads(expected[name]), indent=2, sort_keys=True).encode()
+        elif name == '_CACHE/sop_uid_registry.json':
+            old_registry = json.loads(expected[name])
+            registry = json.loads(actual[name])
+            assert registry.keys() == old_registry.keys()
+            assert actual[name] == json.dumps(registry, indent=2, sort_keys=True).encode()
+            destinations = collections.defaultdict(list)
+            for path in out.rglob('*.dcm'):
+                destinations[str(pydicom.dcmread(path, stop_before_pixels=True).SOPInstanceUID)].append(str(path))
+            assert registry == {uid: min(destinations[uid]) for uid in old_registry}
+        else:
+            assert actual[name] == expected[name], name
+    for course in courses_before:
+        course.related_dicom.sort(key=str)
+    for course in courses_after:
+        related = json.loads((course.dirs.metadata / 'case_metadata.json').read_text())['dicom_related_files']
+        assert related == sorted(original_related[str(course.dirs.root)])
     assert [asdict(course) for course in courses_after] == [asdict(course) for course in courses_before]
     assert asdict(snapshot_before['identity']) == asdict(snapshot_after['identity'])
     assert [asdict(row) for row in snapshot_before['results']] == [asdict(row) for row in snapshot_after['results']]
     assert snapshot_before['candidates'] == snapshot_after['candidates']
-    assert [(r.levelno, r.getMessage()) for r in caplog.records] == expected_warnings
+    assert set((r.levelno, r.getMessage()) for r in caplog.records) == set(expected_warnings)
     assert reads == ({path: 1 for path in records} if processes == 1 else {})
     assert reuse['identity'] > 0
     if processes == 1:
@@ -299,3 +326,87 @@ def test_discovery_reuses_missing_uid_without_changing_copy_headers(tmp_path, mo
         assert organize._sop_instance_uid(path) == expected_safe_uid
         assert len(reads) == 1
     run()
+
+
+@pytest.mark.parametrize('processes', [1, 2])
+@pytest.mark.parametrize('hardlinks', [False, True])
+def test_organize_scheduling_determinism(tmp_path, monkeypatch, caplog, processes, hardlinks):
+    from organize_io_fixture import require_process_pool
+    if processes > 1:
+        require_process_pool()
+    import datetime
+    import xlsxwriter.core
+    class FixedWorkbookTime(datetime.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2024, 1, 1, tzinfo=tz)
+    monkeypatch.setattr(xlsxwriter.core, 'datetime', FixedWorkbookTime)
+    monkeypatch.setattr(organize, 'run_dcm2niix', synthetic_ct_conversion)
+    monkeypatch.setattr(segmentation, 'run_dcm2niix', synthetic_ct_conversion)
+    root, out = tmp_path / 'input', tmp_path / 'output'
+    synthetic(root, shared_related=True, ct_slices=12, all_slices=True)
+    expected = expected_warnings = None
+    # Include serial discovery/masks as the reference for the process runs.
+    for workers, count in [(1, 1), (1, processes), (1, processes), (4, processes), (4, processes)]:
+        monkeypatch.setenv('RTPIPELINE_INDEX_PROCESSES', str(count))
+        monkeypatch.setenv('RTPIPELINE_MASK_PROCESSES', str(count))
+        config = PipelineConfig(root, out, tmp_path / 'logs', max_workers_override=workers,
+                                dicom_copy_use_hardlinks=hardlinks)
+        caplog.clear()
+        snapshot = {}
+        courses = organize.organize_and_merge(config, metadata_snapshot=snapshot)
+        assert len(courses) == 4
+        assert all(list(course.dirs.segmentation_original.rglob('*.nii.gz')) for course in courses)
+        for patient in ('SYNTH_A', 'SYNTH_B'):
+            paired = [course for course in courses if course.patient_id == patient]
+            uids = [{str(pydicom.dcmread(p, stop_before_pixels=True).SOPInstanceUID)
+                     for p in course.related_dicom} for course in paired]
+            assert len(uids[0] & uids[1]) == 3
+        meta.export_metadata(config, source_snapshot=snapshot)
+        publish_manifest(courses, out)
+        actual = tree_bytes(out)
+        # Frozen clock: compare raw ZIP bytes too, not just normalized XML.
+        actual.update({str(p.relative_to(out)): p.read_bytes() for p in out.rglob('*.xlsx')})
+        warnings = {(r.levelno, r.getMessage()) for r in caplog.records}
+        if expected is None:
+            expected, expected_warnings = actual, warnings
+        else:
+            assert actual.keys() == expected.keys()
+            for name in expected:
+                assert actual[name] == expected[name], (workers, count, name)
+            assert warnings == expected_warnings
+        shutil.rmtree(out)
+
+
+@pytest.mark.parametrize('hardlinks', [False, True])
+@pytest.mark.parametrize('reverse', [False, True])
+def test_materialization_does_not_depend_on_registry_owner(tmp_path, hardlinks, reverse):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    from synthetic_rt_fixtures import make_record
+    source = make_record(tmp_path / 'source.dcm', generate_uid())
+    alias = tmp_path / 'alias.dcm'
+    ds = pydicom.dcmread(source)
+    ds.SeriesDescription = 'Distinct synthetic source with the same SOP UID'
+    ds.save_as(alias)
+    sources = [source, alias]
+    destinations = [tmp_path / 'output' / name / 'record.dcm' for name in ('a', 'z')]
+    stamps = [p.stat().st_ctime_ns for p in sources]
+    manager = DicomCopyManager(DicomCopyConfig(use_hardlinks=hardlinks), tmp_path / 'output')
+    first_done = Event()
+    first = int(reverse)
+    def copy(index):
+        if index != first:
+            assert first_done.wait(10)
+        result = manager.copy_dicom(sources[index], destinations[index], materialize=True)
+        if index == first:
+            first_done.set()
+        return result
+    with ThreadPoolExecutor(2) as pool:
+        results = list(pool.map(copy, range(2)))
+    assert results == [(p, True) for p in destinations]
+    assert manager.get_existing_copy(source) == destinations[0]
+    for src, dst, stamp in zip(sources, destinations, stamps):
+        assert dst.read_bytes() == src.read_bytes()
+        assert dst.stat().st_ino != src.stat().st_ino
+        assert src.stat().st_ctime_ns == stamp
