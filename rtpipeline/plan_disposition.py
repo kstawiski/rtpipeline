@@ -21,7 +21,7 @@ from .utils import read_dicom_header, read_record_header
 
 from .course_contract import _record_delivery_session_evidence, _record_delivery_session_key
 from .organize_ledger import _write_json_atomic
-from .utils import _scoped_walk
+from .utils import _scoped_walk, parallel_map_files, DEFAULT_INDEX_WORKERS
 
 SCHEMA = "rtpipeline-source-plan-dispositions-v1"
 RELATIVE_PATH = Path("_COURSES/source_plan_dispositions.json")
@@ -62,12 +62,21 @@ def source_scope_fingerprint(root, patient_ids=None):
         return None
     def fail(error):
         raise error
-    entries = []
-    for base, _, files in _scoped_walk(root, patient_ids, onerror=fail):
-        for name in files:
-            path = Path(base) / name
-            st = path.stat()
-            entries.append((str(path.relative_to(root)), st.st_size, st.st_mtime_ns))
+    def paths():
+        try:
+            for base, _, files in _scoped_walk(root, patient_ids, onerror=fail):
+                for name in files:
+                    yield Path(base) / name
+        except OSError as exc:
+            # Queue walk failures behind every earlier stat, as in the serial
+            # loop. Do not let iterator prefetch change which error is raised.
+            yield exc
+    def entry(path):
+        if isinstance(path, OSError):
+            raise path
+        st = path.stat()
+        return str(path.relative_to(root)), st.st_size, st.st_mtime_ns
+    entries = list(parallel_map_files(paths(), entry, DEFAULT_INDEX_WORKERS))
     return hashlib.sha256(json.dumps(sorted(entries)).encode()).hexdigest()
 
 

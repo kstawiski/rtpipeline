@@ -15,7 +15,7 @@ from pydicom.uid import generate_uid
 from synthetic_rt_fixtures import make_plan, make_dose, make_struct, make_record, _new_dataset
 
 ROOT = Path(__file__).resolve().parents[1]
-BASE = '2369fbb'
+BASE = '3af9f51'
 
 
 def baseline():
@@ -40,14 +40,14 @@ def baseline():
     return modules
 
 
-def synthetic(root, *, records_per_course=3, ct_slices=2, ct_size=8):
+def synthetic(root, *, records_per_course=3, ct_slices=2, ct_size=8, roi_names=("BODY", "PTV1"), all_slices=False):
     records = []
     for patient in ('SYNTH_A', 'SYNTH_B'):
         for course in range(2):
             folder = root / patient / str(course)
             study, frame, struct, plan, dose = [generate_uid() for _ in range(5)]
             common = dict(study_uid=study, frame_uid=frame, patient_id=patient)
-            make_struct(folder / 'struct.dcm', struct, **common)
+            make_struct(folder / 'struct.dcm', struct, roi_names=roi_names, **common)
             make_plan(folder / 'plan.dcm', plan, struct_uid=struct,
                       date=f'20240{course + 1}01', fractions=records_per_course,
                       rx_gy=6.0, **common)
@@ -88,6 +88,17 @@ def synthetic(root, *, records_per_course=3, ct_slices=2, ct_size=8):
                 ref.SeriesInstanceUID = series
                 ref.ContourImageSequence = images
                 structure.ReferencedFrameOfReferenceSequence[0].RTReferencedStudySequence[0].RTReferencedSeriesSequence = [ref]
+                for roi in structure.ROIContourSequence:
+                    if all_slices:
+                        import copy
+                        template = roi.ContourSequence[0]
+                        roi.ContourSequence = [copy.deepcopy(template) for _ in images]
+                    for i, contour in enumerate(roi.ContourSequence):
+                        contour.ContourImageSequence = [images[i]]
+                        if all_slices:
+                            points = list(contour.ContourData)
+                            points[2::3] = [float(i * 5)] * (len(points) // 3)
+                            contour.ContourData = points
                 structure.save_as(folder / 'struct.dcm', enforce_file_format=True)
             # A separate path with exactly the same SOP and source bytes.
             duplicate = folder / 'duplicate' / 'plan.dcm'
@@ -144,3 +155,17 @@ def publish_manifest(courses, output):
     path = output / 'manifests/courses.json'
     path.parent.mkdir(parents=True, exist_ok=True)
     helpers['_write_text_atomic'](path, json.dumps(payload, indent=2, sort_keys=True) + '\n')
+
+
+def require_process_pool():
+    """Do not mistake the infrastructure fallback for process-path coverage."""
+    import multiprocessing
+    import os
+    from concurrent.futures import ProcessPoolExecutor
+    import pytest
+    from rtpipeline.organize_scale import _ready
+    try:
+        with ProcessPoolExecutor(2, mp_context=multiprocessing.get_context('spawn')) as pool:
+            assert pool.submit(_ready).result() != os.getpid()
+    except (OSError, RuntimeError) as exc:
+        pytest.skip(f'process pool unavailable: {exc}')

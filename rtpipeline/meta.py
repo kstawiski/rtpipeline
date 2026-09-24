@@ -4,6 +4,7 @@ import hashlib
 import json
 import logging
 import os
+import stat as stat_module
 import re
 import tempfile
 from collections import defaultdict
@@ -685,7 +686,7 @@ def _source_candidate_paths(
 def _inventory_stat(path: Path) -> tuple[Path, int, int, int, int, int]:
     """Return a strong file-inventory record or raise on an unreadable candidate."""
     stat = path.stat()
-    if not path.is_file():
+    if not stat_module.S_ISREG(stat.st_mode):
         raise OSError(f"metadata source candidate is not a regular file: {path}")
     return (
         path,
