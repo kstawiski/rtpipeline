@@ -68,6 +68,7 @@ def _production_call(ct, source, *, requiredness, sink):
         failure_outcomes=sink,
         tolerate_unselected=requiredness is not None,
         requiredness_by_roi=requiredness,
+        unmeasurable_required_is_disposition=True,
     )
 
 
@@ -115,13 +116,25 @@ def test_production_wiring_tolerates_unselected_failure(tmp_path):
     ] == [("adrenal_gland_right", "ROI_CONTOUR_PARTIALLY_UNPARSEABLE")]
 
 
-def test_production_wiring_selected_failure_stays_fatal(tmp_path):
+def test_production_wiring_selected_structural_status_is_disposition(tmp_path):
+    """Changed 2026-09-24: a selected ROI with an unreadable contour is a
+    governed structural non-measurement in robustness, not a course failure.
+    The main-radiomics call shape (no opt-in flag) still raises."""
     ct, source = _two_roi_rtstruct(tmp_path)
     requiredness = _robustness_selection_requiredness(
         source, ["PTV", "adrenal_gland_right"]
     )
+    sink: list = []
+    masks = _production_call(ct, source, requiredness=requiredness, sink=sink)
+    assert "PTV" in masks and "adrenal_gland_right" not in masks
+    assert [(e["roi_name"], e["status"], e["failure_kind"], e["structural_code"])
+            for e in sink] == [(
+        "adrenal_gland_right", "structural_nonmeasurement",
+        "unmeasurable_source_contour", "ROI_CONTOUR_PARTIALLY_UNPARSEABLE",
+    )]
     with pytest.raises(RadiomicsCourseExtractionError, match="PARTIALLY_UNPARSEABLE"):
-        _production_call(ct, source, requiredness=requiredness, sink=[])
+        _rtstruct_masks(ct, source, failure_outcomes=[], tolerate_unselected=True,
+                        requiredness_by_roi=requiredness)
 
 
 def test_production_wiring_without_expansion_stays_fatal(tmp_path):

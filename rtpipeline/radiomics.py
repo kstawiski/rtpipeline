@@ -844,6 +844,18 @@ _CONTOURLESS_STRUCTURAL_CODES = frozenset({
     "ROI_DECLARED_EMPTY_CONTOUR_SEQUENCE",
 })
 
+# Inventory findings about the contour data an RTSTRUCT carries for a volumetric
+# ROI: some or all of its contour items cannot be read, or closed and open
+# geometry are mixed. They are properties of the source bytes, decided before
+# any mask is rasterized, so they are not technical extraction failures. A
+# caller that opts in may record one as a terminal structural non-measurement
+# of that ROI instead of failing every other ROI with it.
+_UNMEASURABLE_CONTOUR_STRUCTURAL_CODES = frozenset({
+    "ROI_CONTOUR_UNPARSEABLE",
+    "ROI_CONTOUR_PARTIALLY_UNPARSEABLE",
+    "ROI_CONTOUR_MIXED_GEOMETRY",
+})
+
 
 def _rtstruct_masks(
     dicom_series_path: Path,
@@ -857,6 +869,7 @@ def _rtstruct_masks(
     structural_inventory: Any = None,
     tolerate_unselected: bool = False,
     contourless_required_is_absence: bool = False,
+    unmeasurable_required_is_disposition: bool = False,
 ) -> Dict[str, np.ndarray]:
     """Convert RTSTRUCT ROIs to boolean masks under an explicit source policy.
 
@@ -869,6 +882,12 @@ def _rtstruct_masks(
     extraction continues; a required one still raises) without enabling any
     of ``best_effort``'s wider tolerances (swallowed inspection failures,
     silent empty returns). Whole-source failures therefore stay fatal.
+
+    ``unmeasurable_required_is_disposition`` records a required ROI whose
+    inventory code is in ``_UNMEASURABLE_CONTOUR_STRUCTURAL_CODES`` as a
+    ``structural_nonmeasurement`` outcome instead of raising. It needs an
+    outcome sink. Technical failures of a required ROI (unreadable mask,
+    empty rasterization) still raise.
     """
     normalized_skips = {
         ''.join(ch for ch in str(name).lower() if ch.isalnum())
@@ -1012,6 +1031,40 @@ def _rtstruct_masks(
                         "recording the absence and continuing with the ROIs that carry data",
                         observation.name, rs_path, observation.structural_code,
                     )
+                continue
+            if (
+                unmeasurable_required_is_disposition
+                and observation.structural_code in _UNMEASURABLE_CONTOUR_STRUCTURAL_CODES
+                and _is_required(observation.name)
+            ):
+                # The source itself says this ROI's contours cannot be read as
+                # a volume. Nothing is extracted from a partial reading, and
+                # the other ROIs of the source are still measured.
+                if failure_outcomes is None:
+                    raise ValueError(
+                        "structural ROI dispositions require an outcome sink"
+                    )
+                from .rtstruct_identity import require_rtstruct_identity
+
+                failure_outcomes.append({
+                    "roi_name": observation.name,
+                    "status": "structural_nonmeasurement",
+                    "failure_kind": "unmeasurable_source_contour",
+                    "reason": (
+                        f"required ROI {observation.name!r} in {rs_path} has "
+                        f"structural status {observation.structural_code}; its "
+                        "contour data cannot be read as one volume"
+                    ),
+                    "structural_code": observation.structural_code,
+                    "rtstruct_sop_instance_uid": require_rtstruct_identity(rs_path),
+                    "roi_number": str(observation.roi_number),
+                    "source_path": str(rs_path),
+                })
+                logger.warning(
+                    "Required ROI %s in %s has structural status %s; recording a "
+                    "structural non-measurement and continuing with the other ROIs",
+                    observation.name, rs_path, observation.structural_code,
+                )
                 continue
             _record_or_raise(
                 observation.name,
