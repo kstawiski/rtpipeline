@@ -4,6 +4,10 @@ import hashlib
 import logging
 import os
 from collections import deque
+from contextvars import ContextVar, copy_context
+from functools import wraps
+import copy
+import threading
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed, wait, FIRST_COMPLETED
 from itertools import chain, islice
 from pathlib import Path
@@ -282,18 +286,18 @@ def _scoped_patient_dirs(root: Path, patient_ids: Optional[Iterable[str]] = None
 def _default_index_workers() -> int:
     """Read the organize-stage header-read worker count from the environment (once).
 
-    ``RTPIPELINE_INDEX_WORKERS`` (default 32) controls how many threads the
+    ``RTPIPELINE_INDEX_WORKERS`` (default 64) controls how many threads the
     generic per-file DICOM-header discovery loops (``index_ct_series``,
     ``extract_rt``, ``_index_series_and_registrations``) use to read files
-    concurrently. Capped to 64 to avoid oversubscribing NFS/thread resources on
-    hosts with few cores or a conservative NFS server.
+    concurrently, independently of CPU workers. Capped to 256 to bound
+    concurrent header memory and pressure on the storage server.
     """
-    raw = os.environ.get("RTPIPELINE_INDEX_WORKERS", "32")
+    raw = os.environ.get("RTPIPELINE_INDEX_WORKERS", "64")
     try:
         workers = int(raw)
     except (TypeError, ValueError):
-        workers = 32
-    return max(1, min(workers, 64))
+        workers = 64
+    return max(1, min(workers, 256))
 
 
 # Read once at import time; callers pass max_workers=None to pick this default up.
@@ -367,9 +371,9 @@ def parallel_map_files(
     the exact sequence a plain serial ``(fn(p) for p in paths)`` would produce,
     just faster, so downstream assembly logic is unaffected by thread scheduling.
 
-    Memory is BOUNDED: no more than ``min(chunk_size, max_workers)`` futures and
-    decoded results are resident at once.  A slow early file cannot cause later
-    completed datasets to accumulate.  This matters because nested RT headers
+    Memory is BOUNDED: no more than ``min(chunk_size, 4 * max_workers)`` futures and
+    decoded results are resident at once. A slow early file can accumulate
+    completed datasets only within this window. This matters because nested RT headers
     may be tens of megabytes even without pixel data.  Results still leave the
     window in exact input order.  A single executor is reused for the full run.
 
@@ -383,7 +387,7 @@ def parallel_map_files(
             yield fn(item)
         return
 
-    in_flight_limit = min(max(1, chunk_size), max_workers)
+    in_flight_limit = min(max(1, chunk_size), 4 * max_workers)
     # Peek the first two items: a 0- or 1-item input never justifies a thread pool.
     head = list(islice(items_iter, 2))
     if len(head) < 2:
@@ -395,7 +399,7 @@ def parallel_map_files(
     with ThreadPoolExecutor(max_workers=max_workers) as ex:
         pending = deque()
         for item in islice(stream, in_flight_limit):
-            pending.append(ex.submit(fn, item))
+            pending.append(ex.submit(copy_context().run, fn, item))
         while pending:
             future = pending.popleft()
             yield future.result()
@@ -403,7 +407,7 @@ def parallel_map_files(
                 item = next(stream)
             except StopIteration:
                 continue
-            pending.append(ex.submit(fn, item))
+            pending.append(ex.submit(copy_context().run, fn, item))
 
 
 def validate_path(path: Path | str, base: Path | str, allow_absolute: bool = False) -> Path:
@@ -452,12 +456,159 @@ def validate_path(path: Path | str, base: Path | str, allow_absolute: bool = Fal
     return resolved
 
 
+def read_dicom_header(path: str | os.PathLike, **kwargs) -> FileDataset:
+    """Read DICOM headers with bounded buffering and no speculative readahead.
+
+    Callers retain control of force/specific_tags and exception handling. Pixel
+    consumers must continue to use dcmread directly.
+    """
+    filename = str(path)
+    with open(filename, "rb", buffering=64 * 1024) as stream:
+        try:
+            os.posix_fadvise(stream.fileno(), 0, 0, os.POSIX_FADV_RANDOM)
+        except (AttributeError, OSError, NotImplementedError):
+            pass
+        dataset = pydicom.dcmread(stream, **kwargs)
+    dataset.filename = filename
+    return dataset
+
+
+class SourceIdentity(dict):
+    """The existing serialized copy header plus its uncoerced missing-UID meaning."""
+
+    __slots__ = ("sop_instance_uid",)
+
+
+class OrganizeReadCache:
+    """Ephemeral source evidence; never serialized into checkpoint/header files."""
+
+    def __init__(self):
+        self.identities = {}
+        self.records = {}
+        self.locks = [threading.Lock() for _ in range(256)]
+
+
+def _source_read_key(path):
+    resolved = Path(path).resolve()
+    stat = resolved.stat()
+    return str(resolved), stat.st_size, stat.st_mtime_ns
+
+
+_organize_reads = ContextVar("organize_reads", default=None)
+
+
+def organize_read_cache(fn):
+    """Give each organize call its own cache, including its discovery workers."""
+    @wraps(fn)
+    def run(*args, **kwargs):
+        token = _organize_reads.set(OrganizeReadCache())
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            _organize_reads.reset(token)
+    return run
+
+
+def cached_source_identity(path):
+    cache = _organize_reads.get()
+    if cache is None:
+        return None
+    try:
+        return cache.identities.get(_source_read_key(path))
+    except OSError:
+        return None
+
+
+def read_record_header(path, *, force=True):
+    """Reuse discovery evidence only while the source inventory is unchanged."""
+    cache = _organize_reads.get()
+    if cache is None:
+        return read_dicom_header(path, stop_before_pixels=True, force=force)
+    key = _source_read_key(path)
+    with cache.locks[hash(key[0]) % len(cache.locks)]:
+        value = _read_record_cached(path, key, cache)
+    if not force and value.preamble is None:
+        raise pydicom.errors.InvalidDicomError(
+            "File is missing DICOM File Meta Information header or the 'DICM' "
+            "prefix is missing from the header. Use force=True to force reading."
+        )
+    return value
+
+
+def _read_record_cached(path, key, cache):
+    if key not in cache.records:
+        try:
+            value = read_dicom_header(path, stop_before_pixels=True, force=True)
+        except Exception as exc:
+            value = exc
+        if _source_read_key(path) == key:
+            cache.records[key] = value
+    else:
+        value = cache.records[key]
+    if isinstance(value, Exception):
+        raise value
+    return value
+
+
+# All additional top-level fields consumed by delivery evidence and copy headers.
+# Nested session items are already retained intact by ORGANIZE_DISCOVERY_TAGS.
+_DISCOVERY_EXTRA_TAGS = [
+    Tag(0x0008, 0x0016),  # SOPClassUID
+    Tag(0x0008, 0x0021),  # SeriesDate
+    Tag(0x3008, 0x0090),  # ReferencedCalculatedDoseReferenceSequence
+    Tag(0x3008, 0x0050),  # TreatmentSummaryCalculatedDoseReferenceSequence
+]
+
+
+def read_discovery_header(path):
+    cache = _organize_reads.get()
+    if cache is None:
+        return read_dicom_header(path, force=True, stop_before_pixels=True,
+                                 specific_tags=ORGANIZE_DISCOVERY_TAGS)
+    key = _source_read_key(path)
+    with cache.locks[hash(key[0]) % len(cache.locks)]:
+        return _read_discovery_cached(path, key, cache)
+
+
+def _read_discovery_cached(path, key, cache):
+    dataset = cache.records.get(key)
+    if dataset is None or isinstance(dataset, Exception):
+        dataset = read_dicom_header(
+            path, force=True, stop_before_pixels=True,
+            specific_tags=ORGANIZE_DISCOVERY_TAGS + _DISCOVERY_EXTRA_TAGS,
+        )
+    if _source_read_key(path) == key:
+        try:
+            identity = SourceIdentity({
+                field: (getattr(dataset, field, None) if field in {"InstanceNumber", "SeriesNumber"}
+                        else str(getattr(dataset, field, "")))
+                for field in ("SOPInstanceUID", "SOPClassUID", "Modality", "PatientID",
+                              "StudyInstanceUID", "SeriesInstanceUID", "InstanceNumber", "SeriesNumber")
+            })
+            identity.sop_instance_uid = str(getattr(dataset, "SOPInstanceUID", "") or "")
+            cache.identities[key] = identity
+        except Exception:
+            # A malformed extra copy field must not change discovery's exception
+            # boundary. Its ordinary copy-time read retains the original checks.
+            pass
+        if str(getattr(dataset, "Modality", "") or "").strip().upper() == "RTRECORD":
+            cache.records[key] = dataset
+    # Preserve the original discovery projection, including nested metadata search.
+    projected = copy.copy(dataset)
+    projected._dict = dataset._dict.copy()
+    projected.filename = str(path)
+    for tag in _DISCOVERY_EXTRA_TAGS:
+        if tag not in ORGANIZE_DISCOVERY_TAGS and tag in projected:
+            del projected[tag]
+    return projected
+
+
 def read_dicom(path: str | os.PathLike) -> FileDataset | None:
     try:
         # This helper is used for header-centric indexing/metadata extraction.
         # Avoid reading large PixelData blobs (e.g., CT/CBCT) to keep the pipeline I/O-bound
         # stages (organize, dedup, indexing) fast and memory-efficient.
-        return pydicom.dcmread(str(path), force=True, stop_before_pixels=True)
+        return read_dicom_header(str(path), force=True, stop_before_pixels=True)
     except Exception as e:
         logger.debug("Failed to read DICOM %s: %s", path, e)
         return None
@@ -466,12 +617,7 @@ def read_dicom(path: str | os.PathLike) -> FileDataset | None:
 def read_organize_discovery_dicom(path: str | os.PathLike) -> FileDataset | None:
     """Read the bounded tag projection used by combined organize discovery."""
     try:
-        return pydicom.dcmread(
-            str(path),
-            force=True,
-            stop_before_pixels=True,
-            specific_tags=ORGANIZE_DISCOVERY_TAGS,
-        )
+        return read_discovery_header(path)
     except Exception as e:
         logger.debug("Failed to read DICOM discovery tags from %s: %s", path, e)
         return None
@@ -907,7 +1053,10 @@ def run_tasks_with_adaptive_workers(
                 idx = next(idx_iter, None)
                 if idx is None:
                     return None
-                fut = ex.submit(func, seq[idx])
+                if not effective_use_processes and _organize_reads.get() is not None:
+                    fut = ex.submit(copy_context().run, func, seq[idx])
+                else:
+                    fut = ex.submit(func, seq[idx])
                 future_to_idx[fut] = idx
                 task_start_times[fut] = perf_counter()
                 return fut

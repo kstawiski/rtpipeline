@@ -540,8 +540,12 @@ def _list_of_dicts(value: object, field: str) -> list[dict[str, Any]]:
     return list(value)
 
 
-def _read_header(path: Path, field: str):
+def _read_header(path: Path, field: str, *, treatment_record: bool = False):
     try:
+        if treatment_record:
+            from .utils import read_record_header
+
+            return read_record_header(path)
         return pydicom.dcmread(str(path), stop_before_pixels=True, force=True)
     except Exception as exc:
         raise CourseContractError(
@@ -1826,7 +1830,9 @@ def validate_course_contract(contract: CourseContract) -> CourseContract:
                 f"{field}.record_paths[{record_index}]",
             )
             assert record_path is not None
-            record = _read_header(record_path, f"{field}.record_paths[{record_index}]")
+            record = _read_header(
+                record_path, f"{field}.record_paths[{record_index}]", treatment_record=True
+            )
             modality = str(getattr(record, "Modality", "") or "").strip().upper()
             if modality != "RTRECORD":
                 raise CourseContractError(

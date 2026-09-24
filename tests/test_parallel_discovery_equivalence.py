@@ -563,11 +563,11 @@ def test_default_index_workers_env_parsing(monkeypatch):
             monkeypatch.setenv("RTPIPELINE_INDEX_WORKERS", value)
         return _default_index_workers()
 
-    assert _with_env(None) == 32          # unset -> default 32
-    assert _with_env("") == 32            # empty -> default 32
-    assert _with_env("garbage") == 32     # non-int -> default 32
+    assert _with_env(None) == 64          # unset -> default 64
+    assert _with_env("") == 64            # empty -> default 64
+    assert _with_env("garbage") == 64     # non-int -> default 64
     assert _with_env("8") == 8            # honoured
-    assert _with_env("100") == 64         # clamped to max 64
+    assert _with_env("1000") == 256       # clamped to max 256
     assert _with_env("0") == 1            # <=0 -> min 1
     assert _with_env("-5") == 1           # negative -> min 1
     assert _with_env("64") == 64          # boundary
@@ -613,7 +613,7 @@ def test_parallel_map_files_window_order_preserved():
     assert list(parallel_map_files(items, lambda x: x, max_workers=4, chunk_size=999)) == items
 
 
-def test_parallel_map_files_never_queues_more_results_than_workers():
+def test_parallel_map_files_bounds_the_four_worker_window():
     """A blocked first item cannot let later completed results fill cohort memory."""
     first_started = threading.Event()
     release_first = threading.Event()
@@ -640,9 +640,9 @@ def test_parallel_map_files_never_queues_more_results_than_workers():
     try:
         assert first_started.wait(timeout=2)
         deadline = time.monotonic() + 2
-        while len(started) < 4 and time.monotonic() < deadline:
+        while len(started) < 16 and time.monotonic() < deadline:
             time.sleep(0.01)
-        assert 2 <= len(started) <= 4
+        assert len(started) == 16
     finally:
         release_first.set()
         consumer.join(timeout=5)
