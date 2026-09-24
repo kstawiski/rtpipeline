@@ -1948,11 +1948,18 @@ def _prepare_radiomics_task(
     large_roi: bool,
     run_identifier: Optional[str] = None,
     source_identity: Optional[Mapping[str, Any]] = None,
+    *,
+    _cache: Optional[dict] = None,
 ) -> Tuple[Path, Dict[str, Any]]:
     """Save image/mask to temp files and prepare a task descriptor.
 
     Returns (mask_path, task_params) tuple suitable for passing to
     ``_isolated_radiomics_extraction_with_retry``.
+
+    ``_cache`` is private to one ROI's immutable preparation loop. It retains
+    strong image references so Python object-id reuse cannot alias digests.
+    Discard it before changing images, config, ROI, or parameter files.
+
     """
     import hashlib
 
@@ -1974,16 +1981,17 @@ def _prepare_radiomics_task(
         new_run_identifier,
     )
 
-    # Deduplicate only when the exact same image content is reused.
-    # Geometry-only keys are unsafe here because noise perturbations share
-    # origin/spacing/size but differ in voxel intensities. id(image) is also
-    # unsafe: CPython can reuse the id of a garbage-collected image for an
-    # unrelated later image, which would silently return a stale on-disk
-    # NRRD cache hit for different voxel data. Hash the actual voxel bytes
-    # instead so the key tracks content, not object identity.
-    img_key = hashlib.sha1(
-        sitk.GetArrayViewFromImage(image).tobytes(), usedforsecurity=False
-    ).hexdigest()
+    if _cache is None:
+        _cache = {}
+    images = _cache.setdefault("images", {})
+    image_entry = images.get(id(image))
+    if image_entry is None:
+        img_key = hashlib.sha1(
+            memoryview(sitk.GetArrayViewFromImage(image)), usedforsecurity=False
+        ).hexdigest()
+        images[id(image)] = (image, img_key)
+    else:
+        img_key = image_entry[1]
     img_path = temp_dir / f"img_{img_key}.nrrd"
     if not img_path.exists():
         sitk.WriteImage(image, str(img_path))
@@ -2010,30 +2018,43 @@ def _prepare_radiomics_task(
             + "; ".join(mismatches)
         )
 
-    perturbed_mask_identity = _perturbed_mask_identity(mask)
+    masks = _cache.setdefault("masks", {})
+    mask_entry = masks.get(id(mask))
+    if mask_entry is None:
+        perturbed_mask_identity = _perturbed_mask_identity(mask)
+        native_voxel_count = int(np.count_nonzero(sitk.GetArrayViewFromImage(mask)))
+        masks[id(mask)] = (mask, perturbed_mask_identity, native_voxel_count)
+    else:
+        _, perturbed_mask_identity, native_voxel_count = mask_entry
     mask_path = temp_dir / f"mask_{perturbed_mask_identity.split(':', 1)[1]}.nrrd"
-    sitk.WriteImage(sitk.Cast(mask, sitk.sitkUInt8), str(mask_path))
+    written = _cache.setdefault("written_masks", set())
+    if mask_path not in written:
+        sitk.WriteImage(sitk.Cast(mask, sitk.sitkUInt8), str(mask_path))
+        written.add(mask_path)
 
-    params_file = _get_params_file(config, "CT")
-    custom_path = getattr(config, "custom_structures_config", None)
-    decision = classify_ct_roi(
-        source,
-        roi_name,
-        custom_provenance=(
-            load_custom_structure_provenance(Path(custom_path))
-            if source == "Custom" and custom_path
-            else None
-        ),
-    )
-    configured_hashes = {
-        arm: configured_parameter_hash(
-            params_file,
-            arm=arm,
-            window=(decision.primary_resegment_range_hu if arm == PRIMARY_ARM else None),
-            large_roi=large_roi,
+    if "invariants" not in _cache:
+        params_file = _get_params_file(config, "CT")
+        custom_path = getattr(config, "custom_structures_config", None)
+        decision = classify_ct_roi(
+            source,
+            roi_name,
+            custom_provenance=(
+                load_custom_structure_provenance(Path(custom_path))
+                if source == "Custom" and custom_path
+                else None
+            ),
         )
-        for arm in CT_EXTRACTION_ARMS
-    }
+        configured_hashes = {
+            arm: configured_parameter_hash(
+                params_file,
+                arm=arm,
+                window=(decision.primary_resegment_range_hu if arm == PRIMARY_ARM else None),
+                large_roi=large_roi,
+            )
+            for arm in CT_EXTRACTION_ARMS
+        }
+        _cache["invariants"] = (params_file, decision, configured_hashes)
+    params_file, decision, configured_hashes = _cache["invariants"]
     task_params = {
         "image_path": str(img_path),
         "mask_path": str(mask_path),
@@ -2055,7 +2076,7 @@ def _prepare_radiomics_task(
         },
         "run_identifier": run_identifier or new_run_identifier(),
         "code_revision": current_code_revision(),
-        "native_voxel_count": int(np.count_nonzero(sitk.GetArrayViewFromImage(mask))),
+        "native_voxel_count": native_voxel_count,
         "configured_parameter_hashes": configured_hashes,
         "measurement_type": ROBUSTNESS_MEASUREMENT_TYPE,
         "perturbed_mask_identity": perturbed_mask_identity,
