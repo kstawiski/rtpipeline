@@ -903,18 +903,50 @@ def _write_tabular_outputs(
 
 
 def _copy_supplemental_sources() -> None:
-    supplemental_sources = {
-        "plans.xlsx": OUTPUT_DIR / "Data" / "plans.xlsx",
-        "structure_sets.xlsx": OUTPUT_DIR / "Data" / "structure_sets.xlsx",
-        "dosimetrics.xlsx": OUTPUT_DIR / "Data" / "dosimetrics.xlsx",
-        "fractions.xlsx": OUTPUT_DIR / "Data" / "fractions.xlsx",
-        "metadata.xlsx": OUTPUT_DIR / "Data" / "metadata.xlsx",
-        "CT_images.xlsx": OUTPUT_DIR / "Data" / "CT_images.xlsx",
-    }
-    for filename, source_path in supplemental_sources.items():
-        if not source_path.exists():
+    # Metadata export publishes each table as a workbook, or as Parquet when
+    # the table exceeds Excel's sheet limits; copy whichever format exists.
+    supplemental_stems = (
+        "plans",
+        "structure_sets",
+        "dosimetrics",
+        "fractions",
+        "metadata",
+        "CT_images",
+    )
+    # fractions.xlsx in _RESULTS is also this script's per-course aggregate.
+    aggregated_outputs = {Path(str(snakemake.output.fractions))}  # type: ignore[name-defined]
+    for stem in supplemental_stems:
+        sources = [
+            OUTPUT_DIR / "Data" / f"{stem}{suffix}"
+            for suffix in (".xlsx", ".parquet")
+            if (OUTPUT_DIR / "Data" / f"{stem}{suffix}").exists()
+        ]
+        if len(sources) > 1:
+            print(
+                "[aggregate_results] Warning: both "
+                f"{stem}.xlsx and {stem}.parquet exist in {OUTPUT_DIR / 'Data'}; "
+                "the metadata export did not finish, so neither is copied"
+            )
+        stale = [
+            RESULTS_DIR / f"{stem}{suffix}"
+            for suffix in (".xlsx", ".parquet")
+            if len(sources) > 1
+            or (sources and sources[0].suffix != suffix)
+        ]
+        for stale_path in stale:
+            if stale_path in aggregated_outputs:
+                continue
+            try:
+                stale_path.unlink(missing_ok=True)
+            except Exception as exc:
+                print(
+                    "[aggregate_results] Warning: failed to remove stale "
+                    f"{stale_path}: {exc}"
+                )
+        if len(sources) != 1:
             continue
-        destination_path = RESULTS_DIR / filename
+        source_path = sources[0]
+        destination_path = RESULTS_DIR / source_path.name
         try:
             shutil.copy2(source_path, destination_path)
         except Exception as exc:
