@@ -863,6 +863,52 @@ _UNMEASURABLE_CONTOUR_STRUCTURAL_CODES = frozenset({
     "ROI_CONTOUR_MIXED_GEOMETRY",
 })
 
+# Per-ROI findings of the scoped RTSTRUCT reader (rtstruct_geometry): the
+# ROI's contours do not bind to exactly one image of the planning CT series.
+# Main CT radiomics publishes such an ROI as ``unresolved_source_scope`` and
+# measures nothing from it.
+_SOURCE_SCOPE_STRUCTURAL_CODES = frozenset({
+    "ROI_UNRESOLVED_SOURCE_SCOPE",
+    "ROI_MULTISERIES_SOURCE_SCOPE",
+})
+
+
+def _scoped_rtstruct_readers(dicom_series_path: Path, rs_path: Path) -> Tuple[Any, Any]:
+    """Build the scoped reader and, where rt_utils accepts the file, its own reader.
+
+    Returns ``(scoped, legacy)``. ``legacy`` is the reader
+    ``RTStructBuilder.create_from`` would return, built from the same dataset
+    and CT series, or None when rt_utils rejects the file only because it
+    references images outside the series. rt_utils refuses the whole file
+    then, while the scoped reader resolves each ROI against the series.
+    Every other failure raises, as ``create_from`` or ``create_scoped_rtstruct``
+    would.
+    """
+    from rt_utils import RTStructBuilder, image_helper
+    from rt_utils.rtstruct import RTStruct
+
+    from .rtstruct_geometry import ScopedRTStruct
+    from .rtstruct_identity import validate_rtstruct_identity
+
+    # The order of create_from: series first, then the RTSTRUCT and its checks.
+    series_data = image_helper.load_sorted_image_series(str(dicom_series_path))
+    dataset = pydicom.dcmread(str(rs_path))
+    RTStructBuilder.validate_rtstruct(dataset)
+    try:
+        RTStructBuilder.validate_rtstruct_series_references(dataset, series_data)
+    except Exception as exc:
+        legacy = None
+        logger.info(
+            "rt_utils rejects %s as a whole (%s); reading its ROIs through the "
+            "scoped reader only", rs_path, exc,
+        )
+    else:
+        legacy = RTStruct(series_data, dataset)
+    validate_rtstruct_identity(dataset)
+    # ScopedRTStruct copies what it changes; ``dataset`` stays the file's
+    # content, which the legacy reader reads.
+    return ScopedRTStruct(dataset, series_data), legacy
+
 
 # rt_utils reads one ROI by scanning every contour item once per CT slice and
 # writing each slice into a freshly allocated float64-then-bool volume. A
@@ -1049,6 +1095,7 @@ def _rtstruct_masks(
     contourless_required_is_absence: bool = False,
     unmeasurable_required_is_disposition: bool = False,
     retain_mask: Optional[Callable[[str], bool]] = None,
+    scoped_reader: bool = False,
 ) -> Dict[str, Optional[np.ndarray]]:
     """Convert RTSTRUCT ROIs to boolean masks under an explicit source policy.
 
@@ -1074,6 +1121,17 @@ def _rtstruct_masks(
     to ``None`` instead of its array. When the reader is the replicated
     rt_utils 1.2.7 reader, such an ROI is read without allocating a volume.
     Without ``retain_mask`` behaviour and return values are unchanged.
+
+    ``scoped_reader`` reads every ANALYSIS_REQUIRED ROI through the scoped
+    reader of main CT radiomics (``rtstruct_geometry.ScopedRTStruct``). Such
+    an ROI whose contours do not resolve against the CT series is recorded as
+    a ``structural_nonmeasurement`` with failure kind
+    ``unresolved_source_scope`` (it needs an outcome sink), and area-less
+    contour items are withheld from its rasterization, as in the main path.
+    Other ROIs are read by rt_utils exactly as without the flag. Only when
+    rt_utils rejects the whole file for referencing images outside the
+    series are they read through the scoped reader too; a scope finding is
+    then recorded or raised like any other structural status.
     """
     normalized_skips = {
         ''.join(ch for ch in str(name).lower() if ch.isalnum())
@@ -1282,10 +1340,14 @@ def _rtstruct_masks(
             f"RTSTRUCT mask conversion is unavailable for {rs_path}: {exc}"
         ) from exc
 
+    scoped = None
     try:
-        rt = RTStructBuilder.create_from(
-            dicom_series_path=str(dicom_series_path), rt_struct_path=str(rs_path)
-        )
+        if scoped_reader:
+            scoped, rt = _scoped_rtstruct_readers(Path(dicom_series_path), Path(rs_path))
+        else:
+            rt = RTStructBuilder.create_from(
+                dicom_series_path=str(dicom_series_path), rt_struct_path=str(rs_path)
+            )
     except Exception as exc:
         if best_effort:
             try:
@@ -1304,7 +1366,7 @@ def _rtstruct_masks(
         ) from exc
 
     try:
-        available_roi_names = list(rt.get_roi_names())
+        available_roi_names = list((rt if rt is not None else scoped).get_roi_names())
     except Exception as exc:
         raise RadiomicsCourseExtractionError(
             f"Failed to read expected ROI names from {rs_path}: {exc}"
@@ -1318,22 +1380,80 @@ def _rtstruct_masks(
         roi_names = [name for name in roi_names if name in structurally_extractable]
 
     out: Dict[str, Optional[np.ndarray]] = {}
-    indexed_reader = retain_mask is not None and _rt_utils_reader_is_replicated(rt)
+    legacy_indexed = (
+        rt is not None and retain_mask is not None and _rt_utils_reader_is_replicated(rt)
+    )
+    scoped_indexed = (
+        scoped is not None and retain_mask is not None
+        and _rt_utils_reader_is_replicated(scoped.builder)
+    )
     for name in roi_names:
         norm_name = ''.join(ch for ch in str(name).lower() if ch.isalnum())
         if norm_name in normalized_skips:
             logger.debug("Skipping configured radiomics ROI %s in %s", name, rs_path)
             continue
         retain = retain_mask is None or bool(retain_mask(str(name)))
+        reader, indexed_reader = rt, legacy_indexed
+        if scoped is not None and (rt is None or _is_required(name)):
+            # The main path's reader. Its rasterizer copy holds exactly the
+            # ROI's contour items minus the area-less ones, so an ROI that has
+            # none of those rasterizes as rt_utils rasterizes the file itself.
+            # A name the source does not declare verbatim (the inventory strips
+            # whitespace) has no scope result; the reader below then raises
+            # rt_utils' own "does not exist", recorded as it is today.
+            scope = scoped.by_name.get(str(name))
+            if scope is not None and scope.code:
+                detail = str(scope.detail)
+                if len(detail) > 300:
+                    detail = detail[:300] + "…"
+                if _is_required(name):
+                    # A selected ROI the main path could not bind to the
+                    # planning CT has no measurement to be robust against.
+                    # That is a property of the source, not a failed read, so
+                    # the other ROIs of the source are still measured.
+                    if failure_outcomes is None:
+                        raise ValueError(
+                            "source scope ROI dispositions require an outcome sink"
+                        )
+                    from .rtstruct_identity import require_rtstruct_identity
+
+                    failure_outcomes.append({
+                        "roi_name": str(name),
+                        "status": "structural_nonmeasurement",
+                        "failure_kind": "unresolved_source_scope",
+                        "reason": (
+                            f"required ROI {name!r} in {rs_path} has structural "
+                            f"status {scope.code}; its contours do not resolve "
+                            f"against the planning CT series ({detail})"
+                        ),
+                        "structural_code": scope.code,
+                        "rtstruct_sop_instance_uid": require_rtstruct_identity(rs_path),
+                        "roi_number": str(scope.roi_number),
+                        "source_path": str(rs_path),
+                    })
+                    logger.warning(
+                        "Required ROI %s in %s has structural status %s; recording a "
+                        "structural non-measurement and continuing with the other ROIs",
+                        name, rs_path, scope.code,
+                    )
+                else:
+                    _record_or_raise(
+                        name,
+                        f"ROI {name!r} in {rs_path} has structural status {scope.code} ({detail})",
+                        failure_kind="structural_roi_error",
+                        structural_code=scope.code,
+                    )
+                continue
+            reader, indexed_reader = scoped.builder, scoped_indexed
         try:
             if indexed_reader:
-                mask = _rt_utils_indexed_roi_mask(rt, name, retain=retain)
-            elif hasattr(rt, 'get_mask_for_roi'):
-                mask = rt.get_mask_for_roi(name)
-            elif hasattr(rt, 'get_roi_mask'):
-                mask = rt.get_roi_mask(name)
-            elif hasattr(rt, 'get_roi_mask_by_name'):
-                mask = rt.get_roi_mask_by_name(name)
+                mask = _rt_utils_indexed_roi_mask(reader, name, retain=retain)
+            elif hasattr(reader, 'get_mask_for_roi'):
+                mask = reader.get_mask_for_roi(name)
+            elif hasattr(reader, 'get_roi_mask'):
+                mask = reader.get_roi_mask(name)
+            elif hasattr(reader, 'get_roi_mask_by_name'):
+                mask = reader.get_roi_mask_by_name(name)
             else:
                 raise AttributeError("RTSTRUCT reader exposes no ROI mask method")
         except Exception as exc:
