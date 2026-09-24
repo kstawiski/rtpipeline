@@ -72,6 +72,10 @@ _METADATA_OUTPUT_NAMES = {
     "metadata": "metadata.xlsx",
     "ct_images": "CT_images.xlsx",
 }
+# Excel's sheet limits, including the header row. A metadata table that does
+# not fit is published as Parquet under the same stem instead of the workbook.
+_EXCEL_MAX_ROWS = 1_048_576
+_EXCEL_MAX_COLUMNS = 16_384
 
 
 def _format_value(value: object) -> str:
@@ -874,6 +878,26 @@ def _expected_output_paths(paths: ExportPaths) -> Dict[str, Path]:
     }
 
 
+def _parquet_sibling(path: Path) -> Path:
+    return path.with_suffix(".parquet")
+
+
+def _fits_excel_sheet(frame: pd.DataFrame) -> bool:
+    return (
+        len(frame) + 1 <= _EXCEL_MAX_ROWS
+        and len(frame.columns) <= _EXCEL_MAX_COLUMNS
+    )
+
+
+def _parquet_ready_frame(frame: pd.DataFrame) -> pd.DataFrame:
+    """Store object columns as text; header values mix numbers with "NA"."""
+    ready = frame.copy()
+    for column in ready.columns:
+        if ready[column].dtype == object:
+            ready[column] = ready[column].astype("string")
+    return ready
+
+
 def _load_cached_outputs(
     config: PipelineConfig,
     paths: ExportPaths,
@@ -906,27 +930,39 @@ def _load_cached_outputs(
     expected = _expected_output_paths(paths)
     if set(output_records) != set(expected):
         return None
-    for name, path in expected.items():
+    published: Dict[str, Path] = {}
+    for name, xlsx_path in expected.items():
         record = output_records.get(name)
         if not isinstance(record, dict):
             return None
+        parquet_path = _parquet_sibling(xlsx_path)
         state = record.get("state")
         if state == "absent":
-            if path.exists():
+            if xlsx_path.exists() or parquet_path.exists():
                 return None
+            published[name] = xlsx_path
             continue
-        if state != "present" or not path.is_file():
+        output_format = record.get("format", "xlsx")
+        if output_format == "xlsx":
+            path, sibling = xlsx_path, parquet_path
+        elif output_format == "parquet":
+            path, sibling = parquet_path, xlsx_path
+        else:
+            return None
+        # Exactly one format per table; a leftover sibling means an unfinished publish.
+        if state != "present" or not path.is_file() or sibling.exists():
             return None
         try:
             if _sha256_file(path) != record.get("sha256"):
                 return None
         except OSError:
             return None
+        published[name] = path
     logger.info(
         "Metadata export cache hit for %d source files; verified existing workbooks",
         identity.file_count,
     )
-    return expected
+    return published
 
 
 def _write_json_atomic(path: Path, payload: dict) -> None:
@@ -960,8 +996,34 @@ def _publish_metadata_frames(
         dir=str(paths.root), prefix=".metadata-export-"
     ) as temp_dir:
         staged: Dict[str, Path] = {}
+        oversized: set[str] = set()
         for name, frame in frames.items():
             if frame is None:
+                continue
+            if not _fits_excel_sheet(frame):
+                staged_path = _parquet_sibling(Path(temp_dir) / _METADATA_OUTPUT_NAMES[name])
+                logger.warning(
+                    "Metadata table %s has %d rows and %d columns, which exceeds the Excel "
+                    "sheet limit of %d rows including the header and %d columns; publishing "
+                    "%s instead of %s",
+                    name,
+                    len(frame),
+                    len(frame.columns),
+                    _EXCEL_MAX_ROWS,
+                    _EXCEL_MAX_COLUMNS,
+                    staged_path.name,
+                    _METADATA_OUTPUT_NAMES[name],
+                )
+                _parquet_ready_frame(frame).to_parquet(staged_path, index=False)
+                # The same minimum check as for a workbook, plus the table shape.
+                parsed = pd.read_parquet(staged_path)
+                if parsed.shape != frame.shape:
+                    raise MetadataExportError(
+                        f"Staged {staged_path.name} reads back as {parsed.shape[0]} rows x "
+                        f"{parsed.shape[1]} columns, expected {frame.shape[0]} x {frame.shape[1]}"
+                    )
+                staged[name] = staged_path
+                oversized.add(name)
                 continue
             staged_path = Path(temp_dir) / _METADATA_OUTPUT_NAMES[name]
             frame.to_excel(staged_path, index=False)
@@ -989,12 +1051,19 @@ def _publish_metadata_frames(
                 "Metadata source inventory changed during export; refusing to publish mixed-generation outputs"
             )
 
-        for name, destination in outputs.items():
+        for name, xlsx_path in list(outputs.items()):
+            parquet_path = _parquet_sibling(xlsx_path)
             staged_path = staged.get(name)
             if staged_path is None:
-                destination.unlink(missing_ok=True)
+                xlsx_path.unlink(missing_ok=True)
+                parquet_path.unlink(missing_ok=True)
+            elif name in oversized:
+                os.replace(staged_path, parquet_path)
+                xlsx_path.unlink(missing_ok=True)
+                outputs[name] = parquet_path
             else:
-                os.replace(staged_path, destination)
+                os.replace(staged_path, xlsx_path)
+                parquet_path.unlink(missing_ok=True)
 
     output_records: Dict[str, dict] = {}
     for name, path in outputs.items():
@@ -1004,6 +1073,8 @@ def _publish_metadata_frames(
                 "sha256": _sha256_file(path),
                 "rows": int(len(frames[name])) if frames[name] is not None else 0,
             }
+            if name in oversized:
+                output_records[name]["format"] = "parquet"
         else:
             output_records[name] = {"state": "absent"}
     manifest = {
