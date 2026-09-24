@@ -593,7 +593,14 @@ def _get_params_file(config: PipelineConfig | None, modality: str = 'CT') -> Opt
             target_root.mkdir(parents=True, exist_ok=True)
             out = Path(target_root) / packaged_name
             try:
-                out.write_bytes(packaged.read_bytes())
+                # Replace atomically: concurrent robustness preparation
+                # workers hash this file while others rewrite it.
+                partial = out.with_name(f".{out.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+                try:
+                    partial.write_bytes(packaged.read_bytes())
+                    os.replace(partial, out)
+                finally:
+                    partial.unlink(missing_ok=True)
             except Exception:
                 # Fallback: return a temp-like path via as_file context
                 try:

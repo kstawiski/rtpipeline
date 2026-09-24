@@ -74,6 +74,22 @@ def ellipsoid(shape_rcs: Tuple[int, int, int], center: Sequence[float],
             + ((s - center[2]) / radii[2]) ** 2) <= 1.0
 
 
+def cylinder(shape_rcs: Tuple[int, int, int], center: Sequence[float],
+             radii: Sequence[float]) -> np.ndarray:
+    """Elliptic cylinder over slices center[2] +/- radii[2].
+
+    Every slice carries the full ellipse, so no contour degenerates to the
+    one-pixel tips rt_utils writes but cannot fill back.
+    """
+    disc = ellipsoid((shape_rcs[0], shape_rcs[1], 1), (center[0], center[1], 0),
+                     (radii[0], radii[1], 1))[..., 0]
+    mask = np.zeros(shape_rcs, dtype=bool)
+    low = max(0, int(round(center[2] - radii[2])))
+    high = min(shape_rcs[2], int(round(center[2] + radii[2])) + 1)
+    mask[..., low:high] = disc[..., None]
+    return mask
+
+
 def write_rtstruct(ct_dir: Path, path: Path, masks: Iterable[Tuple[str, np.ndarray]]) -> None:
     from rt_utils import RTStructBuilder
 
@@ -173,7 +189,7 @@ def build_course(course: Path, spec: Dict[str, Any]) -> None:
     """Create one synthetic course from ``spec``.
 
     spec keys: rows, columns, slices, rois (list of {source, name, center,
-    radii, catalog}), defects ({source: [defect, ...]}), models ({model: [roi
+    radii, shape ("ellipsoid" or "cylinder"), slab, catalog}), defects ({source: [defect, ...]}), models ({model: [roi
     dict, ...]}), plus driver options copied into inputs.json.
     """
     rows, columns, slices = spec["rows"], spec["columns"], spec["slices"]
@@ -183,7 +199,8 @@ def build_course(course: Path, spec: Dict[str, Any]) -> None:
     by_source: Dict[str, List[Tuple[str, np.ndarray]]] = {}
     catalog: List[List[str]] = []
     for roi in spec["rois"]:
-        mask = ellipsoid((rows, columns, slices), roi["center"], roi["radii"])
+        shape = cylinder if roi.get("shape") == "cylinder" else ellipsoid
+        mask = shape((rows, columns, slices), roi["center"], roi["radii"])
         if roi.get("slab"):
             mask = np.zeros_like(mask)
             r0, r1, c0, c1, s0, s1 = roi["slab"]
