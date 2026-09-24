@@ -1546,6 +1546,20 @@ def _robustness_course_timeout(task_count: int, workers: int) -> int:
     return max(14400, waves * per_wave)
 
 
+def _robustness_worker_budget(config: Any) -> int:
+    """The course's robustness worker budget, shared by preparation and extraction."""
+    from .radiomics_parallel import _calculate_optimal_workers
+
+    max_workers = _calculate_optimal_workers()
+    # Respect global worker limit if set
+    try:
+        config_workers = int(getattr(config, 'effective_workers')())
+        max_workers = min(max_workers, config_workers)
+    except Exception:
+        pass
+    return max_workers
+
+
 def volume_adapt_mask(mask: sitk.Image, tau: float, max_iterations: int = 20) -> Optional[sitk.Image]:
     """Adapt a binary mask to the requested voxel-count volume change.
 
@@ -1931,9 +1945,17 @@ def generate_ntcv_perturbations(
         Both dictionaries map perturbation_id to SimpleITK images.
         The perturbation_id encodes the full chain: "ntcv_n{noise}_t{x}_{y}_{z}_c{idx}_v{pct}"
     """
-    perturbed_masks = {}
-    perturbed_images = {}
-    
+    volume_changes, translation_steps, contour_realizations, noise_levels = _ntcv_factors(config)
+    noise_images = _ntcv_noise_images(original_image, noise_levels, _noise_cache)
+    geometry_states = list(_iter_ntcv_geometry_states(
+        original_mask, config, volume_changes, translation_steps,
+        contour_realizations, structure_name,
+    ))
+    return _ntcv_assemble(noise_images, geometry_states, config, structure_name)
+
+
+def _ntcv_factors(config: PerturbationConfig) -> Tuple[List[float], int, int, List[float]]:
+    """Return (volume changes, translation steps, contour realizations, noise levels)."""
     # Determine perturbation count based on intensity level
     if config.intensity == "mild":
         # Minimal testing: 12 perturbations with the shipped NTCV defaults.
@@ -1955,7 +1977,19 @@ def generate_ntcv_perturbations(
         translation_steps = 1 if config.max_translation_mm > 0 else 0
         contour_realizations = config.n_random_contour_realizations
         noise_levels = config.noise_levels
-    
+    return volume_changes, translation_steps, contour_realizations, noise_levels
+
+
+def _ntcv_noise_suffix(noise_std: float) -> str:
+    return f"_n{int(noise_std)}" if noise_std > 0 else ""
+
+
+def _ntcv_noise_images(
+    original_image: sitk.Image,
+    noise_levels: List[float],
+    _noise_cache: Optional[dict] = None,
+) -> List[Tuple[str, sitk.Image]]:
+    """Return (identifier suffix, image) per noise level, in configured order."""
     # Construct each factor once and then take the strict Cartesian product.
     # In particular, contour draws are keyed only by translation and contour
     # realization, so changing the noise or volume factor cannot silently
@@ -1978,12 +2012,26 @@ def generate_ntcv_perturbations(
                 noisy_image = add_noise_to_image(original_image, noise_std, rng=noise_rng)
                 if _noise_cache is not None:
                     _noise_cache[noise_std] = noisy_image
-            noise_suffix = f"_n{int(noise_std)}"
         else:
             noisy_image = original_image
-            noise_suffix = ""
-        noise_images.append((noise_suffix, noisy_image))
+        noise_images.append((_ntcv_noise_suffix(noise_std), noisy_image))
+    return noise_images
 
+
+def _iter_ntcv_geometry_states(
+    original_mask: sitk.Image,
+    config: PerturbationConfig,
+    volume_changes: List[float],
+    translation_steps: int,
+    contour_realizations: int,
+    structure_name: str,
+):
+    """Yield (identifier suffix, mask or geometric outcome) in grid order.
+
+    States are produced one at a time; only the current translation's contour
+    realizations are retained, so a caller that consumes each state before
+    requesting the next never holds the whole geometry grid.
+    """
     translation_vectors = [(0.0, 0.0, 0.0)]
     if config.max_translation_mm > 0 and translation_steps > 0:
         max_t = float(config.max_translation_mm)
@@ -1996,7 +2044,6 @@ def generate_ntcv_perturbations(
                 (0.0, 0.0, max_t), (0.0, 0.0, -max_t),
             ])
 
-    geometry_states: List[Tuple[str, sitk.Image]] = []
     contour_noise_mm = (
         config.contour_randomization_mm
         if config.contour_randomization_mm > 0
@@ -2023,7 +2070,7 @@ def generate_ntcv_perturbations(
                 contour_suffix = f"_c{contour_index}" if contour_index else ""
                 for tau in volume_changes:
                     vol_suffix = "_v0" if abs(tau) < 1e-6 else f"_v{int(tau * 100):+03d}"
-                    geometry_states.append((f"{trans_suffix}{contour_suffix}{vol_suffix}", translation_outcome))
+                    yield (f"{trans_suffix}{contour_suffix}{vol_suffix}", translation_outcome)
             continue
 
         contour_variants = [translated_mask]
@@ -2070,10 +2117,19 @@ def generate_ntcv_perturbations(
                     if final_mask is None:
                         final_mask = volume_nonmeasurement(contour_mask, tau)
                     vol_suffix = f"_v{int(tau * 100):+03d}"
-                geometry_states.append(
-                    (f"{trans_suffix}{contour_suffix}{vol_suffix}", final_mask)
-                )
+                yield (f"{trans_suffix}{contour_suffix}{vol_suffix}", final_mask)
+                del final_mask
 
+
+def _ntcv_assemble(
+    noise_images: List[Tuple[str, Any]],
+    geometry_states: List[Tuple[str, Any]],
+    config: PerturbationConfig,
+    structure_name: str,
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """Cartesian noise x geometry grid keyed by perturbation identifier."""
+    perturbed_masks = {}
+    perturbed_images = {}
     for noise_suffix, noisy_image in noise_images:
         for geometry_suffix, final_mask in geometry_states:
             pert_id = f"ntcv{noise_suffix}{geometry_suffix}"
@@ -4000,6 +4056,242 @@ def robustness_roi_in_publication_base(
     return True, str(decision.roi_class), "published measurement base"
 
 
+class _ImageGeometry:
+    """The geometry accessors ``_mask_from_array_like`` reads from a CT image."""
+
+    def __init__(self, size, spacing, direction, origin):
+        self._size, self._spacing = tuple(size), tuple(spacing)
+        self._direction, self._origin = tuple(direction), tuple(origin)
+
+    def GetSize(self):
+        return self._size
+
+    def GetSpacing(self):
+        return self._spacing
+
+    def GetDirection(self):
+        return self._direction
+
+    def GetOrigin(self):
+        return self._origin
+
+
+def _prepare_robustness_roi(request: Mapping[str, Any]) -> Dict[str, Any]:
+    """Generate one selected ROI's perturbation grid and write its task files.
+
+    This is the per-ROI body of the parallel robustness path. It runs in the
+    course process or in a preparation worker and returns only identifiers,
+    geometric outcomes and task descriptors, never voxels. The caller has
+    already written the (noisy) CT images; ``request["image_paths"]`` maps each
+    noise level's position (or "original") to its file.
+
+    Masks are generated and their task files written one geometry state at a
+    time, so a worker holds the current translation's contour realizations
+    and one volume state, not the whole grid. Identifiers, seeds, the order of
+    every check and every raised message are those of the in-process loop
+    this replaces: the grid is assembled and checked after generation, then
+    ``len < 2``, then the first task-preparation failure in grid order.
+    """
+    from .radiomics import _mask_from_array_like
+    from .radiomics_parallel import _prepare_radiomics_task
+
+    threads = request.get("itk_threads")
+    if threads:
+        sitk.ProcessObject.SetGlobalDefaultNumberOfThreads(int(threads))
+    roi_name, source = str(request["roi_name"]), str(request["source"])
+    perturbation: PerturbationConfig = request["perturbation"]
+    image_paths: Mapping[Any, str] = request["image_paths"]
+    mask_img = _mask_from_array_like(_ImageGeometry(*request["ct_geometry"]), request["mask"])
+    preparation_cache: Dict[str, Any] = {}
+    prepared: Dict[str, Tuple[Path, Dict[str, Any]]] = {}
+    failures: Dict[str, BaseException] = {}
+
+    def _prepare(pert_id: str, mask: sitk.Image, image_path: str) -> None:
+        try:
+            prepared[pert_id] = _prepare_radiomics_task(
+                None,
+                mask,
+                request["config"],
+                source,
+                roi_name,
+                Path(request["course_dir"]),
+                Path(request["temp_dir"]),
+                False,
+                request["run_identifier"],
+                request["source_identity"],
+                _cache=preparation_cache,
+                _image_path=Path(image_path),
+            )
+        except Exception as exc:
+            failures.setdefault(pert_id, exc)
+
+    use_ntcv = (
+        perturbation.max_translation_mm > 0 or
+        perturbation.n_random_contour_realizations > 0 or
+        any(n > 0 for n in perturbation.noise_levels)
+    )
+    if use_ntcv:
+        volume_changes, translation_steps, contour_realizations, noise_levels = _ntcv_factors(
+            perturbation
+        )
+        noise_images = [
+            (_ntcv_noise_suffix(noise_std), image_paths[index])
+            for index, noise_std in enumerate(noise_levels)
+        ]
+        geometry_states: List[Tuple[str, Any]] = []
+        for geometry_suffix, final_mask in _iter_ntcv_geometry_states(
+            mask_img, perturbation, volume_changes, translation_steps,
+            contour_realizations, roi_name,
+        ):
+            if isinstance(final_mask, GeometricNonmeasurement):
+                geometry_states.append((geometry_suffix, final_mask))
+                continue
+            geometry_states.append((geometry_suffix, None))
+            for noise_suffix, image_path in noise_images:
+                _prepare(f"ntcv{noise_suffix}{geometry_suffix}", final_mask, image_path)
+            # Release this state's voxels; its identity is in the task.
+            preparation_cache.get("masks", {}).clear()
+            del final_mask
+        perturbed_masks, _ = _ntcv_assemble(noise_images, geometry_states, perturbation, roi_name)
+    else:
+        # Legacy mode: volume-only perturbations
+        # C19 fix: honor intensity config — use large_volume_changes for aggressive
+        if perturbation.intensity == "aggressive":
+            volume_changes = perturbation.large_volume_changes
+        else:
+            volume_changes = perturbation.small_volume_changes
+        perturbed_masks = generate_perturbed_masks(mask_img, volume_changes, roi_name)
+        for pert_id, mask in perturbed_masks.items():
+            if not isinstance(mask, GeometricNonmeasurement):
+                _prepare(pert_id, mask, image_paths["original"])
+        perturbed_masks = {
+            pert_id: (mask if isinstance(mask, GeometricNonmeasurement) else None)
+            for pert_id, mask in perturbed_masks.items()
+        }
+    if len(perturbed_masks) < 2:
+        raise RuntimeError(
+            f"insufficient perturbations for {roi_name} ({source}): "
+            f"generated {len(perturbed_masks)}"
+        )
+    for pert_id, outcome in perturbed_masks.items():
+        if pert_id in failures and not isinstance(outcome, GeometricNonmeasurement):
+            exc = failures[pert_id]
+            raise RuntimeError(
+                f"failed to prepare robustness task for "
+                f"{source}/{roi_name}/{pert_id}: {exc}"
+            ) from exc
+    return {
+        "perturbation_ids": list(perturbed_masks),
+        "nonmeasurements": [
+            (pert_id, outcome)
+            for pert_id, outcome in perturbed_masks.items()
+            if isinstance(outcome, GeometricNonmeasurement)
+        ],
+        "tasks": [
+            (pert_id, *prepared[pert_id])
+            for pert_id, outcome in perturbed_masks.items()
+            if not isinstance(outcome, GeometricNonmeasurement)
+        ],
+    }
+
+
+def _robustness_preparation_worker(connection) -> None:
+    """Prepare ROIs received on ``connection`` until told to stop."""
+    try:
+        while True:
+            item = connection.recv()
+            if item is None:
+                return
+            index, request = item
+            try:
+                connection.send(("result", index, _prepare_robustness_roi(request)))
+            except Exception as exc:
+                try:
+                    connection.send(("error", index, exc))
+                except Exception:
+                    connection.send(("error", index, RuntimeError(
+                        f"{type(exc).__name__}: {exc}"
+                    )))
+    finally:
+        connection.close()
+
+
+def _prepare_robustness_rois(
+    requests: List[Dict[str, Any]], workers: int, context: Any
+) -> List[Dict[str, Any]]:
+    """Run ``_prepare_robustness_roi`` for each request; results in request order.
+
+    With one worker (or one request) the ROIs are prepared in this process.
+    Otherwise at most ``workers`` processes each prepare one ROI at a time, so
+    peak memory grows with the worker budget, not with the ROI count. Pipes
+    carry requests and results (no shared semaphores are needed). The first
+    failure in request order is raised, as a serial loop would raise it: once
+    a request fails, no later request is started, and every earlier one is
+    allowed to finish first.
+    """
+    from multiprocessing.connection import wait as wait_connections
+
+    workers = max(1, min(int(workers), len(requests)))
+    if workers == 1:
+        return [_prepare_robustness_roi(request) for request in requests]
+
+    results: Dict[int, Any] = {}
+    errors: Dict[int, BaseException] = {}
+    slots: List[Dict[str, Any]] = []
+    next_index = 0
+    try:
+        for _ in range(workers):
+            parent, child = context.Pipe()
+            process = context.Process(
+                target=_robustness_preparation_worker, args=(child,), daemon=True
+            )
+            process.start()
+            child.close()
+            slots.append({"process": process, "connection": parent, "index": None})
+        while True:
+            stop_at = min(errors) if errors else len(requests)
+            for slot in slots:
+                if slot["index"] is None and next_index < stop_at:
+                    slot["index"] = next_index
+                    slot["connection"].send((next_index, requests[next_index]))
+                    next_index += 1
+            busy = [slot for slot in slots if slot["index"] is not None]
+            if not busy:
+                break
+            ready = wait_connections([slot["connection"] for slot in busy])
+            for slot in busy:
+                if slot["connection"] not in ready:
+                    continue
+                index = slot["index"]
+                try:
+                    kind, received, value = slot["connection"].recv()
+                except (EOFError, OSError) as exc:
+                    slot["process"].join(timeout=5)
+                    raise RuntimeError(
+                        f"robustness preparation worker for ROI request {index} died "
+                        f"(exit code {slot['process'].exitcode}): {exc}"
+                    ) from exc
+                if received != index:
+                    raise RuntimeError("robustness preparation result identity mismatch")
+                (results if kind == "result" else errors)[index] = value
+                slot["index"] = None
+    finally:
+        for slot in slots:
+            try:
+                slot["connection"].send(None)
+            except Exception:
+                pass
+        for slot in slots:
+            slot["process"].join(timeout=5)
+            if slot["process"].is_alive():
+                slot["process"].terminate()
+                slot["process"].join(timeout=5)
+            slot["connection"].close()
+    if errors:
+        raise errors[min(errors)]
+    return [results[index] for index in range(len(requests))]
+
+
 def robustness_for_course(
     config: PipelineConfig,
     rob_config: RobustnessConfig,
@@ -4780,53 +5072,74 @@ def robustness_for_course(
     noise_cache = {}
     image_digest_cache = {}
     try:
-        for roi_name, source in selected_structures:
-            mask_array = all_masks[(roi_name, source)]
-            if mask_array is None:
-                raise RuntimeError(
-                    f"robustness selected {source}/{roi_name} but did not keep its mask"
-                )
-            mask_img = _mask_from_array_like(ct_image, mask_array)
-
-            # Check if NTCV mode is enabled (any perturbation beyond volume is configured)
+        if has_parallel:
+            assert temp_dir is not None
+            # Selected ROIs are prepared by _prepare_robustness_roi, in this
+            # process or in a pool sized by the course worker budget. The CT
+            # and its noisy copies are written once here; workers receive the
+            # source mask and the image paths, never an image.
+            prep_workers = _robustness_worker_budget(config)
+            requests: List[Dict[str, Any]] = []
+            image_paths: Dict[Any, str] = {}
+            perturbation = rob_config.perturbation
             use_ntcv = (
-                rob_config.perturbation.max_translation_mm > 0 or
-                rob_config.perturbation.n_random_contour_realizations > 0 or
-                any(n > 0 for n in rob_config.perturbation.noise_levels)
+                perturbation.max_translation_mm > 0 or
+                perturbation.n_random_contour_realizations > 0 or
+                any(n > 0 for n in perturbation.noise_levels)
             )
+            if selected_structures:
+                from .radiomics_parallel import _radiomics_task_image_path
 
-            if use_ntcv:
-                # Generate NTCV perturbation chain
-                perturbed_masks, perturbed_images = generate_ntcv_perturbations(
-                    mask_img,
-                    ct_image,
-                    rob_config.perturbation,
-                    roi_name,
-                    _noise_cache=noise_cache,
-                )
-            else:
-                # Legacy mode: volume-only perturbations
-                # C19 fix: honor intensity config — use large_volume_changes for aggressive
-                intensity = rob_config.perturbation.intensity
-                if intensity == "aggressive":
-                    volume_changes = rob_config.perturbation.large_volume_changes
+                image_cache = {"images": image_digest_cache}
+                if use_ntcv:
+                    noise_levels = _ntcv_factors(perturbation)[3]
+                    for index, (_, image) in enumerate(
+                        _ntcv_noise_images(ct_image, noise_levels, noise_cache)
+                    ):
+                        image_paths[index] = str(
+                            _radiomics_task_image_path(image, temp_dir, image_cache)
+                        )
                 else:
-                    volume_changes = rob_config.perturbation.small_volume_changes
-                perturbed_masks = generate_perturbed_masks(
-                    mask_img,
-                    volume_changes,
-                    roi_name,
-                )
-                perturbed_images = None
-
-            if len(perturbed_masks) < 2:
-                raise RuntimeError(
-                    f"insufficient perturbations for {roi_name} ({source}): "
-                    f"generated {len(perturbed_masks)}"
-                )
-            expected_perturbations[(roi_name, source)] = set(perturbed_masks)
-            for pert_id, outcome in list(perturbed_masks.items()):
-                if isinstance(outcome, GeometricNonmeasurement):
+                    image_paths["original"] = str(
+                        _radiomics_task_image_path(ct_image, temp_dir, image_cache)
+                    )
+                noise_cache.clear()
+                image_cache.clear()
+            ct_geometry = (
+                ct_image.GetSize(), ct_image.GetSpacing(),
+                ct_image.GetDirection(), ct_image.GetOrigin(),
+            )
+            for roi_name, source in selected_structures:
+                mask_array = all_masks[(roi_name, source)]
+                if mask_array is None:
+                    raise RuntimeError(
+                        f"robustness selected {source}/{roi_name} but did not keep its mask"
+                    )
+                requests.append({
+                    "roi_name": roi_name,
+                    "source": source,
+                    "mask": mask_array,
+                    "ct_geometry": ct_geometry,
+                    "perturbation": perturbation,
+                    "image_paths": image_paths,
+                    "config": config,
+                    "course_dir": str(course_dir),
+                    "temp_dir": str(temp_dir),
+                    "run_identifier": robustness_run_identifier,
+                    "source_identity": identity_catalog[(source, roi_name)].as_dict(),
+                    "itk_threads": sitk.ProcessObject.GetGlobalDefaultNumberOfThreads(),
+                })
+            logger.info(
+                "Preparing perturbations for %d robustness ROI(s) with %d worker(s)",
+                len(requests), max(1, min(prep_workers, len(requests))),
+            )
+            prepared_rois = _prepare_robustness_rois(
+                requests, prep_workers, get_context("spawn")
+            )
+            del requests
+            for (roi_name, source), prepared in zip(selected_structures, prepared_rois):
+                expected_perturbations[(roi_name, source)] = set(prepared["perturbation_ids"])
+                for pert_id, outcome in prepared["nonmeasurements"]:
                     all_features.append(pd.DataFrame(nonmeasurement_rows(
                         outcome, identity_catalog[(source, roi_name)].as_dict(),
                         pert_id, robustness_run_identifier,
@@ -4834,44 +5147,75 @@ def robustness_for_course(
                     generated_nonmeasurement_keys.update(
                         (roi_name, source, pert_id, arm) for arm in CT_EXTRACTION_ARMS
                     )
-                    del perturbed_masks[pert_id]
-            if not perturbed_masks:
-                continue
+                for pert_id, task_file, task_params in prepared["tasks"]:
+                    # Add perturbation-specific metadata to extra_metadata
+                    task_params['extra_metadata'] = {'perturbation_id': pert_id}
+                    tasks.append((task_file, task_params))
+                logger.info(
+                    "Prepared %d robustness task(s) and %d geometric non-measurement(s) "
+                    "for %s (%s)",
+                    len(prepared["tasks"]), len(prepared["nonmeasurements"]), roi_name, source,
+                )
+        else:
+            for roi_name, source in selected_structures:
+                mask_array = all_masks[(roi_name, source)]
+                if mask_array is None:
+                    raise RuntimeError(
+                        f"robustness selected {source}/{roi_name} but did not keep its mask"
+                    )
+                mask_img = _mask_from_array_like(ct_image, mask_array)
 
-            if has_parallel:
-                # Prepare parallel tasks
-                assert temp_dir is not None
-                preparation_cache = {"images": image_digest_cache}
-                for pert_id, mask in perturbed_masks.items():
-                    # Use perturbed image if available
-                    current_image = perturbed_images.get(pert_id, ct_image) if perturbed_images else ct_image
-                    
-                    try:
-                        # We treat each perturbation as a "structure" for the parallel worker
-                        task_file, task_params = _prepare_radiomics_task(
-                            current_image,
-                            mask,
-                            config,
-                            source,
-                            roi_name,
-                            course_dir,
-                            temp_dir,
-                            False,
-                            robustness_run_identifier,
-                            identity_catalog[(source, roi_name)].as_dict(),
-                            _cache=preparation_cache,
+                # Check if NTCV mode is enabled (any perturbation beyond volume is configured)
+                use_ntcv = (
+                    rob_config.perturbation.max_translation_mm > 0 or
+                    rob_config.perturbation.n_random_contour_realizations > 0 or
+                    any(n > 0 for n in rob_config.perturbation.noise_levels)
+                )
+
+                if use_ntcv:
+                    # Generate NTCV perturbation chain
+                    perturbed_masks, perturbed_images = generate_ntcv_perturbations(
+                        mask_img,
+                        ct_image,
+                        rob_config.perturbation,
+                        roi_name,
+                        _noise_cache=noise_cache,
+                    )
+                else:
+                    # Legacy mode: volume-only perturbations
+                    # C19 fix: honor intensity config — use large_volume_changes for aggressive
+                    intensity = rob_config.perturbation.intensity
+                    if intensity == "aggressive":
+                        volume_changes = rob_config.perturbation.large_volume_changes
+                    else:
+                        volume_changes = rob_config.perturbation.small_volume_changes
+                    perturbed_masks = generate_perturbed_masks(
+                        mask_img,
+                        volume_changes,
+                        roi_name,
+                    )
+                    perturbed_images = None
+
+                if len(perturbed_masks) < 2:
+                    raise RuntimeError(
+                        f"insufficient perturbations for {roi_name} ({source}): "
+                        f"generated {len(perturbed_masks)}"
+                    )
+                expected_perturbations[(roi_name, source)] = set(perturbed_masks)
+                for pert_id, outcome in list(perturbed_masks.items()):
+                    if isinstance(outcome, GeometricNonmeasurement):
+                        all_features.append(pd.DataFrame(nonmeasurement_rows(
+                            outcome, identity_catalog[(source, roi_name)].as_dict(),
+                            pert_id, robustness_run_identifier,
+                        )))
+                        generated_nonmeasurement_keys.update(
+                            (roi_name, source, pert_id, arm) for arm in CT_EXTRACTION_ARMS
                         )
-                        # Add perturbation-specific metadata to extra_metadata
-                        task_params['extra_metadata'] = {'perturbation_id': pert_id}
-                        tasks.append((task_file, task_params))
-                    except Exception as e:
-                        raise RuntimeError(
-                            f"failed to prepare robustness task for "
-                            f"{source}/{roi_name}/{pert_id}: {e}"
-                        ) from e
-                preparation_cache.clear()
-            else:
-                # Sequential fallback
+                        del perturbed_masks[pert_id]
+                if not perturbed_masks:
+                    continue
+
+                # Sequential extraction
                 features_df = extract_features_for_masks(
                     ct_image,
                     perturbed_masks,
@@ -4897,21 +5241,13 @@ def robustness_for_course(
                 if not features_df.empty:
                     features_df["segmentation_source"] = source
                     all_features.append(features_df)
-            # Tasks contain file paths, and sequential extraction has finished.
-            # Release this ROI's voxel buffers before generating the next grid.
-            del perturbed_masks, perturbed_images
+                # Sequential extraction has finished. Release this ROI's voxel
+                # buffers before generating the next grid.
+                del perturbed_masks, perturbed_images
 
         # Execute parallel tasks
         if has_parallel and tasks:
-            max_workers = _calculate_optimal_workers()
-            # Respect global worker limit if set
-            try:
-                config_workers = int(getattr(config, 'effective_workers')())
-                max_workers = min(max_workers, config_workers)
-            except Exception:
-                pass
-            
-            max_workers = max(1, min(max_workers, len(tasks)))
+            max_workers = max(1, min(_robustness_worker_budget(config), len(tasks)))
             logger.info("Processing %d robustness perturbations with %d workers", len(tasks), max_workers)
 
             ctx = get_context('spawn')

@@ -30,6 +30,7 @@ import os
 import signal
 import threading
 import time
+import uuid
 from concurrent.futures import ProcessPoolExecutor, wait, FIRST_COMPLETED
 from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass, field
@@ -1937,6 +1938,32 @@ def parallel_radiomics_for_course(
 _ROBUSTNESS_WORKER_STATE: Dict[str, Any] = {}
 
 
+def _radiomics_task_image_path(image, temp_dir: Path, _cache: Optional[dict] = None) -> Path:
+    """Write ``image`` once under its content digest and return the path.
+
+    ``_cache`` follows the ``_prepare_radiomics_task`` contract.
+    """
+    import hashlib
+
+    import SimpleITK as sitk
+
+    if _cache is None:
+        _cache = {}
+    images = _cache.setdefault("images", {})
+    image_entry = images.get(id(image))
+    if image_entry is None:
+        img_key = hashlib.sha1(
+            memoryview(sitk.GetArrayViewFromImage(image)), usedforsecurity=False
+        ).hexdigest()
+        images[id(image)] = (image, img_key)
+    else:
+        img_key = image_entry[1]
+    img_path = temp_dir / f"img_{img_key}.nrrd"
+    if not img_path.exists():
+        sitk.WriteImage(image, str(img_path))
+    return img_path
+
+
 def _prepare_radiomics_task(
     image,  # SimpleITK Image
     mask,   # SimpleITK Image (binary mask)
@@ -1950,6 +1977,7 @@ def _prepare_radiomics_task(
     source_identity: Optional[Mapping[str, Any]] = None,
     *,
     _cache: Optional[dict] = None,
+    _image_path: Optional[Path] = None,
 ) -> Tuple[Path, Dict[str, Any]]:
     """Save image/mask to temp files and prepare a task descriptor.
 
@@ -1960,9 +1988,13 @@ def _prepare_radiomics_task(
     strong image references so Python object-id reuse cannot alias digests.
     Discard it before changing images, config, ROI, or parameter files.
 
-    """
-    import hashlib
+    ``_image_path`` names an image already written by
+    ``_radiomics_task_image_path``; ``image`` is then not read.
 
+    Mask files are named by content and written through a unique temporary
+    name, so concurrent preparation of identical masks never exposes a
+    partial file.
+    """
     import SimpleITK as sitk
     import numpy as np
     from .radiomics import _get_params_file
@@ -1983,18 +2015,12 @@ def _prepare_radiomics_task(
 
     if _cache is None:
         _cache = {}
-    images = _cache.setdefault("images", {})
-    image_entry = images.get(id(image))
-    if image_entry is None:
-        img_key = hashlib.sha1(
-            memoryview(sitk.GetArrayViewFromImage(image)), usedforsecurity=False
-        ).hexdigest()
-        images[id(image)] = (image, img_key)
+    if _image_path is not None:
+        img_path = Path(_image_path)
+        if not img_path.is_file():
+            raise RuntimeError(f"prepared radiomics task image is missing: {img_path}")
     else:
-        img_key = image_entry[1]
-    img_path = temp_dir / f"img_{img_key}.nrrd"
-    if not img_path.exists():
-        sitk.WriteImage(image, str(img_path))
+        img_path = _radiomics_task_image_path(image, temp_dir, _cache)
 
     if source_identity is None:
         raise RuntimeError(
@@ -2029,7 +2055,12 @@ def _prepare_radiomics_task(
     mask_path = temp_dir / f"mask_{perturbed_mask_identity.split(':', 1)[1]}.nrrd"
     written = _cache.setdefault("written_masks", set())
     if mask_path not in written:
-        sitk.WriteImage(sitk.Cast(mask, sitk.sitkUInt8), str(mask_path))
+        partial = mask_path.with_name(f".{os.getpid()}.{uuid.uuid4().hex}.{mask_path.name}")
+        try:
+            sitk.WriteImage(sitk.Cast(mask, sitk.sitkUInt8), str(partial))
+            os.replace(partial, mask_path)
+        finally:
+            partial.unlink(missing_ok=True)
         written.add(mask_path)
 
     if "invariants" not in _cache:
