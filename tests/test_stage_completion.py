@@ -254,3 +254,31 @@ def test_refactored_radiomics_environment_fingerprint_is_byte_compatible() -> No
         json.dumps(legacy, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
     assert execution_environment_fingerprint() == expected
+
+
+def test_disabled_segmentation_completion_validates_beside_its_status_record(
+    tmp_path: Path,
+) -> None:
+    # A course with no planning CT closes segmentation as "disabled". The
+    # producer always writes metadata/segmentation_status.json with that
+    # decision, which the stage's rules discover. The disabled completion binds
+    # no outputs (as written), so validation must not demand the discovered set.
+    course = _course(tmp_path)
+    (course / "metadata").mkdir()
+    (course / "metadata" / "segmentation_status.json").write_text(
+        json.dumps({"status": "disabled", "reasons": ["nothing applicable"]}),
+        encoding="utf-8",
+    )
+    dependency = _dependency(tmp_path, "segmentation", {"device": "gpu"})
+    payload = write_stage_completion_sentinel(
+        course,
+        course / ".segmentation_done",
+        stage="segmentation",
+        status="disabled",
+        configuration_dependency=dependency,
+    )
+    assert payload["status"] == "disabled"
+    assert payload["outputs"] == []
+    validate_stage_completion_sentinel(
+        course / ".segmentation_done", expected_stage="segmentation"
+    )
