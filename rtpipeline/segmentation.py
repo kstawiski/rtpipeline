@@ -450,11 +450,28 @@ def run_dcm2niix(
     if not ok:
         logger.warning("dcm2niix failed; continuing with DICOM-only segmentation")
         return None
+    return _select_dcm2niix_volume(nifti_out)
+
+
+def _select_dcm2niix_volume(nifti_out: Path) -> Optional[Path]:
+    """Pick the volume dcm2niix wrote for the series.
+
+    For a series with uneven slice spacing dcm2niix writes two volumes: one
+    with the acquired slices under a uniform affine (wrong geometry, because
+    NIfTI cannot record uneven spacing) and an ``_Eq_`` volume interpolated
+    onto an equidistant grid. The equalized volume is the only one with
+    correct geometry, so it is chosen whenever it exists. The largest-file
+    rule used before usually picked it on real CTs, but only because it tends
+    to have more slices; on small series it can pick the uniform-affine
+    volume, which the course contract cannot detect.
+    """
     nii_files = [fn for fn in os.listdir(nifti_out)
                  if fn.endswith(".nii") or fn.endswith(".nii.gz")]
-    nii_files.sort(key=lambda fn: os.path.getsize(nifti_out / fn), reverse=True)
-    if nii_files:
-        return nifti_out / nii_files[0]
+    equalized = [fn for fn in nii_files if "_Eq_" in fn]
+    candidates = equalized or nii_files
+    candidates.sort(key=lambda fn: os.path.getsize(nifti_out / fn), reverse=True)
+    if candidates:
+        return nifti_out / candidates[0]
     return None
 
 def _validate_totalseg_environment(config: PipelineConfig) -> bool:
