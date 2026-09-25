@@ -248,6 +248,10 @@ def adopt_legacy_snakemake_inputs(
     return adopted
 
 
+# Bare sentinel tokens that close a course without certifying an outcome.
+TERMINAL_CLOSURE_TOKENS = frozenset({"failed", "disabled"})
+
+
 def advance_dependency_past_unbound_outputs(
     dependency_path: Path,
     output_paths: Iterable[Path],
@@ -262,8 +266,19 @@ def advance_dependency_past_unbound_outputs(
     for output_path in output_paths:
         candidate = Path(output_path)
         try:
-            observed = json.loads(candidate.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+            text = candidate.read_text(encoding="utf-8")
+        except OSError:
+            legacy.append(candidate)
+            continue
+        try:
+            observed = json.loads(text)
+        except json.JSONDecodeError:
+            # A campaign closes a failed or not-applicable course with a bare
+            # terminal token. It certifies no outcome, so it is not a stale
+            # success to invalidate; treating it as one advanced the shared stamp
+            # and re-ran the stage for every other, correctly bound course.
+            if text.strip().lower() in TERMINAL_CLOSURE_TOKENS:
+                continue
             observed = None
         if not isinstance(observed, Mapping) or str(observed.get(binding_field) or "") != expected:
             legacy.append(candidate)
