@@ -256,16 +256,15 @@ def _image_array_for_rtstruct(
 ) -> np.ndarray:
     """Sample an image on the exact, potentially non-uniform DICOM planes.
 
-    2026-09-25: the sampler moved to ``rtstruct_geometry.image_array_for_rtstruct``
-    and is shared with every other RTSTRUCT writer. RS_auto keeps the in-plane
-    layout it published at fe50cc0, ``(columns, rows, slices)``. rt-utils
-    contours axis 1 along the row direction, so this layout exchanges x and y
-    for RS_auto ROIs rebuilt from masks (see REPORT.md). This change moves no
-    RS_auto contour; the correction is left to a separate, reviewed change.
+    Returns the ``(rows, columns, slices)`` layout rt-utils ``add_roi`` contours.
+    2026-09-25: from 49eb9c9 until this date RS_auto transposed this result to
+    ``(columns, rows, slices)``, which exchanged x and y in every RS_auto ROI
+    rebuilt from masks. ``RS_AUTO_MASK_LAYOUT`` names the corrected layout, and
+    reuse rejects files written by the earlier code (see REPORT.md).
     """
     from .rtstruct_geometry import image_array_for_rtstruct
 
-    return np.transpose(image_array_for_rtstruct(image, series_data), (1, 0, 2))
+    return image_array_for_rtstruct(image, series_data)
 
 
 def _image_array_for_rtstruct_builder(
@@ -466,6 +465,217 @@ def _remove_rejected_rtstruct(path: Path, reason: str) -> None:
     except OSError as exc:
         raise OSError(f"could not remove rejected RTSTRUCT {path}") from exc
     logger.warning("Removed rejected RTSTRUCT %s before rebuild because %s", path, reason)
+
+
+# RS_auto origin record (2026-09-25). RS_auto rebuilt from masks between 49eb9c9
+# and this change has x and y exchanged, yet it is on-plane and resolves. The
+# record, bound to the published bytes, says how RS_auto was built. A file without
+# a matching record is reused only when it is exactly the copy-path product of
+# the selected TotalSegmentator RTSTRUCT.
+RS_AUTO_ORIGIN_SCHEMA = "rtpipeline-rs-auto-origin-v1"
+RS_AUTO_ORIGIN_COPY = "totalsegmentator_rtstruct_copy"
+RS_AUTO_ORIGIN_MASKS = "masks"
+RS_AUTO_MASK_LAYOUT = "rows-columns-v2"
+
+
+def _rs_auto_origin_path(course_dir: Path) -> Path:
+    return Path(course_dir) / "metadata" / "rs_auto_origin.json"
+
+
+def _file_sha256(path: Path) -> str:
+    import hashlib
+
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _record_rs_auto_origin(
+    course_dir: Path, rs_auto: Path, origin: str, *, legacy: bool = False
+) -> None:
+    """Bind the origin of the published RS_auto to its bytes.
+
+    A missing record only costs a rebuild (or a copy comparison) on the next run.
+    """
+    record: dict[str, object] = {
+        "schema": RS_AUTO_ORIGIN_SCHEMA,
+        "artifact": Path(rs_auto).name,
+        "rs_auto_sha256": _file_sha256(rs_auto),
+        "origin": origin,
+    }
+    if origin == RS_AUTO_ORIGIN_MASKS:
+        record["mask_layout"] = RS_AUTO_MASK_LAYOUT
+    if legacy:
+        record["recognized_legacy_copy"] = True
+    path = _rs_auto_origin_path(course_dir)
+    tmp = path.parent / f".{path.name}.{os.getpid()}.tmp"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_text(json.dumps(record, indent=2, sort_keys=True), encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError as exc:
+        logger.warning("Could not record the RS_auto origin for %s: %s", course_dir, exc)
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+
+
+def _read_rs_auto_origin(course_dir: Path, rs_auto: Path) -> Optional[dict]:
+    """The origin record of these exact RS_auto bytes, or None."""
+    path = _rs_auto_origin_path(course_dir)
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(record, dict) or record.get("schema") != RS_AUTO_ORIGIN_SCHEMA:
+        return None
+    try:
+        if record.get("rs_auto_sha256") != _file_sha256(rs_auto):
+            return None
+    except OSError:
+        return None
+    return record
+
+
+def _discard_rs_auto_origin(course_dir: Path) -> None:
+    try:
+        _rs_auto_origin_path(course_dir).unlink()
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        # The record is bound to the removed bytes, so a leftover cannot vouch
+        # for a replacement.
+        logger.debug("Could not remove the RS_auto origin record for %s: %s", course_dir, exc)
+
+
+def _postprocess_copied_rtstruct(path: Path, ct_dir: Path) -> None:
+    """What the copy path applies to the copied TotalSegmentator RTSTRUCT."""
+    try:
+        sanitize_rtstruct(path)
+        summary = fix_rtstruct_rois(ct_dir, path)
+        if summary and summary.changed:
+            logger.info(
+                "Auto RTSTRUCT ROI fix: %d repaired, %d still problematic",
+                len(summary.fixed),
+                len(summary.failed),
+            )
+    except Exception as e:
+        logger.debug("Post-processing copied RTSTRUCT failed: %s", e)
+
+
+def _rtstruct_contour_signature(path: Path) -> tuple:
+    """ROI names and every contour's type, referenced images and points, in file order."""
+    ds = pydicom.dcmread(str(path))
+    names = {
+        int(roi.ROINumber): str(getattr(roi, "ROIName", ""))
+        for roi in getattr(ds, "StructureSetROISequence", []) or []
+    }
+    rois = []
+    for item in getattr(ds, "ROIContourSequence", []) or []:
+        contours = []
+        for contour in getattr(item, "ContourSequence", []) or []:
+            images = tuple(
+                str(getattr(ref, "ReferencedSOPInstanceUID", ""))
+                for ref in getattr(contour, "ContourImageSequence", []) or []
+            )
+            points = tuple(float(v) for v in getattr(contour, "ContourData", []) or [])
+            contours.append((str(getattr(contour, "ContourGeometricType", "")), images, points))
+        rois.append((names.get(int(item.ReferencedROINumber)), tuple(contours)))
+    return tuple(names[number] for number in sorted(names)), tuple(rois)
+
+
+def _selected_totalseg_rtstruct(
+    seg_root: Path, ct_dir: Path, ct_series_uid: str
+) -> Optional[Path]:
+    """The ``--total.dcm`` the builder would select for this planning CT, if any."""
+    if not seg_root.exists():
+        return None
+    candidate_dirs = sorted(p for p in seg_root.iterdir() if p.is_dir())
+    _selected, dicom_seg_path, _base = _select_seg_dir_for_ct(
+        candidate_dirs, ct_series_uid, _read_ct_for_uid(ct_dir)
+    )
+    if dicom_seg_path is None or not dicom_seg_path.exists():
+        return None
+    return dicom_seg_path
+
+
+def _legacy_rs_auto_copy_detail(
+    rs_auto: Path, ct_dir: Path, source: Optional[Path]
+) -> Tuple[bool, str]:
+    """Whether an unrecorded RS_auto is exactly the copy path's product of ``source``.
+
+    Repeats the copy path (copy, ``sanitize_rtstruct``, ``fix_rtstruct_rois``) in
+    a scratch directory and compares ROI names and every contour's points and
+    referenced image. The copy is published only from an on-plane RTSTRUCT, so an
+    off-plane or DICOM-SEG source means RS_auto came from masks.
+    """
+    import tempfile
+
+    if source is None:
+        return False, "no selected TotalSegmentator RTSTRUCT exists to compare it with"
+    try:
+        sop = str(
+            getattr(pydicom.dcmread(str(source), stop_before_pixels=True), "SOPClassUID", "")
+        )
+    except Exception as exc:
+        return False, f"the selected TotalSegmentator output could not be read: {exc}"
+    if sop != _RTSTRUCT_SOP_CLASS_UID:
+        return False, "the selected TotalSegmentator output is not an RTSTRUCT, so RS_auto was built from masks"
+    on_planes, _detail = _rtstruct_plane_check(source, ct_dir)
+    if not on_planes:
+        return False, (
+            "the selected TotalSegmentator RTSTRUCT is off the planning CT planes, "
+            "so RS_auto was built from masks"
+        )
+    try:
+        with tempfile.TemporaryDirectory(prefix="rs_auto_copy_") as scratch:
+            expected_path = Path(scratch) / "RS_auto.dcm"
+            shutil.copyfile(str(source), str(expected_path))
+            _postprocess_copied_rtstruct(expected_path, ct_dir)
+            expected = _rtstruct_contour_signature(expected_path)
+        actual = _rtstruct_contour_signature(rs_auto)
+    except Exception as exc:
+        return False, f"it could not be compared with the TotalSegmentator RTSTRUCT copy: {exc}"
+    if actual != expected:
+        return False, "its contours differ from the copy of the selected TotalSegmentator RTSTRUCT"
+    return True, ""
+
+
+def _rs_auto_origin_rejection(
+    course_dir: Path, rs_auto: Path, ct_dir: Path, ct_series_uid: str, seg_root: Path
+) -> str:
+    """Why an otherwise current RS_auto may carry exchanged x and y; '' to reuse it."""
+    record = _read_rs_auto_origin(course_dir, rs_auto)
+    if record is not None:
+        origin = record.get("origin")
+        if origin == RS_AUTO_ORIGIN_COPY:
+            return ""
+        if origin == RS_AUTO_ORIGIN_MASKS and record.get("mask_layout") == RS_AUTO_MASK_LAYOUT:
+            return ""
+        return (
+            f"its origin record ({origin}, mask layout {record.get('mask_layout')}) "
+            "does not name the current mask layout"
+        )
+    try:
+        has_contours = any(signature for _name, signature in _rtstruct_contour_signature(rs_auto)[1])
+    except Exception as exc:
+        return f"its contours could not be read to establish its origin: {exc}"
+    if not has_contours:
+        # Without contour points there is no x or y to exchange.
+        return ""
+    is_copy, detail = _legacy_rs_auto_copy_detail(
+        rs_auto, ct_dir, _selected_totalseg_rtstruct(seg_root, ct_dir, ct_series_uid)
+    )
+    if is_copy:
+        _record_rs_auto_origin(course_dir, rs_auto, RS_AUTO_ORIGIN_COPY, legacy=True)
+        return ""
+    return (
+        "it has no origin record and is not the TotalSegmentator RTSTRUCT copy "
+        f"({detail}); RS_auto built from masks before 2026-09-25 has x and y exchanged"
+    )
 
 
 def _read_ct_for_uid(ct_dir: Path) -> str:
@@ -732,6 +942,7 @@ def build_auto_rtstruct(course_dir: Path) -> Optional[Path]:
                     rejected_artifact=rejected_artifact,
                 )
                 raise RuntimeError(fatal_reason) from exc
+        _discard_rs_auto_origin(course_dir)
         _record_auto_resume_decision(
             course_dir,
             "failed",
@@ -749,6 +960,7 @@ def build_auto_rtstruct(course_dir: Path) -> Optional[Path]:
             fatal_reason = f"could not remove rejected RS_auto.dcm: {exc}"
             _record_auto_resume_decision(course_dir, "failed", fatal_reason)
             raise RuntimeError(fatal_reason) from exc
+        _discard_rs_auto_origin(course_dir)
         rejected_artifact = {
             "action": "removed",
             "path": out_path.name,
@@ -796,8 +1008,14 @@ def build_auto_rtstruct(course_dir: Path) -> Optional[Path]:
             else:
                 on_planes, plane_detail = _rtstruct_plane_check(out_path, ct_dir)
                 if on_planes:
-                    current = True
-                    rejection_reason = ""
+                    rejection_reason = _rs_auto_origin_rejection(
+                        course_dir,
+                        out_path,
+                        ct_dir,
+                        ct_series_uid,
+                        course_dirs.segmentation_totalseg,
+                    )
+                    current = not rejection_reason
                 else:
                     rejection_reason = (
                         "its contours do not lie on the planning CT planes they reference: "
@@ -901,18 +1119,9 @@ def build_auto_rtstruct(course_dir: Path) -> Optional[Path]:
                         logger.error('Failed to copy RTSTRUCT to RS_auto: %s', e)
                         return _failed(f"copying the matched RTSTRUCT failed: {e}")
                     # Keep behavior consistent with NIfTI-derived RTSTRUCTs.
-                    try:
-                        sanitize_rtstruct(out_path)
-                        summary = fix_rtstruct_rois(ct_dir, out_path)
-                        if summary and summary.changed:
-                            logger.info(
-                                "Auto RTSTRUCT ROI fix: %d repaired, %d still problematic",
-                                len(summary.fixed),
-                                len(summary.failed),
-                            )
-                    except Exception as e:
-                        logger.debug("Post-processing copied RTSTRUCT failed: %s", e)
+                    _postprocess_copied_rtstruct(out_path, ct_dir)
                     logger.info("Wrote auto RTSTRUCT (from RTSTRUCT): %s", out_path)
+                    _record_rs_auto_origin(course_dir, out_path, RS_AUTO_ORIGIN_COPY)
                     _record_auto_resume_decision(
                         course_dir,
                         "rebuilt",
@@ -1077,6 +1286,7 @@ def build_auto_rtstruct(course_dir: Path) -> Optional[Path]:
             # The ROI fixer re-adds repaired ROIs through rt-utils.
             _anchor_published_rtstruct(out_path, ct_dir)
         logger.info("Wrote auto RTSTRUCT: %s", out_path)
+        _record_rs_auto_origin(course_dir, out_path, RS_AUTO_ORIGIN_MASKS)
         _record_auto_resume_decision(
             course_dir,
             "rebuilt",

@@ -51,7 +51,15 @@ def _uniform_z(n: int = 20) -> np.ndarray:
     return np.arange(n, dtype=float) * 3.0 - 30.0
 
 
-def _write_ct(ct_dir: Path, zs: np.ndarray) -> None:
+def _write_ct(
+    ct_dir: Path,
+    zs: np.ndarray,
+    *,
+    rows: int = CT_SIZE,
+    columns: int = CT_SIZE,
+    pixel_spacing=(PIXEL_MM, PIXEL_MM),
+    origin_xy=ORIGIN_XY,
+) -> None:
     ct_dir.mkdir(parents=True, exist_ok=True)
     series_uid, for_uid, study_uid = generate_uid(), generate_uid(), generate_uid()
     for i, z in enumerate(zs):
@@ -79,11 +87,12 @@ def _write_ct(ct_dir: Path, zs: np.ndarray) -> None:
         ds.SeriesTime = "120000"
         ds.FrameOfReferenceUID = for_uid
         ds.InstanceNumber = i + 1
-        ds.ImagePositionPatient = [ORIGIN_XY[0], ORIGIN_XY[1], float(z)]
+        ds.ImagePositionPatient = [origin_xy[0], origin_xy[1], float(z)]
         ds.ImageOrientationPatient = [1, 0, 0, 0, 1, 0]
-        ds.PixelSpacing = [PIXEL_MM, PIXEL_MM]
+        ds.PixelSpacing = list(pixel_spacing)
         ds.SliceThickness = 2.4
-        ds.Rows = ds.Columns = CT_SIZE
+        ds.Rows = rows
+        ds.Columns = columns
         ds.BitsAllocated = ds.BitsStored = 16
         ds.HighBit = 15
         ds.PixelRepresentation = 1
@@ -91,7 +100,7 @@ def _write_ct(ct_dir: Path, zs: np.ndarray) -> None:
         ds.PhotometricInterpretation = "MONOCHROME2"
         ds.RescaleIntercept = 0
         ds.RescaleSlope = 1
-        ds.PixelData = np.zeros((CT_SIZE, CT_SIZE), dtype=np.int16).tobytes()
+        ds.PixelData = np.zeros((rows, columns), dtype=np.int16).tobytes()
         ds.save_as(ct_dir / f"ct_{i:03d}.dcm", enforce_file_format=True)
 
 
@@ -134,8 +143,10 @@ def _write_totalseg_outputs(seg_dir: Path, ct_dir: Path, zs: np.ndarray, *, rtst
     if rtstruct:
         builder = RTStructBuilder.create_new(dicom_series_path=str(ct_dir))
         for name, box in STRUCTURES.items():
-            # Regular-grid slice i becomes DICOM slice i, rt-utils layout (x, y, z).
-            builder.add_roi(mask=np.transpose(_grid_mask(grid, box), (2, 1, 0)), name=name)
+            # Regular-grid slice i becomes DICOM slice i, rt-utils layout
+            # (row, column, slice). 2026-09-25: this fixture used (x, y, z), which
+            # published every box with x and y exchanged.
+            builder.add_roi(mask=np.transpose(_grid_mask(grid, box), (1, 2, 0)), name=name)
         total = seg_dir / f"{seg_dir.name}--total.dcm"
         builder.save(str(total))
     if masks:
@@ -344,7 +355,7 @@ def test_anchoring_leaves_uniform_rt_utils_output_untouched(tmp_path) -> None:
     builder = RTStructBuilder.create_new(dicom_series_path=str(ct_dir))
     grid = _regular_grid(_uniform_z())
     for name, box in STRUCTURES.items():
-        builder.add_roi(mask=np.transpose(_grid_mask(grid, box), (2, 1, 0)), name=name)
+        builder.add_roi(mask=np.transpose(_grid_mask(grid, box), (1, 2, 0)), name=name)
     before = [list(c.ContourData) for i in builder.ds.ROIContourSequence for c in i.ContourSequence]
     assert ar._anchor_contours_to_referenced_planes(builder.ds, builder.series_data) == 0
     after = [list(c.ContourData) for i in builder.ds.ROIContourSequence for c in i.ContourSequence]

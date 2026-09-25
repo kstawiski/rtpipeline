@@ -493,24 +493,13 @@ def test_uniform_spacing_writer_outputs_are_byte_identical_to_a177c59(tmp_path) 
     assert results["new"] == results["old"]
 
 
-# Known RS_auto defect, deliberately unchanged here -------------------------------
+# RS_auto orientation (x/y exchange fixed 2026-09-25) ------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "RS_auto samples masks in (column, row) layout, which rt-utils contours "
-        "with x and y exchanged; left unchanged by the task that shared the "
-        "sampler (2026-09-25), see REPORT.md"
-    ),
-)
 def test_rs_auto_rebuilt_from_masks_keeps_structure_x_y_extent(tmp_path) -> None:
     from test_auto_rtstruct_exact_planes import _course
 
     course, ct_dir, _seg, _total = _course(tmp_path, _mixed_z())
     scoped = create_scoped_rtstruct(ct_dir, ar.build_auto_rtstruct(course))
     for name, box in STRUCTURES.items():
-        mask = scoped.get_roi_mask_by_name(name)
-        # The published mask is exactly the in-plane transpose of the box.
-        _assert_box_placed(np.transpose(mask, (1, 0, 2)), _mixed_z(), box)
-        _assert_box_placed(mask, _mixed_z(), box)
+        _assert_box_placed(scoped.get_roi_mask_by_name(name), _mixed_z(), box)

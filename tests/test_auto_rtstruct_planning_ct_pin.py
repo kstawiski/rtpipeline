@@ -144,8 +144,10 @@ def test_mask_sampling_preserves_nonuniform_dicom_slice_planes() -> None:
 
     sampled = _image_array_for_rtstruct(image, slices)
 
-    assert sampled.shape == (4, 3, 4)
-    assert sampled[2, 1, :].tolist() == [1, 2, 4, 6]
+    # rt-utils layout (row, column, slice). 2026-09-25: this test pinned the
+    # (column, row) layout, (4, 3, 4) and [2, 1, :], which exchanged x and y.
+    assert sampled.shape == (3, 4, 4)
+    assert sampled[1, 2, :].tolist() == [1, 2, 4, 6]
     assert np.count_nonzero(sampled) == 4
 
 
