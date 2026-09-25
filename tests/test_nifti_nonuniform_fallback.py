@@ -109,13 +109,20 @@ def test_fallback_publishes_the_volume_dcm2niix_writes_for_signed_data(tmp_path,
     assert result.get_data_dtype() == np.dtype("int16")
     assert np.array_equal(np.asanyarray(result.dataobj), np.asanyarray(reference.dataobj))
 
-    # Independent check of the rescale: the first and last equalized planes lie on
-    # acquired slices and hold the stored value + RescaleIntercept.
+    # Independent check of the rescale: equalized planes that lie on an acquired
+    # slice hold that slice's stored value + RescaleIntercept.
     values = np.asanyarray(result.dataobj)
     rows, columns = 16, 20
-    for plane, index in ((0, 0), (result.shape[2] - 1, len(z) - 1)):
-        expected = synthetic_stored_values(rows, columns, index) - 1000
+    coincident = 0
+    for plane in range(result.shape[2]):
+        plane_z = float((result.affine @ np.array([0.0, 0.0, plane, 1.0]))[2])
+        matches = [index for index, position in enumerate(z) if abs(position - plane_z) < 1e-3]
+        if not matches:
+            continue
+        coincident += 1
+        expected = synthetic_stored_values(rows, columns, matches[0]) - 1000
         assert np.array_equal(values[:, ::-1, plane], expected.T)
+    assert coincident >= 2
 
     sidecar = json.loads((nifti_dir / (published.name[:-7] + ".metadata.json")).read_text())
     assert sidecar_is_complete(sidecar)
