@@ -105,7 +105,15 @@ _STAGE_DEFINITIONS: dict[str, StageDefinition] = {
             ArtifactRule("segmentation_status", "metadata/segmentation_status.json", "content_sha256"),
         ),
         required_roles=frozenset({"segmentation_artifact", "segmentation_status"}),
-        code_sources=(*_COMMON_CODE_SOURCES, "segmentation.py", "course_contract.py"),
+        # 2026-09-25: RS_auto.dcm is written by auto_rtstruct.py, and both it and
+        # segmentation.py place contours through rtstruct_geometry.py.
+        code_sources=(
+            *_COMMON_CODE_SOURCES,
+            "segmentation.py",
+            "auto_rtstruct.py",
+            "rtstruct_geometry.py",
+            "course_contract.py",
+        ),
         environment_packages=("numpy", "pydicom", "SimpleITK", "torch", "totalsegmentator"),
     ),
     "segmentation_custom": StageDefinition(
