@@ -216,6 +216,9 @@ _ROUNDING_MARGIN_VOXELS = 1e-6
 # A term of the input index that changes by less than this over the whole
 # series enters the margin instead of the enumerated sample positions.
 _MINOR_TERM_LIMIT_VOXELS = 1e-2
+# Pixel types whose nearest-neighbour value SimpleITK passes through a double
+# unchanged, so selecting the voxel directly gives the same bytes.
+_GATHER_PIXEL_TYPES = ("sitkUInt8", "sitkInt8", "sitkUInt16", "sitkInt16", "sitkUInt32", "sitkInt32")
 
 
 def _slice_geometries(slices) -> list[tuple]:
@@ -282,8 +285,8 @@ def _half_integer_distance(values: np.ndarray) -> float:
     return float(np.min(np.abs(values - np.floor(values) - 0.5)))
 
 
-def _uniform_reference(image, geometries):
-    """A 3-D reference whose one resample equals the per-slice resamples, or None.
+def _regular_sampling(image, geometries):
+    """How to sample a regular series in one step with the per-slice bytes, or None.
 
     Requires identical rows, columns, pixel spacing and orientation values on
     every slice, and each slice position within REGULAR_GRID_TOLERANCE_MM of
@@ -293,6 +296,11 @@ def _uniform_reference(image, geometries):
     nearest-neighbour rounding and the inside-buffer test change) that both
     paths select the same voxel or the same default value. Anything not
     proven returns None and the per-slice path is used.
+
+    Returns ``(reference, gather)``: the 3-D reference for one resample, and,
+    when each image axis follows exactly one output axis, the proven voxel
+    index of every output position per image axis as ``(output_axis,
+    indices)`` (output axes: 0 row, 1 column, 2 slice), otherwise None.
     """
     import SimpleITK as sitk
 
@@ -327,32 +335,58 @@ def _uniform_reference(image, geometries):
     along_column = to_index @ (orientation[1] * spacing[0])
     if not (np.isfinite(base).all() and np.isfinite(along_row).all() and np.isfinite(along_column).all()):
         return None
+    gather = []
     for axis in range(3):
-        terms = [(along_row[axis], columns), (along_column[axis], rows)]
+        terms = [(along_row[axis], columns, 1), (along_column[axis], rows, 0)]
         margin = deviation[axis] + _ROUNDING_MARGIN_VOXELS
         major = []
-        for coefficient, length in terms:
+        for coefficient, length, output_axis in terms:
             span = abs(coefficient) * (length - 1)
             if span <= _MINOR_TERM_LIMIT_VOXELS:
                 margin += span
             else:
-                major.append((coefficient, length))
+                major.append((coefficient, length, output_axis))
         if len(major) > 1:
             # In-plane rotation between the image and the series; not enumerated.
             return None
         values = base[:, axis][:, None]
+        output_axis = 2
         if major:
-            coefficient, length = major[0]
+            coefficient, length, output_axis = major[0]
             values = values + coefficient * np.arange(length)[None, :]
         if _half_integer_distance(values) <= margin:
             return None
+        # Every sample is off a rounding tie, so this is the voxel both paths use.
+        indices = np.floor(values + 0.5).astype(np.int64)
+        if major and np.all(indices == indices[0]):
+            gather.append((output_axis, indices[0]))
+        elif not major:
+            gather.append((2, indices[:, 0]))
+        else:
+            gather.append(None)
+    if any(item is None for item in gather) or sorted(item[0] for item in gather) != [0, 1, 2]:
+        gather = None
 
     direction = np.column_stack((orientation[0], orientation[1], normal * np.sign(step)))
     reference = sitk.Image(columns, rows, count, image.GetPixelID())
     reference.SetOrigin(geometries[0][4])
     reference.SetSpacing((spacing[1], spacing[0], abs(step)))
     reference.SetDirection(tuple(float(value) for value in direction.ravel()))
-    return reference
+    return reference, gather
+
+
+def _gather_voxels(image, gather) -> np.ndarray:
+    """Select the proven voxel of every output position; 0 outside the image."""
+    import SimpleITK as sitk
+
+    array = sitk.GetArrayFromImage(image)  # (z, y, x): image axis a is array axis 2 - a
+    padded = np.pad(array, 1)
+    for axis, (_output_axis, indices) in enumerate(gather):
+        size = array.shape[2 - axis]
+        inside = (indices >= 0) & (indices < size)
+        padded = padded.take(np.where(inside, indices + 1, 0), axis=2 - axis)
+    order = [2 - next(a for a, item in enumerate(gather) if item[0] == output) for output in range(3)]
+    return np.ascontiguousarray(padded.transpose(order))
 
 
 def image_array_for_rtstruct(image, series_data) -> np.ndarray:
@@ -365,9 +399,11 @@ def image_array_for_rtstruct(image, series_data) -> np.ndarray:
     grid. SimpleITK regularizes mixed slice spacing onto a uniform z grid, so
     moving axes from that image puts slice ``i`` at the wrong position.
 
-    A regular series is sampled with one 3-D resample when ``_uniform_reference``
-    proves it returns the same bytes as one resample per slice; any other
-    series is sampled slice by slice.
+    A regular series is sampled in one step when ``_regular_sampling`` proves
+    it returns the same bytes as one resample per slice: by selecting the
+    proven voxels directly for integer masks whose axes follow the series
+    axes, otherwise by one 3-D resample. Any other series is sampled slice by
+    slice.
     """
     import SimpleITK as sitk
 
@@ -375,9 +411,12 @@ def image_array_for_rtstruct(image, series_data) -> np.ndarray:
     if not slices:
         raise ValueError("RTSTRUCT source series contains no DICOM slices")
     geometries = _slice_geometries(slices)
-    reference = _uniform_reference(image, geometries)
-    if reference is None:
+    plan = _regular_sampling(image, geometries)
+    if plan is None:
         return _image_array_per_slice(image, geometries)
+    reference, gather = plan
+    if gather is not None and image.GetPixelID() in {getattr(sitk, name) for name in _GATHER_PIXEL_TYPES}:
+        return _gather_voxels(image, gather)
     volume = sitk.Resample(
         image,
         reference,
