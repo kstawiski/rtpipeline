@@ -279,6 +279,32 @@ def test_regular_series_is_sampled_in_at_most_one_resample(monkeypatch, pixel, e
     assert calls == expected
 
 
+def test_vector_image_takes_the_per_slice_path() -> None:
+    slices = _series(step=2.4)
+    mask = _mask(_series_grid(slices), seed=13)
+    image = sitk.Compose(mask, mask)
+    geometries = rg._slice_geometries(slices)
+    assert rg._regular_sampling(image, geometries) is None
+    expected = rg._image_array_per_slice(image, geometries)
+    actual = rg.image_array_for_rtstruct(image, slices)
+    assert actual.shape == expected.shape == (36, 44, 24, 2)
+    assert actual.tobytes() == expected.tobytes()
+
+
+def test_reversed_and_partial_index_ranges_match_per_slice() -> None:
+    # A mask grid flipped along x and y, and shorter than the series along z:
+    # reversed slices in-plane, default values beyond the grid along z.
+    slices = _series(step=2.5)
+    fine = _series_grid(slices)
+    flipped = sitk.Image((44, 36, 15), sitk.sitkUInt8)
+    flipped.SetSpacing(fine.GetSpacing())
+    flipped.SetDirection((-1.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 1.0))
+    flipped.SetOrigin(fine.TransformIndexToPhysicalPoint((43, 35, 5)))
+    image = _mask(flipped, seed=14, border=True)
+    _assert_identical(image, slices, fast=True, mechanism="gather")
+    assert not rg.image_array_for_rtstruct(image, slices)[:, :, :5].any()
+
+
 def test_invalid_slice_geometry_still_raises() -> None:
     slices = _series()
     slices[3].Rows = 35
