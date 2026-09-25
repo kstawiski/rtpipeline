@@ -23,7 +23,7 @@ def test_unqualified_targets_reach_real_class_decision(name):
     assert decision.roi_class == "target"
     assert decision.primary_resegment_range_hu == (-1000, 400)
     assert decision.feature_publication_policy == contract.FEATURE_POLICY_EXTRACT
-    assert decision.map_version == "ct-roi-class-map-2026-09-22-v8"
+    assert decision.map_version == "ct-roi-class-map-2026-09-25-v9"
 
 
 @pytest.mark.parametrize("name", [
@@ -45,7 +45,7 @@ def test_definite_crops_margins_and_controls_are_inventory_helpers(name):
 @pytest.mark.parametrize("name", [
     "unknown mixed tissue", "bladder-prostate", "PTVunknown", "xPTV1",
     "PTV 1 2", "G TV1", "P T V1", "PTV-1", "PTV+1", "PTV/1",
-    "PTV_1", "PTV1.0", "PTV1,0", "GTVn+1", "PTV1__unknown", "PBT",
+    "PTV_1", "PTV1.0", "PTV1,0", "GTVn+1", "PTV1__unknown", "QX unlisted",
 ])
 def test_ambiguous_and_mixed_names_fail_closed(name):
     decision = contract.classify_ct_roi("Manual", name)
@@ -100,7 +100,8 @@ def test_ambiguous_and_mixed_names_fail_closed(name):
 ])
 def test_map_v8_standardized_names_reach_approved_decision(name, roi_class, status):
     """Map v8 evidence-bound standardization (2026-09-22): dose, prescription
-    and structure-set evidence reviewed per name; PBT stays held."""
+    and structure-set evidence reviewed per name. PBT was held in v8 and resolved in v9
+    (2026-09-25) from contour geometry; unlisted names stay held."""
     decision = contract.classify_ct_roi("Manual", name)
     assert decision.roi_class == roi_class
     assert decision.adjudication_status == status
@@ -230,7 +231,7 @@ def test_publication_rejects_stale_map_identity(monkeypatch, field, value):
 
 def test_pending_map_entry_still_blocks_required_publication(monkeypatch):
     from test_radiomics_ct_dual_arm import _dual_arm_rows
-    decision = contract.classify_ct_roi("Manual", "PBT")
+    decision = contract.classify_ct_roi("Manual", "QX unlisted")
     rows = _dual_arm_rows(monkeypatch, decision=decision)
     with pytest.raises(ValueError, match="operator adjudication is required"):
         contract.validate_ct_publication(pd.DataFrame(rows))
@@ -240,3 +241,10 @@ def test_new_rule_metadata_is_complete():
     data = contract.load_roi_class_map()[0]
     for entry in data["name_rules"]["rules"].values():
         assert all(entry.get(key) for key in ("roi_class", "adjudication_status", "evidence_basis"))
+
+
+def test_pbt_is_the_proximal_bronchial_tree_airway_class():
+    decision = contract.classify_ct_roi("Manual", "PBT")
+    bronchus = contract.classify_ct_roi("Manual", "Bronchus_L")
+    assert decision.roi_class == bronchus.roi_class == "solid_soft_tissue_neural"
+    assert decision.map_version == "ct-roi-class-map-2026-09-25-v9"

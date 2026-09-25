@@ -380,7 +380,8 @@ def test_exact_crosswalk_uses_defensible_anatomic_classes(name, roi_class):
 @pytest.mark.parametrize(
     "name",
     [
-        "PBT",
+        # PBT was the v8 example; map v9 (2026-09-25) resolves it from contour geometry.
+        "QX unlisted",
     ],
 )
 def test_ambiguous_names_remain_unadjudicated_without_a_governed_class(name):

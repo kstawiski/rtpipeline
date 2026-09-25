@@ -1,5 +1,5 @@
 schema_version: 1
-map_version: ct-roi-class-map-2026-09-22-v8
+map_version: ct-roi-class-map-2026-09-25-v9
 name_rules:
   version: ct-roi-name-rules-v1
   normalization: ASCII case folding and whitespace collapse, Unicode hyphen/nonbreaking
@@ -2450,6 +2450,14 @@ manual_custom_crosswalk:
     roi_class: solid_soft_tissue_neural
     adjudication_status: approved_by_anatomic_equivalence
     evidence_basis: Exact names for left/right bronchus, airway
+  PBT:
+    roi_class: solid_soft_tissue_neural
+    adjudication_status: approved_by_anatomic_equivalence
+    evidence_basis: Proximal bronchial tree (lung SBRT organ at risk; distal trachea,
+      carina, main and lobar bronchi), same airway class as Bronchus_L/R and Oskrzele_L/R.
+      Added 2026-09-25 (v9) after geometric review of every source contour, not from
+      the acronym alone. Each is DICOM RTROIInterpretedType ORGAN, centred at the
+      carina, overlapping the drawn main bronchi and lungs, 15-34 cm3.
   Krtan:
     roi_class: solid_soft_tissue_neural
     adjudication_status: approved_by_anatomic_equivalence
