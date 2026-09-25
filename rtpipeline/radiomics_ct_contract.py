@@ -2655,3 +2655,198 @@ def write_completion_sentinel(
     finally:
         tmp_path.unlink(missing_ok=True)
     return target
+
+
+# A course whose authoritative contract declares no planning CT (for example an
+# MR-planned or plan-less course) has no CT radiomics to extract. Its completion
+# records that outcome in the same sentinel and schema as an extraction, under
+# its own status, so a consumer can count the course as not applicable instead
+# of reading a missing publication as a failure. It binds the evidence for the
+# decision (course contract, disabled segmentation completion and decision
+# record, radiomics configuration) and is refused whenever any of it disagrees.
+NOT_APPLICABLE_STATUS = "not_applicable"
+NO_PLANNING_CT_REASON_CODE = "no_planning_ct"
+NO_PLANNING_CT_REASON = "stage not applicable because no planning CT is declared"
+_NOT_APPLICABLE_FIELDS = (
+    "status",
+    "schema",
+    "reason_code",
+    "reason",
+    "patient_id",
+    "course_id",
+    "course_contract_sha256",
+    "segmentation_completion_sha256",
+    "segmentation_status_sha256",
+)
+
+
+def course_declares_no_planning_ct(course_dir: Path) -> bool:
+    """True only when the contract names no planning CT DICOM, NIfTI or series.
+
+    A partial planning CT (for example a DICOM series without its NIfTI) is not
+    "no planning CT": it is an incomplete course and keeps failing closed.
+    """
+    from .course_contract import load_course_contract
+
+    contract = load_course_contract(Path(course_dir))
+    return (
+        contract.planning_ct_dir is None
+        and contract.planning_ct_nifti is None
+        and not str(contract.planning_ct.get("series_instance_uid") or "").strip()
+    )
+
+
+def completion_sentinel_status(sentinel_path: Path) -> str:
+    """The declared status of a radiomics completion sentinel, or ``""``.
+
+    This only routes a consumer to the matching validator; it certifies nothing.
+    """
+    try:
+        text = Path(sentinel_path).read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        return text.splitlines()[0].strip().lower() if text else ""
+    if isinstance(payload, dict):
+        return str(payload.get("status") or "").strip().lower()
+    return ""
+
+
+def not_applicable_sentinel_payload(
+    course_dir: Path,
+    *,
+    configuration_dependency: Optional[Path] = None,
+) -> dict[str, Any]:
+    """Build the not-applicable completion, or raise if the course has a CT."""
+    from .stage_completion import validate_stage_completion_sentinel
+
+    course_dir = Path(course_dir)
+    if not course_declares_no_planning_ct(course_dir):
+        raise ValueError(
+            "refusing a not-applicable radiomics completion: the course contract "
+            "declares a planning CT"
+        )
+    for name in ("radiomics_ct.parquet", "radiomics_ct.xlsx"):
+        if (course_dir / name).exists():
+            raise ValueError(
+                "refusing a not-applicable radiomics completion beside an existing "
+                f"CT radiomics publication {name}"
+            )
+    segmentation_sentinel = course_dir / ".segmentation_done"
+    segmentation = validate_stage_completion_sentinel(
+        segmentation_sentinel,
+        expected_stage="segmentation",
+        expected_patient=course_dir.parent.name,
+        expected_course=course_dir.name,
+    )
+    if segmentation.get("status") != "disabled":
+        raise ValueError(
+            "refusing a not-applicable radiomics completion: segmentation completed "
+            f"with status {segmentation.get('status')!r}, not 'disabled'"
+        )
+    status_path = course_dir / "metadata" / "segmentation_status.json"
+    try:
+        decision = json.loads(status_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(
+            f"segmentation decision record is unreadable: {status_path}"
+        ) from exc
+    if not isinstance(decision, dict) or decision.get("status") != "disabled":
+        raise ValueError(
+            "refusing a not-applicable radiomics completion: the segmentation "
+            "decision record is not 'disabled'"
+        )
+    payload: dict[str, Any] = {
+        "status": NOT_APPLICABLE_STATUS,
+        "schema": "rtpipeline-radiomics-completion-v2",
+        "reason_code": NO_PLANNING_CT_REASON_CODE,
+        "reason": NO_PLANNING_CT_REASON,
+        "patient_id": course_dir.parent.name,
+        "course_id": course_dir.name,
+        "course_contract_sha256": file_sha256(
+            course_dir / "metadata" / "case_metadata.json"
+        ),
+        "segmentation_completion_sha256": file_sha256(segmentation_sentinel),
+        "segmentation_status_sha256": file_sha256(status_path),
+    }
+    if configuration_dependency is not None:
+        from .config_dependencies import read_stage_dependency
+
+        record = read_stage_dependency(
+            Path(configuration_dependency), expected_stage="radiomics"
+        )
+        payload["configuration_dependency_sha256"] = str(record["sha256"])
+    return payload
+
+
+def write_not_applicable_completion_sentinel(
+    course_dir: Path,
+    sentinel_path: Optional[Path] = None,
+    *,
+    configuration_dependency: Optional[Path] = None,
+) -> Path:
+    course_dir = Path(course_dir)
+    target = Path(sentinel_path) if sentinel_path else course_dir / ".radiomics_done"
+    if target.resolve(strict=False) != (course_dir / ".radiomics_done").resolve(strict=False):
+        raise ValueError(
+            f"radiomics completion sentinel {target} is not this course's .radiomics_done"
+        )
+    payload = not_applicable_sentinel_payload(
+        course_dir, configuration_dependency=configuration_dependency
+    )
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{target.name}.", suffix=".tmp", dir=target.parent)
+    os.close(fd)
+    tmp_path = Path(tmp_name)
+    try:
+        tmp_path.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+        os.replace(tmp_path, target)
+    finally:
+        tmp_path.unlink(missing_ok=True)
+    return target
+
+
+def validate_not_applicable_completion_sentinel(
+    course_dir: Path,
+    sentinel_path: Optional[Path] = None,
+    *,
+    configuration_dependency: Optional[Path] = None,
+) -> dict[str, Any]:
+    """Revalidate a not-applicable completion against the current evidence."""
+    course_dir = Path(course_dir)
+    target = Path(sentinel_path) if sentinel_path else course_dir / ".radiomics_done"
+    try:
+        observed = json.loads(target.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise ValueError(f"governed radiomics completion sentinel is unreadable: {target}") from exc
+    if not isinstance(observed, dict):
+        raise ValueError("governed radiomics completion sentinel must be a JSON object")
+    if observed.get("status") != NOT_APPLICABLE_STATUS:
+        raise ValueError(
+            f"radiomics completion sentinel status {observed.get('status')!r} is "
+            "not a not-applicable completion"
+        )
+    expected = not_applicable_sentinel_payload(
+        course_dir, configuration_dependency=configuration_dependency
+    )
+    # A not-applicable completion certifies no extraction, so it may carry none
+    # of an extraction's fields (row counts, digests, feature completeness).
+    unexpected = set(observed) - set(_NOT_APPLICABLE_FIELDS) - {
+        "configuration_dependency_sha256"
+    }
+    if unexpected:
+        raise ValueError(
+            "not-applicable radiomics completion sentinel carries extraction fields: "
+            + ", ".join(sorted(unexpected))
+        )
+    fields = list(_NOT_APPLICABLE_FIELDS)
+    if configuration_dependency is not None:
+        fields.append("configuration_dependency_sha256")
+    for field in fields:
+        if observed.get(field) != expected.get(field):
+            raise ValueError(
+                f"not-applicable radiomics completion sentinel is stale for {field}"
+            )
+    return observed

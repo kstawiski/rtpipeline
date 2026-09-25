@@ -185,10 +185,36 @@ def _validate_expected_dvh_skip(
     return None
 
 
+NOT_APPLICABLE_NO_PLANNING_CT = "not_applicable_no_planning_ct"
+
+
+def _declared_sentinel_status(path: Path) -> str:
+    try:
+        text = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+    try:
+        decoded = json.loads(text)
+    except json.JSONDecodeError:
+        return text.lower()
+    if isinstance(decoded, dict):
+        return str(decoded.get("status", "")).strip().lower()
+    return ""
+
+
+def _contract_declares_no_planning_ct(course_contract) -> bool:
+    return (
+        course_contract.planning_ct_dir is None
+        and course_contract.planning_ct_nifti is None
+        and not str(course_contract.planning_ct.get("series_instance_uid") or "").strip()
+    )
+
+
 def _validate_required_inputs(courses):
     errors: list[str] = []
     incomplete: dict[tuple[str, str], list[str]] = {}
     expected_noncomputed: dict[tuple[str, str], str] = {}
+    not_applicable: dict[tuple[str, str], str] = {}
     required_frames: dict[tuple[Path, str], pd.DataFrame] = {}
     sentinel_contract = [
         (".organized", {"ok"}),
@@ -235,7 +261,24 @@ def _validate_required_inputs(courses):
             dvh_decision.get("metrics_status") == "not_computed"
             and dvh_decision.get("output") is None
         )
+        # A course whose contract declares no planning CT closes its CT stages
+        # as not applicable (DVH and QC "disabled", radiomics "not_applicable").
+        # Once any of them says so, all of them and segmentation must, and each
+        # completion is revalidated; a mixed or unbound closure fails closed.
+        not_applicable_statuses = {".dvh_done": "disabled", ".qc_done": "disabled"}
+        if RADIOMICS_ENABLED:
+            not_applicable_statuses[".radiomics_done"] = "not_applicable"
+        course_not_applicable = _contract_declares_no_planning_ct(
+            course_contract
+        ) and any(
+            _declared_sentinel_status(course_dir / name) == status
+            for name, status in not_applicable_statuses.items()
+        )
         for sentinel_name, allowed_statuses in sentinel_contract:
+            if course_not_applicable and sentinel_name in not_applicable_statuses:
+                allowed_statuses = {not_applicable_statuses[sentinel_name]}
+            elif course_not_applicable and sentinel_name == ".segmentation_done":
+                allowed_statuses = {"disabled"}
             error = _read_sentinel(
                 course_dir / sentinel_name,
                 patient_id,
@@ -245,6 +288,34 @@ def _validate_required_inputs(courses):
             if error:
                 errors.append(error)
                 course_errors.append(error)
+
+        if course_not_applicable:
+            if RADIOMICS_ENABLED and not course_errors:
+                try:
+                    from rtpipeline.radiomics_ct_contract import (
+                        validate_not_applicable_completion_sentinel,
+                    )
+
+                    validate_not_applicable_completion_sentinel(
+                        course_dir, course_dir / ".radiomics_done"
+                    )
+                except Exception as exc:
+                    message = (
+                        f"{patient_id}/{course_id}: required sentinel is unbound or "
+                        f"stale: .radiomics_done: {exc}"
+                    )
+                    errors.append(message)
+                    course_errors.append(message)
+            if course_errors:
+                incomplete[(patient_id, course_id)] = course_errors
+                continue
+            reason = (
+                f"{NOT_APPLICABLE_NO_PLANNING_CT}: stage not applicable because no "
+                "planning CT is declared"
+            )
+            not_applicable[(patient_id, course_id)] = reason
+            expected_noncomputed[(patient_id, course_id)] = reason
+            continue
 
         required_outputs = []
         if dvh_not_computed:
@@ -309,13 +380,17 @@ def _validate_required_inputs(courses):
                 required_frames[(course_dir, key)] = frame
         if course_errors:
             incomplete[(patient_id, course_id)] = course_errors
-    return required_frames, errors, incomplete, expected_noncomputed
+    return required_frames, errors, incomplete, expected_noncomputed, not_applicable
 
 
-def _write_radiomics_denominator_aggregate(courses) -> None:
+def _write_radiomics_denominator_aggregate(courses, not_applicable=None) -> None:
     """Combine per-course ledgers without replacing course counts by row counts."""
     course_rows = []
     course_roi_rows = []
+    # A course with no planning CT is screened and counted, as not applicable:
+    # never extracted, never a technical exclusion, and it has no ROI rows.
+    for patient_id, course_id in sorted(not_applicable or {}):
+        course_rows.append({"entity": "COURSE", "course_id": str(course_id), "patient_id": str(patient_id), "screened": 1, "in_scope": 0, "out_of_scope": 1, "adequate_coverage": 0, "insufficient_coverage": 0, "valid_derivation": 0, "technical_exclusion": 0, "indeterminate": 0, "extracted": 0, "reason_code": NOT_APPLICABLE_NO_PLANNING_CT})
     for patient_id, course_id, course_dir in courses:
         path = course_dir / "metadata" / "radiomics_roi_ledger.json"
         if not path.exists():
@@ -365,10 +440,15 @@ def _write_radiomics_denominator_aggregate(courses) -> None:
 
 
 def _write_campaign_attrition(
-    courses, incomplete, expected_noncomputed, technical_quarantines=()
+    courses,
+    incomplete,
+    expected_noncomputed,
+    technical_quarantines=(),
+    not_applicable=None,
 ) -> None:
     """Record why each course was excluded, so the denominator is defensible."""
     rows = []
+    not_applicable = not_applicable or {}
     for patient_id, course_id, _ in courses:
         key = (patient_id, course_id)
         failures = incomplete.get(key, [])
@@ -376,6 +456,9 @@ def _write_campaign_attrition(
         if failures:
             status = "excluded"
             reasons = failures
+        elif key in not_applicable:
+            status = "not_applicable"
+            reasons = [not_applicable[key]]
         elif reason:
             status = "not_computed"
             reasons = [reason]
@@ -802,6 +885,7 @@ def _write_tabular_outputs(
     incomplete=None,
     expected_noncomputed=None,
     radiomics_cohort_provenance=None,
+    not_applicable=None,
 ) -> None:
     _write_dvh(
         all_frames.get("dvh", []),
@@ -822,6 +906,7 @@ def _write_tabular_outputs(
                 (str(patient_id), str(course_id))
                 for patient_id, course_id, _course_dir in courses
                 if (patient_id, course_id) not in (incomplete or {})
+                and (patient_id, course_id) not in (not_applicable or {})
             }
             if not {"patient_id", "course_id"}.issubset(combined_radiomics.columns):
                 raise RuntimeError(
@@ -1056,6 +1141,7 @@ _write_organization_gate(
     required_errors,
     incomplete_courses,
     expected_noncomputed_courses,
+    not_applicable_courses,
 ) = _validate_required_inputs(courses)
 downstream_exclusions: list[dict[str, Any]] = []
 
@@ -1067,14 +1153,17 @@ if not CAMPAIGN_MODE:
         )
         log_path.write_text(message, encoding="utf-8")
         raise RuntimeError(message.rstrip())
-    aggregated_courses = courses
-    summary = f"Aggregated {len(courses)} course(s).\n"
+    aggregated_courses = [
+        course for course in courses if (course[0], course[1]) not in not_applicable_courses
+    ]
+    summary = f"Aggregated {len(aggregated_courses)} course(s).\n"
 elif CAMPAIGN_REQUIRE_ALL_COURSES:
     _write_campaign_attrition(
         courses,
         incomplete_courses,
         expected_noncomputed_courses,
         technical_quarantines,
+        not_applicable_courses,
     )
     if required_errors:
         _report_aggregation_errors(required_errors, "required input failures")
@@ -1092,7 +1181,9 @@ elif CAMPAIGN_REQUIRE_ALL_COURSES:
         )
         log_path.write_text(message, encoding="utf-8")
         raise RuntimeError(message.rstrip())
-    aggregated_courses = courses
+    aggregated_courses = [
+        course for course in courses if (course[0], course[1]) not in not_applicable_courses
+    ]
     summary = (
         f"Aggregated all {organize_cohort['attempted_course_count']} intended course(s).\n"
     )
@@ -1109,12 +1200,18 @@ else:
         incomplete_courses,
         expected_noncomputed_courses,
         technical_quarantines,
+        not_applicable_courses,
     )
     aggregated_courses = [
-        course for course in courses if (course[0], course[1]) not in incomplete_courses
+        course
+        for course in courses
+        if (course[0], course[1]) not in incomplete_courses
+        and (course[0], course[1]) not in not_applicable_courses
     ]
     total = organize_cohort["attempted_course_count"]
-    completed = len(aggregated_courses)
+    # A not-applicable course reached its governed terminal outcome; it is not
+    # attrition and counts towards the completion floor.
+    completed = len(aggregated_courses) + len(not_applicable_courses)
     fraction = (completed / total) if total else 0.0
 
     if required_errors:
@@ -1144,6 +1241,11 @@ else:
         f"({fraction:.1%}); {total - completed} excluded with recorded reasons "
         f"in campaign_attrition.csv.\n"
     )
+    if not_applicable_courses:
+        summary += (
+            f"{len(not_applicable_courses)} of the completed course(s) are not "
+            "applicable because no planning CT is declared.\n"
+        )
 
 radiomics_cohort_provenance = None
 if RADIOMICS_ENABLED:
@@ -1166,19 +1268,35 @@ if RADIOMICS_ENABLED:
         ],
         technical_quarantines=provenance_technical_quarantines,
         downstream_exclusions=downstream_exclusions,
+        not_applicable_courses=[
+            {
+                "patient_id": patient_id,
+                "course_id": course_id,
+                "reason": reason,
+                "source_record_sha256": hashlib.sha256(
+                    (course_dir / ".radiomics_done").read_bytes()
+                ).hexdigest(),
+            }
+            for patient_id, course_id, course_dir in courses
+            for reason in [not_applicable_courses.get((patient_id, course_id))]
+            if reason
+        ],
         denominator_source_sha256=denominator_source_sha256,
     )
 
 all_frames, aggregation_errors = _collect_all_frames(aggregated_courses, required_frames)
 _report_aggregation_errors(aggregation_errors)
 if RADIOMICS_ENABLED:
-    _write_radiomics_denominator_aggregate(aggregated_courses)
+    _write_radiomics_denominator_aggregate(
+        aggregated_courses, not_applicable_courses
+    )
 _write_tabular_outputs(
     all_frames,
     courses,
     incomplete=incomplete_courses,
     expected_noncomputed=expected_noncomputed_courses,
     radiomics_cohort_provenance=radiomics_cohort_provenance,
+    not_applicable=not_applicable_courses,
 )
 _copy_supplemental_sources()
 _write_qc(aggregated_courses)

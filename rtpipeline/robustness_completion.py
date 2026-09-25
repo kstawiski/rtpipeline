@@ -34,8 +34,18 @@ ROBUSTNESS_COMPLETION_SENTINEL_NAME = ".radiomics_robustness_done"
 # disposition sidecar as evidence. Only ``measured`` counts as measured
 # (see RobustnessCompletionReceipt.measured); failed courses enter cohort
 # accounting with zero measurement contribution.
+# ``not_applicable_no_planning_ct`` closes a course whose contract declares no
+# planning CT: upstream radiomics was not applicable, so nothing was perturbed.
+# It is neither measured nor failed, and it is admitted only while the upstream
+# not-applicable radiomics completion revalidates (added 2026-09-25).
+ROBUSTNESS_NOT_APPLICABLE_OUTCOME = "not_applicable_no_planning_ct"
 ROBUSTNESS_COMPLETING_OUTCOMES = frozenset(
-    {"measured", "source_only_nonvolumetric", "failed_extraction"}
+    {
+        "measured",
+        "source_only_nonvolumetric",
+        "failed_extraction",
+        ROBUSTNESS_NOT_APPLICABLE_OUTCOME,
+    }
 )
 
 
@@ -294,6 +304,16 @@ def _validate_payload(
             "complete a robustness course"
         )
     output_name = _require_plain_name(str(payload.get("output_path") or ""))
+    if outcome == ROBUSTNESS_NOT_APPLICABLE_OUTCOME:
+        from .radiomics_ct_contract import validate_not_applicable_completion_sentinel
+
+        try:
+            validate_not_applicable_completion_sentinel(course_dir)
+        except Exception as exc:
+            raise RobustnessCompletionError(
+                f"{sentinel_path} records a not-applicable course, but its upstream "
+                f"radiomics completion is not a valid not-applicable record: {exc}"
+            ) from exc
 
     dispositions = payload.get("source_dispositions")
     if not isinstance(dispositions, dict):

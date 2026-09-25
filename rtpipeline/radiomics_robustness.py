@@ -385,11 +385,18 @@ ROBUSTNESS_UNMATCHED_SELECTION_OUTCOME = "selection_matched_no_source_structure"
 # attempted and failed, so the course can be closed with evidence instead of
 # stopping the workflow. It must never masquerade as measured.
 ROBUSTNESS_FAILED_OUTCOME = "failed_extraction"
+# The course contract declares no planning CT, so upstream CT radiomics closed
+# as not applicable and there is nothing to perturb. This is a governed
+# terminal outcome, neither a measurement nor a failure. It binds no source and
+# no row, and is admitted only while the upstream not-applicable radiomics
+# completion still revalidates (added 2026-09-25).
+ROBUSTNESS_NOT_APPLICABLE_OUTCOME = "not_applicable_no_planning_ct"
 ROBUSTNESS_NONMEASURED_OUTCOMES = frozenset(
     {
         ROBUSTNESS_SOURCE_ONLY_OUTCOME,
         ROBUSTNESS_UNMATCHED_SELECTION_OUTCOME,
         ROBUSTNESS_FAILED_OUTCOME,
+        ROBUSTNESS_NOT_APPLICABLE_OUTCOME,
     }
 )
 ROBUSTNESS_SOURCE_DISPOSITION_OUTCOMES = (
@@ -980,6 +987,58 @@ def write_robustness_failure_dispositions(
     )
 
 
+def _require_upstream_radiomics_not_applicable(course_dir: Path, error: type[Exception]) -> None:
+    from .radiomics_ct_contract import validate_not_applicable_completion_sentinel
+
+    try:
+        validate_not_applicable_completion_sentinel(Path(course_dir))
+    except Exception as exc:
+        raise error(
+            "a not-applicable robustness outcome requires a valid not-applicable "
+            f"upstream radiomics completion: {exc}"
+        ) from exc
+
+
+def write_robustness_not_applicable_dispositions(
+    course_dir: Path,
+    *,
+    rob_config: "RobustnessConfig",
+    output_name: str,
+    run_identifier: Optional[str] = None,
+) -> Path:
+    """Publish the sidecar of a course with no planning CT to perturb.
+
+    Upstream radiomics closed the course as not applicable because its contract
+    declares no planning CT. This records that outcome with zero rows and no
+    source bindings; it performs and fabricates no measurement. It is refused
+    unless the upstream not-applicable completion revalidates, so a course with
+    a planning CT can never receive it.
+    """
+    from .radiomics_ct_contract import new_run_identifier
+
+    course_dir = Path(course_dir)
+    _require_upstream_radiomics_not_applicable(course_dir, RuntimeError)
+    output_path = course_dir / str(output_name)
+    if output_path.exists():
+        raise RuntimeError(
+            "refusing to record a not-applicable robustness outcome beside an "
+            f"existing measurement table {output_path}; withdraw it first"
+        )
+    return _write_robustness_source_dispositions(
+        course_dir,
+        run_identifier=str(run_identifier or new_run_identifier()),
+        rows=[],
+        source_bindings=[],
+        effective_configuration=effective_robustness_configuration(
+            rob_config, output_name=str(output_name)
+        ),
+        code_identity=_capture_robustness_code_identity(),
+        output_path=output_path,
+        measured_output=None,
+        nonmeasured_outcome=ROBUSTNESS_NOT_APPLICABLE_OUTCOME,
+    )
+
+
 def robustness_source_dispositions_path(course_dir: Path) -> Path:
     return Path(course_dir) / "metadata" / ROBUSTNESS_SOURCE_DISPOSITIONS_FILENAME
 
@@ -1194,6 +1253,13 @@ def _read_robustness_source_dispositions(
                 "source-only robustness dispositions must contain at least one "
                 "disposition row"
             )
+    if outcome == ROBUSTNESS_NOT_APPLICABLE_OUTCOME:
+        if rows or bindings or payload.get("failed_evidence") is not None:
+            raise ValueError(
+                "not-applicable robustness dispositions must carry no rows, "
+                "source bindings or failed evidence"
+            )
+        _require_upstream_radiomics_not_applicable(course_dir, ValueError)
     if outcome in ROBUSTNESS_NONMEASURED_OUTCOMES:
         from fnmatch import fnmatch
 

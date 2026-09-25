@@ -126,6 +126,35 @@ def _publish_radiomics_completion(
         )
 
 
+NO_PLANNING_CT_DETAIL = "stage not applicable because no planning CT is declared"
+
+
+def _publish_radiomics_not_applicable(
+    workflow: Any, course_dir: Path, sentinel_path: Path
+) -> None:
+    configuration = getattr(workflow.input, "configuration", None)
+    if not configuration:
+        raise RuntimeError("Stage radiomics has no configuration dependency")
+    from rtpipeline.radiomics_ct_contract import (
+        NOT_APPLICABLE_STATUS,
+        validate_not_applicable_completion_sentinel,
+        write_not_applicable_completion_sentinel,
+    )
+
+    write_not_applicable_completion_sentinel(
+        course_dir,
+        sentinel_path,
+        configuration_dependency=Path(str(configuration)),
+    )
+    payload = validate_not_applicable_completion_sentinel(
+        course_dir,
+        sentinel_path,
+        configuration_dependency=Path(str(configuration)),
+    )
+    if payload.get("status") != NOT_APPLICABLE_STATUS:
+        raise RuntimeError("Not-applicable radiomics completion validation returned a mismatch")
+
+
 def _publish_stage_completion(
     workflow: Any,
     course_dir: Path,
@@ -292,12 +321,19 @@ def main(workflow: Any) -> None:
             close_course(str(exc), returncode=1, strict_error=exc)
         if segmentation_status == "disabled":
             try:
-                _publish_stage_completion(
-                    workflow,
-                    ledger_root / patient_id / course_id,
-                    sentinel_path,
-                    status="disabled",
-                )
+                if stage_name == "radiomics":
+                    # Radiomics has its own completion sentinel and validator;
+                    # the generic stage completion cannot represent it.
+                    _publish_radiomics_not_applicable(
+                        workflow, ledger_root / patient_id / course_id, sentinel_path
+                    )
+                else:
+                    _publish_stage_completion(
+                        workflow,
+                        ledger_root / patient_id / course_id,
+                        sentinel_path,
+                        status="disabled",
+                    )
             except Exception as exc:
                 error = RuntimeError(
                     f"Not-applicable-stage completion validation failed for "
@@ -305,9 +341,9 @@ def main(workflow: Any) -> None:
                 )
                 close_course(str(error), returncode=1, strict_error=error)
             record(
-                campaign_ledger.STATUS_OK,
+                campaign_ledger.STATUS_NOT_APPLICABLE,
                 returncode=0,
-                detail="stage not applicable because no planning CT is declared",
+                detail=NO_PLANNING_CT_DETAIL,
             )
             return
 
