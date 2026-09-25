@@ -911,21 +911,36 @@ def _log_progress(logger: logging.Logger, label: str, completed: int, total: int
     )
 
 
+_ITEM_DESC_PART_LIMIT = 200
+
+
+def _describe_item_part(part: Any) -> str:
+    """Compact log label for one task argument.
+
+    2026-09-25: task tuples can carry whole pydicom datasets, whose str() is the
+    complete header dump (~100,000 lines per slow-task warning in one DVH log,
+    including identifying header fields). Only primitives and paths are printed;
+    arrays show their shape and any other object only its type.
+    """
+    if hasattr(part, "shape"):
+        return f"array{tuple(part.shape)}"
+    if isinstance(part, (str, int, float, bool, Path)) or part is None:
+        text = str(part)
+        if len(text) > _ITEM_DESC_PART_LIMIT:
+            text = text[:_ITEM_DESC_PART_LIMIT] + "..."
+        return text
+    return f"<{type(part).__name__}>"
+
+
 def _get_item_desc(item: Any) -> str:
     """Generate a human-readable description of a task item for logging."""
     item_desc = getattr(item, 'dir', None)
-    if item_desc is None:
+    if item_desc is None or callable(item_desc):  # pydicom Dataset.dir() is a method
         if isinstance(item, tuple):
-            parts = []
-            for part in item:
-                if hasattr(part, 'shape'):
-                    parts.append(f"array{tuple(part.shape)}")
-                else:
-                    parts.append(str(part))
-            item_desc = ", ".join(parts)
+            item_desc = ", ".join(_describe_item_part(part) for part in item)
         else:
-            item_desc = str(item)
-    return item_desc
+            item_desc = _describe_item_part(item)
+    return str(item_desc)
 
 
 def run_tasks_with_adaptive_workers(
