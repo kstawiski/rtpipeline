@@ -204,25 +204,24 @@ def contours_on_referenced_planes(dataset, ct_images, roi_numbers=None) -> tuple
     return False, f'{detail}; first: {first}'
 
 
-def image_array_for_rtstruct(image, series_data) -> np.ndarray:
-    """Sample an image on the exact, potentially non-uniform DICOM planes.
+# A series is sampled with one 3-D resample only when that resample provably
+# returns the bytes of the per-slice resample. Each slice position may differ
+# from the regular grid by at most REGULAR_GRID_TOLERANCE_MM, and every sample
+# must then lie further than that deviation plus _ROUNDING_MARGIN_VOXELS from
+# the half-integer input index at which nearest-neighbour rounding or the
+# buffer bound changes its result. Floating-point differences between the two
+# evaluation orders are orders of magnitude below that margin.
+REGULAR_GRID_TOLERANCE_MM = 1e-4
+_ROUNDING_MARGIN_VOXELS = 1e-6
+# A term of the input index that changes by less than this over the whole
+# series enters the margin instead of the enumerated sample positions.
+_MINOR_TERM_LIMIT_VOXELS = 1e-2
 
-    Returns one plane per source DICOM object in the in-plane layout rt-utils
-    ``add_roi`` contours: axis 0 is the row index (along the column direction)
-    and axis 1 the column index (along the row direction), as
-    ``np.moveaxis(sitk.GetArrayFromImage(image), 0, -1)`` gives on a regular
-    grid. SimpleITK regularizes mixed slice spacing onto a uniform z grid, so
-    moving axes from that image puts slice ``i`` at the wrong position.
-    """
-    import SimpleITK as sitk
 
-    slices = list(series_data)
-    if not slices:
-        raise ValueError("RTSTRUCT source series contains no DICOM slices")
-    sampled: list[np.ndarray] = []
+def _slice_geometries(slices) -> list[tuple]:
+    """Per-slice reference geometry exactly as the per-slice sampler builds it."""
+    geometries = []
     expected_shape: tuple[int, int] | None = None
-    identity = sitk.Transform(3, sitk.sitkIdentity)
-
     for dataset in slices:
         try:
             rows = int(dataset.Rows)
@@ -250,7 +249,17 @@ def image_array_for_rtstruct(image, series_data) -> np.ndarray:
             raise ValueError("RTSTRUCT source slice has invalid orientation cosines")
         normal /= norm
         direction = np.column_stack((orientation[0], orientation[1], normal))
+        geometries.append((rows, columns, spacing, orientation, origin, normal, direction))
+    return geometries
 
+
+def _image_array_per_slice(image, geometries) -> np.ndarray:
+    """One nearest-neighbour resample per DICOM slice (the reference path)."""
+    import SimpleITK as sitk
+
+    sampled: list[np.ndarray] = []
+    identity = sitk.Transform(3, sitk.sitkIdentity)
+    for rows, columns, spacing, _orientation, origin, _normal, direction in geometries:
         reference = sitk.Image(columns, rows, 1, image.GetPixelID())
         reference.SetOrigin(origin)
         reference.SetSpacing((spacing[1], spacing[0], 1.0))
@@ -265,8 +274,120 @@ def image_array_for_rtstruct(image, series_data) -> np.ndarray:
         )
         # SimpleITK returns (z, rows, columns).
         sampled.append(sitk.GetArrayFromImage(plane)[0])
-
     return np.stack(sampled, axis=2)
+
+
+def _half_integer_distance(values: np.ndarray) -> float:
+    """Smallest distance of ``values`` from a half-integer."""
+    return float(np.min(np.abs(values - np.floor(values) - 0.5)))
+
+
+def _uniform_reference(image, geometries):
+    """A 3-D reference whose one resample equals the per-slice resamples, or None.
+
+    Requires identical rows, columns, pixel spacing and orientation values on
+    every slice, and each slice position within REGULAR_GRID_TOLERANCE_MM of
+    ``first + k * step * normal``. Then the samples of both paths differ only
+    by that deviation and floating-point rounding. Every sample of the image's
+    continuous index must lie far enough from a half-integer (where
+    nearest-neighbour rounding and the inside-buffer test change) that both
+    paths select the same voxel or the same default value. Anything not
+    proven returns None and the per-slice path is used.
+    """
+    import SimpleITK as sitk
+
+    count = len(geometries)
+    if count < 2:
+        return None
+    rows, columns, spacing, orientation, _origin, normal, _direction = geometries[0]
+    for other in geometries[1:]:
+        if other[2] != spacing or not np.array_equal(other[3], orientation):
+            return None
+    origins = np.asarray([geometry[4] for geometry in geometries], dtype=float)
+    step = float((origins[-1] - origins[0]) @ normal) / (count - 1)
+    if not np.isfinite(step) or abs(step) <= 100 * REGULAR_GRID_TOLERANCE_MM:
+        return None
+    regular = origins[0] + np.arange(count)[:, None] * (step * normal)[None, :]
+    if float(np.max(np.abs(regular - origins))) > REGULAR_GRID_TOLERANCE_MM:
+        return None
+
+    # Continuous index of the image at the per-slice samples:
+    # base[k] + along_row * column_index + along_column * row_index.
+    try:
+        image_matrix = np.asarray(image.GetDirection(), dtype=float).reshape(3, 3) * np.asarray(
+            image.GetSpacing(), dtype=float
+        )[None, :]
+        to_index = np.linalg.inv(image_matrix)
+    except (ValueError, np.linalg.LinAlgError):
+        return None
+    image_origin = np.asarray(image.GetOrigin(), dtype=float)
+    base = (origins - image_origin) @ to_index.T
+    deviation = np.max(np.abs((regular - origins) @ to_index.T), axis=0)
+    along_row = to_index @ (orientation[0] * spacing[1])
+    along_column = to_index @ (orientation[1] * spacing[0])
+    if not (np.isfinite(base).all() and np.isfinite(along_row).all() and np.isfinite(along_column).all()):
+        return None
+    for axis in range(3):
+        terms = [(along_row[axis], columns), (along_column[axis], rows)]
+        margin = deviation[axis] + _ROUNDING_MARGIN_VOXELS
+        major = []
+        for coefficient, length in terms:
+            span = abs(coefficient) * (length - 1)
+            if span <= _MINOR_TERM_LIMIT_VOXELS:
+                margin += span
+            else:
+                major.append((coefficient, length))
+        if len(major) > 1:
+            # In-plane rotation between the image and the series; not enumerated.
+            return None
+        values = base[:, axis][:, None]
+        if major:
+            coefficient, length = major[0]
+            values = values + coefficient * np.arange(length)[None, :]
+        if _half_integer_distance(values) <= margin:
+            return None
+
+    direction = np.column_stack((orientation[0], orientation[1], normal * np.sign(step)))
+    reference = sitk.Image(columns, rows, count, image.GetPixelID())
+    reference.SetOrigin(geometries[0][4])
+    reference.SetSpacing((spacing[1], spacing[0], abs(step)))
+    reference.SetDirection(tuple(float(value) for value in direction.ravel()))
+    return reference
+
+
+def image_array_for_rtstruct(image, series_data) -> np.ndarray:
+    """Sample an image on the exact, potentially non-uniform DICOM planes.
+
+    Returns one plane per source DICOM object in the in-plane layout rt-utils
+    ``add_roi`` contours: axis 0 is the row index (along the column direction)
+    and axis 1 the column index (along the row direction), as
+    ``np.moveaxis(sitk.GetArrayFromImage(image), 0, -1)`` gives on a regular
+    grid. SimpleITK regularizes mixed slice spacing onto a uniform z grid, so
+    moving axes from that image puts slice ``i`` at the wrong position.
+
+    A regular series is sampled with one 3-D resample when ``_uniform_reference``
+    proves it returns the same bytes as one resample per slice; any other
+    series is sampled slice by slice.
+    """
+    import SimpleITK as sitk
+
+    slices = list(series_data)
+    if not slices:
+        raise ValueError("RTSTRUCT source series contains no DICOM slices")
+    geometries = _slice_geometries(slices)
+    reference = _uniform_reference(image, geometries)
+    if reference is None:
+        return _image_array_per_slice(image, geometries)
+    volume = sitk.Resample(
+        image,
+        reference,
+        sitk.Transform(3, sitk.sitkIdentity),
+        sitk.sitkNearestNeighbor,
+        0,
+        image.GetPixelID(),
+    )
+    # SimpleITK returns (slices, rows, columns).
+    return np.ascontiguousarray(np.moveaxis(sitk.GetArrayFromImage(volume), 0, -1))
 
 
 def anchor_contours_to_referenced_planes(ds, series_data, roi_numbers=None) -> int:
