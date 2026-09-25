@@ -771,6 +771,42 @@ def run_totalsegmentator(
                 )
         else:
             logger.error("TotalSegmentator failed and fallback is disabled.")
+        if not ok and "--force_split" in cmd_parts:
+            # 2026-09-25: --force_split divides the volume into three parts along z.
+            # On a volume with few slices one part is empty and TotalSegmentator fails
+            # with "could not broadcast input array from shape (..., 0) into shape (...)",
+            # on any device, so the CPU fallback fails the same way. The split only
+            # saves memory, so after every other attempt has failed the call is retried
+            # once without it, on the requested device. Calls that succeed today never
+            # reach this retry.
+            previous = _last_totalseg_failure() or primary_failure
+            cmd_parts_nosplit = [part for part in cmd_parts if part != "--force_split"]
+            logger.warning(
+                "Retrying TotalSegmentator once without --force_split (%s)",
+                previous.get("reason"),
+            )
+            try:
+                if use_shell:
+                    ok = _run(
+                        "{}{}".format(
+                            _prefix(config),
+                            " ".join(shlex.quote(part) for part in cmd_parts_nosplit),
+                        ),
+                        env=env,
+                    )
+                else:
+                    ok = _run_vec(cmd_parts_nosplit, env=env)
+            except RuntimeError as exc:
+                logger.warning("TotalSegmentator retry without --force_split failed: %s", exc)
+                ok = False
+            if ok:
+                logger.warning("TotalSegmentator recovered without --force_split")
+                _clear_totalseg_failure()
+            else:
+                _set_totalseg_failure(
+                    "no_split_retry_failed",
+                    f"{previous.get('reason')}; retry without --force_split also failed",
+                )
     else:
         _clear_totalseg_failure()
 

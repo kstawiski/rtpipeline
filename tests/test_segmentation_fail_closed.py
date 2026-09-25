@@ -412,3 +412,71 @@ def test_course_without_planning_ct_completes_as_disabled(
     assert (course_dir / ".segmentation_done").read_text(encoding="utf-8").strip() == "disabled"
     report = json.loads((course_dir / "metadata" / "segmentation_status.json").read_text(encoding="utf-8"))
     assert report["status"] == "disabled"
+
+
+def _split_retry_config(tmp_path: Path, *, force_split: bool) -> PipelineConfig:
+    return PipelineConfig(
+        dicom_root=tmp_path / "input",
+        output_root=tmp_path / "output",
+        logs_root=tmp_path / "logs",
+        totalseg_device="gpu",
+        totalseg_allow_fallback=True,
+        totalseg_force_split=force_split,
+    )
+
+
+def test_volume_force_split_cannot_split_is_retried_without_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # 2026-09-25: a small MR volume made --force_split produce an empty part on GPU
+    # and on the CPU fallback alike. The last resort is one run without the split.
+    monkeypatch.setattr(
+        segmentation, "_totalseg_supported_output_types", lambda _config: {"nifti"}
+    )
+    commands: list[list[str]] = []
+
+    def fake_run_vec(command, env=None):
+        commands.append(list(command))
+        return "--force_split" not in command
+
+    monkeypatch.setattr(segmentation, "_run_vec", fake_run_vec)
+    config = _split_retry_config(tmp_path, force_split=True)
+    assert segmentation.run_totalsegmentator(config, tmp_path / "mr.nii.gz", tmp_path / "seg", "nifti")
+    assert len(commands) == 3
+    assert commands[1][commands[1].index("-d") + 1] == "cpu" and "--force_split" in commands[1]
+    last = commands[2]
+    assert "--force_split" not in last
+    assert last[last.index("-d") + 1] == "gpu"
+    assert segmentation._last_totalseg_failure() is None
+
+
+def test_no_split_retry_only_when_the_split_was_requested(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        segmentation, "_totalseg_supported_output_types", lambda _config: {"nifti"}
+    )
+    commands: list[list[str]] = []
+    monkeypatch.setattr(
+        segmentation, "_run_vec", lambda command, env=None: commands.append(list(command)) or False
+    )
+    config = _split_retry_config(tmp_path, force_split=False)
+    assert not segmentation.run_totalsegmentator(config, tmp_path / "ct.nii.gz", tmp_path / "seg", "nifti")
+    assert len(commands) == 2  # primary + CPU fallback, no extra retry
+
+
+def test_failed_no_split_retry_is_recorded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        segmentation, "_totalseg_supported_output_types", lambda _config: {"nifti"}
+    )
+    commands: list[list[str]] = []
+    monkeypatch.setattr(
+        segmentation, "_run_vec", lambda command, env=None: commands.append(list(command)) or False
+    )
+    config = _split_retry_config(tmp_path, force_split=True)
+    assert not segmentation.run_totalsegmentator(config, tmp_path / "ct.nii.gz", tmp_path / "seg", "nifti")
+    assert len(commands) == 3
+    failure = segmentation._last_totalseg_failure()
+    assert failure is not None and failure["category"] == "no_split_retry_failed"
