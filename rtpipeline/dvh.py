@@ -21,6 +21,16 @@ DVH_METRIC_VERSION = "2026-09-05-grid-support-derived-mask-d003-v5"
 from .dvh_support import (rtstruct_grid_coverage, resample_grid_support, mask_grid_coverage,
                           nifti_identity, publish_derived_mask, validate_derived_mask, sha256_file)
 NEAR_ZERO_TARGET_D95_GY = 0.1
+# Target zero-dose classes counted by ``summarize_target_near_zero_rows``.
+NEAR_ZERO_TARGET_ZERO_DOSE_STATUSES = (
+    "zero_dose_outside_dose_grid",
+    "zero_dose_partly_inside_dose_grid",
+    "zero_dose_in_grid",
+    "zero_dose_geometry_unresolved",
+)
+# Per-ROI dose-response status for a near-zero target that no selected plan
+# binds, in a course whose plan-bound targets are all dosed on the grid.
+EXCLUDED_TARGET_NOT_BOUND_STATUS = "excluded_target_not_bound_to_course_plan"
 
 # Modules whose content determines a DVH measurement. A cached DVH is only
 # reusable if the code that produced it still matches: ``_is_dvh_up_to_date``
@@ -530,12 +540,307 @@ def apply_course_dose_quarantine(rows: list[dict], reason: str) -> None:
         status = str(row.get("relative_metric_status") or "")
         if not (status.startswith("unavailable_") or status in {
             "quarantined_near_zero_requires_reconciliation", "suppressed_non_ebrt",
+            EXCLUDED_TARGET_NOT_BOUND_STATUS,
         }):
             row["relative_metric_status"] = "excluded_dose_response_ineligible"
             row["relative_metric_reason"] = reason
         if row.get("HI_status") == "computed":
             row["HI_status"] = "excluded_dose_response_ineligible"
             row["HI_reason"] = reason
+
+
+def _normalize_plan_target_name(value: object) -> str:
+    """Exact-match key: case-insensitive, trimmed, internal whitespace collapsed."""
+    return " ".join(str(value or "").split()).casefold()
+
+
+def _is_near_zero_target_row(row: Mapping[str, object]) -> bool:
+    return bool(row.get("target_like")) and (
+        str(row.get("zero_dose_status") or "") in NEAR_ZERO_TARGET_ZERO_DOSE_STATUSES
+    )
+
+
+def _row_roi_name(row: Mapping[str, object]) -> str:
+    return str(row.get("ROI_OriginalName") or row.get("ROI_Name") or "")
+
+
+def _finite_d95_gy(row: Mapping[str, object]) -> float | None:
+    value = row.get("D95Gy")
+    if isinstance(value, bool) or not isinstance(value, (int, float, np.integer, np.floating)):
+        return None
+    return float(value) if np.isfinite(float(value)) else None
+
+
+def _row_roi_number(row: Mapping[str, object]) -> int | None:
+    try:
+        value = row.get("ROI_Number")
+        return int(value) if value is not None else None  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+
+
+def read_plan_dose_references(plan_paths: Iterable[Path]) -> dict[str, object]:
+    """Read DoseReferenceSequence items and structure-set references of selected plans."""
+    plans: list[dict[str, object]] = []
+    unreadable: list[str] = []
+    for path in plan_paths:
+        try:
+            plan = pydicom.dcmread(str(path), stop_before_pixels=True, force=True)
+        except Exception as exc:
+            unreadable.append(f"{path}: {exc}")
+            continue
+        references = []
+        for index, item in enumerate(getattr(plan, "DoseReferenceSequence", None) or []):
+            try:
+                roi_number = (
+                    int(item.ReferencedROINumber)
+                    if "ReferencedROINumber" in item
+                    and str(item.ReferencedROINumber).strip()
+                    else None
+                )
+            except (TypeError, ValueError):
+                roi_number = None
+            description = str(getattr(item, "DoseReferenceDescription", "") or "")
+            references.append(
+                {
+                    "index": index,
+                    "dose_reference_number": (
+                        str(getattr(item, "DoseReferenceNumber", "") or "") or None
+                    ),
+                    "dose_reference_type": (
+                        str(getattr(item, "DoseReferenceType", "") or "").strip().upper()
+                        or None
+                    ),
+                    "structure_type": (
+                        str(getattr(item, "DoseReferenceStructureType", "") or "")
+                        .strip()
+                        .upper()
+                        or None
+                    ),
+                    "description": description.strip() or None,
+                    "referenced_roi_number": roi_number,
+                }
+            )
+        plans.append(
+            {
+                "plan_sop_instance_uid": str(getattr(plan, "SOPInstanceUID", "") or ""),
+                "plan_path": str(path),
+                "referenced_rtstruct_sop_instance_uids": sorted(
+                    {
+                        str(getattr(ref, "ReferencedSOPInstanceUID", "") or "").strip()
+                        for ref in getattr(plan, "ReferencedStructureSetSequence", None) or []
+                    }
+                    - {""}
+                ),
+                "dose_references": references,
+            }
+        )
+    return {"plans": plans, "unreadable_plans": unreadable}
+
+
+def reconcile_near_zero_plan_targets(
+    rows: list[dict],
+    plan_references: Mapping[str, object],
+    contracted_rtstruct_sop_instance_uid: str | None,
+) -> dict[str, object]:
+    """Decide whether near-zero targets quarantine the course or only themselves.
+
+    A row is plan-bound when a selected plan's dose reference names it by
+    exact normalized DoseReferenceDescription, or references its ROI number in
+    the contracted RTSTRUCT that the plan itself references. Rows from other
+    structure sources that share a bound ROI's normalized name are also bound,
+    so a derived copy of a bound target can never be excluded as unbound.
+
+    The course is quarantined, as before this rule existed, when any plan-bound
+    target is near zero, when no plan-bound target is identified, or when a
+    plan-bound target lacks a whole-ROI measurement on the selected grid. Only
+    otherwise do unbound near-zero targets receive a per-ROI exclusion.
+    Rows are not modified here.
+    """
+    near_zero_rows = [row for row in rows if _is_near_zero_target_row(row)]
+    plans = list(plan_references.get("plans") or [])  # type: ignore[union-attr]
+    unreadable = list(plan_references.get("unreadable_plans") or [])  # type: ignore[union-attr]
+    contracted_uid = str(contracted_rtstruct_sop_instance_uid or "").strip()
+
+    roi_number_binding: list[dict[str, object]] = []
+    description_keys: dict[str, list[dict[str, object]]] = {}
+    number_keys: dict[int, list[dict[str, object]]] = {}
+    for plan in plans:
+        references = list(plan.get("dose_references") or [])
+        referenced_rs = list(plan.get("referenced_rtstruct_sop_instance_uids") or [])
+        numbered = [ref for ref in references if ref.get("referenced_roi_number") is not None]
+        if not contracted_uid:
+            number_status = "not_used_no_contracted_rtstruct_in_dvh"
+        elif contracted_uid in referenced_rs:
+            number_status = "used"
+        elif referenced_rs:
+            number_status = "not_used_plan_references_other_rtstruct"
+        else:
+            number_status = "not_used_plan_has_no_structure_set_reference"
+        roi_number_binding.append(
+            {
+                "plan_sop_instance_uid": plan.get("plan_sop_instance_uid"),
+                "referenced_rtstruct_sop_instance_uids": referenced_rs,
+                "contracted_rtstruct_sop_instance_uid": contracted_uid or None,
+                "status": number_status,
+                "roi_number_reference_count": len(numbered),
+            }
+        )
+        for ref in references:
+            evidence = {
+                "plan_sop_instance_uid": plan.get("plan_sop_instance_uid"),
+                "dose_reference_number": ref.get("dose_reference_number"),
+                "dose_reference_type": ref.get("dose_reference_type"),
+                "structure_type": ref.get("structure_type"),
+            }
+            key = _normalize_plan_target_name(ref.get("description"))
+            if key:
+                description_keys.setdefault(key, []).append(
+                    {**evidence, "method": "dose_reference_description",
+                     "description": ref.get("description")}
+                )
+            if number_status == "used" and ref.get("referenced_roi_number") is not None:
+                number_keys.setdefault(int(ref["referenced_roi_number"]), []).append(
+                    {**evidence, "method": "dose_reference_roi_number",
+                     "referenced_roi_number": int(ref["referenced_roi_number"])}
+                )
+
+    bindings: dict[int, list[dict[str, object]]] = {}
+    for position, row in enumerate(rows):
+        found = list(description_keys.get(_normalize_plan_target_name(_row_roi_name(row)), []))
+        number = _row_roi_number(row)
+        if (
+            number is not None
+            and contracted_uid
+            and str(row.get("rtstruct_sop_instance_uid") or "") == contracted_uid
+        ):
+            found.extend(number_keys.get(number, []))
+        if found:
+            bindings[position] = found
+    number_bound_names = {
+        _normalize_plan_target_name(_row_roi_name(rows[position]))
+        for position, found in bindings.items()
+        if any(item["method"] == "dose_reference_roi_number" for item in found)
+    }
+    for position, row in enumerate(rows):
+        key = _normalize_plan_target_name(_row_roi_name(row))
+        if key and key in number_bound_names and not any(
+            item["method"] == "dose_reference_roi_number" for item in bindings.get(position, [])
+        ):
+            bindings.setdefault(position, []).append(
+                {"method": "name_of_roi_number_bound_roi"}
+            )
+
+    def describe(position: int) -> dict[str, object]:
+        row = rows[position]
+        return {
+            "roi_name": _row_roi_name(row),
+            "roi_number": _row_roi_number(row),
+            "segmentation_source": row.get("Segmentation_Source"),
+            "rtstruct_sop_instance_uid": row.get("rtstruct_sop_instance_uid"),
+            "D95Gy": _finite_d95_gy(row),
+            "zero_dose_status": row.get("zero_dose_status"),
+            "dose_grid_coverage_status": row.get("dose_grid_coverage_status"),
+            "binding_methods": sorted({str(item["method"]) for item in bindings.get(position, [])}),
+            "binding_evidence": bindings.get(position, []),
+        }
+
+    bound_targets = [
+        position for position in bindings if bool(rows[position].get("target_like"))
+    ]
+    anchored = any(
+        item.get("method") != "name_of_roi_number_bound_roi"
+        and item.get("dose_reference_type") in {None, "TARGET"}
+        for position in bound_targets
+        for item in bindings[position]
+    )
+    near_zero_positions = [
+        position for position, row in enumerate(rows) if _is_near_zero_target_row(row)
+    ]
+
+    def measured_above_threshold(row: Mapping[str, object]) -> bool:
+        d95 = _finite_d95_gy(row)
+        return bool(
+            str(row.get("dose_grid_coverage_status") or "") == "fully_covered"
+            and d95 is not None
+            and d95 > NEAR_ZERO_TARGET_D95_GY
+        )
+
+    rules: list[str] = []
+    if unreadable:
+        rules.append("selected_plan_unreadable")
+    if not bound_targets or not anchored:
+        rules.append("no_plan_bound_target_identified")
+    if any(_is_near_zero_target_row(rows[position]) for position in bound_targets):
+        rules.append("plan_bound_target_near_zero")
+    if any(
+        not _is_near_zero_target_row(rows[position])
+        and not measured_above_threshold(rows[position])
+        for position in bound_targets
+    ):
+        rules.append("plan_bound_target_not_measured_on_selected_dose_grid")
+
+    unbound_near_zero = [
+        position for position in near_zero_positions if position not in bindings
+    ]
+    if not near_zero_rows:
+        decision = "not_required_no_near_zero_targets"
+    elif rules:
+        decision = "course_quarantined_pending_plan_target_reconciliation"
+    else:
+        decision = "unbound_near_zero_targets_excluded"
+    return {
+        "decision": decision,
+        "course_quarantine": bool(near_zero_rows and rules),
+        "quarantine_rules": rules if near_zero_rows else [],
+        "near_zero_target_d95_threshold_gy": NEAR_ZERO_TARGET_D95_GY,
+        "name_normalization": "casefold, trim, collapse internal whitespace; exact match only",
+        "contracted_rtstruct_sop_instance_uid": contracted_uid or None,
+        "selected_plan_count": len(plans) + len(unreadable),
+        "unreadable_plans": unreadable,
+        "roi_number_binding": roi_number_binding,
+        "dose_references": [
+            {"plan_sop_instance_uid": plan.get("plan_sop_instance_uid"), **ref}
+            for plan in plans
+            for ref in plan.get("dose_references") or []
+        ],
+        "plan_bound_targets": [describe(position) for position in bound_targets],
+        "plan_bound_non_target_rois": [
+            describe(position) for position in bindings if position not in bound_targets
+        ],
+        "near_zero_target_row_count": len(near_zero_positions),
+        "unbound_near_zero_targets": [describe(position) for position in unbound_near_zero],
+        "excluded_row_indices": unbound_near_zero if decision == "unbound_near_zero_targets_excluded" else [],
+    }
+
+
+def apply_unbound_target_exclusion(
+    rows: list[dict], reconciliation: Mapping[str, object]
+) -> None:
+    """Exclude unbound near-zero targets from dose-response; keep measured values."""
+    if reconciliation.get("decision") != "unbound_near_zero_targets_excluded":
+        return
+    bound_names = sorted(
+        {str(item["roi_name"]) for item in reconciliation.get("plan_bound_targets") or []}
+    )
+    for position in reconciliation.get("excluded_row_indices") or []:
+        row = rows[int(position)]
+        reason = (
+            f"Target-like ROI has D95Gy <= {NEAR_ZERO_TARGET_D95_GY:g} Gy and no "
+            "DoseReferenceSequence item of the selected course plan(s) binds it by "
+            "ReferencedROINumber or exact DoseReferenceDescription. Every plan-bound "
+            f"target ({', '.join(bound_names)}) is measured above {NEAR_ZERO_TARGET_D95_GY:g} Gy "
+            "on the selected dose grid, so this ROI alone is excluded from dose-response. "
+            "Its physical DVH values are retained as measured."
+        )
+        row["dose_response_quarantine_status"] = EXCLUDED_TARGET_NOT_BOUND_STATUS
+        row["dose_response_quarantine_reason"] = reason
+        row["dose_response_eligible"] = False
+        row["dose_metric_usable_for_dose_response"] = False
+        for column in ("dose_metric_status", "relative_metric_status"):
+            if row.get(column) == "quarantined_near_zero_requires_reconciliation":
+                row[column] = EXCLUDED_TARGET_NOT_BOUND_STATUS
+                row[column.replace("_status", "_reason")] = reason
 
 
 def annotate_dvh_metrics(
@@ -2061,6 +2366,7 @@ def _write_dvh_qc(
     treatment_technique: str = "UNKNOWN",
     dose_plan_scope: DVHDosePlanScope | None = None,
     isocenter_geometry: CourseTreatmentIsocenterGeometry | None = None,
+    plan_target_reconciliation: Mapping[str, object] | None = None,
 ) -> None:
     present: set[str] = set()
     partial: set[str] = set()
@@ -2136,6 +2442,8 @@ def _write_dvh_qc(
                 and dose_plan_scope.complete
             ),
         }
+    if plan_target_reconciliation is not None:
+        payload["plan_target_reconciliation"] = dict(plan_target_reconciliation)
     if isocenter_geometry is not None:
         payload["course_treatment_isocenter_geometry"] = {
             "status": isocenter_geometry.status,
@@ -3459,6 +3767,7 @@ def dvh_for_course(
     # Extract curve data before creating DataFrame
     curve_data_export = []
     clean_results = []
+    curve_points_by_row: list[list] = []
     for res in results:
         # Deep copy to avoid modifying original if needed (though we consume it here)
         r_copy = res.copy()
@@ -3477,24 +3786,49 @@ def dvh_for_course(
             structure_resolution.plan_referenced_rtstruct_sop_instance_uids
         )
         clean_results.append(r_copy)
-        
-        if points:
-            curve_data_export.append({
-                "roi_name": res.get("ROI_Name", "Unknown"),
-                "source": res.get("Segmentation_Source", "Unknown"),
-                "volume_cm3": res.get("Volume (cm³)", 0),
-                "dose_metric_status": res.get("dose_metric_status"),
-                "zero_dose_status": res.get("zero_dose_status"),
-                "dose_grid_coverage_status": res.get("dose_grid_coverage_status"),
-                "measurement_scope": "whole_roi",
-                "data": points,
-            })
+        curve_points_by_row.append(points)
 
     target_coverage = summarize_target_near_zero_rows(clean_results)
     near_zero_count = target_coverage.get("near_zero_target_row_count")
     course_near_zero_quarantine = bool(
         isinstance(near_zero_count, (int, float)) and near_zero_count > 0
     )
+    contracted_rtstruct_uid = next(
+        (
+            source.sop_instance_uid
+            for source in structure_resolution.sources
+            if source.source_label == "Manual"
+        ),
+        None,
+    )
+    try:
+        plan_target_reconciliation = reconcile_near_zero_plan_targets(
+            clean_results,
+            read_plan_dose_references(dose_resolution.selected_plan_paths or [rp]),
+            contracted_rtstruct_uid,
+        )
+    except Exception as exc:
+        # Binding evidence that cannot be evaluated leaves the course rule unchanged.
+        logger.warning("Plan-target reconciliation failed for %s: %s", course_dir, exc)
+        plan_target_reconciliation = {
+            "decision": (
+                "course_quarantined_pending_plan_target_reconciliation"
+                if course_near_zero_quarantine
+                else "not_required_no_near_zero_targets"
+            ),
+            "course_quarantine": course_near_zero_quarantine,
+            "quarantine_rules": (
+                ["plan_target_reconciliation_failed"] if course_near_zero_quarantine else []
+            ),
+            "error": str(exc),
+        }
+    if (
+        course_near_zero_quarantine
+        and plan_target_reconciliation.get("decision")
+        == "unbound_near_zero_targets_excluded"
+    ):
+        course_near_zero_quarantine = False
+        apply_unbound_target_exclusion(clean_results, plan_target_reconciliation)
     if course_near_zero_quarantine:
         dose_response_eligible = False
         quarantine_reason = (
@@ -3503,6 +3837,19 @@ def dvh_for_course(
             "clinical exclusion or dose reassignment."
         )
         apply_course_dose_quarantine(clean_results, quarantine_reason)
+
+    for row, points in zip(clean_results, curve_points_by_row):
+        if points:
+            curve_data_export.append({
+                "roi_name": row.get("ROI_Name", "Unknown"),
+                "source": row.get("Segmentation_Source", "Unknown"),
+                "volume_cm3": row.get("Volume (cm³)", 0),
+                "dose_metric_status": row.get("dose_metric_status"),
+                "zero_dose_status": row.get("zero_dose_status"),
+                "dose_grid_coverage_status": row.get("dose_grid_coverage_status"),
+                "measurement_scope": "whole_roi",
+                "data": points,
+            })
 
     # Save curve data to JSON
     if curve_data_export:
@@ -3645,5 +3992,6 @@ def dvh_for_course(
         treatment_technique=treatment_technique,
         dose_plan_scope=dose_plan_scope,
         isocenter_geometry=isocenter_geometry,
+        plan_target_reconciliation=plan_target_reconciliation,
     )
     return out_xlsx
