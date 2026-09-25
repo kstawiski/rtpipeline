@@ -16,7 +16,11 @@ import pydicom
 import pandas as pd
 
 from rtpipeline.course_contract import classify_course_dose_completeness
-from rtpipeline.dvh import _is_target_structure, summarize_plan_isocenter_positions
+from rtpipeline.dvh import (
+    EXCLUDED_TARGET_NOT_BOUND_STATUS,
+    _is_target_structure,
+    summarize_plan_isocenter_positions,
+)
 from rtpipeline.organize import (
     _calculate_delivery_summary,
     _classify_doses,
@@ -383,6 +387,7 @@ def _near_zero_target_evidence(course_dir: Path) -> dict[str, Any]:
         }
 
     records: list[dict[str, object]] = []
+    excluded_unbound: list[dict[str, object]] = []
     rtstruct_cache: dict[Path, dict[int, str]] = {}
     unreadable_rtstruct_paths: set[Path] = set()
     for _, row in frame.iterrows():
@@ -434,14 +439,21 @@ def _near_zero_target_evidence(course_dir: Path) -> dict[str, Any]:
             )
         if not _is_target_structure(roi_name, interpreted_type):
             continue
-        records.append(
-            {
-                "roi_number": roi_number,
-                "roi_name": roi_name,
-                "roi_interpreted_type": interpreted_type or None,
-                "d95_gy": d95_gy,
-            }
-        )
+        record = {
+            "roi_number": roi_number,
+            "roi_name": roi_name,
+            "roi_interpreted_type": interpreted_type or None,
+            "d95_gy": d95_gy,
+        }
+        # The DVH stage excluded this ROI alone after its plan-target reconciliation
+        # found every plan-bound target dosed; it no longer holds the course pending.
+        if (
+            str(row.get("dose_response_quarantine_status") or "")
+            == EXCLUDED_TARGET_NOT_BOUND_STATUS
+        ):
+            excluded_unbound.append(record)
+            continue
+        records.append(record)
 
     return {
         "status": (
@@ -449,6 +461,7 @@ def _near_zero_target_evidence(course_dir: Path) -> dict[str, Any]:
         ),
         "row_count": len(records),
         "rows": records,
+        "excluded_target_not_bound_to_course_plan_rows": excluded_unbound,
         "minimum_d95_gy": min(
             (float(str(item["d95_gy"])) for item in records),
             default=None,

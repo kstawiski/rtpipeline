@@ -7,7 +7,8 @@ from rtpipeline.dvh import RELATIVE_DVH_METRIC_COLUMNS, apply_course_dose_quaran
 @pytest.mark.parametrize('status', ['computed', 'excluded_dose_response_ineligible',
                                    'unavailable_partial_grid',
                                    'quarantined_near_zero_requires_reconciliation',
-                                   'suppressed_non_ebrt'])
+                                   'suppressed_non_ebrt',
+                                   'excluded_target_not_bound_to_course_plan'])
 def test_course_quarantine_suppresses_relative_values_and_preserves_absolute_audit(status):
     row = {column: 1.0 for column in RELATIVE_DVH_METRIC_COLUMNS}
     row.update(DmeanGy=2.0, relative_metric_status=status,
