@@ -43,8 +43,12 @@ BASE_FUNCTION_AST_SHA256 = {
 # validation through utils.read_record_header (one cached, no-readahead read
 # per organize run); validation logic is unchanged and its equivalence against
 # 2369fbb is covered by test_organize_io.py.
+# Updated 2026-09-25: course_contract.py reads planning-CT headers once in
+# parallel using a bounded thread pool (_read_ct_headers); contract validation
+# and provenance logic is identical and its equivalence against ae60f01 is
+# covered by test_contract_ct_headers.py.
 BASE_MODULE_SHA256 = {
-    "course_contract.py": "bb017a4770ef6fcabdaad85f96e724633d026543843dccd3a050aae0cfeea399",
+    "course_contract.py": "6c6c4329c2c8f6628fd531f96abd89455d524d61bb76c66967c11e41eddb7c91",
     "prescription.py": "723c8657c60f48c50b0d31decf0eb458c93d435f597c56724ee748c1b264ce7a",
     "plan_approval.py": "fc213a8ef85e9ec2698c6bfec7bee3877df61b6b7d835257038cd2a470c21aed",
 }

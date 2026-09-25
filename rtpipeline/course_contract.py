@@ -6,13 +6,15 @@ Downstream course stages load this contract and validate its declared artifacts.
 They must not recover a missing or invalid decision by scanning the course tree.
 """
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 import hashlib
 import json
 import math
+import os
 from pathlib import Path
 import re
-from typing import Any, Iterable
+from typing import Any, Iterable, Sequence
 
 import pydicom
 from pydicom.dataset import Dataset
@@ -679,15 +681,53 @@ def _number_list(value: object) -> list[float] | None:
         return None
 
 
-def _ct_provenance(ct_dir: Path) -> dict[str, Any]:
-    """Read the identity and geometry used to create a planning-CT NIfTI."""
+DEFAULT_CONTRACT_HEADER_THREADS = 16
+
+
+def _configured_header_threads() -> int:
+    raw = os.environ.get("RTPIPELINE_CONTRACT_HEADER_THREADS")
+    if raw is None or not raw.strip():
+        return DEFAULT_CONTRACT_HEADER_THREADS
+    try:
+        threads = int(raw.strip())
+        return max(1, threads)
+    except (TypeError, ValueError):
+        return DEFAULT_CONTRACT_HEADER_THREADS
+
+
+def _read_single_ct_header(path: Path) -> tuple[Path, Dataset | None]:
+    try:
+        return path, pydicom.dcmread(str(path), stop_before_pixels=True, force=True)
+    except Exception:
+        return path, None
+
+
+def _read_ct_headers(
+    ct_dir: Path,
+    threads: int | None = None,
+) -> list[tuple[Path, Dataset | None]]:
+    """Read regular file slice headers from a CT directory in sorted order."""
+    paths = sorted(item for item in ct_dir.iterdir() if item.is_file())
+    if not paths:
+        return []
+    worker_threads = _configured_header_threads() if threads is None else max(1, threads)
+    max_workers = min(worker_threads, len(paths))
+    if max_workers <= 1:
+        return [_read_single_ct_header(path) for path in paths]
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        return list(executor.map(_read_single_ct_header, paths))
+
+
+def _ct_provenance_from_headers(
+    ct_dir: Path,
+    headers: Sequence[tuple[Path, Dataset | None]],
+) -> dict[str, Any]:
+    """Derive planning-CT provenance from pre-read DICOM slice headers."""
     instances: list[str] = []
     series_uids: set[str] = set()
     geometry: dict[str, Any] = {}
-    for path in sorted(item for item in ct_dir.iterdir() if item.is_file()):
-        try:
-            dataset = pydicom.dcmread(str(path), stop_before_pixels=True, force=True)
-        except Exception:
+    for path, dataset in headers:
+        if dataset is None:
             continue
         modality = str(getattr(dataset, "Modality", "") or "").strip().upper()
         if not modality:
@@ -734,6 +774,16 @@ def _ct_provenance(ct_dir: Path) -> dict[str, Any]:
     }
 
 
+def _ct_provenance(
+    ct_dir: Path,
+    headers: Sequence[tuple[Path, Dataset | None]] | None = None,
+) -> dict[str, Any]:
+    """Read the identity and geometry used to create a planning-CT NIfTI."""
+    if headers is None:
+        headers = _read_ct_headers(ct_dir)
+    return _ct_provenance_from_headers(ct_dir, headers)
+
+
 def _read_json(path: Path, field: str) -> dict[str, Any]:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
@@ -750,6 +800,8 @@ def _validate_nifti_provenance(
     ct_dir: Path,
     nifti: Path,
     series_uid: str,
+    *,
+    ct_headers: Sequence[tuple[Path, Dataset | None]] | None = None,
 ) -> None:
     provenance = planning_ct.get("nifti_provenance")
     if not isinstance(provenance, dict):
@@ -762,7 +814,11 @@ def _validate_nifti_provenance(
     )
     assert sidecar is not None
     sidecar_data = _read_json(sidecar, "planning_ct.nifti_provenance")
-    expected_ct = _ct_provenance(ct_dir)
+    expected_ct = (
+        _ct_provenance_from_headers(ct_dir, ct_headers)
+        if ct_headers is not None
+        else _ct_provenance(ct_dir)
+    )
     for key in ("series_instance_uid", "sop_hash", "geometry", "nifti_geometry", "nifti_sha256"):
         if key not in provenance or key not in sidecar_data:
             raise CourseContractError(
@@ -1966,15 +2022,10 @@ def validate_course_contract(contract: CourseContract) -> CourseContract:
     if ct_dir is not None:
         if not series_uid:
             raise CourseContractError("planning_ct.series_instance_uid is empty for a declared CT directory")
+        headers = _read_ct_headers(ct_dir)
         readable_series: set[str] = set()
-        for path in sorted(item for item in ct_dir.iterdir() if item.is_file()):
-            try:
-                dataset = pydicom.dcmread(
-                    str(path),
-                    stop_before_pixels=True,
-                    force=True,
-                )
-            except Exception:
+        for path, dataset in headers:
+            if dataset is None:
                 continue
             modality = str(getattr(dataset, "Modality", "") or "").strip().upper()
             sop_class = str(getattr(dataset, "SOPClassUID", "") or "").strip()
@@ -2006,7 +2057,14 @@ def validate_course_contract(contract: CourseContract) -> CourseContract:
         if nifti is None and not allow_dicom_only:
             raise CourseContractError("planning CT contract has DICOM data but no NIfTI path")
         if nifti is not None:
-            _validate_nifti_provenance(contract, planning_ct, ct_dir, nifti, series_uid)
+            _validate_nifti_provenance(
+                contract,
+                planning_ct,
+                ct_dir,
+                nifti,
+                series_uid,
+                ct_headers=headers,
+            )
     elif nifti is not None or series_uid:
         raise CourseContractError(
             "planning CT contract must declare DICOM directory, series UID, and NIfTI together"
