@@ -823,6 +823,9 @@ def apply_unbound_target_exclusion(
     bound_names = sorted(
         {str(item["roi_name"]) for item in reconciliation.get("plan_bound_targets") or []}
     )
+    # Same column layout as a quarantined course; a null reason means no quarantine.
+    for row in rows:
+        row.setdefault("dose_response_quarantine_reason", None)
     for position in reconciliation.get("excluded_row_indices") or []:
         row = rows[int(position)]
         reason = (

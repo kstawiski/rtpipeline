@@ -259,6 +259,7 @@ def test_exclusion_keeps_absolute_values_and_touches_only_unbound_rows():
     before = dict(rows[0])
     result = reconcile_near_zero_plan_targets(rows, _plans(_ref("PTV1")), RS)
     apply_unbound_target_exclusion(rows, result)
+    assert rows[0].pop("dose_response_quarantine_reason") is None
     assert rows[0] == before
     assert rows[1]["DmeanGy"] == 9.0
     assert rows[1]["D95Gy"] == 0.0
