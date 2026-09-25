@@ -122,7 +122,10 @@ def test_nothing_applicable_publishes_disabled_with_reason(
         force_segmentation=False,
     )
 
-    assert cli._execute_segment_task(task) is False
+    # "disabled" is a governed terminal status, not a failure: the CLI must exit 0
+    # so the stage wrapper publishes a bound disabled completion instead of
+    # closing the course as failed (run_course_stage reads the producer status).
+    assert cli._execute_segment_task(task) is True
     assert (course_dir / ".segmentation_done").read_text(encoding="utf-8").strip() == "disabled"
     report = json.loads(
         (course_dir / "metadata" / "segmentation_status.json").read_text(
@@ -377,3 +380,35 @@ def test_cpu_fallback_replaces_gpu_device_instead_of_appending_second_device(
     assert retry.count("-d") == 1
     assert retry[retry.index("-d") + 1] == "cpu"
     assert "gpu" not in retry
+
+
+def test_course_without_planning_ct_completes_as_disabled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A course planned without a CT (for example MR-only) has nothing to segment.
+    # Its stage must end in the governed "disabled" status, not fail and close the
+    # course, and no auto RTSTRUCT build may be attempted for it.
+    course_dir = tmp_path / "output" / "P1" / "C1"
+    write_minimal_course_contract(course_dir)
+    config = PipelineConfig(
+        dicom_root=tmp_path / "input",
+        output_root=tmp_path / "output",
+        logs_root=tmp_path / "logs",
+        segmentation_temp_root=tmp_path / "seg-tmp",
+    )
+
+    def _no_rtstruct(*_args, **_kwargs):
+        raise AssertionError("auto RTSTRUCT must not be built without a planning CT")
+
+    monkeypatch.setattr(auto_rtstruct, "build_auto_rtstruct", _no_rtstruct)
+    task = cli._SegmentTask(
+        cfg=config,
+        course=SimpleNamespace(dirs=build_course_dirs(course_dir)),
+        force_segmentation=False,
+    )
+
+    assert cli._execute_segment_task(task) is True
+    assert (course_dir / ".segmentation_done").read_text(encoding="utf-8").strip() == "disabled"
+    report = json.loads((course_dir / "metadata" / "segmentation_status.json").read_text(encoding="utf-8"))
+    assert report["status"] == "disabled"
