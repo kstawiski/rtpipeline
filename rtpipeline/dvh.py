@@ -31,6 +31,12 @@ NEAR_ZERO_TARGET_ZERO_DOSE_STATUSES = (
 # Per-ROI dose-response status for a near-zero target that no selected plan
 # binds, in a course whose plan-bound targets are all dosed on the grid.
 EXCLUDED_TARGET_NOT_BOUND_STATUS = "excluded_target_not_bound_to_course_plan"
+# Fallback plan-target binding (2026-09-25) used only when no dose reference of the
+# selected plan(s) names or numbers any target ROI (e.g. a SITE reference described
+# with a clinical label such as a nodal site name): a target-like ROI measured on the
+# selected grid with D95 at or above this fraction of the course's resolved
+# prescription is evidently treated by the course plan.
+PRESCRIPTION_COVERAGE_BINDING_FRACTION = 0.9
 
 # Modules whose content determines a DVH measurement. A cached DVH is only
 # reusable if the code that produced it still matches: ``_is_dvh_up_to_date``
@@ -758,6 +764,61 @@ def reconcile_near_zero_plan_targets(
         position for position, row in enumerate(rows) if _is_near_zero_target_row(row)
     ]
 
+    # Fallback binding by prescription coverage, only when the plan's dose references
+    # bind no target at all. It needs a resolved course prescription and resolved
+    # delivery, and binds only target-like rows fully on the selected grid whose D95
+    # reaches the fraction of that prescription. Rows sharing a bound row's normalized
+    # name (derived copies) are bound too, so they cannot be excluded as unbound.
+    prescription_coverage: dict[str, object] = {"used": False}
+    if not bound_targets:
+        prescriptions = {
+            float(row.get("Prescribed_Dose_Gy"))
+            for row in rows
+            if str(row.get("Prescribed_Dose_Status") or "") == "resolved"
+            and isinstance(row.get("Prescribed_Dose_Gy"), (int, float, np.integer, np.floating))
+            and np.isfinite(float(row.get("Prescribed_Dose_Gy")))
+            and float(row.get("Prescribed_Dose_Gy")) > 0
+        }
+        delivery_resolved = bool(rows) and all(
+            str(row.get("Delivered_Dose_Status") or "") == "resolved" for row in rows
+        )
+        prescription_coverage = {
+            "used": False,
+            "fraction": PRESCRIPTION_COVERAGE_BINDING_FRACTION,
+            "course_prescription_gy": next(iter(prescriptions)) if len(prescriptions) == 1 else None,
+            "delivery_resolved": delivery_resolved,
+        }
+        if len(prescriptions) == 1 and delivery_resolved:
+            rx = next(iter(prescriptions))
+            covered = [
+                position
+                for position, row in enumerate(rows)
+                if bool(row.get("target_like"))
+                and str(row.get("dose_grid_coverage_status") or "") == "fully_covered"
+                and _finite_d95_gy(row) is not None
+                and float(_finite_d95_gy(row)) >= PRESCRIPTION_COVERAGE_BINDING_FRACTION * rx
+            ]
+            if covered:
+                covered_names = {
+                    _normalize_plan_target_name(_row_roi_name(rows[position]))
+                    for position in covered
+                }
+                for position, row in enumerate(rows):
+                    key = _normalize_plan_target_name(_row_roi_name(row))
+                    if position in covered:
+                        bindings.setdefault(position, []).append(
+                            {"method": "prescription_coverage", "course_prescription_gy": rx}
+                        )
+                    elif key and key in covered_names and bool(row.get("target_like")):
+                        bindings.setdefault(position, []).append(
+                            {"method": "name_of_prescription_covered_roi"}
+                        )
+                bound_targets = [
+                    position for position in bindings if bool(rows[position].get("target_like"))
+                ]
+                anchored = True
+                prescription_coverage["used"] = True
+
     def measured_above_threshold(row: Mapping[str, object]) -> bool:
         d95 = _finite_d95_gy(row)
         return bool(
@@ -804,6 +865,7 @@ def reconcile_near_zero_plan_targets(
             for plan in plans
             for ref in plan.get("dose_references") or []
         ],
+        "prescription_coverage_binding": prescription_coverage,
         "plan_bound_targets": [describe(position) for position in bound_targets],
         "plan_bound_non_target_rois": [
             describe(position) for position in bindings if position not in bound_targets
@@ -826,14 +888,27 @@ def apply_unbound_target_exclusion(
     # Same column layout as a quarantined course; a null reason means no quarantine.
     for row in rows:
         row.setdefault("dose_response_quarantine_reason", None)
+    coverage = reconciliation.get("prescription_coverage_binding") or {}
+    if isinstance(coverage, Mapping) and coverage.get("used"):
+        basis = (
+            "The selected course plan(s) name no ROI in their DoseReferenceSequence, so "
+            f"the plan-bound targets ({', '.join(bound_names)}) are those measured fully on "
+            f"the selected grid with D95Gy >= {float(coverage.get('fraction') or 0):g} x the "
+            f"resolved course prescription ({float(coverage.get('course_prescription_gy') or 0):g} Gy); "
+            "this ROI is not one of them"
+        )
+    else:
+        basis = (
+            "no DoseReferenceSequence item of the selected course plan(s) binds it by "
+            "ReferencedROINumber or exact DoseReferenceDescription. Every plan-bound "
+            f"target ({', '.join(bound_names)}) is measured above {NEAR_ZERO_TARGET_D95_GY:g} Gy "
+            "on the selected dose grid"
+        )
     for position in reconciliation.get("excluded_row_indices") or []:
         row = rows[int(position)]
         reason = (
-            f"Target-like ROI has D95Gy <= {NEAR_ZERO_TARGET_D95_GY:g} Gy and no "
-            "DoseReferenceSequence item of the selected course plan(s) binds it by "
-            "ReferencedROINumber or exact DoseReferenceDescription. Every plan-bound "
-            f"target ({', '.join(bound_names)}) is measured above {NEAR_ZERO_TARGET_D95_GY:g} Gy "
-            "on the selected dose grid, so this ROI alone is excluded from dose-response. "
+            f"Target-like ROI has D95Gy <= {NEAR_ZERO_TARGET_D95_GY:g} Gy and {basis}, "
+            "so this ROI alone is excluded from dose-response. "
             "Its physical DVH values are retained as measured."
         )
         row["dose_response_quarantine_status"] = EXCLUDED_TARGET_NOT_BOUND_STATUS
