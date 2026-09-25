@@ -318,3 +318,39 @@ def test_snakefile_exposes_stage_configuration_dependencies():
     assert "configuration=ROBUSTNESS_CONFIG_DEPENDENCY" in snakefile
     assert 'os.environ["RTPIPELINE_RADIOMICS_CONFIG_DEPENDENCY"]' in snakefile
     assert "adopt_legacy_snakemake_inputs" in snakefile
+
+
+@pytest.mark.parametrize("token", ["failed", "disabled", "FAILED\n"])
+def test_terminal_closure_token_does_not_invalidate_bound_completions(tmp_path, token):
+    # A campaign closes a failed or not-applicable course with a bare token. It
+    # certifies no outcome, so it must not advance the shared stamp, which would
+    # re-run the stage for every correctly bound course of the cohort.
+    dependency = materialize_stage_dependency(
+        tmp_path / "dependencies", "segmentation", {"device": "gpu"}
+    )
+    record = read_stage_dependency(dependency, expected_stage="segmentation")
+    bound = tmp_path / "bound" / ".segmentation_done"
+    bound.parent.mkdir()
+    bound.write_text(
+        '{"configuration_dependency_sha256":"' + record["sha256"] + '"}\n',
+        encoding="utf-8",
+    )
+    closed = tmp_path / "closed" / ".segmentation_done"
+    closed.parent.mkdir()
+    closed.write_text(token, encoding="utf-8")
+    marker_ns = dependency.stat().st_mtime_ns
+
+    assert advance_dependency_past_unbound_outputs(
+        dependency, [bound, closed], binding_field="configuration_dependency_sha256"
+    ) == 0
+    assert dependency.stat().st_mtime_ns == marker_ns
+
+    legacy_success = tmp_path / "legacy" / ".segmentation_done"
+    legacy_success.parent.mkdir()
+    legacy_success.write_text("ok\n", encoding="utf-8")
+    assert advance_dependency_past_unbound_outputs(
+        dependency,
+        [bound, closed, legacy_success],
+        binding_field="configuration_dependency_sha256",
+    ) == 1
+    assert dependency.stat().st_mtime_ns > marker_ns
