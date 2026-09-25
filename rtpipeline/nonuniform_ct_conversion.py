@@ -196,11 +196,11 @@ def convert_nonuniform_unsigned_ct(
     series does not qualify or any check fails. The caller removes ``work_dir``.
     """
     try:
-        files, evidence = _inspect_series(ct_dir)
         original = _single(
             [p for p in sorted(work_dir.iterdir()) if _is_nifti(p) and not _is_equalized(p)],
             "unequalized volume from the failed conversion",
         )
+        files, evidence = _inspect_series(ct_dir)
         staging_dir = work_dir / "signed_staging_input"
         output_dir = work_dir / "signed_staging_output"
         _stage_signed_copy(files, staging_dir)
