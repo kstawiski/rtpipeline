@@ -25,6 +25,7 @@ import numpy as np
 
 
 from .nifti_provenance import annotate as annotate_nifti_provenance
+from .nonuniform_ct_conversion import convert_nonuniform_unsigned_ct
 from .config import PipelineConfig
 from .course_contract import load_course_contract
 from .inventory import TS_TASK_BY_CLASS, manual_rtstruct_bindings_from_inventory, ts_tasks_for_image_class
@@ -905,19 +906,34 @@ def _ensure_ct_nifti(
             existing_sidecar = {}
 
     regenerated = not target.exists() or force
+    conversion: Optional[dict[str, Any]] = None
     if regenerated:
         tmp_dir = nifti_dir / ".tmp_dcm2niix"
         if tmp_dir.exists():
             shutil.rmtree(tmp_dir)
         tmp_dir.mkdir(parents=True, exist_ok=True)
-        generated = run_dcm2niix(config, ct_dir, tmp_dir, recursive_depth=dcm2niix_depth)
-        if generated is None:
-            logger.error("dcm2niix failed for %s", ct_dir)
-            return None
-        if target.exists():
-            target.unlink()
-        shutil.move(str(generated), str(target))
-        shutil.rmtree(tmp_dir, ignore_errors=True)
+        try:
+            generated = run_dcm2niix(config, ct_dir, tmp_dir, recursive_depth=dcm2niix_depth)
+            if generated is None:
+                fallback = convert_nonuniform_unsigned_ct(
+                    ct_dir,
+                    tmp_dir,
+                    lambda source, out: run_dcm2niix(config, source, out, recursive_depth=0),
+                )
+                if fallback is not None:
+                    generated, conversion = fallback
+            if generated is None:
+                logger.error("dcm2niix failed for %s", ct_dir)
+                return None
+            if target.exists():
+                target.unlink()
+            shutil.move(str(generated), str(target))
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+    elif isinstance(existing_sidecar.get("nifti_conversion"), dict):
+        conversion = existing_sidecar["nifti_conversion"]
+    if conversion is not None:
+        metadata["nifti_conversion"] = conversion
 
     annotate_nifti_provenance(
         metadata,
