@@ -226,10 +226,26 @@ def test_ineligible_series_do_not_reach_the_converter(tmp_path, caplog, signed, 
     write_ct_series(ct_dir, z_positions, signed=signed)
     work_dir = tmp_path / "work"
     work_dir.mkdir()
+    # Stands in for the unequalized volume a failed dcm2niix run leaves behind.
+    (work_dir / "failed_run.nii.gz").write_bytes(b"")
 
     assert nonuniform.convert_nonuniform_unsigned_ct(ct_dir, work_dir, _never_called) is None
     assert reason in caplog.text
-    assert list(work_dir.iterdir()) == []
+    assert [p.name for p in work_dir.iterdir()] == ["failed_run.nii.gz"]
+
+
+def test_series_without_dcm2niix_output_is_not_read(tmp_path, caplog, monkeypatch):
+    ct_dir = tmp_path / "ct"
+    write_ct_series(ct_dir, mixed_z_positions(), signed=False)
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+
+    def inspect_must_not_run(_ct_dir):
+        raise AssertionError("series read although dcm2niix left no volume")
+
+    monkeypatch.setattr(nonuniform, "_inspect_series", inspect_must_not_run)
+    assert nonuniform.convert_nonuniform_unsigned_ct(ct_dir, work_dir, _never_called) is None
+    assert "expected one unequalized volume from the failed conversion, found 0" in caplog.text
 
 
 def test_staged_copy_changes_only_pixel_representation(tmp_path):
