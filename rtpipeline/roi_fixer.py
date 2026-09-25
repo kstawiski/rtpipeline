@@ -36,6 +36,67 @@ class FixSummary:
     output_path: Path
 
 
+def _rt_utils_roi_mask(rtstruct, roi_name: str) -> np.ndarray:
+    """The mask rt-utils ``get_roi_mask_by_name`` returns, without its full scan.
+
+    rt-utils matches every contour against every slice and allocates a float64
+    volume before casting it to bool. This groups contours by referenced
+    SOPInstanceUID once, in the same order, and passes each slice the same
+    contour data rt-utils would to the same rt-utils slice rasterizer. When
+    the grouping cannot be formed exactly (missing attributes, non-string
+    UIDs), rt-utils itself is called so its result or exception is unchanged.
+    Any rasterizer other than rt-utils' own ``RTStruct.get_roi_mask_by_name``
+    is called as it is.
+    """
+    from rt_utils import ds_helper, image_helper
+
+    method = getattr(getattr(rtstruct, "get_roi_mask_by_name", None), "__func__", None)
+    if (getattr(method, "__module__", None), getattr(method, "__qualname__", None)) != (
+        "rt_utils.rtstruct",
+        "RTStruct.get_roi_mask_by_name",
+    ):
+        return rtstruct.get_roi_mask_by_name(roi_name)
+
+    for structure_roi in rtstruct.ds.StructureSetROISequence:
+        if structure_roi.ROIName == roi_name:
+            contour_sequence = ds_helper.get_contour_sequence_by_roi_number(
+                rtstruct.ds, structure_roi.ROINumber
+            )
+            break
+    else:
+        return rtstruct.get_roi_mask_by_name(roi_name)
+
+    series_data = rtstruct.series_data
+    try:
+        by_uid: Dict[str, list] = {}
+        for contour in contour_sequence:
+            for contour_image in contour.ContourImageSequence:
+                uid = contour_image.ReferencedSOPInstanceUID
+                if not isinstance(uid, str):
+                    raise TypeError("non-string referenced UID")
+                by_uid.setdefault(str(uid), []).append(contour)
+        slice_uids = []
+        if by_uid:
+            for series_slice in series_data:
+                uid = series_slice.SOPInstanceUID
+                if not isinstance(uid, str):
+                    raise TypeError("non-string image UID")
+                slice_uids.append(str(uid))
+    except Exception:
+        return rtstruct.get_roi_mask_by_name(roi_name)
+
+    reference = series_data[0]
+    mask = np.zeros((int(reference.Columns), int(reference.Rows), len(series_data)), dtype=bool)
+    transformation_matrix = image_helper.get_patient_to_pixel_transformation_matrix(series_data)
+    for index, uid in enumerate(slice_uids):
+        slice_contour_data = [contour.ContourData for contour in by_uid.get(uid, ())]
+        if len(slice_contour_data):
+            mask[:, :, index] = image_helper.get_slice_mask_from_slice_contour_data(
+                series_data[index], slice_contour_data, transformation_matrix
+            )
+    return mask
+
+
 class _ROIRebuilder:
     """Rebuild ROI voxel masks directly from contour data when rt-utils fails."""
 
@@ -77,7 +138,7 @@ class _ROIRebuilder:
 
     def get_mask(self, roi_name: str) -> Optional[np.ndarray]:
         try:
-            mask = self.rtstruct.get_roi_mask_by_name(roi_name)
+            mask = _rt_utils_roi_mask(self.rtstruct, roi_name)
         except Exception:
             mask = None
         if mask is not None and np.any(mask):
