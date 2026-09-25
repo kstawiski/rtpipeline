@@ -219,7 +219,10 @@ def _execute_segment_task(task: _SegmentTask) -> bool:
     course_dir = task.course.dirs.root
     try:
         segment_course(task.cfg, course_dir, force=task.force_segmentation)
-        build_auto_rtstruct(course_dir)
+        # A course whose contract declares no planning CT has nothing to build
+        # an auto RTSTRUCT from; attempting it only records a spurious failure.
+        if _declares_planning_ct(course_dir):
+            build_auto_rtstruct(course_dir)
         outcome = publish_course_segmentation_status(course_dir)
     except Exception as exc:  # noqa: BLE001 - persist a fail-closed course outcome
         logger.exception("Segmentation stage crashed for %s", course_dir)
@@ -230,7 +233,17 @@ def _execute_segment_task(task: _SegmentTask) -> bool:
                 f"segmentation stage crashed: {type(exc).__name__}: {exc}",
             ),
         )
-    return outcome["status"] == "ok"
+    # "disabled" is the governed terminal status of a course with nothing to
+    # segment (no planning CT DICOM and NIfTI pair); the stage wrapper publishes
+    # it as a disabled completion. Only "failed" fails the stage.
+    return outcome["status"] in {"ok", "disabled"}
+
+
+def _declares_planning_ct(course_dir: Path) -> bool:
+    from .course_contract import load_course_contract
+
+    contract = load_course_contract(course_dir)
+    return contract.planning_ct_dir is not None and contract.planning_ct_nifti is not None
 
 
 def _execute_all_series_segment_task(task: _AllSeriesSegmentTask) -> bool:
