@@ -662,7 +662,11 @@ def validate_stage_completion_payload(
         observed.append(_artifact_entry(root, path, role, binding))
     if observed != outputs:
         raise ValueError("Bound stage output bytes or inventory changed")
-    expected_outputs = _discover_outputs(root, definition)
+    # Mirror the writer: a disabled completion binds no outputs even where the
+    # producer left its own decision record (segmentation_status.json) or other
+    # artefacts in the stage's namespace. Only a completion that certifies an
+    # outcome must declare the complete discovered output set.
+    expected_outputs = [] if status == "disabled" else _discover_outputs(root, definition)
     if expected_outputs != outputs:
         raise ValueError("Stage completion no longer declares the complete output set")
     if payload.get("output_set_sha256") != content_sha256(outputs):
