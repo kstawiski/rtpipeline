@@ -331,7 +331,11 @@ def fix_rtstruct_rois(
         logger.debug("No ROIs found in %s", rtstruct_path)
         return None
 
-    mask_map: Dict[str, np.ndarray] = {}
+    # Masks are not held here: every ROI of a whole-body segmentation at once
+    # takes gigabytes, and most calls find nothing to fix. The rebuild below
+    # recomputes them; rasterization is deterministic and rebuilt masks are
+    # kept by the rebuilder.
+    usable: set = set()
     fixed: List[str] = []
     failed: List[str] = []
 
@@ -340,7 +344,7 @@ def fix_rtstruct_rois(
         if mask is None or not np.any(mask):
             failed.append(roi_name)
             continue
-        mask_map[roi_name] = mask.astype(bool)
+        usable.add(roi_name)
         if rebuilder.was_rebuilt(roi_name):
             fixed.append(roi_name)
 
@@ -365,9 +369,11 @@ def fix_rtstruct_rois(
         pass
 
     for roi_name in roi_names:
-        mask = mask_map.get(roi_name)
-        if mask is None:
+        if roi_name not in usable:
             continue
+        mask = rebuilder._rebuilt.get(roi_name)
+        if mask is None:
+            mask = rebuilder.get_mask(roi_name)
         color = rebuilder.get_roi_color(roi_name)
         try:
             if color:
