@@ -112,9 +112,19 @@ def _coarse_grid(slices, spacing, shift) -> sitk.Image:
     return grid
 
 
-def _assert_identical(image: sitk.Image, slices, *, fast: bool) -> None:
+def _mechanism(image: sitk.Image, slices) -> str:
+    plan = rg._regular_sampling(image, rg._slice_geometries(slices))
+    if plan is None:
+        return "per_slice"
+    gather_types = {getattr(sitk, name) for name in rg._GATHER_PIXEL_TYPES}
+    return "gather" if plan[1] is not None and image.GetPixelID() in gather_types else "resample"
+
+
+def _assert_identical(image: sitk.Image, slices, *, fast: bool, mechanism: str | None = None) -> None:
     geometries = rg._slice_geometries(slices)
-    assert (rg._uniform_reference(image, geometries) is not None) is fast
+    assert (rg._regular_sampling(image, geometries) is not None) is fast
+    if mechanism is not None:
+        assert _mechanism(image, slices) == mechanism
     expected = rg._image_array_per_slice(image, geometries)
     actual = rg.image_array_for_rtstruct(image, slices)
     assert actual.dtype == expected.dtype
@@ -146,7 +156,9 @@ def test_fast_path_matches_per_slice_on_the_series_grid(tmp_path, case, roundtri
     image = _mask(_series_grid(slices), seed=len(case))
     if roundtrip:
         image = _nifti_roundtrip(image, tmp_path)
-    _assert_identical(image, slices, fast=True)
+    _assert_identical(image, slices, fast=True, mechanism="gather")
+    # The same samples through the one-resample evaluation.
+    _assert_identical(sitk.Cast(image, sitk.sitkFloat32), slices, fast=True, mechanism="resample")
 
 
 @pytest.mark.parametrize("case", ["axial_2.4", "negative_step_order", "oblique"])
@@ -154,24 +166,56 @@ def test_fast_path_matches_per_slice_on_a_coarser_mask_grid(tmp_path, case) -> N
     slices = _series(**SAME_GRID_CASES[case])
     grid = _coarse_grid(slices, spacing=(1.5, 1.7, 3.3), shift=(-1.1, -0.9, -2.2))
     image = _nifti_roundtrip(_mask(grid, seed=3), tmp_path)
-    _assert_identical(image, slices, fast=True)
+    _assert_identical(image, slices, fast=True, mechanism="gather")
+    _assert_identical(sitk.Cast(image, sitk.sitkFloat64), slices, fast=True, mechanism="resample")
+
+
+def test_series_tilted_against_the_mask_grid_uses_one_resample() -> None:
+    # The mask grid is tilted about the row direction, so its y and z indices
+    # change with both the row and the slice: no per-axis voxel selection.
+    slices = _series(step=2.4)
+    fine = _series_grid(slices)
+    corners = [fine.TransformIndexToPhysicalPoint((x, y, z)) for x in (0, 43) for y in (0, 35) for z in (0, 23)]
+    tilt = _rotation(0.0, 0.0, 0.25)
+    local = np.asarray(corners) @ tilt  # coordinates along the tilted axes
+    low = local.min(axis=0) - 3.0
+    grid = sitk.Image([int(v) for v in np.ceil((local.max(axis=0) + 3.0 - low) / 1.3)], sitk.sitkUInt8)
+    grid.SetDirection(tuple(tilt.ravel()))
+    grid.SetOrigin(tuple(tilt @ (low + 0.217)))
+    grid.SetSpacing((1.3, 1.3, 1.3))
+    _assert_identical(_mask(grid, seed=12), slices, fast=True, mechanism="resample")
 
 
 @pytest.mark.parametrize("case", ["axial_2.5", "oblique"])
 def test_fast_path_matches_per_slice_when_the_mask_touches_the_border(tmp_path, case) -> None:
     slices = _series(**SAME_GRID_CASES[case])
     image = _mask(_series_grid(slices), seed=5, border=True)
-    _assert_identical(image, slices, fast=True)
+    _assert_identical(image, slices, fast=True, mechanism="gather")
+    _assert_identical(sitk.Cast(image, sitk.sitkFloat32), slices, fast=True, mechanism="resample")
     # A smaller mask grid: samples beyond its border take the default value.
     grid = _series_grid(slices)
     cropped = sitk.RegionOfInterest(_mask(grid, seed=6, border=True), (30, 20, 16), (5, 7, 3))
-    _assert_identical(cropped, slices, fast=True)
+    _assert_identical(cropped, slices, fast=True, mechanism="gather")
+    _assert_identical(sitk.Cast(cropped, sitk.sitkFloat32), slices, fast=True, mechanism="resample")
 
 
-@pytest.mark.parametrize("pixel", [sitk.sitkInt16, sitk.sitkFloat32])
-def test_fast_path_keeps_the_mask_pixel_type(pixel) -> None:
+@pytest.mark.parametrize(
+    "pixel, mechanism",
+    [
+        (sitk.sitkUInt8, "gather"),
+        (sitk.sitkInt8, "gather"),
+        (sitk.sitkUInt16, "gather"),
+        (sitk.sitkInt16, "gather"),
+        (sitk.sitkUInt32, "gather"),
+        (sitk.sitkInt32, "gather"),
+        (sitk.sitkInt64, "resample"),
+        (sitk.sitkFloat32, "resample"),
+        (sitk.sitkFloat64, "resample"),
+    ],
+)
+def test_fast_path_keeps_the_mask_pixel_type(pixel, mechanism) -> None:
     slices = _series(step=2.4)
-    _assert_identical(_mask(_series_grid(slices), seed=9, pixel=pixel), slices, fast=True)
+    _assert_identical(_mask(_series_grid(slices), seed=9, pixel=pixel), slices, fast=True, mechanism=mechanism)
 
 
 def test_mixed_spacing_series_takes_the_per_slice_path() -> None:
@@ -219,9 +263,10 @@ def test_in_plane_rotated_mask_takes_the_per_slice_path() -> None:
     _assert_identical(_mask(grid, seed=8), slices, fast=False)
 
 
-def test_regular_series_is_sampled_with_one_resample(monkeypatch) -> None:
+@pytest.mark.parametrize("pixel, expected", [(sitk.sitkUInt8, []), (sitk.sitkFloat32, [(44, 36, 24)])])
+def test_regular_series_is_sampled_in_at_most_one_resample(monkeypatch, pixel, expected) -> None:
     slices = _series(step=2.4)
-    image = _mask(_series_grid(slices), seed=11)
+    image = _mask(_series_grid(slices), seed=11, pixel=pixel)
     calls = []
     original = sitk.Resample
 
@@ -231,7 +276,7 @@ def test_regular_series_is_sampled_with_one_resample(monkeypatch) -> None:
 
     monkeypatch.setattr(sitk, "Resample", counting)
     rg.image_array_for_rtstruct(image, slices)
-    assert calls == [(44, 36, 24)]
+    assert calls == expected
 
 
 def test_invalid_slice_geometry_still_raises() -> None:
