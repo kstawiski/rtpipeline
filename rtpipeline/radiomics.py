@@ -872,13 +872,6 @@ _SOURCE_SCOPE_STRUCTURAL_CODES = frozenset({
     "ROI_MULTISERIES_SOURCE_SCOPE",
 })
 
-_ORIGINAL_RTSTRUCT_BUILDER_CREATE_FROM = None
-try:
-    from rt_utils import RTStructBuilder as _RTStructBuilder_orig
-    _ORIGINAL_RTSTRUCT_BUILDER_CREATE_FROM = getattr(_RTStructBuilder_orig, "create_from", None)
-except Exception:
-    pass
-
 
 def _scoped_rtstruct_readers(dicom_series_path: Path, rs_path: Path) -> Tuple[Any, Any]:
     """Build the scoped reader and, where rt_utils accepts the file, its own reader.
@@ -896,15 +889,6 @@ def _scoped_rtstruct_readers(dicom_series_path: Path, rs_path: Path) -> Tuple[An
 
     from .rtstruct_geometry import ScopedRTStruct
     from .rtstruct_identity import validate_rtstruct_identity
-
-    if (
-        _ORIGINAL_RTSTRUCT_BUILDER_CREATE_FROM is not None
-        and getattr(RTStructBuilder, "create_from", None) is not _ORIGINAL_RTSTRUCT_BUILDER_CREATE_FROM
-    ):
-        legacy = RTStructBuilder.create_from(
-            dicom_series_path=str(dicom_series_path), rt_struct_path=str(rs_path)
-        )
-        return None, legacy
 
     # The order of create_from: series first, then the RTSTRUCT and its checks.
     series_data = image_helper.load_sorted_image_series(str(dicom_series_path))
@@ -1112,6 +1096,7 @@ def _rtstruct_masks(
     unmeasurable_required_is_disposition: bool = False,
     retain_mask: Optional[Callable[[str], bool]] = None,
     scoped_reader: bool = False,
+    govern_every_roi: bool = False,
 ) -> Dict[str, Optional[np.ndarray]]:
     """Convert RTSTRUCT ROIs to boolean masks under an explicit source policy.
 
@@ -1148,6 +1133,12 @@ def _rtstruct_masks(
     rt_utils rejects the whole file for referencing images outside the
     series are they read through the scoped reader too; a scope finding is
     then recorded or raised like any other structural status.
+
+    ``govern_every_roi`` (with ``scoped_reader``) applies that treatment to
+    every ROI, not only ANALYSIS_REQUIRED ones: each is read through the
+    scoped reader, and a scope or unmeasurable-contour finding becomes a
+    governed ``structural_nonmeasurement`` rather than an extraction error.
+    MR radiomics uses it; every ROI there is published.
     """
     normalized_skips = {
         ''.join(ch for ch in str(name).lower() if ch.isalnum())
@@ -1295,7 +1286,7 @@ def _rtstruct_masks(
             if (
                 unmeasurable_required_is_disposition
                 and observation.structural_code in _UNMEASURABLE_CONTOUR_STRUCTURAL_CODES
-                and (_is_required(observation.name) or (scoped_reader and requiredness_by_roi is None))
+                and (_is_required(observation.name) or (scoped_reader and govern_every_roi))
             ):
                 # The source itself says this ROI's contours cannot be read as
                 # a volume. Nothing is extracted from a partial reading, and
@@ -1411,7 +1402,7 @@ def _rtstruct_masks(
             continue
         retain = retain_mask is None or bool(retain_mask(str(name)))
         reader, indexed_reader = rt, legacy_indexed
-        if scoped is not None and (rt is None or _is_required(name) or requiredness_by_roi is None):
+        if scoped is not None and (rt is None or _is_required(name) or govern_every_roi):
             # The main path's reader. Its rasterizer copy holds exactly the
             # ROI's contour items minus the area-less ones, so an ROI that has
             # none of those rasterizes as rt_utils rasterizes the file itself.
@@ -1423,7 +1414,7 @@ def _rtstruct_masks(
                 detail = str(scope.detail)
                 if len(detail) > 300:
                     detail = detail[:300] + "…"
-                if _is_required(name) or requiredness_by_roi is None:
+                if _is_required(name) or govern_every_roi:
                     # A selected ROI the main path could not bind to the
                     # planning CT (or MR series) has no measurement to be robust
                     # against. That is a property of the source, not a failed read, so
@@ -2942,6 +2933,7 @@ def _collect_total_mr_masks(
                 failure_outcomes=source_failures,
                 scoped_reader=True,
                 unmeasurable_required_is_disposition=True,
+                govern_every_roi=True,
             )
         except RadiomicsCourseExtractionError as exc:
             source_failures.append({
@@ -3929,6 +3921,7 @@ def _mr_manual_rows(
         failure_outcomes=sink,
         scoped_reader=True,
         unmeasurable_required_is_disposition=True,
+        govern_every_roi=True,
     )
     for entry in sink:
         reason = str(entry.get("reason", ""))
