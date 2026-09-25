@@ -442,20 +442,20 @@ def _rs_custom_added_rois_off_plane(rs_custom_path: Path, contract, rs_auto: Opt
     The base RTSTRUCT is chosen as the builder chooses it (contracted manual,
     else RS_auto). Its ROI numbers survive into RS_custom unchanged, and its
     contours are copied without modification, so only the other ROIs are
-    checked with the scoped reader's plane test.
+    checked with the scoped reader's plane test. Without an identifiable base
+    every ROI is checked.
     """
     from rt_utils import image_helper
     from .rtstruct_geometry import contours_on_referenced_planes
 
-    manual = contract.authoritative_rtstruct_path
-    if manual is not None and Path(manual).exists():
-        base = Path(manual)
-    elif rs_auto and Path(rs_auto).exists():
-        base = Path(rs_auto)
-    else:
-        return "its base RTSTRUCT is unavailable, so copied and added ROIs cannot be told apart"
+    candidates = [contract.authoritative_rtstruct_path, rs_auto, Path(rs_custom_path).parent / "RS_auto.dcm"]
+    base = next((Path(path) for path in candidates if path and Path(path).exists()), None)
     try:
-        base_numbers = set(_roi_numbers(pydicom.dcmread(str(base), stop_before_pixels=True)))
+        base_numbers = (
+            set(_roi_numbers(pydicom.dcmread(str(base), stop_before_pixels=True)))
+            if base is not None
+            else set()
+        )
         dataset = pydicom.dcmread(str(rs_custom_path))
         added = set(_roi_numbers(dataset)) - base_numbers
         if not any(
