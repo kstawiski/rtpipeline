@@ -872,6 +872,13 @@ _SOURCE_SCOPE_STRUCTURAL_CODES = frozenset({
     "ROI_MULTISERIES_SOURCE_SCOPE",
 })
 
+_ORIGINAL_RTSTRUCT_BUILDER_CREATE_FROM = None
+try:
+    from rt_utils import RTStructBuilder as _RTStructBuilder_orig
+    _ORIGINAL_RTSTRUCT_BUILDER_CREATE_FROM = getattr(_RTStructBuilder_orig, "create_from", None)
+except Exception:
+    pass
+
 
 def _scoped_rtstruct_readers(dicom_series_path: Path, rs_path: Path) -> Tuple[Any, Any]:
     """Build the scoped reader and, where rt_utils accepts the file, its own reader.
@@ -889,6 +896,15 @@ def _scoped_rtstruct_readers(dicom_series_path: Path, rs_path: Path) -> Tuple[An
 
     from .rtstruct_geometry import ScopedRTStruct
     from .rtstruct_identity import validate_rtstruct_identity
+
+    if (
+        _ORIGINAL_RTSTRUCT_BUILDER_CREATE_FROM is not None
+        and getattr(RTStructBuilder, "create_from", None) is not _ORIGINAL_RTSTRUCT_BUILDER_CREATE_FROM
+    ):
+        legacy = RTStructBuilder.create_from(
+            dicom_series_path=str(dicom_series_path), rt_struct_path=str(rs_path)
+        )
+        return None, legacy
 
     # The order of create_from: series first, then the RTSTRUCT and its checks.
     series_data = image_helper.load_sorted_image_series(str(dicom_series_path))
@@ -1279,7 +1295,7 @@ def _rtstruct_masks(
             if (
                 unmeasurable_required_is_disposition
                 and observation.structural_code in _UNMEASURABLE_CONTOUR_STRUCTURAL_CODES
-                and _is_required(observation.name)
+                and (_is_required(observation.name) or (scoped_reader and requiredness_by_roi is None))
             ):
                 # The source itself says this ROI's contours cannot be read as
                 # a volume. Nothing is extracted from a partial reading, and
@@ -1290,12 +1306,13 @@ def _rtstruct_masks(
                     )
                 from .rtstruct_identity import require_rtstruct_identity
 
+                roi_label = "required ROI" if _is_required(observation.name) else "ROI"
                 failure_outcomes.append({
                     "roi_name": observation.name,
                     "status": "structural_nonmeasurement",
                     "failure_kind": "unmeasurable_source_contour",
                     "reason": (
-                        f"required ROI {observation.name!r} in {rs_path} has "
+                        f"{roi_label} {observation.name!r} in {rs_path} has "
                         f"structural status {observation.structural_code}; its "
                         "contour data cannot be read as one volume"
                     ),
@@ -1394,7 +1411,7 @@ def _rtstruct_masks(
             continue
         retain = retain_mask is None or bool(retain_mask(str(name)))
         reader, indexed_reader = rt, legacy_indexed
-        if scoped is not None and (rt is None or _is_required(name)):
+        if scoped is not None and (rt is None or _is_required(name) or requiredness_by_roi is None):
             # The main path's reader. Its rasterizer copy holds exactly the
             # ROI's contour items minus the area-less ones, so an ROI that has
             # none of those rasterizes as rt_utils rasterizes the file itself.
@@ -1406,10 +1423,10 @@ def _rtstruct_masks(
                 detail = str(scope.detail)
                 if len(detail) > 300:
                     detail = detail[:300] + "…"
-                if _is_required(name):
+                if _is_required(name) or requiredness_by_roi is None:
                     # A selected ROI the main path could not bind to the
-                    # planning CT has no measurement to be robust against.
-                    # That is a property of the source, not a failed read, so
+                    # planning CT (or MR series) has no measurement to be robust
+                    # against. That is a property of the source, not a failed read, so
                     # the other ROIs of the source are still measured.
                     if failure_outcomes is None:
                         raise ValueError(
@@ -1417,12 +1434,13 @@ def _rtstruct_masks(
                         )
                     from .rtstruct_identity import require_rtstruct_identity
 
+                    roi_label = "required ROI" if _is_required(name) else "ROI"
                     failure_outcomes.append({
                         "roi_name": str(name),
                         "status": "structural_nonmeasurement",
                         "failure_kind": "unresolved_source_scope",
                         "reason": (
-                            f"required ROI {name!r} in {rs_path} has structural "
+                            f"{roi_label} {name!r} in {rs_path} has structural "
                             f"status {scope.code}; its contours do not resolve "
                             f"against the planning CT series ({detail})"
                         ),
@@ -2922,6 +2940,8 @@ def _collect_total_mr_masks(
                 rtstruct_path,
                 best_effort=True,
                 failure_outcomes=source_failures,
+                scoped_reader=True,
+                unmeasurable_required_is_disposition=True,
             )
         except RadiomicsCourseExtractionError as exc:
             source_failures.append({
@@ -2932,6 +2952,21 @@ def _collect_total_mr_masks(
                 "reason_code": "failed_source_read",
             })
             candidate_masks = {}
+        for failure in source_failures:
+            failure.setdefault("source", MR_AUTO_SOURCE)
+            failure.setdefault("detail", str(failure.get("reason", "")))
+            if failure.get("status") == "structural_nonmeasurement":
+                failure.setdefault("disposition", "structural_nonmeasurement")
+                failure.setdefault(
+                    "reason_code",
+                    str(failure.get("structural_code") or failure.get("failure_kind") or "ROI_EXTRACTION_FAILED"),
+                )
+            else:
+                failure.setdefault("disposition", "excluded")
+                failure.setdefault(
+                    "reason_code",
+                    str(failure.get("structural_code") or "failed_radiomics_extraction"),
+                )
         if failure_outcomes is not None:
             failure_outcomes.extend(source_failures)
         masks.update(candidate_masks)
@@ -3887,15 +3922,31 @@ def _mr_manual_rows(
 
     rows: List[Dict[str, Any]] = []
     sink: List[Dict] = []
-    masks = _rtstruct_masks(series.dir, rs, best_effort=True, failure_outcomes=sink)
+    masks = _rtstruct_masks(
+        series.dir,
+        rs,
+        best_effort=True,
+        failure_outcomes=sink,
+        scoped_reader=True,
+        unmeasurable_required_is_disposition=True,
+    )
     for entry in sink:
         reason = str(entry.get("reason", ""))
-        if entry.get("status") == "nonvolumetric_nonmeasurement":
-            # POINT and other open geometry is a nonmeasurement with null
-            # measurements, not a technical extraction failure.
+        entry_status = entry.get("status")
+        if entry_status in {"nonvolumetric_nonmeasurement", "structural_nonmeasurement"}:
+            # POINT, open geometry, area-less-only contours, and unresolved source scope
+            # are governed nonmeasurements with null measurements, not technical extraction errors.
+            failure_kind = entry.get("failure_kind")
+            if not failure_kind:
+                failure_kind = (
+                    'nonvolumetric_geometry'
+                    if entry_status == "nonvolumetric_nonmeasurement"
+                    else "unresolved_source_scope"
+                )
             rows.append(_manual_row(
-                entry["roi_name"], status='nonvolumetric_nonmeasurement',
-                failure_kind='nonvolumetric_geometry',
+                entry["roi_name"],
+                status=entry_status,
+                failure_kind=failure_kind,
                 detail=reason,
                 structural_code=str(entry.get("structural_code", "")) or None,
                 row_sop_uid=entry.get("rtstruct_sop_instance_uid"),

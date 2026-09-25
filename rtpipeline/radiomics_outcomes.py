@@ -194,6 +194,9 @@ def extraction_status_is_nonfatal_for_required(status: Any) -> bool:
         # failed. Callers only assign this status for planner-authored sources;
         # a generated source that emits an empty ROI stays fatal.
         "declared_without_contour_data",
+        # 2026-09-25: Governed structural non-measurement from ScopedRTStruct
+        # (unresolved source scope, area-less-only contours) preserves the course gate.
+        "structural_nonmeasurement",
     }
 
 
