@@ -210,7 +210,7 @@ def _contract_declares_no_planning_ct(course_contract) -> bool:
     )
 
 
-def _validate_required_inputs(courses):
+def _validate_required_inputs_with_not_applicable(courses):
     errors: list[str] = []
     incomplete: dict[tuple[str, str], list[str]] = {}
     expected_noncomputed: dict[tuple[str, str], str] = {}
@@ -381,6 +381,11 @@ def _validate_required_inputs(courses):
         if course_errors:
             incomplete[(patient_id, course_id)] = course_errors
     return required_frames, errors, incomplete, expected_noncomputed, not_applicable
+
+
+def _validate_required_inputs(courses):
+    """The historical four-part result; not-applicable courses stay non-computed."""
+    return _validate_required_inputs_with_not_applicable(courses)[:4]
 
 
 def _write_radiomics_denominator_aggregate(courses, not_applicable=None) -> None:
@@ -1142,7 +1147,7 @@ _write_organization_gate(
     incomplete_courses,
     expected_noncomputed_courses,
     not_applicable_courses,
-) = _validate_required_inputs(courses)
+) = _validate_required_inputs_with_not_applicable(courses)
 downstream_exclusions: list[dict[str, Any]] = []
 
 if not CAMPAIGN_MODE:
