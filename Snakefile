@@ -1355,7 +1355,9 @@ if config.get("container_mode", False):
                 exit 0
             fi
 
-            if [ ! -f "{input.radiomics}" ] || ! grep -Eq '^(ok|\{{.*"status"[[:space:]]*:[[:space:]]*"ok".*\}})$' "{input.radiomics}"; then
+            # A not-applicable radiomics completion (no planning CT) passes this
+            # gate; the CLI revalidates it and completes as not applicable.
+            if [ ! -f "{input.radiomics}" ] || ! grep -Eq '^(ok|\{{.*"status"[[:space:]]*:[[:space:]]*"(ok|not_applicable)".*\}})$' "{input.radiomics}"; then
                 if [ "{params.campaign_mode}" = "True" ]; then
                     if ! PYTHONPATH="{params.root_dir}:${{PYTHONPATH:-}}" "{params.python}" "{params.root_dir}/workflow/scripts/campaign_ledger.py" close-robustness-upstream \
                         --output-dir "{params.output_dir}" \
@@ -1472,7 +1474,9 @@ else:
                 exit 0
             fi
 
-            if [ ! -f "{input.radiomics}" ] || ! grep -Eq '^(ok|\{{.*"status"[[:space:]]*:[[:space:]]*"ok".*\}})$' "{input.radiomics}"; then
+            # A not-applicable radiomics completion (no planning CT) passes this
+            # gate; the CLI revalidates it and completes as not applicable.
+            if [ ! -f "{input.radiomics}" ] || ! grep -Eq '^(ok|\{{.*"status"[[:space:]]*:[[:space:]]*"(ok|not_applicable)".*\}})$' "{input.radiomics}"; then
                 if [ "{params.campaign_mode}" = "True" ]; then
                     if ! PYTHONPATH="{params.root_dir}:${{PYTHONPATH:-}}" "{params.python}" "{params.root_dir}/workflow/scripts/campaign_ledger.py" close-robustness-upstream \
                         --output-dir "{params.output_dir}" \

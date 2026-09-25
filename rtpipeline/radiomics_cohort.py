@@ -78,9 +78,17 @@ def build_radiomics_cohort_provenance(
     extracted_courses: Iterable[tuple[str, str]],
     technical_quarantines: Sequence[Mapping[str, Any]] = (),
     downstream_exclusions: Sequence[Mapping[str, Any]] = (),
+    not_applicable_courses: Sequence[Mapping[str, Any]] = (),
     denominator_source_sha256: str,
 ) -> dict[str, Any]:
-    """Build and reconcile the denominator carried by every aggregate row."""
+    """Build and reconcile the denominator carried by every aggregate row.
+
+    A validated course whose contract declares no planning CT has no CT
+    radiomics to extract. It is listed with its own disposition type and the
+    not-applicable completion as its source record. Its count is carried in
+    the downstream count, which covers every validated course that contributed
+    no extracted rows, so the published column set is unchanged.
+    """
 
     extracted = sorted(
         {(str(patient).strip(), str(course).strip()) for patient, course in extracted_courses}
@@ -104,6 +112,14 @@ def build_radiomics_cohort_provenance(
         )
         for entry in downstream_exclusions
     )
+    exclusions.extend(
+        _normalize_exclusion(
+            entry,
+            source="radiomics_completion",
+            disposition_type="not_applicable_no_planning_ct",
+        )
+        for entry in not_applicable_courses
+    )
     exclusions.sort(
         key=lambda entry: (
             entry["patient_id"],
@@ -123,7 +139,7 @@ def build_radiomics_cohort_provenance(
         raise ValueError(f"radiomics courses are both extracted and excluded: {formatted}")
 
     technical_count = len(technical_quarantines)
-    downstream_count = len(downstream_exclusions)
+    downstream_count = len(downstream_exclusions) + len(not_applicable_courses)
     excluded_count = len(exclusions)
     extracted_count = len(extracted)
     if validated_count != extracted_count + downstream_count:

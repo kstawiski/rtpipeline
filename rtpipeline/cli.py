@@ -1398,6 +1398,21 @@ def _radiomics_robustness_course(argv: list[str]) -> int:
     from .radiomics_robustness import RobustnessConfig
     rob_config = RobustnessConfig.from_dict(rob_config_data)
 
+    # A course whose contract declares no planning CT closed upstream radiomics
+    # as not applicable. There is nothing to perturb, so the step completes with
+    # the governed not-applicable outcome instead of failing. Only a revalidated
+    # not-applicable radiomics completion routes here; anything else continues
+    # to the producer and fails closed exactly as before.
+    from .radiomics_ct_contract import (
+        NOT_APPLICABLE_STATUS,
+        completion_sentinel_status,
+    )
+
+    if completion_sentinel_status(course_dir / ".radiomics_done") == NOT_APPLICABLE_STATUS:
+        return _complete_robustness_not_applicable(
+            course_dir, output_path, sentinel_path, rob_config
+        )
+
     def _resolve_path(raw: Any, default_name: str) -> Path:
         candidate = Path(str(raw)) if raw else Path(default_name)
         if not candidate.is_absolute():
@@ -1603,6 +1618,65 @@ def _radiomics_robustness_course(argv: list[str]) -> int:
         outcome.measurement_outcome,
         outcome.run_identifier,
         outcome.measured_output if outcome.measured else "(no measurement table)",
+    )
+    return 0
+
+
+def _complete_robustness_not_applicable(
+    course_dir: Path,
+    output_path: Path,
+    sentinel_path: Path | None,
+    rob_config: Any,
+) -> int:
+    from .radiomics_ct_contract import new_run_identifier
+    from .radiomics_robustness import (
+        ROBUSTNESS_NOT_APPLICABLE_OUTCOME,
+        _content_sha256,
+        effective_robustness_configuration,
+        write_robustness_not_applicable_dispositions,
+    )
+    from .robustness_completion import write_robustness_completion_sentinel
+
+    run_identifier = new_run_identifier()
+    try:
+        dispositions_path = write_robustness_not_applicable_dispositions(
+            course_dir,
+            rob_config=rob_config,
+            output_name=output_path.name,
+            run_identifier=run_identifier,
+        )
+        if sentinel_path is not None:
+            write_robustness_completion_sentinel(
+                sentinel_path,
+                course_dir,
+                patient_id=course_dir.parent.name,
+                course_id=course_dir.name,
+                run_identifier=run_identifier,
+                measurement_outcome=ROBUSTNESS_NOT_APPLICABLE_OUTCOME,
+                output_name=output_path.name,
+                dispositions_path=dispositions_path,
+                measured_output=None,
+                source_disposition_count=0,
+                effective_configuration_sha256=_content_sha256(
+                    effective_robustness_configuration(
+                        rob_config, output_name=output_path.name
+                    )
+                ),
+            )
+    except Exception as e:
+        logger.error(
+            "Could not record the not-applicable robustness outcome for %s: %s",
+            course_dir,
+            e,
+            exc_info=True,
+        )
+        if sentinel_path is not None:
+            sentinel_path.unlink(missing_ok=True)
+        return 1
+    logger.info(
+        "Robustness not applicable for %s/%s: no planning CT is declared",
+        course_dir.parent.name,
+        course_dir.name,
     )
     return 0
 

@@ -40,6 +40,10 @@ STATUS_OK = "ok"
 STATUS_FAILED = "failed"
 STATUS_DISABLED = "disabled"
 STATUS_MISSING = "missing"
+# A course whose contract declares no planning CT has nothing for the CT
+# stages to process. That is a governed terminal outcome, not a failure.
+STATUS_NOT_APPLICABLE = "not_applicable"
+ROBUSTNESS_NOT_APPLICABLE_RECEIPT_OUTCOME = "not_applicable_no_planning_ct"
 
 
 def _utcnow() -> str:
@@ -244,11 +248,28 @@ def _sentinel_status(course_path: Path, suffix: str) -> str:
     if not sentinel.exists():
         return STATUS_MISSING
     try:
-        value = sentinel.read_text(encoding="utf-8").strip().lower()
+        text = sentinel.read_text(encoding="utf-8").strip()
     except Exception:
         return STATUS_MISSING
-    if value == STATUS_DISABLED:
-        return STATUS_DISABLED
+    # Governed completions are JSON records; read their declared status the
+    # way the stage wrapper and aggregation do. This reports, it certifies
+    # nothing: consumers still revalidate the completion before using it.
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        payload = None
+    if isinstance(payload, dict):
+        value = str(payload.get("status") or "").strip().lower()
+        if (
+            value == STATUS_OK
+            and payload.get("measurement_outcome")
+            == ROBUSTNESS_NOT_APPLICABLE_RECEIPT_OUTCOME
+        ):
+            return STATUS_NOT_APPLICABLE
+    else:
+        value = text.lower()
+    if value in {STATUS_DISABLED, STATUS_NOT_APPLICABLE}:
+        return value
     return STATUS_OK if value == STATUS_OK else STATUS_MISSING
 
 
@@ -283,7 +304,10 @@ def rollup(output_dir: Path) -> dict:
                 status = str(entry.get("status") or STATUS_MISSING)
                 source = "record"
                 # A record claiming success without a sentinel is not success.
-                if status == STATUS_OK and sentinel_state == STATUS_MISSING:
+                if (
+                    status in {STATUS_OK, STATUS_NOT_APPLICABLE}
+                    and sentinel_state == STATUS_MISSING
+                ):
                     status = STATUS_FAILED
                     source = "record-sentinel-conflict"
             else:
