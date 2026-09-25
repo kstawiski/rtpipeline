@@ -289,3 +289,69 @@ def test_dose_completeness_audit_accepts_governed_unbound_exclusion(
     assert evidence["status"] == expected_status
     assert evidence["row_count"] == pending_rows
     assert len(evidence["excluded_target_not_bound_to_course_plan_rows"]) == excluded_rows
+
+
+# Prescription-coverage fallback binding (2026-09-25): a real course's only dose
+# reference is a TARGET/SITE item described with a clinical label that names no ROI.
+
+def _rx(row, rx=25.0, rx_status="resolved", delivery="resolved"):
+    row.update({"Prescribed_Dose_Gy": rx, "Prescribed_Dose_Status": rx_status,
+                "Delivered_Dose_Status": delivery})
+    return row
+
+
+def _site_label_course(**kw):
+    return [
+        _rx(_row("PTV1", 1, 25.3), **kw),
+        _rx(_row("GTV1", 2, 27.8), **kw),
+        _rx(_row("PTV_20/4_old", 3, 0.0, zero="zero_dose_in_grid"), **kw),
+        _rx(_row("Bladder", 4, 12.0, target=False), **kw),
+    ]
+
+
+def test_site_label_reference_binds_targets_by_prescription_coverage():
+    rows = _site_label_course()
+    result = reconcile_near_zero_plan_targets(rows, _plans(_ref("wezel")), RS)
+    assert result["decision"] == "unbound_near_zero_targets_excluded"
+    assert result["prescription_coverage_binding"]["used"] is True
+    bound = {t["roi_name"]: t["binding_methods"] for t in result["plan_bound_targets"]}
+    assert bound == {"PTV1": ["prescription_coverage"], "GTV1": ["prescription_coverage"]}
+    assert [t["roi_name"] for t in result["unbound_near_zero_targets"]] == ["PTV_20/4_old"]
+
+
+def test_coverage_binding_needs_a_resolved_prescription():
+    rows = _site_label_course(rx_status="unresolved")
+    result = reconcile_near_zero_plan_targets(rows, _plans(_ref("wezel")), RS)
+    assert result["course_quarantine"] is True
+    assert "no_plan_bound_target_identified" in result["quarantine_rules"]
+
+
+def test_coverage_binding_needs_resolved_delivery():
+    rows = _site_label_course(delivery="unresolved")
+    result = reconcile_near_zero_plan_targets(rows, _plans(_ref("wezel")), RS)
+    assert result["course_quarantine"] is True
+
+
+def test_coverage_binding_needs_a_target_at_prescription_dose():
+    rows = _site_label_course(rx=40.0)  # 25.3 and 27.8 Gy are below 0.9 x 40 Gy
+    result = reconcile_near_zero_plan_targets(rows, _plans(_ref("wezel")), RS)
+    assert result["course_quarantine"] is True
+    assert result["prescription_coverage_binding"]["used"] is False
+
+
+def test_dicom_binding_takes_precedence_over_coverage():
+    rows = _site_label_course()
+    result = reconcile_near_zero_plan_targets(rows, _plans(_ref("PTV1")), RS)
+    assert result["prescription_coverage_binding"] == {"used": False}
+    assert {t["roi_name"] for t in result["plan_bound_targets"]} == {"PTV1"}
+
+
+def test_coverage_exclusion_reason_names_the_basis():
+    from rtpipeline.dvh import apply_unbound_target_exclusion
+
+    rows = _site_label_course()
+    result = reconcile_near_zero_plan_targets(rows, _plans(_ref("wezel")), RS)
+    apply_unbound_target_exclusion(rows, result)
+    reason = rows[2]["dose_response_quarantine_reason"]
+    assert "0.9 x the resolved course prescription (25 Gy)" in reason
+    assert rows[2]["dose_response_eligible"] is False and rows[0]["dose_response_eligible"] is True
