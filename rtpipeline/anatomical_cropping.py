@@ -1072,6 +1072,7 @@ def _create_rtstruct_from_cropped_masks(
     except ImportError:
         logger.warning("rt_utils not available; skipping cropped RTSTRUCT creation")
         return None
+    from .rtstruct_geometry import image_array_for_rtstruct, place_added_rois_on_planes
 
     # Check if CT DICOM exists
     if ct_dir is None:
@@ -1184,6 +1185,12 @@ def _create_rtstruct_from_cropped_masks(
                 cropped_yxz[:, :, :slices_to_copy] > 0
             )
 
+            # full_mask lies on SimpleITK's regularized grid; sample it on the
+            # exact planning CT planes rt-utils references.
+            full_image = sitk.GetImageFromArray(np.moveaxis(full_mask, -1, 0).astype(np.uint8))
+            full_image.CopyInformation(ct_img)
+            full_mask = image_array_for_rtstruct(full_image, rtstruct.series_data) > 0
+
             rtstruct.add_roi(mask=full_mask, name=roi_name)
             added_count += 1
             logger.debug(
@@ -1197,6 +1204,14 @@ def _create_rtstruct_from_cropped_masks(
 
     if added_count == 0:
         logger.warning("No ROIs added to cropped RTSTRUCT")
+        return None
+
+    # rt-utils places mask slices on a uniform grid; never publish contours off
+    # the planes of the CT images they reference.
+    try:
+        place_added_rois_on_planes(rtstruct.ds, rtstruct.series_data)
+    except ValueError as e:
+        logger.error(f"Not saving cropped RTSTRUCT: {e}")
         return None
 
     # Save cropped RTSTRUCT

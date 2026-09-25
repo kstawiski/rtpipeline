@@ -1044,10 +1044,10 @@ def _ensure_model_rtstruct_from_masks(
             _iter_binary_masks,
             _load_ct_image,
             _pretty_roi_name,
-            _resample_to_reference,
             _unique_roi_name,
             _write_rtstruct_atomic,
         )
+        from .rtstruct_geometry import image_array_for_rtstruct, place_added_rois_on_planes
         import SimpleITK as sitk
     except Exception as exc:
         logger.warning("Cannot build derived RTSTRUCT from masks: %s", exc)
@@ -1082,9 +1082,8 @@ def _ensure_model_rtstruct_from_masks(
         rtstruct = RTStructBuilder.create_new(dicom_series_path=str(ct_dir))
         used_names: set[str] = set()
         for raw_name, (_rank, mask_img) in sorted(selected.items()):
-            image = _resample_to_reference(mask_img, ct_img)
-            array = np.moveaxis(sitk.GetArrayFromImage(image), 0, -1)
-            mask = array > 0
+            # One plane per planning CT slice, sampled where that slice lies.
+            mask = image_array_for_rtstruct(mask_img, rtstruct.series_data) > 0
             if not np.any(mask):
                 continue
             roi_name = _unique_roi_name(_pretty_roi_name(raw_name), used_names)
@@ -1092,6 +1091,9 @@ def _ensure_model_rtstruct_from_masks(
             used_names.add(roi_name)
         if not used_names:
             return None
+        # rt-utils places mask slices on a uniform grid; never publish contours
+        # off the planes of the CT images they reference.
+        place_added_rois_on_planes(rtstruct.ds, rtstruct.series_data)
         _write_rtstruct_atomic(target, rtstruct.save)
         return target if target.is_file() else None
     except Exception as exc:
