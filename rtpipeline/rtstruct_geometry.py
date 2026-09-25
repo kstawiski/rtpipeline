@@ -288,7 +288,8 @@ def _half_integer_distance(values: np.ndarray) -> float:
 def _regular_sampling(image, geometries):
     """How to sample a regular series in one step with the per-slice bytes, or None.
 
-    Requires identical rows, columns, pixel spacing and orientation values on
+    Requires a scalar image, at least two slices, and identical rows,
+    columns, pixel spacing and orientation values on
     every slice, and each slice position within REGULAR_GRID_TOLERANCE_MM of
     ``first + k * step * normal``. Then the samples of both paths differ only
     by that deviation and floating-point rounding. Every sample of the image's
@@ -305,7 +306,7 @@ def _regular_sampling(image, geometries):
     import SimpleITK as sitk
 
     count = len(geometries)
-    if count < 2:
+    if count < 2 or image.GetNumberOfComponentsPerPixel() != 1:
         return None
     rows, columns, spacing, orientation, _origin, normal, _direction = geometries[0]
     for other in geometries[1:]:
@@ -379,14 +380,33 @@ def _gather_voxels(image, gather) -> np.ndarray:
     """Select the proven voxel of every output position; 0 outside the image."""
     import SimpleITK as sitk
 
-    array = sitk.GetArrayFromImage(image)  # (z, y, x): image axis a is array axis 2 - a
-    padded = np.pad(array, 1)
+    array = sitk.GetArrayViewFromImage(image)  # (z, y, x): image axis a is array axis 2 - a
+    selected = array
+    outside = []
     for axis, (_output_axis, indices) in enumerate(gather):
-        size = array.shape[2 - axis]
+        dim = 2 - axis
+        size = array.shape[dim]
         inside = (indices >= 0) & (indices < size)
-        padded = padded.take(np.where(inside, indices + 1, 0), axis=2 - axis)
+        key = [slice(None)] * 3
+        steps = np.diff(indices)
+        if inside.all() and np.all(steps == 1):
+            key[dim] = slice(int(indices[0]), int(indices[-1]) + 1)
+            selected = selected[tuple(key)]
+        elif inside.all() and np.all(steps == -1) and len(indices) > 1:
+            stop = int(indices[-1]) - 1
+            key[dim] = slice(int(indices[0]), None if stop < 0 else stop, -1)
+            selected = selected[tuple(key)]
+        else:
+            selected = selected.take(np.clip(indices, 0, size - 1), axis=dim)
+            if not inside.all():
+                outside.append((dim, ~inside))
     order = [2 - next(a for a, item in enumerate(gather) if item[0] == output) for output in range(3)]
-    return np.ascontiguousarray(padded.transpose(order))
+    result = np.ascontiguousarray(selected.transpose(order))
+    for dim, mask in outside:
+        key = [slice(None)] * 3
+        key[order.index(dim)] = mask
+        result[tuple(key)] = 0
+    return result
 
 
 def image_array_for_rtstruct(image, series_data) -> np.ndarray:
