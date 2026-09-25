@@ -117,13 +117,37 @@ def test_bound_near_zero_target_quarantines_the_course_as_before(tmp_path):
 
 
 @pytest.mark.parametrize("description", ["Pelvis 20Gy", "PTV", "PTV1 boost", None])
-def test_no_identifiable_plan_bound_target_quarantines_the_course(tmp_path, description):
-    """Scenario 3: no exact description or ROI-number binding, including prefixes."""
-    course, _frame, qc = _run(
+def test_no_reference_binding_falls_back_to_prescription_coverage(tmp_path, description):
+    """Scenario 3 (2026-09-25): no exact description or ROI-number binding, including
+    prefixes. With a resolved prescription, complete delivery and PTV1 at the
+    prescription dose, PTV1 is bound by prescription coverage and only the near-zero
+    targets are excluded. Before ec0162f+1 the DVH writer attached the prescription
+    fields after the decision, so this fallback never fired in the real stage."""
+    _course, frame, qc = _run(
         tmp_path, references=[fx.dose_reference(description=description)]
     )
-    _assert_course_quarantined_as_at_ae60f01(course, qc, "no_plan_bound_target_identified")
-    assert qc["plan_target_reconciliation"]["plan_bound_targets"] == []
+    reconciliation = qc["plan_target_reconciliation"]
+    assert reconciliation["decision"] == "unbound_near_zero_targets_excluded"
+    assert reconciliation["prescription_coverage_binding"]["used"] is True
+    bound = {t["roi_name"]: t["binding_methods"] for t in reconciliation["plan_bound_targets"]}
+    assert bound.get("PTV1") == ["prescription_coverage"]
+    assert {t["roi_name"] for t in reconciliation["unbound_near_zero_targets"]} == UNBOUND_TARGETS
+    rows = {row["ROI_Name"]: row for row in frame.to_dict("records")}
+    assert all(rows[name]["dose_response_quarantine_status"] == EXCLUDED_TARGET_NOT_BOUND_STATUS
+               for name in UNBOUND_TARGETS)
+
+
+@pytest.mark.parametrize("description", ["Pelvis 20Gy", "PTV1 boost", None])
+def test_no_binding_and_no_delivery_evidence_quarantines_the_course(tmp_path, description):
+    """Scenario 3b: the coverage fallback needs resolved delivery; without it the course
+    stays quarantined for lack of any plan-bound target."""
+    _course, _frame, qc = _run(
+        tmp_path, references=[fx.dose_reference(description=description)], delivered=False
+    )
+    reconciliation = qc["plan_target_reconciliation"]
+    assert reconciliation["decision"] == "course_quarantined_pending_plan_target_reconciliation"
+    assert "no_plan_bound_target_identified" in reconciliation["quarantine_rules"]
+    assert reconciliation["plan_bound_targets"] == []
 
 
 def test_volume_reference_binds_by_referenced_roi_number(tmp_path):
@@ -160,13 +184,25 @@ def test_course_without_near_zero_targets_matches_ae60f01_output(tmp_path):
 def test_roi_number_binding_requires_plan_reference_to_contracted_rtstruct(
     tmp_path, referenced_uid
 ):
-    """Scenario 6: ROI number 1 is ignored when the plan names another RTSTRUCT."""
+    """Scenario 6: ROI number 1 is ignored when the plan names another RTSTRUCT. Without
+    delivery evidence the course stays quarantined; with it (below) only the
+    prescription-coverage fallback can bind a target."""
     course, _frame, qc = _run(
         tmp_path,
         references=[fx.dose_reference(structure_type="VOLUME", roi_number=1)],
         plan_referenced_rtstruct_uid=referenced_uid,
+        delivered=False,
     )
-    _assert_course_quarantined_as_at_ae60f01(course, qc, "no_plan_bound_target_identified")
+    reconciliation = qc["plan_target_reconciliation"]
+    assert reconciliation["decision"] == "course_quarantined_pending_plan_target_reconciliation"
+    assert "no_plan_bound_target_identified" in reconciliation["quarantine_rules"]
+    _c2, _f2, qc2 = _run(
+        tmp_path / "delivered",
+        references=[fx.dose_reference(structure_type="VOLUME", roi_number=1)],
+        plan_referenced_rtstruct_uid=referenced_uid,
+    )
+    methods = {m for t in qc2["plan_target_reconciliation"]["plan_bound_targets"] for m in t["binding_methods"]}
+    assert "dose_reference_roi_number" not in methods and methods <= {"prescription_coverage", "name_of_prescription_covered_roi"}
     binding = qc["plan_target_reconciliation"]["roi_number_binding"][0]
     assert binding["status"] == (
         "not_used_plan_references_other_rtstruct"

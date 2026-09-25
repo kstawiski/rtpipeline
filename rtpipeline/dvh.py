@@ -648,6 +648,9 @@ def reconcile_near_zero_plan_targets(
     rows: list[dict],
     plan_references: Mapping[str, object],
     contracted_rtstruct_sop_instance_uid: str | None,
+    *,
+    course_prescription_gy: float | None = None,
+    course_delivery_resolved: bool | None = None,
 ) -> dict[str, object]:
     """Decide whether near-zero targets quarantine the course or only themselves.
 
@@ -771,16 +774,29 @@ def reconcile_near_zero_plan_targets(
     # name (derived copies) are bound too, so they cannot be excluded as unbound.
     prescription_coverage: dict[str, object] = {"used": False}
     if not bound_targets:
+        # The DVH writer passes the course prescription and delivery state explicitly:
+        # it attaches the Prescribed_/Delivered_ row fields only after this decision.
+        # Rows are the fallback source (direct callers and tests).
+        if course_prescription_gy is not None or course_delivery_resolved is not None:
+            rows_for_rx = [
+                {
+                    "Prescribed_Dose_Gy": course_prescription_gy,
+                    "Prescribed_Dose_Status": "resolved" if course_prescription_gy is not None else "unresolved",
+                    "Delivered_Dose_Status": "resolved" if course_delivery_resolved else "unresolved",
+                }
+            ]
+        else:
+            rows_for_rx = rows
         prescriptions = {
             float(row.get("Prescribed_Dose_Gy"))
-            for row in rows
+            for row in rows_for_rx
             if str(row.get("Prescribed_Dose_Status") or "") == "resolved"
             and isinstance(row.get("Prescribed_Dose_Gy"), (int, float, np.integer, np.floating))
             and np.isfinite(float(row.get("Prescribed_Dose_Gy")))
             and float(row.get("Prescribed_Dose_Gy")) > 0
         }
-        delivery_resolved = bool(rows) and all(
-            str(row.get("Delivered_Dose_Status") or "") == "resolved" for row in rows
+        delivery_resolved = bool(rows_for_rx) and all(
+            str(row.get("Delivered_Dose_Status") or "") == "resolved" for row in rows_for_rx
         )
         prescription_coverage = {
             "used": False,
@@ -3884,6 +3900,17 @@ def dvh_for_course(
             clean_results,
             read_plan_dose_references(dose_resolution.selected_plan_paths or [rp]),
             contracted_rtstruct_uid,
+            # Same conditions as the rows' Prescribed_Dose_Status / Delivered_Dose_Status
+            # "resolved", which are attached after this call.
+            course_prescription_gy=(
+                dose_resolution.prescribed_dose_gy
+                if dose_plan_scope.complete
+                and dose_resolution.resolved_prescribed_dose_total_gy is not None
+                else None
+            ),
+            course_delivery_resolved=bool(
+                dose_plan_scope.complete and dose_resolution.delivered_dose_gy is not None
+            ),
         )
     except Exception as exc:
         # Binding evidence that cannot be evaluated leaves the course rule unchanged.
