@@ -77,6 +77,19 @@ def _write_rs(path, *, names=("Target", "Marker")):
     return path
 
 
+def _patch_readers(monkeypatch, names, mask):
+    """Fake both RTSTRUCT readers. MR radiomics reads through the scoped reader
+    (the main path's), so the fake scoped reader offers the same ROIs and masks
+    with no per-ROI scope disposition."""
+    reader = SimpleNamespace(get_roi_names=lambda: list(names), get_roi_mask_by_name=mask)
+    scoped = SimpleNamespace(
+        get_roi_names=lambda: list(names), get_roi_mask_by_name=mask,
+        by_name={}, builder=reader,
+    )
+    monkeypatch.setattr(RTStructBuilder, "create_from", lambda **_: reader)
+    monkeypatch.setattr(radiomics, "_scoped_rtstruct_readers", lambda *_a, **_k: (scoped, reader))
+
+
 def _reader(monkeypatch, names):
     seen = []
 
@@ -86,13 +99,7 @@ def _reader(monkeypatch, names):
             raise AssertionError("Non-volumetric ROI reached rasterizer")
         return np.ones((2, 2, 2), dtype=bool)
 
-    monkeypatch.setattr(
-        RTStructBuilder, "create_from",
-        lambda **_: SimpleNamespace(
-            get_roi_names=lambda: names,
-            get_roi_mask_by_name=mask,
-        ),
-    )
+    _patch_readers(monkeypatch, names, mask)
     return seen
 
 
@@ -114,13 +121,7 @@ def _env(monkeypatch, tmp_path, *, fail_mask_coord=None, image=_IMAGE):
     import rtpipeline.auto_rtstruct as auto_rtstruct
     monkeypatch.setattr(auto_rtstruct, "_load_seg_dicom", None)
     monkeypatch.setattr(auto_rtstruct, "_load_seg_nifti", None)
-    monkeypatch.setattr(
-        RTStructBuilder, "create_from",
-        lambda **_: SimpleNamespace(
-            get_roi_names=lambda: ["Target"],
-            get_roi_mask_by_name=lambda _: np.ones((2, 2, 2), dtype=bool),
-        ),
-    )
+    _patch_readers(monkeypatch, ["Target"], lambda _: np.ones((2, 2, 2), dtype=bool))
     config = PipelineConfig(
         dicom_root=tmp_path / "input", output_root=tmp_path,
         logs_root=tmp_path / "logs", max_workers_override=1,
