@@ -120,23 +120,85 @@ class ScopeResult:
     detail: str = ''
 
 
+def plane_offset_mm(points, image) -> float:
+    """Largest distance (mm) of ``points`` from the plane of ``image``.
+
+    Infinite when the image orientation cosines do not define a unit normal.
+    """
+    orientation = np.asarray(image.ImageOrientationPatient, dtype=float)
+    normal = np.cross(orientation[:3], orientation[3:])
+    if not np.isclose(np.linalg.norm(normal), 1.0, atol=1e-6):
+        return float('inf')
+    delta = points - np.asarray(image.ImagePositionPatient, dtype=float)
+    return float(np.max(np.abs(delta @ normal)))
+
+
 def _on_image(points, image, frame_uid):
     if frame_uid and str(getattr(image, 'FrameOfReferenceUID', '')) != frame_uid:
         return False
     try:
+        if plane_offset_mm(points, image) > PLANE_TOLERANCE_MM:
+            return False
         orientation = np.asarray(image.ImageOrientationPatient, dtype=float)
         row, column = orientation[:3], orientation[3:]
-        normal = np.cross(row, column)
-        if not np.isclose(np.linalg.norm(normal), 1.0, atol=1e-6):
-            return False
         delta = points - np.asarray(image.ImagePositionPatient, dtype=float)
-        if np.max(np.abs(delta @ normal)) > PLANE_TOLERANCE_MM:
-            return False
         spacing = np.asarray(image.PixelSpacing, dtype=float)
         x, y = delta @ row / spacing[1], delta @ column / spacing[0]
         return bool(np.all(x >= -0.5) and np.all(x <= int(image.Columns)-0.5) and np.all(y >= -0.5) and np.all(y <= int(image.Rows)-0.5))
     except (ValueError, TypeError, AttributeError):
         return False
+
+
+def contours_on_referenced_planes(dataset, ct_images) -> tuple[bool, str]:
+    """Whether every contour lies on the plane of the CT image it references.
+
+    Uses the scoped reader's plane arithmetic and ``PLANE_TOLERANCE_MM``. Items
+    the reader skips (invalid and bounding no area) are skipped here too. A
+    contour without an image reference must lie on some CT plane. Returns
+    ``(ok, detail)``; ``detail`` is empty when ``ok``.
+    """
+    images = list(ct_images)
+    by_uid = {str(image.SOPInstanceUID): image for image in images}
+    names = {int(roi.ROINumber): str(getattr(roi, 'ROIName', ''))
+             for roi in getattr(dataset, 'StructureSetROISequence', []) or []}
+    checked = 0
+    failed = 0
+    worst = 0.0
+    first = ''
+    for item in getattr(dataset, 'ROIContourSequence', []) or []:
+        number = int(item.ReferencedROINumber)
+        for index, contour in enumerate(getattr(item, 'ContourSequence', []) or []):
+            kind, valid = contour_geometry(contour)
+            if (not kind or not valid) and not contour_encloses_area(contour):
+                continue
+            checked += 1
+            reason = ''
+            try:
+                points = np.asarray(contour.ContourData, dtype=float).reshape(-1, 3)
+                refs = list(getattr(contour, 'ContourImageSequence', []) or [])
+                if refs:
+                    targets = [by_uid.get(str(getattr(ref, 'ReferencedSOPInstanceUID', ''))) for ref in refs]
+                    if any(image is None for image in targets):
+                        reason = 'references an image outside the CT series'
+                    else:
+                        offset = max(plane_offset_mm(points, image) for image in targets)
+                else:
+                    offset = min((plane_offset_mm(points, image) for image in images), default=float('inf'))
+            except (ValueError, TypeError, AttributeError) as exc:
+                reason = f'has unreadable geometry ({exc})'
+            if not reason and offset > PLANE_TOLERANCE_MM:
+                reason = f'lies {offset:.3f} mm off its CT plane'
+                worst = max(worst, offset)
+            if reason:
+                failed += 1
+                if not first:
+                    first = f"ROI {names.get(number, number)!r} contour {index} {reason}"
+    if not failed:
+        return True, ''
+    detail = f'{failed} of {checked} contours are not on the CT plane they reference'
+    if worst:
+        detail += f' (max offset {worst:.3f} mm, tolerance {PLANE_TOLERANCE_MM} mm)'
+    return False, f'{detail}; first: {first}'
 
 
 def resolve_roi_scopes(dataset, ct_images) -> dict[int, ScopeResult]:

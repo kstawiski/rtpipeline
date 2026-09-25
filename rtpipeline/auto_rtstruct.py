@@ -329,6 +329,98 @@ def _image_array_for_rtstruct_builder(
     return np.moveaxis(sitk.GetArrayFromImage(image), 0, -1)
 
 
+def _load_rtstruct_series(ct_dir: Path) -> list[Dataset]:
+    """The CT slices in the order rt-utils and the scoped reader use."""
+    from rt_utils import image_helper
+
+    return image_helper.load_sorted_image_series(str(ct_dir))
+
+
+def _rtstruct_plane_check(rtstruct_path: Path, ct_dir: Path) -> Tuple[bool, str]:
+    """Whether every contour of an RTSTRUCT file lies on its referenced CT plane.
+
+    Applies the scoped reader's plane test (``rtstruct_geometry``), so a file
+    that passes here is not held by that reader for plane disagreement. A file
+    without contours passes without loading the CT.
+    """
+    from .rtstruct_geometry import contours_on_referenced_planes
+
+    try:
+        ds = pydicom.dcmread(str(rtstruct_path))
+    except Exception as exc:
+        return False, f"the RTSTRUCT could not be read: {exc}"
+    if not any(
+        getattr(item, "ContourSequence", None)
+        for item in getattr(ds, "ROIContourSequence", []) or []
+    ):
+        return True, ""
+    try:
+        series_data = _load_rtstruct_series(ct_dir)
+    except Exception as exc:
+        return False, f"the planning CT could not be loaded to verify contour planes: {exc}"
+    return contours_on_referenced_planes(ds, series_data)
+
+
+def _anchor_contours_to_referenced_planes(ds: Dataset, series_data: Iterable[Dataset]) -> int:
+    """Move rt-utils contours from its uniform slice grid onto their referenced planes.
+
+    rt-utils converts mask slice ``i`` with one affine built from the first
+    slice and a uniform step ``(z_last - z_first) / (N - 1)``. On a series with
+    mixed slice spacing, slice ``i`` then lands off the plane of the image it
+    references. The masks were sampled on each slice's own pixel grid
+    (``_image_array_for_rtstruct``), so the correct position of a contour is
+    that slice's origin plus the same in-plane offset. Only contours off their
+    referenced plane are changed; on a uniform series nothing moves. Returns the
+    number of contours moved.
+    """
+    from rt_utils import image_helper
+    from .rtstruct_geometry import PLANE_TOLERANCE_MM, plane_offset_mm
+
+    slices = list(series_data)
+    if not slices:
+        return 0
+    index_by_uid = {str(s.SOPInstanceUID): i for i, s in enumerate(slices)}
+    matrix = np.asarray(
+        image_helper.get_pixel_to_patient_transformation_matrix(slices), dtype=float
+    )
+    first_orientation = np.asarray(slices[0].ImageOrientationPatient, dtype=float)
+    first_spacing = np.asarray(slices[0].PixelSpacing, dtype=float)
+    moved = 0
+    for item in getattr(ds, "ROIContourSequence", []) or []:
+        for contour in getattr(item, "ContourSequence", []) or []:
+            refs = list(getattr(contour, "ContourImageSequence", []) or [])
+            if len(refs) != 1:
+                continue
+            index = index_by_uid.get(str(getattr(refs[0], "ReferencedSOPInstanceUID", "")))
+            if index is None:
+                continue
+            points = np.asarray(contour.ContourData, dtype=float).reshape(-1, 3)
+            image = slices[index]
+            if plane_offset_mm(points, image) <= PLANE_TOLERANCE_MM:
+                continue
+            if not (
+                np.allclose(np.asarray(image.ImageOrientationPatient, dtype=float), first_orientation, atol=1e-6)
+                and np.allclose(np.asarray(image.PixelSpacing, dtype=float), first_spacing, atol=1e-6)
+            ):
+                raise ValueError(
+                    "RTSTRUCT source series changes orientation or pixel spacing between slices"
+                )
+            placed_origin = matrix[:3, 3] + matrix[:3, 2] * index
+            shift = np.asarray(image.ImagePositionPatient, dtype=float) - placed_origin
+            contour.ContourData = (points + shift).ravel().tolist()
+            moved += 1
+    return moved
+
+
+def _anchor_published_rtstruct(rtstruct_path: Path, ct_dir: Path) -> int:
+    """Anchor the contours of a written RTSTRUCT file in place (atomically)."""
+    ds = pydicom.dcmread(str(rtstruct_path))
+    moved = _anchor_contours_to_referenced_planes(ds, _load_rtstruct_series(ct_dir))
+    if moved:
+        _write_rtstruct_atomic(rtstruct_path, lambda tmp: ds.save_as(tmp))
+    return moved
+
+
 def _read_for_uid(dcm_path: Path) -> str:
     """FrameOfReferenceUID from a DICOM file; '' if unreadable/absent.
 
@@ -789,8 +881,15 @@ def build_auto_rtstruct(course_dir: Path) -> Optional[Path]:
             ):
                 rejection_reason = "a contracted CT or segmentation dependency is newer or unreadable"
             else:
-                current = True
-                rejection_reason = ""
+                on_planes, plane_detail = _rtstruct_plane_check(out_path, ct_dir)
+                if on_planes:
+                    current = True
+                    rejection_reason = ""
+                else:
+                    rejection_reason = (
+                        "its contours do not lie on the planning CT planes they reference: "
+                        f"{plane_detail}"
+                    )
 
         if current:
             logger.info(
@@ -829,6 +928,7 @@ def build_auto_rtstruct(course_dir: Path) -> Optional[Path]:
     dicom_seg_path: Optional[Path] = None
     base_name: Optional[str] = None
     selected_dir: Optional[Path] = None
+    copy_rejection: Optional[str] = None
 
     if seg_root.exists():
         candidate_dirs = sorted(p for p in seg_root.iterdir() if p.is_dir())
@@ -861,37 +961,52 @@ def build_auto_rtstruct(course_dir: Path) -> Optional[Path]:
             if sop == '1.2.840.10008.5.1.4.1.1.66.4':
                 seg_img, label_map = _load_seg_dicom(dicom_seg_path)
             elif sop == '1.2.840.10008.5.1.4.1.1.481.3':
-                try:
-                    # Copy bytes without preserving the producer timestamp. The new
-                    # publication must be newer than every input dependency or its
-                    # own freshness gate rejects it as stale.
-                    _write_rtstruct_atomic(
-                        out_path,
-                        lambda tmp: shutil.copyfile(str(dicom_seg_path), tmp),
+                # TotalSegmentator writes this file with rt-utils from its own
+                # regularized grid. On a CT with mixed slice spacing its contours
+                # then sit off the planes they reference, and the scoped reader
+                # holds every ROI. Publish it only when every contour is on its
+                # plane; otherwise rebuild from the masks on the exact planes.
+                on_planes, plane_detail = _rtstruct_plane_check(dicom_seg_path, ct_dir)
+                if not on_planes:
+                    copy_rejection = plane_detail
+                    logger.warning(
+                        "Auto RTSTRUCT: not publishing %s because %s; rebuilding RS_auto "
+                        "from the TotalSegmentator NIfTI masks on the exact planning CT planes",
+                        dicom_seg_path,
+                        plane_detail,
                     )
-                except Exception as e:
-                    logger.error('Failed to copy RTSTRUCT to RS_auto: %s', e)
-                    return _failed(f"copying the matched RTSTRUCT failed: {e}")
-                # Keep behavior consistent with NIfTI-derived RTSTRUCTs.
-                try:
-                    sanitize_rtstruct(out_path)
-                    summary = fix_rtstruct_rois(ct_dir, out_path)
-                    if summary and summary.changed:
-                        logger.info(
-                            "Auto RTSTRUCT ROI fix: %d repaired, %d still problematic",
-                            len(summary.fixed),
-                            len(summary.failed),
+                else:
+                    try:
+                        # Copy bytes without preserving the producer timestamp. The new
+                        # publication must be newer than every input dependency or its
+                        # own freshness gate rejects it as stale.
+                        _write_rtstruct_atomic(
+                            out_path,
+                            lambda tmp: shutil.copyfile(str(dicom_seg_path), tmp),
                         )
-                except Exception as e:
-                    logger.debug("Post-processing copied RTSTRUCT failed: %s", e)
-                logger.info("Wrote auto RTSTRUCT (from RTSTRUCT): %s", out_path)
-                _record_auto_resume_decision(
-                    course_dir,
-                    "rebuilt",
-                    "rebuilt from a TotalSegmentator RTSTRUCT referencing the planning CT series",
-                    rejected_artifact=rejected_artifact,
-                )
-                return out_path
+                    except Exception as e:
+                        logger.error('Failed to copy RTSTRUCT to RS_auto: %s', e)
+                        return _failed(f"copying the matched RTSTRUCT failed: {e}")
+                    # Keep behavior consistent with NIfTI-derived RTSTRUCTs.
+                    try:
+                        sanitize_rtstruct(out_path)
+                        summary = fix_rtstruct_rois(ct_dir, out_path)
+                        if summary and summary.changed:
+                            logger.info(
+                                "Auto RTSTRUCT ROI fix: %d repaired, %d still problematic",
+                                len(summary.fixed),
+                                len(summary.failed),
+                            )
+                    except Exception as e:
+                        logger.debug("Post-processing copied RTSTRUCT failed: %s", e)
+                    logger.info("Wrote auto RTSTRUCT (from RTSTRUCT): %s", out_path)
+                    _record_auto_resume_decision(
+                        course_dir,
+                        "rebuilt",
+                        "rebuilt from a TotalSegmentator RTSTRUCT referencing the planning CT series",
+                        rejected_artifact=rejected_artifact,
+                    )
+                    return out_path
         except RuntimeError:
             raise
         except Exception as e:
@@ -1012,7 +1127,29 @@ def build_auto_rtstruct(course_dir: Path) -> Optional[Path]:
                 logger.debug("Failed to add ROI %s: %s", roi_name, e)
 
     if not added_any:
+        if copy_rejection:
+            return _failed(
+                "the TotalSegmentator RTSTRUCT is off the planning CT planes "
+                f"({copy_rejection}) and no usable NIfTI mask exists to rebuild it"
+            )
         return _failed("no readable non-empty segmentation ROI could be added")
+
+    rtstruct_ds = getattr(rtstruct, "ds", None)
+    series_data = getattr(rtstruct, "series_data", None)
+    if rtstruct_ds is not None and series_data:
+        # rt-utils places mask slices on a uniform grid; put each contour on the
+        # plane of the slice it was sampled from and references.
+        from .rtstruct_geometry import contours_on_referenced_planes
+
+        try:
+            moved = _anchor_contours_to_referenced_planes(rtstruct_ds, series_data)
+        except Exception as e:
+            return _failed(f"placing contours on the planning CT planes failed: {e}")
+        if moved:
+            logger.info("Auto RTSTRUCT: placed %d contours on their referenced CT planes", moved)
+        on_planes, plane_detail = contours_on_referenced_planes(rtstruct_ds, series_data)
+        if not on_planes:
+            return _failed(f"rebuilt contours are off the planning CT planes: {plane_detail}")
 
     try:
         _write_rtstruct_atomic(out_path, rtstruct.save)
@@ -1024,6 +1161,8 @@ def build_auto_rtstruct(course_dir: Path) -> Optional[Path]:
                 len(summary.fixed),
                 len(summary.failed),
             )
+            # The ROI fixer re-adds repaired ROIs through rt-utils.
+            _anchor_published_rtstruct(out_path, ct_dir)
         logger.info("Wrote auto RTSTRUCT: %s", out_path)
         _record_auto_resume_decision(
             course_dir,
