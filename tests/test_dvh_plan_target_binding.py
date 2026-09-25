@@ -264,3 +264,27 @@ def test_exclusion_keeps_absolute_values_and_touches_only_unbound_rows():
     assert rows[1]["D95Gy"] == 0.0
     assert rows[1]["dose_response_quarantine_status"] == EXCLUDED_TARGET_NOT_BOUND_STATUS
     assert rows[1]["dose_response_eligible"] is False
+
+
+def _audit_module():
+    import importlib.util
+
+    path = Path(__file__).resolve().parents[1] / "scripts" / "audit_course_dose_completeness.py"
+    spec = importlib.util.spec_from_file_location("audit_course_dose_completeness_under_test", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.mark.parametrize(
+    ("description", "expected_status", "pending_rows", "excluded_rows"),
+    [("PTV1", "clear", 0, 2), ("PTV2", "pending_plan_target_reconciliation", 2, 0)],
+)
+def test_dose_completeness_audit_accepts_governed_unbound_exclusion(
+    tmp_path, description, expected_status, pending_rows, excluded_rows
+):
+    course, _frame, _qc = _run(tmp_path, references=[fx.dose_reference(description=description)])
+    evidence = _audit_module()._near_zero_target_evidence(course)
+    assert evidence["status"] == expected_status
+    assert evidence["row_count"] == pending_rows
+    assert len(evidence["excluded_target_not_bound_to_course_plan_rows"]) == excluded_rows
