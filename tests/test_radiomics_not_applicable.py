@@ -310,6 +310,52 @@ def test_course_without_planning_ct_closes_radiomics_and_robustness_as_not_appli
         assert summary["stage_counts"][stage] == {"not_applicable": 1}
 
 
+def test_manifest_robustness_aggregation_accounts_for_not_applicable_course(
+    tmp_path, monkeypatch
+):
+    course_dir = _no_ct_course_through_wrapper(tmp_path, monkeypatch)
+    config = _robustness_config(tmp_path)
+    assert _run_robustness(course_dir, config) == 0
+    output_root = course_dir.parents[1]
+    manifest = output_root / "_COURSES" / "manifest.json"
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    manifest.write_text(
+        json.dumps(
+            {
+                "schema": CURRENT_COURSE_MANIFEST_SCHEMA,
+                "intended_course_count": 1,
+                "attempted_course_count": 1,
+                "validated_course_count": 1,
+                "technical_quarantine_count": 0,
+                "technical_quarantines": [],
+                "courses": [{"patient": "P1", "course": "C1"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    summary = output_root / "_RESULTS" / "radiomics_robustness_summary.xlsx"
+    code = cli.main(
+        [
+            "radiomics-robustness-aggregate",
+            "--manifest",
+            str(manifest),
+            "--output-root",
+            str(output_root),
+            "--output",
+            str(summary),
+            "--config",
+            str(config),
+        ]
+    )
+    assert code == 0
+    outcomes = pd.read_excel(summary, sheet_name="course_outcomes")
+    assert outcomes[["patient_id", "course_id", "measurement_outcome"]].to_dict(
+        "records"
+    ) == [{"patient_id": "P1", "course_id": "C1", "measurement_outcome": NA_OUTCOME}]
+    assert not bool(outcomes["contributes_measurements"].iloc[0])
+    assert int(outcomes["measured_value_row_count"].iloc[0]) == 0
+
+
 def test_robustness_shell_gate_accepts_not_applicable_radiomics(tmp_path, monkeypatch):
     course_dir = _no_ct_course_through_wrapper(tmp_path, monkeypatch)
     snakefile = (ROOT / "Snakefile").read_text(encoding="utf-8")
