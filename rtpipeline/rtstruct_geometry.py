@@ -149,12 +149,13 @@ def _on_image(points, image, frame_uid):
         return False
 
 
-def contours_on_referenced_planes(dataset, ct_images) -> tuple[bool, str]:
+def contours_on_referenced_planes(dataset, ct_images, roi_numbers=None) -> tuple[bool, str]:
     """Whether every contour lies on the plane of the CT image it references.
 
     Uses the scoped reader's plane arithmetic and ``PLANE_TOLERANCE_MM``. Items
     the reader skips (invalid and bounding no area) are skipped here too. A
-    contour without an image reference must lie on some CT plane. Returns
+    contour without an image reference must lie on some CT plane. When
+    ``roi_numbers`` is given, only those ROIs are checked. Returns
     ``(ok, detail)``; ``detail`` is empty when ``ok``.
     """
     images = list(ct_images)
@@ -167,6 +168,8 @@ def contours_on_referenced_planes(dataset, ct_images) -> tuple[bool, str]:
     first = ''
     for item in getattr(dataset, 'ROIContourSequence', []) or []:
         number = int(item.ReferencedROINumber)
+        if roi_numbers is not None and number not in roi_numbers:
+            continue
         for index, contour in enumerate(getattr(item, 'ContourSequence', []) or []):
             kind, valid = contour_geometry(contour)
             if (not kind or not valid) and not contour_encloses_area(contour):
@@ -199,6 +202,142 @@ def contours_on_referenced_planes(dataset, ct_images) -> tuple[bool, str]:
     if worst:
         detail += f' (max offset {worst:.3f} mm, tolerance {PLANE_TOLERANCE_MM} mm)'
     return False, f'{detail}; first: {first}'
+
+
+def image_array_for_rtstruct(image, series_data) -> np.ndarray:
+    """Sample an image on the exact, potentially non-uniform DICOM planes.
+
+    Returns one plane per source DICOM object in the in-plane layout rt-utils
+    ``add_roi`` contours: axis 0 is the row index (along the column direction)
+    and axis 1 the column index (along the row direction), as
+    ``np.moveaxis(sitk.GetArrayFromImage(image), 0, -1)`` gives on a regular
+    grid. SimpleITK regularizes mixed slice spacing onto a uniform z grid, so
+    moving axes from that image puts slice ``i`` at the wrong position.
+    """
+    import SimpleITK as sitk
+
+    slices = list(series_data)
+    if not slices:
+        raise ValueError("RTSTRUCT source series contains no DICOM slices")
+    sampled: list[np.ndarray] = []
+    expected_shape: tuple[int, int] | None = None
+    identity = sitk.Transform(3, sitk.sitkIdentity)
+
+    for dataset in slices:
+        try:
+            rows = int(dataset.Rows)
+            columns = int(dataset.Columns)
+            spacing = [float(value) for value in dataset.PixelSpacing]
+            orientation = np.asarray(
+                [float(value) for value in dataset.ImageOrientationPatient],
+                dtype=float,
+            ).reshape(2, 3)
+            origin = tuple(float(value) for value in dataset.ImagePositionPatient)
+        except Exception as exc:
+            raise ValueError(
+                "RTSTRUCT source slice lacks rows, columns, pixel spacing, "
+                "orientation, or image position"
+            ) from exc
+        shape = (rows, columns)
+        if expected_shape is None:
+            expected_shape = shape
+        elif shape != expected_shape:
+            raise ValueError("RTSTRUCT source series has inconsistent slice dimensions")
+
+        normal = np.cross(orientation[0], orientation[1])
+        norm = float(np.linalg.norm(normal))
+        if not np.isfinite(norm) or norm <= 0:
+            raise ValueError("RTSTRUCT source slice has invalid orientation cosines")
+        normal /= norm
+        direction = np.column_stack((orientation[0], orientation[1], normal))
+
+        reference = sitk.Image(columns, rows, 1, image.GetPixelID())
+        reference.SetOrigin(origin)
+        reference.SetSpacing((spacing[1], spacing[0], 1.0))
+        reference.SetDirection(tuple(float(value) for value in direction.ravel()))
+        plane = sitk.Resample(
+            image,
+            reference,
+            identity,
+            sitk.sitkNearestNeighbor,
+            0,
+            image.GetPixelID(),
+        )
+        # SimpleITK returns (z, rows, columns).
+        sampled.append(sitk.GetArrayFromImage(plane)[0])
+
+    return np.stack(sampled, axis=2)
+
+
+def anchor_contours_to_referenced_planes(ds, series_data, roi_numbers=None) -> int:
+    """Move rt-utils contours from its uniform slice grid onto their referenced planes.
+
+    rt-utils converts mask slice ``i`` with one affine built from the first
+    slice and a uniform step ``(z_last - z_first) / (N - 1)``. On a series with
+    mixed slice spacing, slice ``i`` then lands off the plane of the image it
+    references. The mask was sampled on each slice's own pixel grid, so the
+    correct position of a contour is that slice's origin plus the same in-plane
+    offset. Only contours off their referenced plane are changed; on a uniform
+    series nothing moves. When ``roi_numbers`` is given, only those ROIs are
+    touched. Raises ``ValueError`` when orientation or pixel spacing changes
+    between slices. Returns the number of contours moved.
+    """
+    from rt_utils import image_helper
+
+    slices = list(series_data)
+    if not slices:
+        return 0
+    index_by_uid = {str(s.SOPInstanceUID): i for i, s in enumerate(slices)}
+    matrix = np.asarray(
+        image_helper.get_pixel_to_patient_transformation_matrix(slices), dtype=float
+    )
+    first_orientation = np.asarray(slices[0].ImageOrientationPatient, dtype=float)
+    first_spacing = np.asarray(slices[0].PixelSpacing, dtype=float)
+    moved = 0
+    for item in getattr(ds, "ROIContourSequence", []) or []:
+        if roi_numbers is not None and int(item.ReferencedROINumber) not in roi_numbers:
+            continue
+        for contour in getattr(item, "ContourSequence", []) or []:
+            refs = list(getattr(contour, "ContourImageSequence", []) or [])
+            if len(refs) != 1:
+                continue
+            index = index_by_uid.get(str(getattr(refs[0], "ReferencedSOPInstanceUID", "")))
+            if index is None:
+                continue
+            points = np.asarray(contour.ContourData, dtype=float).reshape(-1, 3)
+            image = slices[index]
+            if plane_offset_mm(points, image) <= PLANE_TOLERANCE_MM:
+                continue
+            if not (
+                np.allclose(np.asarray(image.ImageOrientationPatient, dtype=float), first_orientation, atol=1e-6)
+                and np.allclose(np.asarray(image.PixelSpacing, dtype=float), first_spacing, atol=1e-6)
+            ):
+                raise ValueError(
+                    "RTSTRUCT source series changes orientation or pixel spacing between slices"
+                )
+            placed_origin = matrix[:3, 3] + matrix[:3, 2] * index
+            shift = np.asarray(image.ImagePositionPatient, dtype=float) - placed_origin
+            contour.ContourData = (points + shift).ravel().tolist()
+            moved += 1
+    return moved
+
+
+def place_added_rois_on_planes(ds, series_data, roi_numbers=None) -> int:
+    """Anchor ROIs written by rt-utils ``add_roi`` and require them on-plane.
+
+    ``roi_numbers`` names the ROIs this writer added; contours copied unchanged
+    from a source RTSTRUCT are left alone. ``None`` means every ROI. Raises
+    ``ValueError`` when anchoring is impossible or a contour stays off its
+    referenced plane, so the caller never publishes an off-plane RTSTRUCT.
+    Returns the number of contours moved.
+    """
+    numbers = None if roi_numbers is None else {int(number) for number in roi_numbers}
+    slices = list(series_data)
+    moved = anchor_contours_to_referenced_planes(ds, slices, numbers)
+    on_planes, detail = contours_on_referenced_planes(ds, slices, numbers)
+    if not on_planes:
+        raise ValueError(f"contours are off the planning CT planes: {detail}")
+    return moved
 
 
 def resolve_roi_scopes(dataset, ct_images) -> dict[int, ScopeResult]:

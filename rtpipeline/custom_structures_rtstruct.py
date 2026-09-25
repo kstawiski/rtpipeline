@@ -436,6 +436,41 @@ def _add_roi_with_unique_number(rtstruct, *, mask: np.ndarray, name: str, **kwar
     _assert_unique_roi_numbers(rtstruct.ds, f"after adding {name}")
 
 
+def _rs_custom_added_rois_off_plane(rs_custom_path: Path, contract, rs_auto: Optional[Path]) -> str:
+    """Why the ROIs RS_custom added are not on their CT planes; '' when they are.
+
+    The base RTSTRUCT is chosen as the builder chooses it (contracted manual,
+    else RS_auto). Its ROI numbers survive into RS_custom unchanged, and its
+    contours are copied without modification, so only the other ROIs are
+    checked with the scoped reader's plane test.
+    """
+    from rt_utils import image_helper
+    from .rtstruct_geometry import contours_on_referenced_planes
+
+    manual = contract.authoritative_rtstruct_path
+    if manual is not None and Path(manual).exists():
+        base = Path(manual)
+    elif rs_auto and Path(rs_auto).exists():
+        base = Path(rs_auto)
+    else:
+        return "its base RTSTRUCT is unavailable, so copied and added ROIs cannot be told apart"
+    try:
+        base_numbers = set(_roi_numbers(pydicom.dcmread(str(base), stop_before_pixels=True)))
+        dataset = pydicom.dcmread(str(rs_custom_path))
+        added = set(_roi_numbers(dataset)) - base_numbers
+        if not any(
+            getattr(item, "ContourSequence", None)
+            for item in getattr(dataset, "ROIContourSequence", []) or []
+            if int(item.ReferencedROINumber) in added
+        ):
+            return ""
+        series_data = image_helper.load_sorted_image_series(str(contract.planning_ct_dir))
+    except Exception as exc:
+        return f"the contour plane check could not run: {exc}"
+    on_planes, detail = contours_on_referenced_planes(dataset, series_data, added)
+    return "" if on_planes else detail
+
+
 def _is_rs_custom_stale(
     rs_custom_path: Path,
     config_path: Optional[Union[str, Path]],
@@ -629,6 +664,18 @@ def _is_rs_custom_stale(
                     logger.info("CustomModel output is newer than RS_custom.dcm, regenerating")
                     return True
 
+        if contract is not None:
+            # Earlier builds wrote added ROIs with rt-utils' uniform slice step;
+            # on a CT with mixed slice spacing the scoped reader holds them.
+            off_plane = _rs_custom_added_rois_off_plane(rs_custom_path, contract, rs_auto)
+            if off_plane:
+                logger.warning(
+                    "RS_custom.dcm in %s has added ROIs off the planning CT planes (%s); regenerating",
+                    course_dir,
+                    off_plane,
+                )
+                return True
+
         logger.debug("RS_custom.dcm is up-to-date, reusing existing file")
         if contract is not None:
             try:
@@ -712,8 +759,16 @@ def _create_custom_structures_rtstruct_unlocked(
         # historical series. The scoped reader resolves each ROI against the
         # contracted planning CT on a copy, leaving the source bytes untouched and
         # dispositioning only the ROIs whose own geometry cannot be bound.
-        from .rtstruct_geometry import create_scoped_rtstruct, ROIContourDisposition
+        from .rtstruct_geometry import (
+            create_scoped_rtstruct,
+            image_array_for_rtstruct,
+            place_added_rois_on_planes,
+            ROIContourDisposition,
+        )
         rtstruct = create_scoped_rtstruct(ct_dir, base_rs)
+        # Base ROIs are copied from the source unchanged; only ROIs added here
+        # are placed on the planning CT planes before publication.
+        base_roi_numbers = set(_roi_numbers(rtstruct.ds))
         source_scope_outcomes = {
             result.roi_name: {"code": result.code, "source_series_uids": list(result.source_series_uids), "detail": result.detail}
             for result in rtstruct.scopes.values() if result.code
@@ -775,19 +830,10 @@ def _create_custom_structures_rtstruct_unlocked(
 
             try:
                 img = sitk.ReadImage(str(mask_path))
-                reference_ct = _ensure_ct_image()
-                if reference_ct is not None:
-                    # Resample to CT geometry
-                    img = sitk.Resample(
-                        img,
-                        reference_ct,
-                        sitk.Transform(),
-                        sitk.sitkNearestNeighbor,
-                        0,
-                        img.GetPixelID(),
-                    )
-                arr = sitk.GetArrayFromImage(img)
-                mask = np.moveaxis(arr.astype(bool), 0, -1)
+                # Sample on the exact DICOM planes, one per planning CT slice,
+                # like the masks the scoped reader returns. SimpleITK's series
+                # image regularizes mixed slice spacing.
+                mask = image_array_for_rtstruct(img, rtstruct.series_data).astype(bool)
             except Exception as exc:
                 logger.warning("CustomModel mask loading failed for %s/%s: %s", model_name, roi_name, exc)
                 custom_model_mask_cache[cache_key] = None
@@ -1115,6 +1161,13 @@ def _create_custom_structures_rtstruct_unlocked(
 
         out_path = course_dir / "RS_custom.dcm"
         _assert_unique_roi_numbers(rtstruct.ds, f"RS_custom before save for {course_dir}")
+        # rt-utils add_roi places mask slices on a uniform grid; on a CT with
+        # mixed slice spacing the added contours miss the planes they reference
+        # and the scoped reader holds them. Never publish them off-plane.
+        added_roi_numbers = set(_roi_numbers(rtstruct.ds)) - base_roi_numbers
+        moved = place_added_rois_on_planes(rtstruct.ds, rtstruct.series_data, added_roi_numbers)
+        if moved:
+            logger.info("RS_custom: placed %d contours on their referenced CT planes", moved)
 
         def _validate_temporary_publication(path: Path) -> None:
             try:

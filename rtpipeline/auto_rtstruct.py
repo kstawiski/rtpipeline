@@ -256,63 +256,16 @@ def _image_array_for_rtstruct(
 ) -> np.ndarray:
     """Sample an image on the exact, potentially non-uniform DICOM planes.
 
-    ``rt-utils`` requires ``(columns, rows, slices)`` with one plane per source
-    DICOM object. SimpleITK regularizes mixed slice spacing onto a uniform z
-    grid, so moving axes from that image can produce the wrong slice count.
+    2026-09-25: the sampler moved to ``rtstruct_geometry.image_array_for_rtstruct``
+    and is shared with every other RTSTRUCT writer. RS_auto keeps the in-plane
+    layout it published at fe50cc0, ``(columns, rows, slices)``. rt-utils
+    contours axis 1 along the row direction, so this layout exchanges x and y
+    for RS_auto ROIs rebuilt from masks (see REPORT.md). This change moves no
+    RS_auto contour; the correction is left to a separate, reviewed change.
     """
+    from .rtstruct_geometry import image_array_for_rtstruct
 
-    slices = list(series_data)
-    if not slices:
-        raise ValueError("RTSTRUCT source series contains no DICOM slices")
-    sampled: list[np.ndarray] = []
-    expected_shape: tuple[int, int] | None = None
-    identity = sitk.Transform(3, sitk.sitkIdentity)
-
-    for dataset in slices:
-        try:
-            rows = int(dataset.Rows)
-            columns = int(dataset.Columns)
-            spacing = [float(value) for value in dataset.PixelSpacing]
-            orientation = np.asarray(
-                [float(value) for value in dataset.ImageOrientationPatient],
-                dtype=float,
-            ).reshape(2, 3)
-            origin = tuple(float(value) for value in dataset.ImagePositionPatient)
-        except Exception as exc:
-            raise ValueError(
-                "RTSTRUCT source slice lacks rows, columns, pixel spacing, "
-                "orientation, or image position"
-            ) from exc
-        shape = (columns, rows)
-        if expected_shape is None:
-            expected_shape = shape
-        elif shape != expected_shape:
-            raise ValueError("RTSTRUCT source series has inconsistent slice dimensions")
-
-        normal = np.cross(orientation[0], orientation[1])
-        norm = float(np.linalg.norm(normal))
-        if not np.isfinite(norm) or norm <= 0:
-            raise ValueError("RTSTRUCT source slice has invalid orientation cosines")
-        normal /= norm
-        direction = np.column_stack((orientation[0], orientation[1], normal))
-
-        reference = sitk.Image(columns, rows, 1, image.GetPixelID())
-        reference.SetOrigin(origin)
-        reference.SetSpacing((spacing[1], spacing[0], 1.0))
-        reference.SetDirection(tuple(float(value) for value in direction.ravel()))
-        plane = sitk.Resample(
-            image,
-            reference,
-            identity,
-            sitk.sitkNearestNeighbor,
-            0,
-            image.GetPixelID(),
-        )
-        # SimpleITK returns (z, rows, columns); rt-utils requires
-        # (columns, rows, slices).
-        sampled.append(sitk.GetArrayFromImage(plane)[0].T)
-
-    return np.stack(sampled, axis=2)
+    return np.transpose(image_array_for_rtstruct(image, series_data), (1, 0, 2))
 
 
 def _image_array_for_rtstruct_builder(
@@ -364,52 +317,12 @@ def _rtstruct_plane_check(rtstruct_path: Path, ct_dir: Path) -> Tuple[bool, str]
 def _anchor_contours_to_referenced_planes(ds: Dataset, series_data: Iterable[Dataset]) -> int:
     """Move rt-utils contours from its uniform slice grid onto their referenced planes.
 
-    rt-utils converts mask slice ``i`` with one affine built from the first
-    slice and a uniform step ``(z_last - z_first) / (N - 1)``. On a series with
-    mixed slice spacing, slice ``i`` then lands off the plane of the image it
-    references. The masks were sampled on each slice's own pixel grid
-    (``_image_array_for_rtstruct``), so the correct position of a contour is
-    that slice's origin plus the same in-plane offset. Only contours off their
-    referenced plane are changed; on a uniform series nothing moves. Returns the
-    number of contours moved.
+    Shared with the other RTSTRUCT writers as
+    ``rtstruct_geometry.anchor_contours_to_referenced_planes``.
     """
-    from rt_utils import image_helper
-    from .rtstruct_geometry import PLANE_TOLERANCE_MM, plane_offset_mm
+    from .rtstruct_geometry import anchor_contours_to_referenced_planes
 
-    slices = list(series_data)
-    if not slices:
-        return 0
-    index_by_uid = {str(s.SOPInstanceUID): i for i, s in enumerate(slices)}
-    matrix = np.asarray(
-        image_helper.get_pixel_to_patient_transformation_matrix(slices), dtype=float
-    )
-    first_orientation = np.asarray(slices[0].ImageOrientationPatient, dtype=float)
-    first_spacing = np.asarray(slices[0].PixelSpacing, dtype=float)
-    moved = 0
-    for item in getattr(ds, "ROIContourSequence", []) or []:
-        for contour in getattr(item, "ContourSequence", []) or []:
-            refs = list(getattr(contour, "ContourImageSequence", []) or [])
-            if len(refs) != 1:
-                continue
-            index = index_by_uid.get(str(getattr(refs[0], "ReferencedSOPInstanceUID", "")))
-            if index is None:
-                continue
-            points = np.asarray(contour.ContourData, dtype=float).reshape(-1, 3)
-            image = slices[index]
-            if plane_offset_mm(points, image) <= PLANE_TOLERANCE_MM:
-                continue
-            if not (
-                np.allclose(np.asarray(image.ImageOrientationPatient, dtype=float), first_orientation, atol=1e-6)
-                and np.allclose(np.asarray(image.PixelSpacing, dtype=float), first_spacing, atol=1e-6)
-            ):
-                raise ValueError(
-                    "RTSTRUCT source series changes orientation or pixel spacing between slices"
-                )
-            placed_origin = matrix[:3, 3] + matrix[:3, 2] * index
-            shift = np.asarray(image.ImagePositionPatient, dtype=float) - placed_origin
-            contour.ContourData = (points + shift).ravel().tolist()
-            moved += 1
-    return moved
+    return anchor_contours_to_referenced_planes(ds, series_data)
 
 
 def _anchor_published_rtstruct(rtstruct_path: Path, ct_dir: Path) -> int:

@@ -20,7 +20,7 @@ import yaml
 from .config import PipelineConfig
 from .course_contract import load_course_contract
 from .segmentation import _run as _run_shell, _sanitize_token
-from .auto_rtstruct import _load_ct_image, _resample_to_reference
+from .auto_rtstruct import _load_ct_image
 from .utils import sanitize_rtstruct
 from .roi_fixer import fix_rtstruct_rois
 
@@ -1257,13 +1257,13 @@ def _build_rtstruct(
         except Exception:
             logger.debug("Unable to remove previous RTSTRUCT %s", rtstruct_path)
 
+    from .rtstruct_geometry import image_array_for_rtstruct, place_added_rois_on_planes
+
     rtstruct = RTStructBuilder.create_new(dicom_series_path=str(ct_dir))
     added_any = False
     for name, mask_img in structure_masks.items():
-        resampled = _resample_to_reference(mask_img, ct_img)
-        mask_arr = sitk.GetArrayFromImage(resampled)
-        mask_arr = np.moveaxis(mask_arr, 0, -1)
-        mask_bin = mask_arr > 0
+        # One plane per planning CT slice, sampled where that slice lies.
+        mask_bin = image_array_for_rtstruct(mask_img, rtstruct.series_data) > 0
         if not np.any(mask_bin):
             continue
         rtstruct.add_roi(mask=mask_bin, name=name)
@@ -1271,6 +1271,13 @@ def _build_rtstruct(
 
     if not added_any:
         raise RuntimeError("Custom segmentation produced no non-empty structures")
+
+    # rt-utils places mask slices on a uniform grid; never publish contours off
+    # the planes of the CT images they reference.
+    try:
+        place_added_rois_on_planes(rtstruct.ds, rtstruct.series_data)
+    except ValueError as exc:
+        raise RuntimeError(f"Custom segmentation RTSTRUCT for {ct_dir}: {exc}") from exc
 
     rtstruct.save(str(rtstruct_path))
     sanitize_rtstruct(rtstruct_path)

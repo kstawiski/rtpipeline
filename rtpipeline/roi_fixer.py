@@ -317,6 +317,17 @@ def fix_rtstruct_rois(
             logger.debug("Failed adding ROI %s during rebuild: %s", roi_name, exc)
             failed.append(roi_name)
 
+    # rt-utils places the re-added mask slices on a uniform grid. On a CT with
+    # mixed slice spacing they would miss the planes they reference; leave the
+    # input untouched rather than publish them there.
+    try:
+        from .rtstruct_geometry import place_added_rois_on_planes
+
+        place_added_rois_on_planes(new_rtstruct.ds, new_rtstruct.series_data)
+    except Exception as exc:
+        logger.error("Not saving fixed RTSTRUCT %s: %s", output_path, exc)
+        return None
+
     # Write to a temp file and replace atomically: `output_path` defaults to
     # `rtstruct_path`, the already-published RTSTRUCT, so a kill mid-save must not
     # truncate it in place. The temp path must end in ".dcm": rt_utils' RTStruct.save()
