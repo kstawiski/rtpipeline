@@ -122,6 +122,9 @@ class _StagedValues:
         if self.rename_roi:
             prototype = prototype.rename(columns={"roi_name": "structure"})
         self.columns = list(prototype.columns)
+        missing = sorted({"patient_id", "structure", "feature_name"} - set(self.columns))
+        if missing:
+            raise ValueError("robustness input is missing required cohort columns: " + ", ".join(missing))
         self.schema = pa.Schema.from_pandas(prototype, preserve_index=False)
         self.groups = ["structure"]
         self.groups += [c for c in ("segmentation_source", "extraction_arm")
@@ -329,6 +332,11 @@ def aggregate_robustness_cohort(
             for original, snapshot in zip(courses, snapshots):
                 if isinstance(original, rr.RobustnessCohortCourse):
                     _check_snapshot(snapshot, original)
+                    if original.table_snapshot is None:
+                        if original.frame is not None or snapshot.measured_output_sha256 is not None:
+                            raise ValueError("admitted measurement frame was mutated")
+                    elif rr.hashlib.sha256(original.table_snapshot).hexdigest() != snapshot.measured_output_sha256:
+                        raise ValueError("admitted course snapshot changed: table_snapshot")
                     if original.table_snapshot is not None and (
                         original.frame is None or not original.frame.equals(
                             pd.read_parquet(BytesIO(original.table_snapshot)))):
