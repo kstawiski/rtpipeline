@@ -34,6 +34,7 @@ from rtpipeline import cli
 from rtpipeline import course_manifest as cm
 from rtpipeline import radiomics_conda as rc_conda
 from rtpipeline import radiomics_robustness as rr
+from rtpipeline import radiomics_robustness_aggregate as ra
 from rtpipeline import robustness_completion as rc
 from rtpipeline.rt_details import DEFAULT_ROI_FAMILY_NAMES
 
@@ -125,8 +126,8 @@ def no_producer(monkeypatch):
     monkeypatch.setattr(rr, "run_robustness_course", _never)
     monkeypatch.setattr(rr, "robustness_for_course", _never)
     monkeypatch.setattr(rr, "admit_robustness_cohort_course", _never)
-    monkeypatch.setattr(rr, "aggregate_robustness_cohort", _never)
-    monkeypatch.setattr(rr, "aggregate_robustness_results", _never)
+    monkeypatch.setattr(ra, "aggregate_robustness_cohort", _never)
+    monkeypatch.setattr(ra, "aggregate_robustness_results", _never)
     monkeypatch.setattr(cm, "read_course_manifest", _never)
 
 
@@ -837,18 +838,13 @@ def test_a_valid_configuration_still_routes_manifest_aggregation(tmp_path, monke
         ),
     )
     monkeypatch.setattr(
-        rr,
-        "admit_robustness_cohort_course",
-        lambda course, *, patient_id, course_id, rob_config: (
-            course,
-            patient_id,
-            course_id,
-            rob_config,
-        ),
+        ra,
+        "robustness_course_reference",
+        lambda course, *, patient_id, course_id: (course, patient_id, course_id),
     )
     calls = []
     monkeypatch.setattr(
-        rr,
+        ra,
         "aggregate_robustness_cohort",
         lambda admitted, out, cfg, *, cohort: calls.append((admitted, out, cfg, cohort)),
     )
@@ -859,7 +855,7 @@ def test_a_valid_configuration_still_routes_manifest_aggregation(tmp_path, monke
     assert out == output.resolve()
     assert cohort is cohort_metadata
     assert cfg.enabled is True
-    assert admitted == [(course_dir, "P1", "C1", cfg)]
+    assert admitted == [(course_dir, "P1", "C1")]
 
 
 def test_a_valid_configuration_still_routes_explicit_input_aggregation(tmp_path, monkeypatch):
@@ -869,7 +865,7 @@ def test_a_valid_configuration_still_routes_explicit_input_aggregation(tmp_path,
     config = _enabled_config(tmp_path)
     calls = []
     monkeypatch.setattr(
-        rr,
+        ra,
         "aggregate_robustness_results",
         lambda inputs, out, cfg: calls.append((inputs, out, cfg)),
     )
@@ -892,7 +888,7 @@ def test_a_failed_explicit_input_aggregation_withdraws_the_pair(tmp_path, monkey
     def _fail(*_args, **_kwargs):
         raise RuntimeError("simulated aggregation failure")
 
-    monkeypatch.setattr(rr, "aggregate_robustness_results", _fail)
+    monkeypatch.setattr(ra, "aggregate_robustness_results", _fail)
 
     assert _run_aggregate_inputs([table], output, config) == 1
     _assert_pair_withdrawn(output, raw)
