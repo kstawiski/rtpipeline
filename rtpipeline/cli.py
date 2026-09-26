@@ -1737,10 +1737,12 @@ def _radiomics_robustness_aggregate(argv: list[str]) -> int:
 
     from .radiomics_robustness import (
         RobustnessConfig,
-        admit_robustness_cohort_course,
+        withdraw_robustness_cohort_outputs,
+    )
+    from .radiomics_robustness_aggregate import (
+        robustness_course_reference,
         aggregate_robustness_cohort,
         aggregate_robustness_results,
-        withdraw_robustness_cohort_outputs,
     )
 
     def _refuse(message: str, *arguments: Any) -> int:
@@ -1797,11 +1799,10 @@ def _radiomics_robustness_aggregate(argv: list[str]) -> int:
             Path(args.manifest), output_dir=output_root, require_current_schema=True
         )
         admitted = [
-            admit_robustness_cohort_course(
+            robustness_course_reference(
                 course_dir,
                 patient_id=patient_id,
                 course_id=course_id,
-                rob_config=rob_config,
             )
             for patient_id, course_id, course_dir in courses
         ]
