@@ -7919,6 +7919,8 @@ def organize_and_merge(
                 logger.debug("Failed to write case metadata XLSX for %s: %s", patient_dir, exc)
         except Exception as exc:
             reason = f"{type(exc).__name__}: {exc}"
+            if co.planning_ct_conversion.get("method") == "planning_ct_image_type_localizer_exclusion":
+                reason = str(co.planning_ct_conversion.get("reason_code") or "ct_localizer_publication_failed")
             _remove_course_done(config, co.patient_id, co.course_key)
             quarantine_path: Path | None = None
             try:
