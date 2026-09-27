@@ -402,3 +402,21 @@ def test_refused_rebuild_removes_stale_curves(tmp_path):
     dvh._invalidate_dvh_outputs(course)
     assert dvh.dvh_for_course(course, parallel_workers=1)
     assert not (course/'dvh_curves.json').exists()
+
+
+def test_rounded_tilted_contours_have_bounded_recorded_projection(tmp_path):
+    dose = analytic_dose(tmp_path/'dose.dcm', .1)
+    grid = prepare_rotated_dose(dose)
+    rs = box_structure(tmp_path/'rs.dcm')
+    for roi in rs.ROIContourSequence:
+        for contour in roi.ContourSequence:
+            points = np.array(contour.ContourData).reshape(-1,3) @ grid.basis.T
+            contour.ContourData = np.round(points, 2).ravel().tolist()
+    hist = grid.get_dvh(rs, 1)
+    metrics = add_brachy_metrics(hist, dvh._compute_metrics(hist, None))
+    assert 0 < metrics['dose_grid_contour_max_projection_mm'] <= .01
+    assert metrics['DmeanGy'] == pytest.approx(10., abs=.06)
+    # An extra nonplanar displacement is refused rather than absorbed by fit.
+    rs.ROIContourSequence[0].ContourSequence[0].ContourData[2] += .1
+    with pytest.raises(DoseOrientationError, match='nonparallel_or_nonplanar'):
+        grid.get_dvh(rs, 1)

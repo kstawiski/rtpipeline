@@ -16,7 +16,9 @@ Tilted contours use a native-plane mask: a local orthonormal XY lattice is
 mapped back into patient coordinates before sampling the original dose. This
 keeps each original contour point in its physical plane, with no flattening,
 contour snapping or second dose interpolation. Parallel contour planes must be
-within 1 degree of axial; planarity/grouping tolerance is 0.001 mm. Each contour plane represents the slab bounded by adjacent plane
+within 1 degree of axial. A least-squares common normal handles rounded DICOM
+coordinates, with each point projected by at most 0.01 mm (recorded per ROI).
+Plane grouping tolerance is 0.001 mm; larger projection errors fail closed. Each contour plane represents the slab bounded by adjacent plane
 midpoints; the endpoints extend by half their adjacent interval. This equals
 dicompyler's slice thickness for uniform planes and does not assign a tiny
 near-duplicate interval to every slice. Rasterization, 1 cGy histograms and
@@ -36,6 +38,7 @@ from scipy.ndimage import map_coordinates
 
 MAX_ROTATION_DEGREES = 1.0
 ORTHONORMAL_TOLERANCE = 1e-6
+MAX_CONTOUR_PROJECTION_MM = 0.01
 METHOD = "rotated_dose_resampled_to_axis_aligned_grid"
 
 
@@ -128,7 +131,9 @@ class RotatedDoseGrid:
             "interpolation": "trilinear_in_original_patient_geometry",
             "outside_original_grid": "not_covered_masked",
             "contour_plane_sampling": "native_planar_mask_mapped_to_patient_coordinates",
-            "contour_planarity_tolerance_mm": 0.001,
+            "contour_max_projection_tolerance_mm": MAX_CONTOUR_PROJECTION_MM,
+            "contour_plane_grouping_tolerance_mm": 0.001,
+            "contour_plane_fit": "least_squares_common_normal_from_centred_contour_points",
             "contour_tilt_tolerance_degrees": 1.0,
             "contour_volume_integration": "adjacent_plane_midpoint_slabs_half_interval_end_extension",
             "max_node_displacement_mm": float(np.linalg.norm(corners @ (basis-nearest).T, axis=1).max()),
@@ -231,10 +236,14 @@ class RotatedDoseGrid:
             polygons.append(points)
         if not polygons:
             raise DoseOrientationError("rotated_dose_insufficient_contour_planes_for_volume")
-        _, singular, axes = np.linalg.svd(polygons[0]-polygons[0].mean(axis=0), full_matrices=False)
-        if singular[1] <= 1e-9:
+        scatter = np.zeros((3, 3))
+        for points in polygons:
+            centred = points-points.mean(axis=0)
+            scatter += centred.T @ centred
+        eigenvalues, axes = np.linalg.eigh(scatter)
+        if eigenvalues[1] <= 1e-18:
             raise DoseOrientationError("rotated_dose_degenerate_contour_plane")
-        normal = axes[-1]
+        normal = axes[:, 0]
         if normal[2] < 0:
             normal = -normal
         tilt = float(np.degrees(np.arccos(np.clip(normal[2], -1, 1))))
@@ -249,13 +258,18 @@ class RotatedDoseGrid:
         local_polygons = []
         for points in polygons:
             local = points @ frame
-            if np.ptp(local[:, 2]) > .001:
+            z = float(np.mean(local[:, 2]))
+            if np.max(np.abs(local[:, 2]-z)) > MAX_CONTOUR_PROJECTION_MM:
                 raise DoseOrientationError("rotated_dose_nonparallel_or_nonplanar_contours")
-            local_polygons.append((float(np.mean(local[:, 2])), local))
+            local_polygons.append((z, local))
         planes = {}
+        max_projection = 0.
         for z, local in sorted(local_polygons, key=lambda item: item[0]):
             if planes and abs(z-next(reversed(planes))) <= .001:
                 z = next(reversed(planes))
+            max_projection = max(max_projection, float(np.max(np.abs(local[:, 2]-z))))
+            if max_projection > MAX_CONTOUR_PROJECTION_MM:
+                raise DoseOrientationError("rotated_dose_nonparallel_or_nonplanar_contours")
             planes.setdefault(z, []).append({"data": local.tolist(), "type": "CLOSED_PLANAR",
                                             "num_points": len(local)})
         zs = np.array(sorted(planes), dtype=float)
@@ -297,7 +311,8 @@ class RotatedDoseGrid:
                          bins=(np.arange(0, 2) if histogram.size == 1 else
                                np.arange(histogram.size+1)/100),
                          dvh_type="differential", dose_units="Gy", name=item["name"]).cumulative
-        result.notes = {"contour_plane_tilt_degrees": tilt}
+        result.notes = {"contour_plane_tilt_degrees": tilt,
+                        "contour_max_projection_mm": max_projection}
         return result
 
     def coverage(self, structure, roi):
@@ -327,6 +342,7 @@ def add_brachy_metrics(histogram, metrics):
         return None
     from .dvh import _bounded_dose_at_fraction, _small_volume_dose
     metrics["dose_grid_contour_plane_tilt_degrees"] = histogram.notes["contour_plane_tilt_degrees"]
+    metrics["dose_grid_contour_max_projection_mm"] = histogram.notes["contour_max_projection_mm"]
     metrics["D90Gy"] = _bounded_dose_at_fraction(
         histogram.bincenters, histogram.counts, .90, histogram.min, histogram.max)
     metrics["D2ccGy"], metrics["D2cc_status"] = _small_volume_dose(
