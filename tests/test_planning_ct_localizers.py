@@ -157,10 +157,10 @@ def _organized_course(root, dcm2niix, name='course_a', localizer=True):
     nifti = segmentation._ensure_ct_nifti(_config(root, dcm2niix), ct, course / 'NIFTI')
     sidecar = nifti.with_name(nifti.name[:-7] + '.metadata.json')
     original_meta = json.loads(sidecar.read_text())
-    if localizer:
+    for index in range(int(localizer)):
         scout, _ = _localizer(paths)
         # Put localizer first to exercise re-derivation of first-slice fields.
-        scout.rename(ct / '000_localizer.dcm')
+        scout.rename(ct / f'000_localizer{index}.dcm')
     metadata_path = write_minimal_course_contract(course, authoritative_rtstruct=rs,
                                                  planning_ct_dir=ct, planning_ct_nifti=nifti)
     case = json.loads(metadata_path.read_text())
@@ -325,3 +325,60 @@ def test_contract_rejects_tampered_exclusion_evidence(tmp_path, dcm2niix):
     case_path.write_text(json.dumps(case))
     with pytest.raises(CourseContractError, match='ct_localizer_stale_selection_evidence'):
         load_course_contract(course)
+
+
+def test_repair_two_localizers_and_continue_after_course_refusal(tmp_path, dcm2niix):
+    from rtpipeline.repair_planning_ct_localizers import repair_output
+    root = tmp_path / 'Output'
+    broken = _organized_course(root, dcm2niix)
+    affected = _organized_course(root, dcm2niix, name='course_b', localizer=2)
+    (broken / '.organized').write_text('{}')
+    broken_before = _files_and_mtimes(broken)
+    result = repair_output(root)
+    assert result['repaired'] == 1 and result['refused'] == 1
+    assert result['localizers_excluded'] == 2
+    assert _files_and_mtimes(broken) == broken_before
+    contract = load_course_contract(affected)
+    assert contract.planning_ct['nifti_provenance']['instance_selection']['excluded_instance_count'] == 2
+    assert _load(contract.planning_ct_dir).GetSize() == (20, 16, 12)
+
+
+def test_repair_retains_and_rebinds_original_mask_provenance(tmp_path, dcm2niix):
+    from rtpipeline.repair_planning_ct_localizers import repair_output
+    from rtpipeline.stage_completion import write_stage_completion_sentinel
+    root = tmp_path / 'Output'
+    course = _organized_course(root, dcm2niix)
+    contract = load_course_contract(course)
+    original = course / 'Segmentation_Original/rtstruct'
+    original.mkdir(parents=True)
+    mask = original / 'mask.nii.gz'
+    sitk.WriteImage(sitk.Image([20, 16, 12], sitk.sitkUInt8), str(mask))
+    before = mask.read_bytes()
+    evidence = organize._original_segmentation_provenance(contract.authoritative_rtstruct_path, contract.planning_ct_nifti)
+    (original / 'provenance.json').write_text(json.dumps(evidence))
+    completion = json.loads((course / '.organized').read_text())
+    dependency = tmp_path / 'configuration.json'
+    dependency.write_text(json.dumps(completion['configuration_dependency']))
+    write_stage_completion_sentinel(course, course / '.organized', stage='organize', status='ok',
+                                    configuration_dependency=dependency)
+    assert repair_output(root)['repaired'] == 1
+    after = json.loads((original / 'provenance.json').read_text())
+    assert after['source_ct_sop_hash'] != evidence['source_ct_sop_hash']
+    assert {k: v for k, v in after.items() if k != 'source_ct_sop_hash'} == {k: v for k, v in evidence.items() if k != 'source_ct_sop_hash'}
+    assert mask.read_bytes() == before
+
+
+def test_cli_suppresses_library_identifier_warnings(monkeypatch, capsys, tmp_path):
+    import warnings
+    import logging
+    from rtpipeline import repair_planning_ct_localizers as repair
+    def noisy(*args, **kwargs):
+        warnings.warn('synthetic identifying text')
+        logging.error('synthetic identifying text')
+        return {'refused': 1, 'reason_codes': {'ct_localizer_inconsistent_evidence': 1}}
+    monkeypatch.setattr(repair, 'repair_output', noisy)
+    assert repair.main(['--output-dir', str(tmp_path)]) == 1
+    output = capsys.readouterr()
+    assert output.err == ''
+    assert 'synthetic identifying text' not in output.out
+    assert json.loads(output.out)['refused'] == 1
