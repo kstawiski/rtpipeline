@@ -1023,6 +1023,121 @@ def _authoritative_structure_source(items: Iterable[LinkedSet]) -> Path | None:
     return min(candidates, key=lambda path: str(path))
 
 
+
+def _planning_ct_summary(ct_dir_path: Path) -> dict:
+    ct_summary = {}
+    try:
+        if ct_dir_path.exists():
+            ct_files = sorted([p for p in ct_dir_path.iterdir() if p.is_file()])
+            if ct_files:
+                ds_ct = read_dicom_header(str(ct_files[0]), stop_before_pixels=True)
+                ct_summary = {
+                    'ct_manufacturer': str(getattr(ds_ct, 'Manufacturer', '')),
+                    'ct_model': str(getattr(ds_ct, 'ManufacturerModelName', '')),
+                    'ct_institution': str(getattr(ds_ct, 'InstitutionName', '')),
+                    'ct_kvp': float(getattr(ds_ct, 'KVP', 0.0) or 0.0) if hasattr(ds_ct, 'KVP') else None,
+                    'ct_convolution_kernel': str(getattr(ds_ct, 'ConvolutionKernel', '')),
+                    'ct_reconstruction_algorithm': _summarize_reconstruction(ds_ct),
+                    'ct_slice_thickness': float(getattr(ds_ct, 'SliceThickness', 0.0) or 0.0) if hasattr(ds_ct, 'SliceThickness') else None,
+                    'ct_study_uid': str(getattr(ds_ct, 'StudyInstanceUID', '')),
+                    'ct_slice_increment': None,
+                    'ct_tube_current_mA': None,
+                    'ct_pitch_factor': None,
+                    'ct_rotation_time_s': None,
+                    'ct_matrix_size': f"{getattr(ds_ct, 'Rows', '')}x{getattr(ds_ct, 'Columns', '')}",
+                    'ct_field_of_view_mm': float(getattr(ds_ct, 'ReconstructionDiameter', 0.0) or 0.0) if hasattr(ds_ct, 'ReconstructionDiameter') else None,
+                    'ct_pixel_spacing': None,
+                    'ct_contrast_agent': str(getattr(ds_ct, 'ContrastBolusAgent', '')),
+                    'ct_contrast_flow_rate': None,
+                    'ct_contrast_total_volume': None,
+                    'ct_contrast_phase': str(getattr(ds_ct, 'ContrastBolusRoute', '')),
+                }
+                try:
+                    ps = getattr(ds_ct, 'PixelSpacing', [None, None])
+                    ct_summary['ct_pixel_spacing'] = [float(ps[0]), float(ps[1])] if ps and len(ps) >= 2 else []
+                except Exception:
+                    pass
+                try:
+                    spacing_between = getattr(ds_ct, 'SpacingBetweenSlices', None)
+                    if spacing_between is not None:
+                        ct_summary['ct_slice_increment'] = float(spacing_between)
+                    else:
+                        positions = []
+                        for ct_file in ct_files[:min(10, len(ct_files))]:
+                            ds_tmp = read_dicom_header(str(ct_file), stop_before_pixels=True)
+                            ipp = getattr(ds_tmp, 'ImagePositionPatient', None)
+                            if ipp and len(ipp) == 3:
+                                positions.append(float(ipp[2]))
+                        if len(positions) >= 2:
+                            positions = sorted(positions)
+                            deltas = [abs(b - a) for a, b in zip(positions, positions[1:]) if abs(b - a) > 1e-6]
+                            if deltas:
+                                ct_summary['ct_slice_increment'] = float(np.median(deltas))
+                except Exception:
+                    pass
+                try:
+                    if hasattr(ds_ct, 'XRayTubeCurrent') and ds_ct.XRayTubeCurrent is not None:
+                        ct_summary['ct_tube_current_mA'] = float(ds_ct.XRayTubeCurrent)
+                    elif hasattr(ds_ct, 'TubeCurrent') and ds_ct.TubeCurrent is not None:
+                        ct_summary['ct_tube_current_mA'] = float(ds_ct.TubeCurrent)
+                except Exception:
+                    pass
+                try:
+                    if hasattr(ds_ct, 'CTPitchFactor') and ds_ct.CTPitchFactor is not None:
+                        ct_summary['ct_pitch_factor'] = float(ds_ct.CTPitchFactor)
+                except Exception:
+                    pass
+                try:
+                    if hasattr(ds_ct, 'GantryRotationTime') and ds_ct.GantryRotationTime is not None:
+                        ct_summary['ct_rotation_time_s'] = float(ds_ct.GantryRotationTime)
+                    elif hasattr(ds_ct, 'RotationTime') and ds_ct.RotationTime is not None:
+                        ct_summary['ct_rotation_time_s'] = float(ds_ct.RotationTime)
+                except Exception:
+                    pass
+                try:
+                    if hasattr(ds_ct, 'ContrastBolusTotalDose') and ds_ct.ContrastBolusTotalDose is not None:
+                        ct_summary['ct_contrast_total_volume'] = float(ds_ct.ContrastBolusTotalDose)
+                except Exception:
+                    pass
+                try:
+                    if hasattr(ds_ct, 'ContrastFlowRate') and ds_ct.ContrastFlowRate is not None:
+                        ct_summary['ct_contrast_flow_rate'] = float(ds_ct.ContrastFlowRate)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    return ct_summary
+
+
+def _ensure_planning_ct_nifti(config, ct_dir, nifti_dir, **kwargs):
+    """Publish only verified non-localizer instances in organize's CT copies."""
+    from .planning_ct_localizers import (
+        METHOD, PlanningCTLocalizerError, select_localizers, verify_volume,
+    )
+    evidence = kwargs.get("conversion_evidence")
+    try:
+        excluded, selection = select_localizers(ct_dir, kwargs.get("authoritative_rtstruct"))
+        if selection is None:
+            return _ensure_ct_nifti(config, ct_dir, nifti_dir, **kwargs)
+        for path in excluded:
+            path.unlink()  # Course copies/hardlinks only; never source DICOM.
+        result = _ensure_ct_nifti(config, ct_dir, nifti_dir, **kwargs)
+        if result is None:
+            raise PlanningCTLocalizerError("ct_localizer_volume_conversion_failed")
+        verify_volume(ct_dir, result)
+        sidecar = result.with_name(f"{_strip_nifti_base(result)}.metadata.json")
+        metadata = json.loads(sidecar.read_text(encoding="utf-8"))
+        metadata["instance_selection"] = selection
+        sidecar.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+        return result
+    except PlanningCTLocalizerError as exc:
+        if evidence is not None:
+            evidence.update(method=METHOD, status="refused", reason_code=exc.reason_code)
+        logger.error("Planning CT publication refused: %s", exc.reason_code)
+        return None
+
+
 def _classify_organize_ct_series(
     series: List[CTInstance],
     *,
@@ -1042,6 +1157,15 @@ def _classify_organize_ct_series(
             logger.warning("Could not read CT header for organize classification %s: %s", instance.path, exc)
     if not datasets:
         return False, "exclude", "unreadable_ct_series"
+    if is_planning_ct:
+        from .planning_ct_localizers import is_localizer
+        retained = [ds for ds in datasets if not is_localizer(ds)]
+        if len(retained) != len(datasets):
+            # Publication performs the reference and volume checks. Classification
+            # must not reject an entire planning series because of its scouts.
+            if not retained:
+                return True, "planning_ct", None
+            datasets = retained
     first = datasets[0]
     image_types: List[str] = []
     thicknesses: List[float] = []
@@ -5772,7 +5896,7 @@ def organize_and_merge(
             )
             copy_ct_series(series, course_dirs.dicom_ct, copy_manager=copy_manager)
             try:
-                primary_nifti = _ensure_ct_nifti(
+                primary_nifti = _ensure_planning_ct_nifti(
                     config,
                     course_dirs.dicom_ct,
                     course_dirs.nifti,
@@ -6094,7 +6218,7 @@ def organize_and_merge(
                 )
                 copy_ct_series(series, course_dirs.dicom_ct, copy_manager=copy_manager)
                 try:
-                    primary_nifti = _ensure_ct_nifti(
+                    primary_nifti = _ensure_planning_ct_nifti(
                         config,
                         course_dirs.dicom_ct,
                         course_dirs.nifti,
@@ -6348,7 +6472,7 @@ def organize_and_merge(
             planning_ct_conversion: dict[str, Any] = {}
             copy_ct_series(series, course_dirs.dicom_ct, copy_manager=copy_manager)
             try:
-                primary_nifti = _ensure_ct_nifti(
+                primary_nifti = _ensure_planning_ct_nifti(
                     config,
                     course_dirs.dicom_ct,
                     course_dirs.nifti,
@@ -6809,88 +6933,7 @@ def organize_and_merge(
             except Exception:
                 pass
 
-            ct_summary = {}
-            try:
-                ct_dir_path = co.dirs.dicom_ct
-                if ct_dir_path.exists():
-                    ct_files = sorted([p for p in ct_dir_path.iterdir() if p.is_file()])
-                    if ct_files:
-                        ds_ct = read_dicom_header(str(ct_files[0]), stop_before_pixels=True)
-                        ct_summary = {
-                            'ct_manufacturer': str(getattr(ds_ct, 'Manufacturer', '')),
-                            'ct_model': str(getattr(ds_ct, 'ManufacturerModelName', '')),
-                            'ct_institution': str(getattr(ds_ct, 'InstitutionName', '')),
-                            'ct_kvp': float(getattr(ds_ct, 'KVP', 0.0) or 0.0) if hasattr(ds_ct, 'KVP') else None,
-                            'ct_convolution_kernel': str(getattr(ds_ct, 'ConvolutionKernel', '')),
-                            'ct_reconstruction_algorithm': _summarize_reconstruction(ds_ct),
-                            'ct_slice_thickness': float(getattr(ds_ct, 'SliceThickness', 0.0) or 0.0) if hasattr(ds_ct, 'SliceThickness') else None,
-                            'ct_study_uid': str(getattr(ds_ct, 'StudyInstanceUID', '')),
-                            'ct_slice_increment': None,
-                            'ct_tube_current_mA': None,
-                            'ct_pitch_factor': None,
-                            'ct_rotation_time_s': None,
-                            'ct_matrix_size': f"{getattr(ds_ct, 'Rows', '')}x{getattr(ds_ct, 'Columns', '')}",
-                            'ct_field_of_view_mm': float(getattr(ds_ct, 'ReconstructionDiameter', 0.0) or 0.0) if hasattr(ds_ct, 'ReconstructionDiameter') else None,
-                            'ct_pixel_spacing': None,
-                            'ct_contrast_agent': str(getattr(ds_ct, 'ContrastBolusAgent', '')),
-                            'ct_contrast_flow_rate': None,
-                            'ct_contrast_total_volume': None,
-                            'ct_contrast_phase': str(getattr(ds_ct, 'ContrastBolusRoute', '')),
-                        }
-                        try:
-                            ps = getattr(ds_ct, 'PixelSpacing', [None, None])
-                            ct_summary['ct_pixel_spacing'] = [float(ps[0]), float(ps[1])] if ps and len(ps) >= 2 else []
-                        except Exception:
-                            pass
-                        try:
-                            spacing_between = getattr(ds_ct, 'SpacingBetweenSlices', None)
-                            if spacing_between is not None:
-                                ct_summary['ct_slice_increment'] = float(spacing_between)
-                            else:
-                                positions = []
-                                for ct_file in ct_files[:min(10, len(ct_files))]:
-                                    ds_tmp = read_dicom_header(str(ct_file), stop_before_pixels=True)
-                                    ipp = getattr(ds_tmp, 'ImagePositionPatient', None)
-                                    if ipp and len(ipp) == 3:
-                                        positions.append(float(ipp[2]))
-                                if len(positions) >= 2:
-                                    positions = sorted(positions)
-                                    deltas = [abs(b - a) for a, b in zip(positions, positions[1:]) if abs(b - a) > 1e-6]
-                                    if deltas:
-                                        ct_summary['ct_slice_increment'] = float(np.median(deltas))
-                        except Exception:
-                            pass
-                        try:
-                            if hasattr(ds_ct, 'XRayTubeCurrent') and ds_ct.XRayTubeCurrent is not None:
-                                ct_summary['ct_tube_current_mA'] = float(ds_ct.XRayTubeCurrent)
-                            elif hasattr(ds_ct, 'TubeCurrent') and ds_ct.TubeCurrent is not None:
-                                ct_summary['ct_tube_current_mA'] = float(ds_ct.TubeCurrent)
-                        except Exception:
-                            pass
-                        try:
-                            if hasattr(ds_ct, 'CTPitchFactor') and ds_ct.CTPitchFactor is not None:
-                                ct_summary['ct_pitch_factor'] = float(ds_ct.CTPitchFactor)
-                        except Exception:
-                            pass
-                        try:
-                            if hasattr(ds_ct, 'GantryRotationTime') and ds_ct.GantryRotationTime is not None:
-                                ct_summary['ct_rotation_time_s'] = float(ds_ct.GantryRotationTime)
-                            elif hasattr(ds_ct, 'RotationTime') and ds_ct.RotationTime is not None:
-                                ct_summary['ct_rotation_time_s'] = float(ds_ct.RotationTime)
-                        except Exception:
-                            pass
-                        try:
-                            if hasattr(ds_ct, 'ContrastBolusTotalDose') and ds_ct.ContrastBolusTotalDose is not None:
-                                ct_summary['ct_contrast_total_volume'] = float(ds_ct.ContrastBolusTotalDose)
-                        except Exception:
-                            pass
-                        try:
-                            if hasattr(ds_ct, 'ContrastFlowRate') and ds_ct.ContrastFlowRate is not None:
-                                ct_summary['ct_contrast_flow_rate'] = float(ds_ct.ContrastFlowRate)
-                        except Exception:
-                            pass
-            except Exception:
-                pass
+            ct_summary = _planning_ct_summary(co.dirs.dicom_ct)
 
             seg_dicom_path = ""
             try:
@@ -7409,6 +7452,8 @@ def organize_and_merge(
                 }
                 if isinstance(nifti_meta.get("nifti_conversion"), dict):
                     nifti_provenance["nifti_conversion"] = nifti_meta["nifti_conversion"]
+                if isinstance(nifti_meta.get("instance_selection"), dict):
+                    nifti_provenance["instance_selection"] = nifti_meta["instance_selection"]
             course_contract = {
                 "version": COURSE_CONTRACT_VERSION,
                 "authority": "organize",
