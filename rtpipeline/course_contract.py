@@ -844,6 +844,29 @@ def _validate_nifti_provenance(
         raise CourseContractError(
             "stale planning CT NIfTI provenance: source CT geometry does not match the selected series"
         )
+    conversion = sidecar_data.get("nifti_conversion")
+    # Older signed-staging contracts did not copy this optional evidence. New
+    # hygiene decisions must be bound to the contract and current RTSTRUCT.
+    from .ct_series_hygiene import (
+        CTSeriesHygieneError,
+        METHOD as CT_HYGIENE_METHOD,
+        select_ct_instances,
+    )
+
+    if (
+        provenance.get("nifti_conversion") is not None
+        or (isinstance(conversion, dict) and conversion.get("method") == CT_HYGIENE_METHOD)
+    ):
+        if conversion != provenance.get("nifti_conversion"):
+            raise CourseContractError("stale planning CT conversion evidence: sidecar differs from contract")
+    if isinstance(conversion, dict) and conversion.get("method") == CT_HYGIENE_METHOD:
+        try:
+            _, expected_selection = select_ct_instances(ct_dir, contract.authoritative_rtstruct_path)
+        except CTSeriesHygieneError as exc:
+            raise CourseContractError(f"stale planning CT conversion evidence: {exc.reason_code}") from exc
+        expected_selection["status"] = "converted"
+        if any(conversion.get(key) != value for key, value in expected_selection.items()):
+            raise CourseContractError("stale planning CT conversion evidence: source selection differs")
     # Geometry and orientation are validated from the conversion sidecar and
     # source-series provenance above. Downstream image readers remain responsible
     # for rejecting an unreadable NIfTI before it is used.
@@ -2055,7 +2078,10 @@ def validate_course_contract(contract: CourseContract) -> CourseContract:
             and planning_ct.get("dicom_only") is True
         )
         if nifti is None and not allow_dicom_only:
-            raise CourseContractError("planning CT contract has DICOM data but no NIfTI path")
+            failure = planning_ct.get("conversion_failure") or {}
+            code = failure.get("reason_code") if isinstance(failure, dict) else None
+            detail = f" ({code})" if code else ""
+            raise CourseContractError("planning CT contract has DICOM data but no NIfTI path" + detail)
         if nifti is not None:
             _validate_nifti_provenance(
                 contract,

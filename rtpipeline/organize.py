@@ -159,6 +159,7 @@ class CourseOutput:
     delivery_plan_details: list[dict[str, object]] = field(default_factory=list)
     delivery_warnings: list[str] = field(default_factory=list)
     unresolved_record_plan_uids: list[str] = field(default_factory=list)
+    planning_ct_conversion: dict[str, Any] = field(default_factory=dict)
     planning_ct_status: str = "unknown"
     planning_ct_referenced_series_uids: list[str] = field(default_factory=list)
     planning_ct_series_uid: str | None = None
@@ -5352,6 +5353,7 @@ def organize_and_merge(
                 logger.warning("Source approval authority changed. Rebuilding %s/%s", patient_id, course_id)
 
         primary_nifti: Optional[Path] = None
+        planning_ct_conversion: dict[str, Any] = {}
         related_outputs: List[Path] = []
         seen_related: set[Path] = set()
         course_ct_series_uids: set[str] = set()
@@ -5775,6 +5777,8 @@ def organize_and_merge(
                     course_dirs.dicom_ct,
                     course_dirs.nifti,
                     force=bool(config.resume),
+                    authoritative_rtstruct=struct_path,
+                    conversion_evidence=planning_ct_conversion,
                 )
             except Exception as exc:
                 logger.warning("CT NIfTI conversion failed for %s: %s", course_dir, exc)
@@ -5940,6 +5944,7 @@ def organize_and_merge(
             delivery_plan_details=delivery_summary["delivery_plan_details"],
             delivery_warnings=delivery_summary["delivery_warnings"],
             unresolved_record_plan_uids=delivery_summary["unresolved_record_plan_uids"],
+            planning_ct_conversion=planning_ct_conversion,
             planning_ct_status=ct_select_status,
             planning_ct_referenced_series_uids=planning_ct_referenced_series_uids,
             planning_ct_series_uid=planning_ct_series_uid,
@@ -6030,6 +6035,7 @@ def organize_and_merge(
                     return hydrated
 
             primary_nifti: Optional[Path] = None
+            planning_ct_conversion: dict[str, Any] = {}
             related_outputs: List[Path] = []
             seen_related: set[Path] = set()
             course_for_uids = {s.frame_of_reference_uid for s in s_list if s.frame_of_reference_uid}
@@ -6093,6 +6099,8 @@ def organize_and_merge(
                         course_dirs.dicom_ct,
                         course_dirs.nifti,
                         force=bool(config.resume),
+                        authoritative_rtstruct=primary_struct,
+                        conversion_evidence=planning_ct_conversion,
                     )
                 except Exception as exc:
                     logger.warning("CT NIfTI conversion failed (RS-only) for %s: %s", course_dir, exc)
@@ -6222,6 +6230,7 @@ def organize_and_merge(
                 primary_nifti=Path(primary_nifti) if primary_nifti else None,
                 related_dicom=sorted(related_outputs, key=str),
                 total_prescription_gy=None,
+                planning_ct_conversion=planning_ct_conversion,
                 planning_ct_status=ct_select_status,
                 planning_ct_referenced_series_uids=sorted(
                     referenced_ct_series_uids(primary_struct)
@@ -6336,6 +6345,7 @@ def organize_and_merge(
                     return hydrated
 
             primary_nifti: Optional[Path] = None
+            planning_ct_conversion: dict[str, Any] = {}
             copy_ct_series(series, course_dirs.dicom_ct, copy_manager=copy_manager)
             try:
                 primary_nifti = _ensure_ct_nifti(
@@ -6343,6 +6353,8 @@ def organize_and_merge(
                     course_dirs.dicom_ct,
                     course_dirs.nifti,
                     force=bool(config.resume),
+                    authoritative_rtstruct=None,
+                    conversion_evidence=planning_ct_conversion,
                 )
             except Exception as exc:
                 logger.warning("CT NIfTI conversion failed (CT-only) for %s: %s", course_dir, exc)
@@ -6359,6 +6371,7 @@ def organize_and_merge(
                 primary_nifti=Path(primary_nifti) if primary_nifti else None,
                 related_dicom=[],
                 total_prescription_gy=None,
+                planning_ct_conversion=planning_ct_conversion,
                 planning_ct_status="ct_only",
                 planning_ct_series_uid=str(series_uid),
             )
@@ -7394,6 +7407,8 @@ def organize_and_merge(
                     "nifti_geometry": nifti_meta["nifti_geometry"],
                     "nifti_sha256": hashlib.sha256(nifti_path.read_bytes()).hexdigest(),
                 }
+                if isinstance(nifti_meta.get("nifti_conversion"), dict):
+                    nifti_provenance["nifti_conversion"] = nifti_meta["nifti_conversion"]
             course_contract = {
                 "version": COURSE_CONTRACT_VERSION,
                 "authority": "organize",
@@ -7412,6 +7427,8 @@ def organize_and_merge(
                     "series_instance_uid": str(co.planning_ct_series_uid or ""),
                     "referenced_series_uids": co.planning_ct_referenced_series_uids,
                     "nifti_provenance": nifti_provenance,
+                    **({"conversion_failure": co.planning_ct_conversion}
+                       if co.planning_ct_conversion.get("status") == "refused" else {}),
                     "dicom_dir": (
                         relative_contract_path(patient_dir, co.dirs.dicom_ct)
                         if co.dirs.dicom_ct.is_dir() and any(co.dirs.dicom_ct.iterdir())
@@ -7601,9 +7618,9 @@ def organize_and_merge(
                         pass
                     age_years = None
                     try:
-                        dob = str(getattr(ds_rp, 'PatientBirthDate', '') or getattr(ds_rp, 'PatientBirthDate', ''))
-                        if dob and plan_date and len(dob) == 8 and len(plan_date) == 8:
-                            d_dob = datetime.datetime.strptime(dob, '%Y%m%d').date()
+                        birth_date_text = str(getattr(ds_rp, 'PatientBirthDate', '') or getattr(ds_rp, 'PatientBirthDate', ''))
+                        if birth_date_text and plan_date and len(birth_date_text) == 8 and len(plan_date) == 8:
+                            d_dob = datetime.datetime.strptime(birth_date_text, '%Y%m%d').date()
                             d_plan = datetime.datetime.strptime(plan_date, '%Y%m%d').date()
                             age_years = int((d_plan - d_dob).days // 365.25)
                     except Exception:
@@ -7884,6 +7901,8 @@ def organize_and_merge(
                     "course_key": co.course_key,
                     "path": str(patient_dir),
                     "status": STATUS_TECHNICAL_QUARANTINE,
+                    **({"planning_ct_conversion": co.planning_ct_conversion}
+                       if co.planning_ct_conversion else {}),
                     "reason": reason,
                     "quarantine_path": (
                         str(quarantine_path) if quarantine_path is not None else None
@@ -7907,6 +7926,8 @@ def organize_and_merge(
                 "course_key": co.course_key,
                 "path": str(patient_dir),
                 "status": STATUS_VALIDATED,
+                **({"planning_ct_conversion": nifti_provenance["nifti_conversion"]}
+                   if nifti_provenance and "nifti_conversion" in nifti_provenance else {}),
                 "reason": None,
                 "quarantine_path": None,
             }
