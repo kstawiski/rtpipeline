@@ -220,6 +220,8 @@ def add_brachy_metrics(histogram, metrics):
     metrics["D2ccGy"], metrics["D2cc_status"] = _small_volume_dose(
         histogram.bincenters, histogram.counts, histogram.volume,
         histogram.min, histogram.max, 2.)
+    if histogram.volume < 2.:
+        metrics["D2cc_status"] = "roi_below_2cc"
     return metrics
 
 
@@ -235,4 +237,6 @@ def add_brachy_metrics_from_values(values, voxel_volume, max_dose, metrics):
     metrics["D90Gy"] = _bounded_dose_at_fraction(centers, cumulative, .9, values.min(), values.max())
     metrics["D2ccGy"], metrics["D2cc_status"] = _small_volume_dose(
         centers, cumulative, len(values)*voxel_volume, values.min(), values.max(), 2.)
+    if len(values)*voxel_volume < 2.:
+        metrics["D2cc_status"] = "roi_below_2cc"
     return metrics
