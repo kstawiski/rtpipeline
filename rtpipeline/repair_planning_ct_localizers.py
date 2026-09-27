@@ -2,7 +2,9 @@
 
 All checks and derived writes happen in a private candidate. Linux renameat2
 RENAME_EXCHANGE publishes the complete course atomically; unsupported filesystems
-refuse the repair. Shared manifests, ledgers and configuration inputs are read only.
+refuse the repair unless two-step publication is explicitly allowed (NFS clients
+do not implement RENAME_EXCHANGE). Shared manifests, ledgers and configuration
+inputs are read only.
 """
 from __future__ import annotations
 
@@ -88,6 +90,26 @@ def _exchange(left: Path, right: Path) -> None:
         _refuse('ct_localizer_atomic_publish_failed')
 
 
+def _two_step_publish(course: Path, candidate: Path, work: Path) -> None:
+    """Publish with two renames where RENAME_EXCHANGE is unavailable (e.g. NFS).
+
+    Opt-in and only for idle courses: between the renames the course path does
+    not exist. A journal in the private work directory names both trees for
+    manual recovery if the process dies in that interval; a failed second rename
+    is rolled back.
+    """
+    previous = work / 'previous_course'
+    _json(work / 'publish_journal.json', {
+        'method': 'two_step_rename', 'course': str(course),
+        'previous_course': str(previous), 'candidate': str(candidate)})
+    os.rename(course, previous)
+    try:
+        os.rename(candidate, course)
+    except BaseException:
+        os.rename(previous, course)
+        raise
+
+
 def _relative(contract, path):
     try:
         return path.relative_to(contract.course_dir)
@@ -169,12 +191,15 @@ def _repair_candidate(course, candidate, completion, selection, excluded):
                                     status='ok', configuration_dependency=dependency)
 
 
-def repair_course(course: Path, *, dry_run=False) -> tuple[str, int]:
+def repair_course(course: Path, *, dry_run=False, two_step=False) -> tuple[str, int]:
     """Repair one ledger-selected course; no mutation on refusal or dry-run."""
+    leftover = None
     try:
         before = _snapshot(course)
         # Use the existing sentinel as the lock inode; no lock file is published.
-        with (course / '.organized').open('rb') as lock:
+        # NFS emulates flock with POSIX locks, which need a descriptor opened for
+        # writing (EBADF otherwise); opening r+b changes neither bytes nor mtime.
+        with (course / '.organized').open('r+b') as lock:
             try:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
@@ -204,17 +229,29 @@ def repair_course(course: Path, *, dry_run=False) -> tuple[str, int]:
                     _refuse('ct_localizer_course_changed_during_repair')
                 if dry_run:
                     return 'would_repair', len(excluded)
-                _exchange(course, candidate)
-                # Candidate now names the old course. Temporary cleanup only
-                # unlinks those names; hardlinked source files remain untouched.
+                try:
+                    _exchange(course, candidate)
+                except PlanningCTLocalizerError as exc:
+                    if not two_step or exc.reason_code != 'ct_localizer_atomic_publish_unavailable':
+                        raise
+                    _two_step_publish(course, candidate, Path(work))
+                # The previous course now lives in the work directory. Temporary
+                # cleanup only unlinks those names; hardlinked source files remain.
+                # NFS keeps silly-renamed files while the lock is open, so the work
+                # directory is removed again after the lock is released.
+                leftover = Path(work)
                 return 'repaired', len(excluded)
     except PlanningCTLocalizerError:
         raise
     except Exception as exc:
         raise PlanningCTLocalizerError('ct_localizer_inconsistent_evidence') from exc
+    finally:
+        if leftover is not None and leftover.exists():
+            shutil.rmtree(leftover, ignore_errors=True)
 
 
-def repair_output(output_dir: Path, *, courses: list[str] | None = None, dry_run=False) -> dict:
+def repair_output(output_dir: Path, *, courses: list[str] | None = None, dry_run=False,
+                  two_step=False) -> dict:
     summary = {'validated_courses': 0, 'selected_courses': 0, 'repaired': 0,
                'would_repair': 0, 'unchanged': 0, 'refused': 0,
                'localizers_excluded': 0, 'localizers_would_exclude': 0, 'reason_codes': {}}
@@ -235,7 +272,7 @@ def repair_output(output_dir: Path, *, courses: list[str] | None = None, dry_run
         for entry in selected:
             try:
                 course = _safe_course(root, entry['patient'], entry['course'])
-                status, count = repair_course(course, dry_run=dry_run)
+                status, count = repair_course(course, dry_run=dry_run, two_step=two_step)
                 summary[status] += 1
                 if status == 'repaired':
                     summary['localizers_excluded'] += count
@@ -259,6 +296,9 @@ def main(argv=None) -> int:
     parser.add_argument('--output-dir', type=Path, required=True)
     parser.add_argument('--course', action='append', help='Select a validated patient/course; repeat as needed')
     parser.add_argument('--dry-run', action='store_true')
+    parser.add_argument('--allow-two-step-publish', action='store_true',
+                        help='Where RENAME_EXCHANGE is unavailable (NFS), publish with two renames; '
+                             'only for idle courses (the course path is briefly absent)')
     args = parser.parse_args(argv)
     # Reports expose counts and stable reason codes only. Library exceptions and
     # DICOM converter logging must never disclose identifiers through this CLI.
@@ -270,7 +310,8 @@ def main(argv=None) -> int:
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            result = repair_output(args.output_dir, courses=args.course, dry_run=args.dry_run)
+            result = repair_output(args.output_dir, courses=args.course, dry_run=args.dry_run,
+                                   two_step=args.allow_two_step_publish)
     finally:
         logging.disable(previous)
         sitk.ProcessObject.SetGlobalWarningDisplay(previous_warnings)
