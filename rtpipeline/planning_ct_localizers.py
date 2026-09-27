@@ -1,4 +1,4 @@
-"""Conservative publication of planning CT without ImageType[2] localizers.
+"""Conservative planning CT publication without localizers or identical copies.
 
 This module acts on organize's course copies only. It never edits source DICOM.
 A uniform volume and exact rescaled voxel equality (after axis permutation/flip,
@@ -13,7 +13,9 @@ from typing import Any
 import numpy as np
 import pydicom
 
-from .ct_series_hygiene import CT_STORAGE, rtstruct_image_references
+from .ct_series_hygiene import (
+    CT_STORAGE, CTSeriesHygieneError, _pixels, rtstruct_image_references, select_duplicate_positions,
+)
 
 METHOD = "planning_ct_image_type_localizer_exclusion"
 POSITION_TOLERANCE_MM = 0.01
@@ -77,11 +79,40 @@ def _volume(entries):
     }
 
 
+def _has_duplicate_positions(entries):
+    positions = set()
+    for _, ds in entries:
+        values = getattr(ds, "ImagePositionPatient", [])
+        if len(values) != 3:
+            continue
+        try:
+            position = tuple(float(value) for value in values)
+        except (ValueError, TypeError):
+            continue
+        if not np.isfinite(position).all():
+            continue
+        if position in positions:
+            return True
+        positions.add(position)
+    return False
+
+
+def _selection_reason(excluded):
+    reasons = {item["reason_code"] for item in excluded}
+    if reasons == {"localizer_image_type"}:
+        return "localizer_image_type"
+    if reasons == {"identical_rescaled_duplicate_position"}:
+        return "identical_rescaled_duplicate_position"
+    if reasons == {"localizer_image_type", "identical_rescaled_duplicate_position"}:
+        return "localizer_and_identical_rescaled_duplicates"
+    raise ValueError("unsupported exclusion reason")
+
+
 def select_localizers(ct_dir: Path, rtstruct: Path | None):
     """Return excluded paths and evidence, or ([], None) for unchanged series."""
     try:
-        # Read failures do not change the pre-existing no-localizer path. Once a
-        # localizer is found, every file must be readable and validated below.
+        # Leave clean-series publication byte-identical. Once either exclusion
+        # trigger is found, every file must be readable and validated below.
         entries, unreadable = [], False
         for path in sorted(ct_dir.iterdir()):
             try:
@@ -89,7 +120,8 @@ def select_localizers(ct_dir: Path, rtstruct: Path | None):
             except Exception:
                 unreadable = True
         excluded = [(p, ds) for p, ds in entries if is_localizer(ds)]
-        if not excluded:
+        axial = [(p, ds) for p, ds in entries if not is_localizer(ds)]
+        if not excluded and not _has_duplicate_positions(axial):
             return [], None
         if unreadable or any(p.is_symlink() or not p.is_file() for p, _ in entries):
             raise PlanningCTLocalizerError("ct_localizer_invalid_series_directory")
@@ -114,15 +146,33 @@ def select_localizers(ct_dir: Path, rtstruct: Path | None):
             raise PlanningCTLocalizerError("ct_localizer_referenced_by_rtstruct")
         if refs - set(identities):
             raise PlanningCTLocalizerError("ct_localizer_rtstruct_references_unresolvable")
-        kept = [(p, ds) for p, ds in entries if not is_localizer(ds)]
+        # Check every axial geometry/acquisition key before discarding copies.
+        # Regular volume positions are checked on the retained set below.
+        keys = {(int(ds.Rows), int(ds.Columns), *map(float, ds.PixelSpacing),
+                 *map(float, ds.ImageOrientationPatient),
+                 str(getattr(ds, "AcquisitionNumber", "")),
+                 str(getattr(ds, "TemporalPositionIdentifier", "")),
+                 str(getattr(ds, "EchoNumbers", ""))) for _, ds in axial}
+        if len(keys) > 1:
+            raise PlanningCTLocalizerError("ct_localizer_inconsistent_geometry")
+        group = [{"path": p, "uid": str(ds.SOPInstanceUID),
+                  "position": np.asarray(ds.ImagePositionPatient, dtype=float),
+                  "instance": int(getattr(ds, "InstanceNumber", 0))} for p, ds in axial]
+        selected, duplicates = select_duplicate_positions(
+            group, refs, position_tolerance_mm=0, include_pixel_evidence=True)
+        kept_paths = {item["path"] for item in selected}
+        kept = [(p, ds) for p, ds in axial if p in kept_paths]
         geometry = _volume(kept)
+        exclusions = [{"sop_instance_uid": uid, "reason_code": "localizer_image_type"}
+                      for uid in excluded_uids] + duplicates
+        exclusions.sort(key=lambda item: item["sop_instance_uid"])
+        excluded = [(p, ds) for p, ds in entries if p not in kept_paths]
         evidence = {
-            "method": METHOD, "reason": "localizer_image_type", "status": "excluded",
+            "method": METHOD, "reason": _selection_reason(exclusions), "status": "excluded",
             "source_instance_count": len(entries), "kept_instance_count": len(kept),
             "excluded_instance_count": len(excluded),
             "kept_sop_instance_uids": sorted(str(ds.SOPInstanceUID) for _, ds in kept),
-            "excluded_instances": [{"sop_instance_uid": uid, "reason_code": "localizer_image_type"}
-                                   for uid in sorted(excluded_uids)],
+            "excluded_instances": exclusions,
             "rtstruct_referenced_instance_count": len(refs),
             "rtstruct_references_all_kept": True,
             "authoritative_rtstruct_sha256": hashlib.sha256(rtstruct.read_bytes()).hexdigest(),
@@ -131,6 +181,8 @@ def select_localizers(ct_dir: Path, rtstruct: Path | None):
         return [p for p, _ in excluded], evidence
     except PlanningCTLocalizerError:
         raise
+    except CTSeriesHygieneError as exc:
+        raise PlanningCTLocalizerError(exc.reason_code) from exc
     except Exception as exc:
         raise PlanningCTLocalizerError("ct_localizer_invalid_dicom_or_references") from exc
 
@@ -166,16 +218,44 @@ def validate_selection(ct_dir: Path, rtstruct: Path | None, evidence: dict[str, 
         excluded = evidence["excluded_instances"]
         dropped = [item["sop_instance_uid"] for item in excluded]
         refs = rtstruct_image_references(rtstruct)
+        retained = {str(ds.SOPInstanceUID): (path, ds) for path, ds in entries}
+        pixel_hashes = {}
+        for item in excluded:
+            if item["reason_code"] == "identical_rescaled_duplicate_position":
+                uid = item["retained_sop_instance_uid"]
+                path, ds = retained[uid]
+                if uid not in pixel_hashes:
+                    pixel_hashes[uid] = hashlib.sha256(_pixels(path)).hexdigest()
+                if (item.get("image_position_patient") != list(map(float, ds.ImagePositionPatient))
+                        or item.get("rescaled_pixels_sha256") != pixel_hashes[uid]):
+                    raise ValueError("inconsistent retained duplicate evidence")
+        repair = evidence.get("nifti_repair")
+        if repair is not None:
+            expected_outputs = {
+                "preserved": "unchanged_grid_original_masks_rebound",
+                "rederived": "stale_left_in_place",
+            }
+            previous = repair.get("previous_nifti_sha256", "")
+            if (repair.get("status") not in expected_outputs
+                    or repair.get("segmentation_outputs") != expected_outputs[repair["status"]]
+                    or not isinstance(previous, str) or len(previous) != 64
+                    or any(c not in "0123456789abcdef" for c in previous)):
+                raise ValueError("inconsistent repair evidence")
         for field in ("SeriesInstanceUID", "FrameOfReferenceUID", "StudyInstanceUID"):
             values = {str(getattr(ds, field, "")) for _, ds in entries}
             if len(values) != 1 or "" in values:
                 raise ValueError("inconsistent retained identity")
-        if (evidence.get("method") != METHOD or evidence.get("reason") != "localizer_image_type"
+        if (evidence.get("method") != METHOD or evidence.get("reason") != _selection_reason(excluded)
                 or evidence.get("status") != "excluded" or not dropped
                 or len(set(kept)) != len(kept) or len(set(dropped)) != len(dropped)
                 or not all(isinstance(uid, str) and uid for uid in dropped)
                 or set(dropped) & set(kept)
-                or any(item["reason_code"] != "localizer_image_type" for item in excluded)
+                or any(
+                    (item["reason_code"] == "identical_rescaled_duplicate_position"
+                     and item.get("retained_sop_instance_uid") not in kept)
+                    or (item["reason_code"] == "localizer_image_type"
+                        and "retained_sop_instance_uid" in item)
+                    for item in excluded)
                 or evidence.get("kept_sop_instance_uids") != kept
                 or evidence.get("kept_instance_count") != len(kept)
                 or evidence.get("excluded_instance_count") != len(dropped)

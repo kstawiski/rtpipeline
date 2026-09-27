@@ -233,6 +233,9 @@ def test_organize_ledger_records_validated_exclusions_and_refusal_codes(tmp_path
             # Explicit LOCALIZER tags are excluded earlier by existing policy.
             scout = pydicom.dcmread(scout_path)
             del scout.ImageType
+            # Keep this RF10 mixed-geometry fallback fixture outside RF13's
+            # exact-position publication trigger.
+            scout.ImagePositionPatient[2] = -20
             scout.save_as(scout_path, enforce_file_format=True)
             if index == 3:
                 rs_path = folder / 'struct.dcm'
@@ -244,7 +247,7 @@ def test_organize_ledger_records_validated_exclusions_and_refusal_codes(tmp_path
                 rs.save_as(rs_path, enforce_file_format=True)
     original = segmentation.run_dcm2niix
     def run(config, source, output, recursive_depth=None):
-        if source.name == 'CT':
+        if source.name == 'CT' and len(list(source.iterdir())) > 12:
             return None
         return original(config, source, output, recursive_depth)
     monkeypatch.setattr(segmentation, 'run_dcm2niix', run)
@@ -260,9 +263,17 @@ def test_organize_ledger_records_validated_exclusions_and_refusal_codes(tmp_path
     assert ledger['validated_course_count'] == 2
     assert ledger['technical_quarantine_count'] == 2
     for entry in ledger['courses']:
-        evidence = entry['planning_ct_conversion']
+        evidence = entry.get('planning_ct_conversion')
         if entry['status'] == 'validated':
-            assert evidence['method'] == METHOD
+            if not evidence:
+                # RF13 resolves duplicates before native conversion. RF10's
+                # mixed-geometry case still records its fallback conversion.
+                from rtpipeline.course_contract import load_course_contract
+                contract = load_course_contract(config.output_root / entry['patient'] / entry['course'])
+                evidence = contract.planning_ct['nifti_provenance']['instance_selection']
+                assert evidence['reason'] == 'identical_rescaled_duplicate_position'
+            else:
+                assert evidence['method'] == METHOD
             assert evidence['excluded_instance_count'] == 1
             assert evidence['kept_instance_count'] == 12
             assert evidence['rtstruct_references_all_kept'] is True

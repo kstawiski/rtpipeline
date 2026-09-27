@@ -74,6 +74,40 @@ def _pixels(path: Path) -> bytes:
     return values.astype("<f8").tobytes()
 
 
+def select_duplicate_positions(group, refs, *, position_tolerance_mm=POSITION_TOLERANCE_MM,
+                               refuse_referenced=True, include_pixel_evidence=False):
+    """Share RF10's pixel proof and deterministic tie break with publication.
+
+    A zero tolerance requires exact numeric positions. Publication always
+    protects referenced instances; RF10 retains its historical mixed-series gate.
+    """
+    excluded = []
+    # Prefer a referenced equivalent instance, then lowest InstanceNumber/UID.
+    ordered = sorted(group, key=lambda item: (item["uid"] not in refs, item["instance"], item["uid"]))
+    kept: list[dict] = []
+    for item in ordered:
+        matches = [other for other in kept if np.linalg.norm(item["position"] - other["position"]) <= position_tolerance_mm]
+        if len(matches) > 1:
+            raise CTSeriesHygieneError("ct_hygiene_ambiguous_duplicate_position")
+        if matches:
+            other = matches[0]
+            retained_pixels = _pixels(other["path"])
+            if _pixels(item["path"]) != retained_pixels:
+                raise CTSeriesHygieneError("ct_hygiene_duplicate_position_pixels_differ")
+            if refuse_referenced and item["uid"] in refs:
+                raise CTSeriesHygieneError("ct_hygiene_referenced_duplicate_would_be_excluded")
+            excluded.append({"sop_instance_uid": item["uid"],
+                             "reason_code": "identical_rescaled_duplicate_position",
+                             "retained_sop_instance_uid": other["uid"]})
+            if include_pixel_evidence:
+                excluded[-1].update(
+                    image_position_patient=other["position"].tolist(),
+                    rescaled_pixels_sha256=hashlib.sha256(retained_pixels).hexdigest())
+        else:
+            kept.append(item)
+    return kept, excluded
+
+
 def select_ct_instances(
     ct_dir: Path, authoritative_rtstruct: Path | None = None,
 ) -> tuple[list[Path], dict[str, Any]]:
@@ -144,24 +178,8 @@ def _select(ct_dir, authoritative_rtstruct):
             or abs(np.dot(row, col)) > ORIENTATION_TOLERANCE
             or (mixed and abs(abs(normal[2]) - 1) > ORIENTATION_TOLERANCE)):
         raise CTSeriesHygieneError("ct_hygiene_not_consistent_axial_volume")
-    # Prefer a referenced equivalent instance, then lowest InstanceNumber/UID.
-    ordered = sorted(group, key=lambda item: (item["uid"] not in refs, item["instance"], item["uid"]))
-    kept: list[dict] = []
-    for item in ordered:
-        matches = [other for other in kept if np.linalg.norm(item["position"] - other["position"]) <= POSITION_TOLERANCE_MM]
-        if len(matches) > 1:
-            raise CTSeriesHygieneError("ct_hygiene_ambiguous_duplicate_position")
-        if matches:
-            other = matches[0]
-            if _pixels(item["path"]) != _pixels(other["path"]):
-                raise CTSeriesHygieneError("ct_hygiene_duplicate_position_pixels_differ")
-            if mixed and item["uid"] in refs:
-                raise CTSeriesHygieneError("ct_hygiene_referenced_duplicate_would_be_excluded")
-            excluded.append({"sop_instance_uid": item["uid"],
-                             "reason_code": "identical_rescaled_duplicate_position",
-                             "retained_sop_instance_uid": other["uid"]})
-        else:
-            kept.append(item)
+    kept, duplicates = select_duplicate_positions(group, refs, refuse_referenced=mixed)
+    excluded.extend(duplicates)
     positions = np.array([item["position"] for item in kept])
     projections = positions @ normal
     steps = np.diff(np.sort(projections))

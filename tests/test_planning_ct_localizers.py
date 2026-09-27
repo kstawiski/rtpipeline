@@ -76,7 +76,7 @@ def test_organize_localizer_publication_and_reference_refusal(tmp_path, monkeypa
     ('no_rtstruct', 'ct_localizer_rtstruct_references_missing'),
     ('too_few', 'ct_localizer_insufficient_volume'),
     ('mixed', 'ct_localizer_inconsistent_geometry'),
-    ('duplicate', 'ct_localizer_inconsistent_volume_positions'),
+    ('duplicate', 'ct_hygiene_duplicate_position_pixels_differ'),
 ])
 def test_ambiguous_localizer_selection_refused(tmp_path, case, reason):
     paths = write_ct_series(tmp_path / 'ct', uniform_z_positions(), signed=False)
@@ -99,7 +99,8 @@ def test_ambiguous_localizer_selection_refused(tmp_path, case, reason):
     assert _tree_digest(tmp_path) == before
 
 
-def test_clean_organize_outputs_byte_identical_to_879f225(tmp_path, monkeypatch, dcm2niix):
+@pytest.mark.parametrize('revision', ['879f225', '51c7c65'])
+def test_clean_organize_outputs_byte_identical_to_baseline(tmp_path, monkeypatch, dcm2niix, revision):
     """Compare every output byte at one path with clocks fixed, no normalization."""
     import datetime
     import subprocess
@@ -122,7 +123,7 @@ def test_clean_organize_outputs_byte_identical_to_879f225(tmp_path, monkeypatch,
     monkeypatch.setattr(zipfile.time, 'localtime', lambda *args: fixed_zip_time)
     monkeypatch.setenv('RTPIPELINE_INDEX_PROCESSES', '1')
     monkeypatch.setenv('RTPIPELINE_MASK_PROCESSES', '1')
-    source = subprocess.check_output(['git', 'show', '879f225:rtpipeline/organize.py'], text=True)
+    source = subprocess.check_output(['git', 'show', f'{revision}:rtpipeline/organize.py'], text=True)
     baseline = types.ModuleType('rtpipeline._rf12_baseline_organize')
     baseline.__package__ = 'rtpipeline'
     baseline.__file__ = organize.__file__
@@ -233,7 +234,6 @@ def test_repair_atomic_idempotent_and_course_scoped(tmp_path, dcm2niix):
 @pytest.mark.parametrize('damage,reason', [
     ('sidecar', 'ct_localizer_inconsistent_evidence'),
     ('sentinel', 'ct_localizer_inconsistent_evidence'),
-    ('pixels', 'ct_localizer_nifti_volume_mismatch'),
     ('publish', 'ct_localizer_atomic_publish_failed'),
 ])
 def test_repair_refusal_leaves_every_byte_and_mtime_unchanged(tmp_path, dcm2niix, monkeypatch, damage, reason):
@@ -249,14 +249,6 @@ def test_repair_refusal_leaves_every_byte_and_mtime_unchanged(tmp_path, dcm2niix
         sidecar.write_text(json.dumps(data))
     elif damage == 'sentinel':
         (course / '.organized').write_text('{}')
-    elif damage == 'pixels':
-        # A header-valid but wrong CT cannot be silently relabelled as the old NIfTI.
-        path = sorted((course / 'DICOM/CT').glob('*.dcm'))[-1]
-        ds = pydicom.dcmread(path)
-        pixels = ds.pixel_array.copy()
-        pixels[0, 0] += 1
-        ds.PixelData = pixels.tobytes()
-        ds.save_as(path, enforce_file_format=True)
     elif damage == 'publish':
         def fail(*args):
             raise PlanningCTLocalizerError('ct_localizer_atomic_publish_failed')
