@@ -127,6 +127,7 @@ def _publish_radiomics_completion(
 
 
 NO_PLANNING_CT_DETAIL = "stage not applicable because no planning CT is declared"
+NOT_APPLICABLE_STATUS = "not_applicable"
 
 
 def _publish_radiomics_not_applicable(
@@ -135,24 +136,44 @@ def _publish_radiomics_not_applicable(
     configuration = getattr(workflow.input, "configuration", None)
     if not configuration:
         raise RuntimeError("Stage radiomics has no configuration dependency")
-    from rtpipeline.radiomics_ct_contract import (
-        NOT_APPLICABLE_STATUS,
-        validate_not_applicable_completion_sentinel,
-        write_not_applicable_completion_sentinel,
+    # The radiomics contract needs pydicom, which the Snakemake interpreter
+    # does not carry, so the completion is written by the pipeline interpreter.
+    payload = invoke(
+        python=str(workflow.params.python),
+        operation="publish-radiomics-not-applicable",
+        arguments=(
+            "--course-dir",
+            str(course_dir),
+            "--sentinel-path",
+            str(sentinel_path),
+            "--configuration-dependency",
+            str(configuration),
+        ),
+        result_dir=Path(workflow.log[0]).parent,
+        env=runtime_environment(workflow.params),
     )
-
-    write_not_applicable_completion_sentinel(
-        course_dir,
-        sentinel_path,
-        configuration_dependency=Path(str(configuration)),
-    )
-    payload = validate_not_applicable_completion_sentinel(
-        course_dir,
-        sentinel_path,
-        configuration_dependency=Path(str(configuration)),
-    )
-    if payload.get("status") != NOT_APPLICABLE_STATUS:
-        raise RuntimeError("Not-applicable radiomics completion validation returned a mismatch")
+    sentinel = payload.get("sentinel")
+    if (
+        payload.get("course_dir") != str(course_dir.resolve(strict=False))
+        or payload.get("sentinel_path") != str(sentinel_path.resolve(strict=False))
+        or not isinstance(sentinel, dict)
+        or sentinel.get("status") != NOT_APPLICABLE_STATUS
+    ):
+        raise RuntimeError(
+            "Not-applicable radiomics completion validation returned a mismatch"
+        )
+    try:
+        observed = json.loads(sentinel_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise RuntimeError(
+            f"Not-applicable radiomics completion sentinel is unreadable after "
+            f"publication: {sentinel_path}: {exc}"
+        ) from exc
+    if observed != sentinel:
+        raise RuntimeError(
+            "Not-applicable radiomics completion sentinel differs from the "
+            "validated delegated result"
+        )
 
 
 def _publish_stage_completion(

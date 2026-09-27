@@ -189,6 +189,32 @@ def _publish_radiomics_completion(
     }
 
 
+def _publish_radiomics_not_applicable(
+    course_dir: Path, sentinel_path: Path, *, configuration_dependency: Path
+) -> dict[str, Any]:
+    from .radiomics_ct_contract import (
+        validate_not_applicable_completion_sentinel,
+        write_not_applicable_completion_sentinel,
+    )
+
+    course_dir = Path(course_dir)
+    sentinel_path = write_not_applicable_completion_sentinel(
+        course_dir,
+        Path(sentinel_path),
+        configuration_dependency=Path(configuration_dependency),
+    )
+    sentinel = validate_not_applicable_completion_sentinel(
+        course_dir,
+        sentinel_path,
+        configuration_dependency=Path(configuration_dependency),
+    )
+    return {
+        "course_dir": str(course_dir.resolve(strict=False)),
+        "sentinel_path": str(sentinel_path.resolve(strict=False)),
+        "sentinel": sentinel,
+    }
+
+
 def _publish_stage_completion(
     course_dir: Path,
     sentinel_path: Path,
@@ -290,6 +316,11 @@ def _parser() -> argparse.ArgumentParser:
     radiomics.add_argument("--course-dir", required=True)
     radiomics.add_argument("--sentinel-path", required=True)
 
+    not_applicable = subparsers.add_parser("publish-radiomics-not-applicable")
+    not_applicable.add_argument("--course-dir", required=True)
+    not_applicable.add_argument("--sentinel-path", required=True)
+    not_applicable.add_argument("--configuration-dependency", required=True)
+
     stage = subparsers.add_parser("publish-stage-completion")
     stage.add_argument("--course-dir", required=True)
     stage.add_argument("--sentinel-path", required=True)
@@ -320,6 +351,12 @@ def main(argv: list[str] | None = None) -> int:
         elif operation == "publish-radiomics-completion":
             payload = _publish_radiomics_completion(
                 Path(args.course_dir), Path(args.sentinel_path)
+            )
+        elif operation == "publish-radiomics-not-applicable":
+            payload = _publish_radiomics_not_applicable(
+                Path(args.course_dir),
+                Path(args.sentinel_path),
+                configuration_dependency=Path(args.configuration_dependency),
             )
         elif operation == "publish-stage-completion":
             payload = _publish_stage_completion(
