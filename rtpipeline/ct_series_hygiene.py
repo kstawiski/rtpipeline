@@ -86,7 +86,10 @@ def select_duplicate_positions(group, refs, *, position_tolerance_mm=POSITION_TO
     ordered = sorted(group, key=lambda item: (item["uid"] not in refs, item["instance"], item["uid"]))
     kept: list[dict] = []
     for item in ordered:
-        matches = [other for other in kept if np.linalg.norm(item["position"] - other["position"]) <= position_tolerance_mm]
+        matches = [other for other in kept if (
+            np.array_equal(item["position"], other["position"])
+            if position_tolerance_mm == 0 else
+            np.linalg.norm(item["position"] - other["position"]) <= position_tolerance_mm)]
         if len(matches) > 1:
             raise CTSeriesHygieneError("ct_hygiene_ambiguous_duplicate_position")
         if matches:

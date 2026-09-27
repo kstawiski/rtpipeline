@@ -83,9 +83,9 @@ def _has_duplicate_positions(entries):
     positions = set()
     for _, ds in entries:
         values = getattr(ds, "ImagePositionPatient", [])
-        if len(values) != 3:
-            continue
         try:
+            if len(values) != 3:
+                continue
             position = tuple(float(value) for value in values)
         except (ValueError, TypeError):
             continue
