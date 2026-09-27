@@ -350,7 +350,7 @@ def test_tolerance_boundary_and_nonaxial_contours(tmp_path):
     assert grid is not None
     rs = box_structure(tmp_path/'rs.dcm')
     rs.ROIContourSequence[0].ContourSequence[0].ContourData[2] += .1
-    with pytest.raises(DoseOrientationError, match='non_axial_or_ambiguous_contour_planes'):
+    with pytest.raises(DoseOrientationError, match='nonparallel_or_nonplanar_contours'):
         grid.get_dvh(rs, 1)
 
 
@@ -365,3 +365,40 @@ def test_nonuniform_contour_planes_use_physical_slab_volumes(tmp_path):
     assert second.volume == pytest.approx(first.volume, rel=1e-12)
     assert second.mean == pytest.approx(first.mean, abs=1e-12)
     assert first.volume > 9.
+
+
+@pytest.mark.parametrize('angle', [.025, .1, .5])
+def test_tilted_rtstruct_contours_keep_their_patient_geometry(tmp_path, angle):
+    course = fx.build_course(tmp_path, delivered=False)
+    dose = analytic_dose(course/'DICOM/RTDOSE/dose.dcm', angle)
+    grid = prepare_rotated_dose(dose)
+    rs = box_structure(course/'DICOM/RTSTRUCT/rs.dcm')
+    for roi in rs.ROIContourSequence:
+        for contour in roi.ContourSequence:
+            points = np.array(contour.ContourData).reshape(-1,3) @ grid.basis.T
+            contour.ContourData = points.ravel().tolist()
+    rs.save_as(course/'DICOM/RTSTRUCT/rs.dcm', enforce_file_format=True)
+    hist = grid.get_dvh(rs, 1)
+    metrics = add_brachy_metrics(hist, dvh._compute_metrics(hist, None))
+    assert metrics['DmeanGy'] == pytest.approx(10., abs=.06)
+    assert metrics['D90Gy'] == pytest.approx(9.2, abs=.12)
+    assert metrics['D2ccGy'] == pytest.approx(11.-.1*2000/(20*21), abs=.12)
+    assert metrics['dose_grid_contour_plane_tilt_degrees'] == pytest.approx(angle, abs=1e-7)
+    assert dvh.dvh_for_course(course, parallel_workers=1)
+    frame = pd.read_parquet(course/'dvh_metrics.parquet')
+    assert set(frame.dose_metric_status) == {'computed'}
+    assert (course/'dvh_curves.json').is_file()
+
+
+def test_refused_rebuild_removes_stale_curves(tmp_path):
+    course = fx.build_course(tmp_path, delivered=False)
+    analytic_dose(course/'DICOM/RTDOSE/dose.dcm', .1)
+    box_structure(course/'DICOM/RTSTRUCT/rs.dcm')
+    assert dvh.dvh_for_course(course, parallel_workers=1)
+    assert (course/'dvh_curves.json').is_file()
+    analytic_dose(course/'DICOM/RTDOSE/dose.dcm', 1.1)
+    # Explicit rebuild isolates publication behavior from filesystem timestamp
+    # precision and keeps this test focused on stale-curve invalidation.
+    dvh._invalidate_dvh_outputs(course)
+    assert dvh.dvh_for_course(course, parallel_workers=1)
+    assert not (course/'dvh_curves.json').exists()
