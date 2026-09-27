@@ -55,6 +55,7 @@ DVH_MEASUREMENT_CODE_SOURCES = (
     "custom_structures_rtstruct.py",
     "dvh.py",
     "dvh_support.py",
+    "dvh_rotation.py",
     "prescription.py",
     "rt_details.py",
     "rtstruct_geometry.py",
@@ -2461,6 +2462,7 @@ def _write_dvh_qc(
     dose_plan_scope: DVHDosePlanScope | None = None,
     isocenter_geometry: CourseTreatmentIsocenterGeometry | None = None,
     plan_target_reconciliation: Mapping[str, object] | None = None,
+    dose_grid_resampling: Mapping[str, object] | None = None,
 ) -> None:
     present: set[str] = set()
     partial: set[str] = set()
@@ -2511,6 +2513,8 @@ def _write_dvh_qc(
         "row_count": int(len(df)),
         "course_contract_sha256": _contract_digest(course_dir),
     }
+    if dose_grid_resampling is not None:
+        payload["dose_grid_resampling"] = dict(dose_grid_resampling)
     if rx_dose_gy is not None and rx_dose_gy > 0:
         payload["rx_dose_gy"] = float(rx_dose_gy)
     if rx_source == "none":
@@ -3101,6 +3105,7 @@ def _compute_nifti_based_dvh(
     dose_response_eligible: bool = True,
     dose_response_ineligibility_reason: str | None = None,
     derived_mask_output_dir: Path | None = None,
+    rotated_grid=None,
 ) -> List[Dict]:
     """Compute DVH for TotalSegmentator and custom composite structures directly from NIfTI masks.
 
@@ -3149,23 +3154,26 @@ def _compute_nifti_based_dvh(
 
     ct_spacing = ct_image.GetSpacing()  # (x, y, z) mm
 
-    # --- Load RTDOSE and resample to CT grid ---
-    try:
-        dose_sitk = sitk.ReadImage(str(rd_path))
-    except Exception as exc:
-        logger.warning("NIfTI DVH: Failed to read RTDOSE: %s", exc)
-        return results
+    if rotated_grid is not None:
+        dose_ct_arr, grid_support_ct = rotated_grid.sample_image(ct_image)
+    else:
+        # --- Load RTDOSE and resample to CT grid ---
+        try:
+            dose_sitk = sitk.ReadImage(str(rd_path))
+        except Exception as exc:
+            logger.warning("NIfTI DVH: Failed to read RTDOSE: %s", exc)
+            return results
 
-    dose_grid_scaling = float(getattr(rtdose_ds, "DoseGridScaling", 1.0))
+        dose_grid_scaling = float(getattr(rtdose_ds, "DoseGridScaling", 1.0))
 
-    # Resample dose to CT geometry (linear interpolation)
-    dose_in_ct = sitk.Resample(
-        dose_sitk, ct_image,
-        sitk.Transform(), sitk.sitkLinear,
-        0.0, dose_sitk.GetPixelID(),
-    )
-    grid_support_ct = resample_grid_support(dose_sitk, ct_image)
-    dose_ct_arr = sitk.GetArrayFromImage(dose_in_ct).astype(np.float64) * dose_grid_scaling
+        # Resample dose to CT geometry (linear interpolation)
+        dose_in_ct = sitk.Resample(
+            dose_sitk, ct_image,
+            sitk.Transform(), sitk.sitkLinear,
+            0.0, dose_sitk.GetPixelID(),
+        )
+        grid_support_ct = resample_grid_support(dose_sitk, ct_image)
+        dose_ct_arr = sitk.GetArrayFromImage(dose_in_ct).astype(np.float64) * dose_grid_scaling
     max_dose_gy = float(np.max(dose_ct_arr)) if dose_ct_arr.size > 0 else 0.0
     ct_voxel_vol_cm3 = (ct_spacing[0] * ct_spacing[1] * ct_spacing[2]) / 1000.0
 
@@ -3239,6 +3247,10 @@ def _compute_nifti_based_dvh(
             )
             if metrics is None:
                 continue
+            if rotated_grid is not None:
+                from .dvh_rotation import add_brachy_metrics_from_values
+                metrics = add_brachy_metrics_from_values(
+                    dose_values, ct_voxel_vol_cm3, max_dose_gy, metrics)
 
             target_like = _is_target_structure(name)
             zero_qc = _near_zero_dose_geometry_qc(
@@ -3251,6 +3263,9 @@ def _compute_nifti_based_dvh(
             covered_values = dose_ct_arr[mask_zyx & grid_support_ct]
             covered = (_compute_metrics_from_arrays(covered_values, ct_voxel_vol_cm3, max_dose_gy, rx_est)
                        if coverage["status"] == "partial_grid" else None)
+            if rotated_grid is not None and covered is not None:
+                covered = add_brachy_metrics_from_values(
+                    covered_values, ct_voxel_vol_cm3, max_dose_gy, covered)
             if zero_qc["trigger_metric"] is not None:
                 zero_qc["status"] = {"fully_covered": "zero_dose_in_grid",
                                      "partial_grid": "zero_dose_partly_inside_dose_grid",
@@ -3525,6 +3540,20 @@ def dvh_for_course(
             logger.error("Failed to read RP/RD even with force=True: %s", e)
             return None
 
+    from .dvh_rotation import prepare_rotated_dose, DoseOrientationError, add_brachy_metrics
+    rotated_grid = None
+    rotation_error = None
+    rotation_metadata = None
+    try:
+        rotated_grid = prepare_rotated_dose(rtdose)
+        if rotated_grid is not None:
+            rotation_metadata = rotated_grid.provenance
+    except DoseOrientationError as exc:
+        rotation_error = str(exc)
+        rotation_metadata = {"status": "refused", "reason": rotation_error,
+                             "original_orientation": [float(v) for v in
+                                 getattr(rtdose, "ImageOrientationPatient", [])]}
+
     results: List[Dict] = []
 
     try:
@@ -3570,9 +3599,15 @@ def dvh_for_course(
             rtstruct_sop_uid,
             rtstruct_path,
         ) = task
-        coverage = rtstruct_grid_coverage(geometry_rtstruct_ds, int(roi_number), rtdose)
+        coverage = (rotated_grid.coverage(geometry_rtstruct_ds, int(roi_number))
+                    if rotated_grid is not None else
+                    rtstruct_grid_coverage(geometry_rtstruct_ds, int(roi_number), rtdose))
         try:
-            abs_dvh = dvhcalc.get_dvh(rtstruct_ds, rtdose, roi_number)
+            if rotation_error:
+                raise DoseOrientationError(rotation_error)
+            abs_dvh = (rotated_grid.get_dvh(rtstruct_ds, roi_number)
+                       if rotated_grid is not None else
+                       dvhcalc.get_dvh(rtstruct_ds, rtdose, roi_number))
         except Exception as exc:
             logger.error("DVH failed for ROI %s: %s", roi_name, exc)
             failed = annotate_dvh_metrics(
@@ -3596,14 +3631,20 @@ def dvh_for_course(
                 roi_name, abs_dvh.volume,
             )
         metrics = _compute_metrics(abs_dvh, rx_value)
+        if rotated_grid is not None:
+            metrics = add_brachy_metrics(abs_dvh, metrics)
         if metrics is None:
             metrics = {"DmeanGy": None, "DmaxGy": None, "DminGy": None,
                        "D0.03ccGy": None, "D0.03cc_status": "not_computable",
                        "Volume (cm³)": coverage.get("roi_volume_cm3")}
         covered = None
         if coverage["status"] == "partial_grid":
-            covered_dvh = dvhcalc.get_dvh(rtstruct_ds, rtdose, roi_number, calculate_full_volume=False)
+            covered_dvh = (rotated_grid.get_dvh(rtstruct_ds, roi_number, calculate_full_volume=False)
+                           if rotated_grid is not None else
+                           dvhcalc.get_dvh(rtstruct_ds, rtdose, roi_number, calculate_full_volume=False))
             covered = _compute_metrics(covered_dvh, rx_value)
+            if rotated_grid is not None:
+                covered = add_brachy_metrics(covered_dvh, covered)
         target_like = _is_target_structure(roi_name, roi_interpreted_type)
         zero_qc = _near_zero_dose_geometry_qc(
             metrics,
@@ -3695,7 +3736,7 @@ def dvh_for_course(
         # Use cached snap if we've already snapped this RS+dose combination
         dose_sop_uid = str(getattr(rtdose, "SOPInstanceUID", ""))
         snap_key = (rs_path, dose_sop_uid)
-        if snap_key not in snap_cache:
+        if rotated_grid is None and rotation_error is None and snap_key not in snap_cache:
             snap_rtstruct_to_dose_grid(rtstruct, rtdose)
             snap_cache[snap_key] = True
 
@@ -3834,12 +3875,13 @@ def dvh_for_course(
     # --- Direct NIfTI-based DVH for TotalSegmentator + custom structures ---
     # Bypasses RTStructBuilder to avoid geometry mismatches from duplicate CT slices
     existing_roi_names = {r.get("ROI_OriginalName", r.get("ROI_Name", "")) for r in results}
-    if structure_resolution.allow_nifti_direct:
+    if structure_resolution.allow_nifti_direct and rotation_error is None:
         nifti_results = _compute_nifti_based_dvh(
             course_dir=course_dir,
             custom_structures_config=custom_structures_config,
             rtdose_ds=rtdose,
             rd_path=rd,
+            rotated_grid=rotated_grid,
             rx_est=rx_est,
             existing_roi_names=existing_roi_names,
             technique=treatment_technique,
@@ -3966,6 +4008,10 @@ def dvh_for_course(
             logger.warning("Failed to save DVH curves JSON: %s", e)
 
     for row in clean_results:
+        if rotation_metadata is not None:
+            row["dose_grid_resampling_status"] = (
+                "refused" if rotation_error else rotation_metadata["method"])
+            row["dose_grid_rotation_angle_degrees"] = rotation_metadata.get("rotation_angle_degrees")
         row["Dose_Grid_Semantics"] = dose_resolution.dose_grid_semantics
         row["Dose_Plan_Scope_Status"] = dose_plan_scope.status
         row["Dose_Plan_Scope_Reason"] = dose_plan_scope.reason
@@ -4098,5 +4144,6 @@ def dvh_for_course(
         dose_plan_scope=dose_plan_scope,
         isocenter_geometry=isocenter_geometry,
         plan_target_reconciliation=plan_target_reconciliation,
+        dose_grid_resampling=rotation_metadata,
     )
     return out_xlsx
