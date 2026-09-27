@@ -16,6 +16,7 @@ import os
 from pathlib import Path
 import shutil
 import tempfile
+import warnings
 from collections import Counter
 
 from .course_contract import CourseContract, _ct_provenance, load_course_contract, validate_course_contract
@@ -126,7 +127,10 @@ def _repair_candidate(course, candidate, completion, selection, excluded):
     provenance = case['course_contract']['planning_ct']['nifti_provenance']
     for key in ('series_instance_uid', 'sop_hash', 'geometry', 'nifti_geometry', 'nifti_sha256', 'instance_selection'):
         provenance[key] = metadata[key]
-    case.update(_planning_ct_summary(ct))
+    summary = _planning_ct_summary(ct)
+    if not summary:
+        _refuse('ct_localizer_metadata_summary_failed')
+    case.update(summary)
     _json(case_path, case)
     # Organize serializes the complete JSON metadata row into this workbook.
     workbook = candidate / 'metadata/case_metadata.xlsx'
@@ -258,11 +262,17 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
     # Reports expose counts and stable reason codes only. Library exceptions and
     # DICOM converter logging must never disclose identifiers through this CLI.
+    import SimpleITK as sitk
     previous = logging.root.manager.disable
+    previous_warnings = sitk.ProcessObject.GetGlobalWarningDisplay()
     logging.disable(logging.CRITICAL)
+    sitk.ProcessObject.SetGlobalWarningDisplay(False)
     try:
-        result = repair_output(args.output_dir, courses=args.course, dry_run=args.dry_run)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            result = repair_output(args.output_dir, courses=args.course, dry_run=args.dry_run)
     finally:
         logging.disable(previous)
+        sitk.ProcessObject.SetGlobalWarningDisplay(previous_warnings)
     print(json.dumps(result, sort_keys=True))
     return 1 if result['refused'] else 0

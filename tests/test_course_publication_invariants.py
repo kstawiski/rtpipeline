@@ -51,8 +51,12 @@ BASE_FUNCTION_AST_SHA256 = {
 # evidence to the sidecar and authoritative RTSTRUCT, and carries refusal codes.
 # Dose/delivery definitions above are unchanged; CT behavior is covered by
 # test_ct_series_hygiene.py and the existing CT-header equivalence tests.
+# RF12: optional planning-CT localizer exclusion evidence is checked against
+# retained DICOM and authoritative RTSTRUCT references. Dose/delivery definitions
+# remain pinned above; test_planning_ct_localizers.py covers the new CT gate and
+# proves clean organize output bytes equal 879f225 with fixed clocks.
 BASE_MODULE_SHA256 = {
-    "course_contract.py": "09e33ff1a960db6fd48dac9be9cd4049ac350647a60b6a9257642708ace9e814",
+    "course_contract.py": "a4ff08edb868a58bf457a9fc88da38e8e15f0d66c1ad81f3c8e2c5022772902f",
     "prescription.py": "723c8657c60f48c50b0d31decf0eb458c93d435f597c56724ee748c1b264ce7a",
     "plan_approval.py": "fc213a8ef85e9ec2698c6bfec7bee3877df61b6b7d835257038cd2a470c21aed",
 }

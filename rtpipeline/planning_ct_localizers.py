@@ -166,9 +166,15 @@ def validate_selection(ct_dir: Path, rtstruct: Path | None, evidence: dict[str, 
         excluded = evidence["excluded_instances"]
         dropped = [item["sop_instance_uid"] for item in excluded]
         refs = rtstruct_image_references(rtstruct)
+        for field in ("SeriesInstanceUID", "FrameOfReferenceUID", "StudyInstanceUID"):
+            values = {str(getattr(ds, field, "")) for _, ds in entries}
+            if len(values) != 1 or "" in values:
+                raise ValueError("inconsistent retained identity")
         if (evidence.get("method") != METHOD or evidence.get("reason") != "localizer_image_type"
                 or evidence.get("status") != "excluded" or not dropped
-                or len(set(dropped)) != len(dropped) or set(dropped) & set(kept)
+                or len(set(kept)) != len(kept) or len(set(dropped)) != len(dropped)
+                or not all(isinstance(uid, str) and uid for uid in dropped)
+                or set(dropped) & set(kept)
                 or any(item["reason_code"] != "localizer_image_type" for item in excluded)
                 or evidence.get("kept_sop_instance_uids") != kept
                 or evidence.get("kept_instance_count") != len(kept)
