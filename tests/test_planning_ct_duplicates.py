@@ -120,6 +120,11 @@ def test_unsafe_duplicate_repair_refuses_without_changes(tmp_path, dcm2niix, pro
     paths, added = _copies(course, differing=problem == 'pixels')
     if problem == 'references':
         _rtstruct(course / 'RS.dcm', paths + added)
+    if problem == 'interleaved':
+        for path in paths + added:
+            ds = pydicom.dcmread(path)
+            ds.ImagePositionPatient[2] /= 5.0  # 1 mm grid, then 0.412/0.588 mm interleaving.
+            ds.save_as(path, enforce_file_format=True)
     if problem in ('interleaved', 'near_position', 'acquisition'):
         for path in added:
             ds = pydicom.dcmread(path)
@@ -315,3 +320,19 @@ def test_cli_rederivation_prints_only_identifier_free_json(tmp_path, dcm2niix):
         assert str(root) not in completed.stdout and 'SYNTH' not in completed.stdout
         if args:
             assert _files_and_mtimes(root) == before
+
+
+def test_exact_position_comparison_does_not_round_small_offsets_to_zero(tmp_path):
+    ct = tmp_path / 'ct'
+    paths = write_ct_series(ct, uniform_z_positions(), signed=False)
+    _localizer(paths)
+    ds = pydicom.dcmread(paths[0])
+    ds.SOPInstanceUID = generate_uid()
+    ds.file_meta.MediaStorageSOPInstanceUID = ds.SOPInstanceUID
+    # Squaring this nonzero distance in a Euclidean norm underflows to zero.
+    # Exact-position publication must retain it and refuse the irregular volume.
+    ds.ImagePositionPatient[2] = 1e-200
+    ds.save_as(ct / 'near.dcm', enforce_file_format=True)
+    rs = _rtstruct(tmp_path / 'RS.dcm', paths)
+    with pytest.raises(PlanningCTLocalizerError, match='ct_localizer_inconsistent_volume_positions'):
+        select_localizers(ct, rs)
