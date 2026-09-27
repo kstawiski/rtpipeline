@@ -11,9 +11,12 @@ with trilinear interpolation in the ORIGINAL grid, without integer requantizing.
 Support is the closed original node box, not the enlarged destination box and
 not dose > 0. Outside samples are masked, never interpreted as measured zero.
 
-For DVHs, destination XY planes are sampled on demand at the actual contour Z.
-This avoids both contour snapping and a second interpolation through resampled
-Z planes. Each contour plane represents the slab bounded by adjacent plane
+For axial contours, destination XY planes are sampled at the actual contour Z.
+Tilted contours use a native-plane mask: a local orthonormal XY lattice is
+mapped back into patient coordinates before sampling the original dose. This
+keeps each original contour point in its physical plane, with no flattening,
+contour snapping or second dose interpolation. Parallel contour planes must be
+within 1 degree of axial; planarity/grouping tolerance is 0.001 mm. Each contour plane represents the slab bounded by adjacent plane
 midpoints; the endpoints extend by half their adjacent interval. This equals
 dicompyler's slice thickness for uniform planes and does not assign a tiny
 near-duplicate interval to every slice. Rasterization, 1 cGy histograms and
@@ -124,7 +127,9 @@ class RotatedDoseGrid:
             "orthonormal_tolerance": ORTHONORMAL_TOLERANCE,
             "interpolation": "trilinear_in_original_patient_geometry",
             "outside_original_grid": "not_covered_masked",
-            "contour_plane_sampling": "original_patient_z_without_snapping_or_second_interpolation",
+            "contour_plane_sampling": "native_planar_mask_mapped_to_patient_coordinates",
+            "contour_planarity_tolerance_mm": 0.001,
+            "contour_tilt_tolerance_degrees": 1.0,
             "contour_volume_integration": "adjacent_plane_midpoint_slabs_half_interval_end_extension",
             "max_node_displacement_mm": float(np.linalg.norm(corners @ (basis-nearest).T, axis=1).max()),
             "max_node_displacement_definition": "displacement_if_orientation_were_snapped_about_original_origin",
@@ -210,16 +215,49 @@ class RotatedDoseGrid:
 
         rtss = dicomparser.DicomParser(structure)
         item = rtss.GetStructures()[roi]
-        # dicompyler groups contours under Z rounded to 0.01 mm. Keep its
-        # grouping, but recover the actual plane position for interpolation.
-        # Ambiguous/non-axial contours cannot support this axial rasterizer.
+        # Read the original triples, not dicompyler's rounded Z keys. Some TPS
+        # rotate the RTSTRUCT together with RTDOSE even when CT is axial.
+        contours = [contour for group in rtss.GetStructureCoordinates(roi).values()
+                    for contour in group]
+        polygons = []
+        for contour in contours:
+            points = np.asarray(contour["data"], dtype=float)
+            if contour["type"] not in {"CLOSED_PLANAR", "CLOSEDPLANAR_XOR"}:
+                raise DoseOrientationError("rotated_dose_unsupported_contour_geometry")
+            if len(np.unique(points, axis=0)) < 3:
+                continue
+            if points.shape[1:] != (3,) or not np.isfinite(points).all():
+                raise DoseOrientationError("rotated_dose_invalid_contour_coordinates")
+            polygons.append(points)
+        if not polygons:
+            raise DoseOrientationError("rotated_dose_insufficient_contour_planes_for_volume")
+        _, singular, axes = np.linalg.svd(polygons[0]-polygons[0].mean(axis=0), full_matrices=False)
+        if singular[1] <= 1e-9:
+            raise DoseOrientationError("rotated_dose_degenerate_contour_plane")
+        normal = axes[-1]
+        if normal[2] < 0:
+            normal = -normal
+        tilt = float(np.degrees(np.arccos(np.clip(normal[2], -1, 1))))
+        if tilt > MAX_ROTATION_DEGREES + 1e-8:
+            raise DoseOrientationError("rotated_dose_contour_tilt_exceeds_1_degree")
+        u = np.array([1., 0., 0.])-normal*normal[0]
+        u /= np.linalg.norm(u)
+        frame = np.column_stack((u, np.cross(normal, u), normal))
+        if np.allclose(frame, np.eye(3), atol=1e-12, rtol=0):
+            frame = np.eye(3)
+        axial = np.array_equal(frame, np.eye(3))
+        local_polygons = []
+        for points in polygons:
+            local = points @ frame
+            if np.ptp(local[:, 2]) > .001:
+                raise DoseOrientationError("rotated_dose_nonparallel_or_nonplanar_contours")
+            local_polygons.append((float(np.mean(local[:, 2])), local))
         planes = {}
-        for group in rtss.GetStructureCoordinates(roi).values():
-            z = float(group[0]["data"][0][2])
-            for contour in group:
-                if any(abs(float(point[2])-z) > 1e-6 for point in contour["data"]):
-                    raise DoseOrientationError("rotated_dose_non_axial_or_ambiguous_contour_planes")
-            planes[z] = group
+        for z, local in sorted(local_polygons, key=lambda item: item[0]):
+            if planes and abs(z-next(reversed(planes))) <= .001:
+                z = next(reversed(planes))
+            planes.setdefault(z, []).append({"data": local.tolist(), "type": "CLOSED_PLANAR",
+                                            "num_points": len(local)})
         zs = np.array(sorted(planes), dtype=float)
         if len(zs) < 2:
             raise DoseOrientationError("rotated_dose_insufficient_contour_planes_for_volume")
@@ -227,7 +265,17 @@ class RotatedDoseGrid:
         weights = np.r_[intervals[0], (intervals[:-1]+intervals[1:])/2, intervals[-1]]
         parser = PatientGridParser(self.dataset)
         dd, image = parser.GetDoseData(), parser.GetImageData()
-        xx, yy = np.meshgrid(dd["lut"][0], dd["lut"][1])
+        if axial:
+            x, y = self.x, self.y
+        else:
+            corners = np.array(list(product(*[(0., float(n-1)) for n in self.shape]))) * self.step
+            local_corners = (self.origin + corners @ self.basis.T) @ frame
+            lower, upper = local_corners.min(axis=0), local_corners.max(axis=0)
+            shape = np.ceil((upper-lower)/self.target_spacing).astype(int)+1
+            x = lower[0]+np.arange(shape[0])*self.target_spacing[0]
+            y = lower[1]+np.arange(shape[1])*self.target_spacing[1]
+        dd.update(lut=(x, y), rows=len(y), columns=len(x))
+        xx, yy = np.meshgrid(x, y)
         points = np.column_stack((xx.ravel(), yy.ravel()))
         maxdose = int(dd["dosemax"] * dd["dosegridscaling"] * 100) + 1
         histogram = np.zeros(maxdose)
@@ -236,18 +284,21 @@ class RotatedDoseGrid:
         # _calculate_dvh otherwise applies the MINIMUM spacing to every plane.
         for z, weight in zip(zs, weights):
             item["thickness"] = float(weight)
+            doseplane = (parser.GetDoseGrid(z) if axial else self.sample(
+                np.stack((xx, yy, np.full_like(xx, z)), axis=-1) @ frame.T))
             counts, volume_mm3 = dvhcalc.calculate_plane_histogram(
-                planes[z], parser.GetDoseGrid(z), points, maxdose, dd, image, item,
-                np.zeros(maxdose))
+                planes[z], doseplane, points, maxdose, dd, image, item, np.zeros(maxdose))
             if counts.sum():
                 histogram += counts * (volume_mm3 / counts.sum() / 1000.)
         histogram = np.trim_zeros(histogram, trim="b")
         if not histogram.size:
             histogram = np.array([0.])
-        return dvh.DVH(counts=histogram,
-                       bins=(np.arange(0, 2) if histogram.size == 1 else
-                             np.arange(histogram.size+1)/100),
-                       dvh_type="differential", dose_units="Gy", name=item["name"]).cumulative
+        result = dvh.DVH(counts=histogram,
+                         bins=(np.arange(0, 2) if histogram.size == 1 else
+                               np.arange(histogram.size+1)/100),
+                         dvh_type="differential", dose_units="Gy", name=item["name"]).cumulative
+        result.notes = {"contour_plane_tilt_degrees": tilt}
+        return result
 
     def coverage(self, structure, roi):
         from .dvh import (_dose_grid_contour_coordinates, _polygon_intersects_box)
@@ -275,6 +326,7 @@ def add_brachy_metrics(histogram, metrics):
     if metrics is None:
         return None
     from .dvh import _bounded_dose_at_fraction, _small_volume_dose
+    metrics["dose_grid_contour_plane_tilt_degrees"] = histogram.notes["contour_plane_tilt_degrees"]
     metrics["D90Gy"] = _bounded_dose_at_fraction(
         histogram.bincenters, histogram.counts, .90, histogram.min, histogram.max)
     metrics["D2ccGy"], metrics["D2cc_status"] = _small_volume_dose(

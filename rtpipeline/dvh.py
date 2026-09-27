@@ -3565,6 +3565,10 @@ def dvh_for_course(
                              "rotation_angle_degrees": exc.rotation_angle_degrees,
                              "rotation_tolerance_degrees": MAX_ROTATION_DEGREES}
 
+    if rotation_metadata is not None:
+        # A refused/empty rotated rebuild must not leave curves from an older run.
+        (course_dir / "dvh_curves.json").unlink(missing_ok=True)
+
     results: List[Dict] = []
 
     try:
@@ -4028,7 +4032,7 @@ def dvh_for_course(
             row["dose_grid_rotation_angle_degrees"] = rotation_metadata.get("rotation_angle_degrees")
             row["dose_grid_sampling_lattice"] = (
                 "ct_voxel_centres" if row.get("Segmentation_Source") == "NIfTI_Direct"
-                else "patient_xy_at_original_contour_z")
+                else "native_contour_plane_in_patient_coordinates")
         row["Dose_Grid_Semantics"] = dose_resolution.dose_grid_semantics
         row["Dose_Plan_Scope_Status"] = dose_plan_scope.status
         row["Dose_Plan_Scope_Reason"] = dose_plan_scope.reason
