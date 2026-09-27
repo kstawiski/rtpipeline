@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+from contextlib import contextmanager
 import errno
 import fcntl
 import json
@@ -17,6 +18,7 @@ import logging
 import os
 from pathlib import Path
 import shutil
+import sys
 import tempfile
 import warnings
 from collections import Counter
@@ -117,9 +119,35 @@ def _relative(contract, path):
         _refuse('ct_localizer_unsafe_course_path')
 
 
+@contextmanager
+def _quiet_converter_output():
+    """dcm2niix inherits stdout/stderr; its filenames must not escape repair.
+
+    The repair command is serial. Redirect descriptors as well as Python
+    streams because the existing converter starts a native subprocess.
+    """
+    sys.stdout.flush()
+    sys.stderr.flush()
+    saved = [os.dup(fd) for fd in (1, 2)]
+    try:
+        with open(os.devnull, 'w') as sink:
+            for fd in (1, 2):
+                os.dup2(sink.fileno(), fd)
+            try:
+                yield
+            finally:
+                sys.stdout.flush()
+                sys.stderr.flush()
+    finally:
+        for fd, original in zip((1, 2), saved):
+            os.dup2(original, fd)
+            os.close(original)
+
+
 def _repair_candidate(course, candidate, completion, selection, excluded):
     from .organize import _planning_ct_summary, _original_segmentation_provenance
-    from .segmentation import _collect_series_metadata
+    from .segmentation import _collect_series_metadata, _ensure_ct_nifti
+    from .config import PipelineConfig
 
     original = load_course_contract(course)
     old_provenance = original.planning_ct['nifti_provenance']
@@ -130,7 +158,6 @@ def _repair_candidate(course, candidate, completion, selection, excluded):
     ct, nifti, sidecar = (candidate / p for p in (ct_relative, nifti_relative, sidecar_relative))
     for path in excluded:
         (candidate / path.relative_to(course)).unlink()
-    verify_volume(ct, nifti)
     existing = json.loads(sidecar.read_text(encoding='utf-8'))
     if existing.get('instance_selection') is not None:
         _refuse('ct_localizer_inconsistent_evidence')
@@ -138,10 +165,50 @@ def _repair_candidate(course, candidate, completion, selection, excluded):
     # rather than silently overwrite a decision made by another repair method.
     if existing.get('nifti_conversion') is not None:
         _refuse('ct_localizer_existing_conversion_selection')
+    rederived = False
+    conversion = None
+    try:
+        verify_volume(ct, nifti)
+    except PlanningCTLocalizerError:
+        # Use precisely organize's converter and RF10/R10d fallback chain in a
+        # fresh directory. Never write through the candidate's NIfTI hardlink.
+        with tempfile.TemporaryDirectory(prefix='rederive-', dir=candidate.parent) as work:
+            output = Path(work)
+            config = PipelineConfig(dicom_root=ct, output_root=output, logs_root=output)
+            if shutil.which(config.dcm2niix_cmd) is None:
+                _refuse('ct_localizer_converter_unavailable')
+            with _quiet_converter_output():
+                generated = _ensure_ct_nifti(
+                    config, ct, output, dcm2niix_depth=0,
+                    authoritative_rtstruct=candidate / _relative(original, original.authoritative_rtstruct_path))
+            if generated is None:
+                _refuse('ct_localizer_volume_conversion_failed')
+            verify_volume(ct, generated)
+            generated_sidecar = generated.with_name(generated.name[:-7] + '.metadata.json')
+            conversion = json.loads(generated_sidecar.read_text()).get('nifti_conversion')
+            # Preserve the published NIfTI path (including uncompressed .nii).
+            if nifti.name.endswith('.nii'):
+                import gzip
+                nifti.unlink()
+                with gzip.open(generated, 'rb') as source, nifti.open('wb') as target:
+                    shutil.copyfileobj(source, target)
+            else:
+                os.replace(generated, nifti)
+            verify_volume(ct, nifti)
+        rederived = True
     metadata = _collect_series_metadata(ct)
     metadata.update(_ct_provenance(ct))
-    annotate(metadata, course / nifti_relative, course / ct_relative,
-             regenerated=False, existing_sidecar=existing)
+    annotate(metadata, nifti, ct, regenerated=rederived, existing_sidecar=existing)
+    metadata['nifti_path'] = str(course / nifti_relative)
+    metadata['source_directory'] = str(course / ct_relative)
+    if conversion is not None:
+        metadata['nifti_conversion'] = conversion
+    selection['nifti_repair'] = {
+        'status': 'rederived' if rederived else 'preserved',
+        'previous_nifti_sha256': old_provenance['nifti_sha256'],
+        'segmentation_outputs': ('stale_left_in_place' if rederived
+                                 else 'unchanged_grid_original_masks_rebound'),
+    }
     metadata['instance_selection'] = selection
     _json(sidecar, metadata)
     case_path = candidate / 'metadata/case_metadata.json'
@@ -149,6 +216,9 @@ def _repair_candidate(course, candidate, completion, selection, excluded):
     provenance = case['course_contract']['planning_ct']['nifti_provenance']
     for key in ('series_instance_uid', 'sop_hash', 'geometry', 'nifti_geometry', 'nifti_sha256', 'instance_selection'):
         provenance[key] = metadata[key]
+    for key in ('nifti_path', 'source_directory', 'generated_at', 'nifti_generated_at', 'nifti_conversion'):
+        if key in metadata:
+            provenance[key] = metadata[key]
     summary = _planning_ct_summary(ct)
     if not summary:
         _refuse('ct_localizer_metadata_summary_failed')
@@ -160,11 +230,12 @@ def _repair_candidate(course, candidate, completion, selection, excluded):
         import pandas as pd
         workbook.unlink()
         pd.DataFrame([case]).to_excel(workbook, index=False)
-    # Original masks are on the unchanged NIfTI grid. Rebind their CT provenance
-    # only after the old record and exact volume equality have been checked.
+    # Rebind original masks only when their NIfTI is unchanged. A re-derived
+    # NIfTI makes every existing segmentation output stale; leave those bytes
+    # and their old provenance intact for the workflow rerun via .organized.
     old_masks = _original_segmentation_provenance(original.authoritative_rtstruct_path,
-                                                  original.planning_ct_nifti)
-    for path in candidate.glob('Segmentation_Original/**/provenance.json'):
+                                                  original.planning_ct_nifti) if not rederived else None
+    for path in ([] if rederived else candidate.glob('Segmentation_Original/**/provenance.json')):
         record = json.loads(path.read_text(encoding='utf-8'))
         if not old_masks or record != old_masks:
             _refuse('ct_localizer_original_mask_evidence_mismatch')
@@ -189,9 +260,10 @@ def _repair_candidate(course, candidate, completion, selection, excluded):
     _json(dependency, completion['configuration_dependency'])
     write_stage_completion_sentinel(candidate, candidate / '.organized', stage='organize',
                                     status='ok', configuration_dependency=dependency)
+    return rederived
 
 
-def repair_course(course: Path, *, dry_run=False, two_step=False) -> tuple[str, int]:
+def repair_course(course: Path, *, dry_run=False, two_step=False, details=None) -> tuple[str, int]:
     """Repair one ledger-selected course; no mutation on refusal or dry-run."""
     leftover = None
     try:
@@ -224,7 +296,14 @@ def repair_course(course: Path, *, dry_run=False, two_step=False) -> tuple[str, 
                 candidate = Path(work) / course.parent.name / course.name
                 candidate.parent.mkdir()
                 shutil.copytree(course, candidate, copy_function=_link_or_copy)
-                _repair_candidate(course, candidate, completion, selection, excluded)
+                rederived = _repair_candidate(course, candidate, completion, selection, excluded)
+                if details is not None:
+                    details.update(
+                        nifti_rederived=rederived,
+                        localizers=sum(item['reason_code'] == 'localizer_image_type'
+                                       for item in selection['excluded_instances']),
+                        duplicates=sum(item['reason_code'] == 'identical_rescaled_duplicate_position'
+                                       for item in selection['excluded_instances']))
                 if _snapshot(course) != before:
                     _refuse('ct_localizer_course_changed_during_repair')
                 if dry_run:
@@ -254,7 +333,10 @@ def repair_output(output_dir: Path, *, courses: list[str] | None = None, dry_run
                   two_step=False) -> dict:
     summary = {'validated_courses': 0, 'selected_courses': 0, 'repaired': 0,
                'would_repair': 0, 'unchanged': 0, 'refused': 0,
-               'localizers_excluded': 0, 'localizers_would_exclude': 0, 'reason_codes': {}}
+               'localizers_excluded': 0, 'localizers_would_exclude': 0,
+               'duplicates_excluded': 0, 'duplicates_would_exclude': 0,
+               'niftis_rederived': 0, 'niftis_would_rederive': 0,
+               'segmentation_outputs_stale_courses': 0, 'reason_codes': {}}
     reasons = Counter()
     try:
         root = Path(output_dir).absolute()
@@ -272,12 +354,18 @@ def repair_output(output_dir: Path, *, courses: list[str] | None = None, dry_run
         for entry in selected:
             try:
                 course = _safe_course(root, entry['patient'], entry['course'])
-                status, count = repair_course(course, dry_run=dry_run, two_step=two_step)
+                details = {}
+                status, count = repair_course(course, dry_run=dry_run, two_step=two_step, details=details)
                 summary[status] += 1
                 if status == 'repaired':
-                    summary['localizers_excluded'] += count
+                    summary['localizers_excluded'] += details['localizers']
+                    summary['duplicates_excluded'] += details['duplicates']
+                    summary['niftis_rederived'] += int(details['nifti_rederived'])
+                    summary['segmentation_outputs_stale_courses'] += int(details['nifti_rederived'])
                 elif status == 'would_repair':
-                    summary['localizers_would_exclude'] += count
+                    summary['localizers_would_exclude'] += details['localizers']
+                    summary['duplicates_would_exclude'] += details['duplicates']
+                    summary['niftis_would_rederive'] += int(details['nifti_rederived'])
             except PlanningCTLocalizerError as exc:
                 summary['refused'] += 1
                 reasons[exc.reason_code] += 1
@@ -292,7 +380,7 @@ def repair_output(output_dir: Path, *, courses: list[str] | None = None, dry_run
 
 
 def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(description='Repair planning CT localizers in validated organized courses')
+    parser = argparse.ArgumentParser(description='Repair planning CT localizers and identical duplicate positions in validated courses')
     parser.add_argument('--output-dir', type=Path, required=True)
     parser.add_argument('--course', action='append', help='Select a validated patient/course; repeat as needed')
     parser.add_argument('--dry-run', action='store_true')
