@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import json
 import shutil
 from pathlib import Path
@@ -382,3 +383,61 @@ def test_cli_suppresses_library_identifier_warnings(monkeypatch, capsys, tmp_pat
     assert output.err == ''
     assert 'synthetic identifying text' not in output.out
     assert json.loads(output.out)['refused'] == 1
+
+
+def _exchange_unavailable(*args):
+    raise PlanningCTLocalizerError('ct_localizer_atomic_publish_unavailable')
+
+
+def test_repair_two_step_publish_only_when_allowed(tmp_path, dcm2niix, monkeypatch):
+    """NFS clients have no RENAME_EXCHANGE: refuse by default, publish by two renames on opt-in."""
+    from rtpipeline import repair_planning_ct_localizers as repair
+    from rtpipeline.stage_completion import validate_stage_completion_sentinel
+    root = tmp_path / 'Output'
+    affected = _organized_course(root, dcm2niix)
+    clean = _organized_course(root, dcm2niix, name='course_b', localizer=False)
+    monkeypatch.setattr(repair, '_exchange', _exchange_unavailable)
+    shared_before = _files_and_mtimes(root / '_COURSES')
+    clean_before = _files_and_mtimes(clean)
+    nifti = load_course_contract(affected).planning_ct_nifti
+    nifti_before = nifti.read_bytes()
+    before = _files_and_mtimes(root)
+    refused = repair.repair_output(root)
+    assert refused['refused'] == 1
+    assert refused['reason_codes'] == {'ct_localizer_atomic_publish_unavailable': 1}
+    assert _files_and_mtimes(root) == before
+    result = repair.repair_output(root, two_step=True)
+    assert result['repaired'] == 1 and result['unchanged'] == 1 and result['refused'] == 0
+    contract = load_course_contract(affected)
+    assert contract.planning_ct['nifti_provenance']['instance_selection']['excluded_instance_count'] == 1
+    assert _load(contract.planning_ct_dir).GetSize() == (20, 16, 12)
+    assert nifti.read_bytes() == nifti_before
+    validate_stage_completion_sentinel(affected / '.organized', expected_stage='organize')
+    assert _files_and_mtimes(clean) == clean_before
+    assert _files_and_mtimes(root / '_COURSES') == shared_before
+    assert not [p for p in (root / '_COURSES').iterdir() if p.name.startswith('.localizer-repair-')]
+    again = _files_and_mtimes(root)
+    assert repair.repair_output(root, two_step=True)['unchanged'] == 2
+    assert _files_and_mtimes(root) == again
+
+
+def test_repair_two_step_publish_rolls_back_a_failed_second_rename(tmp_path, dcm2niix, monkeypatch):
+    from rtpipeline import repair_planning_ct_localizers as repair
+    root = tmp_path / 'Output'
+    _organized_course(root, dcm2niix)
+    monkeypatch.setattr(repair, '_exchange', _exchange_unavailable)
+    real_rename = os.rename
+    calls = []
+
+    def flaky_rename(src, dst):
+        calls.append(1)
+        if len(calls) == 2:
+            raise OSError('injected failure of the second rename')
+        return real_rename(src, dst)
+
+    monkeypatch.setattr(repair.os, 'rename', flaky_rename)
+    before = _files_and_mtimes(root)
+    result = repair.repair_output(root, two_step=True)
+    assert result['refused'] == 1
+    assert _files_and_mtimes(root) == before
+    assert not [p for p in (root / '_COURSES').iterdir() if p.name.startswith('.localizer-repair-')]
