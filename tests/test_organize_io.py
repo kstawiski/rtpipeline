@@ -204,7 +204,10 @@ def test_organize_tree_matches_pinned_baseline(tmp_path, monkeypatch, caplog, co
     for course in courses_after:
         related = json.loads((course.dirs.metadata / 'case_metadata.json').read_text())['dicom_related_files']
         assert related == sorted(original_related[str(course.dirs.root)])
-    assert [asdict(course) for course in courses_after] == [asdict(course) for course in courses_before]
+    # The optional failure/conversion evidence field is new; ordinary course
+    # outputs retain the pinned baseline's values and have no such evidence.
+    expected_courses = [dict(asdict(course), planning_ct_conversion={}) for course in courses_before]
+    assert [asdict(course) for course in courses_after] == expected_courses
     assert asdict(snapshot_before['identity']) == asdict(snapshot_after['identity'])
     assert [asdict(row) for row in snapshot_before['results']] == [asdict(row) for row in snapshot_after['results']]
     assert snapshot_before['candidates'] == snapshot_after['candidates']

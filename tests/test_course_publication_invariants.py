@@ -47,8 +47,12 @@ BASE_FUNCTION_AST_SHA256 = {
 # parallel using a bounded thread pool (_read_ct_headers); contract validation
 # and provenance logic is identical and its equivalence against ae60f01 is
 # covered by test_contract_ct_headers.py.
+# Updated 2026-09-27: course_contract.py binds failed-CT hygiene selection
+# evidence to the sidecar and authoritative RTSTRUCT, and carries refusal codes.
+# Dose/delivery definitions above are unchanged; CT behavior is covered by
+# test_ct_series_hygiene.py and the existing CT-header equivalence tests.
 BASE_MODULE_SHA256 = {
-    "course_contract.py": "6c6c4329c2c8f6628fd531f96abd89455d524d61bb76c66967c11e41eddb7c91",
+    "course_contract.py": "09e33ff1a960db6fd48dac9be9cd4049ac350647a60b6a9257642708ace9e814",
     "prescription.py": "723c8657c60f48c50b0d31decf0eb458c93d435f597c56724ee748c1b264ce7a",
     "plan_approval.py": "fc213a8ef85e9ec2698c6bfec7bee3877df61b6b7d835257038cd2a470c21aed",
 }

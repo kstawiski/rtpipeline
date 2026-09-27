@@ -26,6 +26,11 @@ import numpy as np
 
 from .nifti_provenance import annotate as annotate_nifti_provenance
 from .nonuniform_ct_conversion import convert_nonuniform_unsigned_ct
+from .ct_series_hygiene import (
+    CTSeriesHygieneError,
+    METHOD as CT_HYGIENE_METHOD,
+    convert_ct_series_hygiene,
+)
 from .config import PipelineConfig
 from .course_contract import load_course_contract
 from .inventory import TS_TASK_BY_CLASS, manual_rtstruct_bindings_from_inventory, ts_tasks_for_image_class
@@ -924,6 +929,8 @@ def _ensure_ct_nifti(
     nifti_dir: Path,
     force: bool = False,
     dcm2niix_depth: int | None = None,
+    authoritative_rtstruct: Path | None = None,
+    conversion_evidence: dict[str, Any] | None = None,
 ) -> Optional[Path]:
     nifti_dir.mkdir(parents=True, exist_ok=True)
     metadata = _collect_series_metadata(ct_dir)
@@ -976,8 +983,19 @@ def _ensure_ct_nifti(
                 if fallback is not None:
                     generated, conversion = fallback
             if generated is None:
-                logger.error("dcm2niix failed for %s", ct_dir)
-                return None
+                try:
+                    generated, conversion = convert_ct_series_hygiene(
+                        ct_dir, tmp_dir,
+                        lambda source, out: run_dcm2niix(config, source, out, recursive_depth=0),
+                        authoritative_rtstruct,
+                    )
+                except CTSeriesHygieneError as exc:
+                    if conversion_evidence is not None:
+                        conversion_evidence.update(
+                            method=CT_HYGIENE_METHOD, status="refused", reason_code=exc.reason_code,
+                        )
+                    logger.error("CT conversion refused: %s", exc.reason_code)
+                    return None
             if target.exists():
                 target.unlink()
             shutil.move(str(generated), str(target))
@@ -987,6 +1005,8 @@ def _ensure_ct_nifti(
         conversion = existing_sidecar["nifti_conversion"]
     if conversion is not None:
         metadata["nifti_conversion"] = conversion
+        if conversion_evidence is not None:
+            conversion_evidence.update(conversion)
 
     annotate_nifti_provenance(
         metadata,
