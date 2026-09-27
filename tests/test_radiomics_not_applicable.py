@@ -310,6 +310,37 @@ def test_course_without_planning_ct_closes_radiomics_and_robustness_as_not_appli
         assert summary["stage_counts"][stage] == {"not_applicable": 1}
 
 
+def test_not_applicable_radiomics_is_published_by_the_pipeline_interpreter(
+    tmp_path, monkeypatch
+):
+    """The Snakemake interpreter carries no pydicom, so the wrapper must not
+    import the radiomics contract in-process (a no-planning-CT course was
+    otherwise closed as a radiomics failure)."""
+    course_dir = _segmented_course(tmp_path / "output" / "P1" / "C1", planning_ct=False)
+    configuration = _dependency(tmp_path, "radiomics")
+    monkeypatch.setattr(subprocess, "run", _no_stage_launch)
+    monkeypatch.setitem(sys.modules, "rtpipeline.radiomics_ct_contract", None)
+    _run_wrapper(
+        _stage_workflow(
+            tmp_path,
+            course_dir,
+            stage="radiomics",
+            sentinel=".radiomics_done",
+            configuration=configuration,
+        )
+    )
+    monkeypatch.undo()
+
+    radiomics = json.loads((course_dir / ".radiomics_done").read_text(encoding="utf-8"))
+    assert radiomics["status"] == NOT_APPLICABLE_STATUS
+    assert validate_not_applicable_completion_sentinel(
+        course_dir, configuration_dependency=configuration
+    ) == radiomics
+    record = _ledger_record(course_dir, "radiomics")
+    assert record["status"] == campaign_ledger.STATUS_NOT_APPLICABLE
+    assert "no planning CT" in record["detail"]
+
+
 def test_manifest_robustness_aggregation_accounts_for_not_applicable_course(
     tmp_path, monkeypatch
 ):
