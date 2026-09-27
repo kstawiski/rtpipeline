@@ -75,8 +75,8 @@ def test_organize_localizer_publication_and_reference_refusal(tmp_path, monkeypa
     ('referenced', 'ct_localizer_referenced_by_rtstruct'),
     ('no_rtstruct', 'ct_localizer_rtstruct_references_missing'),
     ('too_few', 'ct_localizer_insufficient_volume'),
-    ('mixed', 'ct_localizer_inconsistent_geometry'),
-    ('duplicate', 'ct_hygiene_duplicate_position_pixels_differ'),
+    ('mixed', 'ct_hygiene_references_span_geometry_partitions'),
+    ('duplicate', 'ct_hygiene_referenced_duplicate_would_be_excluded'),
 ])
 def test_ambiguous_localizer_selection_refused(tmp_path, case, reason):
     paths = write_ct_series(tmp_path / 'ct', uniform_z_positions(), signed=False)
@@ -99,7 +99,7 @@ def test_ambiguous_localizer_selection_refused(tmp_path, case, reason):
     assert _tree_digest(tmp_path) == before
 
 
-@pytest.mark.parametrize('revision', ['879f225', '51c7c65'])
+@pytest.mark.parametrize('revision', ['879f225', '51c7c65', 'fc53fea'])
 def test_clean_organize_outputs_byte_identical_to_baseline(tmp_path, monkeypatch, dcm2niix, revision):
     """Compare every output byte at one path with clocks fixed, no normalization."""
     import datetime
@@ -135,7 +135,22 @@ def test_clean_organize_outputs_byte_identical_to_baseline(tmp_path, monkeypatch
     cfg.dicom_root = root
     cfg.max_workers_override = 1
     cfg.dicom_copy_use_hardlinks = False
-    assert len(baseline.organize_and_merge(cfg, metadata_snapshot={})) == 4
+    with monkeypatch.context() as historical:
+        # Pin the helper implementations too: historical organize imports them
+        # dynamically, so swapping only organize would compare current helpers.
+        import rtpipeline
+        for name in ('ct_series_hygiene', 'planning_ct_localizers'):
+            saved = subprocess.run(['git', 'show', f'{revision}:rtpipeline/{name}.py'],
+                                   capture_output=True, text=True)
+            if saved.returncode:
+                continue  # RF10 predates the planning-publication helper.
+            module = types.ModuleType(f'rtpipeline.{name}')
+            module.__package__ = 'rtpipeline'
+            module.__file__ = str(Path(organize.__file__).with_name(name + '.py'))
+            historical.setitem(sys.modules, module.__name__, module)
+            historical.setattr(rtpipeline, name, module, raising=False)
+            exec(compile(saved.stdout, module.__file__, 'exec'), module.__dict__)
+        assert len(baseline.organize_and_merge(cfg, metadata_snapshot={})) == 4
     expected = _tree_digest(cfg.output_root)
     shutil.rmtree(cfg.output_root)
     assert len(organize.organize_and_merge(cfg, metadata_snapshot={})) == 4

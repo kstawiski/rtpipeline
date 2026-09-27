@@ -302,8 +302,11 @@ def repair_course(course: Path, *, dry_run=False, two_step=False, details=None) 
                         nifti_rederived=rederived,
                         localizers=sum(item['reason_code'] == 'localizer_image_type'
                                        for item in selection['excluded_instances']),
-                        duplicates=sum(item['reason_code'] == 'identical_rescaled_duplicate_position'
-                                       for item in selection['excluded_instances']))
+                        duplicates=sum(item['reason_code'] in ('identical_rescaled_duplicate_position',
+                                                               'unreferenced_duplicate_position')
+                                       for item in selection['excluded_instances']),
+                        geometry_partitions=sum(item['reason_code'] == 'unreferenced_geometry_partition'
+                                                for item in selection['excluded_instances']))
                 if _snapshot(course) != before:
                     _refuse('ct_localizer_course_changed_during_repair')
                 if dry_run:
@@ -335,6 +338,7 @@ def repair_output(output_dir: Path, *, courses: list[str] | None = None, dry_run
                'would_repair': 0, 'unchanged': 0, 'refused': 0,
                'localizers_excluded': 0, 'localizers_would_exclude': 0,
                'duplicates_excluded': 0, 'duplicates_would_exclude': 0,
+               'geometry_partition_instances_excluded': 0, 'geometry_partition_instances_would_exclude': 0,
                'niftis_rederived': 0, 'niftis_would_rederive': 0,
                'segmentation_outputs_stale_courses': 0, 'reason_codes': {}}
     reasons = Counter()
@@ -360,11 +364,13 @@ def repair_output(output_dir: Path, *, courses: list[str] | None = None, dry_run
                 if status == 'repaired':
                     summary['localizers_excluded'] += details['localizers']
                     summary['duplicates_excluded'] += details['duplicates']
+                    summary['geometry_partition_instances_excluded'] += details['geometry_partitions']
                     summary['niftis_rederived'] += int(details['nifti_rederived'])
                     summary['segmentation_outputs_stale_courses'] += int(details['nifti_rederived'])
                 elif status == 'would_repair':
                     summary['localizers_would_exclude'] += details['localizers']
                     summary['duplicates_would_exclude'] += details['duplicates']
+                    summary['geometry_partition_instances_would_exclude'] += details['geometry_partitions']
                     summary['niftis_would_rederive'] += int(details['nifti_rederived'])
             except PlanningCTLocalizerError as exc:
                 summary['refused'] += 1

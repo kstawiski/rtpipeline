@@ -75,13 +75,16 @@ def _pixels(path: Path) -> bytes:
 
 
 def select_duplicate_positions(group, refs, *, position_tolerance_mm=POSITION_TOLERANCE_MM,
-                               refuse_referenced=True, include_pixel_evidence=False):
+                               refuse_referenced=True, include_pixel_evidence=False,
+                               allow_referenced_differences=False):
     """Share RF10's pixel proof and deterministic tie break with publication.
 
     A zero tolerance requires exact numeric positions. Publication always
     protects referenced instances; RF10 retains its historical mixed-series gate.
+    Differing pixels require explicit opt-in and complete image-level authority.
     """
     excluded = []
+    differing = False
     # Prefer a referenced equivalent instance, then lowest InstanceNumber/UID.
     ordered = sorted(group, key=lambda item: (item["uid"] not in refs, item["instance"], item["uid"]))
     kept: list[dict] = []
@@ -95,20 +98,46 @@ def select_duplicate_positions(group, refs, *, position_tolerance_mm=POSITION_TO
         if matches:
             other = matches[0]
             retained_pixels = _pixels(other["path"])
-            if _pixels(item["path"]) != retained_pixels:
+            excluded_pixels = _pixels(item["path"])
+            different = excluded_pixels != retained_pixels
+            if different and not allow_referenced_differences:
                 raise CTSeriesHygieneError("ct_hygiene_duplicate_position_pixels_differ")
+            differing |= different
             if refuse_referenced and item["uid"] in refs:
                 raise CTSeriesHygieneError("ct_hygiene_referenced_duplicate_would_be_excluded")
             excluded.append({"sop_instance_uid": item["uid"],
-                             "reason_code": "identical_rescaled_duplicate_position",
+                             "reason_code": ("unreferenced_duplicate_position" if different else
+                                             "identical_rescaled_duplicate_position"),
                              "retained_sop_instance_uid": other["uid"]})
             if include_pixel_evidence:
                 excluded[-1].update(
                     image_position_patient=other["position"].tolist(),
                     rescaled_pixels_sha256=hashlib.sha256(retained_pixels).hexdigest())
+            if different:
+                excluded[-1].update(
+                    image_position_patient=other["position"].tolist(),
+                    retained_rescaled_pixels_sha256=hashlib.sha256(retained_pixels).hexdigest(),
+                    excluded_rescaled_pixels_sha256=hashlib.sha256(excluded_pixels).hexdigest())
         else:
             kept.append(item)
+    if differing and refs != {item["uid"] for item in kept}:
+        # Exactly one reference at EVERY retained position, including positions
+        # whose copies happen to match. Outside references are also refused.
+        raise CTSeriesHygieneError("ct_hygiene_duplicate_position_reference_coverage")
     return kept, excluded
+
+
+def select_geometry_partition(partitions, refs):
+    """RF10 image-level authority: all references must select exactly one group."""
+    if len(partitions) == 1:
+        return next(iter(partitions.items()))
+    if not refs:
+        raise CTSeriesHygieneError("ct_hygiene_mixed_geometry_without_image_references")
+    candidates = [(key, group) for key, group in partitions.items()
+                  if refs <= {item["uid"] for item in group}]
+    if len(candidates) != 1:
+        raise CTSeriesHygieneError("ct_hygiene_references_span_geometry_partitions")
+    return candidates[0]
 
 
 def select_ct_instances(
@@ -160,16 +189,7 @@ def _select(ct_dir, authoritative_rtstruct):
     if refs - identities:
         raise CTSeriesHygieneError("ct_hygiene_rtstruct_references_unresolvable")
     mixed = len(partitions) > 1
-    if mixed:
-        if not refs:
-            raise CTSeriesHygieneError("ct_hygiene_mixed_geometry_without_image_references")
-        candidates = [(key, group) for key, group in partitions.items()
-                      if refs <= {item["uid"] for item in group}]
-        if len(candidates) != 1:
-            raise CTSeriesHygieneError("ct_hygiene_references_span_geometry_partitions")
-        key, group = candidates[0]
-    else:
-        key, group = next(iter(partitions.items()))
+    key, group = select_geometry_partition(partitions, refs)
     excluded = [{"sop_instance_uid": item["uid"], "reason_code": "unreferenced_geometry_partition"}
                 for other_key, other_group in partitions.items() if other_key != key
                 for item in other_group]
