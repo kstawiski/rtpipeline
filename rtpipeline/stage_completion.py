@@ -91,6 +91,8 @@ _STAGE_DEFINITIONS: dict[str, StageDefinition] = {
             "clinical_prescription.py",
             "organize_ledger.py",
             "nifti_provenance.py",
+            "planning_ct_localizers.py",
+            "repair_planning_ct_localizers.py",
         ),
         environment_packages=("numpy", "pandas", "pydicom", "SimpleITK", "openpyxl"),
     ),

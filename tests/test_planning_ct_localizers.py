@@ -59,6 +59,7 @@ def test_organize_localizer_publication_and_reference_refusal(tmp_path, monkeypa
     refused = ledger['technical_quarantines']
     assert len(refused) == 1
     assert refused[0]['planning_ct_conversion']['reason_code'] == 'ct_localizer_referenced_by_rtstruct'
+    assert refused[0]['reason'] == 'ct_localizer_referenced_by_rtstruct'
     for course in courses:
         contract = load_course_contract(course.dirs.root)
         selection = contract.planning_ct['nifti_provenance']['instance_selection']
@@ -139,3 +140,188 @@ def test_clean_organize_outputs_byte_identical_to_879f225(tmp_path, monkeypatch,
     actual = _tree_digest(cfg.output_root)
     assert actual.keys() == expected.keys()
     assert [name for name in expected if expected[name] != actual[name]] == []
+
+
+def _organized_course(root, dcm2niix, name='course_a', localizer=True):
+    from course_contract_test_utils import write_minimal_course_contract
+    from rtpipeline.course_contract import _ct_provenance
+    from rtpipeline.config_dependencies import materialize_stage_dependency
+    from rtpipeline.organize_ledger import write_organize_ledger, read_organize_ledger
+    from rtpipeline.stage_completion import write_stage_completion_sentinel
+    import pandas as pd
+
+    course = root / 'SYNTH' / name
+    ct = course / 'DICOM/CT'
+    paths = write_ct_series(ct, uniform_z_positions(), signed=False)
+    rs = _rtstruct(course / 'RS.dcm', paths)
+    nifti = segmentation._ensure_ct_nifti(_config(root, dcm2niix), ct, course / 'NIFTI')
+    sidecar = nifti.with_name(nifti.name[:-7] + '.metadata.json')
+    original_meta = json.loads(sidecar.read_text())
+    if localizer:
+        scout, _ = _localizer(paths)
+        # Put localizer first to exercise re-derivation of first-slice fields.
+        scout.rename(ct / '000_localizer.dcm')
+    metadata_path = write_minimal_course_contract(course, authoritative_rtstruct=rs,
+                                                 planning_ct_dir=ct, planning_ct_nifti=nifti)
+    case = json.loads(metadata_path.read_text())
+    original_meta.update(segmentation._collect_series_metadata(ct))
+    original_meta.update(_ct_provenance(ct))
+    sidecar.write_text(json.dumps(original_meta, indent=2))
+    case['course_contract']['planning_ct']['nifti_provenance'] = {
+        **original_meta, 'sidecar_path': str(sidecar.relative_to(course))}
+    case.update(organize._planning_ct_summary(ct))
+    metadata_path.write_text(json.dumps(case, indent=2))
+    pd.DataFrame([case]).to_excel(course / 'metadata/case_metadata.xlsx', index=False)
+    load_course_contract(course)
+    try:
+        entries = read_organize_ledger(root)['courses']
+    except Exception:
+        entries = []
+    entries.append({'patient': 'SYNTH', 'course': name, 'status': 'validated'})
+    write_organize_ledger(root, entries)
+    dependency = materialize_stage_dependency(root / '_CONFIG', 'organize', {'synthetic': True})
+    write_stage_completion_sentinel(course, course / '.organized', stage='organize', status='ok',
+                                    configuration_dependency=dependency)
+    return course
+
+
+def _files_and_mtimes(root):
+    return {str(p.relative_to(root)): (hashlib.sha256(p.read_bytes()).hexdigest(), p.stat().st_mtime_ns)
+            for p in root.rglob('*') if p.is_file()}
+
+
+def test_repair_atomic_idempotent_and_course_scoped(tmp_path, dcm2niix):
+    from rtpipeline.repair_planning_ct_localizers import repair_output
+    from rtpipeline.stage_completion import validate_stage_completion_sentinel
+    root = tmp_path / 'Output'
+    affected = _organized_course(root, dcm2niix)
+    clean = _organized_course(root, dcm2niix, name='course_b', localizer=False)
+    # A second affected course must also remain untouched when not selected.
+    other = _organized_course(root, dcm2niix, name='course_c')
+    for course in (affected, clean, other):
+        (course / '.segmentation_done').write_text('downstream placeholder')
+    (root / '_COURSES/manifest.json').write_text(json.dumps({'courses': [
+        {'patient': 'SYNTH', 'course': name} for name in ('course_a', 'course_b', 'course_c')]}))
+    shared_before = _files_and_mtimes(root / '_COURSES')
+    clean_before, other_before = _files_and_mtimes(clean), _files_and_mtimes(other)
+    nifti = load_course_contract(affected).planning_ct_nifti
+    nifti_before = nifti.read_bytes()
+    sentinel_before = (affected / '.organized').stat().st_mtime_ns
+    before = _files_and_mtimes(root)
+    dry = repair_output(root, courses=['SYNTH/course_a'], dry_run=True)
+    assert dry['would_repair'] == 1 and dry['refused'] == 0
+    assert _files_and_mtimes(root) == before
+    result = repair_output(root, courses=['SYNTH/course_a'])
+    assert result['repaired'] == 1 and result['refused'] == 0
+    assert result['localizers_excluded'] == 1
+    contract = load_course_contract(affected)
+    assert contract.planning_ct['nifti_provenance']['instance_selection']['excluded_instance_count'] == 1
+    assert _load(contract.planning_ct_dir).GetSize() == (20, 16, 12)
+    assert nifti.read_bytes() == nifti_before
+    assert (affected / '.organized').stat().st_mtime_ns > sentinel_before
+    validate_stage_completion_sentinel(affected / '.organized', expected_stage='organize')
+    assert _files_and_mtimes(clean) == clean_before
+    assert _files_and_mtimes(other) == other_before
+    assert _files_and_mtimes(root / '_COURSES') == shared_before
+    before = _files_and_mtimes(root)
+    result = repair_output(root, courses=['SYNTH/course_a', 'SYNTH/course_b'])
+    assert result['unchanged'] == 2 and result['repaired'] == result['refused'] == 0
+    assert _files_and_mtimes(root) == before
+
+
+@pytest.mark.parametrize('damage,reason', [
+    ('sidecar', 'ct_localizer_inconsistent_evidence'),
+    ('sentinel', 'ct_localizer_inconsistent_evidence'),
+    ('pixels', 'ct_localizer_nifti_volume_mismatch'),
+    ('publish', 'ct_localizer_atomic_publish_failed'),
+])
+def test_repair_refusal_leaves_every_byte_and_mtime_unchanged(tmp_path, dcm2niix, monkeypatch, damage, reason):
+    from rtpipeline import repair_planning_ct_localizers as repair
+    from rtpipeline.stage_completion import write_stage_completion_sentinel
+    root = tmp_path / 'Output'
+    course = _organized_course(root, dcm2niix)
+    contract = load_course_contract(course)
+    sidecar = course / contract.planning_ct['nifti_provenance']['sidecar_path']
+    if damage == 'sidecar':
+        data = json.loads(sidecar.read_text())
+        data['sop_hash'] = '0' * 64
+        sidecar.write_text(json.dumps(data))
+    elif damage == 'sentinel':
+        (course / '.organized').write_text('{}')
+    elif damage == 'pixels':
+        # A header-valid but wrong CT cannot be silently relabelled as the old NIfTI.
+        path = sorted((course / 'DICOM/CT').glob('*.dcm'))[-1]
+        ds = pydicom.dcmread(path)
+        pixels = ds.pixel_array.copy()
+        pixels[0, 0] += 1
+        ds.PixelData = pixels.tobytes()
+        ds.save_as(path, enforce_file_format=True)
+    elif damage == 'publish':
+        def fail(*args):
+            raise PlanningCTLocalizerError('ct_localizer_atomic_publish_failed')
+        monkeypatch.setattr(repair, '_exchange', fail)
+    before = _files_and_mtimes(root)
+    result = repair.repair_output(root)
+    assert result['refused'] == 1
+    assert result['reason_codes'] == {reason: 1}
+    assert _files_and_mtimes(root) == before
+
+
+def test_repair_validates_staged_absolute_artifact_paths(tmp_path, dcm2niix):
+    from rtpipeline.repair_planning_ct_localizers import repair_output
+    from rtpipeline.stage_completion import write_stage_completion_sentinel
+    root = tmp_path / 'Output'
+    course = _organized_course(root, dcm2niix)
+    path = course / 'metadata/case_metadata.json'
+    case = json.loads(path.read_text())
+    case['course_contract']['authoritative_rtstruct']['path'] = str(course / 'RS.dcm')
+    path.write_text(json.dumps(case))
+    completion = json.loads((course / '.organized').read_text())
+    dependency = tmp_path / 'configuration.json'
+    dependency.write_text(json.dumps(completion['configuration_dependency']))
+    write_stage_completion_sentinel(course, course / '.organized', stage='organize', status='ok',
+                                    configuration_dependency=dependency)
+    result = repair_output(root)
+    assert result['repaired'] == 1 and result['refused'] == 0
+    assert load_course_contract(course).authoritative_rtstruct_path == course / 'RS.dcm'
+    assert json.loads(path.read_text())['course_contract']['authoritative_rtstruct']['path'] == str(course / 'RS.dcm')
+
+
+def test_repair_cli_prints_only_identifier_free_json(tmp_path, dcm2niix):
+    import subprocess
+    import sys
+    root = tmp_path / 'Output'
+    _organized_course(root, dcm2niix)
+    command = [sys.executable, '-m', 'rtpipeline.cli', 'repair-planning-ct-localizers',
+               '--output-dir', str(root), '--course', 'SYNTH/course_a', '--dry-run']
+    result = subprocess.run(command, capture_output=True, text=True)
+    assert result.returncode == 0
+    assert json.loads(result.stdout)['would_repair'] == 1
+    assert result.stderr == ''
+    assert 'SYNTH' not in result.stdout and str(root) not in result.stdout
+    result = subprocess.run(command[:-2] + ['unvalidated/course'], capture_output=True, text=True)
+    assert result.returncode == 1
+    assert json.loads(result.stdout)['reason_codes'] == {'ct_localizer_course_not_validated': 1}
+    assert result.stderr == ''
+
+
+def test_contract_rejects_tampered_exclusion_evidence(tmp_path, dcm2niix):
+    from rtpipeline.repair_planning_ct_localizers import repair_output
+    from rtpipeline.course_contract import CourseContractError
+    root = tmp_path / 'Output'
+    course = _organized_course(root, dcm2niix)
+    assert repair_output(root)['repaired'] == 1
+    contract = load_course_contract(course)
+    sidecar = course / contract.planning_ct['nifti_provenance']['sidecar_path']
+    case_path = course / 'metadata/case_metadata.json'
+    case = json.loads(case_path.read_text())
+    metadata = json.loads(sidecar.read_text())
+    # Even a matching contract and sidecar cannot claim an excluded image is
+    # still in DICOM/CT, or change the authoritative reference evidence.
+    evidence = metadata['instance_selection']
+    evidence['excluded_instances'][0]['sop_instance_uid'] = evidence['kept_sop_instance_uids'][0]
+    case['course_contract']['planning_ct']['nifti_provenance']['instance_selection'] = evidence
+    sidecar.write_text(json.dumps(metadata))
+    case_path.write_text(json.dumps(case))
+    with pytest.raises(CourseContractError, match='ct_localizer_stale_selection_evidence'):
+        load_course_contract(course)
