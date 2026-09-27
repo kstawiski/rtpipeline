@@ -844,6 +844,15 @@ def _validate_nifti_provenance(
         raise CourseContractError(
             "stale planning CT NIfTI provenance: source CT geometry does not match the selected series"
         )
+    selection = sidecar_data.get("instance_selection")
+    if selection is not None or provenance.get("instance_selection") is not None:
+        from .planning_ct_localizers import PlanningCTLocalizerError, validate_selection
+        if not isinstance(selection, dict) or selection != provenance.get("instance_selection"):
+            raise CourseContractError("ct_localizer_stale_selection_evidence")
+        try:
+            validate_selection(ct_dir, contract.authoritative_rtstruct_path, selection)
+        except PlanningCTLocalizerError as exc:
+            raise CourseContractError(exc.reason_code) from exc
     conversion = sidecar_data.get("nifti_conversion")
     # Older signed-staging contracts did not copy this optional evidence. New
     # hygiene decisions must be bound to the contract and current RTSTRUCT.
