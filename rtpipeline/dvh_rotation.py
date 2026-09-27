@@ -13,8 +13,11 @@ not dose > 0. Outside samples are masked, never interpreted as measured zero.
 
 For DVHs, destination XY planes are sampled on demand at the actual contour Z.
 This avoids both contour snapping and a second interpolation through resampled
-Z planes. Rasterization, 1 cGy histograms and metric extraction remain those of
-dicompyler-core. This is point-dose interpolation, not an energy-conserving
+Z planes. Each contour plane represents the slab bounded by adjacent plane
+midpoints; the endpoints extend by half their adjacent interval. This equals
+dicompyler's slice thickness for uniform planes and does not assign a tiny
+near-duplicate interval to every slice. Rasterization, 1 cGy histograms and
+metric extraction remain those of dicompyler-core. This is point-dose interpolation, not an energy-conserving
 volume integration. ``max_node_displacement_mm`` is the maximum displacement
 that snapping the original orientation about its origin WOULD have caused; no
 such snapping is performed.
@@ -42,6 +45,10 @@ def _axial_bases():
 
 class DoseOrientationError(ValueError):
     """An identifier-free refusal suitable for course QC."""
+
+    def __init__(self, reason, rotation_angle_degrees=None):
+        super().__init__(reason)
+        self.rotation_angle_degrees = rotation_angle_degrees
 
 
 class _FloatDose(Dataset):
@@ -72,7 +79,7 @@ def prepare_rotated_dose(dose):
     nearest = bases[int(np.argmin(angles))]
     angle = min(angles)
     if angle > MAX_ROTATION_DEGREES + 1e-9:
-        raise DoseOrientationError("rotated_dose_rotation_exceeds_1_degree")
+        raise DoseOrientationError("rotated_dose_rotation_exceeds_1_degree", angle)
     return RotatedDoseGrid(dose, basis, nearest, angle)
 
 
@@ -90,12 +97,12 @@ class RotatedDoseGrid:
             valid = (self.origin.shape == (3,) and np.isfinite(self.origin).all()
                      and np.isfinite(self.spacing).all() and (self.spacing > 0).all()
                      and (self.shape >= 2).all() and len(self.offsets) == self.shape[2]
-                     and np.isfinite(self.offsets).all() and abs(self.offsets[0]) <= 1e-6
+                     and np.isfinite(self.offsets).all() and self.offsets[0] == 0
                      and len(delta) > 0 and delta[0] != 0
                      and np.allclose(delta, delta[0], atol=1e-5, rtol=1e-6))
             if not valid:
                 raise ValueError
-            self.step = np.r_[self.spacing, delta[0]]
+            self.step = np.r_[self.spacing, (self.offsets[-1]-self.offsets[0])/(len(self.offsets)-1)]
             self.values = dose.pixel_array.astype(np.float64)
             if (self.values.shape != tuple(self.shape[::-1]) or not np.isfinite(self.values).all()
                     or (self.values < 0).any() or not np.isfinite(float(dose.DoseGridScaling))
@@ -118,9 +125,14 @@ class RotatedDoseGrid:
             "interpolation": "trilinear_in_original_patient_geometry",
             "outside_original_grid": "not_covered_masked",
             "contour_plane_sampling": "original_patient_z_without_snapping_or_second_interpolation",
+            "contour_volume_integration": "adjacent_plane_midpoint_slabs_half_interval_end_extension",
             "max_node_displacement_mm": float(np.linalg.norm(corners @ (basis-nearest).T, axis=1).max()),
             "max_node_displacement_definition": "displacement_if_orientation_were_snapped_about_original_origin",
             "original_shape_xyz": self.shape.tolist(),
+            "original_origin_xyz_mm": self.origin.tolist(),
+            "original_step_column_row_frame_mm": self.step.tolist(),
+            "original_frame_offsets_mm": self.offsets.tolist(),
+            "nifti_sampling": "direct_trilinear_at_ct_voxel_centres",
             "resampled_shape_xyz": self.target_shape.tolist(),
             "resampled_spacing_xyz_mm": self.target_spacing.tolist(),
             "resampled_origin_xyz_mm": self.lower.tolist(),
@@ -140,8 +152,16 @@ class RotatedDoseGrid:
 
     def sample(self, points):
         """Return float samples and independent closed-node-box support."""
-        index = (np.asarray(points) - self.origin) @ self.inverse_basis.T / self.step
+        local = (np.asarray(points) - self.origin) @ self.inverse_basis.T
+        index = local / self.step
         support = ((index >= -1e-9) & (index <= self.shape-1+1e-9)).all(axis=-1)
+        # Honor every declared frame position, including tolerated decimal
+        # rounding of an otherwise uniform spacing. Original nodes stay exact.
+        frames = np.arange(len(self.offsets), dtype=float)
+        if self.step[2] > 0:
+            index[..., 2] = np.interp(local[..., 2], self.offsets, frames)
+        else:
+            index[..., 2] = np.interp(local[..., 2], self.offsets[::-1], frames[::-1])
         # Clip only roundoff at the boundary; all outside values remain masked.
         index = np.clip(index, 0., self.shape-1)
         sampled = map_coordinates(self.values, index[..., ::-1].reshape(-1, 3).T,
@@ -169,6 +189,8 @@ class RotatedDoseGrid:
         return values, support
 
     def get_dvh(self, structure, roi, calculate_full_volume=True):
+        # Both settings sample only supported points. The caller suppresses
+        # whole-ROI values for incomplete coverage and labels covered metrics.
         # Import after dvh.py's compatibility initialization for pydicom >= 3.
         from dicompylercore import dicomparser, dvh, dvhcalc
         sampler = self
@@ -188,26 +210,64 @@ class RotatedDoseGrid:
 
         rtss = dicomparser.DicomParser(structure)
         item = rtss.GetStructures()[roi]
-        item["planes"] = rtss.GetStructureCoordinates(roi)
-        item["thickness"] = rtss.CalculatePlaneThickness(item["planes"])
-        result = dvhcalc._calculate_dvh(item, PatientGridParser(self.dataset),
-                                       calculate_full_volume=calculate_full_volume)
-        return dvh.DVH(counts=result.histogram,
-                       bins=(np.arange(0, 2) if result.histogram.size == 1 else
-                             np.arange(result.histogram.size+1)/100),
-                       dvh_type="differential", dose_units="Gy", notes=result.notes,
-                       name=item["name"]).cumulative
+        # dicompyler groups contours under Z rounded to 0.01 mm. Keep its
+        # grouping, but recover the actual plane position for interpolation.
+        # Ambiguous/non-axial contours cannot support this axial rasterizer.
+        planes = {}
+        for group in rtss.GetStructureCoordinates(roi).values():
+            z = float(group[0]["data"][0][2])
+            for contour in group:
+                if any(abs(float(point[2])-z) > 1e-6 for point in contour["data"]):
+                    raise DoseOrientationError("rotated_dose_non_axial_or_ambiguous_contour_planes")
+            planes[z] = group
+        zs = np.array(sorted(planes), dtype=float)
+        if len(zs) < 2:
+            raise DoseOrientationError("rotated_dose_insufficient_contour_planes_for_volume")
+        intervals = np.diff(zs)
+        weights = np.r_[intervals[0], (intervals[:-1]+intervals[1:])/2, intervals[-1]]
+        parser = PatientGridParser(self.dataset)
+        dd, image = parser.GetDoseData(), parser.GetImageData()
+        xx, yy = np.meshgrid(dd["lut"][0], dd["lut"][1])
+        points = np.column_stack((xx.ravel(), yy.ravel()))
+        maxdose = int(dd["dosemax"] * dd["dosegridscaling"] * 100) + 1
+        histogram = np.zeros(maxdose)
+        # Retain dicompyler's polygon parity, pixel-centre rasterizer and cGy
+        # bins. Integrate physical slab volume separately for each plane;
+        # _calculate_dvh otherwise applies the MINIMUM spacing to every plane.
+        for z, weight in zip(zs, weights):
+            item["thickness"] = float(weight)
+            counts, volume_mm3 = dvhcalc.calculate_plane_histogram(
+                planes[z], parser.GetDoseGrid(z), points, maxdose, dd, image, item,
+                np.zeros(maxdose))
+            if counts.sum():
+                histogram += counts * (volume_mm3 / counts.sum() / 1000.)
+        histogram = np.trim_zeros(histogram, trim="b")
+        if not histogram.size:
+            histogram = np.array([0.])
+        return dvh.DVH(counts=histogram,
+                       bins=(np.arange(0, 2) if histogram.size == 1 else
+                             np.arange(histogram.size+1)/100),
+                       dvh_type="differential", dose_units="Gy", name=item["name"]).cumulative
 
     def coverage(self, structure, roi):
-        from .dvh import classify_zero_dose_roi_geometry
-        result = classify_zero_dose_roi_geometry(structure, roi, self.original)
-        status = {"zero_dose_in_grid": "fully_covered",
-                  "zero_dose_partly_inside_dose_grid": "partial_grid",
-                  "zero_dose_outside_dose_grid": "outside_grid"}.get(result["status"], "coverage_unresolved")
+        from .dvh import (_dose_grid_contour_coordinates, _polygon_intersects_box)
+        contours, unresolved = _dose_grid_contour_coordinates(structure, roi)
+        status = "coverage_unresolved"
+        reason = "Missing, malformed or unsupported ROI contour geometry."
+        if contours and not unresolved:
+            lower, upper = np.zeros(3), self.shape-1
+            inside, intersects = True, False
+            for contour in contours:
+                q = (contour-self.origin) @ self.inverse_basis.T / self.step
+                contained = bool(((q >= -1e-9) & (q <= upper+1e-9)).all())
+                inside &= contained
+                intersects |= contained or _polygon_intersects_box(q, lower, upper, 1e-9)
+            status = "fully_covered" if inside else "partial_grid" if intersects else "outside_grid"
+            reason = "Original rotated node-box containment; outside samples are masked."
         return {"status": status, "fraction": 1. if status == "fully_covered" else
                 0. if status == "outside_grid" else None,
                 "method": "original_rotated_grid_contour_polygon_containment",
-                "reason": result["reason"]}
+                "reason": reason}
 
 
 def add_brachy_metrics(histogram, metrics):

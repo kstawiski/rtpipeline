@@ -159,6 +159,7 @@ def test_course_above_tolerance_records_refusal(tmp_path):
     assert frame.DmeanGy.isna().all()
     qc = json.loads((course/'metadata/dvh_qc.json').read_text())
     assert qc['dose_grid_resampling']['status'] == 'refused'
+    assert qc['dose_grid_resampling']['rotation_angle_degrees'] == pytest.approx(1.1)
 
 
 @pytest.mark.parametrize('orientation', [[1,0,0,0,1,0],[-1,0,0,0,-1,0],[-1,0,0,0,1,0],
@@ -280,3 +281,87 @@ def test_direct_mask_sampler_preserves_patient_coordinates_and_support(tmp_path)
     np.testing.assert_array_equal(support[1,1], ~np.ma.getmaskarray(expected))
     np.testing.assert_allclose(values[1,1], expected.filled(0)*float(dose.DoseGridScaling))
     assert values[1,1,0] == 0 and not support[1,1,0]
+
+
+def test_contour_planes_are_sampled_without_snap_or_centimm_rounding(tmp_path):
+    dose = analytic_dose(tmp_path/'dose.dcm', .5)
+    grid = prepare_rotated_dose(dose)
+    # Use a field with a z gradient so any plane shift changes the answer.
+    zz, yy, xx = np.meshgrid(np.arange(81)*.5, np.arange(81)*.5, np.arange(81)*.5, indexing='ij')
+    points = np.stack((xx,yy,zz), axis=-1) @ grid.basis.T + grid.origin
+    dose.PixelData = np.rint((10+.4*points[...,2])/float(dose.DoseGridScaling)).astype('<u4').tobytes()
+    grid = prepare_rotated_dose(dose)
+    rs = box_structure(tmp_path/'rs.dcm', zs=[-1.1234, .8766, 2.8766])
+    histogram = grid.get_dvh(rs, 1)
+    assert histogram.mean == pytest.approx(10+.4*.8766, abs=.006)
+    # Inspect physical sampler calls to pin the absence of 0.01 mm rounding.
+    seen = []
+    plane = grid.plane
+    grid.plane = lambda z: (seen.append(float(z)) or plane(z))
+    grid.get_dvh(rs, 1)
+    assert sorted(seen) == [-1.1234, .8766, 2.8766]
+
+
+@pytest.mark.parametrize('angle', [.025, .1, .5])
+def test_brachy_like_radial_analytic_field(tmp_path, angle):
+    """Smooth radial fall-off: 50/(1+r²/25) Gy inside a 10 mm sphere."""
+    dose = analytic_dose(tmp_path/'dose.dcm', angle)
+    grid = prepare_rotated_dose(dose)
+    zz, yy, xx = np.meshgrid(np.arange(81)*.5, np.arange(81)*.5, np.arange(81)*.5, indexing='ij')
+    points = np.stack((xx,yy,zz), axis=-1) @ grid.basis.T + grid.origin
+    radius_squared = (points**2).sum(axis=-1)
+    dose.PixelData = np.rint((50/(1+radius_squared/25))/float(dose.DoseGridScaling)).astype('<u4').tobytes()
+    grid = prepare_rotated_dose(dose)
+    rs = box_structure(tmp_path/'rs.dcm')
+    angles = np.linspace(0, 2*np.pi, 256, endpoint=False)
+    for roi in rs.ROIContourSequence:
+        contours = []
+        for z in np.arange(-9.5, 10., .5):
+            r = np.sqrt(100-z*z)
+            item = Dataset()
+            item.ContourGeometricType = 'CLOSED_PLANAR'
+            item.NumberOfContourPoints = len(angles)
+            item.ContourData = np.column_stack((r*np.cos(angles), r*np.sin(angles), np.full_like(angles,z))).ravel().tolist()
+            contours.append(item)
+        roi.ContourSequence = Sequence(contours)
+    hist = grid.get_dvh(rs, 1)
+    metrics = add_brachy_metrics(hist, dvh._compute_metrics(hist, None))
+    expected = {'D90Gy': 50/(1+(10*.9**(1/3))**2/25),
+                'D2ccGy': 50/(1+(3*2000/(4*np.pi))**(2/3)/25),
+                'DmeanGy': 3*50*25/1000*(10-5*np.arctan(2))}
+    # Includes 0.5 mm spherical rasterization, trilinear interpolation, and
+    # dicompyler's 0.01 Gy histogram bins; not a universal patient-dose bound.
+    for key, value in expected.items():
+        assert metrics[key] == pytest.approx(value, abs=.25)
+
+
+def test_decimal_frame_position_rounding_preserves_original_nodes(tmp_path):
+    dose = analytic_dose(tmp_path/'dose.dcm', .1)
+    dose.GridFrameOffsetVector[10] += 1e-7
+    grid = prepare_rotated_dose(dose)
+    local = np.array([[3., 4., float(dose.GridFrameOffsetVector[10])]])
+    point = local @ grid.basis.T + grid.origin
+    assert float(grid.sample(point)[0]) == pytest.approx(grid.values[10, 8, 6], abs=1e-7)
+
+
+def test_tolerance_boundary_and_nonaxial_contours(tmp_path):
+    dose = analytic_dose(tmp_path/'dose.dcm', 1.)
+    grid = prepare_rotated_dose(dose)
+    assert grid is not None
+    rs = box_structure(tmp_path/'rs.dcm')
+    rs.ROIContourSequence[0].ContourSequence[0].ContourData[2] += .1
+    with pytest.raises(DoseOrientationError, match='non_axial_or_ambiguous_contour_planes'):
+        grid.get_dvh(rs, 1)
+
+
+def test_nonuniform_contour_planes_use_physical_slab_volumes(tmp_path):
+    dose = analytic_dose(tmp_path/'dose.dcm', .1)
+    grid = prepare_rotated_dose(dose)
+    uniform = box_structure(tmp_path/'uniform.dcm', zs=[-10., -5., 0., 5., 10.])
+    # Adding an almost duplicate internal plane must not shrink the entire ROI
+    # by 500x, as dicompyler's global minimum-thickness rule would do.
+    nonuniform = box_structure(tmp_path/'nonuniform.dcm', zs=[-10., -5., 0., .01, 5., 10.])
+    first, second = grid.get_dvh(uniform, 1), grid.get_dvh(nonuniform, 1)
+    assert second.volume == pytest.approx(first.volume, rel=1e-12)
+    assert second.mean == pytest.approx(first.mean, abs=1e-12)
+    assert first.volume > 9.

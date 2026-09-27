@@ -3544,7 +3544,8 @@ def dvh_for_course(
             logger.error("Failed to read RP/RD even with force=True: %s", e)
             return None
 
-    from .dvh_rotation import prepare_rotated_dose, DoseOrientationError, add_brachy_metrics
+    from .dvh_rotation import (prepare_rotated_dose, DoseOrientationError,
+                               add_brachy_metrics, MAX_ROTATION_DEGREES)
     rotated_grid = None
     rotation_error = None
     rotation_metadata = None
@@ -3554,9 +3555,15 @@ def dvh_for_course(
             rotation_metadata = rotated_grid.provenance
     except DoseOrientationError as exc:
         rotation_error = str(exc)
+        try:
+            orientation_evidence = [float(v) if np.isfinite(float(v)) else None for v in
+                                    getattr(rtdose, "ImageOrientationPatient", [])]
+        except (TypeError, ValueError):
+            orientation_evidence = None
         rotation_metadata = {"status": "refused", "reason": rotation_error,
-                             "original_orientation": [float(v) for v in
-                                 getattr(rtdose, "ImageOrientationPatient", [])]}
+                             "original_orientation": orientation_evidence,
+                             "rotation_angle_degrees": exc.rotation_angle_degrees,
+                             "rotation_tolerance_degrees": MAX_ROTATION_DEGREES}
 
     results: List[Dict] = []
 
@@ -4019,6 +4026,9 @@ def dvh_for_course(
             row["dose_grid_resampling_status"] = (
                 "refused" if rotation_error else rotation_metadata["method"])
             row["dose_grid_rotation_angle_degrees"] = rotation_metadata.get("rotation_angle_degrees")
+            row["dose_grid_sampling_lattice"] = (
+                "ct_voxel_centres" if row.get("Segmentation_Source") == "NIfTI_Direct"
+                else "patient_xy_at_original_contour_z")
         row["Dose_Grid_Semantics"] = dose_resolution.dose_grid_semantics
         row["Dose_Plan_Scope_Status"] = dose_plan_scope.status
         row["Dose_Plan_Scope_Reason"] = dose_plan_scope.reason
