@@ -1,4 +1,4 @@
-"""Conservative planning CT publication without localizers or identical copies.
+"""Conservative planning CT publication with reference-authorized instance exclusions.
 
 This module acts on organize's course copies only. It never edits source DICOM.
 A uniform volume and exact rescaled voxel equality (after axis permutation/flip,
@@ -15,6 +15,7 @@ import pydicom
 
 from .ct_series_hygiene import (
     CT_STORAGE, CTSeriesHygieneError, _pixels, rtstruct_image_references, select_duplicate_positions,
+    select_geometry_partition,
 )
 
 METHOD = "planning_ct_image_type_localizer_exclusion"
@@ -97,6 +98,34 @@ def _has_duplicate_positions(entries):
     return False
 
 
+def _geometry(ds):
+    """Exact RF10 geometry partition key, excluding acquisition identifiers."""
+    orientation = np.asarray(ds.ImageOrientationPatient, dtype=float)
+    spacing = np.asarray(ds.PixelSpacing, dtype=float)
+    rows, columns = int(ds.Rows), int(ds.Columns)
+    if (orientation.shape != (6,) or spacing.shape != (2,)
+            or not np.isfinite(orientation).all() or not np.isfinite(spacing).all()
+            or min(spacing) <= 0 or min(rows, columns) <= 0):
+        raise ValueError("invalid geometry")
+    return (*orientation, rows, columns, *spacing)
+
+
+def _geometry_record(key):
+    return {"image_orientation_patient": list(key[:6]), "rows": key[6],
+            "columns": key[7], "pixel_spacing": list(key[8:])}
+
+
+def _has_mixed_geometry(entries):
+    # Preserve the historical clean-series gate for incomplete headers.
+    keys = set()
+    for _, ds in entries:
+        try:
+            keys.add(_geometry(ds))
+        except Exception:
+            continue
+    return len(keys) > 1
+
+
 def _selection_reason(excluded):
     reasons = {item["reason_code"] for item in excluded}
     if reasons == {"localizer_image_type"}:
@@ -105,13 +134,17 @@ def _selection_reason(excluded):
         return "identical_rescaled_duplicate_position"
     if reasons == {"localizer_image_type", "identical_rescaled_duplicate_position"}:
         return "localizer_and_identical_rescaled_duplicates"
+    allowed = {"localizer_image_type", "identical_rescaled_duplicate_position",
+               "unreferenced_duplicate_position", "unreferenced_geometry_partition"}
+    if reasons and reasons <= allowed:
+        return "rtstruct_referenced_volume_selection"
     raise ValueError("unsupported exclusion reason")
 
 
 def select_localizers(ct_dir: Path, rtstruct: Path | None):
     """Return excluded paths and evidence, or ([], None) for unchanged series."""
     try:
-        # Leave clean-series publication byte-identical. Once either exclusion
+        # Leave clean-series publication byte-identical. Once an exclusion
         # trigger is found, every file must be readable and validated below.
         entries, unreadable = [], False
         for path in sorted(ct_dir.iterdir()):
@@ -121,7 +154,7 @@ def select_localizers(ct_dir: Path, rtstruct: Path | None):
                 unreadable = True
         excluded = [(p, ds) for p, ds in entries if is_localizer(ds)]
         axial = [(p, ds) for p, ds in entries if not is_localizer(ds)]
-        if not excluded and not _has_duplicate_positions(axial):
+        if not excluded and not _has_duplicate_positions(axial) and not _has_mixed_geometry(axial):
             return [], None
         if unreadable or any(p.is_symlink() or not p.is_file() for p, _ in entries):
             raise PlanningCTLocalizerError("ct_localizer_invalid_series_directory")
@@ -146,25 +179,35 @@ def select_localizers(ct_dir: Path, rtstruct: Path | None):
             raise PlanningCTLocalizerError("ct_localizer_referenced_by_rtstruct")
         if refs - set(identities):
             raise PlanningCTLocalizerError("ct_localizer_rtstruct_references_unresolvable")
-        # Check every axial geometry/acquisition key before discarding copies.
-        # Regular volume positions are checked on the retained set below.
-        keys = {(int(ds.Rows), int(ds.Columns), *map(float, ds.PixelSpacing),
-                 *map(float, ds.ImageOrientationPatient),
-                 str(getattr(ds, "AcquisitionNumber", "")),
-                 str(getattr(ds, "TemporalPositionIdentifier", "")),
-                 str(getattr(ds, "EchoNumbers", ""))) for _, ds in axial}
-        if len(keys) > 1:
+        partitions = {}
+        for p, ds in axial:
+            partitions.setdefault(_geometry(ds), []).append({
+                "path": p, "uid": str(ds.SOPInstanceUID),
+                "position": np.asarray(ds.ImagePositionPatient, dtype=float),
+                "instance": int(getattr(ds, "InstanceNumber", 0))})
+        if not partitions:
+            raise PlanningCTLocalizerError("ct_localizer_insufficient_volume")
+        key, group = select_geometry_partition(partitions, refs)
+        partition_exclusions = [
+            {"sop_instance_uid": item["uid"], "reason_code": "unreferenced_geometry_partition",
+             "excluded_geometry": _geometry_record(other_key)}
+            for other_key, other_group in partitions.items() if other_key != key
+            for item in other_group]
+        selected_paths = {item["path"] for item in group}
+        acquisition_keys = {(str(getattr(ds, "AcquisitionNumber", "")),
+                             str(getattr(ds, "TemporalPositionIdentifier", "")),
+                             str(getattr(ds, "EchoNumbers", "")))
+                            for p, ds in axial if p in selected_paths}
+        if len(acquisition_keys) != 1:
             raise PlanningCTLocalizerError("ct_localizer_inconsistent_geometry")
-        group = [{"path": p, "uid": str(ds.SOPInstanceUID),
-                  "position": np.asarray(ds.ImagePositionPatient, dtype=float),
-                  "instance": int(getattr(ds, "InstanceNumber", 0))} for p, ds in axial]
         selected, duplicates = select_duplicate_positions(
-            group, refs, position_tolerance_mm=0, include_pixel_evidence=True)
+            group, refs, position_tolerance_mm=0, include_pixel_evidence=True,
+            allow_referenced_differences=True)
         kept_paths = {item["path"] for item in selected}
         kept = [(p, ds) for p, ds in axial if p in kept_paths]
         geometry = _volume(kept)
         exclusions = [{"sop_instance_uid": uid, "reason_code": "localizer_image_type"}
-                      for uid in excluded_uids] + duplicates
+                      for uid in excluded_uids] + partition_exclusions + duplicates
         exclusions.sort(key=lambda item: item["sop_instance_uid"])
         excluded = [(p, ds) for p, ds in entries if p not in kept_paths]
         evidence = {
@@ -221,7 +264,8 @@ def validate_selection(ct_dir: Path, rtstruct: Path | None, evidence: dict[str, 
         retained = {str(ds.SOPInstanceUID): (path, ds) for path, ds in entries}
         pixel_hashes = {}
         for item in excluded:
-            if item["reason_code"] == "identical_rescaled_duplicate_position":
+            if item["reason_code"] in ("identical_rescaled_duplicate_position",
+                                       "unreferenced_duplicate_position"):
                 uid = item["retained_sop_instance_uid"]
                 path, ds = retained[uid]
                 if uid not in pixel_hashes:
@@ -229,6 +273,25 @@ def validate_selection(ct_dir: Path, rtstruct: Path | None, evidence: dict[str, 
                 if (item.get("image_position_patient") != list(map(float, ds.ImagePositionPatient))
                         or item.get("rescaled_pixels_sha256") != pixel_hashes[uid]):
                     raise ValueError("inconsistent retained duplicate evidence")
+                if item["reason_code"] == "unreferenced_duplicate_position":
+                    dropped_hash = item.get("excluded_rescaled_pixels_sha256", "")
+                    if (set(kept) != refs or uid not in refs
+                            or item.get("retained_rescaled_pixels_sha256") != pixel_hashes[uid]
+                            or not isinstance(dropped_hash, str) or len(dropped_hash) != 64
+                            or any(c not in "0123456789abcdef" for c in dropped_hash)
+                            or dropped_hash == pixel_hashes[uid]):
+                        raise ValueError("inconsistent referenced duplicate evidence")
+            elif item["reason_code"] == "unreferenced_geometry_partition":
+                geometry = item["excluded_geometry"]
+                orientation = np.asarray(geometry["image_orientation_patient"], dtype=float)
+                spacing = np.asarray(geometry["pixel_spacing"], dtype=float)
+                if ("retained_sop_instance_uid" in item
+                        or orientation.shape != (6,) or spacing.shape != (2,)
+                        or not np.isfinite(orientation).all() or not np.isfinite(spacing).all()
+                        or min(spacing) <= 0 or min(geometry["rows"], geometry["columns"]) <= 0
+                        or (*orientation, geometry["rows"], geometry["columns"], *spacing)
+                        == _geometry(entries[0][1])):
+                    raise ValueError("inconsistent excluded geometry evidence")
         repair = evidence.get("nifti_repair")
         if repair is not None:
             expected_outputs = {
@@ -251,7 +314,7 @@ def validate_selection(ct_dir: Path, rtstruct: Path | None, evidence: dict[str, 
                 or not all(isinstance(uid, str) and uid for uid in dropped)
                 or set(dropped) & set(kept)
                 or any(
-                    (item["reason_code"] == "identical_rescaled_duplicate_position"
+                    (item["reason_code"] in ("identical_rescaled_duplicate_position", "unreferenced_duplicate_position")
                      and item.get("retained_sop_instance_uid") not in kept)
                     or (item["reason_code"] == "localizer_image_type"
                         and "retained_sop_instance_uid" in item)

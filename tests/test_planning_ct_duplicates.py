@@ -108,7 +108,7 @@ def test_repair_identical_copies_preserves_nifti(tmp_path, dcm2niix, localizers,
 
 
 @pytest.mark.parametrize('problem,reason', [
-    ('pixels', 'ct_hygiene_duplicate_position_pixels_differ'),
+    ('pixels', 'ct_hygiene_duplicate_position_reference_coverage'),
     ('references', 'ct_hygiene_referenced_duplicate_would_be_excluded'),
     ('interleaved', 'ct_localizer_inconsistent_volume_positions'),
     ('near_position', 'ct_localizer_inconsistent_volume_positions'),
@@ -118,6 +118,8 @@ def test_unsafe_duplicate_repair_refuses_without_changes(tmp_path, dcm2niix, pro
     root = tmp_path / 'Output'
     course = _organized_course(root, dcm2niix)
     paths, added = _copies(course, differing=problem == 'pixels')
+    if problem == 'pixels':
+        _rtstruct(course / 'RS.dcm', paths[:-1])
     if problem == 'references':
         _rtstruct(course / 'RS.dcm', paths + added)
     if problem == 'interleaved':
@@ -336,3 +338,187 @@ def test_exact_position_comparison_does_not_round_small_offsets_to_zero(tmp_path
     rs = _rtstruct(tmp_path / 'RS.dcm', paths)
     with pytest.raises(PlanningCTLocalizerError, match='ct_localizer_inconsistent_volume_positions'):
         select_localizers(ct, rs)
+
+
+@pytest.mark.parametrize('copies,localizers,referenced_copy', [(2, 0, False), (3, 1, True), (4, 2, False)])
+def test_repair_differing_duplicates_from_complete_references(tmp_path, dcm2niix, copies, localizers, referenced_copy):
+    from rtpipeline.ct_series_hygiene import _pixels
+    root = tmp_path / 'Output'
+    course = _organized_course(root, dcm2niix, localizer=localizers)
+    paths, added = _copies(course, copies, differing=True)
+    refs = added[:12] if referenced_copy else paths
+    _rtstruct(course / 'RS.dcm', refs)
+    _refresh(course)
+    expected_pixels = {str(pydicom.dcmread(p).SOPInstanceUID): hashlib.sha256(_pixels(p)).hexdigest()
+                       for p in paths + added}
+    before = _files_and_mtimes(root)
+    dry = repair_output(root, dry_run=True)
+    assert dry['would_repair'] == 1 and dry['refused'] == 0
+    assert _files_and_mtimes(root) == before
+    result = repair_output(root)
+    assert result['repaired'] == 1 and result['refused'] == 0
+    assert result['duplicates_excluded'] == 12 * (copies - 1)
+    assert result['niftis_rederived'] == int(referenced_copy)
+    contract = load_course_contract(course)
+    evidence = contract.planning_ct['nifti_provenance']['instance_selection']
+    assert set(evidence['kept_sop_instance_uids']) == {str(pydicom.dcmread(p).SOPInstanceUID) for p in refs}
+    different = [e for e in evidence['excluded_instances'] if e['reason_code'] == 'unreferenced_duplicate_position']
+    assert different
+    for item in different:
+        assert item['excluded_rescaled_pixels_sha256'] == expected_pixels[item['sop_instance_uid']]
+        assert item['retained_rescaled_pixels_sha256'] == expected_pixels[item['retained_sop_instance_uid']]
+        assert item['excluded_rescaled_pixels_sha256'] != item['retained_rescaled_pixels_sha256']
+    verify_volume(contract.planning_ct_dir, contract.planning_ct_nifti)
+    assert _load(contract.planning_ct_dir).GetSize() == (20, 16, 12)
+    validate_stage_completion_sentinel(course / '.organized', expected_stage='organize')
+    before = _files_and_mtimes(root)
+    assert repair_output(root)['unchanged'] == 1
+    assert _files_and_mtimes(root) == before
+
+
+@pytest.mark.parametrize('mode,reason', [
+    ('two', 'ct_hygiene_referenced_duplicate_would_be_excluded'),
+    ('missing', 'ct_hygiene_duplicate_position_reference_coverage'),
+    ('unknown', 'ct_localizer_rtstruct_references_unresolvable'),
+    ('none', 'ct_localizer_rtstruct_references_missing'),
+    ('irregular', 'ct_localizer_inconsistent_volume_positions'),
+])
+def test_differing_duplicates_refuse_incomplete_or_ambiguous_authority(tmp_path, dcm2niix, mode, reason):
+    root = tmp_path / 'Output'
+    course = _organized_course(root, dcm2niix, localizer=False)
+    paths, added = _copies(course, differing=True)
+    refs = paths + added[:1] if mode == 'two' else paths[:-1] if mode == 'missing' else paths
+    _rtstruct(course / 'RS.dcm', refs, extra=[generate_uid()] if mode == 'unknown' else [])
+    if mode == 'none':
+        from course_contract_test_utils import write_synthetic_rtstruct
+        write_synthetic_rtstruct(course / 'RS.dcm', referenced_series_uid=str(pydicom.dcmread(paths[0]).SeriesInstanceUID))
+    if mode == 'irregular':
+        for path in (paths[-1], added[-1]):
+            ds = pydicom.dcmread(path)
+            ds.ImagePositionPatient[2] += 1
+            ds.save_as(path, enforce_file_format=True)
+    _refresh(course)
+    before = _files_and_mtimes(root)
+    for dry in (True, False):
+        result = repair_output(root, dry_run=dry)
+        assert result['reason_codes'] == {reason: 1}
+        assert result['refused'] == 1
+        assert _files_and_mtimes(root) == before
+
+
+def _orientation_partition(paths):
+    added = []
+    for index, path in enumerate(paths):
+        ds = pydicom.dcmread(path)
+        ds.SOPInstanceUID = generate_uid()
+        ds.file_meta.MediaStorageSOPInstanceUID = ds.SOPInstanceUID
+        ds.InstanceNumber += 100
+        ds.ImageOrientationPatient = [-1, 0, 0, 0, -1, 0]
+        ds.ImagePositionPatient[2] += 0.412
+        target = path.with_name(f'partition_{index}.dcm')
+        ds.save_as(target, enforce_file_format=True)
+        added.append(target)
+    return added
+
+
+@pytest.mark.parametrize('spanning', [False, True])
+@pytest.mark.parametrize('duplicates', [False, True])
+def test_orientation_partition_selection_and_reference_refusal(tmp_path, dcm2niix, spanning, duplicates):
+    root = tmp_path / 'Output'
+    course = _organized_course(root, dcm2niix, localizer=False)
+    paths = sorted((course / 'DICOM/CT').glob('CT_*.dcm'))
+    added = _orientation_partition(paths)
+    if duplicates:
+        _copies(course, differing=True)
+    _rtstruct(course / 'RS.dcm', paths + added[:1] if spanning else paths)
+    _refresh(course)
+    before = _files_and_mtimes(root)
+    dry = repair_output(root, dry_run=True)
+    assert _files_and_mtimes(root) == before
+    result = repair_output(root)
+    if spanning:
+        assert dry['refused'] == result['refused'] == 1
+        assert result['reason_codes'] == {'ct_hygiene_references_span_geometry_partitions': 1}
+        assert _files_and_mtimes(root) == before
+    else:
+        assert dry['would_repair'] == result['repaired'] == 1
+        assert result['geometry_partition_instances_excluded'] == 12
+        contract = load_course_contract(course)
+        verify_volume(contract.planning_ct_dir, contract.planning_ct_nifti)
+        assert _load(contract.planning_ct_dir).GetSize() == (20, 16, 12)
+        before = _files_and_mtimes(root)
+        assert repair_output(root)['unchanged'] == 1
+        assert _files_and_mtimes(root) == before
+
+
+@pytest.mark.parametrize('damage', ['retained_hash', 'excluded_hash', 'equal_hash', 'position', 'coverage', 'geometry', 'excluded_referenced'])
+def test_contract_reverifies_reference_authorized_exclusions(tmp_path, dcm2niix, damage):
+    root = tmp_path / 'Output'
+    course = _organized_course(root, dcm2niix, localizer=False)
+    paths, _ = _copies(course, differing=True)
+    _orientation_partition(paths)
+    _refresh(course)
+    assert repair_output(root)['repaired'] == 1
+    contract = load_course_contract(course)
+    sidecar = course / contract.planning_ct['nifti_provenance']['sidecar_path']
+    metadata = json.loads(sidecar.read_text())
+    selection = metadata['instance_selection']
+    item = next(e for e in selection['excluded_instances'] if e['reason_code'] == 'unreferenced_duplicate_position')
+    if damage == 'retained_hash':
+        item['retained_rescaled_pixels_sha256'] = '0' * 64
+    elif damage == 'excluded_hash':
+        item['excluded_rescaled_pixels_sha256'] = 'invalid'
+    elif damage == 'equal_hash':
+        item['excluded_rescaled_pixels_sha256'] = item['retained_rescaled_pixels_sha256']
+    elif damage == 'position':
+        item['image_position_patient'][2] += 5
+    elif damage == 'coverage':
+        _rtstruct(course / 'RS.dcm', paths[:-1])
+        selection['authoritative_rtstruct_sha256'] = hashlib.sha256((course / 'RS.dcm').read_bytes()).hexdigest()
+        selection['rtstruct_referenced_instance_count'] -= 1
+    elif damage == 'excluded_referenced':
+        item['sop_instance_uid'] = selection['kept_sop_instance_uids'][0]
+    else:
+        geometry_item = next(e for e in selection['excluded_instances'] if e['reason_code'] == 'unreferenced_geometry_partition')
+        geometry_item['excluded_geometry'] = {k: v for k, v in selection['selected_geometry'].items() if k != 'slice_step_mm'}
+    sidecar.write_text(json.dumps(metadata))
+    case_path = course / 'metadata/case_metadata.json'
+    case = json.loads(case_path.read_text())
+    case['course_contract']['planning_ct']['nifti_provenance']['instance_selection'] = selection
+    if damage == 'coverage':
+        case['course_contract']['authoritative_rtstruct']['sop_instance_uid'] = str(pydicom.dcmread(course / 'RS.dcm').SOPInstanceUID)
+    case_path.write_text(json.dumps(case))
+    with pytest.raises(CourseContractError, match='ct_localizer_stale_selection_evidence'):
+        load_course_contract(course)
+
+
+@pytest.mark.parametrize('defect', ['irregular', 'too_few', 'missing_references'])
+def test_selected_geometry_partition_must_be_regular_and_referenced(tmp_path, defect):
+    paths = write_ct_series(tmp_path / 'ct', uniform_z_positions(), signed=False)
+    _orientation_partition(paths)
+    rs = _rtstruct(tmp_path / 'RS.dcm', paths)
+    if defect == 'irregular':
+        ds = pydicom.dcmread(paths[-1])
+        ds.ImagePositionPatient[2] += 1
+        ds.save_as(paths[-1], enforce_file_format=True)
+        reason = 'ct_localizer_inconsistent_volume_positions'
+    elif defect == 'too_few':
+        for path in paths[2:]:
+            path.unlink()
+        _rtstruct(rs, paths[:2])
+        reason = 'ct_localizer_insufficient_volume'
+    else:
+        rs = None
+        reason = 'ct_localizer_rtstruct_references_missing'
+    before = _tree_digest(tmp_path)
+    with pytest.raises(PlanningCTLocalizerError, match=reason):
+        select_localizers(tmp_path / 'ct', rs)
+    assert _tree_digest(tmp_path) == before
+
+
+def test_differing_duplicate_requires_reference_at_positions_without_duplicates(tmp_path):
+    paths = write_ct_series(tmp_path / 'ct', uniform_z_positions(), signed=False)
+    _duplicate(paths, differing=True)
+    rs = _rtstruct(tmp_path / 'RS.dcm', paths[1:])
+    with pytest.raises(PlanningCTLocalizerError, match='ct_hygiene_duplicate_position_reference_coverage'):
+        select_localizers(tmp_path / 'ct', rs)

@@ -233,8 +233,8 @@ def test_organize_ledger_records_validated_exclusions_and_refusal_codes(tmp_path
             # Explicit LOCALIZER tags are excluded earlier by existing policy.
             scout = pydicom.dcmread(scout_path)
             del scout.ImageType
-            # Keep this RF10 mixed-geometry fallback fixture outside RF13's
-            # exact-position publication trigger.
+            # RF13b now handles this unreferenced geometry at publication,
+            # even without exact-position duplicates.
             scout.ImagePositionPatient[2] = -20
             scout.save_as(scout_path, enforce_file_format=True)
             if index == 3:
@@ -259,29 +259,26 @@ def test_organize_ledger_records_validated_exclusions_and_refusal_codes(tmp_path
     config.dicom_copy_use_hardlinks = False
     courses = organize.organize_and_merge(config, metadata_snapshot={})
     ledger = json.loads((config.output_root / '_COURSES/organize_ledger.json').read_text())
-    assert len(courses) == 2
-    assert ledger['validated_course_count'] == 2
-    assert ledger['technical_quarantine_count'] == 2
+    assert len(courses) == 3
+    assert ledger['validated_course_count'] == 3
+    assert ledger['technical_quarantine_count'] == 1
     for entry in ledger['courses']:
         evidence = entry.get('planning_ct_conversion')
         if entry['status'] == 'validated':
             if not evidence:
-                # RF13 resolves duplicates before native conversion. RF10's
-                # mixed-geometry case still records its fallback conversion.
+                # Reference-authorized exclusions precede native conversion.
                 from rtpipeline.course_contract import load_course_contract
                 contract = load_course_contract(config.output_root / entry['patient'] / entry['course'])
                 evidence = contract.planning_ct['nifti_provenance']['instance_selection']
-                assert evidence['reason'] == 'identical_rescaled_duplicate_position'
+                assert evidence['reason'] in {'identical_rescaled_duplicate_position',
+                                              'rtstruct_referenced_volume_selection'}
             else:
                 assert evidence['method'] == METHOD
             assert evidence['excluded_instance_count'] == 1
             assert evidence['kept_instance_count'] == 12
             assert evidence['rtstruct_references_all_kept'] is True
         else:
-            assert evidence['reason_code'] in {
-                'ct_hygiene_duplicate_position_pixels_differ',
-                'ct_hygiene_references_span_geometry_partitions',
-            }
+            assert evidence['reason_code'] == 'ct_hygiene_references_span_geometry_partitions'
             assert evidence['reason_code'] in entry['reason']
 
 
