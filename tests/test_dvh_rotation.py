@@ -168,3 +168,115 @@ def test_exact_orientations_bypass_resampling(tmp_path, orientation):
     dose = pydicom.dcmread(fx.write_dose(tmp_path/'dose.dcm'))
     dose.ImageOrientationPatient = orientation
     assert prepare_rotated_dose(dose) is None
+
+
+def historical_dvh(tmp_path):
+    """Load actual a61b96a code and its original on-disk identity inputs."""
+    root = Path(__file__).resolve().parents[1]
+    code = subprocess.check_output(['git', 'show', 'a61b96a:rtpipeline/dvh.py'], cwd=root).decode()
+    module = types.ModuleType('rtpipeline._rf14_baseline_dvh')
+    sys.modules[module.__name__] = module
+    shadow = tmp_path/'baseline_package'
+    shadow.mkdir()
+    module.__file__ = str(shadow/'dvh.py')
+    exec(compile(code, module.__file__, 'exec'), module.__dict__)
+    for name in module.DVH_MEASUREMENT_CODE_SOURCES:
+        source = subprocess.check_output(['git', 'show', f'a61b96a:rtpipeline/{name}'], cwd=root)
+        (shadow/name).write_bytes(source)
+    return module
+
+
+@pytest.mark.parametrize('orientation', [[1,0,0,0,1,0], [-1,0,0,0,-1,0], [-1,0,0,0,1,0],
+                                       [0,1,0,-1,0,0], [0,-1,0,1,0,0],
+                                       [1,0,0,0,-1,0], [0,1,0,1,0,0], [0,-1,0,-1,0,0]])
+def test_axis_aligned_publication_bytes_against_git_a61b96a(tmp_path, monkeypatch, orientation):
+    """Exact publication bytes except truthful code identity and its QC hash.
+
+    The production QC source hash cannot be byte-identical after a source edit.
+    We assert it DOES change, then compare every other QC byte and receipt
+    content field. Workbook packaging time is fixed for both implementations.
+    """
+    import xlsxwriter.core
+    from rtpipeline.config_dependencies import materialize_stage_dependency
+    from rtpipeline.stage_completion import write_stage_completion_sentinel
+
+    class FixedWorkbookTime(datetime.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2024, 1, 1, tzinfo=tz)
+    monkeypatch.setattr(xlsxwriter.core, 'datetime', FixedWorkbookTime)
+    baseline = historical_dvh(tmp_path)
+    course = fx.build_course(tmp_path, rois=fx.NO_NEAR_ZERO_ROIS)
+    path = course/'DICOM/RTDOSE/dose.dcm'
+    dose = pydicom.dcmread(path)
+    dose.ImageOrientationPatient = orientation
+    basis = np.column_stack((orientation[:3], orientation[3:],
+                             np.cross(orientation[:3], orientation[3:])))
+    corners = np.array([[x,y,z] for x in (0.,38.) for y in (0.,38.) for z in (0.,8.)])
+    dose.ImagePositionPatient = (-(corners @ basis.T).min(axis=0)).tolist()
+    dose.save_as(path, enforce_file_format=True)
+    dependency = materialize_stage_dependency(tmp_path/'configuration', 'dvh', {'enabled':True})
+
+    def run(module):
+        module._invalidate_dvh_outputs(course)
+        assert module.dvh_for_course(course, parallel_workers=1)
+        artifacts = {name: (course/name).read_bytes() for name in
+                     ('dvh_metrics.parquet', 'dvh_metrics.xlsx', 'dvh_curves.json', 'metadata/dvh_qc.json')}
+        receipt = write_stage_completion_sentinel(course, course/'.dvh_done', stage='dvh',
+                                                  status='ok', configuration_dependency=dependency)
+        return artifacts, receipt
+
+    old, old_receipt = run(baseline)
+    new, new_receipt = run(dvh)
+    for name in ('dvh_metrics.parquet', 'dvh_metrics.xlsx', 'dvh_curves.json'):
+        assert old[name] == new[name], name
+    old_qc = json.loads(old['metadata/dvh_qc.json'])
+    new_qc = json.loads(new['metadata/dvh_qc.json'])
+    old_digest = old_qc['code_sources_sha256']
+    new_digest = new_qc['code_sources_sha256']
+    assert old_digest != new_digest
+    assert old['metadata/dvh_qc.json'].replace(old_digest.encode(), new_digest.encode()) == new['metadata/dvh_qc.json']
+    old_content = [{k: row[k] for k in ('path','role','binding','sha256','size_bytes') if k in row}
+                   for row in old_receipt['outputs'] if row['role'] != 'dvh_qc']
+    new_content = [{k: row[k] for k in ('path','role','binding','sha256','size_bytes') if k in row}
+                   for row in new_receipt['outputs'] if row['role'] != 'dvh_qc']
+    assert old_content == new_content
+    assert old_receipt['content_closure_sha256'] != new_receipt['content_closure_sha256']
+    assert 'dose_grid_resampling' not in new_qc
+    assert 'dose_grid_resampling_status' not in pd.read_parquet(course/'dvh_metrics.parquet').columns
+
+
+def test_partial_course_never_exports_whole_roi_values_or_curve(tmp_path):
+    course = fx.build_course(tmp_path, delivered=False)
+    analytic_dose(course/'DICOM/RTDOSE/dose.dcm', .5)
+    box_structure(course/'DICOM/RTSTRUCT/rs.dcm', x=(-25., 10.))
+    assert dvh.dvh_for_course(course, parallel_workers=1)
+    rows = pd.read_parquet(course/'dvh_metrics.parquet')
+    assert set(rows.dose_grid_coverage_status) == {'partial_grid'}
+    assert rows[['D90Gy','D2ccGy','DmeanGy','D0.03ccGy','D0.1ccGy','D1ccGy']].isna().all().all()
+    assert set(rows.D2cc_status) == {'partial_grid'}
+    assert rows[['covered_D90Gy','covered_D2ccGy','covered_DmeanGy']].notna().all().all()
+    assert not (course/'dvh_curves.json').exists()
+
+
+def test_small_roi_has_no_d2cc(tmp_path):
+    dose = analytic_dose(tmp_path/'dose.dcm', .1)
+    rs = box_structure(tmp_path/'rs.dcm', x=(-2.,2.), y=(-2.,2.), zs=[-1,0,1])
+    histogram = prepare_rotated_dose(dose).get_dvh(rs, 1)
+    metrics = add_brachy_metrics(histogram, dvh._compute_metrics(histogram, None))
+    assert metrics['D2ccGy'] is None
+    assert metrics['D2cc_status'] == 'roi_below_2cc'
+
+
+def test_direct_mask_sampler_preserves_patient_coordinates_and_support(tmp_path):
+    import SimpleITK as sitk
+    dose = analytic_dose(tmp_path/'dose.dcm', .5)
+    grid = prepare_rotated_dose(dose)
+    ct = sitk.Image([50, 3, 3], sitk.sitkFloat32)
+    ct.SetOrigin([-25., -1., -1.])
+    values, support = grid.sample_image(ct)
+    points = np.array([ct.TransformIndexToPhysicalPoint((x,1,1)) for x in range(50)])
+    expected = grid.sample(points)
+    np.testing.assert_array_equal(support[1,1], ~np.ma.getmaskarray(expected))
+    np.testing.assert_allclose(values[1,1], expected.filled(0)*float(dose.DoseGridScaling))
+    assert values[1,1,0] == 0 and not support[1,1,0]

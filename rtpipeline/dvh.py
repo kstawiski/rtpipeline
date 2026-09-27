@@ -496,6 +496,8 @@ def _is_dose_derived_metric_column(column: object) -> bool:
         "DmaxGy",
         "DminGy",
         "D95Gy",
+        "D90Gy",
+        "D2ccGy",
         "D98Gy",
         "D2Gy",
         "D50Gy",
@@ -1122,6 +1124,8 @@ def annotate_dvh_metrics(
                 output["covered_" + column] = value
             output["covered_metric_status"] = ("computed" if covered_metrics else "unavailable")
             output["D0.03cc_status"] = coverage_status
+            if "D2cc_status" in output:
+                output["D2cc_status"] = coverage_status
             dose_metric_status = coverage_status
             dose_metric_reason = "Whole-ROI metrics require complete independent dose-grid support."
             relative_status = "unavailable_" + coverage_status
@@ -4009,6 +4013,9 @@ def dvh_for_course(
 
     for row in clean_results:
         if rotation_metadata is not None:
+            row.setdefault("D90Gy", None)
+            row.setdefault("D2ccGy", None)
+            row.setdefault("D2cc_status", "not_computable")
             row["dose_grid_resampling_status"] = (
                 "refused" if rotation_error else rotation_metadata["method"])
             row["dose_grid_rotation_angle_degrees"] = rotation_metadata.get("rotation_angle_degrees")
