@@ -169,6 +169,7 @@ _STAGE_DEFINITIONS: dict[str, StageDefinition] = {
         code_sources=(
             *_COMMON_CODE_SOURCES,
             "dvh.py",
+            "dvh_rotation.py",
             "custom_structures.py",
             "custom_structures_rtstruct.py",
             "course_contract.py",
