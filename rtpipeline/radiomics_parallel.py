@@ -417,6 +417,12 @@ def _write_parallel_roi_ledger(
                 roi_rows[0],
             ),
         )
+        projected = max(
+            (candidate for candidate in roi_rows
+             if candidate.get("geometry_basis") == "quantized_plane_projection"),
+            key=lambda candidate: candidate["contour_quantization_projection_mm"],
+            default={},
+        )
         status = text_or(row, "extraction_status", "success")
         detail_code = text_or(row, "roi_structural_code")
         completeness = text_or(row, RADIOMICS_FEATURE_COMPLETENESS_COLUMN)
@@ -439,6 +445,8 @@ def _write_parallel_roi_ledger(
             reason_code=reason,
             disposition="extracted" if reason == "extracted" else "excluded",
             detail_code=detail_code or None,
+            **({"contour_quantization_projection_mm": projected["contour_quantization_projection_mm"],
+                "geometry_basis": projected["geometry_basis"]} if projected else {}),
             detail=(
                 text_or(row, "radiomics_feature_completeness_reason")
                 if completeness == "incomplete"
@@ -629,9 +637,24 @@ def _resume_outcome(
 
 
 def _extract_one(task: _RoiTask) -> List[Dict[str, Any]]:
+    records = _extract_one_with_geometry(task)
+    # Carry only projection actually prepared by the scoped rasterizer. A
+    # strict-only run gains no fields or new publication columns.
+    builders = _WORKER_STATE.get("builders", {})
+    builder = next((value for key, value in reversed(list(builders.items()))
+                    if key[0] == str(Path(task.rs_path))), None)
+    scope = getattr(builder, "by_name", {}).get(task.roi_name)
+    if scope is not None and scope.code is None:
+        for row in records:
+            row.update(scope.projection_metadata)
+    return records
+
+
+def _extract_one_with_geometry(task: _RoiTask) -> List[Dict[str, Any]]:
     # Classify before policy, resource admission, or a volumetric builder. Preserve both arm identities
     # for legitimate non-measurements and reject task references to old bytes.
     rs_path = Path(task.rs_path)
+    quantized_scope = None
     from .rtstruct_identity import require_rtstruct_identity
     if rs_path.is_file():
         if pydicom.uid.UID(task.mask_identity).is_valid:
@@ -640,13 +663,21 @@ def _extract_one(task: _RoiTask) -> List[Dict[str, Any]]:
         observations = [r for r in inventory.named_rois if r.name == task.roi_name]
         if len(observations) == 1 and observations[0].structural_code:
             code = observations[0].structural_code
-            nonvolume = code in NONVOLUMETRIC_CODES
-            return _status_records(task,
-                "nonvolumetric_nonmeasurement" if nonvolume else "invalid_contour_geometry",
-                code, failure_kind="nonvolumetric_geometry" if nonvolume else "invalid_contour_geometry",
-                metadata={"roi_structural_code": code})
+            # The inventory remains strict. Only a complete CT-bound scope
+            # with recorded projection can supersede its precision finding.
+            if code in {"ROI_CONTOUR_UNPARSEABLE", "ROI_CONTOUR_PARTIALLY_UNPARSEABLE"}:
+                candidate = _get_builder(rs_path)
+                scope = getattr(candidate, "by_name", {}).get(task.roi_name)
+                if scope is not None and scope.code is None and scope.projection_metadata:
+                    quantized_scope = scope
+            if quantized_scope is None:
+                nonvolume = code in NONVOLUMETRIC_CODES
+                return _status_records(task,
+                    "nonvolumetric_nonmeasurement" if nonvolume else "invalid_contour_geometry",
+                    code, failure_kind="nonvolumetric_geometry" if nonvolume else "invalid_contour_geometry",
+                    metadata={"roi_structural_code": code})
 
-    if task.structural_code:
+    if task.structural_code and quantized_scope is None:
         from .radiomics_source_inventory import structural_disposition
         return _status_records(
             task, structural_disposition(task.structural_code),
