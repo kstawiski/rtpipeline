@@ -83,6 +83,8 @@ def source_ledger_rows(sources, tasks, rows, *, datasets=None):
     for path in sorted({Path(p) for p in sources}):
         ds = datasets[path] if datasets is not None else pydicom.dcmread(str(path), stop_before_pixels=True)
         observations = source_observations(path, dataset=ds)
+        from .rtstruct_geometry import source_quantization_metadata
+        projected = source_quantization_metadata(path, ds)
         expected.update((str(path), i) for i in range(len(getattr(ds, "StructureSetROISequence", ()))))
         file_tasks = [t for t in tasks if Path(t.rs_path) == path]
         for ordinal, observation in enumerate(observations):
@@ -125,6 +127,7 @@ def source_ledger_rows(sources, tasks, rows, *, datasets=None):
                 "roi_name": observation.name, "reason_code": reason,
                 "disposition": disposition,
                 "arm_dispositions": {r["extraction_arm"]: r.get("extraction_status") for r in matched},
+                **projected.get(observation.roi_number, {}),
             })
     identities = {(r["source_path"], r["declaration_ordinal"]) for r in output}
     assert len(identities) == len(output), "source declarations were collapsed"

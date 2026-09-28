@@ -12,9 +12,14 @@ from pydicom.sequence import Sequence
 
 NONVOLUMETRIC_CODES = frozenset({'ROI_NONVOLUMETRIC_POINT', 'ROI_NONVOLUMETRIC_OPEN_NONPLANAR', 'ROI_NONVOLUMETRIC_OPEN_PLANAR', 'ROI_NONVOLUMETRIC_MIXED'})
 PLANE_TOLERANCE_MM = 1e-3  # Numerical coordinate precision, not slice snapping.
+# Exporters may round patient coordinates to a 0.01 mm DS storage step.
+# Half-step rounding in three axes displaces a point by at most sqrt(3)*0.005
+# mm. One full step bounds that displacement and the fitted-plane residual.
+# DICOM DS does not mandate this precision. This is not slice snapping.
+COORDINATE_QUANTIZATION_TOLERANCE_MM = 0.01
 
 
-def contour_geometry(contour) -> tuple[str, bool]:
+def contour_geometry(contour, *, allow_quantization: bool = True) -> tuple[str, bool]:
     kind = str(getattr(contour, 'ContourGeometricType', '') or '')
     try:
         points = np.asarray(contour.ContourData, dtype=float).reshape(-1, 3)
@@ -40,7 +45,12 @@ def contour_geometry(contour) -> tuple[str, bool]:
             return kind, False
         if valid and count >= 3 and kind in {'OPEN_PLANAR', 'CLOSED_PLANAR', 'CLOSEDPLANAR_XOR'}:
             _, _, vt = np.linalg.svd(points - points[0], full_matrices=False)
-            valid = bool(np.max(np.abs((points - points[0]) @ vt[-1])) <= PLANE_TOLERANCE_MM)
+            residual = float(np.max(np.abs((points - points[0]) @ vt[-1])))
+            valid = residual <= PLANE_TOLERANCE_MM
+            if not valid and allow_quantization and kind in {'CLOSED_PLANAR', 'CLOSEDPLANAR_XOR'}:
+                # Inventory eligibility only: scope resolution must also bind
+                # and project to one authoritative CT plane before rasterizing.
+                valid = residual <= COORDINATE_QUANTIZATION_TOLERANCE_MM
         return kind, bool(valid)
     except (ValueError, TypeError, AttributeError, np.linalg.LinAlgError):
         return kind, False
@@ -65,9 +75,9 @@ def contour_encloses_area(contour) -> bool:
         return False
 
 
-def roi_geometry_code(contours) -> str | None:
+def roi_geometry_code(contours, *, allow_quantization: bool = True) -> str | None:
     contours = list(contours)
-    items = [contour_geometry(c) for c in contours]
+    items = [contour_geometry(c, allow_quantization=allow_quantization) for c in contours]
     if not items:
         return 'ROI_DECLARED_EMPTY_CONTOUR_SEQUENCE'
     if not all(valid for _, valid in items):
@@ -118,6 +128,16 @@ class ScopeResult:
     source_series_uids: tuple[str, ...]
     contours: list
     detail: str = ''
+    contour_quantization_projection_mm: float = 0.0
+
+    @property
+    def projection_metadata(self) -> dict:
+        if not self.contour_quantization_projection_mm:
+            return {}
+        return {
+            'contour_quantization_projection_mm': self.contour_quantization_projection_mm,
+            'geometry_basis': 'quantized_plane_projection',
+        }
 
 
 def plane_offset_mm(points, image) -> float:
@@ -520,7 +540,7 @@ def place_added_rois_on_planes(ds, series_data, roi_numbers=None) -> int:
     return moved
 
 
-def resolve_roi_scopes(dataset, ct_images) -> dict[int, ScopeResult]:
+def _resolve_roi_scopes_strict(dataset, ct_images) -> dict[int, ScopeResult]:
     """Bind every volumetric contour. One unresolved contour holds the entire ROI.
 
     No reference is pruned here, no contour is removed, and coordinates are never
@@ -550,7 +570,7 @@ def resolve_roi_scopes(dataset, ct_images) -> dict[int, ScopeResult]:
     for roi in getattr(dataset, 'StructureSetROISequence', []) or []:
         number = int(roi.ROINumber)
         contours = by_number.get(number, [])
-        result = ScopeResult(number, str(roi.ROIName), roi_geometry_code(contours), (), copy.deepcopy(contours))
+        result = ScopeResult(number, str(roi.ROIName), roi_geometry_code(contours, allow_quantization=False), (), copy.deepcopy(contours))
         results[number] = result
         if result.code:
             continue
@@ -558,7 +578,7 @@ def resolve_roi_scopes(dataset, ct_images) -> dict[int, ScopeResult]:
         failures = []
         frame_uid = str(getattr(roi, 'ReferencedFrameOfReferenceUID', '') or '')
         for index, contour in enumerate(result.contours):
-            kind, valid = contour_geometry(contour)
+            kind, valid = contour_geometry(contour, allow_quantization=False)
             if not kind or not valid:
                 if not contour_encloses_area(contour):
                     # The same rule roi_geometry_code applies. An invalid item
@@ -600,6 +620,109 @@ def resolve_roi_scopes(dataset, ct_images) -> dict[int, ScopeResult]:
         elif len(scopes) != 1:
             result.code = 'ROI_MULTISERIES_SOURCE_SCOPE'
             result.detail = 'Complete contours span distinct source series; no combined mask is defined'
+    return results
+
+
+def _quantized_contour_copy(contour, images, by_uid, frame_uid):
+    """Return a bounded, unambiguous CT-plane projection, or refuse it."""
+    kind, valid = contour_geometry(contour)
+    if kind not in {'CLOSED_PLANAR', 'CLOSEDPLANAR_XOR'} or not valid:
+        return None
+    points = np.asarray(contour.ContourData, dtype=float).reshape(-1, 3)
+    refs = list(getattr(contour, 'ContourImageSequence', []) or [])
+    if refs:
+        targets = [by_uid.get(str(getattr(ref, 'ReferencedSOPInstanceUID', ''))) for ref in refs]
+        if any(image is None for image in targets):
+            return None
+        targets = list({str(image.SOPInstanceUID): image for image in targets}.values())
+        if len(targets) != 1:
+            return None
+    else:
+        targets = images
+    matches = []
+    for image in targets:
+        if str(getattr(image, 'SOPClassUID', '')) != '1.2.840.10008.5.1.4.1.1.2':
+            continue
+        try:
+            offset = plane_offset_mm(points, image)
+            if not np.isfinite(offset) or offset > COORDINATE_QUANTIZATION_TOLERANCE_MM:
+                continue
+            orientation = np.asarray(image.ImageOrientationPatient, dtype=float)
+            normal = np.cross(orientation[:3], orientation[3:])
+            normal /= np.linalg.norm(normal)
+            distances = (points - np.asarray(image.ImagePositionPatient, dtype=float)) @ normal
+            distance = float(np.max(np.abs(distances)))
+            if distance > COORDINATE_QUANTIZATION_TOLERANCE_MM:
+                continue
+            projected = points - distances[:, None] * normal
+            if not _on_image(projected, image, frame_uid):
+                continue
+            prepared = copy.deepcopy(contour)
+            prepared.ContourData = projected.ravel().tolist()
+            if not contour_geometry(prepared, allow_quantization=False)[1]:
+                continue
+            if not refs:
+                ref = Dataset()
+                ref.ReferencedSOPClassUID = image.SOPClassUID
+                ref.ReferencedSOPInstanceUID = image.SOPInstanceUID
+                prepared.ContourImageSequence = Sequence([ref])
+            matches.append((prepared, distance))
+        except (ValueError, TypeError, AttributeError, np.linalg.LinAlgError):
+            continue
+    return matches[0] if len(matches) == 1 else None
+
+
+def resolve_roi_scopes(dataset, ct_images) -> dict[int, ScopeResult]:
+    """Use the original strict path first; project only failed closed contours.
+
+    A failed retry returns the original code/detail. Source DICOM coordinates
+    are never modified. The bounded projection exists only in rasterizer copies.
+    """
+    images = list(ct_images)
+    results = _resolve_roi_scopes_strict(dataset, images)
+    by_uid = {str(image.SOPInstanceUID): image for image in images}
+    for roi in getattr(dataset, 'StructureSetROISequence', []) or []:
+        number = int(roi.ROINumber)
+        original = results[number]
+        if original.code not in {'ROI_CONTOUR_UNPARSEABLE', 'ROI_CONTOUR_PARTIALLY_UNPARSEABLE',
+                                 'ROI_UNRESOLVED_SOURCE_SCOPE'}:
+            continue
+        frame_uid = str(getattr(roi, 'ReferencedFrameOfReferenceUID', '') or '')
+        contours = []
+        maximum = 0.0
+        for contour in original.contours:
+            kind, valid = contour_geometry(contour, allow_quantization=False)
+            if not contour_encloses_area(contour):
+                contours.append(contour)
+                continue
+            points = np.asarray(contour.ContourData, dtype=float).reshape(-1, 3) if valid else None
+            refs = list(getattr(contour, 'ContourImageSequence', []) or [])
+            targets = ([by_uid.get(str(getattr(ref, 'ReferencedSOPInstanceUID', ''))) for ref in refs]
+                       if refs else images)
+            strict_matches = ([image for image in targets if image is not None and _on_image(points, image, frame_uid)]
+                              if valid else [])
+            if valid and strict_matches and (not refs or len(strict_matches) == len(targets)):
+                contours.append(contour)
+                continue
+            projected = _quantized_contour_copy(contour, images, by_uid, frame_uid)
+            if projected is None:
+                break
+            prepared, distance = projected
+            contours.append(prepared)
+            maximum = max(maximum, distance)
+        else:
+            if not maximum:
+                continue
+            retry = Dataset()
+            retry.StructureSetROISequence = Sequence([roi])
+            item = Dataset()
+            item.ReferencedROINumber = number
+            item.ContourSequence = Sequence(contours)
+            retry.ROIContourSequence = Sequence([item])
+            result = _resolve_roi_scopes_strict(retry, images)[number]
+            if result.code is None:
+                result.contour_quantization_projection_mm = maximum
+                results[number] = result
     return results
 
 
@@ -685,3 +808,55 @@ def create_scoped_rtstruct(ct_dir: Path, rs_path: Path):
     validate_rtstruct_identity(dataset)
     series_data = image_helper.load_sorted_image_series(str(ct_dir))
     return ScopedRTStruct(dataset, series_data)
+
+
+def source_quantization_metadata(path, dataset=None, *, ct_images=None) -> dict[int, dict]:
+    """Projection provenance for a contracted CT source, keyed by ROI number.
+
+    This read-only reconstruction uses the same resolver as the rasterizer.
+    No fields are supplied for strict or rejected ROIs. Non-course and MR
+    sources have no planning-CT projection provenance.
+    """
+    path = Path(path)
+    if ct_images is None:
+        course = next((parent for parent in path.parents
+                       if (parent / 'metadata' / 'case_metadata.json').is_file()), None)
+        if course is None:
+            return {}
+        from .course_contract import load_course_contract, _read_ct_headers
+        contract = load_course_contract(course)
+        if contract.planning_ct_dir is None:
+            return {}
+        ct_images = [image for _, image in _read_ct_headers(contract.planning_ct_dir)
+                     if image is not None and str(getattr(image, 'Modality', '')) == 'CT']
+    ds = dataset if dataset is not None else pydicom.dcmread(path, stop_before_pixels=True)
+    return {number: result.projection_metadata
+            for number, result in resolve_roi_scopes(ds, ct_images).items()
+            if result.code is None and result.projection_metadata}
+
+
+def course_quantization_metadata(course_dir) -> dict[str, dict]:
+    """Name-level CT ledger provenance; source ledgers retain ROI identity."""
+    course_dir = Path(course_dir)
+    if not (course_dir / 'metadata' / 'case_metadata.json').is_file():
+        return {}
+    from .course_contract import load_course_contract, _read_ct_headers
+    contract = load_course_contract(course_dir)
+    if contract.planning_ct_dir is None:
+        return {}
+    paths = set(course_dir.glob('RS*.dcm'))
+    if contract.authoritative_rtstruct_path is not None:
+        paths.add(contract.authoritative_rtstruct_path)
+    images = [image for _, image in _read_ct_headers(contract.planning_ct_dir)
+              if image is not None and str(getattr(image, 'Modality', '')) == 'CT']
+    output = {}
+    for path in sorted(paths):
+        ds = pydicom.dcmread(path, stop_before_pixels=True)
+        metadata = source_quantization_metadata(path, ds, ct_images=images)
+        for roi in getattr(ds, 'StructureSetROISequence', []) or []:
+            fields = metadata.get(int(roi.ROINumber))
+            if fields:
+                name = str(roi.ROIName)
+                if fields['contour_quantization_projection_mm'] > output.get(name, {}).get('contour_quantization_projection_mm', 0):
+                    output[name] = fields
+    return output
