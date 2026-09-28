@@ -56,6 +56,9 @@ DVH_MEASUREMENT_CODE_SOURCES = (
     "dvh.py",
     "dvh_support.py",
     "dvh_rotation.py",
+    "planning_dose_selection.py",
+    "plan_approval.py",
+    "organize.py",
     "prescription.py",
     "rt_details.py",
     "rtstruct_geometry.py",
@@ -1300,6 +1303,9 @@ class DVHDoseResolution:
     dose_qc_reasons: List[str] | None = None
     contract_path: Optional[Path] = None
     dvh_decision: Dict[str, object] | None = None
+    planning_dose_basis: Optional[str] = None
+    planning_dose_selection_sha256: Optional[str] = None
+    planning_dose_refusal_reason: Optional[str] = None
 
     @property
     def ok(self) -> bool:
@@ -1734,7 +1740,7 @@ def _resolve_dvh_dose(
         if source_plan_uids:
             contract.require_dvh_artifacts()
         dvh_decision = dict(contract.data["dvh"])
-        return DVHDoseResolution(
+        resolution = DVHDoseResolution(
             rd_path=None,
             rp_path=None,
             classification=str(classification.get("classification") or "contract_no_dose_grid"),
@@ -1766,6 +1772,34 @@ def _resolve_dvh_dose(
             contract_path=contract.metadata_path,
             dvh_decision=dvh_decision,
         )
+        if not contract.selected_doses:
+            from .planning_dose_selection import BASIS, SIDECAR, _sha256, load_planning_dose_sidecar
+            selection = load_planning_dose_sidecar(course_dir)
+            if selection.accepted:
+                dose_header = pydicom.dcmread(selection.dose_path, stop_before_pixels=True)
+                resolution.rd_path = selection.dose_path
+                resolution.rp_path = selection.plan_path
+                resolution.classification = BASIS
+                resolution.reason = "Single approved plan and planning dose; delivery is unlinked."
+                resolution.skip_reason = None
+                resolution.source_dose_sop_instance_uids = [str(dose_header.SOPInstanceUID)]
+                resolution.source_dose_summation_types = [str(dose_header.DoseSummationType).upper()]
+                resolution.output_dose_sop_instance_uid = str(dose_header.SOPInstanceUID)
+                resolution.output_dose_summation_type = str(dose_header.DoseSummationType).upper()
+                resolution.selected_dose_paths = [selection.dose_path]
+                resolution.dose_grid_semantics = BASIS
+                resolution.dose_response_eligible = False
+                resolution.planning_dose_basis = BASIS
+                resolution.planning_dose_selection_sha256 = _sha256(course_dir / SIDECAR)
+                resolution.dvh_decision = {
+                    "status": "ready", "metrics_status": "computed",
+                    "reason_code": BASIS, "output": "dvh_metrics.xlsx",
+                    "dose_response_eligible": False,
+                }
+            elif selection.reason_code != 'sidecar_missing':
+                resolution.planning_dose_refusal_reason = selection.reason_code
+                resolution.skip_reason = "Planning-dose sidecar refused: " + selection.reason_code
+        return resolution
     if not isinstance(dose_grid, dict):
         raise CourseContractError("course contract dose_grid must be an object or null")
     plan_path, dose_path = contract.require_computable_dvh_artifacts()
@@ -2517,6 +2551,13 @@ def _write_dvh_qc(
         "row_count": int(len(df)),
         "course_contract_sha256": _contract_digest(course_dir),
     }
+    if dose_resolution is not None and dose_resolution.planning_dose_basis:
+        payload.update({
+            "dose_basis": dose_resolution.planning_dose_basis,
+            "planning_dose_basis": dose_resolution.planning_dose_basis,
+            "dose_response_eligible": False,
+            "planning_dose_selection_sha256": dose_resolution.planning_dose_selection_sha256,
+        })
     if dose_grid_resampling is not None:
         payload["dose_grid_resampling"] = dict(dose_grid_resampling)
     if rx_dose_gy is not None and rx_dose_gy > 0:
@@ -2635,6 +2676,12 @@ def _write_dvh_skip_qc(
             "dvh": dose_resolution.dvh_decision,
         },
     }
+    if dose_resolution.planning_dose_refusal_reason:
+        payload["planning_dose_refusal_reason"] = dose_resolution.planning_dose_refusal_reason
+    if dose_resolution.planning_dose_basis:
+        payload.update({"dose_basis": dose_resolution.planning_dose_basis,
+                        "planning_dose_basis": dose_resolution.planning_dose_basis,
+                        "dose_response_eligible": False})
     if structure_resolution is not None:
         payload["structure_resolution"] = {
             "classification": structure_resolution.classification,
@@ -2778,6 +2825,20 @@ def _is_dvh_up_to_date(
             course_dir / "RS_custom.dcm",
             course_dir / "cropping_metadata.json",  # Ensure DVH reruns if cropping config changes
         ]
+        if not contract.selected_doses and contract.data.get("dose_grid") is None:
+            from .planning_dose_selection import BASIS, SIDECAR, _sha256, load_planning_dose_sidecar
+            selection = load_planning_dose_sidecar(course_dir)
+            if not selection.accepted:
+                return False
+            if (qc_data.get("planning_dose_basis") != BASIS
+                    or qc_data.get("planning_dose_selection_sha256") != _sha256(course_dir / SIDECAR)):
+                return False
+            if not {"dose_basis", "planning_dose_basis"}.issubset(parquet_frame.columns):
+                return False
+            if (not parquet_frame["planning_dose_basis"].eq(BASIS).all()
+                    or parquet_frame["dose_response_eligible"].ne(False).any()):
+                return False
+            deps.extend([course_dir / SIDECAR, selection.dose_path, selection.plan_path])
         structure_meta = qc_data.get("structure_resolution") or {}
         for dep_path in structure_meta.get("selected_rtstruct_paths") or []:
             if dep_path:
@@ -3473,6 +3534,8 @@ def dvh_for_course(
             dose_resolution.skip_reason or dose_resolution.reason,
         )
         _invalidate_dvh_outputs(course_dir)
+        if not contract.selected_doses and contract.data.get("dose_grid") is None:
+            (course_dir / "dvh_curves.json").unlink(missing_ok=True)
         _write_dvh_skip_qc(course_dir, dose_resolution)
         _publish_skipped_course_rs_custom(
             course_dir, custom_structures_config, rs_manual
@@ -3485,6 +3548,7 @@ def dvh_for_course(
     isocenter_geometry = course_treatment_isocenter_geometry(contract)
     dose_response_eligible = bool(
         contract_dose_response_eligible and dose_plan_scope.complete
+        and not dose_resolution.planning_dose_basis
     )
     prescription_resolved = bool(
         dose_response_eligible
@@ -4130,6 +4194,10 @@ def dvh_for_course(
             and dose_response_eligible
         )
         row["Dose_QC_Status"] = dose_resolution.dose_qc_status
+        if dose_resolution.planning_dose_basis:
+            row["dose_basis"] = dose_resolution.planning_dose_basis
+            row["planning_dose_basis"] = dose_resolution.planning_dose_basis
+            row["dose_response_eligible"] = False
 
     df = pd.DataFrame(clean_results)
     _insert_course_publication_key(df, course_dir)

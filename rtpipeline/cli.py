@@ -321,8 +321,24 @@ def _execute_dvh_task(task: _DVHTask) -> _DVHStageOutcome | None:
     decision = contract.data["dvh"]
     if output is not None:
         output_path = Path(output)
-        if not output_path.is_file() or decision.get("metrics_status") != "computed":
+        if not output_path.is_file():
             return None
+        if decision.get("metrics_status") != "computed":
+            # DVH-only planning fallback leaves organize's decision unchanged.
+            from .planning_dose_selection import BASIS, SIDECAR, _sha256, load_planning_dose_sidecar
+            root = task.course.dirs.root
+            selection = load_planning_dose_sidecar(root)
+            if not selection.accepted:
+                return None
+            try:
+                qc = json.loads((root / "metadata/dvh_qc.json").read_text())
+            except (OSError, ValueError):
+                return None
+            if (qc.get("planning_dose_basis") != BASIS
+                    or qc.get("dose_response_eligible") is not False
+                    or qc.get("planning_dose_selection_sha256") != _sha256(root / SIDECAR)
+                    or (qc.get("dose_resolution") or {}).get("dvh", {}).get("metrics_status") != "computed"):
+                return None
         return _DVHStageOutcome(status="computed", output_path=output_path)
 
     if (
