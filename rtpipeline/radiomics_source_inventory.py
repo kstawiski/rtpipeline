@@ -83,8 +83,6 @@ def source_ledger_rows(sources, tasks, rows, *, datasets=None):
     for path in sorted({Path(p) for p in sources}):
         ds = datasets[path] if datasets is not None else pydicom.dcmread(str(path), stop_before_pixels=True)
         observations = source_observations(path, dataset=ds)
-        from .rtstruct_geometry import source_quantization_metadata
-        projected = source_quantization_metadata(path, ds)
         expected.update((str(path), i) for i in range(len(getattr(ds, "StructureSetROISequence", ()))))
         file_tasks = [t for t in tasks if Path(t.rs_path) == path]
         for ordinal, observation in enumerate(observations):
@@ -97,7 +95,11 @@ def source_ledger_rows(sources, tasks, rows, *, datasets=None):
                        r.get("mask_identity") == task.mask_identity and
                        r.get("stable_roi_identifier") == task.stable_roi_identifier and
                        r.get("roi_original_name", r.get("roi_name")) == task.roi_name]
-            if observation.structural_code:
+            projected = next(({
+                "contour_quantization_projection_mm": r["contour_quantization_projection_mm"],
+                "geometry_basis": r["geometry_basis"],
+            } for r in matched if r.get("geometry_basis") == "quantized_plane_projection"), {})
+            if observation.structural_code and not projected:
                 reason = observation.structural_code
                 disposition = structural_disposition(reason)
             elif matched:
@@ -127,7 +129,7 @@ def source_ledger_rows(sources, tasks, rows, *, datasets=None):
                 "roi_name": observation.name, "reason_code": reason,
                 "disposition": disposition,
                 "arm_dispositions": {r["extraction_arm"]: r.get("extraction_status") for r in matched},
-                **projected.get(observation.roi_number, {}),
+                **projected,
             })
     identities = {(r["source_path"], r["declaration_ordinal"]) for r in output}
     assert len(identities) == len(output), "source declarations were collapsed"

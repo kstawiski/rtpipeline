@@ -317,11 +317,6 @@ def write_modality_ledger(directory: Path, ledger: DenominatorLedger, modality: 
         roi_rows=[{**row, "modality": modality_name} for row in ledger.roi_rows],
         expected_pairs=set(ledger.expected_pairs),
     )
-    if modality_name == "CT":
-        from .rtstruct_geometry import course_quantization_metadata
-        projected = course_quantization_metadata(directory.parent)
-        for row in modality_ledger.roi_rows:
-            row.update(projected.get(str(row.get("roi_name", "")), {}))
     paths = modality_ledger.write(directory, prefix=modality_prefix)
 
     course_groups: dict[tuple[str, str], list[dict[str, Any]]] = {}

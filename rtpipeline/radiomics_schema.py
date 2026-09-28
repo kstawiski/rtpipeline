@@ -100,6 +100,7 @@ RADIOMICS_TEXT_COLUMNS = frozenset(
         # JSON): omitting it closed live course 422528/2021-07 at
         # publication after successful extraction — same failure class.
         "source_series_uids",
+        "geometry_basis",
         "roi_structural_code",
         "resource_guard_reason_code",
         "admissibility_grid",
