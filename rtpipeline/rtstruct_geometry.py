@@ -19,7 +19,7 @@ PLANE_TOLERANCE_MM = 1e-3  # Numerical coordinate precision, not slice snapping.
 COORDINATE_QUANTIZATION_TOLERANCE_MM = 0.01
 
 
-def contour_geometry(contour, *, allow_quantization: bool = True) -> tuple[str, bool]:
+def contour_geometry(contour, *, allow_quantization: bool = False) -> tuple[str, bool]:
     kind = str(getattr(contour, 'ContourGeometricType', '') or '')
     try:
         points = np.asarray(contour.ContourData, dtype=float).reshape(-1, 3)
@@ -48,7 +48,7 @@ def contour_geometry(contour, *, allow_quantization: bool = True) -> tuple[str, 
             residual = float(np.max(np.abs((points - points[0]) @ vt[-1])))
             valid = residual <= PLANE_TOLERANCE_MM
             if not valid and allow_quantization and kind in {'CLOSED_PLANAR', 'CLOSEDPLANAR_XOR'}:
-                # Inventory eligibility only: scope resolution must also bind
+                # Quantization candidacy only: scope resolution must also bind
                 # and project to one authoritative CT plane before rasterizing.
                 valid = residual <= COORDINATE_QUANTIZATION_TOLERANCE_MM
         return kind, bool(valid)
@@ -75,7 +75,7 @@ def contour_encloses_area(contour) -> bool:
         return False
 
 
-def roi_geometry_code(contours, *, allow_quantization: bool = True) -> str | None:
+def roi_geometry_code(contours, *, allow_quantization: bool = False) -> str | None:
     contours = list(contours)
     items = [contour_geometry(c, allow_quantization=allow_quantization) for c in contours]
     if not items:
@@ -625,7 +625,7 @@ def _resolve_roi_scopes_strict(dataset, ct_images) -> dict[int, ScopeResult]:
 
 def _quantized_contour_copy(contour, images, by_uid, frame_uid):
     """Return a bounded, unambiguous CT-plane projection, or refuse it."""
-    kind, valid = contour_geometry(contour)
+    kind, valid = contour_geometry(contour, allow_quantization=True)
     if kind not in {'CLOSED_PLANAR', 'CLOSEDPLANAR_XOR'} or not valid:
         return None
     points = np.asarray(contour.ContourData, dtype=float).reshape(-1, 3)
@@ -808,55 +808,3 @@ def create_scoped_rtstruct(ct_dir: Path, rs_path: Path):
     validate_rtstruct_identity(dataset)
     series_data = image_helper.load_sorted_image_series(str(ct_dir))
     return ScopedRTStruct(dataset, series_data)
-
-
-def source_quantization_metadata(path, dataset=None, *, ct_images=None) -> dict[int, dict]:
-    """Projection provenance for a contracted CT source, keyed by ROI number.
-
-    This read-only reconstruction uses the same resolver as the rasterizer.
-    No fields are supplied for strict or rejected ROIs. Non-course and MR
-    sources have no planning-CT projection provenance.
-    """
-    path = Path(path)
-    if ct_images is None:
-        course = next((parent for parent in path.parents
-                       if (parent / 'metadata' / 'case_metadata.json').is_file()), None)
-        if course is None:
-            return {}
-        from .course_contract import load_course_contract, _read_ct_headers
-        contract = load_course_contract(course)
-        if contract.planning_ct_dir is None:
-            return {}
-        ct_images = [image for _, image in _read_ct_headers(contract.planning_ct_dir)
-                     if image is not None and str(getattr(image, 'Modality', '')) == 'CT']
-    ds = dataset if dataset is not None else pydicom.dcmread(path, stop_before_pixels=True)
-    return {number: result.projection_metadata
-            for number, result in resolve_roi_scopes(ds, ct_images).items()
-            if result.code is None and result.projection_metadata}
-
-
-def course_quantization_metadata(course_dir) -> dict[str, dict]:
-    """Name-level CT ledger provenance; source ledgers retain ROI identity."""
-    course_dir = Path(course_dir)
-    if not (course_dir / 'metadata' / 'case_metadata.json').is_file():
-        return {}
-    from .course_contract import load_course_contract, _read_ct_headers
-    contract = load_course_contract(course_dir)
-    if contract.planning_ct_dir is None:
-        return {}
-    paths = set(course_dir.glob('RS*.dcm'))
-    if contract.authoritative_rtstruct_path is not None:
-        paths.add(contract.authoritative_rtstruct_path)
-    images = [image for _, image in _read_ct_headers(contract.planning_ct_dir)
-              if image is not None and str(getattr(image, 'Modality', '')) == 'CT']
-    output = {}
-    for path in sorted(paths):
-        ds = pydicom.dcmread(path, stop_before_pixels=True)
-        metadata = source_quantization_metadata(path, ds, ct_images=images)
-        for roi in getattr(ds, 'StructureSetROISequence', []) or []:
-            fields = metadata.get(int(roi.ROINumber))
-            if fields:
-                name = str(roi.ROIName)
-                if fields['contour_quantization_projection_mm'] > output.get(name, {}).get('contour_quantization_projection_mm', 0):
-                    output[name] = fields
-    return output
