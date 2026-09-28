@@ -188,8 +188,11 @@ def test_parallel_rows_and_both_ledgers_carry_actual_scope_metadata(tmp_path, mo
     ds, images = fixture(.1)
     scope = geometry.resolve_roi_scopes(ds, images)[1]
     source = tmp_path/'synthetic.dcm'
+    source.write_bytes(b'synthetic-source')
+    stat = source.stat()
+    key = (str(source), stat.st_mtime_ns, stat.st_size)
     task = types.SimpleNamespace(rs_path=str(source), roi_name='hip_left')
-    cache = {(str(source), 123, 456): types.SimpleNamespace(by_name={'hip_left':scope})}
+    cache = {key: types.SimpleNamespace(by_name={'hip_left':scope})}
     monkeypatch.setitem(parallel._WORKER_STATE, 'builders', cache)
     monkeypatch.setattr(parallel, '_extract_one_with_geometry', lambda task: [
         {'roi_name':'hip_left', 'extraction_status':'success'}])
@@ -203,7 +206,7 @@ def test_parallel_rows_and_both_ledgers_carry_actual_scope_metadata(tmp_path, mo
         assert row['geometry_basis'] == 'quantized_plane_projection'
         assert row['contour_quantization_projection_mm'] == scope.contour_quantization_projection_mm
     strict = types.SimpleNamespace(code=None, projection_metadata={})
-    cache[(str(source),123,456)].by_name['hip_left'] = strict
+    cache[key].by_name['hip_left'] = strict
     assert parallel._extract_one(task) == [{'roi_name':'hip_left','extraction_status':'success'}]
 
 
@@ -276,3 +279,19 @@ def test_quantization_fallback_does_not_expand_mr_geometry(baseline):
     assert new.code == old.code
     assert new.code is not None
     assert new.projection_metadata == {}
+
+
+def test_projection_provenance_cannot_come_from_stale_cached_source(tmp_path, monkeypatch):
+    from rtpipeline import radiomics_parallel as parallel
+    ds, images = fixture(.1)
+    scope = geometry.resolve_roi_scopes(ds, images)[1]
+    source = tmp_path/'synthetic.dcm'
+    source.write_bytes(b'old')
+    stat = source.stat()
+    cache = {(str(source),stat.st_mtime_ns,stat.st_size): types.SimpleNamespace(by_name={'hip_left':scope})}
+    monkeypatch.setitem(parallel._WORKER_STATE, 'builders', cache)
+    expected = [{'roi_name':'hip_left','extraction_status':'nonvolumetric_nonmeasurement'}]
+    monkeypatch.setattr(parallel, '_extract_one_with_geometry', lambda task: [dict(row) for row in expected])
+    source.write_bytes(b'changed-source')
+    task = types.SimpleNamespace(rs_path=str(source), roi_name='hip_left')
+    assert parallel._extract_one(task) == expected
