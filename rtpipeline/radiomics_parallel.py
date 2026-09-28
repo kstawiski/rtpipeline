@@ -672,10 +672,19 @@ def _extract_one_with_geometry(task: _RoiTask) -> List[Dict[str, Any]]:
             # The inventory remains strict. Only a complete CT-bound scope
             # with recorded projection can supersede its precision finding.
             if code in {"ROI_CONTOUR_UNPARSEABLE", "ROI_CONTOUR_PARTIALLY_UNPARSEABLE"}:
-                candidate = _get_builder(rs_path)
-                scope = getattr(candidate, "by_name", {}).get(task.roi_name)
-                if scope is not None and scope.code is None and scope.projection_metadata:
-                    quantized_scope = scope
+                from .rtstruct_geometry import roi_geometry_code
+                dataset = pydicom.dcmread(str(rs_path), stop_before_pixels=True)
+                contours = [contour
+                    for item in getattr(dataset, "ROIContourSequence", [])
+                    if getattr(item, "ReferencedROINumber", None) == observations[0].roi_number
+                    for contour in getattr(item, "ContourSequence", [])]
+                # Slivers, collinear contours and residuals above the cap
+                # retain their pre-builder rejection path.
+                if roi_geometry_code(contours, allow_quantization=True) is None:
+                    candidate = _get_builder(rs_path)
+                    scope = getattr(candidate, "by_name", {}).get(task.roi_name)
+                    if scope is not None and scope.code is None and scope.projection_metadata:
+                        quantized_scope = scope
             if quantized_scope is None:
                 nonvolume = code in NONVOLUMETRIC_CODES
                 return _status_records(task,
