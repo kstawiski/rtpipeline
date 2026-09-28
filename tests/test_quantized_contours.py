@@ -242,3 +242,37 @@ def test_mixed_roi_leaves_strict_contour_coordinates_untouched():
     assert result.code is None
     assert result.contours[0].ContourData == contour.ContourData
     assert result.projection_metadata
+
+
+def test_fitted_plane_limit_is_independent_of_ct_plane_limit(baseline):
+    # Every CT-plane distance is only 0.009 mm, but the existing anchored SVD
+    # fit has a 0.01223 mm maximum residual. Both bounds must pass.
+    image = _ct_slice(0.)
+    xy = np.array([[8.2,9.2],[30.2,8.2],[37.2,20.2],[29.2,39.2],[10.2,33.2]])
+    points = np.column_stack([xy, [.009,-.009,.009,-.009,.009]])
+    contour = _contour(points)
+    ds = _rtstruct([contour])
+    assert geometry.plane_offset_mm(points, image) == .009
+    residual = np.max(np.abs((points-points[0]) @ np.linalg.svd(points-points[0], full_matrices=False)[2][-1]))
+    assert residual > .01
+    assert geometry.resolve_roi_scopes(ds, [image])[1].code == baseline.resolve_roi_scopes(ds, [image])[1].code == 'ROI_CONTOUR_UNPARSEABLE'
+
+
+def test_exact_twenty_micron_fitted_residual_is_refused(baseline):
+    points = np.array([[20,20,0],[5,5,.02],[35,5,-.02],[35,35,.02],[5,35,-.02]])
+    residual = np.max(np.abs((points-points[0]) @ np.linalg.svd(points-points[0], full_matrices=False)[2][-1]))
+    assert residual == pytest.approx(.02, abs=1e-12)
+    ds = _rtstruct([_contour(points)])
+    images = [_ct_slice(0.)]
+    assert geometry.resolve_roi_scopes(ds, images)[1].code == baseline.resolve_roi_scopes(ds, images)[1].code == 'ROI_CONTOUR_UNPARSEABLE'
+
+
+def test_quantization_fallback_does_not_expand_mr_geometry(baseline):
+    ds, images = fixture(.1)
+    for image in images:
+        image.SOPClassUID = '1.2.840.10008.5.1.4.1.1.4'
+    old = baseline.resolve_roi_scopes(ds, images)[1]
+    new = geometry.resolve_roi_scopes(ds, images)[1]
+    assert new.code == old.code
+    assert new.code is not None
+    assert new.projection_metadata == {}
