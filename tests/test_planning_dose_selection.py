@@ -400,3 +400,31 @@ def test_cli_restores_logging_state_and_counts_refusals(tmp_path, capsys):
     output = capsys.readouterr().out
     assert str(tmp_path) not in output
     assert json.loads(output)['outcomes'] == {'invalid_course_contract': 1}
+
+
+@pytest.mark.parametrize('kind', ['directory', 'broken'])
+def test_dose_inventory_refuses_hidden_symlinks(tmp_path, kind):
+    course = make_course(tmp_path)
+    target = course/'other' if kind == 'directory' else course/'absent'
+    if kind == 'directory':
+        target.mkdir()
+    (course/'DICOM/RTDOSE/linked').symlink_to(target, target_is_directory=kind == 'directory')
+    assert select_planning_dose(course).reason_code == 'unsafe_course_path'
+
+
+def test_completion_binds_planning_sidecar_content(tmp_path):
+    from rtpipeline.config_dependencies import materialize_stage_dependency
+    from rtpipeline.stage_completion import write_stage_completion_sentinel, validate_stage_completion_sentinel
+    course = make_course(tmp_path)
+    assert repair_course(course, apply=True) == 'applied'
+    assert dvh.dvh_for_course(course, parallel_workers=1)
+    dependency = materialize_stage_dependency(tmp_path/'configuration', 'dvh', {'enabled':True})
+    sentinel = course/'.dvh_done'
+    receipt = write_stage_completion_sentinel(course, sentinel, stage='dvh', status='ok',
+                                               configuration_dependency=dependency)
+    bound = [item for item in receipt['outputs'] if item['role'] == 'planning_dose_selection']
+    assert len(bound) == 1 and bound[0]['path'] == SIDECAR
+    assert validate_stage_completion_sentinel(sentinel, expected_stage='dvh') == receipt
+    (course/SIDECAR).unlink()
+    with pytest.raises(ValueError, match='absent'):
+        validate_stage_completion_sentinel(sentinel, expected_stage='dvh')

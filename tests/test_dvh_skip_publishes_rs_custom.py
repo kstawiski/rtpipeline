@@ -142,6 +142,8 @@ def test_dose_absent_course_publishes_rs_custom_before_returning(
     contract = SimpleNamespace(
         treatment_technique={"classification": "VMAT"},
         delivery={},
+        selected_doses=[],
+        data={"dose_grid": None},
         authoritative_rtstruct_path=rs_manual,
     )
     monkeypatch.setattr(dvh, "load_course_contract", lambda _dir: contract)
