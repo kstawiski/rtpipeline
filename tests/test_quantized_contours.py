@@ -163,3 +163,79 @@ def test_fallback_cannot_relax_other_geometry_constraints(defect, baseline):
     assert new.code == old.code
     assert new.code is not None
     assert new.projection_metadata == {}
+
+
+def test_source_projection_metadata_uses_roi_identity_and_omits_strict_rois():
+    ds, images = fixture(.1)
+    fields = geometry.source_quantization_metadata('synthetic.dcm', ds, ct_images=images)
+    assert set(fields) == {1}
+    assert fields[1] == geometry.resolve_roi_scopes(ds, images)[1].projection_metadata
+    exact, _ = fixture(.1, rounded=False, references=False)
+    assert geometry.source_quantization_metadata('synthetic.dcm', exact, ct_images=images) == {}
+
+
+def test_ct_and_combined_ledgers_add_only_affected_roi_fields(tmp_path, monkeypatch):
+    from rtpipeline.roi_requiredness import DenominatorLedger, write_modality_ledger
+    import json
+    ds, images = fixture(.1)
+    fields = geometry.resolve_roi_scopes(ds, images)[1].projection_metadata
+    monkeypatch.setattr(geometry, 'course_quantization_metadata', lambda course: {'quantized': fields})
+    ledger = DenominatorLedger()
+    for name in ('strict', 'quantized'):
+        ledger.record_roi('synthetic-course', 'synthetic-patient', name,
+                          reason_code='extracted', disposition='extracted')
+    write_modality_ledger(tmp_path, ledger, 'CT')
+    for filename in ('radiomics_ct_roi_ledger.json', 'radiomics_roi_ledger.json'):
+        rows = json.loads((tmp_path/filename).read_text())['course_roi']
+        strict, quantized = rows
+        assert strict == {**ledger.roi_rows[0], 'modality': 'CT'}
+        assert quantized == {**ledger.roi_rows[1], 'modality': 'CT', **fields}
+    # The caller's original rows and the MR ledger stay unchanged.
+    assert all('geometry_basis' not in row for row in ledger.roi_rows)
+    write_modality_ledger(tmp_path, ledger, 'MR')
+    rows = json.loads((tmp_path/'radiomics_mr_roi_ledger.json').read_text())['course_roi']
+    assert all('geometry_basis' not in row for row in rows)
+
+
+def test_source_ledger_carries_projection_only_for_affected_identity(monkeypatch):
+    from rtpipeline.radiomics_source_inventory import source_ledger_rows
+    ds, images = fixture(.1)
+    path = Path('synthetic.dcm')
+    fields = geometry.resolve_roi_scopes(ds, images)[1].projection_metadata
+    monkeypatch.setattr(geometry, 'source_quantization_metadata', lambda path, ds: {1: fields})
+    task = types.SimpleNamespace(rs_path=path, roi_name='hip_left',
+                                 stable_roi_identifier='rtstruct_roi_number:1',
+                                 source='Manual', mask_identity='synthetic-mask')
+    row = dict(segmentation_source=task.source, mask_identity=task.mask_identity,
+               stable_roi_identifier=task.stable_roi_identifier,
+               roi_original_name=task.roi_name, extraction_arm='primary', extraction_status='success')
+    result = source_ledger_rows([path], [task], [row], datasets={path:ds})[0]
+    assert result['disposition'] == 'extracted'
+    assert result['geometry_basis'] == fields['geometry_basis']
+    assert result['contour_quantization_projection_mm'] == fields['contour_quantization_projection_mm']
+
+
+def test_exact_tolerance_boundary_and_above_it(baseline):
+    image = _ct_slice(0.)
+    for offset, accepted in [(0.01, True), (np.nextafter(0.01, np.inf), False)]:
+        ds = _rtstruct([_contour([(5,5,offset),(20,5,offset),(20,20,offset),(5,20,offset)])])
+        result = geometry.resolve_roi_scopes(ds, [image])[1]
+        assert (result.code is None) == accepted
+        if accepted:
+            assert result.contour_quantization_projection_mm == 0.01
+        else:
+            assert result.code == baseline.resolve_roi_scopes(ds, [image])[1].code
+
+
+def test_mixed_roi_leaves_strict_contour_coordinates_untouched():
+    ds, images = fixture(.1)
+    contour = ds.ROIContourSequence[0].ContourSequence[0]
+    points = np.array(contour.ContourData).reshape(-1,3)
+    normal = np.cross(np.array(images[0].ImageOrientationPatient[:3]),
+                      np.array(images[0].ImageOrientationPatient[3:]))
+    distances = (points-np.array(images[0].ImagePositionPatient))@normal
+    contour.ContourData = (points-distances[:,None]*normal).ravel().tolist()
+    result = geometry.resolve_roi_scopes(ds, images)[1]
+    assert result.code is None
+    assert result.contours[0].ContourData == contour.ContourData
+    assert result.projection_metadata
