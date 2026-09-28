@@ -14,7 +14,8 @@ NONVOLUMETRIC_CODES = frozenset({'ROI_NONVOLUMETRIC_POINT', 'ROI_NONVOLUMETRIC_O
 PLANE_TOLERANCE_MM = 1e-3  # Numerical coordinate precision, not slice snapping.
 # Exporters may round patient coordinates to a 0.01 mm DS storage step.
 # Half-step rounding in three axes displaces a point by at most sqrt(3)*0.005
-# mm. One full step bounds that displacement and the fitted-plane residual.
+# mm. One full step bounds that displacement. The fitted-plane residual
+# must independently satisfy the same cap; a fit is not a CT-plane binding.
 # DICOM DS does not mandate this precision. This is not slice snapping.
 COORDINATE_QUANTIZATION_TOLERANCE_MM = 0.01
 
