@@ -641,8 +641,14 @@ def _extract_one(task: _RoiTask) -> List[Dict[str, Any]]:
     # Carry only projection actually prepared by the scoped rasterizer. A
     # strict-only run gains no fields or new publication columns.
     builders = _WORKER_STATE.get("builders", {})
-    builder = next((value for key, value in reversed(list(builders.items()))
-                    if key[0] == str(Path(task.rs_path))), None)
+    if not builders:
+        return records
+    rs_path = Path(task.rs_path)
+    try:
+        stat = rs_path.stat()
+    except OSError:
+        return records
+    builder = builders.get((str(rs_path), stat.st_mtime_ns, stat.st_size))
     scope = getattr(builder, "by_name", {}).get(task.roi_name)
     if scope is not None and scope.code is None:
         for row in records:
