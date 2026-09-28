@@ -1,4 +1,5 @@
 """Synthetic courses only; public tests contain no campaign identifiers."""
+import hashlib
 import datetime
 import json
 from pathlib import Path
@@ -412,7 +413,12 @@ def test_dose_inventory_refuses_hidden_symlinks(tmp_path, kind):
     assert select_planning_dose(course).reason_code == 'unsafe_course_path'
 
 
-def test_completion_binds_planning_sidecar_content(tmp_path):
+def test_completion_binds_planning_sidecar_through_dvh_qc(tmp_path):
+    """The receipt binds the sidecar through the content-bound DVH QC, not as its own output role.
+
+    Campaign receipts are validated by earlier releases whose DVH stage definition discovers a
+    fixed output set; an extra output role would make every sidecar-backed receipt invalid there.
+    """
     from rtpipeline.config_dependencies import materialize_stage_dependency
     from rtpipeline.stage_completion import write_stage_completion_sentinel, validate_stage_completion_sentinel
     course = make_course(tmp_path)
@@ -422,9 +428,8 @@ def test_completion_binds_planning_sidecar_content(tmp_path):
     sentinel = course/'.dvh_done'
     receipt = write_stage_completion_sentinel(course, sentinel, stage='dvh', status='ok',
                                                configuration_dependency=dependency)
-    bound = [item for item in receipt['outputs'] if item['role'] == 'planning_dose_selection']
-    assert len(bound) == 1 and bound[0]['path'] == SIDECAR
+    roles = {item['role'] for item in receipt['outputs']}
+    assert 'planning_dose_selection' not in roles and 'dvh_qc' in roles
+    qc = json.loads((course/'metadata/dvh_qc.json').read_text())
+    assert qc['planning_dose_selection_sha256'] == hashlib.sha256((course/SIDECAR).read_bytes()).hexdigest()
     assert validate_stage_completion_sentinel(sentinel, expected_stage='dvh') == receipt
-    (course/SIDECAR).unlink()
-    with pytest.raises(ValueError, match='absent'):
-        validate_stage_completion_sentinel(sentinel, expected_stage='dvh')

@@ -162,7 +162,6 @@ _STAGE_DEFINITIONS: dict[str, StageDefinition] = {
             ArtifactRule("authoritative_dvh", "dvh_metrics.parquet", "content_sha256"),
             ArtifactRule("dvh_workbook", "dvh_metrics.xlsx", "content_sha256"),
             ArtifactRule("dvh_qc", "metadata/dvh_qc.json", "content_sha256"),
-            ArtifactRule("planning_dose_selection", "metadata/planning_dose_selection.json", "content_sha256"),
             ArtifactRule("custom_rtstruct", "RS_custom.dcm", "content_sha256"),
             ArtifactRule("custom_rtstruct_metadata", "metadata/rs_custom_meta.json", "content_sha256"),
         ),
