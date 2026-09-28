@@ -86,8 +86,6 @@ def main(argv=None):
     parser.add_argument('--courses-file', type=Path)
     parser.add_argument('--apply', action='store_true')
     args = parser.parse_args(argv)
-    logging.disable(logging.CRITICAL)
-    warnings.filterwarnings('ignore')
     courses = args.course
     if args.courses_file:
         try:
@@ -97,7 +95,14 @@ def main(argv=None):
             return 1
     if not courses:
         parser.error('provide --course or --courses-file')
-    counts = Counter(repair_course(course, apply=args.apply) for course in dict.fromkeys(courses))
+    previous_level = logging.root.manager.disable
+    try:
+        logging.disable(logging.CRITICAL)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            counts = Counter(repair_course(course, apply=args.apply) for course in dict.fromkeys(courses))
+    finally:
+        logging.disable(previous_level)
     print(json.dumps({'mode': 'apply' if args.apply else 'dry_run',
                       'total': sum(counts.values()), 'outcomes': dict(sorted(counts.items()))}, sort_keys=True))
     return int(any(key not in {'accepted', 'applied', 'unchanged'} for key in counts))

@@ -169,9 +169,13 @@ def test_refusals(tmp_path, case, expected):
     elif case == 'ct_frame_missing':
         edit_dicom(ct, FrameOfReferenceUID=None)
     elif case == 'ct_frames_mixed':
-        # Existing CT provenance rejects an added slice first. A missing frame
-        # on the contracted slice exercises the same unresolved-frame gate.
-        edit_dicom(ct, FrameOfReferenceUID='')
+        extra = ct.with_name('ct_001.dcm')
+        shutil.copy2(ct, extra)
+        edit_dicom(extra, FrameOfReferenceUID='2.25.987', SOPInstanceUID='2.25.988')
+        original_classification = json.loads((course/'metadata/case_metadata.json').read_text())['course_contract']['dose_classification']
+        write_minimal_course_contract(course, selected_doses=[],
+                                      authoritative_rtstruct=course/'DICOM/RTSTRUCT/rs.dcm')
+        edit_contract(course, lambda c: c.update(dose_classification=original_classification))
     elif case == 'no_dose':
         dose.unlink()
     elif case == 'dose_unreadable':
@@ -345,3 +349,54 @@ def test_dvh_cli_accepts_valid_planning_sidecar(tmp_path):
     outcome = _execute_dvh_task(task)
     assert outcome is not None and outcome.status == 'computed'
     assert load_course_contract(course).data['dvh']['metrics_status'] == 'not_computed'
+
+
+def test_sidecar_removal_invalidates_planning_outputs(tmp_path):
+    course = make_course(tmp_path)
+    assert repair_course(course, apply=True) == 'applied'
+    assert dvh.dvh_for_course(course, parallel_workers=1)
+    (course/SIDECAR).unlink()
+    assert dvh.dvh_for_course(course, parallel_workers=1) is None
+    for name in ('dvh_metrics.parquet', 'dvh_metrics.xlsx', 'dvh_curves.json'):
+        assert not (course/name).exists()
+
+
+def test_planning_dose_uses_existing_rotated_grid_path(tmp_path):
+    from test_dvh_rotation import analytic_dose, box_structure
+    course = make_course(tmp_path)
+    analytic_dose(course/'DICOM/RTDOSE/dose.dcm', .1)
+    box_structure(course/'DICOM/RTSTRUCT/rs.dcm')
+    assert repair_course(course, apply=True) == 'applied'
+    assert dvh.dvh_for_course(course, parallel_workers=1)
+    frame = pd.read_parquet(course/'dvh_metrics.parquet')
+    assert set(frame.planning_dose_basis) == {BASIS}
+    assert set(frame.dose_grid_coverage_status) == {'fully_covered'}
+    assert frame.DmeanGy.tolist() == pytest.approx([10., 10.], abs=.12)
+    assert not frame.dose_response_eligible.any()
+
+
+def test_concurrent_input_change_refuses_atomic_publication(tmp_path, monkeypatch):
+    from rtpipeline import repair_planning_dose_selection as repair
+    course = make_course(tmp_path)
+    original = repair.select_planning_dose
+    calls = 0
+    def change(root):
+        nonlocal calls
+        calls += 1
+        if calls == 3:
+            edit_dicom(course/'DICOM/RTDOSE/dose.dcm', DoseGridScaling=.0002)
+        return original(root)
+    monkeypatch.setattr(repair, 'select_planning_dose', change)
+    assert repair_course(course, apply=True) == 'inputs_changed'
+    assert not (course/SIDECAR).exists()
+    assert not list((course/'metadata').glob('.planning-dose-*'))
+
+
+def test_cli_restores_logging_state_and_counts_refusals(tmp_path, capsys):
+    import logging
+    previous = logging.root.manager.disable
+    assert main(['--course', str(tmp_path/'missing')]) == 1
+    assert logging.root.manager.disable == previous
+    output = capsys.readouterr().out
+    assert str(tmp_path) not in output
+    assert json.loads(output)['outcomes'] == {'invalid_course_contract': 1}
