@@ -125,6 +125,7 @@ def _measured_course(tmp_path, monkeypatch, *, code_sources_sha256):
 
     monkeypatch.setattr(dvh_module, "load_course_contract", lambda path: SimpleNamespace(
         metadata_path=contract, plan_artifact_path=None, dose_grid_path=None,
+        selected_doses=[{"path": "contract-selected-dose-fixture"}],
         authoritative_rtstruct_path=None))
     monkeypatch.setattr(dvh_module, "list_custom_model_outputs", lambda path: [])
     return workbook

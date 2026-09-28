@@ -158,7 +158,7 @@ def test_dvh_cache_rejects_changed_component_bytes(tmp_path, monkeypatch):
     workbook = tmp_path / 'dvh_metrics.xlsx'
     workbook.write_bytes(b'cache existence fixture')
     monkeypatch.setattr(dvh, 'load_course_contract', lambda path: SimpleNamespace(
-        metadata_path=contract, plan_artifact_path=None, dose_grid_path=None,
+        metadata_path=contract, plan_artifact_path=None, dose_grid_path=None, selected_doses=[{"path": "contract-selected-dose-fixture"}],
         authoritative_rtstruct_path=None))
     monkeypatch.setattr(dvh, 'list_custom_model_outputs', lambda path: [])
     assert dvh._is_dvh_up_to_date(tmp_path, workbook)

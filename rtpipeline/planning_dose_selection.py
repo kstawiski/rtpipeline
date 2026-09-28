@@ -142,7 +142,14 @@ def _select(course_dir):
         _refuse('planning_ct_frame_unresolved')
 
     dose_dir = _local(root, root / 'DICOM/RTDOSE')
-    paths = {p for p in dose_dir.rglob('*') if p.is_file()} if dose_dir.is_dir() else set()
+    paths = set()
+    if dose_dir.is_dir():
+        for entry in dose_dir.rglob('*'):
+            # Refuse directory and broken symlinks too: they can hide an
+            # unreadable or additional candidate from the uniqueness check.
+            entry = _local(root, entry)
+            if entry.is_file():
+                paths.add(entry)
     # Root dose artifacts and local excluded copies also participate in the
     # ambiguity check. External archive paths are historical evidence only.
     paths.update(root.glob('*.dcm'))
