@@ -3690,9 +3690,17 @@ def dvh_for_course(
         except Exception as exc:
             logger.error("DVH failed for ROI %s: %s", roi_name, exc)
             failed = annotate_dvh_metrics(
-                {"DmeanGy": None, "DmaxGy": None, "DminGy": None,
+                {**dict.fromkeys(RELATIVE_DVH_METRIC_COLUMNS),
+                 "Volume (cm³)": None,
+                 "DmeanGy": None, "DmaxGy": None, "DminGy": None,
+                 "D98Gy": None, "D95Gy": None, "D50Gy": None, "D2Gy": None,
                  "D0.03ccGy": None, "D0.03cc_status": "dvh_computation_failed"},
                 technique=treatment_technique, structure_name=roi_name,
+                structure_interpreted_type=roi_interpreted_type,
+                target_like=_is_target_structure(roi_name, roi_interpreted_type),
+                prescription_resolved=prescription_resolved,
+                dose_response_eligible=dose_response_eligible,
+                dose_response_ineligibility_reason=contract_dose_completeness_reason,
                 rtstruct_sop_instance_uid=rtstruct_sop_uid, rtstruct_path=rtstruct_path,
                 grid_coverage=coverage if coverage["status"] != "fully_covered" else
                     {**coverage, "status": "dvh_computation_failed"},
