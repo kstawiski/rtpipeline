@@ -326,3 +326,46 @@ def test_weighted_prescription_sum_at_threshold_is_not_a_float_refusal(tmp_path)
     assert sum(i['weighted_prescribed_gy'] for i in selection.evidence['inputs']) > 322 / 15
     edit_contract(course, lambda c: c['dose_qc'].update(threshold_gy=21.4))
     assert select_composite_course_dose(course).reason_code == 'composite_prescription_implausible'
+
+
+def _integral_gy_mm3(ds):
+    values = ds.pixel_array.astype(float) * float(ds.DoseGridScaling)
+    offsets = np.asarray([float(v) for v in ds.GridFrameOffsetVector])
+    thickness = float(np.median(np.abs(np.diff(offsets)))) if len(offsets) > 1 else 1.0
+    row, col = (float(v) for v in ds.PixelSpacing)
+    return values, float(values.sum()) * row * col * thickness
+
+
+def _weighted_integrals(course, selection):
+    ds, values = composite_values(course)
+    total = _integral_gy_mm3(ds)[1]
+    expected = sum(w * _integral_gy_mm3(pydicom.dcmread(p))[1]
+                   for p, w in zip(selection.dose_paths, selection.weights))
+    return ds, values, total / expected
+
+
+def test_weighted_composite_conserves_the_dose_integral_on_offset_grids(tmp_path):
+    # Partially delivered second plan (weight 0.5) on a grid shifted by one whole voxel (2 mm).
+    course = make_course(tmp_path, delivered=(5, 1), treatment=((1, 5), (6, 1)), shift_mm=2.0)
+    selection = select_composite_course_dose(course)
+    assert selection.accepted, selection.reason_code
+    assert selection.weights == (1.0, 0.5)
+    assert repair_course(course, apply=True) == 'applied'
+    ds, values, ratio = _weighted_integrals(course, selection)
+    assert ds.DoseSummationType == 'MULTI_PLAN'
+    assert np.isfinite(values).all() and (values >= 0).all()
+    assert ratio == pytest.approx(1.0, abs=1e-4)
+    assert values.max() == pytest.approx(25.0, abs=1e-3)
+
+
+def test_sub_voxel_offset_loses_at_most_the_boundary_half_voxels_of_a_nonzero_edge(tmp_path):
+    # Point-sampled trilinear resampling with zero outside the source extent: a half-voxel offset
+    # drops the source's boundary half-voxels. The synthetic second dose is nonzero up to its edge
+    # (clinical grids are ~0 there), so the loss here is one 5 Gy column of the 20-column grid.
+    course = make_course(tmp_path, delivered=(5, 1), treatment=((1, 5), (6, 1)), shift_mm=1.0)
+    selection = select_composite_course_dose(course)
+    assert repair_course(course, apply=True) == 'applied'
+    _, values, ratio = _weighted_integrals(course, selection)
+    edge_loss = 0.5 * 10.0 / (20.0 * 10 + 0.5 * 10.0 * 20)   # one column / (plan 1 + weighted plan 2) per row
+    assert ratio == pytest.approx(1.0 - edge_loss, abs=1e-3)
+    assert np.isfinite(values).all() and (values >= 0).all()
