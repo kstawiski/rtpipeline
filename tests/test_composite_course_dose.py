@@ -311,3 +311,18 @@ def test_dvh_marks_composite_provenance_and_keeps_dose_response_ineligible(tmp_p
     assert not (course / 'dvh_metrics.parquet').exists()
     qc = json.loads((course / 'metadata/dvh_qc.json').read_text())
     assert qc['composite_dose_refusal_reason'] == 'sidecar_stale_or_mismatched'
+
+
+
+
+def test_weighted_prescription_sum_at_threshold_is_not_a_float_refusal(tmp_path):
+    # 20 Gy + (1/3) x 4.4 Gy evaluates to 21.46666666666667 in binary floating
+    # point, above the float of the exact value 322/15 = 21.466666666666665.
+    course = make_course(tmp_path, plan2_fractions=3, plan2_gy=4.4, delivered=(5, 1),
+                         treatment=((1, 5), (3, 1)))
+    edit_contract(course, lambda c: c['dose_qc'].update(threshold_gy=322 / 15))
+    selection = select_composite_course_dose(course)
+    assert selection.accepted, selection.reason_code
+    assert sum(i['weighted_prescribed_gy'] for i in selection.evidence['inputs']) > 322 / 15
+    edit_contract(course, lambda c: c['dose_qc'].update(threshold_gy=21.4))
+    assert select_composite_course_dose(course).reason_code == 'composite_prescription_implausible'

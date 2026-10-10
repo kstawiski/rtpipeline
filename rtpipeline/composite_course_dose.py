@@ -322,7 +322,9 @@ def _select(course_dir):
     weights = [int(i["delivered_fraction_count"]) / int(i["planned_fraction_count"]) for i in items]
     scaled_rx = [w * float(i.get("resolved_prescribed_dose_total_gy") or 0.0) for w, i in zip(weights, items)]
     threshold = float(contract.dose_qc.get("threshold_gy") or 0.0)
-    if threshold <= 0 or sum(scaled_rx) > threshold:
+    # A 1 uGy tolerance keeps a sum exactly at the threshold (e.g. 50 + 50 Gy)
+    # from being refused by binary floating-point error.
+    if threshold <= 0 or sum(scaled_rx) > threshold + 1e-6:
         _refuse("composite_prescription_implausible")
 
     inputs = []
