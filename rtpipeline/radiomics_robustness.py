@@ -379,6 +379,33 @@ ROBUSTNESS_SOURCE_ONLY_OUTCOME = "source_only_nonvolumetric"
 # about the anatomy of a name that was never found, and it is not a clinical
 # exclusion of anything.
 ROBUSTNESS_UNMATCHED_SELECTION_OUTCOME = "selection_matched_no_source_structure"
+
+# GEC-ESTRO cervix brachytherapy names its clinical target volumes by risk
+# level before the volume type (HR-CTV, IR-CTV). Selection patterns are
+# matched against the whole ROI name, so the CTV* family pattern misses them
+# and a course whose only targets carry these names closes as an unmatched
+# selection. These are the only spellings in the campaign ROI inventory. They
+# are opt-in: adding them changes the recorded robustness configuration, and
+# most brachytherapy courses already select other targets.
+BRACHYTHERAPY_CTV_PATTERNS: Tuple[str, ...] = ("HR-CTV*", "IR-CTV*")
+
+
+def with_brachytherapy_ctv_patterns(selection: Any) -> List[str]:
+    """Return ``selection`` plus the brachytherapy CTV patterns it lacks."""
+    patterns = [str(pattern) for pattern in (selection or [])]
+    present = {pattern.upper() for pattern in patterns}
+    patterns.extend(p for p in BRACHYTHERAPY_CTV_PATTERNS if p.upper() not in present)
+    return patterns
+
+
+def robustness_selection_matches(roi_name: Any, selection: Any) -> bool:
+    """Case-insensitive whole-name selector match shared by every robustness caller."""
+    from fnmatch import fnmatch
+
+    name = str(roi_name).upper()
+    return any(fnmatch(name, str(pattern).upper()) for pattern in (selection or []))
+
+
 # The extraction run itself failed technically (exception inside
 # robustness_for_course) after the previous sidecar was invalidated. This is
 # a terminal run outcome, not a measurement: it certifies that the run
@@ -1261,7 +1288,6 @@ def _read_robustness_source_dispositions(
             )
         _require_upstream_radiomics_not_applicable(course_dir, ValueError)
     if outcome in ROBUSTNESS_NONMEASURED_OUTCOMES:
-        from fnmatch import fnmatch
 
         selection = recorded_configuration.get("robustness", {}).get(
             "perturbation", {}
@@ -1269,8 +1295,7 @@ def _read_robustness_source_dispositions(
         if not isinstance(selection, list) or not all(isinstance(p, str) for p in selection):
             raise ValueError("robustness dispositions record no readable requested selection")
         matched = sum(
-            any(fnmatch(str(row["roi_name"]).upper(), pattern.upper()) for pattern in selection)
-            for row in rows
+            robustness_selection_matches(row["roi_name"], selection) for row in rows
         )
         if outcome == ROBUSTNESS_SOURCE_ONLY_OUTCOME and not matched:
             raise ValueError(
@@ -2292,6 +2317,52 @@ def _order_robustness_rows(frame: pd.DataFrame) -> pd.DataFrame:
         ordering.loc[tied, "content"] = content
     order = ordering.sort_values(by=list(ordering.columns), kind="mergesort").index
     return frame.loc[order].reset_index(drop=True)
+
+
+ROBUSTNESS_RESOURCE_LIMIT_REASON = "resource_limit"
+ROBUSTNESS_NO_SCALAR_FEATURES_REASON = "no_scalar_features"
+_EMPTY_RESULT_EVIDENCE_FIELDS = (
+    "extraction_arm",
+    "extraction_status",
+    "extraction_failure_kind",
+    "roi_structural_code",
+    "intensity_texture_disposition",
+    "resource_guard_predicted_peak_bytes",
+    "resource_guard_memory_budget_bytes",
+)
+
+
+def _empty_worker_result_failure(result: Mapping[str, Any]) -> Dict[str, Any]:
+    """Name the cause of a worker result that carries no scalar feature.
+
+    ``resource_limit`` only when every arm record is the extractor's own
+    resource-guard refusal; anything else is ``no_scalar_features``. The
+    evidence is the records' disposition fields, never a feature value.
+    """
+    records = [dict(r) for r in (result.get("__records__") or []) if isinstance(r, Mapping)]
+    evidence: Dict[str, Any] = {
+        "record_count": len(records),
+        "records": [
+            {
+                field: (None if record.get(field) is None else str(record.get(field)))
+                for field in _EMPTY_RESULT_EVIDENCE_FIELDS
+                if field in record
+            }
+            for record in records
+        ],
+    }
+    resource_limited = bool(records) and all(
+        str(record.get("extraction_failure_kind") or "") == ROBUSTNESS_RESOURCE_LIMIT_REASON
+        for record in records
+    )
+    return {
+        "reason_code": (
+            ROBUSTNESS_RESOURCE_LIMIT_REASON
+            if resource_limited
+            else ROBUSTNESS_NO_SCALAR_FEATURES_REASON
+        ),
+        "evidence": evidence,
+    }
 
 
 def _feature_rows_from_worker_result(result: Mapping[str, Any]) -> List[Dict[str, Any]]:
@@ -4083,7 +4154,6 @@ def _robustness_selection_requiredness(
     no tolerance at all, so whole-source failures stay fatal (B3.2).
     ``inspect`` replaces ``inspect_rtstruct`` (e.g. with a per-run memo).
     """
-    from fnmatch import fnmatch
 
     from .roi_requiredness import Requiredness, inspect_rtstruct
 
@@ -4105,9 +4175,7 @@ def _robustness_selection_requiredness(
     requiredness: Dict[str, Any] = {}
     matched_any = False
     for name in names:
-        if any(
-            fnmatch(str(name).upper(), pattern.upper()) for pattern in patterns
-        ):
+        if robustness_selection_matches(name, patterns):
             requiredness[str(name)] = Requiredness.ANALYSIS_REQUIRED
             matched_any = True
         else:
@@ -4496,7 +4564,6 @@ def robustness_for_course(
     from .radiomics import _rtstruct_masks, _standard_rtstruct_sources
     from .custom_models import list_custom_model_outputs
     from .radiomics_ct_contract import new_run_identifier
-    from fnmatch import fnmatch
 
     # One run identifier for the whole course robustness run: the published
     # table and the source-disposition sidecar are bound to the same value, so
@@ -4582,9 +4649,8 @@ def robustness_for_course(
                 source_disposition_rows.append(outcome)
 
     def _matches_robustness_pattern(roi_name: str) -> bool:
-        return any(
-            fnmatch(roi_name.upper(), pattern.upper())
-            for pattern in rob_config.perturbation.apply_to_structures
+        return robustness_selection_matches(
+            roi_name, rob_config.perturbation.apply_to_structures
         )
 
     # Each RTSTRUCT used to be inspected two or three times per run (selection
@@ -5498,12 +5564,37 @@ def robustness_for_course(
                             }
                             result_frames[index] = result_frame
                         else:
+                            # The worker returned only disposition records
+                            # (e.g. the resource guard refused the perturbed
+                            # mask). Dropping them left the condition missing
+                            # and failed the course with no recorded cause, so
+                            # the condition is recorded as a technical failure
+                            # carrying the worker's own dispositions.
+                            roi_name = str(result.get("roi_name", ""))
+                            source = str(result.get("segmentation_source", ""))
+                            perturbation_id = str(result.get("perturbation_id", ""))
+                            if (roi_name, source, perturbation_id) in identity_failed_perturbations:
+                                continue
+                            failure = _empty_worker_result_failure(result)
                             logger.error(
                                 "Robustness worker returned no scalar features for %s/%s "
-                                "(perturbation %s)",
-                                result.get("segmentation_source"),
-                                result.get("roi_name"),
-                                result.get("perturbation_id"),
+                                "(perturbation %s); recorded as technical failure %s",
+                                source,
+                                roi_name,
+                                perturbation_id,
+                                failure["reason_code"],
+                            )
+                            result_frames[index] = pd.DataFrame(technical_rows(
+                                {"__technical_failure__": failure, "roi_name": roi_name,
+                                 "perturbation_id": perturbation_id},
+                                identity_catalog[(source, roi_name)].as_dict(),
+                                robustness_run_identifier,
+                                task_params["perturbed_mask_identity"],
+                                task_params,
+                            ))
+                            successful_task_keys.update(
+                                (roi_name, source, perturbation_id, arm)
+                                for arm in CT_EXTRACTION_ARMS
                             )
 
                 for index in sorted(result_frames):
