@@ -4846,6 +4846,10 @@ def robustness_for_course(
                 # selected ROI outside the planning CT series is that ROI's
                 # disposition, not the whole source's failure.
                 scoped_reader=True,
+                # RF15: a selected ROI whose strictly unparseable contours the
+                # bounded quantized-plane projection resolves is read as main
+                # CT radiomics reads it; otherwise its disposition is unchanged.
+                quantized_scope_rescue=True,
             )
             _record_source_dispositions(source_binding, source_sink)
             allowed_names = set(expected_rois) if expected_rois else None

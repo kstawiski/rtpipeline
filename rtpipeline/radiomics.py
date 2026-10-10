@@ -862,6 +862,11 @@ _UNMEASURABLE_CONTOUR_STRUCTURAL_CODES = frozenset({
     "ROI_CONTOUR_PARTIALLY_UNPARSEABLE",
     "ROI_CONTOUR_MIXED_GEOMETRY",
 })
+# Strict-inventory codes the bounded RF15 projection may resolve.
+_QUANTIZATION_CANDIDATE_CODES = frozenset({
+    "ROI_CONTOUR_UNPARSEABLE",
+    "ROI_CONTOUR_PARTIALLY_UNPARSEABLE",
+})
 
 # Per-ROI findings of the scoped RTSTRUCT reader (rtstruct_geometry): the
 # ROI's contours do not bind to exactly one image of the planning CT series.
@@ -1097,6 +1102,7 @@ def _rtstruct_masks(
     retain_mask: Optional[Callable[[str], bool]] = None,
     scoped_reader: bool = False,
     govern_every_roi: bool = False,
+    quantized_scope_rescue: bool = False,
 ) -> Dict[str, Optional[np.ndarray]]:
     """Convert RTSTRUCT ROIs to boolean masks under an explicit source policy.
 
@@ -1144,6 +1150,41 @@ def _rtstruct_masks(
         ''.join(ch for ch in str(name).lower() if ch.isalnum())
         for name in (skip_rois or set())
     }
+
+    # ``quantized_scope_rescue`` (with ``scoped_reader``): a required ROI that
+    # the strict inventory finds (partially) unparseable is deferred to the
+    # scoped reader, which applies the bounded RF15 quantized-plane projection
+    # exactly as main CT radiomics does. If the projection does not resolve the
+    # ROI, the inventory's structural non-measurement is recorded unchanged.
+    deferred_unmeasurable: Dict[str, Any] = {}
+
+    def _record_unmeasurable(observation: Any) -> None:
+        if failure_outcomes is None:
+            raise ValueError(
+                "structural ROI dispositions require an outcome sink"
+            )
+        from .rtstruct_identity import require_rtstruct_identity
+
+        roi_label = "required ROI" if _is_required(observation.name) else "ROI"
+        failure_outcomes.append({
+            "roi_name": observation.name,
+            "status": "structural_nonmeasurement",
+            "failure_kind": "unmeasurable_source_contour",
+            "reason": (
+                f"{roi_label} {observation.name!r} in {rs_path} has "
+                f"structural status {observation.structural_code}; its "
+                "contour data cannot be read as one volume"
+            ),
+            "structural_code": observation.structural_code,
+            "rtstruct_sop_instance_uid": require_rtstruct_identity(rs_path),
+            "roi_number": str(observation.roi_number),
+            "source_path": str(rs_path),
+        })
+        logger.warning(
+            "Required ROI %s in %s has structural status %s; recording a "
+            "structural non-measurement and continuing with the other ROIs",
+            observation.name, rs_path, observation.structural_code,
+        )
 
     def _is_required(name: str) -> bool:
         value = (requiredness_by_roi or {}).get(str(name), Requiredness.INVENTORY_ONLY)
@@ -1291,32 +1332,12 @@ def _rtstruct_masks(
                 # The source itself says this ROI's contours cannot be read as
                 # a volume. Nothing is extracted from a partial reading, and
                 # the other ROIs of the source are still measured.
-                if failure_outcomes is None:
-                    raise ValueError(
-                        "structural ROI dispositions require an outcome sink"
-                    )
-                from .rtstruct_identity import require_rtstruct_identity
-
-                roi_label = "required ROI" if _is_required(observation.name) else "ROI"
-                failure_outcomes.append({
-                    "roi_name": observation.name,
-                    "status": "structural_nonmeasurement",
-                    "failure_kind": "unmeasurable_source_contour",
-                    "reason": (
-                        f"{roi_label} {observation.name!r} in {rs_path} has "
-                        f"structural status {observation.structural_code}; its "
-                        "contour data cannot be read as one volume"
-                    ),
-                    "structural_code": observation.structural_code,
-                    "rtstruct_sop_instance_uid": require_rtstruct_identity(rs_path),
-                    "roi_number": str(observation.roi_number),
-                    "source_path": str(rs_path),
-                })
-                logger.warning(
-                    "Required ROI %s in %s has structural status %s; recording a "
-                    "structural non-measurement and continuing with the other ROIs",
-                    observation.name, rs_path, observation.structural_code,
-                )
+                if (quantized_scope_rescue and scoped_reader
+                        and observation.structural_code in _QUANTIZATION_CANDIDATE_CODES):
+                    deferred_unmeasurable[observation.name] = observation
+                    structurally_extractable.add(observation.name)
+                    continue
+                _record_unmeasurable(observation)
                 continue
             _record_or_raise(
                 observation.name,
@@ -1410,6 +1431,9 @@ def _rtstruct_masks(
             # whitespace) has no scope result; the reader below then raises
             # rt_utils' own "does not exist", recorded as it is today.
             scope = scoped.by_name.get(str(name))
+            if str(name) in deferred_unmeasurable and (scope is None or scope.code):
+                _record_unmeasurable(deferred_unmeasurable[str(name)])
+                continue
             if scope is not None and scope.code:
                 detail = str(scope.detail)
                 if len(detail) > 300:

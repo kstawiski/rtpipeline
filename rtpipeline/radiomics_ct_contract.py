@@ -1733,7 +1733,7 @@ def extract_ct_roi_arms(
     run_identifier: str, code_revision: str, native_voxel_count: int,
     required: bool, configured_parameter_hashes: Optional[Mapping[str, str]] = None,
 ) -> list[dict[str, Any]]:
-    from .radiomics_memory import RadiomicsMemoryLimit
+    from .radiomics_memory import RadiomicsMemoryLimit, memory_budget_bytes
     metadata = dict(common_metadata)
     legacy = metadata.pop("_resource_guard_legacy", None)
     arguments = dict(factory=factory, decision=decision, common_metadata=metadata,
@@ -1762,10 +1762,10 @@ def extract_ct_roi_arms(
             {**metadata, **legacy["metadata"],
              "roi_structural_code": "ROI_PREDICTED_MEMORY_EXCEEDS_LIMIT",
              "resource_guard_predicted_peak_bytes": exc.predicted_peak_bytes,
-             "resource_guard_memory_budget_bytes": 8 * 1024**3},
+             "resource_guard_memory_budget_bytes": memory_budget_bytes()},
             decision=decision, disposition="failed",
             detail=f"Full feature extraction rejected by memory predictor: {exc}. "
-                   f"Predicted peak {exc.predicted_peak_bytes} bytes; budget {8 * 1024**3} bytes.",
+                   f"Predicted peak {exc.predicted_peak_bytes} bytes; budget {memory_budget_bytes()} bytes.",
             failure_kind="resource_limit",
             run_identifier=run_identifier, code_revision=code_revision,
             native_voxel_count=native_voxel_count, required=required,
