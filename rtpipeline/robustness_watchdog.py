@@ -232,7 +232,8 @@ def validate_technical_frame(frame, expected_ids, context, identity=None):
     """Technical non-measurements reconcile inventory, never satisfy success."""
     from .radiomics_ct_contract import CT_EXTRACTION_ARMS
     from .radiomics_robustness import ROBUSTNESS_MEASUREMENT_TYPE
-    allowed = {'worker_exception', 'worker_died', 'watchdog_stall', 'course_deadline'}
+    allowed = {'worker_exception', 'worker_died', 'watchdog_stall', 'course_deadline',
+               'resource_limit', 'no_scalar_features'}
     ids = set(frame['perturbation_id'].astype(str))
     if not ids <= expected_ids:
         raise RuntimeError(f"unexpected technical conditions for {context}")
