@@ -18,10 +18,9 @@ from pydicom.uid import RTBeamsTreatmentRecordStorage
 import dvh_plan_target_fixtures as fx
 from course_contract_test_utils import write_minimal_course_contract
 from rtpipeline import dvh
-from rtpipeline.organize import _create_summed_plan
 from rtpipeline.course_contract import build_dvh_decision, classify_course_dose_completeness
 from rtpipeline.composite_course_dose import (
-    BASIS, OUTPUT, SIDECAR, load_composite_sidecar, select_composite_course_dose,
+    BASIS, OUTPUT, OUTPUT_PLAN, SIDECAR, load_composite_sidecar, select_composite_course_dose,
 )
 from rtpipeline.repair_composite_course_dose import main, repair_course
 
@@ -103,9 +102,8 @@ def make_course(tmp_path, *, plan2_fractions=2, plan2_gy=10.0, plan2_dose_gy=10.
         ds.save_as(path, enforce_file_format=True)
     write_minimal_course_contract(course, selected_plans=[plan1, plan2], selected_doses=[],
                                   authoritative_rtstruct=course / 'DICOM/RTSTRUCT/rs.dcm')
-    # Organize writes an evaluation-only plan sum as the multi-plan artifact.
-    plan_sum, _, _ = _create_summed_plan([plan1, plan2])
-    plan_sum.save_as(course / 'RP.dcm', enforce_file_format=True)
+    # Organize copies one intent plan as the artifact of an unreconciled course.
+    shutil.copy(plan1, course / 'RP.dcm')
 
     def update(contract):
         for index, item in enumerate(contract['selected_plans']):
@@ -121,8 +119,8 @@ def make_course(tmp_path, *, plan2_fractions=2, plan2_gy=10.0, plan2_dose_gy=10.
                 {**evidence, 'zero_delivery_records': delivered[index] == 0,
                  'record_paths': records, 'status': 'delivery_unresolved'})
         contract['delivery']['status'] = 'delivery_unresolved'
-        contract['plan_artifact'] = {'path': 'RP.dcm', 'sop_instance_uid': str(plan_sum.SOPInstanceUID),
-                                     'source_plan_uids': [fx.PLAN_UID, PLAN2_UID]}
+        contract['plan_artifact'] = {'path': 'RP.dcm', 'sop_instance_uid': fx.PLAN_UID,
+                                     'source_plan_uids': [fx.PLAN_UID]}
         contract['dose_classification'] = {
             'classification': 'independent_delivered_plans_unreconciled', 'should_sum': False,
             'excluded_doses': ['DICOM/RTDOSE/dose.dcm', 'DICOM/RTDOSE/dose2.dcm'],
@@ -163,6 +161,10 @@ def test_two_phase_dry_run_is_read_only_and_apply_publishes_bound_composite(tmp_
     after = inventory(course)
     sidecar = json.loads(after.pop(SIDECAR))
     after.pop(OUTPUT)
+    after.pop(OUTPUT_PLAN)
+    plan_sum = pydicom.dcmread(course / OUTPUT_PLAN)
+    assert plan_sum.ApprovalStatus == 'UNAPPROVED'
+    assert {str(r.ReferencedSOPInstanceUID) for r in plan_sum.ReferencedRTPlanSequence} == {fx.PLAN_UID, PLAN2_UID}
     assert after == before
     assert sidecar['basis'] == BASIS and sidecar['dose_response_eligible'] is False
     assert [i['weight'] for i in sidecar['inputs']] == [1.0, 1.0]
@@ -236,7 +238,7 @@ def test_replan_replacing_an_interrupted_plan_is_refused(tmp_path):
     ('beam_dose', 'no_plan_level_dose'),
     ('no_dates', 'treatment_dates_unavailable'),
     ('interrupted_then_later_plan', 'replacement_plan_chain_not_summed'),
-    ('artifact', 'invalid_course_contract'),
+    ('brachy', 'brachytherapy_plan_not_supported'),
 ])
 def test_governed_refusals(tmp_path, case, expected):
     kwargs = {
@@ -258,8 +260,8 @@ def test_governed_refusals(tmp_path, case, expected):
     elif case == 'no_dates':
         edit_contract(course, lambda c: [c['selected_plans'][1].update(treatment_dates=['bad']),
                                          c['delivery']['per_plan'][1].update(treatment_dates=['bad'])])
-    elif case == 'artifact':
-        edit_contract(course, lambda c: c['plan_artifact'].update(source_plan_uids=[fx.PLAN_UID]))
+    elif case == 'brachy':
+        edit_dicom(course / 'DICOM/RTPLAN/plan2.dcm', BrachyTreatmentType='HDR')
     before = inventory(course)
     assert select_composite_course_dose(course).reason_code == expected
     assert repair_course(course, apply=True) == expected
