@@ -37,6 +37,11 @@ BASIS = "multi_plan_physical_dose_sum_delivered_fraction_weighted"
 MODE = "composite_course_dose"
 SIDECAR = "metadata/composite_course_dose.json"
 OUTPUT = "metadata/composite_course_dose/RD_composite.dcm"
+# Organize's plan artifact for these courses is one copied intent plan. The
+# composite therefore carries its own evaluation-only plan sum (UNAPPROVED,
+# PlanIntent REVIEW) referencing every summed plan, as organize does for
+# summed phases.
+OUTPUT_PLAN = "metadata/composite_course_dose/RP_composite.dcm"
 ELIGIBLE_CLASSIFICATION = "independent_delivered_plans_unreconciled"
 # Whole-plan dose objects only. MULTI_PLAN/PLAN_SUM cover several plans, so a
 # per-plan delivered-fraction weight would be undefined; BEAM and session
@@ -75,7 +80,7 @@ REFUSAL_CODES = (
     "dose_inventory_unreadable", "dose_identity_invalid", "no_plan_level_dose",
     "ambiguous_plan_level_doses", "dose_not_physical_gy", "dose_ct_frame_mismatch",
     "dose_geometry_qc_failed", "composite_prescription_implausible",
-    "plan_artifact_mismatch", "composite_pixels_invalid",
+    "composite_pixels_invalid",
 )
 
 
@@ -320,12 +325,6 @@ def _select(course_dir):
     if threshold <= 0 or sum(scaled_rx) > threshold:
         _refuse("composite_prescription_implausible")
 
-    artifact = contract.plan_artifact_path
-    source_uids = set((data.get("plan_artifact") or {}).get("source_plan_uids") or [])
-    if artifact is None or source_uids != {uid for uid, _ in plans}:
-        _refuse("plan_artifact_mismatch")
-    artifact = _local(root, artifact)
-
     inputs = []
     for item, (uid, plan), plan_path, (dose_path, ds, geometry), weight, rx in zip(
             items, plans, plan_paths, doses, weights, scaled_rx):
@@ -352,8 +351,6 @@ def _select(course_dir):
         "basis": BASIS,
         "dose_response_eligible": False,
         "course_metadata_sha256": _sha256(metadata),
-        "plan_artifact_path": artifact.relative_to(root).as_posix(),
-        "plan_artifact_sha256": _sha256(artifact),
         "frame_of_reference_uid_sha256": _uid_hash(frame),
         "inputs": inputs,
         "date_relations": _relations(date_sets),
@@ -364,20 +361,28 @@ def _select(course_dir):
         "interpolation": INTERPOLATION,
         "output_dose_path": OUTPUT,
         "output_dose_summation_type": "MULTI_PLAN",
+        "output_plan_path": OUTPUT_PLAN,
     }
     return CompositeSelection("accepted", tuple(plan_paths), tuple(d[0] for d in doses),
-                              tuple(weights), artifact, evidence)
+                              tuple(weights), None, evidence)
 
 
 def build_composite_dose(selection: CompositeSelection):
-    """Return the weighted, resampled MULTI_PLAN RTDOSE dataset and grid record."""
+    """Return the MULTI_PLAN RTDOSE, its evaluation plan sum and a grid record."""
     if not selection.accepted:
         _refuse(selection.reason_code)
-    from .organize import _sum_doses_with_resample, _validated_dose_grid_geometry
-    plan_datasets = [pydicom.dcmread(path) for path in selection.plan_paths]
+    from pydicom.dataset import Dataset
+    from pydicom.sequence import Sequence
+    from .organize import _create_summed_plan, _sum_doses_with_resample, _validated_dose_grid_geometry
+    plan_sum, plan_datasets, _ = _create_summed_plan(list(selection.plan_paths))
+    plan_datasets = plan_datasets or [pydicom.dcmread(path) for path in selection.plan_paths]
     dose, _, source_uids = _sum_doses_with_resample(
-        list(selection.dose_paths), plan_datasets[0], plan_datasets,
+        list(selection.dose_paths), plan_sum, plan_datasets,
         dose_weights=list(selection.weights))
+    reference = Dataset()
+    reference.ReferencedSOPClassUID = str(dose.SOPClassUID)
+    reference.ReferencedSOPInstanceUID = str(dose.SOPInstanceUID)
+    plan_sum.ReferencedDoseSequence = Sequence([reference])
     dose.SeriesDescription = "RF19 composite course dose"
     dose.DoseComment = "Physical dose sum of delivered plans weighted by RTRECORD delivered/planned fractions."
     values = dose.pixel_array.astype(float) * float(dose.DoseGridScaling)
@@ -394,7 +399,7 @@ def build_composite_dose(selection: CompositeSelection):
         "max_dose_gy": float(values.max()) if values.size else 0.0,
         "source_dose_count": len(source_uids),
     }
-    return dose, grid
+    return dose, plan_sum, grid
 
 
 def load_composite_sidecar(course_dir: Path | str) -> CompositeSelection:
@@ -411,11 +416,18 @@ def load_composite_sidecar(course_dir: Path | str) -> CompositeSelection:
         if not selection.accepted:
             return selection
         recorded = {k: v for k, v in payload.items()
-                    if k not in {"code_revision", "output_dose_sha256", "output_grid"}}
+                    if k not in {"code_revision", "output_dose_sha256", "output_plan_sha256", "output_grid"}}
         if json.dumps(recorded, sort_keys=True) != json.dumps(selection.evidence, sort_keys=True):
             _refuse("sidecar_stale_or_mismatched")
         output = _local(root, root / OUTPUT)
         if not output.is_file() or _sha256(output) != payload.get("output_dose_sha256"):
+            _refuse("composite_output_stale_or_missing")
+        plan_output = _local(root, root / OUTPUT_PLAN)
+        if not plan_output.is_file() or _sha256(plan_output) != payload.get("output_plan_sha256"):
+            _refuse("composite_output_stale_or_missing")
+        plan_refs = {str(r.ReferencedSOPInstanceUID) for r in
+                     getattr(pydicom.dcmread(plan_output, stop_before_pixels=True), "ReferencedRTPlanSequence", []) or []}
+        if {_uid_hash(u) for u in plan_refs} != {i["plan_uid_sha256"] for i in selection.evidence["inputs"]}:
             _refuse("composite_output_stale_or_missing")
         dose = pydicom.dcmread(output, stop_before_pixels=True)
         refs = {str(r.ReferencedSOPInstanceUID) for r in getattr(dose, "ReferencedRTPlanSequence", []) or []}
@@ -423,7 +435,8 @@ def load_composite_sidecar(course_dir: Path | str) -> CompositeSelection:
                 or {_uid_hash(u) for u in refs} != {i["plan_uid_sha256"] for i in selection.evidence["inputs"]}
                 or _uid_hash(getattr(dose, "FrameOfReferenceUID", "")) != selection.evidence["frame_of_reference_uid_sha256"]):
             _refuse("composite_output_stale_or_missing")
-        return selection
+        return CompositeSelection(selection.reason_code, selection.plan_paths, selection.dose_paths,
+                                  selection.weights, plan_output, selection.evidence)
     except PlanningDoseError as exc:
         return CompositeSelection(str(exc))
     except (OSError, ValueError, TypeError, KeyError):

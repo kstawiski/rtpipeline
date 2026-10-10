@@ -12,7 +12,7 @@ import tempfile
 import warnings
 
 from .composite_course_dose import (
-    OUTPUT, SIDECAR, build_composite_dose, load_composite_sidecar, select_composite_course_dose,
+    OUTPUT, OUTPUT_PLAN, SIDECAR, build_composite_dose, load_composite_sidecar, select_composite_course_dose,
 )
 from .planning_dose_selection import PlanningDoseError, _local, _sha256
 from .repair_planning_dose_selection import code_revision
@@ -28,9 +28,10 @@ def repair_course(course_dir, *, apply=False):
     try:
         target = _local(root, root / SIDECAR)
         output = _local(root, root / OUTPUT)
+        plan_output = _local(root, root / OUTPUT_PLAN)
         if target.exists():
             return 'unchanged' if load_composite_sidecar(root).accepted else 'sidecar_conflict'
-        if output.exists():
+        if output.exists() or plan_output.exists():
             return 'output_conflict'
         if not apply:
             return 'accepted'
@@ -41,16 +42,18 @@ def repair_course(course_dir, *, apply=False):
             selection = select_composite_course_dose(root)
             if not selection.accepted:
                 return selection.reason_code
-            if target.exists() or output.exists():
+            if target.exists() or output.exists() or plan_output.exists():
                 return 'sidecar_conflict'
-            dose, grid = build_composite_dose(selection)
+            dose, plan_sum, grid = build_composite_dose(selection)
             output.parent.mkdir(exist_ok=True)
-            handle, name = tempfile.mkstemp(dir=output.parent, prefix='.rd-composite-')
-            os.close(handle)
-            temporaries.append(Path(name))
-            dose.save_as(name, enforce_file_format=True)
+            for dataset, prefix in ((dose, '.rd-composite-'), (plan_sum, '.rp-composite-')):
+                handle, name = tempfile.mkstemp(dir=output.parent, prefix=prefix)
+                os.close(handle)
+                temporaries.append(Path(name))
+                dataset.save_as(name, enforce_file_format=True)
             payload = {**selection.evidence, 'code_revision': code_revision(),
-                       'output_dose_sha256': _sha256(Path(name)), 'output_grid': grid}
+                       'output_dose_sha256': _sha256(temporaries[0]),
+                       'output_plan_sha256': _sha256(temporaries[1]), 'output_grid': grid}
             with tempfile.NamedTemporaryFile(mode='w', dir=target.parent,
                                              prefix='.composite-dose-', delete=False) as stream:
                 temporaries.append(Path(stream.name))
@@ -64,7 +67,8 @@ def repair_course(course_dir, *, apply=False):
             # The output is published first; without its sidecar no consumer
             # uses it, and a later sidecar binds its exact bytes.
             os.replace(temporaries[0], output)
-            os.replace(temporaries[1], target)
+            os.replace(temporaries[1], plan_output)
+            os.replace(temporaries[2], target)
             os.fsync(descriptor)
             return 'applied'
         finally:

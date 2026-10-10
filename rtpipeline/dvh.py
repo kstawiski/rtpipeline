@@ -1715,6 +1715,7 @@ def _apply_composite_dose_sidecar(course_dir: Path, contract, resolution) -> Non
     source_headers = [pydicom.dcmread(path, stop_before_pixels=True) for path in selection.dose_paths]
     resolution.rd_path = output
     resolution.rp_path = selection.plan_artifact
+    resolution.selected_plan_paths = list(selection.plan_paths)
     resolution.classification = BASIS
     resolution.reason = (
         "Delivered plans on one planning-CT frame summed as physical dose with "
