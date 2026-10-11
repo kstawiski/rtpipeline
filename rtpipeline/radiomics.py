@@ -1154,11 +1154,12 @@ def _rtstruct_masks(
     # ``quantized_scope_rescue`` (with ``scoped_reader``): a required ROI that
     # the strict inventory finds (partially) unparseable is deferred to the
     # scoped reader, which applies the bounded RF15 quantized-plane projection
-    # exactly as main CT radiomics does. If the projection does not resolve the
-    # ROI, the inventory's structural non-measurement is recorded unchanged.
-    deferred_unmeasurable: Dict[str, Any] = {}
+    # exactly as main CT radiomics does. Its inventory disposition is still
+    # recorded in place, so the outcome order is the one without the flag; it
+    # is withdrawn only when the scoped reader resolves the ROI.
+    deferred_unmeasurable: Dict[str, Dict[str, Any]] = {}
 
-    def _record_unmeasurable(observation: Any) -> None:
+    def _record_unmeasurable(observation: Any, *, log: bool = True) -> Dict[str, Any]:
         if failure_outcomes is None:
             raise ValueError(
                 "structural ROI dispositions require an outcome sink"
@@ -1166,7 +1167,7 @@ def _rtstruct_masks(
         from .rtstruct_identity import require_rtstruct_identity
 
         roi_label = "required ROI" if _is_required(observation.name) else "ROI"
-        failure_outcomes.append({
+        outcome = {
             "roi_name": observation.name,
             "status": "structural_nonmeasurement",
             "failure_kind": "unmeasurable_source_contour",
@@ -1179,11 +1180,17 @@ def _rtstruct_masks(
             "rtstruct_sop_instance_uid": require_rtstruct_identity(rs_path),
             "roi_number": str(observation.roi_number),
             "source_path": str(rs_path),
-        })
+        }
+        failure_outcomes.append(outcome)
+        if log:
+            _log_unmeasurable(observation.name, observation.structural_code)
+        return outcome
+
+    def _log_unmeasurable(name: str, structural_code: str) -> None:
         logger.warning(
             "Required ROI %s in %s has structural status %s; recording a "
             "structural non-measurement and continuing with the other ROIs",
-            observation.name, rs_path, observation.structural_code,
+            name, rs_path, structural_code,
         )
 
     def _is_required(name: str) -> bool:
@@ -1334,7 +1341,9 @@ def _rtstruct_masks(
                 # the other ROIs of the source are still measured.
                 if (quantized_scope_rescue and scoped_reader
                         and observation.structural_code in _QUANTIZATION_CANDIDATE_CODES):
-                    deferred_unmeasurable[observation.name] = observation
+                    deferred_unmeasurable[observation.name] = _record_unmeasurable(
+                        observation, log=False
+                    )
                     structurally_extractable.add(observation.name)
                     continue
                 _record_unmeasurable(observation)
@@ -1431,9 +1440,15 @@ def _rtstruct_masks(
             # whitespace) has no scope result; the reader below then raises
             # rt_utils' own "does not exist", recorded as it is today.
             scope = scoped.by_name.get(str(name))
-            if str(name) in deferred_unmeasurable and (scope is None or scope.code):
-                _record_unmeasurable(deferred_unmeasurable[str(name)])
-                continue
+            deferred = deferred_unmeasurable.pop(str(name), None)
+            if deferred is not None:
+                if scope is None or scope.code:
+                    # Unresolved: the disposition recorded in place stands.
+                    _log_unmeasurable(str(name), deferred["structural_code"])
+                    continue
+                failure_outcomes[:] = [
+                    outcome for outcome in failure_outcomes if outcome is not deferred
+                ]
             if scope is not None and scope.code:
                 detail = str(scope.detail)
                 if len(detail) > 300:
