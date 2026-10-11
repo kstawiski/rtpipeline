@@ -25,14 +25,19 @@ def _hr_ctv(ds):
     return ds
 
 
-def _read(monkeypatch, ds, images, *, rescue):
+def _read(monkeypatch, ds, images, *, rescue, later_marker=False):
     monkeypatch.setattr(radiomics, '_scoped_rtstruct_readers',
                         lambda series, rs: (geometry.ScopedRTStruct(ds, images), None))
     contours = list(ds.ROIContourSequence[0].ContourSequence)
     strict = geometry.roi_geometry_code(contours, allow_quantization=False)
+    named_rois = [SimpleNamespace(name='HR-CTV', structural_code=strict, roi_number=1)]
+    if later_marker:
+        # Recorded from the inventory after HR-CTV, before any mask is read.
+        named_rois.append(SimpleNamespace(
+            name='Marker', structural_code='ROI_NONVOLUMETRIC_POINT', roi_number=2))
     inventory = SimpleNamespace(
-        named_rois=[SimpleNamespace(name='HR-CTV', structural_code=strict, roi_number=1)],
-        structural_codes=(strict,) if strict else ())
+        named_rois=named_rois,
+        structural_codes=tuple(o.structural_code for o in named_rois if o.structural_code))
     outcomes = []
     masks = radiomics._rtstruct_masks(
         Path('ct'), Path('RS.dcm'), failure_outcomes=outcomes, tolerate_unselected=True,
@@ -90,6 +95,33 @@ def test_unresolvable_contour_keeps_the_identical_disposition(monkeypatch):
     assert strict in radiomics._QUANTIZATION_CANDIDATE_CODES
     assert 'HR-CTV' not in masks_on and 'HR-CTV' not in masks_off
     assert on == off and len(on) == 1
+
+
+def _unresolvable():
+    ds, images = fixture(0., rounded=False)
+    contour = ds.ROIContourSequence[0].ContourSequence[0]
+    points = np.array(contour.ContourData).reshape(-1, 3)
+    points[2, 2] += 0.08  # fitted-plane residual beyond the RF15 bound
+    contour.ContourData = points.ravel().tolist()
+    return _hr_ctv(ds), images
+
+
+def test_unresolved_disposition_keeps_its_place_among_other_rows(monkeypatch):
+    # The deferred row must not move behind rows recorded later from the
+    # inventory: published dispositions are hashed in their recorded order.
+    _, _, off = _read(monkeypatch, *_unresolvable(), rescue=False, later_marker=True)
+    _, _, on = _read(monkeypatch, *_unresolvable(), rescue=True, later_marker=True)
+    assert [o['roi_name'] for o in off] == ['HR-CTV', 'Marker']
+    assert on == off
+
+
+def test_resolved_roi_withdraws_only_its_own_row(monkeypatch):
+    ds, images = fixture(0.25)
+    _, _, off = _read(monkeypatch, _hr_ctv(ds), images, rescue=False, later_marker=True)
+    ds, images = fixture(0.25)
+    _, masks, on = _read(monkeypatch, _hr_ctv(ds), images, rescue=True, later_marker=True)
+    assert [o['roi_name'] for o in off] == ['HR-CTV', 'Marker']
+    assert on == off[1:] and masks['HR-CTV'].any()
 
 
 def test_robustness_opts_in_for_the_source_rtstruct():
