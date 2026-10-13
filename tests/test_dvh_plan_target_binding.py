@@ -43,15 +43,34 @@ def _baseline_rows(path: Path) -> dict[str, dict]:
 
 
 def _assert_course_quarantined_as_at_ae60f01(course: Path, qc: dict, rule: str) -> None:
-    assert fx.canonical_dvh_table(course) + "\n" == QUARANTINE_BASELINE.read_text(
-        encoding="utf-8"
-    )
+    _assert_original_columns_unchanged(course, QUARANTINE_BASELINE)
     reconciliation = qc["plan_target_reconciliation"]
     assert reconciliation["decision"] == (
         "course_quarantined_pending_plan_target_reconciliation"
     )
     assert rule in reconciliation["quarantine_rules"]
     assert qc["target_near_zero_dose_grid_coverage"]["near_zero_target_row_count"] == 2
+
+
+def _assert_original_columns_unchanged(course: Path, baseline: Path) -> None:
+    """Preserve exact canonical values; WS105 adds only reason fields."""
+    current = json.loads(fx.canonical_dvh_table(course))
+    original = json.loads(baseline.read_text(encoding="utf-8"))
+    added = {"dose_grid_coverage_reason", "dose_grid_coverage_reason_code"}
+    assert set(current["columns"]) - set(original["columns"]) == added
+    indices = [i for i, column in enumerate(current["columns"]) if column not in added]
+    for row in current["rows"]:
+        assert row[current["columns"].index("dose_grid_coverage_reason")]
+        assert row[current["columns"].index("dose_grid_coverage_reason_code")] is None
+    # The stored fixture predates pandas 3's inferred string dtype. Accept only
+    # that text representation change; every numeric dtype and cell stays exact.
+    for i, expected in zip(indices, original["dtypes"]):
+        if current["dtypes"][i] == "str" and expected == "object":
+            assert all(row[i] is None or isinstance(row[i], str) for row in current["rows"])
+            current["dtypes"][i] = "object"
+    assert {"columns": [current["columns"][i] for i in indices],
+            "dtypes": [current["dtypes"][i] for i in indices],
+            "rows": [[row[i] for i in indices] for row in current["rows"]]} == original
 
 
 def test_site_description_binding_excludes_only_unbound_near_zero_targets(tmp_path):
@@ -171,11 +190,9 @@ def test_volume_reference_binds_by_referenced_roi_number(tmp_path):
 
 
 def test_course_without_near_zero_targets_matches_ae60f01_output(tmp_path):
-    """Scenario 5: byte-identical canonical DVH table to the stored ae60f01 output."""
+    """Scenario 5: exact original columns from the stored ae60f01 output."""
     course, _frame, qc = _run(tmp_path, rois=fx.NO_NEAR_ZERO_ROIS)
-    assert fx.canonical_dvh_table(course) + "\n" == NO_NEAR_ZERO_BASELINE.read_text(
-        encoding="utf-8"
-    )
+    _assert_original_columns_unchanged(course, NO_NEAR_ZERO_BASELINE)
     assert qc["plan_target_reconciliation"]["decision"] == "not_required_no_near_zero_targets"
     assert qc["plan_target_reconciliation"]["course_quarantine"] is False
 

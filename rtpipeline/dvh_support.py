@@ -93,6 +93,124 @@ def mask_grid_coverage(mask, support, voxel_volume_cm3):
             "covered_volume_cm3": inside * voxel_volume_cm3}
 
 
+def roi_nonvolume_coverage(rtstruct, roi_number):
+    """Dispose of explicit nonvolume geometry before either grid comparison.
+
+    An absent ROI is not a declared empty ROI. Malformed coordinates and mixed
+    open/closed geometry remain unresolved, including when another item is valid.
+    """
+    items = []
+    for item in getattr(rtstruct, 'ROIContourSequence', None) or []:
+        try:
+            if int(getattr(item, 'ReferencedROINumber', -1)) == int(roi_number):
+                items.append(item)
+        except (TypeError, ValueError):
+            continue
+    if not items:
+        return None
+
+    def disposition(status, code, reason):
+        return {'status': status, 'fraction': None,
+                'method': 'contour_geometry_disposition',
+                'reason': reason, 'reason_code': code}
+
+    contours = [c for item in items for c in getattr(item, 'ContourSequence', None) or []]
+    if not contours:
+        return disposition('declared_empty', 'ROI_DECLARED_EMPTY_CONTOUR_SEQUENCE',
+                           'ROI is declared with no contour items; no volume was measured.')
+    kinds, points = [], []
+    for contour in contours:
+        kind = str(getattr(contour, 'ContourGeometricType', '') or '').strip().upper()
+        try:
+            p = np.asarray(contour.ContourData, dtype=float).reshape(-1, 3)
+            if not len(p) or not np.isfinite(p).all():
+                raise ValueError('Empty or nonfinite coordinates')
+            if int(getattr(contour, 'NumberOfContourPoints', len(p))) != len(p):
+                raise ValueError('Point count mismatch')
+        except (ValueError, TypeError, AttributeError, OverflowError):
+            return disposition('coverage_unresolved', 'ROI_MALFORMED_CONTOUR_DATA',
+                               'ROI contains missing, malformed or inconsistent contour coordinates.')
+        kinds.append(kind)
+        points.append(p)
+    nonvolume = [(k == 'POINT' and len(p) == 1) or
+                 (k in {'OPEN_PLANAR', 'OPEN_NONPLANAR'} and len(p) >= 2)
+                 for k, p in zip(kinds, points)]
+    if all(nonvolume):
+        return disposition('non_volumetric', 'ROI_NONVOLUMETRIC_CONTOURS',
+                           'ROI contains only points or open lines; no volumetric DVH is defined.')
+    if any(nonvolume) or any(k not in {'', 'CLOSED_PLANAR', 'CLOSEDPLANAR_XOR'} for k in kinds):
+        return disposition('coverage_unresolved', 'ROI_MIXED_OR_UNSUPPORTED_CONTOURS',
+                           'ROI contains mixed volumetric/non-volumetric or unsupported contour types.')
+    if all(k in {'CLOSED_PLANAR', 'CLOSEDPLANAR_XOR'} and len(np.unique(p, axis=0)) < 3
+           for k, p in zip(kinds, points)):
+        return disposition('degenerate_contours', 'ROI_NO_AREA_BEARING_CONTOURS',
+                           'All closed contour items have fewer than three distinct points.')
+    return None
+
+
+def _parity_plane_areas(polygons, xmax, ymax):
+    """Integrate even/odd fill and its intersection with [0,xmax] x [0,ymax].
+
+    A vertical scanline pairs sorted edge crossings across ALL rings. Split x
+    at vertices, edge intersections and crossings of the clipping bounds. Within
+    each open slab the pairing is fixed and both filled and clipped lengths are
+    linear, so midpoint integration is exact up to floating-point roundoff.
+    Retraced edges cancel by parity; self-touching/crossing rings need no winding
+    or polygon repair library. Vertical edges have zero measure in this integral.
+    Edge intersections use O(E^2) comparisons with O(E) temporary storage.
+    """
+    starts, ends = [], []
+    for polygon in polygons:
+        p = np.asarray(polygon, dtype=float)[:, :2]
+        if not np.isfinite(p).all():
+            raise ValueError('Nonfinite planar coordinates')
+        if len(p) < 3:
+            continue
+        q = np.roll(p, -1, axis=0)
+        keep = p[:, 0] != q[:, 0]
+        starts.append(p[keep])
+        ends.append(q[keep])
+    if not starts:
+        return 0.0, 0.0
+    a, b = np.concatenate(starts), np.concatenate(ends)
+    if not len(a):
+        return 0.0, 0.0
+    # Evaluate an edge from the same endpoint in both traversal directions.
+    # Exact retraces then cancel exactly instead of leaving a tiny positive area
+    # from different floating-point evaluation orders.
+    reverse = (a[:, 0] > b[:, 0])[:, None]
+    a, b = np.where(reverse, b, a), np.where(reverse, a, b)
+    slope = (b[:, 1] - a[:, 1]) / (b[:, 0] - a[:, 0])
+    left, right = np.minimum(a[:, 0], b[:, 0]), np.maximum(a[:, 0], b[:, 0])
+    knots = [left, right, np.array([0., xmax])]
+    for i in range(len(a) - 1):
+        lo = np.maximum(left[i], left[i+1:])
+        hi = np.minimum(right[i], right[i+1:])
+        delta = slope[i] - slope[i+1:]
+        usable = (hi > lo) & (delta != 0)
+        j = np.flatnonzero(usable) + i + 1
+        x = a[i, 0] + (a[j, 1] + slope[j] * (a[i, 0] - a[j, 0]) - a[i, 1]) / delta[usable]
+        knots.append(x[(x > lo[usable]) & (x < hi[usable])])
+    nonhorizontal = slope != 0
+    for bound in (0., ymax):
+        x = a[nonhorizontal, 0] + (bound - a[nonhorizontal, 1]) / slope[nonhorizontal]
+        knots.append(x[(x > left[nonhorizontal]) & (x < right[nonhorizontal])])
+    xs = np.unique(np.concatenate(knots))
+    total = inside = 0.0
+    for low, high in zip(xs[:-1], xs[1:]):
+        x = low + (high - low) / 2
+        active = (left < x) & (x < right)
+        y = np.sort(a[active, 1] + slope[active] * (x - a[active, 0]))
+        if len(y) % 2:
+            raise ValueError('Unpaired planar edge crossings')
+        lower, upper = y[::2], y[1::2]
+        total += float(np.sum(upper - lower)) * (high - low)
+        if 0 < x < xmax:
+            lengths = np.maximum(0., np.minimum(upper, ymax) - np.maximum(lower, 0.))
+            inside += float(np.sum(lengths)) * (high - low)
+    return total, inside
+
+
 def rtstruct_grid_coverage(rtstruct, roi_number, dose):
     """Measure unsnapped contour coverage independently of the DVH values.
 
@@ -101,14 +219,15 @@ def rtstruct_grid_coverage(rtstruct, roi_number, dose):
     is made. A single plane uses an area fraction (explicit method code).
     Nested contours use even/odd parity, as in dicompyler's rasterizer.
     """
-    from .dvh import (classify_zero_dose_roi_geometry,
-                      _dose_grid_contour_coordinates, _clip_polygon_to_axis_bound)
-    from matplotlib.path import Path as PolygonPath
+    from .dvh import classify_zero_dose_roi_geometry, _dose_grid_contour_coordinates
+    disposition = roi_nonvolume_coverage(rtstruct, roi_number)
+    if disposition is not None:
+        return disposition
     classified = classify_zero_dose_roi_geometry(rtstruct, roi_number, dose)
     status = {'zero_dose_in_grid': 'fully_covered',
               'zero_dose_partly_inside_dose_grid': 'partial_grid',
               'zero_dose_outside_dose_grid': 'outside_grid'}.get(classified['status'], 'coverage_unresolved')
-    result = {'status': status, 'fraction': None, 'method': 'contour_volume_trapezoid',
+    result = {'status': status, 'fraction': None, 'method': 'contour_volume_trapezoid_even_odd_linework',
               'reason': classified['reason']}
     if status in {'fully_covered', 'outside_grid', 'coverage_unresolved'}:
         result['fraction'] = 1.0 if status == 'fully_covered' else 0.0 if status == 'outside_grid' else None
@@ -132,25 +251,17 @@ def rtstruct_grid_coverage(rtstruct, roi_number, dose):
             return {**result, 'status': 'coverage_unresolved',
                     'reason': 'Volumetric coverage needs closed contours parallel to dose planes.'}
         planes.setdefault(round(float(np.mean(q[:, 2])), 4), []).append(q)
-    def area(p):
-        return abs(float(np.sum(p[:, 0] * np.roll(p[:, 1], -1) - p[:, 1] * np.roll(p[:, 0], -1)))) / 2 if len(p) >= 3 else 0.0
     zs, totals, covered = [], [], []
     for z, polygons in sorted(planes.items()):
-        total = inside = 0.0
-        for p in polygons:
-            # Hole sign is determined by containment, not contour winding.
-            depth = sum(bool(PolygonPath(other[:, :2]).contains_points(p[:, :2]).all())
-                        for other in polygons if other is not p)
-            sign = -1 if depth % 2 else 1
-            clipped = p
-            for axis, bound in [(0, xmax), (1, ymax)]:
-                clipped = _clip_polygon_to_axis_bound(clipped, axis=axis, boundary=0.0, keep_above=True, tolerance=0.0)
-                clipped = _clip_polygon_to_axis_bound(clipped, axis=axis, boundary=bound, keep_above=False, tolerance=0.0)
-            total += sign * area(p)
-            inside += sign * area(clipped)
+        try:
+            total, inside = _parity_plane_areas(polygons, xmax, ymax)
+        except ValueError as exc:
+            return {**result, 'status': 'coverage_unresolved', 'reason': str(exc),
+                    'reason_code': 'ROI_PLANAR_AREA_UNRESOLVED'}
         zs.append(z); totals.append(total); covered.append(inside)
-    if not zs or min(totals) <= 0:
-        return {**result, 'status': 'coverage_unresolved', 'reason': 'Nonpositive contour area.'}
+    if not zs or not np.isfinite(totals).all() or min(totals) < 0:
+        return {**result, 'status': 'coverage_unresolved', 'reason': 'Invalid contour area.',
+                'reason_code': 'ROI_PLANAR_AREA_UNRESOLVED'}
     zs = np.asarray(zs); totals = np.asarray(totals); covered = np.asarray(covered)
     if len(zs) == 1:
         total = totals[0]
@@ -163,6 +274,10 @@ def rtstruct_grid_coverage(rtstruct, roi_number, dose):
         inside = float(_trapezoid(np.interp(knots, zs, covered), knots)) if high > low else 0.0
         result['roi_volume_cm3'] = total / 1000
         result['covered_volume_cm3'] = inside / 1000
+    if not np.isfinite(total) or total <= 0 or not np.isfinite(inside):
+        return {**result, 'status': 'coverage_unresolved',
+                'reason': 'Nonpositive integrated contour volume or single-plane area.',
+                'reason_code': 'ROI_NONPOSITIVE_CONTOUR_VOLUME'}
     fraction = float(np.clip(inside / total, 0, 1))
     result['fraction'] = 1.0 if status == 'fully_covered' else 0.0 if status == 'outside_grid' else fraction
     return result

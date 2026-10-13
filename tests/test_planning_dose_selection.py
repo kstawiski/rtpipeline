@@ -303,7 +303,7 @@ def historical_dvh(tmp_path):
 @pytest.mark.parametrize('delivered', [False, True])
 @pytest.mark.parametrize('sidecar', [False, True])
 def test_contract_selected_bytes_against_80d5d65(tmp_path, monkeypatch, delivered, sidecar):
-    """Exact output bytes except the truthful producing-code digest in QC."""
+    """Exact old values and curves; coverage reasons and the code digest are new."""
     import xlsxwriter.core
     class FixedTime(datetime.datetime):
         @classmethod
@@ -320,8 +320,16 @@ def test_contract_selected_bytes_against_80d5d65(tmp_path, monkeypatch, delivere
         assert module.dvh_for_course(course, parallel_workers=1)
         return {name:(course/name).read_bytes() for name in names}
     old, new = run(baseline), run(dvh)
-    for name in names[:-1]:
-        assert old[name] == new[name], name
+    from io import BytesIO
+    reason_columns = ['dose_grid_coverage_reason', 'dose_grid_coverage_reason_code']
+    for name, reader in [('dvh_metrics.parquet', pd.read_parquet),
+                         ('dvh_metrics.xlsx', pd.read_excel)]:
+        before, after = reader(BytesIO(old[name])), reader(BytesIO(new[name]))
+        assert set(after.columns) - set(before.columns) == set(reason_columns)
+        assert after.dose_grid_coverage_reason.notna().all()
+        assert after.dose_grid_coverage_reason_code.isna().all()
+        pd.testing.assert_frame_equal(before, after.drop(columns=reason_columns), check_exact=True)
+    assert old['dvh_curves.json'] == new['dvh_curves.json']
     old_digest = json.loads(old[names[-1]])['code_sources_sha256']
     new_digest = json.loads(new[names[-1]])['code_sources_sha256']
     assert old_digest != new_digest
