@@ -169,6 +169,7 @@ _STAGE_DEFINITIONS: dict[str, StageDefinition] = {
         code_sources=(
             *_COMMON_CODE_SOURCES,
             "dvh.py",
+            "dvh_support.py",
             "dvh_rotation.py",
             "planning_dose_selection.py",
             "plan_approval.py",
@@ -449,7 +450,7 @@ def _validate_stage_specific_outcome(
     definition: StageDefinition,
     status: str,
     outputs: Sequence[Mapping[str, Any]],
-) -> None:
+) -> str | None:
     if definition.name != "dvh" or status != "ok":
         return
     roles = {str(item.get("role") or "") for item in outputs}
@@ -464,15 +465,25 @@ def _validate_stage_specific_outcome(
         raise ValueError(
             "DVH completion without a table requires readable bound QC and course contract"
         ) from exc
-    decision = ((metadata.get("course_contract") or {}).get("dvh") or {})
+    contract = metadata.get("course_contract") or {}
+    decision = contract.get("dvh") or {}
+    resolution = qc.get("dose_resolution") or {}
     if (
         qc.get("status") != "skipped"
         or decision.get("metrics_status") != "not_computed"
         or decision.get("output") is not None
+        or contract.get("selected_doses")
+        or contract.get("dose_grid") is not None
+        or resolution.get("dose_qc_pass") is not True
+        or resolution.get("dvh") != decision
+        or qc.get("course_contract_sha256") != file_sha256(contract_path)
     ):
         raise ValueError(
             "DVH completion without a table requires an authoritative not-computed decision"
         )
+    # Existing receipt-consumer vocabulary: a governed closure contributes no
+    # measurement and does not masquerade as a missing, pending DVH table.
+    return "not_measured"
 
 
 def stage_completion_payload(
@@ -495,10 +506,11 @@ def stage_completion_payload(
     )
     outputs = [] if terminal_status == "disabled" else _discover_outputs(root, definition)
     _validate_required_roles(definition, terminal_status, outputs)
-    _validate_stage_specific_outcome(root, definition, terminal_status, outputs)
+    measurement_outcome = _validate_stage_specific_outcome(root, definition, terminal_status, outputs)
     code = _code_identity(definition)
     environment = environment_record(definition.environment_packages)
     return {
+        **({"measurement_outcome": measurement_outcome} if measurement_outcome else {}),
         "schema": STAGE_COMPLETION_SCHEMA,
         "status": terminal_status,
         "stage": definition.sentinel,
@@ -691,7 +703,9 @@ def validate_stage_completion_payload(
     if payload.get("content_closure_sha256") != _content_closure(outputs):
         raise ValueError("Stage completion content-closure digest is invalid")
     _validate_required_roles(definition, status, outputs)
-    _validate_stage_specific_outcome(root, definition, status, outputs)
+    measurement_outcome = _validate_stage_specific_outcome(root, definition, status, outputs)
+    if payload.get("measurement_outcome") != measurement_outcome:
+        raise ValueError("Stage completion measurement outcome disagrees with its bound outputs")
     return dict(payload)
 
 

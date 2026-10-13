@@ -191,7 +191,7 @@ def historical_dvh(tmp_path):
                                        [0,1,0,-1,0,0], [0,-1,0,1,0,0],
                                        [1,0,0,0,-1,0], [0,1,0,1,0,0], [0,-1,0,-1,0,0]])
 def test_axis_aligned_publication_bytes_against_git_a61b96a(tmp_path, monkeypatch, orientation):
-    """Exact publication bytes except truthful code identity and its QC hash.
+    """Exact old table values and curves, with two new coverage reason columns.
 
     The production QC source hash cannot be byte-identical after a source edit.
     We assert it DOES change, then compare every other QC byte and receipt
@@ -229,8 +229,16 @@ def test_axis_aligned_publication_bytes_against_git_a61b96a(tmp_path, monkeypatc
 
     old, old_receipt = run(baseline)
     new, new_receipt = run(dvh)
-    for name in ('dvh_metrics.parquet', 'dvh_metrics.xlsx', 'dvh_curves.json'):
-        assert old[name] == new[name], name
+    from io import BytesIO
+    reason_columns = ['dose_grid_coverage_reason', 'dose_grid_coverage_reason_code']
+    for name, reader in [('dvh_metrics.parquet', pd.read_parquet),
+                         ('dvh_metrics.xlsx', pd.read_excel)]:
+        before, after = reader(BytesIO(old[name])), reader(BytesIO(new[name]))
+        assert set(after.columns) - set(before.columns) == set(reason_columns)
+        assert after.dose_grid_coverage_reason.notna().all()
+        assert after.dose_grid_coverage_reason_code.isna().all()
+        pd.testing.assert_frame_equal(before, after.drop(columns=reason_columns), check_exact=True)
+    assert old['dvh_curves.json'] == new['dvh_curves.json']
     old_qc = json.loads(old['metadata/dvh_qc.json'])
     new_qc = json.loads(new['metadata/dvh_qc.json'])
     old_digest = old_qc['code_sources_sha256']
@@ -238,9 +246,11 @@ def test_axis_aligned_publication_bytes_against_git_a61b96a(tmp_path, monkeypatc
     assert old_digest != new_digest
     assert old['metadata/dvh_qc.json'].replace(old_digest.encode(), new_digest.encode()) == new['metadata/dvh_qc.json']
     old_content = [{k: row[k] for k in ('path','role','binding','sha256','size_bytes') if k in row}
-                   for row in old_receipt['outputs'] if row['role'] != 'dvh_qc']
+                   for row in old_receipt['outputs']
+                   if row['role'] not in {'dvh_qc', 'authoritative_dvh', 'dvh_workbook'}]
     new_content = [{k: row[k] for k in ('path','role','binding','sha256','size_bytes') if k in row}
-                   for row in new_receipt['outputs'] if row['role'] != 'dvh_qc']
+                   for row in new_receipt['outputs']
+                   if row['role'] not in {'dvh_qc', 'authoritative_dvh', 'dvh_workbook'}]
     assert old_content == new_content
     assert old_receipt['content_closure_sha256'] != new_receipt['content_closure_sha256']
     assert 'dose_grid_resampling' not in new_qc

@@ -195,7 +195,9 @@ def _dose_grid_contour_coordinates(
             ):
                 unresolved_contour_count += 1
                 continue
-            if not geometry_supported:
+            points = values.reshape((-1, 3))
+            if (geometric_type in {"CLOSED_PLANAR", "CLOSEDPLANAR_XOR"}
+                    and len(np.unique(points, axis=0)) < 3):
                 # A planar item with fewer than three distinct points bounds no
                 # area. Converting a segmentation mask to contours emits one for
                 # a stray boundary voxel, and it contributes nothing a rasteriser
@@ -203,12 +205,8 @@ def _dose_grid_contour_coordinates(
                 # whole ROI's dose-grid coverage undeterminable, which suppressed
                 # its prescription-relative metrics. Skip it; judge coverage on
                 # the items that do carry geometry.
-                points = values.reshape((-1, 3))
-                if (
-                    geometric_type in {"CLOSED_PLANAR", "CLOSEDPLANAR_XOR"}
-                    and len(np.unique(points, axis=0)) < 3
-                ):
-                    continue
+                continue
+            if not geometry_supported:
                 unresolved_contour_count += 1
                 continue
             contours.append(values.reshape((-1, 3)))
@@ -1115,6 +1113,8 @@ def annotate_dvh_metrics(
         output["dose_grid_coverage_status"] = coverage_status
         output["dose_grid_coverage_fraction"] = grid_coverage.get("fraction")
         output["dose_grid_coverage_method"] = grid_coverage.get("method")
+        output["dose_grid_coverage_reason"] = grid_coverage.get("reason")
+        output["dose_grid_coverage_reason_code"] = grid_coverage.get("reason_code")
         output["dose_grid_covered_volume_cm3"] = grid_coverage.get("covered_volume_cm3")
         output["dose_grid_roi_volume_cm3"] = grid_coverage.get("roi_volume_cm3")
         if coverage_status != "fully_covered":
@@ -3754,6 +3754,28 @@ def dvh_for_course(
         coverage = (rotated_grid.coverage(geometry_rtstruct_ds, int(roi_number))
                     if rotated_grid is not None else
                     rtstruct_grid_coverage(geometry_rtstruct_ds, int(roi_number), rtdose))
+        if coverage["status"] in {"declared_empty", "non_volumetric", "degenerate_contours"}:
+            unavailable = annotate_dvh_metrics(
+                {**dict.fromkeys(RELATIVE_DVH_METRIC_COLUMNS), "Volume (cm³)": None,
+                 "DmeanGy": None, "DmaxGy": None, "DminGy": None,
+                 "D98Gy": None, "D95Gy": None, "D50Gy": None, "D2Gy": None,
+                 "D0.03ccGy": None, "D0.1ccGy": None, "D1ccGy": None,
+                 "D90Gy": None, "D2ccGy": None, "D2cc_status": coverage["status"]},
+                technique=treatment_technique, structure_name=roi_name,
+                structure_interpreted_type=roi_interpreted_type,
+                target_like=_is_target_structure(roi_name, roi_interpreted_type),
+                prescription_resolved=prescription_resolved,
+                dose_response_eligible=dose_response_eligible,
+                dose_response_ineligibility_reason=contract_dose_completeness_reason,
+                rtstruct_sop_instance_uid=rtstruct_sop_uid, rtstruct_path=rtstruct_path,
+                grid_coverage=coverage,
+            )
+            unavailable.update({"ROI_Number": int(roi_number), "ROI_Name": roi_name,
+                                "ROI_OriginalName": roi_name, "Segmentation_Source": source_label,
+                                "row_status": "not_computed",
+                                "dvh_nonmeasurement_class": coverage["status"],
+                                "_curve_data": []})
+            return unavailable
         try:
             if rotation_error:
                 raise DoseOrientationError(rotation_error)
