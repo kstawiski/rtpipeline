@@ -1,0 +1,57 @@
+name: release
+
+# Pushing a tag vX.Y.Z publishes the GitHub release with the matching docs/release_notes.md
+# section. The tag must equal rtpipeline/__init__.py; Zenodo archives published releases
+# when its GitHub integration is enabled for this repository.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to publish, e.g. v3.0.0
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+      - name: Extract release notes for the tag
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          python3 - <<'PY'
+          import os, re, sys
+          from pathlib import Path
+          tag = os.environ["TAG"]
+          version = re.search(r'__version__ = "([^"]+)"', Path("rtpipeline/__init__.py").read_text()).group(1)
+          if tag != f"v{version}":
+              sys.exit(f"tag {tag} does not match rtpipeline/__init__.py {version}")
+          text = Path("docs/release_notes.md").read_text()
+          match = re.search(rf"^## {re.escape(version)} — .*?$(.*?)(?=^## |\Z)", text, re.M | re.S)
+          if not match:
+              sys.exit(f"docs/release_notes.md has no section for {version}")
+          notes = match.group(1).strip() + "\n"
+          # Relative documentation links become links to the published site.
+          site = "https://kstawiski.github.io/rtpipeline/"
+          notes = re.sub(r"\]\((?!https?://|#)([^)#]+)\.md(#[^)]*)?\)",
+                         lambda m: f"]({site}{m.group(1)}/{m.group(2) or ''})", notes)
+          Path("release-notes.md").write_text(notes)
+          Path("release-title.txt").write_text(f"RTpipeline {version}\n")
+          PY
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists"
+          else
+            gh release create "$TAG" --verify-tag --title "$(cat release-title.txt)" --notes-file release-notes.md
+          fi
