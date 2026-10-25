@@ -398,6 +398,17 @@ CUSTOM_MODELS_PREDICT = str(CUSTOM_MODELS_CONFIG.get("nnunet_predict") or "nnUNe
 CUSTOM_MODELS_CONDA = CUSTOM_MODELS_CONFIG.get("conda_activate")
 CUSTOM_MODELS_RETAIN = bool(CUSTOM_MODELS_CONFIG.get("retain_weights", True))
 
+# RTsegmentator portal results are imported by the segmentation_custom stage into
+# Segmentation_CustomModels/rtseg_<model>/ (see rtpipeline/rtsegmentator.py).
+RTSEG_CONFIG = config.get("rtsegmentator") or {}
+RTSEG_ENABLED = bool(RTSEG_CONFIG.get("enabled", False))
+_rtseg_models_raw = RTSEG_CONFIG.get("models") or []
+if isinstance(_rtseg_models_raw, str):
+    RTSEG_MODELS = [item for item in _rtseg_models_raw.replace(",", " ").split() if item]
+else:
+    RTSEG_MODELS = [str(item).strip() for item in _rtseg_models_raw if str(item).strip()]
+CUSTOM_STAGE_ENABLED = CUSTOM_MODELS_ENABLED or RTSEG_ENABLED
+
 RADIOMICS_CONFIG = config.get("radiomics", {})
 CAMPAIGN_MODE = bool(config.get("campaign_mode", False))
 CAMPAIGN_MIN_COMPLETION_FRACTION = float(config.get("campaign_min_completion_fraction", 0.5))
@@ -565,16 +576,23 @@ if CUSTOM_MODELS_ROOT:
             "script": file_content_or_absent(_model_script),
         }
         _custom_model_source_paths.extend([_model_spec, _model_script])
+_custom_models_dependency = {
+    "settings": _scientific_settings(
+        CUSTOM_MODELS_CONFIG,
+        ignored={"force", "workers", "retain_weights", "root"},
+    ),
+    "model_sources": _custom_model_sources,
+    "environment": _ENV_MAIN,
+}
+if RTSEG_ENABLED:
+    # Present only when enabled, so projects without RTsegmentator keep their hash.
+    _custom_models_dependency["rtsegmentator"] = {
+        "url": str(RTSEG_CONFIG.get("url") or ""),
+        "models": RTSEG_MODELS,
+    }
 CUSTOM_MODELS_CONFIG_DEPENDENCY = _dependency_path(
     "custom-models",
-    {
-        "settings": _scientific_settings(
-            CUSTOM_MODELS_CONFIG,
-            ignored={"force", "workers", "retain_weights", "root"},
-        ),
-        "model_sources": _custom_model_sources,
-        "environment": _ENV_MAIN,
-    },
+    _custom_models_dependency,
     _custom_model_source_paths,
 )
 
@@ -1062,7 +1080,8 @@ _custom_params_lambda = lambda w: (
     (f"--custom-model-workers {max(1, CUSTOM_MODELS_WORKERS)} " if CUSTOM_MODELS_WORKERS else "") +
     (f"--nnunet-predict '{CUSTOM_MODELS_PREDICT}' " if CUSTOM_MODELS_PREDICT else "") +
     (f"--custom-model-conda-activate '{CUSTOM_MODELS_CONDA}' " if CUSTOM_MODELS_CONDA else "") +
-    ("--purge-custom-model-weights " if not CUSTOM_MODELS_RETAIN else "")
+    ("--purge-custom-model-weights " if not CUSTOM_MODELS_RETAIN else "") +
+    ("--disable-local-custom-models " if not CUSTOM_MODELS_ENABLED else "")
 )
 
 if config.get("container_mode", False):
@@ -1084,7 +1103,7 @@ if config.get("container_mode", False):
         params:
             stage="segmentation_custom",
             campaign_mode=CAMPAIGN_MODE,
-            enabled=CUSTOM_MODELS_ENABLED,
+            enabled=CUSTOM_STAGE_ENABLED,
             extra_args=_custom_params_lambda,
             python=CONTAINER_MAIN_PYTHON,
             python_bin=CONTAINER_MAIN_BIN,
@@ -1116,7 +1135,7 @@ else:
         params:
             stage="segmentation_custom",
             campaign_mode=CAMPAIGN_MODE,
-            enabled=CUSTOM_MODELS_ENABLED,
+            enabled=CUSTOM_STAGE_ENABLED,
             extra_args=_custom_params_lambda,
             python=PYTHON_MAIN,
             python_bin=PYTHON_MAIN_BIN,

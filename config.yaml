@@ -50,6 +50,21 @@ custom_models:
   force: false
   retain_weights: true
 
+# RTsegmentator portal (https://github.com/kstawiski/rtsegmentator) as a segmentation
+# source. The segmentation_custom stage sends each course's planning CT to the portal,
+# verifies the returned package against its manifest and writes each model's RTSTRUCT
+# to Segmentation_CustomModels/rtseg_<model>/, where DVH and radiomics use it.
+# Proxy credentials come from the environment variable named by headers_env
+# ("Name: value" lines); never write them into this file.
+rtsegmentator:
+  enabled: false
+  url: null                 # e.g. "https://rtseg.example.org"
+  models: []                # portal model names, e.g. ["total", "lung_nodules"]
+  headers_env: "RTSEG_CLIENT_HEADERS"
+  ca_bundle: null
+  poll_seconds: 15
+  job_timeout_seconds: 21600
+
 radiomics:
   enabled: true
   sequential: false

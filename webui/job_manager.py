@@ -20,6 +20,50 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# The portal address and default models are operator settings. A browser request may
+# switch RTsegmentator on and choose model names, never the URL it is sent to.
+RTSEGMENTATOR_URL_ENV = "RTPIPELINE_RTSEGMENTATOR_URL"
+RTSEGMENTATOR_MODELS_ENV = "RTPIPELINE_RTSEGMENTATOR_MODELS"
+_RTSEG_MODEL_NAME = re.compile(r"^[A-Za-z0-9_]{1,128}$")
+
+
+def rtsegmentator_server_settings() -> Dict[str, Any]:
+    """Operator-configured RTsegmentator portal, or ``{"available": False}``."""
+    url = os.environ.get(RTSEGMENTATOR_URL_ENV, "").strip()
+    defaults = [
+        name for name in re.split(r"[\s,]+", os.environ.get(RTSEGMENTATOR_MODELS_ENV, ""))
+        if _RTSEG_MODEL_NAME.match(name)
+    ]
+    if not url:
+        return {"available": False, "default_models": []}
+    return {"available": True, "url": url, "default_models": defaults}
+
+
+def rtsegmentator_job_config(user_config: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """The ``rtsegmentator`` section for a Web UI job, or None when it is not requested."""
+    requested = user_config.get("rtsegmentator") or {}
+    if not isinstance(requested, dict) or requested.get("enabled") is not True:
+        return None
+    server = rtsegmentator_server_settings()
+    if not server["available"]:
+        raise ValueError("RTsegmentator is not configured on this server")
+    models = requested.get("models")
+    if models is None:
+        models = server["default_models"]
+    if not isinstance(models, list) or not all(
+        isinstance(name, str) and _RTSEG_MODEL_NAME.match(name) for name in models
+    ):
+        raise ValueError("RTsegmentator models must be a list of task names")
+    models = list(dict.fromkeys(models))
+    if not models:
+        raise ValueError("Select at least one RTsegmentator model")
+    return {
+        "enabled": True,
+        "url": server["url"],
+        "models": models,
+        "headers_env": "RTSEG_CLIENT_HEADERS",
+    }
+
 
 class JobManager:
     """Manages rtpipeline processing jobs"""
@@ -108,6 +152,11 @@ class JobManager:
         Returns:
             Result dictionary with success status
         """
+        try:
+            # Refuse an unusable RTsegmentator request before the job is marked running.
+            rtsegmentator_job_config(config or {})
+        except ValueError as exc:
+            return {'success': False, 'error': str(exc)}
         try:
             with self.lock:
                 if job_id not in self.jobs:
@@ -319,6 +368,10 @@ class JobManager:
             'models': models_list,
             'workers': 1
         }
+
+        rtsegmentator = rtsegmentator_job_config(user_config)
+        if rtsegmentator is not None:
+            config['rtsegmentator'] = rtsegmentator
 
         # Radiomics settings
         if 'radiomics' in user_config:
