@@ -1,6 +1,7 @@
 name: release
 
-# Pushing a tag vX.Y.Z publishes the GitHub release with the matching docs/release_notes.md
+# Pushing a tag vX.Y.Z, or running this workflow by hand on a branch with a tag input,
+# publishes the GitHub release with the matching docs/release_notes.md
 # section. The tag must equal rtpipeline/__init__.py; Zenodo archives published releases
 # when its GitHub integration is enabled for this repository.
 on:
@@ -9,7 +10,9 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing tag to publish, e.g. v3.0.0
+        # A tag that does not exist yet is created at the commit the workflow runs on.
+        # Tags created this way do not trigger other tag-push workflows.
+        description: Release tag (created at the selected commit if absent), e.g. v3.0.0
         required: true
 
 permissions:
@@ -20,8 +23,6 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.inputs.tag || github.ref }}
       - name: Extract release notes for the tag
         env:
           TAG: ${{ github.event.inputs.tag || github.ref_name }}
@@ -52,6 +53,8 @@ jobs:
         run: |
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "Release $TAG already exists"
-          else
+          elif git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null; then
             gh release create "$TAG" --verify-tag --title "$(cat release-title.txt)" --notes-file release-notes.md
+          else
+            gh release create "$TAG" --target "$GITHUB_SHA" --title "$(cat release-title.txt)" --notes-file release-notes.md
           fi
