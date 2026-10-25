@@ -23,6 +23,17 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Read an existing tag from the tagged commit
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          # A manual run for a tag that already exists publishes what the tag points to,
+          # not the selected branch. A new tag is created at the run commit.
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            git checkout --detach "refs/tags/$TAG"
+          fi
       - name: Extract release notes for the tag
         env:
           TAG: ${{ github.event.inputs.tag || github.ref_name }}
@@ -53,7 +64,7 @@ jobs:
         run: |
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "Release $TAG already exists"
-          elif git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null; then
+          elif git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
             gh release create "$TAG" --verify-tag --title "$(cat release-title.txt)" --notes-file release-notes.md
           else
             gh release create "$TAG" --target "$GITHUB_SHA" --title "$(cat release-title.txt)" --notes-file release-notes.md
