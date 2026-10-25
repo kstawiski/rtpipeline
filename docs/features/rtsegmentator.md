@@ -99,7 +99,12 @@ licence, limitations and reference, and the SHA-256 of the package and the RTSTR
 
 In `dvh_metrics.xlsx`, `radiomics_ct.xlsx` and the robustness tables these structures
 carry the segmentation source `CustomModel:rtseg_<model>`, separate from manual
-contours (`Manual`), TotalSegmentator (`AutoTS_*`) and local custom models.
+contours (`Manual`), Boolean custom structures (`Custom`), TotalSegmentator sources and
+local custom models.
+
+The import writes RTSTRUCTs only. Boolean custom structures (`custom_structures`
+YAML) are built from NIfTI masks, so RTsegmentator structures are not available as
+operands there.
 
 ## Licences
 
