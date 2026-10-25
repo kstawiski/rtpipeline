@@ -2706,6 +2706,23 @@ def _invalidate_dvh_outputs(course_dir: Path) -> None:
             logger.warning("Could not invalidate stale DVH output %s", path)
 
 
+def _removed_custom_model_sources(parquet_frame: "pd.DataFrame", course_dir: Path) -> list[str]:
+    """Custom-model sources in a DVH table whose RTSTRUCT output no longer exists.
+
+    A removed output (for example an RTsegmentator model that found nothing when
+    resubmitted) changes no file time, so reuse compares the recorded sources instead.
+    """
+    if "Segmentation_Source" not in parquet_frame.columns:
+        return []
+    recorded = {
+        str(source).partition(":")[2]
+        for source in parquet_frame["Segmentation_Source"].dropna()
+        if str(source).startswith("CustomModel:")
+    }
+    current = {name for name, _ in list_custom_model_outputs(course_dir)}
+    return sorted(recorded - current)
+
+
 def _is_dvh_up_to_date(
     course_dir: Path,
     dvh_path: Path,
@@ -2847,6 +2864,13 @@ def _is_dvh_up_to_date(
         # Check custom model outputs
         for model_name, model_course_dir in list_custom_model_outputs(course_dir):
             deps.append(model_course_dir / "rtstruct.dcm")
+        removed_models = _removed_custom_model_sources(parquet_frame, course_dir)
+        if removed_models:
+            logger.info(
+                "DVH output includes custom-model sources that no longer exist (%s); regenerating",
+                ", ".join(removed_models),
+            )
+            return False
 
         # If any dependency is newer than DVH output, it's stale
         for dep in deps:

@@ -15,6 +15,8 @@ import SimpleITK as sitk
 
 from rtpipeline import radiomics_conda as rc
 
+pytestmark = pytest.mark.requires_radiomics_env
+
 SPACING = (1.25, 1.5, 2.5)
 PARAMETERS = """imageType:
   Original: {}

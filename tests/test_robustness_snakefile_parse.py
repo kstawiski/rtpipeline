@@ -7,7 +7,8 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from snakemake.parser import parse
+
+parse = pytest.importorskip("snakemake.parser", reason="snakemake is not installed").parse
 
 SNAKEFILE_PATH = Path(__file__).resolve().parents[1] / "Snakefile"
 

@@ -128,9 +128,17 @@ _STAGE_DEFINITIONS: dict[str, StageDefinition] = {
         binding_policy="custom-models-content-v1",
         rules=(
             ArtifactRule("custom_model_artifact", "Segmentation_CustomModels/**/*", "content_sha256"),
+            ArtifactRule("rtsegmentator_import_ledger", "metadata/rtsegmentator_imports.json", "content_sha256"),
         ),
         required_roles=frozenset(),
-        code_sources=(*_COMMON_CODE_SOURCES, "custom_models.py", "custom_structures_rtstruct.py", "course_contract.py"),
+        code_sources=(
+            *_COMMON_CODE_SOURCES,
+            "custom_models.py",
+            "custom_structures_rtstruct.py",
+            "course_contract.py",
+            "rtsegmentator.py",
+            "segmenters/rtsegmentator_client.py",
+        ),
         environment_packages=("numpy", "pydicom", "SimpleITK", "torch", "nnunetv2"),
     ),
     "crop_ct": StageDefinition(

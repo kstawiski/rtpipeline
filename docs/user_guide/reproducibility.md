@@ -142,20 +142,20 @@ conda env export --no-builds > rtpipeline-radiomics-environment.yml
 
 ### Docker for Complete Reproducibility
 
-For maximum reproducibility, use the Docker image with a specific tag. Version 2.4.0 is unreleased, so the commands below apply only after that image tag is published. Until then, build from an immutable commit and record the resulting image digest.
+For maximum reproducibility, use the Docker image with a specific version tag and record its digest.
 
 ```bash
 # Use a specific version, not :latest
-docker pull kstawiski/rtpipeline:2.3.99
+docker pull kstawiski/rtpipeline:3.0.0
 
 # Record the image digest
-docker inspect --format='{{.RepoDigests}}' kstawiski/rtpipeline:2.3.99
+docker inspect --format='{{.RepoDigests}}' kstawiski/rtpipeline:3.0.0
 ```
 
 Document in your methods:
-> "All preprocessing was performed using RTpipeline Docker image kstawiski/rtpipeline:2.3.99 (SHA256: abc123...)."
+> "All preprocessing was performed using RTpipeline Docker image kstawiski/rtpipeline:3.0.0 (SHA256: abc123...)."
 
-For `2.4.0`, also record whether radiomics and robustness were executed through the default dual-environment setup (`rtpipeline` + `rtpipeline-radiomics`) or a custom local installation. Manuscripts using the unreleased 2.4.0 bytes must cite an immutable git commit or container digest and must not describe 2.4.0 as a tagged release.
+Also record whether radiomics and robustness were executed through the default dual-environment setup (`rtpipeline` + `rtpipeline-radiomics`) or a custom local installation. When structures come from RTsegmentator, keep each course's `Segmentation_CustomModels/rtseg_<model>/manifest.json` and report the RTsegmentator version, task names and model references it records.
 
 ---
 
@@ -166,7 +166,7 @@ For `2.4.0`, also record whether radiomics and robustness were executed through 
 ```markdown
 **Dose-Volume Histogram Analysis**
 
-DVH metrics were extracted using RTpipeline (version 2.4.0, git commit: XXXXXX; replace if using another tag) [1].
+DVH metrics were extracted using RTpipeline (version 3.0.0; DOI: [release DOI]) [1].
 DICOM RTSTRUCT, RTDOSE, and RTPLAN files were exported from [TPS name/version]
 and processed using the following standardized protocol:
 
@@ -195,7 +195,7 @@ The complete preprocessing configuration is available as Supplementary File S2.
 ```markdown
 **Radiomic Feature Extraction and Stability Assessment**
 
-CT radiomic features were extracted using RTpipeline (version 2.4.0; replace if using another tag) [1] with
+CT radiomic features were extracted using RTpipeline (version 3.0.0; DOI: [release DOI]) [1] with
 PyRadiomics (version 3.0.1) [2] following Image Biomarker Standardisation
 Initiative (IBSI) recommendations [3].
 
@@ -272,6 +272,31 @@ The RTpipeline configuration bundle is available at [repository or archive URL].
 
 [1] RTpipeline software citation (see repository `CITATION.cff`).
 ```
+
+### Template 4: Structures from RTsegmentator
+
+```markdown
+**Automatic Segmentation**
+
+[Structures] were segmented on the planning CT with [model name] ([model reference])
+[2], run through RTsegmentator version [X.Y.Z] [3] (task `[task name]`). RTsegmentator
+maps each prediction onto the acquired CT grid and releases an RTSTRUCT only after
+checking its image references, physical bounds and a contour-to-mask round trip
+(Dice ≥ 0.95). RTpipeline (version 3.0.0) [1] imported each result only after
+verifying every packaged file against the result manifest's SHA-256 checksums and
+confirming that the RTSTRUCT referenced the course's planning CT series. Automatic
+contours were [reviewed by / not edited by] [role] before analysis. [N] courses had
+no structure found by the model and were [handled as].
+
+[1] RTpipeline software citation (see repository `CITATION.cff`).
+[2] Publication of the segmentation model.
+[3] RTsegmentator software citation (see its `CITATION.cff`).
+```
+
+The values for the bracketed fields are recorded per course in
+`Segmentation_CustomModels/rtseg_<model>/manifest.json` (RTsegmentator version, task,
+model reference, licence and limitations) and in `metadata/rtsegmentator_imports.json`
+(job ID and outcome for every model, including models that found nothing).
 
 ---
 
@@ -392,12 +417,13 @@ Supplementary Data.
 ```markdown
 **Code Availability**
 
-All data preprocessing was performed using RTpipeline version 2.4.0
-(https://github.com/kstawiski/rtpipeline). The complete configuration bundle,
-including structure mapping dictionaries and radiomics parameters, is available
-at [repository or archive URL]. Analysis scripts for statistical modeling are
-available at [repository URL]. If unreleased RTpipeline bytes were used, report
-an immutable git commit or container digest in addition to version 2.4.0.
+All data preprocessing was performed using RTpipeline version 3.0.0
+(https://github.com/kstawiski/rtpipeline; archived release DOI: [release DOI]).
+The complete configuration bundle, including structure mapping dictionaries and
+radiomics parameters, is available at [repository or archive URL]. Analysis
+scripts for statistical modeling are available at [repository URL]. Report the
+git commit or container digest as well when the bytes you ran differ from the
+release tag.
 ```
 
 ### Supplementary Materials to Include

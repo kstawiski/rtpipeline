@@ -15,7 +15,7 @@
 **RTpipeline** is a comprehensive, research-grade pipeline that transforms raw DICOM radiotherapy exports into analysis-ready data. It bridges the technical gap between clinical Treatment Planning Systems (TPS) and statistical/ML analysis by automating:
 
 - **DICOM Organization** - Groups scattered files into patient courses
-- **AI Segmentation** - TotalSegmentator (~100 standardized structures) + custom nnU-Net models
+- **AI Segmentation** - TotalSegmentator (~100 standardized structures), custom nnU-Net models, and the [RTsegmentator](https://github.com/kstawiski/rtsegmentator) model catalog
 - **DVH Extraction** - Comprehensive dose-volume metrics
 - **Radiomics** - IBSI-informed PyRadiomics features with robustness assessment
 - **Multimodal Biomarkers** - Opt-in PET structure metrics, functional-MR sampling, and CT body composition
@@ -79,7 +79,26 @@ quantitation is accepted only when SUV conversion is valid, and the optional
 TotalSegmentator `tissue_types` task has an upstream non-commercial model
 license.
 
-### 5. Analysis-Ready Outputs
+### 5. RTsegmentator Model Catalog
+
+[RTsegmentator](https://github.com/kstawiski/rtsegmentator), the companion
+segmentation portal, serves nodal, prostate, brain, PET and many other models behind
+one API. With an `rtsegmentator` section in the configuration, RTpipeline sends each
+course's planning CT to the portal, verifies the returned package against its
+checksummed manifest, and analyses the structures like any other source:
+
+```yaml
+rtsegmentator:
+  enabled: true
+  url: "https://rtseg.example.org"
+  models: ["total", "lung_nodules"]
+```
+
+Packages downloaded from the portal can be imported offline with
+`rtpipeline rtsegmentator-import`. See
+[RTsegmentator models](https://kstawiski.github.io/rtpipeline/features/rtsegmentator/).
+
+### 6. Analysis-Ready Outputs
 
 ```
 _RESULTS/
@@ -89,7 +108,7 @@ _RESULTS/
 └── qc_reports.xlsx       # Quality control summary
 ```
 
-### 6. High-Performance Computing
+### 7. High-Performance Computing
 
 Designed for modern hardware with automatic optimization:
 
@@ -151,6 +170,8 @@ Full documentation at **[kstawiski.github.io/rtpipeline](https://kstawiski.githu
 | [Local installation](https://kstawiski.github.io/rtpipeline/getting_started/local_installation/) | Automatic macOS, Linux, and WSL2 setup |
 | [Radiomics Robustness](https://kstawiski.github.io/rtpipeline/features/radiomics_robustness/) | NTCV perturbation methodology |
 | [Distributed Analysis](https://kstawiski.github.io/rtpipeline/features/distributed_analysis/) | Hash-bound cohort-level packet export and aggregation |
+| [RTsegmentator Models](https://kstawiski.github.io/rtpipeline/features/rtsegmentator/) | Portal segmentation as a verified structure source |
+| [Release Notes](https://kstawiski.github.io/rtpipeline/release_notes/) | Changes in each release |
 
 ---
 
@@ -194,21 +215,22 @@ Shared configs and versioned artifacts make consistent local processing operatio
 If you use RTpipeline in your research, cite the software itself:
 
 ```bibtex
-@software{rtpipeline_2_4_0,
+@software{rtpipeline_3_0_0,
   title = {RTpipeline: Automated Radiotherapy DICOM Processing Pipeline},
   author = {Stawiski, Konrad},
-  version = {2.4.0},
+  version = {3.0.0},
   url = {https://github.com/kstawiski/rtpipeline},
   year = {2026}
 }
 ```
 
-The repository also includes `CITATION.cff` for machine-readable citation metadata. Version 2.4.0 remains unreleased. Manuscripts using these bytes must cite an immutable git commit or container digest and must not describe 2.4.0 as a tagged release.
+Add the DOI archived for the `v3.0.0` release. `CITATION.cff` carries the machine-readable metadata, and GitHub's "Cite this repository" formats it. When the bytes you ran differ from the release tag, also report the immutable git commit or container digest.
 
 Also cite the underlying tools:
 - **TotalSegmentator:** Wasserthal et al., *Radiology: AI* (2023)
 - **PyRadiomics:** van Griethuysen et al., *Cancer Research* (2017)
 - **IBSI:** Zwanenburg et al., *Radiology* (2020)
+- **RTsegmentator** and each segmentation model, when structures came from the portal (references are recorded in every imported `manifest.json`)
 
 ---
 

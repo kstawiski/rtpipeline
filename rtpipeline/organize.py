@@ -15,7 +15,7 @@ from collections import defaultdict
 from itertools import combinations
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple, TypedDict, cast
+from typing import Any, Dict, Iterable, List, Optional, Tuple, TypedDict, cast
 
 import numpy as np
 import pydicom

@@ -6,9 +6,13 @@ import os
 import subprocess
 from pathlib import Path
 
+import pytest
+
+from conftest import snakemake_executable
 
 ROOT = Path(__file__).resolve().parents[1]
-SNAKEMAKE = "/home/konrad/rtpipeline_release/b29a324/envs/rtpipeline-runtime/bin/snakemake"
+SNAKEMAKE = snakemake_executable() or "snakemake"
+pytestmark = pytest.mark.requires_snakemake
 
 
 def _run(workdir: Path) -> subprocess.CompletedProcess[str]:

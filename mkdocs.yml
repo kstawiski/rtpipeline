@@ -106,6 +106,8 @@ nav:
   - Case Studies:
     - Overview: case_studies/index.md
   - Features:
+    - RT Research Suite: suite.md
+    - RTsegmentator Models: features/rtsegmentator.md
     - Custom Models: features/custom_models.md
     - CT Cropping: features/ct_cropping.md
     - Distributed Analysis: features/distributed_analysis.md
@@ -120,3 +122,5 @@ nav:
   - Developer:
     - Code Review: developer/code_review.md
     - Container Testing: developer/container_testing.md
+  - Release Notes: release_notes.md
+  - Citing: citing.md

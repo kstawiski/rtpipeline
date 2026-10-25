@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rtpipeline"
-version = "2.3.99"
+version = "3.0.0"
 description = "Open-source framework for standardized radiotherapy analytics with robustness-aware radiomics"
 authors = [{ name = "Konrad Stawiski", email = "konrad@konsta.com.pl" }]
 readme = "README.md"
@@ -35,6 +35,7 @@ dependencies = [
   "ipython",      # For notebook processing support
   "filelock>=3.20.3",  # For thread-safe file operations in parallel processing
   "pingouin>=0.5.3",  # ICC computation; PyRadiomics itself stays isolated
+  "xlsxwriter",  # Excel writer used by every conda environment; keeps pip installs byte-compatible
 ]
 
 [project.optional-dependencies]
@@ -84,3 +85,5 @@ select = ["E9", "F63", "F7", "F82", "PLE"]
 [tool.ruff.lint.per-file-ignores]
 "scripts/run_*.py" = ["F821"]  # Snakemake injects the global at runtime.
 "workflow/scripts/*.py" = ["F821"]  # Snakemake injects the global at runtime.
+"rtpipeline/workflow_aggregate.py" = ["F821"]  # Run as a Snakemake script; the global is injected.
+"tests/test_contract_ct_headers.py" = ["F821"]  # Reference copies resolve names bound into globals().

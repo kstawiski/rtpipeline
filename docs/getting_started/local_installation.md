@@ -107,7 +107,7 @@ The installer does not need shell activation. Both provided scripts call the
 named environments directly. It writes an explicit package receipt to:
 
 ```text
-~/.local/state/rtpipeline/install-receipt-v2.3.0.txt
+~/.local/state/rtpipeline/install-receipt-v3.0.0.txt
 ```
 
 The receipt includes platform, backend, git commit/dirty state, micromamba's
@@ -218,7 +218,7 @@ Copy the receipt into the analysis provenance directory without editing it:
 
 ```bash
 mkdir -p /absolute/path/to/analysis-provenance
-cp ~/.local/state/rtpipeline/install-receipt-v2.3.0.txt \
+cp ~/.local/state/rtpipeline/install-receipt-v3.0.0.txt \
   /absolute/path/to/analysis-provenance/
 cp config.local.yaml /absolute/path/to/analysis-provenance/
 ```
