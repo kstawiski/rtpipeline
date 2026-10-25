@@ -1,5 +1,6 @@
 import os
 from dataclasses import dataclass, field
+from typing import Any
 
 
 DEFAULT_MAX_TOTAL_DOSE_GY = 100.0
@@ -159,6 +160,9 @@ class PipelineConfig:
     custom_models_workers: int | None = None
     custom_models_conda_activate: str | None = None
     custom_models_retain_weights: bool = True
+
+    # RTsegmentator portal as a segmentation source (rtpipeline.rtsegmentator.RTsegmentatorSettings)
+    rtsegmentator_settings: Any = None
 
     # Body region QC and model gating
     # Maps model names to their required body regions and confidence thresholds

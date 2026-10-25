@@ -542,6 +542,36 @@ def list_custom_models():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/api/config/rtsegmentator', methods=['GET'])
+def rtsegmentator_config():
+    """Whether an RTsegmentator portal is configured, its default and enabled models."""
+    from job_manager import rtsegmentator_server_settings
+
+    settings = rtsegmentator_server_settings()
+    payload = {
+        'available': settings['available'],
+        'default_models': settings['default_models'],
+        'models': [],
+    }
+    if not settings['available']:
+        return jsonify(payload), 200
+    try:
+        from rtpipeline.rtsegmentator import RTsegmentatorSettings, build_client
+
+        client = build_client(RTsegmentatorSettings(url=settings['url'], request_timeout_seconds=10.0))
+        client.retries = 0
+        payload['models'] = [
+            {'name': task['name'], 'modality': task.get('modality', ''),
+             'description': task.get('description', '')}
+            for task in client.models(enabled_only=True)
+            if task.get('modality') == 'CT' and task.get('structure_kind') in {'fixed', 'variable'}
+        ]
+    except Exception as e:
+        logger.warning(f"RTsegmentator catalog unavailable: {e}")
+        payload['error'] = 'The RTsegmentator portal did not return its model catalog'
+    return jsonify(payload), 200
+
+
 @app.route('/api/jobs/<job_id>', methods=['DELETE'])
 def delete_job(job_id):
     """Delete a job and its data"""
