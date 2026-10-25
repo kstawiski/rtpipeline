@@ -43,13 +43,19 @@ The `segmentation_custom` stage runs after TotalSegmentator. For each course it:
 1. reads the contracted planning CT and its SeriesInstanceUID from the course contract;
 2. uploads that series through a resumable upload session and submits one job with the
    configured models;
-3. waits for the job, downloads the result ZIP and verifies it against the packaged
-   `rtsegmentator_manifest.json`;
+3. waits for the job, streams the result ZIP to disk, verifies it against the packaged
+   `rtsegmentator_manifest.json` and checks that this manifest is the one the portal
+   serves for the job;
 4. writes each model's RTSTRUCT to `Segmentation_CustomModels/rtseg_<model>/`.
 
-Courses are submitted one at a time because the portal serializes GPU work. Results are
-reused when the course's planning CT (the set of SOP Instance UIDs), the portal URL and
-the model are unchanged; `custom_models.force: true` resubmits. Any failed request,
+Within one pipeline process courses are submitted in turn. Under Snakemake, the
+`segmentation_custom` jobs of several courses can run at once, up to
+`custom_models.workers` (one at a time when `segmentation.device` is a GPU and no
+worker count is set); the portal queues their jobs and runs one GPU job at a time.
+Results are reused when the course's planning CT (the set of SOP Instance UIDs), the
+portal URL and the model are unchanged; `custom_models.force: true` resubmits. Imports
+this portal produced for models that are no longer listed are removed; offline imports
+and imports from another portal are kept. Any failed request,
 failed job or rejected package fails the course's stage, as for every other stage.
 
 Locally installed custom models still run when `custom_models.enabled` is true; with
@@ -66,6 +72,10 @@ rtpipeline rtsegmentator-import --course-dir Output/PATIENT/COURSE --model total
 ```
 
 The command prints one JSON line per imported model and applies the checks below.
+It also removes the course's `.custom_models_done` receipt, which no longer describes
+`Segmentation_CustomModels/`, so the next workflow run repeats the `segmentation_custom`
+stage for that course and re-runs DVH, radiomics and robustness on the imported
+structures.
 
 ## Checks
 
@@ -93,7 +103,8 @@ metadata/rtsegmentator_imports.json  # per-model outcome, job ID, portal URL and
 `manifest.json` follows the custom-model contract: `expected_structures` and
 `produced_structures` are the ROI names the portal wrote, so radiomics extraction
 requires exactly those ROIs. `catalog_structures` lists the task's full label set and
-`absent_catalog_structures` the labels the model did not find in this scan. The
+`absent_catalog_structures` the labels the portal did not write: the model did not find
+them, or the exporter omitted them, which `package_notes` then records. The
 `rtsegmentator` block records the portal URL, job ID, RTsegmentator version, model
 licence, limitations and reference, and the SHA-256 of the package and the RTSTRUCT.
 

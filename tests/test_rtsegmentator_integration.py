@@ -25,7 +25,7 @@ from course_contract_test_utils import (
 
 # The client is vendored byte-for-byte from RTsegmentator (rtseg_client.py).
 # Update this digest together with the vendored file.
-VENDORED_CLIENT_SHA256 = "31743523c7900db4785a1f8a2e7c00555959bcf1d5535e0921432cfef07be25e"
+VENDORED_CLIENT_SHA256 = "1d5566e6b75a93b43142984ff9f678a9b6a4f1181466c9ca72c04d0a398ddd30"
 
 
 def _sha(data: bytes) -> str:
@@ -71,7 +71,8 @@ def make_package(path: Path, series_uid: str, *, rtstructs=None, empty=(), repor
         "schema": "rtsegmentator.result-manifest", "schema_version": "1.0",
         "generator": {"name": "RTsegmentator", "version": "1.0.0"}, "created_utc": "2026-01-01T00:00:00Z",
         "job": {"id": "20260101-000000-1-abcd", "models": [m["name"] for m in models], "postprocess": []},
-        "source_series": {"series_instance_uid": manifest_series or series_uid, "modality": "CT"},
+        "source_series": {"series_instance_uid": series_uid if manifest_series is None else manifest_series,
+                          "modality": "CT"},
         "models": models,
         "files": [{"path": name, "size": len(data), "sha256": _sha(data)} for name, data in sorted(members.items())],
         "notes": [],
@@ -210,7 +211,13 @@ class FakeClient:
 
     def download(self, job_id, destination):
         self.calls.append(("download", job_id))
-        return self.package_factory(Path(destination))
+        self.package = self.package_factory(Path(destination))
+        return self.package
+
+    def manifest(self, job_id):
+        self.calls.append(("manifest", job_id))
+        with zipfile.ZipFile(self.package) as archive:
+            return json.loads(archive.read("rtsegmentator_manifest.json"))
 
 
 def test_run_for_course_submits_planning_ct_once(course, tmp_path):
@@ -261,3 +268,120 @@ def test_cli_import_subcommand(course, tmp_path, capsys):
     assert record["model"] == "total" and record["rois"] == 2
     bad = make_package(tmp_path / "bad.zip", "9.9.9")
     assert cli.main(["rtsegmentator-import", "--course-dir", str(course_dir), str(bad)]) == 1
+
+
+def test_offline_import_leaves_no_staging_and_invalidates_the_stage_receipt(course, tmp_path):
+    course_dir, series_uid = course
+    (course_dir / ".custom_models_done").write_text("ok\n")
+    (course_dir / rtseg.STAGING_DIRNAME / "rtseg_total.xyz").mkdir(parents=True)  # interrupted import
+    package = make_package(tmp_path / "result.zip", series_uid)
+    assert cli.main(["rtsegmentator-import", "--course-dir", str(course_dir), str(package)]) == 0
+    assert not (course_dir / ".custom_models_done").exists()
+    assert not (course_dir / rtseg.STAGING_DIRNAME).exists()
+    assert [p.name for p in (course_dir / "Segmentation_CustomModels").iterdir()] == ["rtseg_total"]
+
+
+def test_failed_offline_import_keeps_the_stage_receipt(course, tmp_path):
+    course_dir, _ = course
+    (course_dir / ".custom_models_done").write_text("ok\n")
+    bad = make_package(tmp_path / "bad.zip", "9.9.9")
+    assert cli.main(["rtsegmentator-import", "--course-dir", str(course_dir), str(bad)]) == 1
+    assert (course_dir / ".custom_models_done").exists()
+
+
+def test_unconfigured_portal_imports_are_pruned_but_offline_imports_kept(course, tmp_path):
+    course_dir, series_uid = course
+    portal = "https://portal.example"
+    rtseg.import_result_package(make_package(tmp_path / "a.zip", series_uid, rtstructs={"lung": ["lung"]}),
+                                course_dir, url=portal)
+    rtseg.import_result_package(make_package(tmp_path / "b.zip", series_uid, rtstructs={"heart": ["heart"]}),
+                                course_dir, url=None)
+    settings = rtseg.RTsegmentatorSettings.from_mapping({"enabled": True, "url": portal, "models": ["total"]})
+    fake = FakeClient(lambda target: make_package(target, series_uid), series_uid)
+    rtseg.run_for_course(settings, course_dir, client=fake)
+    outputs = sorted(p.name for p in (course_dir / "Segmentation_CustomModels").iterdir())
+    assert outputs == ["rtseg_heart", "rtseg_total"]
+    ledger = json.loads((course_dir / "metadata" / "rtsegmentator_imports.json").read_text())
+    assert set(ledger["models"]) == {"heart", "total"}
+
+
+def test_course_without_planning_ct_is_skipped(tmp_path):
+    course_dir = tmp_path / "Output" / "P002" / "2024-02"
+    course_dir.mkdir(parents=True)
+    write_minimal_course_contract(course_dir)
+    settings = rtseg.RTsegmentatorSettings.from_mapping(
+        {"enabled": True, "url": "https://portal.example", "models": ["total"]})
+    fake = FakeClient(lambda target: None, "unused")
+    assert rtseg.run_for_course(settings, course_dir, client=fake) == []
+    assert fake.calls == []
+
+
+@pytest.mark.parametrize("job_id", ["../escape", "a/b", ""])
+def test_invalid_job_id_from_portal_is_refused(course, job_id):
+    course_dir, series_uid = course
+    settings = rtseg.RTsegmentatorSettings.from_mapping(
+        {"enabled": True, "url": "https://portal.example", "models": ["total"]})
+    fake = FakeClient(lambda target: make_package(target, series_uid), series_uid)
+    original = fake.submit
+    fake.submit = lambda *a, **k: {**original(*a, **k), "jobs": [{"id": job_id, "models": ["total"]}]}
+    with pytest.raises(rtseg.RTsegmentatorError, match="invalid job ID"):
+        rtseg.run_for_course(settings, course_dir, client=fake)
+
+
+def test_package_that_differs_from_the_portal_manifest_is_refused(course):
+    course_dir, series_uid = course
+    settings = rtseg.RTsegmentatorSettings.from_mapping(
+        {"enabled": True, "url": "https://portal.example", "models": ["total"]})
+    fake = FakeClient(lambda target: make_package(target, series_uid), series_uid)
+    fake.manifest = lambda job_id: {"schema": "rtsegmentator.result-manifest", "job": {"id": "another"}}
+    with pytest.raises(rtseg.RTsegmentatorError, match="differs from the portal"):
+        rtseg.run_for_course(settings, course_dir, client=fake)
+    assert not (course_dir / "Segmentation_CustomModels").exists()
+
+
+def test_dvh_reuse_notices_a_removed_custom_model_output(course, tmp_path):
+    import pandas as pd
+    from rtpipeline.dvh import _removed_custom_model_sources
+
+    course_dir, series_uid = course
+    rtseg.import_result_package(make_package(tmp_path / "a.zip", series_uid), course_dir)
+    table = pd.DataFrame({"Segmentation_Source": ["Manual", "CustomModel:rtseg_total", None]})
+    assert _removed_custom_model_sources(table, course_dir) == []
+    rtseg.import_result_package(make_package(tmp_path / "b.zip", series_uid, rtstructs={}, empty=["total"]),
+                                course_dir)
+    assert _removed_custom_model_sources(table, course_dir) == ["rtseg_total"]
+
+
+def test_custom_stage_receipt_binds_rtsegmentator_code():
+    from rtpipeline.stage_completion import _code_identity, stage_definition
+
+    paths = {item["path"] for item in _code_identity(stage_definition("segmentation_custom"))["sources"]}
+    assert {"rtsegmentator.py", "segmenters/rtsegmentator_client.py"} <= paths
+
+
+def test_snakefile_keeps_existing_custom_stage_params():
+    snakefile = (Path(__file__).resolve().parents[1] / "Snakefile").read_text(encoding="utf-8")
+    assert ('("--disable-local-custom-models " if RTSEG_ENABLED and not CUSTOM_MODELS_ENABLED else "")'
+            in snakefile)
+
+
+def test_package_without_source_series_cannot_remove_an_import(course, tmp_path):
+    course_dir, series_uid = course
+    rtseg.import_result_package(make_package(tmp_path / "a.zip", series_uid), course_dir)
+    unbound = make_package(tmp_path / "b.zip", series_uid, rtstructs={}, empty=["total"], manifest_series="")
+    with pytest.raises(rtseg.RTsegmentatorError, match="not the planning CT"):
+        rtseg.import_result_package(unbound, course_dir)
+    assert (course_dir / "Segmentation_CustomModels" / "rtseg_total" / "rtstruct.dcm").is_file()
+
+
+def test_altered_import_is_not_treated_as_current(course):
+    course_dir, series_uid = course
+    settings = rtseg.RTsegmentatorSettings.from_mapping(
+        {"enabled": True, "url": "https://portal.example", "models": ["total"]})
+    fake = FakeClient(lambda target: make_package(target, series_uid), series_uid)
+    rtseg.run_for_course(settings, course_dir, client=fake)
+    rtstruct = course_dir / "Segmentation_CustomModels" / "rtseg_total" / "rtstruct.dcm"
+    rtstruct.write_bytes(rtstruct.read_bytes() + b"edited")
+    fake.calls.clear()
+    rtseg.run_for_course(settings, course_dir, client=fake)
+    assert fake.calls and fake.calls[0][0] == "upload"

@@ -22,8 +22,10 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import http.client
 import json
 import os
+import re
 import ssl
 import sys
 import time
@@ -32,7 +34,7 @@ import urllib.parse
 import urllib.request
 import zipfile
 from dataclasses import dataclass, field
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Callable, Iterable, Mapping, Sequence
 
 CLIENT_VERSION = "1.0.0"
@@ -41,7 +43,10 @@ MANIFEST_NAME = "rtsegmentator_manifest.json"
 MANIFEST_SCHEMA = "rtsegmentator.result-manifest"
 SUPPORTED_MANIFEST_MAJOR = "1"
 TERMINAL_STATES = {"complete", "failed"}
+JOB_ID_PATTERN = re.compile(r"^[A-Za-z0-9-]+$")
 DEFAULT_CHUNK_BYTES = 8 * 1024 * 1024
+STREAM_BLOCK = 1024 * 1024
+MAX_MANIFEST_BYTES = 64 * 1024 * 1024
 
 
 class ClientError(RuntimeError):
@@ -74,8 +79,39 @@ def parse_headers(values: Iterable[str]) -> dict[str, str]:
     return headers
 
 
-def _sha256(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
+def checked_job_id(job_id: object) -> str:
+    """A portal job ID, which may only contain letters, digits and hyphens."""
+    if not isinstance(job_id, str) or not JOB_ID_PATTERN.match(job_id):
+        raise ClientError(f"Invalid job ID: {job_id!r}")
+    return job_id
+
+
+class _SameOriginRedirects(urllib.request.HTTPRedirectHandler):
+    """Follow redirects only within the configured origin, so proxy credentials stay there."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        old, new = urllib.parse.urlsplit(req.full_url), urllib.parse.urlsplit(newurl)
+        if (old.scheme, old.hostname, old.port) != (new.scheme, new.hostname, new.port):
+            raise ClientError(f"Refusing HTTP {code} redirect from {old.scheme}://{old.netloc} to another "
+                              f"origin ({new.scheme}://{new.netloc})", status=code)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _member_digest(archive: zipfile.ZipFile, name: str) -> tuple[int, str]:
+    """Size and SHA-256 of one member, read in blocks so large maps never sit in memory."""
+    digest, size = hashlib.sha256(), 0
+    with archive.open(name) as handle:
+        for block in iter(lambda: handle.read(STREAM_BLOCK), b""):
+            size += len(block)
+            digest.update(block)
+    return size, digest.hexdigest()
+
+
+def unsafe_member_name(name: str) -> bool:
+    """True unless ``name`` is a canonical relative POSIX path (no '.', '..', empty or absolute parts)."""
+    parts = name.split("/")
+    return (not name or name.startswith("/") or "\\" in name or ":" in parts[0]
+            or any(part in {"", ".", ".."} for part in parts))
 
 
 @dataclass
@@ -94,11 +130,24 @@ class RTsegClient:
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             raise ValueError(f"RTsegmentator URL must be http(s)://host[:port]: {self.base_url!r}")
         self.base_url = self.base_url.rstrip("/")
-        self._context = ssl.create_default_context(cafile=self.ca_bundle) if parsed.scheme == "https" else None
+        handlers: list = [_SameOriginRedirects()]
+        if parsed.scheme == "https":
+            handlers.append(urllib.request.HTTPSHandler(context=ssl.create_default_context(cafile=self.ca_bundle)))
+        self._opener = urllib.request.build_opener(*handlers)
+
+    def _open(self, request: urllib.request.Request):
+        return self._opener.open(request, timeout=self.timeout)
 
     # -- transport ---------------------------------------------------------
     def _request(self, method: str, path: str, *, query: Mapping | None = None, body: bytes | None = None,
-                 content_type: str | None = None, expect_json: bool = True, ok: Sequence[int] = (200, 202)):
+                 content_type: str | None = None, expect_json: bool = True, ok: Sequence[int] = (200, 202),
+                 idempotent: bool = True, sink: Path | None = None):
+        """Send one request; ``sink`` streams a successful body to that file instead of returning it.
+
+        Transient failures are retried only for idempotent requests. A request that may
+        have taken effect on the server (job creation) is retried only after HTTP 429,
+        which the portal returns before doing any work.
+        """
         url = self.base_url + path
         if query:
             url += "?" + urllib.parse.urlencode(query, doseq=True)
@@ -109,18 +158,25 @@ class RTsegClient:
         while True:
             request = urllib.request.Request(url, data=body, method=method, headers=headers)
             try:
-                with urllib.request.urlopen(request, timeout=self.timeout, context=self._context) as response:
-                    status, data = response.status, response.read()
+                with self._open(request) as response:
+                    status = response.status
+                    if sink is not None and status in ok:
+                        return self._stream_to(response, Path(sink))
+                    data = response.read()
             except urllib.error.HTTPError as exc:
                 status, data = exc.code, exc.read()
-            except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
+            except (urllib.error.URLError, TimeoutError, ConnectionError, http.client.HTTPException) as exc:
+                if not idempotent:
+                    raise ClientError(f"{method} {path} failed and was not retried because it may have taken "
+                                      f"effect; check the portal's job list before resubmitting: {exc}") from exc
                 if attempt >= self.retries:
                     raise ClientError(f"{method} {path} failed: {exc}") from exc
                 attempt += 1
                 self.sleep(min(2 ** attempt, 30))
                 continue
             # 429: a session lock is briefly held; 502-504: a proxy or restart.
-            if status in {429, 502, 503, 504} and attempt < self.retries:
+            retryable = {429, 502, 503, 504} if idempotent else {429}
+            if status in retryable and attempt < self.retries:
                 attempt += 1
                 self.sleep(min(2 ** attempt, 30))
                 continue
@@ -133,11 +189,28 @@ class RTsegClient:
             if status not in ok:
                 detail = payload.get("detail") if isinstance(payload, dict) else payload
                 raise ClientError(f"{method} {path} returned HTTP {status}: {detail}", status, payload)
+            if expect_json and payload is not None and not isinstance(payload, (dict, list)):
+                # For example an HTML login page from an authenticating proxy.
+                raise ClientError(f"{method} {path} returned a non-JSON response (HTTP {status}): "
+                                  f"{str(payload)[:200]}", status, payload)
             return payload if expect_json else data
 
-    def _form(self, path: str, fields: Sequence[tuple[str, str]]):
+    @staticmethod
+    def _stream_to(response, destination: Path) -> Path:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        partial = destination.with_name(destination.name + ".partial")
+        try:
+            with partial.open("wb") as handle:
+                for block in iter(lambda: response.read(STREAM_BLOCK), b""):
+                    handle.write(block)
+            os.replace(partial, destination)
+        finally:
+            partial.unlink(missing_ok=True)
+        return destination
+
+    def _form(self, path: str, fields: Sequence[tuple[str, str]], *, idempotent: bool = True):
         return self._request("POST", path, body=urllib.parse.urlencode(list(fields)).encode(),
-                             content_type="application/x-www-form-urlencoded")
+                             content_type="application/x-www-form-urlencoded", idempotent=idempotent)
 
     # -- read-only routes --------------------------------------------------
     def health(self) -> dict:
@@ -151,10 +224,10 @@ class RTsegClient:
         return [task for task in tasks if task.get("enabled") or not enabled_only]
 
     def job(self, job_id: str) -> dict:
-        return self._request("GET", f"{API_PREFIX}/jobs/{urllib.parse.quote(job_id, safe='')}")
+        return self._request("GET", f"{API_PREFIX}/jobs/{checked_job_id(job_id)}")
 
     def manifest(self, job_id: str) -> dict:
-        return self._request("GET", f"{API_PREFIX}/jobs/{urllib.parse.quote(job_id, safe='')}/manifest")
+        return self._request("GET", f"{API_PREFIX}/jobs/{checked_job_id(job_id)}/manifest")
 
     # -- upload and submission --------------------------------------------
     def upload_files(self, files: Sequence[Path], *, progress: Callable[[int, int], None] | None = None) -> str:
@@ -176,6 +249,8 @@ class RTsegClient:
                 while offset < size or (size == 0 and offset == 0):
                     handle.seek(offset)
                     chunk = handle.read(chunk_limit)
+                    if not chunk and offset < size:
+                        raise ClientError(f"{path} changed size during upload")
                     try:
                         reply = self._request(
                             "PUT", f"{API_PREFIX}/upload-sessions/{session_id}/files/{index}",
@@ -223,7 +298,9 @@ class RTsegClient:
                 fields.append((name, json.dumps(value)))
         if postprocess:
             fields.append(("postprocess", postprocess))
-        return self._form(f"{API_PREFIX}/uploads/{urllib.parse.quote(upload_id, safe='')}/jobs", fields)
+        # Job creation consumes the assessed upload, so it is never replayed after an ambiguous failure.
+        return self._form(f"{API_PREFIX}/uploads/{urllib.parse.quote(upload_id, safe='')}/jobs", fields,
+                          idempotent=False)
 
     def wait(self, job_id: str, *, poll: float = 10.0, timeout: float | None = None,
              progress: Callable[[dict], None] | None = None) -> dict:
@@ -242,22 +319,21 @@ class RTsegClient:
             self.sleep(poll)
 
     def download(self, job_id: str, destination: Path) -> Path:
-        destination = Path(destination)
-        data = self._request("GET", f"{API_PREFIX}/jobs/{urllib.parse.quote(job_id, safe='')}/result",
-                             expect_json=False)
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        partial = destination.with_name(destination.name + ".partial")
-        partial.write_bytes(data)
-        os.replace(partial, destination)
-        return destination
+        """Stream a completed job's result ZIP to ``destination`` (written atomically)."""
+        return self._request("GET", f"{API_PREFIX}/jobs/{checked_job_id(job_id)}/result",
+                             expect_json=False, sink=Path(destination))
 
 
 # -- result packages ---------------------------------------------------------
 def read_manifest(archive: zipfile.ZipFile) -> dict:
     try:
-        manifest = json.loads(archive.read(MANIFEST_NAME).decode("utf-8"))
+        info = archive.getinfo(MANIFEST_NAME)
     except KeyError as exc:
         raise ManifestError(f"Result package has no {MANIFEST_NAME}") from exc
+    if info.file_size > MAX_MANIFEST_BYTES:
+        raise ManifestError(f"{MANIFEST_NAME} exceeds {MAX_MANIFEST_BYTES} bytes")
+    try:
+        manifest = json.loads(archive.read(info).decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ManifestError(f"{MANIFEST_NAME} is not valid JSON: {exc}") from exc
     if not isinstance(manifest, dict):
@@ -268,8 +344,9 @@ def read_manifest(archive: zipfile.ZipFile) -> dict:
 def verify_result_zip(path: Path) -> dict:
     """Return the manifest of a result ZIP after checking every listed member's size and SHA-256.
 
-    Members not listed in the manifest, missing members, unsafe names and checksum
-    mismatches are all errors.
+    Members not listed in the manifest, missing members, unsafe or noncanonical names,
+    names that collide when compared case-insensitively, and checksum mismatches are
+    all errors.
     """
     with zipfile.ZipFile(path) as archive:
         manifest = read_manifest(archive)
@@ -285,13 +362,18 @@ def verify_result_zip(path: Path) -> dict:
                 problems.append(f"invalid or duplicate file record {record!r}")
                 continue
             listed[name] = record
+        for info in archive.infolist():
+            # A directory entry carries no bytes; one that does would hide an unchecked payload.
+            if info.is_dir() and info.file_size:
+                problems.append(f"directory entry with content {info.filename!r}")
         members = [info for info in archive.infolist() if not info.is_dir()]
         names = [info.filename for info in members]
         for name in names:
-            pure = PurePosixPath(name)
-            if pure.is_absolute() or ".." in pure.parts or "\\" in name:
+            if unsafe_member_name(name):
                 problems.append(f"unsafe member name {name!r}")
-        if len(set(names)) != len(names):
+        # Two names that one filesystem could map to the same file would let one
+        # verified member silently replace another during extraction.
+        if len({name.casefold() for name in names}) != len(names):
             problems.append("duplicate member names")
         unlisted = sorted(set(names) - set(listed) - {MANIFEST_NAME})
         if unlisted:
@@ -300,9 +382,14 @@ def verify_result_zip(path: Path) -> dict:
             if name not in names:
                 problems.append(f"missing member {name}")
                 continue
-            data = archive.read(name)
-            if len(data) != record.get("size") or _sha256(data) != record.get("sha256"):
+            size, digest = _member_digest(archive, name)
+            if size != record.get("size") or digest != record.get("sha256"):
                 problems.append(f"checksum mismatch for {name}")
+        # Every RTSTRUCT a model entry points to must be a verified member.
+        for model in manifest.get("models") or []:
+            path = (model.get("rtstruct") or {}).get("path") if isinstance(model, dict) else None
+            if path is not None and path not in listed:
+                problems.append(f"model RTSTRUCT {path!r} is not a listed member")
         if problems:
             raise ManifestError("Result package failed verification: " + "; ".join(problems), payload=problems)
         return manifest
@@ -321,8 +408,10 @@ def extract_result_zip(path: Path, destination: Path) -> dict:
             if root != target and root not in target.parents:
                 raise ManifestError(f"Member escapes the destination: {info.filename}")
             target.parent.mkdir(parents=True, exist_ok=True)
-            with archive.open(info) as source, target.open("wb") as handle:
-                while chunk := source.read(1024 * 1024):
+            if target.exists():
+                raise ManifestError(f"Refusing to overwrite an existing file: {target}")
+            with archive.open(info) as source, target.open("xb") as handle:
+                while chunk := source.read(STREAM_BLOCK):
                     handle.write(chunk)
     return manifest
 
@@ -341,6 +430,28 @@ def collect_files(paths: Iterable[Path]) -> list[Path]:
         else:
             raise FileNotFoundError(path)
     return found
+
+
+def model_modalities(catalog: Iterable[Mapping], models: Iterable[str]) -> set[str]:
+    """Modalities the named catalog tasks accept (``modality`` and ``modalities`` fields)."""
+    wanted, found = set(models), set()
+    for task in catalog:
+        if task.get("name") in wanted:
+            found.update(str(m).upper() for m in (task.get("modalities") or [task.get("modality")]) if m)
+    return found
+
+
+def verify_against_portal(client: "RTsegClient", job_id: str, package: Path) -> dict:
+    """Verify a downloaded package and check that its manifest is the one the portal serves.
+
+    The manifest is not signed: verification alone detects corruption and incomplete
+    transfers, and comparing it with the portal's copy detects a package that does not
+    belong to this job.
+    """
+    manifest = verify_result_zip(package)
+    if client.manifest(job_id) != manifest:
+        raise ManifestError(f"The packaged manifest of {package} differs from the portal's manifest for job {job_id}")
+    return manifest
 
 
 def select_series(series: Sequence[Mapping], *, modalities: Iterable[str] = (),
@@ -384,7 +495,12 @@ def _command_submit(args) -> int:
         f"\r  {sent / max(total, 1):6.1%} of {total / 1e6:.1f} MB", end="", file=stderr))
     print(file=stderr)
     upload = client.assess(session)
-    chosen = select_series(upload.get("series", []), modalities=args.modality, series_uids=args.series_uid)
+    modalities = args.modality
+    if not modalities and not args.series_uid:
+        # Default to the series the selected models can segment, so a scout or a
+        # companion series of another modality does not make the portal reject the batch.
+        modalities = sorted(model_modalities(client.models(), args.model))
+    chosen = select_series(upload.get("series", []), modalities=modalities, series_uids=args.series_uid)
     if not chosen:
         raise ClientError("No available series match the selection")
     batch = client.submit(upload["upload_id"], [item["key"] for item in chosen], args.model,
@@ -394,29 +510,37 @@ def _command_submit(args) -> int:
     if not args.wait and not args.out:
         _print(batch)
         return 0
-    results = []
+    results, failed = [], False
     for job in batch.get("jobs", []):
-        record = client.wait(job["id"], poll=args.poll, timeout=args.job_timeout,
-                             progress=lambda r: print(f"\r  {r['id']}: {r.get('status')} {r.get('detail', '')}"[:160]
-                                                      .ljust(160), end="", file=stderr))
+        checked_job_id(job.get("id"))
+        entry = {"id": job["id"], "series_key": job.get("series_key")}
+        try:
+            record = client.wait(job["id"], poll=args.poll, timeout=args.job_timeout,
+                                 progress=lambda r: print(f"\r  {r['id']}: {r.get('status')} {r.get('detail', '')}"[:160]
+                                                          .ljust(160), end="", file=stderr))
+            entry["status"] = record.get("status")
+            if args.out:
+                target = Path(args.out) / f"{job['id']}.zip"
+                client.download(job["id"], target)
+                manifest = verify_against_portal(client, job["id"], target)
+                entry.update(result=str(target), models=[
+                    {"name": m["name"], "outcome": m["outcome"], "rois": len((m.get("rtstruct") or {}).get("roi_names", []))}
+                    for m in manifest["models"]])
+        except ClientError as exc:
+            # Report every job of the batch; one failure does not hide the others.
+            failed = True
+            entry.update(status=entry.get("status") or "failed", error=str(exc))
         print(file=stderr)
-        entry = {"id": job["id"], "series_key": job.get("series_key"), "status": record.get("status")}
-        if args.out:
-            target = Path(args.out) / f"{job['id']}.zip"
-            client.download(job["id"], target)
-            manifest = verify_result_zip(target)
-            entry.update(result=str(target), models=[
-                {"name": m["name"], "outcome": m["outcome"], "rois": len((m.get("rtstruct") or {}).get("roi_names", []))}
-                for m in manifest["models"]])
         results.append(entry)
     _print({"batch_id": batch.get("batch_id"), "jobs": results})
-    return 0
+    return 1 if failed else 0
 
 
 def _command_download(args) -> int:
     client = _client(args)
+    checked_job_id(args.job_id)
     target = client.download(args.job_id, Path(args.out) / f"{args.job_id}.zip")
-    manifest = verify_result_zip(target)
+    manifest = verify_against_portal(client, args.job_id, target)
     if args.extract:
         extract_result_zip(target, Path(args.out) / args.job_id)
     _print({"result": str(target), "generator": manifest.get("generator")})

@@ -7,8 +7,11 @@ without them reports the skip reason instead of a spurious failure.
 """
 from __future__ import annotations
 
+import json
 import os
 import shutil
+import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -16,10 +19,19 @@ import pytest
 def radiomics_environment_available() -> bool:
     from rtpipeline import radiomics_conda
 
-    return (
-        radiomics_conda._radiomics_env_prefix() is not None
-        or shutil.which(radiomics_conda.CONDA_EXE) is not None
-    )
+    if radiomics_conda._radiomics_env_prefix() is not None:
+        return True
+    conda = shutil.which(radiomics_conda.CONDA_EXE)
+    if conda is None:
+        return False
+    # A package manager alone does not mean the named environment exists.
+    try:
+        listed = subprocess.run([conda, "env", "list", "--json"], capture_output=True,
+                                text=True, timeout=60, check=False)
+        environments = json.loads(listed.stdout or "{}").get("envs", [])
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return False
+    return any(Path(env).name == radiomics_conda.RADIOMICS_ENV for env in environments)
 
 
 def snakemake_executable() -> str | None:
