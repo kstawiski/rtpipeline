@@ -1,5 +1,6 @@
 from __future__ import annotations
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 import numpy as np
@@ -133,7 +134,15 @@ def test_nonmeasurement_is_not_silently_aggregated(tmp_path,monkeypatch):
         rr.summarize_feature_stability(df,rob)
 
 
-NATIVE_RADIOMICS_INTERPRETER=Path('/home/konrad/micromamba/envs/rtpipeline-radiomics/bin/python')
+def _native_radiomics_interpreter():
+    override=os.environ.get('RTPIPELINE_TEST_RADIOMICS_PYTHON')
+    if override: return Path(override)
+    from rtpipeline import radiomics_conda
+    prefix=radiomics_conda._radiomics_env_prefix()
+    return Path(prefix)/'bin'/'python' if prefix else Path(os.devnull)/'missing-radiomics-python'
+
+
+NATIVE_RADIOMICS_INTERPRETER=_native_radiomics_interpreter()
 NATIVE_RADIOMICS_HELPER=Path(__file__).with_name('robustness_native_pyradiomics_helper.py')
 
 
