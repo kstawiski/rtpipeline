@@ -1,0 +1,86 @@
+# RTpipeline Web UI and the RTsegmentator portal on one GPU host.
+#
+#   cp .env.example .env      # set the model bundle paths and enabled portal models
+#   docker compose up -d
+#
+# The pipeline UI listens on 127.0.0.1:8080 and the portal on 127.0.0.1:8081. Neither
+# application authenticates users: publish them only through an authenticating TLS proxy.
+name: rt-research-suite
+
+services:
+  rtsegmentator:
+    build: https://github.com/kstawiski/rtsegmentator.git#v1.0.0
+    image: rtsegmentator:1.0.0
+    environment:
+      WORKER_MODE: local
+      PORTAL_DATA: /data
+      RETENTION_HOURS: ${RETENTION_HOURS:-24}
+      ENABLED_EXTERNAL_MODELS: ${ENABLED_EXTERNAL_MODELS:-}
+      ENABLED_MODELS_FILE: /data/enabled-models.txt
+      RTSEG_APP_ROOT: /app
+      RTSEG_SCRATCH_ROOT: /scratch
+      RTSEG_MODEL_ROOT: /models
+      RTSEG_RUNTIME_ROOT: /runtimes
+    volumes:
+      - rtsegmentator-data:/data
+      - rtsegmentator-scratch:/scratch
+      - totalsegmentator-home:/root/.totalsegmentator
+      - ${RTSEG_MODEL_BUNDLE:?set RTSEG_MODEL_BUNDLE to the licensed model bundle}:/models:ro
+      - ${RTSEG_RUNTIME_BUNDLE:?set RTSEG_RUNTIME_BUNDLE to the model runtime bundle}:/runtimes:ro
+    ports:
+      - "127.0.0.1:8081:8080"
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/api/v1/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+
+  rtpipeline:
+    image: kstawiski/rtpipeline:3.0.0
+    user: "1000:1000"
+    working_dir: /app
+    command: ["bash", "-c", "cd /app/webui && python app.py"]
+    environment:
+      PORT: "8080"
+      # Web UI jobs may switch RTsegmentator on; only this address is ever contacted.
+      RTPIPELINE_RTSEGMENTATOR_URL: http://rtsegmentator:8080
+      RTPIPELINE_RTSEGMENTATOR_MODELS: ${RTPIPELINE_RTSEGMENTATOR_MODELS:-total}
+      # Headers for a proxy between the services, one "Name: value" per line (usually empty).
+      RTSEG_CLIENT_HEADERS: ${RTSEG_CLIENT_HEADERS:-}
+    volumes:
+      - ./Input:/data/input:rw
+      - ./Output:/data/output:rw
+      - ./Logs:/data/logs:rw
+      - ./Uploads:/data/uploads:rw
+      # Used by command-line runs: snakemake --configfile /app/config.custom.yaml
+      - ./config.suite.yaml:/app/config.custom.yaml:ro
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      rtsegmentator:
+        condition: service_healthy
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    shm_size: "8gb"
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+volumes:
+  rtsegmentator-data:
+  rtsegmentator-scratch:
+  totalsegmentator-home:

@@ -18,8 +18,8 @@
     Validated radiomics reliability packets; imaging stays local
 </div>
 
-!!! info "RTpipeline v2.4.0 release candidate"
-    Version 2.4.0 is unreleased. These bytes add fail-closed radiomics extraction and source-bound distributed aggregate reliability packets. Cite an immutable commit or container digest until a 2.4.0 tag exists.
+!!! info "RTpipeline 3.0.0"
+    Release 3.0.0 adds manifest-bound course organization, receipt-bound radiomics robustness, fail-closed radiomics extraction, distributed aggregate reliability packets and [RTsegmentator](features/rtsegmentator.md) as a segmentation source. See the [release notes](release_notes.md) and [how to cite](citing.md).
 
 ---
 

@@ -1,0 +1,27 @@
+# RTpipeline configuration for command-line runs inside the suite:
+#   docker compose exec rtpipeline snakemake --cores all --configfile /app/config.custom.yaml
+# Start from config.yaml in the RTpipeline repository for every other setting.
+dicom_root: /data/input
+output_dir: /data/output
+logs_dir: /data/logs
+container_mode: true
+
+segmentation:
+  device: gpu
+
+custom_models:
+  enabled: false
+
+rtsegmentator:
+  enabled: true
+  url: "http://rtsegmentator:8080"
+  models: ["total"]
+  headers_env: "RTSEG_CLIENT_HEADERS"
+  poll_seconds: 15
+  job_timeout_seconds: 21600
+
+radiomics:
+  enabled: true
+
+radiomics_robustness:
+  enabled: false

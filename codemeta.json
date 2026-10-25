@@ -1,0 +1,32 @@
+{
+  "@context": "https://w3id.org/codemeta/3.0",
+  "@type": "SoftwareSourceCode",
+  "name": "RTpipeline",
+  "description": "Snakemake and Python pipeline that turns raw radiotherapy DICOM exports into analysis-ready dose-volume, radiomics, robustness and quality-control tables.",
+  "version": "3.0.0",
+  "softwareVersion": "3.0.0",
+  "dateModified": "2026-10-25",
+  "license": "https://spdx.org/licenses/MIT",
+  "codeRepository": "https://github.com/kstawiski/rtpipeline",
+  "url": "https://kstawiski.github.io/rtpipeline/",
+  "issueTracker": "https://github.com/kstawiski/rtpipeline/issues",
+  "programmingLanguage": ["Python", "Snakemake"],
+  "runtimePlatform": "Python 3.10+",
+  "operatingSystem": ["Linux", "macOS", "Windows (WSL2)"],
+  "applicationCategory": "Medical imaging research software",
+  "developmentStatus": "active",
+  "author": [
+    {"@type": "Person", "givenName": "Konrad", "familyName": "Stawiski"}
+  ],
+  "keywords": [
+    "radiotherapy",
+    "DICOM RT",
+    "dose-volume histogram",
+    "radiomics",
+    "auto-segmentation",
+    "reproducibility"
+  ],
+  "softwareSuggestions": [
+    "https://github.com/kstawiski/rtsegmentator"
+  ]
+}
