@@ -609,6 +609,7 @@ def _prepare_conda_rtstruct_course(tmp_path, monkeypatch):
     return course, stale
 
 
+@pytest.mark.requires_radiomics_env
 def test_conda_rtstruct_builder_failure_is_recorded_without_absence_fallback(
     tmp_path, monkeypatch
 ):
@@ -634,6 +635,7 @@ def test_conda_rtstruct_builder_failure_is_recorded_without_absence_fallback(
     assert "broken RTSTRUCT" in result.loc[0, "extraction_status_detail"]
 
 
+@pytest.mark.requires_radiomics_env
 def test_conda_best_effort_mask_serialization_failure_is_recorded(tmp_path, monkeypatch):
     course, stale = _prepare_conda_rtstruct_course(tmp_path, monkeypatch)
 
@@ -1023,6 +1025,7 @@ def _prepare_conda_nifti_fallback(tmp_path, monkeypatch):
     return course, mask_path, stale
 
 
+@pytest.mark.requires_radiomics_env
 def test_conda_nifti_fallback_empty_mask_is_recorded_as_degenerate(
     tmp_path, monkeypatch
 ):
@@ -1049,6 +1052,7 @@ def test_conda_nifti_fallback_empty_mask_is_recorded_as_degenerate(
     assert output.with_suffix(".parquet").exists()
 
 
+@pytest.mark.requires_radiomics_env
 def test_conda_nifti_fallback_serialization_failure_is_recorded(
     tmp_path, monkeypatch
 ):
