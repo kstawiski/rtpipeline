@@ -1,22 +1,49 @@
 cff-version: 1.2.0
-message: RTpipeline 2.3.99 is an unreleased development version carrying the multicohort measurement campaign work. The final release of this line will be 3.0.0, cut once the campaign has run. Cite the immutable git commit or container digest; do not describe these bytes as a published release.
-title: RTpipeline
+message: >-
+  RTpipeline 3.0.0 is a published release. Cite it by version and by the DOI
+  archived for the v3.0.0 tag. When the bytes you ran differ from the tag, also
+  report the immutable git commit or container digest. Cite TotalSegmentator,
+  PyRadiomics and, for imported structures, RTsegmentator and each segmentation
+  model as well.
+title: "RTpipeline: Automated Radiotherapy DICOM Processing Pipeline"
 type: software
-version: 2.3.99
+version: 3.0.0
+date-released: 2026-10-25
 license: MIT
 authors:
 - family-names: Stawiski
   given-names: Konrad
 repository-code: https://github.com/kstawiski/rtpipeline
-url: https://github.com/kstawiski/rtpipeline
-abstract: Research-grade radiotherapy DICOM processing workflow for cohort organization, AI delineation, radiomics extraction, quality control, and robustness analysis.
+url: https://kstawiski.github.io/rtpipeline/
+abstract: >-
+  RTpipeline turns raw radiotherapy DICOM exports into analysis-ready cohort
+  tables. It organizes CT, RTSTRUCT, RTPLAN, RTDOSE and RT treatment records into
+  validated patient courses, adds standardized structures from TotalSegmentator,
+  local nnU-Net models and the RTsegmentator portal, and computes dose-volume
+  histogram metrics, PyRadiomics features with NTCV perturbation robustness,
+  multimodal biomarkers and quality-control reports, with completion receipts
+  that bind each output to its inputs and configuration.
+keywords:
+- radiotherapy
+- DICOM RT
+- dose-volume histogram
+- radiomics
+- auto-segmentation
+- reproducibility
+- Snakemake
 preferred-citation:
   type: software
   authors:
   - family-names: Stawiski
     given-names: Konrad
   title: 'RTpipeline: Automated Radiotherapy DICOM Processing Pipeline'
-  version: 2.3.99
+  version: 3.0.0
   year: 2026
   repository-code: https://github.com/kstawiski/rtpipeline
   url: https://github.com/kstawiski/rtpipeline
+references:
+- type: software
+  title: "RTsegmentator: a DICOM RT segmentation portal and API"
+  authors:
+  - name: RTsegmentator contributors
+  repository-code: https://github.com/kstawiski/rtsegmentator

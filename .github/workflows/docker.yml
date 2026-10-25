@@ -6,6 +6,8 @@ on:
     tags: ['v*']
   pull_request:
     branches: [main]
+  # Run on a release tag (Use workflow from: tags/vX.Y.Z) to publish its image after the fact.
+  workflow_dispatch:
 
 jobs:
   build:
@@ -137,6 +139,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Equivalence tests compare outputs against earlier revisions with git show.
+          fetch-depth: 0
       - uses: astral-sh/setup-uv@v5
       - name: Run the locked suite on the minimum supported Python
         run: |
@@ -179,7 +184,7 @@ jobs:
   push:
     needs: [build, local-installer-plan]
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && startsWith(github.ref, 'refs/tags/v')
 
     steps:
       - uses: actions/checkout@v4

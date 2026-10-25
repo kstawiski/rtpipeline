@@ -1,6 +1,10 @@
 include .condarc
 include .dockerignore
 include CITATION.cff
+include CODE_OF_CONDUCT.md
+include CONTRIBUTING.md
+include codemeta.json
+include .zenodo.json
 include DOCKER_COMPATIBILITY.md
 include Dockerfile
 include GETTING_STARTED.md
@@ -49,6 +53,8 @@ include custom_models/lung_tumor_totalseg_lung_nodules/README.md
 include custom_models/lung_tumor_totalseg_lung_nodules/custom_model.yaml
 include custom_models/lung_tumor_totalseg_lung_nodules_rider/custom_model.yaml
 recursive-include docs *.md *.css *.js
+recursive-include deploy *.yml *.yaml *.md
+include deploy/suite/.env.example
 recursive-include envs *.yaml
 recursive-include scripts *.py *.sh
 recursive-include third_party/wheels *.whl

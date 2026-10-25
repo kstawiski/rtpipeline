@@ -1,0 +1,16 @@
+name: Feature request
+description: A new metric, model integration, output or workflow
+labels: [enhancement]
+body:
+  - type: textarea
+    id: need
+    attributes:
+      label: Research need
+      description: The analysis this would enable and who would use it.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behaviour
+      description: Inputs, outputs, configuration and how results should be validated.

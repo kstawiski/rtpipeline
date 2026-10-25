@@ -1,0 +1,26 @@
+{
+  "title": "RTpipeline: Automated Radiotherapy DICOM Processing Pipeline",
+  "upload_type": "software",
+  "creators": [
+    {"name": "Stawiski, Konrad"}
+  ],
+  "license": "MIT",
+  "access_right": "open",
+  "description": "RTpipeline turns raw radiotherapy DICOM exports into analysis-ready cohort tables: validated patient courses, standardized structures from TotalSegmentator, local nnU-Net models and the RTsegmentator portal, dose-volume histogram metrics, PyRadiomics features with NTCV perturbation robustness, multimodal biomarkers and quality-control reports.",
+  "keywords": [
+    "radiotherapy",
+    "DICOM RT",
+    "dose-volume histogram",
+    "radiomics",
+    "auto-segmentation",
+    "reproducibility"
+  ],
+  "related_identifiers": [
+    {
+      "identifier": "https://github.com/kstawiski/rtsegmentator",
+      "relation": "references",
+      "resource_type": "software",
+      "scheme": "url"
+    }
+  ]
+}

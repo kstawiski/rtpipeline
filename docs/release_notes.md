@@ -2,8 +2,41 @@
 
 ## Unreleased
 
-Version 2.3.99 is an unreleased candidate. There is no published tag or archived
-DOI, so cite an immutable git commit or container digest.
+No changes since 3.0.0.
+
+## 3.0.0 — 2026-10-25
+
+Cite this release by version and by the DOI archived for the `v3.0.0` tag (see
+[citing](citing.md)). Projects upgrading from 2.x re-run the stages whose
+completion evidence was produced by earlier code; outputs without
+configuration-bound completion receipts are invalidated automatically.
+
+### RTsegmentator as a segmentation source
+
+- The `segmentation_custom` stage can send each course's contracted planning CT to
+  an [RTsegmentator](features/rtsegmentator.md) portal, configured under the new
+  `rtsegmentator` section, and import the returned RTSTRUCTs into
+  `Segmentation_CustomModels/rtseg_<model>/`. DVH, radiomics and robustness use
+  them through the custom-model contract with the segmentation source
+  `CustomModel:rtseg_<model>`.
+- `rtpipeline rtsegmentator-import` imports result packages downloaded from a
+  portal into an organized course and removes that course's `segmentation_custom`
+  receipt, so the next workflow run repeats the stage and re-runs DVH, radiomics and
+  robustness on the imported structures.
+- Imports this portal produced for models no longer configured are removed; offline
+  imports and imports from another portal are kept. DVH output is regenerated when a
+  custom-model source it was built from no longer exists.
+- A package is imported only when every file matches its manifest checksum, the
+  manifest and each RTSTRUCT reference the course's planning CT series, and the ROI
+  names agree with the manifest. The custom-model `manifest.json` records the
+  portal URL, job ID, RTsegmentator version, model licence and limitations, and
+  `metadata/rtsegmentator_imports.json` records every model's outcome, including
+  models that found no structure.
+- The RTsegmentator client (`rtpipeline/segmenters/rtsegmentator_client.py`) is
+  vendored unchanged from RTsegmentator 1.0.0 and uses only the standard library. It
+  streams results to disk, compares the packaged manifest with the portal's copy,
+  never replays a job submission after an ambiguous failure and refuses redirects to
+  another origin, so proxy credentials stay with the portal.
 
 ### Course organization and dose classification
 
@@ -58,6 +91,15 @@ DOI, so cite an immutable git commit or container digest.
 - The package requires Python 3.10 or newer. The locked `test` dependency group
   runs the suite on the minimum supported Python, so the version floor is
   exercised rather than only declared.
+- `xlsxwriter` is a declared dependency. Every conda environment already carried
+  it, and pandas prefers it for `.xlsx` output, so pip and conda installations now
+  write the same workbook bytes.
+- Tests that need the separate PyRadiomics environment or the Snakemake executable
+  carry `requires_radiomics_env` and `requires_snakemake` markers. They run in the
+  container job and report an explicit skip reason in an environment without those
+  runtimes. Tests that compare against earlier revisions read full git history.
+- Citation metadata for archiving: `CITATION.cff`, `codemeta.json` and
+  `.zenodo.json`.
 
 ### Distribution scope
 

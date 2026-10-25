@@ -369,7 +369,9 @@ def test_fixture_exercises_the_changed_paths(runs):
     assert base["codes"]["P9"] == 1
     assert base["codes"]["P1"] == base["codes"]["P4"] == 0
     assert "Preparing perturbations for 9 robustness ROI(s) with 3 worker(s)" in runs["current"]["log"]
-    assert "with 5 worker(s)" in runs["current_other_budget"]["log"]
+    # PipelineConfig.effective_workers caps the requested budget at cpu_count - 1.
+    other_budget = max(1, min(5, (os.cpu_count() or 2) - 1, 9))
+    assert f"with {other_budget} worker(s)" in runs["current_other_budget"]["log"]
 
 
 @pytest.mark.parametrize("variant", ["current", "current_other_budget", "current_in_process"])

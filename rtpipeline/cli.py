@@ -698,6 +698,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--nnunet-predict", default="nnUNetv2_predict", help="nnUNetv2 prediction command (default: nnUNetv2_predict)")
     p.add_argument("--purge-custom-model-weights", action="store_true", help="Delete extracted nnUNet caches after each custom model run")
     p.add_argument(
+        "--disable-local-custom-models",
+        action="store_true",
+        help="Do not run locally installed custom models in the segmentation_custom stage "
+        "(RTsegmentator imports configured under 'rtsegmentator' still run).",
+    )
+    p.add_argument(
         "--max-workers",
         type=int,
         default=None,
@@ -1870,6 +1876,10 @@ def main(argv: list[str] | None = None) -> int:
         from .tcia_acquisition import rider_manifest_main
 
         return rider_manifest_main(argv[1:])
+    if argv and argv[0] == "rtsegmentator-import":
+        from .rtsegmentator import import_main as rtsegmentator_import_main
+
+        return rtsegmentator_import_main(argv[1:])
     if argv and argv[0] == "radiomics-robustness":
         return _radiomics_robustness_course(argv[1:])
     if argv and argv[0] == "radiomics-robustness-aggregate":
@@ -2091,6 +2101,14 @@ def main(argv: list[str] | None = None) -> int:
                 yaml_config,
                 config_dir=config_file_path.parent.resolve(strict=False),
             )
+            from .rtsegmentator import RTsegmentatorSettings
+
+            try:
+                cfg.rtsegmentator_settings = RTsegmentatorSettings.from_mapping(
+                    yaml_config.get("rtsegmentator")
+                )
+            except (TypeError, ValueError) as exc:
+                raise ConfigValidationError(f"rtsegmentator: {exc}") from exc
             radiomics_yaml = yaml_config.get("radiomics", {}) or {}
             cfg.radiomics_analysis_contract = (
                 radiomics_yaml.get("analysis_contract")
@@ -2260,6 +2278,8 @@ def main(argv: list[str] | None = None) -> int:
             custom_models_root = default_models_root
     if custom_models_root and not custom_models_root.exists():
         logger.warning("Custom models root not found: %s", custom_models_root)
+        custom_models_root = None
+    if getattr(args, "disable_local_custom_models", False):
         custom_models_root = None
 
     selected_models: list[str] = []
@@ -2631,6 +2651,28 @@ def main(argv: list[str] | None = None) -> int:
                     use_processes=(device == "cpu"),
                 )
                 if any(r is None for r in custom_results):
+                    had_failures = True
+
+        rtseg_settings = getattr(cfg, "rtsegmentator_settings", None)
+        if rtseg_settings is not None and rtseg_settings.enabled:
+            from .rtsegmentator import run_for_course as run_rtsegmentator_for_course
+
+            rtseg_courses = _filter_courses(ensure_courses())
+            if not rtseg_courses:
+                _log_skip("RTsegmentator")
+            # The portal serializes GPU work, so courses are submitted one at a time.
+            for course in rtseg_courses:
+                try:
+                    run_rtsegmentator_for_course(
+                        rtseg_settings, course.dirs.root, force=cfg.custom_models_force
+                    )
+                except Exception as exc:
+                    logger.error(
+                        "RTsegmentator segmentation failed for %s/%s: %s",
+                        course.patient_id,
+                        course.course_id,
+                        exc,
+                    )
                     had_failures = True
 
     if "crop_ct" in stages:

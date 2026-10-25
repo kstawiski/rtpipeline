@@ -775,6 +775,17 @@
                                     </div>
                                 </div>
                             </div>
+                            <div class="config-option hidden" id="rtseg-option">
+                                <label>
+                                    <input type="checkbox" id="rtseg-enabled" onchange="toggleRtsegList()">
+                                    <span>RTsegmentator Models</span>
+                                </label>
+                                <small>Send each planning CT to the configured RTsegmentator portal and analyse the returned structures</small>
+                                <div id="rtseg-list" class="hidden" style="margin-top: 10px; padding-left: 20px;">
+                                    <p style="font-size: 12px; color: #718096;">Select portal models:</p>
+                                    <div id="rtseg-checkboxes" style="max-height: 150px; overflow-y: auto;"></div>
+                                </div>
+                            </div>
                             <div class="config-option"
                                 style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
                                 <div><label>CPU Cores</label><input type="number" id="cores" value="4" min="1"></div>
@@ -1437,6 +1448,13 @@
                 }
             };
 
+            if (document.getElementById('rtseg-enabled').checked) {
+                config.rtsegmentator = {
+                    enabled: true,
+                    models: Array.from(document.querySelectorAll('#rtseg-checkboxes input[type="checkbox"]:checked')).map(cb => cb.value)
+                };
+            }
+
             if (croppingEnabled) {
                 config.ct_cropping = {
                     enabled: true,
@@ -1480,6 +1498,49 @@
             resetUI();
             loadJobs();
         }
+
+        async function loadRtsegConfig() {
+            try {
+                const res = await fetch('/api/config/rtsegmentator');
+                const data = await res.json();
+                if (!res.ok || !data.available) return;
+                document.getElementById('rtseg-option').classList.remove('hidden');
+                const box = document.getElementById('rtseg-checkboxes');
+                const defaults = new Set(data.default_models || []);
+                const models = (data.models && data.models.length)
+                    ? data.models
+                    : (data.default_models || []).map(name => ({ name: name, description: '' }));
+                box.replaceChildren();
+                if (data.error) {
+                    const note = document.createElement('small');
+                    note.style.color = '#c53030';
+                    note.textContent = data.error;
+                    box.appendChild(note);
+                }
+                for (const model of models) {
+                    const label = document.createElement('label');
+                    label.style.display = 'block';
+                    label.style.marginBottom = '6px';
+                    label.title = model.description || '';
+                    const input = document.createElement('input');
+                    input.type = 'checkbox';
+                    input.value = model.name;
+                    input.checked = defaults.has(model.name);
+                    label.appendChild(input);
+                    label.appendChild(document.createTextNode(' ' + model.name));
+                    box.appendChild(label);
+                }
+            } catch (err) {
+                console.warn('RTsegmentator configuration unavailable', err);
+            }
+        }
+
+        function toggleRtsegList() {
+            const enabled = document.getElementById('rtseg-enabled').checked;
+            document.getElementById('rtseg-list').classList.toggle('hidden', !enabled);
+        }
+
+        loadRtsegConfig();
 
         async function toggleCustomModelsList(forceState) {
             const checkbox = document.getElementById('custom-models-enabled');
