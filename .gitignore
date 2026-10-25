@@ -66,6 +66,8 @@ docker_run*/
 !package.json
 !tsconfig.json
 !tests/fixtures/*.json
+!/.zenodo.json
+!/codemeta.json
 !pyproject.toml
 
 # Medical imaging data

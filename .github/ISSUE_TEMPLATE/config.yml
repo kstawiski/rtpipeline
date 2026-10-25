@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/kstawiski/rtpipeline/security/advisories/new
+    about: Report vulnerabilities privately. Never post patient data or credentials.
+  - name: Documentation
+    url: https://kstawiski.github.io/rtpipeline/
+    about: Installation, configuration, outputs and troubleshooting.

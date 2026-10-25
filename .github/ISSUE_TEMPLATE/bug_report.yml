@@ -1,0 +1,41 @@
+name: Bug report
+description: A stage fails, or an output table is wrong
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        Never attach DICOM files, output tables with patient data, identifiers or credentials.
+        Describe the case by modality, TPS vendor, number of plans and structures, or reproduce
+        with synthetic or public (TCIA) data.
+  - type: input
+    id: version
+    attributes:
+      label: RTpipeline version
+      description: Output of `python -c "import rtpipeline; print(rtpipeline.__version__)"`, the image tag and digest, or the commit.
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: Installation
+      options: [Docker image, Local conda installation, Web UI, Google Colab, Other]
+    validations:
+      required: true
+  - type: input
+    id: stage
+    attributes:
+      label: Stage
+      description: organize, segmentation, segmentation_custom, dvh, radiomics, robustness, qc or aggregation.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened and what you expected
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log lines
+      description: From Logs/; remove identifiers first.
+      render: text
