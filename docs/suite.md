@@ -18,7 +18,7 @@ path from treatment-planning exports to analysis tables.
                                              ▼
                Segmentation_CustomModels/rtseg_<model>/rtstruct.dcm
                                              │
-                     DVH · radiomics · robustness · QC tables
+                     DVH · radiomics · robustness tables
 ```
 
 Each tool runs on its own. RTpipeline runs TotalSegmentator and local nnU-Net models

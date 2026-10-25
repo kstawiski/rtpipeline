@@ -16,11 +16,16 @@ configuration-bound completion receipts are invalidated automatically.
 - The `segmentation_custom` stage can send each course's contracted planning CT to
   an [RTsegmentator](features/rtsegmentator.md) portal, configured under the new
   `rtsegmentator` section, and import the returned RTSTRUCTs into
-  `Segmentation_CustomModels/rtseg_<model>/`. DVH, radiomics, robustness and QC use
+  `Segmentation_CustomModels/rtseg_<model>/`. DVH, radiomics and robustness use
   them through the custom-model contract with the segmentation source
   `CustomModel:rtseg_<model>`.
 - `rtpipeline rtsegmentator-import` imports result packages downloaded from a
-  portal into an organized course.
+  portal into an organized course and removes that course's `segmentation_custom`
+  receipt, so the next workflow run repeats the stage and re-runs DVH, radiomics and
+  robustness on the imported structures.
+- Imports this portal produced for models no longer configured are removed; offline
+  imports and imports from another portal are kept. DVH output is regenerated when a
+  custom-model source it was built from no longer exists.
 - A package is imported only when every file matches its manifest checksum, the
   manifest and each RTSTRUCT reference the course's planning CT series, and the ROI
   names agree with the manifest. The custom-model `manifest.json` records the
@@ -28,7 +33,10 @@ configuration-bound completion receipts are invalidated automatically.
   `metadata/rtsegmentator_imports.json` records every model's outcome, including
   models that found no structure.
 - The RTsegmentator client (`rtpipeline/segmenters/rtsegmentator_client.py`) is
-  vendored unchanged from RTsegmentator 1.0.0 and uses only the standard library.
+  vendored unchanged from RTsegmentator 1.0.0 and uses only the standard library. It
+  streams results to disk, compares the packaged manifest with the portal's copy,
+  never replays a job submission after an ambiguous failure and refuses redirects to
+  another origin, so proxy credentials stay with the portal.
 
 ### Course organization and dose classification
 

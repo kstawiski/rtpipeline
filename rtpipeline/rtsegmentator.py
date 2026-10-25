@@ -6,8 +6,8 @@ contracted planning CT to a portal, or reads a result package downloaded from
 one, verifies the package against its ``rtsegmentator_manifest.json``, and writes
 each model's RTSTRUCT under ``Segmentation_CustomModels/rtseg_<model>/``.
 
-That directory is the existing custom-model contract, so DVH, radiomics,
-robustness and QC stages consume RTsegmentator structures without a separate
+That directory is the existing custom-model contract, so the DVH, radiomics
+and robustness stages consume RTsegmentator structures without a separate
 code path. The ``manifest.json`` written there prespecifies the exact ROI
 inventory (the ROI names the portal wrote) and keeps the portal's model,
 licence and job provenance next to the structures.
@@ -44,7 +44,12 @@ OUTPUT_PREFIX = "rtseg_"
 SOURCE_NAME = "rtsegmentator"
 CUSTOM_MODELS_DIRNAME = "Segmentation_CustomModels"
 IMPORT_LEDGER = Path("metadata") / "rtsegmentator_imports.json"
+# Model directories are assembled here, beside (never inside) Segmentation_CustomModels,
+# so an interrupted import cannot leave a directory that consumers enumerate.
+STAGING_DIRNAME = ".rtsegmentator-staging"
+CUSTOM_STAGE_SENTINEL = ".custom_models_done"
 _MODEL_NAME = re.compile(r"^[A-Za-z0-9_]+$")
+_JOB_ID = re.compile(r"^[A-Za-z0-9-]+$")
 
 
 class RTsegmentatorError(RuntimeError):
@@ -234,10 +239,12 @@ def import_result_package(
     _ct_dir, series_uid, ct_digest = planning_ct_identity(course_dir)
 
     source = manifest.get("source_series") or {}
-    if source.get("series_instance_uid") and source["series_instance_uid"] != series_uid:
+    if source.get("series_instance_uid") != series_uid:
+        # Also refuses a package without a source series: even a "no structures found"
+        # outcome must be bound to this course's planning CT before it replaces anything.
         raise RTsegmentatorError(
             f"RTsegmentator package {package.name} was produced for series "
-            f"{source['series_instance_uid']}, not the planning CT {series_uid}"
+            f"{source.get('series_instance_uid')!r}, not the planning CT {series_uid}"
         )
     entries = {str(entry.get("name")): entry for entry in manifest.get("models") or [] if isinstance(entry, dict)}
     if models is not None:
@@ -286,9 +293,10 @@ def import_result_package(
                 "produced_structures": names,
                 "missing_structures": [],
                 "catalog_structures": catalog,
-                # The portal writes only the labels found in the scan; an absent
-                # catalog label is a negative finding of the model, not a failure.
+                # Catalog labels the portal did not write: the model did not find them,
+                # or the exporter omitted them (the package notes then name them).
                 "absent_catalog_structures": [item for item in catalog if item not in names],
+                "package_notes": [str(note) for note in manifest.get("notes") or []],
                 "generated_at": _utc_now(),
                 "planning_ct": {"series_instance_uid": series_uid, "sop_instance_set_sha256": ct_digest,
                                 "frame_of_reference_uids": sorted(frames)},
@@ -312,45 +320,57 @@ def import_result_package(
     # All checks passed; publish each model directory atomically.
     root = course_dir / CUSTOM_MODELS_DIRNAME
     root.mkdir(parents=True, exist_ok=True)
+    staging = course_dir / STAGING_DIRNAME
+    shutil.rmtree(staging, ignore_errors=True)  # leftovers of an interrupted import
+    staging.mkdir()
     ledger = _read_ledger(course_dir)
     manifest_bytes = (json.dumps(manifest, indent=2) + "\n").encode("utf-8")
-    for imported, data, model_manifest in staged:
-        target = root / output_dir_name(imported.model)
-        if data is None:
-            if target.exists():
-                shutil.rmtree(target)
-        else:
-            temporary = Path(tempfile.mkdtemp(prefix=f".{target.name}.", dir=root))
-            try:
+    try:
+        for imported, data, model_manifest in staged:
+            target = root / output_dir_name(imported.model)
+            if data is None:
+                if target.exists():
+                    os.replace(target, staging / f"{target.name}.removed")
+            else:
+                temporary = Path(tempfile.mkdtemp(prefix=f"{target.name}.", dir=staging))
                 (temporary / "rtstruct.dcm").write_bytes(data)
                 (temporary / "rtsegmentator_manifest.json").write_bytes(manifest_bytes)
                 (temporary / "manifest.json").write_text(
                     json.dumps(model_manifest, indent=2) + "\n", encoding="utf-8")
-                previous = None
                 if target.exists():
-                    previous = root / f".{target.name}.replaced"
-                    shutil.rmtree(previous, ignore_errors=True)
-                    os.replace(target, previous)
+                    os.replace(target, staging / f"{target.name}.replaced")
                 os.replace(temporary, target)
-                if previous is not None:
-                    shutil.rmtree(previous, ignore_errors=True)
-            finally:
-                shutil.rmtree(temporary, ignore_errors=True)
-        ledger["models"][imported.model] = {
-            "outcome": imported.outcome,
-            "roi_names": imported.roi_names,
-            "job_id": (manifest.get("job") or {}).get("id"),
-            "generator": manifest.get("generator"),
-            "url": url,
-            "planning_ct_series_instance_uid": series_uid,
-            "planning_ct_sop_instance_set_sha256": ct_digest,
-            "package_sha256": package_sha256,
-            "imported_at": _utc_now(),
-        }
-        logger.info("Imported RTsegmentator %s for %s: %s (%d ROI)", imported.model, course_dir,
-                    imported.outcome, len(imported.roi_names))
-    _write_json_atomic(course_dir / IMPORT_LEDGER, ledger)
+            ledger["models"][imported.model] = {
+                "outcome": imported.outcome,
+                "roi_names": imported.roi_names,
+                "job_id": (manifest.get("job") or {}).get("id"),
+                "generator": manifest.get("generator"),
+                "url": url,
+                "planning_ct_series_instance_uid": series_uid,
+                "planning_ct_sop_instance_set_sha256": ct_digest,
+                "package_sha256": package_sha256,
+                "imported_at": _utc_now(),
+            }
+            logger.info("Imported RTsegmentator %s for %s: %s (%d ROI)", imported.model, course_dir,
+                        imported.outcome, len(imported.roi_names))
+        _write_json_atomic(course_dir / IMPORT_LEDGER, ledger)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
     return [item for item, _data, _manifest in staged]
+
+
+def _import_intact(output: Path, record: Mapping[str, Any]) -> bool:
+    """The imported directory still holds the RTSTRUCT and manifest the ledger recorded."""
+    try:
+        model_manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
+        provenance = model_manifest["rtsegmentator"]
+        return (
+            (output / "rtsegmentator_manifest.json").is_file()
+            and provenance.get("job_id") == record.get("job_id")
+            and _sha256_file(output / "rtstruct.dcm") == provenance.get("rtstruct_sha256")
+        )
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return False
 
 
 def _current_models(course_dir: Path, settings: RTsegmentatorSettings, series_uid: str, digest: str) -> set[str]:
@@ -364,13 +384,35 @@ def _current_models(course_dir: Path, settings: RTsegmentatorSettings, series_ui
                 or record.get("url") != settings.url):
             continue
         if record.get("outcome") == "rtstruct":
-            rtstruct = Path(course_dir) / CUSTOM_MODELS_DIRNAME / output_dir_name(name) / "rtstruct.dcm"
-            if not rtstruct.is_file():
+            if not _import_intact(Path(course_dir) / CUSTOM_MODELS_DIRNAME / output_dir_name(name), record):
                 continue
         elif record.get("outcome") != "no_structures_found":
             continue
         current.add(name)
     return current
+
+
+def _prune_unconfigured(course_dir: Path, settings: RTsegmentatorSettings) -> list[str]:
+    """Remove imports this portal produced for models no longer configured.
+
+    Offline imports (no recorded URL) and imports from another portal are kept.
+    """
+    if not (Path(course_dir) / IMPORT_LEDGER).is_file():
+        return []
+    ledger = _read_ledger(course_dir)
+    removed = []
+    for name, record in sorted(ledger["models"].items()):
+        if name in settings.models or not isinstance(record, dict) or record.get("url") != settings.url:
+            continue
+        target = Path(course_dir) / CUSTOM_MODELS_DIRNAME / output_dir_name(name)
+        if target.exists():
+            shutil.rmtree(target)
+        del ledger["models"][name]
+        removed.append(name)
+    if removed:
+        _write_json_atomic(Path(course_dir) / IMPORT_LEDGER, ledger)
+        logger.info("Removed RTsegmentator imports no longer configured for %s: %s", course_dir, ", ".join(removed))
+    return removed
 
 
 def build_client(settings: RTsegmentatorSettings) -> "client_module.RTsegClient":
@@ -392,6 +434,12 @@ def run_for_course(
     if not settings.enabled:
         return []
     course_dir = Path(course_dir)
+    contract = load_course_contract(course_dir)
+    if contract.planning_ct_dir is None:
+        # Same disposition as local custom models: nothing to segment.
+        logger.info("RTsegmentator skipped for %s: the course contract has no planning CT", course_dir)
+        return []
+    _prune_unconfigured(course_dir, settings)
     ct_dir, series_uid, digest = planning_ct_identity(course_dir)
     pending = list(settings.models)
     if not (force or settings.force):
@@ -415,11 +463,15 @@ def run_for_course(
         skipped = jobs[0].get("skipped_models") or {}
         if skipped:
             raise RTsegmentatorError(f"RTsegmentator skipped model(s) for this series: {skipped}")
-        job_id = jobs[0]["id"]
+        job_id = str(jobs[0].get("id") or "")
+        if not _JOB_ID.match(job_id):
+            raise RTsegmentatorError(f"RTsegmentator returned an invalid job ID: {job_id!r}")
         logger.info("RTsegmentator job %s submitted for %s with %s", job_id, course_dir, ", ".join(pending))
         client.wait(job_id, poll=settings.poll_seconds, timeout=settings.job_timeout_seconds)
         with tempfile.TemporaryDirectory(prefix="rtseg-", dir=course_dir) as scratch:
             package = client.download(job_id, Path(scratch) / f"{job_id}.zip")
+            # The packaged manifest must be the one the portal serves for this job.
+            client_module.verify_against_portal(client, job_id, package)
             return import_result_package(package, course_dir, models=pending, url=settings.url)
     except client_module.ClientError as exc:
         raise RTsegmentatorError(f"RTsegmentator request failed for {course_dir}: {exc}") from exc
@@ -438,13 +490,22 @@ def import_main(argv: Optional[Sequence[str]] = None) -> int:
                         help="Import only this model; repeat for several (default: every model in the package)")
     parser.add_argument("packages", nargs="+", help="Result ZIP(s) downloaded from RTsegmentator")
     args = parser.parse_args(argv)
+    course_dir = Path(args.course_dir)
+    imported_any = False
     try:
         for package in args.packages:
-            for item in import_result_package(Path(package), Path(args.course_dir), models=args.model):
+            for item in import_result_package(Path(package), course_dir, models=args.model):
+                imported_any = True
                 print(json.dumps({"package": str(package), "model": item.model, "outcome": item.outcome,
                                   "rois": len(item.roi_names),
                                   "output": str(item.output_dir) if item.output_dir else None}))
     except RTsegmentatorError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
+    finally:
+        if imported_any:
+            # The custom-model stage receipt no longer describes Segmentation_CustomModels.
+            # Removing it makes the next workflow run repeat that stage for this course and
+            # re-run DVH, radiomics and robustness on the imported structures.
+            (course_dir / CUSTOM_STAGE_SENTINEL).unlink(missing_ok=True)
     return 0

@@ -1081,7 +1081,9 @@ _custom_params_lambda = lambda w: (
     (f"--nnunet-predict '{CUSTOM_MODELS_PREDICT}' " if CUSTOM_MODELS_PREDICT else "") +
     (f"--custom-model-conda-activate '{CUSTOM_MODELS_CONDA}' " if CUSTOM_MODELS_CONDA else "") +
     ("--purge-custom-model-weights " if not CUSTOM_MODELS_RETAIN else "") +
-    ("--disable-local-custom-models " if not CUSTOM_MODELS_ENABLED else "")
+    # Only present when RTsegmentator runs without local models, so params for
+    # existing projects are unchanged.
+    ("--disable-local-custom-models " if RTSEG_ENABLED and not CUSTOM_MODELS_ENABLED else "")
 )
 
 if config.get("container_mode", False):

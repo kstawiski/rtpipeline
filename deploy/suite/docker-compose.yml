@@ -47,10 +47,13 @@ services:
   rtpipeline:
     image: kstawiski/rtpipeline:3.0.0
     user: "1000:1000"
-    working_dir: /app
-    command: ["bash", "-c", "cd /app/webui && python app.py"]
+    # The Web UI and Snakemake live in the image's base environment (/opt/conda).
+    working_dir: /app/webui
+    command: ["/opt/conda/bin/python", "app.py"]
     environment:
       PORT: "8080"
+      PYTHONPATH: /app
+      PATH: /opt/conda/bin:/opt/conda/envs/rtpipeline/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
       # Web UI jobs may switch RTsegmentator on; only this address is ever contacted.
       RTPIPELINE_RTSEGMENTATOR_URL: http://rtsegmentator:8080
       RTPIPELINE_RTSEGMENTATOR_MODELS: ${RTPIPELINE_RTSEGMENTATOR_MODELS:-total}

@@ -21,5 +21,6 @@ docker compose up -d
 
 Both services bind to 127.0.0.1 only. Neither application authenticates users; expose
 them through an authenticating TLS proxy and keep patient data on controlled storage.
-The portal and pipeline share one GPU in this layout; the portal runs one GPU job at a
-time, and RTpipeline submits courses one at a time.
+The portal and pipeline share one GPU in this layout. The portal runs one GPU job at a
+time and queues the rest; with `segmentation.device: gpu`, RTpipeline also runs one
+course's `segmentation_custom` stage at a time.
