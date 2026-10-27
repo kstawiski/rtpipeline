@@ -93,7 +93,7 @@ def mask_grid_coverage(mask, support, voxel_volume_cm3):
             "covered_volume_cm3": inside * voxel_volume_cm3}
 
 
-def roi_nonvolume_coverage(rtstruct, roi_number):
+def roi_nonvolume_coverage(rtstruct, roi_number, *, automatic_source=None):
     """Dispose of explicit nonvolume geometry before either grid comparison.
 
     An absent ROI is not a declared empty ROI. Malformed coordinates and mixed
@@ -143,8 +143,19 @@ def roi_nonvolume_coverage(rtstruct, roi_number):
                            'ROI contains mixed volumetric/non-volumetric or unsupported contour types.')
     if all(k in {'CLOSED_PLANAR', 'CLOSEDPLANAR_XOR'} and len(np.unique(p, axis=0)) < 3
            for k, p in zip(kinds, points)):
-        return disposition('degenerate_contours', 'ROI_NO_AREA_BEARING_CONTOURS',
-                           'All closed contour items have fewer than three distinct points.')
+        # automatic_source is producer-established provenance, never inferred
+        # from the ROI name, geometry, or a DICOM free-text label.
+        automatic = bool(automatic_source)
+        result = disposition(
+            'nonmeasurable_auto_sliver' if automatic else 'degenerate_contours',
+            'ROI_NONMEASURABLE_AUTO_SLIVER' if automatic else 'ROI_NO_AREA_BEARING_CONTOURS',
+            'All closed contour items have fewer than three distinct points.')
+        result['evidence'] = {
+            'contour_count': len(contours),
+            'distinct_point_counts': [len(np.unique(p, axis=0)) for p in points],
+            'automatic_source': dict(automatic_source) if automatic else None,
+        }
+        return result
     return None
 
 
@@ -211,7 +222,7 @@ def _parity_plane_areas(polygons, xmax, ymax):
     return total, inside
 
 
-def rtstruct_grid_coverage(rtstruct, roi_number, dose):
+def rtstruct_grid_coverage(rtstruct, roi_number, dose, *, automatic_source=None):
     """Measure unsnapped contour coverage independently of the DVH values.
 
     Fraction is cross-sectional contour area integrated with trapezoidal
@@ -220,7 +231,7 @@ def rtstruct_grid_coverage(rtstruct, roi_number, dose):
     Nested contours use even/odd parity, as in dicompyler's rasterizer.
     """
     from .dvh import classify_zero_dose_roi_geometry, _dose_grid_contour_coordinates
-    disposition = roi_nonvolume_coverage(rtstruct, roi_number)
+    disposition = roi_nonvolume_coverage(rtstruct, roi_number, automatic_source=automatic_source)
     if disposition is not None:
         return disposition
     classified = classify_zero_dose_roi_geometry(rtstruct, roi_number, dose)
@@ -281,6 +292,39 @@ def rtstruct_grid_coverage(rtstruct, roi_number, dose):
     fraction = float(np.clip(inside / total, 0, 1))
     result['fraction'] = 1.0 if status == 'fully_covered' else 0.0 if status == 'outside_grid' else fraction
     return result
+
+
+def unbinned_plane_summary(plane, doseplane, dosegridpoints, dd, image, thickness):
+    """Summarize Gy samples with dicompyler's exact even/odd raster mask.
+
+    Supported samples alone contribute. Physical voxel volume weights the mean
+    when the rotated adapter integrates unequal contour-plane intervals.
+    """
+    from dicompylercore import dvhcalc
+    mask = np.zeros((dd['rows'], dd['columns']), dtype=bool)
+    for contour in plane:
+        polygon = [p[:2] for p in contour['data']]
+        mask ^= dvhcalc.get_contour_mask(dd, image, dosegridpoints, polygon).astype(bool)
+    samples = np.ma.array(doseplane * dd['dosegridscaling'], mask=~mask).compressed()
+    if not samples.size:
+        return 0., 0., 0.
+    if not np.isfinite(samples).all() or (samples < 0).any():
+        raise ValueError('Unbinned in-mask dose samples must be finite and nonnegative')
+    voxel_volume = (abs(np.mean(np.diff(dd['lut'][0]))) *
+                    abs(np.mean(np.diff(dd['lut'][1]))) * thickness)
+    return float(samples.sum() * voxel_volume), float(samples.size * voxel_volume), float(samples.max())
+
+
+def combine_dose_summaries(summaries):
+    weighted_sum = volume = maximum = 0.
+    for subtotal, subvolume, submax in summaries:
+        weighted_sum += subtotal
+        volume += subvolume
+        maximum = max(maximum, submax)
+    if not np.isfinite(volume) or volume <= 0:
+        raise ValueError('No supported in-mask dose samples for the unbinned summary')
+    # A weighted sum can round a constant-field mean just above its maximum.
+    return {'mean': min(maximum, weighted_sum / volume), 'max': maximum}
 
 
 def publish_derived_mask(directory, name, mask, ct_image, component_paths, config_path, definitions, outcomes, ct_files):

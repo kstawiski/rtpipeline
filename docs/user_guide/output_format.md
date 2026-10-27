@@ -108,6 +108,10 @@ comparison['volume_diff_%'] = 100 * (
 | `V50Gy` | Volume receiving ≥50 Gy | OAR sparing |
 | `ROI_Volume_cc` | Structure volume | Normalization |
 
+`dose_summary_basis` identifies RTSTRUCT mean and maximum as `binned` or `unbinned_subcentigray`. The latter uses supported unbinned samples from the same raster mask and working dose grid when the histogram has at most one bin or its maximum is zero. Positive doses below 0.01 Gy remain positive. Dose-volume quantiles and DVH curves remain histogram-derived. NIfTI-mask summaries already use unbinned samples and leave this field empty.
+
+An automatic ROI containing only closed items with fewer than three distinct points is `nonmeasurable_auto_sliver`, with `row_status = not_computed` and no DVH calculation. AutoRTS requires an origin sidecar matching the RTSTRUCT file hash; selected custom model outputs record their producer source and file hash. `dvh_nonmeasurement_evidence` stores contour count, distinct-point counts, source and origin evidence. This class is expected nonmeasurement. Manual or unverified area-less geometry is `degenerate_contours`. Valid polygons retain their coverage result when stray area-less items coexist.
+
 At exactly 2 cm³, `D2ccGy` equals Dmin. Below 2 cm³, it is empty with `D2cc_status = "roi_below_2cc"`. Incomplete coverage leaves the whole-ROI dose empty and propagates the coverage status. Axial RTSTRUCT, rotated-grid and NIfTI-mask measurements use linear cumulative-DVH interpolation.
 
 ### Radiomics Features (radiomics_ct.xlsx)

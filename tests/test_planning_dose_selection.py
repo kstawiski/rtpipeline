@@ -310,7 +310,7 @@ def test_contract_selected_bytes_against_80d5d65(tmp_path, monkeypatch, delivere
         def now(cls, tz=None):
             return cls(2024, 1, 1, tzinfo=tz)
     monkeypatch.setattr(xlsxwriter.core, 'datetime', FixedTime)
-    course = fx.build_course(tmp_path, delivered=delivered, rois=fx.NO_NEAR_ZERO_ROIS)
+    course = fx.build_course(tmp_path, delivered=delivered, rois=fx.NO_NEAR_ZERO_ROIS, low_dose_gy=0.)
     if sidecar:
         (course/SIDECAR).write_text('{invalid sidecar ignored for a contracted grid')
     baseline = historical_dvh(tmp_path)
@@ -326,7 +326,7 @@ def test_contract_selected_bytes_against_80d5d65(tmp_path, monkeypatch, delivere
         old_frame = reader(BytesIO(old[name]))
         new_frame = reader(BytesIO(new[name]))
         assert set(new_frame.columns) == set(old_frame.columns) | {'dose_plane_alignment', 'D2ccGy', 'D2cc_status',
-                                                                            'dose_grid_coverage_reason', 'dose_grid_coverage_reason_code'}
+                                                                            'dose_grid_coverage_reason', 'dose_grid_coverage_reason_code', 'dose_summary_basis'}
         fx.assert_d2cc_columns(new_frame)
         assert new_frame.dose_grid_coverage_reason.notna().all()
         assert new_frame.dose_grid_coverage_reason_code.isna().all()
