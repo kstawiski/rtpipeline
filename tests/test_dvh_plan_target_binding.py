@@ -1,8 +1,10 @@
 """Plan-target binding for the near-zero target course quarantine.
 
 All inputs are synthetic DICOM objects written under pytest's tmp_path. The two
-stored tables were produced by the unmodified ae60f01 DVH stage from the same
-fixture (see tests/dvh_plan_target_fixtures.py).
+stored tables were produced by the unmodified ae60f01 DVH stage. Exact historical
+comparisons use true-zero right-half dose, which has the same binned histogram
+as the original 0.005-Gy field. The positive field is exercised separately in
+test_dvh_state_fixes.py, including both plan-target binding dispositions.
 """
 from __future__ import annotations
 
@@ -29,7 +31,9 @@ UNBOUND_TARGETS = {"PTV2", "CTV2"}
 
 
 def _run(tmp_path: Path, **kwargs) -> tuple[Path, pd.DataFrame, dict]:
-    course = fx.build_course(tmp_path, **kwargs)
+    # Byte-exact historical controls use true zero in the undosed region.
+    # Positive sub-centigray controls are in test_dvh_state_fixes.py.
+    course = fx.build_course(tmp_path, low_dose_gy=0., **kwargs)
     assert dvh_for_course(course, parallel_workers=1, max_total_dose_gy=100.0)
     frame = pd.read_parquet(course / "dvh_metrics.parquet")
     qc = json.loads((course / "metadata" / "dvh_qc.json").read_text(encoding="utf-8"))
@@ -48,8 +52,11 @@ def _assert_historical_table_with_alignment(course: Path, path: Path) -> None:
     baseline = json.loads(baseline_text)
     current = json.loads(fx.canonical_dvh_table(course))
     assert set(current["columns"]) == set(baseline["columns"]) | {"dose_plane_alignment", "D2ccGy", "D2cc_status",
-                                                                              "dose_grid_coverage_reason", "dose_grid_coverage_reason_code"}
+                                                                              "dose_grid_coverage_reason", "dose_grid_coverage_reason_code", "dose_summary_basis"}
     fx.assert_d2cc_columns(pd.read_parquet(course / "dvh_metrics.parquet"))
+    summaries = pd.read_parquet(course / "dvh_metrics.parquet")
+    assert summaries.loc[summaries.DmaxGy.eq(0), 'dose_summary_basis'].eq('unbinned_subcentigray').all()
+    assert summaries.loc[summaries.DmaxGy.gt(0), 'dose_summary_basis'].eq('binned').all()
     for row in current["rows"]:
         assert row[current["columns"].index("dose_grid_coverage_reason")]
         assert row[current["columns"].index("dose_grid_coverage_reason_code")] is None

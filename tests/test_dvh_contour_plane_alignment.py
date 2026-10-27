@@ -376,14 +376,14 @@ def test_existing_table_columns_match_stored_baseline_with_additive_alignment(tm
     kwargs = ({'references':[fx.dose_reference(number=1, description='PTV1'),
                             fx.dose_reference(number=2, description='ptv2 ')]} if quarantine
               else {'rois':fx.NO_NEAR_ZERO_ROIS})
-    course = fx.build_course(tmp_path, **kwargs)
+    course = fx.build_course(tmp_path, low_dose_gy=0., **kwargs)
     assert dvh.dvh_for_course(course, parallel_workers=1, max_total_dose_gy=100.)
     table = pd.read_parquet(course/'dvh_metrics.parquet')
     filename = ('ae60f01_near_zero_course_quarantine.json' if quarantine
                 else 'ae60f01_no_near_zero_targets.json')
     baseline = json.loads((Path(fx.__file__).parent/'synthetic_dvh_plan_target'/filename).read_text())
     assert set(table) - set(baseline['columns']) == {'dose_plane_alignment', 'D2ccGy', 'D2cc_status',
-                                                                  'dose_grid_coverage_reason', 'dose_grid_coverage_reason_code'}
+                                                                  'dose_grid_coverage_reason', 'dose_grid_coverage_reason_code', 'dose_summary_basis'}
     fx.assert_d2cc_columns(table)
     assert table.dose_grid_coverage_reason.notna().all()
     assert table.dose_grid_coverage_reason_code.isna().all()

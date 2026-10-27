@@ -19,7 +19,8 @@ import SimpleITK as sitk
 logger = logging.getLogger(__name__)
 DVH_METRIC_VERSION = "2026-09-05-grid-support-derived-mask-d003-v5"
 from .dvh_support import (rtstruct_grid_coverage, resample_grid_support, mask_grid_coverage,
-                          nifti_identity, publish_derived_mask, validate_derived_mask, sha256_file)
+                          nifti_identity, publish_derived_mask, validate_derived_mask, sha256_file,
+                          roi_nonvolume_coverage, unbinned_plane_summary, combine_dose_summaries)
 NEAR_ZERO_TARGET_D95_GY = 0.1
 # Target zero-dose classes counted by ``summarize_target_near_zero_rows``.
 NEAR_ZERO_TARGET_ZERO_DOSE_STATUSES = (
@@ -287,9 +288,12 @@ def _polygon_intersects_box(
 
 
 def classify_zero_dose_roi_geometry(
-    rtstruct_ds: object, roi_number: int, dose_ds: object
-) -> dict[str, str]:
+    rtstruct_ds: object, roi_number: int, dose_ds: object, *, automatic_source=None
+) -> dict[str, object]:
     """Classify near-zero ROI dose by contour coverage of the RTDOSE grid."""
+    disposition = roi_nonvolume_coverage(rtstruct_ds, roi_number, automatic_source=automatic_source)
+    if disposition and disposition['status'] in {'nonmeasurable_auto_sliver', 'degenerate_contours'}:
+        return disposition
     try:
         rows = int(getattr(dose_ds, "Rows"))
         columns = int(getattr(dose_ds, "Columns"))
@@ -1118,6 +1122,8 @@ def annotate_dvh_metrics(
         output["dose_grid_coverage_reason_code"] = grid_coverage.get("reason_code")
         output["dose_grid_covered_volume_cm3"] = grid_coverage.get("covered_volume_cm3")
         output["dose_grid_roi_volume_cm3"] = grid_coverage.get("roi_volume_cm3")
+        if grid_coverage.get("evidence") is not None:
+            output["dvh_nonmeasurement_evidence"] = json.dumps(grid_coverage["evidence"], sort_keys=True)
         if coverage_status != "fully_covered":
             # Legacy values may contain zero padding. Never label them covered-volume
             # or whole-ROI measurements. True covered diagnostics have separate keys.
@@ -2085,7 +2091,54 @@ def _small_volume_dose(bins, cumulative, volume_cm3, minimum, maximum, requested
     return (value, "available") if np.isfinite(value) else (None, "not_computable")
 
 
-def _compute_metrics(abs_dvh, rx_dose: Optional[float]) -> Optional[Dict[str, float]]:
+def _automatic_rtstruct_source(course_dir, source_label, rtstruct_path):
+    """Return producer-established automatic provenance bound to current bytes."""
+    if source_label == 'AutoRTS':
+        from .auto_rtstruct import (_read_rs_auto_origin, RS_AUTO_ORIGIN_COPY,
+                                    RS_AUTO_ORIGIN_MASKS, RS_AUTO_MASK_LAYOUT)
+        origin = _read_rs_auto_origin(course_dir, rtstruct_path)
+        if origin and (origin.get('origin') == RS_AUTO_ORIGIN_COPY or
+                       (origin.get('origin') == RS_AUTO_ORIGIN_MASKS and
+                        origin.get('mask_layout') == RS_AUTO_MASK_LAYOUT)):
+            return {'source': source_label, **origin}
+    elif source_label.startswith('CustomModel:'):
+        return {'source': source_label, 'origin': 'custom_model_rtstruct',
+                'rtstruct_sha256': sha256_file(rtstruct_path)}
+    return None
+
+
+def _rtstruct_dose_summary(rtstruct, dose, roi_number):
+    """Replay the default axial DVH rasterizer on its working dose grid.
+
+    Use parsed contour-plane keys, patient-to-pixel LUT, XOR fill and supported
+    planes exactly as get_dvh does. Outside-grid dummy planes used only for
+    full-volume accounting never enter the dose summary.
+    """
+    rtss = _dicomparser.DicomParser(rtstruct)
+    parser = _dicomparser.DicomParser(dose)
+    planes = rtss.GetStructureCoordinates(roi_number)
+    dd, image = parser.GetDoseData(), parser.GetImageData()
+    x_index = dd['x_lut_index']
+    x, y = np.meshgrid(dd['lut'][x_index], dd['lut'][1-x_index])
+    points = np.column_stack((x.ravel(), y.ravel()))
+
+    def summaries():
+        for z, plane in sorted(planes.items()):
+            doseplane = parser.GetDoseGrid(z)
+            if doseplane.size:
+                # Axial get_dvh assigns the same thickness to every plane;
+                # its constant factor cancels in the weighted mean.
+                yield unbinned_plane_summary(plane, doseplane, points, dd, image, 1.)
+    return combine_dose_summaries(summaries())
+
+
+def _compute_metrics(abs_dvh, rx_dose: Optional[float], dose_summary=None) -> Optional[Dict[str, object]]:
+    """Extract binned metrics, recovering mean/max from a collapsed histogram.
+
+    The optional lazy summary must use the histogram's working grid and mask.
+    Quantiles remain histogram-derived; multibin positive-dose metrics retain
+    their existing arithmetic and do not invoke the sampler.
+    """
     bins_abs = abs_dvh.bincenters
     cum_abs = abs_dvh.counts
     if cum_abs.size == 0 or cum_abs[0] == 0:
@@ -2172,7 +2225,7 @@ def _compute_metrics(abs_dvh, rx_dose: Optional[float]) -> Optional[Dict[str, fl
         except Exception as exc:
             logger.debug("Failed computing relative DVH metrics (Rx=%.2f): %s", rx_dose, exc)
 
-    metrics: Dict[str, float] = {
+    metrics: Dict[str, object] = {
         "DmeanGy": DmeanGy,
         "DmaxGy": DmaxGy,
         "DminGy": DminGy,
@@ -2206,6 +2259,23 @@ def _compute_metrics(abs_dvh, rx_dose: Optional[float]) -> Optional[Dict[str, fl
     }
     metrics.update(V_abs)
     metrics.update(V_rel)
+    metrics['dose_summary_basis'] = 'binned'
+    if cum_abs.size <= 1 or DmaxGy == 0:
+        notes = getattr(abs_dvh, 'notes', None)
+        summary = dose_summary or (notes.get('_unbinned_dose_summary') if isinstance(notes, dict) else None)
+        if summary is None:
+            raise ValueError('A collapsed DVH needs unbinned in-mask dose samples')
+        summary = summary() if callable(summary) else summary
+        mean, maximum = float(summary['mean']), float(summary['max'])
+        if not (np.isfinite(mean) and np.isfinite(maximum) and 0 <= mean <= maximum):
+            raise ValueError('Invalid unbinned in-mask dose summary')
+        metrics.update(DmeanGy=mean, DmaxGy=maximum,
+                       IntegralDose_Gycm3=mean * V_total, SpreadGy=maximum - DminGy,
+                       dose_summary_basis='unbinned_subcentigray')
+        if rx_dose and rx_dose > 0:
+            metrics['Dmean%'] = mean / rx_dose * 100.
+            metrics['Dmax%'] = maximum / rx_dose * 100.
+            metrics['Spread%'] = (maximum - DminGy) / rx_dose * 100.
     return metrics
 
 
@@ -2827,6 +2897,15 @@ def _is_dvh_up_to_date(
             return False
 
         for row in parquet_frame.to_dict("records"):
+            if row.get('dvh_nonmeasurement_class') in {'nonmeasurable_auto_sliver', 'degenerate_contours'}:
+                try:
+                    evidence = json.loads(row['dvh_nonmeasurement_evidence'])
+                    current_source = _automatic_rtstruct_source(
+                        course_dir, str(row.get('Segmentation_Source') or ''), Path(row['rtstruct_path']))
+                    if evidence['automatic_source'] != current_source:
+                        return False
+                except (OSError, ValueError, KeyError, TypeError):
+                    return False
             kind = row.get("structure_provenance_type")
             if kind in {"NIFTI_MASK", "DERIVED_NIFTI_MASK"}:
                 try:
@@ -2901,6 +2980,7 @@ def _is_dvh_up_to_date(
             course_dir / "RS_auto.dcm",
             course_dir / "RS_auto_cropped.dcm",
             course_dir / "RS_custom.dcm",
+            course_dir / "metadata" / "rs_auto_origin.json",
             course_dir / "cropping_metadata.json",  # Ensure DVH reruns if cropping config changes
         ]
         if not contract.selected_doses and contract.data.get("dose_grid") is None:
@@ -3769,12 +3849,17 @@ def dvh_for_course(
             builder_obj,
             rtstruct_sop_uid,
             rtstruct_path,
+            automatic_source,
         ) = task
-        coverage = (rotated_grid.coverage(geometry_rtstruct_ds, int(roi_number))
+        coverage = roi_nonvolume_coverage(geometry_rtstruct_ds, int(roi_number),
+                                          automatic_source=automatic_source)
+        if coverage is None:
+            coverage = (rotated_grid.coverage(geometry_rtstruct_ds, int(roi_number))
                     if rotated_grid is not None else
                     rtstruct_grid_coverage(geometry_rtstruct_ds, int(roi_number), rtdose))
         alignment = None
-        if coverage["status"] in {"declared_empty", "non_volumetric", "degenerate_contours"}:
+        if coverage["status"] in {"declared_empty", "non_volumetric", "degenerate_contours",
+                                  "nonmeasurable_auto_sliver"}:
             unavailable = annotate_dvh_metrics(
                 {**dict.fromkeys(RELATIVE_DVH_METRIC_COLUMNS), "Volume (cm³)": None,
                  "DmeanGy": None, "DmaxGy": None, "DminGy": None,
@@ -3805,6 +3890,10 @@ def dvh_for_course(
             abs_dvh = (rotated_grid.get_dvh(rtstruct_ds, roi_number)
                        if rotated_grid is not None else
                        dvhcalc.get_dvh(rtstruct_ds, roi_dose, roi_number))
+            metrics = _compute_metrics(
+                abs_dvh, rx_value,
+                None if rotated_grid is not None else
+                lambda: _rtstruct_dose_summary(rtstruct_ds, roi_dose, roi_number))
         except MemoryError:
             raise
         except Exception as exc:
@@ -3840,7 +3929,6 @@ def dvh_for_course(
                 "DVH interpolation may be unreliable for dose-volume metrics.",
                 roi_name, abs_dvh.volume,
             )
-        metrics = _compute_metrics(abs_dvh, rx_value)
         if rotated_grid is not None:
             metrics = add_brachy_metrics(abs_dvh, metrics)
         if metrics is None:
@@ -3853,7 +3941,10 @@ def dvh_for_course(
             covered_dvh = (rotated_grid.get_dvh(rtstruct_ds, roi_number, calculate_full_volume=False)
                            if rotated_grid is not None else
                            dvhcalc.get_dvh(rtstruct_ds, roi_dose, roi_number, calculate_full_volume=False))
-            covered = _compute_metrics(covered_dvh, rx_value)
+            covered = _compute_metrics(
+                covered_dvh, rx_value,
+                None if rotated_grid is not None else
+                lambda: _rtstruct_dose_summary(rtstruct_ds, roi_dose, roi_number))
             if rotated_grid is not None:
                 covered = add_brachy_metrics(covered_dvh, covered)
         target_like = _is_target_structure(roi_name, roi_interpreted_type)
@@ -3946,6 +4037,8 @@ def dvh_for_course(
         # creates a private working dose for each axial ROI inside _calc_roi.
         geometry_rtstruct = rtstruct
 
+        automatic_source = _automatic_rtstruct_source(course_dir, rs_source.source_label, rs_path)
+
         builder = _get_builder(rs_path)
         roi_interpreted_types = _roi_interpreted_type_map(geometry_rtstruct)
         rois = list(getattr(rtstruct, "StructureSetROISequence", []) or [])
@@ -3971,6 +4064,7 @@ def dvh_for_course(
                 builder,
                 rs_source.sop_instance_uid,
                 rs_path,
+                automatic_source,
             ))
 
         if not tasks:

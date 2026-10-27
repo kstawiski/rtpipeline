@@ -313,11 +313,23 @@ class RotatedDoseGrid:
                          dvh_type="differential", dose_units="Gy", name=item["name"]).cumulative
         result.notes = {"contour_plane_tilt_degrees": tilt,
                         "contour_max_projection_mm": max_projection}
+        def unbinned_summary():
+            from .dvh_support import unbinned_plane_summary, combine_dose_summaries
+
+            def summaries():
+                for z, weight in zip(zs, weights):
+                    doseplane = (parser.GetDoseGrid(z) if axial else self.sample(
+                        np.stack((xx, yy, np.full_like(xx, z)), axis=-1) @ frame.T))
+                    yield unbinned_plane_summary(planes[z], doseplane, points, dd, image, weight)
+            return combine_dose_summaries(summaries())
+        # DVH reconstructs itself from __dict__ during differential/relative
+        # conversion. Keep the lazy sampler in its existing notes container.
+        result.notes['_unbinned_dose_summary'] = unbinned_summary
         return result
 
-    def coverage(self, structure, roi):
+    def coverage(self, structure, roi, *, automatic_source=None):
         from .dvh_support import roi_nonvolume_coverage
-        disposition = roi_nonvolume_coverage(structure, roi)
+        disposition = roi_nonvolume_coverage(structure, roi, automatic_source=automatic_source)
         if disposition is not None:
             return disposition
         from .dvh import (_dose_grid_contour_coordinates, _polygon_intersects_box)

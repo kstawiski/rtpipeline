@@ -219,7 +219,7 @@ def test_axis_aligned_publication_bytes_against_git_a61b96a(tmp_path, monkeypatc
             return cls(2024, 1, 1, tzinfo=tz)
     monkeypatch.setattr(xlsxwriter.core, 'datetime', FixedWorkbookTime)
     baseline = historical_dvh(tmp_path)
-    course = fx.build_course(tmp_path, rois=fx.NO_NEAR_ZERO_ROIS)
+    course = fx.build_course(tmp_path, rois=fx.NO_NEAR_ZERO_ROIS, low_dose_gy=0.)
     path = course/'DICOM/RTDOSE/dose.dcm'
     dose = pydicom.dcmread(path)
     dose.ImageOrientationPatient = orientation
@@ -249,8 +249,10 @@ def test_axis_aligned_publication_bytes_against_git_a61b96a(tmp_path, monkeypatc
     old_table = pd.read_parquet(BytesIO(old['dvh_metrics.parquet']))
     new_table = pd.read_parquet(BytesIO(new['dvh_metrics.parquet']))
     assert set(new_table.columns) == set(old_table.columns) | {'dose_plane_alignment', 'D2ccGy', 'D2cc_status',
-                                                                            'dose_grid_coverage_reason', 'dose_grid_coverage_reason_code'}
+                                                                            'dose_grid_coverage_reason', 'dose_grid_coverage_reason_code', 'dose_summary_basis'}
     fx.assert_d2cc_columns(new_table)
+    assert new_table.loc[new_table.DmaxGy.eq(0), 'dose_summary_basis'].eq('unbinned_subcentigray').all()
+    assert new_table.loc[new_table.DmaxGy.gt(0), 'dose_summary_basis'].eq('binned').all()
     assert new_table.dose_grid_coverage_reason.notna().all()
     assert new_table.dose_grid_coverage_reason_code.isna().all()
     alignment = new_table['dose_plane_alignment']
@@ -263,7 +265,7 @@ def test_axis_aligned_publication_bytes_against_git_a61b96a(tmp_path, monkeypatc
     old_workbook = pd.read_excel(BytesIO(old['dvh_metrics.xlsx']))
     new_workbook = pd.read_excel(BytesIO(new['dvh_metrics.xlsx']))
     assert set(new_workbook.columns) == set(old_workbook.columns) | {'dose_plane_alignment', 'D2ccGy', 'D2cc_status',
-                                                                            'dose_grid_coverage_reason', 'dose_grid_coverage_reason_code'}
+                                                                            'dose_grid_coverage_reason', 'dose_grid_coverage_reason_code', 'dose_summary_basis'}
     fx.assert_d2cc_columns(new_workbook)
     assert new_workbook.dose_grid_coverage_reason.notna().all()
     assert new_workbook.dose_grid_coverage_reason_code.isna().all()
