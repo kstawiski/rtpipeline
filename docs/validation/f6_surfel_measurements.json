@@ -1,0 +1,95 @@
+[
+  {
+    "case": "offset",
+    "spacing_mm": 1.0,
+    "analytic_hd95_mm": 5.7,
+    "analytic_mean_mm": 3.0,
+    "analytic_surface_dice": 0.5,
+    "hd95_mm": 5.385164807134504,
+    "mean_mm": 2.556711033452536,
+    "surface_dice": 0.6238677760441016,
+    "equal_voxel_surface_dice": 0.5644171779141104
+  },
+  {
+    "case": "concentric_tolerance_3",
+    "spacing_mm": 1.0,
+    "analytic_hd95_mm": 4.0,
+    "analytic_mean_mm": 4.0,
+    "analytic_surface_dice": 0.0,
+    "hd95_mm": 4.123105625617661,
+    "mean_mm": 3.5191303193758263,
+    "surface_dice": 0.14498410106635365
+  },
+  {
+    "case": "concentric_tolerance_5",
+    "spacing_mm": 1.0,
+    "analytic_hd95_mm": 4.0,
+    "analytic_mean_mm": 4.0,
+    "analytic_surface_dice": 1.0,
+    "hd95_mm": 4.123105625617661,
+    "mean_mm": 3.5191303193758263,
+    "surface_dice": 1.0
+  },
+  {
+    "case": "offset",
+    "spacing_mm": 0.5,
+    "analytic_hd95_mm": 5.7,
+    "analytic_mean_mm": 3.0,
+    "analytic_surface_dice": 0.5,
+    "hd95_mm": 5.522680508593631,
+    "mean_mm": 2.752274043733744,
+    "surface_dice": 0.5575600097870993,
+    "equal_voxel_surface_dice": 0.5365126676602087
+  },
+  {
+    "case": "concentric_tolerance_3",
+    "spacing_mm": 0.5,
+    "analytic_hd95_mm": 4.0,
+    "analytic_mean_mm": 4.0,
+    "analytic_surface_dice": 0.0,
+    "hd95_mm": 4.031128874149275,
+    "mean_mm": 3.7320523265010306,
+    "surface_dice": 0.0
+  },
+  {
+    "case": "concentric_tolerance_5",
+    "spacing_mm": 0.5,
+    "analytic_hd95_mm": 4.0,
+    "analytic_mean_mm": 4.0,
+    "analytic_surface_dice": 1.0,
+    "hd95_mm": 4.031128874149275,
+    "mean_mm": 3.7320523265010306,
+    "surface_dice": 1.0
+  },
+  {
+    "case": "offset",
+    "spacing_mm": 0.25,
+    "analytic_hd95_mm": 5.7,
+    "analytic_mean_mm": 3.0,
+    "analytic_surface_dice": 0.5,
+    "hd95_mm": 5.573374202401989,
+    "mean_mm": 2.8594890744906034,
+    "surface_dice": 0.5232571819500726,
+    "equal_voxel_surface_dice": 0.5133390181508101
+  },
+  {
+    "case": "concentric_tolerance_3",
+    "spacing_mm": 0.25,
+    "analytic_hd95_mm": 4.0,
+    "analytic_mean_mm": 4.0,
+    "analytic_surface_dice": 0.0,
+    "hd95_mm": 4.00780488547035,
+    "mean_mm": 3.846964597228965,
+    "surface_dice": 0.0
+  },
+  {
+    "case": "concentric_tolerance_5",
+    "spacing_mm": 0.25,
+    "analytic_hd95_mm": 4.0,
+    "analytic_mean_mm": 4.0,
+    "analytic_surface_dice": 1.0,
+    "hd95_mm": 4.00780488547035,
+    "mean_mm": 3.846964597228965,
+    "surface_dice": 1.0
+  }
+]

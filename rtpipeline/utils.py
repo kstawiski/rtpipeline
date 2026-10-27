@@ -786,58 +786,164 @@ def mask_is_cropped(mask: np.ndarray) -> bool:
     return False
 
 
+def _axial_dose_plane_positions(rtdose: FileDataset) -> np.ndarray:
+    """Patient z positions for relative or absolute axial RTDOSE offsets."""
+    orientation = np.asarray(rtdose.ImageOrientationPatient, dtype=float)
+    origin = np.asarray(rtdose.ImagePositionPatient, dtype=float)
+    offsets = np.atleast_1d(np.asarray(rtdose.GridFrameOffsetVector, dtype=float))
+    if (orientation.shape != (6,) or origin.shape != (3,) or not offsets.size
+            or not np.isfinite(orientation).all() or not np.isfinite(origin).all()
+            or not np.isfinite(offsets).all()):
+        raise ValueError("Invalid axial RTDOSE geometry")
+    normal = np.cross(orientation[:3], orientation[3:])
+    if not np.allclose(np.abs(normal), [0., 0., 1.], atol=1e-8, rtol=0):
+        raise ValueError("Contour-plane alignment requires an axial RTDOSE")
+    if abs(offsets[0]) <= 1e-3:
+        planes = origin[2] + normal[2] * (offsets - offsets[0])
+    elif (np.array_equal(orientation, [1., 0., 0., 0., 1., 0.])
+          and abs(offsets[0] - origin[2]) <= 1e-3):
+        # DICOM C.8.8.3.2 option (b): absolute patient z coordinates.
+        planes = offsets
+    else:
+        raise ValueError("Invalid RTDOSE frame offsets")
+    delta = np.diff(planes)
+    if delta.size and not (np.all(delta > 0) or np.all(delta < 0)):
+        raise ValueError("RTDOSE planes must be strictly monotonic")
+    return planes
+
+
+class _ContourPlaneDose(pydicom.dataset.Dataset):
+    """Read-only floating pixel adapter for dicompyler; never written as DICOM."""
+
+    @property
+    def pixel_array(self):
+        return self._contour_plane_pixels
+
+
+def dose_on_contour_planes(
+    rtstruct: FileDataset,
+    rtdose: FileDataset,
+    roi_number: int,
+) -> tuple[pydicom.dataset.Dataset, str]:
+    """Align axial dose samples to one ROI without changing either input.
+
+    Coincident relative planes (within 0.001 mm) use the original dose.
+    Absolute offsets are rebuilt as relative offsets even at source nodes.
+    Otherwise,
+    interpolate between the two *bracketing* source planes, in stored dose
+    units, and retain floating values to avoid another quantization. XY geometry
+    and dose scaling are unchanged. Original boundary planes are retained for
+    dicompyler's full-volume handling; no samples are created outside support.
+    Each ROI has its own working dataset, so other ROIs cannot change its planes
+    or inferred contour slab thickness. Contours are never snapped here.
+    """
+    from .dvh_rotation import MAX_CONTOUR_PROJECTION_MM
+
+    planes = _axial_dose_plane_positions(rtdose)
+    contour_z = []
+    for roi in getattr(rtstruct, "ROIContourSequence", []) or []:
+        if int(roi.ReferencedROINumber) != int(roi_number):
+            continue
+        for contour in getattr(roi, "ContourSequence", []) or []:
+            data = np.asarray(getattr(contour, "ContourData", []), dtype=float)
+            if not data.size:
+                continue
+            points = data.reshape(-1, 3)
+            if (not np.isfinite(points).all()
+                    or np.ptp(points[:, 2]) > MAX_CONTOUR_PROJECTION_MM):
+                raise ValueError("Contour-plane alignment requires finite axial contours")
+            contour_z.append(float(np.mean(points[:, 2])))
+    if not contour_z:
+        return rtdose, "NO_IN_RANGE_PLANE"
+    order = np.argsort(planes)
+    source_z = planes[order]
+    target_z = np.unique(contour_z)
+    # Outside contours remain outside. Coverage is evaluated on the original
+    # dose by the caller, and dicompyler retains its partial-volume policy.
+    target_z = target_z[(target_z >= source_z[0]) & (target_z <= source_z[-1])]
+    if not target_z.size:
+        return rtdose, "NO_IN_RANGE_PLANE"
+    nearest = np.searchsorted(source_z, target_z).clip(0, len(source_z) - 1)
+    previous = (nearest - 1).clip(0)
+    distance = np.minimum(abs(target_z - source_z[nearest]),
+                          abs(target_z - source_z[previous]))
+    first_offset = np.atleast_1d(np.asarray(rtdose.GridFrameOffsetVector, dtype=float))[0]
+    absolute_offsets = abs(first_offset) > 1e-3
+    if np.all(distance <= 1e-3) and not absolute_offsets:
+        return rtdose, "EXACT"
+
+    # Keep the support endpoints, including the origin used by dicompyler to
+    # rasterize out-of-grid contours for its diagnostic full-volume estimate.
+    target_z = np.unique(np.r_[source_z[0], target_z, source_z[-1]])
+    pixels = np.asarray(rtdose.pixel_array)
+    pixels = pixels.reshape(len(planes), int(rtdose.Rows), int(rtdose.Columns))
+    upper = np.searchsorted(source_z, target_z).clip(0, len(source_z) - 1)
+    lower = (upper - 1).clip(0)
+    dz = source_z[upper] - source_z[lower]
+    weights = np.divide(target_z - source_z[lower], dz,
+                        out=np.zeros_like(target_z), where=dz != 0)
+    sampled = np.empty((len(target_z), *pixels.shape[1:]), dtype=np.float64)
+    for i, (lo, hi, weight) in enumerate(zip(lower, upper, weights)):
+        a = pixels[order[lo]].astype(np.float64)
+        b = pixels[order[hi]].astype(np.float64)
+        sampled[i] = a + weight * (b - a)
+    sampled.setflags(write=False)
+
+    working = _ContourPlaneDose()
+    # Do not duplicate the full source pixel array or its decoder cache.
+    for element in rtdose:
+        if element.tag not in (0x7FE00010, 0x7FE00008, 0x7FE00009):
+            working.add(copy.deepcopy(element))
+    if hasattr(rtdose, "file_meta"):
+        working.file_meta = copy.deepcopy(rtdose.file_meta)
+    working.ImagePositionPatient = [float(rtdose.ImagePositionPatient[0]),
+                                    float(rtdose.ImagePositionPatient[1]), float(target_z[0])]
+    normal_z = np.cross(np.asarray(rtdose.ImageOrientationPatient[:3], float),
+                        np.asarray(rtdose.ImageOrientationPatient[3:], float))[2]
+    working.GridFrameOffsetVector = ((target_z - target_z[0]) / normal_z).tolist()
+    working.NumberOfFrames = len(target_z)
+    # DicomParser gates pixel access on this tag; the property supplies floats.
+    working.PixelData = b""
+    working._contour_plane_pixels = sampled
+    alignment = "EXACT" if np.all((weights == 0) | (weights == 1)) else "DOSE_Z_INTERPOLATED"
+    return working, alignment
+
+
 def snap_rtstruct_to_dose_grid(
     rtstruct: FileDataset,
     rtdose: FileDataset,
     tolerance_mm: float = 1.0,
 ) -> bool:
-    """Snap RTSTRUCT contour plane positions to the closest dose grid plane.
+    """Snap only floating misalignment below 0.1 mm, without plane merging.
 
-    Many TPS export contours with sub-millimetre deviations from the dose grid.
-    dicompyler-core expects an exact match and otherwise falls back to extrema,
-    degrading DVH accuracy. This helper adjusts each contour ``z`` coordinate to
-    the nearest plane within ``tolerance_mm``. Returns True when any coordinate
-    was updated.
-
-    Note: This function mutates the pydicom dataset in-place. A snap_cache
-    prevents double-snapping, but callers should be aware that coordinates
-    are modified on the original dataset object.
+    This optional legacy helper mutates its RTSTRUCT argument. The production
+    axial DVH path instead uses :func:`dose_on_contour_planes` and keeps all
+    contour coordinates unchanged. A collision anywhere cancels the snap.
     """
 
     if rtstruct is None or rtdose is None:
         return False
 
     try:
-        ipp = getattr(rtdose, "ImagePositionPatient", None)
-        offsets = getattr(rtdose, "GridFrameOffsetVector", [])
-        if ipp is None or len(ipp) < 3:
-            return False
-        base_z = float(ipp[2])
-        planes = base_z + np.asarray([float(v) for v in offsets], dtype=float)
+        planes = _axial_dose_plane_positions(rtdose)
     except Exception:
         return False
 
     if planes.size == 0:
         return False
 
-    tolerance = abs(float(tolerance_mm)) if tolerance_mm is not None else 0.0
-    if tolerance == 0.0:
-        tolerance = 0.5
-
-    # Safety: do not "snap" contours that genuinely lie between dose planes.
-    # If tolerance approaches half the dose-plane spacing, thin-slice structures
-    # (e.g., CT 1.5mm with dose grid 3mm) can get two adjacent contour planes
-    # collapsed onto the same dose plane. dicompyler-core then interprets the
-    # second contour as a hole, catastrophically underestimating volume/DVH.
-    try:
-        spacings = np.diff(np.unique(planes))
-        min_spacing = float(np.min(spacings)) if spacings.size else None
-    except Exception:
-        min_spacing = None
-    if min_spacing is not None and min_spacing > 0:
-        max_safe_tol = 0.49 * min_spacing
-        if tolerance > max_safe_tol:
-            tolerance = max_safe_tol
+    # Leave a numerical margin so a decimal 0.1 mm is not admitted by binary
+    # subtraction rounding at large patient coordinates.
+    tolerance = min(abs(float(tolerance_mm or 0)), 0.1 - 1e-9)
+    mapping = {}
+    for roi in getattr(rtstruct, "ROIContourSequence", []) or []:
+        for contour in getattr(roi, "ContourSequence", []) or []:
+            for value in getattr(contour, "ContourData", [])[2::3]:
+                z = float(value)
+                nearest = float(planes[np.abs(planes - z).argmin()])
+                mapping[z] = nearest if 1e-3 < abs(nearest - z) <= tolerance else z
+    if len(set(mapping.values())) != len(mapping):
+        return False
 
     changed = False
     roi_sequence = getattr(rtstruct, "ROIContourSequence", []) or []
@@ -855,13 +961,12 @@ def snap_rtstruct_to_dose_grid(
                     current_z = float(data[idx])
                 except Exception:
                     continue
-                nearest = float(planes[np.abs(planes - current_z).argmin()])
-                if abs(nearest - current_z) <= tolerance and not np.isclose(nearest, current_z, atol=1e-3):
-                    rounded = round(nearest, 6)
+                nearest = mapping[current_z]
+                if nearest != current_z:
                     try:
-                        data[idx] = type(data[idx])(rounded)
+                        data[idx] = type(data[idx])(nearest)
                     except Exception:
-                        data[idx] = rounded
+                        data[idx] = nearest
                     updated = True
             if updated:
                 changed = True

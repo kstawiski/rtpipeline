@@ -59,3 +59,7 @@ prune custom_models/lung_tumor_medsam_boxprompt_rider/weights
 prune custom_models/lung_tumor_pancancer_lung/weights
 prune custom_models/lung_tumor_pancancer_lung_rider/weights
 global-exclude __pycache__ *.py[cod] .DS_Store
+
+include rtpipeline/treatment_scope_rules_v1.yaml
+recursive-include rtpipeline/eval/_vendor *.py LICENSE NOTICE
+recursive-include docs/licenses *.md *.txt

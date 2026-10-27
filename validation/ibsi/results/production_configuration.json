@@ -1,0 +1,75 @@
+{
+  "configured_yaml": "rtpipeline/radiomics_params.yaml",
+  "configured_yaml_sha256": "7ee24af298e06d94f491c6dcf4dd1fb72625a4a1e0b242c46ab25f54d7a8cdc3",
+  "effective_settings": {
+    "additionalInfo": true,
+    "binWidth": 25,
+    "correctMask": true,
+    "distances": [
+      1,
+      2
+    ],
+    "force2D": false,
+    "force2Ddimension": 0,
+    "geometryTolerance": 1e-06,
+    "interpolator": "sitkBSpline",
+    "label": 1,
+    "minimumROIDimensions": 2,
+    "minimumROISize": 64,
+    "normalize": false,
+    "normalizeScale": 1,
+    "padDistance": 5,
+    "preCrop": false,
+    "removeOutliers": null,
+    "resampledPixelSpacing": [
+      1.0,
+      1.0,
+      1.0
+    ],
+    "resegmentRange": null,
+    "voxelArrayShift": 0,
+    "weightingNorm": null
+  },
+  "enabled_features": {
+    "firstorder": [],
+    "glcm": [],
+    "gldm": [],
+    "glrlm": [],
+    "glszm": [],
+    "ngtdm": [],
+    "shape": []
+  },
+  "extraction_performed": false,
+  "image_types": {
+    "LoG": {
+      "sigma": [
+        1.0,
+        2.0,
+        3.0,
+        5.0
+      ]
+    },
+    "Original": {},
+    "Wavelet": {
+      "level": 1,
+      "start_level": 0,
+      "wavelet": "coif1"
+    }
+  },
+  "primary_windows_hu": {
+    "hollow_pelvic_organ": [
+      -1000.0,
+      400.0
+    ],
+    "solid_soft_tissue_neural": [
+      -500.0,
+      400.0
+    ],
+    "target": [
+      -1000.0,
+      400.0
+    ]
+  },
+  "sensitivity_policy": "no intensity resegmentation",
+  "shape_policy": "separate unresegmented morphological mask; original image only"
+}

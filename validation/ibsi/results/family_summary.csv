@@ -1,0 +1,122 @@
+arm,configuration,family,within_tolerance,outside_tolerance,computed_with_reference,not_computed,not_mappable,consensus_reference_rows,conformance_proportion_computed,reference_coverage,conformance_proportion_all_references,strict_raw_within
+digital,digital,Co-occurrence matrix,92,0,92,58,1,150,1.0,0.6133333333333333,0.6133333333333333,0
+digital,digital,Distance zone matrix,0,0,0,48,0,48,,0.0,0.0,0
+digital,digital,Intensity histogram,2,0,2,21,0,23,1.0,0.08695652173913043,0.08695652173913043,0
+digital,digital,Intensity volume histogram,0,0,0,7,0,6,,0.0,0.0,0
+digital,digital,Local intensity,0,0,0,2,0,2,,0.0,0.0,0
+digital,digital,Morphology,10,1,11,18,3,25,0.9090909090909091,0.44,0.4,9
+digital,digital,Neighbourhood grey tone difference matrix,10,0,10,5,0,15,1.0,0.6666666666666666,0.6666666666666666,0
+digital,digital,Neighbouring grey level dependence matrix,28,0,28,23,0,51,1.0,0.5490196078431373,0.5490196078431373,1
+digital,digital,Run length matrix,64,0,64,32,0,96,1.0,0.6666666666666666,0.6666666666666666,0
+digital,digital,Size zone matrix,32,0,32,16,0,48,1.0,0.6666666666666666,0.6666666666666666,6
+digital,digital,Statistics,14,1,15,3,1,18,0.9333333333333333,0.8333333333333334,0.7777777777777778,8
+ibsi_preprocessed,A,Co-occurrence matrix,46,0,46,54,1,100,1.0,0.46,0.46,46
+ibsi_preprocessed,A,Distance zone matrix,0,0,0,32,0,32,,0.0,0.0,0
+ibsi_preprocessed,A,Intensity histogram,2,0,2,21,0,23,1.0,0.08695652173913043,0.08695652173913043,2
+ibsi_preprocessed,A,Intensity volume histogram,0,0,0,7,0,6,,0.0,0.0,0
+ibsi_preprocessed,A,Local intensity,0,0,0,2,0,2,,0.0,0.0,0
+ibsi_preprocessed,A,Morphology,11,0,11,18,3,25,1.0,0.44,0.44,11
+ibsi_preprocessed,A,Neighbourhood grey tone difference matrix,5,0,5,5,0,10,1.0,0.5,0.5,5
+ibsi_preprocessed,A,Neighbouring grey level dependence matrix,14,0,14,20,0,34,1.0,0.4117647058823529,0.4117647058823529,14
+ibsi_preprocessed,A,Run length matrix,32,0,32,32,0,64,1.0,0.5,0.5,32
+ibsi_preprocessed,A,Size zone matrix,16,0,16,16,0,32,1.0,0.5,0.5,16
+ibsi_preprocessed,A,Statistics,14,1,15,3,1,18,0.9333333333333333,0.8333333333333334,0.7777777777777778,14
+ibsi_preprocessed,B,Co-occurrence matrix,46,0,46,54,1,100,1.0,0.46,0.46,46
+ibsi_preprocessed,B,Distance zone matrix,0,0,0,32,0,32,,0.0,0.0,0
+ibsi_preprocessed,B,Intensity histogram,2,0,2,21,0,23,1.0,0.08695652173913043,0.08695652173913043,2
+ibsi_preprocessed,B,Intensity volume histogram,0,0,0,7,0,6,,0.0,0.0,0
+ibsi_preprocessed,B,Local intensity,0,0,0,2,0,2,,0.0,0.0,0
+ibsi_preprocessed,B,Morphology,11,0,11,18,3,25,1.0,0.44,0.44,11
+ibsi_preprocessed,B,Neighbourhood grey tone difference matrix,5,0,5,5,0,10,1.0,0.5,0.5,5
+ibsi_preprocessed,B,Neighbouring grey level dependence matrix,14,0,14,20,0,34,1.0,0.4117647058823529,0.4117647058823529,14
+ibsi_preprocessed,B,Run length matrix,32,0,32,32,0,64,1.0,0.5,0.5,32
+ibsi_preprocessed,B,Size zone matrix,16,0,16,16,0,32,1.0,0.5,0.5,16
+ibsi_preprocessed,B,Statistics,14,1,15,3,1,18,0.9333333333333333,0.8333333333333334,0.7777777777777778,14
+ibsi_preprocessed,C,Co-occurrence matrix,40,6,46,4,1,50,0.8695652173913043,0.92,0.8,40
+ibsi_preprocessed,C,Distance zone matrix,0,0,0,16,0,16,,0.0,0.0,0
+ibsi_preprocessed,C,Intensity histogram,2,0,2,21,0,23,1.0,0.08695652173913043,0.08695652173913043,2
+ibsi_preprocessed,C,Intensity volume histogram,0,0,0,7,0,6,,0.0,0.0,0
+ibsi_preprocessed,C,Local intensity,0,0,0,2,0,2,,0.0,0.0,0
+ibsi_preprocessed,C,Morphology,11,0,11,18,3,25,1.0,0.44,0.44,11
+ibsi_preprocessed,C,Neighbourhood grey tone difference matrix,4,1,5,0,0,5,0.8,1.0,0.8,4
+ibsi_preprocessed,C,Neighbouring grey level dependence matrix,8,6,14,3,0,17,0.5714285714285714,0.8235294117647058,0.47058823529411764,8
+ibsi_preprocessed,C,Run length matrix,20,12,32,0,0,32,0.625,1.0,0.625,20
+ibsi_preprocessed,C,Size zone matrix,10,6,16,0,0,16,0.625,1.0,0.625,10
+ibsi_preprocessed,C,Statistics,14,1,15,3,1,18,0.9333333333333333,0.8333333333333334,0.7777777777777778,14
+ibsi_preprocessed,D,Co-occurrence matrix,46,0,46,4,1,50,1.0,0.92,0.92,46
+ibsi_preprocessed,D,Distance zone matrix,0,0,0,16,0,16,,0.0,0.0,0
+ibsi_preprocessed,D,Intensity histogram,2,0,2,21,0,23,1.0,0.08695652173913043,0.08695652173913043,2
+ibsi_preprocessed,D,Intensity volume histogram,0,0,0,7,0,6,,0.0,0.0,0
+ibsi_preprocessed,D,Local intensity,0,0,0,2,0,2,,0.0,0.0,0
+ibsi_preprocessed,D,Morphology,11,0,11,18,3,25,1.0,0.44,0.44,11
+ibsi_preprocessed,D,Neighbourhood grey tone difference matrix,5,0,5,0,0,5,1.0,1.0,1.0,5
+ibsi_preprocessed,D,Neighbouring grey level dependence matrix,14,0,14,3,0,17,1.0,0.8235294117647058,0.8235294117647058,14
+ibsi_preprocessed,D,Run length matrix,32,0,32,0,0,32,1.0,1.0,1.0,32
+ibsi_preprocessed,D,Size zone matrix,16,0,16,0,0,16,1.0,1.0,1.0,16
+ibsi_preprocessed,D,Statistics,14,1,15,3,1,18,0.9333333333333333,0.8333333333333334,0.7777777777777778,14
+ibsi_preprocessed,E,Co-occurrence matrix,46,0,46,4,1,50,1.0,0.92,0.92,46
+ibsi_preprocessed,E,Distance zone matrix,0,0,0,16,0,16,,0.0,0.0,0
+ibsi_preprocessed,E,Intensity histogram,2,0,2,21,0,23,1.0,0.08695652173913043,0.08695652173913043,2
+ibsi_preprocessed,E,Intensity volume histogram,0,0,0,7,0,6,,0.0,0.0,0
+ibsi_preprocessed,E,Local intensity,0,0,0,2,0,2,,0.0,0.0,0
+ibsi_preprocessed,E,Morphology,11,0,11,18,3,25,1.0,0.44,0.44,11
+ibsi_preprocessed,E,Neighbourhood grey tone difference matrix,5,0,5,0,0,5,1.0,1.0,1.0,5
+ibsi_preprocessed,E,Neighbouring grey level dependence matrix,14,0,14,3,0,17,1.0,0.8235294117647058,0.8235294117647058,14
+ibsi_preprocessed,E,Run length matrix,32,0,32,0,0,32,1.0,1.0,1.0,32
+ibsi_preprocessed,E,Size zone matrix,16,0,16,0,0,16,1.0,1.0,1.0,16
+ibsi_preprocessed,E,Statistics,14,1,15,3,1,18,0.9333333333333333,0.8333333333333334,0.7777777777777778,14
+native,A,Co-occurrence matrix,46,0,46,54,1,100,1.0,0.46,0.46,46
+native,A,Distance zone matrix,0,0,0,32,0,32,,0.0,0.0,0
+native,A,Intensity histogram,2,0,2,21,0,23,1.0,0.08695652173913043,0.08695652173913043,2
+native,A,Intensity volume histogram,0,0,0,7,0,6,,0.0,0.0,0
+native,A,Local intensity,0,0,0,2,0,2,,0.0,0.0,0
+native,A,Morphology,11,0,11,18,3,25,1.0,0.44,0.44,11
+native,A,Neighbourhood grey tone difference matrix,5,0,5,5,0,10,1.0,0.5,0.5,5
+native,A,Neighbouring grey level dependence matrix,14,0,14,20,0,34,1.0,0.4117647058823529,0.4117647058823529,14
+native,A,Run length matrix,32,0,32,32,0,64,1.0,0.5,0.5,32
+native,A,Size zone matrix,16,0,16,16,0,32,1.0,0.5,0.5,16
+native,A,Statistics,14,1,15,3,1,18,0.9333333333333333,0.8333333333333334,0.7777777777777778,14
+native,B,Co-occurrence matrix,15,31,46,54,1,100,0.32608695652173914,0.46,0.15,11
+native,B,Distance zone matrix,0,0,0,32,0,32,,0.0,0.0,0
+native,B,Intensity histogram,0,2,2,21,0,23,0.0,0.08695652173913043,0.0,0
+native,B,Intensity volume histogram,0,0,0,7,0,6,,0.0,0.0,0
+native,B,Local intensity,0,0,0,2,0,2,,0.0,0.0,0
+native,B,Morphology,10,1,11,18,3,25,0.9090909090909091,0.44,0.4,10
+native,B,Neighbourhood grey tone difference matrix,3,2,5,5,0,10,0.6,0.5,0.3,2
+native,B,Neighbouring grey level dependence matrix,6,8,14,20,0,34,0.42857142857142855,0.4117647058823529,0.17647058823529413,4
+native,B,Run length matrix,8,24,32,32,0,64,0.25,0.5,0.125,6
+native,B,Size zone matrix,10,6,16,16,0,32,0.625,0.5,0.3125,8
+native,B,Statistics,13,2,15,3,1,18,0.8666666666666667,0.8333333333333334,0.7222222222222222,12
+native,C,Co-occurrence matrix,14,32,46,4,1,50,0.30434782608695654,0.92,0.28,6
+native,C,Distance zone matrix,0,0,0,16,0,16,,0.0,0.0,0
+native,C,Intensity histogram,0,2,2,21,0,23,0.0,0.08695652173913043,0.0,0
+native,C,Intensity volume histogram,0,0,0,7,0,6,,0.0,0.0,0
+native,C,Local intensity,0,0,0,2,0,2,,0.0,0.0,0
+native,C,Morphology,6,5,11,18,3,25,0.5454545454545454,0.44,0.24,3
+native,C,Neighbourhood grey tone difference matrix,1,4,5,0,0,5,0.2,1.0,0.2,1
+native,C,Neighbouring grey level dependence matrix,2,12,14,3,0,17,0.14285714285714285,0.8235294117647058,0.11764705882352941,2
+native,C,Run length matrix,12,20,32,0,0,32,0.375,1.0,0.375,10
+native,C,Size zone matrix,4,12,16,0,0,16,0.25,1.0,0.25,2
+native,C,Statistics,1,14,15,3,1,18,0.06666666666666667,0.8333333333333334,0.05555555555555555,1
+native,D,Co-occurrence matrix,5,41,46,4,1,50,0.10869565217391304,0.92,0.1,2
+native,D,Distance zone matrix,0,0,0,16,0,16,,0.0,0.0,0
+native,D,Intensity histogram,0,2,2,21,0,23,0.0,0.08695652173913043,0.0,0
+native,D,Intensity volume histogram,0,0,0,7,0,6,,0.0,0.0,0
+native,D,Local intensity,0,0,0,2,0,2,,0.0,0.0,0
+native,D,Morphology,6,5,11,18,3,25,0.5454545454545454,0.44,0.24,3
+native,D,Neighbourhood grey tone difference matrix,2,3,5,0,0,5,0.4,1.0,0.4,2
+native,D,Neighbouring grey level dependence matrix,4,10,14,3,0,17,0.2857142857142857,0.8235294117647058,0.23529411764705882,4
+native,D,Run length matrix,10,22,32,0,0,32,0.3125,1.0,0.3125,10
+native,D,Size zone matrix,1,15,16,0,0,16,0.0625,1.0,0.0625,1
+native,D,Statistics,2,13,15,3,1,18,0.13333333333333333,0.8333333333333334,0.1111111111111111,1
+native,E,Co-occurrence matrix,0,0,0,50,0,50,,0.0,0.0,0
+native,E,Distance zone matrix,0,0,0,16,0,16,,0.0,0.0,0
+native,E,Intensity histogram,0,0,0,23,0,23,,0.0,0.0,0
+native,E,Intensity volume histogram,0,0,0,7,0,6,,0.0,0.0,0
+native,E,Local intensity,0,0,0,2,0,2,,0.0,0.0,0
+native,E,Morphology,0,0,0,29,0,25,,0.0,0.0,0
+native,E,Neighbourhood grey tone difference matrix,0,0,0,5,0,5,,0.0,0.0,0
+native,E,Neighbouring grey level dependence matrix,0,0,0,17,0,17,,0.0,0.0,0
+native,E,Run length matrix,0,0,0,32,0,32,,0.0,0.0,0
+native,E,Size zone matrix,0,0,0,16,0,16,,0.0,0.0,0
+native,E,Statistics,0,0,0,18,0,18,,0.0,0.0,0

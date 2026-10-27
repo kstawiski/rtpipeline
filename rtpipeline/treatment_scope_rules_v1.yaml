@@ -1,0 +1,382 @@
+geometry:
+  MP_interpretation: MP requires two gross targets with different organ-dominant geometry.
+    Bladder GTV overlap must equal or exceed its other-pelvic-organ overlap. Another
+    GTV must have at least 30% other-organ overlap, at least twice its bladder overlap,
+    at most 50% pairwise containment and at least 20 mm centroid separation. This
+    is not histological proof of distinct primary malignancies.
+  actual_organ_panel:
+  - adrenal_gland_left
+  - adrenal_gland_right
+  - aorta
+  - atrial_appendage_left
+  - autochthon_left
+  - autochthon_right
+  - brachiocephalic_trunk
+  - brachiocephalic_vein_left
+  - brachiocephalic_vein_right
+  - brain
+  - clavicula_left
+  - clavicula_right
+  - colon
+  - common_carotid_artery_left
+  - common_carotid_artery_right
+  - costal_cartilages
+  - duodenum
+  - esophagus
+  - femur_left
+  - femur_right
+  - gallbladder
+  - gluteus_maximus_left
+  - gluteus_maximus_right
+  - gluteus_medius_left
+  - gluteus_medius_right
+  - gluteus_minimus_left
+  - gluteus_minimus_right
+  - heart
+  - hip_left
+  - hip_right
+  - humerus_left
+  - humerus_right
+  - iliac_artery_left
+  - iliac_artery_right
+  - iliac_vena_left
+  - iliac_vena_right
+  - iliopsoas_left
+  - iliopsoas_right
+  - inferior_vena_cava
+  - kidney_cyst_left
+  - kidney_cyst_right
+  - kidney_left
+  - kidney_right
+  - liver
+  - lung_lower_lobe_left
+  - lung_lower_lobe_right
+  - lung_middle_lobe_right
+  - lung_upper_lobe_left
+  - lung_upper_lobe_right
+  - pancreas
+  - portal_vein_and_splenic_vein
+  - prostate
+  - pulmonary_vein
+  - rib_left_1
+  - rib_left_10
+  - rib_left_11
+  - rib_left_12
+  - rib_left_2
+  - rib_left_3
+  - rib_left_4
+  - rib_left_5
+  - rib_left_6
+  - rib_left_7
+  - rib_left_8
+  - rib_left_9
+  - rib_right_1
+  - rib_right_10
+  - rib_right_11
+  - rib_right_12
+  - rib_right_2
+  - rib_right_3
+  - rib_right_4
+  - rib_right_5
+  - rib_right_6
+  - rib_right_7
+  - rib_right_8
+  - rib_right_9
+  - sacrum
+  - scapula_left
+  - scapula_right
+  - skull
+  - small_bowel
+  - spinal_cord
+  - spleen
+  - sternum
+  - stomach
+  - subclavian_artery_left
+  - subclavian_artery_right
+  - superior_vena_cava
+  - thyroid_gland
+  - trachea
+  - urinary_bladder
+  - vertebrae_C1
+  - vertebrae_C2
+  - vertebrae_C3
+  - vertebrae_C4
+  - vertebrae_C5
+  - vertebrae_C6
+  - vertebrae_C7
+  - vertebrae_L1
+  - vertebrae_L2
+  - vertebrae_L3
+  - vertebrae_L4
+  - vertebrae_L5
+  - vertebrae_S1
+  - vertebrae_T1
+  - vertebrae_T10
+  - vertebrae_T11
+  - vertebrae_T12
+  - vertebrae_T2
+  - vertebrae_T3
+  - vertebrae_T4
+  - vertebrae_T5
+  - vertebrae_T6
+  - vertebrae_T7
+  - vertebrae_T8
+  - vertebrae_T9
+  approval_status: pending_PI
+  centroid_vertebral_level: Nearest available segmented vertebral centroid in patient
+    superior-inferior coordinate, not a claim that the target is inside that vertebra.
+  classification_definition: All four criteria are reported without selection. B and
+    MP require the relevant bladder criterion and wholly pelvic target geometry. X
+    and MX are independent of the bladder criterion.
+  coverage: CT contour-point bounds must contain all targets. Organ mask grid equals
+    CT grid and union organ occupancy must span target z within 3 mm. Missing or contradictory
+    geometry is U. An empty automatic bladder mask makes a wholly pelvic course U
+    because B versus P cannot be established without assuming why the bladder was
+    not segmented. X and MX do not require a bladder mask.
+  criteria:
+    C1:
+      intersection_ml_min: 5
+      target_fraction_min: 0.1
+    C2:
+      intersection_ml_min: 5
+    C3:
+      organ_fraction_min: 0.5
+    C4:
+      organ_fraction_min: 0.9
+  frozen_utc: '2026-09-06T10:19:00.215406+00:00'
+  helper_regex:
+  - ^(?:z|zz|marg|m_|ns_)
+  - (?<![a-z])(?:gtv|ctv|ptv)[^+]*\+.*(?:gtv|ctv|ptv)
+  - (?:gtv|ctv|ptv).*[-/]\s*(?:gtv|ctv|ptv)
+  - (?:gtv|ctv|ptv).*[-/]\s*(?:[0-9.]*jel|bowel|esica|rect|odbyt)
+  - (?:suma|sumaptv|orptv|and|\bw\s+ptv|\d\s*cm\s+od|crop|ring|optim|helper|margin|stary|stare|poprzednio|prechemo)
+  measurement:
+    allclose_default_rtol: 1.0e-05
+    axial_grid_atol: 0.0001
+    contour_bound_extra_voxel: 0.001
+    contour_bound_half_voxel: 0.5
+    contour_plane_offset_voxel: 0.35
+    contour_plane_spread_voxel: 0.1
+    mask_grid_atol: 0.001
+    orientation_atol: 1.0e-05
+    origin_voxel_atol: 0.01
+    pixel_equivalence_hu_atol: 0.01
+    roundoff_epsilon_multiplier: 32
+    spacing_mm_atol: 0.001
+  organ_panel: Every mask named in the selected TotalSegmentator manifest. Actual
+    labels and empty masks retained per course. No inferred labels for absent uterus
+    or rectum.
+  other_pelvic_primary_organs:
+  - prostate
+  - uterus
+  - rectum
+  overlap_csv_min_target_fraction: 0
+  pelvis_definition: The pelvic slab extends from the inferior extent of the bilateral
+    hip masks to the superior extent of L5, with 10 mm padding at each end. Without
+    these landmarks, X requires every target to lie at least 10 mm above the lowest
+    visible C1 to L4 vertebral inferior extent.
+  prescription_screen:
+    PTV_in_bladder_course_screen_ml:
+    - 50
+    - 3000
+    TMT_fraction_size_gy:
+    - 1.5
+    - 1.8
+    conventional_fractions:
+    - 30
+    - 33
+    conventional_total_gy:
+    - 60
+    - 66
+    definitive_TMT_total_gy:
+    - 64
+    - 64.8
+    dose_tolerance_gy: 0.11
+    general_target_volume_screen_ml:
+    - 0.01
+    - 10000
+    induction_total_gy:
+    - 40
+    - 40.3
+    interpretation: Screening flags are not proof of physically impossible targets
+      or inappropriate therapy. Small focal boosts may be valid.
+    schedules:
+    - - 55
+      - 20
+    - - 64
+      - 32
+    - - 8
+      - 1
+    - - 20
+      - 5
+    - - 30
+      - 10
+    - - 36
+      - 6
+    - - 21
+      - 3
+    - - 30
+      - 5
+    timing: Twice-daily or split-course temporal spacing is not inferred from planned
+      fractions.
+  rasterization: Voxel centers on the exact planning CT grid represented in its provenance-bound
+    NIfTI signed-axis orientation. All DICOM slice origins, sizes, spacing, series
+    and frames checked. Closed contours filled by even-odd polygon rule. No contour
+    interpolation or supersampling. Volume equals voxel count times voxel volume.
+  reasoning: Exploratory sibling pelvic rule with four mandated bladder criteria.
+    No criterion is selected. C2 uses absolute organ intersection rather than a target-relative
+    fraction. Stability describes threshold dependence, not anatomical validity.
+  requested_but_not_provided:
+  - uterus
+  - rectum
+  schema: rtpipeline-geometric-scope-v1
+  selected_criterion: null
+  target_selection: Nonblank GTV/CTV/PTV interpreted types take precedence. Otherwise
+    use the existing rtpipeline.rt_details.is_target_volume_name function. The requested
+    is_target_volume_candidate symbol does not exist in this checkout. Helpers and
+    contour-empty targets are excluded. ROI names are retained but not used for anatomical
+    geometry.
+  variants:
+    C1:
+      bladder_min_overlap_ml: 5
+      bladder_target_fraction: 0.1
+      coverage_tolerance_mm: 3
+      distinct_target_max_containment: 0.5
+      distinct_target_min_centroid_distance_mm: 20
+      other_primary_dominance_ratio: 2
+      other_primary_target_fraction: 0.3
+      pelvic_target_fraction: 0.95
+      pelvis_padding_mm: 10
+    C2:
+      bladder_min_overlap_ml: 5
+      bladder_target_fraction: 0.1
+      coverage_tolerance_mm: 3
+      distinct_target_max_containment: 0.5
+      distinct_target_min_centroid_distance_mm: 20
+      other_primary_dominance_ratio: 2
+      other_primary_target_fraction: 0.3
+      pelvic_target_fraction: 0.95
+      pelvis_padding_mm: 10
+    C3:
+      bladder_min_overlap_ml: 5
+      bladder_target_fraction: 0.1
+      coverage_tolerance_mm: 3
+      distinct_target_max_containment: 0.5
+      distinct_target_min_centroid_distance_mm: 20
+      other_primary_dominance_ratio: 2
+      other_primary_target_fraction: 0.3
+      pelvic_target_fraction: 0.95
+      pelvis_padding_mm: 10
+    C4:
+      bladder_min_overlap_ml: 5
+      bladder_target_fraction: 0.1
+      coverage_tolerance_mm: 3
+      distinct_target_max_containment: 0.5
+      distinct_target_min_centroid_distance_mm: 20
+      other_primary_dominance_ratio: 2
+      other_primary_target_fraction: 0.3
+      pelvic_target_fraction: 0.95
+      pelvis_padding_mm: 10
+names:
+  anatomy_regex:
+    ambiguous_segments: segm[ ._]*(?:iv|vi|vii|viii)
+    bladder: (?<![a-z])(?:bladder|urinary[ _]bladder|pecherz(?!yk)|pech(?![a-z]))
+    nonpelvic: (?:mozg|brain|pien[ _]mozg|pluc|lung|piers|breast|kregoslup|spine|krtan|larynx|zuchw|mandibl|lopatk|scapul|mostek|sternum|watrob|liver|hepatic|humer|ramien|rib|zebr|skull|czasz|supraclav|nadobojcz|paraaort|para-aort|(?<![a-z])(?:th|t|l|c)[
+      _]?[0-9]{1,2}(?![0-9]))
+    other_pelvic_primary: (?:prostat|stercz|gruczol[ _]krokow|odbytnic|rectum|rectal|szyjka[
+      _]macic|cervix|macic|uterus|uterine|endometri|vagin)
+    pelvic_region: (?:miednic|pelvi|sacrum|sacral|k[ ._]*krzyz|kos[c]?c?[ _]krzyz|iliac|obturator|presacral)
+    unlocalized_nodes: (?:wez|nodal|nodes|lymph|gtv[ _]*n)
+  approval_status: pending
+  classes:
+    B: Documented bladder-directed targets, with or without regional elective pelvic
+      nodes, and no separate other-primary or non-pelvic target.
+    MP: Bladder and another distinct pelvic primary target in the same course, with
+      no non-pelvic target.
+    MX: Both pelvic and non-pelvic targets in the same course.
+    P: Wholly pelvic non-bladder targets with no bladder-directed target.
+    U: Generic, contradictory, unreadable or insufficient target evidence. No anatomical
+      assignment based solely on OARs.
+    X: Documented non-pelvic targets only.
+  exceptions:
+    bone: Unlocalized bone metastasis does not establish pelvis or nonpelvis.
+    case_overrides: []
+    cervical: Unqualified cervical is ambiguous between neck and uterine cervix.
+    pecherzyk: Seminal vesicle, never urinary bladder by loose pech substring.
+    sacrum: Pelvic bone, not automatically nonpelvic spine.
+    segment_numbers: Segment IV/VIII and VI/VII are not accepted as an organ name.
+      Record liver-compatible contextual evidence but retain U.
+    trzon: Unqualified trzon may denote uterine or vertebral body and remains ambiguous.
+  generic_policy: Generic targets remain U-with-evidence. Prescription and OAR vocabulary
+    only annotate uncertainty, never determine a class. Explicit target anatomy on
+    the same selected structure may resolve generic targets. Nodes without a named
+    anatomical location do not establish pelvic anatomy. No cross-course borrowing.
+  helper_regex:
+  - ^(?:z|zz|marg|m_|ns_)
+  - (?<![a-z])(?:gtv|ctv|ptv)[^+]*\+.*(?:gtv|ctv|ptv)
+  - (?:gtv|ctv|ptv).*[-/]\s*(?:gtv|ctv|ptv)
+  - (?:gtv|ctv|ptv).*[-/]\s*(?:[0-9.]*jel|bowel|esica|rect|odbyt)
+  - (?:suma|sumaptv|orptv|and|\bw\s+ptv|\d\s*cm\s+od|crop|ring|optim|helper|margin|stary|stare|poprzednio|prechemo)
+  normalization: NFKD remove accents, transliterate Polish l stroke, lowercase. Keep
+    source ROI names unchanged in evidence.
+  plausibility:
+    absolute_dose_tolerance_gy: 0.1
+    conventional_fractions:
+    - 30
+    - 33
+    conventional_total_gy:
+    - 60
+    - 66
+    exact_gy_fractions:
+    - - 55
+      - 20
+    - - 64
+      - 32
+    - - 8
+      - 1
+    - - 20
+      - 5
+    - - 30
+      - 10
+    - - 36
+      - 6
+    interpretation: Compatibility screen, not proof of delivery or clinical appropriateness.
+      Other prescriptions require review, not automatic anatomical reclassification.
+      Weekly spacing is not established from a plan.
+  schema: rtpipeline-names-target-scope-v1
+  selection: If ROI interpreted type is nonblank, only GTV/CTV/PTV qualify. Otherwise
+    use rtpipeline.rt_details.is_target_volume_name. Apply helper exclusions even
+    to target-typed ROIs. Require a nonempty valid contour. Deduplicate structure
+    UID and ROI number.
+schema: rtpipeline-treatment-scope-v1
+target_dependency_binding:
+  ast_python: '3.11'
+  nodes:
+    _BOOLEAN_CROP_SEPARATOR: fa8b8dd7ea358a4818a11c887c5753e94c61bbd15002479440c182d0b33a480c
+    _LEADING_MARGIN_HELPER: a9db19df19162bf14f2bde074538d52355af33f156089360364d5a32cd45488f
+    _LEADING_Z_HELPER: 2a5a9399848c2de7b5d82f22907381580611fff4291b8c93be9569a6cffab0c5
+    _TARGET_VOLUME_TOKEN: 5b69f94ee90b9f23604c0da3df9bc07ce3f6eb2a7e5ae504165cca0f2c05a7e5
+    is_target_volume_candidate: d46ead65dd3d344b26ad0da8a165abdf0b5d67fbf6fd3c282c17d4c41aa1107b
+    is_target_volume_name: 447e4c33169b3619192a2753e4fa8cfc9d4680558f400e82066c73acedbf08e1
+  release_comparisons:
+  - b431e08
+  - bb6295d
+  - 939ad18
+target_selection:
+  boolean_crop_separator_regex: \s+-\s*$
+  closed_contour_types:
+  - CLOSED_PLANAR
+  - CLOSEDPLANAR_XOR
+  leading_margin_helper_regex: ^\s*MARG(?:\b|[\s_.-])
+  leading_z_helper_regex: ^\s*Z[\s_.-]*(?:GTV|CTV|PTV)
+  minimum_contour_points: 3
+  name_token_regex: (?<![A-Z0-9])(?:GTV|CTV|PTV)
+  target_types:
+  - GTV
+  - CTV
+  - PTV
+  type_precedence:
+  - PTV
+  - CTV
+  - GTV
+version: 1.0.0

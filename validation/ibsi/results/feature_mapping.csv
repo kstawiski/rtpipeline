@@ -1,0 +1,175 @@
+ibsi_tag_stem,ibsi_id,pyradiomics_class,pyradiomics_name,mapping_basis
+morph_volume,RNU0,shape,MeshVolume,published mapping
+morph_vol_approx,YEKZ,shape,VoxelVolume,published mapping
+morph_area_mesh,C0JK,shape,SurfaceArea,published mapping
+morph_av,2PR5,shape,SurfaceVolumeRatio,published mapping
+morph_comp_1,SKGS,shape,Compactness1,published mapping
+morph_comp_2,BQWJ,shape,Compactness2,published mapping
+morph_sph_dispr,KRCK,shape,SphericalDisproportion,published mapping
+morph_sphericity,QCFX,shape,Sphericity,published mapping
+morph_asphericity,25C7,,,IBSI identifier catalogue; no PyRadiomics implementation
+morph_com,KLMA,,,IBSI identifier catalogue; no PyRadiomics implementation
+morph_diam,L0JK,shape,Maximum3DDiameter,published mapping
+morph_pca_maj_axis,TDIC,shape,MajorAxisLength,published mapping
+morph_pca_min_axis,P9VJ,shape,MinorAxisLength,published mapping
+morph_pca_least_axis,7J51,shape,LeastAxisLength,published mapping
+morph_pca_elongation,Q3CK,shape,Elongation,published mapping
+morph_pca_flatness,N17B,shape,Flatness,published mapping
+morph_vol_dens_aabb,PBX1,,,IBSI identifier catalogue; no PyRadiomics implementation
+morph_area_dens_aabb,R59B,,,IBSI identifier catalogue; no PyRadiomics implementation
+morph_vol_dens_ombb,ZH1A,,,IBSI identifier catalogue; no PyRadiomics implementation
+morph_area_dens_ombb,IQYR,,,IBSI identifier catalogue; no PyRadiomics implementation
+morph_vol_dens_aee,6BDE,,,IBSI identifier catalogue; no PyRadiomics implementation
+morph_area_dens_aee,RDD2,,,IBSI identifier catalogue; no PyRadiomics implementation
+morph_vol_dens_mvee,SWZ1,,,IBSI identifier catalogue; no PyRadiomics implementation
+morph_area_dens_mvee,BRI8,,,IBSI identifier catalogue; no PyRadiomics implementation
+morph_vol_dens_conv_hull,R3ER,,,IBSI identifier catalogue; no PyRadiomics implementation
+morph_area_dens_conv_hull,7T7F,,,IBSI identifier catalogue; no PyRadiomics implementation
+morph_integ_int,99N0,,,IBSI identifier catalogue; no PyRadiomics implementation
+morph_moran_i,N365,,,IBSI identifier catalogue; no PyRadiomics implementation
+morph_geary_c,NPT7,,,IBSI identifier catalogue; no PyRadiomics implementation
+loc_peak_loc,VJGA,,,IBSI identifier catalogue; no PyRadiomics implementation
+loc_peak_glob,0F91,,,IBSI identifier catalogue; no PyRadiomics implementation
+stat_mean,Q4LE,firstorder,Mean,published mapping
+stat_var,ECT3,firstorder,Variance,published mapping
+stat_skew,KE2A,firstorder,Skewness,published mapping
+stat_kurt,IPH6,firstorder,Kurtosis,definition-checked amendment
+stat_median,Y12H,firstorder,Median,published mapping
+stat_min,1GSF,firstorder,Minimum,published mapping
+stat_p10,QG58,firstorder,10Percentile,published mapping
+stat_p90,8DWT,firstorder,90Percentile,published mapping
+stat_max,84IY,firstorder,Maximum,published mapping
+stat_iqr,SALO,firstorder,InterquartileRange,published mapping
+stat_range,2OJQ,firstorder,Range,published mapping
+stat_mad,4FUA,firstorder,MeanAbsoluteDeviation,published mapping
+stat_rmad,1128,firstorder,RobustMeanAbsoluteDeviation,published mapping
+stat_medad,N72L,,,IBSI identifier catalogue; no PyRadiomics implementation
+stat_cov,7TET,,,IBSI identifier catalogue; no PyRadiomics implementation
+stat_qcod,9S40,,,IBSI identifier catalogue; no PyRadiomics implementation
+stat_energy,N8CA,firstorder,Energy,published mapping
+stat_rms,5ZWQ,firstorder,RootMeanSquared,published mapping
+ih_mean,X6K6,,,IBSI identifier catalogue; no PyRadiomics implementation
+ih_var,CH89,,,IBSI identifier catalogue; no PyRadiomics implementation
+ih_skew,88K1,,,IBSI identifier catalogue; no PyRadiomics implementation
+ih_kurt,C3I7,,,IBSI identifier catalogue; no PyRadiomics implementation
+ih_median,WIFQ,,,IBSI identifier catalogue; no PyRadiomics implementation
+ih_min,1PR8,,,IBSI identifier catalogue; no PyRadiomics implementation
+ih_p10,GPMT,,,IBSI identifier catalogue; no PyRadiomics implementation
+ih_p90,OZ0C,,,IBSI identifier catalogue; no PyRadiomics implementation
+ih_max,3NCY,,,IBSI identifier catalogue; no PyRadiomics implementation
+ih_mode,AMMC,,,IBSI identifier catalogue; no PyRadiomics implementation
+ih_iqr,WR0O,,,IBSI identifier catalogue; no PyRadiomics implementation
+ih_range,5Z3W,,,IBSI identifier catalogue; no PyRadiomics implementation
+ih_mad,D2ZX,,,IBSI identifier catalogue; no PyRadiomics implementation
+ih_rmad,WRZB,,,IBSI identifier catalogue; no PyRadiomics implementation
+ih_medad,4RNL,,,IBSI identifier catalogue; no PyRadiomics implementation
+ih_cov,CWYJ,,,IBSI identifier catalogue; no PyRadiomics implementation
+ih_qcod,SLWD,,,IBSI identifier catalogue; no PyRadiomics implementation
+ih_entropy,TLU2,firstorder,Entropy,published mapping
+ih_uniformity,BJ5W,firstorder,Uniformity,published mapping
+ih_max_grad,12CE,,,IBSI identifier catalogue; no PyRadiomics implementation
+ih_max_grad_g,8E6O,,,IBSI identifier catalogue; no PyRadiomics implementation
+ih_min_grad,VQB3,,,IBSI identifier catalogue; no PyRadiomics implementation
+ih_min_grad_g,RHQZ,,,IBSI identifier catalogue; no PyRadiomics implementation
+ivh_v10,BC2M,,,IBSI identifier catalogue; no PyRadiomics implementation
+ivh_v90,BC2M,,,IBSI identifier catalogue; no PyRadiomics implementation
+ivh_i10,GBPN,,,IBSI identifier catalogue; no PyRadiomics implementation
+ivh_i90,GBPN,,,IBSI identifier catalogue; no PyRadiomics implementation
+ivh_diff_v10_v90,DDTU,,,IBSI identifier catalogue; no PyRadiomics implementation
+ivh_diff_i10_i90,CNV2,,,IBSI identifier catalogue; no PyRadiomics implementation
+ivh_auc,9CMM,,,IBSI identifier catalogue; no PyRadiomics implementation
+cm_joint_max,GYBY,glcm,MaximumProbability,published mapping
+cm_joint_avg,60VM,glcm,JointAverage,published mapping
+cm_joint_var,UR99,glcm,SumSquares,published mapping
+cm_joint_entr,TU9B,glcm,JointEntropy,published mapping
+cm_diff_avg,TF7R,glcm,DifferenceAverage,published mapping
+cm_diff_var,D3YU,glcm,DifferenceVariance,published mapping
+cm_diff_entr,NTRS,glcm,DifferenceEntropy,published mapping
+cm_sum_avg,ZGXS,glcm,SumAverage,published mapping
+cm_sum_var,OEEB,glcm,SumVariance,published mapping
+cm_sum_entr,P6QZ,glcm,SumEntropy,published mapping
+cm_energy,8ZQL,glcm,JointEnergy,published mapping
+cm_contrast,ACUI,glcm,Contrast,published mapping
+cm_dissimilarity,8S9J,glcm,Dissimilarity,published mapping
+cm_inv_diff,IB1Z,glcm,Id,published mapping
+cm_inv_diff_norm,NDRX,glcm,Idn,published mapping
+cm_inv_diff_mom,WF0Z,glcm,Idm,published mapping
+cm_inv_diff_mom_norm,1QCO,glcm,Idmn,published mapping
+cm_inv_var,E8JP,glcm,InverseVariance,published mapping
+cm_corr,NI2N,glcm,Correlation,published mapping
+cm_auto_corr,QWB0,glcm,Autocorrelation,definition-checked amendment
+cm_clust_tend,DG8W,glcm,ClusterTendency,published mapping
+cm_clust_shade,7NFM,glcm,ClusterShade,published mapping
+cm_clust_prom,AE86,glcm,ClusterProminence,published mapping
+cm_info_corr1,R8DG,glcm,Imc1,definition-checked amendment
+cm_info_corr2,JN9H,glcm,Imc2,definition-checked amendment
+rlm_sre,22OV,glrlm,ShortRunEmphasis,published mapping
+rlm_lre,W4KF,glrlm,LongRunEmphasis,published mapping
+rlm_lgre,V3SW,glrlm,LowGrayLevelRunEmphasis,published mapping
+rlm_hgre,G3QZ,glrlm,HighGrayLevelRunEmphasis,published mapping
+rlm_srlge,HTZT,glrlm,ShortRunLowGrayLevelEmphasis,published mapping
+rlm_srhge,GD3A,glrlm,ShortRunHighGrayLevelEmphasis,published mapping
+rlm_lrlge,IVPO,glrlm,LongRunLowGrayLevelEmphasis,published mapping
+rlm_lrhge,3KUM,glrlm,LongRunHighGrayLevelEmphasis,published mapping
+rlm_glnu,R5YN,glrlm,GrayLevelNonUniformity,published mapping
+rlm_glnu_norm,OVBL,glrlm,GrayLevelNonUniformityNormalized,published mapping
+rlm_rlnu,W92Y,glrlm,RunLengthNonUniformity,published mapping
+rlm_rlnu_norm,IC23,glrlm,RunLengthNonUniformityNormalized,published mapping
+rlm_r_perc,9ZK5,glrlm,RunPercentage,published mapping
+rlm_gl_var,8CE5,glrlm,GrayLevelVariance,published mapping
+rlm_rl_var,SXLW,glrlm,RunVariance,published mapping
+rlm_rl_entr,HJ9O,glrlm,RunEntropy,published mapping
+szm_sze,5QRC,glszm,SmallAreaEmphasis,published mapping
+szm_lze,48P8,glszm,LargeAreaEmphasis,published mapping
+szm_lgze,XMSY,glszm,LowGrayLevelZoneEmphasis,definition-checked amendment
+szm_hgze,5GN9,glszm,HighGrayLevelZoneEmphasis,definition-checked amendment
+szm_szlge,5RAI,glszm,SmallAreaLowGrayLevelEmphasis,definition-checked amendment
+szm_szhge,HW1V,glszm,SmallAreaHighGrayLevelEmphasis,definition-checked amendment
+szm_lzlge,YH51,glszm,LargeAreaLowGrayLevelEmphasis,definition-checked amendment
+szm_lzhge,J17V,glszm,LargeAreaHighGrayLevelEmphasis,definition-checked amendment
+szm_glnu,JNSA,glszm,GrayLevelNonUniformity,published mapping
+szm_glnu_norm,Y1RO,glszm,GrayLevelNonUniformityNormalized,published mapping
+szm_zsnu,4JP3,glszm,SizeZoneNonUniformity,published mapping
+szm_zsnu_norm,VB3A,glszm,SizeZoneNonUniformityNormalized,published mapping
+szm_z_perc,P30P,glszm,ZonePercentage,published mapping
+szm_gl_var,BYLV,glszm,GrayLevelVariance,published mapping
+szm_zs_var,3NSA,glszm,ZoneVariance,definition-checked amendment
+szm_zs_entr,GU8N,glszm,ZoneEntropy,definition-checked amendment
+dzm_sde,0GBI,,,IBSI identifier catalogue; no PyRadiomics implementation
+dzm_lde,MB4I,,,IBSI identifier catalogue; no PyRadiomics implementation
+dzm_lgze,S1RA,,,IBSI identifier catalogue; no PyRadiomics implementation
+dzm_hgze,K26C,,,IBSI identifier catalogue; no PyRadiomics implementation
+dzm_sdlge,RUVG,,,IBSI identifier catalogue; no PyRadiomics implementation
+dzm_sdhge,DKNJ,,,IBSI identifier catalogue; no PyRadiomics implementation
+dzm_ldlge,A7WM,,,IBSI identifier catalogue; no PyRadiomics implementation
+dzm_ldhge,KLTH,,,IBSI identifier catalogue; no PyRadiomics implementation
+dzm_glnu,VFT7,,,IBSI identifier catalogue; no PyRadiomics implementation
+dzm_glnu_norm,7HP3,,,IBSI identifier catalogue; no PyRadiomics implementation
+dzm_zdnu,V294,,,IBSI identifier catalogue; no PyRadiomics implementation
+dzm_zdnu_norm,IATH,,,IBSI identifier catalogue; no PyRadiomics implementation
+dzm_z_perc,VIWW,,,IBSI identifier catalogue; no PyRadiomics implementation
+dzm_gl_var,QK93,,,IBSI identifier catalogue; no PyRadiomics implementation
+dzm_zd_var,7WT1,,,IBSI identifier catalogue; no PyRadiomics implementation
+dzm_zd_entr,GBDU,,,IBSI identifier catalogue; no PyRadiomics implementation
+ngt_coarseness,QCDE,ngtdm,Coarseness,published mapping
+ngt_contrast,65HE,ngtdm,Contrast,published mapping
+ngt_busyness,NQ30,ngtdm,Busyness,published mapping
+ngt_complexity,HDEZ,ngtdm,Complexity,published mapping
+ngt_strength,1X9X,ngtdm,Strength,published mapping
+ngl_lde,SODN,gldm,SmallDependenceEmphasis,published mapping
+ngl_hde,IMOQ,gldm,LargeDependenceEmphasis,published mapping
+ngl_lgce,TL9H,gldm,LowGrayLevelEmphasis,published mapping
+ngl_hgce,OAE7,gldm,HighGrayLevelEmphasis,published mapping
+ngl_ldlge,EQ3F,gldm,SmallDependenceLowGrayLevelEmphasis,published mapping
+ngl_ldhge,JA6D,gldm,SmallDependenceHighGrayLevelEmphasis,published mapping
+ngl_hdlge,NBZI,gldm,LargeDependenceLowGrayLevelEmphasis,published mapping
+ngl_hdhge,9QMG,gldm,LargeDependenceHighGrayLevelEmphasis,published mapping
+ngl_glnu,FP8K,gldm,GrayLevelNonUniformity,published mapping
+ngl_glnu_norm,5SPA,gldm,GrayLevelNonUniformityNormalized,published mapping
+ngl_dcnu,Z87G,gldm,DependenceNonUniformity,published mapping
+ngl_dcnu_norm,OKJI,gldm,DependenceNonUniformityNormalized,published mapping
+ngl_dc_perc,6XV8,gldm,DependencePercentage,published mapping
+ngl_gl_var,1PFV,gldm,GrayLevelVariance,published mapping
+ngl_dc_var,DNX2,gldm,DependenceVariance,published mapping
+ngl_dc_entr,FCBV,gldm,DependenceEntropy,published mapping
+ngl_dc_energy,CAS9,,,IBSI identifier catalogue; no PyRadiomics implementation

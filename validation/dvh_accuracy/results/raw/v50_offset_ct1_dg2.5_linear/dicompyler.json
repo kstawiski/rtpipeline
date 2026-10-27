@@ -1,0 +1,158 @@
+{
+  "versions": {
+    "contourpy": "1.3.3",
+    "cycler": "0.12.1",
+    "dicompyler-core": "0.5.6",
+    "fonttools": "4.67.0",
+    "kiwisolver": "1.5.1",
+    "matplotlib": "3.9.4",
+    "numpy": "1.26.4",
+    "packaging": "26.3",
+    "pillow": "12.0.0",
+    "pip": "24.0",
+    "pydicom": "2.4.4",
+    "pyparsing": "3.3.3",
+    "python-dateutil": "3.0.0",
+    "setuptools": "79.0.1",
+    "six": "1.17.0",
+    "tzdata": "2026.5"
+  },
+  "python": "3.11.14 | packaged by conda-forge | (main, Jan 26 2026, 23:48:32) [GCC 14.3.0]",
+  "dicompyler_source_sha256": {
+    "dicomparser.py": "64ecb66a4eb9664b1a44b7427b6b1ad7b5fb0b1dfa443d68d654d052b37cd76a",
+    "dvh.py": "cb9fbec4c9d36e88f5a73c110d217430e6d48d9b6e8b6a95fb42961e56773073",
+    "dvhcalc.py": "0233e7e0cebc3c7778ff3314909f96e7cba0a66fbb9689ec60480cb82058c4c4",
+    "config.py": "7a4d437292323d25f22b230c53f444302a1fd3390bdeb160140522cf3503a6c4",
+    "util.py": "41ea6f932caf560acecc14dd122ee20d1610760e7b292019bedf079ad3a61809"
+  },
+  "rois": [
+    {
+      "roi": 1,
+      "dicompyler_native": {
+        "Dmean_Gy": 20.04834667333667,
+        "Dmin_Gy": 17.81,
+        "Dmax_Gy": 22.31,
+        "Volume_cc": 49.97500000000001,
+        "V95Rx_pct": 0.0,
+        "V20Gy_cc": 26.5,
+        "D98_Gy": 18.11,
+        "D95_Gy": 18.31,
+        "D50_Gy": 20.01,
+        "D2_Gy": 21.91,
+        "D2cc_Gy": 21.71,
+        "D0.03cc_Gy": 22.21
+      },
+      "dicompyler_harmonized": {
+        "Dmean_Gy": 20.04834667333667,
+        "Dmin_Gy": 17.81,
+        "Dmax_Gy": 22.31,
+        "Volume_cc": 49.97500000000001,
+        "D98_Gy": 18.114294444444447,
+        "D95_Gy": 18.40740625,
+        "D50_Gy": 20.014307692307693,
+        "D2_Gy": 21.91456923076923,
+        "D2cc_Gy": 21.808177570093456,
+        "D0.03cc_Gy": 22.305,
+        "V95Rx_pct": 0.0,
+        "V20Gy_cc": 26.5
+      },
+      "native_status": {}
+    },
+    {
+      "roi": 2,
+      "dicompyler_native": {
+        "Dmean_Gy": 20.055,
+        "Dmin_Gy": 18.11,
+        "Dmax_Gy": 22.01,
+        "Volume_cc": 50.250000000000036,
+        "V95Rx_pct": 0.0,
+        "V20Gy_cc": 26.38125000000001,
+        "D98_Gy": 18.11,
+        "D95_Gy": 18.21,
+        "D50_Gy": 20.01,
+        "D2_Gy": 21.91,
+        "D2cc_Gy": 21.81,
+        "D0.03cc_Gy": 21.91
+      },
+      "dicompyler_harmonized": {
+        "Dmean_Gy": 20.055,
+        "Dmin_Gy": 18.11,
+        "Dmax_Gy": 22.01,
+        "Volume_cc": 50.250000000000036,
+        "D98_Gy": 18.113000000000003,
+        "D95_Gy": 18.215,
+        "D50_Gy": 20.015,
+        "D2_Gy": 22.005000000000003,
+        "D2cc_Gy": 21.90907960199005,
+        "D0.03cc_Gy": 22.005000000000003,
+        "V95Rx_pct": 0.0,
+        "V20Gy_cc": 26.38125000000001
+      },
+      "native_status": {}
+    },
+    {
+      "roi": 3,
+      "dicompyler_native": {
+        "Dmean_Gy": 20.055,
+        "Dmin_Gy": 18.31,
+        "Dmax_Gy": 21.81,
+        "Volume_cc": 50.625,
+        "V95Rx_pct": 0.0,
+        "V20Gy_cc": 26.71875,
+        "D98_Gy": 18.31,
+        "D95_Gy": 18.41,
+        "D50_Gy": 20.01,
+        "D2_Gy": 21.71,
+        "D2cc_Gy": 21.71,
+        "D0.03cc_Gy": 21.71
+      },
+      "dicompyler_harmonized": {
+        "Dmean_Gy": 20.055,
+        "Dmin_Gy": 18.31,
+        "Dmax_Gy": 21.81,
+        "Volume_cc": 50.625,
+        "D98_Gy": 18.312199999999997,
+        "D95_Gy": 18.413,
+        "D50_Gy": 20.015,
+        "D2_Gy": 21.805,
+        "D2cc_Gy": 21.71077777777778,
+        "D0.03cc_Gy": 21.805,
+        "V95Rx_pct": 0.0,
+        "V20Gy_cc": 26.71875
+      },
+      "native_status": {}
+    },
+    {
+      "roi": 4,
+      "dicompyler_native": {
+        "Dmean_Gy": 20.043229022952463,
+        "Dmin_Gy": 16.61,
+        "Dmax_Gy": 23.51,
+        "Volume_cc": 49.83124999999999,
+        "V95Rx_pct": 0.0,
+        "V20Gy_cc": 25.575,
+        "D98_Gy": 16.81,
+        "D95_Gy": 17.01,
+        "D50_Gy": 20.01,
+        "D2_Gy": 23.21,
+        "D2cc_Gy": 23.11,
+        "D0.03cc_Gy": 23.41
+      },
+      "dicompyler_harmonized": {
+        "Dmean_Gy": 20.043229022952463,
+        "Dmin_Gy": 16.61,
+        "Dmax_Gy": 23.51,
+        "Volume_cc": 49.83124999999999,
+        "D98_Gy": 16.811373469387753,
+        "D95_Gy": 17.012029411764708,
+        "D50_Gy": 20.013719008264463,
+        "D2_Gy": 23.30747789473684,
+        "D2cc_Gy": 23.11354700854701,
+        "D0.03cc_Gy": 23.505000000000003,
+        "V95Rx_pct": 0.0,
+        "V20Gy_cc": 25.575
+      },
+      "native_status": {}
+    }
+  ]
+}

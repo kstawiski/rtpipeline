@@ -1,0 +1,13 @@
+DeepMind surface-distance
+Copyright 2018 Google Inc. All Rights Reserved.
+Licensed under the Apache License, Version 2.0; see LICENSE.
+
+Source: https://github.com/google-deepmind/surface-distance
+Commit: 1f805cea446805e559badc80dd27f34175e4173d (2025-02-19)
+Vendored files: surface_distance/__init__.py, metrics.py, lookup_tables.py,
+and the repository LICENSE. These four files are byte-for-byte upstream files.
+Upstream has no NOTICE file; this NOTICE records RTpipeline's vendoring.
+
+RTpipeline retains its mask/grid/empty-input handling and pools the two directed
+average distances by their respective surface areas. No upstream algorithms,
+imports or lookup tables were changed.

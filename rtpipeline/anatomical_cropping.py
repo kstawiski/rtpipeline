@@ -1092,8 +1092,8 @@ def _create_rtstruct_from_cropped_masks(
 
     seg_dir = candidate_dirs[0]
 
-    # Find cropped masks
-    cropped_masks = list(seg_dir.glob(f"*{output_suffix}.nii.gz"))
+    # Filename order keeps ROI numbers and display colours stable across filesystems.
+    cropped_masks = sorted(seg_dir.glob(f"*{output_suffix}.nii.gz"), key=lambda path: path.name)
     if not cropped_masks:
         logger.warning("No cropped masks found")
         return None

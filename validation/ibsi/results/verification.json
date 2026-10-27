@@ -1,0 +1,19 @@
+{
+  "verified_utc": "2026-10-27T12:15:20.667086+00:00",
+  "passed": true,
+  "checks": [
+    "8 independent workbook-arithmetic cases passed",
+    "26 downloaded source hashes passed",
+    "RTpipeline and installed PyRadiomics source/binary hashes passed",
+    "Numerical extraction and mapping scripts match the executed versions",
+    "22 raw extraction hashes passed",
+    "3831 classified rows cover every reference row once per extraction arm",
+    "1523 comparisons independently linked to raw outputs; statuses and strict comparisons passed",
+    "All family counts and denominators independently reconciled",
+    "Digital phantom analytic checks passed: energy 567, voxel volume 592 mm3, mean 159/74",
+    "All 300 IBSI preprocessing diagnostics within published tolerances",
+    "Digital least-axis and unadjusted kurtosis discrepancies retained"
+  ],
+  "row_count": 3831,
+  "computed_comparisons": 1523
+}

@@ -303,7 +303,7 @@ def historical_dvh(tmp_path):
 @pytest.mark.parametrize('delivered', [False, True])
 @pytest.mark.parametrize('sidecar', [False, True])
 def test_contract_selected_bytes_against_80d5d65(tmp_path, monkeypatch, delivered, sidecar):
-    """Exact output bytes except the truthful producing-code digest in QC."""
+    """Exact historical output bytes with explicit additive plane-alignment evidence."""
     import xlsxwriter.core
     class FixedTime(datetime.datetime):
         @classmethod
@@ -320,12 +320,35 @@ def test_contract_selected_bytes_against_80d5d65(tmp_path, monkeypatch, delivere
         assert module.dvh_for_course(course, parallel_workers=1)
         return {name:(course/name).read_bytes() for name in names}
     old, new = run(baseline), run(dvh)
-    for name in names[:-1]:
-        assert old[name] == new[name], name
-    old_digest = json.loads(old[names[-1]])['code_sources_sha256']
-    new_digest = json.loads(new[names[-1]])['code_sources_sha256']
+    from io import BytesIO
+    for name in names[:2]:
+        reader = pd.read_parquet if name.endswith('.parquet') else pd.read_excel
+        old_frame = reader(BytesIO(old[name]))
+        new_frame = reader(BytesIO(new[name]))
+        assert set(new_frame.columns) == set(old_frame.columns) | {'dose_plane_alignment'}
+        assert new_frame['dose_plane_alignment'].tolist() == ['EXACT'] * len(new_frame)
+        projected = new_frame.loc[:, old_frame.columns]
+        pd.testing.assert_frame_equal(projected, old_frame, check_dtype=True,
+                                      check_exact=True, check_like=False)
+        buffer = BytesIO()
+        if name.endswith('.parquet'):
+            projected.to_parquet(buffer, index=False)
+        else:
+            projected.to_excel(buffer, index=False)
+        assert old[name] == buffer.getvalue(), name
+    curves = json.loads(new['dvh_curves.json'])
+    for curve in curves['points']:
+        assert curve.pop('dose_plane_alignment') == 'EXACT'
+    assert old['dvh_curves.json'] == json.dumps(curves, ensure_ascii=False).encode('utf-8')
+    old_qc = json.loads(old[names[-1]])
+    new_qc = json.loads(new[names[-1]])
+    assert set(new_qc) == set(old_qc) | {'dose_plane_alignment', 'dose_plane_alignment_counts'}
+    assert new_qc.pop('dose_plane_alignment') == 'EXACT'
+    assert new_qc.pop('dose_plane_alignment_counts') == {'EXACT': len(new_frame)}
+    old_digest = old_qc['code_sources_sha256']
+    new_digest = new_qc['code_sources_sha256']
     assert old_digest != new_digest
-    assert old[names[-1]].replace(old_digest.encode(), new_digest.encode()) == new[names[-1]]
+    assert old[names[-1]].replace(old_digest.encode(), new_digest.encode()) == json.dumps(new_qc, indent=2).encode('utf-8')
     assert 'planning_dose_basis' not in pd.read_parquet(course/'dvh_metrics.parquet')
 
 

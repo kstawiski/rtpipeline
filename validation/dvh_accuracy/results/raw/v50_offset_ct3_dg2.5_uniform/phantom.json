@@ -1,0 +1,165 @@
+{
+  "group": "v50_offset_ct3_dg2.5_uniform",
+  "volume_cc": 50.0,
+  "phase": "offset",
+  "ct_mm": 3.0,
+  "dose_mm": 2.5,
+  "field": "uniform",
+  "center": [
+    0.37,
+    -0.61,
+    0.43
+  ],
+  "shapes": [
+    "sphere",
+    "cylinder",
+    "cube",
+    "shell"
+  ],
+  "extent_mm": 45,
+  "circle_vertices": 256,
+  "rois": [
+    {
+      "roi": 1,
+      "geometry": {
+        "shape": "sphere",
+        "volume_cc": 50.0,
+        "center": [
+          0.37,
+          -0.61,
+          0.43
+        ],
+        "inner_ratio": 0.9
+      },
+      "radius_mm": 22.85390748670416,
+      "inner_radius_mm": 0.0,
+      "contour_planes": 15,
+      "contour_slab_volume_cc": 50.05697056653125,
+      "contour_z_mm": [
+        -21.0,
+        -18.0,
+        -15.0,
+        -12.0,
+        -9.0,
+        -6.0,
+        -3.0,
+        0.0,
+        3.0,
+        6.0,
+        9.0,
+        12.0,
+        15.0,
+        18.0,
+        21.0
+      ]
+    },
+    {
+      "roi": 2,
+      "geometry": {
+        "shape": "cylinder",
+        "volume_cc": 50.0,
+        "center": [
+          0.37,
+          -0.61,
+          0.43
+        ],
+        "inner_ratio": 0.9
+      },
+      "radius_mm": 19.9647271232754,
+      "inner_radius_mm": 0.0,
+      "contour_planes": 13,
+      "contour_slab_volume_cc": 48.831226597340844,
+      "contour_z_mm": [
+        -18.0,
+        -15.0,
+        -12.0,
+        -9.0,
+        -6.0,
+        -3.0,
+        0.0,
+        3.0,
+        6.0,
+        9.0,
+        12.0,
+        15.0,
+        18.0
+      ]
+    },
+    {
+      "roi": 3,
+      "geometry": {
+        "shape": "cube",
+        "volume_cc": 50.0,
+        "center": [
+          0.37,
+          -0.61,
+          0.43
+        ],
+        "inner_ratio": 0.9
+      },
+      "radius_mm": 18.42015749320193,
+      "inner_radius_mm": 0.0,
+      "contour_planes": 12,
+      "contour_slab_volume_cc": 48.85951709870831,
+      "contour_z_mm": [
+        -15.0,
+        -12.0,
+        -9.0,
+        -6.0,
+        -3.0,
+        0.0,
+        3.0,
+        6.0,
+        9.0,
+        12.0,
+        15.0,
+        18.0
+      ]
+    },
+    {
+      "roi": 4,
+      "geometry": {
+        "shape": "shell",
+        "volume_cc": 50.0,
+        "center": [
+          0.37,
+          -0.61,
+          0.43
+        ],
+        "inner_ratio": 0.9
+      },
+      "radius_mm": 35.31593439580597,
+      "inner_radius_mm": 31.78434095622537,
+      "contour_planes": 23,
+      "contour_slab_volume_cc": 49.87515252929696,
+      "contour_z_mm": [
+        -33.0,
+        -30.0,
+        -27.0,
+        -24.0,
+        -21.0,
+        -18.0,
+        -15.0,
+        -12.0,
+        -9.0,
+        -6.0,
+        -3.0,
+        0.0,
+        3.0,
+        6.0,
+        9.0,
+        12.0,
+        15.0,
+        18.0,
+        21.0,
+        24.0,
+        27.0,
+        30.0,
+        33.0
+      ]
+    }
+  ],
+  "ct_inplane_mm": 2.0,
+  "dose_quantization_Gy": 0.0001,
+  "reference_dose_Gy": 25.0
+}

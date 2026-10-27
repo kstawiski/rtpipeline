@@ -1330,6 +1330,7 @@ def _disable_shape(extractor: Any) -> Any:
 
 def _configure_shape_only(extractor: Any) -> Any:
     extractor.settings.pop("resegmentRange", None)
+    extractor.settings.pop("rtpipelineResegmentSigma", None)
     extractor.settings["resegmentShape"] = False
     extractor.disableAllImageTypes()
     extractor.enableImageTypeByName("Original")
@@ -1344,6 +1345,7 @@ def build_ct_extractors(
 ) -> tuple[Any, Any, Optional[Any]]:
     shape_extractor = _configure_shape_only(factory())
     raw_extractor = _disable_shape(factory())
+    raw_extractor.settings.pop("rtpipelineResegmentSigma", None)
     primary_extractor = None
     if window is not None:
         primary_extractor = _disable_shape(factory())
@@ -1580,6 +1582,8 @@ def resampled_mask_qc(
     settings["minimumROIDimensions"] = 1
     settings["preCrop"] = False
     loaded_image, loaded_mask = extractor.loadImage(image, mask, None, **settings)
+    if settings.get("rtpipelinePreprocessing") == "ibsi":
+        settings["label"] = 1  # The packaged preprocessing returns a binary mask.
     preliminary = sitk.GetArrayViewFromImage(loaded_mask) == int(settings.get("label", 1))
     if _observed_dimensions(preliminary) > 0:
         _, corrected_mask = imageoperations.checkMask(loaded_image, loaded_mask, **settings)
@@ -1587,12 +1591,24 @@ def resampled_mask_qc(
             loaded_mask = corrected_mask
     label = int(settings.get("label", 1))
     image_array = sitk.GetArrayFromImage(loaded_image)
-    morphologic = sitk.GetArrayFromImage(loaded_mask) == label
+    ibsi = settings.get("rtpipelinePreprocessing") == "ibsi"
+    morphologic = sitk.GetArrayFromImage(loaded_mask) == (1 if ibsi else label)
     morphologic_count = int(morphologic.sum())
     values = np.asarray(image_array[morphologic])
     finite = np.isfinite(values)
     nonfinite_count = int((~finite).sum())
-    if window is None:
+    if ibsi:
+        from .ibsi_preprocessing import resegmentation_bounds
+        criteria = dict(extractor.settings)
+        if window is not None:
+            criteria.update(resegmentRange=list(window), resegmentMode="absolute")
+        lower, upper = (resegmentation_bounds(values[finite].astype(np.float64), criteria)
+                        if finite.any() else (-np.inf, np.inf))
+        below_count = int((finite & (values < lower)).sum())
+        # Count each excluded voxel once even if the intersection is empty.
+        above_count = int((finite & (values >= lower) & (values > upper)).sum())
+        retained_values = finite & (values >= lower) & (values <= upper)
+    elif window is None:
         below_count = 0
         above_count = 0
         retained_values = finite
