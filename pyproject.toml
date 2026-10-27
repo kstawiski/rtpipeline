@@ -74,6 +74,7 @@ rtpipeline = [
   "roi_class_map_v1.yaml",
   "custom_structures_pelvic.yaml",
   "treatment_scope_rules_v1.yaml",
+  "treatment_scope_rules_v1_1.yaml",
   "eval/_vendor/surface_distance/LICENSE",
   "eval/_vendor/surface_distance/NOTICE",
 ]
