@@ -1,0 +1,1916 @@
+[
+  {
+    "arm": "digital",
+    "completed_utc": "2026-10-27T12:12:49.938719+00:00",
+    "configuration": "digital",
+    "input_diagnostics": {
+      "bbox_size_xyz": [
+        5,
+        4,
+        4
+      ],
+      "direction": [
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "origin_xyz_mm": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "roi_max": 6.0,
+      "roi_mean": 2.1486486486486487,
+      "roi_min": 1.0,
+      "size_xyz": [
+        5,
+        4,
+        4
+      ],
+      "spacing_xyz_mm": [
+        2.0,
+        2.0,
+        2.0
+      ],
+      "voxel_count": 74
+    },
+    "intensity": {
+      "bbox_size_xyz": [
+        5,
+        4,
+        4
+      ],
+      "direction": [
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "origin_xyz_mm": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "roi_max": 6.0,
+      "roi_mean": 2.1486486486486487,
+      "roi_min": 1.0,
+      "size_xyz": [
+        5,
+        4,
+        4
+      ],
+      "spacing_xyz_mm": [
+        2.0,
+        2.0,
+        2.0
+      ],
+      "voxel_count": 74
+    },
+    "morphology": {
+      "bbox_size_xyz": [
+        5,
+        4,
+        4
+      ],
+      "direction": [
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "origin_xyz_mm": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "roi_max": 6.0,
+      "roi_mean": 2.1486486486486487,
+      "roi_min": 1.0,
+      "size_xyz": [
+        5,
+        4,
+        4
+      ],
+      "spacing_xyz_mm": [
+        2.0,
+        2.0,
+        2.0
+      ],
+      "voxel_count": 74
+    },
+    "runs": [
+      {
+        "config_path": "results/configs/digital_digital_3D_averaged.yaml",
+        "mode": "3D, averaged",
+        "settings": {
+          "additionalInfo": true,
+          "binWidth": 1,
+          "correctMask": false,
+          "distances": [
+            1
+          ],
+          "force2D": false,
+          "force2Ddimension": 0,
+          "geometryTolerance": 1e-06,
+          "gldm_a": 0,
+          "interpolator": "sitkBSpline",
+          "label": 1,
+          "minimumROIDimensions": 2,
+          "minimumROISize": 64,
+          "normalize": false,
+          "normalizeScale": 1,
+          "padDistance": 5,
+          "preCrop": false,
+          "removeOutliers": null,
+          "resampledPixelSpacing": null,
+          "resegmentShape": false,
+          "symmetricalGLCM": true,
+          "voxelArrayShift": 0,
+          "weightingNorm": null
+        }
+      },
+      {
+        "config_path": "results/configs/digital_digital_3D_merged.yaml",
+        "mode": "3D, merged",
+        "settings": {
+          "additionalInfo": true,
+          "binWidth": 1,
+          "correctMask": false,
+          "distances": [
+            1
+          ],
+          "force2D": false,
+          "force2Ddimension": 0,
+          "geometryTolerance": 1e-06,
+          "gldm_a": 0,
+          "interpolator": "sitkBSpline",
+          "label": 1,
+          "minimumROIDimensions": 2,
+          "minimumROISize": 64,
+          "normalize": false,
+          "normalizeScale": 1,
+          "padDistance": 5,
+          "preCrop": false,
+          "removeOutliers": null,
+          "resampledPixelSpacing": null,
+          "resegmentShape": false,
+          "symmetricalGLCM": true,
+          "voxelArrayShift": 0,
+          "weightingNorm": "no_weighting"
+        }
+      },
+      {
+        "config_path": "results/configs/digital_digital_2.5D_direction-merged.yaml",
+        "mode": "2.5D, direction-merged",
+        "settings": {
+          "additionalInfo": true,
+          "binWidth": 1,
+          "correctMask": false,
+          "distances": [
+            1
+          ],
+          "force2D": true,
+          "force2Ddimension": 0,
+          "geometryTolerance": 1e-06,
+          "gldm_a": 0,
+          "interpolator": "sitkBSpline",
+          "label": 1,
+          "minimumROIDimensions": 2,
+          "minimumROISize": 64,
+          "normalize": false,
+          "normalizeScale": 1,
+          "padDistance": 5,
+          "preCrop": false,
+          "removeOutliers": null,
+          "resampledPixelSpacing": null,
+          "resegmentShape": false,
+          "symmetricalGLCM": true,
+          "voxelArrayShift": 0,
+          "weightingNorm": null
+        }
+      },
+      {
+        "config_path": "results/configs/digital_digital_2.5D_merged.yaml",
+        "mode": "2.5D, merged",
+        "settings": {
+          "additionalInfo": true,
+          "binWidth": 1,
+          "correctMask": false,
+          "distances": [
+            1
+          ],
+          "force2D": true,
+          "force2Ddimension": 0,
+          "geometryTolerance": 1e-06,
+          "gldm_a": 0,
+          "interpolator": "sitkBSpline",
+          "label": 1,
+          "minimumROIDimensions": 2,
+          "minimumROISize": 64,
+          "normalize": false,
+          "normalizeScale": 1,
+          "padDistance": 5,
+          "preCrop": false,
+          "removeOutliers": null,
+          "resampledPixelSpacing": null,
+          "resegmentShape": false,
+          "symmetricalGLCM": true,
+          "voxelArrayShift": 0,
+          "weightingNorm": "no_weighting"
+        }
+      }
+    ],
+    "started_utc": "2026-10-27T12:12:46.644810+00:00"
+  },
+  {
+    "arm": "native",
+    "completed_utc": "2026-10-27T12:12:55.484166+00:00",
+    "configuration": "A",
+    "input_diagnostics": {
+      "bbox_size_xyz": [
+        100,
+        99,
+        26
+      ],
+      "direction": [
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "origin_xyz_mm": [
+        -174.39450073242188,
+        -79.62550354003906,
+        -100.4000015258789
+      ],
+      "roi_max": 723.0,
+      "roi_mean": -46.88272018905282,
+      "roi_min": -1000.0,
+      "size_xyz": [
+        204,
+        201,
+        60
+      ],
+      "spacing_xyz_mm": [
+        0.9769999980926514,
+        0.9769999980926514,
+        3.0
+      ],
+      "voxel_count": 125256
+    },
+    "intensity": {
+      "bbox_size_xyz": [
+        100,
+        99,
+        26
+      ],
+      "direction": [
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "origin_xyz_mm": [
+        -174.39450073242188,
+        -79.62550354003906,
+        -100.4000015258789
+      ],
+      "roi_max": 723.0,
+      "roi_mean": -46.88272018905282,
+      "roi_min": -1000.0,
+      "size_xyz": [
+        204,
+        201,
+        60
+      ],
+      "spacing_xyz_mm": [
+        0.9769999980926514,
+        0.9769999980926514,
+        3.0
+      ],
+      "voxel_count": 125256
+    },
+    "morphology": {
+      "bbox_size_xyz": [
+        100,
+        99,
+        26
+      ],
+      "direction": [
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "origin_xyz_mm": [
+        -174.39450073242188,
+        -79.62550354003906,
+        -100.4000015258789
+      ],
+      "roi_max": 723.0,
+      "roi_mean": -46.88272018905282,
+      "roi_min": -1000.0,
+      "size_xyz": [
+        204,
+        201,
+        60
+      ],
+      "spacing_xyz_mm": [
+        0.9769999980926514,
+        0.9769999980926514,
+        3.0
+      ],
+      "voxel_count": 125256
+    },
+    "runs": [
+      {
+        "config_path": "results/configs/native_A_2.5D_direction-merged.yaml",
+        "mode": "2.5D, direction-merged",
+        "settings": {
+          "additionalInfo": true,
+          "binWidth": 25,
+          "correctMask": false,
+          "distances": [
+            1
+          ],
+          "force2D": true,
+          "force2Ddimension": 0,
+          "geometryTolerance": 1e-06,
+          "gldm_a": 0,
+          "interpolator": "sitkBSpline",
+          "label": 1,
+          "minimumROIDimensions": 2,
+          "minimumROISize": 64,
+          "normalize": false,
+          "normalizeScale": 1,
+          "padDistance": 5,
+          "preCrop": false,
+          "removeOutliers": null,
+          "resampledPixelSpacing": null,
+          "resegmentMode": "absolute",
+          "resegmentRange": [
+            -500.0,
+            400.0
+          ],
+          "resegmentShape": false,
+          "symmetricalGLCM": true,
+          "voxelArrayShift": 0,
+          "weightingNorm": null
+        }
+      },
+      {
+        "config_path": "results/configs/native_A_2.5D_merged.yaml",
+        "mode": "2.5D, merged",
+        "settings": {
+          "additionalInfo": true,
+          "binWidth": 25,
+          "correctMask": false,
+          "distances": [
+            1
+          ],
+          "force2D": true,
+          "force2Ddimension": 0,
+          "geometryTolerance": 1e-06,
+          "gldm_a": 0,
+          "interpolator": "sitkBSpline",
+          "label": 1,
+          "minimumROIDimensions": 2,
+          "minimumROISize": 64,
+          "normalize": false,
+          "normalizeScale": 1,
+          "padDistance": 5,
+          "preCrop": false,
+          "removeOutliers": null,
+          "resampledPixelSpacing": null,
+          "resegmentMode": "absolute",
+          "resegmentRange": [
+            -500.0,
+            400.0
+          ],
+          "resegmentShape": false,
+          "symmetricalGLCM": true,
+          "voxelArrayShift": 0,
+          "weightingNorm": "no_weighting"
+        }
+      }
+    ],
+    "started_utc": "2026-10-27T12:12:50.792234+00:00"
+  },
+  {
+    "arm": "ibsi_preprocessed",
+    "completed_utc": "2026-10-27T12:12:59.373200+00:00",
+    "configuration": "A",
+    "input_diagnostics": {
+      "bbox_size_xyz": [
+        100,
+        99,
+        26
+      ],
+      "direction": [
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "origin_xyz_mm": [
+        -174.39450073242188,
+        -79.62550354003906,
+        -100.4000015258789
+      ],
+      "roi_max": 723.0,
+      "roi_mean": -46.88272018905282,
+      "roi_min": -1000.0,
+      "size_xyz": [
+        204,
+        201,
+        60
+      ],
+      "spacing_xyz_mm": [
+        0.9769999980926514,
+        0.9769999980926514,
+        3.0
+      ],
+      "voxel_count": 125256
+    },
+    "intensity": {
+      "bbox_size_xyz": [
+        100,
+        99,
+        26
+      ],
+      "direction": [
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "origin_xyz_mm": [
+        -174.39450073242188,
+        -79.62550354003906,
+        -100.4000015258789
+      ],
+      "roi_max": 377.0,
+      "roi_mean": 13.408426123075849,
+      "roi_min": -500.0,
+      "size_xyz": [
+        204,
+        201,
+        60
+      ],
+      "spacing_xyz_mm": [
+        0.9769999980926514,
+        0.9769999980926514,
+        3.0
+      ],
+      "voxel_count": 114596
+    },
+    "morphology": {
+      "bbox_size_xyz": [
+        100,
+        99,
+        26
+      ],
+      "direction": [
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "origin_xyz_mm": [
+        -174.39450073242188,
+        -79.62550354003906,
+        -100.4000015258789
+      ],
+      "roi_max": 723.0,
+      "roi_mean": -46.88272018905282,
+      "roi_min": -1000.0,
+      "size_xyz": [
+        204,
+        201,
+        60
+      ],
+      "spacing_xyz_mm": [
+        0.9769999980926514,
+        0.9769999980926514,
+        3.0
+      ],
+      "voxel_count": 125256
+    },
+    "runs": [
+      {
+        "config_path": "results/configs/ibsi_preprocessed_A_2.5D_direction-merged.yaml",
+        "mode": "2.5D, direction-merged",
+        "settings": {
+          "additionalInfo": true,
+          "binWidth": 25,
+          "correctMask": false,
+          "distances": [
+            1
+          ],
+          "force2D": true,
+          "force2Ddimension": 0,
+          "geometryTolerance": 1e-06,
+          "gldm_a": 0,
+          "interpolator": "sitkBSpline",
+          "label": 1,
+          "minimumROIDimensions": 2,
+          "minimumROISize": 64,
+          "normalize": false,
+          "normalizeScale": 1,
+          "padDistance": 5,
+          "preCrop": false,
+          "removeOutliers": null,
+          "resampledPixelSpacing": null,
+          "resegmentShape": false,
+          "symmetricalGLCM": true,
+          "voxelArrayShift": 0,
+          "weightingNorm": null
+        }
+      },
+      {
+        "config_path": "results/configs/ibsi_preprocessed_A_2.5D_merged.yaml",
+        "mode": "2.5D, merged",
+        "settings": {
+          "additionalInfo": true,
+          "binWidth": 25,
+          "correctMask": false,
+          "distances": [
+            1
+          ],
+          "force2D": true,
+          "force2Ddimension": 0,
+          "geometryTolerance": 1e-06,
+          "gldm_a": 0,
+          "interpolator": "sitkBSpline",
+          "label": 1,
+          "minimumROIDimensions": 2,
+          "minimumROISize": 64,
+          "normalize": false,
+          "normalizeScale": 1,
+          "padDistance": 5,
+          "preCrop": false,
+          "removeOutliers": null,
+          "resampledPixelSpacing": null,
+          "resegmentShape": false,
+          "symmetricalGLCM": true,
+          "voxelArrayShift": 0,
+          "weightingNorm": "no_weighting"
+        }
+      }
+    ],
+    "started_utc": "2026-10-27T12:12:55.487918+00:00"
+  },
+  {
+    "arm": "native",
+    "completed_utc": "2026-10-27T12:13:02.116569+00:00",
+    "configuration": "B",
+    "input_diagnostics": {
+      "bbox_size_xyz": [
+        100,
+        99,
+        26
+      ],
+      "direction": [
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "origin_xyz_mm": [
+        -174.39450073242188,
+        -79.62550354003906,
+        -100.4000015258789
+      ],
+      "roi_max": 723.0,
+      "roi_mean": -46.88272018905282,
+      "roi_min": -1000.0,
+      "size_xyz": [
+        204,
+        201,
+        60
+      ],
+      "spacing_xyz_mm": [
+        0.9769999980926514,
+        0.9769999980926514,
+        3.0
+      ],
+      "voxel_count": 125256
+    },
+    "intensity": {
+      "bbox_size_xyz": [
+        100,
+        99,
+        26
+      ],
+      "direction": [
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "origin_xyz_mm": [
+        -174.39450073242188,
+        -79.62550354003906,
+        -100.4000015258789
+      ],
+      "roi_max": 723.0,
+      "roi_mean": -46.88272018905282,
+      "roi_min": -1000.0,
+      "size_xyz": [
+        204,
+        201,
+        60
+      ],
+      "spacing_xyz_mm": [
+        0.9769999980926514,
+        0.9769999980926514,
+        3.0
+      ],
+      "voxel_count": 125256
+    },
+    "morphology": {
+      "bbox_size_xyz": [
+        100,
+        99,
+        26
+      ],
+      "direction": [
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "origin_xyz_mm": [
+        -174.39450073242188,
+        -79.62550354003906,
+        -100.4000015258789
+      ],
+      "roi_max": 723.0,
+      "roi_mean": -46.88272018905282,
+      "roi_min": -1000.0,
+      "size_xyz": [
+        204,
+        201,
+        60
+      ],
+      "spacing_xyz_mm": [
+        0.9769999980926514,
+        0.9769999980926514,
+        3.0
+      ],
+      "voxel_count": 125256
+    },
+    "runs": [
+      {
+        "config_path": "results/configs/native_B_2.5D_direction-merged.yaml",
+        "mode": "2.5D, direction-merged",
+        "settings": {
+          "additionalInfo": true,
+          "binCount": 32,
+          "correctMask": false,
+          "distances": [
+            1
+          ],
+          "force2D": true,
+          "force2Ddimension": 0,
+          "geometryTolerance": 1e-06,
+          "gldm_a": 0,
+          "interpolator": "sitkLinear",
+          "label": 1,
+          "minimumROIDimensions": 2,
+          "minimumROISize": 64,
+          "normalize": false,
+          "normalizeScale": 1,
+          "padDistance": 5,
+          "preCrop": false,
+          "removeOutliers": null,
+          "resampledPixelSpacing": [
+            2.0,
+            2.0,
+            0.0
+          ],
+          "resegmentMode": "absolute",
+          "resegmentRange": [
+            -500.0,
+            400.0
+          ],
+          "resegmentShape": false,
+          "symmetricalGLCM": true,
+          "voxelArrayShift": 0,
+          "weightingNorm": null
+        }
+      },
+      {
+        "config_path": "results/configs/native_B_2.5D_merged.yaml",
+        "mode": "2.5D, merged",
+        "settings": {
+          "additionalInfo": true,
+          "binCount": 32,
+          "correctMask": false,
+          "distances": [
+            1
+          ],
+          "force2D": true,
+          "force2Ddimension": 0,
+          "geometryTolerance": 1e-06,
+          "gldm_a": 0,
+          "interpolator": "sitkLinear",
+          "label": 1,
+          "minimumROIDimensions": 2,
+          "minimumROISize": 64,
+          "normalize": false,
+          "normalizeScale": 1,
+          "padDistance": 5,
+          "preCrop": false,
+          "removeOutliers": null,
+          "resampledPixelSpacing": [
+            2.0,
+            2.0,
+            0.0
+          ],
+          "resegmentMode": "absolute",
+          "resegmentRange": [
+            -500.0,
+            400.0
+          ],
+          "resegmentShape": false,
+          "symmetricalGLCM": true,
+          "voxelArrayShift": 0,
+          "weightingNorm": "no_weighting"
+        }
+      }
+    ],
+    "started_utc": "2026-10-27T12:12:59.446019+00:00"
+  },
+  {
+    "arm": "ibsi_preprocessed",
+    "completed_utc": "2026-10-27T12:13:04.200895+00:00",
+    "configuration": "B",
+    "input_diagnostics": {
+      "bbox_size_xyz": [
+        100,
+        99,
+        26
+      ],
+      "direction": [
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "origin_xyz_mm": [
+        -174.39450073242188,
+        -79.62550354003906,
+        -100.4000015258789
+      ],
+      "roi_max": 723.0,
+      "roi_mean": -46.88272018905282,
+      "roi_min": -1000.0,
+      "size_xyz": [
+        204,
+        201,
+        60
+      ],
+      "spacing_xyz_mm": [
+        0.9769999980926514,
+        0.9769999980926514,
+        3.0
+      ],
+      "voxel_count": 125256
+    },
+    "intensity": {
+      "bbox_size_xyz": [
+        49,
+        49,
+        26
+      ],
+      "direction": [
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "origin_xyz_mm": [
+        -174.22900092601776,
+        -79.92550373077393,
+        -100.4000015258789
+      ],
+      "roi_max": 391.0,
+      "roi_mean": 11.530099784348844,
+      "roi_min": -500.0,
+      "size_xyz": [
+        100,
+        99,
+        60
+      ],
+      "spacing_xyz_mm": [
+        2.0,
+        2.0,
+        3.0
+      ],
+      "voxel_count": 27359
+    },
+    "morphology": {
+      "bbox_size_xyz": [
+        49,
+        49,
+        26
+      ],
+      "direction": [
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "origin_xyz_mm": [
+        -174.22900092601776,
+        -79.92550373077393,
+        -100.4000015258789
+      ],
+      "roi_max": 525.0,
+      "roi_mean": -46.98106695261712,
+      "roi_min": -956.0,
+      "size_xyz": [
+        100,
+        99,
+        60
+      ],
+      "spacing_xyz_mm": [
+        2.0,
+        2.0,
+        3.0
+      ],
+      "voxel_count": 29842
+    },
+    "runs": [
+      {
+        "config_path": "results/configs/ibsi_preprocessed_B_2.5D_direction-merged.yaml",
+        "mode": "2.5D, direction-merged",
+        "settings": {
+          "additionalInfo": true,
+          "binCount": 32,
+          "correctMask": false,
+          "distances": [
+            1
+          ],
+          "force2D": true,
+          "force2Ddimension": 0,
+          "geometryTolerance": 1e-06,
+          "gldm_a": 0,
+          "interpolator": "sitkBSpline",
+          "label": 1,
+          "minimumROIDimensions": 2,
+          "minimumROISize": 64,
+          "normalize": false,
+          "normalizeScale": 1,
+          "padDistance": 5,
+          "preCrop": false,
+          "removeOutliers": null,
+          "resampledPixelSpacing": null,
+          "resegmentShape": false,
+          "symmetricalGLCM": true,
+          "voxelArrayShift": 0,
+          "weightingNorm": null
+        }
+      },
+      {
+        "config_path": "results/configs/ibsi_preprocessed_B_2.5D_merged.yaml",
+        "mode": "2.5D, merged",
+        "settings": {
+          "additionalInfo": true,
+          "binCount": 32,
+          "correctMask": false,
+          "distances": [
+            1
+          ],
+          "force2D": true,
+          "force2Ddimension": 0,
+          "geometryTolerance": 1e-06,
+          "gldm_a": 0,
+          "interpolator": "sitkBSpline",
+          "label": 1,
+          "minimumROIDimensions": 2,
+          "minimumROISize": 64,
+          "normalize": false,
+          "normalizeScale": 1,
+          "padDistance": 5,
+          "preCrop": false,
+          "removeOutliers": null,
+          "resampledPixelSpacing": null,
+          "resegmentShape": false,
+          "symmetricalGLCM": true,
+          "voxelArrayShift": 0,
+          "weightingNorm": "no_weighting"
+        }
+      }
+    ],
+    "started_utc": "2026-10-27T12:13:02.119620+00:00"
+  },
+  {
+    "arm": "native",
+    "completed_utc": "2026-10-27T12:13:13.929960+00:00",
+    "configuration": "C",
+    "input_diagnostics": {
+      "bbox_size_xyz": [
+        100,
+        99,
+        26
+      ],
+      "direction": [
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "origin_xyz_mm": [
+        -174.39450073242188,
+        -79.62550354003906,
+        -100.4000015258789
+      ],
+      "roi_max": 723.0,
+      "roi_mean": -46.88272018905282,
+      "roi_min": -1000.0,
+      "size_xyz": [
+        204,
+        201,
+        60
+      ],
+      "spacing_xyz_mm": [
+        0.9769999980926514,
+        0.9769999980926514,
+        3.0
+      ],
+      "voxel_count": 125256
+    },
+    "intensity": {
+      "bbox_size_xyz": [
+        100,
+        99,
+        26
+      ],
+      "direction": [
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "origin_xyz_mm": [
+        -174.39450073242188,
+        -79.62550354003906,
+        -100.4000015258789
+      ],
+      "roi_max": 723.0,
+      "roi_mean": -46.88272018905282,
+      "roi_min": -1000.0,
+      "size_xyz": [
+        204,
+        201,
+        60
+      ],
+      "spacing_xyz_mm": [
+        0.9769999980926514,
+        0.9769999980926514,
+        3.0
+      ],
+      "voxel_count": 125256
+    },
+    "morphology": {
+      "bbox_size_xyz": [
+        100,
+        99,
+        26
+      ],
+      "direction": [
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "origin_xyz_mm": [
+        -174.39450073242188,
+        -79.62550354003906,
+        -100.4000015258789
+      ],
+      "roi_max": 723.0,
+      "roi_mean": -46.88272018905282,
+      "roi_min": -1000.0,
+      "size_xyz": [
+        204,
+        201,
+        60
+      ],
+      "spacing_xyz_mm": [
+        0.9769999980926514,
+        0.9769999980926514,
+        3.0
+      ],
+      "voxel_count": 125256
+    },
+    "runs": [
+      {
+        "config_path": "results/configs/native_C_3D_averaged.yaml",
+        "mode": "3D, averaged",
+        "settings": {
+          "additionalInfo": true,
+          "binWidth": 25,
+          "correctMask": false,
+          "distances": [
+            1
+          ],
+          "force2D": false,
+          "force2Ddimension": 0,
+          "geometryTolerance": 1e-06,
+          "gldm_a": 0,
+          "interpolator": "sitkLinear",
+          "label": 1,
+          "minimumROIDimensions": 2,
+          "minimumROISize": 64,
+          "normalize": false,
+          "normalizeScale": 1,
+          "padDistance": 5,
+          "preCrop": false,
+          "removeOutliers": null,
+          "resampledPixelSpacing": [
+            2.0,
+            2.0,
+            2.0
+          ],
+          "resegmentMode": "absolute",
+          "resegmentRange": [
+            -1000.0,
+            400.0
+          ],
+          "resegmentShape": false,
+          "symmetricalGLCM": true,
+          "voxelArrayShift": 0,
+          "weightingNorm": null
+        }
+      },
+      {
+        "config_path": "results/configs/native_C_3D_merged.yaml",
+        "mode": "3D, merged",
+        "settings": {
+          "additionalInfo": true,
+          "binWidth": 25,
+          "correctMask": false,
+          "distances": [
+            1
+          ],
+          "force2D": false,
+          "force2Ddimension": 0,
+          "geometryTolerance": 1e-06,
+          "gldm_a": 0,
+          "interpolator": "sitkLinear",
+          "label": 1,
+          "minimumROIDimensions": 2,
+          "minimumROISize": 64,
+          "normalize": false,
+          "normalizeScale": 1,
+          "padDistance": 5,
+          "preCrop": false,
+          "removeOutliers": null,
+          "resampledPixelSpacing": [
+            2.0,
+            2.0,
+            2.0
+          ],
+          "resegmentMode": "absolute",
+          "resegmentRange": [
+            -1000.0,
+            400.0
+          ],
+          "resegmentShape": false,
+          "symmetricalGLCM": true,
+          "voxelArrayShift": 0,
+          "weightingNorm": "no_weighting"
+        }
+      }
+    ],
+    "started_utc": "2026-10-27T12:13:11.166090+00:00"
+  },
+  {
+    "arm": "ibsi_preprocessed",
+    "completed_utc": "2026-10-27T12:13:17.043107+00:00",
+    "configuration": "C",
+    "input_diagnostics": {
+      "bbox_size_xyz": [
+        100,
+        99,
+        26
+      ],
+      "direction": [
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "origin_xyz_mm": [
+        -174.39450073242188,
+        -79.62550354003906,
+        -100.4000015258789
+      ],
+      "roi_max": 723.0,
+      "roi_mean": -46.88272018905282,
+      "roi_min": -1000.0,
+      "size_xyz": [
+        204,
+        201,
+        60
+      ],
+      "spacing_xyz_mm": [
+        0.9769999980926514,
+        0.9769999980926514,
+        3.0
+      ],
+      "voxel_count": 125256
+    },
+    "intensity": {
+      "bbox_size_xyz": [
+        49,
+        49,
+        40
+      ],
+      "direction": [
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "origin_xyz_mm": [
+        -174.22900092601776,
+        -79.92550373077393,
+        -100.9000015258789
+      ],
+      "roi_max": 393.0,
+      "roi_mean": -48.978469367782346,
+      "roi_min": -939.0,
+      "size_xyz": [
+        100,
+        99,
+        90
+      ],
+      "spacing_xyz_mm": [
+        2.0,
+        2.0,
+        2.0
+      ],
+      "voxel_count": 45981
+    },
+    "morphology": {
+      "bbox_size_xyz": [
+        49,
+        49,
+        40
+      ],
+      "direction": [
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "origin_xyz_mm": [
+        -174.22900092601776,
+        -79.92550373077393,
+        -100.9000015258789
+      ],
+      "roi_max": 521.0,
+      "roi_mean": -48.93206480374035,
+      "roi_min": -939.0,
+      "size_xyz": [
+        100,
+        99,
+        90
+      ],
+      "spacing_xyz_mm": [
+        2.0,
+        2.0,
+        2.0
+      ],
+      "voxel_count": 45985
+    },
+    "runs": [
+      {
+        "config_path": "results/configs/ibsi_preprocessed_C_3D_averaged.yaml",
+        "mode": "3D, averaged",
+        "settings": {
+          "additionalInfo": true,
+          "binWidth": 25,
+          "correctMask": false,
+          "distances": [
+            1
+          ],
+          "force2D": false,
+          "force2Ddimension": 0,
+          "geometryTolerance": 1e-06,
+          "gldm_a": 0,
+          "interpolator": "sitkBSpline",
+          "label": 1,
+          "minimumROIDimensions": 2,
+          "minimumROISize": 64,
+          "normalize": false,
+          "normalizeScale": 1,
+          "padDistance": 5,
+          "preCrop": false,
+          "removeOutliers": null,
+          "resampledPixelSpacing": null,
+          "resegmentShape": false,
+          "symmetricalGLCM": true,
+          "voxelArrayShift": 0,
+          "weightingNorm": null
+        }
+      },
+      {
+        "config_path": "results/configs/ibsi_preprocessed_C_3D_merged.yaml",
+        "mode": "3D, merged",
+        "settings": {
+          "additionalInfo": true,
+          "binWidth": 25,
+          "correctMask": false,
+          "distances": [
+            1
+          ],
+          "force2D": false,
+          "force2Ddimension": 0,
+          "geometryTolerance": 1e-06,
+          "gldm_a": 0,
+          "interpolator": "sitkBSpline",
+          "label": 1,
+          "minimumROIDimensions": 2,
+          "minimumROISize": 64,
+          "normalize": false,
+          "normalizeScale": 1,
+          "padDistance": 5,
+          "preCrop": false,
+          "removeOutliers": null,
+          "resampledPixelSpacing": null,
+          "resegmentShape": false,
+          "symmetricalGLCM": true,
+          "voxelArrayShift": 0,
+          "weightingNorm": "no_weighting"
+        }
+      }
+    ],
+    "started_utc": "2026-10-27T12:13:13.932373+00:00"
+  },
+  {
+    "arm": "native",
+    "completed_utc": "2026-10-27T12:13:26.337402+00:00",
+    "configuration": "D",
+    "input_diagnostics": {
+      "bbox_size_xyz": [
+        100,
+        99,
+        26
+      ],
+      "direction": [
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "origin_xyz_mm": [
+        -174.39450073242188,
+        -79.62550354003906,
+        -100.4000015258789
+      ],
+      "roi_max": 723.0,
+      "roi_mean": -46.88272018905282,
+      "roi_min": -1000.0,
+      "size_xyz": [
+        204,
+        201,
+        60
+      ],
+      "spacing_xyz_mm": [
+        0.9769999980926514,
+        0.9769999980926514,
+        3.0
+      ],
+      "voxel_count": 125256
+    },
+    "intensity": {
+      "bbox_size_xyz": [
+        100,
+        99,
+        26
+      ],
+      "direction": [
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "origin_xyz_mm": [
+        -174.39450073242188,
+        -79.62550354003906,
+        -100.4000015258789
+      ],
+      "roi_max": 723.0,
+      "roi_mean": -46.88272018905282,
+      "roi_min": -1000.0,
+      "size_xyz": [
+        204,
+        201,
+        60
+      ],
+      "spacing_xyz_mm": [
+        0.9769999980926514,
+        0.9769999980926514,
+        3.0
+      ],
+      "voxel_count": 125256
+    },
+    "morphology": {
+      "bbox_size_xyz": [
+        100,
+        99,
+        26
+      ],
+      "direction": [
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "origin_xyz_mm": [
+        -174.39450073242188,
+        -79.62550354003906,
+        -100.4000015258789
+      ],
+      "roi_max": 723.0,
+      "roi_mean": -46.88272018905282,
+      "roi_min": -1000.0,
+      "size_xyz": [
+        204,
+        201,
+        60
+      ],
+      "spacing_xyz_mm": [
+        0.9769999980926514,
+        0.9769999980926514,
+        3.0
+      ],
+      "voxel_count": 125256
+    },
+    "runs": [
+      {
+        "config_path": "results/configs/native_D_3D_averaged.yaml",
+        "mode": "3D, averaged",
+        "settings": {
+          "additionalInfo": true,
+          "binCount": 32,
+          "correctMask": false,
+          "distances": [
+            1
+          ],
+          "force2D": false,
+          "force2Ddimension": 0,
+          "geometryTolerance": 1e-06,
+          "gldm_a": 0,
+          "interpolator": "sitkLinear",
+          "label": 1,
+          "minimumROIDimensions": 2,
+          "minimumROISize": 64,
+          "normalize": false,
+          "normalizeScale": 1,
+          "padDistance": 5,
+          "preCrop": false,
+          "removeOutliers": null,
+          "resampledPixelSpacing": [
+            2.0,
+            2.0,
+            2.0
+          ],
+          "resegmentMode": "sigma",
+          "resegmentRange": [
+            -3.0,
+            3.0
+          ],
+          "resegmentShape": false,
+          "symmetricalGLCM": true,
+          "voxelArrayShift": 0,
+          "weightingNorm": null
+        }
+      },
+      {
+        "config_path": "results/configs/native_D_3D_merged.yaml",
+        "mode": "3D, merged",
+        "settings": {
+          "additionalInfo": true,
+          "binCount": 32,
+          "correctMask": false,
+          "distances": [
+            1
+          ],
+          "force2D": false,
+          "force2Ddimension": 0,
+          "geometryTolerance": 1e-06,
+          "gldm_a": 0,
+          "interpolator": "sitkLinear",
+          "label": 1,
+          "minimumROIDimensions": 2,
+          "minimumROISize": 64,
+          "normalize": false,
+          "normalizeScale": 1,
+          "padDistance": 5,
+          "preCrop": false,
+          "removeOutliers": null,
+          "resampledPixelSpacing": [
+            2.0,
+            2.0,
+            2.0
+          ],
+          "resegmentMode": "sigma",
+          "resegmentRange": [
+            -3.0,
+            3.0
+          ],
+          "resegmentShape": false,
+          "symmetricalGLCM": true,
+          "voxelArrayShift": 0,
+          "weightingNorm": "no_weighting"
+        }
+      }
+    ],
+    "started_utc": "2026-10-27T12:13:23.778542+00:00"
+  },
+  {
+    "arm": "ibsi_preprocessed",
+    "completed_utc": "2026-10-27T12:13:28.573722+00:00",
+    "configuration": "D",
+    "input_diagnostics": {
+      "bbox_size_xyz": [
+        100,
+        99,
+        26
+      ],
+      "direction": [
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "origin_xyz_mm": [
+        -174.39450073242188,
+        -79.62550354003906,
+        -100.4000015258789
+      ],
+      "roi_max": 723.0,
+      "roi_mean": -46.88272018905282,
+      "roi_min": -1000.0,
+      "size_xyz": [
+        204,
+        201,
+        60
+      ],
+      "spacing_xyz_mm": [
+        0.9769999980926514,
+        0.9769999980926514,
+        3.0
+      ],
+      "voxel_count": 125256
+    },
+    "intensity": {
+      "bbox_size_xyz": [
+        49,
+        49,
+        40
+      ],
+      "direction": [
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "origin_xyz_mm": [
+        -174.22900092601776,
+        -79.92550373077393,
+        -100.9000015258789
+      ],
+      "roi_max": 521.0,
+      "roi_mean": -23.51791296525357,
+      "roi_min": -724.0,
+      "size_xyz": [
+        100,
+        99,
+        90
+      ],
+      "spacing_xyz_mm": [
+        2.0,
+        2.0,
+        2.0
+      ],
+      "voxel_count": 44465
+    },
+    "morphology": {
+      "bbox_size_xyz": [
+        49,
+        49,
+        40
+      ],
+      "direction": [
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "origin_xyz_mm": [
+        -174.22900092601776,
+        -79.92550373077393,
+        -100.9000015258789
+      ],
+      "roi_max": 521.0,
+      "roi_mean": -48.93206480374035,
+      "roi_min": -939.0,
+      "size_xyz": [
+        100,
+        99,
+        90
+      ],
+      "spacing_xyz_mm": [
+        2.0,
+        2.0,
+        2.0
+      ],
+      "voxel_count": 45985
+    },
+    "runs": [
+      {
+        "config_path": "results/configs/ibsi_preprocessed_D_3D_averaged.yaml",
+        "mode": "3D, averaged",
+        "settings": {
+          "additionalInfo": true,
+          "binCount": 32,
+          "correctMask": false,
+          "distances": [
+            1
+          ],
+          "force2D": false,
+          "force2Ddimension": 0,
+          "geometryTolerance": 1e-06,
+          "gldm_a": 0,
+          "interpolator": "sitkBSpline",
+          "label": 1,
+          "minimumROIDimensions": 2,
+          "minimumROISize": 64,
+          "normalize": false,
+          "normalizeScale": 1,
+          "padDistance": 5,
+          "preCrop": false,
+          "removeOutliers": null,
+          "resampledPixelSpacing": null,
+          "resegmentShape": false,
+          "symmetricalGLCM": true,
+          "voxelArrayShift": 0,
+          "weightingNorm": null
+        }
+      },
+      {
+        "config_path": "results/configs/ibsi_preprocessed_D_3D_merged.yaml",
+        "mode": "3D, merged",
+        "settings": {
+          "additionalInfo": true,
+          "binCount": 32,
+          "correctMask": false,
+          "distances": [
+            1
+          ],
+          "force2D": false,
+          "force2Ddimension": 0,
+          "geometryTolerance": 1e-06,
+          "gldm_a": 0,
+          "interpolator": "sitkBSpline",
+          "label": 1,
+          "minimumROIDimensions": 2,
+          "minimumROISize": 64,
+          "normalize": false,
+          "normalizeScale": 1,
+          "padDistance": 5,
+          "preCrop": false,
+          "removeOutliers": null,
+          "resampledPixelSpacing": null,
+          "resegmentShape": false,
+          "symmetricalGLCM": true,
+          "voxelArrayShift": 0,
+          "weightingNorm": "no_weighting"
+        }
+      }
+    ],
+    "started_utc": "2026-10-27T12:13:26.339713+00:00"
+  },
+  {
+    "arm": "ibsi_preprocessed",
+    "completed_utc": "2026-10-27T12:13:37.708902+00:00",
+    "configuration": "E",
+    "input_diagnostics": {
+      "bbox_size_xyz": [
+        100,
+        99,
+        26
+      ],
+      "direction": [
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "origin_xyz_mm": [
+        -174.39450073242188,
+        -79.62550354003906,
+        -100.4000015258789
+      ],
+      "roi_max": 723.0,
+      "roi_mean": -46.88272018905282,
+      "roi_min": -1000.0,
+      "size_xyz": [
+        204,
+        201,
+        60
+      ],
+      "spacing_xyz_mm": [
+        0.9769999980926514,
+        0.9769999980926514,
+        3.0
+      ],
+      "voxel_count": 125256
+    },
+    "intensity": {
+      "bbox_size_xyz": [
+        49,
+        49,
+        40
+      ],
+      "direction": [
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "origin_xyz_mm": [
+        -174.22900092601776,
+        -79.92550373077393,
+        -100.9000015258789
+      ],
+      "roi_max": 345.0,
+      "roi_mean": -22.625663159787788,
+      "roi_min": -743.0,
+      "size_xyz": [
+        100,
+        99,
+        90
+      ],
+      "spacing_xyz_mm": [
+        2.0,
+        2.0,
+        2.0
+      ],
+      "voxel_count": 44484
+    },
+    "morphology": {
+      "bbox_size_xyz": [
+        49,
+        49,
+        40
+      ],
+      "direction": [
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "origin_xyz_mm": [
+        -174.22900092601776,
+        -79.92550373077393,
+        -100.9000015258789
+      ],
+      "roi_max": 627.0,
+      "roi_mean": -48.27837338262477,
+      "roi_min": -966.0,
+      "size_xyz": [
+        100,
+        99,
+        90
+      ],
+      "spacing_xyz_mm": [
+        2.0,
+        2.0,
+        2.0
+      ],
+      "voxel_count": 45985
+    },
+    "runs": [
+      {
+        "config_path": "results/configs/ibsi_preprocessed_E_3D_averaged.yaml",
+        "mode": "3D, averaged",
+        "settings": {
+          "additionalInfo": true,
+          "binCount": 32,
+          "correctMask": false,
+          "distances": [
+            1
+          ],
+          "force2D": false,
+          "force2Ddimension": 0,
+          "geometryTolerance": 1e-06,
+          "gldm_a": 0,
+          "interpolator": "sitkBSpline",
+          "label": 1,
+          "minimumROIDimensions": 2,
+          "minimumROISize": 64,
+          "normalize": false,
+          "normalizeScale": 1,
+          "padDistance": 5,
+          "preCrop": false,
+          "removeOutliers": null,
+          "resampledPixelSpacing": null,
+          "resegmentShape": false,
+          "symmetricalGLCM": true,
+          "voxelArrayShift": 0,
+          "weightingNorm": null
+        }
+      },
+      {
+        "config_path": "results/configs/ibsi_preprocessed_E_3D_merged.yaml",
+        "mode": "3D, merged",
+        "settings": {
+          "additionalInfo": true,
+          "binCount": 32,
+          "correctMask": false,
+          "distances": [
+            1
+          ],
+          "force2D": false,
+          "force2Ddimension": 0,
+          "geometryTolerance": 1e-06,
+          "gldm_a": 0,
+          "interpolator": "sitkBSpline",
+          "label": 1,
+          "minimumROIDimensions": 2,
+          "minimumROISize": 64,
+          "normalize": false,
+          "normalizeScale": 1,
+          "padDistance": 5,
+          "preCrop": false,
+          "removeOutliers": null,
+          "resampledPixelSpacing": null,
+          "resegmentShape": false,
+          "symmetricalGLCM": true,
+          "voxelArrayShift": 0,
+          "weightingNorm": "no_weighting"
+        }
+      }
+    ],
+    "started_utc": "2026-10-27T12:13:34.733060+00:00"
+  }
+]

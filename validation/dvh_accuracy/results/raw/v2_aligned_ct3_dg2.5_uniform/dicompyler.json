@@ -1,0 +1,164 @@
+{
+  "versions": {
+    "contourpy": "1.3.3",
+    "cycler": "0.12.1",
+    "dicompyler-core": "0.5.6",
+    "fonttools": "4.67.0",
+    "kiwisolver": "1.5.1",
+    "matplotlib": "3.9.4",
+    "numpy": "1.26.4",
+    "packaging": "26.3",
+    "pillow": "12.0.0",
+    "pip": "24.0",
+    "pydicom": "2.4.4",
+    "pyparsing": "3.3.3",
+    "python-dateutil": "3.0.0",
+    "setuptools": "79.0.1",
+    "six": "1.17.0",
+    "tzdata": "2026.5"
+  },
+  "python": "3.11.14 | packaged by conda-forge | (main, Jan 26 2026, 23:48:32) [GCC 14.3.0]",
+  "dicompyler_source_sha256": {
+    "dicomparser.py": "64ecb66a4eb9664b1a44b7427b6b1ad7b5fb0b1dfa443d68d654d052b37cd76a",
+    "dvh.py": "cb9fbec4c9d36e88f5a73c110d217430e6d48d9b6e8b6a95fb42961e56773073",
+    "dvhcalc.py": "0233e7e0cebc3c7778ff3314909f96e7cba0a66fbb9689ec60480cb82058c4c4",
+    "config.py": "7a4d437292323d25f22b230c53f444302a1fd3390bdeb160140522cf3503a6c4",
+    "util.py": "41ea6f932caf560acecc14dd122ee20d1610760e7b292019bedf079ad3a61809"
+  },
+  "rois": [
+    {
+      "roi": 1,
+      "dicompyler_native": {
+        "Dmean_Gy": 20.005000000000003,
+        "Dmin_Gy": 20.01,
+        "Dmax_Gy": 20.01,
+        "Volume_cc": 1.96875,
+        "V95Rx_pct": 0.0,
+        "V20Gy_cc": 1.96875,
+        "D98_Gy": 0.0,
+        "D95_Gy": 0.0,
+        "D50_Gy": 0.0,
+        "D2_Gy": 0.0,
+        "D2cc_Gy": 0.0,
+        "D0.03cc_Gy": 0.0
+      },
+      "dicompyler_harmonized": {
+        "Dmean_Gy": 20.005000000000003,
+        "Dmin_Gy": 20.01,
+        "Dmax_Gy": 20.01,
+        "Volume_cc": 1.96875,
+        "D98_Gy": 20.01,
+        "D95_Gy": 20.01,
+        "D50_Gy": 20.01,
+        "D2_Gy": 20.01,
+        "D2cc_Gy": null,
+        "D0.03cc_Gy": 20.01,
+        "V95Rx_pct": 0.0,
+        "V20Gy_cc": 1.96875
+      },
+      "native_status": {
+        "D2cc_Gy": "native_zero_for_volume_below_request"
+      }
+    },
+    {
+      "roi": 2,
+      "dicompyler_native": {
+        "Dmean_Gy": 20.005000000000003,
+        "Dmin_Gy": 20.01,
+        "Dmax_Gy": 20.01,
+        "Volume_cc": 1.96875,
+        "V95Rx_pct": 0.0,
+        "V20Gy_cc": 1.96875,
+        "D98_Gy": 0.0,
+        "D95_Gy": 0.0,
+        "D50_Gy": 0.0,
+        "D2_Gy": 0.0,
+        "D2cc_Gy": 0.0,
+        "D0.03cc_Gy": 0.0
+      },
+      "dicompyler_harmonized": {
+        "Dmean_Gy": 20.005000000000003,
+        "Dmin_Gy": 20.01,
+        "Dmax_Gy": 20.01,
+        "Volume_cc": 1.96875,
+        "D98_Gy": 20.01,
+        "D95_Gy": 20.01,
+        "D50_Gy": 20.01,
+        "D2_Gy": 20.01,
+        "D2cc_Gy": null,
+        "D0.03cc_Gy": 20.01,
+        "V95Rx_pct": 0.0,
+        "V20Gy_cc": 1.96875
+      },
+      "native_status": {
+        "D2cc_Gy": "native_zero_for_volume_below_request"
+      }
+    },
+    {
+      "roi": 3,
+      "dicompyler_native": {
+        "Dmean_Gy": 20.005000000000003,
+        "Dmin_Gy": 20.01,
+        "Dmax_Gy": 20.01,
+        "Volume_cc": 2.34375,
+        "V95Rx_pct": 0.0,
+        "V20Gy_cc": 2.34375,
+        "D98_Gy": 0.0,
+        "D95_Gy": 0.0,
+        "D50_Gy": 0.0,
+        "D2_Gy": 0.0,
+        "D2cc_Gy": 0.0,
+        "D0.03cc_Gy": 0.0
+      },
+      "dicompyler_harmonized": {
+        "Dmean_Gy": 20.005000000000003,
+        "Dmin_Gy": 20.01,
+        "Dmax_Gy": 20.01,
+        "Volume_cc": 2.34375,
+        "D98_Gy": 20.01,
+        "D95_Gy": 20.01,
+        "D50_Gy": 20.01,
+        "D2_Gy": 20.01,
+        "D2cc_Gy": 20.01,
+        "D0.03cc_Gy": 20.01,
+        "V95Rx_pct": 0.0,
+        "V20Gy_cc": 2.34375
+      },
+      "native_status": {}
+    },
+    {
+      "roi": 4,
+      "dicompyler_native": {
+        "Dmean_Gy": 20.005000000000003,
+        "Dmin_Gy": 20.01,
+        "Dmax_Gy": 20.01,
+        "Volume_cc": 1.6875,
+        "V95Rx_pct": 0.0,
+        "V20Gy_cc": 1.6875,
+        "D98_Gy": 0.0,
+        "D95_Gy": 0.0,
+        "D50_Gy": 0.0,
+        "D2_Gy": 0.0,
+        "D2cc_Gy": 0.0,
+        "D0.03cc_Gy": 0.0
+      },
+      "dicompyler_harmonized": {
+        "Dmean_Gy": 20.005000000000003,
+        "Dmin_Gy": 20.01,
+        "Dmax_Gy": 20.01,
+        "Volume_cc": 1.6875,
+        "D98_Gy": 20.01,
+        "D95_Gy": 20.01,
+        "D50_Gy": 20.01,
+        "D2_Gy": 20.01,
+        "D2cc_Gy": null,
+        "D0.03cc_Gy": 20.01,
+        "V95Rx_pct": 0.0,
+        "V20Gy_cc": 1.6875
+      },
+      "native_status": {
+        "D2cc_Gy": "native_zero_for_volume_below_request"
+      }
+    }
+  ]
+}

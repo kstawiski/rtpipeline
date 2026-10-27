@@ -63,6 +63,7 @@ DVH_MEASUREMENT_CODE_SOURCES = (
     "rt_details.py",
     "rtstruct_geometry.py",
     "rtstruct_identity.py",
+    "utils.py",
 )
 
 _DVH_MEASUREMENT_CODE_SHA256: Optional[str] = None
@@ -1185,7 +1186,7 @@ from .course_contract import (
     load_course_contract,
 )
 
-from .utils import sanitize_rtstruct, mask_is_cropped, run_tasks_with_adaptive_workers, snap_rtstruct_to_dose_grid
+from .utils import sanitize_rtstruct, mask_is_cropped, run_tasks_with_adaptive_workers, dose_on_contour_planes
 from .custom_models import list_custom_model_outputs
 
 # Compatibility shim for dicompyler-core with pydicom>=3
@@ -2543,6 +2544,14 @@ def _write_dvh_qc(
             if "zero_dose_status" in df
             else {}
         ),
+        "dose_plane_alignment_counts": (
+            df["dose_plane_alignment"].dropna().value_counts().to_dict()
+            if "dose_plane_alignment" in df else {}
+        ),
+        "dose_plane_alignment": next((method for method in
+            ("DOSE_Z_INTERPOLATED", "EXACT", "NO_IN_RANGE_PLANE")
+            if "dose_plane_alignment" in df
+            and df["dose_plane_alignment"].eq(method).any()), None),
         "target_near_zero_dose_grid_coverage": target_coverage,
         "rx_recovery_attempted": rx_recovery_attempted,
         "custom_structures_expected": expected_custom_names,
@@ -3642,10 +3651,6 @@ def dvh_for_course(
 
     builder_cache: Dict[Path, Optional["RTStructBuilder"]] = {}  # type: ignore[name-defined]
 
-    # Cache for dose-grid snapping to avoid redundant work within a single dvh_for_course call
-    # Key: (rs_path, dose_sop_uid) -> True if already snapped
-    snap_cache: Dict[tuple, bool] = {}
-
     def _get_builder(rs_path: Path) -> Optional["RTStructBuilder"]:  # type: ignore[name-defined]
         if RTStructBuilder is None:
             return None
@@ -3681,12 +3686,18 @@ def dvh_for_course(
         coverage = (rotated_grid.coverage(geometry_rtstruct_ds, int(roi_number))
                     if rotated_grid is not None else
                     rtstruct_grid_coverage(geometry_rtstruct_ds, int(roi_number), rtdose))
+        alignment = None
         try:
             if rotation_error:
                 raise DoseOrientationError(rotation_error)
+            roi_dose = rtdose
+            if rotated_grid is None:
+                roi_dose, alignment = dose_on_contour_planes(rtstruct_ds, rtdose, roi_number)
             abs_dvh = (rotated_grid.get_dvh(rtstruct_ds, roi_number)
                        if rotated_grid is not None else
-                       dvhcalc.get_dvh(rtstruct_ds, rtdose, roi_number))
+                       dvhcalc.get_dvh(rtstruct_ds, roi_dose, roi_number))
+        except MemoryError:
+            raise
         except Exception as exc:
             logger.error("DVH failed for ROI %s: %s", roi_name, exc)
             failed = annotate_dvh_metrics(
@@ -3700,6 +3711,8 @@ def dvh_for_course(
             failed.update({"ROI_Number": int(roi_number), "ROI_Name": roi_name,
                            "ROI_OriginalName": roi_name, "Segmentation_Source": source_label,
                            "dvh_computation_error": str(exc), "_curve_data": []})
+            if alignment is not None:
+                failed["dose_plane_alignment"] = alignment
             return failed
         if abs_dvh.volume == 0 and coverage["status"] == "fully_covered":
             return None
@@ -3720,7 +3733,7 @@ def dvh_for_course(
         if coverage["status"] == "partial_grid":
             covered_dvh = (rotated_grid.get_dvh(rtstruct_ds, roi_number, calculate_full_volume=False)
                            if rotated_grid is not None else
-                           dvhcalc.get_dvh(rtstruct_ds, rtdose, roi_number, calculate_full_volume=False))
+                           dvhcalc.get_dvh(rtstruct_ds, roi_dose, roi_number, calculate_full_volume=False))
             covered = _compute_metrics(covered_dvh, rx_value)
             if rotated_grid is not None:
                 covered = add_brachy_metrics(covered_dvh, covered)
@@ -3796,6 +3809,8 @@ def dvh_for_course(
                 "_curve_data": curve_points, # Internal key for JSON export
             }
         )
+        if alignment is not None:
+            metrics["dose_plane_alignment"] = alignment
         return metrics
 
     def process_struct(rs_source: DVHRTStructSource, rx_dose: Optional[float]) -> None:
@@ -3808,16 +3823,9 @@ def dvh_for_course(
             logger.warning("Cannot read RTSTRUCT %s: %s", rs_path, e)
             return
 
-        # Keep original contour coordinates for zero-dose geometry QC. The
-        # downstream snap operation intentionally mutates a working dataset.
-        geometry_rtstruct = copy.deepcopy(rtstruct)
-
-        # Use cached snap if we've already snapped this RS+dose combination
-        dose_sop_uid = str(getattr(rtdose, "SOPInstanceUID", ""))
-        snap_key = (rs_path, dose_sop_uid)
-        if rotated_grid is None and rotation_error is None and snap_key not in snap_cache:
-            snap_rtstruct_to_dose_grid(rtstruct, rtdose)
-            snap_cache[snap_key] = True
+        # Both DVH and coverage use the original contour planes. Dose alignment
+        # creates a private working dose for each axial ROI inside _calc_roi.
+        geometry_rtstruct = rtstruct
 
         builder = _get_builder(rs_path)
         roi_interpreted_types = _roi_interpreted_type_map(geometry_rtstruct)
@@ -4073,6 +4081,7 @@ def dvh_for_course(
                 "dose_metric_status": row.get("dose_metric_status"),
                 "zero_dose_status": row.get("zero_dose_status"),
                 "dose_grid_coverage_status": row.get("dose_grid_coverage_status"),
+                "dose_plane_alignment": row.get("dose_plane_alignment"),
                 "measurement_scope": "whole_roi",
                 "data": points,
             })

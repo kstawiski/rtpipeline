@@ -622,6 +622,18 @@ def _extractor(config: PipelineConfig, modality: str = 'CT', normalize_override:
     numpy_version = tuple(map(int, np.__version__.split('.')[:2]))
 
     if numpy_version[0] >= 2:
+        # Helper/isolated factories instantiate PyRadiomics directly and cannot
+        # apply this package-specific option. Reject it before delegating.
+        candidate = getattr(config, 'radiomics_params_file', None) if config else None
+        if candidate is not None:
+            requested = _load_radiomics_params_dict(Path(candidate))
+            if requested and requested.get('radiomics'):
+                from .ibsi_preprocessing import preprocessing_options
+                if preprocessing_options(requested):
+                    raise ValueError(
+                        "IBSI preprocessing requires the native CT extractor in a "
+                        "NumPy 1.x/PyRadiomics environment; helper extraction is unsupported."
+                    )
         # For NumPy 2.x we always delegate to the conda executor.
         logger.debug(
             "NumPy %s detected – returning None to trigger conda-based radiomics",
@@ -631,6 +643,7 @@ def _extractor(config: PipelineConfig, modality: str = 'CT', normalize_override:
 
     # Direct usage with NumPy 1.x
     logger.debug("NumPy 1.x detected (%s), using PyRadiomics directly", np.__version__)
+    explicit_preprocessing = False
     try:
         from radiomics.featureextractor import RadiomicsFeatureExtractor
         logging.getLogger('radiomics.featureextractor').setLevel(logging.WARNING)
@@ -640,13 +653,25 @@ def _extractor(config: PipelineConfig, modality: str = 'CT', normalize_override:
         if pfile is not None:
             params_dict = _load_radiomics_params_dict(pfile)
 
-        ext = RadiomicsFeatureExtractor()
+        from .ibsi_preprocessing import preprocessing_options
+        explicit_preprocessing = bool(params_dict and params_dict.get('radiomics'))
+        preprocessing = preprocessing_options(params_dict or {})
+        if preprocessing:
+            if modality.upper() != 'CT':
+                raise ValueError("radiomics.preprocessing: ibsi is available for CT only")
+            from .ibsi_preprocessing import extractor_class
+            ext = extractor_class()()
+        else:
+            ext = RadiomicsFeatureExtractor()
 
         if params_dict is not None:
             _apply_params_to_extractor(ext, params_dict)
         elif pfile is not None:
             # Fallback to the library parser if caching fails for any reason
             ext.loadParams(str(pfile))
+
+        if preprocessing:
+            ext.settings.update(preprocessing)
 
         # Adjust per-modality recommendations
         if modality.upper() == 'MR':
@@ -665,6 +690,8 @@ def _extractor(config: PipelineConfig, modality: str = 'CT', normalize_override:
 
         return ext
     except Exception as e:
+        if explicit_preprocessing:
+            raise
         logger.warning("Failed to create RadiomicsFeatureExtractor: %s", e)
         return None
 

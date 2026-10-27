@@ -12,8 +12,8 @@ from test_custom_structures_d16_auto_harvest import _manual_only_course
 
 
 @pytest.mark.parametrize("failure", [None, "empty", "exception"])
-def test_manual_priority_does_not_block_distinct_auto_roi(tmp_path, monkeypatch, failure):
-    assert tmp_path.resolve().is_relative_to(Path("/tmp"))
+def test_manual_priority_does_not_block_distinct_auto_roi(tmp_path, tmp_path_factory, monkeypatch, failure):
+    assert tmp_path.resolve().is_relative_to(tmp_path_factory.getbasetemp().resolve())
     course = _manual_only_course(tmp_path, monkeypatch)
     manual_mask = RTStructBuilder.create_from(
         str(course.ct), str(course.rs_manual)

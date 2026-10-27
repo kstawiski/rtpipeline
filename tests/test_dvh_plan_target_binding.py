@@ -42,10 +42,27 @@ def _baseline_rows(path: Path) -> dict[str, dict]:
     return {row["ROI_Name"]: row for row in rows}
 
 
+def _assert_historical_table_with_alignment(course: Path, path: Path) -> None:
+    """Keep the stored values, dtypes and row order exact on historical columns."""
+    baseline_text = path.read_text(encoding="utf-8")
+    baseline = json.loads(baseline_text)
+    current = json.loads(fx.canonical_dvh_table(course))
+    assert set(current["columns"]) == set(baseline["columns"]) | {"dose_plane_alignment"}
+    positions = [current["columns"].index(column) for column in baseline["columns"]]
+    projected = {
+        "columns": [current["columns"][i] for i in positions],
+        "dtypes": [current["dtypes"][i] for i in positions],
+        "rows": [[row[i] for i in positions] for row in current["rows"]],
+    }
+    assert json.dumps(projected, indent=1, ensure_ascii=False, sort_keys=False) + "\n" == baseline_text
+    alignment_index = current["columns"].index("dose_plane_alignment")
+    alignment = [row[alignment_index] for row in current["rows"]]
+    assert set(alignment) <= {"EXACT", "DOSE_Z_INTERPOLATED"}
+    assert alignment == ["EXACT"] * len(baseline["rows"])
+
+
 def _assert_course_quarantined_as_at_ae60f01(course: Path, qc: dict, rule: str) -> None:
-    assert fx.canonical_dvh_table(course) + "\n" == QUARANTINE_BASELINE.read_text(
-        encoding="utf-8"
-    )
+    _assert_historical_table_with_alignment(course, QUARANTINE_BASELINE)
     reconciliation = qc["plan_target_reconciliation"]
     assert reconciliation["decision"] == (
         "course_quarantined_pending_plan_target_reconciliation"
@@ -171,11 +188,9 @@ def test_volume_reference_binds_by_referenced_roi_number(tmp_path):
 
 
 def test_course_without_near_zero_targets_matches_ae60f01_output(tmp_path):
-    """Scenario 5: byte-identical canonical DVH table to the stored ae60f01 output."""
+    """Scenario 5: exact historical DVH columns and explicit contour alignment."""
     course, _frame, qc = _run(tmp_path, rois=fx.NO_NEAR_ZERO_ROIS)
-    assert fx.canonical_dvh_table(course) + "\n" == NO_NEAR_ZERO_BASELINE.read_text(
-        encoding="utf-8"
-    )
+    _assert_historical_table_with_alignment(course, NO_NEAR_ZERO_BASELINE)
     assert qc["plan_target_reconciliation"]["decision"] == "not_required_no_near_zero_targets"
     assert qc["plan_target_reconciliation"]["course_quarantine"] is False
 

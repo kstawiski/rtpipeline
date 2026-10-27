@@ -1,0 +1,22 @@
+--- production/dicomparser.py
++++ isolated-comparator/dicomparser.py
+@@ -12,9 +12,16 @@
+ import logging
+ import numpy as np
+ try:
+-    from pydicom.dicomio import read_file
+-    from pydicom.dataset import Dataset, validate_file_meta
+-    from pydicom.pixel_data_handlers.util import pixel_dtype
++    from pydicom import dcmread as read_file
++    from pydicom.dataset import Dataset
++    try:
++        from pydicom.dataset import validate_file_meta
++    except ImportError:
++        validate_file_meta = None
++    try:
++        from pydicom.pixel_data_handlers.util import pixel_dtype
++    except ImportError:
++        pixel_dtype = None
+ except ImportError:
+     from dicom import read_file
+     from dicom.dataset import Dataset

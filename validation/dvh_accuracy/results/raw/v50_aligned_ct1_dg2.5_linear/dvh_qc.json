@@ -1,0 +1,154 @@
+{
+  "status": "ok",
+  "metric_version": "2026-09-05-grid-support-derived-mask-d003-v5",
+  "code_sources_sha256": "f8538cb9e7a0d8d4e8b5373182593b41d5f2619e74d1018c4e64f776e22234b8",
+  "rx_source": "course_contract_resolved_total",
+  "rx_relative_metrics_available": true,
+  "treatment_technique": "EBRT",
+  "relative_metric_status_counts": {
+    "computed": 4
+  },
+  "rtstruct_provenance_status_counts": {
+    "traceable": 4
+  },
+  "zero_dose_status_counts": {
+    "not_zero": 4
+  },
+  "dose_plane_alignment_counts": {
+    "DOSE_Z_INTERPOLATED": 4
+  },
+  "dose_plane_alignment": "DOSE_Z_INTERPOLATED",
+  "target_near_zero_dose_grid_coverage": {
+    "status": "no_near_zero_targets",
+    "near_zero_target_row_count": 0,
+    "outside_dose_grid_count": 0,
+    "partly_inside_dose_grid_count": 0,
+    "inside_dose_grid_count": 0,
+    "geometry_unresolved_count": 0
+  },
+  "rx_recovery_attempted": true,
+  "custom_structures_expected": [],
+  "custom_structures_missing": [],
+  "custom_structures_partial": [],
+  "row_count": 4,
+  "course_contract_sha256": "219477296c313f0333114ded108b3683f42f3748535e40bc9f715d3b2cece591",
+  "rx_dose_gy": 25.0,
+  "dose_plan_scope": {
+    "status": "complete_course_plan_set",
+    "reason": "The selected dose grid represents all 1 plan(s) in the authoritative course treatment plan set.",
+    "course_treatment_plan_count": 1,
+    "dose_grid_plan_count": 1,
+    "unrepresented_treatment_plan_uids": [],
+    "dose_response_eligible": true
+  },
+  "plan_target_reconciliation": {
+    "decision": "not_required_no_near_zero_targets",
+    "course_quarantine": false,
+    "quarantine_rules": [],
+    "near_zero_target_d95_threshold_gy": 0.1,
+    "name_normalization": "casefold, trim, collapse internal whitespace; exact match only",
+    "contracted_rtstruct_sop_instance_uid": "2.25.57390635782766557683006296201491875512",
+    "selected_plan_count": 1,
+    "unreadable_plans": [],
+    "roi_number_binding": [
+      {
+        "plan_sop_instance_uid": "2.25.314536267585645655750783094052003258441",
+        "referenced_rtstruct_sop_instance_uids": [
+          "2.25.57390635782766557683006296201491875512"
+        ],
+        "contracted_rtstruct_sop_instance_uid": "2.25.57390635782766557683006296201491875512",
+        "status": "used",
+        "roi_number_reference_count": 0
+      }
+    ],
+    "dose_references": [
+      {
+        "plan_sop_instance_uid": "2.25.314536267585645655750783094052003258441",
+        "index": 0,
+        "dose_reference_number": "1",
+        "dose_reference_type": "TARGET",
+        "structure_type": "SITE",
+        "description": "synthetic reference",
+        "referenced_roi_number": null
+      }
+    ],
+    "prescription_coverage_binding": {
+      "used": false,
+      "fraction": 0.9,
+      "course_prescription_gy": 25.0,
+      "delivery_resolved": true
+    },
+    "plan_bound_targets": [],
+    "plan_bound_non_target_rois": [],
+    "near_zero_target_row_count": 0,
+    "unbound_near_zero_targets": [],
+    "excluded_row_indices": []
+  },
+  "course_treatment_isocenter_geometry": {
+    "status": "single_plan_isocenter",
+    "reason": "DICOM RTPLAN records contain one distinct isocenter. Isocenter count is not a treated-region count.",
+    "isocenter_count": 1,
+    "max_separation_mm": null,
+    "plan_count": 1,
+    "readable_plan_count": 1,
+    "treated_region_count": null
+  },
+  "dose_resolution": {
+    "classification": "single_dose",
+    "reason": "Organize course contract selected the plan and dose membership",
+    "rd_path": "validation/dvh_accuracy/results/tmp/run-1hxinsqf/phantom-24byue8u/SYNTH_DVH/v50_aligned_ct1_dg2.5_linear/DICOM/RTDOSE/dose.dcm",
+    "rp_path": "validation/dvh_accuracy/results/tmp/run-1hxinsqf/phantom-24byue8u/SYNTH_DVH/v50_aligned_ct1_dg2.5_linear/DICOM/RTPLAN/plan.dcm",
+    "source_dose_sop_instance_uids": [
+      "2.25.307529260519945520910995742108384061221"
+    ],
+    "source_dose_summation_types": [
+      "PLAN"
+    ],
+    "output_dose_sop_instance_uid": "2.25.307529260519945520910995742108384061221",
+    "output_dose_summation_type": "PLAN",
+    "source_plan_sop_instance_uids": [
+      "2.25.314536267585645655750783094052003258441"
+    ],
+    "selected_plan_paths": [
+      "validation/dvh_accuracy/results/tmp/run-1hxinsqf/phantom-24byue8u/SYNTH_DVH/v50_aligned_ct1_dg2.5_linear/DICOM/RTPLAN/plan.dcm"
+    ],
+    "selected_dose_paths": [
+      "validation/dvh_accuracy/results/tmp/run-1hxinsqf/phantom-24byue8u/SYNTH_DVH/v50_aligned_ct1_dg2.5_linear/DICOM/RTDOSE/dose.dcm"
+    ],
+    "dose_grid_semantics": "planned_rtdose_weighted_by_rtrecord_delivered_fraction_counts",
+    "prescribed_dose_gy": 25.0,
+    "resolved_prescribed_dose_total_gy": 25.0,
+    "delivered_dose_gy": 25.0,
+    "delivery_status": "fully_delivered",
+    "dose_response_dose_field": "delivered_dose_gy",
+    "dose_response_eligible": true,
+    "dose_qc_status": "pass",
+    "dose_qc_pass": true,
+    "dose_qc_reasons": [],
+    "contract_path": "validation/dvh_accuracy/results/tmp/run-1hxinsqf/phantom-24byue8u/SYNTH_DVH/v50_aligned_ct1_dg2.5_linear/metadata/case_metadata.json",
+    "dvh": {
+      "status": "ready",
+      "metrics_status": "computed",
+      "reason_code": "authoritative_dose_grid",
+      "dose_record_status": "authoritative_rtdose_selected",
+      "output": "dvh_metrics.xlsx",
+      "delivery_status": "fully_delivered",
+      "reason": "The contract contains an authoritative RTDOSE grid for DVH.",
+      "dose_response_eligible": true
+    }
+  },
+  "structure_resolution": {
+    "classification": "contract_rtstruct",
+    "reason": "Using organize's authoritative RTSTRUCT",
+    "plan_referenced_rtstruct_sop_instance_uids": [
+      "2.25.57390635782766557683006296201491875512"
+    ],
+    "selected_rtstruct_sop_instance_uids": [
+      "2.25.57390635782766557683006296201491875512"
+    ],
+    "selected_rtstruct_paths": [
+      "validation/dvh_accuracy/results/tmp/run-1hxinsqf/phantom-24byue8u/SYNTH_DVH/v50_aligned_ct1_dg2.5_linear/DICOM/RTSTRUCT/rs.dcm"
+    ],
+    "allow_nifti_direct": true
+  }
+}

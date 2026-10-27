@@ -1855,6 +1855,10 @@ def main(argv: list[str] | None = None) -> int:
     if argv is None:
         argv = sys.argv[1:]
     # Lightweight subcommand dispatch to preserve backward compatibility
+    if argv and argv[0] == "scope":
+        from .treatment_scope import main as scope_main
+
+        return scope_main(argv[1:])
     if argv and argv[0] == "repair-planning-ct-localizers":
         from .repair_planning_ct_localizers import main as repair_main
         return repair_main(argv[1:])
