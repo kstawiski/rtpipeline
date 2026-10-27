@@ -1,0 +1,435 @@
+{
+  "patient_id": "SYNTH_DVH",
+  "course_id": "v1000_offset_ct3_dg2.5_linear",
+  "course_contract": {
+    "version": 4,
+    "authority": "organize",
+    "patient_id": "SYNTH_DVH",
+    "course_id": "v1000_offset_ct3_dg2.5_linear",
+    "course_key": "v1000_offset_ct3_dg2.5_linear",
+    "selected_plans": [
+      {
+        "sop_instance_uid": "2.25.134930498582479051121641621287431078157",
+        "path": "DICOM/RTPLAN/plan.dcm",
+        "prescribed_dose_gy": 25.0,
+        "resolved_prescribed_dose_total_gy": 25.0,
+        "prescription_groups": [
+          {
+            "source_prescribed_dose_gy": 25.0,
+            "source_prescribed_dose_tag_path": "DoseReferenceSequence[0].TargetPrescriptionDose",
+            "source_dose_reference_number": "1",
+            "source_dose_reference_uid": "2.25.140959884428308537886657975245268731031",
+            "source_dose_reference_structure_type": "SITE",
+            "source_dose_reference_description": "synthetic reference",
+            "fraction_group_number": "1",
+            "planned_fractions": 5,
+            "beam_dose_sum_per_fraction_gy": 5.0,
+            "prescribed_dose_scope": "TOTAL",
+            "resolved_prescribed_dose_per_fraction_gy": 5.0,
+            "resolved_prescribed_dose_total_gy": 25.0,
+            "prescription_resolution_method": "BEAMDOSE_TOTAL_5PCT_V1",
+            "prescription_resolution_status": "TOTAL_CONFIRMED",
+            "prescription_resolution_details": {
+              "included_beams": [
+                {
+                  "referenced_beam_number": "1",
+                  "treatment_delivery_type": "TREATMENT",
+                  "beam_dose_gy": 5.0,
+                  "beam_dose_type": "PHYSICAL",
+                  "referenced_dose_reference_uid": null
+                }
+              ],
+              "excluded_setup_beams": [],
+              "imaging_beams": [],
+              "delivery_type_unclassified_beams": [],
+              "beam_dose_type": "PHYSICAL",
+              "relative_tolerance": "0.05",
+              "match_per_fraction": false,
+              "match_total": true
+            },
+            "beam_dose_target_binding": "DOSE_REFERENCE_UID_ABSENT"
+          }
+        ],
+        "source_prescribed_dose_gy": 25.0,
+        "source_prescribed_dose_tag_path": "DoseReferenceSequence[0].TargetPrescriptionDose",
+        "source_dose_reference_number": "1",
+        "source_dose_reference_uid": "2.25.140959884428308537886657975245268731031",
+        "source_dose_reference_structure_type": "SITE",
+        "source_dose_reference_description": "synthetic reference",
+        "fraction_group_number": "1",
+        "planned_fractions": 5,
+        "beam_dose_sum_per_fraction_gy": 5.0,
+        "prescribed_dose_scope": "TOTAL",
+        "resolved_prescribed_dose_per_fraction_gy": 5.0,
+        "prescription_resolution_method": "BEAMDOSE_TOTAL_5PCT_V1",
+        "prescription_resolution_status": "TOTAL_CONFIRMED",
+        "beam_dose_target_binding": "DOSE_REFERENCE_UID_ABSENT",
+        "prescription_resolution_details": {
+          "included_beams": [
+            {
+              "referenced_beam_number": "1",
+              "treatment_delivery_type": "TREATMENT",
+              "beam_dose_gy": 5.0,
+              "beam_dose_type": "PHYSICAL",
+              "referenced_dose_reference_uid": null
+            }
+          ],
+          "excluded_setup_beams": [],
+          "imaging_beams": [],
+          "delivery_type_unclassified_beams": [],
+          "beam_dose_type": "PHYSICAL",
+          "relative_tolerance": "0.05",
+          "match_per_fraction": false,
+          "match_total": true
+        },
+        "delivered_record_count": 5,
+        "delivered_fraction_count": 5,
+        "treatment_dates": [
+          "20200101",
+          "20200102",
+          "20200103",
+          "20200104",
+          "20200105"
+        ],
+        "planned_fraction_count": 5
+      }
+    ],
+    "selected_doses": [
+      {
+        "sop_instance_uid": "2.25.208964760802316714659446656302723196943",
+        "path": "DICOM/RTDOSE/dose.dcm",
+        "dose_summation_type": "PLAN",
+        "referenced_plan_uids": [
+          "2.25.134930498582479051121641621287431078157"
+        ]
+      }
+    ],
+    "treatment_technique": {
+      "classification": "EBRT",
+      "plan_evidence": [
+        {
+          "sop_instance_uid": "2.25.134930498582479051121641621287431078157",
+          "sop_class_uid": "1.2.840.10008.5.1.4.1.1.481.5",
+          "sop_class_profile": "standard_rt_plan",
+          "path": "DICOM/RTPLAN/plan.dcm",
+          "classification": "EBRT",
+          "beam_sequence_count": 1,
+          "number_of_beams": 1,
+          "referenced_beam_count": 1,
+          "brachy_application_setup_sequence_count": 0,
+          "number_of_brachy_application_setups": 0,
+          "referenced_brachy_application_setup_count": 0
+        }
+      ],
+      "dose_response_eligible": true,
+      "dose_response_exclusion_reason": null,
+      "prescription_relative_dvh_metrics": "available_when_prescription_resolved"
+    },
+    "dose_classification": {
+      "classification": "single_dose",
+      "should_sum": false
+    },
+    "dose_completeness": {
+      "schema_version": 1,
+      "status": "eligible",
+      "category": "single_plan_course_dose_delivered_weighted",
+      "reason_code": "single_plan_course_dose_delivered_weighted",
+      "reason": "RTRECORD evidence identifies one clinically contributing plan; its linked PLAN RTDOSE has a positive bounded delivered-fraction weight.",
+      "expected_plan_uids": [
+        "2.25.134930498582479051121641621287431078157"
+      ],
+      "delivered_plan_uids": [
+        "2.25.134930498582479051121641621287431078157"
+      ],
+      "represented_plan_uids": [
+        "2.25.134930498582479051121641621287431078157"
+      ],
+      "unselected_delivered_plan_uids": [],
+      "dose_summation_types": [
+        "PLAN"
+      ],
+      "delivered_fraction_weights": {
+        "2.25.134930498582479051121641621287431078157": 1.0
+      },
+      "spatial_mapping_validated": true
+    },
+    "dvh": {
+      "status": "ready",
+      "metrics_status": "computed",
+      "reason_code": "authoritative_dose_grid",
+      "dose_record_status": "authoritative_rtdose_selected",
+      "output": "dvh_metrics.xlsx",
+      "delivery_status": "fully_delivered",
+      "reason": "The contract contains an authoritative RTDOSE grid for DVH.",
+      "dose_response_eligible": true
+    },
+    "authoritative_rtstruct": {
+      "sop_instance_uid": "2.25.36513463762932340056498450585149105264",
+      "path": "DICOM/RTSTRUCT/rs.dcm"
+    },
+    "planning_ct": {
+      "status": "referenced",
+      "series_instance_uid": "2.25.65143150541971891023191697220686777351",
+      "referenced_series_uids": [
+        "2.25.65143150541971891023191697220686777351"
+      ],
+      "dicom_dir": "DICOM/CT",
+      "nifti_path": "NIFTI/ct.nii.gz",
+      "nifti_provenance": {
+        "sidecar_path": "NIFTI/ct.metadata.json",
+        "series_instance_uid": "2.25.65143150541971891023191697220686777351",
+        "sop_hash": "f9af7c8a5bac6a17436bff47a74cc990f69c0c8c7e1da12e04382b180042b741",
+        "geometry": {
+          "rows": 106,
+          "columns": 106,
+          "pixel_spacing": null,
+          "image_orientation_patient": null,
+          "slice_thickness": 3.0
+        },
+        "nifti_geometry": {
+          "size": [
+            106,
+            106,
+            71
+          ],
+          "spacing": [
+            2.0,
+            2.0,
+            3.0
+          ],
+          "origin": [
+            -105.0,
+            -105.0,
+            -105.0
+          ],
+          "direction": [
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        },
+        "nifti_sha256": "2499c337cc94c9eec0fcca45ba77373dee2b27b932e5e30d65bdc6000acfa83d"
+      }
+    },
+    "plan_artifact": {
+      "sop_instance_uid": "2.25.134930498582479051121641621287431078157",
+      "path": "DICOM/RTPLAN/plan.dcm",
+      "prescribed_dose_gy": 25.0,
+      "resolved_prescribed_dose_total_gy": 25.0,
+      "prescription_groups": [
+        {
+          "source_prescribed_dose_gy": 25.0,
+          "source_prescribed_dose_tag_path": "DoseReferenceSequence[0].TargetPrescriptionDose",
+          "source_dose_reference_number": "1",
+          "source_dose_reference_uid": "2.25.140959884428308537886657975245268731031",
+          "source_dose_reference_structure_type": "SITE",
+          "source_dose_reference_description": "synthetic reference",
+          "fraction_group_number": "1",
+          "planned_fractions": 5,
+          "beam_dose_sum_per_fraction_gy": 5.0,
+          "prescribed_dose_scope": "TOTAL",
+          "resolved_prescribed_dose_per_fraction_gy": 5.0,
+          "resolved_prescribed_dose_total_gy": 25.0,
+          "prescription_resolution_method": "BEAMDOSE_TOTAL_5PCT_V1",
+          "prescription_resolution_status": "TOTAL_CONFIRMED",
+          "prescription_resolution_details": {
+            "included_beams": [
+              {
+                "referenced_beam_number": "1",
+                "treatment_delivery_type": "TREATMENT",
+                "beam_dose_gy": 5.0,
+                "beam_dose_type": "PHYSICAL",
+                "referenced_dose_reference_uid": null
+              }
+            ],
+            "excluded_setup_beams": [],
+            "imaging_beams": [],
+            "delivery_type_unclassified_beams": [],
+            "beam_dose_type": "PHYSICAL",
+            "relative_tolerance": "0.05",
+            "match_per_fraction": false,
+            "match_total": true
+          },
+          "beam_dose_target_binding": "DOSE_REFERENCE_UID_ABSENT"
+        }
+      ],
+      "source_prescribed_dose_gy": 25.0,
+      "source_prescribed_dose_tag_path": "DoseReferenceSequence[0].TargetPrescriptionDose",
+      "source_dose_reference_number": "1",
+      "source_dose_reference_uid": "2.25.140959884428308537886657975245268731031",
+      "source_dose_reference_structure_type": "SITE",
+      "source_dose_reference_description": "synthetic reference",
+      "fraction_group_number": "1",
+      "planned_fractions": 5,
+      "beam_dose_sum_per_fraction_gy": 5.0,
+      "prescribed_dose_scope": "TOTAL",
+      "resolved_prescribed_dose_per_fraction_gy": 5.0,
+      "prescription_resolution_method": "BEAMDOSE_TOTAL_5PCT_V1",
+      "prescription_resolution_status": "TOTAL_CONFIRMED",
+      "beam_dose_target_binding": "DOSE_REFERENCE_UID_ABSENT",
+      "prescription_resolution_details": {
+        "included_beams": [
+          {
+            "referenced_beam_number": "1",
+            "treatment_delivery_type": "TREATMENT",
+            "beam_dose_gy": 5.0,
+            "beam_dose_type": "PHYSICAL",
+            "referenced_dose_reference_uid": null
+          }
+        ],
+        "excluded_setup_beams": [],
+        "imaging_beams": [],
+        "delivery_type_unclassified_beams": [],
+        "beam_dose_type": "PHYSICAL",
+        "relative_tolerance": "0.05",
+        "match_per_fraction": false,
+        "match_total": true
+      },
+      "delivered_record_count": 0,
+      "delivered_fraction_count": 0,
+      "treatment_dates": [],
+      "source_plan_uids": [
+        "2.25.134930498582479051121641621287431078157"
+      ]
+    },
+    "dose_grid": {
+      "sop_instance_uid": "2.25.208964760802316714659446656302723196943",
+      "path": "DICOM/RTDOSE/dose.dcm",
+      "dose_summation_type": "PLAN",
+      "referenced_plan_uids": [
+        "2.25.134930498582479051121641621287431078157"
+      ],
+      "semantics": "planned_rtdose_weighted_by_rtrecord_delivered_fraction_counts",
+      "source_plan_uids": [
+        "2.25.134930498582479051121641621287431078157"
+      ],
+      "source_dose_uids": [
+        "2.25.208964760802316714659446656302723196943"
+      ],
+      "source_dose_summation_types": [
+        "PLAN"
+      ]
+    },
+    "delivery": {
+      "prescribed_dose_gy": 25.0,
+      "resolved_prescribed_dose_total_gy": 25.0,
+      "delivered_dose_gy": 25.0,
+      "status": "fully_delivered",
+      "method": null,
+      "dose_response_field": "delivered_dose_gy",
+      "per_plan": [
+        {
+          "plan_path": "DICOM/RTPLAN/plan.dcm",
+          "plan_sop_uid": "2.25.134930498582479051121641621287431078157",
+          "prescribed_dose_gy": 25.0,
+          "resolved_prescribed_dose_total_gy": 25.0,
+          "planned_fraction_count": 5,
+          "prescription_groups": [
+            {
+              "source_prescribed_dose_gy": 25.0,
+              "source_prescribed_dose_tag_path": "DoseReferenceSequence[0].TargetPrescriptionDose",
+              "source_dose_reference_number": "1",
+              "source_dose_reference_uid": "2.25.140959884428308537886657975245268731031",
+              "source_dose_reference_structure_type": "SITE",
+              "source_dose_reference_description": "synthetic reference",
+              "fraction_group_number": "1",
+              "planned_fractions": 5,
+              "beam_dose_sum_per_fraction_gy": 5.0,
+              "prescribed_dose_scope": "TOTAL",
+              "resolved_prescribed_dose_per_fraction_gy": 5.0,
+              "resolved_prescribed_dose_total_gy": 25.0,
+              "prescription_resolution_method": "BEAMDOSE_TOTAL_5PCT_V1",
+              "prescription_resolution_status": "TOTAL_CONFIRMED",
+              "prescription_resolution_details": {
+                "included_beams": [
+                  {
+                    "referenced_beam_number": "1",
+                    "treatment_delivery_type": "TREATMENT",
+                    "beam_dose_gy": 5.0,
+                    "beam_dose_type": "PHYSICAL",
+                    "referenced_dose_reference_uid": null
+                  }
+                ],
+                "excluded_setup_beams": [],
+                "imaging_beams": [],
+                "delivery_type_unclassified_beams": [],
+                "beam_dose_type": "PHYSICAL",
+                "relative_tolerance": "0.05",
+                "match_per_fraction": false,
+                "match_total": true
+              },
+              "beam_dose_target_binding": "DOSE_REFERENCE_UID_ABSENT"
+            }
+          ],
+          "source_prescribed_dose_gy": 25.0,
+          "source_prescribed_dose_tag_path": "DoseReferenceSequence[0].TargetPrescriptionDose",
+          "source_dose_reference_number": "1",
+          "source_dose_reference_uid": "2.25.140959884428308537886657975245268731031",
+          "source_dose_reference_structure_type": "SITE",
+          "source_dose_reference_description": "synthetic reference",
+          "fraction_group_number": "1",
+          "planned_fractions": 5,
+          "beam_dose_sum_per_fraction_gy": 5.0,
+          "prescribed_dose_scope": "TOTAL",
+          "resolved_prescribed_dose_per_fraction_gy": 5.0,
+          "prescription_resolution_method": "BEAMDOSE_TOTAL_5PCT_V1",
+          "prescription_resolution_status": "TOTAL_CONFIRMED",
+          "beam_dose_target_binding": "DOSE_REFERENCE_UID_ABSENT",
+          "prescription_resolution_details": {
+            "included_beams": [
+              {
+                "referenced_beam_number": "1",
+                "treatment_delivery_type": "TREATMENT",
+                "beam_dose_gy": 5.0,
+                "beam_dose_type": "PHYSICAL",
+                "referenced_dose_reference_uid": null
+              }
+            ],
+            "excluded_setup_beams": [],
+            "imaging_beams": [],
+            "delivery_type_unclassified_beams": [],
+            "beam_dose_type": "PHYSICAL",
+            "relative_tolerance": "0.05",
+            "match_per_fraction": false,
+            "match_total": true
+          },
+          "delivered_record_count": 5,
+          "delivered_fraction_count": 5,
+          "treatment_dates": [
+            "20200101",
+            "20200102",
+            "20200103",
+            "20200104",
+            "20200105"
+          ],
+          "record_paths": [
+            "DICOM_related/RTRECORD/record_1.dcm",
+            "DICOM_related/RTRECORD/record_2.dcm",
+            "DICOM_related/RTRECORD/record_3.dcm",
+            "DICOM_related/RTRECORD/record_4.dcm",
+            "DICOM_related/RTRECORD/record_5.dcm"
+          ],
+          "zero_delivery_records": false,
+          "selected_for_dose_grid": true,
+          "status": "fully_delivered"
+        }
+      ],
+      "warnings": [],
+      "unresolved_record_plan_uids": [],
+      "dose_response_eligible": true,
+      "dose_response_eligibility_basis": "verified_complete_course_dose_and_rtrecord_delivery_evidence"
+    },
+    "dose_qc": {
+      "status": "pass",
+      "pass": true,
+      "threshold_gy": 100.0,
+      "reasons": []
+    }
+  }
+}

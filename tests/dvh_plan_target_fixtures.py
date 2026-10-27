@@ -43,6 +43,22 @@ RTSTRUCT_UID = f"{UID_ROOT}.4"
 OTHER_RTSTRUCT_UID = f"{UID_ROOT}.5"
 STUDY_UID = f"{UID_ROOT}.6"
 
+
+def assert_d2cc_columns(frame):
+    """Check additive D2cc output separately from historical table projections."""
+    assert {'D2ccGy', 'D2cc_status'}.issubset(frame.columns)
+    for _, row in frame.iterrows():
+        if row.dose_grid_coverage_status != 'fully_covered':
+            assert pd.isna(row.D2ccGy)
+            assert row.D2cc_status == row.dose_grid_coverage_status
+        elif row['Volume (cm³)'] < 2.:
+            assert pd.isna(row.D2ccGy)
+            assert row.D2cc_status == 'roi_below_2cc'
+        else:
+            assert np.isfinite(row.D2ccGy)
+            assert row.DminGy <= row.D2ccGy <= row.DmaxGy
+            assert row.D2cc_status == 'available'
+
 # Dose grid: 20 x 20 voxels in-plane at 2 mm, five planes at 2 mm.
 GRID_SPACING_MM = 2.0
 GRID_SIZE = 20
@@ -144,7 +160,7 @@ def write_plan(
     return path
 
 
-def write_dose(path: Path) -> Path:
+def write_dose(path: Path, *, low_dose_gy: float = LOW_DOSE_GY) -> Path:
     dose = _file_dataset(path, RTDoseStorage, DOSE_UID)
     dose.Modality = "RTDOSE"
     dose.DoseSummationType = "PLAN"
@@ -170,7 +186,7 @@ def write_dose(path: Path) -> Path:
     dose.PixelRepresentation = 0
     scaling = 1e-4
     dose.DoseGridScaling = scaling
-    values = np.full((GRID_PLANES, GRID_SIZE, GRID_SIZE), LOW_DOSE_GY, dtype=float)
+    values = np.full((GRID_PLANES, GRID_SIZE, GRID_SIZE), low_dose_gy, dtype=float)
     values[:, :, : GRID_SIZE // 2] = HIGH_DOSE_GY
     dose.PixelData = np.round(values / scaling).astype("<u4").tobytes()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -322,6 +338,7 @@ def build_course(
     rois=DEFAULT_ROIS,
     plan_referenced_rtstruct_uid: str | None = RTSTRUCT_UID,
     delivered: bool = True,
+    low_dose_gy: float = LOW_DOSE_GY,
 ) -> Path:
     course = Path(root) / "SYNTH_P" / "SYNTH_C"
     write_synthetic_planning_ct(course)
@@ -330,7 +347,7 @@ def build_course(
         references,
         referenced_rtstruct_uid=plan_referenced_rtstruct_uid,
     )
-    dose = write_dose(course / "DICOM" / "RTDOSE" / "dose.dcm")
+    dose = write_dose(course / "DICOM" / "RTDOSE" / "dose.dcm", low_dose_gy=low_dose_gy)
     rtstruct = write_rtstruct(course / "DICOM" / "RTSTRUCT" / "rs.dcm", rois)
     write_minimal_course_contract(
         course,

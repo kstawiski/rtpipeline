@@ -59,7 +59,8 @@ def test_the_snakefile_does_not_decide_the_identity():
     assert "stage_completion.py" not in DVH_MEASUREMENT_CODE_SOURCES
 
 
-def test_changing_a_source_changes_the_identity(monkeypatch, tmp_path):
+@pytest.mark.parametrize("changed", ["dvh.py", "dvh_support.py", "dvh_rotation.py"])
+def test_changing_a_source_changes_the_identity(monkeypatch, tmp_path, changed):
     baseline = _current_dvh_measurement_code_sha256()
 
     real = dvh_module.Path(dvh_module.__file__).resolve().parent
@@ -67,7 +68,7 @@ def test_changing_a_source_changes_the_identity(monkeypatch, tmp_path):
     shadow.mkdir()
     for relative in DVH_MEASUREMENT_CODE_SOURCES:
         (shadow / relative).write_bytes((real / relative).read_bytes())
-    (shadow / "dvh.py").write_bytes(b"# edited\n" + (real / "dvh.py").read_bytes())
+    (shadow / changed).write_bytes(b"# edited\n" + (real / changed).read_bytes())
 
     monkeypatch.setattr(dvh_module, "__file__", str(shadow / "dvh.py"))
     dvh_module._DVH_MEASUREMENT_CODE_RESOLVED = False

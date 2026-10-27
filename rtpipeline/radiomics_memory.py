@@ -15,6 +15,11 @@ import yaml
 from .radiomics_resource_guard import DEFAULT_MAX_RESAMPLED_BBOX_VOXELS
 
 MEMORY_BUDGET_BYTES = 8 * 1024**3
+# A scoped rescue may raise the envelope for named courses on a high-memory
+# host. The variable is inherited by forked and conda workers; the effective
+# value is stamped on every row as resource_guard_memory_budget_bytes.
+MEMORY_BUDGET_ENV = "RTPIPELINE_RADIOMICS_MEMORY_BUDGET_BYTES"
+MEMORY_BUDGET_CEILING_BYTES = 64 * 1024**3
 FIXED_BYTES = 512 * 1024**2
 MATRIX_RESERVE_BYTES = 1024**3
 CROP_BYTES_PER_VOXEL = 128
@@ -22,6 +27,26 @@ NATIVE_BYTES_PER_VOXEL = 32
 MASK_BYTES_PER_VOXEL = 128
 STAGE1_CODE = "ROI_RESOURCE_BBOX_ADMITTED"
 STAGE2_CODE = "ROI_RESOURCE_MEMORY_ADMITTED"
+
+def memory_budget_bytes() -> int:
+    """The default budget, or a validated raise from MEMORY_BUDGET_ENV.
+
+    Only raises up to MEMORY_BUDGET_CEILING_BYTES are accepted. A malformed,
+    lower or excessive value is a configuration error, never a silent default.
+    """
+    import os
+    raw = os.environ.get(MEMORY_BUDGET_ENV, "").strip()
+    if not raw:
+        return MEMORY_BUDGET_BYTES
+    try:
+        value = int(raw)
+    except ValueError:
+        raise ValueError(f"{MEMORY_BUDGET_ENV} must be an integer byte count") from None
+    if not MEMORY_BUDGET_BYTES <= value <= MEMORY_BUDGET_CEILING_BYTES:
+        raise ValueError(f"{MEMORY_BUDGET_ENV} must lie in "
+                         f"[{MEMORY_BUDGET_BYTES}, {MEMORY_BUDGET_CEILING_BYTES}]")
+    return value
+
 
 def legacy_rejection(estimate, limit, roi_name):
     from .radiomics_resource_guard import RESAMPLED_BBOX_LIMIT_CODE
@@ -100,7 +125,7 @@ def preflight_metadata(estimate, mask, *, native_spacing_xyz, array_axis_to_xyz,
     if estimate.estimated_resampled_bbox_voxels <= limit:
         return {'resource_guard_reason_code': STAGE1_CODE,
                 'resource_guard_predicted_peak_bytes': 0,
-                'resource_guard_memory_budget_bytes': MEMORY_BUDGET_BYTES,
+                'resource_guard_memory_budget_bytes': memory_budget_bytes(),
                 'resource_guard_crop_voxels_bound': math.prod(int(x)+2 for x in estimate.estimated_resampled_bbox_shape),
                 'resource_guard_native_image_voxels': int(np.asarray(mask).size)}
     if limit < DEFAULT_MAX_RESAMPLED_BBOX_VOXELS:
@@ -119,11 +144,11 @@ def preflight_metadata(estimate, mask, *, native_spacing_xyz, array_axis_to_xyz,
     native = int(np.asarray(mask).size)
     peak = predicted_peak_bytes(crop_voxels=b,native_image_voxels=native,
                                 mask_voxels=n,reserve=True)
-    if peak > MEMORY_BUDGET_BYTES:
+    if peak > memory_budget_bytes():
         return None
     return {'resource_guard_reason_code': STAGE2_CODE,
             'resource_guard_predicted_peak_bytes': peak,
-            'resource_guard_memory_budget_bytes': MEMORY_BUDGET_BYTES,
+            'resource_guard_memory_budget_bytes': memory_budget_bytes(),
             'resource_guard_crop_voxels_bound': b,
             'resource_guard_mask_voxels_bound': n,
             'resource_guard_native_image_voxels': native}
@@ -167,7 +192,7 @@ def install_texture_budget(extractor: Any, metadata: dict) -> Any:
             g_bound = math.floor(float(values.max())/width) - math.floor(float(values.min())/width) + 1
             if predicted_peak_bytes(crop_voxels=max(crop, a.size), native_image_voxels=native,
                                     mask_voxels=int(values.size), gray_levels=g_bound,
-                                    max_gray_frequency=1, max_extent=max(a.shape)) > MEMORY_BUDGET_BYTES:
+                                    max_gray_frequency=1, max_extent=max(a.shape)) > memory_budget_bytes():
                 raise RadiomicsMemoryLimit('gray-level range exceeds byte budget')
             low = values.min() - (values.min() % width)
             edges = np.arange(low, values.max() + 2 * width, width)
@@ -188,7 +213,7 @@ def install_texture_budget(extractor: Any, metadata: dict) -> Any:
                                     gldm_neighbors=neighbors)
         metadata['resource_guard_predicted_peak_bytes'] = max(
             metadata['resource_guard_predicted_peak_bytes'],peak)
-        if peak > MEMORY_BUDGET_BYTES:
+        if peak > memory_budget_bytes():
             raise RadiomicsMemoryLimit('filtered-image allocation envelope exceeds byte budget', peak)
         del values, bins, foreground, frequencies
         enabled = getattr(self, 'enabledFeatures', None)

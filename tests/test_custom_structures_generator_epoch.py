@@ -10,8 +10,8 @@ from test_custom_structures_d16_auto_harvest import _publish_clean_course
 
 
 @pytest.fixture
-def published(tmp_path, monkeypatch):
-    assert tmp_path.resolve().is_relative_to(Path("/tmp"))
+def published(tmp_path, tmp_path_factory, monkeypatch):
+    assert tmp_path.resolve().is_relative_to(tmp_path_factory.getbasetemp().resolve())
     course = _publish_clean_course(tmp_path, monkeypatch)
     assert not (tmp_path / "RS_auto_cropped.dcm").exists()
     assert not custom._is_rs_custom_stale(

@@ -82,6 +82,7 @@ plugins:
 
 exclude_docs: |
   README.md
+  **/*.log
 
 extra_css:
   - stylesheets/extra.css
@@ -110,6 +111,8 @@ nav:
     - RTsegmentator Models: features/rtsegmentator.md
     - Custom Models: features/custom_models.md
     - CT Cropping: features/ct_cropping.md
+    - Treatment-region Classification: features/treatment_scope.md
+    - Surface Metrics and IBSI Preprocessing: features/surface_metrics_and_ibsi.md
     - Distributed Analysis: features/distributed_analysis.md
     - Dose Classification: features/dose_classification.md
     - Radiomics Robustness: features/radiomics_robustness.md
@@ -119,6 +122,11 @@ nav:
     - Docker Details: technical/docker.md
     - Security: technical/security.md
     - Hang Prevention: technical/hang_prevention.md
+  - Validation:
+    - Surface Metrics and IBSI Checks: validation/f6_checks.md
+    - Packaged IBSI Comparison: validation/f6_ibsi/index.md
+  - Licenses:
+    - Vendored Surface-distance: licenses/surface-distance.md
   - Developer:
     - Code Review: developer/code_review.md
     - Container Testing: developer/container_testing.md

@@ -1,0 +1,254 @@
+{
+  "diagnostics": {
+    "diagnostics_Configuration_EnabledImageTypes": {
+      "Original": {}
+    },
+    "diagnostics_Configuration_Settings": {
+      "additionalInfo": true,
+      "binCount": 32,
+      "correctMask": false,
+      "distances": [
+        1
+      ],
+      "force2D": true,
+      "force2Ddimension": 0,
+      "geometryTolerance": 1e-06,
+      "gldm_a": 0,
+      "interpolator": "sitkLinear",
+      "label": 1,
+      "minimumROIDimensions": 2,
+      "minimumROISize": 64,
+      "normalize": false,
+      "normalizeScale": 1,
+      "padDistance": 5,
+      "preCrop": false,
+      "removeOutliers": null,
+      "resampledPixelSpacing": [
+        2.0,
+        2.0,
+        0.0
+      ],
+      "resegmentMode": "absolute",
+      "resegmentRange": [
+        -500.0,
+        400.0
+      ],
+      "resegmentShape": false,
+      "symmetricalGLCM": true,
+      "voxelArrayShift": 0,
+      "weightingNorm": "no_weighting"
+    },
+    "diagnostics_Image-interpolated_Maximum": 1020.0126342773438,
+    "diagnostics_Image-interpolated_Mean": -154.75396392295295,
+    "diagnostics_Image-interpolated_Minimum": -1000.0,
+    "diagnostics_Image-interpolated_Size": [
+      61,
+      61,
+      38
+    ],
+    "diagnostics_Image-interpolated_Spacing": [
+      2.0,
+      2.0,
+      3.0
+    ],
+    "diagnostics_Image-original_Dimensionality": "3D",
+    "diagnostics_Image-original_Hash": "90dc99f56755630db311639becd3787e8e9cab83",
+    "diagnostics_Image-original_Maximum": 3065.0,
+    "diagnostics_Image-original_Mean": -266.4703671186551,
+    "diagnostics_Image-original_Minimum": -1000.0,
+    "diagnostics_Image-original_Size": [
+      204,
+      201,
+      60
+    ],
+    "diagnostics_Image-original_Spacing": [
+      0.9769999980926514,
+      0.9769999980926514,
+      3.0
+    ],
+    "diagnostics_Mask-interpolated_BoundingBox": [
+      6,
+      6,
+      6,
+      49,
+      48,
+      26
+    ],
+    "diagnostics_Mask-interpolated_CenterOfMass": [
+      -74.61828398476752,
+      16.215725464574902,
+      -18.781747051249134
+    ],
+    "diagnostics_Mask-interpolated_CenterOfMassIndex": [
+      30.632358373350346,
+      28.66486450183015,
+      16.20608482487659
+    ],
+    "diagnostics_Mask-interpolated_Maximum": 633.240234375,
+    "diagnostics_Mask-interpolated_Mean": -46.63647384157248,
+    "diagnostics_Mask-interpolated_Minimum": -941.6058349609375,
+    "diagnostics_Mask-interpolated_Size": [
+      61,
+      61,
+      38
+    ],
+    "diagnostics_Mask-interpolated_Spacing": [
+      2.0,
+      2.0,
+      3.0
+    ],
+    "diagnostics_Mask-interpolated_VolumeNum": 1,
+    "diagnostics_Mask-interpolated_VoxelNum": 29779,
+    "diagnostics_Mask-original_BoundingBox": [
+      51,
+      51,
+      17,
+      100,
+      99,
+      26
+    ],
+    "diagnostics_Mask-original_CenterOfMass": [
+      -74.48451188902193,
+      16.332758367855362,
+      -18.742500088822
+    ],
+    "diagnostics_Mask-original_CenterOfMassIndex": [
+      102.26201539247621,
+      98.21725905345852,
+      27.219167145685635
+    ],
+    "diagnostics_Mask-original_Hash": "c9eba5e975f0f03ad479c80a3dc1706e8f45a1f7",
+    "diagnostics_Mask-original_Size": [
+      204,
+      201,
+      60
+    ],
+    "diagnostics_Mask-original_Spacing": [
+      0.9769999980926514,
+      0.9769999980926514,
+      3.0
+    ],
+    "diagnostics_Mask-original_VolumeNum": 1,
+    "diagnostics_Mask-original_VoxelNum": 125256,
+    "diagnostics_Mask-resegmented_BoundingBox": [
+      6,
+      6,
+      6,
+      49,
+      48,
+      26
+    ],
+    "diagnostics_Mask-resegmented_CenterOfMass": [
+      -74.8938874291699,
+      16.96092040065288,
+      -21.015851384755045
+    ],
+    "diagnostics_Mask-resegmented_CenterOfMassIndex": [
+      30.49455665114915,
+      29.03746196986914,
+      15.46138338037462
+    ],
+    "diagnostics_Mask-resegmented_Maximum": 395.19610595703125,
+    "diagnostics_Mask-resegmented_Mean": 12.311342619893585,
+    "diagnostics_Mask-resegmented_Minimum": -499.8550720214844,
+    "diagnostics_Mask-resegmented_Size": [
+      61,
+      61,
+      38
+    ],
+    "diagnostics_Mask-resegmented_Spacing": [
+      2.0,
+      2.0,
+      3.0
+    ],
+    "diagnostics_Mask-resegmented_VolumeNum": 4,
+    "diagnostics_Mask-resegmented_VoxelNum": 27281,
+    "diagnostics_Versions_Numpy": "1.26.4",
+    "diagnostics_Versions_PyRadiomics": "v3.0.1",
+    "diagnostics_Versions_PyWavelet": "1.8.0",
+    "diagnostics_Versions_Python": "3.10.19",
+    "diagnostics_Versions_SimpleITK": "2.5.3"
+  },
+  "effective_settings": {
+    "additionalInfo": true,
+    "binCount": 32,
+    "correctMask": false,
+    "distances": [
+      1
+    ],
+    "force2D": true,
+    "force2Ddimension": 0,
+    "geometryTolerance": 1e-06,
+    "gldm_a": 0,
+    "interpolator": "sitkLinear",
+    "label": 1,
+    "minimumROIDimensions": 2,
+    "minimumROISize": 64,
+    "normalize": false,
+    "normalizeScale": 1,
+    "padDistance": 5,
+    "preCrop": false,
+    "removeOutliers": null,
+    "resampledPixelSpacing": [
+      2.0,
+      2.0,
+      0.0
+    ],
+    "resegmentMode": "absolute",
+    "resegmentRange": [
+      -500.0,
+      400.0
+    ],
+    "resegmentShape": false,
+    "symmetricalGLCM": true,
+    "voxelArrayShift": 0,
+    "weightingNorm": "no_weighting"
+  },
+  "enabled_features": {
+    "glcm": [],
+    "glrlm": []
+  },
+  "shape_settings": null,
+  "values": {
+    "original_glcm_Autocorrelation": 376.9681252119979,
+    "original_glcm_ClusterProminence": 23571.839503438026,
+    "original_glcm_ClusterShade": -855.9292375708093,
+    "original_glcm_ClusterTendency": 46.07589828116562,
+    "original_glcm_Contrast": 8.466744197315501,
+    "original_glcm_Correlation": 0.6895367069662636,
+    "original_glcm_DifferenceAverage": 1.4493094926588168,
+    "original_glcm_DifferenceEntropy": 2.2175524632346724,
+    "original_glcm_DifferenceVariance": 6.366246191804546,
+    "original_glcm_Id": 0.6313900292470644,
+    "original_glcm_Idm": 0.6038362424406082,
+    "original_glcm_Idmn": 0.9926212725886918,
+    "original_glcm_Idn": 0.9610633863850414,
+    "original_glcm_Imc1": -0.18391410740784528,
+    "original_glcm_Imc2": 0.8158542246458663,
+    "original_glcm_InverseVariance": 0.42283654754927696,
+    "original_glcm_JointAverage": 19.17200659010515,
+    "original_glcm_JointEnergy": 0.06013598223799771,
+    "original_glcm_JointEntropy": 5.408694575941456,
+    "original_glcm_MCC": 0.7184568864998655,
+    "original_glcm_MaximumProbability": 0.13454474972137423,
+    "original_glcm_SumAverage": 38.344013180210304,
+    "original_glcm_SumEntropy": 3.8797594941096776,
+    "original_glcm_SumSquares": 13.63566061962028,
+    "original_glrlm_GrayLevelNonUniformity": 9716.866825617972,
+    "original_glrlm_GrayLevelNonUniformityNormalized": 0.13956403524148586,
+    "original_glrlm_GrayLevelVariance": 24.970249036246493,
+    "original_glrlm_HighGrayLevelRunEmphasis": 353.5489421599184,
+    "original_glrlm_LongRunEmphasis": 3.902244947790242,
+    "original_glrlm_LongRunHighGrayLevelEmphasis": 1521.7843241457565,
+    "original_glrlm_LongRunLowGrayLevelEmphasis": 0.0281266767543363,
+    "original_glrlm_LowGrayLevelRunEmphasis": 0.018026104267038556,
+    "original_glrlm_RunEntropy": 4.828251395982215,
+    "original_glrlm_RunLengthNonUniformity": 36923.072792037114,
+    "original_glrlm_RunLengthNonUniformityNormalized": 0.5303286671363934,
+    "original_glrlm_RunPercentage": 0.6380173014185697,
+    "original_glrlm_RunVariance": 1.4456413231593328,
+    "original_glrlm_ShortRunEmphasis": 0.7568024867054529,
+    "original_glrlm_ShortRunHighGrayLevelEmphasis": 255.07611827130216,
+    "original_glrlm_ShortRunLowGrayLevelEmphasis": 0.016770612554707368
+  }
+}
