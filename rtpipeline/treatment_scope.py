@@ -300,6 +300,10 @@ def geometric_classes(course, rules=None):
     overlap, missing_reason, targets, representative = _overlap_values(evidence, rule)
     return dict(
         rule_version=bundle.get("version", rule.get("schema")),
+        plan_selection_basis=evidence.get("plan_selection_basis", "not_recorded"),
+        selected_plan_evidence=copy.deepcopy(
+            evidence.get("selected_plan_evidence", [])
+        ),
         classes=classes,
         consensus=consensus,
         u_reason=reason,

@@ -380,7 +380,9 @@ def test_custom_rules_and_fresh_loads(monkeypatch):
 
     monkeypatch.setattr(resources, "files", lambda package: Missing())
     resources._packaged_rules.cache_clear()
-    assert resources.load_rules()["version"] == "1.0.0"
+    assert resources.load_rules()["version"] == "1.1.0"
+    assert resources.load_rules("1.0.0")["version"] == "1.0.0"
+    assert json.loads(resources._PACKAGED_JSON_V1) == resources.load_rules("1.0.0")
 
 
 @pytest.mark.parametrize("sign", [1, -1])
@@ -658,3 +660,151 @@ def test_cli_invalid_rules_do_not_echo_source(tmp_path, capsys):
     captured = capsys.readouterr()
     assert "secret-marker" not in captured.err
     assert str(path) not in captured.err
+
+
+@pytest.mark.parametrize("name", ["HR-CTV", "ir_ctv", "Hr CTV"])
+def test_exact_treated_volume_ctv_allowance(name):
+    ds = rtstruct([(1, name, ["TREATED_VOLUME"], 1)])
+    selected, excluded = geometry.select_targets(ds, load_rules()["geometry"])
+    assert not excluded
+    assert selected[0]["type"] == "CTV"
+    assert selected[0]["interpreted_types"] == ["TREATED_VOLUME"]
+    assert selected[0]["route"] == "exact_name_treated_volume_ctv"
+    assert geometry.select_targets(ds, load_rules("1.0.0")["geometry"]) == ([], [])
+    # The allowance is geometric; names alone still need explicit anatomy.
+    assert names_only_class(ds)[1]["n_targets"] == 0
+
+
+@pytest.mark.parametrize(
+    "name,types,count,expected,reason",
+    [
+        (
+            "HR-CTV",
+            ["TREATED_VOLUME", "CTV"],
+            1,
+            False,
+            "contradictory_interpreted_types",
+        ),
+        (
+            "HR-CTV",
+            ["TREATED_VOLUME", "GTV"],
+            1,
+            False,
+            "contradictory_interpreted_types",
+        ),
+        ("HR-CTV", ["TREATED_VOLUME", "ORGAN"], 1, False, ""),
+        ("CTV", ["TREATED_VOLUME"], 1, False, ""),
+        ("HR-CTV", ["ORGAN"], 1, False, ""),
+        ("HR-CTV", ["TREATED_VOLUME"], 0, False, "no_valid_closed_contour"),
+        ("GTV", ["GTV"], 1, True, ""),
+        ("HR-CTV ring", ["CTV"], 1, False, "frozen_helper_exclusion"),
+        ("HR-CTV ring", ["TREATED_VOLUME"], 1, False, ""),
+        ("HR-CTV1", ["TREATED_VOLUME"], 1, False, ""),
+        (" HR-CTV", ["TREATED_VOLUME"], 1, False, ""),
+        ("HR--CTV", ["TREATED_VOLUME"], 1, False, ""),
+    ],
+)
+def test_treated_volume_controls(name, types, count, expected, reason):
+    ds = rtstruct([(1, name, types, count)])
+    selected, excluded = geometry.select_targets(ds, load_rules()["geometry"])
+    assert bool(selected) is expected
+    assert [row["reason"] for row in excluded] == ([reason] if reason else [])
+
+
+def test_treated_volume_retains_helper_and_geometry_guards():
+    rule = load_rules()["geometry"]
+    rule["helper_regex"].append("^hr")
+    selected, excluded = geometry.select_targets(
+        rtstruct([(1, "HR-CTV", ["TREATED_VOLUME"], 1)]), rule
+    )
+    assert not selected
+    assert excluded[0]["reason"] == "frozen_helper_exclusion"
+    for change in ("outside_ct_contour_points", "unsupported_contours"):
+        ev = evidence()
+        ev["targets"][0].update(type="CTV", **{change: 1})
+        assert geometric_classes(ev)["consensus"] == "U"
+    ev = evidence()
+    ev["organs"] = {"urinary_bladder": organ(100, 110)}
+    assert geometric_classes(ev)["consensus"] == "U"
+
+
+@pytest.mark.parametrize("status", ["APPROVED", "UNAPPROVED", "REJECTED", None])
+def test_geometry_only_plan_fallback(organized_course, status):
+    plan_path = organized_course / "DICOM/RTPLAN/plan.dcm"
+    plan = pydicom.dcmread(plan_path)
+    if status is not None:
+        plan.ApprovalStatus = status
+    plan.save_as(plan_path, enforce_file_format=True)
+    metadata_path = organized_course / "metadata/case_metadata.json"
+    metadata = json.loads(metadata_path.read_text())
+    metadata["course_contract"]["selected_plans"] = []
+    metadata_path.write_text(json.dumps(metadata))
+    original = metadata_path.read_bytes()
+    result = geometric_classes(organized_course)
+    assert result["consensus"] == "B"
+    assert result["plan_selection_basis"] == "linked_original_rtplan_geometry_only"
+    assert len(result["selected_plan_evidence"]) == 1
+    witness = result["selected_plan_evidence"][0]
+    assert witness["approval_status"] == (status or "ABSENT")
+    assert witness["selection_basis"] == result["plan_selection_basis"]
+    assert witness["resolved_total_gy"] is None
+    assert metadata_path.read_bytes() == original
+    frozen = geometric_classes(organized_course, "1.0.0")
+    assert frozen["consensus"] == "U"
+    assert frozen["u_reason"] == "ValueError: no_selected_plan"
+
+
+def test_fallback_does_not_replace_nonempty_selected_membership(organized_course):
+    metadata_path = organized_course / "metadata/case_metadata.json"
+    metadata = json.loads(metadata_path.read_text())
+    plan = metadata["course_contract"]["selected_plans"][0]
+    plan["sop_instance_uid"] = "1.2.3.4"
+    metadata_path.write_text(json.dumps(metadata))
+    result = geometric_classes(organized_course)
+    assert result["consensus"] == "U"
+    assert result["u_reason"] == "ValueError: plan_structure_identity_mismatch"
+    assert result["plan_selection_basis"] == "selected_plan_membership"
+
+
+def test_fallback_requires_linked_original_plan(organized_course):
+    metadata_path = organized_course / "metadata/case_metadata.json"
+    metadata = json.loads(metadata_path.read_text())
+    metadata["course_contract"]["selected_plans"] = []
+    metadata_path.write_text(json.dumps(metadata))
+    plan_path = organized_course / "DICOM/RTPLAN/plan.dcm"
+    plan = pydicom.dcmread(plan_path)
+    plan.ReferencedStructureSetSequence[0].ReferencedSOPInstanceUID = "1.2.3.4"
+    plan.save_as(plan_path, enforce_file_format=True)
+    result = geometric_classes(organized_course)
+    assert result["consensus"] == "U"
+    assert result["u_reason"] == "ValueError: no_selected_plan"
+    assert not result["selected_plan_evidence"]
+
+
+def test_selected_plan_preserves_classes_and_overlap_across_versions(organized_course):
+    frozen = geometric_classes(organized_course, "1.0.0")
+    current = geometric_classes(organized_course)
+    for field in (
+        "classes",
+        "consensus",
+        "representative_overlap",
+        "selected_target_overlaps",
+    ):
+        assert frozen[field] == current[field]
+    assert current["plan_selection_basis"] == "selected_plan_membership"
+
+
+def test_fresh_treated_volume_admission_preserves_frame_check(organized_course):
+    path = organized_course / "DICOM/RTSTRUCT/structure.dcm"
+    structure = pydicom.dcmread(path)
+    structure.StructureSetROISequence[0].ROIName = "HR-CTV"
+    structure.RTROIObservationsSequence[0].RTROIInterpretedType = "TREATED_VOLUME"
+    structure.save_as(path, enforce_file_format=True)
+    assert geometric_classes(organized_course)["consensus"] == "B"
+    frozen = geometric_classes(organized_course, "1.0.0")
+    assert frozen["u_reason"] == "ValueError: no_targets_after_helper_exclusion"
+    structure.StructureSetROISequence[0].ReferencedFrameOfReferenceUID = "1.2.3.4"
+    structure.save_as(path, enforce_file_format=True)
+    result = geometric_classes(organized_course)
+    assert result["consensus"] == "U"
+    assert result["u_reason"] == "ValueError: RTSTRUCT_CT_frame_mismatch"
