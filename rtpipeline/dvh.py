@@ -57,6 +57,7 @@ DVH_MEASUREMENT_CODE_SOURCES = (
     "dvh_support.py",
     "dvh_rotation.py",
     "planning_dose_selection.py",
+    "composite_course_dose.py",
     "plan_approval.py",
     "organize.py",
     "prescription.py",
@@ -195,7 +196,9 @@ def _dose_grid_contour_coordinates(
             ):
                 unresolved_contour_count += 1
                 continue
-            if not geometry_supported:
+            points = values.reshape((-1, 3))
+            if (geometric_type in {"CLOSED_PLANAR", "CLOSEDPLANAR_XOR"}
+                    and len(np.unique(points, axis=0)) < 3):
                 # A planar item with fewer than three distinct points bounds no
                 # area. Converting a segmentation mask to contours emits one for
                 # a stray boundary voxel, and it contributes nothing a rasteriser
@@ -203,12 +206,8 @@ def _dose_grid_contour_coordinates(
                 # whole ROI's dose-grid coverage undeterminable, which suppressed
                 # its prescription-relative metrics. Skip it; judge coverage on
                 # the items that do carry geometry.
-                points = values.reshape((-1, 3))
-                if (
-                    geometric_type in {"CLOSED_PLANAR", "CLOSEDPLANAR_XOR"}
-                    and len(np.unique(points, axis=0)) < 3
-                ):
-                    continue
+                continue
+            if not geometry_supported:
                 unresolved_contour_count += 1
                 continue
             contours.append(values.reshape((-1, 3)))
@@ -1115,6 +1114,8 @@ def annotate_dvh_metrics(
         output["dose_grid_coverage_status"] = coverage_status
         output["dose_grid_coverage_fraction"] = grid_coverage.get("fraction")
         output["dose_grid_coverage_method"] = grid_coverage.get("method")
+        output["dose_grid_coverage_reason"] = grid_coverage.get("reason")
+        output["dose_grid_coverage_reason_code"] = grid_coverage.get("reason_code")
         output["dose_grid_covered_volume_cm3"] = grid_coverage.get("covered_volume_cm3")
         output["dose_grid_roi_volume_cm3"] = grid_coverage.get("roi_volume_cm3")
         if coverage_status != "fully_covered":
@@ -1307,6 +1308,9 @@ class DVHDoseResolution:
     planning_dose_basis: Optional[str] = None
     planning_dose_selection_sha256: Optional[str] = None
     planning_dose_refusal_reason: Optional[str] = None
+    composite_dose_basis: Optional[str] = None
+    composite_dose_sidecar_sha256: Optional[str] = None
+    composite_dose_refusal_reason: Optional[str] = None
 
     @property
     def ok(self) -> bool:
@@ -1696,6 +1700,45 @@ def _contract_dose_response_eligible(contract) -> bool:
     return contract.resolved_prescribed_dose_total_gy is not None
 
 
+def _apply_composite_dose_sidecar(course_dir: Path, contract, resolution) -> None:
+    """Use a revalidated RF19 composite course dose; the contract stays unchanged."""
+    from .composite_course_dose import BASIS, OUTPUT, SIDECAR, load_composite_sidecar
+    from .planning_dose_selection import _sha256
+    selection = load_composite_sidecar(course_dir)
+    if selection.reason_code == "sidecar_missing":
+        return
+    if not selection.accepted:
+        resolution.composite_dose_refusal_reason = selection.reason_code
+        resolution.skip_reason = "Composite course dose sidecar refused: " + selection.reason_code
+        return
+    output = Path(course_dir) / OUTPUT
+    dose_header = pydicom.dcmread(output, stop_before_pixels=True)
+    source_headers = [pydicom.dcmread(path, stop_before_pixels=True) for path in selection.dose_paths]
+    resolution.rd_path = output
+    resolution.rp_path = selection.plan_artifact
+    resolution.selected_plan_paths = list(selection.plan_paths)
+    resolution.classification = BASIS
+    resolution.reason = (
+        "Delivered plans on one planning-CT frame summed as physical dose with "
+        "RTRECORD delivered/planned fraction weights."
+    )
+    resolution.skip_reason = None
+    resolution.source_dose_sop_instance_uids = [str(ds.SOPInstanceUID) for ds in source_headers]
+    resolution.source_dose_summation_types = [str(ds.DoseSummationType).upper() for ds in source_headers]
+    resolution.output_dose_sop_instance_uid = str(dose_header.SOPInstanceUID)
+    resolution.output_dose_summation_type = str(dose_header.DoseSummationType).upper()
+    resolution.selected_dose_paths = list(selection.dose_paths)
+    resolution.dose_grid_semantics = BASIS
+    resolution.dose_response_eligible = False
+    resolution.composite_dose_basis = BASIS
+    resolution.composite_dose_sidecar_sha256 = _sha256(Path(course_dir) / SIDECAR)
+    resolution.dvh_decision = {
+        "status": "ready", "metrics_status": "computed",
+        "reason_code": BASIS, "output": "dvh_metrics.xlsx",
+        "dose_response_eligible": False,
+    }
+
+
 def _resolve_dvh_dose(
     course_dir: Path,
     course_dirs,
@@ -1800,6 +1843,8 @@ def _resolve_dvh_dose(
             elif selection.reason_code != 'sidecar_missing':
                 resolution.planning_dose_refusal_reason = selection.reason_code
                 resolution.skip_reason = "Planning-dose sidecar refused: " + selection.reason_code
+            else:
+                _apply_composite_dose_sidecar(course_dir, contract, resolution)
         return resolution
     if not isinstance(dose_grid, dict):
         raise CourseContractError("course contract dose_grid must be an object or null")
@@ -2581,6 +2626,14 @@ def _write_dvh_qc(
             "dose_response_eligible": False,
             "planning_dose_selection_sha256": dose_resolution.planning_dose_selection_sha256,
         })
+    if dose_resolution is not None and dose_resolution.composite_dose_basis:
+        payload.update({
+            "dose_basis": dose_resolution.composite_dose_basis,
+            "composite_dose_basis": dose_resolution.composite_dose_basis,
+            "dose_provenance": "composite",
+            "dose_response_eligible": False,
+            "composite_dose_sidecar_sha256": dose_resolution.composite_dose_sidecar_sha256,
+        })
     if dose_grid_resampling is not None:
         payload["dose_grid_resampling"] = dict(dose_grid_resampling)
     if rx_dose_gy is not None and rx_dose_gy > 0:
@@ -2705,6 +2758,8 @@ def _write_dvh_skip_qc(
         payload.update({"dose_basis": dose_resolution.planning_dose_basis,
                         "planning_dose_basis": dose_resolution.planning_dose_basis,
                         "dose_response_eligible": False})
+    if dose_resolution.composite_dose_refusal_reason:
+        payload["composite_dose_refusal_reason"] = dose_resolution.composite_dose_refusal_reason
     if structure_resolution is not None:
         payload["structure_resolution"] = {
             "classification": structure_resolution.classification,
@@ -2851,17 +2906,34 @@ def _is_dvh_up_to_date(
         if not contract.selected_doses and contract.data.get("dose_grid") is None:
             from .planning_dose_selection import BASIS, SIDECAR, _sha256, load_planning_dose_sidecar
             selection = load_planning_dose_sidecar(course_dir)
-            if not selection.accepted:
+            if selection.reason_code == "sidecar_missing":
+                from . import composite_course_dose as composite
+                chosen = composite.load_composite_sidecar(course_dir)
+                if not chosen.accepted:
+                    return False
+                if (qc_data.get("composite_dose_basis") != composite.BASIS
+                        or qc_data.get("composite_dose_sidecar_sha256")
+                        != _sha256(course_dir / composite.SIDECAR)):
+                    return False
+                if "composite_dose_basis" not in parquet_frame.columns:
+                    return False
+                if (not parquet_frame["composite_dose_basis"].eq(composite.BASIS).all()
+                        or parquet_frame["dose_response_eligible"].ne(False).any()):
+                    return False
+                deps.extend([course_dir / composite.SIDECAR, course_dir / composite.OUTPUT,
+                             chosen.plan_artifact, *chosen.dose_paths])
+            elif not selection.accepted:
                 return False
-            if (qc_data.get("planning_dose_basis") != BASIS
-                    or qc_data.get("planning_dose_selection_sha256") != _sha256(course_dir / SIDECAR)):
-                return False
-            if not {"dose_basis", "planning_dose_basis"}.issubset(parquet_frame.columns):
-                return False
-            if (not parquet_frame["planning_dose_basis"].eq(BASIS).all()
-                    or parquet_frame["dose_response_eligible"].ne(False).any()):
-                return False
-            deps.extend([course_dir / SIDECAR, selection.dose_path, selection.plan_path])
+            else:
+                if (qc_data.get("planning_dose_basis") != BASIS
+                        or qc_data.get("planning_dose_selection_sha256") != _sha256(course_dir / SIDECAR)):
+                    return False
+                if not {"dose_basis", "planning_dose_basis"}.issubset(parquet_frame.columns):
+                    return False
+                if (not parquet_frame["planning_dose_basis"].eq(BASIS).all()
+                        or parquet_frame["dose_response_eligible"].ne(False).any()):
+                    return False
+                deps.extend([course_dir / SIDECAR, selection.dose_path, selection.plan_path])
         structure_meta = qc_data.get("structure_resolution") or {}
         for dep_path in structure_meta.get("selected_rtstruct_paths") or []:
             if dep_path:
@@ -3572,6 +3644,7 @@ def dvh_for_course(
     dose_response_eligible = bool(
         contract_dose_response_eligible and dose_plan_scope.complete
         and not dose_resolution.planning_dose_basis
+        and not dose_resolution.composite_dose_basis
     )
     prescription_resolved = bool(
         dose_response_eligible
@@ -3701,6 +3774,28 @@ def dvh_for_course(
                     if rotated_grid is not None else
                     rtstruct_grid_coverage(geometry_rtstruct_ds, int(roi_number), rtdose))
         alignment = None
+        if coverage["status"] in {"declared_empty", "non_volumetric", "degenerate_contours"}:
+            unavailable = annotate_dvh_metrics(
+                {**dict.fromkeys(RELATIVE_DVH_METRIC_COLUMNS), "Volume (cm³)": None,
+                 "DmeanGy": None, "DmaxGy": None, "DminGy": None,
+                 "D98Gy": None, "D95Gy": None, "D50Gy": None, "D2Gy": None,
+                 "D0.03ccGy": None, "D0.1ccGy": None, "D1ccGy": None,
+                 "D90Gy": None, "D2ccGy": None, "D2cc_status": coverage["status"]},
+                technique=treatment_technique, structure_name=roi_name,
+                structure_interpreted_type=roi_interpreted_type,
+                target_like=_is_target_structure(roi_name, roi_interpreted_type),
+                prescription_resolved=prescription_resolved,
+                dose_response_eligible=dose_response_eligible,
+                dose_response_ineligibility_reason=contract_dose_completeness_reason,
+                rtstruct_sop_instance_uid=rtstruct_sop_uid, rtstruct_path=rtstruct_path,
+                grid_coverage=coverage,
+            )
+            unavailable.update({"ROI_Number": int(roi_number), "ROI_Name": roi_name,
+                                "ROI_OriginalName": roi_name, "Segmentation_Source": source_label,
+                                "row_status": "not_computed",
+                                "dvh_nonmeasurement_class": coverage["status"],
+                                "_curve_data": []})
+            return unavailable
         try:
             if rotation_error:
                 raise DoseOrientationError(rotation_error)
@@ -3715,10 +3810,18 @@ def dvh_for_course(
         except Exception as exc:
             logger.error("DVH failed for ROI %s: %s", roi_name, exc)
             failed = annotate_dvh_metrics(
-                {"DmeanGy": None, "DmaxGy": None, "DminGy": None,
+                {**dict.fromkeys(RELATIVE_DVH_METRIC_COLUMNS),
+                 "Volume (cm³)": None,
+                 "DmeanGy": None, "DmaxGy": None, "DminGy": None,
+                 "D98Gy": None, "D95Gy": None, "D50Gy": None, "D2Gy": None,
                  "D0.03ccGy": None, "D0.03cc_status": "dvh_computation_failed",
                  "D2ccGy": None, "D2cc_status": "dvh_computation_failed"},
                 technique=treatment_technique, structure_name=roi_name,
+                structure_interpreted_type=roi_interpreted_type,
+                target_like=_is_target_structure(roi_name, roi_interpreted_type),
+                prescription_resolved=prescription_resolved,
+                dose_response_eligible=dose_response_eligible,
+                dose_response_ineligibility_reason=contract_dose_completeness_reason,
                 rtstruct_sop_instance_uid=rtstruct_sop_uid, rtstruct_path=rtstruct_path,
                 grid_coverage=coverage if coverage["status"] != "fully_covered" else
                     {**coverage, "status": "dvh_computation_failed"},
@@ -4222,6 +4325,11 @@ def dvh_for_course(
         if dose_resolution.planning_dose_basis:
             row["dose_basis"] = dose_resolution.planning_dose_basis
             row["planning_dose_basis"] = dose_resolution.planning_dose_basis
+            row["dose_response_eligible"] = False
+        if dose_resolution.composite_dose_basis:
+            row["dose_basis"] = dose_resolution.composite_dose_basis
+            row["composite_dose_basis"] = dose_resolution.composite_dose_basis
+            row["dose_provenance"] = "composite"
             row["dose_response_eligible"] = False
 
     df = pd.DataFrame(clean_results)

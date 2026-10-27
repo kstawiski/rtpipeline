@@ -210,3 +210,20 @@ def test_dvh_aggregate_dedup_tolerates_frames_without_identity_columns() -> None
     )
     aggregate = build_dvh_aggregate([frame], [("P1", "C1", Path("P1/C1"))])
     assert len(aggregate) == 1
+
+
+def test_aggregate_keeps_producer_nonmeasurement_and_reason_fields():
+    frame = pd.DataFrame([
+        _dvh_row(row_status='not_computed', DmeanGy=None, DmaxGy=None,
+                 dvh_nonmeasurement_class='declared_empty',
+                 dose_grid_coverage_reason='ROI has no contour items.',
+                 dose_grid_coverage_reason_code='ROI_DECLARED_EMPTY_CONTOUR_SEQUENCE'),
+        _dvh_row(ROI_Number=80, row_status=None),
+    ])
+    aggregate = build_dvh_aggregate([frame], [('P1', 'C1', Path('P1/C1'))])
+    empty = aggregate.loc[aggregate.ROI_Number == 79].iloc[0]
+    assert empty.row_status == 'not_computed'
+    assert empty.dose_grid_coverage_reason == 'ROI has no contour items.'
+    assert empty.dose_grid_coverage_reason_code == 'ROI_DECLARED_EMPTY_CONTOUR_SEQUENCE'
+    assert pd.isna(empty.DmeanGy)
+    assert aggregate.loc[aggregate.ROI_Number == 80, 'row_status'].tolist() == ['computed']

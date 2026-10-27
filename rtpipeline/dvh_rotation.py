@@ -316,6 +316,10 @@ class RotatedDoseGrid:
         return result
 
     def coverage(self, structure, roi):
+        from .dvh_support import roi_nonvolume_coverage
+        disposition = roi_nonvolume_coverage(structure, roi)
+        if disposition is not None:
+            return disposition
         from .dvh import (_dose_grid_contour_coordinates, _polygon_intersects_box)
         contours, unresolved = _dose_grid_contour_coordinates(structure, roi)
         status = "coverage_unresolved"
