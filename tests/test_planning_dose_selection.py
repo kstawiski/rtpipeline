@@ -325,8 +325,11 @@ def test_contract_selected_bytes_against_80d5d65(tmp_path, monkeypatch, delivere
         reader = pd.read_parquet if name.endswith('.parquet') else pd.read_excel
         old_frame = reader(BytesIO(old[name]))
         new_frame = reader(BytesIO(new[name]))
-        assert set(new_frame.columns) == set(old_frame.columns) | {'dose_plane_alignment', 'D2ccGy', 'D2cc_status'}
+        assert set(new_frame.columns) == set(old_frame.columns) | {'dose_plane_alignment', 'D2ccGy', 'D2cc_status',
+                                                                            'dose_grid_coverage_reason', 'dose_grid_coverage_reason_code'}
         fx.assert_d2cc_columns(new_frame)
+        assert new_frame.dose_grid_coverage_reason.notna().all()
+        assert new_frame.dose_grid_coverage_reason_code.isna().all()
         assert new_frame['dose_plane_alignment'].tolist() == ['EXACT'] * len(new_frame)
         projected = new_frame.loc[:, old_frame.columns]
         pd.testing.assert_frame_equal(projected, old_frame, check_dtype=True,

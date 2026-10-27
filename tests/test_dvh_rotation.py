@@ -248,8 +248,11 @@ def test_axis_aligned_publication_bytes_against_git_a61b96a(tmp_path, monkeypatc
     new, new_receipt = run(dvh)
     old_table = pd.read_parquet(BytesIO(old['dvh_metrics.parquet']))
     new_table = pd.read_parquet(BytesIO(new['dvh_metrics.parquet']))
-    assert set(new_table.columns) == set(old_table.columns) | {'dose_plane_alignment', 'D2ccGy', 'D2cc_status'}
+    assert set(new_table.columns) == set(old_table.columns) | {'dose_plane_alignment', 'D2ccGy', 'D2cc_status',
+                                                                            'dose_grid_coverage_reason', 'dose_grid_coverage_reason_code'}
     fx.assert_d2cc_columns(new_table)
+    assert new_table.dose_grid_coverage_reason.notna().all()
+    assert new_table.dose_grid_coverage_reason_code.isna().all()
     alignment = new_table['dose_plane_alignment']
     assert set(alignment) <= {'EXACT', 'DOSE_Z_INTERPOLATED'}
     assert alignment.tolist() == ['EXACT'] * len(old_table)
@@ -259,8 +262,11 @@ def test_axis_aligned_publication_bytes_against_git_a61b96a(tmp_path, monkeypatc
 
     old_workbook = pd.read_excel(BytesIO(old['dvh_metrics.xlsx']))
     new_workbook = pd.read_excel(BytesIO(new['dvh_metrics.xlsx']))
-    assert set(new_workbook.columns) == set(old_workbook.columns) | {'dose_plane_alignment', 'D2ccGy', 'D2cc_status'}
+    assert set(new_workbook.columns) == set(old_workbook.columns) | {'dose_plane_alignment', 'D2ccGy', 'D2cc_status',
+                                                                            'dose_grid_coverage_reason', 'dose_grid_coverage_reason_code'}
     fx.assert_d2cc_columns(new_workbook)
+    assert new_workbook.dose_grid_coverage_reason.notna().all()
+    assert new_workbook.dose_grid_coverage_reason_code.isna().all()
     assert set(new_workbook['dose_plane_alignment']) <= {'EXACT', 'DOSE_Z_INTERPOLATED'}
     assert new_workbook['dose_plane_alignment'].tolist() == ['EXACT'] * len(old_workbook)
     pd.testing.assert_frame_equal(new_workbook.loc[:, old_workbook.columns], old_workbook,

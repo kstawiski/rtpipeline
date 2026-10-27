@@ -371,7 +371,7 @@ def test_alignment_helper_participates_in_measurement_identity():
 
 @pytest.mark.parametrize('quarantine', [False, True])
 def test_existing_table_columns_match_stored_baseline_with_additive_alignment(tmp_path, quarantine):
-    """The required extra column preserves every existing value and dtype."""
+    """Additive alignment, D2cc and coverage evidence preserve existing values and dtypes."""
     from pathlib import Path
     kwargs = ({'references':[fx.dose_reference(number=1, description='PTV1'),
                             fx.dose_reference(number=2, description='ptv2 ')]} if quarantine
@@ -382,8 +382,11 @@ def test_existing_table_columns_match_stored_baseline_with_additive_alignment(tm
     filename = ('ae60f01_near_zero_course_quarantine.json' if quarantine
                 else 'ae60f01_no_near_zero_targets.json')
     baseline = json.loads((Path(fx.__file__).parent/'synthetic_dvh_plan_target'/filename).read_text())
-    assert set(table) - set(baseline['columns']) == {'dose_plane_alignment', 'D2ccGy', 'D2cc_status'}
+    assert set(table) - set(baseline['columns']) == {'dose_plane_alignment', 'D2ccGy', 'D2cc_status',
+                                                                  'dose_grid_coverage_reason', 'dose_grid_coverage_reason_code'}
     fx.assert_d2cc_columns(table)
+    assert table.dose_grid_coverage_reason.notna().all()
+    assert table.dose_grid_coverage_reason_code.isna().all()
     projected = table[baseline['columns']]
     assert projected.dtypes.astype(str).tolist() == baseline['dtypes']
 

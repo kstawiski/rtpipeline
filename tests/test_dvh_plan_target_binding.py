@@ -47,9 +47,18 @@ def _assert_historical_table_with_alignment(course: Path, path: Path) -> None:
     baseline_text = path.read_text(encoding="utf-8")
     baseline = json.loads(baseline_text)
     current = json.loads(fx.canonical_dvh_table(course))
-    assert set(current["columns"]) == set(baseline["columns"]) | {"dose_plane_alignment", "D2ccGy", "D2cc_status"}
+    assert set(current["columns"]) == set(baseline["columns"]) | {"dose_plane_alignment", "D2ccGy", "D2cc_status",
+                                                                              "dose_grid_coverage_reason", "dose_grid_coverage_reason_code"}
     fx.assert_d2cc_columns(pd.read_parquet(course / "dvh_metrics.parquet"))
+    for row in current["rows"]:
+        assert row[current["columns"].index("dose_grid_coverage_reason")]
+        assert row[current["columns"].index("dose_grid_coverage_reason_code")] is None
     positions = [current["columns"].index(column) for column in baseline["columns"]]
+    # Pandas 3 infers string dtype; numeric dtypes and every cell stay exact.
+    for i, expected in zip(positions, baseline["dtypes"]):
+        if current["dtypes"][i] == "str" and expected == "object":
+            assert all(row[i] is None or isinstance(row[i], str) for row in current["rows"])
+            current["dtypes"][i] = "object"
     projected = {
         "columns": [current["columns"][i] for i in positions],
         "dtypes": [current["dtypes"][i] for i in positions],
