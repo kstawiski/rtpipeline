@@ -1,0 +1,15 @@
+{
+  "upstream_commit": "1f805cea446805e559badc80dd27f34175e4173d",
+  "random_mask_pairs": 96,
+  "metric_comparisons": 384,
+  "seed": 20261027,
+  "max_absolute_error_hd95_mean_dice": [
+    0.0,
+    1.7763568394002505e-15,
+    4.440892098500626e-16
+  ],
+  "source_sha256": {
+    "lookup": "8e3572a6b0b8df19b7a975b9d708964aad875c37ca43a4746a1074d51df46bc2",
+    "metrics": "cadafae1aecda043dae2d526230a73f8b50fc4fd0fe0d0a28d86962eea49dad0"
+  }
+}

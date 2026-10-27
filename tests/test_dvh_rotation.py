@@ -1,6 +1,8 @@
 """Synthetic patient-coordinate dose tests; no campaign input is used."""
 import copy
 import datetime
+import hashlib
+from io import BytesIO
 import json
 from pathlib import Path
 import subprocess
@@ -100,10 +102,20 @@ def test_analytic_box_dvh_and_course_curves(tmp_path, angle):
     assert set(rows.dose_grid_resampling_status) == {METHOD}
     assert set(rows.dose_grid_coverage_status) == {'fully_covered'}
     assert rows.D90Gy.notna().all() and rows.D2ccGy.notna().all()
+    assert set(rows.D2cc_status) == {'available'}
+    np.testing.assert_allclose(rows.D2ccGy, expected['D2ccGy'], atol=.12, rtol=0)
     qc = json.loads((course/'metadata/dvh_qc.json').read_text())
     assert qc['dose_grid_resampling']['method'] == METHOD
     curves = json.loads((course/'dvh_curves.json').read_text())['points']
     assert len(curves) == 2 and all(c['data'] for c in curves)
+    for curve in curves:
+        row = rows[rows.ROI_Name == curve['roi_name']].iloc[0]
+        bins = np.array([p['x'] for p in curve['data']])
+        cumulative = np.array([p['y'] for p in curve['data']]) / 100 * curve['volume_cm3']
+        value, status = dvh._small_volume_dose(
+            bins, cumulative, curve['volume_cm3'], row.DminGy, row.DmaxGy, 2.)
+        assert row.D2ccGy == pytest.approx(value, abs=1e-12)
+        assert row.D2cc_status == status
 
 
 @pytest.mark.parametrize('base', [np.diag([-1.,-1.,1.]), np.diag([-1.,1.,-1.]),
@@ -191,11 +203,11 @@ def historical_dvh(tmp_path):
                                        [0,1,0,-1,0,0], [0,-1,0,1,0,0],
                                        [1,0,0,0,-1,0], [0,1,0,1,0,0], [0,-1,0,-1,0,0]])
 def test_axis_aligned_publication_bytes_against_git_a61b96a(tmp_path, monkeypatch, orientation):
-    """Exact publication bytes except truthful code identity and its QC hash.
+    """Exact historical publication content with explicit alignment metadata.
 
-    The production QC source hash cannot be byte-identical after a source edit.
-    We assert it DOES change, then compare every other QC byte and receipt
-    content field. Workbook packaging time is fixed for both implementations.
+    Historical columns retain exact values, dtypes, row order and serialized
+    bytes. Alignment metadata and the code identity are checked separately.
+    Workbook packaging time is fixed for both implementations.
     """
     import xlsxwriter.core
     from rtpipeline.config_dependencies import materialize_stage_dependency
@@ -207,7 +219,7 @@ def test_axis_aligned_publication_bytes_against_git_a61b96a(tmp_path, monkeypatc
             return cls(2024, 1, 1, tzinfo=tz)
     monkeypatch.setattr(xlsxwriter.core, 'datetime', FixedWorkbookTime)
     baseline = historical_dvh(tmp_path)
-    course = fx.build_course(tmp_path, rois=fx.NO_NEAR_ZERO_ROIS)
+    course = fx.build_course(tmp_path, rois=fx.NO_NEAR_ZERO_ROIS, low_dose_gy=0.)
     path = course/'DICOM/RTDOSE/dose.dcm'
     dose = pydicom.dcmread(path)
     dose.ImageOrientationPatient = orientation
@@ -225,22 +237,80 @@ def test_axis_aligned_publication_bytes_against_git_a61b96a(tmp_path, monkeypatc
                      ('dvh_metrics.parquet', 'dvh_metrics.xlsx', 'dvh_curves.json', 'metadata/dvh_qc.json')}
         receipt = write_stage_completion_sentinel(course, course/'.dvh_done', stage='dvh',
                                                   status='ok', configuration_dependency=dependency)
+        for row in receipt['outputs']:
+            if row['binding'] == 'content_sha256':
+                content = (course / row['path']).read_bytes()
+                assert row['sha256'] == hashlib.sha256(content).hexdigest()
+                assert row['size_bytes'] == len(content)
         return artifacts, receipt
 
     old, old_receipt = run(baseline)
     new, new_receipt = run(dvh)
-    for name in ('dvh_metrics.parquet', 'dvh_metrics.xlsx', 'dvh_curves.json'):
-        assert old[name] == new[name], name
+    old_table = pd.read_parquet(BytesIO(old['dvh_metrics.parquet']))
+    new_table = pd.read_parquet(BytesIO(new['dvh_metrics.parquet']))
+    assert set(new_table.columns) == set(old_table.columns) | {'dose_plane_alignment', 'D2ccGy', 'D2cc_status',
+                                                                            'dose_grid_coverage_reason', 'dose_grid_coverage_reason_code', 'dose_summary_basis'}
+    fx.assert_d2cc_columns(new_table)
+    assert new_table.loc[new_table.DmaxGy.eq(0), 'dose_summary_basis'].eq('unbinned_subcentigray').all()
+    assert new_table.loc[new_table.DmaxGy.gt(0), 'dose_summary_basis'].eq('binned').all()
+    assert new_table.dose_grid_coverage_reason.notna().all()
+    assert new_table.dose_grid_coverage_reason_code.isna().all()
+    alignment = new_table['dose_plane_alignment']
+    assert set(alignment) <= {'EXACT', 'DOSE_Z_INTERPOLATED'}
+    assert alignment.tolist() == ['EXACT'] * len(old_table)
+    projected_table = new_table.loc[:, old_table.columns]
+    pd.testing.assert_frame_equal(projected_table, old_table, check_dtype=True,
+                                  check_exact=True, check_like=False)
+
+    old_workbook = pd.read_excel(BytesIO(old['dvh_metrics.xlsx']))
+    new_workbook = pd.read_excel(BytesIO(new['dvh_metrics.xlsx']))
+    assert set(new_workbook.columns) == set(old_workbook.columns) | {'dose_plane_alignment', 'D2ccGy', 'D2cc_status',
+                                                                            'dose_grid_coverage_reason', 'dose_grid_coverage_reason_code', 'dose_summary_basis'}
+    fx.assert_d2cc_columns(new_workbook)
+    assert new_workbook.dose_grid_coverage_reason.notna().all()
+    assert new_workbook.dose_grid_coverage_reason_code.isna().all()
+    assert set(new_workbook['dose_plane_alignment']) <= {'EXACT', 'DOSE_Z_INTERPOLATED'}
+    assert new_workbook['dose_plane_alignment'].tolist() == ['EXACT'] * len(old_workbook)
+    pd.testing.assert_frame_equal(new_workbook.loc[:, old_workbook.columns], old_workbook,
+                                  check_dtype=True, check_exact=True, check_like=False)
+
+    projected_new = {}
+    for name in ('dvh_metrics.parquet', 'dvh_metrics.xlsx'):
+        buffer = BytesIO()
+        if name.endswith('.parquet'):
+            projected_table.to_parquet(buffer, index=False)
+        else:
+            projected_table.to_excel(buffer, index=False)
+        projected_new[name] = buffer.getvalue()
+        assert old[name] == projected_new[name], name
+
+    new_curves = json.loads(new['dvh_curves.json'])
+    for curve in new_curves['points']:
+        curve_alignment = curve.pop('dose_plane_alignment')
+        assert curve_alignment in {'EXACT', 'DOSE_Z_INTERPOLATED'}
+        assert curve_alignment == 'EXACT'
+    projected_new['dvh_curves.json'] = json.dumps(new_curves, ensure_ascii=False).encode('utf-8')
+    assert old['dvh_curves.json'] == projected_new['dvh_curves.json']
+
     old_qc = json.loads(old['metadata/dvh_qc.json'])
     new_qc = json.loads(new['metadata/dvh_qc.json'])
+    assert set(new_qc) == set(old_qc) | {'dose_plane_alignment', 'dose_plane_alignment_counts'}
+    assert new_qc.pop('dose_plane_alignment') == 'EXACT'
+    assert new_qc.pop('dose_plane_alignment_counts') == {'EXACT': len(new_table)}
     old_digest = old_qc['code_sources_sha256']
     new_digest = new_qc['code_sources_sha256']
     assert old_digest != new_digest
-    assert old['metadata/dvh_qc.json'].replace(old_digest.encode(), new_digest.encode()) == new['metadata/dvh_qc.json']
+    assert old['metadata/dvh_qc.json'].replace(old_digest.encode(), new_digest.encode()) == (
+        json.dumps(new_qc, indent=2).encode('utf-8'))
     old_content = [{k: row[k] for k in ('path','role','binding','sha256','size_bytes') if k in row}
                    for row in old_receipt['outputs'] if row['role'] != 'dvh_qc']
     new_content = [{k: row[k] for k in ('path','role','binding','sha256','size_bytes') if k in row}
                    for row in new_receipt['outputs'] if row['role'] != 'dvh_qc']
+    for row in new_content:
+        if row['path'] in projected_new:
+            content = projected_new[row['path']]
+            row['sha256'] = hashlib.sha256(content).hexdigest()
+            row['size_bytes'] = len(content)
     assert old_content == new_content
     assert old_receipt['content_closure_sha256'] != new_receipt['content_closure_sha256']
     assert 'dose_grid_resampling' not in new_qc

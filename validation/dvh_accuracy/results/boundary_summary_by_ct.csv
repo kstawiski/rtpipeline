@@ -1,0 +1,3 @@
+stratum,cases,dose_comparisons,dose_failures,max_dose_error_Gy,V95Rx_comparisons,V95Rx_failures,max_V95Rx_error_pp,volume_comparisons,volume_failures,max_volume_error_pct
+1,60,525,0,0.12,60,0,0.378787878788,60,13,14.6875
+3,60,527,0,0.30901574932,60,0,0.868748871784,60,16,17.1875

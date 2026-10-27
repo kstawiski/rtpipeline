@@ -1,0 +1,18 @@
+# Local environments, inputs and scratch artifacts.
+.venv*/
+venv*/
+/tmp/
+/phantoms/
+/data/
+/scratch*/
+__pycache__/
+.pytest_cache/
+*.py[cod]
+*.log
+/results-smoke/
+/results-single/
+/results/tmp/
+/results/preprocessed/
+# Retained synthetic/public numerical evidence.
+!/results/**/*.csv
+!/results/**/*.json

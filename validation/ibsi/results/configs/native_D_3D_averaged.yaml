@@ -1,0 +1,35 @@
+setting:
+  label: 1
+  normalize: false
+  voxelArrayShift: 0
+  minimumROIDimensions: 2
+  minimumROISize: 64
+  distances:
+  - 1
+  force2D: false
+  force2Ddimension: 0
+  padDistance: 5
+  geometryTolerance: 1.0e-06
+  correctMask: false
+  weightingNorm: null
+  additionalInfo: true
+  preCrop: false
+  resegmentShape: false
+  symmetricalGLCM: true
+  gldm_a: 0
+  binCount: 32
+  resampledPixelSpacing:
+  - 2.0
+  - 2.0
+  - 2.0
+  interpolator: sitkLinear
+imageType:
+  Original: {}
+featureClass:
+  shape: []
+  firstorder: []
+  glcm: []
+  glrlm: []
+  glszm: []
+  gldm: []
+  ngtdm: []

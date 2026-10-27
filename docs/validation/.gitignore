@@ -1,0 +1,7 @@
+*.log
+__pycache__/
+tmp/
+scratch*/
+!/f6_*.json
+!/f6_ibsi/*.json
+!/f6_ibsi/*.csv

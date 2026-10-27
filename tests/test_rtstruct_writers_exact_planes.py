@@ -377,6 +377,55 @@ def test_cropped_rtstruct_on_mixed_ct(tmp_path) -> None:
     _assert_resolves(out, ct_dir, STRUCTURES)
 
 
+@pytest.mark.parametrize("zs", [_uniform_z(), _mixed_z()], ids=["uniform", "mixed"])
+def test_cropped_rtstruct_bytes_are_independent_of_mask_listing(tmp_path, monkeypatch, zs) -> None:
+    import datetime
+    import itertools
+    import types
+
+    import rt_utils.ds_helper as ds_helper
+    from rtpipeline.anatomical_cropping import _create_rtstruct_from_cropped_masks
+
+    course = _cropping_course(tmp_path, zs)
+    dirs = ar.build_course_dirs(course)
+    seg_dir = dirs.segmentation_totalseg / "CT_series"
+    original_glob = Path.glob
+    listings = []
+
+    class FixedTime(datetime.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 1, 1, 12, 0, 0, tzinfo=tz)
+
+    outputs = []
+    for reverse in (False, True):
+        def mask_glob(path, pattern):
+            matches = original_glob(path, pattern)
+            if path == seg_dir and pattern == "*_cropped.nii.gz":
+                matches = sorted(matches, key=lambda p: p.name, reverse=reverse)
+                listings.append([p.name for p in matches])
+            return iter(matches)
+
+        counter = itertools.count()
+        with monkeypatch.context() as patch:
+            patch.setattr(Path, "glob", mask_glob)
+            patch.setattr(ds_helper, "datetime", types.SimpleNamespace(datetime=FixedTime))
+            patch.setattr(ds_helper, "generate_uid", lambda *a, **k: pydicom.uid.generate_uid(
+                entropy_srcs=[f"uid-{next(counter)}"]
+            ))
+            out = _create_rtstruct_from_cropped_masks(course, dirs, "_cropped")
+        assert out == course / "RS_auto_cropped.dcm"
+        outputs.append(out.read_bytes())
+
+    assert len(listings) == 2
+    assert len(listings[0]) == len(STRUCTURES) > 1
+    assert listings[0] == list(reversed(listings[1]))
+    assert outputs[0] == outputs[1]
+    result = pydicom.dcmread(out)
+    assert [str(roi.ROIName) for roi in result.StructureSetROISequence] == sorted(STRUCTURES)
+    _assert_resolves(out, dirs.dicom_ct, STRUCTURES)
+
+
 # Uniform spacing: byte-identical to a177c59 ------------------------------------
 
 _RUNNER = r'''
@@ -430,6 +479,17 @@ RTStruct.get_roi_mask_by_name = original
 assert summary is not None and summary.changed
 out["roi_fixer"] = sha(work / "fix.dcm")
 crop = work / "crop"
+if sys.argv[3] == "reference":
+    # The historical writer used directory order; fix its reference order to
+    # the fixture's filename order without changing the archived source.
+    original_glob = Path.glob
+    crop_masks = build_course_dirs(crop).segmentation_totalseg / "CT_series"
+    def reference_glob(path, pattern):
+        matches = original_glob(path, pattern)
+        if path == crop_masks and pattern == "*_cropped.nii.gz":
+            return iter(sorted(matches, key=lambda p: p.name))
+        return matches
+    Path.glob = reference_glob
 out["RS_auto_cropped"] = sha(anatomical_cropping._create_rtstruct_from_cropped_masks(crop, build_course_dirs(crop), "_cropped"))
 print(json.dumps(out))
 '''
@@ -449,7 +509,7 @@ def _old_tree(tmp_path: Path) -> Path:
     return tree
 
 
-def _run_writers(runner: Path, tree: Path, work: Path) -> dict:
+def _run_writers(runner: Path, tree: Path, work: Path, *, reference: bool = False) -> dict:
     env = {
         **os.environ,
         "PYTHONNOUSERSITE": "1",
@@ -459,7 +519,7 @@ def _run_writers(runner: Path, tree: Path, work: Path) -> dict:
         "SITK_NUMBER_OF_THREADS": "1",
     }
     result = subprocess.run(
-        [sys.executable, str(runner), str(tree), str(work)],
+        [sys.executable, str(runner), str(tree), str(work), "reference" if reference else "current"],
         capture_output=True, text=True, env=env, cwd=str(work),
     )
     assert result.returncode == 0, result.stderr[-4000:]
@@ -486,7 +546,7 @@ def test_uniform_spacing_writer_outputs_are_byte_identical_to_a177c59(tmp_path) 
         # The course contract binds the course to its parent directory name.
         work = tmp_path / label / template.name
         shutil.copytree(template, work, copy_function=shutil.copy2)
-        results[label] = _run_writers(runner, tree, work)
+        results[label] = _run_writers(runner, tree, work, reference=(label == "old"))
     assert set(results["new"]) == {
         "RS_custom", "model_rtstruct", "custom_model_rtstruct", "roi_fixer", "RS_auto_cropped"
     }

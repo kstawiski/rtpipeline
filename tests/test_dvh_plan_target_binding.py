@@ -1,8 +1,10 @@
 """Plan-target binding for the near-zero target course quarantine.
 
 All inputs are synthetic DICOM objects written under pytest's tmp_path. The two
-stored tables were produced by the unmodified ae60f01 DVH stage from the same
-fixture (see tests/dvh_plan_target_fixtures.py).
+stored tables were produced by the unmodified ae60f01 DVH stage. Exact historical
+comparisons use true-zero right-half dose, which has the same binned histogram
+as the original 0.005-Gy field. The positive field is exercised separately in
+test_dvh_state_fixes.py, including both plan-target binding dispositions.
 """
 from __future__ import annotations
 
@@ -29,7 +31,9 @@ UNBOUND_TARGETS = {"PTV2", "CTV2"}
 
 
 def _run(tmp_path: Path, **kwargs) -> tuple[Path, pd.DataFrame, dict]:
-    course = fx.build_course(tmp_path, **kwargs)
+    # Byte-exact historical controls use true zero in the undosed region.
+    # Positive sub-centigray controls are in test_dvh_state_fixes.py.
+    course = fx.build_course(tmp_path, low_dose_gy=0., **kwargs)
     assert dvh_for_course(course, parallel_workers=1, max_total_dose_gy=100.0)
     frame = pd.read_parquet(course / "dvh_metrics.parquet")
     qc = json.loads((course / "metadata" / "dvh_qc.json").read_text(encoding="utf-8"))
@@ -42,10 +46,40 @@ def _baseline_rows(path: Path) -> dict[str, dict]:
     return {row["ROI_Name"]: row for row in rows}
 
 
+def _assert_historical_table_with_alignment(course: Path, path: Path) -> None:
+    """Keep the stored values, dtypes and row order exact on historical columns."""
+    baseline_text = path.read_text(encoding="utf-8")
+    baseline = json.loads(baseline_text)
+    current = json.loads(fx.canonical_dvh_table(course))
+    assert set(current["columns"]) == set(baseline["columns"]) | {"dose_plane_alignment", "D2ccGy", "D2cc_status",
+                                                                              "dose_grid_coverage_reason", "dose_grid_coverage_reason_code", "dose_summary_basis"}
+    fx.assert_d2cc_columns(pd.read_parquet(course / "dvh_metrics.parquet"))
+    summaries = pd.read_parquet(course / "dvh_metrics.parquet")
+    assert summaries.loc[summaries.DmaxGy.eq(0), 'dose_summary_basis'].eq('unbinned_subcentigray').all()
+    assert summaries.loc[summaries.DmaxGy.gt(0), 'dose_summary_basis'].eq('binned').all()
+    for row in current["rows"]:
+        assert row[current["columns"].index("dose_grid_coverage_reason")]
+        assert row[current["columns"].index("dose_grid_coverage_reason_code")] is None
+    positions = [current["columns"].index(column) for column in baseline["columns"]]
+    # Pandas 3 infers string dtype; numeric dtypes and every cell stay exact.
+    for i, expected in zip(positions, baseline["dtypes"]):
+        if current["dtypes"][i] == "str" and expected == "object":
+            assert all(row[i] is None or isinstance(row[i], str) for row in current["rows"])
+            current["dtypes"][i] = "object"
+    projected = {
+        "columns": [current["columns"][i] for i in positions],
+        "dtypes": [current["dtypes"][i] for i in positions],
+        "rows": [[row[i] for i in positions] for row in current["rows"]],
+    }
+    assert json.dumps(projected, indent=1, ensure_ascii=False, sort_keys=False) + "\n" == baseline_text
+    alignment_index = current["columns"].index("dose_plane_alignment")
+    alignment = [row[alignment_index] for row in current["rows"]]
+    assert set(alignment) <= {"EXACT", "DOSE_Z_INTERPOLATED"}
+    assert alignment == ["EXACT"] * len(baseline["rows"])
+
+
 def _assert_course_quarantined_as_at_ae60f01(course: Path, qc: dict, rule: str) -> None:
-    assert fx.canonical_dvh_table(course) + "\n" == QUARANTINE_BASELINE.read_text(
-        encoding="utf-8"
-    )
+    _assert_historical_table_with_alignment(course, QUARANTINE_BASELINE)
     reconciliation = qc["plan_target_reconciliation"]
     assert reconciliation["decision"] == (
         "course_quarantined_pending_plan_target_reconciliation"
@@ -84,7 +118,7 @@ def test_site_description_binding_excludes_only_unbound_near_zero_targets(tmp_pa
     # Physical measurements are those ae60f01 published for the quarantined course.
     baseline = _baseline_rows(QUARANTINE_BASELINE)
     for name, row in rows.items():
-        for column in frame.columns:
+        for column in baseline[name]:
             if _is_dose_derived_metric_column(column) and column not in RELATIVE_DVH_METRIC_COLUMNS:
                 expected = baseline[name][column]
                 actual = row[column]
@@ -171,11 +205,9 @@ def test_volume_reference_binds_by_referenced_roi_number(tmp_path):
 
 
 def test_course_without_near_zero_targets_matches_ae60f01_output(tmp_path):
-    """Scenario 5: byte-identical canonical DVH table to the stored ae60f01 output."""
+    """Scenario 5: exact historical DVH columns and explicit contour alignment."""
     course, _frame, qc = _run(tmp_path, rois=fx.NO_NEAR_ZERO_ROIS)
-    assert fx.canonical_dvh_table(course) + "\n" == NO_NEAR_ZERO_BASELINE.read_text(
-        encoding="utf-8"
-    )
+    _assert_historical_table_with_alignment(course, NO_NEAR_ZERO_BASELINE)
     assert qc["plan_target_reconciliation"]["decision"] == "not_required_no_near_zero_targets"
     assert qc["plan_target_reconciliation"]["course_quarantine"] is False
 

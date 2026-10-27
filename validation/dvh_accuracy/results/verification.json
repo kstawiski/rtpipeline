@@ -1,0 +1,143 @@
+{
+  "checks": {
+    "run_completed": true,
+    "all_36_dg25_groups": true,
+    "all_120_cases": true,
+    "all_4440_rows_unique": true,
+    "tool_row_counts": true,
+    "endpoint_sets": true,
+    "native_missing_only_below_volume_D2cc": true,
+    "absolute_errors_recompute": true,
+    "pipeline_sources_unchanged_during_run": true,
+    "benchmark_sources_match_receipt": true,
+    "nice_10": true,
+    "scratch_inside_results": true,
+    "helper_diagnostics_labelled": true,
+    "relative_errors_recompute": true,
+    "zero_truth_relative_error_undefined": true,
+    "production_kernel_matches_executed_sources": true,
+    "raw_evidence_complete": true,
+    "all_fully_covered": true,
+    "curves_finite_monotone": true,
+    "production_alignment_consistent": true,
+    "native_D2cc_matches_published_table": true,
+    "all_native_dose_boundaries_hold": true,
+    "all_V95Rx_boundaries_hold": true,
+    "native_D2cc_matches_full_curve": true
+  },
+  "all_integrity_and_dose_checks_passed": true,
+  "boundaries": {
+    "stratum": "overall",
+    "cases": 120,
+    "dose_comparisons": 1052,
+    "dose_failures": 0,
+    "max_dose_error_Gy": 0.30901574932,
+    "V95Rx_comparisons": 120,
+    "V95Rx_failures": 0,
+    "max_V95Rx_error_pp": 0.868748871784,
+    "volume_comparisons": 120,
+    "volume_failures": 29,
+    "max_volume_error_pct": 17.1875
+  },
+  "boundaries_by_ct": [
+    {
+      "stratum": 1,
+      "cases": 60,
+      "dose_comparisons": 525,
+      "dose_failures": 0,
+      "max_dose_error_Gy": 0.12,
+      "V95Rx_comparisons": 60,
+      "V95Rx_failures": 0,
+      "max_V95Rx_error_pp": 0.378787878788,
+      "volume_comparisons": 60,
+      "volume_failures": 13,
+      "max_volume_error_pct": 14.6875
+    },
+    {
+      "stratum": 3,
+      "cases": 60,
+      "dose_comparisons": 527,
+      "dose_failures": 0,
+      "max_dose_error_Gy": 0.30901574932,
+      "V95Rx_comparisons": 60,
+      "V95Rx_failures": 0,
+      "max_V95Rx_error_pp": 0.868748871784,
+      "volume_comparisons": 60,
+      "volume_failures": 16,
+      "max_volume_error_pct": 17.1875
+    }
+  ],
+  "volume_boundaries_by_size": [
+    {
+      "volume_cc": 2.0,
+      "cases": 40,
+      "failures": 21,
+      "max_relative_error_pct": 17.1875
+    },
+    {
+      "volume_cc": 50.0,
+      "cases": 40,
+      "failures": 8,
+      "max_relative_error_pct": 9.6875
+    },
+    {
+      "volume_cc": 1000.0,
+      "cases": 40,
+      "failures": 0,
+      "max_relative_error_pct": 2.744375
+    }
+  ],
+  "native_D2cc": {
+    "cases": 120,
+    "available": 92,
+    "unavailable": 28,
+    "failures": 0,
+    "max_abs_error_Gy": 0.218
+  },
+  "curve_D2cc_supplement": {
+    "available": 92,
+    "unavailable": 28,
+    "failures": 0,
+    "max_abs_error_Gy": 0.218
+  },
+  "tests": {
+    "alignment-tests": {
+      "tests": 76,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "passed": 76,
+      "failure_details": []
+    },
+    "dvh-tests": {
+      "tests": 453,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "passed": 453,
+      "failure_details": []
+    },
+    "rtstruct-tests": {
+      "tests": 71,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "passed": 71,
+      "failure_details": []
+    },
+    "analytic-tests": {
+      "tests": 20,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "passed": 20,
+      "failure_details": []
+    }
+  },
+  "python": "3.11.14 | packaged by conda-forge | (main, Jan 26 2026, 23:48:32) [GCC 14.3.0]",
+  "effective_nice": 10,
+  "executed_pipeline_source_sha256": {
+    "rtpipeline/utils.py": "72bbd134555870f8f1d6e77fd7adb96d9f7232fabf382964741a36e42ad8d5a9",
+    "rtpipeline/dvh.py": "4abef0c44eeb0bbb99ccaeaca31c5aa07e04447211b0332bcb70a6fbdd8d38ad"
+  }
+}

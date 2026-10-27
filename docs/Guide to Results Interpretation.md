@@ -61,6 +61,14 @@ Key columns:
 | `Segmentation_Source` | Provenance: `Manual`, `AutoRTS_total`, `AutoRTS_total_mr`, `Merged`, `Custom`, `CustomModel:<name>`. |
 | `structure_cropped` | `True` when the mask touches the image boundary (quality flag). |
 | `DmeanGy`, `DmaxGy`, … | Standard DVH metrics. |
+| `dose_summary_basis` | RTSTRUCT mean and maximum: `binned`, or `unbinned_subcentigray` when the histogram has at most one bin or its maximum is zero. The latter uses supported samples in the same raster mask and working dose grid. NIfTI-mask mean and maximum already use unbinned samples; this field is empty for those rows. |
+| `row_status`, `dvh_nonmeasurement_class` | `not_computed` for declared empty, nonvolumetric, degenerate or nonmeasurable automatic sliver geometry. These rows have no dose measurement. |
+| `D0.03ccGy`, `D2ccGy` | Dose received by the hottest 0.03 cm³ or 2 cm³, respectively, in Gy. Values are bounded by Dmin and Dmax. |
+| `D0.03cc_status`, `D2cc_status` | `available` when computable; `roi_below_0.03cc` or `roi_below_2cc` when measured volume is too small. Incomplete dose-grid coverage propagates its coverage status and leaves the whole-ROI dose empty. |
+
+An automatic ROI whose closed contour items each have fewer than three distinct points has `dvh_nonmeasurement_class = nonmeasurable_auto_sliver`. This is expected nonmeasurement. Automatic-source evidence is bound to the RTSTRUCT bytes. AutoRTS uses `metadata/rs_auto_origin.json`; selected custom model outputs record their producer source and file hash. `dvh_nonmeasurement_evidence` records the contour count, each distinct-point count, source, origin and file hash. Manual or unverified area-less geometry remains `degenerate_contours`. An ROI with an area-bearing polygon and stray area-less items is assessed using its area-bearing polygons. Malformed coordinates and mixed open/closed geometry remain unresolved.
+
+Sub-centigray mean and maximum retain positive sample values below 0.01 Gy. An unbinned maximum of zero means every supported in-mask sample is zero. Samples are dose-grid values inside the raster mask; they do not establish a continuous-dose maximum between samples. Histograms with more than one bin and a positive maximum retain the binned metrics. Dose-volume quantiles and DVH curves remain histogram-derived.
 
 **Recommended checks**
 

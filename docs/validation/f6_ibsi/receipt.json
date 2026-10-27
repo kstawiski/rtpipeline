@@ -1,0 +1,111 @@
+{
+  "completed_utc": "2026-10-27T12:20:14.281586+00:00",
+  "python": "RTPIPELINE_RADIOMICS_PYTHON",
+  "default": {
+    "sha256": "4174115f0c5c677b17b56ea525606cbda57639c999035618ada18b69bcc08fd7",
+    "reference_sha256": "4174115f0c5c677b17b56ea525606cbda57639c999035618ada18b69bcc08fd7",
+    "versions": {
+      "numpy": "1.26.4",
+      "pyradiomics": "3.0.1",
+      "SimpleITK": "2.5.3"
+    },
+    "entries": 1260,
+    "features": 1223,
+    "parameter_sha256": "7ee24af298e06d94f491c6dcf4dd1fb72625a4a1e0b242c46ab25f54d7a8cdc3"
+  },
+  "synthetic": {
+    "synthetic_option_and_qc": "passed",
+    "morphology_voxels": 210,
+    "intensity_voxels": 210
+  },
+  "ibsi": {
+    "configurations": {
+      "A": {
+        "within_tolerance": 140,
+        "computed_comparison_pairs": 141,
+        "outside_tolerance": 1,
+        "feature_outputs": 147,
+        "bit_identical_to_benchmark": true
+      },
+      "B": {
+        "within_tolerance": 140,
+        "computed_comparison_pairs": 141,
+        "outside_tolerance": 1,
+        "feature_outputs": 147,
+        "bit_identical_to_benchmark": true
+      },
+      "C": {
+        "within_tolerance": 109,
+        "computed_comparison_pairs": 141,
+        "outside_tolerance": 32,
+        "feature_outputs": 147,
+        "bit_identical_to_benchmark": true
+      },
+      "D": {
+        "within_tolerance": 140,
+        "computed_comparison_pairs": 141,
+        "outside_tolerance": 1,
+        "feature_outputs": 147,
+        "bit_identical_to_benchmark": true
+      },
+      "E": {
+        "within_tolerance": 140,
+        "computed_comparison_pairs": 141,
+        "outside_tolerance": 1,
+        "feature_outputs": 147,
+        "bit_identical_to_benchmark": true
+      }
+    },
+    "preprocessing_diagnostics": 300,
+    "preprocessing_within_tolerance": 300,
+    "feature_outputs": 735,
+    "all_feature_outputs_bit_identical": true,
+    "public_source_hashes_verified": 26,
+    "retained_raw_hashes_verified": 22,
+    "reference_receipt_sha256": "c42140da22bf515f794e1aa49ccb63bf1fa30c1c22ff0f05e5a8c65ea14847e8",
+    "public_input_sha256": {
+      "data/public_sources_20261027/official_ibsi_reference/IBSI-1-submission-table.xlsx": "3af20577b580f2161bd546e147338ff226abb1676488e2906f2ce908b7985710",
+      "data/public_sources_20261027/theibsi/ibsi_1_data_analysis/data/compare_tables/20191014.xlsx": "f4e92b322cf9a652f9243ad37ef11e6d48f2626f23a194b38ade5c0228cfe55e",
+      "data/public_sources_20261027/theibsi/ibsi_1_data_analysis/naming_tables/20190830.xlsx": "6153303f478af652e46b00638fecf12dd7b527a4e3a8593033af56f72b9b723a",
+      "data/public_sources_20261027/theibsi/ibsi-doc/docs/05_Reference_data_sets.rst": "da9e09cc6956cb0f391d56fd6f79c268521468050a1d053b99e6bc67f6a96ce9",
+      "data/public_sources_20261027/theibsi/ibsi-doc/docs/03_Image_features.rst": "427afdd2ea0196ecade329ab0096a68f65273bd023f3457217fe630b825ed0bd",
+      "data/public_sources_20261027/theibsi/ibsi_1_data_analysis/data/20181005_pyradiomics.xlsx": "cb32ac047281ba6c23270165ded6a2fae204b15c8e73c5fa19e52225569570df",
+      "data/public_sources_20261027/theibsi/ibsi_1_data_analysis/tolerance/20180108_tolerance_table.csv": "829cfaca5b80fcbbb2bdd9bbb3ca65089d03f235438c0879c1f685794fd2f212",
+      "data/public_sources_20261027/AIM-Harvard/pyradiomics/labs/pyradiomics-dcm/resources/featuresDict_IBSIv7.tsv": "c83d3a180aba3e825de9d59fb425eb24bacf3609e62deba17791ecc5c7d7fc4d",
+      "data/public_sources_20261027/theibsi/ibsi_identifier/ibsi_concepts.csv": "8026a92c42e2ea423501122670556dc6655280a33c26a0dfe8687462a2d004ae",
+      "data/public_sources_20261027/theibsi/data_sets/ibsi_1_digital_phantom/README.md": "9759bad4490e0f2443188a6f565c14d55fce8fdc90670c153962e375fbcdee00",
+      "data/public_sources_20261027/theibsi/data_sets/ibsi_1_digital_phantom/LICENSE.md": "c863fa4a2aa4d3152f4bcb58bb7bb63c95704805bbb4aec18cbea7c701d4f046",
+      "data/public_sources_20261027/theibsi/data_sets/ibsi_1_digital_phantom/nifti/image/phantom.nii.gz": "83773ac2a288aa93cf819a98eaf301c18d35d5876182ec9c18733184e2b7a83a",
+      "data/public_sources_20261027/theibsi/data_sets/ibsi_1_digital_phantom/nifti/mask/mask.nii.gz": "3032d340944b577b83bc559ea7ae9a6034b84633a840eff39570ec17aa1d6281",
+      "data/public_sources_20261027/theibsi/data_sets/ibsi_1_ct_radiomics_phantom/README.md": "160af3a1d00f72519467bf44009aaa906597b61cb699635dd670de177c609b5e",
+      "data/public_sources_20261027/theibsi/data_sets/ibsi_1_ct_radiomics_phantom/LICENSE.md": "03e3631fbf812e9158e525de9ebd062987f51810d219e795ba5c12e190828663",
+      "data/public_sources_20261027/theibsi/data_sets/ibsi_1_ct_radiomics_phantom/nifti/image/phantom.nii.gz": "909129fdf99d5f5fd17bc568b1834d31edce8663ea6746c6020720bfc1d7bbcb",
+      "data/public_sources_20261027/theibsi/data_sets/ibsi_1_ct_radiomics_phantom/nifti/mask/mask.nii.gz": "0e9243e473b1255c60e6460df465d0b07b65436d6e0c691fe3d17bca0594ae78",
+      "data/public_sources_20261027/theibsi/ibsi-doc/README.md": "e66b0fe99e3a9f131a14944f7f100d99e78f24a1c6e95f69728c8004c125ef0e",
+      "data/public_sources_20261027/theibsi/ibsi-doc/docs/02_Image_processing.rst": "e7af08bfd2d3bc50cd66b4d83a6db4f6f9f092bb1a585ec94e2cda5bfffb61d6",
+      "data/public_sources_20261027/theibsi/ibsi_1_data_analysis/README.md": "7d2035b56019ef9d63ef7b552d5941482c327cc232f993b196c12a3fb1f62b1a",
+      "data/public_sources_20261027/theibsi/ibsi_1_data_analysis/main_results.R": "105f46a4f64248ceee3ce7b897d3b9cd5c0b886b294b4e6e1ea9373b4be0a778",
+      "data/public_sources_20261027/theibsi/ibsi_1_data_analysis/tables.R": "77191588908821850b2e2677d09744ce51daf058e2d63036807f299ba00ab3f2",
+      "data/public_sources_20261027/theibsi/ibsi_1_data_analysis/validation.R": "e65498fe0f437cb263229c999fe1b33cd6ba718987cdbd161039460bb198808a",
+      "data/public_sources_20261027/AIM-Harvard/pyradiomics/docs/features.rst": "2e8105faeb605914979b637a79a968a92ee4afb5c2ab9becc8127320bbfb46c9",
+      "data/public_sources_20261027/AIM-Harvard/pyradiomics/docs/faq.rst": "3edbbfaed9491b4ef73b6f631df61adacd51dd987cd2573ef08684e5534a91b4",
+      "data/public_sources_20261027/AIM-Harvard/pyradiomics/docs/changes.rst": "c3c53a28b203e61c0afca540d27df40dc316bc0c1cc435ac135424cf04aac1ab"
+    },
+    "benchmark_scripts_sha256": {
+      "check_preprocessing.py": "f762d44c222fb6c141574624e2100548051fcfe88dcffba18b767bcd32f30c29",
+      "feature_map.py": "d8bb67a300a8c13c42f3f6b88d84e0989ac35bc27e874abc3bd656b8a8c4b4b8",
+      "retrieve_pinned.py": "12c218ab6900d2860cabda897b04294f192fd4a92bcb0e230c8f2a97ef58ab7b",
+      "report.py": "5904e0ef07530160ff5a9bb211e8f507437decac00979d0cfdd3ef5d8c8598f7",
+      "verify_results.py": "3e38bd06fe43edeeaecdcebf794587a9c788a0abe74cea990da97aff16e9ace0",
+      "run_validation.py": "937012ea821f3cd9bd9e9e27ff88605f13f4355088fc151e4918d31336b376da",
+      "retrieve.py": "2953870c2a90587f4b3fc5e23ae82eeaaf4996a1882e70f64cabdfe39c74af1a"
+    }
+  },
+  "source_sha256": {
+    "rtpipeline/eval/geometry.py": "570f9886f1e2b385ef6e8ba29699c9b24ef77887d1597735f6f1d665ce7a050c",
+    "rtpipeline/radiomics.py": "3dce5d7b29dc3cfff525087c8cef090a3fbf2b1369d36b0aa0e7cdd1c8545de9",
+    "rtpipeline/radiomics_ct_contract.py": "4f41118456aafff3ef7fb2894e476ae8624990b3d2305bd18cd6403588455343",
+    "rtpipeline/ibsi_preprocessing.py": "6f24d3503aba7c6c2ef56bfdfbb7266affa73991aab789eb582f8974e2919c36",
+    "tests/validate_f6_ibsi.py": "bb7ecbec9fdde1ef759620fd50d6090f8ea2adad57a839c64450e628d7d2a22a"
+  }
+}

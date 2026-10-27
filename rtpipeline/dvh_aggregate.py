@@ -359,8 +359,14 @@ def build_dvh_aggregate(
                     "Dose-derived metrics are null because the ROI does not intersect "
                     "the selected RTDOSE grid."
                 )
-        current["row_status"] = "computed"
-        current["failure_reason"] = pd.NA
+        # A published row may explicitly represent contour nonmeasurement.
+        # Table presence alone must not turn that row into a measurement.
+        if "row_status" not in current:
+            current["row_status"] = "computed"
+        else:
+            current["row_status"] = current["row_status"].fillna("computed")
+        if "failure_reason" not in current:
+            current["failure_reason"] = pd.NA
         current["aggregate_schema_version"] = DVH_AGGREGATE_SCHEMA_VERSION
         valid_frames.append(current)
         successful_keys.update(

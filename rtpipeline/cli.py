@@ -328,11 +328,22 @@ def _execute_dvh_task(task: _DVHTask) -> _DVHStageOutcome | None:
             from .planning_dose_selection import BASIS, SIDECAR, _sha256, load_planning_dose_sidecar
             root = task.course.dirs.root
             selection = load_planning_dose_sidecar(root)
-            if not selection.accepted:
-                return None
             try:
                 qc = json.loads((root / "metadata/dvh_qc.json").read_text())
             except (OSError, ValueError):
+                return None
+            if selection.reason_code == "sidecar_missing":
+                # RF19 composite course dose, also DVH-only.
+                from . import composite_course_dose as composite
+                if not composite.load_composite_sidecar(root).accepted:
+                    return None
+                if (qc.get("composite_dose_basis") != composite.BASIS
+                        or qc.get("dose_response_eligible") is not False
+                        or qc.get("composite_dose_sidecar_sha256") != _sha256(root / composite.SIDECAR)
+                        or (qc.get("dose_resolution") or {}).get("dvh", {}).get("metrics_status") != "computed"):
+                    return None
+                return _DVHStageOutcome(status="computed", output_path=output_path)
+            if not selection.accepted:
                 return None
             if (qc.get("planning_dose_basis") != BASIS
                     or qc.get("dose_response_eligible") is not False
@@ -1861,6 +1872,10 @@ def main(argv: list[str] | None = None) -> int:
     if argv is None:
         argv = sys.argv[1:]
     # Lightweight subcommand dispatch to preserve backward compatibility
+    if argv and argv[0] == "scope":
+        from .treatment_scope import main as scope_main
+
+        return scope_main(argv[1:])
     if argv and argv[0] == "repair-planning-ct-localizers":
         from .repair_planning_ct_localizers import main as repair_main
         return repair_main(argv[1:])
