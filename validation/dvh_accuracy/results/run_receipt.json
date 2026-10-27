@@ -1,15 +1,13 @@
 {
-  "start_utc": "2026-10-27T15:56:23.582592+00:00",
+  "start_utc": "2026-10-27T19:13:05.484093+00:00",
   "seed": 20261027,
   "platform": "Linux-6.1.0-42-amd64-x86_64-with-glibc2.35",
   "python": "3.11.14 | packaged by conda-forge | (main, Jan 26 2026, 23:48:32) [GCC 14.3.0]",
   "executable": "RTPIPELINE_PYTHON",
   "command": [
-    "validation/dvh_accuracy/run_benchmark.py",
-    "--results",
-    "validation/dvh_accuracy/results"
+    "validation/dvh_accuracy/run_benchmark.py"
   ],
-  "reproduction_command": "nice -n 10 env PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. TMPDIR=validation/dvh_accuracy/results/tmp OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS=1 RTPIPELINE_CONTRACT_HEADER_THREADS=4 \"${RTPIPELINE_PYTHON:-python}\" validation/dvh_accuracy/run_benchmark.py --results validation/dvh_accuracy/results",
+  "reproduction_command": "nice -n 10 env PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. TMPDIR=validation/dvh_accuracy/results/tmp OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS=1 RTPIPELINE_CONTRACT_HEADER_THREADS=4 \"${RTPIPELINE_PYTHON:-python}\" validation/dvh_accuracy/run_benchmark.py",
   "pipeline_versions": {
     "ConfigArgParse": "1.7.1",
     "GitPython": "3.1.46",
@@ -310,8 +308,9 @@
     "rtpipeline/anatomical_cropping.py": "dcc3808957f97d6a4975b362b2f741737d3befbdce0dde4db4734cdfaff80b62",
     "rtpipeline/auto_rtstruct.py": "a35fb51b0f9615dcdbc1541cc5b38852a411b5fbdfed1b8e5f2f7c2051596909",
     "rtpipeline/body_composition.py": "9e87bf63c10f9f6928a02ff5d267594780e86cf8e52675d6bf454dda895cb91d",
-    "rtpipeline/cli.py": "851d2320a03e3a37d5f4b720e72c5bb3c9329e7139c4aa33619e38ca62cc8642",
+    "rtpipeline/cli.py": "5f5fd289bea98074b1be82a9bb79fd6794367c1b623f0c01ef6cccb7eb48929a",
     "rtpipeline/clinical_prescription.py": "0c4ae868cfe9d07cf221b3fc93ce5c8896ad45ff90ccaf16f6345c662e7a9b5c",
+    "rtpipeline/composite_course_dose.py": "f72d5a2e072905fe1d4a0b00e42e145dfd80289b2d420d30fb3634e0fd6f8a6e",
     "rtpipeline/config.py": "13980705d61d43369eaad5db9e97d548c6907ddf6aedbe52144c1869b1404cc6",
     "rtpipeline/config_dependencies.py": "e5a37d28d8a2d0fc6e2cf7a95fc07e4246dca160f055d492a5050341e0be1f88",
     "rtpipeline/course_contract.py": "a4ff08edb868a58bf457a9fc88da38e8e15f0d66c1ad81f3c8e2c5022772902f",
@@ -323,10 +322,10 @@
     "rtpipeline/custom_structures_rtstruct.py": "1b042da2c2748bb9079ff23bdcd019a8fef58a585bc53a65fea276e1ed294ee1",
     "rtpipeline/dicom_copy.py": "8a37280f07826a9b3afa1dbc89099eaff90949b6e0d957106a750ddc944c43ae",
     "rtpipeline/dicom_seg.py": "4deb7e0b823a6465db2c1ef7bb8207b6db4f4d5a0482c1ef00232aa536ebb7ac",
-    "rtpipeline/dvh.py": "093ac857a3b438b4262238298f5a1468ec862198565ef533818d70b2d358c86d",
-    "rtpipeline/dvh_aggregate.py": "574df24a7af4bb5a595450ecafea46f3c2ad3b108c79f1562bd44e700b778708",
-    "rtpipeline/dvh_rotation.py": "9c3bb38f20bd3dd45543ad9ab6ec79c8988528589b57a139f72f79e3bf8a1b20",
-    "rtpipeline/dvh_support.py": "919ef46b0f2ba81c28219b2a7b1ebe8f754548a58de1327fae6a6908123c289e",
+    "rtpipeline/dvh.py": "4abef0c44eeb0bbb99ccaeaca31c5aa07e04447211b0332bcb70a6fbdd8d38ad",
+    "rtpipeline/dvh_aggregate.py": "fe4f6ad75e8427301715267ce83b54ad2fb93d747b18bdc09d3287aabb91dfaa",
+    "rtpipeline/dvh_rotation.py": "c7494841164d9169fe887664252043ba3a6887385042fd800fe527f8de84ed91",
+    "rtpipeline/dvh_support.py": "b5486b9f597dd09962fed0daa309a059c87e71ceb7d6522855e89fd99fbc7c9d",
     "rtpipeline/eval/__init__.py": "567354c43b47c8661211af1ddb687ff49bd3b6288000bc075a810121a9af8543",
     "rtpipeline/eval/_vendor/__init__.py": "f517b76dfdd95e014f1e45e526980387d2219c2e27426eae69352e0d9b089705",
     "rtpipeline/eval/_vendor/surface_distance/__init__.py": "4db2aa7eaae29333dbfaa88bd2b2d2e5c642ea7f5abd50120a8c43f96956fabf",
@@ -357,25 +356,25 @@
     "rtpipeline/planning_dose_selection.py": "f23febff506b3e02514d4e7551c74ee0467be21e049130c73f6a9c9af096ca00",
     "rtpipeline/prescription.py": "723c8657c60f48c50b0d31decf0eb458c93d435f597c56724ee748c1b264ce7a",
     "rtpipeline/quality_control.py": "00dc742d826fdf205a1c187ae8a91cdcf30f866d1f8b353e6bed5a6477b487b3",
-    "rtpipeline/radiomics.py": "1e2b08dd8fdd868f09a62d1f07ce51baa0c05283d825d0fec108960dc58a7cdb",
+    "rtpipeline/radiomics.py": "d2ce40ba3466fc25ea7ad2856267c283f9803e97b2948100270966a4192fb926",
     "rtpipeline/radiomics_cohort.py": "a7ee836d6186a2390498f74269aab984b1d974dee124c8ef0dddb23d4997f960",
     "rtpipeline/radiomics_conda.py": "dc96edc3630693265d77ff64c86e3b852a1824f10928fbd21bd151e56ef83b18",
-    "rtpipeline/radiomics_ct_contract.py": "4f41118456aafff3ef7fb2894e476ae8624990b3d2305bd18cd6403588455343",
-    "rtpipeline/radiomics_memory.py": "40aaf1a968b1a4b07cb3dffbc231d9f8498b8245554460eb95309b1c27f554e8",
+    "rtpipeline/radiomics_ct_contract.py": "05397722250af717ff59c863555ea262296c2556116bc3c05b092d329f8389a2",
+    "rtpipeline/radiomics_memory.py": "1cb55399791531d5bf8f6fcc3dbccbfc9ed7f3b47fb9726c6f2b87977e2086f0",
     "rtpipeline/radiomics_outcomes.py": "8219b73697814c81e642f773e1900372d186084481a57bfd935fab4707ffb1ce",
     "rtpipeline/radiomics_parallel.py": "b520a44a0ad3763da4052c1a894b00a92407a2da6cf0251e91155d1d64e95ef2",
     "rtpipeline/radiomics_resource_guard.py": "4fb5ba4c8d99fda9228fbbe0e046f0b39c406aa343b15e689d540b1eff857bf3",
-    "rtpipeline/radiomics_robustness.py": "c3b982bc6ab9ed08c44341f53f9b777b3faf3419bb9fc1aa39dea9a59a2c084e",
+    "rtpipeline/radiomics_robustness.py": "7c9976bca1901def78787d49e2c28bbcc35dc7858d3230312003b1a721aff120",
     "rtpipeline/radiomics_robustness_aggregate.py": "1c5bdaa7104c7ff694f6e7159665d1aacd3fe2363a796215278b7ae5f780c647",
     "rtpipeline/radiomics_robustness_outcomes.py": "50baf7fddd05514f4360889dad58f9100bde9ec2cdcf739385e2ca256d4416ac",
     "rtpipeline/radiomics_schema.py": "718e34e258c428a5ccf0064bba45b6f8bbde2c91ef838f15f44dd21a498ca643",
     "rtpipeline/radiomics_source_inventory.py": "2d39f7af1f34dc340c6a297e3b513b1c2fb7a7083f8d9b989718009c4b05a519",
+    "rtpipeline/repair_composite_course_dose.py": "c8417e260bcc21da312a7ef8ec09d9d97d8cca916b8fecf360029035493b95f3",
     "rtpipeline/repair_planning_ct_localizers.py": "751fcf44a4e567bfc5c0977ddd1315c3822879cc2a7c56c847f958b25d351f22",
     "rtpipeline/repair_planning_dose_selection.py": "342b877f46829a76bd24f98d9bcba56d6c01ce86570224405da07b9fa8f51a95",
     "rtpipeline/robustness_completion.py": "b961cd9b37361ad9ca2ea32a4fa7aa294829236b35288ff8b84a55f074e6546f",
     "rtpipeline/robustness_mcc.py": "774c7d5befb4c5980428ba191f2a14eec297eefa68223880731a8bc07ae5445c",
-    "rtpipeline/robustness_watchdog.py": "3e85035d61bf2a3e3322ccf16791051c6ca564cd7cf46ea30fba1d98e01fc640",
-    "rtpipeline/roi_adjudication.py": "44f90923a1b539fc8d9562ef82da984f4adffaba314d050870b95bb294fd56c3",
+    "rtpipeline/robustness_watchdog.py": "1117be7f7853f2b01b854c3e9c9fbed8ae43787c056be256b869222e3bbe663e",
     "rtpipeline/roi_fixer.py": "f8cc1ccebe2c788480842c1380a4750d3889314f2123a45872b871d8fe5a1fde",
     "rtpipeline/roi_name_rules.py": "7a28db9f2ecf10b27a2f50571789fdaa8f2167ac14ba27a25d0eae938346ec57",
     "rtpipeline/roi_requiredness.py": "9b590af1be824a9a12cd67c8029dc228a8853a91782e08438e2ddac92c834d56",
@@ -389,23 +388,23 @@
     "rtpipeline/segmenters/postprocessing.py": "ec01a1654a74d9cb81e2fe2998fb585276a3a053b393dc7857b175e077a3a5c9",
     "rtpipeline/segmenters/totalsegmentator.py": "ce83c5422aba9e06d517365504a3e8f5abaa28e17f39673882e01a0ca910f994",
     "rtpipeline/snakemake_delegate.py": "61a163fd7ab3705eac59b729bbbb4b129f3195f2f96d42e021413d6e2577454e",
-    "rtpipeline/stage_completion.py": "416d76598ce93cb17cb78fe750f12f27e50db877d0c0c71e69804124450e84f6",
+    "rtpipeline/stage_completion.py": "d740d4e55764025bb6d5a511fc693c3a3fed8a840a41f828c128b8d070b4cd34",
     "rtpipeline/structure_merger.py": "131d1e91363cd9cd5d4e8937ea3948f3b423f9a7d5a99926ceadd804c1d9cd6b",
     "rtpipeline/tcia_acquisition.py": "62c54876f62d17617b6ff854085e81756dacdb628b5b03bae7d91e530007d741",
-    "rtpipeline/treatment_scope.py": "31100ad848a8ceaa95548918c44e35bb4f2c6bd8c28316fa61cc2c2a578acc26",
-    "rtpipeline/treatment_scope_geometry.py": "f1ec4a2c6896c61f313311b719937ef2bc8e66d7221c0e589517fa0388d15130",
-    "rtpipeline/treatment_scope_rules.py": "608db697697786ce508f6621f5887090e1f24eb6be33b7d33e392a5847bc03a7",
+    "rtpipeline/treatment_scope.py": "a35d981e27810f28f519d96b939a0bb83d6590687433c4ecd48dbd31cc28bda3",
+    "rtpipeline/treatment_scope_geometry.py": "c0df4afe6c2b4432c2a66b9c08cf24b39262b9ea960a62fa3c6a5b36f1853cf3",
+    "rtpipeline/treatment_scope_rules.py": "89b139f33bd72996e47f77b3038dcc286d7f1d294f9875b1e1bd3120b21c7a08",
     "rtpipeline/utils.py": "72bbd134555870f8f1d6e77fd7adb96d9f7232fabf382964741a36e42ad8d5a9",
     "rtpipeline/visualize.py": "d284953716e8b2632300a959737fd392b085eaa20b9e9164ba0e3cb6aaa63a4b",
     "rtpipeline/workflow_aggregate.py": "81e12d6cd84ed09fd6583b2de973d4c0cc32abd4bd6767979ab199c30fe8fc13",
     "rtpipeline/workflow_delegate.py": "377f043664ae433612a87b16a71f7cf977d3234d575b03ed681bfa1eaad3797f",
-    "tests/dvh_plan_target_fixtures.py": "5ecf097601e4791cde0fbfe6f0ef20786a2d9a17318d6dca9ef6fb6f1c5b5669",
+    "tests/dvh_plan_target_fixtures.py": "06d07424f073a3ceb5ca2658665bb99983177b89039230ba0c6f11918089725d",
     "tests/course_contract_test_utils.py": "90825f8ea76696d96824f241be8706b3aea0511c4fd3030ab96fe5080ad443a0"
   },
   "benchmark_code_sha256": {
     "analytic.py": "5956aedb4868a1ffe09b755d7c84c5e7f6b75610ceb72fab0e2381a2682f8a82",
     "analyze_volume.py": "5913dab3820f857c2c29e3cbaa64467790daa093a8519161446af84c491efc71",
-    "finalize_results.py": "0707871c474fc51d834297b0420ca1576a1cbc438945cd4bb427c6cdf8106aa9",
+    "finalize_results.py": "cd1b2d47007359c72775eb721371ca5ee027b3840f74a63c759502e9b71d290b",
     "generate_phantoms.py": "8ab18b95dc19629589b8755e7132f960594a94e75151fbd18821eeaf8355b8a4",
     "run_benchmark.py": "73d6fd24ba435eb753b9b2bb129bcbe46514aee1db0bcdf2ad98babf71617935",
     "test_analytic.py": "7794fec374bed1e203a6f3a9f83e73e4de9d1cd924e6bcb1d928a42b4d149951",
@@ -428,253 +427,253 @@
   "groups": [
     {
       "group": "v2_aligned_ct1_dg2.5_uniform",
-      "started_utc": "2026-10-27T15:56:26.392773+00:00",
-      "ended_utc": "2026-10-27T15:56:55.055011+00:00",
+      "started_utc": "2026-10-27T19:13:08.508531+00:00",
+      "ended_utc": "2026-10-27T19:13:42.505828+00:00",
       "case_count": 4,
       "status": "completed"
     },
     {
       "group": "v2_aligned_ct1_dg2.5_linear",
-      "started_utc": "2026-10-27T15:56:57.654489+00:00",
-      "ended_utc": "2026-10-27T15:57:12.321430+00:00",
+      "started_utc": "2026-10-27T19:13:44.635349+00:00",
+      "ended_utc": "2026-10-27T19:13:57.346340+00:00",
       "case_count": 4,
       "status": "completed"
     },
     {
       "group": "v2_aligned_ct1_dg2.5_radial",
-      "started_utc": "2026-10-27T15:57:14.462536+00:00",
-      "ended_utc": "2026-10-27T15:57:25.082850+00:00",
+      "started_utc": "2026-10-27T19:13:58.354590+00:00",
+      "ended_utc": "2026-10-27T19:14:07.743845+00:00",
       "case_count": 2,
       "status": "completed"
     },
     {
       "group": "v2_aligned_ct3_dg2.5_uniform",
-      "started_utc": "2026-10-27T15:57:26.773675+00:00",
-      "ended_utc": "2026-10-27T15:57:34.412135+00:00",
+      "started_utc": "2026-10-27T19:14:10.046593+00:00",
+      "ended_utc": "2026-10-27T19:14:22.559995+00:00",
       "case_count": 4,
       "status": "completed"
     },
     {
       "group": "v2_aligned_ct3_dg2.5_linear",
-      "started_utc": "2026-10-27T15:57:35.501302+00:00",
-      "ended_utc": "2026-10-27T15:57:43.416085+00:00",
+      "started_utc": "2026-10-27T19:14:23.967982+00:00",
+      "ended_utc": "2026-10-27T19:14:33.902284+00:00",
       "case_count": 4,
       "status": "completed"
     },
     {
       "group": "v2_aligned_ct3_dg2.5_radial",
-      "started_utc": "2026-10-27T15:57:45.806086+00:00",
-      "ended_utc": "2026-10-27T15:57:53.596748+00:00",
+      "started_utc": "2026-10-27T19:14:35.339373+00:00",
+      "ended_utc": "2026-10-27T19:14:42.991729+00:00",
       "case_count": 2,
       "status": "completed"
     },
     {
       "group": "v2_offset_ct1_dg2.5_uniform",
-      "started_utc": "2026-10-27T15:57:55.268008+00:00",
-      "ended_utc": "2026-10-27T15:58:11.798433+00:00",
+      "started_utc": "2026-10-27T19:14:44.079388+00:00",
+      "ended_utc": "2026-10-27T19:15:00.430523+00:00",
       "case_count": 4,
       "status": "completed"
     },
     {
       "group": "v2_offset_ct1_dg2.5_linear",
-      "started_utc": "2026-10-27T15:58:13.604801+00:00",
-      "ended_utc": "2026-10-27T15:58:32.332704+00:00",
+      "started_utc": "2026-10-27T19:15:03.829982+00:00",
+      "ended_utc": "2026-10-27T19:15:33.508672+00:00",
       "case_count": 4,
       "status": "completed"
     },
     {
       "group": "v2_offset_ct1_dg2.5_radial",
-      "started_utc": "2026-10-27T15:58:36.880420+00:00",
-      "ended_utc": "2026-10-27T15:58:49.895169+00:00",
+      "started_utc": "2026-10-27T19:15:35.878260+00:00",
+      "ended_utc": "2026-10-27T19:15:56.389207+00:00",
       "case_count": 2,
       "status": "completed"
     },
     {
       "group": "v2_offset_ct3_dg2.5_uniform",
-      "started_utc": "2026-10-27T15:58:51.958144+00:00",
-      "ended_utc": "2026-10-27T15:59:03.218962+00:00",
+      "started_utc": "2026-10-27T19:15:59.902950+00:00",
+      "ended_utc": "2026-10-27T19:16:19.253107+00:00",
       "case_count": 4,
       "status": "completed"
     },
     {
       "group": "v2_offset_ct3_dg2.5_linear",
-      "started_utc": "2026-10-27T15:59:04.342714+00:00",
-      "ended_utc": "2026-10-27T15:59:11.263351+00:00",
+      "started_utc": "2026-10-27T19:16:20.527759+00:00",
+      "ended_utc": "2026-10-27T19:16:28.528843+00:00",
       "case_count": 4,
       "status": "completed"
     },
     {
       "group": "v2_offset_ct3_dg2.5_radial",
-      "started_utc": "2026-10-27T15:59:13.782668+00:00",
-      "ended_utc": "2026-10-27T15:59:19.965085+00:00",
+      "started_utc": "2026-10-27T19:16:30.292038+00:00",
+      "ended_utc": "2026-10-27T19:16:37.035357+00:00",
       "case_count": 2,
       "status": "completed"
     },
     {
       "group": "v50_aligned_ct1_dg2.5_uniform",
-      "started_utc": "2026-10-27T15:59:21.904883+00:00",
-      "ended_utc": "2026-10-27T15:59:42.691677+00:00",
+      "started_utc": "2026-10-27T19:16:37.904466+00:00",
+      "ended_utc": "2026-10-27T19:17:01.168040+00:00",
       "case_count": 4,
       "status": "completed"
     },
     {
       "group": "v50_aligned_ct1_dg2.5_linear",
-      "started_utc": "2026-10-27T15:59:46.132477+00:00",
-      "ended_utc": "2026-10-27T16:00:03.792492+00:00",
+      "started_utc": "2026-10-27T19:17:04.336149+00:00",
+      "ended_utc": "2026-10-27T19:17:24.247724+00:00",
       "case_count": 4,
       "status": "completed"
     },
     {
       "group": "v50_aligned_ct1_dg2.5_radial",
-      "started_utc": "2026-10-27T16:00:05.195079+00:00",
-      "ended_utc": "2026-10-27T16:00:15.327451+00:00",
+      "started_utc": "2026-10-27T19:17:25.948970+00:00",
+      "ended_utc": "2026-10-27T19:17:38.823861+00:00",
       "case_count": 2,
       "status": "completed"
     },
     {
       "group": "v50_aligned_ct3_dg2.5_uniform",
-      "started_utc": "2026-10-27T16:00:17.749219+00:00",
-      "ended_utc": "2026-10-27T16:00:27.516547+00:00",
+      "started_utc": "2026-10-27T19:17:40.434489+00:00",
+      "ended_utc": "2026-10-27T19:17:52.005230+00:00",
       "case_count": 4,
       "status": "completed"
     },
     {
       "group": "v50_aligned_ct3_dg2.5_linear",
-      "started_utc": "2026-10-27T16:00:28.471468+00:00",
-      "ended_utc": "2026-10-27T16:00:40.165987+00:00",
+      "started_utc": "2026-10-27T19:17:53.829768+00:00",
+      "ended_utc": "2026-10-27T19:18:01.890836+00:00",
       "case_count": 4,
       "status": "completed"
     },
     {
       "group": "v50_aligned_ct3_dg2.5_radial",
-      "started_utc": "2026-10-27T16:00:41.437103+00:00",
-      "ended_utc": "2026-10-27T16:00:47.730381+00:00",
+      "started_utc": "2026-10-27T19:18:03.714757+00:00",
+      "ended_utc": "2026-10-27T19:18:12.399803+00:00",
       "case_count": 2,
       "status": "completed"
     },
     {
       "group": "v50_offset_ct1_dg2.5_uniform",
-      "started_utc": "2026-10-27T16:00:48.924689+00:00",
-      "ended_utc": "2026-10-27T16:01:10.009523+00:00",
+      "started_utc": "2026-10-27T19:18:13.933152+00:00",
+      "ended_utc": "2026-10-27T19:18:36.521966+00:00",
       "case_count": 4,
       "status": "completed"
     },
     {
       "group": "v50_offset_ct1_dg2.5_linear",
-      "started_utc": "2026-10-27T16:01:12.195621+00:00",
-      "ended_utc": "2026-10-27T16:01:29.466588+00:00",
+      "started_utc": "2026-10-27T19:18:38.463375+00:00",
+      "ended_utc": "2026-10-27T19:18:53.439612+00:00",
       "case_count": 4,
       "status": "completed"
     },
     {
       "group": "v50_offset_ct1_dg2.5_radial",
-      "started_utc": "2026-10-27T16:01:31.828733+00:00",
-      "ended_utc": "2026-10-27T16:01:45.206916+00:00",
+      "started_utc": "2026-10-27T19:18:54.934009+00:00",
+      "ended_utc": "2026-10-27T19:19:06.033287+00:00",
       "case_count": 2,
       "status": "completed"
     },
     {
       "group": "v50_offset_ct3_dg2.5_uniform",
-      "started_utc": "2026-10-27T16:01:47.248077+00:00",
-      "ended_utc": "2026-10-27T16:01:57.089679+00:00",
+      "started_utc": "2026-10-27T19:19:10.363261+00:00",
+      "ended_utc": "2026-10-27T19:19:21.168470+00:00",
       "case_count": 4,
       "status": "completed"
     },
     {
       "group": "v50_offset_ct3_dg2.5_linear",
-      "started_utc": "2026-10-27T16:01:58.375512+00:00",
-      "ended_utc": "2026-10-27T16:02:07.364817+00:00",
+      "started_utc": "2026-10-27T19:19:21.878303+00:00",
+      "ended_utc": "2026-10-27T19:19:27.901675+00:00",
       "case_count": 4,
       "status": "completed"
     },
     {
       "group": "v50_offset_ct3_dg2.5_radial",
-      "started_utc": "2026-10-27T16:02:09.292045+00:00",
-      "ended_utc": "2026-10-27T16:02:20.315071+00:00",
+      "started_utc": "2026-10-27T19:19:29.310493+00:00",
+      "ended_utc": "2026-10-27T19:19:39.647342+00:00",
       "case_count": 2,
       "status": "completed"
     },
     {
       "group": "v1000_aligned_ct1_dg2.5_uniform",
-      "started_utc": "2026-10-27T16:02:22.630562+00:00",
-      "ended_utc": "2026-10-27T16:03:24.286504+00:00",
+      "started_utc": "2026-10-27T19:19:40.876066+00:00",
+      "ended_utc": "2026-10-27T19:20:22.743708+00:00",
       "case_count": 4,
       "status": "completed"
     },
     {
       "group": "v1000_aligned_ct1_dg2.5_linear",
-      "started_utc": "2026-10-27T16:03:33.630284+00:00",
-      "ended_utc": "2026-10-27T16:04:21.856255+00:00",
+      "started_utc": "2026-10-27T19:20:26.729015+00:00",
+      "ended_utc": "2026-10-27T19:21:04.160122+00:00",
       "case_count": 4,
       "status": "completed"
     },
     {
       "group": "v1000_aligned_ct1_dg2.5_radial",
-      "started_utc": "2026-10-27T16:04:30.339402+00:00",
-      "ended_utc": "2026-10-27T16:05:24.450572+00:00",
+      "started_utc": "2026-10-27T19:21:10.709963+00:00",
+      "ended_utc": "2026-10-27T19:22:06.762279+00:00",
       "case_count": 2,
       "status": "completed"
     },
     {
       "group": "v1000_aligned_ct3_dg2.5_uniform",
-      "started_utc": "2026-10-27T16:05:29.197961+00:00",
-      "ended_utc": "2026-10-27T16:06:24.215405+00:00",
+      "started_utc": "2026-10-27T19:22:13.289964+00:00",
+      "ended_utc": "2026-10-27T19:22:48.395270+00:00",
       "case_count": 4,
       "status": "completed"
     },
     {
       "group": "v1000_aligned_ct3_dg2.5_linear",
-      "started_utc": "2026-10-27T16:06:27.667712+00:00",
-      "ended_utc": "2026-10-27T16:06:53.965648+00:00",
+      "started_utc": "2026-10-27T19:22:51.665079+00:00",
+      "ended_utc": "2026-10-27T19:23:08.994614+00:00",
       "case_count": 4,
       "status": "completed"
     },
     {
       "group": "v1000_aligned_ct3_dg2.5_radial",
-      "started_utc": "2026-10-27T16:06:56.559896+00:00",
-      "ended_utc": "2026-10-27T16:07:14.543653+00:00",
+      "started_utc": "2026-10-27T19:23:13.180782+00:00",
+      "ended_utc": "2026-10-27T19:23:35.618049+00:00",
       "case_count": 2,
       "status": "completed"
     },
     {
       "group": "v1000_offset_ct1_dg2.5_uniform",
-      "started_utc": "2026-10-27T16:07:18.909757+00:00",
-      "ended_utc": "2026-10-27T16:08:46.162597+00:00",
+      "started_utc": "2026-10-27T19:23:39.597502+00:00",
+      "ended_utc": "2026-10-27T19:24:41.202159+00:00",
       "case_count": 4,
       "status": "completed"
     },
     {
       "group": "v1000_offset_ct1_dg2.5_linear",
-      "started_utc": "2026-10-27T16:08:51.438188+00:00",
-      "ended_utc": "2026-10-27T16:09:35.997177+00:00",
+      "started_utc": "2026-10-27T19:24:45.425644+00:00",
+      "ended_utc": "2026-10-27T19:25:32.801392+00:00",
       "case_count": 4,
       "status": "completed"
     },
     {
       "group": "v1000_offset_ct1_dg2.5_radial",
-      "started_utc": "2026-10-27T16:09:40.742753+00:00",
-      "ended_utc": "2026-10-27T16:10:26.287785+00:00",
+      "started_utc": "2026-10-27T19:25:41.665872+00:00",
+      "ended_utc": "2026-10-27T19:26:22.422275+00:00",
       "case_count": 2,
       "status": "completed"
     },
     {
       "group": "v1000_offset_ct3_dg2.5_uniform",
-      "started_utc": "2026-10-27T16:10:36.831294+00:00",
-      "ended_utc": "2026-10-27T16:11:05.025156+00:00",
+      "started_utc": "2026-10-27T19:26:26.308258+00:00",
+      "ended_utc": "2026-10-27T19:26:45.731385+00:00",
       "case_count": 4,
       "status": "completed"
     },
     {
       "group": "v1000_offset_ct3_dg2.5_linear",
-      "started_utc": "2026-10-27T16:11:07.890603+00:00",
-      "ended_utc": "2026-10-27T16:11:26.412335+00:00",
+      "started_utc": "2026-10-27T19:26:47.199571+00:00",
+      "ended_utc": "2026-10-27T19:27:02.874798+00:00",
       "case_count": 4,
       "status": "completed"
     },
     {
       "group": "v1000_offset_ct3_dg2.5_radial",
-      "started_utc": "2026-10-27T16:11:28.961992+00:00",
-      "ended_utc": "2026-10-27T16:11:50.541357+00:00",
+      "started_utc": "2026-10-27T19:27:04.739447+00:00",
+      "ended_utc": "2026-10-27T19:27:22.181913+00:00",
       "case_count": 2,
       "status": "completed"
     }
@@ -683,7 +682,7 @@
   "status": "completed",
   "analytic_tests": {
     "path": "analytic-tests.xml",
-    "sha256": "5ff45235837b146043ea5cb3342ef38e56eff8ff746df59db533cceb5150898a",
+    "sha256": "471a1fffec33142dd3024f00381738f08f5345b3227f3aabc54d486aaa1db7ea",
     "suites": [
       {
         "name": "pytest",
@@ -691,11 +690,11 @@
         "failures": "0",
         "skipped": "0",
         "tests": "20",
-        "time": "2.485",
-        "timestamp": "2026-10-27T15:19:04.358925+00:00"
+        "time": "2.191",
+        "timestamp": "2026-10-27T19:06:05.953384+00:00"
       }
     ],
-    "public_sha256": "5ff45235837b146043ea5cb3342ef38e56eff8ff746df59db533cceb5150898a"
+    "public_sha256": "97e848fabb45c90091d72284c8f63c102dca19b07b6195bf3b72d1850784954d"
   },
   "requirements_sha256": {
     "requirements-dicompyler-lock.txt": "715781c53be58f1356d7c86aefc068123a8f05aa0e5851f8dbb2b5c1703c2bc1",
@@ -730,15 +729,16 @@
   "dicompyler_files_with_different_hashes": [
     "dicomparser.py"
   ],
-  "ended_utc": "2026-10-27T16:11:54.405247+00:00",
+  "ended_utc": "2026-10-27T19:27:26.194982+00:00",
   "pipeline_source_sha256_after": {
     "rtpipeline/__init__.py": "41b948d1e3d2b3efc289e3f3a17c3ffc6529295dc476e817bc0a2f88c7a34802",
     "rtpipeline/acquisition_scale.py": "0f673cf5fe35a0f14d33f3bad46536855ab0c4c428570d8d0326f5a88c54fc7d",
     "rtpipeline/anatomical_cropping.py": "dcc3808957f97d6a4975b362b2f741737d3befbdce0dde4db4734cdfaff80b62",
     "rtpipeline/auto_rtstruct.py": "a35fb51b0f9615dcdbc1541cc5b38852a411b5fbdfed1b8e5f2f7c2051596909",
     "rtpipeline/body_composition.py": "9e87bf63c10f9f6928a02ff5d267594780e86cf8e52675d6bf454dda895cb91d",
-    "rtpipeline/cli.py": "851d2320a03e3a37d5f4b720e72c5bb3c9329e7139c4aa33619e38ca62cc8642",
+    "rtpipeline/cli.py": "5f5fd289bea98074b1be82a9bb79fd6794367c1b623f0c01ef6cccb7eb48929a",
     "rtpipeline/clinical_prescription.py": "0c4ae868cfe9d07cf221b3fc93ce5c8896ad45ff90ccaf16f6345c662e7a9b5c",
+    "rtpipeline/composite_course_dose.py": "f72d5a2e072905fe1d4a0b00e42e145dfd80289b2d420d30fb3634e0fd6f8a6e",
     "rtpipeline/config.py": "13980705d61d43369eaad5db9e97d548c6907ddf6aedbe52144c1869b1404cc6",
     "rtpipeline/config_dependencies.py": "e5a37d28d8a2d0fc6e2cf7a95fc07e4246dca160f055d492a5050341e0be1f88",
     "rtpipeline/course_contract.py": "a4ff08edb868a58bf457a9fc88da38e8e15f0d66c1ad81f3c8e2c5022772902f",
@@ -750,10 +750,10 @@
     "rtpipeline/custom_structures_rtstruct.py": "1b042da2c2748bb9079ff23bdcd019a8fef58a585bc53a65fea276e1ed294ee1",
     "rtpipeline/dicom_copy.py": "8a37280f07826a9b3afa1dbc89099eaff90949b6e0d957106a750ddc944c43ae",
     "rtpipeline/dicom_seg.py": "4deb7e0b823a6465db2c1ef7bb8207b6db4f4d5a0482c1ef00232aa536ebb7ac",
-    "rtpipeline/dvh.py": "093ac857a3b438b4262238298f5a1468ec862198565ef533818d70b2d358c86d",
-    "rtpipeline/dvh_aggregate.py": "574df24a7af4bb5a595450ecafea46f3c2ad3b108c79f1562bd44e700b778708",
-    "rtpipeline/dvh_rotation.py": "9c3bb38f20bd3dd45543ad9ab6ec79c8988528589b57a139f72f79e3bf8a1b20",
-    "rtpipeline/dvh_support.py": "919ef46b0f2ba81c28219b2a7b1ebe8f754548a58de1327fae6a6908123c289e",
+    "rtpipeline/dvh.py": "4abef0c44eeb0bbb99ccaeaca31c5aa07e04447211b0332bcb70a6fbdd8d38ad",
+    "rtpipeline/dvh_aggregate.py": "fe4f6ad75e8427301715267ce83b54ad2fb93d747b18bdc09d3287aabb91dfaa",
+    "rtpipeline/dvh_rotation.py": "c7494841164d9169fe887664252043ba3a6887385042fd800fe527f8de84ed91",
+    "rtpipeline/dvh_support.py": "b5486b9f597dd09962fed0daa309a059c87e71ceb7d6522855e89fd99fbc7c9d",
     "rtpipeline/eval/__init__.py": "567354c43b47c8661211af1ddb687ff49bd3b6288000bc075a810121a9af8543",
     "rtpipeline/eval/_vendor/__init__.py": "f517b76dfdd95e014f1e45e526980387d2219c2e27426eae69352e0d9b089705",
     "rtpipeline/eval/_vendor/surface_distance/__init__.py": "4db2aa7eaae29333dbfaa88bd2b2d2e5c642ea7f5abd50120a8c43f96956fabf",
@@ -784,25 +784,25 @@
     "rtpipeline/planning_dose_selection.py": "f23febff506b3e02514d4e7551c74ee0467be21e049130c73f6a9c9af096ca00",
     "rtpipeline/prescription.py": "723c8657c60f48c50b0d31decf0eb458c93d435f597c56724ee748c1b264ce7a",
     "rtpipeline/quality_control.py": "00dc742d826fdf205a1c187ae8a91cdcf30f866d1f8b353e6bed5a6477b487b3",
-    "rtpipeline/radiomics.py": "1e2b08dd8fdd868f09a62d1f07ce51baa0c05283d825d0fec108960dc58a7cdb",
+    "rtpipeline/radiomics.py": "d2ce40ba3466fc25ea7ad2856267c283f9803e97b2948100270966a4192fb926",
     "rtpipeline/radiomics_cohort.py": "a7ee836d6186a2390498f74269aab984b1d974dee124c8ef0dddb23d4997f960",
     "rtpipeline/radiomics_conda.py": "dc96edc3630693265d77ff64c86e3b852a1824f10928fbd21bd151e56ef83b18",
-    "rtpipeline/radiomics_ct_contract.py": "4f41118456aafff3ef7fb2894e476ae8624990b3d2305bd18cd6403588455343",
-    "rtpipeline/radiomics_memory.py": "40aaf1a968b1a4b07cb3dffbc231d9f8498b8245554460eb95309b1c27f554e8",
+    "rtpipeline/radiomics_ct_contract.py": "05397722250af717ff59c863555ea262296c2556116bc3c05b092d329f8389a2",
+    "rtpipeline/radiomics_memory.py": "1cb55399791531d5bf8f6fcc3dbccbfc9ed7f3b47fb9726c6f2b87977e2086f0",
     "rtpipeline/radiomics_outcomes.py": "8219b73697814c81e642f773e1900372d186084481a57bfd935fab4707ffb1ce",
     "rtpipeline/radiomics_parallel.py": "b520a44a0ad3763da4052c1a894b00a92407a2da6cf0251e91155d1d64e95ef2",
     "rtpipeline/radiomics_resource_guard.py": "4fb5ba4c8d99fda9228fbbe0e046f0b39c406aa343b15e689d540b1eff857bf3",
-    "rtpipeline/radiomics_robustness.py": "c3b982bc6ab9ed08c44341f53f9b777b3faf3419bb9fc1aa39dea9a59a2c084e",
+    "rtpipeline/radiomics_robustness.py": "7c9976bca1901def78787d49e2c28bbcc35dc7858d3230312003b1a721aff120",
     "rtpipeline/radiomics_robustness_aggregate.py": "1c5bdaa7104c7ff694f6e7159665d1aacd3fe2363a796215278b7ae5f780c647",
     "rtpipeline/radiomics_robustness_outcomes.py": "50baf7fddd05514f4360889dad58f9100bde9ec2cdcf739385e2ca256d4416ac",
     "rtpipeline/radiomics_schema.py": "718e34e258c428a5ccf0064bba45b6f8bbde2c91ef838f15f44dd21a498ca643",
     "rtpipeline/radiomics_source_inventory.py": "2d39f7af1f34dc340c6a297e3b513b1c2fb7a7083f8d9b989718009c4b05a519",
+    "rtpipeline/repair_composite_course_dose.py": "c8417e260bcc21da312a7ef8ec09d9d97d8cca916b8fecf360029035493b95f3",
     "rtpipeline/repair_planning_ct_localizers.py": "751fcf44a4e567bfc5c0977ddd1315c3822879cc2a7c56c847f958b25d351f22",
     "rtpipeline/repair_planning_dose_selection.py": "342b877f46829a76bd24f98d9bcba56d6c01ce86570224405da07b9fa8f51a95",
     "rtpipeline/robustness_completion.py": "b961cd9b37361ad9ca2ea32a4fa7aa294829236b35288ff8b84a55f074e6546f",
     "rtpipeline/robustness_mcc.py": "774c7d5befb4c5980428ba191f2a14eec297eefa68223880731a8bc07ae5445c",
-    "rtpipeline/robustness_watchdog.py": "3e85035d61bf2a3e3322ccf16791051c6ca564cd7cf46ea30fba1d98e01fc640",
-    "rtpipeline/roi_adjudication.py": "44f90923a1b539fc8d9562ef82da984f4adffaba314d050870b95bb294fd56c3",
+    "rtpipeline/robustness_watchdog.py": "1117be7f7853f2b01b854c3e9c9fbed8ae43787c056be256b869222e3bbe663e",
     "rtpipeline/roi_fixer.py": "f8cc1ccebe2c788480842c1380a4750d3889314f2123a45872b871d8fe5a1fde",
     "rtpipeline/roi_name_rules.py": "7a28db9f2ecf10b27a2f50571789fdaa8f2167ac14ba27a25d0eae938346ec57",
     "rtpipeline/roi_requiredness.py": "9b590af1be824a9a12cd67c8029dc228a8853a91782e08438e2ddac92c834d56",
@@ -816,17 +816,17 @@
     "rtpipeline/segmenters/postprocessing.py": "ec01a1654a74d9cb81e2fe2998fb585276a3a053b393dc7857b175e077a3a5c9",
     "rtpipeline/segmenters/totalsegmentator.py": "ce83c5422aba9e06d517365504a3e8f5abaa28e17f39673882e01a0ca910f994",
     "rtpipeline/snakemake_delegate.py": "61a163fd7ab3705eac59b729bbbb4b129f3195f2f96d42e021413d6e2577454e",
-    "rtpipeline/stage_completion.py": "416d76598ce93cb17cb78fe750f12f27e50db877d0c0c71e69804124450e84f6",
+    "rtpipeline/stage_completion.py": "d740d4e55764025bb6d5a511fc693c3a3fed8a840a41f828c128b8d070b4cd34",
     "rtpipeline/structure_merger.py": "131d1e91363cd9cd5d4e8937ea3948f3b423f9a7d5a99926ceadd804c1d9cd6b",
     "rtpipeline/tcia_acquisition.py": "62c54876f62d17617b6ff854085e81756dacdb628b5b03bae7d91e530007d741",
-    "rtpipeline/treatment_scope.py": "31100ad848a8ceaa95548918c44e35bb4f2c6bd8c28316fa61cc2c2a578acc26",
-    "rtpipeline/treatment_scope_geometry.py": "f1ec4a2c6896c61f313311b719937ef2bc8e66d7221c0e589517fa0388d15130",
-    "rtpipeline/treatment_scope_rules.py": "608db697697786ce508f6621f5887090e1f24eb6be33b7d33e392a5847bc03a7",
+    "rtpipeline/treatment_scope.py": "a35d981e27810f28f519d96b939a0bb83d6590687433c4ecd48dbd31cc28bda3",
+    "rtpipeline/treatment_scope_geometry.py": "c0df4afe6c2b4432c2a66b9c08cf24b39262b9ea960a62fa3c6a5b36f1853cf3",
+    "rtpipeline/treatment_scope_rules.py": "89b139f33bd72996e47f77b3038dcc286d7f1d294f9875b1e1bd3120b21c7a08",
     "rtpipeline/utils.py": "72bbd134555870f8f1d6e77fd7adb96d9f7232fabf382964741a36e42ad8d5a9",
     "rtpipeline/visualize.py": "d284953716e8b2632300a959737fd392b085eaa20b9e9164ba0e3cb6aaa63a4b",
     "rtpipeline/workflow_aggregate.py": "81e12d6cd84ed09fd6583b2de973d4c0cc32abd4bd6767979ab199c30fe8fc13",
     "rtpipeline/workflow_delegate.py": "377f043664ae433612a87b16a71f7cf977d3234d575b03ed681bfa1eaad3797f",
-    "tests/dvh_plan_target_fixtures.py": "5ecf097601e4791cde0fbfe6f0ef20786a2d9a17318d6dca9ef6fb6f1c5b5669",
+    "tests/dvh_plan_target_fixtures.py": "06d07424f073a3ceb5ca2658665bb99983177b89039230ba0c6f11918089725d",
     "tests/course_contract_test_utils.py": "90825f8ea76696d96824f241be8706b3aea0511c4fd3030ab96fe5080ad443a0"
   },
   "pipeline_sources_unchanged": true,
@@ -834,8 +834,8 @@
   "metric_row_count": 4440,
   "postprocessing": {
     "volume_error_components": {
-      "started_utc": "2026-10-27T16:12:59.954375+00:00",
-      "ended_utc": "2026-10-27T16:13:00.210132+00:00",
+      "started_utc": "2026-10-27T19:27:33.430492+00:00",
+      "ended_utc": "2026-10-27T19:27:33.715257+00:00",
       "status": "completed",
       "code_sha256": "5913dab3820f857c2c29e3cbaa64467790daa093a8519161446af84c491efc71",
       "command": "\"${RTPIPELINE_PYTHON:-python}\" validation/dvh_accuracy/analyze_volume.py --results validation/dvh_accuracy/results",
@@ -849,7 +849,7 @@
       }
     },
     "portable_evidence": {
-      "ended_utc": "2026-10-27T16:19:49.184785+00:00",
+      "ended_utc": "2026-10-27T19:28:41.129960+00:00",
       "status": "completed",
       "code_sha256": "cd1b2d47007359c72775eb721371ca5ee027b3840f74a63c759502e9b71d290b",
       "command": "\"${RTPIPELINE_PYTHON:-python}\" validation/dvh_accuracy/finalize_results.py --results validation/dvh_accuracy/results"

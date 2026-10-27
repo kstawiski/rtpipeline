@@ -110,11 +110,11 @@
       "failure_details": []
     },
     "dvh-tests": {
-      "tests": 338,
+      "tests": 453,
       "failures": 0,
       "errors": 0,
       "skipped": 0,
-      "passed": 338,
+      "passed": 453,
       "failure_details": []
     },
     "rtstruct-tests": {
@@ -138,6 +138,6 @@
   "effective_nice": 10,
   "executed_pipeline_source_sha256": {
     "rtpipeline/utils.py": "72bbd134555870f8f1d6e77fd7adb96d9f7232fabf382964741a36e42ad8d5a9",
-    "rtpipeline/dvh.py": "093ac857a3b438b4262238298f5a1468ec862198565ef533818d70b2d358c86d"
+    "rtpipeline/dvh.py": "4abef0c44eeb0bbb99ccaeaca31c5aa07e04447211b0332bcb70a6fbdd8d38ad"
   }
 }
