@@ -1,7 +1,7 @@
 {
   "status": "ok",
   "metric_version": "2026-09-05-grid-support-derived-mask-d003-v5",
-  "code_sources_sha256": "a36dd2ded0f905210a91b24b3f1c9e891cc709d48641187ae0a6248011854165",
+  "code_sources_sha256": "c6f6f985e402b87f75d04cc34e9fa6362e71fd6638a4fb922b4ad7c5693f695c",
   "rx_source": "course_contract_resolved_total",
   "rx_relative_metrics_available": true,
   "treatment_technique": "EBRT",
@@ -96,8 +96,8 @@
   "dose_resolution": {
     "classification": "single_dose",
     "reason": "Organize course contract selected the plan and dose membership",
-    "rd_path": "validation/dvh_accuracy/results/tmp/run-8jbz2s2r/phantom-g9zamng0/SYNTH_DVH/v50_offset_ct1_dg2.5_linear/DICOM/RTDOSE/dose.dcm",
-    "rp_path": "validation/dvh_accuracy/results/tmp/run-8jbz2s2r/phantom-g9zamng0/SYNTH_DVH/v50_offset_ct1_dg2.5_linear/DICOM/RTPLAN/plan.dcm",
+    "rd_path": "validation/dvh_accuracy/results/tmp/run-h_o8n8hn/phantom-_z0bhpmq/SYNTH_DVH/v50_offset_ct1_dg2.5_linear/DICOM/RTDOSE/dose.dcm",
+    "rp_path": "validation/dvh_accuracy/results/tmp/run-h_o8n8hn/phantom-_z0bhpmq/SYNTH_DVH/v50_offset_ct1_dg2.5_linear/DICOM/RTPLAN/plan.dcm",
     "source_dose_sop_instance_uids": [
       "2.25.264142010030779584079860513116516357901"
     ],
@@ -110,10 +110,10 @@
       "2.25.307527602588997759940591353647715946414"
     ],
     "selected_plan_paths": [
-      "validation/dvh_accuracy/results/tmp/run-8jbz2s2r/phantom-g9zamng0/SYNTH_DVH/v50_offset_ct1_dg2.5_linear/DICOM/RTPLAN/plan.dcm"
+      "validation/dvh_accuracy/results/tmp/run-h_o8n8hn/phantom-_z0bhpmq/SYNTH_DVH/v50_offset_ct1_dg2.5_linear/DICOM/RTPLAN/plan.dcm"
     ],
     "selected_dose_paths": [
-      "validation/dvh_accuracy/results/tmp/run-8jbz2s2r/phantom-g9zamng0/SYNTH_DVH/v50_offset_ct1_dg2.5_linear/DICOM/RTDOSE/dose.dcm"
+      "validation/dvh_accuracy/results/tmp/run-h_o8n8hn/phantom-_z0bhpmq/SYNTH_DVH/v50_offset_ct1_dg2.5_linear/DICOM/RTDOSE/dose.dcm"
     ],
     "dose_grid_semantics": "planned_rtdose_weighted_by_rtrecord_delivered_fraction_counts",
     "prescribed_dose_gy": 25.0,
@@ -125,7 +125,7 @@
     "dose_qc_status": "pass",
     "dose_qc_pass": true,
     "dose_qc_reasons": [],
-    "contract_path": "validation/dvh_accuracy/results/tmp/run-8jbz2s2r/phantom-g9zamng0/SYNTH_DVH/v50_offset_ct1_dg2.5_linear/metadata/case_metadata.json",
+    "contract_path": "validation/dvh_accuracy/results/tmp/run-h_o8n8hn/phantom-_z0bhpmq/SYNTH_DVH/v50_offset_ct1_dg2.5_linear/metadata/case_metadata.json",
     "dvh": {
       "status": "ready",
       "metrics_status": "computed",
@@ -147,7 +147,7 @@
       "2.25.284539916287980508621787393689545580544"
     ],
     "selected_rtstruct_paths": [
-      "validation/dvh_accuracy/results/tmp/run-8jbz2s2r/phantom-g9zamng0/SYNTH_DVH/v50_offset_ct1_dg2.5_linear/DICOM/RTSTRUCT/rs.dcm"
+      "validation/dvh_accuracy/results/tmp/run-h_o8n8hn/phantom-_z0bhpmq/SYNTH_DVH/v50_offset_ct1_dg2.5_linear/DICOM/RTSTRUCT/rs.dcm"
     ],
     "allow_nifti_direct": true
   }
