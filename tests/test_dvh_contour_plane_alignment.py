@@ -382,7 +382,8 @@ def test_existing_table_columns_match_stored_baseline_with_additive_alignment(tm
     filename = ('ae60f01_near_zero_course_quarantine.json' if quarantine
                 else 'ae60f01_no_near_zero_targets.json')
     baseline = json.loads((Path(fx.__file__).parent/'synthetic_dvh_plan_target'/filename).read_text())
-    assert set(table) - set(baseline['columns']) == {'dose_plane_alignment'}
+    assert set(table) - set(baseline['columns']) == {'dose_plane_alignment', 'D2ccGy', 'D2cc_status'}
+    fx.assert_d2cc_columns(table)
     projected = table[baseline['columns']]
     assert projected.dtypes.astype(str).tolist() == baseline['dtypes']
 

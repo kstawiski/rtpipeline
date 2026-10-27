@@ -61,6 +61,8 @@ Key columns:
 | `Segmentation_Source` | Provenance: `Manual`, `AutoRTS_total`, `AutoRTS_total_mr`, `Merged`, `Custom`, `CustomModel:<name>`. |
 | `structure_cropped` | `True` when the mask touches the image boundary (quality flag). |
 | `DmeanGy`, `DmaxGy`, … | Standard DVH metrics. |
+| `D0.03ccGy`, `D2ccGy` | Dose received by the hottest 0.03 cm³ or 2 cm³, respectively, in Gy. Values are bounded by Dmin and Dmax. |
+| `D0.03cc_status`, `D2cc_status` | `available` when computable; `roi_below_0.03cc` or `roi_below_2cc` when measured volume is too small. Incomplete dose-grid coverage propagates its coverage status and leaves the whole-ROI dose empty. |
 
 **Recommended checks**
 

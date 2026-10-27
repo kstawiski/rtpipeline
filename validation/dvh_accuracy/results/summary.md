@@ -40,7 +40,7 @@ Each row pools all fields, sizes, phases and resolutions for that metric. N coun
 | dicompyler_native | Volume_cc | 120/120 | 0.303125 | 27.4437 | 1.25 | 17.1875 |
 | rtpipeline | D0.03cc_Gy | 120/120 | 0.01 | 0.24964 | 0.05 | 1.05312 |
 | rtpipeline | D2_Gy | 120/120 | 0.01 | 0.20251 | 0.05 | 0.896081 |
-| rtpipeline | D2cc_Gy | 0/120 | — | — | — | — |
+| rtpipeline | D2cc_Gy | 92/120 | 0.01 | 0.218 | 0.05 | 0.871198 |
 | rtpipeline | D50_Gy | 120/120 | 0.01 | 0.262385 | 0.05 | 1.30911 |
 | rtpipeline | D95_Gy | 120/120 | 0.01 | 0.233964 | 0.05 | 1.38313 |
 | rtpipeline | D98_Gy | 120/120 | 0.01 | 0.271762 | 0.05 | 1.39808 |
@@ -95,6 +95,7 @@ These errors include finite contour spacing, polygon boundaries, rasterization o
 | dicompyler_native | Volume_cc | v1000_aligned_ct3_dg2.5_uniform_cylinder | 1027.44 | 1000 | 27.4437 |
 | rtpipeline | D0.03cc_Gy | v1000_aligned_ct3_dg2.5_linear_shell | 29.305 | 29.5546 | 0.24964 |
 | rtpipeline | D2_Gy | v1000_aligned_ct3_dg2.5_linear_cylinder | 25.405 | 25.2025 | 0.20251 |
+| rtpipeline | D2cc_Gy | v1000_offset_ct3_dg2.5_linear_cube | 24.805 | 25.023 | 0.218 |
 | rtpipeline | D50_Gy | v2_offset_ct3_dg2.5_linear_shell | 20.3054 | 20.043 | 0.262385 |
 | rtpipeline | D95_Gy | v2_offset_ct3_dg2.5_linear_cube | 19.71 | 19.476 | 0.233964 |
 | rtpipeline | D98_Gy | v2_offset_ct3_dg2.5_linear_cube | 19.71 | 19.4382 | 0.271762 |
@@ -108,7 +109,7 @@ These errors include finite contour spacing, polygon boundaries, rasterization o
 
 ## Endpoint availability and interpretation
 
-The production axial path does not publish D2cc. Its native D2cc rows are unavailable. `rtpipeline_curve_supplement` reports only D2cc, extracted from the production curve with the production small-volume helper; it is a benchmark supplement, not a pipeline-exported endpoint. D2cc is undefined for a measured ROI volume below 2 cm³. The isolated native API instead returns zero in that situation; these outputs have an explicit status in the long table. Continuous truth includes D2cc at exactly 2 cm³, where it equals Dmin.
+The production axial path exports D2cc using linear cumulative-DVH interpolation, bounded by Dmin and Dmax. `rtpipeline_curve_supplement` reports only D2cc, extracted from the production curve with the production small-volume helper as a consistency check against the native endpoint. D2cc is undefined for a measured ROI volume below 2 cm³, with native status `roi_below_2cc`. The isolated native API returns zero in that situation; these outputs have an explicit status in the long table. Continuous truth includes D2cc at exactly 2 cm³, where it equals Dmin.
 
 Circular contours have 256 vertices (area deficit <0.0101% before slice discretization). Dose storage quantization is 0.0001 Gy; DVHs use the tools' default 0.01 Gy bins. Dmin and Dmax compare continuous extrema with histogram extrema and therefore include sampling and binning effects. The continuous formulas do not use the generated DICOM or either tool's voxels.
 

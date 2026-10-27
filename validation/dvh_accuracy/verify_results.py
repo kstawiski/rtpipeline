@@ -45,7 +45,9 @@ def audit():
             'rtpipeline_curve_supplement': 120},
         'endpoint_sets': all(len(g) == 12 and set(g.metric) == set(METRICS)
             for _, g in rows[rows.tool != 'rtpipeline_curve_supplement'].groupby(['case', 'tool'])),
-        'native_missing_only_D2cc': primary[primary.value.isna()].metric.tolist() == ['D2cc_Gy'] * 120,
+        'native_missing_only_below_volume_D2cc': bool(
+            primary[primary.value.isna()].metric.eq('D2cc_Gy').all()
+            and primary[primary.value.isna()].status.eq('roi_below_2cc').all()),
         'absolute_errors_recompute': bool(np.allclose(numeric.abs_err, abs(numeric.value - numeric.analytic),
                                                      atol=2e-8, rtol=1e-9)),
         'pipeline_sources_unchanged_during_run': receipt['pipeline_sources_unchanged'],
@@ -60,7 +62,7 @@ def audit():
                      'snapped_min_thickness_mm'}.intersection(geometry.columns),
     }
     alignments = []
-    raw_ok = coverage_ok = curves_ok = alignment_ok = True
+    raw_ok = coverage_ok = curves_ok = alignment_ok = d2cc_ok = True
     for spec in selected:
         raw = OUT / 'raw' / spec['group']
         raw_ok &= all((raw / f).is_file() for f in (
@@ -68,6 +70,17 @@ def audit():
             'dvh_qc.json', 'case_metadata.json'))
         table = pd.read_csv(raw / 'rtpipeline_metrics.csv')
         coverage_ok &= table.dose_grid_coverage_status.eq('fully_covered').all()
+        available = table['Volume (cm³)'].ge(2.)
+        d2cc_ok &= bool(table.loc[available, 'D2ccGy'].notna().all()
+            and table.loc[available, 'D2cc_status'].eq('available').all()
+            and table.loc[~available, 'D2ccGy'].isna().all()
+            and table.loc[~available, 'D2cc_status'].eq('roi_below_2cc').all())
+        for _, row in table.iterrows():
+            native = primary[primary.case.eq(spec['group'] + '_' + row.ROI_OriginalName)
+                             & primary.metric.eq('D2cc_Gy')].iloc[0]
+            d2cc_ok &= bool(native.status == row.D2cc_status and (
+                pd.isna(native.value) and pd.isna(row.D2ccGy) or
+                np.isclose(native.value, row.D2ccGy, atol=2e-8, rtol=1e-9)))
         qc = json.loads((raw / 'dvh_qc.json').read_text())
         alignment_ok &= qc['dose_plane_alignment_counts'] == table.dose_plane_alignment.value_counts().to_dict()
         for _, row in table.iterrows():
@@ -88,7 +101,8 @@ def audit():
     checks['zero_truth_relative_error_undefined'] = bool(zero.rel_err.isna().all() and zero.abs_err.notna().all())
     checks['production_kernel_matches_executed_sources'] = all(sha(REPO / p) == receipt['pipeline_source_sha256_after'][p] for p in ('rtpipeline/utils.py', 'rtpipeline/dvh.py'))
     checks.update(raw_evidence_complete=bool(raw_ok), all_fully_covered=bool(coverage_ok),
-                  curves_finite_monotone=bool(curves_ok), production_alignment_consistent=bool(alignment_ok))
+                  curves_finite_monotone=bool(curves_ok), production_alignment_consistent=bool(alignment_ok),
+                  native_D2cc_matches_published_table=bool(d2cc_ok))
     pd.DataFrame(alignments).to_csv(OUT / 'alignment_by_roi.csv', index=False)
 
     primary['boundary_type'] = None
@@ -140,12 +154,24 @@ def audit():
     volume_components['contour_slab_signed_error_cc'] = volume_components.contour_slab_volume_cc - volume_components.analytic
     volume_components['subsequent_rasterization_signed_error_cc'] = volume_components.value - volume_components.contour_slab_volume_cc
     volume_components.to_csv(OUT / 'primary_volume_error_components.csv', index=False, float_format='%.12g')
-    checks['all_native_dose_boundaries_hold'] = overall['dose_comparisons'] == 960 and overall['dose_failures'] == 0
+    native_d2cc = primary[primary.metric.eq('D2cc_Gy')]
+    checks['all_native_dose_boundaries_hold'] = (
+        overall['dose_comparisons'] == 960 + int(native_d2cc.value.notna().sum())
+        and overall['dose_failures'] == 0)
     checks['all_V95Rx_boundaries_hold'] = overall['V95Rx_comparisons'] == 120 and overall['V95Rx_failures'] == 0
     supplements = rows[(rows.tool == 'rtpipeline_curve_supplement') & rows.abs_err.notna()]
     supplement_result = dict(available=len(supplements), unavailable=120-len(supplements),
         failures=int((supplements.abs_err > np.maximum(.02 * abs(supplements.analytic), .5)).sum()),
         max_abs_error_Gy=float(supplements.abs_err.max()))
+    paired_d2cc = native_d2cc[['case', 'value']].merge(
+        rows[rows.tool.eq('rtpipeline_curve_supplement')][['case', 'value']],
+        on='case', suffixes=('_native', '_curve'), validate='one_to_one')
+    checks['native_D2cc_matches_full_curve'] = bool(np.allclose(
+        paired_d2cc.value_native, paired_d2cc.value_curve, atol=2e-8, rtol=1e-9, equal_nan=True))
+    d2cc_result = dict(cases=len(native_d2cc), available=int(native_d2cc.value.notna().sum()),
+        unavailable=int(native_d2cc.value.isna().sum()),
+        failures=int(native_d2cc.boundary_pass.eq(False).sum()),
+        max_abs_error_Gy=float(native_d2cc.abs_err.max()))
 
     suites = {}
     for name in ('alignment-tests', 'dvh-tests', 'rtstruct-tests', 'analytic-tests'):
@@ -165,7 +191,7 @@ def audit():
 
     verification = dict(checks={k:bool(v) for k,v in checks.items()}, all_integrity_and_dose_checks_passed=all(checks.values()),
         boundaries=overall, boundaries_by_ct=by_ct, volume_boundaries_by_size=volume_by_size,
-        curve_D2cc_supplement=supplement_result, tests=suites,
+        native_D2cc=d2cc_result, curve_D2cc_supplement=supplement_result, tests=suites,
         python=receipt['python'], effective_nice=receipt['effective_nice'],
         executed_pipeline_source_sha256={p:receipt['pipeline_source_sha256_after'][p] for p in (
             'rtpipeline/utils.py', 'rtpipeline/dvh.py')})
@@ -183,7 +209,11 @@ def audit():
             f"{r['max_V95Rx_error_pp']:.6g} | {r['volume_failures']}/{r['volume_comparisons']} | {r['max_volume_error_pct']:.6g} |")
     lines += ['', f"All {overall['dose_comparisons']} available production RTpipeline dose comparisons and all 120 V95Rx comparisons met their limits. "
         f"Volume exceeded its limit in {overall['volume_failures']} of 120 cases.", '',
-        'D2cc is absent from the production axial output. The curve-derived D2cc supplement is reported separately in verification.json. '
+        f"Native D2cc is available in {d2cc_result['available']}/{d2cc_result['cases']} cases; "
+        f"{d2cc_result['unavailable']} measured structures are below 2 cm³. "
+        f"Its maximum absolute error is {d2cc_result['max_abs_error_Gy']:.6g} Gy, with "
+        f"{d2cc_result['failures']} cases exceeding max(2% of analytic dose, 0.5 Gy). "
+        'The full-curve D2cc check is reported separately in verification.json. '
         'The isolated dicompyler comparator shares the production rasterizer and is not an independent DVH engine. '
         'The helper_snap_ columns describe the optional snapping helper; dose_plane_alignment records production alignment.', '',
         'These measurements cover synthetic axial geometry and smooth dose fields. They do not assess patient anatomy, '

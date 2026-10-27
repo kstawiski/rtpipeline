@@ -102,10 +102,20 @@ def test_analytic_box_dvh_and_course_curves(tmp_path, angle):
     assert set(rows.dose_grid_resampling_status) == {METHOD}
     assert set(rows.dose_grid_coverage_status) == {'fully_covered'}
     assert rows.D90Gy.notna().all() and rows.D2ccGy.notna().all()
+    assert set(rows.D2cc_status) == {'available'}
+    np.testing.assert_allclose(rows.D2ccGy, expected['D2ccGy'], atol=.12, rtol=0)
     qc = json.loads((course/'metadata/dvh_qc.json').read_text())
     assert qc['dose_grid_resampling']['method'] == METHOD
     curves = json.loads((course/'dvh_curves.json').read_text())['points']
     assert len(curves) == 2 and all(c['data'] for c in curves)
+    for curve in curves:
+        row = rows[rows.ROI_Name == curve['roi_name']].iloc[0]
+        bins = np.array([p['x'] for p in curve['data']])
+        cumulative = np.array([p['y'] for p in curve['data']]) / 100 * curve['volume_cm3']
+        value, status = dvh._small_volume_dose(
+            bins, cumulative, curve['volume_cm3'], row.DminGy, row.DmaxGy, 2.)
+        assert row.D2ccGy == pytest.approx(value, abs=1e-12)
+        assert row.D2cc_status == status
 
 
 @pytest.mark.parametrize('base', [np.diag([-1.,-1.,1.]), np.diag([-1.,1.,-1.]),
@@ -238,7 +248,8 @@ def test_axis_aligned_publication_bytes_against_git_a61b96a(tmp_path, monkeypatc
     new, new_receipt = run(dvh)
     old_table = pd.read_parquet(BytesIO(old['dvh_metrics.parquet']))
     new_table = pd.read_parquet(BytesIO(new['dvh_metrics.parquet']))
-    assert set(new_table.columns) == set(old_table.columns) | {'dose_plane_alignment'}
+    assert set(new_table.columns) == set(old_table.columns) | {'dose_plane_alignment', 'D2ccGy', 'D2cc_status'}
+    fx.assert_d2cc_columns(new_table)
     alignment = new_table['dose_plane_alignment']
     assert set(alignment) <= {'EXACT', 'DOSE_Z_INTERPOLATED'}
     assert alignment.tolist() == ['EXACT'] * len(old_table)
@@ -248,7 +259,8 @@ def test_axis_aligned_publication_bytes_against_git_a61b96a(tmp_path, monkeypatc
 
     old_workbook = pd.read_excel(BytesIO(old['dvh_metrics.xlsx']))
     new_workbook = pd.read_excel(BytesIO(new['dvh_metrics.xlsx']))
-    assert set(new_workbook.columns) == set(old_workbook.columns) | {'dose_plane_alignment'}
+    assert set(new_workbook.columns) == set(old_workbook.columns) | {'dose_plane_alignment', 'D2ccGy', 'D2cc_status'}
+    fx.assert_d2cc_columns(new_workbook)
     assert set(new_workbook['dose_plane_alignment']) <= {'EXACT', 'DOSE_Z_INTERPOLATED'}
     assert new_workbook['dose_plane_alignment'].tolist() == ['EXACT'] * len(old_workbook)
     pd.testing.assert_frame_equal(new_workbook.loc[:, old_workbook.columns], old_workbook,

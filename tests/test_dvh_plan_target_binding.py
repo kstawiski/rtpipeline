@@ -47,7 +47,8 @@ def _assert_historical_table_with_alignment(course: Path, path: Path) -> None:
     baseline_text = path.read_text(encoding="utf-8")
     baseline = json.loads(baseline_text)
     current = json.loads(fx.canonical_dvh_table(course))
-    assert set(current["columns"]) == set(baseline["columns"]) | {"dose_plane_alignment"}
+    assert set(current["columns"]) == set(baseline["columns"]) | {"dose_plane_alignment", "D2ccGy", "D2cc_status"}
+    fx.assert_d2cc_columns(pd.read_parquet(course / "dvh_metrics.parquet"))
     positions = [current["columns"].index(column) for column in baseline["columns"]]
     projected = {
         "columns": [current["columns"][i] for i in positions],
@@ -101,7 +102,7 @@ def test_site_description_binding_excludes_only_unbound_near_zero_targets(tmp_pa
     # Physical measurements are those ae60f01 published for the quarantined course.
     baseline = _baseline_rows(QUARANTINE_BASELINE)
     for name, row in rows.items():
-        for column in frame.columns:
+        for column in baseline[name]:
             if _is_dose_derived_metric_column(column) and column not in RELATIVE_DVH_METRIC_COLUMNS:
                 expected = baseline[name][column]
                 actual = row[column]

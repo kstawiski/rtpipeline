@@ -99,12 +99,16 @@ comparison['volume_diff_%'] = 100 * (
 |--------|-------------|-------------|
 | `Dmean_Gy` | Mean dose | Parallel organ toxicity (lung, kidney) |
 | `Dmax_Gy` | Maximum dose | Serial organ toxicity (spinal cord) |
-| `D2cc` | Dose to 2cc hottest volume | Rectum/bladder constraints |
+| `D2ccGy` | Dose received by the hottest 2 cm³, in Gy, bounded by Dmin and Dmax | Bladder, rectum and bowel dose reporting |
+| `D2cc_status` | `available`, `roi_below_2cc`, or the dose-grid coverage status when coverage is incomplete | Identify computable whole-ROI values |
+| `D0.03ccGy`, `D0.03cc_status` | Hottest 0.03 cm³ dose and availability status | Small-volume dose reporting |
 | `D50%` | Median dose | Homogeneity |
 | `D95%` | Dose to 95% of volume | Target coverage |
 | `V95%` | Volume receiving ≥95% Rx | PTV coverage |
 | `V50Gy` | Volume receiving ≥50 Gy | OAR sparing |
 | `ROI_Volume_cc` | Structure volume | Normalization |
+
+At exactly 2 cm³, `D2ccGy` equals Dmin. Below 2 cm³, it is empty with `D2cc_status = "roi_below_2cc"`. Incomplete coverage leaves the whole-ROI dose empty and propagates the coverage status. Axial RTSTRUCT, rotated-grid and NIfTI-mask measurements use linear cumulative-DVH interpolation.
 
 ### Radiomics Features (radiomics_ct.xlsx)
 
@@ -244,7 +248,7 @@ dvh = pd.read_excel("_RESULTS/dvh_metrics.xlsx")
 rectum = dvh[dvh['Structure'].str.contains('rectum', case=False)]
 
 # Features
-X = rectum[['Dmean_Gy', 'D2cc', 'V50Gy', 'V60Gy']]
+X = rectum[['Dmean_Gy', 'D2ccGy', 'V50Gy', 'V60Gy']]
 
 # Train (assuming you have outcome labels)
 # y = outcomes['Grade2+_Toxicity']

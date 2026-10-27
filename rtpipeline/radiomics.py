@@ -623,8 +623,10 @@ def _extractor(config: PipelineConfig, modality: str = 'CT', normalize_override:
 
     if numpy_version[0] >= 2:
         # Helper/isolated factories instantiate PyRadiomics directly and cannot
-        # apply this package-specific option. Reject it before delegating.
-        candidate = getattr(config, 'radiomics_params_file', None) if config else None
+        # apply this package-specific option. Reject it before delegating,
+        # reading the parameter file of the requested modality only.
+        attribute = 'radiomics_params_file_mr' if (modality or 'CT').upper() == 'MR' else 'radiomics_params_file'
+        candidate = getattr(config, attribute, None) if config else None
         if candidate is not None:
             requested = _load_radiomics_params_dict(Path(candidate))
             if requested and requested.get('radiomics'):
