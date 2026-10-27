@@ -120,7 +120,13 @@ def select_targets(ds, rule):
         name = str(roi.ROIName)
         types = obs[n]
         route = "interpreted_type" if types else "pipeline_name_rule"
-        qualifies = (
+        treated_ctv = (
+            types == {"TREATED_VOLUME"}
+            and bool(rule.get("treated_volume_ctv_name_regex"))
+            and re.fullmatch(rule["treated_volume_ctv_name_regex"], name, re.I)
+            is not None
+        )
+        qualifies = treated_ctv or (
             bool(types & set(selection["target_types"]))
             if types
             else _is_target_name(name, selection)
@@ -128,7 +134,7 @@ def select_targets(ds, rule):
         if not qualifies:
             continue
         reason = None
-        if types - set(selection["target_types"]):
+        if types - set(selection["target_types"]) and not treated_ctv:
             reason = "contradictory_interpreted_types"
         elif _pipeline_helper(name, selection):
             reason = "pipeline_helper_exclusion"
@@ -144,7 +150,9 @@ def select_targets(ds, rule):
             reason = "no_valid_closed_contour"
         rec = {
             "roi_number": n,
-            "type": next(
+            "type": "CTV"
+            if treated_ctv
+            else next(
                 (t for t in selection["type_precedence"] if t in types),
                 next(
                     (
@@ -155,7 +163,7 @@ def select_targets(ds, rule):
                     "TARGET",
                 ),
             ),
-            "route": route,
+            "route": "exact_name_treated_volume_ctv" if treated_ctv else route,
             "interpreted_types": sorted(types),
         }
         # No source free text is persisted. Names are used only for target/helper selection.
@@ -583,9 +591,11 @@ def measure(course, rule):
         )
         ev["rtstruct_sha256"] = used[-1]["sha256"]
         ev["selected_plan_evidence"] = []
+        ev["plan_selection_basis"] = "selected_plan_membership"
         ev["linked_plan_prescriptions"] = []
         linked_uids = set()
-        for pf in (root / "DICOM/RTPLAN").glob("*"):
+        linked_originals = []
+        for pf in sorted((root / "DICOM/RTPLAN").glob("*")):
             if not pf.is_file():
                 continue
             pd = read_dcm(pf, ["SOPInstanceUID", "ReferencedStructureSetSequence"])
@@ -594,6 +604,12 @@ def measure(course, rule):
                 for x in getattr(pd, "ReferencedStructureSetSequence", [])
             }:
                 linked_uids.add(str(pd.SOPInstanceUID))
+                linked_originals.append(
+                    {
+                        "path": str(pf.relative_to(root)),
+                        "sop_instance_uid": str(pd.SOPInstanceUID),
+                    }
+                )
         for pl in m.get("delivery_plan_details", []):
             if str(pl.get("plan_sop_uid", "")) in linked_uids:
                 ev["linked_plan_prescriptions"].append(
@@ -607,9 +623,18 @@ def measure(course, rule):
                     }
                 )
         ev["n_original_plans_referencing_structure"] = len(linked_uids)
-        if not co["selected_plans"]:
+        plans = co["selected_plans"]
+        if (
+            not plans
+            and rule.get("plan_selection", {}).get("empty_selected_plans_fallback")
+            == "linked_original_rtplan_geometry_only"
+        ):
+            plans = linked_originals
+            ev["plan_selection_basis"] = "linked_original_rtplan_geometry_only"
+        if not plans:
+            ev["plan_selection_basis"] = "no_selected_plan"
             raise ValueError("no_selected_plan")
-        for plan in co["selected_plans"]:
+        for plan in plans:
             pf = root / plan["path"]
             use(pf)
             pd = read_dcm(
@@ -619,6 +644,7 @@ def measure(course, rule):
                     "ReferencedStructureSetSequence",
                     "DoseReferenceSequence",
                     "FractionGroupSequence",
+                    "ApprovalStatus",
                 ],
             )
             if str(pd.SOPInstanceUID) != plan["sop_instance_uid"] or uid not in {
@@ -629,6 +655,11 @@ def measure(course, rule):
             ev["selected_plan_evidence"].append(
                 {
                     "sha256": used[-1]["sha256"],
+                    "approval_status": str(
+                        getattr(pd, "ApprovalStatus", "") or ""
+                    ).strip()
+                    or "ABSENT",
+                    "selection_basis": ev["plan_selection_basis"],
                     "prescription_gy": [
                         float(x.TargetPrescriptionDose)
                         for x in getattr(pd, "DoseReferenceSequence", [])
