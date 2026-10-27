@@ -254,10 +254,10 @@ def summary_results(out, rows, geometry_rows):
         r = sub.loc[sub.abs_err.idxmax()]
         lines.append(f"| {tool} | {metric} | {r.case} | {fmt(r.value)} | {fmt(r.analytic)} | {fmt(r.abs_err)} |")
     lines += ["", "## Endpoint availability and interpretation", "",
-              "The production axial path does not publish D2cc. Its native D2cc rows are unavailable. "
+              "The production axial path exports D2cc using linear cumulative-DVH interpolation, bounded by Dmin and Dmax. "
               "`rtpipeline_curve_supplement` reports only D2cc, extracted from the production curve with the production "
-              "small-volume helper; it is a benchmark supplement, not a pipeline-exported endpoint. "
-              "D2cc is undefined for a measured ROI volume below 2 cm³. The isolated native API instead returns zero "
+              "small-volume helper as a consistency check against the native endpoint. "
+              "D2cc is undefined for a measured ROI volume below 2 cm³, with native status `roi_below_2cc`. The isolated native API returns zero "
               "in that situation; these outputs have an explicit status in the long table. "
               "Continuous truth includes D2cc at exactly 2 cm³, where it equals Dmin.", "",
               "Circular contours have 256 vertices (area deficit <0.0101% before slice discretization). "
@@ -399,7 +399,13 @@ def run(args):
                     r = matching.iloc[0]
                     group_geometry[item["roi"]]["dose_plane_alignment"] = r.get("dose_plane_alignment")
                     values = {k: r.get(v) for k,v in PIPELINE_KEYS.items()}
-                    statuses = {"D2cc_Gy": "not_exported_by_production_axial_path"}
+                    statuses = {metric: r[status] for metric, status in (
+                        ("D2cc_Gy", "D2cc_status"), ("D0.03cc_Gy", "D0.03cc_status"))}
+                    for metric, requested in (("D2cc_Gy", 2.), ("D0.03cc_Gy", .03)):
+                        computable = r['Volume (cm³)'] >= requested
+                        expected_status = "available" if computable else f"roi_below_{requested:g}cc"
+                        if statuses[metric] != expected_status or (numeric(values[metric]) is not None) != computable:
+                            raise RuntimeError(f"Invalid native {metric} value/status for {name}")
                     if any(numeric(values[k]) is None for k in METRICS if k not in {"D2cc_Gy", "D0.03cc_Gy"}):
                         raise RuntimeError(f"Production returned incomplete metrics for {name}: {r.to_dict()}")
                     if r.get("dose_grid_coverage_status") != "fully_covered":

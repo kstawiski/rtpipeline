@@ -87,6 +87,24 @@ def test_numpy2_helper_route_rejects_ibsi_instead_of_delegating(tmp_path, monkey
         radiomics._extractor(SimpleNamespace(radiomics_params_file=params))
 
 
+def test_numpy2_helper_route_checks_only_the_requested_modality(tmp_path, monkeypatch):
+    import rtpipeline.radiomics as radiomics
+    from types import SimpleNamespace
+    ibsi = tmp_path / "ibsi.yaml"
+    ibsi.write_text("radiomics:\n  preprocessing: ibsi\n")
+    plain = tmp_path / "plain.yaml"
+    plain.write_text("setting:\n  binWidth: 25\n")
+    monkeypatch.setattr(np, "__version__", "2.0.0")
+    ct_only = SimpleNamespace(radiomics_params_file=ibsi, radiomics_params_file_mr=plain)
+    assert radiomics._extractor(ct_only, modality="MR") is None
+    with pytest.raises(ValueError, match="native CT extractor"):
+        radiomics._extractor(ct_only, modality="CT")
+    mr_only = SimpleNamespace(radiomics_params_file=plain, radiomics_params_file_mr=ibsi)
+    with pytest.raises(ValueError, match="native CT extractor"):
+        radiomics._extractor(mr_only, modality="MR")
+    assert radiomics._extractor(mr_only, modality="CT") is None
+
+
 @pytest.fixture(scope="module")
 def numerical_receipt():
     executable = shutil.which(os.environ.get("RTPIPELINE_RADIOMICS_PYTHON", sys.executable))

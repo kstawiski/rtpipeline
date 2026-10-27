@@ -22,7 +22,7 @@ Spheres and shells contribute 36 cases each; cylinders and cubes contribute 24 e
 
 ## Reproduction
 
-Run commands in bash from the repository root. All generated files and temporary files stay within this directory. The host environment supplies RTpipeline; the comparator environment is isolated. Network access is used only by pip to install public packages. No browser or account access is needed.
+Run commands in bash from the repository root. Benchmark data stay within this directory; pytest uses temporary directories under `/tmp`. The host environment supplies RTpipeline; the comparator environment is isolated. Network access is used only by pip to install public packages. No browser or account access is needed.
 
 ```bash
 export DVH_REPO="$(pwd)"
@@ -40,10 +40,14 @@ export RTPIPELINE_CONTRACT_HEADER_THREADS=4
 export MPLCONFIGDIR="$DVH_BENCH/tmp/matplotlib"
 nice -n 10 "$DVH_PY" -m venv "$DVH_BENCH/.venv-dicompyler"
 nice -n 10 "$DVH_BENCH/.venv-dicompyler/bin/python" -m pip install --disable-pip-version-check --no-cache-dir --no-compile -r "$DVH_BENCH/requirements-dicompyler.txt"
-nice -n 10 env PYTHONPATH="$DVH_REPO" "$DVH_PY" -m pytest -q -p no:cacheprovider --basetemp="$DVH_BENCH/tmp/pytest" --junitxml="$DVH_BENCH/results/analytic-tests.xml" "$DVH_BENCH/test_analytic.py"
+nice -n 10 env PYTHONPATH="$DVH_REPO" "$DVH_PY" -m pytest -q -p no:cacheprovider --basetemp=/tmp/rtpipeline-dvh-accuracy-analytic --junitxml="$DVH_BENCH/results/analytic-tests.xml" "$DVH_BENCH/test_analytic.py"
+nice -n 10 "$DVH_PY" -m pytest -q -p no:cacheprovider --basetemp=/tmp/rtpipeline-dvh-accuracy-dvh --junitxml="$DVH_BENCH/results/dvh-tests.xml" tests/test_dvh*.py tests/test_planning_dose_selection.py tests/test_dose_grid_degenerate_contours.py
+nice -n 10 "$DVH_PY" -m pytest -q -p no:cacheprovider --basetemp=/tmp/rtpipeline-dvh-accuracy-alignment --junitxml="$DVH_BENCH/results/alignment-tests.xml" tests/test_dvh_contour_plane_alignment.py
+nice -n 10 "$DVH_PY" -m pytest -q -p no:cacheprovider --basetemp=/tmp/rtpipeline-dvh-accuracy-rtstruct --junitxml="$DVH_BENCH/results/rtstruct-tests.xml" tests/test_rtstruct_writers_exact_planes.py tests/test_auto_rtstruct_exact_planes.py tests/test_rtstruct_uniform_fastpath.py
 nice -n 10 env PYTHONPATH="$DVH_REPO" "$DVH_PY" "$DVH_BENCH/run_benchmark.py" > "$DVH_BENCH/results/benchmark.log" 2>&1
-nice -n 10 env PYTHONPATH="$DVH_REPO" "$DVH_PY" "$DVH_BENCH/verify_results.py"
 nice -n 10 env PYTHONPATH="$DVH_REPO" "$DVH_PY" "$DVH_BENCH/analyze_volume.py"
+nice -n 10 env PYTHONPATH="$DVH_REPO" "$DVH_PY" "$DVH_BENCH/finalize_results.py"
+nice -n 10 env PYTHONPATH="$DVH_REPO" "$DVH_PY" "$DVH_BENCH/verify_results.py"
 ```
 
 `requirements-dicompyler-lock.txt` records all installed comparator dependencies. Use it instead of `requirements-dicompyler.txt` in the pip command to pin transitive dependencies as well. The latter lists the direct dependency pins used for installation. Full primary-environment versions are in the run receipt; the benchmark uses the supplied RTpipeline environment rather than changing it.
@@ -96,11 +100,11 @@ The run uses one DVH worker, one numerical-library thread and four threads for C
 
 RTpipeline itself uses dicompyler-core for this path. The comparator therefore shares the underlying rasterizer and histogram engine; it is not an independent DVH algorithm. The analytic truth supplies the independent reference. The installed comparator uses dicompyler-core 0.5.6 and pydicom 2.4.4, which work without an RTpipeline compatibility shim. Exact installed versions, including transitive dependencies, are recorded in the run receipt.
 
-The production axial path does not export D2cc. The `rtpipeline` D2cc rows explicitly record that absence. A separate `rtpipeline_curve_supplement` endpoint applies the production `_small_volume_dose` helper to the full published production curve. It is not presented as a native pipeline endpoint. No supplement is reported when the measured volume is below 2 cm³.
+The production axial path exports `D2ccGy` and `D2cc_status`. It uses the same `_small_volume_dose` helper as D0.03cc: linear cumulative-DVH interpolation at 2 cm³ divided by the measured structure volume, bounded by Dmin and Dmax. At exactly 2 cm³, D2cc equals Dmin. A smaller measured volume yields an empty dose with status `roi_below_2cc`; incomplete dose-grid coverage propagates its coverage status and leaves the whole-ROI value empty. The `rtpipeline` D2cc rows read the native published table. A separate `rtpipeline_curve_supplement` applies the same helper to the full published curve and checks agreement with the native endpoint. Both are unavailable when the measured volume is below 2 cm³.
 
 ## Results and evidence
 
-The canonical results are in `results/`. Across 960 available native dose-endpoint
+The canonical results are in `results/`. Across 1,052 available native dose-endpoint
 comparisons, the maximum absolute error is 0.309016 Gy. All meet the descriptive
 boundary of max(2% of analytic dose, 0.5 Gy). All 120 V95Rx comparisons meet a
 2-percentage-point boundary; the maximum error is 0.868749 percentage points.
@@ -112,9 +116,10 @@ Structure volume exceeds a 3% relative-error boundary in 29/120 cases.
 | 3 mm | 60 | 0.309016 | 0.868749 | 16/60 | 17.1875% |
 
 The largest relative volume errors occur in small structures; 21/40 cases at
-2 cm³, 8/40 at 50 cm³ and 0/40 at 1,000 cm³ exceed 3%. The separate D2cc curve
-supplement is available in 92/120 cases, with maximum error 0.218 Gy; it is
-unavailable in 28 cases whose measured volume is below 2 cm³.
+2 cm³, 8/40 at 50 cm³ and 0/40 at 1,000 cm³ exceed 3%. Native D2cc is available
+in 92/120 cases, with maximum absolute error 0.218 Gy and 0/92 cases exceeding
+max(2% of analytic dose, 0.5 Gy). It is unavailable in 28 cases whose measured
+volume is below 2 cm³. The full-curve D2cc check agrees with the native endpoint.
 [Boundary tables](results/boundary_report.md) retain these limits and denominators.
 
 
@@ -133,7 +138,7 @@ unavailable in 28 cases whose measured volume is below 2 cm³.
 | `results/run_receipt.json` | UTC times, interpreter version, package versions, portable commands, executed code hashes, source-integrity checks and errors |
 | `results/verification.json` | Completeness, numeric consistency, zero-truth handling, source identity, coverage and curve integrity checks |
 
-The receipt retains the benchmark hashes from execution and the pipeline source hashes measured at launch and completion. Public script hashes are recorded separately; the verifier also checks that the production DVH and contour-handling code match the executed hashes. Stored paths are relative to the repository, and host identity is omitted. A completed run requires all production calls to return outputs and all expected structures to have dose metrics and full grid coverage. Analytic tests establish formula consistency only. Error summaries are descriptive for this synthetic design. The reported boundaries are descriptive software comparisons and are not clinical acceptance criteria.
+The receipt retains the benchmark hashes from execution and the pipeline source hashes measured at launch and completion. Public script hashes are recorded separately; the verifier also checks that the production DVH and contour-handling code match the executed hashes. `finalize_results.py` makes stored paths relative to the repository, removes host identity and records the public test-evidence hash. A completed run requires all production calls to return outputs and all expected structures to have dose metrics and full grid coverage. Analytic tests establish formula consistency only. Error summaries are descriptive for this synthetic design. The reported boundaries are descriptive software comparisons and are not clinical acceptance criteria.
 
 `analyze_volume.py` adds a reproducible volume decomposition after the main run and records its own code hash and command in the receipt. Its original-contour rasterization residual uses the unsnapped comparator. RTpipeline uses the original contour planes with dose interpolated onto them. The residual therefore measures subsequent rasterization on those planes.
 

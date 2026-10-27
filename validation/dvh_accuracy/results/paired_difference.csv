@@ -1,7 +1,7 @@
 case,metric,dicompyler_harmonized,rtpipeline,difference_Gy_cc_or_pp
 v1000_aligned_ct1_dg2.5_linear_cube,D0.03cc_Gy,24.905,24.905,0
 v1000_aligned_ct1_dg2.5_linear_cube,D2_Gy,24.8052,24.8052,0
-v1000_aligned_ct1_dg2.5_linear_cube,D2cc_Gy,24.905,,
+v1000_aligned_ct1_dg2.5_linear_cube,D2cc_Gy,24.905,24.905,0
 v1000_aligned_ct1_dg2.5_linear_cube,D50_Gy,20.01,20.01,0
 v1000_aligned_ct1_dg2.5_linear_cube,D95_Gy,15.5145,15.5145,0
 v1000_aligned_ct1_dg2.5_linear_cube,D98_Gy,15.2148,15.2148,0
@@ -13,7 +13,7 @@ v1000_aligned_ct1_dg2.5_linear_cube,V95Rx_pct,12.1212121212,12.1212121212,0
 v1000_aligned_ct1_dg2.5_linear_cube,Volume_cc,1014.75,1014.75,0
 v1000_aligned_ct1_dg2.5_linear_cylinder,D0.03cc_Gy,25.405,25.405,0
 v1000_aligned_ct1_dg2.5_linear_cylinder,D2_Gy,25.2132,25.2132,0
-v1000_aligned_ct1_dg2.5_linear_cylinder,D2cc_Gy,25.405,,
+v1000_aligned_ct1_dg2.5_linear_cylinder,D2cc_Gy,25.405,25.405,0
 v1000_aligned_ct1_dg2.5_linear_cylinder,D50_Gy,20.01,20.01,0
 v1000_aligned_ct1_dg2.5_linear_cylinder,D95_Gy,15.1095,15.1095,0
 v1000_aligned_ct1_dg2.5_linear_cylinder,D98_Gy,14.8068,14.8068,0
@@ -25,7 +25,7 @@ v1000_aligned_ct1_dg2.5_linear_cylinder,V95Rx_pct,15.5963302752,15.5963302752,0
 v1000_aligned_ct1_dg2.5_linear_cylinder,Volume_cc,1008.93125,1008.93125,0
 v1000_aligned_ct1_dg2.5_linear_shell,D0.03cc_Gy,29.505,29.505,0
 v1000_aligned_ct1_dg2.5_linear_shell,D2_Gy,28.8060422069,28.8060422069,0
-v1000_aligned_ct1_dg2.5_linear_shell,D2cc_Gy,29.3130505415,,
+v1000_aligned_ct1_dg2.5_linear_shell,D2cc_Gy,29.3130505415,29.3130505415,0
 v1000_aligned_ct1_dg2.5_linear_shell,D50_Gy,20.01,20.01,0
 v1000_aligned_ct1_dg2.5_linear_shell,D95_Gy,11.8097738636,11.8097738636,0
 v1000_aligned_ct1_dg2.5_linear_shell,D98_Gy,11.2139577931,11.2139577931,0
@@ -37,7 +37,7 @@ v1000_aligned_ct1_dg2.5_linear_shell,V95Rx_pct,29.435488898,29.435488898,0
 v1000_aligned_ct1_dg2.5_linear_shell,Volume_cc,1002.6375,1002.6375,0
 v1000_aligned_ct1_dg2.5_linear_sphere,D0.03cc_Gy,26.1144492754,26.1144492754,0
 v1000_aligned_ct1_dg2.5_linear_sphere,D2_Gy,25.2061109185,25.2061109185,0
-v1000_aligned_ct1_dg2.5_linear_sphere,D2cc_Gy,25.908027027,,
+v1000_aligned_ct1_dg2.5_linear_sphere,D2cc_Gy,25.908027027,25.908027027,0
 v1000_aligned_ct1_dg2.5_linear_sphere,D50_Gy,20.01,20.01,0
 v1000_aligned_ct1_dg2.5_linear_sphere,D95_Gy,15.5075327154,15.5075327154,0
 v1000_aligned_ct1_dg2.5_linear_sphere,D98_Gy,14.8138890815,14.8138890815,0
@@ -49,7 +49,7 @@ v1000_aligned_ct1_dg2.5_linear_sphere,V95Rx_pct,10.1791240739,10.1791240739,0
 v1000_aligned_ct1_dg2.5_linear_sphere,Volume_cc,999.65625,999.65625,0
 v1000_aligned_ct1_dg2.5_radial_shell,D0.03cc_Gy,17.055,17.055,0
 v1000_aligned_ct1_dg2.5_radial_shell,D2_Gy,17.0337132479,17.0337132479,0
-v1000_aligned_ct1_dg2.5_radial_shell,D2cc_Gy,17.055,,
+v1000_aligned_ct1_dg2.5_radial_shell,D2cc_Gy,17.055,17.055,0
 v1000_aligned_ct1_dg2.5_radial_shell,D50_Gy,16.3065427215,16.3065427215,0
 v1000_aligned_ct1_dg2.5_radial_shell,D95_Gy,15.6877358934,15.6877358934,0
 v1000_aligned_ct1_dg2.5_radial_shell,D98_Gy,15.6490277439,15.6490277439,0
@@ -61,7 +61,7 @@ v1000_aligned_ct1_dg2.5_radial_shell,V95Rx_pct,0,0,0
 v1000_aligned_ct1_dg2.5_radial_shell,Volume_cc,1002.6375,1002.6375,0
 v1000_aligned_ct1_dg2.5_radial_sphere,D0.03cc_Gy,29.706,29.706,0
 v1000_aligned_ct1_dg2.5_radial_sphere,D2_Gy,27.4861477273,27.4861477273,0
-v1000_aligned_ct1_dg2.5_radial_sphere,D2cc_Gy,28.82625,,
+v1000_aligned_ct1_dg2.5_radial_sphere,D2cc_Gy,28.82625,28.82625,0
 v1000_aligned_ct1_dg2.5_radial_sphere,D50_Gy,22.6152083333,22.6152083333,0
 v1000_aligned_ct1_dg2.5_radial_sphere,D95_Gy,20.8585791925,20.8585791925,0
 v1000_aligned_ct1_dg2.5_radial_sphere,D98_Gy,20.7618217213,20.7618217213,0
@@ -73,7 +73,7 @@ v1000_aligned_ct1_dg2.5_radial_sphere,V95Rx_pct,30.3748163431,30.3748163431,0
 v1000_aligned_ct1_dg2.5_radial_sphere,Volume_cc,999.65625,999.65625,0
 v1000_aligned_ct1_dg2.5_uniform_cube,D0.03cc_Gy,20.01,20.01,0
 v1000_aligned_ct1_dg2.5_uniform_cube,D2_Gy,20.01,20.01,0
-v1000_aligned_ct1_dg2.5_uniform_cube,D2cc_Gy,20.01,,
+v1000_aligned_ct1_dg2.5_uniform_cube,D2cc_Gy,20.01,20.01,0
 v1000_aligned_ct1_dg2.5_uniform_cube,D50_Gy,20.01,20.01,0
 v1000_aligned_ct1_dg2.5_uniform_cube,D95_Gy,20.01,20.01,0
 v1000_aligned_ct1_dg2.5_uniform_cube,D98_Gy,20.01,20.01,0
@@ -85,7 +85,7 @@ v1000_aligned_ct1_dg2.5_uniform_cube,V95Rx_pct,0,0,0
 v1000_aligned_ct1_dg2.5_uniform_cube,Volume_cc,1014.75,1014.75,0
 v1000_aligned_ct1_dg2.5_uniform_cylinder,D0.03cc_Gy,20.01,20.01,0
 v1000_aligned_ct1_dg2.5_uniform_cylinder,D2_Gy,20.01,20.01,0
-v1000_aligned_ct1_dg2.5_uniform_cylinder,D2cc_Gy,20.01,,
+v1000_aligned_ct1_dg2.5_uniform_cylinder,D2cc_Gy,20.01,20.01,0
 v1000_aligned_ct1_dg2.5_uniform_cylinder,D50_Gy,20.01,20.01,0
 v1000_aligned_ct1_dg2.5_uniform_cylinder,D95_Gy,20.01,20.01,0
 v1000_aligned_ct1_dg2.5_uniform_cylinder,D98_Gy,20.01,20.01,0
@@ -97,7 +97,7 @@ v1000_aligned_ct1_dg2.5_uniform_cylinder,V95Rx_pct,0,0,0
 v1000_aligned_ct1_dg2.5_uniform_cylinder,Volume_cc,1008.93125,1008.93125,0
 v1000_aligned_ct1_dg2.5_uniform_shell,D0.03cc_Gy,20.01,20.01,0
 v1000_aligned_ct1_dg2.5_uniform_shell,D2_Gy,20.01,20.01,0
-v1000_aligned_ct1_dg2.5_uniform_shell,D2cc_Gy,20.01,,
+v1000_aligned_ct1_dg2.5_uniform_shell,D2cc_Gy,20.01,20.01,0
 v1000_aligned_ct1_dg2.5_uniform_shell,D50_Gy,20.01,20.01,0
 v1000_aligned_ct1_dg2.5_uniform_shell,D95_Gy,20.01,20.01,0
 v1000_aligned_ct1_dg2.5_uniform_shell,D98_Gy,20.01,20.01,0
@@ -109,7 +109,7 @@ v1000_aligned_ct1_dg2.5_uniform_shell,V95Rx_pct,0,0,0
 v1000_aligned_ct1_dg2.5_uniform_shell,Volume_cc,1002.6375,1002.6375,0
 v1000_aligned_ct1_dg2.5_uniform_sphere,D0.03cc_Gy,20.01,20.01,0
 v1000_aligned_ct1_dg2.5_uniform_sphere,D2_Gy,20.01,20.01,0
-v1000_aligned_ct1_dg2.5_uniform_sphere,D2cc_Gy,20.01,,
+v1000_aligned_ct1_dg2.5_uniform_sphere,D2cc_Gy,20.01,20.01,0
 v1000_aligned_ct1_dg2.5_uniform_sphere,D50_Gy,20.01,20.01,0
 v1000_aligned_ct1_dg2.5_uniform_sphere,D95_Gy,20.01,20.01,0
 v1000_aligned_ct1_dg2.5_uniform_sphere,D98_Gy,20.01,20.01,0
@@ -121,7 +121,7 @@ v1000_aligned_ct1_dg2.5_uniform_sphere,V95Rx_pct,0,0,0
 v1000_aligned_ct1_dg2.5_uniform_sphere,Volume_cc,999.65625,999.65625,0
 v1000_aligned_ct3_dg2.5_linear_cube,D0.03cc_Gy,24.805,24.805,0
 v1000_aligned_ct3_dg2.5_linear_cube,D2_Gy,24.805,24.805,0
-v1000_aligned_ct3_dg2.5_linear_cube,D2cc_Gy,24.805,,
+v1000_aligned_ct3_dg2.5_linear_cube,D2cc_Gy,24.805,24.805,0
 v1000_aligned_ct3_dg2.5_linear_cube,D50_Gy,20.01,20.01,0
 v1000_aligned_ct3_dg2.5_linear_cube,D95_Gy,15.5115,15.5115,0
 v1000_aligned_ct3_dg2.5_linear_cube,D98_Gy,15.2116,15.2116,0
@@ -133,7 +133,7 @@ v1000_aligned_ct3_dg2.5_linear_cube,V95Rx_pct,12.1212121212,12.1212121212,0
 v1000_aligned_ct3_dg2.5_linear_cube,Volume_cc,1014.75,1014.75,0
 v1000_aligned_ct3_dg2.5_linear_cylinder,D0.03cc_Gy,25.405,25.405,0
 v1000_aligned_ct3_dg2.5_linear_cylinder,D2_Gy,25.405,25.405,0
-v1000_aligned_ct3_dg2.5_linear_cylinder,D2cc_Gy,25.405,,
+v1000_aligned_ct3_dg2.5_linear_cylinder,D2cc_Gy,25.405,25.405,0
 v1000_aligned_ct3_dg2.5_linear_cylinder,D50_Gy,20.01,20.01,0
 v1000_aligned_ct3_dg2.5_linear_cylinder,D95_Gy,14.9135,14.9135,0
 v1000_aligned_ct3_dg2.5_linear_cylinder,D98_Gy,14.6124,14.6124,0
@@ -145,7 +145,7 @@ v1000_aligned_ct3_dg2.5_linear_cylinder,V95Rx_pct,16.2162162162,16.2162162162,0
 v1000_aligned_ct3_dg2.5_linear_cylinder,Volume_cc,1027.44375,1027.44375,0
 v1000_aligned_ct3_dg2.5_linear_shell,D0.03cc_Gy,29.305,29.305,0
 v1000_aligned_ct3_dg2.5_linear_shell,D2_Gy,28.7120648447,28.7120648447,0
-v1000_aligned_ct3_dg2.5_linear_shell,D2cc_Gy,29.305,,
+v1000_aligned_ct3_dg2.5_linear_shell,D2cc_Gy,29.305,29.305,0
 v1000_aligned_ct3_dg2.5_linear_shell,D50_Gy,20.01,20.01,0
 v1000_aligned_ct3_dg2.5_linear_shell,D95_Gy,11.9065833333,11.9065833333,0
 v1000_aligned_ct3_dg2.5_linear_shell,D98_Gy,11.3079351553,11.3079351553,0
@@ -157,7 +157,7 @@ v1000_aligned_ct3_dg2.5_linear_shell,V95Rx_pct,29.4012829651,29.4012829651,0
 v1000_aligned_ct3_dg2.5_linear_shell,Volume_cc,999.6375,999.6375,0
 v1000_aligned_ct3_dg2.5_linear_sphere,D0.03cc_Gy,26.005,26.005,0
 v1000_aligned_ct3_dg2.5_linear_sphere,D2_Gy,25.1122460548,25.1122460548,0
-v1000_aligned_ct3_dg2.5_linear_sphere,D2cc_Gy,26.005,,
+v1000_aligned_ct3_dg2.5_linear_sphere,D2cc_Gy,26.005,26.005,0
 v1000_aligned_ct3_dg2.5_linear_sphere,D50_Gy,20.01,20.01,0
 v1000_aligned_ct3_dg2.5_linear_sphere,D95_Gy,15.5090572519,15.5090572519,0
 v1000_aligned_ct3_dg2.5_linear_sphere,D98_Gy,14.9077539452,14.9077539452,0
@@ -169,7 +169,7 @@ v1000_aligned_ct3_dg2.5_linear_sphere,V95Rx_pct,10.1986829515,10.1986829515,0
 v1000_aligned_ct3_dg2.5_linear_sphere,Volume_cc,999.39375,999.39375,0
 v1000_aligned_ct3_dg2.5_radial_shell,D0.03cc_Gy,17.055,17.055,0
 v1000_aligned_ct3_dg2.5_radial_shell,D2_Gy,17.0320239583,17.0320239583,0
-v1000_aligned_ct3_dg2.5_radial_shell,D2cc_Gy,17.055,,
+v1000_aligned_ct3_dg2.5_radial_shell,D2cc_Gy,17.055,17.055,0
 v1000_aligned_ct3_dg2.5_radial_shell,D50_Gy,16.3090778689,16.3090778689,0
 v1000_aligned_ct3_dg2.5_radial_shell,D95_Gy,15.692803719,15.692803719,0
 v1000_aligned_ct3_dg2.5_radial_shell,D98_Gy,15.6501286885,15.6501286885,0
@@ -181,7 +181,7 @@ v1000_aligned_ct3_dg2.5_radial_shell,V95Rx_pct,0,0,0
 v1000_aligned_ct3_dg2.5_radial_shell,Volume_cc,999.6375,999.6375,0
 v1000_aligned_ct3_dg2.5_radial_sphere,D0.03cc_Gy,29.6335,29.6335,0
 v1000_aligned_ct3_dg2.5_radial_sphere,D2_Gy,27.46280625,27.46280625,0
-v1000_aligned_ct3_dg2.5_radial_sphere,D2cc_Gy,28.8229166667,,
+v1000_aligned_ct3_dg2.5_radial_sphere,D2cc_Gy,28.8229166667,28.8229166667,0
 v1000_aligned_ct3_dg2.5_radial_sphere,D50_Gy,22.6180592105,22.6180592105,0
 v1000_aligned_ct3_dg2.5_radial_sphere,D95_Gy,20.8614829545,20.8614829545,0
 v1000_aligned_ct3_dg2.5_radial_sphere,D98_Gy,20.76012625,20.76012625,0
@@ -193,7 +193,7 @@ v1000_aligned_ct3_dg2.5_radial_sphere,V95Rx_pct,30.414063526,30.414063526,0
 v1000_aligned_ct3_dg2.5_radial_sphere,Volume_cc,999.39375,999.39375,0
 v1000_aligned_ct3_dg2.5_uniform_cube,D0.03cc_Gy,20.01,20.01,0
 v1000_aligned_ct3_dg2.5_uniform_cube,D2_Gy,20.01,20.01,0
-v1000_aligned_ct3_dg2.5_uniform_cube,D2cc_Gy,20.01,,
+v1000_aligned_ct3_dg2.5_uniform_cube,D2cc_Gy,20.01,20.01,0
 v1000_aligned_ct3_dg2.5_uniform_cube,D50_Gy,20.01,20.01,0
 v1000_aligned_ct3_dg2.5_uniform_cube,D95_Gy,20.01,20.01,0
 v1000_aligned_ct3_dg2.5_uniform_cube,D98_Gy,20.01,20.01,0
@@ -205,7 +205,7 @@ v1000_aligned_ct3_dg2.5_uniform_cube,V95Rx_pct,0,0,0
 v1000_aligned_ct3_dg2.5_uniform_cube,Volume_cc,1014.75,1014.75,0
 v1000_aligned_ct3_dg2.5_uniform_cylinder,D0.03cc_Gy,20.01,20.01,0
 v1000_aligned_ct3_dg2.5_uniform_cylinder,D2_Gy,20.01,20.01,0
-v1000_aligned_ct3_dg2.5_uniform_cylinder,D2cc_Gy,20.01,,
+v1000_aligned_ct3_dg2.5_uniform_cylinder,D2cc_Gy,20.01,20.01,0
 v1000_aligned_ct3_dg2.5_uniform_cylinder,D50_Gy,20.01,20.01,0
 v1000_aligned_ct3_dg2.5_uniform_cylinder,D95_Gy,20.01,20.01,0
 v1000_aligned_ct3_dg2.5_uniform_cylinder,D98_Gy,20.01,20.01,0
@@ -217,7 +217,7 @@ v1000_aligned_ct3_dg2.5_uniform_cylinder,V95Rx_pct,0,0,0
 v1000_aligned_ct3_dg2.5_uniform_cylinder,Volume_cc,1027.44375,1027.44375,0
 v1000_aligned_ct3_dg2.5_uniform_shell,D0.03cc_Gy,20.01,20.01,0
 v1000_aligned_ct3_dg2.5_uniform_shell,D2_Gy,20.01,20.01,0
-v1000_aligned_ct3_dg2.5_uniform_shell,D2cc_Gy,20.01,,
+v1000_aligned_ct3_dg2.5_uniform_shell,D2cc_Gy,20.01,20.01,0
 v1000_aligned_ct3_dg2.5_uniform_shell,D50_Gy,20.01,20.01,0
 v1000_aligned_ct3_dg2.5_uniform_shell,D95_Gy,20.01,20.01,0
 v1000_aligned_ct3_dg2.5_uniform_shell,D98_Gy,20.01,20.01,0
@@ -229,7 +229,7 @@ v1000_aligned_ct3_dg2.5_uniform_shell,V95Rx_pct,0,0,0
 v1000_aligned_ct3_dg2.5_uniform_shell,Volume_cc,999.6375,999.6375,0
 v1000_aligned_ct3_dg2.5_uniform_sphere,D0.03cc_Gy,20.01,20.01,0
 v1000_aligned_ct3_dg2.5_uniform_sphere,D2_Gy,20.01,20.01,0
-v1000_aligned_ct3_dg2.5_uniform_sphere,D2cc_Gy,20.01,,
+v1000_aligned_ct3_dg2.5_uniform_sphere,D2cc_Gy,20.01,20.01,0
 v1000_aligned_ct3_dg2.5_uniform_sphere,D50_Gy,20.01,20.01,0
 v1000_aligned_ct3_dg2.5_uniform_sphere,D95_Gy,20.01,20.01,0
 v1000_aligned_ct3_dg2.5_uniform_sphere,D98_Gy,20.01,20.01,0
@@ -241,7 +241,7 @@ v1000_aligned_ct3_dg2.5_uniform_sphere,V95Rx_pct,0,0,0
 v1000_aligned_ct3_dg2.5_uniform_sphere,Volume_cc,999.39375,999.39375,0
 v1000_offset_ct1_dg2.5_linear_cube,D0.03cc_Gy,25.005,25.005,0
 v1000_offset_ct1_dg2.5_linear_cube,D2_Gy,24.815,24.815,0
-v1000_offset_ct1_dg2.5_linear_cube,D2cc_Gy,25.005,,
+v1000_offset_ct1_dg2.5_linear_cube,D2cc_Gy,25.005,25.005,0
 v1000_offset_ct1_dg2.5_linear_cube,D50_Gy,20.015,20.015,0
 v1000_offset_ct1_dg2.5_linear_cube,D95_Gy,15.515,15.515,0
 v1000_offset_ct1_dg2.5_linear_cube,D98_Gy,15.215,15.215,0
@@ -253,7 +253,7 @@ v1000_offset_ct1_dg2.5_linear_cube,V95Rx_pct,13,13,0
 v1000_offset_ct1_dg2.5_linear_cube,Volume_cc,1000,1000,0
 v1000_offset_ct1_dg2.5_linear_cylinder,D0.03cc_Gy,25.405,25.405,0
 v1000_offset_ct1_dg2.5_linear_cylinder,D2_Gy,25.2134,25.2134,0
-v1000_offset_ct1_dg2.5_linear_cylinder,D2cc_Gy,25.405,,
+v1000_offset_ct1_dg2.5_linear_cylinder,D2cc_Gy,25.405,25.405,0
 v1000_offset_ct1_dg2.5_linear_cylinder,D50_Gy,20.015,20.015,0
 v1000_offset_ct1_dg2.5_linear_cylinder,D95_Gy,15.209,15.209,0
 v1000_offset_ct1_dg2.5_linear_cylinder,D98_Gy,14.9066,14.9066,0
@@ -265,7 +265,7 @@ v1000_offset_ct1_dg2.5_linear_cylinder,V95Rx_pct,15.7407407407,15.7407407407,0
 v1000_offset_ct1_dg2.5_linear_cylinder,Volume_cc,996.3,996.3,0
 v1000_offset_ct1_dg2.5_linear_shell,D0.03cc_Gy,29.605,29.605,0
 v1000_offset_ct1_dg2.5_linear_shell,D2_Gy,28.8104117493,28.8104117493,0
-v1000_offset_ct1_dg2.5_linear_shell,D2cc_Gy,29.4074545455,,
+v1000_offset_ct1_dg2.5_linear_shell,D2cc_Gy,29.4074545455,29.4074545455,0
 v1000_offset_ct1_dg2.5_linear_shell,D50_Gy,20.0141647727,20.0141647727,0
 v1000_offset_ct1_dg2.5_linear_shell,D95_Gy,11.8137730375,11.8137730375,0
 v1000_offset_ct1_dg2.5_linear_shell,D98_Gy,11.3082575484,11.3082575484,0
@@ -277,7 +277,7 @@ v1000_offset_ct1_dg2.5_linear_shell,V95Rx_pct,29.6811590578,29.6811590578,0
 v1000_offset_ct1_dg2.5_linear_shell,Volume_cc,999.51875,999.51875,0
 v1000_offset_ct1_dg2.5_linear_sphere,D0.03cc_Gy,26.205,26.205,0
 v1000_offset_ct1_dg2.5_linear_sphere,D2_Gy,25.2105191275,25.2105191275,0
-v1000_offset_ct1_dg2.5_linear_sphere,D2cc_Gy,25.9126076555,,
+v1000_offset_ct1_dg2.5_linear_sphere,D2cc_Gy,25.9126076555,25.9126076555,0
 v1000_offset_ct1_dg2.5_linear_sphere,D50_Gy,20.014313827,20.014313827,0
 v1000_offset_ct1_dg2.5_linear_sphere,D95_Gy,15.5117446927,15.5117446927,0
 v1000_offset_ct1_dg2.5_linear_sphere,D98_Gy,14.9080192371,14.9080192371,0
@@ -289,7 +289,7 @@ v1000_offset_ct1_dg2.5_linear_sphere,V95Rx_pct,10.5199652398,10.5199652398,0
 v1000_offset_ct1_dg2.5_linear_sphere,Volume_cc,999.70625,999.70625,0
 v1000_offset_ct1_dg2.5_radial_shell,D0.03cc_Gy,17.055,17.055,0
 v1000_offset_ct1_dg2.5_radial_shell,D2_Gy,17.0306085743,17.0306085743,0
-v1000_offset_ct1_dg2.5_radial_shell,D2cc_Gy,17.055,,
+v1000_offset_ct1_dg2.5_radial_shell,D2cc_Gy,17.055,17.055,0
 v1000_offset_ct1_dg2.5_radial_shell,D50_Gy,16.3063509749,16.3063509749,0
 v1000_offset_ct1_dg2.5_radial_shell,D95_Gy,15.6898372951,15.6898372951,0
 v1000_offset_ct1_dg2.5_radial_shell,D98_Gy,15.6513881107,15.6513881107,0
@@ -301,7 +301,7 @@ v1000_offset_ct1_dg2.5_radial_shell,V95Rx_pct,0,0,0
 v1000_offset_ct1_dg2.5_radial_shell,Volume_cc,999.51875,999.51875,0
 v1000_offset_ct1_dg2.5_radial_sphere,D0.03cc_Gy,29.707,29.707,0
 v1000_offset_ct1_dg2.5_radial_sphere,D2_Gy,27.4771030303,27.4771030303,0
-v1000_offset_ct1_dg2.5_radial_sphere,D2cc_Gy,28.826,,
+v1000_offset_ct1_dg2.5_radial_sphere,D2cc_Gy,28.826,28.826,0
 v1000_offset_ct1_dg2.5_radial_sphere,D50_Gy,22.6190365449,22.6190365449,0
 v1000_offset_ct1_dg2.5_radial_sphere,D95_Gy,20.8577332636,20.8577332636,0
 v1000_offset_ct1_dg2.5_radial_sphere,D98_Gy,20.7629323276,20.7629323276,0
@@ -313,7 +313,7 @@ v1000_offset_ct1_dg2.5_radial_sphere,V95Rx_pct,30.3689208705,30.3689208705,3.552
 v1000_offset_ct1_dg2.5_radial_sphere,Volume_cc,999.70625,999.70625,0
 v1000_offset_ct1_dg2.5_uniform_cube,D0.03cc_Gy,20.01,20.01,0
 v1000_offset_ct1_dg2.5_uniform_cube,D2_Gy,20.01,20.01,0
-v1000_offset_ct1_dg2.5_uniform_cube,D2cc_Gy,20.01,,
+v1000_offset_ct1_dg2.5_uniform_cube,D2cc_Gy,20.01,20.01,0
 v1000_offset_ct1_dg2.5_uniform_cube,D50_Gy,20.01,20.01,0
 v1000_offset_ct1_dg2.5_uniform_cube,D95_Gy,20.01,20.01,0
 v1000_offset_ct1_dg2.5_uniform_cube,D98_Gy,20.01,20.01,0
@@ -325,7 +325,7 @@ v1000_offset_ct1_dg2.5_uniform_cube,V95Rx_pct,0,0,0
 v1000_offset_ct1_dg2.5_uniform_cube,Volume_cc,1000,1000,0
 v1000_offset_ct1_dg2.5_uniform_cylinder,D0.03cc_Gy,20.01,20.01,0
 v1000_offset_ct1_dg2.5_uniform_cylinder,D2_Gy,20.01,20.01,0
-v1000_offset_ct1_dg2.5_uniform_cylinder,D2cc_Gy,20.01,,
+v1000_offset_ct1_dg2.5_uniform_cylinder,D2cc_Gy,20.01,20.01,0
 v1000_offset_ct1_dg2.5_uniform_cylinder,D50_Gy,20.01,20.01,0
 v1000_offset_ct1_dg2.5_uniform_cylinder,D95_Gy,20.01,20.01,0
 v1000_offset_ct1_dg2.5_uniform_cylinder,D98_Gy,20.01,20.01,0
@@ -337,7 +337,7 @@ v1000_offset_ct1_dg2.5_uniform_cylinder,V95Rx_pct,0,0,0
 v1000_offset_ct1_dg2.5_uniform_cylinder,Volume_cc,996.3,996.3,0
 v1000_offset_ct1_dg2.5_uniform_shell,D0.03cc_Gy,20.01,20.01,0
 v1000_offset_ct1_dg2.5_uniform_shell,D2_Gy,20.01,20.01,0
-v1000_offset_ct1_dg2.5_uniform_shell,D2cc_Gy,20.01,,
+v1000_offset_ct1_dg2.5_uniform_shell,D2cc_Gy,20.01,20.01,0
 v1000_offset_ct1_dg2.5_uniform_shell,D50_Gy,20.01,20.01,0
 v1000_offset_ct1_dg2.5_uniform_shell,D95_Gy,20.01,20.01,0
 v1000_offset_ct1_dg2.5_uniform_shell,D98_Gy,20.01,20.01,0
@@ -349,7 +349,7 @@ v1000_offset_ct1_dg2.5_uniform_shell,V95Rx_pct,0,0,0
 v1000_offset_ct1_dg2.5_uniform_shell,Volume_cc,999.51875,999.51875,0
 v1000_offset_ct1_dg2.5_uniform_sphere,D0.03cc_Gy,20.01,20.01,0
 v1000_offset_ct1_dg2.5_uniform_sphere,D2_Gy,20.01,20.01,0
-v1000_offset_ct1_dg2.5_uniform_sphere,D2cc_Gy,20.01,,
+v1000_offset_ct1_dg2.5_uniform_sphere,D2cc_Gy,20.01,20.01,0
 v1000_offset_ct1_dg2.5_uniform_sphere,D50_Gy,20.01,20.01,0
 v1000_offset_ct1_dg2.5_uniform_sphere,D95_Gy,20.01,20.01,0
 v1000_offset_ct1_dg2.5_uniform_sphere,D98_Gy,20.01,20.01,0
@@ -361,7 +361,7 @@ v1000_offset_ct1_dg2.5_uniform_sphere,V95Rx_pct,0,0,0
 v1000_offset_ct1_dg2.5_uniform_sphere,Volume_cc,999.70625,999.70625,0
 v1000_offset_ct3_dg2.5_linear_cube,D0.03cc_Gy,24.805,24.805,0
 v1000_offset_ct3_dg2.5_linear_cube,D2_Gy,24.805,24.805,0
-v1000_offset_ct3_dg2.5_linear_cube,D2cc_Gy,24.805,,
+v1000_offset_ct3_dg2.5_linear_cube,D2cc_Gy,24.805,24.805,0
 v1000_offset_ct3_dg2.5_linear_cube,D50_Gy,20.01,20.01,0
 v1000_offset_ct3_dg2.5_linear_cube,D95_Gy,15.5115,15.5115,0
 v1000_offset_ct3_dg2.5_linear_cube,D98_Gy,15.2116,15.2116,0
@@ -373,7 +373,7 @@ v1000_offset_ct3_dg2.5_linear_cube,V95Rx_pct,12.1212121212,12.1212121212,0
 v1000_offset_ct3_dg2.5_linear_cube,Volume_cc,990,990,0
 v1000_offset_ct3_dg2.5_linear_cylinder,D0.03cc_Gy,25.405,25.405,0
 v1000_offset_ct3_dg2.5_linear_cylinder,D2_Gy,25.405,25.405,0
-v1000_offset_ct3_dg2.5_linear_cylinder,D2cc_Gy,25.405,,
+v1000_offset_ct3_dg2.5_linear_cylinder,D2cc_Gy,25.405,25.405,0
 v1000_offset_ct3_dg2.5_linear_cylinder,D50_Gy,20.305,20.305,0
 v1000_offset_ct3_dg2.5_linear_cylinder,D95_Gy,15.213,15.213,0
 v1000_offset_ct3_dg2.5_linear_cylinder,D98_Gy,14.9122,14.9122,0
@@ -385,7 +385,7 @@ v1000_offset_ct3_dg2.5_linear_cylinder,V95Rx_pct,16.6666666667,16.6666666667,0
 v1000_offset_ct3_dg2.5_linear_cylinder,Volume_cc,996.3,996.3,0
 v1000_offset_ct3_dg2.5_linear_shell,D0.03cc_Gy,29.605,29.605,0
 v1000_offset_ct3_dg2.5_linear_shell,D2_Gy,28.7133608899,28.7133608899,0
-v1000_offset_ct3_dg2.5_linear_shell,D2cc_Gy,29.3124946237,,
+v1000_offset_ct3_dg2.5_linear_shell,D2cc_Gy,29.3124946237,29.3124946237,0
 v1000_offset_ct3_dg2.5_linear_shell,D50_Gy,20.0113238636,20.0113238636,0
 v1000_offset_ct3_dg2.5_linear_shell,D95_Gy,11.9081287185,11.9081287185,0
 v1000_offset_ct3_dg2.5_linear_shell,D98_Gy,11.309232,11.309232,0
@@ -397,7 +397,7 @@ v1000_offset_ct3_dg2.5_linear_shell,V95Rx_pct,29.6681627824,29.6681627824,0
 v1000_offset_ct3_dg2.5_linear_shell,Volume_cc,998.41875,998.41875,0
 v1000_offset_ct3_dg2.5_linear_sphere,D0.03cc_Gy,26.005,26.005,0
 v1000_offset_ct3_dg2.5_linear_sphere,D2_Gy,25.113508589,25.113508589,0
-v1000_offset_ct3_dg2.5_linear_sphere,D2cc_Gy,26.005,,
+v1000_offset_ct3_dg2.5_linear_sphere,D2cc_Gy,26.005,26.005,0
 v1000_offset_ct3_dg2.5_linear_sphere,D50_Gy,20.0114526152,20.0114526152,0
 v1000_offset_ct3_dg2.5_linear_sphere,D95_Gy,15.5104480447,15.5104480447,0
 v1000_offset_ct3_dg2.5_linear_sphere,D98_Gy,14.9090835821,14.9090835821,0
@@ -409,7 +409,7 @@ v1000_offset_ct3_dg2.5_linear_sphere,V95Rx_pct,10.5192076831,10.5192076831,0
 v1000_offset_ct3_dg2.5_linear_sphere,Volume_cc,999.6,999.6,0
 v1000_offset_ct3_dg2.5_radial_shell,D0.03cc_Gy,17.055,17.055,0
 v1000_offset_ct3_dg2.5_radial_shell,D2_Gy,17.0302140244,17.0302140244,0
-v1000_offset_ct3_dg2.5_radial_shell,D2cc_Gy,17.055,,
+v1000_offset_ct3_dg2.5_radial_shell,D2cc_Gy,17.055,17.055,0
 v1000_offset_ct3_dg2.5_radial_shell,D50_Gy,16.307867036,16.307867036,0
 v1000_offset_ct3_dg2.5_radial_shell,D95_Gy,15.6912487864,15.6912487864,0
 v1000_offset_ct3_dg2.5_radial_shell,D98_Gy,15.652463285,15.652463285,0
@@ -421,7 +421,7 @@ v1000_offset_ct3_dg2.5_radial_shell,V95Rx_pct,0,0,0
 v1000_offset_ct3_dg2.5_radial_shell,Volume_cc,998.41875,998.41875,0
 v1000_offset_ct3_dg2.5_radial_sphere,D0.03cc_Gy,29.709,29.709,0
 v1000_offset_ct3_dg2.5_radial_sphere,D2_Gy,27.4780666667,27.4780666667,0
-v1000_offset_ct3_dg2.5_radial_sphere,D2cc_Gy,28.8294444444,,
+v1000_offset_ct3_dg2.5_radial_sphere,D2cc_Gy,28.8294444444,28.8294444444,0
 v1000_offset_ct3_dg2.5_radial_sphere,D50_Gy,22.6199484536,22.6199484536,0
 v1000_offset_ct3_dg2.5_radial_sphere,D95_Gy,20.8583081761,20.8583081761,0
 v1000_offset_ct3_dg2.5_radial_sphere,D98_Gy,20.7635316129,20.7635316129,0
@@ -433,7 +433,7 @@ v1000_offset_ct3_dg2.5_radial_sphere,V95Rx_pct,30.3655837335,30.3655837335,0
 v1000_offset_ct3_dg2.5_radial_sphere,Volume_cc,999.6,999.6,0
 v1000_offset_ct3_dg2.5_uniform_cube,D0.03cc_Gy,20.01,20.01,0
 v1000_offset_ct3_dg2.5_uniform_cube,D2_Gy,20.01,20.01,0
-v1000_offset_ct3_dg2.5_uniform_cube,D2cc_Gy,20.01,,
+v1000_offset_ct3_dg2.5_uniform_cube,D2cc_Gy,20.01,20.01,0
 v1000_offset_ct3_dg2.5_uniform_cube,D50_Gy,20.01,20.01,0
 v1000_offset_ct3_dg2.5_uniform_cube,D95_Gy,20.01,20.01,0
 v1000_offset_ct3_dg2.5_uniform_cube,D98_Gy,20.01,20.01,0
@@ -445,7 +445,7 @@ v1000_offset_ct3_dg2.5_uniform_cube,V95Rx_pct,0,0,0
 v1000_offset_ct3_dg2.5_uniform_cube,Volume_cc,990,990,0
 v1000_offset_ct3_dg2.5_uniform_cylinder,D0.03cc_Gy,20.01,20.01,0
 v1000_offset_ct3_dg2.5_uniform_cylinder,D2_Gy,20.01,20.01,0
-v1000_offset_ct3_dg2.5_uniform_cylinder,D2cc_Gy,20.01,,
+v1000_offset_ct3_dg2.5_uniform_cylinder,D2cc_Gy,20.01,20.01,0
 v1000_offset_ct3_dg2.5_uniform_cylinder,D50_Gy,20.01,20.01,0
 v1000_offset_ct3_dg2.5_uniform_cylinder,D95_Gy,20.01,20.01,0
 v1000_offset_ct3_dg2.5_uniform_cylinder,D98_Gy,20.01,20.01,0
@@ -457,7 +457,7 @@ v1000_offset_ct3_dg2.5_uniform_cylinder,V95Rx_pct,0,0,0
 v1000_offset_ct3_dg2.5_uniform_cylinder,Volume_cc,996.3,996.3,0
 v1000_offset_ct3_dg2.5_uniform_shell,D0.03cc_Gy,20.01,20.01,0
 v1000_offset_ct3_dg2.5_uniform_shell,D2_Gy,20.01,20.01,0
-v1000_offset_ct3_dg2.5_uniform_shell,D2cc_Gy,20.01,,
+v1000_offset_ct3_dg2.5_uniform_shell,D2cc_Gy,20.01,20.01,0
 v1000_offset_ct3_dg2.5_uniform_shell,D50_Gy,20.01,20.01,0
 v1000_offset_ct3_dg2.5_uniform_shell,D95_Gy,20.01,20.01,0
 v1000_offset_ct3_dg2.5_uniform_shell,D98_Gy,20.01,20.01,0
@@ -469,7 +469,7 @@ v1000_offset_ct3_dg2.5_uniform_shell,V95Rx_pct,0,0,0
 v1000_offset_ct3_dg2.5_uniform_shell,Volume_cc,998.41875,998.41875,0
 v1000_offset_ct3_dg2.5_uniform_sphere,D0.03cc_Gy,20.01,20.01,0
 v1000_offset_ct3_dg2.5_uniform_sphere,D2_Gy,20.01,20.01,0
-v1000_offset_ct3_dg2.5_uniform_sphere,D2cc_Gy,20.01,,
+v1000_offset_ct3_dg2.5_uniform_sphere,D2cc_Gy,20.01,20.01,0
 v1000_offset_ct3_dg2.5_uniform_sphere,D50_Gy,20.01,20.01,0
 v1000_offset_ct3_dg2.5_uniform_sphere,D95_Gy,20.01,20.01,0
 v1000_offset_ct3_dg2.5_uniform_sphere,D98_Gy,20.01,20.01,0
@@ -481,7 +481,7 @@ v1000_offset_ct3_dg2.5_uniform_sphere,V95Rx_pct,0,0,0
 v1000_offset_ct3_dg2.5_uniform_sphere,Volume_cc,999.6,999.6,0
 v2_aligned_ct1_dg2.5_linear_cube,D0.03cc_Gy,20.605,20.605,0
 v2_aligned_ct1_dg2.5_linear_cube,D2_Gy,20.605,20.605,0
-v2_aligned_ct1_dg2.5_linear_cube,D2cc_Gy,19.41,,
+v2_aligned_ct1_dg2.5_linear_cube,D2cc_Gy,19.41,19.41,0
 v2_aligned_ct1_dg2.5_linear_cube,D50_Gy,20.01,20.01,0
 v2_aligned_ct1_dg2.5_linear_cube,D95_Gy,19.4115,19.4115,0
 v2_aligned_ct1_dg2.5_linear_cube,D98_Gy,19.41,19.41,0
@@ -553,7 +553,7 @@ v2_aligned_ct1_dg2.5_radial_sphere,V95Rx_pct,100,100,1.42108547152e-14
 v2_aligned_ct1_dg2.5_radial_sphere,Volume_cc,1.96875,1.96875,-2.22044604925e-16
 v2_aligned_ct1_dg2.5_uniform_cube,D0.03cc_Gy,20.01,20.01,0
 v2_aligned_ct1_dg2.5_uniform_cube,D2_Gy,20.01,20.01,0
-v2_aligned_ct1_dg2.5_uniform_cube,D2cc_Gy,20.01,,
+v2_aligned_ct1_dg2.5_uniform_cube,D2cc_Gy,20.01,20.01,0
 v2_aligned_ct1_dg2.5_uniform_cube,D50_Gy,20.01,20.01,0
 v2_aligned_ct1_dg2.5_uniform_cube,D95_Gy,20.01,20.01,0
 v2_aligned_ct1_dg2.5_uniform_cube,D98_Gy,20.01,20.01,0
@@ -601,7 +601,7 @@ v2_aligned_ct1_dg2.5_uniform_sphere,V95Rx_pct,0,0,0
 v2_aligned_ct1_dg2.5_uniform_sphere,Volume_cc,1.96875,1.96875,0
 v2_aligned_ct3_dg2.5_linear_cube,D0.03cc_Gy,20.605,20.605,0
 v2_aligned_ct3_dg2.5_linear_cube,D2_Gy,20.605,20.605,0
-v2_aligned_ct3_dg2.5_linear_cube,D2cc_Gy,19.4123333333,,
+v2_aligned_ct3_dg2.5_linear_cube,D2cc_Gy,19.4123333333,19.4123333333,0
 v2_aligned_ct3_dg2.5_linear_cube,D50_Gy,20.01,20.01,0
 v2_aligned_ct3_dg2.5_linear_cube,D95_Gy,19.41,19.41,0
 v2_aligned_ct3_dg2.5_linear_cube,D98_Gy,19.41,19.41,0
@@ -673,7 +673,7 @@ v2_aligned_ct3_dg2.5_radial_sphere,V95Rx_pct,100,100,1.42108547152e-14
 v2_aligned_ct3_dg2.5_radial_sphere,Volume_cc,1.96875,1.96875,-2.22044604925e-16
 v2_aligned_ct3_dg2.5_uniform_cube,D0.03cc_Gy,20.01,20.01,0
 v2_aligned_ct3_dg2.5_uniform_cube,D2_Gy,20.01,20.01,0
-v2_aligned_ct3_dg2.5_uniform_cube,D2cc_Gy,20.01,,
+v2_aligned_ct3_dg2.5_uniform_cube,D2cc_Gy,20.01,20.01,0
 v2_aligned_ct3_dg2.5_uniform_cube,D50_Gy,20.01,20.01,0
 v2_aligned_ct3_dg2.5_uniform_cube,D95_Gy,20.01,20.01,0
 v2_aligned_ct3_dg2.5_uniform_cube,D98_Gy,20.01,20.01,0
@@ -757,7 +757,7 @@ v2_offset_ct1_dg2.5_linear_shell,V95Rx_pct,0,0,0
 v2_offset_ct1_dg2.5_linear_shell,Volume_cc,1.9625,1.9625,0
 v2_offset_ct1_dg2.5_linear_sphere,D0.03cc_Gy,20.7118888889,20.7118888889,0
 v2_offset_ct1_dg2.5_linear_sphere,D2_Gy,20.7100666667,20.7100666667,0
-v2_offset_ct1_dg2.5_linear_sphere,D2cc_Gy,19.3116666667,,
+v2_offset_ct1_dg2.5_linear_sphere,D2cc_Gy,19.3116666667,19.3116666667,0
 v2_offset_ct1_dg2.5_linear_sphere,D50_Gy,20.0143548387,20.0143548387,0
 v2_offset_ct1_dg2.5_linear_sphere,D95_Gy,19.5069375,19.5069375,0
 v2_offset_ct1_dg2.5_linear_sphere,D98_Gy,19.40844,19.40844,0
@@ -781,7 +781,7 @@ v2_offset_ct1_dg2.5_radial_shell,V95Rx_pct,100,100,0
 v2_offset_ct1_dg2.5_radial_shell,Volume_cc,1.9625,1.9625,0
 v2_offset_ct1_dg2.5_radial_sphere,D0.03cc_Gy,29.707,29.707,0
 v2_offset_ct1_dg2.5_radial_sphere,D2_Gy,29.6606,29.6606,0
-v2_offset_ct1_dg2.5_radial_sphere,D2cc_Gy,28.8216666667,,
+v2_offset_ct1_dg2.5_radial_sphere,D2cc_Gy,28.8216666667,28.8216666667,0
 v2_offset_ct1_dg2.5_radial_sphere,D50_Gy,29.0666666667,29.0666666667,0
 v2_offset_ct1_dg2.5_radial_sphere,D95_Gy,28.8406666667,28.8406666667,0
 v2_offset_ct1_dg2.5_radial_sphere,D98_Gy,28.8293,28.8293,0
@@ -829,7 +829,7 @@ v2_offset_ct1_dg2.5_uniform_shell,V95Rx_pct,0,0,0
 v2_offset_ct1_dg2.5_uniform_shell,Volume_cc,1.9625,1.9625,0
 v2_offset_ct1_dg2.5_uniform_sphere,D0.03cc_Gy,20.01,20.01,0
 v2_offset_ct1_dg2.5_uniform_sphere,D2_Gy,20.01,20.01,0
-v2_offset_ct1_dg2.5_uniform_sphere,D2cc_Gy,20.01,,
+v2_offset_ct1_dg2.5_uniform_sphere,D2cc_Gy,20.01,20.01,0
 v2_offset_ct1_dg2.5_uniform_sphere,D50_Gy,20.01,20.01,0
 v2_offset_ct1_dg2.5_uniform_sphere,D95_Gy,20.01,20.01,0
 v2_offset_ct1_dg2.5_uniform_sphere,D98_Gy,20.01,20.01,0
@@ -853,7 +853,7 @@ v2_offset_ct3_dg2.5_linear_cube,V95Rx_pct,0,0,0
 v2_offset_ct3_dg2.5_linear_cube,Volume_cc,1.875,1.875,0
 v2_offset_ct3_dg2.5_linear_cylinder,D0.03cc_Gy,20.605,20.605,0
 v2_offset_ct3_dg2.5_linear_cylinder,D2_Gy,20.605,20.605,0
-v2_offset_ct3_dg2.5_linear_cylinder,D2cc_Gy,19.41,,
+v2_offset_ct3_dg2.5_linear_cylinder,D2cc_Gy,19.41,19.41,0
 v2_offset_ct3_dg2.5_linear_cylinder,D50_Gy,20.01,20.01,0
 v2_offset_ct3_dg2.5_linear_cylinder,D95_Gy,19.41,19.41,0
 v2_offset_ct3_dg2.5_linear_cylinder,D98_Gy,19.41,19.41,0
@@ -877,7 +877,7 @@ v2_offset_ct3_dg2.5_linear_shell,V95Rx_pct,0,0,0
 v2_offset_ct3_dg2.5_linear_shell,Volume_cc,1.93125,1.93125,0
 v2_offset_ct3_dg2.5_linear_sphere,D0.03cc_Gy,20.605,20.605,0
 v2_offset_ct3_dg2.5_linear_sphere,D2_Gy,20.605,20.605,0
-v2_offset_ct3_dg2.5_linear_sphere,D2cc_Gy,19.41,,
+v2_offset_ct3_dg2.5_linear_sphere,D2cc_Gy,19.41,19.41,0
 v2_offset_ct3_dg2.5_linear_sphere,D50_Gy,20.0114516129,20.0114516129,0
 v2_offset_ct3_dg2.5_linear_sphere,D95_Gy,19.4104,19.4104,0
 v2_offset_ct3_dg2.5_linear_sphere,D98_Gy,19.41,19.41,0
@@ -901,7 +901,7 @@ v2_offset_ct3_dg2.5_radial_shell,V95Rx_pct,100,100,1.42108547152e-14
 v2_offset_ct3_dg2.5_radial_shell,Volume_cc,1.93125,1.93125,-2.22044604925e-16
 v2_offset_ct3_dg2.5_radial_sphere,D0.03cc_Gy,29.709,29.709,0
 v2_offset_ct3_dg2.5_radial_sphere,D2_Gy,29.6734,29.6734,0
-v2_offset_ct3_dg2.5_radial_sphere,D2cc_Gy,28.83,,
+v2_offset_ct3_dg2.5_radial_sphere,D2cc_Gy,28.83,28.83,0
 v2_offset_ct3_dg2.5_radial_sphere,D50_Gy,29.063,29.063,0
 v2_offset_ct3_dg2.5_radial_sphere,D95_Gy,28.8398,28.8398,0
 v2_offset_ct3_dg2.5_radial_sphere,D98_Gy,28.8322,28.8322,0
@@ -925,7 +925,7 @@ v2_offset_ct3_dg2.5_uniform_cube,V95Rx_pct,0,0,0
 v2_offset_ct3_dg2.5_uniform_cube,Volume_cc,1.875,1.875,0
 v2_offset_ct3_dg2.5_uniform_cylinder,D0.03cc_Gy,20.01,20.01,0
 v2_offset_ct3_dg2.5_uniform_cylinder,D2_Gy,20.01,20.01,0
-v2_offset_ct3_dg2.5_uniform_cylinder,D2cc_Gy,20.01,,
+v2_offset_ct3_dg2.5_uniform_cylinder,D2cc_Gy,20.01,20.01,0
 v2_offset_ct3_dg2.5_uniform_cylinder,D50_Gy,20.01,20.01,0
 v2_offset_ct3_dg2.5_uniform_cylinder,D95_Gy,20.01,20.01,0
 v2_offset_ct3_dg2.5_uniform_cylinder,D98_Gy,20.01,20.01,0
@@ -949,7 +949,7 @@ v2_offset_ct3_dg2.5_uniform_shell,V95Rx_pct,0,0,0
 v2_offset_ct3_dg2.5_uniform_shell,Volume_cc,1.93125,1.93125,0
 v2_offset_ct3_dg2.5_uniform_sphere,D0.03cc_Gy,20.01,20.01,0
 v2_offset_ct3_dg2.5_uniform_sphere,D2_Gy,20.01,20.01,0
-v2_offset_ct3_dg2.5_uniform_sphere,D2cc_Gy,20.01,,
+v2_offset_ct3_dg2.5_uniform_sphere,D2cc_Gy,20.01,20.01,0
 v2_offset_ct3_dg2.5_uniform_sphere,D50_Gy,20.01,20.01,0
 v2_offset_ct3_dg2.5_uniform_sphere,D95_Gy,20.01,20.01,0
 v2_offset_ct3_dg2.5_uniform_sphere,D98_Gy,20.01,20.01,0
@@ -961,7 +961,7 @@ v2_offset_ct3_dg2.5_uniform_sphere,V95Rx_pct,0,0,0
 v2_offset_ct3_dg2.5_uniform_sphere,Volume_cc,2.025,2.025,0
 v50_aligned_ct1_dg2.5_linear_cube,D0.03cc_Gy,21.805,21.805,0
 v50_aligned_ct1_dg2.5_linear_cube,D2_Gy,21.805,21.805,0
-v50_aligned_ct1_dg2.5_linear_cube,D2cc_Gy,21.7107777778,,
+v50_aligned_ct1_dg2.5_linear_cube,D2cc_Gy,21.7107777778,21.7107777778,0
 v50_aligned_ct1_dg2.5_linear_cube,D50_Gy,20.01,20.01,0
 v50_aligned_ct1_dg2.5_linear_cube,D95_Gy,18.3135,18.3135,0
 v50_aligned_ct1_dg2.5_linear_cube,D98_Gy,18.2124,18.2124,0
@@ -973,7 +973,7 @@ v50_aligned_ct1_dg2.5_linear_cube,V95Rx_pct,0,0,0
 v50_aligned_ct1_dg2.5_linear_cube,Volume_cc,52.03125,52.03125,0
 v50_aligned_ct1_dg2.5_linear_cylinder,D0.03cc_Gy,21.905,21.905,0
 v50_aligned_ct1_dg2.5_linear_cylinder,D2_Gy,21.905,21.905,0
-v50_aligned_ct1_dg2.5_linear_cylinder,D2cc_Gy,21.8084196891,,
+v50_aligned_ct1_dg2.5_linear_cylinder,D2cc_Gy,21.8084196891,21.8084196891,0
 v50_aligned_ct1_dg2.5_linear_cylinder,D50_Gy,20.01,20.01,0
 v50_aligned_ct1_dg2.5_linear_cylinder,D95_Gy,18.2145,18.2145,0
 v50_aligned_ct1_dg2.5_linear_cylinder,D98_Gy,18.1128,18.1128,0
@@ -985,7 +985,7 @@ v50_aligned_ct1_dg2.5_linear_cylinder,V95Rx_pct,0,0,0
 v50_aligned_ct1_dg2.5_linear_cylinder,Volume_cc,47.04375,47.04375,0
 v50_aligned_ct1_dg2.5_linear_shell,D0.03cc_Gy,23.505,23.505,0
 v50_aligned_ct1_dg2.5_linear_shell,D2_Gy,23.2129633028,23.2129633028,0
-v50_aligned_ct1_dg2.5_linear_shell,D2cc_Gy,23.1088709677,,
+v50_aligned_ct1_dg2.5_linear_shell,D2cc_Gy,23.1088709677,23.1088709677,0
 v50_aligned_ct1_dg2.5_linear_shell,D50_Gy,20.01,20.01,0
 v50_aligned_ct1_dg2.5_linear_shell,D95_Gy,17.0070833333,17.0070833333,0
 v50_aligned_ct1_dg2.5_linear_shell,D98_Gy,16.8070366972,16.8070366972,0
@@ -997,7 +997,7 @@ v50_aligned_ct1_dg2.5_linear_shell,V95Rx_pct,0,0,0
 v50_aligned_ct1_dg2.5_linear_shell,Volume_cc,49.125,49.125,-7.1054273576e-15
 v50_aligned_ct1_dg2.5_linear_sphere,D0.03cc_Gy,22.205,22.205,0
 v50_aligned_ct1_dg2.5_linear_sphere,D2_Gy,21.910962963,21.910962963,0
-v50_aligned_ct1_dg2.5_linear_sphere,D2cc_Gy,21.7137603306,,
+v50_aligned_ct1_dg2.5_linear_sphere,D2cc_Gy,21.7137603306,21.7137603306,0
 v50_aligned_ct1_dg2.5_linear_sphere,D50_Gy,20.01,20.01,0
 v50_aligned_ct1_dg2.5_linear_sphere,D95_Gy,18.3127892562,18.3127892562,0
 v50_aligned_ct1_dg2.5_linear_sphere,D98_Gy,18.109037037,18.109037037,0
@@ -1009,7 +1009,7 @@ v50_aligned_ct1_dg2.5_linear_sphere,V95Rx_pct,0,0,0
 v50_aligned_ct1_dg2.5_linear_sphere,Volume_cc,49.90625,49.90625,0
 v50_aligned_ct1_dg2.5_radial_shell,D0.03cc_Gy,25.235,25.235,0
 v50_aligned_ct1_dg2.5_radial_shell,D2_Gy,25.2232083333,25.2232083333,0
-v50_aligned_ct1_dg2.5_radial_shell,D2cc_Gy,25.2064285714,,
+v50_aligned_ct1_dg2.5_radial_shell,D2cc_Gy,25.2064285714,25.2064285714,0
 v50_aligned_ct1_dg2.5_radial_shell,D50_Gy,24.9594565217,24.9594565217,0
 v50_aligned_ct1_dg2.5_radial_shell,D95_Gy,24.7327403846,24.7327403846,0
 v50_aligned_ct1_dg2.5_radial_shell,D98_Gy,24.7198055556,24.7198055556,0
@@ -1021,7 +1021,7 @@ v50_aligned_ct1_dg2.5_radial_shell,V95Rx_pct,100,100,0
 v50_aligned_ct1_dg2.5_radial_shell,Volume_cc,49.125,49.125,0
 v50_aligned_ct1_dg2.5_radial_sphere,D0.03cc_Gy,29.706,29.706,0
 v50_aligned_ct1_dg2.5_radial_sphere,D2_Gy,29.0958125,29.0958125,0
-v50_aligned_ct1_dg2.5_radial_sphere,D2cc_Gy,28.82625,,
+v50_aligned_ct1_dg2.5_radial_sphere,D2cc_Gy,28.82625,28.82625,0
 v50_aligned_ct1_dg2.5_radial_sphere,D50_Gy,27.2818303571,27.2818303571,0
 v50_aligned_ct1_dg2.5_radial_sphere,D95_Gy,26.6298323171,26.6298323171,0
 v50_aligned_ct1_dg2.5_radial_sphere,D98_Gy,26.596375,26.596375,0
@@ -1033,7 +1033,7 @@ v50_aligned_ct1_dg2.5_radial_sphere,V95Rx_pct,100,100,-2.84217094304e-14
 v50_aligned_ct1_dg2.5_radial_sphere,Volume_cc,49.90625,49.90625,7.1054273576e-15
 v50_aligned_ct1_dg2.5_uniform_cube,D0.03cc_Gy,20.01,20.01,0
 v50_aligned_ct1_dg2.5_uniform_cube,D2_Gy,20.01,20.01,0
-v50_aligned_ct1_dg2.5_uniform_cube,D2cc_Gy,20.01,,
+v50_aligned_ct1_dg2.5_uniform_cube,D2cc_Gy,20.01,20.01,0
 v50_aligned_ct1_dg2.5_uniform_cube,D50_Gy,20.01,20.01,0
 v50_aligned_ct1_dg2.5_uniform_cube,D95_Gy,20.01,20.01,0
 v50_aligned_ct1_dg2.5_uniform_cube,D98_Gy,20.01,20.01,0
@@ -1045,7 +1045,7 @@ v50_aligned_ct1_dg2.5_uniform_cube,V95Rx_pct,0,0,0
 v50_aligned_ct1_dg2.5_uniform_cube,Volume_cc,52.03125,52.03125,0
 v50_aligned_ct1_dg2.5_uniform_cylinder,D0.03cc_Gy,20.01,20.01,0
 v50_aligned_ct1_dg2.5_uniform_cylinder,D2_Gy,20.01,20.01,0
-v50_aligned_ct1_dg2.5_uniform_cylinder,D2cc_Gy,20.01,,
+v50_aligned_ct1_dg2.5_uniform_cylinder,D2cc_Gy,20.01,20.01,0
 v50_aligned_ct1_dg2.5_uniform_cylinder,D50_Gy,20.01,20.01,0
 v50_aligned_ct1_dg2.5_uniform_cylinder,D95_Gy,20.01,20.01,0
 v50_aligned_ct1_dg2.5_uniform_cylinder,D98_Gy,20.01,20.01,0
@@ -1057,7 +1057,7 @@ v50_aligned_ct1_dg2.5_uniform_cylinder,V95Rx_pct,0,0,0
 v50_aligned_ct1_dg2.5_uniform_cylinder,Volume_cc,47.04375,47.04375,0
 v50_aligned_ct1_dg2.5_uniform_shell,D0.03cc_Gy,20.01,20.01,0
 v50_aligned_ct1_dg2.5_uniform_shell,D2_Gy,20.01,20.01,0
-v50_aligned_ct1_dg2.5_uniform_shell,D2cc_Gy,20.01,,
+v50_aligned_ct1_dg2.5_uniform_shell,D2cc_Gy,20.01,20.01,0
 v50_aligned_ct1_dg2.5_uniform_shell,D50_Gy,20.01,20.01,0
 v50_aligned_ct1_dg2.5_uniform_shell,D95_Gy,20.01,20.01,0
 v50_aligned_ct1_dg2.5_uniform_shell,D98_Gy,20.01,20.01,0
@@ -1069,7 +1069,7 @@ v50_aligned_ct1_dg2.5_uniform_shell,V95Rx_pct,0,0,0
 v50_aligned_ct1_dg2.5_uniform_shell,Volume_cc,49.125,49.125,0
 v50_aligned_ct1_dg2.5_uniform_sphere,D0.03cc_Gy,20.01,20.01,0
 v50_aligned_ct1_dg2.5_uniform_sphere,D2_Gy,20.01,20.01,0
-v50_aligned_ct1_dg2.5_uniform_sphere,D2cc_Gy,20.01,,
+v50_aligned_ct1_dg2.5_uniform_sphere,D2cc_Gy,20.01,20.01,0
 v50_aligned_ct1_dg2.5_uniform_sphere,D50_Gy,20.01,20.01,0
 v50_aligned_ct1_dg2.5_uniform_sphere,D95_Gy,20.01,20.01,0
 v50_aligned_ct1_dg2.5_uniform_sphere,D98_Gy,20.01,20.01,0
@@ -1081,7 +1081,7 @@ v50_aligned_ct1_dg2.5_uniform_sphere,V95Rx_pct,0,0,0
 v50_aligned_ct1_dg2.5_uniform_sphere,Volume_cc,49.90625,49.90625,0
 v50_aligned_ct3_dg2.5_linear_cube,D0.03cc_Gy,21.805,21.805,0
 v50_aligned_ct3_dg2.5_linear_cube,D2_Gy,21.805,21.805,0
-v50_aligned_ct3_dg2.5_linear_cube,D2cc_Gy,21.805,,
+v50_aligned_ct3_dg2.5_linear_cube,D2cc_Gy,21.805,21.805,0
 v50_aligned_ct3_dg2.5_linear_cube,D50_Gy,20.01,20.01,0
 v50_aligned_ct3_dg2.5_linear_cube,D95_Gy,18.2115,18.2115,0
 v50_aligned_ct3_dg2.5_linear_cube,D98_Gy,18.21,18.21,0
@@ -1093,7 +1093,7 @@ v50_aligned_ct3_dg2.5_linear_cube,V95Rx_pct,0,0,0
 v50_aligned_ct3_dg2.5_linear_cube,Volume_cc,54.84375,54.84375,0
 v50_aligned_ct3_dg2.5_linear_cylinder,D0.03cc_Gy,21.805,21.805,0
 v50_aligned_ct3_dg2.5_linear_cylinder,D2_Gy,21.805,21.805,0
-v50_aligned_ct3_dg2.5_linear_cylinder,D2cc_Gy,21.805,,
+v50_aligned_ct3_dg2.5_linear_cylinder,D2cc_Gy,21.805,21.805,0
 v50_aligned_ct3_dg2.5_linear_cylinder,D50_Gy,20.01,20.01,0
 v50_aligned_ct3_dg2.5_linear_cylinder,D95_Gy,18.2115,18.2115,0
 v50_aligned_ct3_dg2.5_linear_cylinder,D98_Gy,18.21,18.21,0
@@ -1105,7 +1105,7 @@ v50_aligned_ct3_dg2.5_linear_cylinder,V95Rx_pct,0,0,0
 v50_aligned_ct3_dg2.5_linear_cylinder,Volume_cc,47.04375,47.04375,0
 v50_aligned_ct3_dg2.5_linear_shell,D0.03cc_Gy,23.305,23.305,0
 v50_aligned_ct3_dg2.5_linear_shell,D2_Gy,23.305,23.305,0
-v50_aligned_ct3_dg2.5_linear_shell,D2cc_Gy,23.0128611111,,
+v50_aligned_ct3_dg2.5_linear_shell,D2cc_Gy,23.0128611111,23.0128611111,0
 v50_aligned_ct3_dg2.5_linear_shell,D50_Gy,20.01,20.01,0
 v50_aligned_ct3_dg2.5_linear_shell,D95_Gy,17.0091083333,17.0091083333,0
 v50_aligned_ct3_dg2.5_linear_shell,D98_Gy,16.7114345679,16.7114345679,0
@@ -1117,7 +1117,7 @@ v50_aligned_ct3_dg2.5_linear_shell,V95Rx_pct,0,0,0
 v50_aligned_ct3_dg2.5_linear_shell,Volume_cc,48.8625,48.8625,0
 v50_aligned_ct3_dg2.5_linear_sphere,D0.03cc_Gy,22.105,22.105,0
 v50_aligned_ct3_dg2.5_linear_sphere,D2_Gy,21.8141731959,21.8141731959,0
-v50_aligned_ct3_dg2.5_linear_sphere,D2cc_Gy,21.8086426117,,
+v50_aligned_ct3_dg2.5_linear_sphere,D2cc_Gy,21.8086426117,21.8086426117,0
 v50_aligned_ct3_dg2.5_linear_sphere,D50_Gy,20.01,20.01,0
 v50_aligned_ct3_dg2.5_linear_sphere,D95_Gy,18.2140257732,18.2140257732,0
 v50_aligned_ct3_dg2.5_linear_sphere,D98_Gy,18.2058268041,18.2058268041,0
@@ -1129,7 +1129,7 @@ v50_aligned_ct3_dg2.5_linear_sphere,V95Rx_pct,0,0,0
 v50_aligned_ct3_dg2.5_linear_sphere,Volume_cc,49.70625,49.70625,0
 v50_aligned_ct3_dg2.5_radial_shell,D0.03cc_Gy,25.235,25.235,0
 v50_aligned_ct3_dg2.5_radial_shell,D2_Gy,25.219925,25.219925,0
-v50_aligned_ct3_dg2.5_radial_shell,D2cc_Gy,25.1953333333,,
+v50_aligned_ct3_dg2.5_radial_shell,D2cc_Gy,25.1953333333,25.1953333333,0
 v50_aligned_ct3_dg2.5_radial_shell,D50_Gy,24.9519791667,24.9519791667,0
 v50_aligned_ct3_dg2.5_radial_shell,D95_Gy,24.7297638889,24.7297638889,0
 v50_aligned_ct3_dg2.5_radial_shell,D98_Gy,24.7189055556,24.7189055556,0
@@ -1141,7 +1141,7 @@ v50_aligned_ct3_dg2.5_radial_shell,V95Rx_pct,100,100,-2.84217094304e-14
 v50_aligned_ct3_dg2.5_radial_shell,Volume_cc,48.8625,48.8625,7.1054273576e-15
 v50_aligned_ct3_dg2.5_radial_sphere,D0.03cc_Gy,29.6335,29.6335,0
 v50_aligned_ct3_dg2.5_radial_sphere,D2_Gy,29.0524875,29.0524875,0
-v50_aligned_ct3_dg2.5_radial_sphere,D2cc_Gy,28.8229166667,,
+v50_aligned_ct3_dg2.5_radial_sphere,D2cc_Gy,28.8229166667,28.8229166667,0
 v50_aligned_ct3_dg2.5_radial_sphere,D50_Gy,27.28234375,27.28234375,0
 v50_aligned_ct3_dg2.5_radial_sphere,D95_Gy,26.63534375,26.63534375,0
 v50_aligned_ct3_dg2.5_radial_sphere,D98_Gy,26.6181375,26.6181375,0
@@ -1153,7 +1153,7 @@ v50_aligned_ct3_dg2.5_radial_sphere,V95Rx_pct,100,100,0
 v50_aligned_ct3_dg2.5_radial_sphere,Volume_cc,49.70625,49.70625,0
 v50_aligned_ct3_dg2.5_uniform_cube,D0.03cc_Gy,20.01,20.01,0
 v50_aligned_ct3_dg2.5_uniform_cube,D2_Gy,20.01,20.01,0
-v50_aligned_ct3_dg2.5_uniform_cube,D2cc_Gy,20.01,,
+v50_aligned_ct3_dg2.5_uniform_cube,D2cc_Gy,20.01,20.01,0
 v50_aligned_ct3_dg2.5_uniform_cube,D50_Gy,20.01,20.01,0
 v50_aligned_ct3_dg2.5_uniform_cube,D95_Gy,20.01,20.01,0
 v50_aligned_ct3_dg2.5_uniform_cube,D98_Gy,20.01,20.01,0
@@ -1165,7 +1165,7 @@ v50_aligned_ct3_dg2.5_uniform_cube,V95Rx_pct,0,0,0
 v50_aligned_ct3_dg2.5_uniform_cube,Volume_cc,54.84375,54.84375,0
 v50_aligned_ct3_dg2.5_uniform_cylinder,D0.03cc_Gy,20.01,20.01,0
 v50_aligned_ct3_dg2.5_uniform_cylinder,D2_Gy,20.01,20.01,0
-v50_aligned_ct3_dg2.5_uniform_cylinder,D2cc_Gy,20.01,,
+v50_aligned_ct3_dg2.5_uniform_cylinder,D2cc_Gy,20.01,20.01,0
 v50_aligned_ct3_dg2.5_uniform_cylinder,D50_Gy,20.01,20.01,0
 v50_aligned_ct3_dg2.5_uniform_cylinder,D95_Gy,20.01,20.01,0
 v50_aligned_ct3_dg2.5_uniform_cylinder,D98_Gy,20.01,20.01,0
@@ -1177,7 +1177,7 @@ v50_aligned_ct3_dg2.5_uniform_cylinder,V95Rx_pct,0,0,0
 v50_aligned_ct3_dg2.5_uniform_cylinder,Volume_cc,47.04375,47.04375,0
 v50_aligned_ct3_dg2.5_uniform_shell,D0.03cc_Gy,20.01,20.01,0
 v50_aligned_ct3_dg2.5_uniform_shell,D2_Gy,20.01,20.01,0
-v50_aligned_ct3_dg2.5_uniform_shell,D2cc_Gy,20.01,,
+v50_aligned_ct3_dg2.5_uniform_shell,D2cc_Gy,20.01,20.01,0
 v50_aligned_ct3_dg2.5_uniform_shell,D50_Gy,20.01,20.01,0
 v50_aligned_ct3_dg2.5_uniform_shell,D95_Gy,20.01,20.01,0
 v50_aligned_ct3_dg2.5_uniform_shell,D98_Gy,20.01,20.01,0
@@ -1189,7 +1189,7 @@ v50_aligned_ct3_dg2.5_uniform_shell,V95Rx_pct,0,0,0
 v50_aligned_ct3_dg2.5_uniform_shell,Volume_cc,48.8625,48.8625,0
 v50_aligned_ct3_dg2.5_uniform_sphere,D0.03cc_Gy,20.01,20.01,0
 v50_aligned_ct3_dg2.5_uniform_sphere,D2_Gy,20.01,20.01,0
-v50_aligned_ct3_dg2.5_uniform_sphere,D2cc_Gy,20.01,,
+v50_aligned_ct3_dg2.5_uniform_sphere,D2cc_Gy,20.01,20.01,0
 v50_aligned_ct3_dg2.5_uniform_sphere,D50_Gy,20.01,20.01,0
 v50_aligned_ct3_dg2.5_uniform_sphere,D95_Gy,20.01,20.01,0
 v50_aligned_ct3_dg2.5_uniform_sphere,D98_Gy,20.01,20.01,0
@@ -1201,7 +1201,7 @@ v50_aligned_ct3_dg2.5_uniform_sphere,V95Rx_pct,0,0,0
 v50_aligned_ct3_dg2.5_uniform_sphere,Volume_cc,49.70625,49.70625,0
 v50_offset_ct1_dg2.5_linear_cube,D0.03cc_Gy,21.805,21.805,0
 v50_offset_ct1_dg2.5_linear_cube,D2_Gy,21.805,21.805,0
-v50_offset_ct1_dg2.5_linear_cube,D2cc_Gy,21.7107777778,,
+v50_offset_ct1_dg2.5_linear_cube,D2cc_Gy,21.7107777778,21.7107777778,0
 v50_offset_ct1_dg2.5_linear_cube,D50_Gy,20.015,20.015,0
 v50_offset_ct1_dg2.5_linear_cube,D95_Gy,18.413,18.413,0
 v50_offset_ct1_dg2.5_linear_cube,D98_Gy,18.3122,18.3122,0
@@ -1213,7 +1213,7 @@ v50_offset_ct1_dg2.5_linear_cube,V95Rx_pct,0,0,0
 v50_offset_ct1_dg2.5_linear_cube,Volume_cc,50.625,50.625,0
 v50_offset_ct1_dg2.5_linear_cylinder,D0.03cc_Gy,22.005,22.005,0
 v50_offset_ct1_dg2.5_linear_cylinder,D2_Gy,22.005,22.005,0
-v50_offset_ct1_dg2.5_linear_cylinder,D2cc_Gy,21.909079602,,
+v50_offset_ct1_dg2.5_linear_cylinder,D2cc_Gy,21.909079602,21.909079602,0
 v50_offset_ct1_dg2.5_linear_cylinder,D50_Gy,20.015,20.015,0
 v50_offset_ct1_dg2.5_linear_cylinder,D95_Gy,18.215,18.215,0
 v50_offset_ct1_dg2.5_linear_cylinder,D98_Gy,18.113,18.113,0
@@ -1225,7 +1225,7 @@ v50_offset_ct1_dg2.5_linear_cylinder,V95Rx_pct,0,0,0
 v50_offset_ct1_dg2.5_linear_cylinder,Volume_cc,50.25,50.25,0
 v50_offset_ct1_dg2.5_linear_shell,D0.03cc_Gy,23.505,23.505,0
 v50_offset_ct1_dg2.5_linear_shell,D2_Gy,23.3074778947,23.3074778947,0
-v50_offset_ct1_dg2.5_linear_shell,D2cc_Gy,23.1135470085,,
+v50_offset_ct1_dg2.5_linear_shell,D2cc_Gy,23.1135470085,23.1135470085,0
 v50_offset_ct1_dg2.5_linear_shell,D50_Gy,20.0137190083,20.0137190083,0
 v50_offset_ct1_dg2.5_linear_shell,D95_Gy,17.0120294118,17.0120294118,0
 v50_offset_ct1_dg2.5_linear_shell,D98_Gy,16.8113734694,16.8113734694,0
@@ -1237,7 +1237,7 @@ v50_offset_ct1_dg2.5_linear_shell,V95Rx_pct,0,0,0
 v50_offset_ct1_dg2.5_linear_shell,Volume_cc,49.83125,49.83125,0
 v50_offset_ct1_dg2.5_linear_sphere,D0.03cc_Gy,22.305,22.305,0
 v50_offset_ct1_dg2.5_linear_sphere,D2_Gy,21.9145692308,21.9145692308,0
-v50_offset_ct1_dg2.5_linear_sphere,D2cc_Gy,21.8081775701,,
+v50_offset_ct1_dg2.5_linear_sphere,D2cc_Gy,21.8081775701,21.8081775701,0
 v50_offset_ct1_dg2.5_linear_sphere,D50_Gy,20.0143076923,20.0143076923,0
 v50_offset_ct1_dg2.5_linear_sphere,D95_Gy,18.40740625,18.40740625,0
 v50_offset_ct1_dg2.5_linear_sphere,D98_Gy,18.1142944444,18.1142944444,0
@@ -1249,7 +1249,7 @@ v50_offset_ct1_dg2.5_linear_sphere,V95Rx_pct,0,0,0
 v50_offset_ct1_dg2.5_linear_sphere,Volume_cc,49.975,49.975,0
 v50_offset_ct1_dg2.5_radial_shell,D0.03cc_Gy,25.235,25.235,0
 v50_offset_ct1_dg2.5_radial_shell,D2_Gy,25.2222159292,25.2222159292,0
-v50_offset_ct1_dg2.5_radial_shell,D2cc_Gy,25.2099032258,,
+v50_offset_ct1_dg2.5_radial_shell,D2cc_Gy,25.2099032258,25.2099032258,0
 v50_offset_ct1_dg2.5_radial_shell,D50_Gy,24.959335443,24.959335443,0
 v50_offset_ct1_dg2.5_radial_shell,D95_Gy,24.7311955128,24.7311955128,0
 v50_offset_ct1_dg2.5_radial_shell,D98_Gy,24.7162552147,24.7162552147,0
@@ -1261,7 +1261,7 @@ v50_offset_ct1_dg2.5_radial_shell,V95Rx_pct,100,100,0
 v50_offset_ct1_dg2.5_radial_shell,Volume_cc,49.83125,49.83125,0
 v50_offset_ct1_dg2.5_radial_sphere,D0.03cc_Gy,29.707,29.707,0
 v50_offset_ct1_dg2.5_radial_sphere,D2_Gy,29.0684666667,29.0684666667,0
-v50_offset_ct1_dg2.5_radial_sphere,D2cc_Gy,28.826,,
+v50_offset_ct1_dg2.5_radial_sphere,D2cc_Gy,28.826,28.826,0
 v50_offset_ct1_dg2.5_radial_sphere,D50_Gy,27.28275,27.28275,0
 v50_offset_ct1_dg2.5_radial_sphere,D95_Gy,26.6326111111,26.6326111111,0
 v50_offset_ct1_dg2.5_radial_sphere,D98_Gy,26.5971180328,26.5971180328,0
@@ -1273,7 +1273,7 @@ v50_offset_ct1_dg2.5_radial_sphere,V95Rx_pct,100,100,1.42108547152e-14
 v50_offset_ct1_dg2.5_radial_sphere,Volume_cc,49.975,49.975,-7.1054273576e-15
 v50_offset_ct1_dg2.5_uniform_cube,D0.03cc_Gy,20.01,20.01,0
 v50_offset_ct1_dg2.5_uniform_cube,D2_Gy,20.01,20.01,0
-v50_offset_ct1_dg2.5_uniform_cube,D2cc_Gy,20.01,,
+v50_offset_ct1_dg2.5_uniform_cube,D2cc_Gy,20.01,20.01,0
 v50_offset_ct1_dg2.5_uniform_cube,D50_Gy,20.01,20.01,0
 v50_offset_ct1_dg2.5_uniform_cube,D95_Gy,20.01,20.01,0
 v50_offset_ct1_dg2.5_uniform_cube,D98_Gy,20.01,20.01,0
@@ -1285,7 +1285,7 @@ v50_offset_ct1_dg2.5_uniform_cube,V95Rx_pct,0,0,0
 v50_offset_ct1_dg2.5_uniform_cube,Volume_cc,50.625,50.625,0
 v50_offset_ct1_dg2.5_uniform_cylinder,D0.03cc_Gy,20.01,20.01,0
 v50_offset_ct1_dg2.5_uniform_cylinder,D2_Gy,20.01,20.01,0
-v50_offset_ct1_dg2.5_uniform_cylinder,D2cc_Gy,20.01,,
+v50_offset_ct1_dg2.5_uniform_cylinder,D2cc_Gy,20.01,20.01,0
 v50_offset_ct1_dg2.5_uniform_cylinder,D50_Gy,20.01,20.01,0
 v50_offset_ct1_dg2.5_uniform_cylinder,D95_Gy,20.01,20.01,0
 v50_offset_ct1_dg2.5_uniform_cylinder,D98_Gy,20.01,20.01,0
@@ -1297,7 +1297,7 @@ v50_offset_ct1_dg2.5_uniform_cylinder,V95Rx_pct,0,0,0
 v50_offset_ct1_dg2.5_uniform_cylinder,Volume_cc,50.25,50.25,0
 v50_offset_ct1_dg2.5_uniform_shell,D0.03cc_Gy,20.01,20.01,0
 v50_offset_ct1_dg2.5_uniform_shell,D2_Gy,20.01,20.01,0
-v50_offset_ct1_dg2.5_uniform_shell,D2cc_Gy,20.01,,
+v50_offset_ct1_dg2.5_uniform_shell,D2cc_Gy,20.01,20.01,0
 v50_offset_ct1_dg2.5_uniform_shell,D50_Gy,20.01,20.01,0
 v50_offset_ct1_dg2.5_uniform_shell,D95_Gy,20.01,20.01,0
 v50_offset_ct1_dg2.5_uniform_shell,D98_Gy,20.01,20.01,0
@@ -1309,7 +1309,7 @@ v50_offset_ct1_dg2.5_uniform_shell,V95Rx_pct,0,0,0
 v50_offset_ct1_dg2.5_uniform_shell,Volume_cc,49.83125,49.83125,0
 v50_offset_ct1_dg2.5_uniform_sphere,D0.03cc_Gy,20.01,20.01,0
 v50_offset_ct1_dg2.5_uniform_sphere,D2_Gy,20.01,20.01,0
-v50_offset_ct1_dg2.5_uniform_sphere,D2cc_Gy,20.01,,
+v50_offset_ct1_dg2.5_uniform_sphere,D2cc_Gy,20.01,20.01,0
 v50_offset_ct1_dg2.5_uniform_sphere,D50_Gy,20.01,20.01,0
 v50_offset_ct1_dg2.5_uniform_sphere,D95_Gy,20.01,20.01,0
 v50_offset_ct1_dg2.5_uniform_sphere,D98_Gy,20.01,20.01,0
@@ -1321,7 +1321,7 @@ v50_offset_ct1_dg2.5_uniform_sphere,V95Rx_pct,0,0,0
 v50_offset_ct1_dg2.5_uniform_sphere,Volume_cc,49.975,49.975,0
 v50_offset_ct3_dg2.5_linear_cube,D0.03cc_Gy,21.805,21.805,0
 v50_offset_ct3_dg2.5_linear_cube,D2_Gy,21.805,21.805,0
-v50_offset_ct3_dg2.5_linear_cube,D2cc_Gy,21.805,,
+v50_offset_ct3_dg2.5_linear_cube,D2cc_Gy,21.805,21.805,0
 v50_offset_ct3_dg2.5_linear_cube,D50_Gy,20.015,20.015,0
 v50_offset_ct3_dg2.5_linear_cube,D95_Gy,18.511,18.511,0
 v50_offset_ct3_dg2.5_linear_cube,D98_Gy,18.51,18.51,0
@@ -1333,7 +1333,7 @@ v50_offset_ct3_dg2.5_linear_cube,V95Rx_pct,0,0,0
 v50_offset_ct3_dg2.5_linear_cube,Volume_cc,50.625,50.625,0
 v50_offset_ct3_dg2.5_linear_cylinder,D0.03cc_Gy,21.805,21.805,0
 v50_offset_ct3_dg2.5_linear_cylinder,D2_Gy,21.805,21.805,0
-v50_offset_ct3_dg2.5_linear_cylinder,D2cc_Gy,21.805,,
+v50_offset_ct3_dg2.5_linear_cylinder,D2cc_Gy,21.805,21.805,0
 v50_offset_ct3_dg2.5_linear_cylinder,D50_Gy,20.01,20.01,0
 v50_offset_ct3_dg2.5_linear_cylinder,D95_Gy,18.2115,18.2115,0
 v50_offset_ct3_dg2.5_linear_cylinder,D98_Gy,18.21,18.21,0
@@ -1345,7 +1345,7 @@ v50_offset_ct3_dg2.5_linear_cylinder,V95Rx_pct,0,0,0
 v50_offset_ct3_dg2.5_linear_cylinder,Volume_cc,48.99375,48.99375,0
 v50_offset_ct3_dg2.5_linear_shell,D0.03cc_Gy,23.305,23.305,0
 v50_offset_ct3_dg2.5_linear_shell,D2_Gy,23.305,23.305,0
-v50_offset_ct3_dg2.5_linear_shell,D2cc_Gy,23.0140112994,,
+v50_offset_ct3_dg2.5_linear_shell,D2cc_Gy,23.0140112994,23.0140112994,0
 v50_offset_ct3_dg2.5_linear_shell,D50_Gy,20.0117355372,20.0117355372,0
 v50_offset_ct3_dg2.5_linear_shell,D95_Gy,17.0106512605,17.0106512605,0
 v50_offset_ct3_dg2.5_linear_shell,D98_Gy,16.7130757576,16.7130757576,0
@@ -1357,7 +1357,7 @@ v50_offset_ct3_dg2.5_linear_shell,V95Rx_pct,0,0,0
 v50_offset_ct3_dg2.5_linear_shell,Volume_cc,49.96875,49.96875,0
 v50_offset_ct3_dg2.5_linear_sphere,D0.03cc_Gy,22.105,22.105,0
 v50_offset_ct3_dg2.5_linear_sphere,D2_Gy,21.8147757009,21.8147757009,0
-v50_offset_ct3_dg2.5_linear_sphere,D2cc_Gy,21.8097975078,,
+v50_offset_ct3_dg2.5_linear_sphere,D2cc_Gy,21.8097975078,21.8097975078,0
 v50_offset_ct3_dg2.5_linear_sphere,D50_Gy,20.0113461538,20.0113461538,0
 v50_offset_ct3_dg2.5_linear_sphere,D95_Gy,18.505528169,18.505528169,0
 v50_offset_ct3_dg2.5_linear_sphere,D98_Gy,18.2072765957,18.2072765957,0
@@ -1369,7 +1369,7 @@ v50_offset_ct3_dg2.5_linear_sphere,V95Rx_pct,0,0,0
 v50_offset_ct3_dg2.5_linear_sphere,Volume_cc,50.0625,50.0625,0
 v50_offset_ct3_dg2.5_radial_shell,D0.03cc_Gy,25.235,25.235,0
 v50_offset_ct3_dg2.5_radial_shell,D2_Gy,25.2237954545,25.2237954545,0
-v50_offset_ct3_dg2.5_radial_shell,D2cc_Gy,25.2122839506,,
+v50_offset_ct3_dg2.5_radial_shell,D2cc_Gy,25.2122839506,25.2122839506,0
 v50_offset_ct3_dg2.5_radial_shell,D50_Gy,24.96125,24.96125,0
 v50_offset_ct3_dg2.5_radial_shell,D95_Gy,24.7308333333,24.7308333333,0
 v50_offset_ct3_dg2.5_radial_shell,D98_Gy,24.7160192308,24.7160192308,0
@@ -1381,7 +1381,7 @@ v50_offset_ct3_dg2.5_radial_shell,V95Rx_pct,100,100,0
 v50_offset_ct3_dg2.5_radial_shell,Volume_cc,49.96875,49.96875,0
 v50_offset_ct3_dg2.5_radial_sphere,D0.03cc_Gy,29.709,29.709,0
 v50_offset_ct3_dg2.5_radial_sphere,D2_Gy,29.0642,29.0642,0
-v50_offset_ct3_dg2.5_radial_sphere,D2cc_Gy,28.8294444444,,
+v50_offset_ct3_dg2.5_radial_sphere,D2cc_Gy,28.8294444444,28.8294444444,0
 v50_offset_ct3_dg2.5_radial_sphere,D50_Gy,27.2785294118,27.2785294118,0
 v50_offset_ct3_dg2.5_radial_sphere,D95_Gy,26.6310344828,26.6310344828,0
 v50_offset_ct3_dg2.5_radial_sphere,D98_Gy,26.59756,26.59756,0
@@ -1393,7 +1393,7 @@ v50_offset_ct3_dg2.5_radial_sphere,V95Rx_pct,100,100,0
 v50_offset_ct3_dg2.5_radial_sphere,Volume_cc,50.0625,50.0625,0
 v50_offset_ct3_dg2.5_uniform_cube,D0.03cc_Gy,20.01,20.01,0
 v50_offset_ct3_dg2.5_uniform_cube,D2_Gy,20.01,20.01,0
-v50_offset_ct3_dg2.5_uniform_cube,D2cc_Gy,20.01,,
+v50_offset_ct3_dg2.5_uniform_cube,D2cc_Gy,20.01,20.01,0
 v50_offset_ct3_dg2.5_uniform_cube,D50_Gy,20.01,20.01,0
 v50_offset_ct3_dg2.5_uniform_cube,D95_Gy,20.01,20.01,0
 v50_offset_ct3_dg2.5_uniform_cube,D98_Gy,20.01,20.01,0
@@ -1405,7 +1405,7 @@ v50_offset_ct3_dg2.5_uniform_cube,V95Rx_pct,0,0,0
 v50_offset_ct3_dg2.5_uniform_cube,Volume_cc,50.625,50.625,0
 v50_offset_ct3_dg2.5_uniform_cylinder,D0.03cc_Gy,20.01,20.01,0
 v50_offset_ct3_dg2.5_uniform_cylinder,D2_Gy,20.01,20.01,0
-v50_offset_ct3_dg2.5_uniform_cylinder,D2cc_Gy,20.01,,
+v50_offset_ct3_dg2.5_uniform_cylinder,D2cc_Gy,20.01,20.01,0
 v50_offset_ct3_dg2.5_uniform_cylinder,D50_Gy,20.01,20.01,0
 v50_offset_ct3_dg2.5_uniform_cylinder,D95_Gy,20.01,20.01,0
 v50_offset_ct3_dg2.5_uniform_cylinder,D98_Gy,20.01,20.01,0
@@ -1417,7 +1417,7 @@ v50_offset_ct3_dg2.5_uniform_cylinder,V95Rx_pct,0,0,0
 v50_offset_ct3_dg2.5_uniform_cylinder,Volume_cc,48.99375,48.99375,0
 v50_offset_ct3_dg2.5_uniform_shell,D0.03cc_Gy,20.01,20.01,0
 v50_offset_ct3_dg2.5_uniform_shell,D2_Gy,20.01,20.01,0
-v50_offset_ct3_dg2.5_uniform_shell,D2cc_Gy,20.01,,
+v50_offset_ct3_dg2.5_uniform_shell,D2cc_Gy,20.01,20.01,0
 v50_offset_ct3_dg2.5_uniform_shell,D50_Gy,20.01,20.01,0
 v50_offset_ct3_dg2.5_uniform_shell,D95_Gy,20.01,20.01,0
 v50_offset_ct3_dg2.5_uniform_shell,D98_Gy,20.01,20.01,0
@@ -1429,7 +1429,7 @@ v50_offset_ct3_dg2.5_uniform_shell,V95Rx_pct,0,0,0
 v50_offset_ct3_dg2.5_uniform_shell,Volume_cc,49.96875,49.96875,0
 v50_offset_ct3_dg2.5_uniform_sphere,D0.03cc_Gy,20.01,20.01,0
 v50_offset_ct3_dg2.5_uniform_sphere,D2_Gy,20.01,20.01,0
-v50_offset_ct3_dg2.5_uniform_sphere,D2cc_Gy,20.01,,
+v50_offset_ct3_dg2.5_uniform_sphere,D2cc_Gy,20.01,20.01,0
 v50_offset_ct3_dg2.5_uniform_sphere,D50_Gy,20.01,20.01,0
 v50_offset_ct3_dg2.5_uniform_sphere,D95_Gy,20.01,20.01,0
 v50_offset_ct3_dg2.5_uniform_sphere,D98_Gy,20.01,20.01,0

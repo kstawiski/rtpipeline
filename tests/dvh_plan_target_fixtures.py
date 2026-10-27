@@ -43,6 +43,22 @@ RTSTRUCT_UID = f"{UID_ROOT}.4"
 OTHER_RTSTRUCT_UID = f"{UID_ROOT}.5"
 STUDY_UID = f"{UID_ROOT}.6"
 
+
+def assert_d2cc_columns(frame):
+    """Check additive D2cc output separately from historical table projections."""
+    assert {'D2ccGy', 'D2cc_status'}.issubset(frame.columns)
+    for _, row in frame.iterrows():
+        if row.dose_grid_coverage_status != 'fully_covered':
+            assert pd.isna(row.D2ccGy)
+            assert row.D2cc_status == row.dose_grid_coverage_status
+        elif row['Volume (cm³)'] < 2.:
+            assert pd.isna(row.D2ccGy)
+            assert row.D2cc_status == 'roi_below_2cc'
+        else:
+            assert np.isfinite(row.D2ccGy)
+            assert row.DminGy <= row.D2ccGy <= row.DmaxGy
+            assert row.D2cc_status == 'available'
+
 # Dose grid: 20 x 20 voxels in-plane at 2 mm, five planes at 2 mm.
 GRID_SPACING_MM = 2.0
 GRID_SIZE = 20

@@ -2031,8 +2031,12 @@ def _small_volume_dose(bins, cumulative, volume_cm3, minimum, maximum, requested
     The exact volume boundary is inclusive. No tolerance promotes a smaller ROI.
     """
     if volume_cm3 < requested_cm3:
-        return None, "roi_below_0.03cc"
-    value = _bounded_dose_at_fraction(bins, cumulative, requested_cm3 / volume_cm3, minimum, maximum)
+        return None, f"roi_below_{requested_cm3:g}cc"
+    if requested_cm3 == 2.0 and volume_cm3 == requested_cm3:
+        # Whole-ROI D2cc is Dmin, even when the first bin centre is above zero.
+        value = float(minimum)
+    else:
+        value = _bounded_dose_at_fraction(bins, cumulative, requested_cm3 / volume_cm3, minimum, maximum)
     return (value, "available") if np.isfinite(value) else (None, "not_computable")
 
 
@@ -2080,6 +2084,9 @@ def _compute_metrics(abs_dvh, rx_dose: Optional[float]) -> Optional[Dict[str, fl
 
     D0_03ccGy, D0_03cc_status = _small_volume_dose(
         bins_abs, cum_abs, V_total, DminGy, DmaxGy, 0.03
+    )
+    D2ccGy, D2cc_status = _small_volume_dose(
+        bins_abs, cum_abs, V_total, DminGy, DmaxGy, 2.0
     )
 
     # Coverage at 95% and 100% of Rx dose
@@ -2134,6 +2141,8 @@ def _compute_metrics(abs_dvh, rx_dose: Optional[float]) -> Optional[Dict[str, fl
         "D0.1ccGy": D0_1ccGy,
         "D0.03ccGy": D0_03ccGy,
         "D0.03cc_status": D0_03cc_status,
+        "D2ccGy": D2ccGy,
+        "D2cc_status": D2cc_status,
         "Dmean%": Dmean_pct,
         "Dmax%": Dmax_pct,
         "Dmin%": Dmin_pct,
@@ -2222,6 +2231,9 @@ def _compute_metrics_from_arrays(
     D0_03ccGy, D0_03cc_status = _small_volume_dose(
         bin_centers, cumulative_vol, V_total, DminGy, DmaxGy, 0.03
     )
+    D2ccGy, D2cc_status = _small_volume_dose(
+        bin_centers, cumulative_vol, V_total, DminGy, DmaxGy, 2.0
+    )
 
     V95Rx_cc = V95Rx_pct = V100Rx_cc = V100Rx_pct = None
     Dmean_pct = Dmax_pct = Dmin_pct = D95_pct = D98_pct = D2_pct = D50_pct = None
@@ -2269,6 +2281,8 @@ def _compute_metrics_from_arrays(
         "D0.1ccGy": D0_1ccGy,
         "D0.03ccGy": D0_03ccGy,
         "D0.03cc_status": D0_03cc_status,
+        "D2ccGy": D2ccGy,
+        "D2cc_status": D2cc_status,
         "Dmean%": Dmean_pct,
         "Dmax%": Dmax_pct,
         "Dmin%": Dmin_pct,
@@ -3702,7 +3716,8 @@ def dvh_for_course(
             logger.error("DVH failed for ROI %s: %s", roi_name, exc)
             failed = annotate_dvh_metrics(
                 {"DmeanGy": None, "DmaxGy": None, "DminGy": None,
-                 "D0.03ccGy": None, "D0.03cc_status": "dvh_computation_failed"},
+                 "D0.03ccGy": None, "D0.03cc_status": "dvh_computation_failed",
+                 "D2ccGy": None, "D2cc_status": "dvh_computation_failed"},
                 technique=treatment_technique, structure_name=roi_name,
                 rtstruct_sop_instance_uid=rtstruct_sop_uid, rtstruct_path=rtstruct_path,
                 grid_coverage=coverage if coverage["status"] != "fully_covered" else
@@ -3728,6 +3743,7 @@ def dvh_for_course(
         if metrics is None:
             metrics = {"DmeanGy": None, "DmaxGy": None, "DminGy": None,
                        "D0.03ccGy": None, "D0.03cc_status": "not_computable",
+                       "D2ccGy": None, "D2cc_status": "not_computable",
                        "Volume (cm³)": coverage.get("roi_volume_cm3")}
         covered = None
         if coverage["status"] == "partial_grid":
