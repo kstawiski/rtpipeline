@@ -463,7 +463,7 @@ def test_dual_environment_contract_is_enforced_in_packaging_and_receipt():
     assert "python -m pip uninstall \\" in installer
     assert "--yes rtpipeline" in installer
     assert '--no-deps --editable "$PROJECT_DIR"' not in installer
-    assert installer.count('PYTHONPATH="${PROJECT_DIR}${PYTHONPATH:+:${PYTHONPATH}}"') == 2
+    assert installer.count('PYTHONPATH="${PROJECT_DIR}${PYTHONPATH:+:${PYTHONPATH}}"') == 3
     assert "env update --yes" in installer
     assert "--prune" in installer
 

@@ -30,6 +30,9 @@ From: kstawiski/rtpipeline:3.0.0
 
     For more information, visit https://github.com/kstawiski/rtpipeline.
 
+%environment
+    export PYTHONNOUSERSITE=1
+
 %runscript
     cd /app
     exec python webui/app.py "$@"

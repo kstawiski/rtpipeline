@@ -281,6 +281,10 @@ def _real_mixed_course(tmp_path, monkeypatch, *, add_bad_roi=False,
     report that many conditions (the last in sorted order) as technical
     failures with null values.
     Returns (course, cfg, rob, rs_path)."""
+    # This fixture tests source dispositions with stubbed feature extraction;
+    # it compares masks only within the current backend, not across versions.
+    from rtpipeline import radiomics_rasterizer
+    monkeypatch.setattr(radiomics_rasterizer, 'require_radiomics_rasterizer', lambda: None)
     course = tmp_path / 'P' / 'C'
     course.mkdir(parents=True)
     ct_dir = course / 'CT'

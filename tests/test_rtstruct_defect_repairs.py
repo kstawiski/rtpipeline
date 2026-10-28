@@ -116,6 +116,7 @@ def multiseries_fixture(tmp_path):
     return ct, source, rt
 
 
+@pytest.mark.usefixtures("rasterizer_guard_stub")
 def test_four_complete_rois_recover_eleven_remain_unresolved_no_clipping(tmp_path, monkeypatch):
     ct, source, rt = multiseries_fixture(tmp_path)
     before = source.read_bytes()

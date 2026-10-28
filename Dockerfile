@@ -10,7 +10,7 @@
 # Stage 1: Builder
 FROM condaforge/mambaforge:24.3.0-0 AS builder
 
-ENV PIP_NO_CACHE_DIR=1
+ENV PIP_NO_CACHE_DIR=1 PYTHONNOUSERSITE=1
 
 # Install build dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -45,6 +45,7 @@ RUN mkdir -p /projekty && ln -s /app /projekty/rtpipeline
 RUN mamba env create -f /app/envs/rtpipeline.yaml && \
     mamba clean -afy && rm -rf /root/.cache/pip /opt/conda/pkgs/* && \
     mamba env create -f /app/envs/rtpipeline-radiomics.yaml && \
+    /opt/conda/envs/rtpipeline-radiomics/bin/pip install --no-deps "rt-utils==1.2.7" && \
     mamba clean -afy && rm -rf /root/.cache/pip /opt/conda/pkgs/* && \
     mamba env create -f /app/envs/rtpipeline-custom-models.yaml && \
     mamba clean -afy && \
@@ -64,6 +65,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     LANG=C.UTF-8 \
     LC_ALL=C.UTF-8 \
     PYTHONUNBUFFERED=1 \
+    PYTHONNOUSERSITE=1 \
     PIP_NO_CACHE_DIR=1 \
     CONDA_DIR=/opt/conda \
     PATH=/opt/conda/envs/rtpipeline/bin:/opt/conda/bin:$PATH \
@@ -154,7 +156,8 @@ COPY --chown=rtpipeline:rtpipeline . /app/
 # pip to resolve them again would download a second Torch/CUDA stack.
 RUN pip install --no-deps -e . && \
     /opt/conda/envs/rtpipeline/bin/pip install --no-deps -e . && \
-    /opt/conda/envs/rtpipeline/bin/pip install --no-cache-dir psutil pytest
+    /opt/conda/envs/rtpipeline/bin/pip install --no-cache-dir psutil pytest && \
+    PYTHONPATH=/app PYTHONNOUSERSITE=1 /opt/conda/envs/rtpipeline-radiomics/bin/python /app/scripts/check_radiomics_environment.py
 
 
 

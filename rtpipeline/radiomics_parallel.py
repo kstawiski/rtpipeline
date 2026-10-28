@@ -337,6 +337,10 @@ def _get_builder(rs_path: Path):
         builders[key] = None
         return None
 
+    from .radiomics_rasterizer import require_radiomics_rasterizer
+
+    require_radiomics_rasterizer()
+
     ct_dir = _WORKER_STATE.get("ct_dir")
     if ct_dir is None:
         builders[key] = None
@@ -1673,6 +1677,25 @@ def parallel_radiomics_for_course(
         logger.info("No radiomics tasks for %s", course_dir)
         _invalidate_radiomics_outputs(out_path)
         return RadiomicsCourseOutcome.nothing_to_do("no RTSTRUCT ROIs were enumerated")
+
+    from .radiomics_ct_contract import FEATURE_POLICY_INVENTORY_ONLY
+    from .radiomics_rasterizer import require_radiomics_rasterizer
+
+    # Validate in the parent before any measurement workers start. Resume and
+    # terminal source-only/skip records do not prepare masks. Quantized contour
+    # candidates can still reach the scoped reader and need the same guard.
+    mask_tasks = (
+        task for task in tasks
+        if task.structural_code in (None, "ROI_CONTOUR_UNPARSEABLE", "ROI_CONTOUR_PARTIALLY_UNPARSEABLE")
+        and _norm(task.roi_name) not in skip_rois
+        and task.decision.feature_publication_policy != FEATURE_POLICY_INVENTORY_ONLY
+    )
+    if next(mask_tasks, None) is not None:
+        try:
+            require_radiomics_rasterizer()
+        except Exception:
+            _invalidate_radiomics_outputs(out_path)
+            raise
 
     if max_workers is None:
         worker_count = _calculate_optimal_workers()

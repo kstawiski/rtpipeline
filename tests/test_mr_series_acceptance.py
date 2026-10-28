@@ -17,6 +17,7 @@ from rtpipeline.radiomics_schema import RadiomicsFeatureTypeError
 from test_mr_series_dispositions import _env, _plant_stale, _read
 
 
+@pytest.mark.usefixtures("rasterizer_guard_stub")
 @pytest.mark.parametrize("change", ["source_bytes", "code", "effective_settings"])
 def test_mr_resume_rejects_changed_execution_identity(tmp_path, monkeypatch, change):
     config, series, source, output = _env(monkeypatch, tmp_path)
@@ -91,6 +92,7 @@ def test_required_absent_roi_cannot_hide_behind_other_rows(tmp_path, monkeypatch
     assert not output.with_suffix(".parquet").exists()
 
 
+@pytest.mark.usefixtures("rasterizer_guard_stub")
 def test_new_required_contract_rejects_previous_optional_failure(tmp_path, monkeypatch):
     config, series, _, output = _env(monkeypatch, tmp_path, fail_mask_coord=(0, 0, 0))
     radiomics.radiomics_for_mr_series(config, series)

@@ -55,6 +55,7 @@ def _reader(monkeypatch, names):
     return seen
 
 
+@pytest.mark.usefixtures("rasterizer_guard_stub")
 def test_expected_inventory_does_not_rasterize_recorded_point(tmp_path, monkeypatch):
     source = tmp_path / "rtstruct.dcm"
     dataset = _source(source)
@@ -99,6 +100,7 @@ def test_all_point_duplicate_names_still_fail_expected_inventory(tmp_path):
         )
 
 
+@pytest.mark.usefixtures("rasterizer_guard_stub")
 def test_explicit_skip_does_not_add_second_nonmeasurement(tmp_path, monkeypatch):
     source = tmp_path / "rtstruct.dcm"
     _source(source)
@@ -331,6 +333,7 @@ def test_alias_resolution_respects_source_scope_and_ambiguity(tmp_path, monkeypa
         assert canonical[0]["segmentation_source"] == required_source
 
 
+@pytest.mark.usefixtures("rasterizer_guard_stub")
 def test_optional_mask_failure_has_one_source_roi_denominator_row(tmp_path, monkeypatch):
     course, source, _, config = _course(tmp_path, monkeypatch)
     write_synthetic_rtstruct(source, roi_names=("vertebrae_T8",))

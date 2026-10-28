@@ -441,6 +441,7 @@ def test_parallel_all_series_conda_fallback_preserves_scope_opt_in(
         radpar.parallel_radiomics_for_course(cast(Any, _Cfg(tmp_path)), course)
 
 
+@pytest.mark.usefixtures("rasterizer_guard_stub")
 def test_all_series_parallel_and_conda_emit_one_auto_source(tmp_path, monkeypatch):
     src = tmp_path / "series"
     src.mkdir()

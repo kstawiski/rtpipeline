@@ -522,6 +522,7 @@ def _write_rtstruct_with_rois(
     return path
 
 
+@pytest.mark.usefixtures("rasterizer_guard_stub")
 def test_parallel_radiomics_recovers_from_broken_pool_during_backfill(tmp_path, monkeypatch):
     """Same CRITICAL regression, end-to-end through parallel_radiomics_for_course: a
     worker dying mid-batch must not lose ROI tasks. Fails on the un-remediated code
@@ -810,6 +811,7 @@ def test_parallel_success_record_uses_public_feature_schema_only(monkeypatch, tm
         assert record["stable_roi_identifier"] == "test-roi"
 
 
+@pytest.mark.usefixtures("rasterizer_guard_stub")
 def test_parallel_radiomics_region_failure_aborts_course_and_invalidates_table(tmp_path, monkeypatch):
     """A timed-out/failed ROI must not be omitted from an apparently complete table."""
     course_dir = tmp_path / "course"
@@ -857,6 +859,7 @@ def test_parallel_radiomics_region_failure_aborts_course_and_invalidates_table(t
     assert not output_path.exists(), "failed course must not retain a table presented as complete"
 
 
+@pytest.mark.usefixtures("rasterizer_guard_stub")
 def test_parallel_radiomics_none_result_aborts_course_and_invalidates_table(tmp_path, monkeypatch):
     course_dir = tmp_path / "course"
     course_dirs = build_course_dirs(course_dir)
@@ -991,6 +994,7 @@ def test_conda_delegation_failure_is_not_converted_to_nothing_to_do(tmp_path, mo
         function(config, course_root)
 
 
+@pytest.mark.usefixtures("rasterizer_guard_stub")
 def test_parallel_status_rows_are_not_written_as_feature_rows(tmp_path, monkeypatch):
     import json
     import pandas as pd

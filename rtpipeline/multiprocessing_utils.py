@@ -66,6 +66,7 @@ def multiprocessing_subprocess_env(env=None) -> dict[str, str]:
     RTpipeline installed nor its scientific dependencies in their environment.
     """
     result = dict(os.environ if env is None else env)
+    result["PYTHONNOUSERSITE"] = "1"
     startup = str(Path(__file__).with_name("_mp_startup"))
     paths = result["PYTHONPATH"].split(os.pathsep) if result.get("PYTHONPATH") else []
     result["PYTHONPATH"] = os.pathsep.join([startup, *[p for p in paths if p != startup]])

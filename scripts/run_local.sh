@@ -94,6 +94,7 @@ MAMBA_BIN_DIR="$(dirname "$MAMBA_BIN")"
 export PATH="${MAMBA_BIN_DIR}:${PATH}"
 export RTPIPELINE_CONDA_EXE="$MAMBA_BIN"
 export RTPIPELINE_RADIOMICS_ENV="rtpipeline-radiomics"
+export PYTHONNOUSERSITE=1
 
 command=(
     "$MAMBA_BIN" run --name rtpipeline

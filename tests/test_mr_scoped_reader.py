@@ -104,6 +104,7 @@ class _MockMRExtractor:
         return {"_firstorder_Mean": 42.0, "_firstorder_Energy": 1234.5}
 
 
+@pytest.mark.usefixtures("rasterizer_guard_stub")
 def test_clean_mr_masks_and_feature_rows_equivalence(tmp_path: Path, monkeypatch):
     """Equivalence proof: for clean MR ROIs without area-less items or scope problems,
     masks are byte-for-byte identical and feature rows match ae60f01 semantics."""
@@ -171,6 +172,7 @@ def test_clean_mr_masks_and_feature_rows_equivalence(tmp_path: Path, monkeypatch
         assert r_scoped["stable_roi_identifier"] == r_raw["stable_roi_identifier"]
 
 
+@pytest.mark.usefixtures("rasterizer_guard_stub")
 def test_mr_totalsegmentator_arealess_contour_item_regression(tmp_path: Path):
     """Regression (a): MR TotalSegmentator RTSTRUCT with an area-less (1-point) contour item
     fails raw rt-utils / OpenCV fillPoly, but is successfully measured after fix
@@ -219,6 +221,7 @@ def test_mr_totalsegmentator_arealess_contour_item_regression(tmp_path: Path):
     assert np.array_equal(masks["femur_left"], mask_femur)
 
 
+@pytest.mark.usefixtures("rasterizer_guard_stub")
 def test_mr_rtstruct_unresolved_scope_regression(tmp_path: Path):
     """Regression (b): MR RTSTRUCT referencing an SOP not in the MR series
     fails raw rt-utils as a whole file; after fix, normal ROI is measured and
@@ -339,6 +342,7 @@ def test_mr_unreadable_rtstruct_negative_control(tmp_path: Path):
     assert any(f.get("status") == "failed" and f.get("reason_code") == "failed_source_read" for f in failures)
 
 
+@pytest.mark.usefixtures("rasterizer_guard_stub")
 def test_mr_unexplained_read_failure_negative_control(tmp_path: Path, monkeypatch):
     """Negative control: an ROI read failure NOT explained by scope/area-less items
     remains a failure."""

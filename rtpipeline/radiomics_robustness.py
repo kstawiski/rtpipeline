@@ -458,6 +458,7 @@ ROBUSTNESS_DISPOSITION_CODE_SOURCES = (
     "radiomics_robustness.py",
     "radiomics_robustness_outcomes.py",
     "radiomics.py",
+    "radiomics_rasterizer.py",
     "rtstruct_geometry.py",
     "radiomics_parallel.py",
     "radiomics_ct_contract.py",
@@ -893,6 +894,9 @@ def _write_robustness_source_dispositions(
             failed_entry, output_path=Path(output_path), outcome=outcome, error=RuntimeError
         )
 
+    from .radiomics_rasterizer import active_radiomics_rasterizer
+    from .stage_completion import execution_environment_fingerprint
+
     path = Path(course_dir) / "metadata" / ROBUSTNESS_SOURCE_DISPOSITIONS_FILENAME
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
@@ -911,6 +915,8 @@ def _write_robustness_source_dispositions(
         "tolerated_source_failures_sha256": _content_sha256(tolerated),
         "source_bindings": source_bindings,
         "code_identity": dict(code_identity),
+        "environment_fingerprint": execution_environment_fingerprint(),
+        "rasterizer": active_radiomics_rasterizer(),
         "effective_configuration": effective_configuration,
         "effective_configuration_sha256": _content_sha256(effective_configuration),
         "output_path": Path(output_path).name,
@@ -5719,6 +5725,15 @@ def robustness_for_course(
         combined_df.loc[selected, "requested_condition_ids"] = json.dumps(sorted(requested_ids))
         combined_df.loc[selected, "impossible_condition_ids"] = json.dumps(impossible_ids)
         combined_df.loc[selected, "possible_condition_count"] = len(requested_ids) - len(impossible_ids)
+
+    from .radiomics_ct_contract import _rasterizer_columns
+    from .stage_completion import execution_environment_fingerprint
+
+    for _col_name, _col_val in (
+        *_rasterizer_columns().items(),
+        ("environment_fingerprint", execution_environment_fingerprint()),
+    ):
+        combined_df[_col_name] = _col_val
 
     combined_df = _order_robustness_rows(combined_df)
 

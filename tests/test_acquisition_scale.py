@@ -436,6 +436,7 @@ def _config(tmp_path: Path, *, resume: bool = False) -> PipelineConfig:
     )
 
 
+@pytest.mark.usefixtures("rasterizer_guard_stub")
 def test_default_parallel_backend_publishes_contracted_full_series_descriptor(
     tmp_path: Path,
     monkeypatch,

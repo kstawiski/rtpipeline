@@ -1401,7 +1401,10 @@ def _rtstruct_masks(
     if structural_inventory is not None and not structurally_extractable:
         return {}
     try:
+        from .radiomics_rasterizer import require_radiomics_rasterizer
         from rt_utils import RTStructBuilder
+
+        require_radiomics_rasterizer()
     except Exception as exc:
         raise RadiomicsCourseExtractionError(
             f"RTSTRUCT mask conversion is unavailable for {rs_path}: {exc}"
@@ -2295,7 +2298,10 @@ def radiomics_for_course(
         custom_rebuild_attempted = False
         custom_rebuild_published = False
         try:
+            from .radiomics_rasterizer import require_radiomics_rasterizer
             from rt_utils import RTStructBuilder
+
+            require_radiomics_rasterizer()
 
             rs_manual_path = contracted_rs_manual
             rs_auto_path = course_dir / "RS_auto.dcm"
@@ -3451,6 +3457,8 @@ def _mr_parameter_provenance(
     run_identifier: str,
     code_revision: str,
 ) -> dict[str, str]:
+    from .radiomics_ct_contract import _rasterizer_columns
+
     arm = _mr_parameter_arm(normalize_override)
     params_path = _get_params_file(config, "MR")
     return {
@@ -3468,6 +3476,7 @@ def _mr_parameter_provenance(
         ),
         "run_identifier": run_identifier,
         "code_revision": code_revision,
+        **_rasterizer_columns(),
     }
 
 

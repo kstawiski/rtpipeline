@@ -84,6 +84,7 @@ from .radiomics_ct_contract import (
     RADIOMICS_FEATURE_COMPLETENESS_REASON_COLUMN,
     SENSITIVITY_ARM,
     RoiClassDecision,
+    _rasterizer_columns,
     classify_ct_roi,
     configured_parameter_hash,
     current_code_revision,
@@ -2351,6 +2352,7 @@ def radiomics_for_course_ct_nifti_fallback(
                 "patient_id": course_dir.parent.name,
                 "course_id": course_dir.name,
                 "structure_cropped": bool(cropped_flag),
+                **_rasterizer_columns(),
                 "roi_original_name": roi_name,
                 "roi_name": display_roi,
                 "nifti_path": nifti_path_str,
@@ -3130,6 +3132,7 @@ def radiomics_for_course(
                 "stable_roi_identifier": identity[1],
                 "roi_name": display_roi,
                 "structure_cropped": bool(cropped_flag),
+                **_rasterizer_columns(),
             },
         }
 
@@ -3152,7 +3155,10 @@ def radiomics_for_course(
     tasks: List[Dict[str, Any]] = []
     preparation_failures: List[Dict[str, Any]] = []
     try:
+        from .radiomics_rasterizer import require_radiomics_rasterizer
         from rt_utils import RTStructBuilder
+
+        require_radiomics_rasterizer()
 
         min_voxels_limit, max_voxels_limit = _ct_voxel_limits(config)
 
@@ -3981,6 +3987,7 @@ def _mr_row_identity(
         "configured_parameter_hash": configured_parameter_hash_value,
         "run_identifier": run_identifier,
         "code_revision": code_revision,
+        **_rasterizer_columns(),
     }
 
 

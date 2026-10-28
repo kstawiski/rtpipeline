@@ -3,7 +3,8 @@
 Launched by ``test_robustness_prep_equivalence.py`` and
 ``benchmark_robustness_prep.py`` once with an export of the base revision and
 once with the working tree, on identical inputs at the same absolute paths.
-Only seams present in both revisions are replaced: the course contract, the
+The runtime guard is stubbed when present so both revisions use the same
+installed OpenCV convention. Other replaced seams are: the course contract, the
 main-radiomics identity catalog (served from ``inputs.json``), the
 standard-source resolver, the custom-model listing and PyRadiomics execution.
 RTSTRUCT inspection, rasterization, selection, perturbation, task
@@ -179,6 +180,14 @@ _INJECTED_READ_FAILURES: set = set()
 
 
 def main():
+    # This semantic comparison stubs feature extraction and uses one installed
+    # fill convention on both revisions. Test the runtime guard separately.
+    try:
+        from rtpipeline import radiomics_rasterizer
+    except ImportError:  # historical comparison package has no guard
+        pass
+    else:
+        radiomics_rasterizer.require_radiomics_rasterizer = lambda: None
     _inject_read_failures()
     rr.load_course_contract = contract
     rr._load_main_ct_identity_catalog = catalog
