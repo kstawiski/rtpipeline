@@ -1866,6 +1866,18 @@ def _apply_dicom_copy_yaml_config(cfg: PipelineConfig, organize_config: dict) ->
     cfg.dicom_copy_cache_headers = organize_config.get("cache_headers", True)
     if "allow_ct_only_courses" in organize_config:
         cfg.allow_ct_only_courses = bool(organize_config["allow_ct_only_courses"])
+    stack_overrides = organize_config.get("planning_ct_stack_overrides")
+    if stack_overrides is not None:
+        if not isinstance(stack_overrides, dict) or any(
+            not isinstance(k, str) or not isinstance(v, dict)
+            for k, v in stack_overrides.items()
+        ):
+            raise ConfigValidationError(
+                "organize.planning_ct_stack_overrides must be a mapping of course/series keys to override mappings"
+            )
+        cfg.planning_ct_stack_overrides = {
+            str(k).strip(): dict(v) for k, v in stack_overrides.items() if str(k).strip()
+        }
 
 
 def main(argv: list[str] | None = None) -> int:

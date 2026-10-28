@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 
 import nibabel as nib
@@ -403,3 +404,582 @@ def test_converter_cannot_silently_drop_a_selected_slice(tmp_path):
         return result
     with pytest.raises(CTSeriesHygieneError, match='ct_hygiene_converter_did_not_preserve_selected_extent'):
         convert_ct_series_hygiene(ct, work, incomplete)
+
+
+def _rtstruct_dual(path, frame_paths, contour_paths=None, *, frame_extra=None, contour_extra=None):
+    """Write a synthetic RTSTRUCT with independent frame-level and contour-level image references."""
+    if contour_paths is None:
+        contour_paths = frame_paths
+    ref_paths = frame_paths or contour_paths
+    first = pydicom.dcmread(ref_paths[0], stop_before_pixels=True)
+    write_synthetic_rtstruct(path, referenced_series_uid=str(first.SeriesInstanceUID))
+    ds = pydicom.dcmread(path)
+
+    def _items(paths_list, extra_list):
+        items = []
+        for uid in [str(pydicom.dcmread(p, stop_before_pixels=True).SOPInstanceUID) for p in paths_list] + (extra_list or []):
+            item = Dataset()
+            item.ReferencedSOPClassUID = first.SOPClassUID
+            item.ReferencedSOPInstanceUID = uid
+            items.append(item)
+        return items
+
+    frame_items = _items(frame_paths, frame_extra)
+    ds.ReferencedFrameOfReferenceSequence[0].RTReferencedStudySequence[0].RTReferencedSeriesSequence[0].ContourImageSequence = Sequence(frame_items)
+
+    contour_items = _items(contour_paths, contour_extra)
+    if contour_items:
+        contours = []
+        for item in contour_items:
+            contour = Dataset()
+            contour.ContourGeometricType = 'CLOSED_PLANAR'
+            contour.NumberOfContourPoints = 3
+            contour.ContourData = [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0]
+            contour.ContourImageSequence = Sequence([item])
+            contours.append(contour)
+        roi = Dataset()
+        roi.ReferencedROINumber = 1
+        roi.ContourSequence = Sequence(contours)
+        ds.ROIContourSequence = Sequence([roi])
+    else:
+        ds.ROIContourSequence = Sequence([])
+    ds.save_as(path, enforce_file_format=True)
+    return path
+
+
+def test_pattern_e_mixed_image_type_harmonized_and_verified(tmp_path, dcm2niix):
+    ct = tmp_path / 'ct'
+    paths = write_ct_series(ct, uniform_z_positions(16), signed=False)
+    for p in paths[5:8]:
+        ds = pydicom.dcmread(p)
+        ds.ImageType = ['DERIVED', 'SECONDARY', 'AXIAL']
+        ds.save_as(p, enforce_file_format=True)
+    rs = _rtstruct_dual(tmp_path / 'RS.dcm', paths, paths[2:14])
+    before = _tree_digest(ct)
+    config = _config(tmp_path, dcm2niix)
+    assert segmentation.run_dcm2niix(config, ct, tmp_path / 'probe', recursive_depth=0) is None
+    evidence = {}
+    result = segmentation._ensure_ct_nifti(
+        config, ct, tmp_path / 'nifti', authoritative_rtstruct=rs, conversion_evidence=evidence
+    )
+    assert result is not None
+    assert _tree_digest(ct) == before
+    assert evidence['method'] == METHOD
+    assert evidence['status'] == 'converted'
+    assert evidence['reason_code'] == 'mixed_image_type_harmonized'
+    assert evidence['selection_basis'] == 'rtstruct_complete_references_image_type_harmonized'
+    assert evidence['kept_instance_count'] == 16
+    assert evidence['excluded_instance_count'] == 0
+    assert evidence['original_image_type_counts'] == {
+        'DERIVED\\SECONDARY\\AXIAL': 3,
+        'ORIGINAL\\PRIMARY\\AXIAL': 13,
+    }
+    assert evidence['harmonized_image_type'] == ['ORIGINAL', 'PRIMARY', 'AXIAL']
+    volume = nib.load(result)
+    assert volume.shape == (20, 16, 16)
+    assert '_Eq_' not in result.name
+    values = np.asanyarray(volume.dataobj)
+    for index, path in enumerate(paths):
+        ds = pydicom.dcmread(path)
+        expected = ds.pixel_array.astype(np.float64) * float(ds.RescaleSlope) + float(ds.RescaleIntercept)
+        assert np.array_equal(values[:, ::-1, index], expected.T)
+    meta = _evidence(result)
+    provenance = {key: meta[key] for key in ('series_instance_uid', 'sop_hash', 'geometry', 'nifti_geometry', 'nifti_sha256', 'nifti_conversion')}
+    sidecar = result.with_name(result.name[:-7] + '.metadata.json')
+    provenance['sidecar_path'] = str(sidecar.relative_to(tmp_path))
+    contract = CourseContract(tmp_path, tmp_path / 'metadata.json', {'authoritative_rtstruct': {'path': 'RS.dcm'}})
+    _validate_nifti_provenance(contract, {'nifti_provenance': provenance}, ct, result, meta['series_instance_uid'])
+
+
+@pytest.mark.parametrize('defect,expected_reason', [
+    ('rescale_slope', 'ct_hygiene_mixed_image_type_refused'),
+    ('rescale_intercept', 'ct_hygiene_mixed_image_type_refused'),
+    ('geometry', 'ct_hygiene_mixed_image_type_refused'),
+    ('acquisition', 'ct_hygiene_mixed_image_type_refused'),
+    ('incomplete_references', 'ct_hygiene_incomplete_rtstruct_references'),
+    ('tampered_converter_pixels', 'ct_hygiene_mixed_image_type_refused'),
+])
+def test_pattern_e_negative_controls_refused(tmp_path, dcm2niix, monkeypatch, defect, expected_reason):
+    ct = tmp_path / 'ct'
+    paths = write_ct_series(ct, uniform_z_positions(12), signed=False)
+    for p in paths[4:7]:
+        ds = pydicom.dcmread(p)
+        ds.ImageType = ['DERIVED', 'SECONDARY', 'AXIAL']
+        if defect == 'rescale_slope' and p == paths[5]:
+            ds.RescaleSlope = 2.0
+        elif defect == 'rescale_intercept' and p == paths[5]:
+            ds.RescaleIntercept = -500.0
+        elif defect == 'geometry' and p == paths[5]:
+            ds.PixelSpacing = [2.0, 2.0]
+        elif defect == 'acquisition' and p == paths[5]:
+            ds.AcquisitionNumber = 2
+        ds.save_as(p, enforce_file_format=True)
+    frame_refs = paths[:-1] if defect == 'incomplete_references' else paths
+    rs = _rtstruct_dual(tmp_path / 'RS.dcm', frame_refs, frame_refs[:6])
+    config = _config(tmp_path, dcm2niix)
+    if defect == 'tampered_converter_pixels':
+        original_run = segmentation.run_dcm2niix
+        def tampered_run(cfg, source, output, recursive_depth=None):
+            if source == ct:
+                return None
+            out = original_run(cfg, source, output, recursive_depth)
+            if out is not None:
+                img = nib.load(out)
+                arr = np.asanyarray(img.dataobj).copy()
+                arr[0, 0, 0] += 1
+                nib.save(nib.Nifti1Image(arr, img.affine, img.header), out)
+            return out
+        monkeypatch.setattr(segmentation, 'run_dcm2niix', tampered_run)
+    else:
+        _failed_native(monkeypatch, ct)
+    evidence = {}
+    assert segmentation._ensure_ct_nifti(
+        config, ct, tmp_path / 'nifti', authoritative_rtstruct=rs, conversion_evidence=evidence
+    ) is None
+    assert evidence['reason_code'] == expected_reason
+
+
+def test_pattern_b_referenced_duplicate_differing_pixels_converted(tmp_path, dcm2niix):
+    from rtpipeline.ct_series_hygiene import _pixels
+    ct = tmp_path / 'ct'
+    paths = write_ct_series(ct, uniform_z_positions(12), signed=False)
+    for p in paths:
+        ds = pydicom.dcmread(p)
+        ds.AcquisitionNumber = 2
+        ds.save_as(p, enforce_file_format=True)
+    dup_path, dup_uid = _duplicate(paths, differing=True)
+    dup_ds = pydicom.dcmread(dup_path)
+    dup_ds.AcquisitionNumber = 3
+    dup_ds.save_as(dup_path, enforce_file_format=True)
+    rs = _rtstruct_dual(tmp_path / 'RS.dcm', paths, paths[3:8])
+    before = _tree_digest(ct)
+    config = _config(tmp_path, dcm2niix)
+    evidence = {}
+    result = segmentation._ensure_ct_nifti(
+        config, ct, tmp_path / 'nifti', authoritative_rtstruct=rs, conversion_evidence=evidence
+    )
+    assert result is not None
+    assert _tree_digest(ct) == before
+    assert evidence['method'] == METHOD
+    assert evidence['reason_code'] == 'unreferenced_duplicate_position'
+    assert evidence['selection_basis'] == 'rtstruct_frame_and_contour_complete_references'
+    assert evidence['kept_instance_count'] == 12
+    assert evidence['excluded_instance_count'] == 1
+    retained_uid = str(pydicom.dcmread(paths[4]).SOPInstanceUID)
+    expected_retained_hash = hashlib.sha256(_pixels(paths[4])).hexdigest()
+    expected_excluded_hash = hashlib.sha256(_pixels(dup_path)).hexdigest()
+    assert expected_retained_hash != expected_excluded_hash
+    assert evidence['excluded_instances'] == [{
+        'sop_instance_uid': dup_uid,
+        'reason_code': 'unreferenced_duplicate_position',
+        'retained_sop_instance_uid': retained_uid,
+        'image_position_patient': [float(v) for v in pydicom.dcmread(paths[4]).ImagePositionPatient],
+        'retained_rescaled_pixels_sha256': expected_retained_hash,
+        'excluded_rescaled_pixels_sha256': expected_excluded_hash,
+    }]
+    meta = _evidence(result)
+    provenance = {key: meta[key] for key in ('series_instance_uid', 'sop_hash', 'geometry', 'nifti_geometry', 'nifti_sha256', 'nifti_conversion')}
+    sidecar = result.with_name(result.name[:-7] + '.metadata.json')
+    provenance['sidecar_path'] = str(sidecar.relative_to(tmp_path))
+    contract = CourseContract(tmp_path, tmp_path / 'metadata.json', {'authoritative_rtstruct': {'path': 'RS.dcm'}})
+    _validate_nifti_provenance(contract, {'nifti_provenance': provenance}, ct, result, meta['series_instance_uid'])
+
+
+@pytest.mark.parametrize('mode,expected_reason', [
+    ('missing_contour_at_dup', 'ct_hygiene_duplicate_position_reference_coverage'),
+    ('frame_only', 'ct_hygiene_duplicate_position_reference_coverage'),
+    ('contour_only', 'ct_hygiene_duplicate_position_reference_coverage'),
+    ('incomplete_frame_refs', 'ct_hygiene_duplicate_position_reference_coverage'),
+    ('both_duplicates_referenced', 'ct_hygiene_referenced_duplicate_would_be_excluded'),
+    ('external_reference', 'ct_hygiene_rtstruct_references_unresolvable'),
+])
+def test_pattern_b_negative_controls_refused(tmp_path, dcm2niix, monkeypatch, mode, expected_reason):
+    ct = tmp_path / 'ct'
+    paths = write_ct_series(ct, uniform_z_positions(12), signed=False)
+    dup_path, _ = _duplicate(paths, differing=True)
+    dup_ds = pydicom.dcmread(dup_path)
+    dup_ds.AcquisitionNumber = 3
+    dup_ds.save_as(dup_path, enforce_file_format=True)
+    if mode == 'missing_contour_at_dup':
+        rs = _rtstruct_dual(tmp_path / 'RS.dcm', paths, [paths[0], paths[1]])
+    elif mode == 'frame_only':
+        rs = _rtstruct_dual(tmp_path / 'RS.dcm', paths, [])
+    elif mode == 'contour_only':
+        rs = _rtstruct_dual(tmp_path / 'RS.dcm', [], paths)
+    elif mode == 'incomplete_frame_refs':
+        rs = _rtstruct_dual(tmp_path / 'RS.dcm', paths[:-1], paths[:6])
+    elif mode == 'both_duplicates_referenced':
+        rs = _rtstruct_dual(tmp_path / 'RS.dcm', paths + [dup_path], paths)
+    else:
+        rs = _rtstruct_dual(tmp_path / 'RS.dcm', paths, paths, frame_extra=[generate_uid()])
+    _failed_native(monkeypatch, ct)
+    evidence = {}
+    assert segmentation._ensure_ct_nifti(
+        _config(tmp_path, dcm2niix), ct, tmp_path / 'nifti', authoritative_rtstruct=rs, conversion_evidence=evidence
+    ) is None
+    assert evidence['reason_code'] == expected_reason
+
+
+def test_pattern_a_referenced_uniform_subset_preferred_before_equalization(tmp_path, dcm2niix):
+    ct = tmp_path / 'ct'
+    paths = write_ct_series(ct, uniform_z_positions(12), signed=False)
+    stray = pydicom.dcmread(paths[3])
+    stray_uid = str(generate_uid())
+    stray.SOPInstanceUID = stray_uid
+    stray.file_meta.MediaStorageSOPInstanceUID = stray_uid
+    stray.InstanceNumber = 99
+    stray.AcquisitionNumber = 2
+    stray.ImagePositionPatient = [-10.0, -20.0, 17.0]
+    stray_path = ct / 'stray_slice.dcm'
+    stray.save_as(stray_path, enforce_file_format=True)
+    rs = _rtstruct_dual(tmp_path / 'RS.dcm', paths, paths[2:8])
+    before = _tree_digest(ct)
+    config = _config(tmp_path, dcm2niix)
+    assert segmentation.run_dcm2niix(config, ct, tmp_path / 'probe', recursive_depth=0) is None
+    evidence = {}
+    result = segmentation._ensure_ct_nifti(
+        config, ct, tmp_path / 'nifti', authoritative_rtstruct=rs, conversion_evidence=evidence
+    )
+    assert result is not None
+    assert _tree_digest(ct) == before
+    assert evidence['method'] == METHOD
+    assert evidence['reason_code'] == 'unreferenced_slice_position'
+    assert evidence['selection_basis'] == 'rtstruct_complete_referenced_volume'
+    assert 'downstream_conversion' not in evidence
+    assert evidence['kept_instance_count'] == 12
+    assert evidence['excluded_instance_count'] == 1
+    assert evidence['excluded_instances'] == [{
+        'sop_instance_uid': stray_uid,
+        'reason_code': 'unreferenced_slice_position',
+    }]
+    volume = nib.load(result)
+    assert volume.shape == (20, 16, 12)
+    assert volume.header.get_zooms() == (1.0, 1.0, 5.0)
+    assert '_Eq_' not in result.name
+    values = np.asanyarray(volume.dataobj)
+    for index, path in enumerate(paths):
+        ds = pydicom.dcmread(path)
+        expected = ds.pixel_array.astype(np.float64) * float(ds.RescaleSlope) + float(ds.RescaleIntercept)
+        assert np.array_equal(values[:, ::-1, index], expected.T)
+
+
+def test_pattern_a_nonuniform_referenced_subset_uses_signed_staging_on_subset(tmp_path, dcm2niix):
+    ct = tmp_path / 'ct'
+    paths = write_ct_series(ct, mixed_z_positions(), signed=False)
+    stray = pydicom.dcmread(paths[2])
+    stray_uid = str(generate_uid())
+    stray.SOPInstanceUID = stray_uid
+    stray.file_meta.MediaStorageSOPInstanceUID = stray_uid
+    stray.InstanceNumber = 99
+    stray.AcquisitionNumber = 2
+    stray.ImagePositionPatient = [-10.0, -20.0, 12.0]
+    stray.save_as(ct / 'stray_slice.dcm', enforce_file_format=True)
+    rs = _rtstruct_dual(tmp_path / 'RS.dcm', paths, paths[:6])
+    evidence = {}
+    result = segmentation._ensure_ct_nifti(
+        _config(tmp_path, dcm2niix), ct, tmp_path / 'nifti', authoritative_rtstruct=rs, conversion_evidence=evidence
+    )
+    assert result is not None
+    assert evidence['method'] == METHOD
+    assert evidence['reason_code'] == 'unreferenced_slice_position'
+    assert evidence['kept_instance_count'] == 12
+    assert evidence['excluded_instance_count'] == 1
+    assert evidence['downstream_conversion']['method'] == 'dcm2niix_signed_staging_equalized'
+
+
+def test_pattern_a_negative_control_incomplete_references_refused(tmp_path, dcm2niix):
+    ct = tmp_path / 'ct'
+    paths = write_ct_series(ct, uniform_z_positions(12), signed=False)
+    stray = pydicom.dcmread(paths[3])
+    stray_uid = str(generate_uid())
+    stray.SOPInstanceUID = stray_uid
+    stray.file_meta.MediaStorageSOPInstanceUID = stray_uid
+    stray.InstanceNumber = 99
+    stray.AcquisitionNumber = 2
+    stray.ImagePositionPatient = [-10.0, -20.0, 17.0]
+    stray.save_as(ct / 'stray_slice.dcm', enforce_file_format=True)
+    rs = _rtstruct_dual(tmp_path / 'RS.dcm', paths[:-1], paths[:6])
+    evidence = {}
+    assert segmentation._ensure_ct_nifti(
+        _config(tmp_path, dcm2niix), ct, tmp_path / 'nifti', authoritative_rtstruct=rs, conversion_evidence=evidence
+    ) is None
+    assert evidence['reason_code'] == 'ct_hygiene_incomplete_rtstruct_references'
+
+
+def _build_pattern_d_series(ct_dir, rs_path, slices=12):
+    stack1 = write_ct_series(ct_dir, uniform_z_positions(slices), signed=False)
+    stack2 = []
+    for idx, p in enumerate(stack1):
+        ds1 = pydicom.dcmread(p)
+        ds1.ScanOptions = 'HELIX'
+        ds1.ConvolutionKernel = 'SHARP'
+        ds1.ReconstructionDiameter = 300.0
+        ds1.WindowCenter = 40.0
+        ds1.Exposure = 200
+        ds1.save_as(p, enforce_file_format=True)
+
+        ds2 = pydicom.dcmread(p)
+        uid2 = str(generate_uid())
+        ds2.SOPInstanceUID = uid2
+        ds2.file_meta.MediaStorageSOPInstanceUID = uid2
+        ds2.InstanceNumber = 100 + idx + 1
+        ds2.ScanOptions = 'SURVIEW'
+        ds2.ConvolutionKernel = 'SMOOTH'
+        ds2.ReconstructionDiameter = 280.0
+        ds2.WindowCenter = 50.0
+        ds2.Exposure = 180
+        pixels = ds2.pixel_array.copy()
+        pixels[0, 0] += 15
+        ds2.PixelData = pixels.tobytes()
+        p2 = ct_dir / f'stack2_{idx:03d}.dcm'
+        ds2.save_as(p2, enforce_file_format=True)
+        stack2.append(p2)
+
+    loc1, _ = _localizer(stack1)
+    loc2 = ct_dir / 'localizer_2.dcm'
+    ds_loc2 = pydicom.dcmread(loc1)
+    uid_loc2 = str(generate_uid())
+    ds_loc2.SOPInstanceUID = uid_loc2
+    ds_loc2.file_meta.MediaStorageSOPInstanceUID = uid_loc2
+    ds_loc2.InstanceNumber = 201
+    ds_loc2.save_as(loc2, enforce_file_format=True)
+
+    _rtstruct_dual(rs_path, stack1 + stack2, stack1[:slices - 2] + stack2[:2])
+    return stack1, stack2, [loc1, loc2]
+
+
+def test_pattern_d_spanning_reconstruction_stacks_refused_and_governed_override(tmp_path, dcm2niix):
+    from rtpipeline.cli import _apply_dicom_copy_yaml_config
+    ct = tmp_path / 'SYNTH' / 'course_0' / 'DICOM' / 'CT'
+    rs = tmp_path / 'SYNTH' / 'course_0' / 'RS.dcm'
+    stack1, stack2, localizers = _build_pattern_d_series(ct, rs, slices=12)
+    config = _config(tmp_path, dcm2niix)
+
+    # 1. Without override: fails closed with ct_hygiene_references_span_reconstruction_stacks
+    evidence = {}
+    assert segmentation._ensure_ct_nifti(
+        config,
+        ct,
+        tmp_path / 'SYNTH' / 'course_0' / 'NIFTI',
+        authoritative_rtstruct=rs,
+        conversion_evidence=evidence,
+        require_hygiene=True,
+    ) is None
+    assert evidence['reason_code'] == 'ct_hygiene_references_span_reconstruction_stacks'
+    candidates = evidence.get('candidate_stacks')
+    assert isinstance(candidates, list) and len(candidates) == 2
+    serialized_candidates = json.dumps(candidates)
+    for p in stack1 + stack2 + localizers:
+        uid = str(pydicom.dcmread(p, stop_before_pixels=True).SOPInstanceUID)
+        assert uid not in serialized_candidates
+    assert str(tmp_path) not in serialized_candidates
+
+    sharp_stack = next(c for c in candidates if c['ConvolutionKernel'] == 'SHARP')
+    smooth_stack = next(c for c in candidates if c['ConvolutionKernel'] == 'SMOOTH')
+    assert sharp_stack['instance_count'] == 12
+    assert sharp_stack['contour_reference_count'] == 10
+    assert sharp_stack['frame_reference_count'] == 12
+    assert smooth_stack['instance_count'] == 12
+    assert smooth_stack['contour_reference_count'] == 2
+    assert smooth_stack['frame_reference_count'] == 12
+
+    # 2. Missing adjudication_record_id or mismatching stack_signature is refused
+    for bad_override, expected_code in [
+        ({'reason': 'missing id', 'stack_signature': sharp_stack['stack_signature']}, 'ct_hygiene_stack_override_invalid_governance'),
+        ({'adjudication_record_id': 'ADJ-1', 'stack_signature': sharp_stack['stack_signature']}, 'ct_hygiene_stack_override_invalid_governance'),
+        ({'adjudication_record_id': 'ADJ-1', 'reason': 'wrong kernel', 'stack_signature': {**sharp_stack['stack_signature'], 'ConvolutionKernel': 'BONE'}}, 'ct_hygiene_stack_override_signature_mismatch'),
+    ]:
+        bad_ev = {}
+        assert segmentation._ensure_ct_nifti(
+            config,
+            ct,
+            tmp_path / 'SYNTH' / 'course_0' / 'NIFTI',
+            authoritative_rtstruct=rs,
+            conversion_evidence=bad_ev,
+            stack_override=bad_override,
+        ) is None
+        assert bad_ev['reason_code'] == expected_code
+
+    # 3. With matching governed override via YAML config parsing: converts selected stack and validates contract
+    _apply_dicom_copy_yaml_config(config, {
+        'planning_ct_stack_overrides': {
+            'SYNTH/course_0': {
+                'adjudication_record_id': 'WS201-ADJ-001',
+                'reason': 'Select primary HELIX/SHARP planning stack (10/12 contour references)',
+                'stack_signature': sharp_stack['stack_signature'],
+            }
+        }
+    })
+    ok_ev = {}
+    nifti_dir = tmp_path / 'SYNTH' / 'course_0' / 'NIFTI'
+    result = segmentation._ensure_ct_nifti(
+        config,
+        ct,
+        nifti_dir,
+        authoritative_rtstruct=rs,
+        conversion_evidence=ok_ev,
+    )
+    assert result is not None
+    assert ok_ev['method'] == METHOD
+    assert ok_ev['reason_code'] == 'governed_stack_override_selected'
+    assert ok_ev['selection_basis'] == 'governed_stack_override'
+    assert ok_ev['kept_instance_count'] == 12
+    assert ok_ev['excluded_instance_count'] == 14
+    assert ok_ev['stack_override']['adjudication_record_id'] == 'WS201-ADJ-001'
+    meta = _evidence(result)
+    provenance = {key: meta[key] for key in ('series_instance_uid', 'sop_hash', 'geometry', 'nifti_geometry', 'nifti_sha256', 'nifti_conversion')}
+    sidecar = result.with_name(result.name[:-7] + '.metadata.json')
+    course_root = tmp_path / 'SYNTH' / 'course_0'
+    provenance['sidecar_path'] = str(sidecar.relative_to(course_root))
+    contract = CourseContract(course_root, course_root / 'metadata.json', {'authoritative_rtstruct': {'path': 'RS.dcm'}})
+    _validate_nifti_provenance(contract, {'nifti_provenance': provenance}, ct, result, meta['series_instance_uid'])
+
+
+def test_organize_publishes_contracts_for_patterns_a_b_d_e(tmp_path, dcm2niix, monkeypatch):
+    from rtpipeline import organize
+    from rtpipeline.course_contract import load_course_contract
+    from organize_io_fixture import synthetic
+
+    root = tmp_path / 'input'
+    synthetic(root, ct_slices=12, all_slices=True)
+
+    # Course 1 (SYNTH_A/0): Pattern E - mixed ImageType within one uniform stack
+    folder_e = root / 'SYNTH_A' / '0'
+    for idx in range(12):
+        p = folder_e / f'ct{idx}.dcm'
+        ds = pydicom.dcmread(p)
+        ds.ImageType = (
+            ['DERIVED', 'SECONDARY', 'AXIAL']
+            if idx in (4, 5, 6)
+            else ['ORIGINAL', 'PRIMARY', 'AXIAL']
+        )
+        ds.RescaleSlope = 1.0
+        ds.RescaleIntercept = -1024.0
+        ds.save_as(p, enforce_file_format=True)
+
+    # Course 2 (SYNTH_A/1): Pattern B - duplicate slice at one position from second AcquisitionNumber with differing pixels
+    folder_b = root / 'SYNTH_A' / '1'
+    paths_b = [folder_b / f'ct{i}.dcm' for i in range(12)]
+    for p in paths_b:
+        ds = pydicom.dcmread(p)
+        ds.AcquisitionNumber = 2
+        ds.save_as(p, enforce_file_format=True)
+    dup_b, _ = _duplicate(paths_b, differing=True)
+    ds_dup_b = pydicom.dcmread(dup_b)
+    ds_dup_b.AcquisitionNumber = 3
+    ds_dup_b.save_as(dup_b, enforce_file_format=True)
+
+    # Course 3 (SYNTH_B/0): Pattern A - unreferenced stray slice at intermediate z from second AcquisitionNumber
+    folder_a = root / 'SYNTH_B' / '0'
+    paths_a = [folder_a / f'ct{i}.dcm' for i in range(12)]
+    for p in paths_a:
+        ds = pydicom.dcmread(p)
+        ds.AcquisitionNumber = 1
+        ds.save_as(p, enforce_file_format=True)
+    stray_a = pydicom.dcmread(paths_a[3])
+    stray_uid = str(generate_uid())
+    stray_a.SOPInstanceUID = stray_uid
+    stray_a.file_meta.MediaStorageSOPInstanceUID = stray_uid
+    stray_a.InstanceNumber = 99
+    stray_a.AcquisitionNumber = 2
+    stray_a.ImagePositionPatient = [-10.0, -10.0, 17.0]
+    stray_a.save_as(folder_a / 'ct_stray.dcm', enforce_file_format=True)
+
+    # Course 4 (SYNTH_B/1): Pattern D - two complete reconstruction stacks + 2 localizers with spanning references
+    folder_d = root / 'SYNTH_B' / '1'
+    paths_d = [folder_d / f'ct{i}.dcm' for i in range(12)]
+    stack2_uids = []
+    for idx, p in enumerate(paths_d):
+        ds1 = pydicom.dcmread(p)
+        ds1.ScanOptions = 'HELIX'
+        ds1.ConvolutionKernel = 'SHARP'
+        ds1.ReconstructionDiameter = 300.0
+        ds1.save_as(p, enforce_file_format=True)
+
+        ds2 = pydicom.dcmread(p)
+        uid2 = str(generate_uid())
+        ds2.SOPInstanceUID = uid2
+        ds2.file_meta.MediaStorageSOPInstanceUID = uid2
+        ds2.InstanceNumber = 100 + idx + 1
+        ds2.ScanOptions = 'SURVIEW'
+        ds2.ConvolutionKernel = 'SMOOTH'
+        ds2.ReconstructionDiameter = 280.0
+        arr = bytearray(ds2.PixelData)
+        arr[0] = (arr[0] + 5) % 256
+        ds2.PixelData = bytes(arr)
+        ds2.save_as(folder_d / f'ct_stack2_{idx}.dcm', enforce_file_format=True)
+        stack2_uids.append(uid2)
+
+    loc1, _ = _localizer(paths_d)
+    loc2 = folder_d / 'localizer2.dcm'
+    ds_loc2 = pydicom.dcmread(loc1)
+    uid_loc2 = str(generate_uid())
+    ds_loc2.SOPInstanceUID = uid_loc2
+    ds_loc2.file_meta.MediaStorageSOPInstanceUID = uid_loc2
+    ds_loc2.InstanceNumber = 201
+    ds_loc2.save_as(loc2, enforce_file_format=True)
+
+    rs_d_path = folder_d / 'struct.dcm'
+    rs_d = pydicom.dcmread(rs_d_path)
+    first_sop_class = pydicom.dcmread(paths_d[0], stop_before_pixels=True).SOPClassUID
+    for uid2 in stack2_uids:
+        item = Dataset()
+        item.ReferencedSOPClassUID = first_sop_class
+        item.ReferencedSOPInstanceUID = uid2
+        rs_d.ReferencedFrameOfReferenceSequence[0].RTReferencedStudySequence[0].RTReferencedSeriesSequence[0].ContourImageSequence.append(item)
+    # Switch 2 contours in ROI 1 to reference stack 2
+    for c_idx in (0, 1):
+        rs_d.ROIContourSequence[0].ContourSequence[c_idx].ContourImageSequence[0].ReferencedSOPInstanceUID = stack2_uids[c_idx]
+    rs_d.save_as(rs_d_path, enforce_file_format=True)
+
+    monkeypatch.setenv('RTPIPELINE_INDEX_PROCESSES', '1')
+    monkeypatch.setenv('RTPIPELINE_MASK_PROCESSES', '1')
+    config = _config(tmp_path / 'run1', dcm2niix)
+    config.dicom_root = root
+    config.max_workers_override = 1
+    config.dicom_copy_use_hardlinks = False
+
+    # Run 1: no override for SYNTH_B/1 -> 3 courses validated (Patterns E, B, A), 1 quarantined (Pattern D)
+    courses = organize.organize_and_merge(config, metadata_snapshot={})
+    ledger = json.loads((config.output_root / '_COURSES/organize_ledger.json').read_text())
+    assert len(courses) == 3
+    assert ledger['validated_course_count'] == 3
+    assert ledger['technical_quarantine_count'] == 1
+
+    quarantined = ledger['technical_quarantines'][0]
+    assert quarantined['patient'] == 'SYNTH_B' and quarantined['course'] == '2024-02'
+    assert quarantined['planning_ct_conversion']['reason_code'] == 'ct_hygiene_references_span_reconstruction_stacks'
+    cand_stacks = quarantined['planning_ct_conversion']['candidate_stacks']
+    assert len(cand_stacks) == 2
+    sharp_sig = next(c['stack_signature'] for c in cand_stacks if c['ConvolutionKernel'] == 'SHARP')
+
+    for patient, course_id, expected_reason in [
+        ('SYNTH_A', '2024-01', 'mixed_image_type_harmonized'),
+        ('SYNTH_A', '2024-02', 'unreferenced_duplicate_position'),
+        ('SYNTH_B', '2024-01', 'unreferenced_slice_position'),
+    ]:
+        contract = load_course_contract(config.output_root / patient / course_id)
+        conv = contract.planning_ct['nifti_provenance']['nifti_conversion']
+        assert conv['method'] == METHOD
+        assert conv['reason_code'] == expected_reason
+
+    # Run 2: with governed stack override for SYNTH_B/2024-02 -> all 4 courses validated
+    config2 = _config(tmp_path / 'run2', dcm2niix)
+    config2.dicom_root = root
+    config2.max_workers_override = 1
+    config2.dicom_copy_use_hardlinks = False
+    config2.planning_ct_stack_overrides = {
+        'SYNTH_B/2024-02': {
+            'adjudication_record_id': 'WS201-SYNTH-B1',
+            'reason': 'Select SHARP stack with 10/12 contour references',
+            'stack_signature': sharp_sig,
+        }
+    }
+    courses2 = organize.organize_and_merge(config2, metadata_snapshot={})
+    assert len(courses2) == 4
+    contract_d = load_course_contract(config2.output_root / 'SYNTH_B' / '2024-02')
+    conv_d = contract_d.planning_ct['nifti_provenance']['nifti_conversion']
+    assert conv_d['method'] == METHOD
+    assert conv_d['reason_code'] == 'governed_stack_override_selected'
+    assert conv_d['stack_override']['adjudication_record_id'] == 'WS201-SYNTH-B1'
+
