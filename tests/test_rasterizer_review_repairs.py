@@ -1,5 +1,6 @@
 """Runtime-enabled regressions for publication, resume and checkpoint boundaries."""
 from pathlib import Path
+from contextlib import nullcontext
 from types import SimpleNamespace
 from unittest.mock import Mock
 import json
@@ -10,7 +11,7 @@ import pytest
 from rtpipeline import radiomics, radiomics_conda as conda, radiomics_rasterizer as rasterizer
 from rtpipeline import custom_structures_rtstruct as custom
 from rtpipeline.radiomics_outcomes import RadiomicsCourseExtractionError, invalidate_radiomics_outputs
-from rtpipeline.radiomics_ct_contract import _rasterizer_columns, write_ct_publication_atomic
+from rtpipeline.radiomics_ct_contract import _rasterizer_columns
 import test_radiomics_fail_closed as fixtures
 
 PIN = {
@@ -36,8 +37,9 @@ def altered(record, variant):
     return record
 
 
-@pytest.mark.parametrize('backend', ['parallel', 'conda', 'parallel_delegated'])
-def test_rebuild_guard_keeps_previous_file_quarantined(tmp_path, monkeypatch, backend):
+@pytest.mark.parametrize('backend', ['serial', 'parallel', 'conda', 'parallel_delegated'])
+@pytest.mark.parametrize('artifact', ['legacy', 'missing'])
+def test_consumers_never_rebuild_stale_custom(tmp_path, monkeypatch, backend, artifact, rasterizer_guard_stub):
     import rtpipeline.radiomics_parallel as parallel
     course = tmp_path / 'P1' / 'C1'
     fixtures._write_contract(course)
@@ -45,39 +47,41 @@ def test_rebuild_guard_keeps_previous_file_quarantined(tmp_path, monkeypatch, ba
     rs = course / 'RS_custom.dcm'
     fixtures.write_synthetic_rtstruct(rs, roi_names=('bowel_bag',))
     previous = rs.read_bytes()
+    if artifact == 'missing':
+        rs.unlink()
     config_file = tmp_path / 'custom.yaml'
     config_file.write_text('custom_structures:\n  - name: bowel_bag\n    operation: union\n    source_structures: [PTV]\n')
     config = fixtures._config(tmp_path, custom_structures_config=config_file)
     monkeypatch.setattr(radiomics, '_load_series_image', lambda *_a: object())
     monkeypatch.setattr(radiomics, '_extractor', lambda *_a: (
         None if backend == 'parallel_delegated' else fixtures._FakeExtractor()))
-    monkeypatch.setattr(parallel, '_is_rs_custom_stale', lambda *_a: True)
-    monkeypatch.setattr(custom, '_is_rs_custom_stale', lambda *_a: True)
-    writer = Mock(side_effect=lambda *_a: rs.write_bytes(b'WRONG NEW FILE'))
-    monkeypatch.setattr(parallel, '_create_custom_structures_rtstruct', writer)
+    writer = Mock(side_effect=AssertionError('consumer attempted custom derivation'))
     monkeypatch.setattr(custom, '_create_custom_structures_rtstruct', writer)
-    guard = Mock(side_effect=rasterizer.RadiomicsRasterizerError('unsupported rasterizer'))
-    monkeypatch.setattr(rasterizer, 'require_radiomics_rasterizer', guard)
     checkpoint = course / 'metadata' / 'radiomics_ct_checkpoint.parquet'
     checkpoint.write_bytes(b'stale checkpoint')
-    with pytest.raises(RadiomicsCourseExtractionError, match='unsupported rasterizer'):
+    # With no source masks, serial applicability already provides a governed
+    # nonmeasurement disposition for an absent custom ROI.
+    expected = (nullcontext() if artifact == 'missing' and backend == 'serial' else
+                pytest.raises(RadiomicsCourseExtractionError, match='RS_custom.*(stale|main-runtime)'))
+    with expected:
         if backend == 'conda':
             conda.radiomics_for_course(course, config)
+        elif backend == 'serial':
+            # Avoid unrelated source mask work; the real stale check still runs.
+            monkeypatch.setattr(radiomics, '_rtstruct_masks', lambda *_a, **_k: {})
+            radiomics.radiomics_for_course(config, course)
         else:
             parallel.parallel_radiomics_for_course(config, course)
-    guard.assert_called_once()
     writer.assert_not_called()
-    assert not rs.exists()
+    if artifact == 'legacy':
+        assert rs.read_bytes() == previous
+    else:
+        assert not rs.exists()
     assert not checkpoint.exists()
-    quarantined = list(course.glob('.RS_custom.dcm.rejected*'))
-    assert len(quarantined) == 1
-    assert quarantined[0].read_bytes() == previous
-    audit = json.loads((course / 'metadata' / 'segmentation_resume.json').read_text())
-    assert audit['decisions']['RS_custom']['action'] == 'failed'
 
 
 @pytest.mark.parametrize('variant', VARIANTS)
-def test_parallel_resume_checks_rasterizer_before_reuse(tmp_path, monkeypatch, variant):
+def test_parallel_resume_checks_rasterizer_before_reuse(tmp_path, monkeypatch, variant, rasterizer_guard_stub):
     # Synthetic features exercise real course publication and resume control flow.
     course, parallel = fixtures._parallel_course_with_fake_roi_results(
         tmp_path, monkeypatch, {'Manual': [fixtures._success_record],
@@ -87,7 +91,8 @@ def test_parallel_resume_checks_rasterizer_before_reuse(tmp_path, monkeypatch, v
     parallel.parallel_radiomics_for_course(config, course, max_workers=1)
     output = course / 'radiomics_ct.xlsx'
     rows = pd.read_parquet(output.with_suffix('.parquet')).to_dict('records')
-    write_ct_publication_atomic(pd.DataFrame([altered(row, variant) for row in rows]), output)
+    # Historical artifacts bypass the current publication writer deliberately.
+    pd.DataFrame([altered(row, variant) for row in rows]).to_parquet(output.with_suffix(".parquet"))
     before = output.with_suffix('.parquet').read_bytes()
     guard = Mock(side_effect=rasterizer.RadiomicsRasterizerError('recomputation required'))
     monkeypatch.setattr(rasterizer, 'require_radiomics_rasterizer', guard)
@@ -118,7 +123,7 @@ def test_mr_resume_identity(variant, source):
 
 @pytest.mark.parametrize('variant', VARIANTS)
 @pytest.mark.parametrize('source', ['rtstruct', 'nifti'])
-def test_ct_checkpoint_identity(tmp_path, variant, source):
+def test_ct_checkpoint_identity(tmp_path, variant, source, rasterizer_guard_stub):
     path = tmp_path / 'metadata' / 'radiomics_ct_checkpoint.parquet'
     path.parent.mkdir()
     fixtures._write_test_ct_publication(tmp_path / 'radiomics_ct.xlsx', [

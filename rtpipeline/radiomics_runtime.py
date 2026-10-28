@@ -1,0 +1,65 @@
+"""Run the entire radiomics driver in its isolated interpreter."""
+from __future__ import annotations
+
+import os
+import pickle
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+
+
+def needs_radiomics_process() -> bool:
+    import numpy as np
+    return int(np.__version__.split(".")[0]) >= 2
+
+
+def run_course_driver(driver: str, *args, **kwargs):
+    """Transfer trusted in-process configuration, never measurement masks."""
+    from .radiomics_conda import _radiomics_env_prefix, _conda_subprocess_env
+    from .radiomics_outcomes import RadiomicsCourseExtractionError
+
+    prefix = _radiomics_env_prefix()
+    if prefix is None:
+        raise RadiomicsCourseExtractionError(
+            "Radiomics cannot rasterize in a NumPy 2 process. Set "
+            "RTPIPELINE_RADIOMICS_ENV_PREFIX to the isolated NumPy 1.26 "
+            "radiomics environment containing bin/python."
+        )
+    env = _conda_subprocess_env()
+    root = str(Path(__file__).resolve().parents[1])
+    env["PYTHONPATH"] = os.pathsep.join(filter(None, (root, env.get("PYTHONPATH", ""))))
+    env["LD_LIBRARY_PATH"] = os.pathsep.join(filter(None, (str(Path(prefix) / "lib"), env.get("LD_LIBRARY_PATH", ""))))
+    # Private IPC files contain only this caller's trusted Python objects. They
+    # are removed on success and on every failure; stdout remains usable for logs.
+    with tempfile.TemporaryDirectory(prefix="radiomics-driver-") as scratch:
+        request = Path(scratch) / "request.pkl"
+        result = Path(scratch) / "result.pkl"
+        request.write_bytes(pickle.dumps((driver, args, kwargs)))
+        completed = subprocess.run(
+            [str(Path(prefix) / "bin" / "python"), "-m", "rtpipeline.radiomics_runtime", str(request), str(result)],
+            env=env, check=False,
+        )
+        if completed.returncode or not result.is_file():
+            raise RadiomicsCourseExtractionError(
+                f"Isolated radiomics course driver failed (exit {completed.returncode}); "
+                "check the child rasterizer diagnosis and RTPIPELINE_RADIOMICS_ENV_PREFIX"
+            )
+        return pickle.loads(result.read_bytes())
+
+
+def main() -> None:
+    if needs_radiomics_process():
+        raise RuntimeError("Configured radiomics interpreter uses NumPy 2; select a NumPy 1.26 environment")
+    # Polygon readers enforce the pin before filling. Stored voxel masks
+    # remain exempt, including courses with no applicable polygon source.
+    request, result = map(Path, sys.argv[1:])
+    driver, args, kwargs = pickle.loads(request.read_bytes())
+    from . import radiomics_conda
+    drivers = {"ct": radiomics_conda.radiomics_for_course, "mr": radiomics_conda.radiomics_for_course_mr}
+    output = drivers[driver](*args, **kwargs)
+    result.write_bytes(pickle.dumps(output))
+
+
+if __name__ == "__main__":
+    main()

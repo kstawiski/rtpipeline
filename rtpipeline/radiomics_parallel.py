@@ -52,7 +52,6 @@ from .custom_models import (
     validate_custom_model_output_inventory,
 )
 from .custom_structures_rtstruct import (
-    _create_custom_structures_rtstruct,
     _is_rs_custom_stale,
     record_rs_custom_resume_decision,
 )
@@ -1049,6 +1048,12 @@ def parallel_radiomics_for_course(
     allow_all_series_temp: bool = False,
 ) -> RadiomicsCourseOutcome:
     """Parallel CT radiomics for one course (process isolation)."""
+    from .radiomics_runtime import needs_radiomics_process, run_course_driver
+    if needs_radiomics_process():
+        output = run_course_driver("ct", course_dir, config, custom_structures_config, allow_all_series_temp=allow_all_series_temp)
+        return (outcome_from_output(output) if output is not None
+                else RadiomicsCourseOutcome.nothing_to_do("isolated backend found no eligible ROIs"))
+
     course_dir = Path(course_dir)
     contract = load_course_contract(course_dir)
     is_temp = contract.data.get("scope") == ALL_SERIES_RADIOMICS_TEMP_SCOPE
@@ -1190,8 +1195,7 @@ def parallel_radiomics_for_course(
             }
         }
         custom_provenance = load_custom_structure_provenance(configured_custom_path)
-        # Decide applicability before rebuilding RS_custom. Source-applicable
-        # missing ROIs remain repair candidates until the governed builder has run.
+        # Decide source applicability before consuming the main-runtime artifact.
         for source_name, source_path, _ in sources:
             try:
                 inventory = inspect_rtstruct(source_path)
@@ -1280,8 +1284,6 @@ def parallel_radiomics_for_course(
                         f"Required custom ROI {base!r} has {assessment.reason_code}: {assessment.detail}"
                     )
         desired_custom = applicable_custom
-        custom_rebuild_attempted = False
-        custom_rebuild_published = False
         try:
             rs_auto_for_custom = course_dir / "RS_auto.dcm"
             custom_is_stale = bool(
@@ -1297,34 +1299,9 @@ def parallel_radiomics_for_course(
                     "no configured custom ROI was applicable to the contracted planning CT",
                 )
             elif custom_is_stale:
-                custom_rebuild_attempted = True
-                from .custom_structures_rtstruct import _quarantine_rejected_rtstruct
-
-                _quarantine_rejected_rtstruct(
-                    rs_custom,
-                    "RS_custom failed the authoritative currentness check",
-                )
-                from .radiomics_rasterizer import require_radiomics_rasterizer
-
-                require_radiomics_rasterizer()
-                rebuilt = _create_custom_structures_rtstruct(
-                    course_dir, configured_custom_path, rs_manual, rs_auto_for_custom
-                )
-                if rebuilt is None or not Path(rebuilt).is_file():
-                    record_rs_custom_resume_decision(
-                        course_dir,
-                        "failed",
-                        "RS_custom replacement could not be published",
-                    )
-                    raise RadiomicsCourseExtractionError(
-                        f"RS_custom rebuild failed for configured ROIs in {course_dir}"
-                    )
-                rs_custom = Path(rebuilt)
-                custom_rebuild_published = True
-                record_rs_custom_resume_decision(
-                    course_dir,
-                    "rebuilt",
-                    "rebuilt after the previous RS_custom failed the authoritative currentness check",
+                raise RadiomicsCourseExtractionError(
+                    f"RS_custom is missing, stale, or lacks main-runtime OpenCV 5.0.0 provenance in {course_dir}; "
+                    "run the main-runtime DVH/custom-structure stage before radiomics"
                 )
             else:
                 record_rs_custom_resume_decision(
@@ -1333,12 +1310,6 @@ def parallel_radiomics_for_course(
                     "existing RS_custom passed the authoritative currentness check",
                 )
         except Exception as exc:
-            if custom_rebuild_attempted and not custom_rebuild_published:
-                record_rs_custom_resume_decision(
-                    course_dir,
-                    "failed",
-                    f"RS_custom rebuild raised {type(exc).__name__}: {exc}",
-                )
             _invalidate_radiomics_outputs(out_path)
             raise RadiomicsCourseExtractionError(
                 f"Failed to prepare RS_custom for radiomics in {course_dir}: {exc}"
@@ -1527,6 +1498,12 @@ def parallel_radiomics_for_course(
             f"Required custom RTSTRUCT is missing for configured ROIs in {course_dir}"
         )
     if rs_custom.exists() and (desired_custom or configured_custom_path is None):
+        if _is_rs_custom_stale(rs_custom, configured_custom_path, rs_manual, course_dir / "RS_auto.dcm"):
+            _invalidate_radiomics_outputs(out_path)
+            raise RadiomicsCourseExtractionError(
+                "RS_custom is stale or lacks main-runtime OpenCV 5.0.0 provenance; "
+                "run the main-runtime DVH/custom-structure stage"
+            )
         try:
             avail = set(_list_roi_names(rs_custom))
             if configured_custom_path is None and not desired_custom:

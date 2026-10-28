@@ -47,7 +47,9 @@ def _rows(*, required: bool = False) -> list[dict[str, object]]:
         "original_firstorder_Mean",
         "wavelet-LLL_glcm_MCC",
     }
+    from rasterizer_test_utils import PINNED_RASTERIZER_ROW
     for index, row in enumerate(rows, start=1):
+        row.update(PINNED_RASTERIZER_ROW)
         row["original_shape_VoxelVolume"] = 100.0
         row["original_firstorder_Mean"] = float(index)
         row["wavelet-LLL_glcm_MCC"] = 0.5

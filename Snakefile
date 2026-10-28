@@ -1225,6 +1225,8 @@ _radiomics_input_dict = {
     "segmentation": SEGMENTATION_SENTINEL_PATTERN,
     "custom": CUSTOM_SEG_SENTINEL_PATTERN,
     "crop": CROP_CT_SENTINEL_PATTERN,
+    # DVH owns the locked main-runtime RS_custom build.
+    "dvh": DVH_SENTINEL_PATTERN,
     "configuration": RADIOMICS_CONFIG_DEPENDENCY,
 }
 

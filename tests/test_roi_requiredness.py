@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import pytest
 from types import SimpleNamespace
 
 import numpy as np
@@ -91,6 +92,7 @@ def test_structural_taxonomy_covers_all_codes_and_parser_uses_sequence_presence(
     assert "ROI_CONTOUR_ORPHAN_REFERENCE" in _inventory(dataset).structural_codes
 
 
+@pytest.mark.usefixtures("rasterizer_guard_stub")
 def test_serial_mask_path_skips_declared_uncontoured_inventory_roi(tmp_path):
     path = write_synthetic_rtstruct(tmp_path / "RS.dcm", roi_names=("TemplateEmpty",))
     dataset = pydicom.dcmread(path)

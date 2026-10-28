@@ -84,7 +84,9 @@ def _qc(*_args, **_kwargs) -> dict[str, object]:
 
 
 def _versions() -> dict[str, str]:
+    from rasterizer_test_utils import PINNED_RASTERIZER_ROW
     return {
+        **PINNED_RASTERIZER_ROW,
         "pyradiomics_version": "3.0.1",
         "simpleitk_version": sitk.Version_VersionString(),
         "numpy_version": np.__version__,
@@ -524,7 +526,7 @@ def test_disposition_rows_require_runtime_effective_parameter_hashes():
         )
 
 
-def test_required_unclassified_roi_blocks_publication(monkeypatch):
+def test_required_unclassified_roi_blocks_publication(monkeypatch, rasterizer_guard_stub):
     decision = contract.classify_ct_roi("Manual", "operator must adjudicate this")
     rows = contract.disposition_rows_for_arms(
         {**_common_identity(), "roi_original_name": "operator must adjudicate this", "roi_name": "operator must adjudicate this"},

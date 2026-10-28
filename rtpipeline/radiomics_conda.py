@@ -2752,6 +2752,10 @@ def radiomics_for_course(
     Returns:
         Path to the radiomics Excel file if successful, None otherwise
     """
+    from .radiomics_runtime import needs_radiomics_process, run_course_driver
+    if needs_radiomics_process():
+        return run_course_driver("ct", course_dir, config, custom_structures_config, allow_all_series_temp=allow_all_series_temp)
+
     course_dir = Path(course_dir)
     contract = load_course_contract(course_dir)
     is_temp = contract.data.get("scope") == ALL_SERIES_RADIOMICS_TEMP_SCOPE
@@ -2885,11 +2889,8 @@ def radiomics_for_course(
             raise
         except Exception as exc:
             logger.warning("Could not complete custom ROI applicability inspection for %s: %s", course_dir, exc)
-        custom_rebuild_attempted = False
-        custom_rebuild_published = False
         try:
             from .custom_structures_rtstruct import (
-                _create_custom_structures_rtstruct,
                 _is_rs_custom_stale,
                 record_rs_custom_resume_decision,
             )
@@ -2899,34 +2900,9 @@ def radiomics_for_course(
                 and _is_rs_custom_stale(rs_custom, custom_cfg, rs_manual, rs_auto)
             )
             if custom_is_stale:
-                custom_rebuild_attempted = True
-                from .custom_structures_rtstruct import _quarantine_rejected_rtstruct
-
-                _quarantine_rejected_rtstruct(
-                    rs_custom,
-                    "RS_custom failed the authoritative currentness check",
-                )
-                from .radiomics_rasterizer import require_radiomics_rasterizer
-
-                require_radiomics_rasterizer()
-                rebuilt = _create_custom_structures_rtstruct(
-                    course_dir, custom_cfg, rs_manual, rs_auto
-                )
-                if rebuilt is None or not Path(rebuilt).is_file():
-                    record_rs_custom_resume_decision(
-                        course_dir,
-                        "failed",
-                        "RS_custom replacement could not be published",
-                    )
-                    raise RadiomicsCourseExtractionError(
-                        f"RS_custom rebuild failed for configured ROIs in {course_dir}"
-                    )
-                rs_custom = Path(rebuilt)
-                custom_rebuild_published = True
-                record_rs_custom_resume_decision(
-                    course_dir,
-                    "rebuilt",
-                    "rebuilt after the previous RS_custom failed the authoritative currentness check",
+                raise RadiomicsCourseExtractionError(
+                    f"RS_custom is missing, stale, or lacks main-runtime OpenCV 5.0.0 provenance in {course_dir}; "
+                    "run the main-runtime DVH/custom-structure stage before radiomics"
                 )
             elif desired_custom:
                 record_rs_custom_resume_decision(
@@ -2935,14 +2911,6 @@ def radiomics_for_course(
                     "existing RS_custom passed the authoritative currentness check",
                 )
         except Exception as exc:
-            if custom_rebuild_attempted and not custom_rebuild_published:
-                from .custom_structures_rtstruct import record_rs_custom_resume_decision
-
-                record_rs_custom_resume_decision(
-                    course_dir,
-                    "failed",
-                    f"RS_custom rebuild raised {type(exc).__name__}: {exc}",
-                )
             _invalidate_radiomics_outputs(output_path)
             raise RadiomicsCourseExtractionError(
                 f"Failed to prepare configured custom RTSTRUCT for {course_dir}: {exc}"
@@ -2950,6 +2918,7 @@ def radiomics_for_course(
 
     try:
         from .radiomics import _list_roi_names_dicom
+        from .custom_structures_rtstruct import _is_rs_custom_stale
 
         if custom_cfg is None and not desired_custom and rs_custom.exists():
             manual_names = set(_list_roi_names_dicom(rs_manual))
@@ -2963,6 +2932,8 @@ def radiomics_for_course(
 
         custom_wanted: List[str] = []
         if desired_custom:
+            if _is_rs_custom_stale(rs_custom, custom_cfg, rs_manual, rs_auto):
+                raise RadiomicsCourseExtractionError("RS_custom is missing or stale; run the main-runtime DVH/custom-structure stage")
             if not rs_custom.is_file():
                 raise RadiomicsCourseExtractionError(
                     f"Required custom RTSTRUCT is missing for configured ROIs in {course_dir}"
@@ -2983,7 +2954,7 @@ def radiomics_for_course(
                 )
                 if final_assessment.reason_code != "extracted":
                     raise RadiomicsCourseExtractionError(
-                        f"Configured custom ROI {base!r} remains unavailable after rebuild: "
+                        f"Configured custom ROI {base!r} is unavailable in the main-runtime artifact: "
                         f"{final_assessment.reason_code}: {final_assessment.detail}"
                     )
             missing_custom: List[str] = []

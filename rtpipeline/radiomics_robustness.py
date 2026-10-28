@@ -4876,6 +4876,15 @@ def robustness_for_course(
         # published as Custom by the main path are independent Custom ROIs.
         rs_custom = course_dir / "RS_custom.dcm"
         if rs_custom.exists():
+            from .custom_structures_rtstruct import _is_rs_custom_stale
+            if _is_rs_custom_stale(
+                rs_custom, getattr(config, "custom_structures_config", None),
+                contract.authoritative_rtstruct_path, course_dir / "RS_auto.dcm",
+            ):
+                raise RuntimeError(
+                    "RS_custom is stale or lacks main-runtime OpenCV 5.0.0 provenance; "
+                    "run the main-runtime DVH/custom-structure stage before robustness"
+                )
             custom_sink: List[Dict[str, Any]] = []
             custom_binding = _bind_rtstruct_source("Custom", rs_custom)
             custom_masks = _rtstruct_masks(
@@ -4967,6 +4976,8 @@ def robustness_for_course(
                         loaded += 1
                 except Exception as e:
                     logger.debug("Failed to load seg mask %s: %s", seg_file.name, e)
+            if loaded:
+                _use_nifti_masks = True
             logger.info("NIfTI fallback: loaded %d structures from segmentation files", loaded)
 
     logger.info(
@@ -5771,6 +5782,9 @@ def robustness_for_course(
         context="refusing to publish robustness measurements",
     )
 
+    from .radiomics_rasterizer import require_table_rasterizer
+    require_table_rasterizer(combined_df)
+
     # Partial rows are evidence of a failed run, never an aggregation input.
     publication_path = (
         robustness_failed_evidence_path(output_path)
@@ -6189,6 +6203,8 @@ def _admit_robustness_aggregation_input(
     """
     path = Path(parquet_path)
     table_sha256, frame = _read_robustness_input_bytes(path)
+    from .radiomics_rasterizer import require_table_rasterizer
+    require_table_rasterizer(frame)
 
     # A table that declares its own technical failures is rejected on its own
     # evidence first, so the failed course is named rather than the sidecar it

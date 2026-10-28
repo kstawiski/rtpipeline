@@ -151,14 +151,14 @@ metadata mismatch. Other dependency errors remain fatal. Third-party metadata is
 retained unchanged. The local installer removes competing provider wheels before
 reinstalling headless, because their installed files overlap.
 
-Before RTSTRUCT mask preparation or custom RTSTRUCT rebuilding, the runtime
+Before radiomics RTSTRUCT mask preparation, the runtime
 verifies rt-utils `1.2.7`, OpenCV `4.8.1`, the sole
 pinned provider and the exact 23-pixel reference-triangle mask with vertices
 `(8,9), (8,13), (14,5)`. OpenCV `4.11.0` fills 21 pixels on this example. A mismatch
 raises an error; there is no bypass. Launch radiomics and robustness in the
-radiomics runtime. The legacy conda feature executor prepares RTSTRUCT masks in
-its caller, which must also satisfy this guard. An incompatible main runtime
-cannot prepare those measurement masks. NIfTI mask loading does not fill polygons.
+radiomics runtime. CT calls from NumPy 2 re-execute the whole course driver in the isolated radiomics
+interpreter, resolved through `RTPIPELINE_RADIOMICS_ENV_PREFIX` or the existing
+environment discovery. A missing interpreter fails before course processing. NIfTI mask loading does not fill polygons.
 
 The main NumPy 2 runtime pins `opencv-python==5.0.0.93`, matching the production
 main runtime. Main stages record imported OpenCV version, provider distribution
@@ -177,10 +177,22 @@ source-disposition sidecars also record these identities. The environment
 fingerprint includes the imported cv2 version, provider metadata, rt-utils version
 and reference mask; the absolute module path is recorded separately. Polygon
 rows are reusable only with the recorded single headless pin and rt-utils 1.2.7.
-Missing or different identities invalidate resume and checkpoints. NIfTI and
+Missing or different identities invalidate resume, checkpoints, publication,
+completion receipts, partial refresh, and cohort aggregation. Historical polygon
+outputs without the pinned rasterizer identity are not republished by this release. NIfTI and
 DICOM-SEG rows use distinct `no-polygon-fill` backend labels and do not require
 the polygon pin for reuse. These records describe the runtime used for the measurement;
 they do not establish clinical accuracy.
+
+Custom structures are derived only in the main runtime. Its locked builder
+publishes `RS_custom.dcm` and records OpenCV `5.0.0` in `rs_custom_meta.json`.
+Radiomics and robustness consume that shared polygon artifact only when the code,
+configuration, source identities and main-runtime builder record are current.
+They never rebuild it. Missing, stale or legacy custom structures fail closed
+when required for extraction. The workflow orders radiomics after DVH, which
+builds the custom structures; robustness follows radiomics. The shared polygons
+are filled with OpenCV `4.8.1` for radiomics measurement. Derivation and final
+measurement rasterization therefore have separate, explicit runtime identities.
 
 ### Exporting Environments
 

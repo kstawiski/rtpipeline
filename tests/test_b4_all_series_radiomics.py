@@ -19,6 +19,9 @@ import numpy as np
 import pandas as pd
 import pydicom
 import pytest
+
+# Synthetic extraction tests assume the supported runtime; enforcement is tested separately.
+pytestmark = pytest.mark.usefixtures("rasterizer_guard_stub")
 from pydicom.dataset import FileDataset, FileMetaDataset
 from pydicom.uid import CTImageStorage, ExplicitVRLittleEndian, generate_uid
 

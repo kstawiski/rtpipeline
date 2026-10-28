@@ -304,7 +304,16 @@ def test_dicom_seg_is_authoritative_and_each_label_publishes_once(tmp_path, monk
 
     seg_dicom = out_feat.parent / "TotalSegmentator_total_mr_DICOM" / "segmentations.dcm"
     seg_dicom.parent.mkdir(parents=True, exist_ok=True)
-    seg_dicom.write_bytes(b"synthetic dicom seg")
+    from pydicom.dataset import FileDataset, FileMetaDataset
+    from pydicom.uid import ExplicitVRLittleEndian, SegmentationStorage, generate_uid
+    meta = FileMetaDataset()
+    meta.TransferSyntaxUID = ExplicitVRLittleEndian
+    meta.MediaStorageSOPClassUID = SegmentationStorage
+    meta.MediaStorageSOPInstanceUID = generate_uid()
+    ds = FileDataset(str(seg_dicom), {}, file_meta=meta, preamble=b"\0" * 128)
+    ds.SOPClassUID = SegmentationStorage
+    ds.SOPInstanceUID = meta.MediaStorageSOPInstanceUID
+    ds.save_as(seg_dicom, enforce_file_format=True)
     _nifti_dir(out_feat)
     monkeypatch.setattr(auto_rtstruct, "_load_seg_dicom", lambda *_a, **_k: (
         sitk.GetImageFromArray(_seg_array()), {1: "liver", 2: "kidney"},

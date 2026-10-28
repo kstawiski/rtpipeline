@@ -40,7 +40,6 @@ from .custom_models import (
     validate_custom_model_output_inventory,
 )
 from .custom_structures_rtstruct import (
-    _create_custom_structures_rtstruct,
     _is_rs_custom_stale,
     load_rs_custom_outcomes,
     record_rs_custom_resume_decision,
@@ -1175,6 +1174,9 @@ def _rtstruct_masks(
     governed ``structural_nonmeasurement`` rather than an extraction error.
     MR radiomics uses it; every ROI there is published.
     """
+    from .radiomics_rasterizer import require_radiomics_rasterizer
+    require_radiomics_rasterizer()
+
     normalized_skips = {
         ''.join(ch for ch in str(name).lower() if ch.isalnum())
         for name in (skip_rois or set())
@@ -1401,10 +1403,7 @@ def _rtstruct_masks(
     if structural_inventory is not None and not structurally_extractable:
         return {}
     try:
-        from .radiomics_rasterizer import require_radiomics_rasterizer
         from rt_utils import RTStructBuilder
-
-        require_radiomics_rasterizer()
     except Exception as exc:
         raise RadiomicsCourseExtractionError(
             f"RTSTRUCT mask conversion is unavailable for {rs_path}: {exc}"
@@ -1626,6 +1625,12 @@ def radiomics_for_course(
     allow_all_series_temp: bool = False,
 ) -> RadiomicsCourseOutcome:
     """Run pyradiomics on CT course with manual RS, RS_auto, and custom structures if present."""
+
+    from .radiomics_runtime import needs_radiomics_process, run_course_driver
+    if needs_radiomics_process():
+        output = run_course_driver("ct", course_dir, config, custom_structures_config, allow_all_series_temp=allow_all_series_temp)
+        return (outcome_from_output(output) if output is not None
+                else RadiomicsCourseOutcome.nothing_to_do("isolated backend found no eligible ROIs"))
 
     contract = load_course_contract(course_dir)
     _check_radiomics_contract_scope(
@@ -2211,8 +2216,7 @@ def radiomics_for_course(
         custom_stage_outcomes = load_rs_custom_outcomes(course_dir)
     if want_custom and configured_custom_path is not None:
         # First classify source applicability. A missing but source-applicable ROI is
-        # a rebuild candidate, not a terminal finding. Final applicability is recorded
-        # only after the governed RS_custom builder has had one repair attempt.
+        # evaluated against the main-runtime artifact before any measurement.
         custom_inventory = None
         if rs_custom.is_file():
             try:
@@ -2295,8 +2299,6 @@ def radiomics_for_course(
             ) from exc
 
     if want_custom:
-        custom_rebuild_attempted = False
-        custom_rebuild_published = False
         try:
             from .radiomics_rasterizer import require_radiomics_rasterizer
             from rt_utils import RTStructBuilder
@@ -2307,41 +2309,14 @@ def radiomics_for_course(
             rs_auto_path = course_dir / "RS_auto.dcm"
 
             custom_is_stale = bool(
-                configured_custom_path
-                and _is_rs_custom_stale(
+                _is_rs_custom_stale(
                     rs_custom, configured_custom_path, rs_manual_path, rs_auto_path
                 )
             )
             if custom_is_stale:
-                custom_rebuild_attempted = True
-                logger.info("Regenerating RS_custom.dcm for radiomics in %s", course_dir.name)
-                from .custom_structures_rtstruct import _quarantine_rejected_rtstruct
-
-                _quarantine_rejected_rtstruct(
-                    rs_custom,
-                    "RS_custom failed the authoritative currentness check",
-                )
-                rebuilt = _create_custom_structures_rtstruct(
-                    course_dir,
-                    configured_custom_path,
-                    rs_manual_path,
-                    rs_auto_path,
-                )
-                if rebuilt is None or not Path(rebuilt).is_file():
-                    record_rs_custom_resume_decision(
-                        course_dir,
-                        "failed",
-                        "RS_custom replacement could not be published",
-                    )
-                    raise RadiomicsCourseExtractionError(
-                        f"RS_custom rebuild failed for configured ROIs in {course_dir}"
-                    )
-                rs_custom = Path(rebuilt)
-                custom_rebuild_published = True
-                record_rs_custom_resume_decision(
-                    course_dir,
-                    "rebuilt",
-                    "rebuilt after the previous RS_custom failed the authoritative currentness check",
+                raise RadiomicsCourseExtractionError(
+                    f"RS_custom is missing, stale, or lacks main-runtime OpenCV 5.0.0 provenance in {course_dir}; "
+                    "run the main-runtime DVH/custom-structure stage before radiomics"
                 )
             elif configured_custom_path:
                 record_rs_custom_resume_decision(
@@ -2357,8 +2332,7 @@ def radiomics_for_course(
 
             _source_fingerprint(rs_custom)
             # Resolve every declared ROI (base vs base__partial). A configured
-            # source-applicable ROI gets one governed rebuild attempt before a
-            # missing outcome is treated as a technical generation failure.
+            # source-applicable ROI must be present in the current main artifact.
             available = set(_list_roi_names_dicom(rs_custom))
             for base in sorted(pending_custom_assessments):
                 generated_state = (
@@ -2452,12 +2426,6 @@ def radiomics_for_course(
                     )
                 )
         except Exception as exc:
-            if custom_rebuild_attempted and not custom_rebuild_published:
-                record_rs_custom_resume_decision(
-                    course_dir,
-                    "failed",
-                    f"RS_custom rebuild raised {type(exc).__name__}: {exc}",
-                )
             _invalidate_radiomics_outputs(out_path)
             if isinstance(exc, RadiomicsCourseExtractionError):
                 raise
@@ -2995,6 +2963,8 @@ def _collect_total_mr_masks(
     series_dir: Path,
     seg_dir: Path,
     failure_outcomes: Optional[List[Dict[str, str]]] = None,
+    *,
+    backend_out: Optional[Dict[str, str]] = None,
 ) -> Dict[str, np.ndarray]:
     masks: Dict[str, np.ndarray] = {}
     if not seg_dir.exists():
@@ -3040,12 +3010,16 @@ def _collect_total_mr_masks(
             failure_outcomes.extend(source_failures)
         masks.update(candidate_masks)
         if masks:
+            if backend_out is not None:
+                backend_out["backend"] = "rt-utils/cv2.fillPoly"
             return masks
     # These masks come from the TotalSegmentator MR model, which emits its whole
     # structure list regardless of field of view. A pelvic MR legitimately yields
     # empty brain/lung/liver masks. roi_source_is_required() already classifies
     # this source (AutoTS_total_mr) as not required, so an empty or unreadable
     # mask is recorded and skipped rather than aborting the course.
+    if backend_out is not None:
+        backend_out["backend"] = "nifti/no-polygon-fill"
     for mask_path in sorted(seg_dir.glob("total_mr--*.nii*")):
         try:
             img = sitk.ReadImage(str(mask_path))
@@ -3216,7 +3190,8 @@ def radiomics_for_course_mr(config: PipelineConfig, course) -> Optional[Path]:
                 )
             continue
         base_name = _strip_nii_name(nifti_path)
-        masks = _collect_total_mr_masks(source_dir, seg_dir, mr_failures)
+        backend_out: Dict[str, str] = {}
+        masks = _collect_total_mr_masks(source_dir, seg_dir, mr_failures, backend_out=backend_out)
         if not masks:
             continue
         for roi_name, mask in masks.items():
@@ -3241,6 +3216,7 @@ def radiomics_for_course_mr(config: PipelineConfig, course) -> Optional[Path]:
                         code_revision=code_revision,
                     ),
                 })
+                rec["rasterizer_backend"] = backend_out.get("backend", "rt-utils/cv2.fillPoly")
                 rows.append(rec)
             except Exception as exc:
                 if roi_source_is_required(MR_AUTO_SOURCE):
@@ -3633,6 +3609,17 @@ def _mr_mask_sources(
     seg_dicom = out_root / 'TotalSegmentator_total_mr_DICOM' / 'segmentations.dcm'
     seg_nifti_dir = out_root / 'TotalSegmentator_total_mr_NIFTI'
     if seg_dicom.exists():
+        # Legacy directory names do not establish the DICOM encoding.
+        import pydicom
+        try:
+            sop_class = str(pydicom.dcmread(seg_dicom, stop_before_pixels=True).SOPClassUID)
+        except Exception as exc:
+            raise RadiomicsCourseExtractionError(f"Cannot classify MR DICOM mask {seg_dicom}: {exc}") from exc
+        if sop_class != "1.2.840.10008.5.1.4.1.1.66.4":
+            raise RadiomicsCourseExtractionError(
+                f"MR voxel source {seg_dicom} has SOP Class {sop_class}, not DICOM-SEG; "
+                "RTSTRUCT requires the polygon rasterizer and cannot use the voxel decoder"
+            )
         try:
             digest = _mr_content_digest([seg_dicom])
         except OSError as exc:
@@ -4458,6 +4445,8 @@ def run_radiomics(config: PipelineConfig, courses: List["object"], custom_struct
         for p in expected_mr_paths:
             try:
                 df = _pd.read_excel(p, engine="openpyxl")
+                from .radiomics_rasterizer import require_table_rasterizer
+                require_table_rasterizer(df)
             except Exception as exc:
                 raise RadiomicsCourseExtractionError(
                     f"Expected MR radiomics workbook is unreadable: {p}: {exc}"

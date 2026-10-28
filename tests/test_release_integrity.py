@@ -270,6 +270,8 @@ def _publish_course_tables(
     provenance, and it is not clinical evidence. The real publication path is
     exercised in ``tests/test_robustness_aggregation_admission.py``.
     """
+    from rasterizer_test_utils import PINNED_RASTERIZER_ROW
+    frame = frame.assign(**PINNED_RASTERIZER_ROW)
     output_name = "radiomics_robustness_ct.parquet"
     tables: list[Path] = []
     for patient_id, patient_frame in frame.groupby("patient_id", sort=True):

@@ -165,7 +165,10 @@ def _assert_resolves(path: Path, ct_dir: Path, names) -> None:
 # RS_custom ----------------------------------------------------------------
 
 
-def test_rs_custom_on_mixed_spacing_ct_resolves_every_added_roi(tmp_path) -> None:
+def test_rs_custom_on_mixed_spacing_ct_resolves_every_added_roi(tmp_path, monkeypatch) -> None:
+    from rtpipeline import radiomics_rasterizer, custom_structures_rtstruct
+    monkeypatch.setattr(radiomics_rasterizer, "opencv_runtime_provenance", lambda: {"opencv_version": "5.0.0"})
+    monkeypatch.setattr(custom_structures_rtstruct, "opencv_runtime_provenance", lambda: {"opencv_version": "5.0.0"})
     case = _custom_course(tmp_path, _mixed_z())
     out = _build_rs_custom(case)
     assert out == case["course"] / "RS_custom.dcm"
@@ -197,6 +200,7 @@ def test_rs_custom_on_mixed_spacing_ct_resolves_every_added_roi(tmp_path) -> Non
     assert not crs._is_rs_custom_stale(out, case["config"], case["manual"], case["rs_auto"])
 
 
+@pytest.mark.usefixtures("main_builder_identity_stub")
 def test_existing_off_plane_rs_custom_is_rejected_and_rebuilt(tmp_path, monkeypatch, caplog) -> None:
     """An RS_custom written without anchoring (what a177c59 published) is rebuilt."""
     import rtpipeline.rtstruct_geometry as geometry
@@ -234,6 +238,7 @@ def _write_ct_with_changing_slice(ct_dir: Path, zs, change: str) -> None:
 
 
 @pytest.mark.parametrize("change", ["spacing", "orientation"])
+@pytest.mark.usefixtures("main_builder_identity_stub")
 def test_rs_custom_fails_closed_when_anchoring_is_impossible(tmp_path, change) -> None:
     """Pixel spacing or orientation changes between slices: nothing is published."""
     case = _custom_course(tmp_path, _mixed_z(), ct_change=change, with_auto=False)
@@ -460,6 +465,15 @@ import rtpipeline
 assert Path(rtpipeline.__file__).resolve().is_relative_to(tree), rtpipeline.__file__
 from rtpipeline import anatomical_cropping, custom_models, segmentation
 from rtpipeline import custom_structures_rtstruct as crs
+# Compare writer geometry under one installed backend. Builder runtime
+# enforcement is covered separately; this is synthetic provenance only.
+try:
+    from rtpipeline import radiomics_rasterizer
+except ImportError:
+    pass
+else:
+    radiomics_rasterizer.opencv_runtime_provenance = lambda: {"opencv_version": "5.0.0"}
+    crs.opencv_runtime_provenance = radiomics_rasterizer.opencv_runtime_provenance
 from rtpipeline.layout import build_course_dirs
 from rtpipeline.roi_fixer import fix_rtstruct_rois
 
