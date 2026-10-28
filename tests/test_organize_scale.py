@@ -162,6 +162,8 @@ def test_mask_nifti_bytes(tmp_path, monkeypatch, processes):
                 log_root=tmp_path, overwrite=True)
     expected_manifest = baseline()['organize']._export_original_segmentation_from_paths(**args)
     assert expected_manifest and len(expected_manifest['structures']) == 2
+    expected_manifest = dict(schema=organize.ORIGINAL_SEGMENTATION_SCHEMA,
+        geometry_status='exact_physical_mapping', **expected_manifest)
     expected = {p.name: p.read_bytes() for p in (tmp_path / 'masks').rglob('*.nii.gz')}
     assert expected
     if processes:

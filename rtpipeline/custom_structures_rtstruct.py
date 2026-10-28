@@ -916,7 +916,8 @@ def _create_custom_structures_rtstruct_unlocked(
                     # same-name automatic contour cannot replace either one.
                     continue
                 try:
-                    mask = builder.get_roi_mask_by_name(roi_name)
+                    from .rtstruct_geometry import rtstruct_roi_mask
+                    mask = rtstruct_roi_mask(builder, roi_name)
                 except Exception as exc:
                     # A disposition is a statement about this ROI's own geometry
                     # and an unexpected error is a failure to read it. Neither is
@@ -1033,7 +1034,8 @@ def _create_custom_structures_rtstruct_unlocked(
                     if base_outcome.get("code") not in _FALLBACK_ELIGIBLE_BASE_CODES:
                         continue
                     try:
-                        fallback_mask = fallback_builder.get_roi_mask_by_name(source_name)
+                        from .rtstruct_geometry import rtstruct_roi_mask
+                        fallback_mask = rtstruct_roi_mask(fallback_builder, source_name)
                     except Exception as exc:
                         logger.debug(
                             "Fallback custom source %s unreadable from %s: %s",

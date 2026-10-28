@@ -12,7 +12,10 @@ from rt_utils import RTStructBuilder
 
 from robustness_prep_fixture import write_ct
 from rtpipeline import organize
-from rtpipeline.rtstruct_geometry import image_array_for_rtstruct, rtstruct_mask_to_image
+from rtpipeline.rtstruct_geometry import (
+    image_array_for_rtstruct, rtstruct_mask_to_image, create_scoped_rtstruct,
+    place_added_rois_on_planes,
+)
 
 
 @pytest.fixture(params=[False, True], ids=['axial', 'oblique'])
@@ -33,9 +36,11 @@ def source(tmp_path, request):
     mask[2:7, 3:8, 1:4] = True
     mask[5:9, 3:5, 1:4] = True
     rt.add_roi(mask=mask, name='Asymmetric')
+    place_added_rois_on_planes(rt.ds, rt.series_data)
     rs = tmp_path / 'RS.dcm'
     rt.save(str(rs))
-    rt = RTStructBuilder.create_from(str(ct), str(rs))
+    rt = create_scoped_rtstruct(ct, rs)
+    np.testing.assert_array_equal(rt.get_roi_mask_by_name('Asymmetric'), mask)
     reader = sitk.ImageSeriesReader()
     reader.SetFileNames(reader.GetGDCMSeriesFileNames(str(ct)))
     return ct, rs, rt, reader.Execute()
@@ -182,3 +187,20 @@ def test_rectangular_reader_mask_is_rejected(tmp_path):
     assert physical_voxels(actual)[0] == dicom_voxels(mask, rt.series_data)[0]
     with pytest.raises(ValueError, match='MASK_GRID_NOT_EQUIVALENT'):
         rtstruct_mask_to_image(rt.get_roi_mask_by_name('Asymmetric'), rt.series_data, ref)
+
+
+def test_all_axis_permutations_and_flips(source):
+    from itertools import permutations, product
+    _, _, rt, native = source
+    mask = rt.get_roi_mask_by_name('Asymmetric')
+    expected, center = dicom_voxels(mask, rt.series_data)
+    for permutation in permutations(range(3)):
+        for flips in product((False, True), repeat=3):
+            reference = sitk.Flip(sitk.PermuteAxes(native, permutation), flips)
+            image = rtstruct_mask_to_image(mask, rt.series_data, reference)
+            actual, observed = physical_voxels(image)
+            assert actual == expected, (permutation, flips)
+            np.testing.assert_allclose(observed, center, atol=1e-5)
+    # The mapping follows the supplied rt-utils slice order, not a z guess.
+    reversed_image = rtstruct_mask_to_image(mask[:, :, ::-1], rt.series_data[::-1], native)
+    assert physical_voxels(reversed_image)[0] == expected

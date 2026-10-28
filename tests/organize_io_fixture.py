@@ -209,3 +209,33 @@ def synthetic_ct_conversion(config, dicom_dir, nifti_out, **kwargs):
     path = nifti_out / 'synthetic.nii.gz'
     sitk.WriteImage(reader.Execute(), str(path))
     return path
+
+
+def upgrade_original_export_schema(old, monkeypatch):
+    """Account only for the deliberate clinical export schema change in parity.
+
+    These fixtures use identity DICOM grids: preserve the pinned rasterizer and
+    compare its mask bytes. Only schema fields and their workbook embedding
+    change; physical placement is covered by the asymmetric geometry tests.
+    """
+    from rtpipeline.organize import ORIGINAL_SEGMENTATION_SCHEMA, ORIGINAL_PROVENANCE_SCHEMA
+    export = old._export_original_segmentation_from_paths
+    provenance = old._original_segmentation_provenance
+
+    def current_provenance(*args, **kwargs):
+        result = provenance(*args, **kwargs)
+        if result is not None:
+            result['schema'] = ORIGINAL_PROVENANCE_SCHEMA
+        return result
+
+    def current_metadata(**kwargs):
+        result = export(**kwargs)
+        if result is not None:
+            result = dict(schema=ORIGINAL_SEGMENTATION_SCHEMA,
+                          geometry_status='exact_physical_mapping', **result)
+            path = kwargs['segmentation_original_dir'] / old._strip_nifti_base(kwargs['primary_nifti']) / 'metadata.json'
+            path.write_text(json.dumps(result, indent=2), encoding='utf-8')
+        return result
+
+    monkeypatch.setattr(old, '_original_segmentation_provenance', current_provenance)
+    monkeypatch.setattr(old, '_export_original_segmentation_from_paths', current_metadata)

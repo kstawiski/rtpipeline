@@ -24,9 +24,9 @@ from robustness_performance_fixture import synthetic, task_context
 
 def _masks():
     image, masks = synthetic((24, 48, 48))
-    arrays = {name: sitk.GetArrayFromImage(mask).astype(bool) for name, mask in masks.items()}
+    arrays = {name: np.moveaxis(sitk.GetArrayFromImage(mask), 0, -1).astype(bool) for name, mask in masks.items()}
     edge = np.zeros_like(arrays["large"])
-    edge[:3, 10:20, 10:20] = True  # touches the first slice: a clipped translation
+    edge[10:20, 10:20, :3] = True  # touches the first slice: a clipped translation
     arrays["edge"] = edge
     return image, arrays
 
@@ -164,7 +164,7 @@ def test_a_dead_preparation_worker_fails_the_course(tmp_path, monkeypatch):
 def test_prepared_image_path_equals_written_image(tmp_path):
     image, arrays = _masks()
     config, course, identity = task_context(tmp_path)
-    mask = sitk.GetImageFromArray(arrays["large"].astype(np.uint8))
+    mask = sitk.GetImageFromArray(np.moveaxis(arrays["large"], -1, 0).astype(np.uint8))
     mask.CopyInformation(image)
     args = (mask, config, "AutoRTS_total", "urinary_bladder", course, tmp_path, False,
             "synthetic-run", identity)

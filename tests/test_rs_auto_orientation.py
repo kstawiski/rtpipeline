@@ -324,17 +324,9 @@ def test_rs_custom_regenerates_after_legacy_rs_auto_is_rebuilt(tmp_path, monkeyp
     assert not crs._is_rs_custom_stale(out, case["config"], case["manual"], case["rs_auto"])
 
 
-# Known rt-utils limitation, not changed here -------------------------------------
+# Unequal row/column spacing -----------------------------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "rt-utils get_pixel_to_patient_transformation_matrix scales the row "
-        "direction (x) by PixelSpacing[0], the spacing between rows (y); every "
-        "rt-utils writer misplaces contours on non-square pixels (2026-09-25, see REPORT.md)"
-    ),
-)
 @pytest.mark.parametrize("path", ["model_rtstruct", "rs_auto_masks"])
 def test_contours_keep_mask_x_y_extent_on_non_square_pixels(tmp_path, path) -> None:
     from rtpipeline import segmentation
@@ -348,3 +340,29 @@ def test_contours_keep_mask_x_y_extent_on_non_square_pixels(tmp_path, path) -> N
         out = ar.build_auto_rtstruct(course)
     assert out is not None
     _assert_physical_extent(out, zs, ANISOTROPIC)
+
+
+@pytest.mark.parametrize('path', ['model_rtstruct', 'rs_auto_masks'])
+def test_unequal_pixel_spacing_legacy_product_is_rebuilt(tmp_path, monkeypatch, path):
+    from rtpipeline import segmentation, rtstruct_geometry
+
+    zs = _uniform_z()
+    course, ct_dir, seg_dir = _geometry_course(tmp_path, zs, ANISOTROPIC)
+    _age(ct_dir, seg_dir)
+    with monkeypatch.context() as patch:
+        patch.setattr(rtstruct_geometry, 'place_added_rois_on_planes',
+                      rtstruct_geometry.anchor_contours_to_referenced_planes)
+        if path == 'model_rtstruct':
+            old = segmentation._ensure_model_rtstruct_from_masks(ct_dir, seg_dir, 'CT_series', 'total')
+        else:
+            old = ar.build_auto_rtstruct(course)
+    with pytest.raises(AssertionError):
+        _assert_physical_extent(old, zs, ANISOTROPIC)
+    if path == 'model_rtstruct':
+        result = segmentation._ensure_model_rtstruct_from_masks(ct_dir, seg_dir, 'CT_series', 'total')
+    else:
+        record = _origin(course)
+        record['mask_layout'] = 'rows-columns-v2'
+        ar._rs_auto_origin_path(course).write_text(json.dumps(record))
+        result = ar.build_auto_rtstruct(course)
+    _assert_physical_extent(result, zs, ANISOTROPIC)

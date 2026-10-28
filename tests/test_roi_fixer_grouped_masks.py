@@ -4,7 +4,9 @@
 must rebuild. ``_rt_utils_roi_mask`` groups contours by referenced image once
 instead of matching every contour against every slice. These tests require the
 same mask, or an exception wherever rt-utils raises, and the same fixer result.
-All data here are synthetic.
+Byte equivalence is required on square arrays with equal pixel spacing, where
+rt-utils has the correct convention. Rectangular and unequal-spacing geometry
+is checked independently in test_mask_consumers_physical.py. All data are synthetic.
 """
 from __future__ import annotations
 
@@ -25,9 +27,9 @@ from rtpipeline.roi_fixer import _rt_utils_roi_mask, fix_rtstruct_rois
 def _builder(ct_dir, zs):
     from rt_utils import RTStructBuilder
 
-    _write_ct(ct_dir, zs, rows=24, columns=20)
+    _write_ct(ct_dir, zs, rows=24, columns=24)
     builder = RTStructBuilder.create_new(dicom_series_path=str(ct_dir))
-    shape = (24, 20, len(zs))
+    shape = (24, 24, len(zs))
     ring = np.zeros(shape, dtype=bool)
     ring[4:18, 3:15, 2:9] = True
     ring[8:13, 7:11, 2:9] = False  # holes

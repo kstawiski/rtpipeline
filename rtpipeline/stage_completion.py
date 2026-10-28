@@ -57,6 +57,7 @@ _COMMON_CODE_SOURCES = (
     "__init__.py",
     "cli.py",
     "stage_completion.py",
+    "original_segmentation.py",
     "workflow_delegate.py",
     "workflow/scripts/run_course_stage.py",
     "Snakefile",
@@ -135,6 +136,10 @@ _STAGE_DEFINITIONS: dict[str, StageDefinition] = {
         code_sources=(
             *_COMMON_CODE_SOURCES,
             "custom_models.py",
+            "organize.py",
+            "rtstruct_geometry.py",
+            "segmenters/postprocessing.py",
+            "segmenters/medsam_boxprompt.py",
             "custom_structures_rtstruct.py",
             "course_contract.py",
             "rtsegmentator.py",
@@ -159,7 +164,7 @@ _STAGE_DEFINITIONS: dict[str, StageDefinition] = {
             ArtifactRule("cropping_metadata", "cropping_metadata.json", "content_sha256"),
         ),
         required_roles=frozenset({"cropped_image_or_mask", "cropping_metadata"}),
-        code_sources=(*_COMMON_CODE_SOURCES, "anatomical_cropping.py", "course_contract.py"),
+        code_sources=(*_COMMON_CODE_SOURCES, "anatomical_cropping.py", "rtstruct_geometry.py", "course_contract.py"),
         environment_packages=("numpy", "pydicom", "SimpleITK", "rt-utils"),
     ),
     "dvh": StageDefinition(
@@ -178,6 +183,7 @@ _STAGE_DEFINITIONS: dict[str, StageDefinition] = {
         code_sources=(
             *_COMMON_CODE_SOURCES,
             "dvh.py",
+            "rtstruct_geometry.py",
             "dvh_support.py",
             "dvh_rotation.py",
             "planning_dose_selection.py",
@@ -461,23 +467,15 @@ def _validate_stage_specific_outcome(
     outputs: Sequence[Mapping[str, Any]],
 ) -> str | None:
     if definition.name in {"organize", "segmentation"} and status == "ok":
-        from .organize import ORIGINAL_SEGMENTATION_SCHEMA, ORIGINAL_PROVENANCE_SCHEMA
+        from .original_segmentation import require_current_original_mask
 
-        original = Path(course_dir) / "Segmentation_Original"
-        for mask in original.rglob("*.nii*"):
-            try:
-                metadata = json.loads((mask.parent / "metadata.json").read_text())
-                provenance = json.loads((mask.parent / "provenance.json").read_text())
-            except (OSError, ValueError) as exc:
-                raise ValueError("Original segmentation is stale: missing physical-space provenance") from exc
-            if (metadata.get("schema") != ORIGINAL_SEGMENTATION_SCHEMA
-                    or metadata.get("geometry_status") != "exact_physical_mapping"
-                    or provenance.get("schema") != ORIGINAL_PROVENANCE_SCHEMA):
-                raise ValueError("Original segmentation is stale: physical-space export required")
-        for path in original.rglob("metadata.json"):
-            metadata = json.loads(path.read_text())
-            if metadata.get("geometry_status") == "MASK_GRID_NOT_EQUIVALENT":
-                raise ValueError("Original segmentation geometry was rejected")
+        for original in Path(course_dir).rglob("Segmentation_Original"):
+            for mask in original.rglob("*.nii*"):
+                require_current_original_mask(mask)
+            for path in original.rglob("metadata.json"):
+                metadata = json.loads(path.read_text())
+                if metadata.get("geometry_status") == "MASK_GRID_NOT_EQUIVALENT":
+                    raise ValueError("Original segmentation geometry was rejected")
     if definition.name != "dvh" or status != "ok":
         return
     roles = {str(item.get("role") or "") for item in outputs}

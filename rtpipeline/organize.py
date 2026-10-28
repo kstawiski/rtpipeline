@@ -29,6 +29,7 @@ from scipy.ndimage import map_coordinates
 
 from .config import DEFAULT_MAX_TOTAL_DOSE_GY, PipelineConfig
 from . import nifti_provenance
+from .original_segmentation import ORIGINAL_SEGMENTATION_SCHEMA, ORIGINAL_PROVENANCE_SCHEMA
 from .clinical_prescription import (
     CLINICAL_RESOLVED_SCOPE,
     adjudicate_clinical_prescription,
@@ -3825,8 +3826,6 @@ def _classify_approved_doses(
 
 
 _ORIGINAL_SEGMENTATION_PROVENANCE = "provenance.json"
-ORIGINAL_SEGMENTATION_SCHEMA = "rtpipeline-original-segmentation-v2"
-ORIGINAL_PROVENANCE_SCHEMA = "rtpipeline-original-segmentation-provenance-v2"
 _ORIGINAL_PROVENANCE_BOUND_KEYS = (
     "schema",
     "source_rtstruct_sha256",
@@ -3982,7 +3981,8 @@ def _export_original_segmentation_from_paths(
 
     for roi_name in builder.get_roi_names():
         try:
-            mask = builder.get_roi_mask_by_name(roi_name)
+            from .rtstruct_geometry import rtstruct_roi_mask
+            mask = rtstruct_roi_mask(builder, roi_name)
         except Exception:
             mask = None
         if mask is None:

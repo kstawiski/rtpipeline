@@ -183,6 +183,11 @@ def test_derive_anchor_from_reference_glob_unions_gtv_masks(tmp_path):
     img.SetSpacing((2.0, 2.0, 5.0))
     ref_dir = tmp_path / "Segmentation_Original" / "CT_1"
     ref_dir.mkdir(parents=True)
+    import json
+    from rtpipeline.organize import ORIGINAL_SEGMENTATION_SCHEMA, ORIGINAL_PROVENANCE_SCHEMA
+    (ref_dir / "metadata.json").write_text(json.dumps({"schema": ORIGINAL_SEGMENTATION_SCHEMA,
+        "geometry_status": "exact_physical_mapping"}))
+    (ref_dir / "provenance.json").write_text(json.dumps({"schema": ORIGINAL_PROVENANCE_SCHEMA}))
     sitk.WriteImage(img, str(ref_dir / "GTV-a.nii.gz"))
 
     anchor = derive_anchor_from_reference(str(tmp_path / "Segmentation_Original" / "CT_*" / "GTV-*.nii.gz"))
@@ -196,6 +201,11 @@ def test_derive_anchor_from_reference_glob_unions_gtv_masks(tmp_path):
 def test_derive_anchor_from_reference_indexed_glob_excludes_second_lesion(tmp_path):
     ref_dir = tmp_path / "Segmentation_Original" / "CT_1"
     ref_dir.mkdir(parents=True)
+    import json
+    from rtpipeline.organize import ORIGINAL_SEGMENTATION_SCHEMA, ORIGINAL_PROVENANCE_SCHEMA
+    (ref_dir / "metadata.json").write_text(json.dumps({"schema": ORIGINAL_SEGMENTATION_SCHEMA,
+        "geometry_status": "exact_physical_mapping"}))
+    (ref_dir / "provenance.json").write_text(json.dumps({"schema": ORIGINAL_PROVENANCE_SCHEMA}))
 
     def write_box(name: str, y0: int, x0: int) -> None:
         arr = np.zeros((4, 24, 24), dtype=np.uint8)

@@ -524,21 +524,118 @@ def anchor_contours_to_referenced_planes(ds, series_data, roi_numbers=None) -> i
 
 
 def place_added_rois_on_planes(ds, series_data, roi_numbers=None) -> int:
-    """Anchor ROIs written by rt-utils ``add_roi`` and require them on-plane.
+    """Place fresh rt-utils ROIs using DICOM pixel spacing and actual planes.
 
     ``roi_numbers`` names the ROIs this writer added; contours copied unchanged
-    from a source RTSTRUCT are left alone. ``None`` means every ROI. Raises
+    from a source RTSTRUCT are left alone. ``None`` means every ROI. Apply once
+    to newly added contours. Raises
     ``ValueError`` when anchoring is impossible or a contour stays off its
     referenced plane, so the caller never publishes an off-plane RTSTRUCT.
     Returns the number of contours moved.
     """
     numbers = None if roi_numbers is None else {int(number) for number in roi_numbers}
     slices = list(series_data)
-    moved = anchor_contours_to_referenced_planes(ds, slices, numbers)
+    moved = 0
+    if slices and not np.isclose(*slices[0].PixelSpacing, rtol=0, atol=1e-8):
+        # Only freshly added ROIs enter this function. Undo rt-utils' writer
+        # affine, which interchanges row/column spacing, then place each vertex
+        # on the referenced DICOM pixel grid. Never change copied source ROIs.
+        from rt_utils import image_helper
+
+        raw = np.asarray(image_helper.get_pixel_to_patient_transformation_matrix(slices), dtype=float)
+        inverse = np.linalg.inv(raw)
+        geometry = dict(zip((str(s.SOPInstanceUID) for s in slices), _slice_geometries(slices)))
+        for item in getattr(ds, 'ROIContourSequence', []):
+            if numbers is not None and int(item.ReferencedROINumber) not in numbers:
+                continue
+            for contour in getattr(item, 'ContourSequence', []):
+                refs = list(getattr(contour, 'ContourImageSequence', []))
+                if len(refs) != 1 or str(refs[0].ReferencedSOPInstanceUID) not in geometry:
+                    raise ValueError('Added contour requires one source DICOM plane')
+                _, _, spacing, orientation, origin, _, _ = geometry[str(refs[0].ReferencedSOPInstanceUID)]
+                if not (np.allclose(orientation.ravel(), slices[0].ImageOrientationPatient, atol=1e-6)
+                        and np.allclose(spacing, slices[0].PixelSpacing, atol=1e-6)):
+                    raise ValueError('RTSTRUCT source series changes orientation or pixel spacing between slices')
+                points = np.asarray(contour.ContourData).reshape(-1, 3)
+                indices = np.column_stack((points, np.ones(len(points)))) @ inverse.T
+                placed = (np.asarray(origin) + indices[:, :1] * orientation[0] * spacing[1]
+                          + indices[:, 1:2] * orientation[1] * spacing[0])
+                contour.ContourData = placed.ravel().tolist()
+                moved += 1
+    moved += anchor_contours_to_referenced_planes(ds, slices, numbers)
     on_planes, detail = contours_on_referenced_planes(ds, slices, numbers)
     if not on_planes:
         raise ValueError(f"contours are off the planning CT planes: {detail}")
     return moved
+
+
+def rtutils_requires_geometry_adapter(series_data) -> bool:
+    """rt-utils 1.2.7 swaps rectangular dimensions and unequal pixel spacing."""
+    return any(all(hasattr(s, attr) for attr in ('Rows', 'Columns', 'PixelSpacing',
+                                               'ImageOrientationPatient', 'ImagePositionPatient'))
+               and (int(s.Rows) != int(s.Columns)
+                    or not np.isclose(*s.PixelSpacing, rtol=0, atol=1e-8)) for s in series_data)
+
+
+def dicom_has_unequal_pixel_spacing(directory: Path) -> bool:
+    """Whether generated RTSTRUCTs need the corrected in-plane writer."""
+    for path in Path(directory).rglob('*'):
+        if not path.is_file():
+            continue
+        try:
+            image = pydicom.dcmread(path, stop_before_pixels=True, specific_tags=['PixelSpacing'])
+        except pydicom.errors.InvalidDicomError:
+            continue
+        if hasattr(image, 'PixelSpacing') and not np.isclose(*image.PixelSpacing, rtol=0, atol=1e-8):
+            return True
+    return False
+
+
+def rtstruct_contours_to_mask(series_data, contours, *, retain=True):
+    """Rasterize referenced contours on actual DICOM rows/columns/slices.
+
+    Retain rt-utils/OpenCV polygon filling, but supply each plane's physical
+    inverse and correct row/column dimensions. No installed code is patched.
+    """
+    from rt_utils import image_helper
+    import cv2
+
+    slices = list(series_data)
+    geometries = _slice_geometries(slices)
+    rows, columns = geometries[0][:2]
+    mask = np.zeros((rows, columns, len(slices)), dtype=bool) if retain else None
+    any_foreground = False
+    for k, (image, geo) in enumerate(zip(slices, geometries)):
+        nr, nc, spacing, orientation, origin, _, _ = geo
+        polygons = []
+        for data in image_helper.get_slice_contour_data(image, contours):
+            relative = np.asarray(data).reshape(-1, 3) - origin
+            xy = np.column_stack((relative @ orientation[0] / spacing[1],
+                                  relative @ orientation[1] / spacing[0]))
+            polygons.append(np.rint(xy).astype(np.int32))
+        plane = np.zeros((nr, nc), dtype=np.uint8)
+        if polygons:
+            cv2.fillPoly(plane, polygons, 1)
+        any_foreground = any_foreground or bool(plane.any())
+        if retain:
+            mask[:, :, k] = plane
+    return mask if retain else any_foreground
+
+
+def rtstruct_roi_mask(builder, name):
+    """Read an rt-utils ROI with correct DICOM dimensions and pixel spacing."""
+    slices = getattr(builder, 'series_data', None)
+    method = getattr(getattr(builder, 'get_roi_mask_by_name', None), '__func__', None)
+    raw_reader = (getattr(method, '__module__', None), getattr(method, '__qualname__', None)) == (
+        'rt_utils.rtstruct', 'RTStruct.get_roi_mask_by_name')
+    if raw_reader and slices and rtutils_requires_geometry_adapter(slices):
+        from rt_utils import ds_helper
+
+        for roi in builder.ds.StructureSetROISequence:
+            if roi.ROIName == name:
+                contours = ds_helper.get_contour_sequence_by_roi_number(builder.ds, roi.ROINumber)
+                return rtstruct_contours_to_mask(slices, contours)
+    return builder.get_roi_mask_by_name(name)
 
 
 def _resolve_roi_scopes_strict(dataset, ct_images) -> dict[int, ScopeResult]:
@@ -799,7 +896,7 @@ class ScopedRTStruct:
         result = self.by_name[name]
         if result.code:
             raise ROIContourDisposition(result)
-        return self.builder.get_roi_mask_by_name(name)
+        return rtstruct_roi_mask(self.builder, name)
 
 
 def create_scoped_rtstruct(ct_dir: Path, rs_path: Path):

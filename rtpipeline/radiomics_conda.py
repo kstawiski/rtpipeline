@@ -3301,7 +3301,8 @@ def radiomics_for_course(
                     )
                     continue
                 try:
-                    mask = rtstruct.get_roi_mask_by_name(roi_name)
+                    from .rtstruct_geometry import rtstruct_roi_mask
+                    mask = rtstruct_roi_mask(rtstruct, roi_name)
                 except Exception as exc:
                     _record_preparation_failure(
                         roi_name,
@@ -3408,7 +3409,12 @@ def radiomics_for_course(
                     with tempfile.NamedTemporaryFile(
                         suffix=".nrrd", delete=False
                     ) as mask_file:
-                        _write_mask_to_file(mask_bool, mask_file.name, ct_info)
+                        from .radiomics import _mask_from_array_like
+
+                        physical_mask = _mask_from_array_like(
+                            ct_image, mask_bool, series_data=getattr(rtstruct, "series_data", None))
+                        aligned_mask = np.moveaxis(sitk.GetArrayFromImage(physical_mask), 0, -1)
+                        _write_mask_to_file(aligned_mask, mask_file.name, ct_info)
                         mask_path = mask_file.name
                 except Exception as exc:
                     _record_preparation_failure(
