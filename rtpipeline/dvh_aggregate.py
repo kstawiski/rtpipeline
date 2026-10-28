@@ -340,6 +340,14 @@ def build_dvh_aggregate(
                 "zero_dose_outside_dose_grid"
             )
             if bool(outside_grid.any()):
+                published_outside_grid = (
+                    outside_grid
+                    & _optional_text_column(current, "dose_grid_coverage_status")
+                    .astype("string").eq("outside_grid")
+                    & _optional_text_column(current, "dose_metric_status")
+                    .astype("string").eq("outside_grid")
+                ).fillna(False)
+                legacy_outside_grid = outside_grid & ~published_outside_grid
                 for column in current.columns:
                     if _dose_metric_column(column):
                         current.loc[outside_grid, column] = pd.NA
@@ -350,12 +358,14 @@ def build_dvh_aggregate(
                 ] = False
                 if "dose_metric_status" not in current:
                     current["dose_metric_status"] = pd.NA
-                current.loc[outside_grid, "dose_metric_status"] = (
+                # A canonical producer disposition takes precedence over the
+                # legacy zero-dose label. Keep its reason verbatim as well.
+                current.loc[legacy_outside_grid, "dose_metric_status"] = (
                     "not_measurable_outside_dose_grid"
                 )
                 if "dose_metric_reason" not in current:
                     current["dose_metric_reason"] = pd.NA
-                current.loc[outside_grid, "dose_metric_reason"] = (
+                current.loc[legacy_outside_grid, "dose_metric_reason"] = (
                     "Dose-derived metrics are null because the ROI does not intersect "
                     "the selected RTDOSE grid."
                 )

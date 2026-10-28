@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 from rtpipeline.dvh_aggregate import (
     DVH_AGGREGATE_SCHEMA_VERSION,
@@ -139,6 +140,117 @@ def test_dvh_aggregate_preserves_target_geometry_and_null_nonmeasurement() -> No
     assert row["Course_Treatment_Isocenter_Status"] == "multiple_plan_isocenters"
     assert row["Course_Treatment_Isocenter_Count"] == 2.0
     assert row["Course_Treatment_Isocenter_Max_Separation_mm"] == 233.137
+
+
+def test_dvh_aggregate_keeps_producer_outside_grid_disposition() -> None:
+    from rtpipeline.dvh import annotate_dvh_metrics
+
+    published = annotate_dvh_metrics(
+        {"Volume (cm³)": 12.0, "DmeanGy": 0.0, "D2ccGy": 0.0, "D0.03ccGy": 0.0},
+        technique="EBRT",
+        structure_name="PTV 1",
+        structure_interpreted_type="PTV",
+        prescription_resolved=True,
+        dose_response_eligible=True,
+        rtstruct_sop_instance_uid="1.2.3",
+        rtstruct_path="RS.dcm",
+        zero_dose_status="zero_dose_outside_dose_grid",
+        zero_dose_reason="Outside grid.",
+        grid_coverage={"status": "outside_grid", "fraction": 0.0},
+    )
+    reason = "Whole-ROI metrics require complete independent dose-grid support."
+    assert published["dose_metric_status"] == "outside_grid"
+    assert published["dose_metric_reason"] == reason
+    # Aggregation must also discard stale numeric values on a declared nonmeasurement.
+    published.update(patient_id="P1", course_id="C1", DmeanGy=3.0,
+                     **{"V1Gy (cm³)": 4.0, "dose_metric_usable_for_dose_response": True})
+    source = pd.DataFrame([published])
+    aggregate = build_dvh_aggregate([source], [("P1", "C1", Path("P1/C1"))])
+    row = aggregate.iloc[0]
+    assert row["dose_grid_coverage_status"] == "outside_grid"
+    assert row["dose_metric_status"] == "outside_grid"
+    assert row["dose_metric_reason"] == reason
+    assert row["zero_dose_status"] == "zero_dose_outside_dose_grid"
+    assert row["Volume (cm³)"] == 12.0
+    for column in ("DmeanGy", "D2ccGy", "D0.03ccGy", "V1Gy (cm³)"):
+        assert pd.isna(row[column])
+    assert not bool(row["dose_metric_usable_for_dose_response"])
+    assert aggregate.loc[aggregate["dose_metric_usable_for_dose_response"].fillna(False)].empty
+    assert source.iloc[0]["DmeanGy"] == 3.0
+
+
+@pytest.mark.parametrize("reason", ["Producer-specific outside-grid evidence.", None, pd.NA])
+def test_dvh_aggregate_preserves_published_outside_grid_reason_verbatim(reason) -> None:
+    frame = pd.DataFrame([{
+        "patient_id": "P1", "course_id": "C1",
+        "zero_dose_status": "zero_dose_outside_dose_grid",
+        "dose_grid_coverage_status": "outside_grid",
+        "dose_metric_status": "outside_grid", "dose_metric_reason": reason,
+    }])
+    row = build_dvh_aggregate([frame], []).iloc[0]
+    assert row["dose_metric_status"] == "outside_grid"
+    if pd.isna(reason):
+        assert pd.isna(row["dose_metric_reason"])
+    else:
+        assert row["dose_metric_reason"] == reason
+
+
+@pytest.mark.parametrize("published_status", [None, pd.NA, "computed", "not_measurable_outside_dose_grid"])
+@pytest.mark.parametrize("coverage", [None, "outside_grid"])
+def test_dvh_aggregate_keeps_legacy_outside_grid_behavior(published_status, coverage) -> None:
+    record = {
+        "patient_id": "P1", "course_id": "C1", "DmeanGy": 0.0,
+        "zero_dose_status": "zero_dose_outside_dose_grid",
+        "dose_metric_reason": "Legacy reason to replace.",
+        "dose_metric_usable_for_dose_response": True,
+    }
+    # None means the column was absent in an older export; pd.NA is a null cell.
+    if published_status is not None:
+        record["dose_metric_status"] = published_status
+    if coverage is not None:
+        record["dose_grid_coverage_status"] = coverage
+    row = build_dvh_aggregate([pd.DataFrame([record])], []).iloc[0]
+    assert row["dose_metric_status"] == "not_measurable_outside_dose_grid"
+    assert row["dose_metric_reason"] == (
+        "Dose-derived metrics are null because the ROI does not intersect "
+        "the selected RTDOSE grid."
+    )
+    assert pd.isna(row["DmeanGy"])
+    assert not bool(row["dose_metric_usable_for_dose_response"])
+
+
+@pytest.mark.parametrize("coverage", [None, pd.NA, "fully_covered", "partial_grid"])
+def test_dvh_aggregate_requires_matching_canonical_outside_grid_coverage(coverage) -> None:
+    record = {
+        "zero_dose_status": "zero_dose_outside_dose_grid",
+        "dose_metric_status": "outside_grid",
+        "dose_metric_reason": "Unconfirmed outside-grid label.",
+    }
+    if coverage is not None:
+        record["dose_grid_coverage_status"] = coverage
+    row = build_dvh_aggregate([pd.DataFrame([record])], []).iloc[0]
+    assert row["dose_metric_status"] == "not_measurable_outside_dose_grid"
+    assert row["dose_metric_reason"].startswith("Dose-derived metrics are null")
+
+
+def test_dvh_aggregate_handles_mixed_producer_and_legacy_rows() -> None:
+    frame = pd.DataFrame({
+        "patient_id": ["P1"] * 3, "course_id": ["C1"] * 3,
+        "zero_dose_status": ["zero_dose_outside_dose_grid"] * 2 + ["not_zero_dose"],
+        "dose_grid_coverage_status": ["outside_grid", "outside_grid", "fully_covered"],
+        "dose_metric_status": ["outside_grid", pd.NA, "computed"],
+        "dose_metric_reason": ["Producer evidence.", "Legacy evidence.", "Measured."],
+        "DmeanGy": [0.0, 0.0, 20.0],
+        "dose_metric_usable_for_dose_response": [True, True, True],
+    }, index=[12, 18, 25])
+    aggregate = build_dvh_aggregate([frame], [])
+    assert aggregate["dose_metric_status"].tolist() == [
+        "outside_grid", "not_measurable_outside_dose_grid", "computed",
+    ]
+    assert aggregate["dose_metric_reason"].iloc[0] == "Producer evidence."
+    assert aggregate["dose_metric_reason"].iloc[2] == "Measured."
+    assert aggregate["DmeanGy"].isna().tolist() == [True, True, False]
+    assert aggregate["dose_metric_usable_for_dose_response"].tolist() == [False, False, True]
 
 
 def _dvh_row(**overrides: object) -> dict[str, object]:
