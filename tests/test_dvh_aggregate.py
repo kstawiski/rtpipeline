@@ -44,8 +44,9 @@ def test_dvh_aggregate_retains_computed_rows_and_failure_rows() -> None:
     assert aggregate["ROI_Number"].dtype.name == "Float64"
     assert aggregate["structure_cropped"].dtype.name == "boolean"
     assert set(aggregate["aggregate_schema_version"].dropna()) == {
-        DVH_AGGREGATE_SCHEMA_VERSION
+        "rtpipeline-dvh-aggregate-v3"
     }
+    assert DVH_AGGREGATE_SCHEMA_VERSION == "rtpipeline-dvh-aggregate-v3"
 
 
 def test_dvh_aggregate_records_expected_not_computed_course() -> None:
@@ -163,7 +164,9 @@ def test_dvh_aggregate_keeps_producer_outside_grid_disposition() -> None:
     assert published["dose_metric_reason"] == reason
     # Aggregation must also discard stale numeric values on a declared nonmeasurement.
     published.update(patient_id="P1", course_id="C1", DmeanGy=3.0,
-                     **{"V1Gy (cm³)": 4.0, "dose_metric_usable_for_dose_response": True})
+                     D90Gy=4.0, D2ccGy=50.0,
+                     **{"D0.03ccGy": 7.5, "V1Gy (cm³)": 4.0,
+                        "dose_metric_usable_for_dose_response": True})
     source = pd.DataFrame([published])
     aggregate = build_dvh_aggregate([source], [("P1", "C1", Path("P1/C1"))])
     row = aggregate.iloc[0]
@@ -172,7 +175,7 @@ def test_dvh_aggregate_keeps_producer_outside_grid_disposition() -> None:
     assert row["dose_metric_reason"] == reason
     assert row["zero_dose_status"] == "zero_dose_outside_dose_grid"
     assert row["Volume (cm³)"] == 12.0
-    for column in ("DmeanGy", "D2ccGy", "D0.03ccGy", "V1Gy (cm³)"):
+    for column in ("DmeanGy", "D90Gy", "D2ccGy", "D0.03ccGy", "V1Gy (cm³)"):
         assert pd.isna(row[column])
     assert not bool(row["dose_metric_usable_for_dose_response"])
     assert aggregate.loc[aggregate["dose_metric_usable_for_dose_response"].fillna(False)].empty
@@ -199,7 +202,8 @@ def test_dvh_aggregate_preserves_published_outside_grid_reason_verbatim(reason) 
 @pytest.mark.parametrize("coverage", [None, "outside_grid"])
 def test_dvh_aggregate_keeps_legacy_outside_grid_behavior(published_status, coverage) -> None:
     record = {
-        "patient_id": "P1", "course_id": "C1", "DmeanGy": 0.0,
+        "patient_id": "P1", "course_id": "C1", "DmeanGy": 3.0,
+        "D90Gy": 4.0, "D2ccGy": 50.0, "D0.03ccGy": 7.5, "Volume (cm³)": 12.0,
         "zero_dose_status": "zero_dose_outside_dose_grid",
         "dose_metric_reason": "Legacy reason to replace.",
         "dose_metric_usable_for_dose_response": True,
@@ -215,7 +219,9 @@ def test_dvh_aggregate_keeps_legacy_outside_grid_behavior(published_status, cove
         "Dose-derived metrics are null because the ROI does not intersect "
         "the selected RTDOSE grid."
     )
-    assert pd.isna(row["DmeanGy"])
+    for column in ("DmeanGy", "D90Gy", "D2ccGy", "D0.03ccGy"):
+        assert pd.isna(row[column])
+    assert row["Volume (cm³)"] == 12.0
     assert not bool(row["dose_metric_usable_for_dose_response"])
 
 
@@ -251,6 +257,35 @@ def test_dvh_aggregate_handles_mixed_producer_and_legacy_rows() -> None:
     assert aggregate["dose_metric_reason"].iloc[2] == "Measured."
     assert aggregate["DmeanGy"].isna().tolist() == [True, True, False]
     assert aggregate["dose_metric_usable_for_dose_response"].tolist() == [False, False, True]
+
+
+@pytest.mark.parametrize("published_status", ["outside_grid", "not_measurable_outside_dose_grid"])
+def test_dvh_aggregate_nulls_exactly_the_producer_dose_metrics(published_status) -> None:
+    from rtpipeline.dvh import RELATIVE_DVH_METRIC_COLUMNS, _is_dose_derived_metric_column
+
+    metrics = {
+        "DmeanGy", "DmaxGy", "DminGy", "D95Gy", "D90Gy", "D98Gy", "D2Gy", "D50Gy",
+        "D2ccGy", "D1ccGy", "D0.1ccGy", "D0.03ccGy", "HI", "SpreadGy", "IntegralDose_Gycm3",
+        *RELATIVE_DVH_METRIC_COLUMNS,
+        "V0Gy (cm³)", "V1Gy (%)", "V2.5Gy (cm³)", "V12.75Gy (%)",
+    }
+    retained = {
+        "Volume (cm³)", "Prescribed_Dose_Gy", "zero_dose_trigger_value_gy",
+        "VnoteGy (cm³)", "V99%Rx (%)", "V1Gy (%)_note", "D2cc_status", "D0.03cc_status",
+    }
+    record = dict.fromkeys(metrics | retained, 12.0)
+    record.update(
+        patient_id="P1", course_id="C1", zero_dose_status="zero_dose_outside_dose_grid",
+        dose_grid_coverage_status="outside_grid", dose_metric_status=published_status,
+    )
+    computed = dict(record, zero_dose_status="not_zero_dose", dose_metric_status="computed")
+    source = pd.DataFrame([record, computed])
+    aggregate = build_dvh_aggregate([source], [])
+    for column in metrics | retained:
+        assert _is_dose_derived_metric_column(column) == (column in metrics)
+        assert pd.isna(aggregate.iloc[0][column]) == (column in metrics), column
+        assert aggregate.iloc[1][column] == 12.0, column
+        assert source.iloc[0][column] == 12.0, column
 
 
 def _dvh_row(**overrides: object) -> dict[str, object]:

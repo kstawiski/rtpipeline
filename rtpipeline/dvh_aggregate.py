@@ -6,13 +6,14 @@ from collections.abc import Iterable, Mapping
 import json
 import logging
 from pathlib import Path
+import re
 from typing import Any
 
 import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-DVH_AGGREGATE_SCHEMA_VERSION = "rtpipeline-dvh-aggregate-v2"
+DVH_AGGREGATE_SCHEMA_VERSION = "rtpipeline-dvh-aggregate-v3"
 DVH_IDENTIFIER_COLUMNS = (
     "patient_id",
     "course_id",
@@ -136,11 +137,14 @@ DVH_DOSE_METRIC_COLUMNS = (
     "DmaxGy",
     "DminGy",
     "D95Gy",
+    "D90Gy",
+    "D2ccGy",
     "D98Gy",
     "D2Gy",
     "D50Gy",
     "D1ccGy",
     "D0.1ccGy",
+    "D0.03ccGy",
     "HI",
     "SpreadGy",
     "IntegralDose_Gycm3",
@@ -160,9 +164,10 @@ def _dose_metric_column(column: object) -> bool:
     name = str(column)
     if name in DVH_DOSE_METRIC_COLUMNS:
         return True
-    return name.startswith("V") and any(
-        token in name
-        for token in ("Gy (cm³)", "Gy (%)", "%Rx (cm³)", "%Rx (%)")
+    # Match the producer's dose-derived columns without importing its imaging
+    # dependencies into this table-only aggregator.
+    return bool(
+        re.fullmatch(r"V(?:\d+(?:\.\d+)?Gy|(?:95|100)%Rx) \((?:cm³|%)\)", name)
     )
 
 

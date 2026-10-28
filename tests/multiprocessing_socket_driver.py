@@ -47,6 +47,7 @@ def main():
         shared = manager.list([1, 2])
         assert list(shared) == [1, 2]
     result = {
+        "pid": os.getpid(),
         "directory": directory,
         "old_directory": old_directory,
         "mode": stat.S_IMODE(os.stat(directory).st_mode),
