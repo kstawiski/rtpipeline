@@ -110,9 +110,12 @@ comparison['volume_diff_%'] = 100 * (
 
 `dose_summary_basis` identifies RTSTRUCT mean and maximum as `binned` or `unbinned_subcentigray`. The latter uses supported unbinned samples from the same raster mask and working dose grid when the histogram has at most one bin or its maximum is zero. Positive doses below 0.01 Gy remain positive. Dose-volume quantiles and DVH curves remain histogram-derived. NIfTI-mask summaries already use unbinned samples and leave this field empty.
 
-Outside-grid rows remain in the aggregate as nonmeasurements. Dose-derived
-metrics are null and `dose_metric_usable_for_dose_response` is false. Their
-status depends on the evidence published by the producer:
+The aggregate identifies this disposition contract with
+`aggregate_schema_version = rtpipeline-dvh-aggregate-v3`. Outside-grid rows remain
+as nonmeasurements. All producer-defined dose-derived metrics, including
+`D90Gy`, `D2ccGy` and `D0.03ccGy`, are null;
+`dose_metric_usable_for_dose_response` is false. `Volume (cm³)` is retained.
+Their status depends on the evidence published by the producer:
 
 | Published evidence | Aggregate `dose_metric_status` and reason |
 |---|---|
