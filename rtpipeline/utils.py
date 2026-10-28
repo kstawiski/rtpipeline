@@ -20,6 +20,8 @@ from pydicom.dataset import FileDataset
 from pydicom.sequence import Sequence
 from pydicom.tag import Tag
 
+from .multiprocessing_utils import get_context
+
 logger = logging.getLogger(__name__)
 
 T = TypeVar('T')
@@ -48,17 +50,15 @@ def radiomics_mp_context(method: Optional[str] = None):
     Override with ``RTPIPELINE_RADIOMICS_MP_START=spawn`` (or ``forkserver``); any other
     value falls back to ``forkserver``.
     """
-    import multiprocessing as mp
-
     requested = (method or os.environ.get("RTPIPELINE_RADIOMICS_MP_START", "forkserver")).strip().lower()
     if requested not in ("forkserver", "spawn"):
         requested = "forkserver"
     for candidate in (requested, "spawn", "forkserver"):
         try:
-            return mp.get_context(candidate)
+            return get_context(candidate)
         except ValueError:
             continue
-    return mp.get_context()
+    return get_context()
 
 
 FOLLOW_INPUT_SYMLINKS_ENV = "RTPIPELINE_FOLLOW_INPUT_SYMLINKS"

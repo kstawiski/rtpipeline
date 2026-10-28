@@ -15,6 +15,8 @@ import resource
 import time
 import traceback
 
+from .multiprocessing_utils import configure_multiprocessing_tempdir
+
 logger = logging.getLogger(__name__)
 _sender = None
 
@@ -128,6 +130,7 @@ class SupervisedResults:
                 **task.get('extra_metadata', {})}
 
     def _backfill(self):
+        configure_multiprocessing_tempdir()
         while self.pending and len(self.slots) < self.workers:
             parent, child = self.context.Pipe()
             process = self.context.Process(target=_worker, args=(child, self.function))
