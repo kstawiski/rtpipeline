@@ -18,7 +18,7 @@ from test_mr_series_dispositions import _env, _plant_stale, _read
 
 
 @pytest.mark.usefixtures("rasterizer_guard_stub")
-@pytest.mark.parametrize("change", ["source_bytes", "code", "effective_settings"])
+@pytest.mark.parametrize("change", ["source_bytes", "code", "effective_settings", "rasterizer_missing", "rasterizer_opencv", "rasterizer_rt_utils", "rasterizer_provider"])
 def test_mr_resume_rejects_changed_execution_identity(tmp_path, monkeypatch, change):
     config, series, source, output = _env(monkeypatch, tmp_path)
     config.resume = True
@@ -29,7 +29,16 @@ def test_mr_resume_rejects_changed_execution_identity(tmp_path, monkeypatch, cha
     radiomics.radiomics_for_mr_series(config, series)
     assert output.with_suffix(".parquet").read_bytes() == unchanged_bytes
     assert set(_read(output).run_identifier) == run_ids
-    if change == "source_bytes":
+    if change.startswith("rasterizer_"):
+        field, value = {
+            "rasterizer_missing": ("rasterizer_opencv_version", None),
+            "rasterizer_opencv": ("rasterizer_opencv_version", "4.11.0"),
+            "rasterizer_rt_utils": ("rasterizer_rt_utils_version", "1.2.6"),
+            "rasterizer_provider": ("rasterizer_providers", "{}"),
+        }[change]
+        first[field] = value
+        radiomics.write_radiomics_feature_table_atomic(first, output)
+    elif change == "source_bytes":
         ds = pydicom.dcmread(source)
         original_uid = str(ds.SOPInstanceUID)
         ds.StructureSetLabel = "CHANGED"

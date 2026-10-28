@@ -1,4 +1,6 @@
 from __future__ import annotations
+
+from .radiomics_rasterizer import opencv_runtime_provenance
 import logging
 import os
 import re
@@ -369,6 +371,7 @@ def generate_axial_review(course_dir: Path) -> Optional[Path]:
     html.append("<div id='overlays'></div>")
     html.append("</div>")
     html.append("<script>")
+    html.append(f"const OPENCV_RUNTIME = {json.dumps(opencv_runtime_provenance())};")
     html.append(f"const CT_SLICES = {json.dumps(ct_png)};")
     html.append(f"const OVERLAYS_MANUAL = {json.dumps(overlays_manual)};")
     html.append(f"const OVERLAYS_AUTO = {json.dumps(overlays_auto)};")

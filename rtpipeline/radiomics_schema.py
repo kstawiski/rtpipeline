@@ -60,6 +60,8 @@ RADIOMICS_TEXT_COLUMNS = frozenset(
         "simpleitk_version",
         "numpy_version",
         "rasterizer_backend",
+        "rasterizer_providers",
+        "rasterizer_probe_error",
         "rasterizer_opencv_version",
         "rasterizer_opencv_path",
         "rasterizer_rt_utils_version",

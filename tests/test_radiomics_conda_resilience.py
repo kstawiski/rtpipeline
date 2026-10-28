@@ -61,6 +61,10 @@ def _feature_record(roi_name):
     """A record shaped like _combine_feature_record output: scalar features +
     the nested diagnostics struct + scalar metadata."""
     return {
+        "rasterizer_backend": "rt-utils/cv2.fillPoly",
+            "rasterizer_opencv_version": "4.8.1",
+            "rasterizer_rt_utils_version": "1.2.7",
+            "rasterizer_providers": '{"opencv-python-headless": "4.8.1.78"}',
         "original_firstorder_Mean": 42.0,
         "original_shape_VoxelVolume": 1234.5,
         "diagnostics_Configuration_EnabledImageTypes": _NESTED_DIAGNOSTIC,
@@ -269,9 +273,9 @@ def test_mr_duplicate_roi_name_across_series_not_collapsed(tmp_path, monkeypatch
 
     cp = RadiomicsCheckpoint(cp_path, buffer_size=1)
     cp.add_result({"roi_name": "liver", "series_uid": "1.2.A", "modality": "MR",
-                   "segmentation_source": "AutoTS_total_mr", "original_firstorder_Mean": 1.0})
+                   "segmentation_source": "AutoTS_total_mr", "rasterizer_backend": "nifti/no-polygon-fill", "original_firstorder_Mean": 1.0})
     cp.add_result({"roi_name": "liver", "series_uid": "1.2.B", "modality": "MR",
-                   "segmentation_source": "AutoTS_total_mr", "original_firstorder_Mean": 2.0})
+                   "segmentation_source": "AutoTS_total_mr", "rasterizer_backend": "nifti/no-polygon-fill", "original_firstorder_Mean": 2.0})
     cp.flush()
     assert len(cp.load_records()) == 2, "distinct (roi_name, series_uid) must not be deduped to one"
 

@@ -72,6 +72,7 @@ RASTERIZER_RT_UTILS_VERSION_COLUMN = "rasterizer_rt_utils_version"
 RASTERIZER_COLUMNS = (
     RASTERIZER_BACKEND_COLUMN, RASTERIZER_OPENCV_VERSION_COLUMN,
     RASTERIZER_OPENCV_PATH_COLUMN, RASTERIZER_RT_UTILS_VERSION_COLUMN,
+    "rasterizer_providers", "rasterizer_probe_error",
 )
 FEATURE_COMPLETENESS_SCHEMA = "rtpipeline-radiomics-feature-completeness-v1"
 ALLOWED_UNDEFINED_FEATURE_SUFFIXES = ("_glcm_MCC",)
@@ -1029,6 +1030,8 @@ def _add_feature_completeness_metadata(dataframe: Any) -> Any:
         (ENVIRONMENT_FINGERPRINT_COLUMN, execution_environment_fingerprint()),
         # Missing historical provenance cannot be inferred from this publisher.
         (RASTERIZER_BACKEND_COLUMN, "unrecorded"),
+        ("rasterizer_providers", "unrecorded"),
+        ("rasterizer_probe_error", "unrecorded"),
         (RASTERIZER_OPENCV_VERSION_COLUMN, "unrecorded"),
         (RASTERIZER_OPENCV_PATH_COLUMN, "unrecorded"),
         (RASTERIZER_RT_UTILS_VERSION_COLUMN, "unrecorded"),
@@ -1665,12 +1668,14 @@ def resampled_mask_qc(
     }
 
 
-def _rasterizer_columns() -> dict[str, str]:
+def _rasterizer_columns(backend: Optional[str] = None) -> dict[str, str]:
     from .radiomics_rasterizer import active_radiomics_rasterizer
 
     rasterizer = active_radiomics_rasterizer()
     return {
-        RASTERIZER_BACKEND_COLUMN: str(rasterizer["backend"]),
+        RASTERIZER_BACKEND_COLUMN: backend or str(rasterizer["backend"]),
+        "rasterizer_providers": json.dumps(rasterizer["providers"], sort_keys=True),
+        "rasterizer_probe_error": str(rasterizer.get("error") or ""),
         RASTERIZER_OPENCV_VERSION_COLUMN: str(
             rasterizer.get("opencv_version") or "unavailable"
         ),
@@ -1795,8 +1800,11 @@ def extract_ct_roi_arms(
         supplied_rasterizer = {
             key: metadata[key] for key in RASTERIZER_COLUMNS if key in metadata
         }
+        from .radiomics_rasterizer import mask_backend
+
         for row in rows:
             row.update(supplied_rasterizer)
+            row[RASTERIZER_BACKEND_COLUMN] = mask_backend(row)
         return rows
     except RadiomicsMemoryLimit as exc:
         # No partial feature row can escape a late filtered-image rejection.
@@ -2089,6 +2097,9 @@ def disposition_rows_for_arms(
     versions = {**default_versions, **dict(runtime_versions or {})}
     versions.update({key: common_metadata[key] for key in RASTERIZER_COLUMNS
                      if key in common_metadata})
+    from .radiomics_rasterizer import mask_backend
+
+    versions[RASTERIZER_BACKEND_COLUMN] = mask_backend({**common_metadata, **versions})
     rows: list[dict[str, Any]] = []
     for arm in CT_EXTRACTION_ARMS:
         window = decision.primary_resegment_range_hu if arm == PRIMARY_ARM else None
@@ -2591,6 +2602,8 @@ def sentinel_payload(
         "environment_fingerprint": _fingerprint_metadata_value(
             ENVIRONMENT_FINGERPRINT_COLUMN, execution_environment_fingerprint()
         ),
+        "rasterizer_providers": _fingerprint_metadata_value("rasterizer_providers", "unrecorded"),
+        "rasterizer_probe_error": _fingerprint_metadata_value("rasterizer_probe_error", "unrecorded"),
         "rasterizer_backend": _fingerprint_metadata_value(
             RASTERIZER_BACKEND_COLUMN, "unrecorded"
         ),
@@ -2688,6 +2701,8 @@ def validate_completion_sentinel(
         "execution_host",
         "environment_fingerprint",
         "rasterizer_backend",
+        "rasterizer_providers",
+        "rasterizer_probe_error",
         "rasterizer_opencv_version",
         "rasterizer_opencv_path",
         "rasterizer_rt_utils_version",

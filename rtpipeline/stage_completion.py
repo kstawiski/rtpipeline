@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .radiomics_rasterizer import opencv_runtime_provenance
+
 import hashlib
 import json
 import os
@@ -273,7 +275,9 @@ def execution_environment_fingerprint() -> str:
         "simpleitk": record["packages"]["SimpleITK"],
         "pyradiomics": record["packages"]["pyradiomics"],
         "pyarrow": record["packages"]["pyarrow"],
-        "rasterizer": rasterizer,
+        "rasterizer": {key: rasterizer.get(key) for key in (
+            "providers", "opencv_version", "rt_utils_version", "triangle_hex",
+        )},
     }
     return hashlib.sha256(canonical_json(legacy_record).encode("utf-8")).hexdigest()
 
@@ -545,6 +549,7 @@ def stage_completion_payload(
         "execution_host": socket.gethostname(),
         "environment_fingerprint": content_sha256(environment),
         "environment": environment,
+        "opencv_runtime": opencv_runtime_provenance(),
     }
 
 

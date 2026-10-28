@@ -15,7 +15,10 @@ From: kstawiski/rtpipeline:3.0.0
     RTpipeline 3.0.0 - Radiotherapy DICOM Processing Pipeline
 
     This definition deliberately converts the version-matched canonical Docker
-    image instead of rebuilding a second dependency stack:
+    image built from this repository's Dockerfile by .github/workflows/docker.yml
+    (v3.0.0 publishes kstawiski/rtpipeline:3.0.0). It does not build dependencies
+    from source. The mandatory %post check rejects an older image or an image
+    without the pinned radiomics environment:
 
       apptainer build rtpipeline-3.0.0.sif rtpipeline.def
 
@@ -29,6 +32,13 @@ From: kstawiski/rtpipeline:3.0.0
         snakemake --cores all --configfile /app/config.container.yaml
 
     For more information, visit https://github.com/kstawiski/rtpipeline.
+
+%post
+    set -eu
+    cd /app
+    export PYTHONNOUSERSITE=1 PYTHONPATH=/app
+    export LD_LIBRARY_PATH=/opt/conda/envs/rtpipeline-radiomics/lib:${LD_LIBRARY_PATH:-}
+    /opt/conda/envs/rtpipeline-radiomics/bin/python /app/scripts/check_radiomics_environment.py
 
 %environment
     export PYTHONNOUSERSITE=1

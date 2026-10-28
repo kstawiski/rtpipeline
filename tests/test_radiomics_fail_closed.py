@@ -109,6 +109,11 @@ def _stub_dual_arm_resampled_qc_when_pyradiomics_is_mocked(monkeypatch, rasteriz
             "pyradiomics_version": "test",
             "simpleitk_version": "test",
             "numpy_version": np.__version__,
+            "rasterizer_backend": "rt-utils/cv2.fillPoly",
+            "rasterizer_opencv_version": "4.8.1",
+            "rasterizer_rt_utils_version": "1.2.7",
+            "rasterizer_providers": '{"opencv-python-headless": "4.8.1.78"}',
+
         },
     )
 
@@ -1369,7 +1374,7 @@ def test_direct_invalid_resume_is_rebuilt_with_every_current_roi_arm(
 
 
 @pytest.mark.parametrize("large_roi", [False, True])
-@pytest.mark.parametrize("change", ["unchanged", "source_bytes", "code", "effective_settings", "native_minimum", "missing_fingerprint", "fingerprint_error", "during_masks", "during_extraction"])
+@pytest.mark.parametrize("change", ["unchanged", "source_bytes", "code", "effective_settings", "native_minimum", "missing_fingerprint", "fingerprint_error", "during_masks", "during_extraction", "rasterizer_missing", "rasterizer_opencv", "rasterizer_rt_utils", "rasterizer_provider"])
 def test_direct_measured_resume_binds_current_source_and_execution(
     tmp_path, monkeypatch, large_roi, change
 ):
@@ -1415,7 +1420,17 @@ def test_direct_measured_resume_binds_current_source_and_execution(
     assert state["calls"] == 3  # Separate shape, raw, and resegmented extractors.
     assert set(before.extraction_status) == {"success"}
 
-    if change == "source_bytes":
+    if change.startswith("rasterizer_"):
+        field = {
+            "rasterizer_missing": "rasterizer_opencv_version",
+            "rasterizer_opencv": "rasterizer_opencv_version",
+            "rasterizer_rt_utils": "rasterizer_rt_utils_version",
+            "rasterizer_provider": "rasterizer_providers",
+        }[change]
+        before[field] = {"rasterizer_missing": None, "rasterizer_opencv": "4.11.0",
+                         "rasterizer_rt_utils": "1.2.6", "rasterizer_provider": "{}"}[change]
+        write_ct_publication_atomic(before, output)
+    elif change == "source_bytes":
         dataset = pydicom.dcmread(source)
         dataset.StructureSetLabel = "CHANGED"
         dataset.save_as(source, enforce_file_format=True)

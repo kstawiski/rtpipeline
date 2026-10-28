@@ -1304,6 +1304,9 @@ def parallel_radiomics_for_course(
                     rs_custom,
                     "RS_custom failed the authoritative currentness check",
                 )
+                from .radiomics_rasterizer import require_radiomics_rasterizer
+
+                require_radiomics_rasterizer()
                 rebuilt = _create_custom_structures_rtstruct(
                     course_dir, configured_custom_path, rs_manual, rs_auto_for_custom
                 )
@@ -1650,7 +1653,10 @@ def parallel_radiomics_for_course(
                 for task in tasks
                 for arm in CT_EXTRACTION_ARMS
             }
+            from .radiomics_rasterizer import require_recorded_rasterizer
+
             for record in existing_df.to_dict("records"):
+                require_recorded_rasterizer(record)
                 key = publication_key(record)
                 if str(record.get("configured_parameter_hash") or "") != str(
                     expected_config_hashes.get(key) or ""

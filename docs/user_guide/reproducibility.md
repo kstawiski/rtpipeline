@@ -136,7 +136,10 @@ Radiomics and robustness convert RTSTRUCT contours to CT-grid masks through
 Install `rt-utils==1.2.7` separately with `python -m pip install --no-deps
 "rt-utils==1.2.7"` after creating either radiomics YAML environment. NumPy,
 pydicom and dataclasses (declared by rt-utils) are explicit dependencies.
-Docker and `scripts/install_local.sh` perform this step. Do not install RTpipeline
+Docker and `scripts/install_local.sh` perform this step. The Apptainer definition
+converts the Docker image published by this repository’s release workflow. Its
+mandatory `%post` environment check fails the build if the radiomics interpreter
+or pinned dependencies are missing or incompatible. Do not install RTpipeline
 with dependency resolution in this helper environment: use the source through
 `PYTHONPATH` or install the package with `--no-deps`.
 
@@ -148,7 +151,8 @@ metadata mismatch. Other dependency errors remain fatal. Third-party metadata is
 retained unchanged. The local installer removes competing provider wheels before
 reinstalling headless, because their installed files overlap.
 
-Before RTSTRUCT mask preparation, the runtime verifies OpenCV `4.8.1`, the sole
+Before RTSTRUCT mask preparation or custom RTSTRUCT rebuilding, the runtime
+verifies rt-utils `1.2.7`, OpenCV `4.8.1`, the sole
 pinned provider and the exact 23-pixel reference-triangle mask with vertices
 `(8,9), (8,13), (14,5)`. OpenCV `4.11.0` fills 21 pixels on this example. A mismatch
 raises an error; there is no bypass. Launch radiomics and robustness in the
@@ -156,8 +160,10 @@ radiomics runtime. The legacy conda feature executor prepares RTSTRUCT masks in
 its caller, which must also satisfy this guard. An incompatible main runtime
 cannot prepare those measurement masks. NIfTI mask loading does not fill polygons.
 
-The main NumPy 2 runtime retains `opencv-python==4.11.0.86`, already selected
-by the project lock. Its RTSTRUCT utilities fill masks for custom structures,
+The main NumPy 2 runtime pins `opencv-python==5.0.0.93`, matching the production
+main runtime. Main stages record imported OpenCV version, provider distribution
+name and version, module path, and probe errors in their existing provenance or
+completion records. They do not impose the radiomics 4.8.1 guard. Its RTSTRUCT utilities fill masks for custom structures,
 ROI repair, QC, review images and DVH crop labels. Its RTSTRUCT writers use
 OpenCV contour tracing. These paths retain their existing algorithms and do not
 establish equivalence to the radiomics mask convention.
@@ -165,10 +171,15 @@ establish equivalence to the radiomics mask convention.
 Python environment launches set `PYTHONNOUSERSITE=1`, while retaining the existing
 `PYTHONPATH` and multiprocessing socket hook. Radiomics tables and completion
 receipts record `rasterizer_backend`, `rasterizer_opencv_version`,
-`rasterizer_opencv_path` and `rasterizer_rt_utils_version`. Robustness tables and
+`rasterizer_opencv_path`, `rasterizer_rt_utils_version`, `rasterizer_providers`,
+and `rasterizer_probe_error`. Robustness tables and
 source-disposition sidecars also record these identities. The environment
-fingerprint includes the imported cv2 path, version, provider metadata and
-reference mask. These records describe the runtime used for the measurement;
+fingerprint includes the imported cv2 version, provider metadata, rt-utils version
+and reference mask; the absolute module path is recorded separately. Polygon
+rows are reusable only with the recorded single headless pin and rt-utils 1.2.7.
+Missing or different identities invalidate resume and checkpoints. NIfTI and
+DICOM-SEG rows use distinct `no-polygon-fill` backend labels and do not require
+the polygon pin for reuse. These records describe the runtime used for the measurement;
 they do not establish clinical accuracy.
 
 ### Exporting Environments

@@ -346,6 +346,8 @@ def test_contract_selected_bytes_against_80d5d65(tmp_path, monkeypatch, delivere
     assert old['dvh_curves.json'] == json.dumps(curves, ensure_ascii=False).encode('utf-8')
     old_qc = json.loads(old[names[-1]])
     new_qc = json.loads(new[names[-1]])
+    from rtpipeline.radiomics_rasterizer import opencv_runtime_provenance
+    assert new_qc.pop('opencv_runtime') == opencv_runtime_provenance()
     assert set(new_qc) == set(old_qc) | {'dose_plane_alignment', 'dose_plane_alignment_counts'}
     assert new_qc.pop('dose_plane_alignment') == 'EXACT'
     assert new_qc.pop('dose_plane_alignment_counts') == {'EXACT': len(new_frame)}

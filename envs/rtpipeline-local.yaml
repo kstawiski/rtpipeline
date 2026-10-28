@@ -28,4 +28,4 @@ dependencies:
   - wheel
   - pip
   - pip:
-    - opencv-python==4.11.0.86  # Main runtime; radiomics uses its own provider
+    - opencv-python==5.0.0.93  # Main runtime; radiomics uses its own provider

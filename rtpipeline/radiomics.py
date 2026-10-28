@@ -2599,7 +2599,10 @@ def radiomics_for_course(
             current_dispositions = {
                 publication_key(record): record for record in rows
             }
+            from .radiomics_rasterizer import require_recorded_rasterizer
+
             for record in existing_df.to_dict("records"):
+                require_recorded_rasterizer(record)
                 key = publication_key(record)
                 if str(record.get("configured_parameter_hash") or "") != str(
                     expected_config_hashes.get(key) or ""
@@ -3511,7 +3514,11 @@ def _mr_resume_parameter_provenance_is_current(
     if dataframe.empty or not required.issubset(columns):
         return False
     observed_sources: set[tuple[str, str]] = set()
+    from .radiomics_rasterizer import recorded_rasterizer_is_current
+
     for row in dataframe.to_dict("records"):
+        if not recorded_rasterizer_is_current(row):
+            return False
         arm = str(row.get("extraction_arm") or "")
         if arm not in {"mr_configured", "mr_normalized", "mr_native_intensity"}:
             return False
@@ -3886,11 +3893,25 @@ def radiomics_for_mr_series(config: PipelineConfig, series: MRSeries) -> Optiona
                 f"MR radiomics rows for {series.patient_id}/{series.series_uid} are not "
                 "uniquely identified: " + "; ".join(conflicts)
             )
+        # Loader labels are source-specific in a mixed RTSTRUCT/voxel series.
+        execution_fields = tuple(field for field in parameter_provenance
+                                 if field != "rasterizer_backend")
+        expected_backends = {
+            str(source.path): {
+                "manual": "rt-utils/cv2.fillPoly",
+                "auto_nifti": "nifti/no-polygon-fill",
+                "auto_dicom_seg": "dicom-seg/no-polygon-fill",
+            }[source.kind]
+            for source in sources
+        }
+        if any(row.get("rasterizer_backend") != expected_backends.get(str(row.get("mask_path_source")))
+               for row in rows):
+            raise RadiomicsCourseExtractionError("MR mask loader provenance differs from its source")
         divergent = {
-            tuple(str(row.get(field) or "") for field in parameter_provenance)
+            tuple(str(row.get(field) or "") for field in execution_fields)
             for row in rows
         }
-        if divergent != {tuple(str(parameter_provenance[field]) for field in parameter_provenance)}:
+        if divergent != {tuple(str(parameter_provenance[field]) for field in execution_fields)}:
             raise RadiomicsCourseExtractionError(
                 f"MR radiomics rows for {series.patient_id}/{series.series_uid} do not share "
                 "one execution identity"
@@ -4081,6 +4102,9 @@ def _mr_auto_rows(
             'stable_roi_identifier': stable_identifier,
             'extraction_status': status,
             **parameter_provenance,
+            'rasterizer_backend': ('dicom-seg/no-polygon-fill'
+                                   if source.kind == 'auto_dicom_seg'
+                                   else 'nifti/no-polygon-fill'),
         })
         if failure_kind:
             rec['extraction_failure_kind'] = failure_kind

@@ -677,13 +677,18 @@ class RadiomicsCheckpoint:
             ):
                 raise ValueError("checkpoint has no PyRadiomics feature column")
             records = df.to_dict("records")
+            from .radiomics_rasterizer import require_recorded_rasterizer
+
+            for record in records:
+                require_recorded_rasterizer(record)
             keys = _validated_identity_keys(records, context="checkpoint")
             if expected_keys is not None and keys != expected_keys:
                 raise ValueError(
                     "checkpoint identity set is incomplete or outside the current tasks "
                     f"(expected {len(expected_keys)}, found {len(keys)})"
                 )
-            if any(_identity_value(record, "extraction_arm") for record in records):
+            if any(_identity_value(record, "extraction_arm") in CT_EXTRACTION_ARMS
+                   for record in records):
                 validate_ct_publication(df, fail_on_unclassified_required=False)
                 if expected_configured_hashes is None:
                     raise ValueError("CT checkpoint lacks a current configured-parameter contract")
@@ -2352,7 +2357,7 @@ def radiomics_for_course_ct_nifti_fallback(
                 "patient_id": course_dir.parent.name,
                 "course_id": course_dir.name,
                 "structure_cropped": bool(cropped_flag),
-                **_rasterizer_columns(),
+                **_rasterizer_columns("nifti/no-polygon-fill"),
                 "roi_original_name": roi_name,
                 "roi_name": display_roi,
                 "nifti_path": nifti_path_str,
@@ -2901,6 +2906,9 @@ def radiomics_for_course(
                     rs_custom,
                     "RS_custom failed the authoritative currentness check",
                 )
+                from .radiomics_rasterizer import require_radiomics_rasterizer
+
+                require_radiomics_rasterizer()
                 rebuilt = _create_custom_structures_rtstruct(
                     course_dir, custom_cfg, rs_manual, rs_auto
                 )
@@ -3603,6 +3611,9 @@ _MR_BINDING_FIELDS = (
     "mask_identity",
     "configured_parameter_hash",
     "code_revision",
+    "rasterizer_opencv_version",
+    "rasterizer_rt_utils_version",
+    "rasterizer_providers",
 )
 
 
@@ -3987,7 +3998,7 @@ def _mr_row_identity(
         "configured_parameter_hash": configured_parameter_hash_value,
         "run_identifier": run_identifier,
         "code_revision": code_revision,
-        **_rasterizer_columns(),
+        **_rasterizer_columns("nifti/no-polygon-fill"),
     }
 
 
@@ -4043,11 +4054,14 @@ def _mr_ledger_rows(dispositions: Sequence[Mapping[str, Any]]) -> List[Dict[str,
 
 
 def _mr_expected_bindings(tasks: Sequence[Mapping[str, Any]]) -> Dict[str, Dict[str, str]]:
+    from .radiomics_rasterizer import RASTERIZER_BACKEND, mask_backend
+
     bindings: Dict[str, Dict[str, str]] = {}
     for task in tasks:
         metadata = task.get("metadata") or {}
         bindings[_roi_instance_key(task)] = {
             field: str(metadata.get(field) or "") for field in _MR_BINDING_FIELDS
+            if not field.startswith("rasterizer_") or mask_backend(metadata) == RASTERIZER_BACKEND
         }
     return bindings
 
@@ -4071,7 +4085,11 @@ def _mr_reject_stale_checkpoint(
     except Exception as exc:
         stale = f"checkpoint is unreadable or the current inventory is invalid: {exc}"
         records, expected = [], {}
+    from .radiomics_rasterizer import recorded_rasterizer_is_current
+
     for record in records:
+        if not recorded_rasterizer_is_current(record):
+            stale = "checkpoint rasterizer identity is missing or stale"
         if stale:
             break
         try:

@@ -8,6 +8,7 @@ import sys
 from rtpipeline.multiprocessing_utils import multiprocessing_subprocess_env
 from rtpipeline.radiomics_rasterizer import (
     EXPECTED_RT_UTILS_VERSION,
+    RadiomicsRasterizerError,
     require_radiomics_rasterizer,
 )
 
@@ -26,9 +27,12 @@ def dependency_errors(result: subprocess.CompletedProcess[str]) -> list[str]:
 
 
 def main() -> int:
-    info = require_radiomics_rasterizer()
-    if info["rt_utils_version"] != EXPECTED_RT_UTILS_VERSION:
-        raise RuntimeError(f"rt-utils=={EXPECTED_RT_UTILS_VERSION} is required")
+    try:
+        require_radiomics_rasterizer()
+    except RadiomicsRasterizerError as exc:
+        # The guard includes exact repair commands for overlapping provider files.
+        print(str(exc), file=sys.stderr)
+        return 1
     checked = subprocess.run(
         [sys.executable, "-m", "pip", "check"], capture_output=True, text=True,
         env=multiprocessing_subprocess_env(), check=False,
