@@ -8,6 +8,8 @@ from typing import Iterator, Mapping, Sequence
 
 import numpy as np
 
+from ..multiprocessing_utils import configure_multiprocessing_tempdir
+
 
 def _parse_predict_args(args: Sequence[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(add_help=False)
@@ -249,6 +251,7 @@ def run_modelfolder_prediction(
         overrides.update({str(key): str(value) for key, value in env.items()})
 
     with _temporary_env(overrides):
+        configure_multiprocessing_tempdir()
         args = _parse_predict_args(predict_args)
 
         import torch

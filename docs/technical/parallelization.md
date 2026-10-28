@@ -1,5 +1,18 @@
 # Parallelization & Resource Guide
 
+Multiprocessing control sockets use the effective temporary directory when its
+path is short enough. For long paths, RTpipeline creates a private directory
+with mode 0700 under `/tmp`, with `/dev/shm` as a fallback, and removes it when
+the creating process exits. `TMPDIR` and ordinary temporary files retain the
+operator's scratch location. This applies to radiomics, robustness, organise
+workers and segmentation helpers. External Python segmentation and radiomics
+commands receive a startup hook through `PYTHONPATH` for the same socket setup;
+an existing `sitecustomize` is imported normally. Socket setup runs even if
+that module raises, and Python reports the startup error. Spawn workers use
+the parent's socket directory; worker, resource-tracker and fork-server
+interpreters skip eager directory creation. Commands that disable Python site
+initialisation or discard `PYTHONPATH` must arrange their own socket directory.
+
 The pipeline uses an optimized parallelization model that automatically calculates the optimal number of parallel courses based on available CPU cores. Snakemake orchestrates job scheduling while each stage of `rtpipeline` fans out internally using a calculated worker budget.
 
 ---

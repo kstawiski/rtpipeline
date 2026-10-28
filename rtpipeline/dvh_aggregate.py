@@ -6,13 +6,14 @@ from collections.abc import Iterable, Mapping
 import json
 import logging
 from pathlib import Path
+import re
 from typing import Any
 
 import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-DVH_AGGREGATE_SCHEMA_VERSION = "rtpipeline-dvh-aggregate-v2"
+DVH_AGGREGATE_SCHEMA_VERSION = "rtpipeline-dvh-aggregate-v3"
 DVH_IDENTIFIER_COLUMNS = (
     "patient_id",
     "course_id",
@@ -136,11 +137,14 @@ DVH_DOSE_METRIC_COLUMNS = (
     "DmaxGy",
     "DminGy",
     "D95Gy",
+    "D90Gy",
+    "D2ccGy",
     "D98Gy",
     "D2Gy",
     "D50Gy",
     "D1ccGy",
     "D0.1ccGy",
+    "D0.03ccGy",
     "HI",
     "SpreadGy",
     "IntegralDose_Gycm3",
@@ -160,9 +164,10 @@ def _dose_metric_column(column: object) -> bool:
     name = str(column)
     if name in DVH_DOSE_METRIC_COLUMNS:
         return True
-    return name.startswith("V") and any(
-        token in name
-        for token in ("Gy (cm³)", "Gy (%)", "%Rx (cm³)", "%Rx (%)")
+    # Match the producer's dose-derived columns without importing its imaging
+    # dependencies into this table-only aggregator.
+    return bool(
+        re.fullmatch(r"V(?:\d+(?:\.\d+)?Gy|(?:95|100)%Rx) \((?:cm³|%)\)", name)
     )
 
 
@@ -340,6 +345,14 @@ def build_dvh_aggregate(
                 "zero_dose_outside_dose_grid"
             )
             if bool(outside_grid.any()):
+                published_outside_grid = (
+                    outside_grid
+                    & _optional_text_column(current, "dose_grid_coverage_status")
+                    .astype("string").eq("outside_grid")
+                    & _optional_text_column(current, "dose_metric_status")
+                    .astype("string").eq("outside_grid")
+                ).fillna(False)
+                legacy_outside_grid = outside_grid & ~published_outside_grid
                 for column in current.columns:
                     if _dose_metric_column(column):
                         current.loc[outside_grid, column] = pd.NA
@@ -350,12 +363,14 @@ def build_dvh_aggregate(
                 ] = False
                 if "dose_metric_status" not in current:
                     current["dose_metric_status"] = pd.NA
-                current.loc[outside_grid, "dose_metric_status"] = (
+                # A canonical producer disposition takes precedence over the
+                # legacy zero-dose label. Keep its reason verbatim as well.
+                current.loc[legacy_outside_grid, "dose_metric_status"] = (
                     "not_measurable_outside_dose_grid"
                 )
                 if "dose_metric_reason" not in current:
                     current["dose_metric_reason"] = pd.NA
-                current.loc[outside_grid, "dose_metric_reason"] = (
+                current.loc[legacy_outside_grid, "dose_metric_reason"] = (
                     "Dose-derived metrics are null because the ROI does not intersect "
                     "the selected RTDOSE grid."
                 )
