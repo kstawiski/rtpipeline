@@ -169,6 +169,9 @@ def test_rs_custom_on_mixed_spacing_ct_resolves_every_added_roi(tmp_path) -> Non
     case = _custom_course(tmp_path, _mixed_z())
     out = _build_rs_custom(case)
     assert out == case["course"] / "RS_custom.dcm"
+    from rtpipeline.radiomics_rasterizer import opencv_runtime_provenance
+    provenance = json.loads((case["course"] / "metadata" / "rs_custom_meta.json").read_text())
+    assert provenance["opencv_runtime"] == opencv_runtime_provenance()
     manual_names = {"GTV", "manual_offplane"}
     added = set(_roi_contours(out)) - manual_names
     assert added == {*STRUCTURES, f"{MODEL}_{MODEL_ROI}", "auto_union", "model_gtv_union"}
@@ -288,6 +291,9 @@ def test_custom_model_rtstruct_on_mixed_ct(tmp_path) -> None:
     masks = {name: _box_image(_mixed_z(), box) for name, box in STRUCTURES.items()}
     paths = {name: out_dir / f"{name}.nii.gz" for name in STRUCTURES}
     out = custom_models._build_rtstruct(ct_dir, masks, out_dir, paths)
+    from rtpipeline.radiomics_rasterizer import opencv_runtime_provenance
+    provenance = json.loads((out_dir / "rtstruct_manifest.json").read_text())
+    assert provenance["opencv_runtime"] == opencv_runtime_provenance()
     _assert_resolves(out, ct_dir, STRUCTURES)
     scoped = create_scoped_rtstruct(ct_dir, out)
     for name, box in STRUCTURES.items():
