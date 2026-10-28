@@ -947,3 +947,41 @@ def test_cli_radiomics_stage_runs_all_series_adapter(tmp_path, monkeypatch):
         ]
     ) == 0
     assert seen == {"course": True, "patient_ids": ["P1"]}
+
+
+@pytest.mark.parametrize("source,expected", [("PTV", "generated"), ("absent_roi", "source_unavailable")])
+@pytest.mark.parametrize("mode", ["serial", "parallel"])
+def test_all_series_builds_custom_before_extraction(tmp_path, monkeypatch, fake_dispatch, source, expected, mode):
+    from rtpipeline import custom_structures_rtstruct as custom
+    from test_science_batch_c import _build_real_rtstruct
+
+    out_root = tmp_path / "out"
+    _build_patient_tree(out_root, "P1", [{"image_class": "planning_ct", "series_uid": "u"}])
+    cdirs = build_course_dirs(out_root / "P1" / "all_series")
+    row = json.loads((cdirs.metadata / "series_manifest.json").read_text())["series"][0]
+    ct = Path(row["output_dir"])
+    for path in ct.glob("*.dcm"):
+        path.unlink()
+    rt = _build_real_rtstruct(ct, n_slices=6, side=8)
+    rt.save(str(rad._find_all_series_auto_rtstruct(ct, "total")))
+    cfg = _Cfg(out_root)
+    cfg.custom_structures_config = tmp_path / "custom.yaml"
+    cfg.custom_structures_config.write_text(
+        f"custom_structures:\n  - name: test_union\n    operation: union\n    source_structures: [{source}]\n"
+    )
+    # Exercise the real builder and publication; runtime pin enforcement has its own tests.
+    monkeypatch.setattr(custom, "_create_custom_structures_rtstruct", custom._create_custom_structures_rtstruct_unlocked)
+    calls, fake = fake_dispatch
+
+    def extract(config, course_dir, *args, **kwargs):
+        assert (course_dir / "RS_custom.dcm").is_file()
+        meta = json.loads((course_dir / "metadata" / "rs_custom_meta.json").read_text())
+        outcome = meta["custom_structure_outcomes"]["test_union"]
+        assert outcome["status"] == expected
+        ds = pydicom.dcmread(course_dir / "RS_custom.dcm")
+        assert ("test_union" in {str(r.ROIName) for r in ds.StructureSetROISequence}) == (source == "PTV")
+        return fake(config, course_dir, *args, **kwargs)
+
+    _install(monkeypatch, extract, mode)
+    assert rad.run_radiomics_all_series(cfg, ["P1"]) is not None
+    assert len(calls) == 1

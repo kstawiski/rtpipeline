@@ -1053,7 +1053,7 @@ rule segmentation_course:
     params:
         stage="segmentation",
         campaign_mode=CAMPAIGN_MODE,
-        enabled=True,
+        enabled=bool(SEG_CONFIG.get("enabled", True)),
         extra_args=_seg_params_lambda,
         python=(
             CONTAINER_MAIN_PYTHON
@@ -1383,7 +1383,7 @@ if config.get("container_mode", False):
             fi
 
             # The custom artifact is owned by DVH even when radiomics is disabled.
-            if [ ! -f "{input.dvh}" ] || ! grep -Eq '^(disabled|ok|\{{.*"status"[[:space:]]*:[[:space:]]*"(disabled|ok)".*\}})$' "{input.dvh}"; then
+            if ! PYTHONPATH="{params.root_dir}:${{PYTHONPATH:-}}" "{params.python}" "{params.root_dir}/workflow/scripts/run_course_stage.py" --require-upstream "{input.dvh}" --label dvh --allowed-statuses ok disabled; then
                 if [ "{params.campaign_mode}" = "True" ]; then
                     if ! PYTHONPATH="{params.root_dir}:${{PYTHONPATH:-}}" "{params.python}" "{params.root_dir}/workflow/scripts/campaign_ledger.py" close-robustness-upstream \
                         --output-dir "{params.output_dir}" \
@@ -1402,7 +1402,7 @@ if config.get("container_mode", False):
 
             # A not-applicable radiomics completion (no planning CT) passes this
             # gate; the CLI revalidates it and completes as not applicable.
-            if [ ! -f "{input.radiomics}" ] || ! grep -Eq '^(ok|\{{.*"status"[[:space:]]*:[[:space:]]*"(ok|not_applicable)".*\}})$' "{input.radiomics}"; then
+            if ! PYTHONPATH="{params.root_dir}:${{PYTHONPATH:-}}" "{params.python}" "{params.root_dir}/workflow/scripts/run_course_stage.py" --require-upstream "{input.radiomics}" --label radiomics --allowed-statuses ok not_applicable; then
                 if [ "{params.campaign_mode}" = "True" ]; then
                     if ! PYTHONPATH="{params.root_dir}:${{PYTHONPATH:-}}" "{params.python}" "{params.root_dir}/workflow/scripts/campaign_ledger.py" close-robustness-upstream \
                         --output-dir "{params.output_dir}" \
@@ -1520,7 +1520,7 @@ else:
             fi
 
             # The custom artifact is owned by DVH even when radiomics is disabled.
-            if [ ! -f "{input.dvh}" ] || ! grep -Eq '^(disabled|ok|\{{.*"status"[[:space:]]*:[[:space:]]*"(disabled|ok)".*\}})$' "{input.dvh}"; then
+            if ! PYTHONPATH="{params.root_dir}:${{PYTHONPATH:-}}" "{params.python}" "{params.root_dir}/workflow/scripts/run_course_stage.py" --require-upstream "{input.dvh}" --label dvh --allowed-statuses ok disabled; then
                 if [ "{params.campaign_mode}" = "True" ]; then
                     if ! PYTHONPATH="{params.root_dir}:${{PYTHONPATH:-}}" "{params.python}" "{params.root_dir}/workflow/scripts/campaign_ledger.py" close-robustness-upstream \
                         --output-dir "{params.output_dir}" \
@@ -1539,7 +1539,7 @@ else:
 
             # A not-applicable radiomics completion (no planning CT) passes this
             # gate; the CLI revalidates it and completes as not applicable.
-            if [ ! -f "{input.radiomics}" ] || ! grep -Eq '^(ok|\{{.*"status"[[:space:]]*:[[:space:]]*"(ok|not_applicable)".*\}})$' "{input.radiomics}"; then
+            if ! PYTHONPATH="{params.root_dir}:${{PYTHONPATH:-}}" "{params.python}" "{params.root_dir}/workflow/scripts/run_course_stage.py" --require-upstream "{input.radiomics}" --label radiomics --allowed-statuses ok not_applicable; then
                 if [ "{params.campaign_mode}" = "True" ]; then
                     if ! PYTHONPATH="{params.root_dir}:${{PYTHONPATH:-}}" "{params.python}" "{params.root_dir}/workflow/scripts/campaign_ledger.py" close-robustness-upstream \
                         --output-dir "{params.output_dir}" \
