@@ -229,13 +229,16 @@ def test_configuration_dependency_must_match_stage_and_digest(tmp_path: Path) ->
         )
 
 
-def test_refactored_radiomics_environment_fingerprint_is_byte_compatible() -> None:
+def test_radiomics_environment_fingerprint_includes_active_rasterizer() -> None:
+    from rtpipeline.radiomics_rasterizer import active_radiomics_rasterizer
+
     def version(name: str) -> str:
         try:
             return importlib_metadata.version(name)
         except importlib_metadata.PackageNotFoundError:
             return "unavailable"
 
+    rasterizer = active_radiomics_rasterizer()
     legacy = {
         "python": platform.python_version(),
         "implementation": platform.python_implementation(),
@@ -249,6 +252,9 @@ def test_refactored_radiomics_environment_fingerprint_is_byte_compatible() -> No
         "simpleitk": version("SimpleITK"),
         "pyradiomics": version("pyradiomics"),
         "pyarrow": version("pyarrow"),
+        "rasterizer": {key: rasterizer.get(key) for key in (
+            "providers", "opencv_version", "rt_utils_version", "triangle_hex",
+        )},
     }
     expected = hashlib.sha256(
         json.dumps(legacy, sort_keys=True, separators=(",", ":")).encode("utf-8")

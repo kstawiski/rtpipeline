@@ -26,6 +26,7 @@ def main():
         env["PYTHONPATH"] = root_dir
     
     env.setdefault("PIP_NO_BUILD_ISOLATION", "1")
+    env["PYTHONNOUSERSITE"] = "1"
 
     # Collect parquet files (passed via input.parquet_files if we modify the rule, 
     # OR we can reconstruct the logic of finding them. 

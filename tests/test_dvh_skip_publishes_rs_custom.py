@@ -80,7 +80,7 @@ def test_publish_without_a_configuration_does_nothing(tmp_path: Path) -> None:
     assert not (course_dir / "RS_custom.dcm").exists()
 
 
-def test_a_builder_failure_does_not_fail_the_skipped_course(
+def test_a_builder_failure_fails_the_skipped_course(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     course_dir = tmp_path / "patient" / "course"
@@ -99,7 +99,8 @@ def test_a_builder_failure_does_not_fail_the_skipped_course(
         custom_structures_rtstruct, "_create_custom_structures_rtstruct", _raise
     )
 
-    dvh._publish_skipped_course_rs_custom(course_dir, config, rs_manual)
+    with pytest.raises(RuntimeError, match="builder exploded"):
+        dvh._publish_skipped_course_rs_custom(course_dir, config, rs_manual)
 
 
 @pytest.mark.parametrize(

@@ -190,7 +190,10 @@ def _resolve_env_python(env_name: str) -> str:
 _envs_cfg = config.get("environments", {})
 _ENV_MAIN = _envs_cfg.get("main", "rtpipeline")
 _ENV_RADIOMICS = _envs_cfg.get("radiomics", "rtpipeline-radiomics")
-os.environ.update(RTPIPELINE_RADIOMICS_ENV=_ENV_RADIOMICS)
+os.environ.update(
+    RTPIPELINE_RADIOMICS_ENV=_ENV_RADIOMICS,
+    PYTHONNOUSERSITE="1",
+)
 PYTHON_MAIN = _resolve_env_python(_ENV_MAIN)
 PYTHON_RADIOMICS = _resolve_env_python(_ENV_RADIOMICS)
 # Derive bin dirs for PATH export in shell rules
@@ -1050,7 +1053,7 @@ rule segmentation_course:
     params:
         stage="segmentation",
         campaign_mode=CAMPAIGN_MODE,
-        enabled=True,
+        enabled=bool(SEG_CONFIG.get("enabled", True)),
         extra_args=_seg_params_lambda,
         python=(
             CONTAINER_MAIN_PYTHON
@@ -1222,6 +1225,8 @@ _radiomics_input_dict = {
     "segmentation": SEGMENTATION_SENTINEL_PATTERN,
     "custom": CUSTOM_SEG_SENTINEL_PATTERN,
     "crop": CROP_CT_SENTINEL_PATTERN,
+    # DVH owns the locked main-runtime RS_custom build.
+    "dvh": DVH_SENTINEL_PATTERN,
     "configuration": RADIOMICS_CONFIG_DEPENDENCY,
 }
 
@@ -1332,6 +1337,7 @@ rule qc_course:
 
 _robustness_input_dict = {
     "manifest": _manifest_input,
+    "dvh": DVH_SENTINEL_PATTERN,
     "radiomics": RADIOMICS_SENTINEL_PATTERN,
     "configuration": ROBUSTNESS_CONFIG_DEPENDENCY,
 }
@@ -1376,9 +1382,27 @@ if config.get("container_mode", False):
                 exit 0
             fi
 
+            # The custom artifact is owned by DVH even when radiomics is disabled.
+            if ! PYTHONPATH="{params.root_dir}:${{PYTHONPATH:-}}" "{params.python}" "{params.root_dir}/workflow/scripts/run_course_stage.py" --require-upstream "{input.dvh}" --label dvh --allowed-statuses ok disabled; then
+                if [ "{params.campaign_mode}" = "True" ]; then
+                    if ! PYTHONPATH="{params.root_dir}:${{PYTHONPATH:-}}" "{params.python}" "{params.root_dir}/workflow/scripts/campaign_ledger.py" close-robustness-upstream \
+                        --output-dir "{params.output_dir}" \
+                        --patient "{wildcards.patient}" \
+                        --course "{wildcards.course}" \
+                        --sentinel "{output.sentinel}" \
+                        --log-path "{log}" --upstream dvh; then
+                        rm -f {output.sentinel}
+                        exit 1
+                    fi
+                    exit 0
+                fi
+                echo "Robustness cannot run because upstream DVH failed: {input.dvh}" >&2
+                exit 1
+            fi
+
             # A not-applicable radiomics completion (no planning CT) passes this
             # gate; the CLI revalidates it and completes as not applicable.
-            if [ ! -f "{input.radiomics}" ] || ! grep -Eq '^(ok|\{{.*"status"[[:space:]]*:[[:space:]]*"(ok|not_applicable)".*\}})$' "{input.radiomics}"; then
+            if ! PYTHONPATH="{params.root_dir}:${{PYTHONPATH:-}}" "{params.python}" "{params.root_dir}/workflow/scripts/run_course_stage.py" --require-upstream "{input.radiomics}" --label radiomics --allowed-statuses ok not_applicable; then
                 if [ "{params.campaign_mode}" = "True" ]; then
                     if ! PYTHONPATH="{params.root_dir}:${{PYTHONPATH:-}}" "{params.python}" "{params.root_dir}/workflow/scripts/campaign_ledger.py" close-robustness-upstream \
                         --output-dir "{params.output_dir}" \
@@ -1495,9 +1519,27 @@ else:
                 exit 0
             fi
 
+            # The custom artifact is owned by DVH even when radiomics is disabled.
+            if ! PYTHONPATH="{params.root_dir}:${{PYTHONPATH:-}}" "{params.python}" "{params.root_dir}/workflow/scripts/run_course_stage.py" --require-upstream "{input.dvh}" --label dvh --allowed-statuses ok disabled; then
+                if [ "{params.campaign_mode}" = "True" ]; then
+                    if ! PYTHONPATH="{params.root_dir}:${{PYTHONPATH:-}}" "{params.python}" "{params.root_dir}/workflow/scripts/campaign_ledger.py" close-robustness-upstream \
+                        --output-dir "{params.output_dir}" \
+                        --patient "{wildcards.patient}" \
+                        --course "{wildcards.course}" \
+                        --sentinel "{output.sentinel}" \
+                        --log-path "{log}" --upstream dvh; then
+                        rm -f {output.sentinel}
+                        exit 1
+                    fi
+                    exit 0
+                fi
+                echo "Robustness cannot run because upstream DVH failed: {input.dvh}" >&2
+                exit 1
+            fi
+
             # A not-applicable radiomics completion (no planning CT) passes this
             # gate; the CLI revalidates it and completes as not applicable.
-            if [ ! -f "{input.radiomics}" ] || ! grep -Eq '^(ok|\{{.*"status"[[:space:]]*:[[:space:]]*"(ok|not_applicable)".*\}})$' "{input.radiomics}"; then
+            if ! PYTHONPATH="{params.root_dir}:${{PYTHONPATH:-}}" "{params.python}" "{params.root_dir}/workflow/scripts/run_course_stage.py" --require-upstream "{input.radiomics}" --label radiomics --allowed-statuses ok not_applicable; then
                 if [ "{params.campaign_mode}" = "True" ]; then
                     if ! PYTHONPATH="{params.root_dir}:${{PYTHONPATH:-}}" "{params.python}" "{params.root_dir}/workflow/scripts/campaign_ledger.py" close-robustness-upstream \
                         --output-dir "{params.output_dir}" \

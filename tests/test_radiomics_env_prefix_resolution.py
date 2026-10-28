@@ -6,6 +6,7 @@ could never find the env. These tests pin the prefix resolver and the
 command builder that replaced the four ``conda run -n`` call sites.
 """
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -71,6 +72,7 @@ def test_fallback_keeps_conda_run_shape(tmp_path, monkeypatch):
     monkeypatch.delenv("CONDA_PREFIX", raising=False)
     monkeypatch.delenv("MAMBA_ROOT_PREFIX", raising=False)
     monkeypatch.setenv("HOME", str(tmp_path / "emptyhome"))
+    monkeypatch.setattr(sys, "prefix", str(tmp_path / "empty-prefixes/main"))
     assert _radiomics_env_prefix() is None
     command = _radiomics_env_command("-c", "print('OK')")
     assert command[1:4] == ["run", "-n", RADIOMICS_ENV]

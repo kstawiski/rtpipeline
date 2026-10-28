@@ -16,6 +16,9 @@ from types import SimpleNamespace
 
 import pandas as pd
 import pytest
+
+# Synthetic extraction tests assume the supported runtime; enforcement is tested separately.
+pytestmark = pytest.mark.usefixtures("rasterizer_guard_stub")
 import yaml
 
 import rtpipeline.segmentation as segmentation
@@ -390,20 +393,26 @@ def test_manifest_robustness_aggregation_accounts_for_not_applicable_course(
 def test_robustness_shell_gate_accepts_not_applicable_radiomics(tmp_path, monkeypatch):
     course_dir = _no_ct_course_through_wrapper(tmp_path, monkeypatch)
     snakefile = (ROOT / "Snakefile").read_text(encoding="utf-8")
-    patterns = {
-        line.split("grep -Eq '", 1)[1].split("'", 1)[0]
-        for line in snakefile.splitlines()
-        if "grep -Eq '" in line and "{input.radiomics}" in line
+    gates = {
+        line.strip() for line in snakefile.splitlines()
+        if line.strip().startswith("if ") and "{input.radiomics}" in line
     }
-    assert len(patterns) == 1, "both robustness rules must share one gate"
-    pattern = patterns.pop().replace("{{", "{").replace("}}", "}")
+    assert len(gates) == 1, "both robustness rules must share one gate"
+    shell_gate = gates.pop()
     failed = tmp_path / "failed_token"
     failed.write_text("failed\n", encoding="utf-8")
     forged = tmp_path / "forged"
     forged.write_text('{"status": "not_applicable_forged"}\n', encoding="utf-8")
 
     def gate(path: Path) -> int:
-        return subprocess.run(["grep", "-Eq", pattern, str(path)], check=False).returncode
+        rendered = shell_gate.format(
+            input=SimpleNamespace(radiomics=path),
+            params=SimpleNamespace(root_dir=ROOT, python=sys.executable),
+        )
+        return subprocess.run(
+            ["bash", "-c", rendered + "\nexit 1\nfi"],
+            check=False, capture_output=True,
+        ).returncode
 
     assert gate(course_dir / ".radiomics_done") == 0
     assert gate(failed) != 0

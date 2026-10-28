@@ -19,6 +19,8 @@ from rtpipeline.radiomics_robustness_outcomes import (
 
 
 def course_fixture(tmp_path, monkeypatch, *, parallel=False):
+    from rasterizer_test_utils import stub_synthetic_rasterizer_columns
+    stub_synthetic_rasterizer_columns(monkeypatch)
     course=tmp_path/'P'/'C'; course.mkdir(parents=True)
     array=np.zeros((17,17,17),np.uint8); array[0:4,5:12,5:12]=1
     mask=sitk.GetImageFromArray(array)
@@ -281,6 +283,12 @@ def _real_mixed_course(tmp_path, monkeypatch, *, add_bad_roi=False,
     report that many conditions (the last in sorted order) as technical
     failures with null values.
     Returns (course, cfg, rob, rs_path)."""
+    from rasterizer_test_utils import stub_synthetic_rasterizer_columns
+    stub_synthetic_rasterizer_columns(monkeypatch)
+    # This fixture tests source dispositions with stubbed feature extraction;
+    # it compares masks only within the current backend, not across versions.
+    from rtpipeline import radiomics_rasterizer
+    monkeypatch.setattr(radiomics_rasterizer, 'require_radiomics_rasterizer', lambda: None)
     course = tmp_path / 'P' / 'C'
     course.mkdir(parents=True)
     ct_dir = course / 'CT'
@@ -322,6 +330,7 @@ def _real_mixed_course(tmp_path, monkeypatch, *, add_bad_roi=False,
     ))
     monkeypatch.setattr(rr, 'load_course_contract',
                         lambda _: SimpleNamespace(planning_ct_dir=ct_dir,
+                                                  authoritative_rtstruct_path=rs_path,
                                                   planning_ct={'series_instance_uid': series_uid}))
     monkeypatch.setattr(rr, '_load_main_ct_identity_catalog',
                         lambda *a, **k: ({('Manual', 'ROI'): identity}, {}))

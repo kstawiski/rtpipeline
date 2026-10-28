@@ -10,6 +10,8 @@ staleness logic with minimal imports.
 
 from __future__ import annotations
 
+from .radiomics_rasterizer import opencv_runtime_provenance
+
 import fcntl
 import hashlib
 import json
@@ -577,6 +579,10 @@ def _is_rs_custom_stale(
                 )
                 return True
             if not allow_contractless:
+                runtime = recorded.get("opencv_runtime")
+                if not isinstance(runtime, dict) or runtime.get("opencv_version") != "5.0.0":
+                    logger.warning("RS_custom lacks the main-runtime OpenCV 5.0.0 builder identity: %s", course_dir)
+                    return True
                 # The producer writes an integer epoch. Do not coerce malformed
                 # values or accept unknown future semantics. Older publications
                 # can contain manual-mask substitutions with no fallback field,
@@ -1200,6 +1206,7 @@ def _create_custom_structures_rtstruct_unlocked(
             if config_path and Path(config_path).is_file():
                 config_sha256 = hashlib.sha256(Path(config_path).read_bytes()).hexdigest()
             meta_payload = {
+                "opencv_runtime": opencv_runtime_provenance(),
                 "version": _RS_CUSTOM_META_VERSION,
                 "generator_code_sha256": rs_custom_generator_sha256(),
                 "base_source": base_source,
@@ -1285,6 +1292,13 @@ def _create_custom_structures_rtstruct(
         ):
             logger.info("Reusing RS_custom published by a competing course stage: %s", out_path)
             return out_path
+        from .radiomics_rasterizer import opencv_runtime_provenance
+        runtime = opencv_runtime_provenance()
+        if int(np.__version__.split(".")[0]) < 2 or runtime.get("opencv_version") != "5.0.0":
+            raise RuntimeError(
+                "Custom structures must be built in the main NumPy 2 runtime with OpenCV 5.0.0; "
+                f"observed NumPy {np.__version__}, OpenCV {runtime.get('opencv_version')}"
+            )
         return _create_custom_structures_rtstruct_unlocked(
             course_dir,
             config_path,

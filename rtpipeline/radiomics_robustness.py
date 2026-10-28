@@ -458,6 +458,7 @@ ROBUSTNESS_DISPOSITION_CODE_SOURCES = (
     "radiomics_robustness.py",
     "radiomics_robustness_outcomes.py",
     "radiomics.py",
+    "radiomics_rasterizer.py",
     "rtstruct_geometry.py",
     "radiomics_parallel.py",
     "radiomics_ct_contract.py",
@@ -893,6 +894,9 @@ def _write_robustness_source_dispositions(
             failed_entry, output_path=Path(output_path), outcome=outcome, error=RuntimeError
         )
 
+    from .radiomics_rasterizer import active_radiomics_rasterizer
+    from .stage_completion import execution_environment_fingerprint
+
     path = Path(course_dir) / "metadata" / ROBUSTNESS_SOURCE_DISPOSITIONS_FILENAME
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
@@ -911,6 +915,8 @@ def _write_robustness_source_dispositions(
         "tolerated_source_failures_sha256": _content_sha256(tolerated),
         "source_bindings": source_bindings,
         "code_identity": dict(code_identity),
+        "environment_fingerprint": execution_environment_fingerprint(),
+        "rasterizer": active_radiomics_rasterizer(),
         "effective_configuration": effective_configuration,
         "effective_configuration_sha256": _content_sha256(effective_configuration),
         "output_path": Path(output_path).name,
@@ -4559,6 +4565,26 @@ def robustness_for_course(
         expected_series_uid=series_uid,
     )
 
+    # Validate custom derivation before any contour inventory or mask loading,
+    # including voxel fallback courses with selected Custom identities.
+    rs_custom = course_dir / "RS_custom.dcm"
+    custom_cfg = getattr(config, "custom_structures_config", None)
+    custom_selected = any(
+        source == "Custom" and robustness_selection_matches(
+            roi_name, rob_config.perturbation.apply_to_structures
+        )
+        for source, roi_name in identity_catalog
+    )
+    if custom_cfg or custom_selected or rs_custom.exists():
+        from .custom_structures_rtstruct import _is_rs_custom_stale
+        if _is_rs_custom_stale(
+            rs_custom, custom_cfg, contract.authoritative_rtstruct_path, course_dir / "RS_auto.dcm"
+        ):
+            raise RuntimeError(
+                "RS_custom is stale, missing, or lacks main-runtime OpenCV 5.0.0 provenance; "
+                "run the main-runtime DVH/custom-structure stage before robustness"
+            )
+
     # ========================================================================
     # Collect masks from all segmentation sources
     # ========================================================================
@@ -4961,6 +4987,8 @@ def robustness_for_course(
                         loaded += 1
                 except Exception as e:
                     logger.debug("Failed to load seg mask %s: %s", seg_file.name, e)
+            if loaded:
+                _use_nifti_masks = True
             logger.info("NIfTI fallback: loaded %d structures from segmentation files", loaded)
 
     logger.info(
@@ -5720,6 +5748,15 @@ def robustness_for_course(
         combined_df.loc[selected, "impossible_condition_ids"] = json.dumps(impossible_ids)
         combined_df.loc[selected, "possible_condition_count"] = len(requested_ids) - len(impossible_ids)
 
+    from .radiomics_ct_contract import _rasterizer_columns
+    from .stage_completion import execution_environment_fingerprint
+
+    for _col_name, _col_val in (
+        *_rasterizer_columns("nifti/no-polygon-fill" if _use_nifti_masks else None).items(),
+        ("environment_fingerprint", execution_environment_fingerprint()),
+    ):
+        combined_df[_col_name] = _col_val
+
     combined_df = _order_robustness_rows(combined_df)
 
     # Bind the published rows to the run that produced them: a table carrying a
@@ -5755,6 +5792,9 @@ def robustness_for_course(
         run_code_identity,
         context="refusing to publish robustness measurements",
     )
+
+    from .radiomics_rasterizer import require_table_rasterizer
+    require_table_rasterizer(combined_df)
 
     # Partial rows are evidence of a failed run, never an aggregation input.
     publication_path = (
@@ -6174,6 +6214,8 @@ def _admit_robustness_aggregation_input(
     """
     path = Path(parquet_path)
     table_sha256, frame = _read_robustness_input_bytes(path)
+    from .radiomics_rasterizer import require_table_rasterizer
+    require_table_rasterizer(frame)
 
     # A table that declares its own technical failures is rejected on its own
     # evidence first, so the failed course is named rather than the sidecar it

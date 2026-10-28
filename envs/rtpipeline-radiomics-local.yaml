@@ -18,7 +18,6 @@ dependencies:
   - pyarrow
   - openpyxl
   - filelock>=3.20.3
-  - opencv=4.8.*
   # Non-Linux platforms compile the pinned PyRadiomics source release.
   - c-compiler
   - cxx-compiler
@@ -28,3 +27,8 @@ dependencies:
   - setuptools<70
   - wheel
   - pip
+  - pip:
+    - dataclasses  # rt-utils declares this backport even on Python 3.10
+    # Single OpenCV provider pinned for reproducible cv2.fillPoly RTSTRUCT rasterization.
+    # rt-utils==1.2.7 is installed in scripts/install_local.sh with `pip install --no-deps`.
+    - opencv-python-headless==4.8.1.78

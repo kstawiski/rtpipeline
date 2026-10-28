@@ -819,7 +819,8 @@ def _doctor(argv: list[str]) -> int:
     # GPU diagnostics
     try:
         import subprocess as _sp
-        out = _sp.check_output(["python","-c","import torch;print('torch_cuda',getattr(torch,'cuda',None) is not None);print('cuda_available',getattr(torch,'cuda',None) and torch.cuda.is_available());print('cuda_count',getattr(torch,'cuda',None) and torch.cuda.device_count())"], stderr=_sp.STDOUT)
+        from .multiprocessing_utils import multiprocessing_subprocess_env
+        out = _sp.check_output(["python","-c","import torch;print('torch_cuda',getattr(torch,'cuda',None) is not None);print('cuda_available',getattr(torch,'cuda',None) and torch.cuda.is_available());print('cuda_count',getattr(torch,'cuda',None) and torch.cuda.device_count())"], stderr=_sp.STDOUT, env=multiprocessing_subprocess_env())
         print(out.decode().strip())
     except Exception:
         print("- PyTorch CUDA diagnostics: unavailable")

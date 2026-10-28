@@ -47,6 +47,26 @@ def _require_upstream_status(
 def _require_segmentation_content(workflow: Any, course_dir: Path) -> str:
     """Validate segmentation content inside the dependency-bearing interpreter."""
 
+    # Disabling automatic segmentation leaves manual RTSTRUCT analysis enabled.
+    # Require the producer's content-bound disabled receipt; a plain marker
+    # cannot authorize bypassing segmentation content checks.
+    import yaml
+    from rtpipeline.stage_completion import validate_stage_completion_sentinel
+
+    configfile = getattr(workflow.params, "configfile", None)
+    configuration = (
+        yaml.safe_load(Path(configfile).read_text())
+        if configfile and Path(configfile).is_file() else {}
+    )
+    if (configuration or {}).get("segmentation", {}).get("enabled", True) is False:
+        receipt = validate_stage_completion_sentinel(
+            course_dir / ".segmentation_done", expected_stage="segmentation",
+            expected_patient=course_dir.parent.name, expected_course=course_dir.name,
+        )
+        if receipt["status"] != "disabled":
+            raise RuntimeError("Configured-disabled segmentation requires a disabled receipt")
+        return "configuration_disabled"
+
     payload = invoke(
         python=str(workflow.params.python),
         operation="assess-segmentation",
@@ -308,12 +328,13 @@ def main(workflow: Any) -> None:
         ("segmentation", {"disabled", "ok"}),
         ("custom", {"disabled", "ok"}),
         ("crop", {"disabled", "ok"}),
+        ("dvh", {"disabled", "ok"}),
     ):
         upstream = getattr(workflow.input, input_name, None)
         try:
             _require_upstream_status(upstream, input_name, allowed_statuses)
         except RuntimeError as exc:
-            close_course(str(exc), returncode=1, strict_error=exc)
+            close_course(f"upstream_failed: upstream_{input_name}_failed: {exc}", returncode=1, strict_error=exc)
 
     if not bool(getattr(workflow.params, "enabled", True)):
         try:
@@ -477,3 +498,13 @@ def main(workflow: Any) -> None:
 
 if "snakemake" in globals():
     main(snakemake)  # type: ignore[name-defined]
+
+elif __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Check an upstream receipt status")
+    parser.add_argument("--require-upstream", required=True)
+    parser.add_argument("--label", required=True)
+    parser.add_argument("--allowed-statuses", nargs="+", required=True)
+    args = parser.parse_args()
+    _require_upstream_status(args.require_upstream, args.label, set(args.allowed_statuses))

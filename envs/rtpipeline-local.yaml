@@ -27,3 +27,5 @@ dependencies:
   - psutil
   - wheel
   - pip
+  - pip:
+    - opencv-python==5.0.0.93  # Main runtime; radiomics uses its own provider

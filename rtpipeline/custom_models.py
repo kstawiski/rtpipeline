@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .radiomics_rasterizer import opencv_runtime_provenance
+
 import datetime
 import json
 import logging
@@ -1296,6 +1298,7 @@ def _build_rtstruct(
     manifest = {
         "generated_at": datetime.datetime.utcnow().isoformat() + "Z",
         "rtstruct": "rtstruct.dcm",
+        "opencv_runtime": opencv_runtime_provenance(),
         "structures": [
             {"name": name, "file": str(structure_paths[name].name)}
             for name in sorted(structure_paths)
