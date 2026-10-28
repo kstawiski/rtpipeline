@@ -2964,9 +2964,10 @@ def _delivered_remainder_chain(
     of each source grid. The classifier retains all contributing plans so the
     course grid can be resampled and weighted by delivered divided by planned
     fractions. The ``< 0.60`` ratio only separates observed early replacement
-    chains from independent overlapping phases. Beam-dose equality partitions
-    replacement plans from independent phases but never collapses delivered
-    plan membership.
+    chains from independent overlapping phases and is evaluated over the anchor
+    and its same-fraction-dose replacement candidates when independent phases
+    are present. Beam-dose equality partitions replacement plans from
+    independent phases but never collapses delivered plan membership.
     """
 
     def evidence(plan: dict) -> tuple[set[str], int, int]:
@@ -2981,7 +2982,7 @@ def _delivered_remainder_chain(
         return None
     planned_total = sum(evidence(plan)[2] for plan in supported)
     delivered_total = sum(evidence(plan)[1] for plan in supported)
-    if planned_total <= 0 or delivered_total <= 0 or delivered_total / planned_total >= 0.60:
+    if planned_total <= 0 or delivered_total <= 0:
         return None
     anchor = max(
         supported,
@@ -2997,26 +2998,77 @@ def _delivered_remainder_chain(
     later = [plan for plan in supported if plan is not anchor]
     if not later:
         return None
-    replacement_plans: List[dict] = []
-    independent_phases: List[dict] = []
+    if delivered_total / planned_total < 0.60:
+        replacement_plans: List[dict] = []
+        independent_phases: List[dict] = []
+        represented_fractions = anchor_delivered
+        for plan in sorted(
+            later,
+            key=lambda item: (
+                min(evidence(item)[0]) if evidence(item)[0] else "",
+                -evidence(item)[2],
+                str(item.get("sop_uid") or ""),
+            ),
+        ):
+            planned = evidence(plan)[2]
+            if (
+                _same_fraction_dose(plan, anchor)
+                and represented_fractions + planned <= anchor_planned
+            ):
+                replacement_plans.append(plan)
+                represented_fractions += planned
+            else:
+                independent_phases.append(plan)
+        if replacement_plans:
+            return anchor, later, [anchor] + independent_phases, represented_fractions
+        if represented_fractions + sum(
+            evidence(plan)[2] for plan in independent_phases
+        ) <= anchor_planned:
+            return anchor, later, [], represented_fractions
+        return None
+    if any(
+        other is not plan
+        and dates
+        and other_dates
+        and (
+            dates < other_dates
+            or (min(dates) < max(other_dates) and min(other_dates) < max(dates))
+        )
+        for plan in supported
+        for dates in (evidence(plan)[0],)
+        for other in supported
+        for other_dates in (evidence(other)[0],)
+    ):
+        return None
+    replacement_plans = []
+    independent_phases = []
     represented_fractions = anchor_delivered
-    for plan in sorted(later, key=lambda item: str(item.get("sop_uid") or "")):
-        planned = evidence(plan)[2]
+    for plan in sorted(
+        later,
+        key=lambda item: (
+            min(evidence(item)[0]) if evidence(item)[0] else "",
+            -evidence(item)[2],
+            str(item.get("sop_uid") or ""),
+        ),
+    ):
+        plan_dates, _, planned = evidence(plan)
         if (
             _same_fraction_dose(plan, anchor)
             and represented_fractions + planned <= anchor_planned
+            and not (anchor_dates and plan_dates and min(plan_dates) < max(anchor_dates))
         ):
             replacement_plans.append(plan)
             represented_fractions += planned
         else:
             independent_phases.append(plan)
-    if replacement_plans:
-        return anchor, later, [anchor] + independent_phases, represented_fractions
-    if represented_fractions + sum(
-        evidence(plan)[2] for plan in independent_phases
-    ) <= anchor_planned:
-        return anchor, later, [], represented_fractions
-    return None
+    if not replacement_plans or not independent_phases:
+        return None
+    chain_plans = [anchor] + replacement_plans
+    chain_planned = sum(evidence(plan)[2] for plan in chain_plans)
+    chain_delivered = sum(evidence(plan)[1] for plan in chain_plans)
+    if chain_planned <= 0 or chain_delivered <= 0 or chain_delivered / chain_planned >= 0.60:
+        return None
+    return anchor, later, [anchor] + independent_phases, represented_fractions
 
 
 def _replacement_partition(plans: List[dict]) -> tuple[int, tuple[int, ...]] | None:
@@ -3806,7 +3858,12 @@ def _classify_approved_doses(
         for plan in paired_plans
         if dose_for_plan[str(plan["sop_uid"])]["path"] not in selected_dose_set
     ]
-    selected_total_rx = sum(float(plan.get("total_rx_gy") or 0.0) for plan in selected_representatives)
+    prescription_basis = (
+        prescription_components
+        if remainder_chain is not None and prescription_components
+        else selected_representatives
+    )
+    selected_total_rx = sum(float(plan.get("total_rx_gy") or 0.0) for plan in prescription_basis)
     if should_sum and selected_total_rx > max_total_dose_gy:
         warnings.append(
             f"PLAUSIBILITY WARNING: selected prescription total {selected_total_rx:.1f} Gy exceeds {max_total_dose_gy:.1f} Gy"

@@ -1029,3 +1029,295 @@ def test_same_uid_equivalence_requires_identical_source_bytes(tmp_path):
     assert org._strict_plan_equivalence(b, a) == (
         False, "same SOPInstanceUID with different source bytes"
     )
+
+
+# --- WS206: delivered remainder chain with an independent boost phase ---------
+
+
+@pytest.mark.parametrize("boost_uid_precedes_transfer", [False, True])
+@pytest.mark.parametrize("plan_order", [(0, 1, 2), (2, 1, 0), (1, 2, 0), (0, 2, 1)])
+def test_delivered_remainder_chain_with_boost_3_22_8_permutation_invariant(
+    tmp_path, boost_uid_precedes_transfer, plan_order
+):
+    """50 Gy / 25 fx (3 fx delivered) + 44 Gy / 22 fx transfer (22 fx delivered) + 16 Gy / 8 fx boost (8 fx delivered).
+
+    Overall delivered/planned is 33/55 = 0.60, but over the anchor and its
+    replacement candidate it is 25/47 = 0.5319 < 0.60. The boost stays out of
+    the replacement ratio while remaining in course membership and prescription
+    components (50 + 16 = 66 Gy).
+    """
+    study_uid, frame_uid, struct_uid = _ids()
+    low_uid, mid_uid, high_uid = sorted(generate_uid() for _ in range(3))
+    if boost_uid_precedes_transfer:
+        anchor_uid, transfer_uid, boost_uid = mid_uid, high_uid, low_uid
+    else:
+        anchor_uid, transfer_uid, boost_uid = low_uid, mid_uid, high_uid
+    anchor_plan, anchor_dose, _ = _plan_and_dose(
+        tmp_path, "phase1_orig", struct_uid=struct_uid, study_uid=study_uid, frame_uid=frame_uid,
+        plan_date="20240101", rx_gy=50.0, fractions=25, isocentre=(0.0, 0.0, 0.0), plan_uid=anchor_uid,
+    )
+    transfer_plan, transfer_dose, _ = _plan_and_dose(
+        tmp_path, "phase1_transfer", struct_uid=struct_uid, study_uid=study_uid, frame_uid=frame_uid,
+        plan_date="20240105", rx_gy=44.0, fractions=22, isocentre=(0.0, 0.0, 0.0), plan_uid=transfer_uid,
+    )
+    boost_plan, boost_dose, _ = _plan_and_dose(
+        tmp_path, "phase2_boost", struct_uid=struct_uid, study_uid=study_uid, frame_uid=frame_uid,
+        plan_date="20240127", rx_gy=16.0, fractions=8, isocentre=(0.0, 0.0, 0.0), plan_uid=boost_uid,
+    )
+    records = _records(tmp_path, "orig_rec", anchor_uid, 3, start=date(2024, 1, 2))
+    records += _records(tmp_path, "transfer_rec", transfer_uid, 22, start=date(2024, 1, 5))
+    records += _records(tmp_path, "boost_rec", boost_uid, 8, start=date(2024, 1, 27))
+
+    plans = [anchor_plan, transfer_plan, boost_plan]
+    doses = [anchor_dose, transfer_dose, boost_dose]
+    ordered_plans = [plans[i] for i in plan_order]
+    ordered_doses = [doses[i] for i in plan_order]
+
+    classified = org._classify_doses(
+        ordered_plans, ordered_doses, treatment_record_paths=records
+    )
+
+    assert classified.classification == org.DELIVERED_REMAINDER_CHAIN
+    assert sorted(map(str, classified.selected_plans)) == sorted(map(str, plans))
+    assert sorted(map(str, classified.selected_doses)) == sorted(map(str, doses))
+    assert classified.excluded_doses == []
+    assert classified.should_sum is True
+    assert sorted(map(str, classified.prescription_plans)) == sorted(
+        map(str, [anchor_plan, boost_plan])
+    )
+    assert not any("PLAUSIBILITY WARNING" in warning for warning in classified.warnings)
+
+
+def test_organizer_publishes_3_22_8_remainder_chain_with_boost_at_66gy_and_dose_qc_pass(tmp_path):
+    """End-to-end organizer check for the 3/22/8 course: 66 Gy prescription, dose QC pass, denominator hold."""
+    root, out = tmp_path / "input", tmp_path / "output"
+    study_uid, frame_uid, struct_uid = _ids()
+    _mk_struct(root / "struct.dcm", struct_uid, study_uid=study_uid, frame_uid=frame_uid, roi_names=["BODY", "PTV1"])
+    _, _, anchor_uid = _plan_and_dose(
+        root, "phase1_orig", struct_uid=struct_uid, study_uid=study_uid, frame_uid=frame_uid,
+        plan_date="20240101", rx_gy=50.0, fractions=25, isocentre=(0.0, 0.0, 0.0), with_pixels=True,
+    )
+    _, _, transfer_uid = _plan_and_dose(
+        root, "phase1_transfer", struct_uid=struct_uid, study_uid=study_uid, frame_uid=frame_uid,
+        plan_date="20240105", rx_gy=44.0, fractions=22, isocentre=(0.0, 0.0, 0.0), with_pixels=True,
+    )
+    _, _, boost_uid = _plan_and_dose(
+        root, "phase2_boost", struct_uid=struct_uid, study_uid=study_uid, frame_uid=frame_uid,
+        plan_date="20240127", rx_gy=16.0, fractions=8, isocentre=(0.0, 0.0, 0.0), with_pixels=True,
+    )
+    _records(root, "orig_rec", anchor_uid, 3, start=date(2024, 1, 2))
+    _records(root, "transfer_rec", transfer_uid, 22, start=date(2024, 1, 5))
+    _records(root, "boost_rec", boost_uid, 8, start=date(2024, 1, 27))
+
+    courses, dispositions, ledger = _run_organizer(root, out)
+
+    assert ledger["validated_course_count"] == 1
+    assert len(courses) == 1
+    course = courses[0]
+    assert course.total_prescription_gy == pytest.approx(66.0)
+    assert course.resolved_prescription_total_gy == pytest.approx(66.0)
+    assert course.dose_qc["pass"] is True
+    assert course.dose_qc["status"] == "pass"
+    assert course.dose_qc["reasons"] == []
+    assert course.delivered_dose_gy is None
+    assert course.delivery_status == "delivery_unresolved"
+
+    contract = load_course_contract(course.dirs.root).data
+    assert contract["dose_classification"]["classification"] == org.DELIVERED_REMAINDER_CHAIN
+    assert contract["dose_classification"]["should_sum"] is True
+    assert sorted(contract["dose_classification"]["prescription_plan_uids"]) == sorted(
+        [anchor_uid, boost_uid]
+    )
+    assert contract["dose_classification"]["prescribed_dose_scope"] == "COURSE_TOTAL_SUMMED"
+    assert sorted(item["sop_instance_uid"] for item in contract["selected_plans"]) == sorted(
+        [anchor_uid, transfer_uid, boost_uid]
+    )
+    assert len(contract["selected_doses"]) == 3
+    delivery = contract["delivery"]
+    assert delivery["prescribed_dose_gy"] == pytest.approx(66.0)
+    assert delivery["resolved_prescribed_dose_total_gy"] == pytest.approx(66.0)
+    assert delivery["delivered_dose_gy"] is None
+    assert delivery["status"] == "delivery_unresolved"
+    assert delivery["dose_response_eligible"] is False
+    assert (
+        delivery["dose_response_ineligibility_reason_code"]
+        == "delivery_evidence_unresolved"
+    )
+    assert any(
+        "COURSE_REPLACEMENT_DENOMINATOR_UNADJUDICATED" in warning
+        for warning in course.delivery_warnings
+    )
+    assert dispositions["disposition_counts"] == {"course_member": 3}
+
+
+def test_plain_replacement_chain_without_boost_is_unchanged(tmp_path):
+    """50 Gy / 25 fx (3 fx delivered) + 44 Gy / 22 fx (22 fx delivered) without a boost."""
+    study_uid, frame_uid, struct_uid = _ids()
+    anchor_plan, anchor_dose, anchor_uid = _plan_and_dose(
+        tmp_path, "orig", struct_uid=struct_uid, study_uid=study_uid, frame_uid=frame_uid,
+        plan_date="20240101", rx_gy=50.0, fractions=25, isocentre=(0.0, 0.0, 0.0),
+    )
+    transfer_plan, transfer_dose, transfer_uid = _plan_and_dose(
+        tmp_path, "transfer", struct_uid=struct_uid, study_uid=study_uid, frame_uid=frame_uid,
+        plan_date="20240105", rx_gy=44.0, fractions=22, isocentre=(0.0, 0.0, 0.0),
+    )
+    records = _records(tmp_path, "orig_rec", anchor_uid, 3, start=date(2024, 1, 2))
+    records += _records(tmp_path, "transfer_rec", transfer_uid, 22, start=date(2024, 1, 5))
+
+    classified = org._classify_doses(
+        [anchor_plan, transfer_plan], [anchor_dose, transfer_dose], treatment_record_paths=records
+    )
+
+    assert classified.classification == org.DELIVERED_REMAINDER_CHAIN
+    assert classified.selected_plans == [anchor_plan, transfer_plan]
+    assert classified.selected_doses == [anchor_dose, transfer_dose]
+    assert classified.prescription_plans == [anchor_plan]
+    assert classified.should_sum is True
+
+
+@pytest.mark.parametrize("phase1_delivered", [25, 20, 15])
+def test_two_genuinely_independent_phases_remain_sequential_phases_summed(
+    tmp_path, phase1_delivered
+):
+    """Two sequential phases without a replacement plan stay sequential_phases_summed."""
+    study_uid, frame_uid, struct_uid = _ids()
+    phase1_plan, phase1_dose, phase1_uid = _plan_and_dose(
+        tmp_path, "phase1", struct_uid=struct_uid, study_uid=study_uid, frame_uid=frame_uid,
+        plan_date="20240101", rx_gy=50.0, fractions=25, isocentre=(0.0, 0.0, 0.0),
+    )
+    phase2_plan, phase2_dose, phase2_uid = _plan_and_dose(
+        tmp_path, "phase2", struct_uid=struct_uid, study_uid=study_uid, frame_uid=frame_uid,
+        plan_date="20240205", rx_gy=16.0, fractions=8, isocentre=(0.0, 0.0, 0.0),
+    )
+    records = _records(tmp_path, "ph1", phase1_uid, phase1_delivered, start=date(2024, 1, 2))
+    records += _records(tmp_path, "ph2", phase2_uid, 8, start=date(2024, 2, 5))
+
+    classified = org._classify_doses(
+        [phase1_plan, phase2_plan], [phase1_dose, phase2_dose], treatment_record_paths=records
+    )
+
+    assert classified.classification == "sequential_phases_summed"
+    assert classified.selected_plans == [phase1_plan, phase2_plan]
+    assert classified.selected_doses == [phase1_dose, phase2_dose]
+    assert classified.prescription_plans == []
+    assert classified.should_sum is True
+
+
+def test_concurrent_overlapping_plans_with_strict_subset_dates_remain_unreconciled(tmp_path):
+    """A 3-plan course where one plan's treatment dates are a strict subset of another's stays unreconciled."""
+    study_uid, frame_uid, struct_uid = _ids()
+    anchor_plan, anchor_dose, anchor_uid = _plan_and_dose(
+        tmp_path, "anchor", struct_uid=struct_uid, study_uid=study_uid, frame_uid=frame_uid,
+        plan_date="20240101", rx_gy=50.0, fractions=25, isocentre=(0.0, 0.0, 0.0),
+    )
+    transfer_plan, transfer_dose, transfer_uid = _plan_and_dose(
+        tmp_path, "transfer", struct_uid=struct_uid, study_uid=study_uid, frame_uid=frame_uid,
+        plan_date="20240105", rx_gy=44.0, fractions=22, isocentre=(0.0, 0.0, 0.0),
+    )
+    concurrent_plan, concurrent_dose, concurrent_uid = _plan_and_dose(
+        tmp_path, "concurrent", struct_uid=struct_uid, study_uid=study_uid, frame_uid=frame_uid,
+        plan_date="20240108", rx_gy=16.0, fractions=8, isocentre=(200.0, 0.0, 0.0),
+    )
+    records = _records(tmp_path, "orig_rec", anchor_uid, 3, start=date(2024, 1, 2))
+    records += _records(tmp_path, "transfer_rec", transfer_uid, 22, start=date(2024, 1, 5))
+    # Delivered Jan 8..15, which is a strict subset of transfer_rec's Jan 5..26 window.
+    records += _records(tmp_path, "conc_rec", concurrent_uid, 8, start=date(2024, 1, 8))
+
+    classified = org._classify_doses(
+        [anchor_plan, transfer_plan, concurrent_plan],
+        [anchor_dose, transfer_dose, concurrent_dose],
+        treatment_record_paths=records,
+    )
+
+    _assert_unreconciled(classified, [anchor_plan, transfer_plan, concurrent_plan])
+
+
+def test_concurrent_overlapping_candidate_dates_do_not_form_replacement_chain(tmp_path):
+    """If a same-fraction-dose candidate overlaps the anchor's delivery dates, it is not a replacement chain."""
+    study_uid, frame_uid, struct_uid = _ids()
+    anchor_plan, anchor_dose, anchor_uid = _plan_and_dose(
+        tmp_path, "anchor", struct_uid=struct_uid, study_uid=study_uid, frame_uid=frame_uid,
+        plan_date="20240101", rx_gy=50.0, fractions=25, isocentre=(0.0, 0.0, 0.0),
+    )
+    overlap_plan, overlap_dose, overlap_uid = _plan_and_dose(
+        tmp_path, "overlap", struct_uid=struct_uid, study_uid=study_uid, frame_uid=frame_uid,
+        plan_date="20240102", rx_gy=30.0, fractions=15, isocentre=(200.0, 0.0, 0.0),
+    )
+    boost_plan, boost_dose, boost_uid = _plan_and_dose(
+        tmp_path, "boost", struct_uid=struct_uid, study_uid=study_uid, frame_uid=frame_uid,
+        plan_date="20240201", rx_gy=16.0, fractions=8, isocentre=(0.0, 0.0, 0.0),
+    )
+    # Anchor delivered Jan 2..9 (8 fx); overlap_plan delivered Jan 5..19 (15 fx), overlapping Jan 5..9.
+    records = _records(tmp_path, "anchor_rec", anchor_uid, 8, start=date(2024, 1, 2))
+    records += _records(tmp_path, "overlap_rec", overlap_uid, 15, start=date(2024, 1, 5))
+    records += _records(tmp_path, "boost_rec", boost_uid, 8, start=date(2024, 2, 1))
+
+    classified = org._classify_doses(
+        [anchor_plan, overlap_plan, boost_plan],
+        [anchor_dose, overlap_dose, boost_dose],
+        treatment_record_paths=records,
+    )
+
+    assert classified.classification == "sequential_phases_summed"
+
+
+@pytest.mark.parametrize(
+    "anchor_delivered,candidate_planned,candidate_delivered,with_boost,expected_classification",
+    [
+        # 23 / 40 = 0.575 < 0.60: remainder chain both without and with boost (with boost overall = 31 / 48 = 0.6458)
+        (8, 15, 15, False, org.DELIVERED_REMAINDER_CHAIN),
+        (8, 15, 15, True, org.DELIVERED_REMAINDER_CHAIN),
+        # 25 / 43 = 0.5814 < 0.60: remainder chain both without and with boost (with boost overall = 33 / 51 = 0.6471)
+        (7, 18, 18, False, org.DELIVERED_REMAINDER_CHAIN),
+        (7, 18, 18, True, org.DELIVERED_REMAINDER_CHAIN),
+        # 24 / 40 = 0.60 >= 0.60: boundary refuses remainder chain both without and with boost
+        (9, 15, 15, False, "sequential_phases_summed"),
+        (9, 15, 15, True, "sequential_phases_summed"),
+        # 25 / 40 = 0.625 > 0.60: refuses remainder chain both without and with boost
+        (10, 15, 15, False, "sequential_phases_summed"),
+        (10, 15, 15, True, "sequential_phases_summed"),
+    ],
+)
+def test_remainder_chain_ratio_edge_cases_around_060_with_and_without_boost(
+    tmp_path,
+    anchor_delivered,
+    candidate_planned,
+    candidate_delivered,
+    with_boost,
+    expected_classification,
+):
+    """Verify the < 0.60 early-replacement ratio boundary with and without an independent boost."""
+    study_uid, frame_uid, struct_uid = _ids()
+    anchor_plan, anchor_dose, anchor_uid = _plan_and_dose(
+        tmp_path, "anchor", struct_uid=struct_uid, study_uid=study_uid, frame_uid=frame_uid,
+        plan_date="20240101", rx_gy=50.0, fractions=25, isocentre=(0.0, 0.0, 0.0),
+    )
+    cand_plan, cand_dose, cand_uid = _plan_and_dose(
+        tmp_path, "cand", struct_uid=struct_uid, study_uid=study_uid, frame_uid=frame_uid,
+        plan_date="20240115", rx_gy=float(candidate_planned * 2), fractions=candidate_planned,
+        isocentre=(0.0, 0.0, 0.0),
+    )
+    plans = [anchor_plan, cand_plan]
+    doses = [anchor_dose, cand_dose]
+    records = _records(tmp_path, "anchor_rec", anchor_uid, anchor_delivered, start=date(2024, 1, 2))
+    records += _records(tmp_path, "cand_rec", cand_uid, candidate_delivered, start=date(2024, 1, 15))
+
+    boost_plan = None
+    if with_boost:
+        boost_plan, boost_dose, boost_uid = _plan_and_dose(
+            tmp_path, "boost", struct_uid=struct_uid, study_uid=study_uid, frame_uid=frame_uid,
+            plan_date="20240210", rx_gy=16.0, fractions=8, isocentre=(0.0, 0.0, 0.0),
+        )
+        plans.append(boost_plan)
+        doses.append(boost_dose)
+        records += _records(tmp_path, "boost_rec", boost_uid, 8, start=date(2024, 2, 10))
+
+    classified = org._classify_doses(plans, doses, treatment_record_paths=records)
+
+    assert classified.classification == expected_classification
+    if expected_classification == org.DELIVERED_REMAINDER_CHAIN:
+        expected_rx_plans = [anchor_plan, boost_plan] if boost_plan is not None else [anchor_plan]
+        assert sorted(map(str, classified.prescription_plans)) == sorted(map(str, expected_rx_plans))
+    else:
+        assert classified.prescription_plans == []
+
