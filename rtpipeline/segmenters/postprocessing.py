@@ -96,11 +96,17 @@ def centroid_distance_cm(
 
 
 def _resolve_reference_paths(reference_mask_path: str | Path) -> list[Path]:
+    from ..original_segmentation import require_current_original_mask
+
     pattern = str(reference_mask_path)
     if any(ch in pattern for ch in "*?[]"):
-        return [Path(p) for p in sorted(glob(pattern))]
-    path = Path(reference_mask_path)
-    return [path] if path.exists() else []
+        paths = [Path(p) for p in sorted(glob(pattern))]
+    else:
+        path = Path(reference_mask_path)
+        paths = [path] if path.exists() else []
+    for path in paths:
+        require_current_original_mask(path)
+    return paths
 
 
 def _jsonable_anchor(anchor: dict[str, Any]) -> dict[str, Any]:
@@ -157,6 +163,30 @@ def derive_anchor_from_reference(reference_mask_path: str | Path) -> dict[str, A
         "affine": _zyx_affine_from_sitk(reference),
         "reference_paths": used_paths,
     }
+
+
+def anchor_in_reference_geometry(anchor: dict[str, Any], reference: sitk.Image) -> dict[str, Any]:
+    """Express a physical reference anchor in the model image's array grid.
+
+    Clinician bbox manifests without an affine explicitly use the input CT's
+    voxel grid. NIfTI-derived anchors always carry their source affine.
+    """
+    if "affine" not in anchor:
+        return anchor
+    from itertools import product
+
+    source = np.asarray(anchor["affine"], dtype=float)
+    target = _zyx_affine_from_sitk(reference)
+    transform = np.linalg.solve(target, source)
+    result = dict(anchor)
+    result["centroid_zyx"] = (transform @ np.array([*anchor["centroid_zyx"], 1.0]))[:3].tolist()
+    if anchor.get("bbox_zyx") is not None:
+        low, high = anchor["bbox_zyx"]
+        corners = np.array([(*p, 1.) for p in product(*zip(low, high))]) @ transform.T
+        result["bbox_zyx"] = [np.floor(corners[:, :3].min(axis=0) + 1e-6).astype(int).tolist(),
+                               np.ceil(corners[:, :3].max(axis=0) - 1e-6).astype(int).tolist()]
+    result["affine"] = target
+    return result
 
 
 def select_component_nearest_anchor(

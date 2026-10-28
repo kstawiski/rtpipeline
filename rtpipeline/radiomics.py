@@ -541,17 +541,22 @@ def _resample_to_reference(img: sitk.Image, ref: sitk.Image, nn: bool = True) ->
     return sitk.Resample(img, ref, sitk.Transform(), sitk.sitkNearestNeighbor if nn else sitk.sitkLinear, 0, img.GetPixelID())
 
 
-def _mask_from_array_like(ct_img: sitk.Image, mask3d: np.ndarray) -> sitk.Image:
-    # Radiomics expects a label image with same geometry as ct_img.
-    # SimpleITK GetImageFromArray expects [z,y,x] order. rt-utils may return [y,x,z].
-    sx, sy, sz = ct_img.GetSize()
-    zyx = mask3d
-    if mask3d.shape == (sz, sy, sx):
-        zyx = mask3d
-    elif mask3d.shape == (sy, sx, sz):
-        zyx = np.transpose(mask3d, (2, 0, 1))
-    elif mask3d.shape == (sx, sy, sz):
-        zyx = np.transpose(mask3d, (2, 1, 0))
+def _mask_from_array_like(ct_img: sitk.Image, mask3d: np.ndarray, *, series_data=None,
+                          array_order: str = "yxz") -> sitk.Image:
+    """Convert an explicitly ordered mask; DICOM masks require source geometry.
+
+    With no DICOM geometry, the array is already on ``ct_img``'s grid. Never
+    infer layout from shape: a cubic volume cannot distinguish permutations.
+    """
+    if series_data is not None:
+        from .rtstruct_geometry import rtstruct_mask_to_image
+
+        return rtstruct_mask_to_image(mask3d, series_data, ct_img)
+    if array_order not in {"yxz", "zyx"}:
+        raise ValueError("Unknown mask array order")
+    zyx = np.moveaxis(mask3d, -1, 0) if array_order == "yxz" else mask3d
+    if zyx.shape != tuple(reversed(ct_img.GetSize())):
+        raise ValueError("Mask shape does not match its declared image grid")
     m = sitk.GetImageFromArray(zyx.astype(np.uint8))
     m.SetSpacing(ct_img.GetSpacing())
     m.SetDirection(ct_img.GetDirection())
@@ -1067,6 +1072,11 @@ def _rt_utils_indexed_series_mask(series_data: Any, contour_sequence: Any, *, re
     """
     from rt_utils import image_helper
 
+    from .rtstruct_geometry import rtutils_requires_geometry_adapter, rtstruct_contours_to_mask
+
+    if rtutils_requires_geometry_adapter(series_data):
+        return rtstruct_contours_to_mask(series_data, contour_sequence, retain=retain)
+
     if retain:
         mask = image_helper.create_empty_series_mask(series_data)
     else:
@@ -1133,7 +1143,10 @@ def _rtstruct_masks(
     govern_every_roi: bool = False,
     quantized_scope_rescue: bool = False,
 ) -> Dict[str, Optional[np.ndarray]]:
-    """Convert RTSTRUCT ROIs to boolean masks under an explicit source policy.
+    """Convert RTSTRUCT ROIs to image-grid (y, x, z) boolean masks.
+
+    Source DICOM voxel centers must map exactly to the loaded series image.
+    No interpolation or regularization of a nonuniform mask is allowed.
 
     Required sources fail closed when an advertised ROI cannot be read or has a
     degenerate mask. For best-effort TotalSegmentator sources, the same failure
@@ -1530,7 +1543,8 @@ def _rtstruct_masks(
             elif hasattr(reader, 'get_roi_mask'):
                 mask = reader.get_roi_mask(name)
             elif hasattr(reader, 'get_roi_mask_by_name'):
-                mask = reader.get_roi_mask_by_name(name)
+                from .rtstruct_geometry import rtstruct_roi_mask
+                mask = rtstruct_roi_mask(reader, name)
             else:
                 raise AttributeError("RTSTRUCT reader exposes no ROI mask method")
         except Exception as exc:
@@ -1575,6 +1589,18 @@ def _rtstruct_masks(
                 ),
             )
             continue
+        series_data = getattr(reader, "series_data", None)
+        if mask_bool is not None and series_data:
+            try:
+                reference = _load_series_image(dicom_series_path)
+                if reference is None:
+                    raise ValueError("DICOM mask has no reference image")
+                image_mask = _mask_from_array_like(reference, mask_bool, series_data=series_data)
+                mask_bool = np.moveaxis(sitk.GetArrayFromImage(image_mask), 0, -1).astype(bool)
+            except Exception as exc:
+                _record_or_raise(name, f"ROI physical grid cannot be represented exactly: {exc}",
+                                 failure_kind="mask_geometry")
+                continue
         out[str(name)] = mask_bool
     return out
 
@@ -2413,7 +2439,8 @@ def radiomics_for_course(
                     )
                     continue
                 try:
-                    mask = rt.get_roi_mask_by_name(roi_name)
+                    from .rtstruct_geometry import rtstruct_roi_mask
+                    mask = rtstruct_roi_mask(rt, roi_name)
                 except Exception as exc:
                     if required_custom:
                         raise RadiomicsCourseExtractionError(
@@ -2429,6 +2456,10 @@ def radiomics_for_course(
                     roi_failures.append({"roi_name": roi_name, "source": "Custom", "status": "failed", "failure_kind": "custom_read", "reason_code": "failed_custom_read", "reason": "mask is absent"})
                     continue
                 mask_bool = np.asarray(mask).astype(bool)
+                series_data = getattr(rt, "series_data", None)
+                if series_data:
+                    image_mask = _mask_from_array_like(img, mask_bool, series_data=series_data)
+                    mask_bool = np.moveaxis(sitk.GetArrayFromImage(image_mask), 0, -1).astype(bool)
                 if not mask_bool.any():
                     if required_custom:
                         raise RadiomicsCourseExtractionError(
@@ -3041,6 +3072,12 @@ def _collect_total_mr_masks(
         try:
             img = sitk.ReadImage(str(mask_path))
             arr = sitk.GetArrayFromImage(img)
+            if arr.any():
+                reference = _load_series_image(series_dir)
+                if reference is None:
+                    raise ValueError("MR mask has no reference image")
+                img = _resample_to_reference(img, reference)
+                arr = sitk.GetArrayFromImage(img)
         except Exception as exc:
             if roi_source_is_required(MR_AUTO_SOURCE):
                 raise RadiomicsCourseExtractionError(
@@ -4138,7 +4175,7 @@ def _mr_auto_rows(
                     ),
                     stable_identifier=identifier,
                 )
-            m_img = _mask_from_array_like(img, mask)
+            m_img = _mask_from_array_like(img, mask, array_order="zyx")
             res = ext.execute(img, m_img)
             return _source_row(roi, status='success', stable_identifier=identifier,
                                measurements=normalize_radiomics_result(res))

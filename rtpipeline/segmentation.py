@@ -1112,7 +1112,13 @@ def _ensure_model_rtstruct_from_masks(
     """Materialize a missing model RTSTRUCT from validated masks only."""
     target = seg_dir / f"{base_name}--{model}.dcm"
     if target.is_file():
-        return target
+        from .rtstruct_geometry import dicom_has_unequal_pixel_spacing
+
+        if not dicom_has_unequal_pixel_spacing(ct_dir):
+            return target
+        # Old rt-utils products cannot certify their in-plane spacing. The
+        # validated NIfTI masks remain reusable; regenerate this derived file.
+        target.unlink()
     try:
         from rt_utils import RTStructBuilder
         from .auto_rtstruct import (

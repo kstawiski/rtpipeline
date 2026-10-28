@@ -42,6 +42,9 @@ class _FakeMaskImage:
 
 def _patch_manual_export_dependencies(monkeypatch, calls: list[dict]) -> None:
     class _FakeBuilder:
+        series_data = [types.SimpleNamespace(Rows=2, Columns=2, PixelSpacing=[1, 1],
+            ImageOrientationPatient=[1, 0, 0, 0, 1, 0], ImagePositionPatient=[0, 0, 0],
+            SliceThickness=1)]
         @classmethod
         def create_from(cls, *, dicom_series_path: str, rt_struct_path: str):
             calls.append(
@@ -56,7 +59,7 @@ def _patch_manual_export_dependencies(monkeypatch, calls: list[dict]) -> None:
             return ["liver"]
 
         def get_roi_mask_by_name(self, roi_name: str):
-            mask = np.zeros((1, 2, 2), dtype=bool)
+            mask = np.zeros((2, 2, 1), dtype=bool)
             mask[0, 0, 0] = True
             return mask
 
@@ -365,7 +368,7 @@ def test_original_segmentation_export_reuses_cached_manifest_on_rerun(tmp_path: 
     assert len(calls) == 1
 
 
-def test_per_course_original_export_keeps_legacy_manifest_schema(tmp_path: Path, monkeypatch) -> None:
+def test_per_course_original_export_records_physical_manifest_schema(tmp_path: Path, monkeypatch) -> None:
     calls: list[dict] = []
     _patch_manual_export_dependencies(monkeypatch, calls)
 
@@ -394,6 +397,8 @@ def test_per_course_original_export_keeps_legacy_manifest_schema(tmp_path: Path,
     manifest = organize._export_original_segmentation(course, overwrite=True)
 
     expected = {
+        "schema": organize.ORIGINAL_SEGMENTATION_SCHEMA,
+        "geometry_status": "exact_physical_mapping",
         "model": "manual",
         "source_rtstruct": str(rs_path),
         "source_nifti": str(primary_nifti),

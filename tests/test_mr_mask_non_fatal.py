@@ -32,7 +32,9 @@ def test_auto_mr_source_is_not_required() -> None:
     assert roi_source_is_required(MR_AUTO_SOURCE) is False
 
 
-def test_empty_mr_mask_is_skipped_not_fatal(tmp_path: Path) -> None:
+def test_empty_mr_mask_is_skipped_not_fatal(tmp_path: Path, monkeypatch) -> None:
+    import SimpleITK as sitk
+    monkeypatch.setattr("rtpipeline.radiomics._load_series_image", lambda _: sitk.Image(4, 4, 4, sitk.sitkInt16))
     seg = tmp_path / "Segmentation_TotalSegmentator"
     _write_mask(seg / "total_mr--brain.nii.gz", filled=False)
     _write_mask(seg / "total_mr--urinary_bladder.nii.gz", filled=True)

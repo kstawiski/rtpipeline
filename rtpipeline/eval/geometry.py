@@ -34,6 +34,9 @@ class MaskGeometry:
 
 
 def mask_geometry(path: Path) -> MaskGeometry:
+    from ..original_segmentation import require_current_original_mask
+
+    require_current_original_mask(path)
     img = sitk.ReadImage(str(path))
     arr = sitk.GetArrayFromImage(img) > 0
     voxels = int(arr.sum())
@@ -75,6 +78,10 @@ class MaskAgreement:
 
 
 def _read_mask(source: MaskInput) -> tuple[sitk.Image, np.ndarray]:
+    if not isinstance(source, sitk.Image):
+        from ..original_segmentation import require_current_original_mask
+
+        require_current_original_mask(Path(source))
     image = source if isinstance(source, sitk.Image) else sitk.ReadImage(str(source))
     if image.GetDimension() != 3 or image.GetNumberOfComponentsPerPixel() != 1:
         raise ValueError("Masks must be scalar, three-dimensional images.")

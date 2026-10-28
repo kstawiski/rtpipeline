@@ -880,9 +880,12 @@ def _postprocess_structures(
                     "anchor_source": network.anchor_source,
                 }
             else:
+                from .segmenters.postprocessing import anchor_in_reference_geometry
+
+                local_anchor = anchor_in_reference_geometry(anchor, current)
                 current, selection_meta = select_component_nearest_anchor(
                     current,
-                    anchor["centroid_zyx"],
+                    local_anchor["centroid_zyx"],
                     max_distance_cm=network.anchor_max_distance_cm,
                     min_component_volume_cm3=network.min_component_volume_cm3,
                 )

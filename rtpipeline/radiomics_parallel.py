@@ -733,7 +733,8 @@ def _extract_one_with_geometry(task: _RoiTask) -> List[Dict[str, Any]]:
         )
 
     try:
-        mask = builder.get_roi_mask_by_name(task.roi_name)
+        from .rtstruct_geometry import rtstruct_roi_mask
+        mask = rtstruct_roi_mask(builder, task.roi_name)
     except Exception as exc:
         from .rtstruct_geometry import ROIContourDisposition
         if isinstance(exc, ROIContourDisposition):
@@ -856,7 +857,7 @@ def _extract_one_with_geometry(task: _RoiTask) -> List[Dict[str, Any]]:
     if use_alarm:
         signal.alarm(roi_timeout)
     try:
-        mask_img = _mask_from_array_like(img, mask_bool)
+        mask_img = _mask_from_array_like(img, mask_bool, series_data=getattr(builder, "series_data", None))
 
         def _factory():
             from .radiomics import _extractor, _extractor_large_roi

@@ -757,7 +757,7 @@ def test_parallel_success_record_uses_public_feature_schema_only(monkeypatch, tm
         }
     )
     monkeypatch.setattr(rp, "_get_builder", lambda _path: Builder())
-    monkeypatch.setattr(radiomics_mod, "_mask_from_array_like", lambda *_a: object())
+    monkeypatch.setattr(radiomics_mod, "_mask_from_array_like", lambda *_a, **_k: object())
     monkeypatch.setattr(radiomics_mod, "_extractor", lambda *_a, **_k: Extractor())
     monkeypatch.setattr(rp, "mask_is_cropped", lambda _mask: False)
     monkeypatch.setattr(

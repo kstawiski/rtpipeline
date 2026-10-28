@@ -3173,18 +3173,9 @@ def _legacy_create_custom_structures_rtstruct(
                 return None
             try:
                 img = sitk.ReadImage(str(mask_path))
-                reference_ct = _ensure_ct_image()
-                if reference_ct is not None:
-                    img = sitk.Resample(
-                        img,
-                        reference_ct,
-                        sitk.Transform(),
-                        sitk.sitkNearestNeighbor,
-                        0,
-                        img.GetPixelID(),
-                    )
-                arr = sitk.GetArrayFromImage(img)
-                mask = np.moveaxis(arr.astype(bool), 0, -1)
+                from .rtstruct_geometry import image_array_for_rtstruct
+
+                mask = image_array_for_rtstruct(img, rtstruct.series_data) > 0
             except Exception as exc:
                 logger.debug("TotalSegmentator fallback failed for %s: %s", roi_name, exc)
                 totalseg_mask_cache[key] = None
@@ -3196,7 +3187,8 @@ def _legacy_create_custom_structures_rtstruct(
             nonlocal existing_names, available_masks
             for roi_name in builder.get_roi_names():
                 try:
-                    mask = builder.get_roi_mask_by_name(roi_name)
+                    from .rtstruct_geometry import rtstruct_roi_mask
+                    mask = rtstruct_roi_mask(builder, roi_name)
                 except Exception as exc:  # pragma: no cover - safety
                     logger.debug("Failed to fetch mask for %s from %s: %s", roi_name, label, exc)
                     mask = None
@@ -4005,7 +3997,8 @@ def dvh_for_course(
         cropped = False
         if builder_obj is not None:
             try:
-                mask = builder_obj.get_roi_mask_by_name(roi_name)
+                from .rtstruct_geometry import rtstruct_roi_mask
+                mask = rtstruct_roi_mask(builder_obj, roi_name)
                 cropped = mask_is_cropped(mask)
             except Exception:
                 cropped = False

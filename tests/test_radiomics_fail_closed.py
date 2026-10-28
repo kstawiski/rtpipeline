@@ -573,6 +573,9 @@ def test_direct_rtstruct_construction_failure_invalidates_stale_course_output(
 
 
 class _Image:
+    def GetSize(self):
+        return (2, 2, 2)
+
     def GetSpacing(self):
         return (1.0, 1.0, 1.0)
 

@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+import SimpleITK as sitk
 from rt_utils import image_helper
 
 from rtpipeline import radiomics, rtstruct_geometry as geometry
@@ -28,6 +29,15 @@ def _hr_ctv(ds):
 def _read(monkeypatch, ds, images, *, rescue, later_marker=False):
     monkeypatch.setattr(radiomics, '_scoped_rtstruct_readers',
                         lambda series, rs: (geometry.ScopedRTStruct(ds, images), None))
+    first = images[0]
+    axes = np.asarray(first.ImageOrientationPatient).reshape(2, 3)
+    reference = sitk.Image(first.Columns, first.Rows, len(images), sitk.sitkUInt8)
+    reference.SetOrigin(tuple(first.ImagePositionPatient))
+    reference.SetDirection(tuple(np.column_stack((*axes, np.cross(*axes))).ravel()))
+    reference.SetSpacing((float(first.PixelSpacing[1]), float(first.PixelSpacing[0]),
+                          float(np.linalg.norm(np.asarray(images[1].ImagePositionPatient)
+                                               - first.ImagePositionPatient))))
+    monkeypatch.setattr(radiomics, '_load_series_image', lambda *_a, **_k: reference)
     contours = list(ds.ROIContourSequence[0].ContourSequence)
     strict = geometry.roi_geometry_code(contours, allow_quantization=False)
     named_rois = [SimpleNamespace(name='HR-CTV', structural_code=strict, roi_number=1)]
