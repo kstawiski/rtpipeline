@@ -288,7 +288,7 @@ def write_sidecar(nifti):
     nifti.with_name(nifti.name.removesuffix('.nii.gz')+'.metadata.json').write_text(json.dumps(data))
 
 
-@pytest.mark.parametrize('columns,spacing,adapter', [(8,(1.,1.,2.),False), (9,(1.,1.,2.),True), (8,(1.,2.,2.),True)])
+@pytest.mark.parametrize('columns,spacing,adapter', [(8,(1.,1.,2.),False), (9,(1.,1.,2.),False), (8,(1.,2.,2.),True)])
 def test_f7_model_reuse_is_geometry_scoped(tmp_path, columns, spacing, adapter):
     from robustness_prep_fixture import write_ct
     from rtpipeline.segmentation import _ensure_model_rtstruct_from_masks
@@ -321,14 +321,14 @@ def test_f7_model_reuse_is_geometry_scoped(tmp_path, columns, spacing, adapter):
 
 
 @pytest.mark.parametrize('columns,spacing', [(9,(1.,1.,2.)), (8,(1.,2.,2.))])
-def test_f7_adapter_series_rejects_v2_rs_auto(tmp_path, monkeypatch, columns, spacing):
+def test_f7_writer_adapter_scopes_v2_rs_auto_currentness(tmp_path, monkeypatch, columns, spacing):
     from robustness_prep_fixture import write_ct
     from rtpipeline import auto_rtstruct as auto
     ct=tmp_path/'CT'
     write_ct(ct,rows=8,columns=columns,slices=3,spacing=spacing)
     monkeypatch.setattr(auto,'_read_rs_auto_origin',lambda *_:{
         'origin':auto.RS_AUTO_ORIGIN_MASKS,'mask_layout':'rows-columns-v2'})
-    assert auto._rs_auto_origin_rejection(tmp_path,tmp_path/'RS_auto.dcm',ct,'',tmp_path/'seg')
+    assert bool(auto._rs_auto_origin_rejection(tmp_path,tmp_path/'RS_auto.dcm',ct,'',tmp_path/'seg')) == (spacing[0] != spacing[1])
 
 
 def test_f10_conda_guards_receive_aligned_array(tmp_path, monkeypatch):

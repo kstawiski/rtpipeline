@@ -29,7 +29,7 @@ from .organize_ledger import read_organize_ledger, STATUS_VALIDATED
 from .planning_ct_localizers import (
     PlanningCTLocalizerError, select_localizers, verify_volume,
 )
-from .stage_completion import validate_stage_completion_sentinel, write_stage_completion_sentinel
+from .stage_completion import validate_stage_completion_sentinel
 
 
 def _refuse(code):
@@ -207,8 +207,7 @@ def _repair_candidate(course, candidate, completion, selection, excluded):
     selection['nifti_repair'] = {
         'status': 'rederived' if rederived else 'preserved',
         'previous_nifti_sha256': old_provenance['nifti_sha256'],
-        'segmentation_outputs': ('original_exports_quarantined_organize_invalidated' if rederived
-                                 else 'unchanged_grid_original_masks_rebound'),
+        'segmentation_outputs': 'original_exports_quarantined_organize_invalidated',
     }
     metadata['instance_selection'] = selection
     _json(sidecar, metadata)
@@ -253,7 +252,7 @@ def _repair_candidate(course, candidate, completion, selection, excluded):
         record['source_ct_sop_hash'] = metadata['sop_hash']
         _json(path, record)
     # Original masks belong to organize. Remove all stale exports from its
-    # active namespace; a re-derived CT invalidates organize for its next run.
+    # active namespace; both branches invalidate organize for its next run.
     from .original_segmentation import quarantine_stale_original_exports
     quarantine_stale_original_exports(candidate / 'Segmentation_Original')
     # Some organize contracts contain absolute RTRECORD paths within the
@@ -269,15 +268,9 @@ def _repair_candidate(course, candidate, completion, selection, excluded):
         return value
     validate_course_contract(CourseContract(candidate, case_path,
                                             staged_paths(case['course_contract'])))
-    if rederived:
-        (candidate / '.organized').unlink(missing_ok=True)
-        return rederived
-    # Reuse the already validated embedded configuration record. No shared
-    # configuration file is created, rewritten or timestamped.
-    dependency = candidate.parent.parent / 'organize-config.json'
-    _json(dependency, completion['configuration_dependency'])
-    write_stage_completion_sentinel(candidate, candidate / '.organized', stage='organize',
-                                    status='ok', configuration_dependency=dependency)
+    # Organize owns clinical exports. Both preserved and re-derived NIfTI
+    # branches return to that producer before certifying the course.
+    (candidate / '.organized').unlink(missing_ok=True)
     return rederived
 
 

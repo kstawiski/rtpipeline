@@ -122,7 +122,7 @@ def test_stale_export_is_removed_on_geometry_failure(source, tmp_path):
     assert result is None
     assert not list(target.glob('*.nii*'))
     assert json.loads((target/'metadata.json').read_text())['geometry_status'] == 'MASK_GRID_NOT_EQUIVALENT'
-    assert not (target/'provenance.json').exists()
+    assert json.loads((target/'provenance.json').read_text()) == organize._original_segmentation_provenance(rs, nifti)
 
 
 @pytest.mark.integration

@@ -3889,6 +3889,13 @@ def _original_masks_reusable(
             return False, f"recorded {key} does not match the current input"
     if not isinstance(manifest, dict):
         return False, "the existing manifest is not an object"
+    if manifest.get("geometry_status") == "MASK_GRID_NOT_EQUIVALENT":
+        from .original_segmentation import require_current_original_export
+        try:
+            require_current_original_export(target_root)
+        except ValueError as exc:
+            return False, str(exc)
+        return True, "unchanged inputs retain the grid rejection record"
     if manifest.get("schema") != ORIGINAL_SEGMENTATION_SCHEMA or manifest.get("geometry_status") != "exact_physical_mapping":
         return False, "original export lacks verified physical geometry"
     structures = manifest.get("structures")
@@ -4016,6 +4023,8 @@ def _export_original_segmentation_from_paths(
                 exported.unlink()
             manifest.update(geometry_status="MASK_GRID_NOT_EQUIVALENT", structures=[], detail=str(exc))
             manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+            (target_root / _ORIGINAL_SEGMENTATION_PROVENANCE).write_text(
+                json.dumps(provenance, indent=2), encoding="utf-8")
             logger.warning("original_segmentation event=geometry_rejected: %s", exc)
             return None
         safe = _sanitize_name(roi_name, "ROI")

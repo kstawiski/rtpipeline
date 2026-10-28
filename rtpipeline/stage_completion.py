@@ -422,15 +422,17 @@ def _stale_original_exports(course_dir: Path, definition: StageDefinition) -> li
     """Record retained stale exports without certifying them as organize outputs."""
     if definition.name != "organize":
         return []
-    from .original_segmentation import require_current_original_mask
+    from .original_segmentation import original_export_entries, require_current_original_export
 
     root = Path(course_dir)
     stale = []
-    for mask in sorted(root.glob("Segmentation_Original/**/*.nii*")):
+    for entry in original_export_entries(root / "Segmentation_Original"):
         try:
-            require_current_original_mask(mask)
+            if not entry.is_dir():
+                raise ValueError("loose file outside an export directory")
+            require_current_original_export(entry)
         except ValueError as exc:
-            stale.append({"path": mask.parent.relative_to(root).as_posix(),
+            stale.append({"path": entry.relative_to(root).as_posix(),
                           "status": "stale", "reason": str(exc)})
     return stale
 

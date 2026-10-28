@@ -158,11 +158,8 @@ def test_model_rtstruct_and_copied_rs_auto_keep_mask_x_y_extent(tmp_path, geomet
     _age(ct_dir, course / "NIFTI", seg_dir)
 
     out = ar.build_auto_rtstruct(course)
-    if geometry == SQUARE:
-        assert out.read_bytes() == total.read_bytes()
-        assert _origin(course)["origin"] == ar.RS_AUTO_ORIGIN_COPY
-    else:
-        assert _origin(course)["origin"] == ar.RS_AUTO_ORIGIN_MASKS
+    assert out.read_bytes() == total.read_bytes()
+    assert _origin(course)["origin"] == ar.RS_AUTO_ORIGIN_COPY
     _assert_physical_extent(out, zs, geometry)
 
 
