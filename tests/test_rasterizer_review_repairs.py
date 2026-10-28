@@ -190,14 +190,17 @@ def test_apptainer_fails_closed():
 
 
 @pytest.mark.parametrize('stage', ['organize', 'segmentation', 'segmentation_custom', 'crop_ct', 'dvh', 'qc'])
-def test_main_stage_completion_records_imported_cv2(tmp_path, stage):
+def test_main_stage_completion_records_imported_cv2(tmp_path, monkeypatch, stage):
     from rtpipeline import stage_completion as sc
     from test_stage_completion import _dependency
     course = tmp_path / 'P1' / 'C1'
     course.mkdir(parents=True)
     definition = sc.stage_definition(stage)
+    # Isolate runtime recording from the independently tested output contracts.
+    monkeypatch.setattr(sc, '_validate_required_roles', lambda *_a: None)
+    monkeypatch.setattr(sc, '_validate_stage_specific_outcome', lambda *_a: None)
     payload = sc.stage_completion_payload(
-        course, stage=stage, status='disabled',
+        course, stage=stage, status='ok',
         configuration_dependency=_dependency(tmp_path, definition.configuration_stage))
     info = payload['opencv_runtime']
     import cv2
@@ -304,3 +307,22 @@ def test_model_manifest_source_provenance_records_runtime(tmp_path):
     path = tmp_path / 'manifest.json'
     segmentation._write_manifest_atomic(path, {**provenance, 'models': []})
     assert json.loads(path.read_text())['opencv_runtime'] == rasterizer.opencv_runtime_provenance()
+
+
+def test_disabled_completion_does_not_import_rasterizer(tmp_path, monkeypatch):
+    import builtins
+    from rtpipeline import stage_completion as sc
+    from test_stage_completion import _dependency
+    course = tmp_path / 'P1' / 'C1'
+    course.mkdir(parents=True)
+    dependency = _dependency(tmp_path, 'qc')
+    original_import = builtins.__import__
+    def lightweight_import(name, *args, **kwargs):
+        if 'radiomics_rasterizer' in name or name in {'cv2', 'numpy'}:
+            raise AssertionError('disabled workflow stage imported a pipeline runtime dependency')
+        return original_import(name, *args, **kwargs)
+    monkeypatch.setattr(builtins, '__import__', lightweight_import)
+    payload = sc.stage_completion_payload(
+        course, stage='qc', status='disabled', configuration_dependency=dependency)
+    assert payload['status'] == 'disabled'
+    assert 'opencv_runtime' not in payload

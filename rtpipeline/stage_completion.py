@@ -509,8 +509,6 @@ def stage_completion_payload(
     status: str,
     configuration_dependency: Path,
 ) -> dict[str, Any]:
-    from .radiomics_rasterizer import opencv_runtime_provenance
-
     root = Path(course_dir).resolve(strict=False)
     definition = stage_definition(stage)
     terminal_status = str(status).strip().lower()
@@ -527,6 +525,13 @@ def stage_completion_payload(
     measurement_outcome = _validate_stage_specific_outcome(root, definition, terminal_status, outputs)
     code = _code_identity(definition)
     environment = environment_record(definition.environment_packages)
+    runtime_provenance = {}
+    if terminal_status == "ok":
+        # Disabled stages close in the dependency-light workflow interpreter.
+        # They execute no main-runtime RTSTRUCT operations.
+        from .radiomics_rasterizer import opencv_runtime_provenance
+
+        runtime_provenance["opencv_runtime"] = opencv_runtime_provenance()
     return {
         **({"measurement_outcome": measurement_outcome} if measurement_outcome else {}),
         "schema": STAGE_COMPLETION_SCHEMA,
@@ -549,7 +554,7 @@ def stage_completion_payload(
         "execution_host": socket.gethostname(),
         "environment_fingerprint": content_sha256(environment),
         "environment": environment,
-        "opencv_runtime": opencv_runtime_provenance(),
+        **runtime_provenance,
     }
 
 
