@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from .radiomics_rasterizer import opencv_runtime_provenance
-
 import hashlib
 import json
 import os
@@ -511,6 +509,8 @@ def stage_completion_payload(
     status: str,
     configuration_dependency: Path,
 ) -> dict[str, Any]:
+    from .radiomics_rasterizer import opencv_runtime_provenance
+
     root = Path(course_dir).resolve(strict=False)
     definition = stage_definition(stage)
     terminal_status = str(status).strip().lower()

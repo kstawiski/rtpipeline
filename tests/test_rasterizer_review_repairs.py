@@ -215,8 +215,8 @@ def test_main_origin_manifest_and_repair_summary_use_existing_records(tmp_path):
     rs.write_bytes(b'synthetic rtstruct')
     auto_rtstruct._record_rs_auto_origin(course, rs, auto_rtstruct.RS_AUTO_ORIGIN_MASKS)
     origin = json.loads((course / 'metadata' / 'rs_auto_origin.json').read_text())
-    manifest = course / 'manifest.json'
-    segmentation._write_manifest_atomic(manifest, {'structures': []})
+    manifest = segmentation.record_segmentation_resume_decision(
+        course, {'total': {'action': 'rebuilt'}})
     summary = roi_fixer.FixSummary(False, [], [], rs)
     expected = rasterizer.opencv_runtime_provenance()
     assert origin['opencv_runtime'] == expected
@@ -258,3 +258,49 @@ def test_model_names_do_not_exempt_polygon_rows(source):
 def test_nullable_identity_is_rejected():
     row = {**PIN, 'rasterizer_rt_utils_version': pd.NA}
     assert not rasterizer.recorded_rasterizer_is_current(row)
+
+
+def test_qc_report_records_actual_runtime(tmp_path):
+    from rtpipeline.quality_control import generate_qc_report
+    course = tmp_path / 'P1' / 'C1'
+    fixtures._write_contract(course)
+    (tmp_path / 'qc').mkdir()
+    path = generate_qc_report(course, tmp_path / 'qc', skip_structure_cropping=True)
+    assert json.loads(path.read_text())['opencv_runtime'] == rasterizer.opencv_runtime_provenance()
+
+
+def test_crop_metadata_records_runtime_after_rtstruct_write(tmp_path, monkeypatch):
+    from rtpipeline import anatomical_cropping as cropping
+    course = tmp_path / 'P1' / 'C1'
+    fixtures._write_contract(course)
+    monkeypatch.setattr(cropping, 'determine_brain_crop_boundaries', lambda *_a, **_k: (30.0, -30.0))
+    def write_rtstruct(*_args):
+        path = course / 'RS_auto_cropped.dcm'
+        path.write_bytes(b'synthetic written RTSTRUCT')
+        return path
+    monkeypatch.setattr(cropping, '_create_rtstruct_from_cropped_masks', write_rtstruct)
+    cropping.apply_systematic_cropping(course, region='brain')
+    metadata = json.loads((course / 'cropping_metadata.json').read_text())
+    assert metadata['opencv_runtime'] == rasterizer.opencv_runtime_provenance()
+
+
+def test_review_html_records_runtime(tmp_path, monkeypatch):
+    from rtpipeline import visualize
+    import SimpleITK as sitk
+    course = tmp_path / 'P1' / 'C1'
+    fixtures._write_contract(course)
+    monkeypatch.setattr(visualize, '_load_ct_sitk', lambda *_a: sitk.Image([3, 3, 3], sitk.sitkInt16))
+    path = visualize.generate_axial_review(course)
+    html = path.read_text()
+    encoded = html.split('const OPENCV_RUNTIME = ', 1)[1].split(';', 1)[0]
+    assert json.loads(encoded) == rasterizer.opencv_runtime_provenance()
+
+
+def test_model_manifest_source_provenance_records_runtime(tmp_path):
+    from rtpipeline import segmentation
+    source = tmp_path / 'ct.nii.gz'
+    source.write_bytes(b'synthetic source identity')
+    provenance = segmentation._segmentation_source_provenance(source, 'series-1')
+    path = tmp_path / 'manifest.json'
+    segmentation._write_manifest_atomic(path, {**provenance, 'models': []})
+    assert json.loads(path.read_text())['opencv_runtime'] == rasterizer.opencv_runtime_provenance()

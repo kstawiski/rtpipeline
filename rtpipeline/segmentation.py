@@ -1198,7 +1198,6 @@ def _write_manifest_atomic(path: Path, data: dict) -> None:
     the temp, so cleanup is a no-op on the happy path)."""
     tmp_path = path.parent / f".{path.name}.{os.getpid()}.tmp"
     try:
-        data = {**data, "opencv_runtime": opencv_runtime_provenance()}
         tmp_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
         os.replace(tmp_path, path)
     finally:
@@ -1292,6 +1291,7 @@ def record_segmentation_resume_decision(
         stored = {}
         existing["decisions"] = stored
     stored.update(decisions)
+    existing["opencv_runtime"] = opencv_runtime_provenance()
     existing["updated_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
     _write_manifest_atomic(path, existing)
     return path
@@ -1521,6 +1521,7 @@ def _segmentation_source_provenance(
 ) -> dict[str, Any]:
     """Build the provenance fields written into a completed mask manifest."""
     return {
+        "opencv_runtime": opencv_runtime_provenance(),
         "source_nifti": str(Path(nifti_path).name),
         "source_nifti_path": str(Path(nifti_path).resolve(strict=False)),
         "source_nifti_sha256": _file_sha256(Path(nifti_path)),
@@ -2184,6 +2185,7 @@ def publish_course_segmentation_status(
         final["reasons"] = ["segmentation status had no recorded reason"]
         status = "failed"
     final["status"] = status
+    final["opencv_runtime"] = opencv_runtime_provenance()
     final["assessed_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
     _write_manifest_atomic(course_dir / SEGMENTATION_STATUS_RELATIVE_PATH, final)
     _write_text_atomic(course_dir / SEGMENTATION_SENTINEL_NAME, f"{status}\n")
@@ -2622,6 +2624,7 @@ def segment_course(config: PipelineConfig, course_dir: Path, force: bool = False
                         _write_manifest_atomic(
                             manifest_path,
                             {
+                                "opencv_runtime": opencv_runtime_provenance(),
                                 "source_nifti": str(nifti_path.name),
                                 "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
                                 "models": manifest_mr,
@@ -2848,6 +2851,7 @@ def _segment_mr_series_for_course(config: PipelineConfig, course_dirs, course_di
                     _write_manifest_atomic(
                         manifest_path,
                         {
+                            "opencv_runtime": opencv_runtime_provenance(),
                             "source_nifti": str(nifti_path.name),
                             "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
                             "models": manifest_mr,
