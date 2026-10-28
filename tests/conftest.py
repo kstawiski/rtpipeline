@@ -65,3 +65,26 @@ def rasterizer_guard_stub(monkeypatch):
     from rtpipeline import radiomics_rasterizer
 
     monkeypatch.setattr(radiomics_rasterizer, "require_radiomics_rasterizer", lambda: None)
+
+    # Unit tests using synthetic features also supply synthetic execution
+    # identity. Real runtime enforcement is tested without this opt-in fixture.
+    from rtpipeline import radiomics_runtime
+    monkeypatch.setattr(radiomics_runtime, "needs_radiomics_process", lambda: False)
+    original = radiomics_rasterizer.active_radiomics_rasterizer
+
+    def pinned_identity(*args, **kwargs):
+        info = original(*args, **kwargs)
+        info.update(opencv_version="4.8.1", rt_utils_version="1.2.7",
+                    providers={"opencv-python-headless": "4.8.1.78"}, error=None)
+        return info
+
+    monkeypatch.setattr(radiomics_rasterizer, "active_radiomics_rasterizer", pinned_identity)
+
+
+@pytest.fixture
+def main_builder_identity_stub(monkeypatch):
+    """Geometry-only fixtures assume the supported builder; guard tests do not."""
+    from rtpipeline import radiomics_rasterizer, custom_structures_rtstruct
+    identity = lambda: {"opencv_version": "5.0.0"}
+    monkeypatch.setattr(radiomics_rasterizer, "opencv_runtime_provenance", identity)
+    monkeypatch.setattr(custom_structures_rtstruct, "opencv_runtime_provenance", identity)

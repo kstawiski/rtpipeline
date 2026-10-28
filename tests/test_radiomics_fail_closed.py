@@ -125,6 +125,7 @@ def _write_test_ct_publication(output: Path, base_rows: list[dict]) -> None:
         write_ct_publication_atomic,
     )
 
+    from rasterizer_test_utils import PINNED_RASTERIZER_ROW
     records = []
     for index, base in enumerate(base_rows, start=1):
         source = str(base.get("segmentation_source", "Manual"))
@@ -147,6 +148,7 @@ def _write_test_ct_publication(output: Path, base_rows: list[dict]) -> None:
         )
         status = str(base.get("extraction_status") or "success")
         common = {
+            **PINNED_RASTERIZER_ROW,
             "patient_id": patient_id,
             "course_id": course_id,
             "series_uid": str(base.get("series_uid", f"series-{course_id}")),
@@ -1429,7 +1431,8 @@ def test_direct_measured_resume_binds_current_source_and_execution(
         }[change]
         before[field] = {"rasterizer_missing": None, "rasterizer_opencv": "4.11.0",
                          "rasterizer_rt_utils": "1.2.6", "rasterizer_provider": "{}"}[change]
-        write_ct_publication_atomic(before, output)
+        # Plant historical bytes without going through the current writer.
+        before.to_parquet(output.with_suffix(".parquet"), index=False)
     elif change == "source_bytes":
         dataset = pydicom.dcmread(source)
         dataset.StructureSetLabel = "CHANGED"

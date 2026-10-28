@@ -86,7 +86,9 @@ def _write_ct_publication(course_dir: Path, *, patient_id: str) -> None:
             "sensitivity_raw": "effective-sensitivity",
         },
     )
+    from rasterizer_test_utils import PINNED_RASTERIZER_ROW
     for record in records:
+        record.update(PINNED_RASTERIZER_ROW)
         record["original_firstorder_Mean"] = 1.0
         record.update(_feature_schema_metadata({"original_firstorder_Mean"}))
     write_ct_publication_atomic(

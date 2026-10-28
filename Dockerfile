@@ -43,9 +43,12 @@ RUN mkdir -p /projekty && ln -s /app /projekty/rtpipeline
 # otherwise retain multiple package caches at once and can exhaust the build
 # volume before the third environment is complete.
 RUN mamba env create -f /app/envs/rtpipeline.yaml && \
+    /opt/conda/envs/rtpipeline/bin/pip uninstall -y opencv-python-headless opencv-contrib-python opencv-contrib-python-headless && \
+    /opt/conda/envs/rtpipeline/bin/pip install --no-deps --force-reinstall "opencv-python==5.0.0.93" && \
     mamba clean -afy && rm -rf /root/.cache/pip /opt/conda/pkgs/* && \
     mamba env create -f /app/envs/rtpipeline-radiomics.yaml && \
-    /opt/conda/envs/rtpipeline-radiomics/bin/pip install --no-deps "rt-utils==1.2.7" && \
+    /opt/conda/envs/rtpipeline-radiomics/bin/pip uninstall -y opencv-python opencv-contrib-python opencv-contrib-python-headless && \
+    /opt/conda/envs/rtpipeline-radiomics/bin/pip install --no-deps --force-reinstall "rt-utils==1.2.7" "opencv-python-headless==4.8.1.78" && \
     mamba clean -afy && rm -rf /root/.cache/pip /opt/conda/pkgs/* && \
     mamba env create -f /app/envs/rtpipeline-custom-models.yaml && \
     mamba clean -afy && \
@@ -157,6 +160,7 @@ COPY --chown=rtpipeline:rtpipeline . /app/
 RUN pip install --no-deps -e . && \
     /opt/conda/envs/rtpipeline/bin/pip install --no-deps -e . && \
     /opt/conda/envs/rtpipeline/bin/pip install --no-cache-dir psutil pytest && \
+    PYTHONPATH=/app PYTHONNOUSERSITE=1 /opt/conda/envs/rtpipeline/bin/python -c "from rtpipeline.radiomics_rasterizer import opencv_runtime_provenance; p = opencv_runtime_provenance(); assert p['opencv_version'] == '5.0.0' and p['providers'] == {'opencv-python': '5.0.0.93'} and p['error'] is None, p" && \
     PYTHONPATH=/app PYTHONNOUSERSITE=1 /opt/conda/envs/rtpipeline-radiomics/bin/python /app/scripts/check_radiomics_environment.py
 
 

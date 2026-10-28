@@ -75,6 +75,7 @@ def test_quantized_hr_ctv_is_read_through_projection(monkeypatch):
     assert masks['HR-CTV'].tobytes() == expected.tobytes()
 
 
+@pytest.mark.usefixtures("rasterizer_guard_stub")
 def test_without_rescue_the_inventory_disposition_is_unchanged(monkeypatch):
     ds, images = fixture(0.25)
     strict, masks, outcomes = _read(monkeypatch, _hr_ctv(ds), images, rescue=False)

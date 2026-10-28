@@ -78,12 +78,14 @@ def require_radiomics_rasterizer(*, cv2_module: Any = None) -> dict[str, Any]:
     providers_ok = info["providers"] == {
         "opencv-python-headless": EXPECTED_OPENCV_DIST_VERSION,
     }
-    if (info["pinned_convention"] and providers_ok
+    if (int(np.__version__.split(".")[0]) < 2
+            and info["pinned_convention"] and providers_ok
             and info["rt_utils_version"] == EXPECTED_RT_UTILS_VERSION):
         return info
     raise RadiomicsRasterizerError(
         "RTSTRUCT rasterization requires a single opencv-python-headless==4.8.1.78 "
-        "provider (cv2 4.8.1), rt-utils==1.2.7, and the exact 23-pixel reference triangle. "
+        "provider (cv2 4.8.1), rt-utils==1.2.7, NumPy 1.x, and the exact 23-pixel reference triangle. "
+        f"NumPy is {np.__version__}. "
         f"Imported cv2 {info['opencv_version']!r} at {info['opencv_path']!r}; "
         f"reference triangle filled {info['triangle_pixels']!r} pixels "
         f"(expected 23), mask={info['triangle_hex']!r}; "
@@ -100,20 +102,24 @@ def require_radiomics_rasterizer(*, cv2_module: Any = None) -> dict[str, Any]:
 
 def mask_backend(record: Mapping[str, Any]) -> str:
     """Identify loaders that use stored voxels rather than polygon filling."""
-    source = str(record.get("segmentation_source", "")).lower()
-    path = str(record.get("mask_path_source", "")).lower()
-    backend = str(record.get("rasterizer_backend", ""))
-    if backend in {"nifti/no-polygon-fill", "dicom-seg/no-polygon-fill"}:
+    backend = str(record.get("rasterizer_backend", "")).strip()
+    if backend in {RASTERIZER_BACKEND, "nifti/no-polygon-fill", "dicom-seg/no-polygon-fill"}:
         return backend
-    if source == "autots_total_nifti_fallback" or path.endswith((".nii", ".nii.gz")):
+    # Infer historical voxel sources only from the exact published layout.
+    path = Path(str(record.get("mask_path_source", "")).replace("\\", "/").lower())
+    if path.parent.name == "totalsegmentator_total_mr_nifti" and path.name.endswith((".nii", ".nii.gz")):
         return "nifti/no-polygon-fill"
-    if source in {"dicom_seg", "dicom-seg"}:
-        return "dicom-seg/no-polygon-fill"
-    # Historical MR auto rows explicitly name the stored voxel source.
-    if "totalsegmentator_total_mr_nifti" in path:
-        return "nifti/no-polygon-fill"
-    if "totalsegmentator_total_mr" in path and path.endswith(".dcm"):
-        return "dicom-seg/no-polygon-fill"
+    if path.parent.name == "totalsegmentator_total_mr_dicom" and path.name == "segmentations.dcm":
+        # A .dcm suffix is not evidence of stored voxels. Legacy producers can
+        # write RTSTRUCT here; require the DICOM-SEG SOP class before exemption.
+        try:
+            import pydicom
+            source = Path(str(record.get("mask_path_source", "")))
+            ds = pydicom.dcmread(source, stop_before_pixels=True)
+            if str(ds.SOPClassUID) == "1.2.840.10008.5.1.4.1.1.66.4":
+                return "dicom-seg/no-polygon-fill"
+        except Exception:
+            pass
     return RASTERIZER_BACKEND
 
 
@@ -141,3 +147,12 @@ def opencv_runtime_provenance() -> dict[str, Any]:
     """Record the imported main-runtime binary without imposing a radiomics pin."""
     info = active_radiomics_rasterizer()
     return {key: info[key] for key in ("opencv_version", "opencv_path", "providers", "error")}
+
+
+def require_table_rasterizer(dataframe: Any) -> None:
+    """Reject historical polygon measurements at every publication boundary."""
+    for index, record in enumerate(dataframe.to_dict("records")):
+        try:
+            require_recorded_rasterizer(record)
+        except ValueError as exc:
+            raise ValueError(f"row {index}: {exc}") from exc

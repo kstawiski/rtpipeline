@@ -118,7 +118,8 @@ def contract(course_dir):
     spec = inputs(Path(course_dir).parent.name)
     return SimpleNamespace(planning_ct_dir=Path(course_dir) / "CT",
                            planning_ct={"series_instance_uid": spec["series_uid"]},
-                           planning_ct_nifti=None)
+                           planning_ct_nifti=None,
+                           authoritative_rtstruct_path=Path(course_dir) / "RS.dcm")
 
 
 def catalog(course_dir, **kwargs):
@@ -188,6 +189,18 @@ def main():
         pass
     else:
         radiomics_rasterizer.require_radiomics_rasterizer = lambda: None
+        # Feature values are synthetic; declare their assumed runtime identity
+        # so the real publication/admission validators remain enabled.
+        from rasterizer_test_utils import PINNED_RASTERIZER_ROW
+        from rtpipeline import radiomics_ct_contract
+        radiomics_ct_contract._rasterizer_columns = lambda backend=None: {
+            **PINNED_RASTERIZER_ROW,
+            "rasterizer_backend": backend or "rt-utils/cv2.fillPoly",
+        }
+    # The fixture supplies custom contours directly; currency is covered by
+    # the custom-artifact tests, while this suite compares perturbation work.
+    from rtpipeline import custom_structures_rtstruct
+    custom_structures_rtstruct._is_rs_custom_stale = lambda *_a: False
     _inject_read_failures()
     rr.load_course_contract = contract
     rr._load_main_ct_identity_catalog = catalog

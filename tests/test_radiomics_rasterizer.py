@@ -61,6 +61,9 @@ def decision():
 
 class RasterizerContractTests(unittest.TestCase):
     def setUp(self):
+        numpy_version = patch.object(rasterizer.np, "__version__", "1.26.4")
+        numpy_version.start()
+        self.addCleanup(numpy_version.stop)
         self.versions = patch.object(rasterizer, "_dist_version", side_effect=pinned_version)
         self.versions.start()
         self.addCleanup(self.versions.stop)

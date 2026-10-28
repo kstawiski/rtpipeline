@@ -5,6 +5,9 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
+
+# Synthetic extraction tests assume the supported runtime; enforcement is tested separately.
+pytestmark = pytest.mark.usefixtures("rasterizer_guard_stub")
 import yaml
 
 from rtpipeline import radiomics_ct_contract as contract

@@ -920,6 +920,7 @@ def test_run_radiomics_propagates_failed_course_before_cohort_aggregation(tmp_pa
 
 
 @pytest.mark.parametrize("parallel", [False, True])
+@pytest.mark.usefixtures("rasterizer_guard_stub")
 def test_course_with_no_ct_is_explicit_noop_and_does_not_abort_cohort(
     tmp_path, monkeypatch, parallel
 ):
@@ -948,6 +949,7 @@ def test_course_with_no_ct_is_explicit_noop_and_does_not_abort_cohort(
 
 
 @pytest.mark.parametrize("parallel", [False, True])
+@pytest.mark.usefixtures("rasterizer_guard_stub")
 def test_course_with_present_unreadable_ct_is_failure(tmp_path, monkeypatch, parallel):
     course_root = tmp_path / "patient" / "course"
     course_dirs = build_course_dirs(course_root)
@@ -968,6 +970,7 @@ def test_course_with_present_unreadable_ct_is_failure(tmp_path, monkeypatch, par
 
 
 @pytest.mark.parametrize("parallel", [False, True])
+@pytest.mark.usefixtures("rasterizer_guard_stub")
 def test_conda_delegation_failure_is_not_converted_to_nothing_to_do(tmp_path, monkeypatch, parallel):
     course_root = tmp_path / "patient" / "course"
     course_dirs = build_course_dirs(course_root)

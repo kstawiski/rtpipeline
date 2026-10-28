@@ -10,6 +10,9 @@ from types import SimpleNamespace
 import numpy as np
 import pydicom
 import pytest
+
+# Synthetic extraction tests assume the supported runtime; enforcement is tested separately.
+pytestmark = pytest.mark.usefixtures("rasterizer_guard_stub")
 import SimpleITK as sitk
 from pydicom.sequence import Sequence
 from rt_utils import RTStructBuilder
@@ -149,6 +152,9 @@ class _Extractor:
 
 
 def _course(tmp_path, monkeypatch, *, malformed=False):
+    from rasterizer_test_utils import stub_course_runtime, stub_synthetic_rasterizer_columns
+    stub_course_runtime(monkeypatch)
+    stub_synthetic_rasterizer_columns(monkeypatch)
     course = tmp_path / "P1" / "C1"
     ct = write_synthetic_planning_ct(course)
     write_minimal_course_contract(course, planning_ct_dir=ct)

@@ -10,6 +10,9 @@ from typing import Any, cast
 import pandas as pd
 import pytest
 
+# Synthetic extraction tests assume the supported runtime; enforcement is tested separately.
+pytestmark = pytest.mark.usefixtures("rasterizer_guard_stub")
+
 from rtpipeline import radiomics_ct_contract as contract
 from rtpipeline.config_dependencies import (
     _snakemake_record_path,

@@ -16,6 +16,9 @@ from types import SimpleNamespace
 
 import pandas as pd
 import pytest
+
+# Synthetic extraction tests assume the supported runtime; enforcement is tested separately.
+pytestmark = pytest.mark.usefixtures("rasterizer_guard_stub")
 import yaml
 
 import rtpipeline.segmentation as segmentation

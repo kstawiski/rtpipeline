@@ -2273,6 +2273,9 @@ def validate_ct_publication(
     if missing_columns:
         raise ValueError("CT radiomics publication lacks required columns: " + ", ".join(missing_columns))
 
+    from .radiomics_rasterizer import require_table_rasterizer
+    require_table_rasterizer(dataframe)
+
     records = dataframe.to_dict("records")
     keys = [publication_key(record) for record in records]
     if any(any(not field for field in key) for key in keys):

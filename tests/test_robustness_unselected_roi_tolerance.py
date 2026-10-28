@@ -139,6 +139,7 @@ def test_production_wiring_selected_structural_status_is_disposition(tmp_path):
                         requiredness_by_roi=requiredness)
 
 
+@pytest.mark.usefixtures("rasterizer_guard_stub")
 def test_production_wiring_without_expansion_stays_fatal(tmp_path):
     """No map, no tolerance: the legacy fail-closed shape is preserved."""
     ct, source = _two_roi_rtstruct(tmp_path)

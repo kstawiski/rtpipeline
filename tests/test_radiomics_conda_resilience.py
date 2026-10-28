@@ -28,6 +28,9 @@ from types import SimpleNamespace
 import numpy as np
 import pandas as pd
 import pytest
+
+# Synthetic extraction tests assume the supported runtime; enforcement is tested separately.
+pytestmark = pytest.mark.usefixtures("rasterizer_guard_stub")
 import SimpleITK as sitk
 
 import rtpipeline.radiomics_conda as rc
