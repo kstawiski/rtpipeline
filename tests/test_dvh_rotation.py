@@ -294,6 +294,8 @@ def test_axis_aligned_publication_bytes_against_git_a61b96a(tmp_path, monkeypatc
 
     old_qc = json.loads(old['metadata/dvh_qc.json'])
     new_qc = json.loads(new['metadata/dvh_qc.json'])
+    from rtpipeline.radiomics_rasterizer import opencv_runtime_provenance
+    assert new_qc.pop('opencv_runtime') == opencv_runtime_provenance()
     assert set(new_qc) == set(old_qc) | {'dose_plane_alignment', 'dose_plane_alignment_counts'}
     assert new_qc.pop('dose_plane_alignment') == 'EXACT'
     assert new_qc.pop('dose_plane_alignment_counts') == {'EXACT': len(new_table)}

@@ -25,6 +25,7 @@ def main():
         env["PYTHONPATH"] = root_dir
         
     env.setdefault("PIP_NO_BUILD_ISOLATION", "1")
+    env["PYTHONNOUSERSITE"] = "1"
 
     course_path = Path(snakemake.params.output_dir) / snakemake.wildcards.patient / snakemake.wildcards.course
     output_parquet = course_path / "radiomics_robustness_ct.parquet"

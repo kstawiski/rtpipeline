@@ -30,6 +30,9 @@ dependencies = [
   "dicom2nifti>=2.4",
   "nested-lookup",
   "rt-utils",
+  # Main-runtime RTSTRUCT utilities retain the existing NumPy 2-compatible build.
+  # Radiomics uses the separate headless 4.8.1 provider in its NumPy 1.26 helper.
+  "opencv-python==5.0.0.93",
   "plotly",
   "nbformat",     # For notebook processing support
   "ipython",      # For notebook processing support

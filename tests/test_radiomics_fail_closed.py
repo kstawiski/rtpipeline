@@ -78,7 +78,7 @@ def _config(tmp_path: Path, **overrides) -> PipelineConfig:
 
 
 @pytest.fixture(autouse=True)
-def _stub_dual_arm_resampled_qc_when_pyradiomics_is_mocked(monkeypatch):
+def _stub_dual_arm_resampled_qc_when_pyradiomics_is_mocked(monkeypatch, rasterizer_guard_stub):
     """Keep legacy unit tests independent of the optional PyRadiomics package."""
     import rtpipeline.radiomics_ct_contract as contract
 
@@ -109,6 +109,11 @@ def _stub_dual_arm_resampled_qc_when_pyradiomics_is_mocked(monkeypatch):
             "pyradiomics_version": "test",
             "simpleitk_version": "test",
             "numpy_version": np.__version__,
+            "rasterizer_backend": "rt-utils/cv2.fillPoly",
+            "rasterizer_opencv_version": "4.8.1",
+            "rasterizer_rt_utils_version": "1.2.7",
+            "rasterizer_providers": '{"opencv-python-headless": "4.8.1.78"}',
+
         },
     )
 
@@ -120,6 +125,7 @@ def _write_test_ct_publication(output: Path, base_rows: list[dict]) -> None:
         write_ct_publication_atomic,
     )
 
+    from rasterizer_test_utils import PINNED_RASTERIZER_ROW
     records = []
     for index, base in enumerate(base_rows, start=1):
         source = str(base.get("segmentation_source", "Manual"))
@@ -142,6 +148,7 @@ def _write_test_ct_publication(output: Path, base_rows: list[dict]) -> None:
         )
         status = str(base.get("extraction_status") or "success")
         common = {
+            **PINNED_RASTERIZER_ROW,
             "patient_id": patient_id,
             "course_id": course_id,
             "series_uid": str(base.get("series_uid", f"series-{course_id}")),
@@ -1369,7 +1376,7 @@ def test_direct_invalid_resume_is_rebuilt_with_every_current_roi_arm(
 
 
 @pytest.mark.parametrize("large_roi", [False, True])
-@pytest.mark.parametrize("change", ["unchanged", "source_bytes", "code", "effective_settings", "native_minimum", "missing_fingerprint", "fingerprint_error", "during_masks", "during_extraction"])
+@pytest.mark.parametrize("change", ["unchanged", "source_bytes", "code", "effective_settings", "native_minimum", "missing_fingerprint", "fingerprint_error", "during_masks", "during_extraction", "rasterizer_missing", "rasterizer_opencv", "rasterizer_rt_utils", "rasterizer_provider"])
 def test_direct_measured_resume_binds_current_source_and_execution(
     tmp_path, monkeypatch, large_roi, change
 ):
@@ -1415,7 +1422,18 @@ def test_direct_measured_resume_binds_current_source_and_execution(
     assert state["calls"] == 3  # Separate shape, raw, and resegmented extractors.
     assert set(before.extraction_status) == {"success"}
 
-    if change == "source_bytes":
+    if change.startswith("rasterizer_"):
+        field = {
+            "rasterizer_missing": "rasterizer_opencv_version",
+            "rasterizer_opencv": "rasterizer_opencv_version",
+            "rasterizer_rt_utils": "rasterizer_rt_utils_version",
+            "rasterizer_provider": "rasterizer_providers",
+        }[change]
+        before[field] = {"rasterizer_missing": None, "rasterizer_opencv": "4.11.0",
+                         "rasterizer_rt_utils": "1.2.6", "rasterizer_provider": "{}"}[change]
+        # Plant historical bytes without going through the current writer.
+        before.to_parquet(output.with_suffix(".parquet"), index=False)
+    elif change == "source_bytes":
         dataset = pydicom.dcmread(source)
         dataset.StructureSetLabel = "CHANGED"
         dataset.save_as(source, enforce_file_format=True)

@@ -26,6 +26,9 @@ _RADIOMICS_ENVIRONMENT_PACKAGES = (
     "SimpleITK",
     "pyradiomics",
     "pyarrow",
+    "opencv-python-headless",
+    "opencv-python",
+    "rt-utils",
 )
 
 
@@ -252,9 +255,11 @@ def environment_fingerprint(package_names: Sequence[str]) -> str:
 
 
 def execution_environment_fingerprint() -> str:
-    """Preserve the radiomics environment-fingerprint API and byte contract."""
+    """Fingerprint the runtime, including the imported RTSTRUCT rasterizer."""
+    from .radiomics_rasterizer import active_radiomics_rasterizer
 
     record = environment_record(_RADIOMICS_ENVIRONMENT_PACKAGES)
+    rasterizer = active_radiomics_rasterizer()
     legacy_record = {
         "python": record["python"],
         "implementation": record["implementation"],
@@ -268,6 +273,9 @@ def execution_environment_fingerprint() -> str:
         "simpleitk": record["packages"]["SimpleITK"],
         "pyradiomics": record["packages"]["pyradiomics"],
         "pyarrow": record["packages"]["pyarrow"],
+        "rasterizer": {key: rasterizer.get(key) for key in (
+            "providers", "opencv_version", "rt_utils_version", "triangle_hex",
+        )},
     }
     return hashlib.sha256(canonical_json(legacy_record).encode("utf-8")).hexdigest()
 
@@ -517,6 +525,13 @@ def stage_completion_payload(
     measurement_outcome = _validate_stage_specific_outcome(root, definition, terminal_status, outputs)
     code = _code_identity(definition)
     environment = environment_record(definition.environment_packages)
+    runtime_provenance = {}
+    if terminal_status == "ok":
+        # Disabled stages close in the dependency-light workflow interpreter.
+        # They execute no main-runtime RTSTRUCT operations.
+        from .radiomics_rasterizer import opencv_runtime_provenance
+
+        runtime_provenance["opencv_runtime"] = opencv_runtime_provenance()
     return {
         **({"measurement_outcome": measurement_outcome} if measurement_outcome else {}),
         "schema": STAGE_COMPLETION_SCHEMA,
@@ -539,6 +554,7 @@ def stage_completion_payload(
         "execution_host": socket.gethostname(),
         "environment_fingerprint": content_sha256(environment),
         "environment": environment,
+        **runtime_provenance,
     }
 
 

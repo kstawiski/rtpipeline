@@ -1,6 +1,9 @@
 """Cross-repair acceptance gates, using synthetic DICOM only."""
 from dataclasses import replace
 import pytest
+
+# Synthetic extraction tests assume the supported runtime; enforcement is tested separately.
+pytestmark = pytest.mark.usefixtures("rasterizer_guard_stub")
 from pydicom.dataset import Dataset
 from rtpipeline import radiomics_ct_contract as contract, radiomics_parallel as parallel
 from rtpipeline.rt_details import is_target_volume_candidate, is_target_volume_name

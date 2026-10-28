@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from .radiomics_rasterizer import opencv_runtime_provenance
+
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
@@ -34,6 +36,7 @@ class FixSummary:
     fixed: List[str]
     failed: List[str]
     output_path: Path
+    opencv_runtime: dict = field(default_factory=opencv_runtime_provenance)
 
 
 def _rt_utils_roi_mask(rtstruct, roi_name: str) -> np.ndarray:

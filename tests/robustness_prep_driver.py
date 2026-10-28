@@ -3,7 +3,8 @@
 Launched by ``test_robustness_prep_equivalence.py`` and
 ``benchmark_robustness_prep.py`` once with an export of the base revision and
 once with the working tree, on identical inputs at the same absolute paths.
-Only seams present in both revisions are replaced: the course contract, the
+The runtime guard is stubbed when present so both revisions use the same
+installed OpenCV convention. Other replaced seams are: the course contract, the
 main-radiomics identity catalog (served from ``inputs.json``), the
 standard-source resolver, the custom-model listing and PyRadiomics execution.
 RTSTRUCT inspection, rasterization, selection, perturbation, task
@@ -117,7 +118,8 @@ def contract(course_dir):
     spec = inputs(Path(course_dir).parent.name)
     return SimpleNamespace(planning_ct_dir=Path(course_dir) / "CT",
                            planning_ct={"series_instance_uid": spec["series_uid"]},
-                           planning_ct_nifti=None)
+                           planning_ct_nifti=None,
+                           authoritative_rtstruct_path=Path(course_dir) / "RS.dcm")
 
 
 def catalog(course_dir, **kwargs):
@@ -179,6 +181,26 @@ _INJECTED_READ_FAILURES: set = set()
 
 
 def main():
+    # This semantic comparison stubs feature extraction and uses one installed
+    # fill convention on both revisions. Test the runtime guard separately.
+    try:
+        from rtpipeline import radiomics_rasterizer
+    except ImportError:  # historical comparison package has no guard
+        pass
+    else:
+        radiomics_rasterizer.require_radiomics_rasterizer = lambda: None
+        # Feature values are synthetic; declare their assumed runtime identity
+        # so the real publication/admission validators remain enabled.
+        from rasterizer_test_utils import PINNED_RASTERIZER_ROW
+        from rtpipeline import radiomics_ct_contract
+        radiomics_ct_contract._rasterizer_columns = lambda backend=None: {
+            **PINNED_RASTERIZER_ROW,
+            "rasterizer_backend": backend or "rt-utils/cv2.fillPoly",
+        }
+    # The fixture supplies custom contours directly; currency is covered by
+    # the custom-artifact tests, while this suite compares perturbation work.
+    from rtpipeline import custom_structures_rtstruct
+    custom_structures_rtstruct._is_rs_custom_stale = lambda *_a: False
     _inject_read_failures()
     rr.load_course_contract = contract
     rr._load_main_ct_identity_catalog = catalog

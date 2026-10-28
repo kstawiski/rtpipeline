@@ -11,6 +11,9 @@ placeholders named 'Pecherz' while a contoured urinary_bladder sat beside them.
 import pydicom
 import pytest
 
+# Synthetic extraction tests assume the supported runtime; enforcement is tested separately.
+pytestmark = pytest.mark.usefixtures("rasterizer_guard_stub")
+
 from rtpipeline import radiomics
 from rtpipeline.roi_requiredness import Requiredness
 
