@@ -520,7 +520,8 @@ def test_env_check_timeout_is_configurable_and_classified(monkeypatch):
     assert error.attempts == 2
     assert len(seen) == 2
     assert all(timeout == 321 for _command, timeout in seen)
-    assert "conda" in str(error) or "micromamba" in str(error) or "mamba" in str(error)
+    assert error.command == tuple(seen[-1][0])
+    assert str(seen[-1][0][0]) in str(error)
     assert "timeout=321s" in str(error)
     assert "attempts=2" in str(error)
 
