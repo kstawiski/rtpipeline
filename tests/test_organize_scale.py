@@ -158,13 +158,16 @@ def test_mask_nifti_bytes(tmp_path, monkeypatch, processes):
     nifti = tmp_path / 'ct.nii.gz'
     sitk.WriteImage(reader.Execute(), str(nifti))
     args = dict(rs_path=folder / 'struct.dcm', primary_nifti=nifti,
-                dicom_ct_dir=ct, segmentation_original_dir=tmp_path / 'masks',
+                dicom_ct_dir=ct, segmentation_original_dir=tmp_path / 'Segmentation_Original',
                 log_root=tmp_path, overwrite=True)
-    expected_manifest = baseline()['organize']._export_original_segmentation_from_paths(**args)
+    from test_s9c_repairs import write_sidecar
+    from organize_io_fixture import upgrade_original_export_schema
+    write_sidecar(nifti)
+    old = baseline()['organize']
+    upgrade_original_export_schema(old, monkeypatch)
+    expected_manifest = old._export_original_segmentation_from_paths(**args)
     assert expected_manifest and len(expected_manifest['structures']) == 2
-    expected_manifest = dict(schema=organize.ORIGINAL_SEGMENTATION_SCHEMA,
-        geometry_status='exact_physical_mapping', **expected_manifest)
-    expected = {p.name: p.read_bytes() for p in (tmp_path / 'masks').rglob('*.nii.gz')}
+    expected = {p.name: p.read_bytes() for p in (tmp_path / 'Segmentation_Original').rglob('*.nii.gz')}
     assert expected
     if processes:
         require_process_pool()
@@ -175,7 +178,7 @@ def test_mask_nifti_bytes(tmp_path, monkeypatch, processes):
         if processes:
             assert outcome.worker_pid not in (None, os.getpid())
         assert outcome.result() == expected_manifest
-    assert {p.name: p.read_bytes() for p in (tmp_path / 'masks').rglob('*.nii.gz')} == expected
+    assert {p.name: p.read_bytes() for p in (tmp_path / 'Segmentation_Original').rglob('*.nii.gz')} == expected
 
 
 def test_discovery_transport_pickle_preserves_dataset_and_cache(tmp_path):

@@ -70,6 +70,8 @@ def test_export_voxels_and_centroid_in_lps(source, tmp_path, perm, flip):
     ref = sitk.Flip(sitk.PermuteAxes(ref, perm), flip)
     nifti = tmp_path / 'CT_reference.nii.gz'
     sitk.WriteImage(ref, str(nifti))
+    from test_s9c_repairs import write_sidecar
+    write_sidecar(nifti)
     manifest = organize._export_original_segmentation_from_paths(
         rs_path=rs, primary_nifti=nifti, dicom_ct_dir=ct,
         segmentation_original_dir=tmp_path/'Segmentation_Original', log_root=tmp_path, overwrite=False)
@@ -109,6 +111,8 @@ def test_stale_export_is_removed_on_geometry_failure(source, tmp_path):
     nifti = tmp_path/'CT_reference.nii.gz'
     ref.SetOrigin(tuple(np.asarray(ref.GetOrigin()) + [0.2, 0, 0]))
     sitk.WriteImage(ref, str(nifti))
+    from test_s9c_repairs import write_sidecar
+    write_sidecar(nifti)
     target = tmp_path/'Segmentation_Original/CT_reference'
     target.mkdir(parents=True)
     (target/'obsolete.nii.gz').write_bytes(b'old')
@@ -149,9 +153,8 @@ def test_legacy_export_is_recomputed_and_stage_receipt_excludes_it(source, tmp_p
     ref = sitk.Flip(ref, [False, True, False])
     nifti = tmp_path/'CT_reference.nii.gz'
     sitk.WriteImage(ref, str(nifti))
-    (tmp_path/'CT_reference.metadata.json').write_text(json.dumps({
-        'series_instance_uid': 'synthetic', 'sop_hash': 'synthetic',
-        'nifti_geometry': {'size': list(ref.GetSize())}}))
+    from test_s9c_repairs import write_sidecar
+    write_sidecar(nifti)
     target = tmp_path/'Segmentation_Original/CT_reference'
     target.mkdir(parents=True)
     mask = rt.get_roi_mask_by_name('Asymmetric')
@@ -163,8 +166,9 @@ def test_legacy_export_is_recomputed_and_stage_receipt_excludes_it(source, tmp_p
     provenance['schema'] = 'rtpipeline-original-segmentation-provenance-v1'
     (target/'provenance.json').write_text(json.dumps(provenance))
     definition = _STAGE_DEFINITIONS['organize']
-    assert not any(item['role'] == 'original_segmentation' for item in _discover_outputs(tmp_path, definition))
-    assert _stale_original_exports(tmp_path, definition)[0]['status'] == 'stale_excluded'
+    with pytest.raises(ValueError, match='stale'):
+        _discover_outputs(tmp_path, definition)
+    assert _stale_original_exports(tmp_path, definition)[0]['status'] == 'stale'
     with pytest.raises(ValueError, match='stale'):
         _validate_stage_specific_outcome(tmp_path, _STAGE_DEFINITIONS['segmentation'], 'ok', [])
     result = organize._export_original_segmentation_from_paths(rs_path=rs, primary_nifti=nifti,

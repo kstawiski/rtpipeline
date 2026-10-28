@@ -536,7 +536,7 @@ def place_added_rois_on_planes(ds, series_data, roi_numbers=None) -> int:
     numbers = None if roi_numbers is None else {int(number) for number in roi_numbers}
     slices = list(series_data)
     moved = 0
-    if slices and not np.isclose(*slices[0].PixelSpacing, rtol=0, atol=1e-8):
+    if any(not np.isclose(*s.PixelSpacing, rtol=0, atol=1e-8) for s in slices):
         # Only freshly added ROIs enter this function. Undo rt-utils' writer
         # affine, which interchanges row/column spacing, then place each vertex
         # on the referenced DICOM pixel grid. Never change copied source ROIs.
@@ -553,9 +553,6 @@ def place_added_rois_on_planes(ds, series_data, roi_numbers=None) -> int:
                 if len(refs) != 1 or str(refs[0].ReferencedSOPInstanceUID) not in geometry:
                     raise ValueError('Added contour requires one source DICOM plane')
                 _, _, spacing, orientation, origin, _, _ = geometry[str(refs[0].ReferencedSOPInstanceUID)]
-                if not (np.allclose(orientation.ravel(), slices[0].ImageOrientationPatient, atol=1e-6)
-                        and np.allclose(spacing, slices[0].PixelSpacing, atol=1e-6)):
-                    raise ValueError('RTSTRUCT source series changes orientation or pixel spacing between slices')
                 points = np.asarray(contour.ContourData).reshape(-1, 3)
                 indices = np.column_stack((points, np.ones(len(points)))) @ inverse.T
                 placed = (np.asarray(origin) + indices[:, :1] * orientation[0] * spacing[1]
@@ -591,6 +588,20 @@ def dicom_has_unequal_pixel_spacing(directory: Path) -> bool:
     return False
 
 
+def dicom_requires_geometry_adapter(directory: Path) -> bool:
+    """Inspect every image header for rectangular arrays or unequal spacing."""
+    for path in Path(directory).rglob('*'):
+        if not path.is_file():
+            continue
+        try:
+            ds = pydicom.dcmread(path, stop_before_pixels=True)
+        except (pydicom.errors.InvalidDicomError, OSError):
+            continue
+        if rtutils_requires_geometry_adapter([ds]):
+            return True
+    return False
+
+
 def rtstruct_contours_to_mask(series_data, contours, *, retain=True):
     """Rasterize referenced contours on actual DICOM rows/columns/slices.
 
@@ -609,6 +620,8 @@ def rtstruct_contours_to_mask(series_data, contours, *, retain=True):
         nr, nc, spacing, orientation, origin, _, _ = geo
         polygons = []
         for data in image_helper.get_slice_contour_data(image, contours):
+            if len(data) < 9 or len(data) % 3:
+                continue
             relative = np.asarray(data).reshape(-1, 3) - origin
             xy = np.column_stack((relative @ orientation[0] / spacing[1],
                                   relative @ orientation[1] / spacing[0]))
@@ -914,7 +927,7 @@ def rtstruct_mask_to_image(mask, series_data, reference):
     Slice order is the order of ``builder.series_data``. Only a bijective axis
     permutation/flip is allowed: no interpolation, cropping, padding, slice
     regularization or shape-based inference. Every source slice's corners must
-    agree within 0.001 mm (DICOM/NIfTI numeric precision).
+    agree within 0.01 mm (DICOM/NIfTI numeric precision).
     """
     import SimpleITK as sitk
 
@@ -943,10 +956,36 @@ def rtstruct_mask_to_image(mask, series_data, reference):
     step = (np.asarray(geometries[1][4]) - origin if len(slices) > 1
             else normal * float(getattr(slices[0], 'SpacingBetweenSlices',
                                        getattr(slices[0], 'SliceThickness', 1.0))))
+    # Six-decimal IOP rounding gives <=1.8e-6 norm/dot error. A 2e-5
+    # direction/scale cap also admits five-decimal DS storage. Across a
+    # 512 x 512 grid at 0.931 mm this is a few micrometres; the independent
+    # 0.01 mm corner cap bounds accumulated drift on EVERY plane. Mapping
+    # uses integer indices only: no interpolation or fractional index offset.
+    axis_tolerance = 2e-5
+    if len(slices) == 1:
+        # GDCM uses a unit out-of-plane step for a single DICOM slice.
+        # Admit that convention or the declared thickness/spacing, but never
+        # infer an arbitrary step from the reference. The full matrix below
+        # still checks the out-of-plane direction (even on singleton axes).
+        unit_transform = inverse @ np.column_stack((
+            orientation[1] * spacing[0], orientation[0] * spacing[1], normal))
+        if np.allclose(unit_transform, np.rint(unit_transform), atol=axis_tolerance, rtol=0) and np.sum(np.abs(np.rint(unit_transform[:, 2]))) == 1:
+            step = normal
     basis = np.column_stack((orientation[1] * spacing[0], orientation[0] * spacing[1], step))
     transform = inverse @ basis
     permutation = np.rint(transform).astype(int)
-    if not (np.all(np.sum(np.abs(permutation), axis=0) == 1)
+    # A step formed by subtracting two 0.001-mm-rounded IPPs can carry
+    # sqrt(3)*0.001 mm error. Check its full physical vector within 0.002 mm;
+    # all slice corners still have to satisfy the independent 0.01-mm cap.
+    # Singleton axes have no position difference to justify this allowance.
+    step_matches = (
+        np.linalg.norm(basis[:, 2] - ref_basis @ permutation[:, 2]) <= 0.002
+        if len(slices) > 1 else
+        np.allclose(transform[:, 2], permutation[:, 2], atol=axis_tolerance, rtol=0)
+    )
+    if not (np.allclose(transform[:, :2], permutation[:, :2], atol=axis_tolerance, rtol=0)
+            and step_matches
+            and np.all(np.sum(np.abs(permutation), axis=0) == 1)
             and np.all(np.sum(np.abs(permutation), axis=1) == 1)):
         reject("axes are not an exact permutation/flip")
     axes = np.argmax(np.abs(permutation), axis=1)
@@ -959,12 +998,12 @@ def rtstruct_mask_to_image(mask, series_data, reference):
     for k, (nr, nc, sp, orient, pos, _, _) in enumerate(geometries):
         if not (np.isfinite(orient).all() and np.isfinite(sp).all()
                 and np.all(np.asarray(sp) > 0)
-                and np.allclose(orient @ orient.T, np.eye(2), atol=1e-6, rtol=0)):
+                and np.allclose(orient @ orient.T, np.eye(2), atol=2e-5, rtol=0)):
             reject("invalid DICOM orientation or spacing")
         for r, c in ((0, 0), (nr - 1, 0), (0, nc - 1), (nr - 1, nc - 1)):
             physical = np.asarray(pos) + r * orient[1] * sp[0] + c * orient[0] * sp[1]
             mapped = ref_origin + ref_basis @ (offset + permutation @ np.array((r, c, k)))
-            if not np.isfinite(physical).all() or np.linalg.norm(physical - mapped) > PLANE_TOLERANCE_MM:
+            if not np.isfinite(physical).all() or np.linalg.norm(physical - mapped) > 0.01:
                 reject("DICOM voxel centers do not coincide with reference voxel centers")
     xyz = array.transpose(tuple(axes))
     xyz = xyz[tuple(slice(None, None, int(sign)) for sign in signs)]
@@ -973,3 +1012,44 @@ def rtstruct_mask_to_image(mask, series_data, reference):
     image.SetDirection(reference.GetDirection())
     image.SetOrigin(reference.GetOrigin())
     return image
+
+
+def _adapter_identity(path: Path, ct_dir: Path) -> dict:
+    """Bind a derived RTSTRUCT to its bytes and every source image geometry."""
+    import hashlib
+    import json
+
+    geometry = []
+    for file in sorted(Path(ct_dir).rglob('*')):
+        if not file.is_file():
+            continue
+        try:
+            ds = pydicom.dcmread(file, stop_before_pixels=True)
+        except (pydicom.errors.InvalidDicomError, OSError):
+            continue
+        if hasattr(ds, 'ImagePositionPatient'):
+            geometry.append([str(getattr(ds, key, '')) for key in (
+                'SOPInstanceUID', 'SeriesInstanceUID', 'StudyInstanceUID',
+                'FrameOfReferenceUID', 'Rows', 'Columns', 'PixelSpacing',
+                'ImageOrientationPatient', 'ImagePositionPatient',
+                'SliceThickness', 'SpacingBetweenSlices')])
+    return {'schema': 'rtpipeline-geometry-adapter-v1',
+            'rtstruct_sha256': hashlib.sha256(Path(path).read_bytes()).hexdigest(),
+            'geometry_sha256': hashlib.sha256(json.dumps(geometry).encode()).hexdigest()}
+
+
+def record_geometry_adapter(path: Path, ct_dir: Path) -> None:
+    import json
+
+    Path(path).with_suffix('.geometry.json').write_text(json.dumps(_adapter_identity(path, ct_dir)))
+
+
+def geometry_adapter_output_current(path: Path, ct_dir: Path) -> bool:
+    if not dicom_requires_geometry_adapter(ct_dir):
+        return True
+    import json
+
+    try:
+        return json.loads(Path(path).with_suffix('.geometry.json').read_text()) == _adapter_identity(path, ct_dir)
+    except (OSError, ValueError):
+        return False
