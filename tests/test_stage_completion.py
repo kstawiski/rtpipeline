@@ -118,6 +118,41 @@ def test_organized_completion_uses_hybrid_binding(tmp_path: Path) -> None:
         )
 
 
+@pytest.mark.parametrize('metadata', [None, '{', '{}',
+    '{"schema":"rtpipeline-original-segmentation-v2","geometry_status":"MASK_GRID_NOT_EQUIVALENT"}'])
+def test_organized_completion_records_stale_exports_without_certifying_them(tmp_path, metadata):
+    course = _course(tmp_path)
+    contract = course / 'metadata/case_metadata.json'
+    contract.parent.mkdir()
+    contract.write_text('{}')
+    dicom = course / 'DICOM/CT/image.dcm'
+    dicom.parent.mkdir(parents=True)
+    dicom.write_bytes(b'synthetic')
+    export = course / 'Segmentation_Original/series/rtstruct'
+    export.mkdir(parents=True)
+    mask = export / 'mask.nii.gz'
+    mask.write_bytes(b'stale synthetic mask')
+    if metadata is not None:
+        (export / 'metadata.json').write_text(metadata)
+    (export / 'provenance.json').write_text('{}')
+    before = {path: path.read_bytes() for path in export.iterdir()}
+    sentinel = course / '.organized'
+    payload = write_stage_completion_sentinel(course, sentinel, stage='organize', status='ok',
+                                             configuration_dependency=_dependency(tmp_path, 'organize'))
+    assert not any(item['role'] == 'original_segmentation' for item in payload['outputs'])
+    stale = payload['stale_original_exports']
+    assert len(stale) == 1
+    assert stale[0]['path'] == 'Segmentation_Original/series/rtstruct'
+    assert stale[0]['status'] == 'stale_excluded'
+    assert 'stale' in stale[0]['reason']
+    assert validate_stage_completion_sentinel(sentinel, expected_stage='organize') == payload
+    assert {path: path.read_bytes() for path in export.iterdir()} == before
+    payload['stale_original_exports'] = []
+    sentinel.write_text(json.dumps(payload))
+    with pytest.raises(ValueError, match='stale original exports changed'):
+        validate_stage_completion_sentinel(sentinel, expected_stage='organize')
+
+
 def test_organized_inventory_detects_missing_declared_output(tmp_path: Path) -> None:
     course = _course(tmp_path)
     contract = course / "metadata" / "case_metadata.json"

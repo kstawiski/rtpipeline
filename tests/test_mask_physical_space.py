@@ -140,8 +140,10 @@ def test_real_dcm2niix(source, tmp_path):
     np.testing.assert_allclose(observed, center, atol=1e-5)
 
 
-def test_legacy_export_is_recomputed_and_stage_receipt_rejects_it(source, tmp_path):
-    from rtpipeline.stage_completion import _STAGE_DEFINITIONS, _validate_stage_specific_outcome
+def test_legacy_export_is_recomputed_and_stage_receipt_excludes_it(source, tmp_path):
+    from rtpipeline.stage_completion import (
+        _STAGE_DEFINITIONS, _validate_stage_specific_outcome, _discover_outputs, _stale_original_exports,
+    )
 
     ct, rs, rt, ref = source
     ref = sitk.Flip(ref, [False, True, False])
@@ -160,15 +162,25 @@ def test_legacy_export_is_recomputed_and_stage_receipt_rejects_it(source, tmp_pa
     provenance = organize._original_segmentation_provenance(rs, nifti)
     provenance['schema'] = 'rtpipeline-original-segmentation-provenance-v1'
     (target/'provenance.json').write_text(json.dumps(provenance))
+    definition = _STAGE_DEFINITIONS['organize']
+    assert not any(item['role'] == 'original_segmentation' for item in _discover_outputs(tmp_path, definition))
+    assert _stale_original_exports(tmp_path, definition)[0]['status'] == 'stale_excluded'
     with pytest.raises(ValueError, match='stale'):
-        _validate_stage_specific_outcome(tmp_path, _STAGE_DEFINITIONS['organize'], 'ok', [])
+        _validate_stage_specific_outcome(tmp_path, _STAGE_DEFINITIONS['segmentation'], 'ok', [])
     result = organize._export_original_segmentation_from_paths(rs_path=rs, primary_nifti=nifti,
         dicom_ct_dir=ct, segmentation_original_dir=target.parent, log_root=tmp_path, overwrite=False)
     new = sitk.ReadImage(str(target/'Asymmetric.nii.gz'))
     assert physical_voxels(new)[0] == dicom_voxels(mask, rt.series_data)[0]
     _validate_stage_specific_outcome(tmp_path, _STAGE_DEFINITIONS['organize'], 'ok', [])
+    assert _stale_original_exports(tmp_path, definition) == []
+    assert sum(item['role'] == 'original_segmentation' for item in _discover_outputs(tmp_path, definition)) == 3
     assert organize._original_masks_reusable(target, target.parent, result,
         organize._original_segmentation_provenance(rs, nifti))[0]
+    changed = organize._original_segmentation_provenance(rs, nifti)
+    changed['source_nifti_sha256'] = 'changed-content-on-same-grid'
+    reusable, reason = organize._original_masks_reusable(target, target.parent, result, changed)
+    assert not reusable
+    assert 'source_nifti_sha256' in reason
 
 
 def test_rectangular_reader_mask_is_rejected(tmp_path):

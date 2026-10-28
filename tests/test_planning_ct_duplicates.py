@@ -145,7 +145,9 @@ def test_unsafe_duplicate_repair_refuses_without_changes(tmp_path, dcm2niix, pro
 
 
 @pytest.mark.parametrize('kind', ['4d', 'wrong_pixels'])
-def test_mismatched_nifti_rederived_and_old_masks_stay_stale(tmp_path, dcm2niix, kind):
+@pytest.mark.parametrize('export', ['missing_metadata', 'v2'])
+def test_mismatched_nifti_rederived_and_old_masks_stay_stale(tmp_path, dcm2niix, kind, export):
+    from rtpipeline.original_segmentation import require_current_original_mask
     root = tmp_path / 'Output'
     course = _organized_course(root, dcm2niix)
     _copies(course)
@@ -161,6 +163,12 @@ def test_mismatched_nifti_rederived_and_old_masks_stay_stale(tmp_path, dcm2niix,
     sitk.WriteImage(sitk.Image([20, 16, 12], sitk.sitkUInt8), str(masks / 'mask.nii.gz'))
     (masks / 'provenance.json').write_text(json.dumps(organize._original_segmentation_provenance(
         contract.authoritative_rtstruct_path, contract.planning_ct_nifti)))
+    if export == 'v2':
+        (masks / 'metadata.json').write_text(json.dumps({
+            'schema': organize.ORIGINAL_SEGMENTATION_SCHEMA,
+            'geometry_status': 'exact_physical_mapping',
+            'structures': [{'mask': 'rtstruct/mask.nii.gz'}]}))
+        require_current_original_mask(masks / 'mask.nii.gz')
     (course / '.segmentation_done').write_text('stale synthetic segmentation marker')
     _refresh(course)
     mask_before = _files_and_mtimes(masks)
@@ -181,7 +189,15 @@ def test_mismatched_nifti_rederived_and_old_masks_stay_stale(tmp_path, dcm2niix,
     assert evidence['status'] == 'rederived'
     assert evidence['segmentation_outputs'] == 'stale_left_in_place'
     assert evidence['previous_nifti_sha256'] != contract.planning_ct['nifti_provenance']['nifti_sha256']
-    validate_stage_completion_sentinel(course / '.organized', expected_stage='organize')
+    completion = validate_stage_completion_sentinel(course / '.organized', expected_stage='organize')
+    assert completion['stale_original_exports'][0]['path'] == 'Segmentation_Original/rtstruct'
+    assert not any(item['role'] == 'original_segmentation' for item in completion['outputs'])
+    with pytest.raises(ValueError, match='stale'):
+        require_current_original_mask(masks / 'mask.nii.gz')
+    manifest = json.loads((masks / 'metadata.json').read_text()) if export == 'v2' else {}
+    assert not organize._original_masks_reusable(masks, masks.parent, manifest,
+        organize._original_segmentation_provenance(
+            contract.authoritative_rtstruct_path, contract.planning_ct_nifti))[0]
     before = _files_and_mtimes(root)
     assert repair_output(root)['unchanged'] == 1
     assert _files_and_mtimes(root) == before

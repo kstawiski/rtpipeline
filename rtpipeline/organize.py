@@ -3832,6 +3832,7 @@ _ORIGINAL_PROVENANCE_BOUND_KEYS = (
     "planning_ct_series_instance_uid",
     "source_ct_sop_hash",
     "source_nifti_geometry",
+    "source_nifti_sha256",
 )
 
 

@@ -146,6 +146,7 @@ def _quiet_converter_output():
 
 def _repair_candidate(course, candidate, completion, selection, excluded):
     from .organize import _planning_ct_summary, _original_segmentation_provenance
+    from .original_segmentation import require_current_original_mask
     from .segmentation import _collect_series_metadata, _ensure_ct_nifti
     from .config import PipelineConfig
 
@@ -236,9 +237,15 @@ def _repair_candidate(course, candidate, completion, selection, excluded):
     old_masks = _original_segmentation_provenance(original.authoritative_rtstruct_path,
                                                   original.planning_ct_nifti) if not rederived else None
     for path in ([] if rederived else candidate.glob('Segmentation_Original/**/provenance.json')):
+        try:
+            # Check against the pre-repair course, not the candidate's new SOP
+            # set. Legacy, incomplete and already stale exports stay untouched.
+            require_current_original_mask(course / path.relative_to(candidate))
+        except ValueError:
+            continue
         record = json.loads(path.read_text(encoding='utf-8'))
         if not old_masks or record != old_masks:
-            _refuse('ct_localizer_original_mask_evidence_mismatch')
+            continue
         record['source_ct_sop_hash'] = metadata['sop_hash']
         _json(path, record)
     # Some organize contracts contain absolute RTRECORD paths within the
