@@ -809,3 +809,70 @@ def create_scoped_rtstruct(ct_dir: Path, rs_path: Path):
     validate_rtstruct_identity(dataset)
     series_data = image_helper.load_sorted_image_series(str(ct_dir))
     return ScopedRTStruct(dataset, series_data)
+
+
+def rtstruct_mask_to_image(mask, series_data, reference):
+    """Place an rt-utils (rows, columns, slices) mask on an equivalent LPS grid.
+
+    Slice order is the order of ``builder.series_data``. Only a bijective axis
+    permutation/flip is allowed: no interpolation, cropping, padding, slice
+    regularization or shape-based inference. Every source slice's corners must
+    agree within 0.001 mm (DICOM/NIfTI numeric precision).
+    """
+    import SimpleITK as sitk
+
+    def reject(detail):
+        raise ValueError(f"MASK_GRID_NOT_EQUIVALENT: {detail}")
+
+    array = np.asarray(mask)
+    slices = list(series_data)
+    if not slices or array.ndim != 3:
+        reject("a 3-D mask and source DICOM geometry are required")
+    geometries = _slice_geometries(slices)
+    rows, columns, spacing, orientation, origin, normal, _ = geometries[0]
+    shape = np.array((rows, columns, len(slices)))
+    if tuple(shape) != array.shape:
+        reject("mask does not have the source rows, columns, slices layout")
+    size = np.asarray(reference.GetSize())
+    direction = np.asarray(reference.GetDirection()).reshape(3, 3)
+    ref_basis = direction @ np.diag(reference.GetSpacing())
+    ref_origin = np.asarray(reference.GetOrigin())
+    if not np.isfinite(ref_basis).all() or not np.isfinite(ref_origin).all():
+        reject("nonfinite reference geometry")
+    try:
+        inverse = np.linalg.inv(ref_basis)
+    except np.linalg.LinAlgError:
+        reject("singular reference geometry")
+    step = (np.asarray(geometries[1][4]) - origin if len(slices) > 1
+            else normal * float(getattr(slices[0], 'SpacingBetweenSlices',
+                                       getattr(slices[0], 'SliceThickness', 1.0))))
+    basis = np.column_stack((orientation[1] * spacing[0], orientation[0] * spacing[1], step))
+    transform = inverse @ basis
+    permutation = np.rint(transform).astype(int)
+    if not (np.all(np.sum(np.abs(permutation), axis=0) == 1)
+            and np.all(np.sum(np.abs(permutation), axis=1) == 1)):
+        reject("axes are not an exact permutation/flip")
+    axes = np.argmax(np.abs(permutation), axis=1)
+    if not np.array_equal(shape[axes], size):
+        reject("grid extents differ")
+    signs = permutation[np.arange(3), axes]
+    offset = np.where(signs < 0, size - 1, 0)
+    # Check physical positions, including accumulated angular/spacing error,
+    # every slice origin, irregular spacing, shear and changing orientation.
+    for k, (nr, nc, sp, orient, pos, _, _) in enumerate(geometries):
+        if not (np.isfinite(orient).all() and np.isfinite(sp).all()
+                and np.all(np.asarray(sp) > 0)
+                and np.allclose(orient @ orient.T, np.eye(2), atol=1e-6, rtol=0)):
+            reject("invalid DICOM orientation or spacing")
+        for r, c in ((0, 0), (nr - 1, 0), (0, nc - 1), (nr - 1, nc - 1)):
+            physical = np.asarray(pos) + r * orient[1] * sp[0] + c * orient[0] * sp[1]
+            mapped = ref_origin + ref_basis @ (offset + permutation @ np.array((r, c, k)))
+            if not np.isfinite(physical).all() or np.linalg.norm(physical - mapped) > PLANE_TOLERANCE_MM:
+                reject("DICOM voxel centers do not coincide with reference voxel centers")
+    xyz = array.transpose(tuple(axes))
+    xyz = xyz[tuple(slice(None, None, int(sign)) for sign in signs)]
+    image = sitk.GetImageFromArray(np.ascontiguousarray(xyz.transpose(2, 1, 0), dtype=np.uint8))
+    image.SetSpacing(reference.GetSpacing())
+    image.SetDirection(reference.GetDirection())
+    image.SetOrigin(reference.GetOrigin())
+    return image
