@@ -9,6 +9,8 @@ import tempfile
 from pathlib import Path
 from typing import Iterable, Mapping
 
+from .multiprocessing_utils import multiprocessing_subprocess_env
+
 
 DELEGATE_SCHEMA = "rtpipeline-workflow-delegate-v1"
 
@@ -42,7 +44,7 @@ def runtime_environment(params: object) -> dict[str, str]:
         current_path = env.get("PATH", "")
         if python_bin not in current_path.split(os.pathsep):
             env["PATH"] = os.pathsep.join([python_bin, current_path])
-    return env
+    return multiprocessing_subprocess_env(env)
 
 
 def invoke(
@@ -79,7 +81,7 @@ def invoke(
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
-                env=dict(env) if env is not None else None,
+                env=multiprocessing_subprocess_env(env),
             )
         except OSError as exc:
             raise DelegatedOperationError(

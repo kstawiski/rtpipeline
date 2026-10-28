@@ -561,9 +561,11 @@ def check_pipeline_requirements() -> Dict[str, Any]:
         import subprocess
 
         # Check TotalSegmentator
+        from .multiprocessing_utils import multiprocessing_subprocess_env
         try:
             result = subprocess.run(["TotalSegmentator", "--version"],
-                                  capture_output=True, text=True, timeout=10)
+                                  capture_output=True, text=True, timeout=10,
+                                  env=multiprocessing_subprocess_env())
             requirements["checks"]["totalsegmentator"] = {
                 "available": result.returncode == 0,
                 "version": result.stdout.strip() if result.returncode == 0 else None
@@ -662,12 +664,13 @@ def _run_totalseg_tool(
         cmd = cmd_parts
 
     try:
+        from .multiprocessing_utils import multiprocessing_subprocess_env
         logger.debug("Running %s: %s", tool_name, " ".join(shlex.quote(str(part)) for part in cmd))
         result = subprocess.run(
             cmd,
             capture_output=True,
             timeout=timeout,
-            env=os.environ.copy(),
+            env=multiprocessing_subprocess_env(os.environ.copy()),
         )
 
         if result.returncode != 0:

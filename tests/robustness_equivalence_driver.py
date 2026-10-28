@@ -2,7 +2,8 @@
 
 Launched by ``test_robustness_equivalence.py`` once with an export of the base
 revision and once with the working tree, on identical synthetic inputs at the
-same absolute paths. Only seams present in both revisions are replaced: the
+same absolute paths. The runtime guard is stubbed when present so both revisions use the same
+installed OpenCV convention. Other replaced seams are: the
 course contract, the main-radiomics identity catalog, the standard-source
 resolver, the custom-model listing and the PyRadiomics execution (conda batch
 and isolated worker). Mask reading, perturbation, flattening, validation,
@@ -125,6 +126,14 @@ def models(course_dir):
 
 
 def main():
+    # This semantic comparison stubs feature extraction and uses one installed
+    # fill convention on both revisions. Test the runtime guard separately.
+    try:
+        from rtpipeline import radiomics_rasterizer
+    except ImportError:  # historical comparison package has no guard
+        pass
+    else:
+        radiomics_rasterizer.require_radiomics_rasterizer = lambda: None
     rr.load_course_contract = contract
     rr._load_main_ct_identity_catalog = catalog
     rm._standard_rtstruct_sources = lambda c, course_dir: [("Manual", course_dir / "RS.dcm", None)]

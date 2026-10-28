@@ -54,6 +54,7 @@ def test_brachytherapy_selection_reaches_hr_ctv():
     assert not robustness_selection_matches('HR-CTV', ['GTV*', 'CTV*', 'PTV*'])
 
 
+@pytest.mark.usefixtures("rasterizer_guard_stub")
 def test_scope_only_quantization_was_already_read_and_still_is(monkeypatch):
     # Strict inventory accepts it; only the CT-plane scope needs RF15. Unaffected by the flag.
     for rescue in (False, True):
@@ -62,6 +63,7 @@ def test_scope_only_quantization_was_already_read_and_still_is(monkeypatch):
         assert strict is None and outcomes == [] and masks['HR-CTV'].any()
 
 
+@pytest.mark.usefixtures("rasterizer_guard_stub")
 def test_quantized_hr_ctv_is_read_through_projection(monkeypatch):
     # The production class: the strict inventory itself refuses the contours.
     ds, images = fixture(0.25)
@@ -82,6 +84,7 @@ def test_without_rescue_the_inventory_disposition_is_unchanged(monkeypatch):
     assert outcomes[0]['structural_code'] == strict
 
 
+@pytest.mark.usefixtures("rasterizer_guard_stub")
 def test_unresolvable_contour_keeps_the_identical_disposition(monkeypatch):
     def broken():
         ds, images = fixture(0., rounded=False)
@@ -106,6 +109,7 @@ def _unresolvable():
     return _hr_ctv(ds), images
 
 
+@pytest.mark.usefixtures("rasterizer_guard_stub")
 def test_unresolved_disposition_keeps_its_place_among_other_rows(monkeypatch):
     # The deferred row must not move behind rows recorded later from the
     # inventory: published dispositions are hashed in their recorded order.
@@ -115,6 +119,7 @@ def test_unresolved_disposition_keeps_its_place_among_other_rows(monkeypatch):
     assert on == off
 
 
+@pytest.mark.usefixtures("rasterizer_guard_stub")
 def test_resolved_roi_withdraws_only_its_own_row(monkeypatch):
     ds, images = fixture(0.25)
     _, _, off = _read(monkeypatch, _hr_ctv(ds), images, rescue=False, later_marker=True)

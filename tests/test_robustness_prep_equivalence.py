@@ -30,6 +30,10 @@ item) and P7 (a selected ROI beyond the image) fail on the base and complete
 now; S3 (a selected ROI with a two-point item) completes on both with that
 ROI's mask changed to the main path's. Every other course, including the
 negative controls N1-N3, must publish exactly what the base published.
+Runtime rasterizer provenance is checked separately from the
+historical comparison; all existing measurement fields, masks and Arrow field
+types remain exact comparisons. Both runs use the same installed OpenCV.
+
 """
 from __future__ import annotations
 
@@ -46,6 +50,10 @@ import pandas as pd
 import pyarrow.parquet as pq
 import pytest
 import yaml
+
+from rasterizer_provenance_test_utils import (
+    RASTERIZER_PROVENANCE_FIELDS, measurement_table_and_schema,
+)
 
 from robustness_prep_fixture import build_course, realistic_rois
 
@@ -222,7 +230,7 @@ def _collect(output_root: Path) -> dict:
                                                    "Segmentation_CustomModels", "inputs.json"}:
             continue
         if path.suffix == ".parquet":
-            collected[str(relative)] = (pd.read_parquet(path), pq.read_schema(path))
+            collected[str(relative)] = measurement_table_and_schema(path)
         else:
             text = path.read_text(encoding="utf-8")
             try:
@@ -251,6 +259,10 @@ def _normalize(value, ids, parent=None):
     if isinstance(value, dict):
         out = {}
         for key, item in value.items():
+            # Runtime provenance is tested independently. All
+            # existing scientific fields and identities remain exact checks.
+            if key in RASTERIZER_PROVENANCE_FIELDS:
+                continue
             if key == "code_identity":
                 out[key] = "<code identity>"
             elif key in {"sha256", "size", "size_bytes", "bytes"} and parent in RUN_BOUND_PARENTS:
@@ -539,6 +551,7 @@ def _assert_same_bytes(observed, expected):
     assert observed.tobytes() == expected.tobytes()
 
 
+@pytest.mark.usefixtures("rasterizer_guard_stub")
 def test_scoped_masks_are_byte_identical_for_in_scope_rois(tmp_path):
     """Every in-scope ROI without area-less items: scoped mask == rt_utils mask."""
     from rtpipeline.rtstruct_geometry import _contour_rasterizable, create_scoped_rtstruct
@@ -573,6 +586,7 @@ def test_scoped_masks_are_byte_identical_for_in_scope_rois(tmp_path):
     assert compared >= 120
 
 
+@pytest.mark.usefixtures("rasterizer_guard_stub")
 def test_scoped_mask_for_area_less_items_matches_main_path(tmp_path):
     import copy
 
@@ -608,6 +622,7 @@ def test_scoped_mask_for_area_less_items_matches_main_path(tmp_path):
     assert drawn.sum() > masks["GTV1"].sum() and not (masks["GTV1"] & ~drawn).any()
 
 
+@pytest.mark.usefixtures("rasterizer_guard_stub")
 def test_out_of_scope_roi_does_not_void_its_source(tmp_path):
     from rtpipeline.rtstruct_geometry import create_scoped_rtstruct
     from rt_utils import RTStructBuilder
@@ -629,6 +644,7 @@ def test_out_of_scope_roi_does_not_void_its_source(tmp_path):
         _assert_same_bytes(masks[name], main_path.get_roi_mask_by_name(name))
 
 
+@pytest.mark.usefixtures("rasterizer_guard_stub")
 def test_scoped_reader_keeps_whole_source_failures_fatal(tmp_path):
     from rtpipeline import radiomics as rm
 

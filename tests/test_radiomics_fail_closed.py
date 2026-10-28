@@ -78,7 +78,7 @@ def _config(tmp_path: Path, **overrides) -> PipelineConfig:
 
 
 @pytest.fixture(autouse=True)
-def _stub_dual_arm_resampled_qc_when_pyradiomics_is_mocked(monkeypatch):
+def _stub_dual_arm_resampled_qc_when_pyradiomics_is_mocked(monkeypatch, rasterizer_guard_stub):
     """Keep legacy unit tests independent of the optional PyRadiomics package."""
     import rtpipeline.radiomics_ct_contract as contract
 

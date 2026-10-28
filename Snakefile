@@ -190,7 +190,10 @@ def _resolve_env_python(env_name: str) -> str:
 _envs_cfg = config.get("environments", {})
 _ENV_MAIN = _envs_cfg.get("main", "rtpipeline")
 _ENV_RADIOMICS = _envs_cfg.get("radiomics", "rtpipeline-radiomics")
-os.environ.update(RTPIPELINE_RADIOMICS_ENV=_ENV_RADIOMICS)
+os.environ.update(
+    RTPIPELINE_RADIOMICS_ENV=_ENV_RADIOMICS,
+    PYTHONNOUSERSITE="1",
+)
 PYTHON_MAIN = _resolve_env_python(_ENV_MAIN)
 PYTHON_RADIOMICS = _resolve_env_python(_ENV_RADIOMICS)
 # Derive bin dirs for PATH export in shell rules

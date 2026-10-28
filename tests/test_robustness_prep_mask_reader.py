@@ -150,6 +150,7 @@ def _read(ct, rs, **kwargs):
     return ("value", out, sink)
 
 
+@pytest.mark.usefixtures("rasterizer_guard_stub")
 @pytest.mark.parametrize("use_index", [True, False])
 def test_retain_mask_changes_only_which_arrays_are_kept(source, monkeypatch, use_index):
     from rtpipeline.roi_requiredness import Requiredness

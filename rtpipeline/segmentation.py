@@ -495,7 +495,8 @@ def _validate_totalseg_environment(config: PipelineConfig) -> bool:
         result = subprocess.run(
             [config.totalseg_cmd, "--help"], 
             capture_output=True, 
-            timeout=30
+            timeout=30,
+            env=multiprocessing_subprocess_env(),
         )
         if result.returncode != 0:
             stderr = result.stderr.decode() if result.stderr else ""
@@ -536,6 +537,7 @@ def _totalseg_supported_output_types_cached(prefix: str, cmd: str) -> set[str]:
             stderr=subprocess.STDOUT,
             text=True,
             timeout=20,
+            env=multiprocessing_subprocess_env(),
         )
     except Exception as exc:
         logger.debug("Failed to inspect TotalSegmentator CLI: %s", exc)

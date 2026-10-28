@@ -52,3 +52,16 @@ def pytest_collection_modifyitems(config, items):
                 snakemake = snakemake_executable() is not None
             if not snakemake:
                 item.add_marker(pytest.mark.skip(reason="snakemake executable is not installed"))
+
+
+@pytest.fixture
+def rasterizer_guard_stub(monkeypatch):
+    """Opt-in precondition stub for tests of other radiomics behavior.
+
+    Those tests replace feature extraction or compare reader semantics within
+    one backend. They leave OpenCV operations unchanged. The runtime contract
+    itself is exercised without this fixture in test_radiomics_rasterizer.py.
+    """
+    from rtpipeline import radiomics_rasterizer
+
+    monkeypatch.setattr(radiomics_rasterizer, "require_radiomics_rasterizer", lambda: None)

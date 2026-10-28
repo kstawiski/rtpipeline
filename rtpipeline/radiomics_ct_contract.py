@@ -65,6 +65,14 @@ RADIOMICS_EXPECTED_SCHEMA_ZLIB_COLUMN = (
 )
 EXECUTION_HOST_COLUMN = "execution_host"
 ENVIRONMENT_FINGERPRINT_COLUMN = "environment_fingerprint"
+RASTERIZER_BACKEND_COLUMN = "rasterizer_backend"
+RASTERIZER_OPENCV_VERSION_COLUMN = "rasterizer_opencv_version"
+RASTERIZER_OPENCV_PATH_COLUMN = "rasterizer_opencv_path"
+RASTERIZER_RT_UTILS_VERSION_COLUMN = "rasterizer_rt_utils_version"
+RASTERIZER_COLUMNS = (
+    RASTERIZER_BACKEND_COLUMN, RASTERIZER_OPENCV_VERSION_COLUMN,
+    RASTERIZER_OPENCV_PATH_COLUMN, RASTERIZER_RT_UTILS_VERSION_COLUMN,
+)
 FEATURE_COMPLETENESS_SCHEMA = "rtpipeline-radiomics-feature-completeness-v1"
 ALLOWED_UNDEFINED_FEATURE_SUFFIXES = ("_glcm_MCC",)
 PUBLICATION_KEY_COLUMNS = (
@@ -1019,6 +1027,11 @@ def _add_feature_completeness_metadata(dataframe: Any) -> Any:
     for column, default in (
         (EXECUTION_HOST_COLUMN, socket.gethostname()),
         (ENVIRONMENT_FINGERPRINT_COLUMN, execution_environment_fingerprint()),
+        # Missing historical provenance cannot be inferred from this publisher.
+        (RASTERIZER_BACKEND_COLUMN, "unrecorded"),
+        (RASTERIZER_OPENCV_VERSION_COLUMN, "unrecorded"),
+        (RASTERIZER_OPENCV_PATH_COLUMN, "unrecorded"),
+        (RASTERIZER_RT_UTILS_VERSION_COLUMN, "unrecorded"),
         (RADIOMICS_UNDEFINED_FEATURES_COLUMN, "[]"),
     ):
         if column not in output.columns:
@@ -1652,6 +1665,24 @@ def resampled_mask_qc(
     }
 
 
+def _rasterizer_columns() -> dict[str, str]:
+    from .radiomics_rasterizer import active_radiomics_rasterizer
+
+    rasterizer = active_radiomics_rasterizer()
+    return {
+        RASTERIZER_BACKEND_COLUMN: str(rasterizer["backend"]),
+        RASTERIZER_OPENCV_VERSION_COLUMN: str(
+            rasterizer.get("opencv_version") or "unavailable"
+        ),
+        RASTERIZER_OPENCV_PATH_COLUMN: str(
+            rasterizer.get("opencv_path") or "unavailable"
+        ),
+        RASTERIZER_RT_UTILS_VERSION_COLUMN: str(
+            rasterizer.get("rt_utils_version") or "unavailable"
+        ),
+    }
+
+
 def _runtime_versions() -> dict[str, str]:
     import SimpleITK as sitk
     import radiomics
@@ -1660,6 +1691,7 @@ def _runtime_versions() -> dict[str, str]:
         "pyradiomics_version": str(getattr(radiomics, "__version__", "unknown")),
         "simpleitk_version": str(sitk.Version_VersionString()),
         "numpy_version": str(np.__version__),
+        **_rasterizer_columns(),
     }
 
 
@@ -1757,7 +1789,15 @@ def extract_ct_roi_arms(
                      native_voxel_count=native_voxel_count, required=required,
                      configured_parameter_hashes=configured_parameter_hashes)
     try:
-        return _extract_ct_roi_arms_impl(image, mask, **arguments)
+        rows = _extract_ct_roi_arms_impl(image, mask, **arguments)
+        # A legacy conda caller prepares masks before sending them to the feature
+        # runtime. Preserve that preparer's provenance across the process boundary.
+        supplied_rasterizer = {
+            key: metadata[key] for key in RASTERIZER_COLUMNS if key in metadata
+        }
+        for row in rows:
+            row.update(supplied_rasterizer)
+        return rows
     except RadiomicsMemoryLimit as exc:
         # No partial feature row can escape a late filtered-image rejection.
         if legacy is None:
@@ -2038,13 +2078,17 @@ def disposition_rows_for_arms(
         raise ValueError(
             "disposition rows require runtime effective-parameter hashes for both CT arms"
         )
-    versions = dict(runtime_versions or {
+    default_versions = {
         "pyradiomics_version": "unavailable",
         "simpleitk_version": "unavailable",
         "numpy_version": str(np.__version__),
         "execution_host": socket.gethostname(),
         "environment_fingerprint": execution_environment_fingerprint(),
-    })
+        **_rasterizer_columns(),
+    }
+    versions = {**default_versions, **dict(runtime_versions or {})}
+    versions.update({key: common_metadata[key] for key in RASTERIZER_COLUMNS
+                     if key in common_metadata})
     rows: list[dict[str, Any]] = []
     for arm in CT_EXTRACTION_ARMS:
         window = decision.primary_resegment_range_hu if arm == PRIMARY_ARM else None
@@ -2547,6 +2591,21 @@ def sentinel_payload(
         "environment_fingerprint": _fingerprint_metadata_value(
             ENVIRONMENT_FINGERPRINT_COLUMN, execution_environment_fingerprint()
         ),
+        "rasterizer_backend": _fingerprint_metadata_value(
+            RASTERIZER_BACKEND_COLUMN, "unrecorded"
+        ),
+        "rasterizer_opencv_version": _fingerprint_metadata_value(
+            RASTERIZER_OPENCV_VERSION_COLUMN,
+            "unrecorded",
+        ),
+        "rasterizer_opencv_path": _fingerprint_metadata_value(
+            RASTERIZER_OPENCV_PATH_COLUMN,
+            "unrecorded",
+        ),
+        "rasterizer_rt_utils_version": _fingerprint_metadata_value(
+            RASTERIZER_RT_UTILS_VERSION_COLUMN,
+            "unrecorded",
+        ),
         "feature_completeness": {
             "schema": FEATURE_COMPLETENESS_SCHEMA,
             "row_count": len(completeness),
@@ -2628,6 +2687,10 @@ def validate_completion_sentinel(
         "code_revisions",
         "execution_host",
         "environment_fingerprint",
+        "rasterizer_backend",
+        "rasterizer_opencv_version",
+        "rasterizer_opencv_path",
+        "rasterizer_rt_utils_version",
         "feature_completeness",
     ]
     if configuration_dependency is not None:
