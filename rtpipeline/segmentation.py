@@ -35,6 +35,7 @@ from .config import PipelineConfig
 from .course_contract import load_course_contract
 from .inventory import TS_TASK_BY_CLASS, manual_rtstruct_bindings_from_inventory, ts_tasks_for_image_class
 from .layout import build_course_dirs
+from .multiprocessing_utils import multiprocessing_subprocess_env
 
 logger = logging.getLogger(__name__)
 _TOTALSEG_OUTPUT_TYPE_FALLBACK = {"nifti", "dicom", "dicom_rtstruct", "dicom_seg"}
@@ -107,6 +108,7 @@ def _run_vec(cmd: List[str], env: Optional[dict] = None, timeout: Optional[int] 
     if not cmd:
         raise ValueError("Empty command list")
 
+    env = multiprocessing_subprocess_env(env)
     if timeout is None:
         cmd_name = cmd[0].lower() if cmd else ""
         if 'totalsegmentator' in cmd_name:
@@ -197,6 +199,7 @@ def _run(cmd: str, env: Optional[dict] = None, timeout: Optional[int] = None) ->
         timeout: Optional timeout in seconds (default: 3600 for TotalSegmentator, 300 for others)
     """
 
+    env = multiprocessing_subprocess_env(env)
     shell = os.environ.get('SHELL', '/bin/bash')
     if not os.path.isfile(shell):
         shell = shutil.which('bash') or shutil.which('sh') or '/bin/sh'

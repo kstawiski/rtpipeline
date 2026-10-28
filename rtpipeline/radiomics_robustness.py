@@ -43,7 +43,6 @@ import shutil
 import tempfile
 import time
 from dataclasses import asdict, dataclass, field, is_dataclass
-from multiprocessing import get_context
 from multiprocessing import TimeoutError as MPTimeoutError
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Literal, Mapping, Optional, Tuple
@@ -58,6 +57,7 @@ from .course_contract import (
     load_course_contract,
 )
 from .layout import build_course_dirs
+from .multiprocessing_utils import configure_multiprocessing_tempdir, get_context
 from .radiomics_ct_contract import read_authoritative_ct_publication
 from .rt_details import DEFAULT_ROI_FAMILY_NAMES
 from .robustness_completion import (
@@ -4412,6 +4412,7 @@ def _prepare_robustness_rois(
     """
     from multiprocessing.connection import wait as wait_connections
 
+    configure_multiprocessing_tempdir()
     workers = max(1, min(int(workers), len(requests)))
     if workers == 1:
         return [_prepare_robustness_roi(request) for request in requests]

@@ -27,6 +27,8 @@ import pandas as pd
 import SimpleITK as sitk
 import pydicom
 
+from .multiprocessing_utils import multiprocessing_subprocess_env
+
 from .acquisition_scale import (
     attach_acquisition_descriptor,
     describe_contract_planning_ct,
@@ -924,7 +926,7 @@ def _conda_subprocess_env() -> Dict[str, str]:
     for var in _THREAD_ENV_VARS:
         env.setdefault(var, thread_limit)
 
-    return env
+    return multiprocessing_subprocess_env(env)
 
 
 @lru_cache(maxsize=64)

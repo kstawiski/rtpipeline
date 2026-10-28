@@ -7,6 +7,8 @@ import subprocess
 from pathlib import Path
 from typing import Callable, Mapping, Sequence
 
+from ..multiprocessing_utils import multiprocessing_subprocess_env
+
 
 def run_totalsegmentator_prediction(
     *,
@@ -43,11 +45,12 @@ def run_totalsegmentator_prediction(
     cmd_parts.extend(str(arg) for arg in (extra_args or []))
 
     cmd = f"{command_prefix}{' '.join(shlex.quote(part) for part in cmd_parts)}"
+    run_env = os.environ.copy()
+    run_env.update(dict(env or {}))
+    run_env = multiprocessing_subprocess_env(run_env)
     if runner is not None:
-        ok = runner(cmd, env=dict(env or {}))
+        ok = runner(cmd, env=run_env)
     else:
-        run_env = os.environ.copy()
-        run_env.update(dict(env or {}))
         if command_prefix:
             shell = os.environ.get("SHELL", "/bin/bash")
             if not os.path.isfile(shell):

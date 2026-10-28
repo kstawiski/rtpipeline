@@ -8,11 +8,11 @@ from functools import wraps
 from dataclasses import dataclass
 from itertools import islice
 import logging
-import multiprocessing
 import os
 import warnings
 
 from . import utils
+from .multiprocessing_utils import get_context
 
 
 def process_count(variable="RTPIPELINE_INDEX_PROCESSES"):
@@ -77,7 +77,7 @@ def ordered_process_results(items, fn, workers, *, fallback=None):
     if workers > 1:
         try:
             executor = ProcessPoolExecutor(
-                max_workers=workers, mp_context=multiprocessing.get_context("spawn"))
+                max_workers=workers, mp_context=get_context("spawn"))
             executor.submit(_ready).result()
         except (OSError, RuntimeError, BrokenProcessPool):
             if executor is not None:
