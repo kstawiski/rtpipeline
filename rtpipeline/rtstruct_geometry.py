@@ -953,9 +953,17 @@ def rtstruct_mask_to_image(mask, series_data, reference):
         inverse = np.linalg.inv(ref_basis)
     except np.linalg.LinAlgError:
         reject("singular reference geometry")
-    step = (np.asarray(geometries[1][4]) - origin if len(slices) > 1
-            else normal * float(getattr(slices[0], 'SpacingBetweenSlices',
-                                       getattr(slices[0], 'SliceThickness', 1.0))))
+    dz = 1.0
+    if len(slices) == 1:
+        for tag in ('SpacingBetweenSlices', 'SliceThickness'):
+            try:
+                value = abs(float(getattr(slices[0], tag, None)))
+            except (TypeError, ValueError):
+                continue
+            if np.isfinite(value) and value > 0:
+                dz = value
+                break
+    step = np.asarray(geometries[1][4]) - origin if len(slices) > 1 else normal * dz
     # Six-decimal IOP rounding gives <=1.8e-6 norm/dot error. A 2e-5
     # direction/scale cap also admits five-decimal DS storage. Across a
     # 512 x 512 grid at 0.931 mm this is a few micrometres; the independent
@@ -1045,7 +1053,8 @@ def record_geometry_adapter(path: Path, ct_dir: Path) -> None:
 
 
 def geometry_adapter_output_current(path: Path, ct_dir: Path) -> bool:
-    if not dicom_requires_geometry_adapter(ct_dir):
+    # Rectangular row/column masks write correctly; unequal spacing requires adaptation.
+    if not dicom_has_unequal_pixel_spacing(ct_dir):
         return True
     import json
 

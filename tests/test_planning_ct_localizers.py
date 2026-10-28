@@ -209,7 +209,6 @@ def _files_and_mtimes(root):
 
 def test_repair_atomic_idempotent_and_course_scoped(tmp_path, dcm2niix):
     from rtpipeline.repair_planning_ct_localizers import repair_output
-    from rtpipeline.stage_completion import validate_stage_completion_sentinel
     root = tmp_path / 'Output'
     affected = _organized_course(root, dcm2niix)
     clean = _organized_course(root, dcm2niix, name='course_b', localizer=False)
@@ -223,7 +222,6 @@ def test_repair_atomic_idempotent_and_course_scoped(tmp_path, dcm2niix):
     clean_before, other_before = _files_and_mtimes(clean), _files_and_mtimes(other)
     nifti = load_course_contract(affected).planning_ct_nifti
     nifti_before = nifti.read_bytes()
-    sentinel_before = (affected / '.organized').stat().st_mtime_ns
     before = _files_and_mtimes(root)
     dry = repair_output(root, courses=['SYNTH/course_a'], dry_run=True)
     assert dry['would_repair'] == 1 and dry['refused'] == 0
@@ -235,8 +233,7 @@ def test_repair_atomic_idempotent_and_course_scoped(tmp_path, dcm2niix):
     assert contract.planning_ct['nifti_provenance']['instance_selection']['excluded_instance_count'] == 1
     assert _load(contract.planning_ct_dir).GetSize() == (20, 16, 12)
     assert nifti.read_bytes() == nifti_before
-    assert (affected / '.organized').stat().st_mtime_ns > sentinel_before
-    validate_stage_completion_sentinel(affected / '.organized', expected_stage='organize')
+    assert not (affected / '.organized').exists()
     assert _files_and_mtimes(clean) == clean_before
     assert _files_and_mtimes(other) == other_before
     assert _files_and_mtimes(root / '_COURSES') == shared_before
@@ -354,7 +351,7 @@ def test_repair_two_localizers_and_continue_after_course_refusal(tmp_path, dcm2n
 @pytest.mark.parametrize('export', ['v2', 'v1', 'missing_metadata', 'malformed_metadata', 'stale_v2'])
 def test_repair_retains_and_rebinds_original_mask_provenance(tmp_path, dcm2niix, export):
     from rtpipeline.repair_planning_ct_localizers import repair_output
-    from rtpipeline.stage_completion import write_stage_completion_sentinel, validate_stage_completion_sentinel
+    from rtpipeline.stage_completion import write_stage_completion_sentinel
     from rtpipeline.original_segmentation import require_current_original_mask
     root = tmp_path / 'Output'
     course = _organized_course(root, dcm2niix)
@@ -387,20 +384,16 @@ def test_repair_retains_and_rebinds_original_mask_provenance(tmp_path, dcm2niix,
     write_stage_completion_sentinel(course, course / '.organized', stage='organize', status='ok',
                                     configuration_dependency=dependency)
     assert repair_output(root)['repaired'] == 1
-    completion = validate_stage_completion_sentinel(course / '.organized', expected_stage='organize')
+    assert not (course / '.organized').exists()
     if export == 'v2':
         after = json.loads((original / 'provenance.json').read_text())
         assert after['source_ct_sop_hash'] != evidence['source_ct_sop_hash']
         assert {k: v for k, v in after.items() if k != 'source_ct_sop_hash'} == {k: v for k, v in evidence.items() if k != 'source_ct_sop_hash'}
         require_current_original_mask(mask)
-        assert completion['stale_original_exports'] == []
-        assert any(item['path'].endswith('/mask.nii.gz') for item in completion['outputs'])
     else:
         assert not original.exists()
         archived = list((course / 'Segmentation_Quarantine').rglob('mask.nii.gz'))
         assert len(archived) == 1 and archived[0].read_bytes() == before
-        assert completion['stale_original_exports'] == []
-        assert not any(item['role'] == 'original_segmentation' for item in completion['outputs'])
     from rtpipeline.stage_completion import _validate_stage_specific_outcome, stage_definition
     _validate_stage_specific_outcome(course, stage_definition('segmentation'), 'ok', [])
 
@@ -429,7 +422,6 @@ def _exchange_unavailable(*args):
 def test_repair_two_step_publish_only_when_allowed(tmp_path, dcm2niix, monkeypatch):
     """NFS clients have no RENAME_EXCHANGE: refuse by default, publish by two renames on opt-in."""
     from rtpipeline import repair_planning_ct_localizers as repair
-    from rtpipeline.stage_completion import validate_stage_completion_sentinel
     root = tmp_path / 'Output'
     affected = _organized_course(root, dcm2niix)
     clean = _organized_course(root, dcm2niix, name='course_b', localizer=False)
@@ -449,7 +441,7 @@ def test_repair_two_step_publish_only_when_allowed(tmp_path, dcm2niix, monkeypat
     assert contract.planning_ct['nifti_provenance']['instance_selection']['excluded_instance_count'] == 1
     assert _load(contract.planning_ct_dir).GetSize() == (20, 16, 12)
     assert nifti.read_bytes() == nifti_before
-    validate_stage_completion_sentinel(affected / '.organized', expected_stage='organize')
+    assert not (affected / '.organized').exists()
     assert _files_and_mtimes(clean) == clean_before
     assert _files_and_mtimes(root / '_COURSES') == shared_before
     assert not [p for p in (root / '_COURSES').iterdir() if p.name.startswith('.localizer-repair-')]

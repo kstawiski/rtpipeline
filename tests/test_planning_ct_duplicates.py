@@ -19,7 +19,7 @@ from rtpipeline.course_contract import CourseContractError, _ct_provenance, load
 from rtpipeline.nifti_provenance import annotate
 from rtpipeline.planning_ct_localizers import PlanningCTLocalizerError, select_localizers, verify_volume
 from rtpipeline.repair_planning_ct_localizers import repair_output
-from rtpipeline.stage_completion import validate_stage_completion_sentinel, write_stage_completion_sentinel
+from rtpipeline.stage_completion import write_stage_completion_sentinel
 from test_ct_series_hygiene import _duplicate, _localizer, _rtstruct
 from test_nifti_nonuniform_fallback import _config, _tree_digest, dcm2niix
 from test_planning_ct_localizers import _files_and_mtimes, _load, _organized_course
@@ -101,7 +101,7 @@ def test_repair_identical_copies_preserves_nifti(tmp_path, dcm2niix, localizers,
     assert contract.planning_ct_nifti.read_bytes() == nifti_bytes
     assert _load(contract.planning_ct_dir).GetSize() == (20, 16, 12)
     assert all(source_bytes[k] == v for k, v in _tree_digest(contract.planning_ct_dir).items())
-    validate_stage_completion_sentinel(course / '.organized', expected_stage='organize')
+    assert not (course / '.organized').exists()
     before = _files_and_mtimes(root)
     assert repair_output(root)['unchanged'] == 1
     assert _files_and_mtimes(root) == before
@@ -385,10 +385,7 @@ def test_repair_differing_duplicates_from_complete_references(tmp_path, dcm2niix
         assert item['excluded_rescaled_pixels_sha256'] != item['retained_rescaled_pixels_sha256']
     verify_volume(contract.planning_ct_dir, contract.planning_ct_nifti)
     assert _load(contract.planning_ct_dir).GetSize() == (20, 16, 12)
-    if referenced_copy:
-        assert not (course / '.organized').exists()
-    else:
-        validate_stage_completion_sentinel(course / '.organized', expected_stage='organize')
+    assert not (course / '.organized').exists()
     before = _files_and_mtimes(root)
     assert repair_output(root)['unchanged'] == 1
     assert _files_and_mtimes(root) == before

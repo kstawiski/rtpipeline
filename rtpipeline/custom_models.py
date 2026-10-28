@@ -623,6 +623,9 @@ def run_custom_models_for_course(
     skipped_models: Dict[str, str] = {}
 
     for model in models:
+        if (not force and _model_outputs_ready(course.dirs.root, model)
+                and not _model_outputs_ready(course.dirs.root, model, ct_dir=ct_dir)):
+            _rebuild_model_rtstruct_from_masks(course.dirs.root, model, ct_dir)
         if force or not _model_outputs_ready(course.dirs.root, model, ct_dir=ct_dir):
             # Check body region eligibility before adding to run list
             eligible, reason = _check_custom_model_eligibility(cfg, course.dirs.root, model)
@@ -673,6 +676,22 @@ def run_custom_models_for_course(
     if skipped_models:
         sentinel_content += f"skipped: {json.dumps(skipped_models)}\n"
     sentinel_path.write_text(sentinel_content, encoding="utf-8")
+
+
+def _rebuild_model_rtstruct_from_masks(course_root: Path, model: CustomModelDefinition, ct_dir: Path) -> None:
+    """Refresh only the writer artifact, retaining all recorded model masks."""
+    output_dir = course_root / "Segmentation_CustomModels" / model.name
+    manifest = json.loads((output_dir / "manifest.json").read_text(encoding="utf-8"))
+    paths = {}
+    for entry in manifest["structures"]:
+        path = output_dir / entry["file"]
+        if path.parent != output_dir or not path.is_file():
+            raise ValueError("Custom model manifest names a missing or external mask")
+        paths[entry["name"]] = path
+    if not set(model.expected_structures()).issubset(paths):
+        raise ValueError("Custom model manifest omits expected masks")
+    masks = {name: sitk.ReadImage(str(path)) for name, path in paths.items()}
+    _build_rtstruct(ct_dir, masks, output_dir, paths)
 
 
 def _model_outputs_ready(course_root: Path, model: CustomModelDefinition, *, ct_dir: Path | None = None) -> bool:

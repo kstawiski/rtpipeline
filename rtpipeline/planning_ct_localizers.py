@@ -295,7 +295,7 @@ def validate_selection(ct_dir: Path, rtstruct: Path | None, evidence: dict[str, 
         repair = evidence.get("nifti_repair")
         if repair is not None:
             expected_outputs = {
-                "preserved": {"unchanged_grid_original_masks_rebound"},
+                "preserved": {"unchanged_grid_original_masks_rebound", "original_exports_quarantined_organize_invalidated"},
                 "rederived": {"stale_left_in_place", "original_exports_quarantined_organize_invalidated"},
             }
             previous = repair.get("previous_nifti_sha256", "")

@@ -649,14 +649,14 @@ def _rs_auto_origin_rejection(
 ) -> str:
     """Why an otherwise current RS_auto may carry exchanged x and y; '' to reuse it."""
     record = _read_rs_auto_origin(course_dir, rs_auto)
-    from .rtstruct_geometry import dicom_requires_geometry_adapter
+    from .rtstruct_geometry import dicom_has_unequal_pixel_spacing, geometry_adapter_output_current
 
-    needs_adapter = dicom_requires_geometry_adapter(ct_dir)
+    needs_adapter = dicom_has_unequal_pixel_spacing(ct_dir)
     if record is not None:
         origin = record.get("origin")
         if origin == RS_AUTO_ORIGIN_COPY:
-            if needs_adapter:
-                return "a copied RTSTRUCT does not certify rectangular or unequal-spacing geometry"
+            if not geometry_adapter_output_current(rs_auto, ct_dir):
+                return "copied RTSTRUCT lacks current unequal-spacing geometry evidence"
             return ""
         if origin == RS_AUTO_ORIGIN_MASKS and (record.get("mask_layout") == RS_AUTO_MASK_LAYOUT
                 or (not needs_adapter and record.get("mask_layout") == "rows-columns-v2")):
@@ -666,7 +666,7 @@ def _rs_auto_origin_rejection(
             "does not name the current mask layout"
         )
     if needs_adapter:
-        return "rectangular or unequal-spacing geometry requires a current mask-built RTSTRUCT"
+        return "unequal-spacing geometry requires a current adapted RTSTRUCT"
     try:
         has_contours = any(signature for _name, signature in _rtstruct_contour_signature(rs_auto)[1])
     except Exception as exc:
@@ -1106,11 +1106,11 @@ def build_auto_rtstruct(course_dir: Path) -> Optional[Path]:
                 # holds every ROI. Publish it only when every contour is on its
                 # plane; otherwise rebuild from the masks on the exact planes.
                 on_planes, plane_detail = _rtstruct_plane_check(dicom_seg_path, ct_dir)
-                from .rtstruct_geometry import dicom_requires_geometry_adapter
+                from .rtstruct_geometry import geometry_adapter_output_current
 
-                if dicom_requires_geometry_adapter(ct_dir):
+                if not geometry_adapter_output_current(dicom_seg_path, ct_dir):
                     on_planes = False
-                    plane_detail = "copied contours do not certify rectangular or unequal-spacing geometry"
+                    plane_detail = "copied contours lack current unequal-spacing geometry evidence"
                 if not on_planes:
                     copy_rejection = plane_detail
                     logger.warning(
@@ -1128,6 +1128,8 @@ def build_auto_rtstruct(course_dir: Path) -> Optional[Path]:
                             out_path,
                             lambda tmp: shutil.copyfile(str(dicom_seg_path), tmp),
                         )
+                        from .rtstruct_geometry import record_geometry_adapter
+                        record_geometry_adapter(out_path, ct_dir)
                     except Exception as e:
                         logger.error('Failed to copy RTSTRUCT to RS_auto: %s', e)
                         return _failed(f"copying the matched RTSTRUCT failed: {e}")
