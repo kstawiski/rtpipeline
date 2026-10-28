@@ -131,7 +131,7 @@ def test_multiprocessing():
     print("Multiprocessing Test (spawn context)")
     print("=" * 60)
 
-    from multiprocessing import get_context
+    from rtpipeline.multiprocessing_utils import get_context
 
     try:
         ctx = get_context('spawn')
