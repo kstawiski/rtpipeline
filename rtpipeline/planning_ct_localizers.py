@@ -14,8 +14,8 @@ import numpy as np
 import pydicom
 
 from .ct_series_hygiene import (
-    CT_STORAGE, CTSeriesHygieneError, _pixels, rtstruct_image_references, select_duplicate_positions,
-    select_geometry_partition,
+    CT_STORAGE, CTSeriesHygieneError, _pixels, rtstruct_image_references,
+    rtstruct_reference_levels, select_duplicate_positions, select_geometry_partition,
 )
 
 METHOD = "planning_ct_image_type_localizer_exclusion"
@@ -160,7 +160,8 @@ def select_localizers(ct_dir: Path, rtstruct: Path | None):
             raise PlanningCTLocalizerError("ct_localizer_invalid_series_directory")
         if rtstruct is None:
             raise PlanningCTLocalizerError("ct_localizer_rtstruct_references_missing")
-        refs = rtstruct_image_references(rtstruct)
+        frame_refs, contour_refs = rtstruct_reference_levels(rtstruct)
+        refs = frame_refs | contour_refs
         if not refs:
             raise PlanningCTLocalizerError("ct_localizer_rtstruct_references_missing")
         identities = [str(ds.SOPInstanceUID) for _, ds in entries]
@@ -203,6 +204,27 @@ def select_localizers(ct_dir: Path, rtstruct: Path | None):
         selected, duplicates = select_duplicate_positions(
             group, refs, position_tolerance_mm=0, include_pixel_evidence=True,
             allow_referenced_differences=True)
+        differing_duplicates = [
+            item
+            for item in duplicates
+            if item["reason_code"] == "unreferenced_duplicate_position"
+        ]
+        if differing_duplicates:
+            kept_uids_check = {item["uid"] for item in selected}
+            if (
+                not frame_refs
+                or not contour_refs
+                or frame_refs != kept_uids_check
+                or not (contour_refs <= kept_uids_check)
+                or any(
+                    item["retained_sop_instance_uid"] not in contour_refs
+                    or item["retained_sop_instance_uid"] not in frame_refs
+                    for item in differing_duplicates
+                )
+            ):
+                raise PlanningCTLocalizerError(
+                    "ct_hygiene_duplicate_position_reference_coverage"
+                )
         kept_paths = {item["path"] for item in selected}
         kept = [(p, ds) for p, ds in axial if p in kept_paths]
         geometry = _volume(kept)

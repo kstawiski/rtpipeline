@@ -29,7 +29,11 @@ from .nonuniform_ct_conversion import convert_nonuniform_unsigned_ct
 from .ct_series_hygiene import (
     CTSeriesHygieneError,
     METHOD as CT_HYGIENE_METHOD,
+    _verify_nifti_voxel_payload,
+    _verify_slice_by_slice_volume,
+    conversion_evidence_matches_expected,
     convert_ct_series_hygiene,
+    select_ct_instances,
 )
 from .config import PipelineConfig
 from .course_contract import load_course_contract
@@ -1006,6 +1010,66 @@ def _ensure_ct_nifti(
         stack_override=stack_override,
     )
     regenerated = not target.exists() or force
+    existing_conversion = (
+        existing_sidecar.get("nifti_conversion")
+        if isinstance(existing_sidecar.get("nifti_conversion"), dict)
+        else None
+    )
+    if not regenerated:
+        if existing_sidecar.get("sop_hash") != metadata["sop_hash"]:
+            regenerated = True
+        elif (
+            require_hygiene
+            or effective_stack_override is not None
+            or (
+                existing_conversion is not None
+                and existing_conversion.get("method") == CT_HYGIENE_METHOD
+            )
+        ):
+            try:
+                selected_files, expected_selection = select_ct_instances(
+                    ct_dir,
+                    authoritative_rtstruct,
+                    stack_override=effective_stack_override,
+                )
+            except CTSeriesHygieneError as exc:
+                if (
+                    not (require_hygiene or effective_stack_override is not None)
+                    and authoritative_rtstruct is not None
+                    and exc.reason_code == "ct_hygiene_no_safe_exclusions"
+                ):
+                    regenerated = True
+                else:
+                    if conversion_evidence is not None:
+                        conversion_evidence.update(
+                            method=CT_HYGIENE_METHOD,
+                            status="refused",
+                            reason_code=exc.reason_code,
+                            **exc.evidence,
+                        )
+                    logger.error("CT conversion refused: %s", exc.reason_code)
+                    return None
+            else:
+                if existing_conversion is None or not conversion_evidence_matches_expected(
+                    existing_conversion, expected_selection
+                ):
+                    regenerated = True
+                else:
+                    try:
+                        expected_geom = expected_selection["selected_geometry"]
+                        _verify_nifti_voxel_payload(
+                            target,
+                            expected_geom["rows"],
+                            expected_geom["columns"],
+                            expected_selection["kept_instance_count"],
+                            allow_equalized_slices=isinstance(
+                                existing_conversion.get("downstream_conversion"), dict
+                            ),
+                        )
+                        if expected_selection.get("reason_code") == "mixed_image_type_harmonized":
+                            _verify_slice_by_slice_volume(selected_files, target)
+                    except CTSeriesHygieneError:
+                        regenerated = True
     conversion: Optional[dict[str, Any]] = None
     if regenerated:
         tmp_dir = nifti_dir / ".tmp_dcm2niix"

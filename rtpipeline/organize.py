@@ -1125,8 +1125,11 @@ def _ensure_planning_ct_nifti(config, ct_dir, nifti_dir, **kwargs):
         stack_override=kwargs.get("stack_override"),
     )
     if override is not None:
+        call_kwargs = dict(kwargs)
+        call_kwargs["stack_override"] = override
+        call_kwargs["require_hygiene"] = True
         return _ensure_ct_nifti(
-            config, ct_dir, nifti_dir, require_hygiene=True, **kwargs
+            config, ct_dir, nifti_dir, **call_kwargs
         )
     try:
         excluded, selection = select_localizers(ct_dir, kwargs.get("authoritative_rtstruct"))
@@ -1145,8 +1148,10 @@ def _ensure_planning_ct_nifti(config, ct_dir, nifti_dir, **kwargs):
         return result
     except PlanningCTLocalizerError as exc:
         if exc.reason_code != "ct_localizer_referenced_by_rtstruct":
+            call_kwargs = dict(kwargs)
+            call_kwargs["require_hygiene"] = True
             return _ensure_ct_nifti(
-                config, ct_dir, nifti_dir, require_hygiene=True, **kwargs
+                config, ct_dir, nifti_dir, **call_kwargs
             )
         if evidence is not None:
             evidence.update(method=METHOD, status="refused", reason_code=exc.reason_code)
@@ -7243,7 +7248,10 @@ def organize_and_merge(
                     co.delivery_status = clinical_delivery["delivery_status"]
                     co.delivery_method = clinical_delivery["delivery_method"]
                     if clinical_delivery["independently_established"]:
-                        assert isinstance(phase_classification, dict)
+                        if not isinstance(phase_classification, dict):
+                            raise CourseContractError(
+                                "clinical_prescription_evidence.fractionation_classification must be a JSON object when clinical delivery is independently established"
+                            )
                         dose_classification_contract[
                             "dicom_reason"
                         ] = dose_classification_contract.get("reason")

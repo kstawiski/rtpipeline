@@ -7,11 +7,12 @@ rescaled pixels, with no numeric tolerance or interpolation.
 """
 from __future__ import annotations
 
+from decimal import Decimal, InvalidOperation
 import hashlib
 import shutil
 import struct
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 import numpy as np
 import pydicom
@@ -134,26 +135,50 @@ def _stack_attr_value(ds: Any, keyword: str) -> Any:
             return "\\".join(tokens) if tokens else None
         text = str(raw).strip()
         return text if text else None
-    if keyword in ("ReconstructionDiameter", "Exposure"):
-        if isinstance(raw, (list, tuple)) and len(raw) == 1:
-            raw = raw[0]
-        val = float(raw)
-        if not np.isfinite(val):
-            raise ValueError(f"non-finite {keyword}")
-        return int(val) if keyword == "Exposure" and val.is_integer() else float(val)
-    if keyword == "WindowCenter":
-        if isinstance(raw, (list, tuple)) or (
-            hasattr(raw, "__iter__") and not isinstance(raw, (str, bytes))
-        ):
-            vals = [float(v) for v in raw]
-            if not vals or not np.isfinite(vals).all():
-                raise ValueError("invalid WindowCenter")
-            return vals[0] if len(vals) == 1 else vals
-        val = float(raw)
-        if not np.isfinite(val):
-            raise ValueError("invalid WindowCenter")
-        return float(val)
+    if keyword in ("ReconstructionDiameter", "WindowCenter", "Exposure"):
+        def exact_value(value: Any) -> str:
+            # pydicom's DSfloat retains the on-disk decimal in original_string.
+            # Converting it through float can merge distinct 16-character DS values.
+            text = str(getattr(value, "original_string", value)).strip()
+            if _canonical_decimal(text) is None:
+                raise ValueError(f"non-finite {keyword}")
+            return text
+
+        if hasattr(raw, "__iter__") and not isinstance(raw, (str, bytes)):
+            values = [exact_value(value) for value in raw]
+            if not values:
+                raise ValueError(f"empty {keyword}")
+            return values[0] if len(values) == 1 else values
+        return exact_value(raw)
     return str(raw).strip() or None
+
+
+def _canonical_decimal(value: Any) -> Decimal | None:
+    """Parse a finite numeric attribute into an exact Decimal; NaN/Inf/bool return None."""
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, Decimal):
+        return value if value.is_finite() else None
+    if isinstance(value, int):
+        return Decimal(value)
+    if isinstance(value, float):
+        if not np.isfinite(value):
+            return None
+        try:
+            dec = Decimal(str(value).strip())
+        except InvalidOperation:
+            return None
+        return dec if dec.is_finite() else None
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            dec = Decimal(text)
+        except InvalidOperation:
+            return None
+        return dec if dec.is_finite() else None
+    return None
 
 
 def _stack_attr_key(attrs: dict[str, Any]) -> tuple[Any, ...]:
@@ -161,9 +186,15 @@ def _stack_attr_key(attrs: dict[str, Any]) -> tuple[Any, ...]:
     for name in STACK_DISTINGUISHING_ATTRIBUTES:
         val = attrs.get(name)
         if isinstance(val, list):
-            key_parts.append(tuple(float(x) for x in val))
-        elif isinstance(val, (int, float)) and not isinstance(val, bool):
-            key_parts.append(float(val))
+            decs = [_canonical_decimal(x) for x in val]
+            if any(d is None for d in decs):
+                raise ValueError(f"non-finite {name}")
+            key_parts.append(tuple(decs))
+        elif name in ("ReconstructionDiameter", "WindowCenter", "Exposure") and val is not None:
+            dec = _canonical_decimal(val)
+            if dec is None:
+                raise ValueError(f"non-finite {name}")
+            key_parts.append(dec)
         else:
             key_parts.append(val)
     return tuple(key_parts)
@@ -195,33 +226,46 @@ def _signatures_match(candidate_sig: dict[str, Any], requested_sig: dict[str, An
                 if left is not right:
                     return False
             else:
-                try:
-                    if isinstance(right, bool) or abs(float(left) - float(right)) > 1e-6:
-                        return False
-                except (TypeError, ValueError):
+                d_left = _canonical_decimal(left)
+                d_right = _canonical_decimal(right)
+                if d_left is None or d_right is None or d_left != d_right:
                     return False
         elif key == "WindowCenter":
             if left is None or right is None:
                 if left is not right:
                     return False
             elif isinstance(left, list) and isinstance(right, list):
-                if len(left) != len(right):
+                if not left or len(left) != len(right):
                     return False
-                try:
-                    if any(abs(float(a) - float(b)) > 1e-6 for a, b in zip(left, right)):
+                for a, b in zip(left, right):
+                    d_a = _canonical_decimal(a)
+                    d_b = _canonical_decimal(b)
+                    if d_a is None or d_b is None or d_a != d_b:
                         return False
-                except (TypeError, ValueError):
-                    return False
             elif not isinstance(left, list) and not isinstance(right, list):
-                try:
-                    if isinstance(right, bool) or abs(float(left) - float(right)) > 1e-6:
-                        return False
-                except (TypeError, ValueError):
+                d_left = _canonical_decimal(left)
+                d_right = _canonical_decimal(right)
+                if d_left is None or d_right is None or d_left != d_right:
                     return False
             else:
                 return False
+        elif key in ("ScanOptions", "ConvolutionKernel"):
+            if left is None or right is None:
+                if left is not right:
+                    return False
+            elif not isinstance(left, str) or not isinstance(right, str) or left != right:
+                return False
+        elif key == "instance_count":
+            if (
+                isinstance(left, bool)
+                or isinstance(right, bool)
+                or not isinstance(left, int)
+                or not isinstance(right, int)
+                or left != right
+            ):
+                return False
         else:
-            if left != right:
+            if not isinstance(left, str) or not isinstance(right, str) or left != right:
                 return False
     return True
 
@@ -267,7 +311,67 @@ def _validate_stack_override_governance(
         raise CTSeriesHygieneError(
             "ct_hygiene_stack_override_invalid_governance", evidence=err_evidence
         )
+    for str_key in ("ScanOptions", "ConvolutionKernel"):
+        val = sig_raw.get(str_key)
+        if val is not None and not isinstance(val, str):
+            raise CTSeriesHygieneError(
+                "ct_hygiene_stack_override_invalid_governance", evidence=err_evidence
+            )
+    for num_key in ("ReconstructionDiameter", "Exposure"):
+        val = sig_raw.get(num_key)
+        if val is not None and _canonical_decimal(val) is None:
+            raise CTSeriesHygieneError(
+                "ct_hygiene_stack_override_invalid_governance", evidence=err_evidence
+            )
+    wc_val = sig_raw.get("WindowCenter")
+    if wc_val is not None:
+        if isinstance(wc_val, list):
+            if not wc_val or any(_canonical_decimal(item) is None for item in wc_val):
+                raise CTSeriesHygieneError(
+                    "ct_hygiene_stack_override_invalid_governance", evidence=err_evidence
+                )
+        elif _canonical_decimal(wc_val) is None:
+            raise CTSeriesHygieneError(
+                "ct_hygiene_stack_override_invalid_governance", evidence=err_evidence
+            )
     return adjudication_record_id.strip(), reason.strip(), sig_raw
+
+
+def conversion_evidence_matches_expected(
+    recorded: Mapping[str, Any], expected_selection: Mapping[str, Any]
+) -> bool:
+    """Compare stored CT hygiene conversion evidence against current selection.
+
+    Accepts both the current WS201 evidence schema (with `reason_code` and
+    `selection_basis`) and the legacy parent (`1aeb0c5`) hygiene evidence schema
+    when the selected instance set and all legacy fields match exactly.
+    """
+    if not isinstance(recorded, Mapping):
+        return False
+    expected = dict(expected_selection)
+    expected["status"] = "converted"
+    is_legacy_schema = (
+        "reason_code" not in recorded
+        and "selection_basis" not in recorded
+        and "stack_override" not in recorded
+        and "stack_override" not in expected
+        and expected.get("reason_code") == "verified_instance_exclusions"
+        and expected.get("selection_basis")
+        == "rtstruct_referenced_geometry_or_identical_duplicates"
+        and recorded.get("kept_sop_instance_uids") == expected.get("kept_sop_instance_uids")
+    )
+    if is_legacy_schema:
+        expected_compare = {
+            k: v
+            for k, v in expected.items()
+            if k not in ("reason_code", "selection_basis")
+        }
+    else:
+        expected_compare = expected
+    recorded_keys = set(recorded.keys()) - {"downstream_conversion"}
+    if not (recorded_keys <= set(expected_compare.keys())):
+        return False
+    return all(recorded.get(key) == value for key, value in expected_compare.items())
 
 
 def _pixels(path: Path) -> bytes:
@@ -770,7 +874,7 @@ def _select(
     kept, duplicates = select_duplicate_positions(
         group,
         refs,
-        refuse_referenced=mixed or bool(refs),
+        refuse_referenced=mixed,
         allow_referenced_differences=bool(refs),
     )
     differing_duplicates = [
@@ -1021,9 +1125,58 @@ def _stage_harmonized_image_type(
             raise CTSeriesHygieneError("ct_hygiene_mixed_image_type_refused")
 
 
+def _verify_nifti_voxel_payload(
+    nifti_path: Path,
+    expected_rows: int,
+    expected_cols: int,
+    expected_slices: int,
+    *,
+    allow_equalized_slices: bool = False,
+    is_mixed_image_type: bool = False,
+) -> None:
+    """Verify 3D extent and complete, finite, decompressable voxel payload."""
+    import nibabel as nib
+
+    try:
+        img = nib.load(str(nifti_path))
+        shape = tuple(int(dim) for dim in img.shape)
+    except Exception as exc:
+        if is_mixed_image_type:
+            raise CTSeriesHygieneError("ct_hygiene_mixed_image_type_refused") from exc
+        raise CTSeriesHygieneError("ct_hygiene_unreadable_converter_output") from exc
+    slice_ok = (
+        len(shape) == 3 and shape[2] >= int(expected_slices)
+        if allow_equalized_slices
+        else len(shape) == 3 and shape[2] == int(expected_slices)
+    )
+    if (
+        len(shape) != 3
+        or not slice_ok
+        or sorted(shape[:2]) != sorted([int(expected_rows), int(expected_cols)])
+    ):
+        if is_mixed_image_type:
+            raise CTSeriesHygieneError("ct_hygiene_mixed_image_type_refused")
+        raise CTSeriesHygieneError("ct_hygiene_converter_did_not_preserve_selected_extent")
+    try:
+        voxels = img.get_fdata(dtype=np.float64, caching="unchanged")
+    except Exception as exc:
+        if is_mixed_image_type:
+            raise CTSeriesHygieneError("ct_hygiene_mixed_image_type_refused") from exc
+        raise CTSeriesHygieneError("ct_hygiene_unreadable_converter_output") from exc
+    if (
+        voxels.shape != shape
+        or voxels.size != int(np.prod(shape))
+        or voxels.size <= 0
+        or not np.isfinite(voxels).all()
+    ):
+        if is_mixed_image_type:
+            raise CTSeriesHygieneError("ct_hygiene_mixed_image_type_refused")
+        raise CTSeriesHygieneError("ct_hygiene_unreadable_converter_output")
+
+
 def _verify_slice_by_slice_volume(files: list[Path], nifti_path: Path) -> None:
-    """Verify exact slice-by-slice rescaled float64 pixels and slice positions."""
-    import SimpleITK as sitk
+    """Verify exact slice-by-slice rescaled float64 pixels and float32-bounded NIfTI-1 geometry."""
+    import nibabel as nib
 
     try:
         slices = []
@@ -1033,6 +1186,8 @@ def _verify_slice_by_slice_volume(files: list[Path], nifti_path: Path) -> None:
                 raise ValueError("ModalityLUTSequence unsupported")
             slope = float(getattr(ds, "RescaleSlope", 1.0))
             intercept = float(getattr(ds, "RescaleIntercept", 0.0))
+            if not np.isfinite([slope, intercept]).all() or slope == 0:
+                raise ValueError("invalid rescale slope/intercept")
             rescaled = np.asarray(ds.pixel_array, dtype=np.float64) * slope + intercept
             orientation = np.asarray(ds.ImageOrientationPatient, dtype=np.float64)
             position = np.asarray(ds.ImagePositionPatient, dtype=np.float64)
@@ -1040,37 +1195,85 @@ def _verify_slice_by_slice_volume(files: list[Path], nifti_path: Path) -> None:
             normal = np.cross(orientation[:3], orientation[3:])
             slices.append((float(np.dot(position, normal)), position, orientation, spacing, rescaled))
         slices.sort(key=lambda item: item[0])
+        if len(slices) < 2:
+            raise ValueError("insufficient slices")
         expected_stack = np.stack([item[4] for item in slices], axis=0)
         first_pos = slices[0][1]
+        last_pos = slices[-1][1]
         first_orient = slices[0][2]
         first_spacing = slices[0][3]
-        normal = np.cross(first_orient[:3], first_orient[3:])
-        step = float(np.mean(np.diff([item[0] for item in slices])))
-        expected_direction = (
-            float(first_orient[0]), float(first_orient[3]), float(normal[0]),
-            float(first_orient[1]), float(first_orient[4]), float(normal[1]),
-            float(first_orient[2]), float(first_orient[5]), float(normal[2]),
+        for _proj, _pos, orient, sp, _pix in slices[1:]:
+            if not np.array_equal(orient, first_orient) or not np.array_equal(sp, first_spacing):
+                raise ValueError("non-uniform DICOM slice orientation or spacing")
+        rows = int(expected_stack.shape[1])
+        n_slices = len(slices)
+        row_dir = first_orient[:3]
+        col_dir = first_orient[3:]
+        row_spacing = float(first_spacing[0])
+        col_spacing = float(first_spacing[1])
+        slice_vec_lps = (last_pos - first_pos) / float(n_slices - 1)
+        lps_to_ras = np.array([-1.0, -1.0, 1.0], dtype=np.float64)
+        col_i_ras = row_dir * col_spacing * lps_to_ras
+        col_j_ras = (-col_dir) * row_spacing * lps_to_ras
+        col_k_ras = slice_vec_lps * lps_to_ras
+        origin_ras = (first_pos + (rows - 1) * row_spacing * col_dir) * lps_to_ras
+        expected_affine_f64 = np.eye(4, dtype=np.float64)
+        expected_affine_f64[:3, 0] = col_i_ras
+        expected_affine_f64[:3, 1] = col_j_ras
+        expected_affine_f64[:3, 2] = col_k_ras
+        expected_affine_f64[:3, 3] = origin_ras
+        # NIfTI-1 stores sform entries as IEEE binary32. Some converter
+        # calculations also round the source attributes to binary32 before
+        # forming the affine, notably the translation after the row flip.
+        # Accept only these two exact representations, component by component;
+        # no additional millimetre or angular tolerance is permitted.
+        expected_sform_f32 = expected_affine_f64.astype(np.float32)
+        converter_sform_f32 = np.eye(4, dtype=np.float32)
+        ras_f32 = lps_to_ras.astype(np.float32)
+        row_f32, col_f32 = row_dir.astype(np.float32), col_dir.astype(np.float32)
+        pos_f32 = first_pos.astype(np.float32)
+        converter_sform_f32[:3, 0] = row_f32 * np.float32(col_spacing) * ras_f32
+        converter_sform_f32[:3, 1] = -col_f32 * np.float32(row_spacing) * ras_f32
+        converter_sform_f32[:3, 2] = (
+            (last_pos.astype(np.float32) - pos_f32) / np.float32(n_slices - 1) * ras_f32
         )
-        image = sitk.ReadImage(str(nifti_path))
-        orient_code = sitk.DICOMOrientImageFilter_GetOrientationFromDirectionCosines(
-            expected_direction
-        )
-        oriented = sitk.DICOMOrient(image, orient_code)
-        expected_size = (int(expected_stack.shape[2]), int(expected_stack.shape[1]), len(slices))
-        expected_spacing = (float(first_spacing[1]), float(first_spacing[0]), step)
-        if (
-            oriented.GetSize() != expected_size
-            or not np.allclose(oriented.GetSpacing(), expected_spacing, atol=1e-4, rtol=0)
-            or not np.allclose(oriented.GetOrigin(), first_pos, atol=1e-3, rtol=0)
-            or not np.allclose(oriented.GetDirection(), expected_direction, atol=1e-5, rtol=0)
-        ):
-            raise ValueError("NIfTI geometry mismatch")
+        converter_sform_f32[:3, 3] = (
+            pos_f32 + np.float32(rows - 1) * np.float32(row_spacing) * col_f32
+        ) * ras_f32
         for idx, (_proj, pos, _orient, _sp, _pix) in enumerate(slices):
-            phys = np.asarray(oriented.TransformIndexToPhysicalPoint((0, 0, idx)), dtype=np.float64)
-            if not np.allclose(phys, pos, atol=1e-2, rtol=0):
-                raise ValueError("slice physical position mismatch")
-        actual_array = np.asarray(sitk.GetArrayViewFromImage(oriented), dtype=np.float64)
-        if actual_array.shape != expected_stack.shape or not np.array_equal(actual_array, expected_stack):
+            expected_pos = first_pos + idx * slice_vec_lps
+            if not np.array_equal(pos.astype(np.float32), expected_pos.astype(np.float32)):
+                raise ValueError("source positions cannot be represented by one uniform affine")
+
+        nib_img = nib.load(str(nifti_path))
+        hdr = nib_img.header
+        if type(hdr) is not nib.Nifti1Header or hdr.get_xyzt_units()[0] != "mm":
+            raise ValueError("expected millimetre NIfTI-1 geometry")
+        sform, sform_code = hdr.get_sform(coded=True)
+        if int(sform_code) <= 0 or sform is None:
+            raise ValueError("missing NIfTI sform")
+        if not np.all((sform == expected_sform_f32) | (sform == converter_sform_f32)):
+            raise ValueError("NIfTI sform mismatch")
+        # Verify the independently encoded qform too: readers may prefer it.
+        # Decode a canonical binary32 quaternion rather than adding a rotation
+        # tolerance. This also handles equivalent quaternion signs at 180 degrees.
+        qform, qform_code = hdr.get_qform(coded=True)
+        if int(qform_code) <= 0:
+            raise ValueError("missing NIfTI qform")
+        for affine in (expected_affine_f64, sform):
+            expected_header = nib.Nifti1Header()
+            expected_header.set_qform(affine, code=1)
+            if np.array_equal(qform, expected_header.get_qform()):
+                break
+        else:
+            raise ValueError("NIfTI qform mismatch")
+
+        # dcm2niix's native CT layout flips DICOM rows; use the same index
+        # mapping as the affine above, without another reader's reorientation
+        # or quaternion normalization changing the geometry being checked.
+        actual_array = nib_img.get_fdata(dtype=np.float64, caching="unchanged")
+        expected_array = expected_stack[:, ::-1, :].transpose(2, 1, 0)
+        if actual_array.shape != expected_array.shape or not np.array_equal(actual_array, expected_array):
             raise ValueError("slice rescaled pixel mismatch")
     except CTSeriesHygieneError:
         raise
@@ -1119,23 +1322,24 @@ def convert_ct_series_hygiene(
         if is_mixed_image_type:
             raise CTSeriesHygieneError("ct_hygiene_mixed_image_type_refused")
         raise CTSeriesHygieneError("ct_hygiene_ambiguous_converter_outputs")
-    import nibabel as nib
-
-    try:
-        acquired_shape = nib.load(str(unequalized[0])).shape
-    except Exception as exc:
-        if is_mixed_image_type:
-            raise CTSeriesHygieneError("ct_hygiene_mixed_image_type_refused") from exc
-        raise CTSeriesHygieneError("ct_hygiene_unreadable_converter_output") from exc
     geometry = evidence["selected_geometry"]
-    if (
-        len(acquired_shape) != 3
-        or acquired_shape[2] != len(files)
-        or sorted(acquired_shape[:2]) != sorted([geometry["rows"], geometry["columns"]])
-    ):
-        if is_mixed_image_type:
-            raise CTSeriesHygieneError("ct_hygiene_mixed_image_type_refused")
-        raise CTSeriesHygieneError("ct_hygiene_converter_did_not_preserve_selected_extent")
+    _verify_nifti_voxel_payload(
+        unequalized[0],
+        geometry["rows"],
+        geometry["columns"],
+        len(files),
+        allow_equalized_slices=False,
+        is_mixed_image_type=is_mixed_image_type,
+    )
+    if generated != unequalized[0]:
+        _verify_nifti_voxel_payload(
+            generated,
+            geometry["rows"],
+            geometry["columns"],
+            len(files),
+            allow_equalized_slices=True,
+            is_mixed_image_type=is_mixed_image_type,
+        )
     if is_mixed_image_type:
         _verify_slice_by_slice_volume(files, generated)
     evidence["status"] = "converted"
