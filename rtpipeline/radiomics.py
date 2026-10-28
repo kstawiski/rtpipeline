@@ -2218,7 +2218,9 @@ def radiomics_for_course(
         # First classify source applicability. A missing but source-applicable ROI is
         # evaluated against the main-runtime artifact before any measurement.
         custom_inventory = None
-        if rs_custom.is_file():
+        if rs_custom.is_file() and not _is_rs_custom_stale(
+            rs_custom, configured_custom_path, contracted_rs_manual, course_dir / "RS_auto.dcm"
+        ):
             try:
                 custom_inventory = inspect_rtstruct(rs_custom)
             except Exception as exc:
@@ -2283,7 +2285,10 @@ def radiomics_for_course(
         desired_custom_bases = eligible_custom
         want_custom = bool(desired_custom_bases)
     if configured_custom_path is None and not want_custom and rs_custom.exists():
-        # Unconfigured legacy fallback only. A configured file defines the exact inventory.
+        # Unconfigured legacy fallback still requires a current main artifact.
+        if _is_rs_custom_stale(rs_custom, None, contracted_rs_manual, course_dir / "RS_auto.dcm"):
+            _invalidate_radiomics_outputs(out_path)
+            raise RadiomicsCourseExtractionError(f"RS_custom is stale in {course_dir}")
         try:
             base_names = set(_list_roi_names_dicom(rs_custom))
             manual_names = set(_list_roi_names_dicom(rs_manual_path))

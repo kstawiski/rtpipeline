@@ -2993,7 +2993,15 @@ def _is_dvh_up_to_date(
         # Only contracted RT inputs are dependencies. Extra copied candidates
         # do not alter the organize-stage decision.
         contract = load_course_contract(course_dir)
+        if custom_structures_config:
+            from .custom_structures_rtstruct import _is_rs_custom_stale
+            if _is_rs_custom_stale(
+                course_dir / "RS_custom.dcm", custom_structures_config,
+                contract.authoritative_rtstruct_path, course_dir / "RS_auto.dcm",
+            ):
+                return False
         deps = [
+            Path(custom_structures_config) if custom_structures_config else None,
             contract.metadata_path,
             contract.plan_artifact_path,
             contract.dose_grid_path,
@@ -3637,16 +3645,11 @@ def _publish_skipped_course_rs_custom(
     custom_structures_config: Optional[Union[str, Path]],
     rs_manual: Path,
 ) -> None:
-    """Publish RS_custom.dcm for a course that emits no dose metrics.
+    """Publish the main-runtime custom artifact even when no dose is available.
 
-    RS_custom.dcm and metadata/rs_custom_meta.json are bound outputs of the DVH
-    stage. A course without an authoritative dose grid still reaches radiomics,
-    and radiomics rebuilds a missing RS_custom.dcm; that later write lands after
-    the DVH completion sentinel is published and leaves the sentinel declaring
-    an incomplete output set, which blocks cohort aggregation. Publishing here
-    keeps the stage owner and its declared outputs in agreement. The source
-    arguments match the ones radiomics would use, so the published bytes do not
-    depend on which stage got there first.
+    Custom derivation always uses uncropped RS_auto. DVH measurement may use
+    RS_auto_cropped, but all consumers validate the same uncropped derivation.
+    A configured artifact that cannot be built fails the owning DVH stage.
     """
     if not custom_structures_config:
         return
@@ -3661,15 +3664,12 @@ def _publish_skipped_course_rs_custom(
         rs_custom, custom_structures_config, rs_manual, rs_auto
     ):
         return
-    try:
-        logger.info(
-            "Publishing RS_custom.dcm for dose-absent course %s", course_dir.name
-        )
-        _create_governed_rs_custom(
-            course_dir, custom_structures_config, rs_manual, rs_auto
-        )
-    except Exception as e:
-        logger.warning("Failed to create custom structures: %s", e)
+    logger.info("Publishing RS_custom.dcm for course %s", course_dir.name)
+    published = _create_governed_rs_custom(
+        course_dir, custom_structures_config, rs_manual, rs_auto
+    )
+    if published is None:
+        raise RuntimeError(f"RS_custom could not be built for {course_dir}")
 
 
 def dvh_for_course(
@@ -4140,25 +4140,8 @@ def dvh_for_course(
     # Use RS_custom.dcm if it exists and is up-to-date
     rs_custom = course_dir / "RS_custom.dcm"
 
-    # One governed builder owns RS_custom publication. DVH and radiomics may run
-    # concurrently for a course, so the builder serializes publication and validates
-    # temporary bytes before the atomic replace.
-    from .custom_structures_rtstruct import (
-        _create_custom_structures_rtstruct as _create_governed_rs_custom,
-        _is_rs_custom_stale as _governed_rs_custom_is_stale,
-    )
-
-    if custom_structures_config and _governed_rs_custom_is_stale(
-        rs_custom, custom_structures_config, rs_manual, rs_auto
-    ):
-        try:
-            logger.info("Regenerating RS_custom.dcm for %s", course_dir.name)
-            rs_custom = _create_governed_rs_custom(
-                course_dir, custom_structures_config, rs_manual, rs_auto
-            )
-        except Exception as e:
-            logger.warning("Failed to create custom structures: %s", e)
-            rs_custom = None
+    # Derivation uses uncropped RS_auto; measurement below may use cropped ROIs.
+    _publish_skipped_course_rs_custom(course_dir, custom_structures_config, rs_manual)
 
     structure_resolution = _resolve_dvh_structures(
         course_dir=course_dir,

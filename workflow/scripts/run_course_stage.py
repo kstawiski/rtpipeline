@@ -308,12 +308,13 @@ def main(workflow: Any) -> None:
         ("segmentation", {"disabled", "ok"}),
         ("custom", {"disabled", "ok"}),
         ("crop", {"disabled", "ok"}),
+        ("dvh", {"disabled", "ok"}),
     ):
         upstream = getattr(workflow.input, input_name, None)
         try:
             _require_upstream_status(upstream, input_name, allowed_statuses)
         except RuntimeError as exc:
-            close_course(str(exc), returncode=1, strict_error=exc)
+            close_course(f"upstream_failed: upstream_{input_name}_failed: {exc}", returncode=1, strict_error=exc)
 
     if not bool(getattr(workflow.params, "enabled", True)):
         try:

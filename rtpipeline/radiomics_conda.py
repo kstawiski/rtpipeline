@@ -7,6 +7,7 @@ Runs PyRadiomics in a separate conda environment with NumPy 1.x for compatibilit
 import json
 import logging
 import os
+import sys
 import shlex
 import shutil
 import subprocess
@@ -280,7 +281,7 @@ def _write_conda_roi_ledger(
             )
             ledger.record_roi(course_id, patient_id, str(name), reason_code=reason, disposition="excluded")
     technical_exclusion = not extracted or has_incomplete
-    course_reason = "extracted" if extracted else "failed_radiomics_extraction"
+    course_reason = "extracted" if extracted else missing_reason
     if derive_course_states:
         # A published workbook is not proof that every ROI was measured, and a
         # course that only ever held nonmeasurements was not excluded by a
@@ -363,7 +364,7 @@ def _radiomics_env_prefix() -> Optional[str]:
     under the current HOME, so any isolated, service or container invocation
     with a different HOME can never find the env even when it exists. The
     prefix layout is stable, so resolve it directly: an explicit operator
-    override first, then CONDA_PREFIX/MAMBA_ROOT_PREFIX siblings, then the
+    override first, then CONDA_PREFIX/sys.prefix siblings and MAMBA_ROOT_PREFIX, then the
     usual user-level roots. Returns None when no prefix carries bin/python.
     """
     override = os.environ.get("RTPIPELINE_RADIOMICS_ENV_PREFIX")
@@ -376,6 +377,7 @@ def _radiomics_env_prefix() -> Optional[str]:
     conda_prefix = os.environ.get("CONDA_PREFIX")
     if conda_prefix:
         candidates.append(Path(conda_prefix).parent / RADIOMICS_ENV)
+    candidates.append(Path(sys.prefix).resolve().parent / RADIOMICS_ENV)
     mamba_root = os.environ.get("MAMBA_ROOT_PREFIX")
     if mamba_root:
         candidates.append(Path(mamba_root) / "envs" / RADIOMICS_ENV)
@@ -2280,6 +2282,7 @@ def radiomics_for_course_ct_nifti_fallback(
     config: Any,
     *,
     allow_all_series_temp: bool = False,
+    max_workers: Optional[int] = None,
 ) -> Optional[Path]:
     """Extract CT radiomics from TotalSegmentator NIfTI masks when no RS is usable."""
     course_dir = Path(course_dir)
@@ -2686,11 +2689,11 @@ def radiomics_for_course_ct_nifti_fallback(
 
     logger.info("Processing %d CT radiomics fallback tasks for %s", len(tasks), course_dir.name)
 
-    max_workers = None
+    max_workers = max_workers if max_workers is not None and max_workers > 0 else None
     env_workers = int(os.environ.get("RTPIPELINE_MAX_WORKERS", "0") or 0)
-    if env_workers > 0:
+    if env_workers > 0 and max_workers is None:
         max_workers = env_workers
-    elif hasattr(config, "effective_workers") and callable(config.effective_workers):
+    elif max_workers is None and hasattr(config, "effective_workers") and callable(config.effective_workers):
         try:
             max_workers = config.effective_workers()
         except Exception:
@@ -2740,6 +2743,7 @@ def radiomics_for_course(
     custom_structures_config: Optional[str] = None,
     *,
     allow_all_series_temp: bool = False,
+    max_workers: Optional[int] = None,
 ) -> Optional[Path]:
     """
     Extract radiomics features for a course using conda environment.
@@ -2754,7 +2758,7 @@ def radiomics_for_course(
     """
     from .radiomics_runtime import needs_radiomics_process, run_course_driver
     if needs_radiomics_process():
-        return run_course_driver("ct", course_dir, config, custom_structures_config, allow_all_series_temp=allow_all_series_temp)
+        return run_course_driver("ct", course_dir, config, custom_structures_config, allow_all_series_temp=allow_all_series_temp, max_workers=max_workers)
 
     course_dir = Path(course_dir)
     contract = load_course_contract(course_dir)
@@ -2845,7 +2849,11 @@ def radiomics_for_course(
                     dependency_states[observation.name] = (
                         dependency_state_from_observation(observation)
                     )
-            custom_inventory = inspect_rtstruct(rs_custom) if rs_custom.is_file() else None
+            from .custom_structures_rtstruct import _is_rs_custom_stale
+            custom_is_stale = _is_rs_custom_stale(rs_custom, custom_cfg, rs_manual, rs_auto)
+            custom_inventory = (
+                inspect_rtstruct(rs_custom) if rs_custom.is_file() and not custom_is_stale else None
+            )
             available_custom = {
                 item.name: item for item in getattr(custom_inventory, "named_rois", ())
             }
@@ -2871,6 +2879,17 @@ def radiomics_for_course(
                 elif assessment.reason_code == "failed_custom_generation":
                     applicable_custom.add(base)
                     pending_custom_assessments.add(base)
+                elif assessment.reason_code == "failed_custom_read":
+                    required_custom = requiredness_for(
+                        "Custom", base,
+                        contract=getattr(config, "radiomics_analysis_contract", {}) or {},
+                        modality="CT",
+                    )
+                    if required_custom == Requiredness.ANALYSIS_REQUIRED:
+                        raise RadiomicsCourseExtractionError(
+                            f"Required custom ROI {base!r} has failed_custom_read: {assessment.detail}"
+                        )
+                    skipped_custom_dispositions[base] = assessment.reason_code
                 elif assessment.reason_code == "indeterminate_applicability":
                     required_custom = requiredness_for(
                         "Custom",
@@ -2921,6 +2940,8 @@ def radiomics_for_course(
         from .custom_structures_rtstruct import _is_rs_custom_stale
 
         if custom_cfg is None and not desired_custom and rs_custom.exists():
+            if _is_rs_custom_stale(rs_custom, None, rs_manual, rs_auto):
+                raise RadiomicsCourseExtractionError(f"RS_custom is stale in {course_dir}")
             manual_names = set(_list_roi_names_dicom(rs_manual))
             auto_names = set(_list_roi_names_dicom(rs_auto))
             custom_names = set(_list_roi_names_dicom(rs_custom))
@@ -3007,7 +3028,9 @@ def radiomics_for_course(
             "No current RTSTRUCT source for %s; trying CT TotalSegmentator NIfTI fallback",
             course_dir,
         )
-        return radiomics_for_course_ct_nifti_fallback(course_dir, config)
+        return radiomics_for_course_ct_nifti_fallback(
+            course_dir, config, allow_all_series_temp=allow_all_series_temp, max_workers=max_workers
+        )
 
     if not has_ct_dicom:
         _invalidate_radiomics_outputs(output_path)
@@ -3023,6 +3046,9 @@ def radiomics_for_course(
         ct_image = reader.Execute()
     except Exception as e:
         logger.error(f"Failed to load CT image: {e}")
+        _write_conda_roi_ledger(
+            course_dir, (), (), extracted=False, expected_names=(), missing_reason="failed_source_read"
+        )
         _invalidate_radiomics_outputs(output_path)
         raise RadiomicsCourseExtractionError(
             f"CT series is present but unreadable for radiomics in {course_dir}: {e}"
@@ -3478,12 +3504,13 @@ def radiomics_for_course(
     sequential = os.environ.get('RTPIPELINE_RADIOMICS_SEQUENTIAL', '').lower() in ('1', 'true', 'yes')
 
     # Determine worker count - respect Snakemake thread budget via env var or config
-    max_workers = None
-    worker_source = "unknown"
+    max_workers = max_workers if max_workers is not None and max_workers > 0 else None
+    worker_source = "caller" if max_workers is not None else "unknown"
 
-    # Priority 1: Environment variable (set by CLI from --max-workers or by Snakemake)
+    # An explicit per-course cap takes precedence over the overall job budget.
+    # Otherwise use the environment variable set by CLI or Snakemake.
     env_workers = int(os.environ.get('RTPIPELINE_MAX_WORKERS', '0') or 0)
-    if env_workers > 0:
+    if env_workers > 0 and max_workers is None:
         max_workers = env_workers
         worker_source = "RTPIPELINE_MAX_WORKERS env"
 

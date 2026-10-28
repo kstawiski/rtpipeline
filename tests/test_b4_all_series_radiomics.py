@@ -414,8 +414,10 @@ def test_parallel_all_series_conda_fallback_preserves_scope_opt_in(
         _custom=None,
         *,
         allow_all_series_temp=False,
+        max_workers=None,
     ):
         seen["allow_all_series_temp"] = allow_all_series_temp
+        seen["max_workers"] = max_workers
         output = Path(course_dir) / "radiomics_ct.xlsx"
         _write_dual_arm_test_publication(
             output,
@@ -435,10 +437,11 @@ def test_parallel_all_series_conda_fallback_preserves_scope_opt_in(
     monkeypatch.setattr(radconda, "radiomics_for_course", fake_conda)
 
     outcome = radpar.parallel_radiomics_for_course(
-        cast(Any, _Cfg(tmp_path)), course, allow_all_series_temp=True
+        cast(Any, _Cfg(tmp_path)), course, allow_all_series_temp=True, max_workers=2
     )
     assert outcome.output_path == course / "radiomics_ct.xlsx"
     assert seen["allow_all_series_temp"] is True
+    assert seen["max_workers"] == 2
 
     with pytest.raises(rad.RadiomicsCourseExtractionError, match="temporary contract"):
         radpar.parallel_radiomics_for_course(cast(Any, _Cfg(tmp_path)), course)

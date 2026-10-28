@@ -4565,6 +4565,26 @@ def robustness_for_course(
         expected_series_uid=series_uid,
     )
 
+    # Validate custom derivation before any contour inventory or mask loading,
+    # including voxel fallback courses with selected Custom identities.
+    rs_custom = course_dir / "RS_custom.dcm"
+    custom_cfg = getattr(config, "custom_structures_config", None)
+    custom_selected = any(
+        source == "Custom" and robustness_selection_matches(
+            roi_name, rob_config.perturbation.apply_to_structures
+        )
+        for source, roi_name in identity_catalog
+    )
+    if custom_cfg or custom_selected or rs_custom.exists():
+        from .custom_structures_rtstruct import _is_rs_custom_stale
+        if _is_rs_custom_stale(
+            rs_custom, custom_cfg, contract.authoritative_rtstruct_path, course_dir / "RS_auto.dcm"
+        ):
+            raise RuntimeError(
+                "RS_custom is stale, missing, or lacks main-runtime OpenCV 5.0.0 provenance; "
+                "run the main-runtime DVH/custom-structure stage before robustness"
+            )
+
     # ========================================================================
     # Collect masks from all segmentation sources
     # ========================================================================
@@ -4876,15 +4896,6 @@ def robustness_for_course(
         # published as Custom by the main path are independent Custom ROIs.
         rs_custom = course_dir / "RS_custom.dcm"
         if rs_custom.exists():
-            from .custom_structures_rtstruct import _is_rs_custom_stale
-            if _is_rs_custom_stale(
-                rs_custom, getattr(config, "custom_structures_config", None),
-                contract.authoritative_rtstruct_path, course_dir / "RS_auto.dcm",
-            ):
-                raise RuntimeError(
-                    "RS_custom is stale or lacks main-runtime OpenCV 5.0.0 provenance; "
-                    "run the main-runtime DVH/custom-structure stage before robustness"
-                )
             custom_sink: List[Dict[str, Any]] = []
             custom_binding = _bind_rtstruct_source("Custom", rs_custom)
             custom_masks = _rtstruct_masks(

@@ -140,7 +140,7 @@ def test_course_driver_reexec_transfers_configuration_only(tmp_path, monkeypatch
         assert command[0] == '/isolated/radiomics/bin/python'
         assert env['PYTHONNOUSERSITE'] == '1'
         assert env['PYTHONPATH'].split(os.pathsep)[0] == str(ROOT)
-        Path(command[-1]).write_bytes(pickle.dumps(None))
+        Path(command[-1]).write_bytes(pickle.dumps({"ok": True, "result": None}))
         return SimpleNamespace(returncode=0)
     monkeypatch.setattr(runtime.subprocess, 'run', execute)
     assert runtime.run_course_driver('ct', tmp_path, {'resume': True}, allow_all_series_temp=True) is None

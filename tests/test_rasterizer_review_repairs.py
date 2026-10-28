@@ -1,10 +1,10 @@
 """Runtime-enabled regressions for publication, resume and checkpoint boundaries."""
 from pathlib import Path
-from contextlib import nullcontext
 from types import SimpleNamespace
 from unittest.mock import Mock
 import json
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -59,16 +59,14 @@ def test_consumers_never_rebuild_stale_custom(tmp_path, monkeypatch, backend, ar
     monkeypatch.setattr(custom, '_create_custom_structures_rtstruct', writer)
     checkpoint = course / 'metadata' / 'radiomics_ct_checkpoint.parquet'
     checkpoint.write_bytes(b'stale checkpoint')
-    # With no source masks, serial applicability already provides a governed
-    # nonmeasurement disposition for an absent custom ROI.
-    expected = (nullcontext() if artifact == 'missing' and backend == 'serial' else
-                pytest.raises(RadiomicsCourseExtractionError, match='RS_custom.*(stale|main-runtime)'))
-    with expected:
+    # Measurable source masks make the configured custom ROI applicable in
+    # every backend, including serial when the custom artifact is absent.
+    with pytest.raises(RadiomicsCourseExtractionError, match='RS_custom.*(stale|main-runtime)'):
         if backend == 'conda':
             conda.radiomics_for_course(course, config)
         elif backend == 'serial':
-            # Avoid unrelated source mask work; the real stale check still runs.
-            monkeypatch.setattr(radiomics, '_rtstruct_masks', lambda *_a, **_k: {})
+            monkeypatch.setattr(radiomics, '_rtstruct_masks',
+                                lambda *_a, **_k: {'PTV': np.ones((2, 2, 2), dtype=bool)})
             radiomics.radiomics_for_course(config, course)
         else:
             parallel.parallel_radiomics_for_course(config, course)
