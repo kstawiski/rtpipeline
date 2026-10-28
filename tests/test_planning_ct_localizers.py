@@ -367,7 +367,11 @@ def test_repair_retains_and_rebinds_original_mask_provenance(tmp_path, dcm2niix,
     evidence = organize._original_segmentation_provenance(contract.authoritative_rtstruct_path, contract.planning_ct_nifti)
     metadata = {'schema': organize.ORIGINAL_SEGMENTATION_SCHEMA,
                 'geometry_status': 'exact_physical_mapping',
-                'structures': [{'mask': 'rtstruct/mask.nii.gz'}]}
+                'source_nifti': str(contract.planning_ct_nifti),
+                'source_rtstruct': str(contract.authoritative_rtstruct_path),
+                'structures': [{'mask': 'rtstruct/mask.nii.gz',
+                    'sha256': __import__('hashlib').sha256(mask.read_bytes()).hexdigest(),
+                    'size_bytes': mask.stat().st_size}]}
     if export == 'v1':
         metadata['schema'] = 'rtpipeline-original-segmentation-v1'
         evidence['schema'] = 'rtpipeline-original-segmentation-provenance-v1'
@@ -377,28 +381,29 @@ def test_repair_retains_and_rebinds_original_mask_provenance(tmp_path, dcm2niix,
         (original / 'metadata.json').write_text(
             '{' if export == 'malformed_metadata' else json.dumps(metadata))
     (original / 'provenance.json').write_text(json.dumps(evidence))
-    export_before = _files_and_mtimes(original)
     completion = json.loads((course / '.organized').read_text())
     dependency = tmp_path / 'configuration.json'
     dependency.write_text(json.dumps(completion['configuration_dependency']))
     write_stage_completion_sentinel(course, course / '.organized', stage='organize', status='ok',
                                     configuration_dependency=dependency)
     assert repair_output(root)['repaired'] == 1
-    after = json.loads((original / 'provenance.json').read_text())
     completion = validate_stage_completion_sentinel(course / '.organized', expected_stage='organize')
     if export == 'v2':
+        after = json.loads((original / 'provenance.json').read_text())
         assert after['source_ct_sop_hash'] != evidence['source_ct_sop_hash']
         assert {k: v for k, v in after.items() if k != 'source_ct_sop_hash'} == {k: v for k, v in evidence.items() if k != 'source_ct_sop_hash'}
         require_current_original_mask(mask)
         assert completion['stale_original_exports'] == []
         assert any(item['path'].endswith('/mask.nii.gz') for item in completion['outputs'])
     else:
-        assert _files_and_mtimes(original) == export_before
-        with pytest.raises(ValueError, match='stale'):
-            require_current_original_mask(mask)
-        assert completion['stale_original_exports'][0]['path'] == 'Segmentation_Original/rtstruct'
+        assert not original.exists()
+        archived = list((course / 'Segmentation_Quarantine').rglob('mask.nii.gz'))
+        assert len(archived) == 1 and archived[0].read_bytes() == before
+        assert completion['stale_original_exports'] == []
         assert not any(item['role'] == 'original_segmentation' for item in completion['outputs'])
-    assert mask.read_bytes() == before
+    from rtpipeline.stage_completion import _validate_stage_specific_outcome, stage_definition
+    _validate_stage_specific_outcome(course, stage_definition('segmentation'), 'ok', [])
+
 
 
 def test_cli_suppresses_library_identifier_warnings(monkeypatch, capsys, tmp_path):

@@ -623,7 +623,7 @@ def run_custom_models_for_course(
     skipped_models: Dict[str, str] = {}
 
     for model in models:
-        if force or not _model_outputs_ready(course.dirs.root, model):
+        if force or not _model_outputs_ready(course.dirs.root, model, ct_dir=ct_dir):
             # Check body region eligibility before adding to run list
             eligible, reason = _check_custom_model_eligibility(cfg, course.dirs.root, model)
             if not eligible:
@@ -675,12 +675,15 @@ def run_custom_models_for_course(
     sentinel_path.write_text(sentinel_content, encoding="utf-8")
 
 
-def _model_outputs_ready(course_root: Path, model: CustomModelDefinition) -> bool:
+def _model_outputs_ready(course_root: Path, model: CustomModelDefinition, *, ct_dir: Path | None = None) -> bool:
     output_dir = course_root / "Segmentation_CustomModels" / model.name
     if not output_dir.exists():
         return False
     rtstruct_path = output_dir / "rtstruct.dcm"
     if not rtstruct_path.exists():
+        return False
+    from .rtstruct_geometry import geometry_adapter_output_current
+    if ct_dir is not None and not geometry_adapter_output_current(rtstruct_path, ct_dir):
         return False
     expected_structures = model.expected_structures()
     for struct_name in expected_structures:
@@ -1283,6 +1286,7 @@ def _build_rtstruct(
         raise RuntimeError(f"Custom segmentation RTSTRUCT for {ct_dir}: {exc}") from exc
 
     rtstruct.save(str(rtstruct_path))
+    from .rtstruct_geometry import record_geometry_adapter
     sanitize_rtstruct(rtstruct_path)
     try:
         summary = fix_rtstruct_rois(ct_dir, rtstruct_path)
@@ -1306,6 +1310,7 @@ def _build_rtstruct(
     }
     (output_dir / "rtstruct_manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
+    record_geometry_adapter(rtstruct_path, ct_dir)
     return rtstruct_path
 
 

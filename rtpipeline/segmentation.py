@@ -1112,9 +1112,9 @@ def _ensure_model_rtstruct_from_masks(
     """Materialize a missing model RTSTRUCT from validated masks only."""
     target = seg_dir / f"{base_name}--{model}.dcm"
     if target.is_file():
-        from .rtstruct_geometry import dicom_has_unequal_pixel_spacing
+        from .rtstruct_geometry import geometry_adapter_output_current
 
-        if not dicom_has_unequal_pixel_spacing(ct_dir):
+        if geometry_adapter_output_current(target, ct_dir):
             return target
         # Old rt-utils products cannot certify their in-plane spacing. The
         # validated NIfTI masks remain reusable; regenerate this derived file.
@@ -1185,6 +1185,8 @@ def _ensure_model_rtstruct_from_masks(
         if series_data and getattr(rtstruct, "ds", None) is not None:
             place_added_rois_on_planes(rtstruct.ds, series_data)
         _write_rtstruct_atomic(target, rtstruct.save)
+        from .rtstruct_geometry import record_geometry_adapter
+        record_geometry_adapter(target, ct_dir)
         return target if target.is_file() else None
     except Exception as exc:
         logger.warning("Failed to derive %s from masks: %s", target, exc)

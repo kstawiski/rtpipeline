@@ -128,7 +128,7 @@ def test_parallel_worker_records_oversized_crop_without_extraction(
     rp._WORKER_STATE.clear()
     rp._WORKER_STATE.update(
         {
-            "img": Image(),
+            "img": __import__('SimpleITK').Image([30, 20, 40], __import__('SimpleITK').sitkInt16),
             "extractor": Extractor(),
             "config": config,
             "skip_rois": set(),

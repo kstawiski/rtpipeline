@@ -167,11 +167,15 @@ def test_mismatched_nifti_rederived_and_old_masks_stay_stale(tmp_path, dcm2niix,
         (masks / 'metadata.json').write_text(json.dumps({
             'schema': organize.ORIGINAL_SEGMENTATION_SCHEMA,
             'geometry_status': 'exact_physical_mapping',
-            'structures': [{'mask': 'rtstruct/mask.nii.gz'}]}))
+            'source_nifti': str(contract.planning_ct_nifti),
+            'source_rtstruct': str(contract.authoritative_rtstruct_path),
+            'structures': [{'mask': 'rtstruct/mask.nii.gz',
+                'sha256': __import__('hashlib').sha256((masks/'mask.nii.gz').read_bytes()).hexdigest(),
+                'size_bytes': (masks/'mask.nii.gz').stat().st_size}]}))
         require_current_original_mask(masks / 'mask.nii.gz')
     (course / '.segmentation_done').write_text('stale synthetic segmentation marker')
     _refresh(course)
-    mask_before = _files_and_mtimes(masks)
+    mask_before = list(course.rglob('mask.nii.gz'))[0].read_bytes()
     marker_before = (course / '.segmentation_done').read_bytes()
     before = _files_and_mtimes(root)
     dry = repair_output(root, dry_run=True)
@@ -183,21 +187,16 @@ def test_mismatched_nifti_rederived_and_old_masks_stay_stale(tmp_path, dcm2niix,
     contract = load_course_contract(course)
     verify_volume(contract.planning_ct_dir, contract.planning_ct_nifti)
     assert sitk.ReadImage(str(nifti)).GetDimension() == 3
-    assert _files_and_mtimes(masks) == mask_before
+    assert not masks.exists()
+    assert list((course/'Segmentation_Quarantine').rglob('mask.nii.gz'))[0].read_bytes() == mask_before
     assert (course / '.segmentation_done').read_bytes() == marker_before
     evidence = contract.planning_ct['nifti_provenance']['instance_selection']['nifti_repair']
     assert evidence['status'] == 'rederived'
-    assert evidence['segmentation_outputs'] == 'stale_left_in_place'
+    assert evidence['segmentation_outputs'] == 'original_exports_quarantined_organize_invalidated'
     assert evidence['previous_nifti_sha256'] != contract.planning_ct['nifti_provenance']['nifti_sha256']
-    completion = validate_stage_completion_sentinel(course / '.organized', expected_stage='organize')
-    assert completion['stale_original_exports'][0]['path'] == 'Segmentation_Original/rtstruct'
-    assert not any(item['role'] == 'original_segmentation' for item in completion['outputs'])
-    with pytest.raises(ValueError, match='stale'):
-        require_current_original_mask(masks / 'mask.nii.gz')
-    manifest = json.loads((masks / 'metadata.json').read_text()) if export == 'v2' else {}
-    assert not organize._original_masks_reusable(masks, masks.parent, manifest,
-        organize._original_segmentation_provenance(
-            contract.authoritative_rtstruct_path, contract.planning_ct_nifti))[0]
+    assert not (course / '.organized').exists()  # workflow must rerun the export owner
+    from rtpipeline.stage_completion import _validate_stage_specific_outcome, stage_definition
+    _validate_stage_specific_outcome(course, stage_definition('segmentation'), 'ok', [])
     before = _files_and_mtimes(root)
     assert repair_output(root)['unchanged'] == 1
     assert _files_and_mtimes(root) == before
@@ -386,7 +385,10 @@ def test_repair_differing_duplicates_from_complete_references(tmp_path, dcm2niix
         assert item['excluded_rescaled_pixels_sha256'] != item['retained_rescaled_pixels_sha256']
     verify_volume(contract.planning_ct_dir, contract.planning_ct_nifti)
     assert _load(contract.planning_ct_dir).GetSize() == (20, 16, 12)
-    validate_stage_completion_sentinel(course / '.organized', expected_stage='organize')
+    if referenced_copy:
+        assert not (course / '.organized').exists()
+    else:
+        validate_stage_completion_sentinel(course / '.organized', expected_stage='organize')
     before = _files_and_mtimes(root)
     assert repair_output(root)['unchanged'] == 1
     assert _files_and_mtimes(root) == before

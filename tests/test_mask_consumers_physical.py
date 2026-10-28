@@ -76,7 +76,6 @@ def test_conda_mask_serialization(source, tmp_path):
 def test_custom_anchor_and_dice_use_physical_coordinates(source, tmp_path):
     from rtpipeline.segmenters.postprocessing import derive_anchor_from_reference
     from rtpipeline.eval.geometry import dice
-    from rtpipeline.organize import ORIGINAL_SEGMENTATION_SCHEMA, ORIGINAL_PROVENANCE_SCHEMA
     _, _, rt, native = source
     target = tmp_path/'Segmentation_Original/CT_reference'
     target.mkdir(parents=True)
@@ -85,9 +84,8 @@ def test_custom_anchor_and_dice_use_physical_coordinates(source, tmp_path):
     sitk.WriteImage(image, str(path))
     with pytest.raises(ValueError, match='stale'):
         derive_anchor_from_reference(str(path))
-    (target/'metadata.json').write_text(json.dumps({'schema': ORIGINAL_SEGMENTATION_SCHEMA,
-        'geometry_status':'exact_physical_mapping'}))
-    (target/'provenance.json').write_text(json.dumps({'schema':ORIGINAL_PROVENANCE_SCHEMA}))
+    from test_s9c_repairs import bind_export
+    bind_export(tmp_path, [path])
     anchor = derive_anchor_from_reference(str(path))
     center = anchor['affine'] @ np.array([*anchor['centroid_zyx'], 1])
     np.testing.assert_allclose(center[:3], dicom_voxels(rt.get_roi_mask_by_name('Asymmetric'), rt.series_data)[1], atol=1e-5)
@@ -289,6 +287,8 @@ def test_rectangular_and_unequal_spacing_readers_preserve_dicom_voxels(tmp_path,
     reference = sitk.Flip(native.Execute(), [False, True, False])
     path = tmp_path/'reference.nii.gz'
     sitk.WriteImage(reference, str(path))
+    from test_s9c_repairs import write_sidecar
+    write_sidecar(path)
     manifest = _export_original_segmentation_from_paths(rs_path=rs, primary_nifti=path,
         dicom_ct_dir=ct, segmentation_original_dir=tmp_path/'Segmentation_Original',
         log_root=tmp_path, overwrite=False)

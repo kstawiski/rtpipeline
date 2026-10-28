@@ -158,8 +158,11 @@ def test_model_rtstruct_and_copied_rs_auto_keep_mask_x_y_extent(tmp_path, geomet
     _age(ct_dir, course / "NIFTI", seg_dir)
 
     out = ar.build_auto_rtstruct(course)
-    assert out.read_bytes() == total.read_bytes()
-    assert _origin(course)["origin"] == ar.RS_AUTO_ORIGIN_COPY
+    if geometry == SQUARE:
+        assert out.read_bytes() == total.read_bytes()
+        assert _origin(course)["origin"] == ar.RS_AUTO_ORIGIN_COPY
+    else:
+        assert _origin(course)["origin"] == ar.RS_AUTO_ORIGIN_MASKS
     _assert_physical_extent(out, zs, geometry)
 
 
@@ -359,6 +362,8 @@ def test_unequal_pixel_spacing_legacy_product_is_rebuilt(tmp_path, monkeypatch, 
     with pytest.raises(AssertionError):
         _assert_physical_extent(old, zs, ANISOTROPIC)
     if path == 'model_rtstruct':
+        # A historical writer did not publish a current geometry receipt.
+        old.with_suffix('.geometry.json').unlink()
         result = segmentation._ensure_model_rtstruct_from_masks(ct_dir, seg_dir, 'CT_series', 'total')
     else:
         record = _origin(course)

@@ -649,23 +649,24 @@ def _rs_auto_origin_rejection(
 ) -> str:
     """Why an otherwise current RS_auto may carry exchanged x and y; '' to reuse it."""
     record = _read_rs_auto_origin(course_dir, rs_auto)
-    from .rtstruct_geometry import dicom_has_unequal_pixel_spacing
+    from .rtstruct_geometry import dicom_requires_geometry_adapter
 
-    unequal_spacing = dicom_has_unequal_pixel_spacing(ct_dir)
+    needs_adapter = dicom_requires_geometry_adapter(ct_dir)
     if record is not None:
         origin = record.get("origin")
         if origin == RS_AUTO_ORIGIN_COPY:
-            if unequal_spacing:
-                return "a copied RTSTRUCT does not certify unequal in-plane pixel spacing"
+            if needs_adapter:
+                return "a copied RTSTRUCT does not certify rectangular or unequal-spacing geometry"
             return ""
-        if origin == RS_AUTO_ORIGIN_MASKS and record.get("mask_layout") == RS_AUTO_MASK_LAYOUT:
+        if origin == RS_AUTO_ORIGIN_MASKS and (record.get("mask_layout") == RS_AUTO_MASK_LAYOUT
+                or (not needs_adapter and record.get("mask_layout") == "rows-columns-v2")):
             return ""
         return (
             f"its origin record ({origin}, mask layout {record.get('mask_layout')}) "
             "does not name the current mask layout"
         )
-    if unequal_spacing:
-        return "unequal in-plane pixel spacing requires a current mask-built RTSTRUCT"
+    if needs_adapter:
+        return "rectangular or unequal-spacing geometry requires a current mask-built RTSTRUCT"
     try:
         has_contours = any(signature for _name, signature in _rtstruct_contour_signature(rs_auto)[1])
     except Exception as exc:
@@ -1105,11 +1106,11 @@ def build_auto_rtstruct(course_dir: Path) -> Optional[Path]:
                 # holds every ROI. Publish it only when every contour is on its
                 # plane; otherwise rebuild from the masks on the exact planes.
                 on_planes, plane_detail = _rtstruct_plane_check(dicom_seg_path, ct_dir)
-                from .rtstruct_geometry import dicom_has_unequal_pixel_spacing
+                from .rtstruct_geometry import dicom_requires_geometry_adapter
 
-                if dicom_has_unequal_pixel_spacing(ct_dir):
+                if dicom_requires_geometry_adapter(ct_dir):
                     on_planes = False
-                    plane_detail = "copied contours do not certify unequal in-plane pixel spacing"
+                    plane_detail = "copied contours do not certify rectangular or unequal-spacing geometry"
                 if not on_planes:
                     copy_rejection = plane_detail
                     logger.warning(

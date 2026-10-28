@@ -139,17 +139,22 @@ def test_organized_completion_records_stale_exports_without_certifying_them(tmp_
     sentinel = course / '.organized'
     payload = write_stage_completion_sentinel(course, sentinel, stage='organize', status='ok',
                                              configuration_dependency=_dependency(tmp_path, 'organize'))
-    assert not any(item['role'] == 'original_segmentation' for item in payload['outputs'])
-    stale = payload['stale_original_exports']
-    assert len(stale) == 1
-    assert stale[0]['path'] == 'Segmentation_Original/series/rtstruct'
-    assert stale[0]['status'] == 'stale_excluded'
-    assert 'stale' in stale[0]['reason']
+    # Workflow resume accepts organize, then segmentation completion must work.
     assert validate_stage_completion_sentinel(sentinel, expected_stage='organize') == payload
-    assert {path: path.read_bytes() for path in export.iterdir()} == before
-    payload['stale_original_exports'] = []
-    sentinel.write_text(json.dumps(payload))
-    with pytest.raises(ValueError, match='stale original exports changed'):
+    from rtpipeline.stage_completion import _validate_stage_specific_outcome, stage_definition
+    _validate_stage_specific_outcome(course, stage_definition('segmentation'), 'ok', [])
+    assert not any(item['role'] == 'original_segmentation' for item in payload['outputs'])
+    assert payload['stale_original_exports'] == []
+    assert not export.exists()
+    archived = next((course / 'Segmentation_Quarantine').rglob('export'))
+    assert {p.name: p.read_bytes() for p in archived.iterdir()} == {p.name: v for p,v in before.items()}
+    assert validate_stage_completion_sentinel(sentinel, expected_stage='organize') == payload
+    from rtpipeline.stage_completion import _validate_stage_specific_outcome, stage_definition
+    _validate_stage_specific_outcome(course, stage_definition('segmentation'), 'ok', [])
+    # An active stale mask introduced after publication must invalidate organize.
+    export.mkdir(parents=True)
+    mask.write_bytes(b'new stale mask')
+    with pytest.raises(ValueError, match='stale'):
         validate_stage_completion_sentinel(sentinel, expected_stage='organize')
 
 

@@ -78,6 +78,8 @@ _STAGE_DEFINITIONS: dict[str, StageDefinition] = {
             ArtifactRule("organized_related_dicom", "DICOM_related/**/*", "inventory"),
             ArtifactRule("organized_nifti", "NIFTI/**/*", "inventory"),
             ArtifactRule("original_segmentation", "Segmentation_Original/**/*", "inventory"),
+            ArtifactRule("original_segmentation", "Segmentation_Original/**/metadata.json", "content_sha256"),
+            ArtifactRule("original_segmentation", "Segmentation_Original/**/provenance.json", "content_sha256"),
             ArtifactRule("selected_plan_alias", "RP.dcm", "inventory"),
             ArtifactRule("selected_dose_alias", "RD.dcm", "inventory"),
             ArtifactRule("selected_rtstruct_alias", "RS.dcm", "inventory"),
@@ -423,21 +425,21 @@ def _stale_original_exports(course_dir: Path, definition: StageDefinition) -> li
     from .original_segmentation import require_current_original_mask
 
     root = Path(course_dir)
-    directories = {path.parent for path in root.glob("Segmentation_Original/**/*")
-                   if path.is_file() or path.is_symlink()}
     stale = []
-    for directory in sorted(directories):
+    for mask in sorted(root.glob("Segmentation_Original/**/*.nii*")):
         try:
-            require_current_original_mask(directory / "metadata.json")
+            require_current_original_mask(mask)
         except ValueError as exc:
-            stale.append({"path": directory.relative_to(root).as_posix(),
-                          "status": "stale_excluded", "reason": str(exc)})
+            stale.append({"path": mask.parent.relative_to(root).as_posix(),
+                          "status": "stale", "reason": str(exc)})
     return stale
 
 
 def _discover_outputs(course_dir: Path, definition: StageDefinition) -> list[dict[str, Any]]:
     root = Path(course_dir)
-    stale = {item["path"] for item in _stale_original_exports(root, definition)}
+    stale = _stale_original_exports(root, definition)
+    if stale:
+        raise ValueError("Original segmentation is stale: producer export required")
     selected: dict[str, tuple[Path, str, str]] = {}
     for rule in definition.rules:
         allowed = _rule_manifest_paths(root, rule)
@@ -445,8 +447,6 @@ def _discover_outputs(course_dir: Path, definition: StageDefinition) -> list[dic
             if not (candidate.is_file() or candidate.is_symlink()):
                 continue
             relative = candidate.relative_to(root).as_posix()
-            if rule.role == "original_segmentation" and candidate.parent.relative_to(root).as_posix() in stale:
-                continue
             if allowed is not None and relative not in allowed:
                 continue
             previous = selected.get(relative)
@@ -616,6 +616,9 @@ def write_stage_completion_sentinel(
         raise ValueError(
             f"Completion sentinel path mismatch: expected {expected}, got {destination}"
         )
+    if stage_definition(stage).name == "organize" and status == "ok":
+        from .original_segmentation import quarantine_stale_original_exports
+        quarantine_stale_original_exports(Path(course_dir) / "Segmentation_Original")
     payload = stage_completion_payload(
         root,
         stage=stage,

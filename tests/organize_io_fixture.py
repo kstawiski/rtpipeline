@@ -233,6 +233,11 @@ def upgrade_original_export_schema(old, monkeypatch):
         if result is not None:
             result = dict(schema=ORIGINAL_SEGMENTATION_SCHEMA,
                           geometry_status='exact_physical_mapping', **result)
+            import hashlib
+            for structure in result['structures']:
+                mask = kwargs['segmentation_original_dir'] / structure['mask']
+                structure['sha256'] = hashlib.sha256(mask.read_bytes()).hexdigest()
+                structure['size_bytes'] = mask.stat().st_size
             path = kwargs['segmentation_original_dir'] / old._strip_nifti_base(kwargs['primary_nifti']) / 'metadata.json'
             path.write_text(json.dumps(result, indent=2), encoding='utf-8')
         return result

@@ -750,7 +750,10 @@ def _extract_one_with_geometry(task: _RoiTask) -> List[Dict[str, Any]]:
             f"ROI {task.roi_name} structure builder did not provide a mask from {rs_path}"
         )
 
-    mask_bool = mask.astype(bool)
+    import SimpleITK as sitk
+    import numpy as np
+    mask_img = _mask_from_array_like(img, mask.astype(bool), series_data=getattr(builder, "series_data", None))
+    mask_bool = np.moveaxis(sitk.GetArrayFromImage(mask_img), 0, -1) > 0
     if not mask_bool.any():
         raise RadiomicsRegionExtractionError(
             f"ROI {task.roi_name} from {task.source} produced an empty required mask",
@@ -857,7 +860,6 @@ def _extract_one_with_geometry(task: _RoiTask) -> List[Dict[str, Any]]:
     if use_alarm:
         signal.alarm(roi_timeout)
     try:
-        mask_img = _mask_from_array_like(img, mask_bool, series_data=getattr(builder, "series_data", None))
 
         def _factory():
             from .radiomics import _extractor, _extractor_large_roi

@@ -3850,7 +3850,8 @@ def _original_segmentation_provenance(
     series_uid = str(data.get("series_instance_uid") or "").strip()
     sop_hash = str(data.get("sop_hash") or "").strip()
     geometry = data.get("nifti_geometry")
-    if not series_uid or not sop_hash or not isinstance(geometry, dict) or not geometry:
+    if (not series_uid or not sop_hash or not isinstance(geometry, dict) or not geometry
+            or not data.get("nifti_sha256")):
         return None
     try:
         rtstruct_sha256 = hashlib.sha256(rs_path.read_bytes()).hexdigest()
@@ -3908,6 +3909,12 @@ def _original_masks_reusable(
                 return False, f"manifest mask {relative} is missing or empty"
         except OSError as exc:
             return False, f"manifest mask {relative} is unreadable: {exc}"
+    from .original_segmentation import require_current_original_mask
+    try:
+        for mask in target_root.glob("*.nii*"):
+            require_current_original_mask(mask)
+    except ValueError as exc:
+        return False, str(exc)
     return True, f"{len(structures)} original ROI mask(s) match the recorded inputs"
 
 
@@ -3920,11 +3927,18 @@ def _export_original_segmentation_from_paths(
     log_root: Path,
     overwrite: bool,
 ) -> Optional[dict]:
+    seg_root = segmentation_original_dir
+    from .original_segmentation import quarantine_stale_original_exports, quarantine_original_export
+    quarantine_stale_original_exports(seg_root)
     if not rs_path or not rs_path.exists() or not primary_nifti or not primary_nifti.exists():
         return None
-    seg_root = segmentation_original_dir
     base_name = _strip_nifti_base(primary_nifti)
     target_root = seg_root / base_name
+    # Each producer owns this root (all-series uses a separate root per CT).
+    # Even a byte-current old stem is superseded by the selected NIfTI stem.
+    for sibling in sorted(seg_root.iterdir()) if seg_root.exists() else []:
+        if sibling.is_dir() and sibling != target_root:
+            quarantine_original_export(sibling, "superseded NIfTI export stem")
     ensure_dir(target_root)
     manifest_path = target_root / "metadata.json"
     provenance = _original_segmentation_provenance(rs_path, primary_nifti)
@@ -3944,11 +3958,13 @@ def _export_original_segmentation_from_paths(
         logger.info(
             "original_segmentation event=re_export root=%s reason=%s", log_root, reason
         )
-    # Retire stale masks before attempting a new export, including failed attempts.
-    for old_mask in target_root.glob("*.nii*"):
-        old_mask.unlink()
-    manifest_path.unlink(missing_ok=True)
-    (target_root / _ORIGINAL_SEGMENTATION_PROVENANCE).unlink(missing_ok=True)
+    # Keep superseded bytes out of all active consumer globs, including on failure.
+    if any(target_root.iterdir()):
+        quarantine_original_export(target_root, "superseded by producer export")
+        ensure_dir(target_root)
+    if provenance is None:
+        logger.warning("original_segmentation event=provenance_unavailable root=%s", log_root)
+        return None
     try:
         from rt_utils import RTStructBuilder
     except Exception as exc:
@@ -4017,6 +4033,8 @@ def _export_original_segmentation_from_paths(
             {
                 "roi_name": roi_name,
                 "mask": str(out_path.relative_to(seg_root)),
+                "sha256": hashlib.sha256(out_path.read_bytes()).hexdigest(),
+                "size_bytes": out_path.stat().st_size,
             }
         )
 
