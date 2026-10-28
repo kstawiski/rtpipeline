@@ -1050,7 +1050,7 @@ def parallel_radiomics_for_course(
     """Parallel CT radiomics for one course (process isolation)."""
     from .radiomics_runtime import needs_radiomics_process, run_course_driver
     if needs_radiomics_process():
-        output = run_course_driver("ct", course_dir, config, custom_structures_config, allow_all_series_temp=allow_all_series_temp)
+        output = run_course_driver("ct", course_dir, config, custom_structures_config, allow_all_series_temp=allow_all_series_temp, max_workers=max_workers)
         return (outcome_from_output(output) if output is not None
                 else RadiomicsCourseOutcome.nothing_to_do("isolated backend found no eligible ROIs"))
 
@@ -1129,6 +1129,7 @@ def parallel_radiomics_for_course(
             config,
             str(custom_structures_config) if custom_structures_config else None,
             allow_all_series_temp=allow_all_series_temp,
+            max_workers=max_workers,
         )
         if conda_out is None:
             _invalidate_radiomics_outputs(out_path)
@@ -1214,7 +1215,9 @@ def parallel_radiomics_for_course(
             _planning_ct_fov = lambda _path: {}
             _roi_requiredness = lambda _config, _source, _name: Requiredness.INVENTORY_ONLY
         available_custom = {}
-        if rs_custom.is_file():
+        if rs_custom.is_file() and not _is_rs_custom_stale(
+            rs_custom, configured_custom_path, rs_manual, course_dir / "RS_auto.dcm"
+        ):
             try:
                 custom_inventory = inspect_rtstruct(rs_custom)
                 available_custom = {item.name: item for item in custom_inventory.named_rois}

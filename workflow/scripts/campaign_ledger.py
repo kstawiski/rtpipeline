@@ -101,11 +101,12 @@ def close_robustness_upstream_failure(
     sentinel_path: Path,
     *,
     log_path: str | None = None,
+    upstream: str = "radiomics",
 ) -> Path:
-    """Close robustness in campaign mode when upstream radiomics already failed.
+    """Close robustness in campaign mode when an upstream stage already failed.
 
     Records a failed radiomics_robustness ledger row with reason
-    ``upstream_radiomics_failed``, publishes a failed sentinel, and leaves
+    ``upstream_<stage>_failed``, publishes a failed sentinel, and leaves
     the caller to exit 0. Outside campaign mode the Snakefile still exits 1.
     """
     record_path = record(
@@ -116,7 +117,7 @@ def close_robustness_upstream_failure(
         STATUS_FAILED,
         returncode=1,
         log_path=log_path,
-        detail=UPSTREAM_RADIOMICS_FAILED,
+        detail=f"upstream_{upstream}_failed",
     )
     _publish_failed_sentinel(Path(sentinel_path))
     return record_path
@@ -469,6 +470,7 @@ def main(argv: list[str] | None = None) -> int:
     close.add_argument("--course", required=True)
     close.add_argument("--sentinel", required=True)
     close.add_argument("--log-path", default=None)
+    close.add_argument("--upstream", choices=("radiomics", "dvh"), default="radiomics")
 
     close_failed = sub.add_parser(
         "close-robustness-failed",
@@ -514,6 +516,7 @@ def main(argv: list[str] | None = None) -> int:
             args.course,
             Path(args.sentinel),
             log_path=args.log_path,
+            upstream=args.upstream,
         )
         print(path)
         return 0
