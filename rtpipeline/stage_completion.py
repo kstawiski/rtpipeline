@@ -86,6 +86,7 @@ _STAGE_DEFINITIONS: dict[str, StageDefinition] = {
             *_COMMON_CODE_SOURCES,
             "workflow/scripts/organize_courses.py",
             "organize.py",
+            "rtstruct_geometry.py",
             "course_contract.py",
             "prescription.py",
             "clinical_prescription.py",
@@ -459,6 +460,24 @@ def _validate_stage_specific_outcome(
     status: str,
     outputs: Sequence[Mapping[str, Any]],
 ) -> str | None:
+    if definition.name in {"organize", "segmentation"} and status == "ok":
+        from .organize import ORIGINAL_SEGMENTATION_SCHEMA, ORIGINAL_PROVENANCE_SCHEMA
+
+        original = Path(course_dir) / "Segmentation_Original"
+        for mask in original.rglob("*.nii*"):
+            try:
+                metadata = json.loads((mask.parent / "metadata.json").read_text())
+                provenance = json.loads((mask.parent / "provenance.json").read_text())
+            except (OSError, ValueError) as exc:
+                raise ValueError("Original segmentation is stale: missing physical-space provenance") from exc
+            if (metadata.get("schema") != ORIGINAL_SEGMENTATION_SCHEMA
+                    or metadata.get("geometry_status") != "exact_physical_mapping"
+                    or provenance.get("schema") != ORIGINAL_PROVENANCE_SCHEMA):
+                raise ValueError("Original segmentation is stale: physical-space export required")
+        for path in original.rglob("metadata.json"):
+            metadata = json.loads(path.read_text())
+            if metadata.get("geometry_status") == "MASK_GRID_NOT_EQUIVALENT":
+                raise ValueError("Original segmentation geometry was rejected")
     if definition.name != "dvh" or status != "ok":
         return
     roles = {str(item.get("role") or "") for item in outputs}

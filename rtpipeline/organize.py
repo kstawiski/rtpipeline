@@ -3824,33 +3824,9 @@ def _classify_approved_doses(
     )
 
 
-def _mask_array_to_image(ct_img: sitk.Image, mask: np.ndarray) -> Optional[sitk.Image]:
-    arr = np.asarray(mask)
-    if arr.size == 0:
-        return None
-    try:
-        ct_z, ct_y, ct_x = ct_img.GetSize()[2], ct_img.GetSize()[1], ct_img.GetSize()[0]
-    except Exception:
-        size = ct_img.GetSize()
-        ct_z, ct_y, ct_x = size[2], size[1], size[0]
-    if arr.shape == (ct_z, ct_y, ct_x):
-        zyx = arr
-    elif arr.shape == (ct_y, ct_x, ct_z):
-        zyx = np.transpose(arr, (2, 0, 1))
-    elif arr.shape == (ct_x, ct_y, ct_z):
-        zyx = np.transpose(arr, (2, 1, 0))
-    else:
-        logger.debug("Mask shape %s does not match CT shape (%d,%d,%d)", arr.shape, ct_z, ct_y, ct_x)
-        return None
-    zyx = zyx.astype(np.uint8)
-    img = sitk.GetImageFromArray(zyx)
-    img.SetSpacing(ct_img.GetSpacing())
-    img.SetDirection(ct_img.GetDirection())
-    img.SetOrigin(ct_img.GetOrigin())
-    return img
-
-
 _ORIGINAL_SEGMENTATION_PROVENANCE = "provenance.json"
+ORIGINAL_SEGMENTATION_SCHEMA = "rtpipeline-original-segmentation-v2"
+ORIGINAL_PROVENANCE_SCHEMA = "rtpipeline-original-segmentation-provenance-v2"
 _ORIGINAL_PROVENANCE_BOUND_KEYS = (
     "schema",
     "source_rtstruct_sha256",
@@ -3881,7 +3857,7 @@ def _original_segmentation_provenance(
     except OSError:
         return None
     return {
-        "schema": "rtpipeline-original-segmentation-provenance-v1",
+        "schema": ORIGINAL_PROVENANCE_SCHEMA,
         "source_rtstruct_sha256": rtstruct_sha256,
         "planning_ct_series_instance_uid": series_uid,
         "source_ct_sop_hash": sop_hash,
@@ -3912,6 +3888,8 @@ def _original_masks_reusable(
             return False, f"recorded {key} does not match the current input"
     if not isinstance(manifest, dict):
         return False, "the existing manifest is not an object"
+    if manifest.get("schema") != ORIGINAL_SEGMENTATION_SCHEMA or manifest.get("geometry_status") != "exact_physical_mapping":
+        return False, "original export lacks verified physical geometry"
     structures = manifest.get("structures")
     if not isinstance(structures, list) or not structures:
         return False, "the existing manifest lists no structures"
@@ -3966,6 +3944,11 @@ def _export_original_segmentation_from_paths(
         logger.info(
             "original_segmentation event=re_export root=%s reason=%s", log_root, reason
         )
+    # Retire stale masks before attempting a new export, including failed attempts.
+    for old_mask in target_root.glob("*.nii*"):
+        old_mask.unlink()
+    manifest_path.unlink(missing_ok=True)
+    (target_root / _ORIGINAL_SEGMENTATION_PROVENANCE).unlink(missing_ok=True)
     try:
         from rt_utils import RTStructBuilder
     except Exception as exc:
@@ -3989,6 +3972,8 @@ def _export_original_segmentation_from_paths(
 
     used_names: dict[str, int] = {}
     manifest = {
+        "schema": ORIGINAL_SEGMENTATION_SCHEMA,
+        "geometry_status": "exact_physical_mapping",
         "model": "manual",
         "source_rtstruct": str(rs_path),
         "source_nifti": str(primary_nifti),
@@ -4005,9 +3990,17 @@ def _export_original_segmentation_from_paths(
         mask_bool = np.asarray(mask).astype(bool)
         if not np.any(mask_bool):
             continue
-        sitk_mask = _mask_array_to_image(ct_img, mask_bool)
-        if sitk_mask is None:
-            continue
+        from .rtstruct_geometry import rtstruct_mask_to_image
+
+        try:
+            sitk_mask = rtstruct_mask_to_image(mask_bool, builder.series_data, ct_img)
+        except (ValueError, AttributeError) as exc:
+            for exported in target_root.glob("*.nii*"):
+                exported.unlink()
+            manifest.update(geometry_status="MASK_GRID_NOT_EQUIVALENT", structures=[], detail=str(exc))
+            manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+            logger.warning("original_segmentation event=geometry_rejected: %s", exc)
+            return None
         safe = _sanitize_name(roi_name, "ROI")
         idx = used_names.get(safe, 0)
         used_names[safe] = idx + 1
