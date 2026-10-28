@@ -20,7 +20,7 @@ from rtpipeline.nifti_provenance import annotate
 from rtpipeline.planning_ct_localizers import PlanningCTLocalizerError, select_localizers, verify_volume
 from rtpipeline.repair_planning_ct_localizers import repair_output
 from rtpipeline.stage_completion import validate_stage_completion_sentinel, write_stage_completion_sentinel
-from test_ct_series_hygiene import _duplicate, _localizer, _rtstruct
+from test_ct_series_hygiene import _duplicate, _localizer, _rtstruct, _rtstruct_dual
 from test_nifti_nonuniform_fallback import _config, _tree_digest, dcm2niix
 from test_planning_ct_localizers import _files_and_mtimes, _load, _organized_course
 from synthetic_ct_series import write_ct_series, uniform_z_positions
@@ -347,7 +347,7 @@ def test_repair_differing_duplicates_from_complete_references(tmp_path, dcm2niix
     course = _organized_course(root, dcm2niix, localizer=localizers)
     paths, added = _copies(course, copies, differing=True)
     refs = added[:12] if referenced_copy else paths
-    _rtstruct(course / 'RS.dcm', refs)
+    _rtstruct_dual(course / 'RS.dcm', refs, refs)
     _refresh(course)
     expected_pixels = {str(pydicom.dcmread(p).SOPInstanceUID): hashlib.sha256(_pixels(p)).hexdigest()
                        for p in paths + added}
@@ -393,6 +393,8 @@ def test_differing_duplicates_refuse_incomplete_or_ambiguous_authority(tmp_path,
         from course_contract_test_utils import write_synthetic_rtstruct
         write_synthetic_rtstruct(course / 'RS.dcm', referenced_series_uid=str(pydicom.dcmread(paths[0]).SeriesInstanceUID))
     if mode == 'irregular':
+        # Complete image authority isolates the irregular-geometry refusal.
+        _rtstruct_dual(course / 'RS.dcm', refs, refs)
         for path in (paths[-1], added[-1]):
             ds = pydicom.dcmread(path)
             ds.ImagePositionPatient[2] += 1
@@ -430,7 +432,8 @@ def test_orientation_partition_selection_and_reference_refusal(tmp_path, dcm2nii
     added = _orientation_partition(paths)
     if duplicates:
         _copies(course, differing=True)
-    _rtstruct(course / 'RS.dcm', paths + added[:1] if spanning else paths)
+    refs = paths + added[:1] if spanning else paths
+    _rtstruct_dual(course / 'RS.dcm', refs, refs)
     _refresh(course)
     before = _files_and_mtimes(root)
     dry = repair_output(root, dry_run=True)
@@ -457,6 +460,7 @@ def test_contract_reverifies_reference_authorized_exclusions(tmp_path, dcm2niix,
     course = _organized_course(root, dcm2niix, localizer=False)
     paths, _ = _copies(course, differing=True)
     _orientation_partition(paths)
+    _rtstruct_dual(course / 'RS.dcm', paths, paths)
     _refresh(course)
     assert repair_output(root)['repaired'] == 1
     contract = load_course_contract(course)
