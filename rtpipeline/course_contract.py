@@ -870,7 +870,11 @@ def _validate_nifti_provenance(
             raise CourseContractError("stale planning CT conversion evidence: sidecar differs from contract")
     if isinstance(conversion, dict) and conversion.get("method") == CT_HYGIENE_METHOD:
         try:
-            _, expected_selection = select_ct_instances(ct_dir, contract.authoritative_rtstruct_path)
+            _, expected_selection = select_ct_instances(
+                ct_dir,
+                contract.authoritative_rtstruct_path,
+                stack_override=conversion.get("stack_override"),
+            )
         except CTSeriesHygieneError as exc:
             raise CourseContractError(f"stale planning CT conversion evidence: {exc.reason_code}") from exc
         expected_selection["status"] = "converted"

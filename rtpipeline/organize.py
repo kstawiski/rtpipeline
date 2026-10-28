@@ -1115,7 +1115,19 @@ def _ensure_planning_ct_nifti(config, ct_dir, nifti_dir, **kwargs):
     from .planning_ct_localizers import (
         METHOD, PlanningCTLocalizerError, select_localizers, verify_volume,
     )
+    from .segmentation import _collect_series_metadata, _resolve_planning_ct_stack_override
     evidence = kwargs.get("conversion_evidence")
+    override = _resolve_planning_ct_stack_override(
+        config,
+        ct_dir,
+        _collect_series_metadata(ct_dir) if getattr(config, "planning_ct_stack_overrides", None) else {},
+        course_key=kwargs.get("course_key"),
+        stack_override=kwargs.get("stack_override"),
+    )
+    if override is not None:
+        return _ensure_ct_nifti(
+            config, ct_dir, nifti_dir, require_hygiene=True, **kwargs
+        )
     try:
         excluded, selection = select_localizers(ct_dir, kwargs.get("authoritative_rtstruct"))
         if selection is None:
@@ -1132,6 +1144,10 @@ def _ensure_planning_ct_nifti(config, ct_dir, nifti_dir, **kwargs):
         sidecar.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
         return result
     except PlanningCTLocalizerError as exc:
+        if exc.reason_code != "ct_localizer_referenced_by_rtstruct":
+            return _ensure_ct_nifti(
+                config, ct_dir, nifti_dir, require_hygiene=True, **kwargs
+            )
         if evidence is not None:
             evidence.update(method=METHOD, status="refused", reason_code=exc.reason_code)
         logger.error("Planning CT publication refused: %s", exc.reason_code)
@@ -5903,6 +5919,7 @@ def organize_and_merge(
                     force=bool(config.resume),
                     authoritative_rtstruct=struct_path,
                     conversion_evidence=planning_ct_conversion,
+                    course_key=f"{patient_id}/{course_id}",
                 )
             except Exception as exc:
                 logger.warning("CT NIfTI conversion failed for %s: %s", course_dir, exc)
@@ -6225,6 +6242,7 @@ def organize_and_merge(
                         force=bool(config.resume),
                         authoritative_rtstruct=primary_struct,
                         conversion_evidence=planning_ct_conversion,
+                        course_key=f"{patient_id}/{course_id}",
                     )
                 except Exception as exc:
                     logger.warning("CT NIfTI conversion failed (RS-only) for %s: %s", course_dir, exc)

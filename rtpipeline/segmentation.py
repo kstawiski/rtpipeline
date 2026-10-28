@@ -923,6 +923,35 @@ def _collect_series_metadata(ct_dir: Path) -> dict:
     return metadata
 
 
+def _resolve_planning_ct_stack_override(
+    config: PipelineConfig,
+    ct_dir: Path,
+    metadata: dict[str, Any],
+    *,
+    course_key: str | None = None,
+    stack_override: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    if stack_override is not None:
+        return stack_override
+    overrides = getattr(config, "planning_ct_stack_overrides", None)
+    if not isinstance(overrides, dict) or not overrides:
+        return None
+    candidate_keys: list[str] = []
+    if course_key:
+        candidate_keys.append(str(course_key).strip())
+    if ct_dir.name == "CT" and ct_dir.parent.name == "DICOM" and len(ct_dir.parents) >= 4:
+        inferred = f"{ct_dir.parents[2].name}/{ct_dir.parents[1].name}"
+        if inferred not in candidate_keys:
+            candidate_keys.append(inferred)
+    series_uid = str(metadata.get("series_instance_uid") or "").strip()
+    if series_uid and series_uid not in candidate_keys:
+        candidate_keys.append(series_uid)
+    for key in candidate_keys:
+        if key in overrides:
+            return overrides[key]
+    return None
+
+
 def _ensure_ct_nifti(
     config: PipelineConfig,
     ct_dir: Path,
@@ -931,6 +960,10 @@ def _ensure_ct_nifti(
     dcm2niix_depth: int | None = None,
     authoritative_rtstruct: Path | None = None,
     conversion_evidence: dict[str, Any] | None = None,
+    *,
+    course_key: str | None = None,
+    stack_override: dict[str, Any] | None = None,
+    require_hygiene: bool = False,
 ) -> Optional[Path]:
     nifti_dir.mkdir(parents=True, exist_ok=True)
     metadata = _collect_series_metadata(ct_dir)
@@ -965,6 +998,13 @@ def _ensure_ct_nifti(
         except Exception:
             existing_sidecar = {}
 
+    effective_stack_override = _resolve_planning_ct_stack_override(
+        config,
+        ct_dir,
+        metadata,
+        course_key=course_key,
+        stack_override=stack_override,
+    )
     regenerated = not target.exists() or force
     conversion: Optional[dict[str, Any]] = None
     if regenerated:
@@ -973,8 +1013,14 @@ def _ensure_ct_nifti(
             shutil.rmtree(tmp_dir)
         tmp_dir.mkdir(parents=True, exist_ok=True)
         try:
-            generated = run_dcm2niix(config, ct_dir, tmp_dir, recursive_depth=dcm2niix_depth)
-            if generated is None:
+            skip_native = require_hygiene or effective_stack_override is not None
+            generated = (
+                None
+                if skip_native
+                else run_dcm2niix(config, ct_dir, tmp_dir, recursive_depth=dcm2niix_depth)
+            )
+            prefer_hygiene = skip_native or authoritative_rtstruct is not None
+            if generated is None and not prefer_hygiene:
                 fallback = convert_nonuniform_unsigned_ct(
                     ct_dir,
                     tmp_dir,
@@ -985,17 +1031,35 @@ def _ensure_ct_nifti(
             if generated is None:
                 try:
                     generated, conversion = convert_ct_series_hygiene(
-                        ct_dir, tmp_dir,
+                        ct_dir,
+                        tmp_dir,
                         lambda source, out: run_dcm2niix(config, source, out, recursive_depth=0),
                         authoritative_rtstruct,
+                        stack_override=effective_stack_override,
                     )
                 except CTSeriesHygieneError as exc:
-                    if conversion_evidence is not None:
-                        conversion_evidence.update(
-                            method=CT_HYGIENE_METHOD, status="refused", reason_code=exc.reason_code,
+                    if (
+                        not skip_native
+                        and prefer_hygiene
+                        and exc.reason_code == "ct_hygiene_no_safe_exclusions"
+                    ):
+                        fallback = convert_nonuniform_unsigned_ct(
+                            ct_dir,
+                            tmp_dir,
+                            lambda source, out: run_dcm2niix(config, source, out, recursive_depth=0),
                         )
-                    logger.error("CT conversion refused: %s", exc.reason_code)
-                    return None
+                        if fallback is not None:
+                            generated, conversion = fallback
+                    if generated is None:
+                        if conversion_evidence is not None:
+                            conversion_evidence.update(
+                                method=CT_HYGIENE_METHOD,
+                                status="refused",
+                                reason_code=exc.reason_code,
+                                **exc.evidence,
+                            )
+                        logger.error("CT conversion refused: %s", exc.reason_code)
+                        return None
             if target.exists():
                 target.unlink()
             shutil.move(str(generated), str(target))
