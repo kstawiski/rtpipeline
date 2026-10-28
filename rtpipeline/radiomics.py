@@ -4750,7 +4750,10 @@ def run_radiomics_all_series(config: PipelineConfig, patient_ids: List[str]) -> 
     For every eligible CT-class series in each patient's all_series manifest, a real temporary
     course-shaped tree is materialized (``DICOM/CT/`` slices + ``RS_auto.dcm`` <- the per-series
     TotalSegmentator ``{base}--{task}.dcm``), the per-course CT radiomics worker is run on it, and
-    ``radiomics_ct.xlsx`` is read back and tagged with provenance. The temp tree is deleted on series
+    ``radiomics_ct.xlsx`` is read back and tagged with provenance. Configured custom structures
+    are built here in the main NumPy 2/OpenCV 5 runtime from the series' automatic RTSTRUCT,
+    before guarded extraction in the pinned radiomics runtime. Unavailable source structures
+    retain the builder's explicit dispositions. The temp tree is deleted on series
     completion. Output is aggregated to ``Data/radiomics_all_series.csv`` with columns
     patient_id / series_uid / study_uid / image_class / is_4d_phase / series_dir.
 
@@ -4841,6 +4844,21 @@ def run_radiomics_all_series(config: PipelineConfig, patient_ids: List[str]) -> 
                 if not _materialize_temp_course_tree(course_dir, input_dir, rtstruct_path):
                     logger.info("No CT slices to radiomic for patient %s series %s; skipping", patient_id, series_uid)
                     continue
+                # This dispatcher runs in the main runtime. Publish custom ROIs
+                # before extraction crosses into the pinned radiomics runtime.
+                # The builder also records source-unavailable outcomes for
+                # configured structures that do not apply to this series.
+                custom_config = getattr(config, "custom_structures_config", None)
+                if custom_config:
+                    from .custom_structures_rtstruct import _create_custom_structures_rtstruct
+
+                    published = _create_custom_structures_rtstruct(
+                        course_dir, custom_config, rs_auto=course_dir / "RS_auto.dcm"
+                    )
+                    if published is None:
+                        raise RadiomicsCourseExtractionError(
+                            f"All-series custom structures could not be built for {course_dir}"
+                        )
                 out_path = _dispatch_radiomics_for_course(config, course_dir)
                 if not out_path or not Path(out_path).exists():
                     continue
