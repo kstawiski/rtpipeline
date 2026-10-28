@@ -208,6 +208,21 @@ class EnvironmentAndProvenanceTests(unittest.TestCase):
                           result(2, known), result(1, ""), result(1, known, "pip failed")):
             self.assertTrue(dependency_errors(candidate))
 
+    def test_dependency_check_allows_only_absent_main_runtime_dependencies(self):
+        from rtpipeline import __version__
+        result = lambda line: subprocess.CompletedProcess([], 1, line, "")
+        for name in ("dicom2nifti", "dicompyler-core", "ipython", "nbformat", "nested-lookup",
+                     "opencv-python", "plotly", "totalsegmentator", "xgboost"):
+            with self.subTest(name=name):
+                line = f"rtpipeline {__version__} requires {name}, which is not installed."
+                self.assertEqual(dependency_errors(result(line)), [])
+        for name in ("numpy", "pydicom", "SimpleITK", "pyarrow", "rt-utils", "unknown"):
+            with self.subTest(name=name):
+                line = f"rtpipeline {__version__} requires {name}, which is not installed."
+                self.assertTrue(dependency_errors(result(line)))
+        conflict = f"rtpipeline {__version__} has requirement opencv-python==5.0.0.93, but you have opencv-python 4.11.0."
+        self.assertTrue(dependency_errors(result(conflict)))
+
     def test_environment_check_prints_guard_repair_commands(self):
         from contextlib import redirect_stderr
         from io import StringIO

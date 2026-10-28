@@ -54,7 +54,10 @@ def _require_segmentation_content(workflow: Any, course_dir: Path) -> str:
     from rtpipeline.stage_completion import validate_stage_completion_sentinel
 
     configfile = getattr(workflow.params, "configfile", None)
-    configuration = yaml.safe_load(Path(configfile).read_text()) if configfile else {}
+    configuration = (
+        yaml.safe_load(Path(configfile).read_text())
+        if configfile and Path(configfile).is_file() else {}
+    )
     if (configuration or {}).get("segmentation", {}).get("enabled", True) is False:
         receipt = validate_stage_completion_sentinel(
             course_dir / ".segmentation_done", expected_stage="segmentation",
