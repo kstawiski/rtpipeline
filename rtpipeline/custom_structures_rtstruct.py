@@ -10,6 +10,8 @@ staleness logic with minimal imports.
 
 from __future__ import annotations
 
+from .radiomics_rasterizer import opencv_runtime_provenance
+
 import fcntl
 import hashlib
 import json
@@ -1200,6 +1202,7 @@ def _create_custom_structures_rtstruct_unlocked(
             if config_path and Path(config_path).is_file():
                 config_sha256 = hashlib.sha256(Path(config_path).read_bytes()).hexdigest()
             meta_payload = {
+                "opencv_runtime": opencv_runtime_provenance(),
                 "version": _RS_CUSTOM_META_VERSION,
                 "generator_code_sha256": rs_custom_generator_sha256(),
                 "base_source": base_source,

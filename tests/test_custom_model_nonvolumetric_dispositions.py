@@ -257,6 +257,13 @@ def test_point_disposition_is_not_measurement_or_technical_exclusion(tmp_path, m
 @pytest.mark.parametrize("change", ["source_bytes", "code_revision", "unchanged"])
 def test_nonmeasurement_resume_checks_content_and_rebuilds_ledger(tmp_path, monkeypatch, change):
     course, source, dataset, config = _course(tmp_path, monkeypatch)
+    from rtpipeline import radiomics_ct_contract
+    monkeypatch.setattr(radiomics_ct_contract, "_rasterizer_columns", lambda: {
+        "rasterizer_backend": "rt-utils/cv2.fillPoly",
+        "rasterizer_opencv_version": "4.8.1",
+        "rasterizer_rt_utils_version": "1.2.7",
+        "rasterizer_providers": '{"opencv-python-headless": "4.8.1.78"}',
+    })
     radiomics.radiomics_for_course(config, course)
     first = radiomics.read_authoritative_ct_publication(course / "radiomics_ct.parquet")
     first_run = set(first.run_identifier)

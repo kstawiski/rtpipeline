@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 
 RASTERIZER_PROVENANCE_FIELDS = frozenset({
+    "rasterizer_providers", "rasterizer_probe_error",
     "rasterizer", "rasterizer_backend", "rasterizer_opencv_version",
     "rasterizer_opencv_path", "rasterizer_rt_utils_version", "environment_fingerprint",
 })

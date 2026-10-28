@@ -5730,7 +5730,7 @@ def robustness_for_course(
     from .stage_completion import execution_environment_fingerprint
 
     for _col_name, _col_val in (
-        *_rasterizer_columns().items(),
+        *_rasterizer_columns("nifti/no-polygon-fill" if _use_nifti_masks else None).items(),
         ("environment_fingerprint", execution_environment_fingerprint()),
     ):
         combined_df[_col_name] = _col_val

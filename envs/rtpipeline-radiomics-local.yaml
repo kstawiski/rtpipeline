@@ -28,7 +28,6 @@ dependencies:
   - wheel
   - pip
   - pip:
-    - "numpy<2.0"
     - dataclasses  # rt-utils declares this backport even on Python 3.10
     # Single OpenCV provider pinned for reproducible cv2.fillPoly RTSTRUCT rasterization.
     # rt-utils==1.2.7 is installed in scripts/install_local.sh with `pip install --no-deps`.

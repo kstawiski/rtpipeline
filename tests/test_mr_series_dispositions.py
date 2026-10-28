@@ -111,6 +111,14 @@ def _env(monkeypatch, tmp_path, *, fail_mask_coord=None, image=_IMAGE):
     rs = _write_rs(tmp_path / "input" / "RS_manual.dcm")
     out_root = tmp_path / PATIENT / f"MR_{SERIES_UID}"
     out_feat = out_root / "radiomics_features_MR.xlsx"
+    # These synthetic readers/extractors represent a pinned measurement runtime.
+    from rtpipeline import radiomics_ct_contract
+    monkeypatch.setattr(radiomics_ct_contract, "_rasterizer_columns", lambda: {
+        "rasterizer_backend": "rt-utils/cv2.fillPoly",
+        "rasterizer_opencv_version": "4.8.1",
+        "rasterizer_rt_utils_version": "1.2.7",
+        "rasterizer_providers": '{"opencv-python-headless": "4.8.1.78"}',
+    })
     extractor = _Extractor(fail_mask_coord=fail_mask_coord)
     monkeypatch.setattr(radiomics, "_extractor", lambda *_a, **_k: extractor)
     monkeypatch.setattr(radiomics, "_load_series_image", lambda *_a, **_k: image)

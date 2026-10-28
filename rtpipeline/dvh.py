@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .radiomics_rasterizer import opencv_runtime_provenance
+
 import copy
 from dataclasses import dataclass
 import hashlib
@@ -2783,6 +2785,7 @@ def _write_dvh_qc(
         }
     meta_dir = course_dir / "metadata"
     meta_dir.mkdir(parents=True, exist_ok=True)
+    payload["opencv_runtime"] = opencv_runtime_provenance()
     (meta_dir / "dvh_qc.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
@@ -2841,6 +2844,7 @@ def _write_dvh_skip_qc(
         }
     meta_dir = course_dir / "metadata"
     meta_dir.mkdir(parents=True, exist_ok=True)
+    payload["opencv_runtime"] = opencv_runtime_provenance()
     (meta_dir / "dvh_qc.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 

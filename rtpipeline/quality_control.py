@@ -1,6 +1,8 @@
 """Quality control and validation functions for DICOM-RT processing pipeline."""
 
 from __future__ import annotations
+
+from .radiomics_rasterizer import opencv_runtime_provenance
 import logging
 import hashlib
 import json
@@ -110,6 +112,7 @@ class DICOMValidator:
     def validate_all(self) -> Dict[str, Any]:
         """Run all validation checks and return summary."""
         results = {
+            "opencv_runtime": opencv_runtime_provenance(),
             "patient_id": self.course_dir.parent.name,
             "course_id": self.course_dir.name,
             "timestamp": datetime.now().isoformat(),

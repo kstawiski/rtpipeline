@@ -252,7 +252,9 @@ def test_radiomics_environment_fingerprint_includes_active_rasterizer() -> None:
         "simpleitk": version("SimpleITK"),
         "pyradiomics": version("pyradiomics"),
         "pyarrow": version("pyarrow"),
-        "rasterizer": rasterizer,
+        "rasterizer": {key: rasterizer.get(key) for key in (
+            "providers", "opencv_version", "rt_utils_version", "triangle_hex",
+        )},
     }
     expected = hashlib.sha256(
         json.dumps(legacy, sort_keys=True, separators=(",", ":")).encode("utf-8")

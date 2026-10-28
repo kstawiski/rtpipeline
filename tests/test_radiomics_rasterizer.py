@@ -88,6 +88,23 @@ class RasterizerContractTests(unittest.TestCase):
                     with self.assertRaisesRegex(rasterizer.RadiomicsRasterizerError, "single"):
                         rasterizer.require_radiomics_rasterizer(cv2_module=fake_cv2())
 
+    def test_rejects_rt_utils_distribution_mismatch(self):
+        for version in (None, "1.2.6", "1.3.0"):
+            with self.subTest(version=version):
+                with patch.object(rasterizer, "_dist_version", side_effect=lambda name: (
+                    version if name == "rt-utils" else pinned_version(name))):
+                    with self.assertRaisesRegex(rasterizer.RadiomicsRasterizerError, "rt-utils==1.2.7"):
+                        rasterizer.require_radiomics_rasterizer(cv2_module=fake_cv2())
+
+    def test_repair_commands_name_all_providers_and_no_deps(self):
+        with patch.object(rasterizer, "_dist_version", return_value=None):
+            with self.assertRaises(rasterizer.RadiomicsRasterizerError) as caught:
+                rasterizer.require_radiomics_rasterizer(cv2_module=fake_cv2())
+        message = str(caught.exception)
+        self.assertIn("python -m pip uninstall -y opencv-python opencv-python-headless "
+                      "opencv-contrib-python opencv-contrib-python-headless", message)
+        self.assertIn("python -m pip install --no-deps opencv-python-headless==4.8.1.78", message)
+
     def test_rejects_missing_provider_and_import_failure(self):
         with patch.object(rasterizer, "_dist_version", return_value=None):
             with self.assertRaises(rasterizer.RadiomicsRasterizerError):
@@ -97,11 +114,13 @@ class RasterizerContractTests(unittest.TestCase):
         with self.assertRaisesRegex(rasterizer.RadiomicsRasterizerError, "TypeError"):
             rasterizer.require_radiomics_rasterizer(cv2_module=broken)
 
-    def test_fingerprint_changes_with_active_binary_path_and_fill(self):
+    def test_fingerprint_ignores_binary_path_but_changes_with_fill(self):
         first = fake_cv2()
         with patch.dict(sys.modules, {"cv2": first}):
             original = execution_environment_fingerprint()
             first.__file__ = "/other/cv2/__init__.py"
+            self.assertEqual(original, execution_environment_fingerprint())
+        with patch.dict(sys.modules, {"cv2": fake_cv2(version="4.11.0")}):
             self.assertNotEqual(original, execution_environment_fingerprint())
         with patch.dict(sys.modules, {"cv2": fake_cv2(pixels=21)}):
             self.assertNotEqual(original, execution_environment_fingerprint())
@@ -185,6 +204,24 @@ class EnvironmentAndProvenanceTests(unittest.TestCase):
         for candidate in (result(1, known + "rt-utils 1.2.7 requires dataclasses, which is not installed."),
                           result(2, known), result(1, ""), result(1, known, "pip failed")):
             self.assertTrue(dependency_errors(candidate))
+
+    def test_environment_check_prints_guard_repair_commands(self):
+        from contextlib import redirect_stderr
+        from io import StringIO
+        from scripts import check_radiomics_environment as checker
+        with patch.object(rasterizer, "_dist_version", return_value=None):
+            try:
+                rasterizer.require_radiomics_rasterizer(cv2_module=fake_cv2())
+            except rasterizer.RadiomicsRasterizerError as exc:
+                error = exc
+        output = StringIO()
+        with patch.object(checker, "require_radiomics_rasterizer", side_effect=error):
+            with redirect_stderr(output):
+                self.assertEqual(checker.main(), 1)
+        self.assertIn("python -m pip uninstall -y opencv-python opencv-python-headless "
+                      "opencv-contrib-python opencv-contrib-python-headless\n", output.getvalue())
+        self.assertIn("python -m pip install --no-deps opencv-python-headless==4.8.1.78\n",
+                      output.getvalue())
 
     def test_recorded_columns_survive_preparer_feature_runtime_boundary(self):
         from rtpipeline.radiomics_schema import RADIOMICS_TEXT_COLUMNS
@@ -281,7 +318,9 @@ print(json.dumps(dict(info=info, rejected=rejected, user_site=site.ENABLE_USER_S
         self.assertEqual(payload["nousersite"], "1")
         info = payload["info"]
         self.assertTrue(info["opencv_path"])
-        supported = info["pinned_convention"] and info["providers"] == {"opencv-python-headless": "4.8.1.78"}
+        supported = (info["pinned_convention"]
+                     and info["rt_utils_version"] == "1.2.7"
+                     and info["providers"] == {"opencv-python-headless": "4.8.1.78"})
         self.assertEqual(payload["rejected"], not supported)
 
 

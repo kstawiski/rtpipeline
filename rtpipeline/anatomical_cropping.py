@@ -10,6 +10,8 @@ cross-patient comparison and statistical analysis.
 
 from __future__ import annotations
 
+from .radiomics_rasterizer import opencv_runtime_provenance
+
 import json
 import logging
 import warnings
@@ -1034,6 +1036,7 @@ def apply_systematic_cropping(
     if rs_auto_cropped:
         logger.info(f"Created cropped RTSTRUCT: {rs_auto_cropped}")
         metadata['rs_auto_cropped'] = str(rs_auto_cropped)
+        metadata['opencv_runtime'] = opencv_runtime_provenance()
 
         # Save updated metadata
         with open(metadata_path, 'w') as f:

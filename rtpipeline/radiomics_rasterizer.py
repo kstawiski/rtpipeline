@@ -1,9 +1,10 @@
 """The OpenCV convention used to turn RTSTRUCT polygons into radiomics masks."""
 from __future__ import annotations
 
+import json
 from importlib import metadata
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 import numpy as np
 
@@ -77,15 +78,66 @@ def require_radiomics_rasterizer(*, cv2_module: Any = None) -> dict[str, Any]:
     providers_ok = info["providers"] == {
         "opencv-python-headless": EXPECTED_OPENCV_DIST_VERSION,
     }
-    if info["pinned_convention"] and providers_ok:
+    if (info["pinned_convention"] and providers_ok
+            and info["rt_utils_version"] == EXPECTED_RT_UTILS_VERSION):
         return info
     raise RadiomicsRasterizerError(
         "RTSTRUCT rasterization requires a single opencv-python-headless==4.8.1.78 "
-        "provider (cv2 4.8.1) and the exact 23-pixel reference triangle. "
+        "provider (cv2 4.8.1), rt-utils==1.2.7, and the exact 23-pixel reference triangle. "
         f"Imported cv2 {info['opencv_version']!r} at {info['opencv_path']!r}; "
         f"reference triangle filled {info['triangle_pixels']!r} pixels "
         f"(expected 23), mask={info['triangle_hex']!r}; "
-        f"providers={info['providers']!r}; probe error={info['error']!r}. "
-        "Recreate the isolated radiomics environment, install rt-utils==1.2.7 "
-        "with --no-deps, and launch Python with PYTHONNOUSERSITE=1."
+        f"providers={info['providers']!r}; rt-utils={info['rt_utils_version']!r}; "
+        f"probe error={info['error']!r}. "
+        "In the isolated radiomics interpreter run:\n"
+        "python -m pip uninstall -y opencv-python opencv-python-headless "
+        "opencv-contrib-python opencv-contrib-python-headless\n"
+        "python -m pip install --no-deps opencv-python-headless==4.8.1.78\n"
+        "python -m pip install --no-deps rt-utils==1.2.7\n"
+        "Launch Python with PYTHONNOUSERSITE=1."
     )
+
+
+def mask_backend(record: Mapping[str, Any]) -> str:
+    """Identify loaders that use stored voxels rather than polygon filling."""
+    source = str(record.get("segmentation_source", "")).lower()
+    path = str(record.get("mask_path_source", "")).lower()
+    backend = str(record.get("rasterizer_backend", ""))
+    if backend in {"nifti/no-polygon-fill", "dicom-seg/no-polygon-fill"}:
+        return backend
+    if source == "autots_total_nifti_fallback" or path.endswith((".nii", ".nii.gz")):
+        return "nifti/no-polygon-fill"
+    if source in {"dicom_seg", "dicom-seg"}:
+        return "dicom-seg/no-polygon-fill"
+    # Historical MR auto rows explicitly name the stored voxel source.
+    if "totalsegmentator_total_mr_nifti" in path:
+        return "nifti/no-polygon-fill"
+    if "totalsegmentator_total_mr" in path and path.endswith(".dcm"):
+        return "dicom-seg/no-polygon-fill"
+    return RASTERIZER_BACKEND
+
+
+def recorded_rasterizer_is_current(record: Mapping[str, Any]) -> bool:
+    """Missing polygon provenance requires recomputation, never inference."""
+    if mask_backend(record) != RASTERIZER_BACKEND:
+        return True
+    try:
+        providers = json.loads(str(record.get("rasterizer_providers", "")))
+    except (TypeError, ValueError):
+        return False
+    return (
+        str(record.get("rasterizer_opencv_version")) == EXPECTED_OPENCV_VERSION
+        and str(record.get("rasterizer_rt_utils_version")) == EXPECTED_RT_UTILS_VERSION
+        and providers == {"opencv-python-headless": EXPECTED_OPENCV_DIST_VERSION}
+    )
+
+
+def require_recorded_rasterizer(record: Mapping[str, Any]) -> None:
+    if not recorded_rasterizer_is_current(record):
+        raise ValueError("recorded RTSTRUCT rasterizer identity is missing or stale")
+
+
+def opencv_runtime_provenance() -> dict[str, Any]:
+    """Record the imported main-runtime binary without imposing a radiomics pin."""
+    info = active_radiomics_rasterizer()
+    return {key: info[key] for key in ("opencv_version", "opencv_path", "providers", "error")}

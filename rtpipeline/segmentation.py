@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .radiomics_rasterizer import opencv_runtime_provenance
+
 import datetime
 import functools
 import io
@@ -1196,6 +1198,7 @@ def _write_manifest_atomic(path: Path, data: dict) -> None:
     the temp, so cleanup is a no-op on the happy path)."""
     tmp_path = path.parent / f".{path.name}.{os.getpid()}.tmp"
     try:
+        data = {**data, "opencv_runtime": opencv_runtime_provenance()}
         tmp_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
         os.replace(tmp_path, path)
     finally:
