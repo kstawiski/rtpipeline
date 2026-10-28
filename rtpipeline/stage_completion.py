@@ -416,8 +416,28 @@ def _rule_manifest_paths(root: Path, rule: ArtifactRule) -> set[str] | None:
     return allowed
 
 
+def _stale_original_exports(course_dir: Path, definition: StageDefinition) -> list[dict[str, str]]:
+    """Record retained stale exports without certifying them as organize outputs."""
+    if definition.name != "organize":
+        return []
+    from .original_segmentation import require_current_original_mask
+
+    root = Path(course_dir)
+    directories = {path.parent for path in root.glob("Segmentation_Original/**/*")
+                   if path.is_file() or path.is_symlink()}
+    stale = []
+    for directory in sorted(directories):
+        try:
+            require_current_original_mask(directory / "metadata.json")
+        except ValueError as exc:
+            stale.append({"path": directory.relative_to(root).as_posix(),
+                          "status": "stale_excluded", "reason": str(exc)})
+    return stale
+
+
 def _discover_outputs(course_dir: Path, definition: StageDefinition) -> list[dict[str, Any]]:
     root = Path(course_dir)
+    stale = {item["path"] for item in _stale_original_exports(root, definition)}
     selected: dict[str, tuple[Path, str, str]] = {}
     for rule in definition.rules:
         allowed = _rule_manifest_paths(root, rule)
@@ -425,6 +445,8 @@ def _discover_outputs(course_dir: Path, definition: StageDefinition) -> list[dic
             if not (candidate.is_file() or candidate.is_symlink()):
                 continue
             relative = candidate.relative_to(root).as_posix()
+            if rule.role == "original_segmentation" and candidate.parent.relative_to(root).as_posix() in stale:
+                continue
             if allowed is not None and relative not in allowed:
                 continue
             previous = selected.get(relative)
@@ -466,7 +488,7 @@ def _validate_stage_specific_outcome(
     status: str,
     outputs: Sequence[Mapping[str, Any]],
 ) -> str | None:
-    if definition.name in {"organize", "segmentation"} and status == "ok":
+    if definition.name == "segmentation" and status == "ok":
         from .original_segmentation import require_current_original_mask
 
         for original in Path(course_dir).rglob("Segmentation_Original"):
@@ -535,6 +557,8 @@ def stage_completion_payload(
     code = _code_identity(definition)
     environment = environment_record(definition.environment_packages)
     return {
+        **({"stale_original_exports": _stale_original_exports(root, definition)}
+           if definition.name == "organize" and terminal_status == "ok" else {}),
         **({"measurement_outcome": measurement_outcome} if measurement_outcome else {}),
         "schema": STAGE_COMPLETION_SCHEMA,
         "status": terminal_status,
@@ -723,6 +747,9 @@ def validate_stage_completion_payload(
     expected_outputs = [] if status == "disabled" else _discover_outputs(root, definition)
     if expected_outputs != outputs:
         raise ValueError("Stage completion no longer declares the complete output set")
+    if definition.name == "organize" and status == "ok":
+        if payload.get("stale_original_exports", []) != _stale_original_exports(root, definition):
+            raise ValueError("Stage completion stale original exports changed")
     if payload.get("output_set_sha256") != content_sha256(outputs):
         raise ValueError("Stage completion output-set digest is invalid")
     if payload.get("content_closure_sha256") != _content_closure(outputs):
