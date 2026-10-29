@@ -23,6 +23,10 @@ RS_custom and custom-model sources, an unselected unparseable Manual ROI
 in RS_custom (silently skipped before and after), a primary arm below minimum
 in every perturbation and an undefined feature in every perturbation (no
 feature-set difference).
+Runtime rasterizer provenance is checked separately from the
+historical comparison; all existing measurement fields, masks and Arrow field
+types remain exact comparisons. Both runs use the same installed OpenCV.
+
 """
 from __future__ import annotations
 
@@ -42,6 +46,10 @@ import pyarrow.parquet as pq
 import pydicom
 import pytest
 import yaml
+
+from rasterizer_provenance_test_utils import (
+    RASTERIZER_PROVENANCE_FIELDS, measurement_table_and_schema,
+)
 from pydicom.dataset import Dataset
 from pydicom.sequence import Sequence
 
@@ -147,7 +155,7 @@ def _collect(output_root: Path) -> dict:
         if path.is_dir() or (len(relative.parts) > 2 and relative.parts[2] in INPUT_NAMES):
             continue
         if path.suffix == ".parquet":
-            collected[str(relative)] = (pd.read_parquet(path), pq.read_schema(path))
+            collected[str(relative)] = measurement_table_and_schema(path)
         elif path.suffix == ".xlsx":
             collected[str(relative)] = pd.read_excel(path, sheet_name=None)
         else:
@@ -179,6 +187,10 @@ def _normalize(value, ids, parent=None):
     if isinstance(value, dict):
         out = {}
         for key, item in value.items():
+            # Runtime provenance is tested independently. All
+            # existing scientific fields and identities remain exact checks.
+            if key in RASTERIZER_PROVENANCE_FIELDS:
+                continue
             if key == "code_identity":
                 out[key] = "<code identity>"
             elif key == "sha256" and parent in {"measured_output", "source_dispositions"}:
@@ -196,7 +208,7 @@ def _normalize(value, ids, parent=None):
 
 
 def _normalize_frame(frame: pd.DataFrame, ids) -> pd.DataFrame:
-    frame = frame.copy()
+    frame = frame.drop(columns=list(RASTERIZER_PROVENANCE_FIELDS), errors="ignore").copy()
     for column in frame.columns:
         if frame[column].dtype == object:
             frame[column] = frame[column].map(lambda v: _normalize_text(v, ids))

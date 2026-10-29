@@ -10,6 +10,9 @@ from types import SimpleNamespace
 import numpy as np
 import pydicom
 import pytest
+
+# Synthetic extraction tests assume the supported runtime; enforcement is tested separately.
+pytestmark = pytest.mark.usefixtures("rasterizer_guard_stub")
 import SimpleITK as sitk
 from pydicom.sequence import Sequence
 from rt_utils import RTStructBuilder
@@ -55,6 +58,7 @@ def _reader(monkeypatch, names):
     return seen
 
 
+@pytest.mark.usefixtures("rasterizer_guard_stub")
 def test_expected_inventory_does_not_rasterize_recorded_point(tmp_path, monkeypatch):
     source = tmp_path / "rtstruct.dcm"
     dataset = _source(source)
@@ -99,6 +103,7 @@ def test_all_point_duplicate_names_still_fail_expected_inventory(tmp_path):
         )
 
 
+@pytest.mark.usefixtures("rasterizer_guard_stub")
 def test_explicit_skip_does_not_add_second_nonmeasurement(tmp_path, monkeypatch):
     source = tmp_path / "rtstruct.dcm"
     _source(source)
@@ -147,6 +152,9 @@ class _Extractor:
 
 
 def _course(tmp_path, monkeypatch, *, malformed=False):
+    from rasterizer_test_utils import stub_course_runtime, stub_synthetic_rasterizer_columns
+    stub_course_runtime(monkeypatch)
+    stub_synthetic_rasterizer_columns(monkeypatch)
     course = tmp_path / "P1" / "C1"
     ct = write_synthetic_planning_ct(course)
     write_minimal_course_contract(course, planning_ct_dir=ct)
@@ -255,6 +263,13 @@ def test_point_disposition_is_not_measurement_or_technical_exclusion(tmp_path, m
 @pytest.mark.parametrize("change", ["source_bytes", "code_revision", "unchanged"])
 def test_nonmeasurement_resume_checks_content_and_rebuilds_ledger(tmp_path, monkeypatch, change):
     course, source, dataset, config = _course(tmp_path, monkeypatch)
+    from rtpipeline import radiomics_ct_contract
+    monkeypatch.setattr(radiomics_ct_contract, "_rasterizer_columns", lambda: {
+        "rasterizer_backend": "rt-utils/cv2.fillPoly",
+        "rasterizer_opencv_version": "4.8.1",
+        "rasterizer_rt_utils_version": "1.2.7",
+        "rasterizer_providers": '{"opencv-python-headless": "4.8.1.78"}',
+    })
     radiomics.radiomics_for_course(config, course)
     first = radiomics.read_authoritative_ct_publication(course / "radiomics_ct.parquet")
     first_run = set(first.run_identifier)
@@ -331,6 +346,7 @@ def test_alias_resolution_respects_source_scope_and_ambiguity(tmp_path, monkeypa
         assert canonical[0]["segmentation_source"] == required_source
 
 
+@pytest.mark.usefixtures("rasterizer_guard_stub")
 def test_optional_mask_failure_has_one_source_roi_denominator_row(tmp_path, monkeypatch):
     course, source, _, config = _course(tmp_path, monkeypatch)
     write_synthetic_rtstruct(source, roi_names=("vertebrae_T8",))

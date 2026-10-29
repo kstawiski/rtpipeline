@@ -7,6 +7,9 @@ from types import SimpleNamespace
 import numpy as np
 import pydicom
 import pytest
+
+# Synthetic extraction tests assume the supported runtime; enforcement is tested separately.
+pytestmark = pytest.mark.usefixtures("rasterizer_guard_stub")
 from pydicom.dataset import Dataset
 from pydicom.sequence import Sequence
 from pydicom.uid import generate_uid
@@ -116,6 +119,7 @@ def multiseries_fixture(tmp_path):
     return ct, source, rt
 
 
+@pytest.mark.usefixtures("rasterizer_guard_stub")
 def test_four_complete_rois_recover_eleven_remain_unresolved_no_clipping(tmp_path, monkeypatch):
     ct, source, rt = multiseries_fixture(tmp_path)
     before = source.read_bytes()
@@ -252,6 +256,7 @@ def test_organizer_uses_unique_complete_geometry_not_largest_series(tmp_path):
     assert status == 'unresolved_multiseries_scope'
 
 
+@pytest.mark.usefixtures("main_builder_identity_stub")
 def test_concurrent_real_publication_reuses_one_content_identity(tmp_path, monkeypatch):
     from concurrent.futures import ThreadPoolExecutor
     ct, source, rt = fixture(tmp_path)

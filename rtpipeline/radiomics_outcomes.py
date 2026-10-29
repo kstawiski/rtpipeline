@@ -26,9 +26,13 @@ def invalidate_radiomics_outputs(
     *,
     additional_artifacts: Iterable[Path] = (),
 ) -> None:
-    """Strictly remove a workbook, its Parquet sidecar, and named extra artifacts."""
+    """Remove publications and checkpoints so invalid rows cannot be republished."""
     output_path = Path(output_path)
-    candidates = (output_path, output_path.with_suffix(".parquet"), *additional_artifacts)
+    checkpoints = [output_path.parent / "metadata" / "radiomics_ct_checkpoint.parquet",
+                   output_path.parent / "radiomics_mr_checkpoint.parquet",
+                   output_path.parent / "metadata" / "radiomics_mr_checkpoint.parquet"]
+    candidates = (output_path, output_path.with_suffix(".parquet"),
+                  *checkpoints, *additional_artifacts)
     for candidate in dict.fromkeys(Path(path) for path in candidates):
         remove_artifact_strict(candidate, context="invalidating failed or ineligible output")
 

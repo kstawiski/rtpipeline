@@ -224,6 +224,7 @@ fi
 export MAMBA_ROOT_PREFIX="$MAMBA_ROOT"
 MAMBA_BIN_DIR="$(dirname "$MAMBA_BIN")"
 export PATH="${MAMBA_BIN_DIR}:${PATH}"
+export PYTHONNOUSERSITE=1
 
 env_exists() {
     [[ -f "${MAMBA_ROOT}/envs/$1/conda-meta/history" ]]
@@ -283,6 +284,15 @@ if [[ "$VERIFY_ONLY" != true ]]; then
     fi
     "$MAMBA_BIN" run --name "$RADIOMICS_ENV" python -m pip install \
         --no-deps --no-build-isolation "$radiomics_source"
+    # Install rt-utils with --no-deps so its unpinned opencv-python requirement
+    # cannot co-install alongside opencv-python-headless==4.8.1.78.
+    "$MAMBA_BIN" run --name "$RADIOMICS_ENV" python -m pip uninstall \
+        --yes opencv-python opencv-contrib-python opencv-contrib-python-headless
+    # Provider wheels share files. Reinstall headless AFTER removing competitors.
+    "$MAMBA_BIN" run --name "$RADIOMICS_ENV" python -m pip install \
+        --no-deps --force-reinstall "opencv-python-headless==4.8.1.78"
+    "$MAMBA_BIN" run --name "$RADIOMICS_ENV" python -m pip install \
+        --no-deps "rt-utils==1.2.7"
     # The radiomics helper intentionally does not install RTpipeline as a Python
     # distribution. Its package metadata declares the full NumPy 2.x/main
     # runtime (including TotalSegmentator), which is incompatible with this
@@ -297,11 +307,12 @@ log "verifying both environments"
     "import numpy, pydicom, SimpleITK, torch, rtpipeline; assert numpy.__version__.split('.')[0] == '2'; print('main', rtpipeline.__version__, numpy.__version__, torch.__version__)"
 env PYTHONPATH="${PROJECT_DIR}${PYTHONPATH:+:${PYTHONPATH}}" \
     "$MAMBA_BIN" run --name "$RADIOMICS_ENV" python -c \
-    "import numpy, radiomics; assert numpy.__version__.split('.')[0] == '1'; print('radiomics', radiomics.__version__, numpy.__version__)"
+    "import numpy, radiomics; from rtpipeline.radiomics_rasterizer import require_radiomics_rasterizer; r = require_radiomics_rasterizer(); assert numpy.__version__.split('.')[0] == '1'; print('radiomics', radiomics.__version__, numpy.__version__, r['opencv_version'])"
 env PYTHONPATH="${PROJECT_DIR}${PYTHONPATH:+:${PYTHONPATH}}" \
     "$MAMBA_BIN" run --name "$RADIOMICS_ENV" python -m rtpipeline.cli --help >/dev/null
 "$MAMBA_BIN" run --name "$MAIN_ENV" python -m pip check
-"$MAMBA_BIN" run --name "$RADIOMICS_ENV" python -m pip check
+env PYTHONPATH="${PROJECT_DIR}${PYTHONPATH:+:${PYTHONPATH}}" \
+    "$MAMBA_BIN" run --name "$RADIOMICS_ENV" python "${PROJECT_DIR}/scripts/check_radiomics_environment.py"
 "$MAMBA_BIN" run --name "$MAIN_ENV" snakemake --version
 
 case "$DEVICE" in

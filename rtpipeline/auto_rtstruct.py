@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .radiomics_rasterizer import opencv_runtime_provenance
+
 import json
 import logging
 import os
@@ -507,6 +509,7 @@ def _record_rs_auto_origin(
     }
     if origin == RS_AUTO_ORIGIN_MASKS:
         record["mask_layout"] = RS_AUTO_MASK_LAYOUT
+        record["opencv_runtime"] = opencv_runtime_provenance()
     if legacy:
         record["recognized_legacy_copy"] = True
     path = _rs_auto_origin_path(course_dir)

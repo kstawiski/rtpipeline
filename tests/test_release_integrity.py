@@ -270,6 +270,8 @@ def _publish_course_tables(
     provenance, and it is not clinical evidence. The real publication path is
     exercised in ``tests/test_robustness_aggregation_admission.py``.
     """
+    from rasterizer_test_utils import PINNED_RASTERIZER_ROW
+    frame = frame.assign(**PINNED_RASTERIZER_ROW)
     output_name = "radiomics_robustness_ct.parquet"
     tables: list[Path] = []
     for patient_id, patient_frame in frame.groupby("patient_id", sort=True):
@@ -427,13 +429,13 @@ def test_robustness_workflow_failure_is_not_converted_to_success():
     # completion receipt only for an admitted terminal outcome, the rule fails
     # when a "successful" run leaves none, and cohort aggregation revalidates
     # every manifest course's receipt instead of scanning for sentinels.
-    # Six sentinel paths, each governed: two receipt-producing CLI
-    # invocations, two upstream-refusal recorders (plain *failed* sentinel
+    # Eight sentinel paths, each governed: two receipt-producing CLI
+    # invocations, four upstream-refusal recorders (plain *failed* sentinel
     # with a ledger reason, never a success), and two failed-extraction
     # recorders (which revalidate the CLI-published failure receipt before
     # recording, and never overwrite it).
-    assert snakefile.count('--sentinel "{output.sentinel}"') == 6
-    assert snakefile.count("close-robustness-upstream") == 2
+    assert snakefile.count('--sentinel "{output.sentinel}"') == 8
+    assert snakefile.count("close-robustness-upstream") == 4
     assert snakefile.count("close-robustness-failed") == 2
     assert snakefile.count(
         'Radiomics robustness returned success without a completion receipt'
@@ -463,7 +465,7 @@ def test_dual_environment_contract_is_enforced_in_packaging_and_receipt():
     assert "python -m pip uninstall \\" in installer
     assert "--yes rtpipeline" in installer
     assert '--no-deps --editable "$PROJECT_DIR"' not in installer
-    assert installer.count('PYTHONPATH="${PROJECT_DIR}${PYTHONPATH:+:${PYTHONPATH}}"') == 2
+    assert installer.count('PYTHONPATH="${PROJECT_DIR}${PYTHONPATH:+:${PYTHONPATH}}"') == 3
     assert "env update --yes" in installer
     assert "--prune" in installer
 

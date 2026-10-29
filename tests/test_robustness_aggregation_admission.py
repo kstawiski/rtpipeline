@@ -53,6 +53,8 @@ def _build_cohort(
     extra_feature_for=(),
 ):
     """Publish one real robustness table + sidecar per synthetic course."""
+    from rasterizer_test_utils import stub_synthetic_rasterizer_columns
+    stub_synthetic_rasterizer_columns(monkeypatch)
     output_root = tmp_path / "Output"
     array = _roi_array()
     mask = sitk.GetImageFromArray(array)

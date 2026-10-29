@@ -22,7 +22,7 @@ def assert_physical(image, rt):
     np.testing.assert_allclose(observed, center, atol=1e-5)
 
 
-def test_radiomics_reader_and_nifti_robustness(source):
+def test_radiomics_reader_and_nifti_robustness(source, rasterizer_guard_stub):
     from rtpipeline.radiomics import _mask_from_array_like, _rtstruct_masks
     from rtpipeline.radiomics_robustness import _nifti_mask_in_reference_order, _ImageGeometry
 
@@ -60,7 +60,9 @@ def test_mr_nifti_fallback(source, tmp_path):
     seg.mkdir()
     sitk.WriteImage(mask_image(rt, sitk.Flip(native, [False, True, False])),
                     str(seg/'total_mr--Asymmetric.nii.gz'))
-    masks = _collect_total_mr_masks(ct, seg)
+    backend = {}
+    masks = _collect_total_mr_masks(ct, seg, backend_out=backend)
+    assert backend['backend'] == 'nifti/no-polygon-fill'
     assert_physical(_mask_from_array_like(native, masks['Asymmetric']), rt)
 
 

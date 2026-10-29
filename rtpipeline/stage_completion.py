@@ -26,6 +26,9 @@ _RADIOMICS_ENVIRONMENT_PACKAGES = (
     "SimpleITK",
     "pyradiomics",
     "pyarrow",
+    "opencv-python-headless",
+    "opencv-python",
+    "rt-utils",
 )
 
 
@@ -58,6 +61,7 @@ _COMMON_CODE_SOURCES = (
     "cli.py",
     "stage_completion.py",
     "original_segmentation.py",
+    "radiomics_rasterizer.py",
     "workflow_delegate.py",
     "workflow/scripts/run_course_stage.py",
     "Snakefile",
@@ -205,7 +209,7 @@ _STAGE_DEFINITIONS: dict[str, StageDefinition] = {
         binding_policy="qc-content-v1",
         rules=(ArtifactRule("qc_report", "qc_reports/**/*.json", "content_sha256"),),
         required_roles=frozenset({"qc_report"}),
-        code_sources=(*_COMMON_CODE_SOURCES, "quality_control.py", "course_contract.py"),
+        code_sources=(*_COMMON_CODE_SOURCES, "quality_control.py", "rtstruct_geometry.py", "course_contract.py"),
         environment_packages=("numpy", "pydicom", "SimpleITK"),
     ),
 }
@@ -261,9 +265,11 @@ def environment_fingerprint(package_names: Sequence[str]) -> str:
 
 
 def execution_environment_fingerprint() -> str:
-    """Preserve the radiomics environment-fingerprint API and byte contract."""
+    """Fingerprint the runtime, including the imported RTSTRUCT rasterizer."""
+    from .radiomics_rasterizer import active_radiomics_rasterizer
 
     record = environment_record(_RADIOMICS_ENVIRONMENT_PACKAGES)
+    rasterizer = active_radiomics_rasterizer()
     legacy_record = {
         "python": record["python"],
         "implementation": record["implementation"],
@@ -277,6 +283,9 @@ def execution_environment_fingerprint() -> str:
         "simpleitk": record["packages"]["SimpleITK"],
         "pyradiomics": record["packages"]["pyradiomics"],
         "pyarrow": record["packages"]["pyarrow"],
+        "rasterizer": {key: rasterizer.get(key) for key in (
+            "providers", "opencv_version", "rt_utils_version", "triangle_hex",
+        )},
     }
     return hashlib.sha256(canonical_json(legacy_record).encode("utf-8")).hexdigest()
 
@@ -558,6 +567,13 @@ def stage_completion_payload(
     measurement_outcome = _validate_stage_specific_outcome(root, definition, terminal_status, outputs)
     code = _code_identity(definition)
     environment = environment_record(definition.environment_packages)
+    runtime_provenance = {}
+    if terminal_status == "ok":
+        # Disabled stages close in the dependency-light workflow interpreter.
+        # They execute no main-runtime RTSTRUCT operations.
+        from .radiomics_rasterizer import opencv_runtime_provenance
+
+        runtime_provenance["opencv_runtime"] = opencv_runtime_provenance()
     return {
         **({"stale_original_exports": _stale_original_exports(root, definition)}
            if definition.name == "organize" and terminal_status == "ok" else {}),
@@ -582,6 +598,7 @@ def stage_completion_payload(
         "execution_host": socket.gethostname(),
         "environment_fingerprint": content_sha256(environment),
         "environment": environment,
+        **runtime_provenance,
     }
 
 

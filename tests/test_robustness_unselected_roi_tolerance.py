@@ -98,6 +98,7 @@ def test_empty_selection_and_uninspectable_source_fail_closed(tmp_path):
     )
 
 
+@pytest.mark.usefixtures("rasterizer_guard_stub")
 def test_production_wiring_tolerates_unselected_failure(tmp_path):
     """The reviewer's empirical protocol as a regression test."""
     ct, source = _two_roi_rtstruct(tmp_path)
@@ -116,6 +117,7 @@ def test_production_wiring_tolerates_unselected_failure(tmp_path):
     ] == [("adrenal_gland_right", "ROI_CONTOUR_PARTIALLY_UNPARSEABLE")]
 
 
+@pytest.mark.usefixtures("rasterizer_guard_stub")
 def test_production_wiring_selected_structural_status_is_disposition(tmp_path):
     """Changed 2026-09-24: a selected ROI with an unreadable contour is a
     governed structural non-measurement in robustness, not a course failure.
@@ -137,6 +139,7 @@ def test_production_wiring_selected_structural_status_is_disposition(tmp_path):
                         requiredness_by_roi=requiredness)
 
 
+@pytest.mark.usefixtures("rasterizer_guard_stub")
 def test_production_wiring_without_expansion_stays_fatal(tmp_path):
     """No map, no tolerance: the legacy fail-closed shape is preserved."""
     ct, source = _two_roi_rtstruct(tmp_path)

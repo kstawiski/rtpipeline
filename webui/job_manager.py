@@ -231,6 +231,7 @@ class JobManager:
                     stdout=log,
                     stderr=subprocess.STDOUT,
                     cwd='/app',
+                    env={**os.environ, 'PYTHONNOUSERSITE': '1'},
                     start_new_session=True  # Create new process group for cleanup
                 )
 

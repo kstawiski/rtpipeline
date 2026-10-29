@@ -667,6 +667,7 @@ def test_a_same_name_mask_that_contradicts_the_roi_is_not_its_source(tmp_path, m
 
 def _publish_clean_course(tmp_path, monkeypatch):
     """A course with no disposition at all, published once."""
+    monkeypatch.setattr(custom, "opencv_runtime_provenance", lambda: {"opencv_version": "5.0.0"})
     ct, rs_manual, series_uid = _fixture(tmp_path)
     _patch_contract(tmp_path, ct, rs_manual, series_uid, monkeypatch)
     rt_auto = RTStructBuilder.create_new(dicom_series_path=str(ct))

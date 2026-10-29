@@ -768,6 +768,8 @@ def _load_course(course, required_frames):
                 course_dir / "MR" / "radiomics_mr.xlsx"
             )
             if frame is not None:
+                from rtpipeline.radiomics_rasterizer import require_table_rasterizer
+                require_table_rasterizer(frame)
                 _add_course_ids(frame, patient_id, course_id)
                 frame["contrast_phase"] = "unknown"
                 frame["image_modality"] = "MR"

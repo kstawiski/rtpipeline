@@ -618,3 +618,12 @@ singularity exec --nv \
 ```
 
 For production, see docker-compose.yml configuration with restart policies, resource limits, and health checks.
+
+The Apptainer definition converts `kstawiski/rtpipeline:3.0.0`, published from this
+repository’s Dockerfile by the `v3.0.0` Docker workflow. It does not build the
+environments from source. Its mandatory `%post` check runs
+`scripts/check_radiomics_environment.py` with the radiomics interpreter and fails
+the build if that interpreter, rt-utils 1.2.7, or the single headless OpenCV
+4.8.1.78 provider is absent or incompatible. A previously published tag must be
+rebuilt from the matching Dockerfile before conversion can pass. The NumPy 2 main
+environment pins `opencv-python==5.0.0.93`; it does not use the radiomics guard.

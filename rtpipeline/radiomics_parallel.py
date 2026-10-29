@@ -52,7 +52,6 @@ from .custom_models import (
     validate_custom_model_output_inventory,
 )
 from .custom_structures_rtstruct import (
-    _create_custom_structures_rtstruct,
     _is_rs_custom_stale,
     record_rs_custom_resume_decision,
 )
@@ -336,6 +335,10 @@ def _get_builder(rs_path: Path):
         logger.error("rt-utils missing for radiomics worker: %s", exc)
         builders[key] = None
         return None
+
+    from .radiomics_rasterizer import require_radiomics_rasterizer
+
+    require_radiomics_rasterizer()
 
     ct_dir = _WORKER_STATE.get("ct_dir")
     if ct_dir is None:
@@ -1048,6 +1051,12 @@ def parallel_radiomics_for_course(
     allow_all_series_temp: bool = False,
 ) -> RadiomicsCourseOutcome:
     """Parallel CT radiomics for one course (process isolation)."""
+    from .radiomics_runtime import needs_radiomics_process, run_course_driver
+    if needs_radiomics_process():
+        output = run_course_driver("ct", course_dir, config, custom_structures_config, allow_all_series_temp=allow_all_series_temp, max_workers=max_workers)
+        return (outcome_from_output(output) if output is not None
+                else RadiomicsCourseOutcome.nothing_to_do("isolated backend found no eligible ROIs"))
+
     course_dir = Path(course_dir)
     contract = load_course_contract(course_dir)
     is_temp = contract.data.get("scope") == ALL_SERIES_RADIOMICS_TEMP_SCOPE
@@ -1123,6 +1132,7 @@ def parallel_radiomics_for_course(
             config,
             str(custom_structures_config) if custom_structures_config else None,
             allow_all_series_temp=allow_all_series_temp,
+            max_workers=max_workers,
         )
         if conda_out is None:
             _invalidate_radiomics_outputs(out_path)
@@ -1189,8 +1199,7 @@ def parallel_radiomics_for_course(
             }
         }
         custom_provenance = load_custom_structure_provenance(configured_custom_path)
-        # Decide applicability before rebuilding RS_custom. Source-applicable
-        # missing ROIs remain repair candidates until the governed builder has run.
+        # Decide source applicability before consuming the main-runtime artifact.
         for source_name, source_path, _ in sources:
             try:
                 inventory = inspect_rtstruct(source_path)
@@ -1209,7 +1218,9 @@ def parallel_radiomics_for_course(
             _planning_ct_fov = lambda _path: {}
             _roi_requiredness = lambda _config, _source, _name: Requiredness.INVENTORY_ONLY
         available_custom = {}
-        if rs_custom.is_file():
+        if rs_custom.is_file() and not _is_rs_custom_stale(
+            rs_custom, configured_custom_path, rs_manual, course_dir / "RS_auto.dcm"
+        ):
             try:
                 custom_inventory = inspect_rtstruct(rs_custom)
                 available_custom = {item.name: item for item in custom_inventory.named_rois}
@@ -1279,8 +1290,6 @@ def parallel_radiomics_for_course(
                         f"Required custom ROI {base!r} has {assessment.reason_code}: {assessment.detail}"
                     )
         desired_custom = applicable_custom
-        custom_rebuild_attempted = False
-        custom_rebuild_published = False
         try:
             rs_auto_for_custom = course_dir / "RS_auto.dcm"
             custom_is_stale = bool(
@@ -1296,31 +1305,9 @@ def parallel_radiomics_for_course(
                     "no configured custom ROI was applicable to the contracted planning CT",
                 )
             elif custom_is_stale:
-                custom_rebuild_attempted = True
-                from .custom_structures_rtstruct import _quarantine_rejected_rtstruct
-
-                _quarantine_rejected_rtstruct(
-                    rs_custom,
-                    "RS_custom failed the authoritative currentness check",
-                )
-                rebuilt = _create_custom_structures_rtstruct(
-                    course_dir, configured_custom_path, rs_manual, rs_auto_for_custom
-                )
-                if rebuilt is None or not Path(rebuilt).is_file():
-                    record_rs_custom_resume_decision(
-                        course_dir,
-                        "failed",
-                        "RS_custom replacement could not be published",
-                    )
-                    raise RadiomicsCourseExtractionError(
-                        f"RS_custom rebuild failed for configured ROIs in {course_dir}"
-                    )
-                rs_custom = Path(rebuilt)
-                custom_rebuild_published = True
-                record_rs_custom_resume_decision(
-                    course_dir,
-                    "rebuilt",
-                    "rebuilt after the previous RS_custom failed the authoritative currentness check",
+                raise RadiomicsCourseExtractionError(
+                    f"RS_custom is missing, stale, or lacks main-runtime OpenCV 5.0.0 provenance in {course_dir}; "
+                    "run the main-runtime DVH/custom-structure stage before radiomics"
                 )
             else:
                 record_rs_custom_resume_decision(
@@ -1329,12 +1316,6 @@ def parallel_radiomics_for_course(
                     "existing RS_custom passed the authoritative currentness check",
                 )
         except Exception as exc:
-            if custom_rebuild_attempted and not custom_rebuild_published:
-                record_rs_custom_resume_decision(
-                    course_dir,
-                    "failed",
-                    f"RS_custom rebuild raised {type(exc).__name__}: {exc}",
-                )
             _invalidate_radiomics_outputs(out_path)
             raise RadiomicsCourseExtractionError(
                 f"Failed to prepare RS_custom for radiomics in {course_dir}: {exc}"
@@ -1523,6 +1504,12 @@ def parallel_radiomics_for_course(
             f"Required custom RTSTRUCT is missing for configured ROIs in {course_dir}"
         )
     if rs_custom.exists() and (desired_custom or configured_custom_path is None):
+        if _is_rs_custom_stale(rs_custom, configured_custom_path, rs_manual, course_dir / "RS_auto.dcm"):
+            _invalidate_radiomics_outputs(out_path)
+            raise RadiomicsCourseExtractionError(
+                "RS_custom is stale or lacks main-runtime OpenCV 5.0.0 provenance; "
+                "run the main-runtime DVH/custom-structure stage"
+            )
         try:
             avail = set(_list_roi_names(rs_custom))
             if configured_custom_path is None and not desired_custom:
@@ -1649,7 +1636,10 @@ def parallel_radiomics_for_course(
                 for task in tasks
                 for arm in CT_EXTRACTION_ARMS
             }
+            from .radiomics_rasterizer import require_recorded_rasterizer
+
             for record in existing_df.to_dict("records"):
+                require_recorded_rasterizer(record)
                 key = publication_key(record)
                 if str(record.get("configured_parameter_hash") or "") != str(
                     expected_config_hashes.get(key) or ""
@@ -1676,6 +1666,25 @@ def parallel_radiomics_for_course(
         logger.info("No radiomics tasks for %s", course_dir)
         _invalidate_radiomics_outputs(out_path)
         return RadiomicsCourseOutcome.nothing_to_do("no RTSTRUCT ROIs were enumerated")
+
+    from .radiomics_ct_contract import FEATURE_POLICY_INVENTORY_ONLY
+    from .radiomics_rasterizer import require_radiomics_rasterizer
+
+    # Validate in the parent before any measurement workers start. Resume and
+    # terminal source-only/skip records do not prepare masks. Quantized contour
+    # candidates can still reach the scoped reader and need the same guard.
+    mask_tasks = (
+        task for task in tasks
+        if task.structural_code in (None, "ROI_CONTOUR_UNPARSEABLE", "ROI_CONTOUR_PARTIALLY_UNPARSEABLE")
+        and _norm(task.roi_name) not in skip_rois
+        and task.decision.feature_publication_policy != FEATURE_POLICY_INVENTORY_ONLY
+    )
+    if next(mask_tasks, None) is not None:
+        try:
+            require_radiomics_rasterizer()
+        except Exception:
+            _invalidate_radiomics_outputs(out_path)
+            raise
 
     if max_workers is None:
         worker_count = _calculate_optimal_workers()

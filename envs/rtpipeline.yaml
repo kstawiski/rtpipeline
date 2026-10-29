@@ -32,6 +32,7 @@ dependencies:
     - dicom2nifti>=2.4
     - nested-lookup
     - rt-utils
+    - opencv-python==5.0.0.93  # Preserve the main runtime polygon convention
     - xlsxwriter
     - openpyxl
     - plotly
