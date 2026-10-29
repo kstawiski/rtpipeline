@@ -24,7 +24,7 @@ import pydicom
 import numpy as np
 
 
-from .nifti_provenance import annotate as annotate_nifti_provenance
+from .nifti_provenance import annotate as annotate_nifti_provenance, content_hash_matches
 from .nonuniform_ct_conversion import convert_nonuniform_unsigned_ct
 from .ct_series_hygiene import (
     CTSeriesHygieneError,
@@ -1050,8 +1050,10 @@ def _ensure_ct_nifti(
                     logger.error("CT conversion refused: %s", exc.reason_code)
                     return None
             else:
-                if existing_conversion is None or not conversion_evidence_matches_expected(
-                    existing_conversion, expected_selection
+                if (
+                    existing_conversion is None
+                    or not conversion_evidence_matches_expected(existing_conversion, expected_selection)
+                    or not content_hash_matches(target, existing_sidecar)
                 ):
                     regenerated = True
                 else:
@@ -1124,6 +1126,9 @@ def _ensure_ct_nifti(
                             )
                         logger.error("CT conversion refused: %s", exc.reason_code)
                         return None
+            # The sidecar digest commits this publication. If its later write
+            # is interrupted, the old digest cannot authorize the new bytes;
+            # the next hygiene request must regenerate them.
             if target.exists():
                 target.unlink()
             shutil.move(str(generated), str(target))

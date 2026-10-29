@@ -3007,14 +3007,8 @@ def _delivered_remainder_chain(
         replacement_plans: List[dict] = []
         independent_phases: List[dict] = []
         represented_fractions = anchor_delivered
-        for plan in sorted(
-            later,
-            key=lambda item: (
-                min(evidence(item)[0]) if evidence(item)[0] else "",
-                -evidence(item)[2],
-                str(item.get("sop_uid") or ""),
-            ),
-        ):
+        # Preserve the release partition for chains already below the threshold.
+        for plan in sorted(later, key=lambda item: str(item.get("sop_uid") or "")):
             planned = evidence(plan)[2]
             if (
                 _same_fraction_dose(plan, anchor)
@@ -3433,6 +3427,7 @@ def _classify_approved_doses(
     plan_sum_doses = [meta for meta in dose_meta if meta["summation_type"] == "PLAN_SUM"]
     remainder_chain = None
     prescription_components: List[dict] = []
+    component_plausibility = False
     if plan_sum_doses:
         best_sum = max(
             plan_sum_doses,
@@ -3792,6 +3787,11 @@ def _classify_approved_doses(
         if remainder_chain is not None:
             anchor, later, prescription_components, represented_fractions = remainder_chain
             selected_representatives = list(supported_candidates)
+            # Component-based warnings apply only to the added >=0.60 branch.
+            # Existing low-ratio chains keep the release warning basis.
+            planned_total = sum(int(plan.get("fractions_planned") or 0) for plan in supported_candidates)
+            delivered_total = sum(len(plan_records(plan)) for plan in supported_candidates)
+            component_plausibility = planned_total > 0 and delivered_total / planned_total >= 0.60
             classification = DELIVERED_REMAINDER_CHAIN
             should_sum = len(selected_representatives) > 1
             warnings.append(
@@ -3865,7 +3865,7 @@ def _classify_approved_doses(
     ]
     prescription_basis = (
         prescription_components
-        if remainder_chain is not None and prescription_components
+        if component_plausibility and prescription_components
         else selected_representatives
     )
     selected_total_rx = sum(float(plan.get("total_rx_gy") or 0.0) for plan in prescription_basis)

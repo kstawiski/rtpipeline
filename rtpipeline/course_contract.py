@@ -902,7 +902,9 @@ def _validate_nifti_provenance(
             raise CourseContractError("stale planning CT conversion evidence: source selection differs")
     # Hygiene outputs have a fully loaded voxel payload above. Other conversion
     # methods retain their existing provenance and content-hash checks.
-    if provenance.get("nifti_sha256") != _sha256(nifti):
+    from .nifti_provenance import content_hash_matches
+
+    if not content_hash_matches(nifti, sidecar_data):
         raise CourseContractError(
             "stale planning CT NIfTI provenance: content hash does not match the NIfTI on disk"
         )
