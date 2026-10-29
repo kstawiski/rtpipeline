@@ -5159,8 +5159,8 @@ def _convert_one_related_series(
     mirroring _ensure_ct_nifti. Overwriting would corrupt the planning-CT
     artifact and fail the next contract gate with stale provenance instead.
 
-    Returns the NIfTI path, or None when conversion produced nothing (or
-    when a previous sidecar is reused and resume is off).
+    Reuse requires bytes matching the sidecar's publication digest. Returns
+    the NIfTI path, or None when conversion produced nothing.
     """
     base_name = _derive_nifti_name(series_subdir)
     if name_suffix and not base_name.endswith(name_suffix):
@@ -5177,9 +5177,9 @@ def _convert_one_related_series(
                 existing = json.loads(meta_path.read_text(encoding="utf-8"))
             except Exception:
                 existing = {}
-            if existing.get("series_instance_uid") == series_uid:
-                if not config.resume:
-                    return target if target.exists() else None
+            if isinstance(existing, dict) and existing.get("series_instance_uid") == series_uid:
+                if not config.resume and nifti_provenance.content_hash_matches(target, existing):
+                    return target
                 break
         if not target.exists():
             break

@@ -26,7 +26,7 @@ from test_planning_ct_localizers import _files_and_mtimes, _load, _organized_cou
 from synthetic_ct_series import write_ct_series, uniform_z_positions
 
 
-def _refresh(course):
+def _refresh(course, *, regenerated=False):
     """Bind intentional synthetic input changes before exercising repair."""
     case_path = course / 'metadata/case_metadata.json'
     case = json.loads(case_path.read_text())
@@ -39,7 +39,7 @@ def _refresh(course):
     nifti = next((course / 'NIFTI').glob('*.nii*'))
     metadata.update(segmentation._collect_series_metadata(ct))
     metadata.update(_ct_provenance(ct))
-    annotate(metadata, nifti, ct, regenerated=False, existing_sidecar=metadata.copy())
+    annotate(metadata, nifti, ct, regenerated=regenerated, existing_sidecar=metadata.copy())
     sidecar.write_text(json.dumps(metadata))
     provenance.update(metadata)
     case_path.write_text(json.dumps(case))
@@ -155,7 +155,7 @@ def test_mismatched_nifti_rederived_and_old_masks_stay_stale(tmp_path, dcm2niix,
     values = np.asanyarray(image.dataobj).copy()
     values = np.stack([values, values], axis=-1) if kind == '4d' else values + 1
     nib.save(nib.Nifti1Image(values, image.affine), nifti)
-    contract = _refresh(course)
+    contract = _refresh(course, regenerated=True)
     masks = course / 'Segmentation_Original/rtstruct'
     masks.mkdir(parents=True)
     sitk.WriteImage(sitk.Image([20, 16, 12], sitk.sitkUInt8), str(masks / 'mask.nii.gz'))
@@ -275,7 +275,7 @@ def _make_4d(course):
     image = nib.load(contract.planning_ct_nifti)
     values = np.asanyarray(image.dataobj).copy()
     nib.save(nib.Nifti1Image(np.stack([values, values], axis=-1), image.affine), contract.planning_ct_nifti)
-    return _refresh(course)
+    return _refresh(course, regenerated=True)
 
 
 @pytest.mark.parametrize('failure,reason', [
