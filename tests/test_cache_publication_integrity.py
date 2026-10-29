@@ -152,7 +152,7 @@ def contract_validate(tmp, ct, rs, out):
     from rtpipeline.course_contract import CourseContract, _validate_nifti_provenance
     meta = sidecar(out)
     provenance = {k:meta[k] for k in ('series_instance_uid','sop_hash','geometry',
-                                   'nifti_geometry','nifti_sha256','nifti_conversion')}
+                                   'nifti_geometry','nifti_sha256','nifti_conversion') if k in meta}
     provenance['sidecar_path'] = str(out.with_name(out.name[:-7]+'.metadata.json').relative_to(tmp))
     c = CourseContract(tmp, tmp/'metadata.json',
                        {'authoritative_rtstruct':{'path':str(rs.relative_to(tmp))}})
@@ -297,3 +297,159 @@ def test_reused_provenance_retains_verified_publication_digest(tmp_path, monkeyp
                                        existing_sidecar=previous)
     assert result['nifti_sha256'] == digest
     assert result['generated_at'] == result['nifti_generated_at'] == 'original'
+
+
+def nonhygiene_cache(tmp, prior_method):
+    _, rs, _ = make(tmp, 'A')
+    if prior_method == 'native':
+        for path in (tmp/'ct').glob('*.dcm'):
+            change(path, PixelRepresentation=1)
+    def ordinary_request():
+        return seg._ensure_ct_nifti(
+            config(tmp), tmp/'ct', tmp/'nifti',
+            authoritative_rtstruct=rs if prior_method == 'native' else None,
+        )
+    out = ordinary_request()
+    assert out
+    expected_method = None if prior_method == 'native' else 'dcm2niix_signed_staging_equalized'
+    assert sidecar(out).get('nifti_conversion', {}).get('method') == expected_method
+    return rs, out, ordinary_request
+
+
+@pytest.mark.parametrize('prior_method', ['native', 'signed_staging'])
+def test_interrupted_hygiene_over_nonhygiene_cache_regenerates(tmp_path, monkeypatch, prior_method):
+    from rtpipeline.nifti_provenance import annotate
+    rs, out, ordinary_request = nonhygiene_cache(tmp_path, prior_method)
+    sources = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in (tmp_path/'ct').iterdir()}
+    previous = sidecar(out)
+    expected = nib.load(out).get_fdata()
+    assert expected.shape[2] == 26
+    original_write = Path.write_text
+    with monkeypatch.context() as fault:
+        def failed_sidecar(path, *args, **kwargs):
+            if path.name.endswith('.metadata.json'):
+                raise OSError('synthetic interrupted hygiene publication')
+            return original_write(path, *args, **kwargs)
+        fault.setattr(Path, 'write_text', failed_sidecar)
+        with pytest.raises(OSError, match='interrupted hygiene'):
+            convert(tmp_path, rs, None)
+    assert nib.load(out).shape[2] == 12
+    assert sidecar(out) == previous
+    with pytest.raises(CourseContractError, match='content hash'):
+        contract_validate(tmp_path, tmp_path/'ct', rs, out)
+    metadata = copy.deepcopy(previous)
+    with pytest.raises(ValueError, match='content hash'):
+        annotate(metadata, out, tmp_path/'ct', regenerated=False, existing_sidecar=previous)
+    assert metadata == previous
+    calls = []
+    real_converter = seg.run_dcm2niix
+    def counted(*args, **kwargs):
+        calls.append(args[1])
+        return real_converter(*args, **kwargs)
+    monkeypatch.setattr(seg, 'run_dcm2niix', counted)
+    result = ordinary_request()
+    assert result and calls
+    assert np.array_equal(nib.load(result).get_fdata(), expected)
+    assert sidecar(result).get('nifti_conversion') == previous.get('nifti_conversion')
+    contract_validate(tmp_path, tmp_path/'ct', rs, result)
+    assert sources == {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in (tmp_path/'ct').iterdir()}
+
+
+@pytest.mark.parametrize('prior_method', ['native', 'signed_staging'])
+@pytest.mark.parametrize('state', ['valid', 'missing_digest', 'mismatch', 'unreadable_digest',
+                                  'unreadable_sidecar', 'nonobject_sidecar'])
+def test_nonhygiene_reuse_requires_publication_digest(tmp_path, monkeypatch, prior_method, state):
+    rs, out, ordinary_request = nonhygiene_cache(tmp_path, prior_method)
+    previous = sidecar(out)
+    expected = nib.load(out).get_fdata()
+    meta_path = out.with_name(out.name[:-7]+'.metadata.json')
+    if state in {'missing_digest', 'mismatch'}:
+        metadata = copy.deepcopy(previous)
+        if state == 'missing_digest':
+            del metadata['nifti_sha256']
+        else:
+            metadata['nifti_sha256'] = '0'*64
+        meta_path.write_text(json.dumps(metadata))
+    elif state == 'nonobject_sidecar':
+        meta_path.write_text('[]')
+    original_open, original_read = Path.open, Path.read_text
+    if state == 'unreadable_digest':
+        def unreadable(path, *args, **kwargs):
+            if path == out and args and args[0] == 'rb':
+                raise PermissionError('synthetic unreadable volume')
+            return original_open(path, *args, **kwargs)
+        monkeypatch.setattr(Path, 'open', unreadable)
+    elif state == 'unreadable_sidecar':
+        def unreadable_sidecar(path, *args, **kwargs):
+            if path == meta_path:
+                raise PermissionError('synthetic unreadable sidecar')
+            return original_read(path, *args, **kwargs)
+        monkeypatch.setattr(Path, 'read_text', unreadable_sidecar)
+    calls = []
+    real_converter = seg.run_dcm2niix
+    def counted(*args, **kwargs):
+        calls.append(args[1])
+        monkeypatch.setattr(Path, 'open', original_open)
+        monkeypatch.setattr(Path, 'read_text', original_read)
+        return real_converter(*args, **kwargs)
+    monkeypatch.setattr(seg, 'run_dcm2niix', counted)
+    result = ordinary_request()
+    assert result
+    assert bool(calls) == (state != 'valid')
+    assert np.array_equal(nib.load(result).get_fdata(), expected)
+    contract_validate(tmp_path, tmp_path/'ct', rs, result)
+    if state == 'valid':
+        assert sidecar(result) == previous
+
+
+@pytest.mark.parametrize('method', [None, 'dcm2niix_signed_staging_equalized', hygiene.METHOD])
+@pytest.mark.parametrize('state', ['changed_bytes', 'missing_digest', 'unreadable_volume'])
+def test_provenance_writer_never_rebinds_any_method(tmp_path, monkeypatch, method, state):
+    from rtpipeline.nifti_provenance import annotate
+    volume = tmp_path/'volume.nii.gz'
+    volume.write_bytes(b'synthetic publication bytes')
+    previous = {'nifti_sha256': hashlib.sha256(volume.read_bytes()).hexdigest()}
+    if method:
+        previous['nifti_conversion'] = {'method': method}
+    if state == 'changed_bytes':
+        volume.write_bytes(b'different synthetic publication bytes')
+    elif state == 'missing_digest':
+        del previous['nifti_sha256']
+    else:
+        volume.unlink()
+    metadata = copy.deepcopy(previous)
+    with pytest.raises(ValueError, match='content hash'):
+        annotate(metadata, volume, tmp_path, regenerated=False, existing_sidecar=previous)
+    assert metadata == previous
+
+
+@pytest.mark.parametrize('state', ['valid', 'missing_digest', 'mismatch', 'nonobject_sidecar'])
+def test_related_series_reuse_requires_publication_digest(tmp_path, monkeypatch, state):
+    from rtpipeline import organize
+    write_ct_series(tmp_path/'ct', uniform_z_positions(), signed=True)
+    cfg = config(tmp_path)
+    cfg.resume = False
+    nifti_dir = tmp_path/'nifti'
+    nifti_dir.mkdir()
+    out = organize._convert_one_related_series(nifti_dir, tmp_path/'ct', cfg)
+    assert out
+    expected = out.read_bytes()
+    previous = sidecar(out)
+    metadata = copy.deepcopy(previous)
+    if state == 'missing_digest':
+        del metadata['nifti_sha256']
+    elif state == 'mismatch':
+        metadata['nifti_sha256'] = '0'*64
+    out.with_name(out.name[:-7]+'.metadata.json').write_text(
+        '[]' if state == 'nonobject_sidecar' else json.dumps(metadata)
+    )
+    calls = []
+    original = organize.run_dcm2niix
+    def counted(*args, **kwargs):
+        calls.append(args[1])
+        return original(*args, **kwargs)
+    monkeypatch.setattr(organize, 'run_dcm2niix', counted)
+    result = organize._convert_one_related_series(nifti_dir, tmp_path/'ct', cfg)
+    assert result and result.read_bytes() == expected
+    assert bool(calls) == (state != 'valid')
+    assert sidecar(result)['nifti_sha256'] == hashlib.sha256(expected).hexdigest()

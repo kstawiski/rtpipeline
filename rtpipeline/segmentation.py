@@ -982,7 +982,7 @@ def _ensure_ct_nifti(
                 existing = json.loads(meta_path.read_text(encoding='utf-8'))
             except Exception:
                 existing = {}
-            if existing.get("series_instance_uid") == metadata["series_instance_uid"]:
+            if isinstance(existing, dict) and existing.get("series_instance_uid") == metadata["series_instance_uid"]:
                 base = candidate
                 break
         if not target.exists():
@@ -1016,7 +1016,10 @@ def _ensure_ct_nifti(
         else None
     )
     if not regenerated:
-        if existing_sidecar.get("sop_hash") != metadata["sop_hash"]:
+        if (
+            existing_sidecar.get("sop_hash") != metadata["sop_hash"]
+            or not content_hash_matches(target, existing_sidecar)
+        ):
             regenerated = True
         elif (
             require_hygiene
@@ -1053,7 +1056,6 @@ def _ensure_ct_nifti(
                 if (
                     existing_conversion is None
                     or not conversion_evidence_matches_expected(existing_conversion, expected_selection)
-                    or not content_hash_matches(target, existing_sidecar)
                 ):
                     regenerated = True
                 else:
@@ -1128,7 +1130,7 @@ def _ensure_ct_nifti(
                         return None
             # The sidecar digest commits this publication. If its later write
             # is interrupted, the old digest cannot authorize the new bytes;
-            # the next hygiene request must regenerate them.
+            # the next request must regenerate them, for every conversion method.
             if target.exists():
                 target.unlink()
             shutil.move(str(generated), str(target))

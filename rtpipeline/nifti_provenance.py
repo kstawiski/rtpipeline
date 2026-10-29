@@ -74,14 +74,9 @@ def annotate(
     forward, because those timestamps describe content and are load-bearing for
     segmentation mask reuse.
     """
-    # Hygiene evidence describes one published selection and its exact bytes.
+    # Provenance describes one publication and its exact bytes, for every method.
     # Never repair a stale digest by attaching it to a different cached volume.
-    conversion = (existing_sidecar or {}).get("nifti_conversion")
-    if (
-        not regenerated
-        and isinstance(conversion, dict)
-        and conversion.get("method") == "dcm2niix_ct_series_hygiene"
-    ):
+    if not regenerated:
         if not content_hash_matches(nifti_path, existing_sidecar or {}):
             raise ValueError("stale planning CT NIfTI provenance: content hash mismatch")
         published_hash = (existing_sidecar or {})["nifti_sha256"]
