@@ -2584,8 +2584,11 @@ def segment_course(config: PipelineConfig, course_dir: Path, force: bool = False
             base_dir_mr.mkdir(parents=True, exist_ok=True)
 
             def _mr_ready(model: str) -> bool:
-                rt_path = base_dir_mr / f"{base_name_mr}--{model}.dcm"
-                return rt_path.exists() and _series_segmentation_ready(base_dir_mr, base_name_mr, model)
+                if not _series_segmentation_ready(base_dir_mr, base_name_mr, model):
+                    return False
+                return _ensure_model_rtstruct_from_masks(
+                    source_dir, base_dir_mr, base_name_mr, model,
+                ) is not None
 
             if not force and all(_mr_ready(model) for model in mr_models):
                 continue
@@ -2811,8 +2814,11 @@ def _segment_mr_series_for_course(config: PipelineConfig, course_dirs, course_di
         base_dir_mr.mkdir(parents=True, exist_ok=True)
 
         def _mr_ready(model: str) -> bool:
-            rt_path = base_dir_mr / f"{base_name_mr}--{model}.dcm"
-            return rt_path.exists() and _series_segmentation_ready(base_dir_mr, base_name_mr, model)
+            if not _series_segmentation_ready(base_dir_mr, base_name_mr, model):
+                return False
+            return _ensure_model_rtstruct_from_masks(
+                source_dir, base_dir_mr, base_name_mr, model,
+            ) is not None
 
         if not force and all(_mr_ready(model) for model in mr_models):
             continue
