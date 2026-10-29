@@ -22,8 +22,9 @@ def main():
     else:
         env["PYTHONPATH"] = root_dir
         
-    # Disable pip build isolation
+    # Disable pip build isolation and isolate user site-packages
     env.setdefault("PIP_NO_BUILD_ISOLATION", "1")
+    env["PYTHONNOUSERSITE"] = "1"
 
     cmd = [
         sys.executable,

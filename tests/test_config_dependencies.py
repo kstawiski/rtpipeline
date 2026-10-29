@@ -10,6 +10,9 @@ from typing import Any, cast
 import pandas as pd
 import pytest
 
+# Synthetic extraction tests assume the supported runtime; enforcement is tested separately.
+pytestmark = pytest.mark.usefixtures("rasterizer_guard_stub")
+
 from rtpipeline import radiomics_ct_contract as contract
 from rtpipeline.config_dependencies import (
     _snakemake_record_path,
@@ -204,7 +207,7 @@ def test_default_roi_map_comes_from_the_dag_dependency(tmp_path, monkeypatch):
     assert digest == identity["sha256"]
 
 
-def test_mr_rows_reuse_the_manifest_configured_hash():
+def test_mr_rows_reuse_the_manifest_configured_hash(monkeypatch):
     from rtpipeline import radiomics
 
     class _Extractor:
@@ -221,6 +224,11 @@ def test_mr_rows_reuse_the_manifest_configured_hash():
         run_identifier="run-1",
         code_revision="revision-1",
     )
+    provenance.update({"rasterizer_backend": "rt-utils/cv2.fillPoly",
+            "rasterizer_opencv_version": "4.8.1",
+            "rasterizer_rt_utils_version": "1.2.7",
+            "rasterizer_providers": '{"opencv-python-headless": "4.8.1.78"}',
+    })
     manifest = _parameter_manifest()
 
     assert provenance["configured_parameter_hash"] == manifest["mr"][

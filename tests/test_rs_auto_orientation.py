@@ -297,6 +297,9 @@ def test_origin_record_must_name_current_layout_and_these_bytes(tmp_path, tamper
 
 
 def test_rs_custom_regenerates_after_legacy_rs_auto_is_rebuilt(tmp_path, monkeypatch) -> None:
+    from rtpipeline import radiomics_rasterizer, custom_structures_rtstruct
+    monkeypatch.setattr(radiomics_rasterizer, "opencv_runtime_provenance", lambda: {"opencv_version": "5.0.0"})
+    monkeypatch.setattr(custom_structures_rtstruct, "opencv_runtime_provenance", lambda: {"opencv_version": "5.0.0"})
     with monkeypatch.context() as patch:
         patch.setattr(ar, "_image_array_for_rtstruct", _transposed_sampler)
         case = _custom_course(tmp_path, _mixed_z())

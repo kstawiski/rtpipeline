@@ -436,6 +436,7 @@ def _config(tmp_path: Path, *, resume: bool = False) -> PipelineConfig:
     )
 
 
+@pytest.mark.usefixtures("rasterizer_guard_stub")
 def test_default_parallel_backend_publishes_contracted_full_series_descriptor(
     tmp_path: Path,
     monkeypatch,
@@ -491,6 +492,7 @@ def test_default_parallel_backend_publishes_contracted_full_series_descriptor(
     assert seen_ct_dirs == [selected, selected]
 
 
+@pytest.mark.usefixtures("rasterizer_guard_stub")
 def test_native_backend_attaches_descriptor_once_after_feature_extraction(
     tmp_path: Path,
     monkeypatch,
@@ -551,10 +553,12 @@ def test_native_backend_attaches_descriptor_once_after_feature_extraction(
             "observed_roi_dimensions_after_resegmentation": 3,
         },
     )
+    from rasterizer_test_utils import PINNED_RASTERIZER_ROW
     monkeypatch.setattr(
         radiomics_ct_contract,
         "_runtime_versions",
         lambda: {
+            **PINNED_RASTERIZER_ROW,
             "pyradiomics_version": "test",
             "simpleitk_version": "test",
             "numpy_version": np.__version__,

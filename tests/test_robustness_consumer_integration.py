@@ -145,6 +145,8 @@ def _build_courses(tmp_path, monkeypatch, specs, *, apply_to_structures=("ROI", 
     disposition, whose ROI name is either inside the requested selection
     (source-only) or outside it (unmatched).
     """
+    from rasterizer_test_utils import stub_synthetic_rasterizer_columns
+    stub_synthetic_rasterizer_columns(monkeypatch)
     output_root = tmp_path / "Output"
     array = _roi_array()
     mask = sitk.GetImageFromArray(array)

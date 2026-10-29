@@ -207,6 +207,10 @@ def robustness_completion_payload(
         raise RobustnessCompletionError(
             "a source-only robustness completion must not bind a measurement table"
         )
+    # The workflow caller may run outside the measurement environment. Copy
+    # provenance from the bound sidecar rather than inspect the caller's cv2.
+    source_provenance = json.loads(dispositions_path.read_text(encoding="utf-8"))
+
     return {
         "schema": ROBUSTNESS_COMPLETION_SCHEMA,
         "status": "ok",
@@ -224,6 +228,8 @@ def robustness_completion_payload(
             "row_count": int(source_disposition_count),
         },
         "effective_configuration_sha256": str(effective_configuration_sha256),
+        "environment_fingerprint": source_provenance.get("environment_fingerprint", "unrecorded"),
+        "rasterizer": source_provenance.get("rasterizer", {"backend": "unrecorded"}),
     }
 
 
@@ -351,6 +357,11 @@ def _validate_payload(
         raise RobustnessCompletionError("robustness disposition sidecar is unreadable") from exc
     if not isinstance(disposition_payload, dict):
         raise RobustnessCompletionError("robustness disposition sidecar is not a record")
+    for field in ("environment_fingerprint", "rasterizer"):
+        if field in disposition_payload and payload.get(field) != disposition_payload[field]:
+            raise RobustnessCompletionError(
+                f"robustness receipt {field} differs from the measurement sidecar"
+            )
     if disposition_payload.get("failed_evidence") is not None:
         for field, expected in (
             ("measurement_outcome", outcome),

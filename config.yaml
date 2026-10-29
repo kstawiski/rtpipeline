@@ -29,6 +29,7 @@ scheduler:
   prioritize_short_courses: true
 
 segmentation:
+  enabled: true  # Disable automatic masks while retaining manual RTSTRUCT analysis.
   device: "cpu"
   fast: false
   force: false

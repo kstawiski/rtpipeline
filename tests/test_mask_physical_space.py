@@ -76,6 +76,8 @@ def test_export_voxels_and_centroid_in_lps(source, tmp_path, perm, flip):
         rs_path=rs, primary_nifti=nifti, dicom_ct_dir=ct,
         segmentation_original_dir=tmp_path/'Segmentation_Original', log_root=tmp_path, overwrite=False)
     assert manifest['geometry_status'] == 'exact_physical_mapping'
+    from rtpipeline.radiomics_rasterizer import opencv_runtime_provenance
+    assert manifest['opencv_runtime'] == opencv_runtime_provenance()
     image = sitk.ReadImage(str(tmp_path/'Segmentation_Original'/manifest['structures'][0]['mask']))
     expected, center = dicom_voxels(rt.get_roi_mask_by_name('Asymmetric'), rt.series_data)
     actual, observed = physical_voxels(image)
@@ -185,6 +187,11 @@ def test_legacy_export_is_recomputed_and_stage_receipt_excludes_it(source, tmp_p
     reusable, reason = organize._original_masks_reusable(target, target.parent, result, changed)
     assert not reusable
     assert 'source_nifti_sha256' in reason
+    changed = organize._original_segmentation_provenance(rs, nifti)
+    changed['opencv_runtime'] = {**changed['opencv_runtime'], 'opencv_version': 'different'}
+    reusable, reason = organize._original_masks_reusable(target, target.parent, result, changed)
+    assert not reusable
+    assert 'opencv_runtime' in reason
 
 
 def test_rectangular_reader_mask_is_rejected(tmp_path):

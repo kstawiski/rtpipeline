@@ -73,6 +73,9 @@ def _course_with_custom(tmp_path, monkeypatch, *, selection, custom_name="small_
         tmp_path, monkeypatch, apply_to_structures=tuple(selection)
     )
     _add_partially_unparseable_roi(rs_path, course / "RS_custom.dcm", course / "CT", custom_name)
+    # Currency is a precondition here; these tests vary contour structure.
+    from rtpipeline import custom_structures_rtstruct
+    monkeypatch.setattr(custom_structures_rtstruct, "_is_rs_custom_stale", lambda *_a: False)
     extract = rr.extract_features_for_masks
 
     def features(*args, **kwargs):

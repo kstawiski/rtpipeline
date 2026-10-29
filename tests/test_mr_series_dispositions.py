@@ -111,6 +111,14 @@ def _env(monkeypatch, tmp_path, *, fail_mask_coord=None, image=_IMAGE):
     rs = _write_rs(tmp_path / "input" / "RS_manual.dcm")
     out_root = tmp_path / PATIENT / f"MR_{SERIES_UID}"
     out_feat = out_root / "radiomics_features_MR.xlsx"
+    # These synthetic readers/extractors represent a pinned measurement runtime.
+    from rtpipeline import radiomics_ct_contract
+    monkeypatch.setattr(radiomics_ct_contract, "_rasterizer_columns", lambda: {
+        "rasterizer_backend": "rt-utils/cv2.fillPoly",
+        "rasterizer_opencv_version": "4.8.1",
+        "rasterizer_rt_utils_version": "1.2.7",
+        "rasterizer_providers": '{"opencv-python-headless": "4.8.1.78"}',
+    })
     extractor = _Extractor(fail_mask_coord=fail_mask_coord)
     monkeypatch.setattr(radiomics, "_extractor", lambda *_a, **_k: extractor)
     monkeypatch.setattr(radiomics, "_load_series_image", lambda *_a, **_k: image)
@@ -142,6 +150,7 @@ def _read(out_feat):
     return pd.read_parquet(out_feat.with_suffix(".parquet"), engine="pyarrow")
 
 
+@pytest.mark.usefixtures("rasterizer_guard_stub")
 def test_nonvolumetric_roi_persists_identity_bound_nonmeasurement(tmp_path, monkeypatch):
     config, series, rs, out_feat = _env(monkeypatch, tmp_path)
     result = radiomics.radiomics_for_mr_series(config, series)
@@ -178,6 +187,7 @@ def test_nonvolumetric_roi_persists_identity_bound_nonmeasurement(tmp_path, monk
     assert frame.columns.intersection({"roi_number", "status", "failure_kind", "reason"}).empty
 
 
+@pytest.mark.usefixtures("rasterizer_guard_stub")
 def test_manual_extraction_failure_persists_durable_failed_row(tmp_path, monkeypatch):
     config, series, rs, out_feat = _env(monkeypatch, tmp_path, fail_mask_coord=(0, 0, 0))
     _plant_stale(out_feat)
@@ -199,6 +209,7 @@ def test_manual_extraction_failure_persists_durable_failed_row(tmp_path, monkeyp
     assert frame.extraction_status.isin(["failed", "nonvolumetric_nonmeasurement"]).all()
 
 
+@pytest.mark.usefixtures("rasterizer_guard_stub")
 def test_required_manual_roi_failure_is_not_relabelled_and_fails_closed(tmp_path, monkeypatch):
     config, series, rs, out_feat = _env(monkeypatch, tmp_path, fail_mask_coord=(0, 0, 0))
     config.radiomics_analysis_contract = {
@@ -235,6 +246,7 @@ def test_series_level_technical_failure_invalidates_stale_output(tmp_path, monke
     assert not out_feat.with_suffix(".parquet").exists()
 
 
+@pytest.mark.usefixtures("rasterizer_guard_stub")
 def test_auto_label_extraction_failure_persists_durable_failed_row(tmp_path, monkeypatch):
     config, series, rs, out_feat = _env(monkeypatch, tmp_path, fail_mask_coord=(1, 2, 2))
     import rtpipeline.auto_rtstruct as auto_rtstruct
@@ -284,6 +296,7 @@ def _nifti_dir(out_feat, *, contents=b"synthetic nifti mask"):
     return directory
 
 
+@pytest.mark.usefixtures("rasterizer_guard_stub")
 def test_dicom_seg_is_authoritative_and_each_label_publishes_once(tmp_path, monkeypatch):
     """A course carrying both auto encodings publishes each label exactly once."""
     config, series, _rs, out_feat = _env(monkeypatch, tmp_path)
@@ -291,7 +304,16 @@ def test_dicom_seg_is_authoritative_and_each_label_publishes_once(tmp_path, monk
 
     seg_dicom = out_feat.parent / "TotalSegmentator_total_mr_DICOM" / "segmentations.dcm"
     seg_dicom.parent.mkdir(parents=True, exist_ok=True)
-    seg_dicom.write_bytes(b"synthetic dicom seg")
+    from pydicom.dataset import FileDataset, FileMetaDataset
+    from pydicom.uid import ExplicitVRLittleEndian, SegmentationStorage, generate_uid
+    meta = FileMetaDataset()
+    meta.TransferSyntaxUID = ExplicitVRLittleEndian
+    meta.MediaStorageSOPClassUID = SegmentationStorage
+    meta.MediaStorageSOPInstanceUID = generate_uid()
+    ds = FileDataset(str(seg_dicom), {}, file_meta=meta, preamble=b"\0" * 128)
+    ds.SOPClassUID = SegmentationStorage
+    ds.SOPInstanceUID = meta.MediaStorageSOPInstanceUID
+    ds.save_as(seg_dicom, enforce_file_format=True)
     _nifti_dir(out_feat)
     monkeypatch.setattr(auto_rtstruct, "_load_seg_dicom", lambda *_a, **_k: (
         sitk.GetImageFromArray(_seg_array()), {1: "liver", 2: "kidney"},
@@ -316,6 +338,7 @@ def test_dicom_seg_is_authoritative_and_each_label_publishes_once(tmp_path, monk
     assert (auto.extraction_status == "success").all()
 
 
+@pytest.mark.usefixtures("rasterizer_guard_stub")
 def test_nifti_source_identity_covers_every_member_and_binds_resume(tmp_path, monkeypatch):
     """The NIfTI directory identity is content-derived, and resume follows it."""
     config, series, _rs, out_feat = _env(monkeypatch, tmp_path)
@@ -352,6 +375,7 @@ def test_nifti_source_identity_covers_every_member_and_binds_resume(tmp_path, mo
                .source_content_sha256) != {expected_digest}
 
 
+@pytest.mark.usefixtures("rasterizer_guard_stub")
 def test_undecodable_auto_source_keeps_a_durable_technical_row(tmp_path, monkeypatch):
     """An auto source that cannot be decoded is recorded, never silently dropped."""
     config, series, _rs, out_feat = _env(monkeypatch, tmp_path)
@@ -378,6 +402,7 @@ def test_undecodable_auto_source_keeps_a_durable_technical_row(tmp_path, monkeyp
     ]
 
 
+@pytest.mark.usefixtures("rasterizer_guard_stub")
 def test_nifti_loader_is_called_with_its_required_base_name_argument(tmp_path, monkeypatch):
     """Regression: the loader takes (seg_dir, base_name), not a single argument."""
     config, series, _rs, out_feat = _env(monkeypatch, tmp_path)

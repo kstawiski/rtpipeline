@@ -681,6 +681,9 @@ def test_custom_publication_lock_reuses_competing_stage_result(tmp_path, monkeyp
     course_dir = tmp_path / "P1" / "C1"
     course_dir.mkdir(parents=True)
     calls: list[int] = []
+    from rtpipeline import radiomics_rasterizer
+    monkeypatch.setattr(radiomics_rasterizer, "opencv_runtime_provenance",
+                        lambda: {"opencv_version": "5.0.0"})
 
     def _build(course, *_args):
         calls.append(1)

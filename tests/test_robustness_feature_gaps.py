@@ -112,6 +112,8 @@ def fake_parallel_worker(task):
 
 
 def _course(tmp_path, monkeypatch, *, patient="P1", parallel=False, plan=None):
+    from rasterizer_test_utils import stub_synthetic_rasterizer_columns
+    stub_synthetic_rasterizer_columns(monkeypatch)
     PLAN.clear()
     PLAN.update(plan or {})
     course = tmp_path / patient / "C"

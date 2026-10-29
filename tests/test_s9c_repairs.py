@@ -331,7 +331,7 @@ def test_f7_writer_adapter_scopes_v2_rs_auto_currentness(tmp_path, monkeypatch, 
     assert bool(auto._rs_auto_origin_rejection(tmp_path,tmp_path/'RS_auto.dcm',ct,'',tmp_path/'seg')) == (spacing[0] != spacing[1])
 
 
-def test_f10_conda_guards_receive_aligned_array(tmp_path, monkeypatch):
+def test_f10_conda_guards_receive_aligned_array(tmp_path, monkeypatch, rasterizer_guard_stub):
     from rt_utils import RTStructBuilder
     from robustness_prep_fixture import write_ct
     from course_contract_test_utils import write_minimal_course_contract

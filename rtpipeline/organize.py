@@ -3828,6 +3828,7 @@ def _classify_approved_doses(
 _ORIGINAL_SEGMENTATION_PROVENANCE = "provenance.json"
 _ORIGINAL_PROVENANCE_BOUND_KEYS = (
     "schema",
+    "opencv_runtime",
     "source_rtstruct_sha256",
     "planning_ct_series_instance_uid",
     "source_ct_sop_hash",
@@ -3840,6 +3841,8 @@ def _original_segmentation_provenance(
     rs_path: Path, primary_nifti: Path
 ) -> Optional[dict]:
     """Return the content identity used to rasterize original ROI masks."""
+    from .radiomics_rasterizer import opencv_runtime_provenance
+
     sidecar = primary_nifti.parent / f"{_strip_nifti_base(primary_nifti)}.metadata.json"
     try:
         data = json.loads(sidecar.read_text(encoding="utf-8"))
@@ -3859,6 +3862,7 @@ def _original_segmentation_provenance(
         return None
     return {
         "schema": ORIGINAL_PROVENANCE_SCHEMA,
+        "opencv_runtime": opencv_runtime_provenance(),
         "source_rtstruct_sha256": rtstruct_sha256,
         "planning_ct_series_instance_uid": series_uid,
         "source_ct_sop_hash": sop_hash,
@@ -3997,6 +4001,7 @@ def _export_original_segmentation_from_paths(
     manifest = {
         "schema": ORIGINAL_SEGMENTATION_SCHEMA,
         "geometry_status": "exact_physical_mapping",
+        "opencv_runtime": provenance["opencv_runtime"],
         "model": "manual",
         "source_rtstruct": str(rs_path),
         "source_nifti": str(primary_nifti),

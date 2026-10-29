@@ -12,6 +12,9 @@ from test_custom_structures_d16_auto_harvest import _publish_clean_course
 @pytest.fixture
 def published(tmp_path, tmp_path_factory, monkeypatch):
     assert tmp_path.resolve().is_relative_to(tmp_path_factory.getbasetemp().resolve())
+    # This test isolates metadata currency from the host's unpinned OpenCV.
+    monkeypatch.setattr(custom, "opencv_runtime_provenance",
+                        lambda: {"opencv_version": "5.0.0"})
     course = _publish_clean_course(tmp_path, monkeypatch)
     assert not (tmp_path / "RS_auto_cropped.dcm").exists()
     assert not custom._is_rs_custom_stale(
@@ -98,3 +101,9 @@ def test_contractless_cropped_utility_keeps_historical_epoch_check(published, ve
         published.out, published.config, published.rs_manual, published.rs_auto,
         allow_contractless=True,
     ) is expected
+
+
+@pytest.mark.parametrize("runtime", [None, {}, {"opencv_version": "4.8.1"}, {"opencv_version": "4.11.0"}, {"opencv_version": "5.0.0"}])
+def test_main_builder_identity_is_required(published, runtime):
+    _rewrite_metadata(published, lambda payload: payload.update(opencv_runtime=runtime))
+    assert _stale(published) == (runtime != {"opencv_version": "5.0.0"})

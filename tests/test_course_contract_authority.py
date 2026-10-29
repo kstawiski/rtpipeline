@@ -566,6 +566,11 @@ def test_dvh_invalidates_stale_output_when_contract_dose_qc_fails(
             function(task) for task in tasks
         ],
     )
+    # This fixture has dose evidence only. Custom publication has its own
+    # failure tests; isolate it here to exercise the CLI dose-QC outcome.
+    monkeypatch.setattr(
+        "rtpipeline.dvh._publish_skipped_course_rs_custom", lambda *_args: None
+    )
     exit_status = cli_module.main(
         [
             "--dicom-root",
