@@ -4,6 +4,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 from rtpipeline.config_dependencies import (
@@ -15,6 +16,7 @@ from rtpipeline.config_dependencies import (
     adopt_legacy_snakemake_inputs,
     semantic_yaml_or_absent,
 )
+from rtpipeline.stage_completion import validate_stage_completion_sentinel
 
 configfile: "config.yaml"
 
@@ -867,7 +869,12 @@ def _manifest_input(wildcards):
     return str(_manifest_path())
 
 
-ORGANIZED_SENTINEL_PATTERN = str(OUTPUT_DIR / "{patient}" / "{course}" / ".organized")
+def _organized_input(wildcards):
+    # Wait for the checkpoint before resolving its per-course side effect.
+    _manifest_path()
+    return str(course_sentinel_path(wildcards.patient, wildcards.course, ".organized"))
+
+
 SEGMENTATION_SENTINEL_PATTERN = str(OUTPUT_DIR / "{patient}" / "{course}" / ".segmentation_done")
 CUSTOM_SEG_SENTINEL_PATTERN = str(OUTPUT_DIR / "{patient}" / "{course}" / ".custom_models_done")
 CROP_CT_SENTINEL_PATTERN = str(OUTPUT_DIR / "{patient}" / "{course}" / ".crop_ct_done")
@@ -876,6 +883,38 @@ RADIOMICS_SENTINEL_PATTERN = str(OUTPUT_DIR / "{patient}" / "{course}" / ".radio
 RADIOMICS_ROBUSTNESS_SENTINEL_PATTERN = str(OUTPUT_DIR / "{patient}" / "{course}" / ".radiomics_robustness_done")
 CROP_CT_SENTINEL_PATTERN = str(OUTPUT_DIR / "{patient}" / "{course}" / ".crop_ct_done")
 QC_SENTINEL_PATTERN = str(OUTPUT_DIR / "{patient}" / "{course}" / ".qc_done")
+
+# Course flags are checkpoint side effects, not independently produced outputs.
+# Invalidate the checkpoint before DAG expansion if any publication is absent
+# or no longer validates, so its manifest is regenerated before course inputs.
+if COURSE_MANIFEST.exists():
+    try:
+        _manifest_courses = json.loads(COURSE_MANIFEST.read_text(encoding="utf-8"))["courses"]
+        if not isinstance(_manifest_courses, list):
+            raise ValueError("Manifest courses must be a list")
+        for _entry in _manifest_courses:
+            _patient = str(_entry["patient"] or "").strip()
+            _course = str(_entry["course"] or "").strip()
+            if not _patient or not _course:
+                raise ValueError("Manifest course lacks patient/course identity")
+            validate_stage_completion_sentinel(
+                course_sentinel_path(_patient, _course, ".organized"),
+                expected_stage="organize",
+                expected_patient=_patient,
+                expected_course=_course,
+            )
+    except (OSError, ValueError, KeyError, TypeError) as _exc:
+        _organize_dependency = Path(ORGANIZE_CONFIG_DEPENDENCY)
+        _target_ns = max(
+            time.time_ns(),
+            _organize_dependency.stat().st_mtime_ns + 1_000_000_000,
+            COURSE_MANIFEST.stat().st_mtime_ns + 1_000_000_000,
+        )
+        os.utime(_organize_dependency, ns=(_target_ns, _target_ns))
+        sys.stderr.write(
+            "[rtpipeline] Re-running organize for invalid manifest course "
+            f"completion: {_exc}\n"
+        )
 
 _GENERIC_STAGE_COMPLETION_DEPENDENCIES = (
     ("segmentation", ".segmentation_done", SEGMENTATION_CONFIG_DEPENDENCY),
@@ -1038,7 +1077,7 @@ _seg_params_lambda = lambda w: (
 rule segmentation_course:
     input:
         manifest=_manifest_input,
-        organized=ORGANIZED_SENTINEL_PATTERN,
+        organized=_organized_input,
         configuration=SEGMENTATION_CONFIG_DEPENDENCY
     output:
         sentinel=SEGMENTATION_SENTINEL_PATTERN
