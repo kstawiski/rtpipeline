@@ -401,9 +401,12 @@ def test_per_course_original_export_records_physical_manifest_schema(tmp_path: P
 
     manifest = organize._export_original_segmentation(course, overwrite=True)
 
+    from rtpipeline.radiomics_rasterizer import opencv_runtime_provenance
+
     expected = {
         "schema": organize.ORIGINAL_SEGMENTATION_SCHEMA,
         "geometry_status": "exact_physical_mapping",
+        "opencv_runtime": opencv_runtime_provenance(),
         "model": "manual",
         "source_rtstruct": str(rs_path),
         "source_nifti": str(primary_nifti),
