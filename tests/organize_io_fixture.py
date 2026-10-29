@@ -219,20 +219,24 @@ def upgrade_original_export_schema(old, monkeypatch):
     change; physical placement is covered by the asymmetric geometry tests.
     """
     from rtpipeline.organize import ORIGINAL_SEGMENTATION_SCHEMA, ORIGINAL_PROVENANCE_SCHEMA
+    from rtpipeline.radiomics_rasterizer import opencv_runtime_provenance
     export = old._export_original_segmentation_from_paths
     provenance = old._original_segmentation_provenance
 
     def current_provenance(*args, **kwargs):
         result = provenance(*args, **kwargs)
         if result is not None:
-            result['schema'] = ORIGINAL_PROVENANCE_SCHEMA
+            result = {'schema': ORIGINAL_PROVENANCE_SCHEMA,
+                      'opencv_runtime': opencv_runtime_provenance(),
+                      **{key: value for key, value in result.items() if key != 'schema'}}
         return result
 
     def current_metadata(**kwargs):
         result = export(**kwargs)
         if result is not None:
             result = dict(schema=ORIGINAL_SEGMENTATION_SCHEMA,
-                          geometry_status='exact_physical_mapping', **result)
+                          geometry_status='exact_physical_mapping',
+                          opencv_runtime=opencv_runtime_provenance(), **result)
             import hashlib
             for structure in result['structures']:
                 mask = kwargs['segmentation_original_dir'] / structure['mask']
