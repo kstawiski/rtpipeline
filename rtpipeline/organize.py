@@ -3957,14 +3957,16 @@ def _original_segmentation_provenance(
 
 def _bind_original_builder_to_planning_ct(builder, ct_dir: Path, rs_path: Path, nifti: Path):
     """Rasterize the validated conversion stack, retaining source DICOM bytes."""
+    sidecar = nifti.with_name(f"{_strip_nifti_base(nifti)}.metadata.json")
+    metadata = json.loads(sidecar.read_text(encoding="utf-8"))
+    conversion = metadata.get("nifti_conversion")
+    if not isinstance(conversion, dict):
+        return builder
     from .ct_series_hygiene import (
         METHOD, select_ct_instances, conversion_evidence_matches_expected,
     )
 
-    sidecar = nifti.with_name(f"{_strip_nifti_base(nifti)}.metadata.json")
-    metadata = json.loads(sidecar.read_text(encoding="utf-8"))
-    conversion = metadata.get("nifti_conversion")
-    if not isinstance(conversion, dict) or conversion.get("method") != METHOD:
+    if conversion.get("method") != METHOD:
         return builder
     paths, expected = select_ct_instances(
         ct_dir, rs_path, stack_override=conversion.get("stack_override"),
@@ -3976,10 +3978,10 @@ def _bind_original_builder_to_planning_ct(builder, ct_dir: Path, rs_path: Path, 
     selected = [image for image in images if str(image.SOPInstanceUID) in kept]
     if {str(image.SOPInstanceUID) for image in selected} != kept or len(selected) != len(paths):
         raise ValueError("planning CT export stack is incomplete")
-    if expected.get("reason_code") == "governed_stack_override_selected":
-        # The governed override selects one of complete, same-geometry stacks.
-        # References to its counterpart may name the other reconstruction. Map
-        # only exact physical counterparts in a private RTSTRUCT copy.
+    if len(selected) != len(images):
+        # References can name an equivalent duplicate or the counterpart of a
+        # governed reconstruction. Map only exact physical counterparts in a
+        # private RTSTRUCT copy; never drop a referenced excluded plane.
         import copy
 
         def geometry(image):
@@ -3997,6 +3999,10 @@ def _bind_original_builder_to_planning_ct(builder, ct_dir: Path, rs_path: Path, 
         for element in builder.ds.iterall():
             if element.keyword == "ReferencedSOPInstanceUID" and str(element.value) in replacements:
                 element.value = replacements[str(element.value)]
+        excluded = {str(image.SOPInstanceUID) for image in images} - kept
+        if any(element.keyword == "ReferencedSOPInstanceUID" and str(element.value) in excluded
+               for element in builder.ds.iterall()):
+            raise ValueError("excluded CT reference has no exact physical counterpart")
     builder.series_data = selected
     return builder
 
