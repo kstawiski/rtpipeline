@@ -1131,13 +1131,13 @@ def build_auto_rtstruct(course_dir: Path) -> Optional[Path]:
                             out_path,
                             lambda tmp: shutil.copyfile(str(dicom_seg_path), tmp),
                         )
+                        # Keep behavior consistent with NIfTI-derived RTSTRUCTs.
+                        _postprocess_copied_rtstruct(out_path, ct_dir)
                         from .rtstruct_geometry import record_geometry_adapter
                         record_geometry_adapter(out_path, ct_dir)
                     except Exception as e:
                         logger.error('Failed to copy RTSTRUCT to RS_auto: %s', e)
                         return _failed(f"copying the matched RTSTRUCT failed: {e}")
-                    # Keep behavior consistent with NIfTI-derived RTSTRUCTs.
-                    _postprocess_copied_rtstruct(out_path, ct_dir)
                     logger.info("Wrote auto RTSTRUCT (from RTSTRUCT): %s", out_path)
                     _record_rs_auto_origin(course_dir, out_path, RS_AUTO_ORIGIN_COPY)
                     _record_auto_resume_decision(
