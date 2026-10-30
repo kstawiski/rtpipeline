@@ -135,7 +135,8 @@ def synthetic(root, *, records_per_course=3, ct_slices=2, ct_size=8, roi_names=(
 def tree_bytes(root):
     """Compare every file; normalize only explicitly run-dependent fields.
 
-    NIFTI sidecar generated_at/nifti_generated_at describe conversion time.
+    NIFTI sidecar generated_at/nifti_generated_at and the original export's
+    source_nifti_generated_at describe conversion time.
     Same output path is reused in sequential runs, so no path substitution is
     needed. Ledger generated_at is a wall-clock timestamp. XLSX ZIP timestamps
     and core created/modified properties are workbook packaging timestamps;
@@ -160,6 +161,8 @@ def tree_bytes(root):
                 result[relative] = members
         elif path.name.endswith('.metadata.json') and 'NIFTI' in path.parts:
             result[relative] = re.sub(rb'("(?:generated_at|nifti_generated_at)": ")[^"]+"', rb'\1TIMESTAMP"', data)
+        elif path.name == 'provenance.json' and 'Segmentation_Original' in path.parts:
+            result[relative] = re.sub(rb'("source_nifti_generated_at": ")[^"]+"', rb'\1TIMESTAMP"', data)
         elif path.name == 'organize_ledger.json':
             # Preserve byte formatting and every other field.
             result[relative] = re.sub(rb'("generated_at": ")[^"]+"', rb'\1TIMESTAMP"', data)
@@ -226,9 +229,14 @@ def upgrade_original_export_schema(old, monkeypatch):
     def current_provenance(*args, **kwargs):
         result = provenance(*args, **kwargs)
         if result is not None:
+            nifti = args[1] if len(args) > 1 else kwargs['primary_nifti']
+            sidecar = nifti.with_name(old._strip_nifti_base(nifti) + '.metadata.json')
+            publication = json.loads(sidecar.read_text())
             result = {'schema': ORIGINAL_PROVENANCE_SCHEMA,
                       'opencv_runtime': opencv_runtime_provenance(),
-                      **{key: value for key, value in result.items() if key != 'schema'}}
+                      **{key: value for key, value in result.items() if key != 'schema'},
+                      'source_nifti_generated_at': publication.get('nifti_generated_at'),
+                      'source_nifti_conversion': publication.get('nifti_conversion')}
         return result
 
     def current_metadata(**kwargs):

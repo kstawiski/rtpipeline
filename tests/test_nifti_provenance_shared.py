@@ -8,6 +8,7 @@ validation with "planning CT NIfTI provenance sidecar is incomplete".
 from __future__ import annotations
 
 import json
+import hashlib
 from pathlib import Path
 
 import numpy as np
@@ -39,7 +40,8 @@ def test_unregenerated_sidecar_preserves_content_timestamps(tmp_path: Path) -> N
     """Mask reuse keys off these timestamps, so a metadata refresh must not move them."""
     nifti = _write_nifti(tmp_path / "ct.nii.gz")
     existing = {"generated_at": "2020-01-01T00:00:00+00:00",
-                "nifti_generated_at": "2020-01-01T00:00:00+00:00"}
+                "nifti_generated_at": "2020-01-01T00:00:00+00:00",
+                "nifti_sha256": hashlib.sha256(nifti.read_bytes()).hexdigest()}
     metadata: dict = {}
     nifti_provenance.annotate(
         metadata, nifti, tmp_path / "DICOM", regenerated=False, existing_sidecar=existing

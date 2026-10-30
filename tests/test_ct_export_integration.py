@@ -115,3 +115,16 @@ def test_ct_change_quarantines_old_export(tmp_path, dcm2niix, change):
         provenance = json.loads((mask.parent/'provenance.json').read_text())
         assert provenance['source_nifti_conversion'] == sidecar(out)['nifti_conversion']
         assert provenance['source_nifti_generated_at'] == sidecar(out)['nifti_generated_at']
+
+
+def test_governed_export_refuses_shifted_counterpart(tmp_path, dcm2niix):
+    paths, rs, ov = make(tmp_path, 'D')
+    clinical_roi(rs, paths, 'D')
+    for path in (tmp_path/'ct').glob('second_*.dcm'):
+        ds = pydicom.dcmread(path)
+        ds.ImagePositionPatient[0] += .1
+        ds.save_as(path, enforce_file_format=True)
+    out = convert(tmp_path, rs, ov)
+    assert out is not None
+    assert export(tmp_path, rs, out) is None
+    assert not list((tmp_path/'Segmentation_Original').rglob('*.nii*'))
