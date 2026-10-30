@@ -152,6 +152,8 @@ def _load_dicom_rt_seg(seg_path: Path):
 
 
 def _overlay_fig(ct_img, seg_img, title: str):
+    seg_img = sitk.Resample(seg_img, ct_img, sitk.Transform(), sitk.sitkNearestNeighbor,
+                           0, seg_img.GetPixelID())
     ct = sitk.GetArrayFromImage(ct_img)
     seg = sitk.GetArrayFromImage(seg_img)
     if seg.shape != ct.shape:
@@ -243,21 +245,19 @@ def generate_axial_review(course_dir: Path) -> Optional[Path]:
                     elif hasattr(rt, 'get_roi_mask'):
                         m3d = rt.get_roi_mask(roi)
                     elif hasattr(rt, 'get_roi_mask_by_name'):
-                        m3d = rt.get_roi_mask_by_name(roi)
+                        from .rtstruct_geometry import rtstruct_roi_mask
+                        m3d = rtstruct_roi_mask(rt, roi)
                     else:
                         m3d = None
                 except Exception:
                     m3d = None
                 if m3d is None:
                     continue
-                # Ensure [z,y,x] orientation and boolean mask
-                ct_z, ct_y, ct_x = ct_arr.shape
-                if m3d.shape != (ct_z, ct_y, ct_x):
-                    if m3d.shape == (ct_y, ct_x, ct_z):
-                        m3d = np.transpose(m3d, (2, 0, 1))
-                    elif m3d.shape == (ct_x, ct_y, ct_z):
-                        m3d = np.transpose(m3d, (2, 1, 0))
-                m3d = m3d.astype(bool)
+                from .rtstruct_geometry import rtstruct_mask_to_image
+
+                m3d = sitk.GetArrayFromImage(
+                    rtstruct_mask_to_image(m3d, rt.series_data, ct_img)
+                ).astype(bool)
                 pal = _roi_palette([roi])
                 color = pal[roi]
                 slmap = {}
@@ -283,21 +283,19 @@ def generate_axial_review(course_dir: Path) -> Optional[Path]:
                     elif hasattr(rt, 'get_roi_mask'):
                         m3d = rt.get_roi_mask(roi)
                     elif hasattr(rt, 'get_roi_mask_by_name'):
-                        m3d = rt.get_roi_mask_by_name(roi)
+                        from .rtstruct_geometry import rtstruct_roi_mask
+                        m3d = rtstruct_roi_mask(rt, roi)
                     else:
                         m3d = None
                 except Exception:
                     m3d = None
                 if m3d is None:
                     continue
-                # Ensure [z,y,x] orientation and boolean mask
-                ct_z, ct_y, ct_x = ct_arr.shape
-                if m3d.shape != (ct_z, ct_y, ct_x):
-                    if m3d.shape == (ct_y, ct_x, ct_z):
-                        m3d = np.transpose(m3d, (2, 0, 1))
-                    elif m3d.shape == (ct_x, ct_y, ct_z):
-                        m3d = np.transpose(m3d, (2, 1, 0))
-                m3d = m3d.astype(bool)
+                from .rtstruct_geometry import rtstruct_mask_to_image
+
+                m3d = sitk.GetArrayFromImage(
+                    rtstruct_mask_to_image(m3d, rt.series_data, ct_img)
+                ).astype(bool)
                 pal = _roi_palette([roi])
                 color = pal[roi]
                 slmap = {}
@@ -326,20 +324,19 @@ def generate_axial_review(course_dir: Path) -> Optional[Path]:
                     elif hasattr(rt, 'get_roi_mask'):
                         m3d = rt.get_roi_mask(roi)
                     elif hasattr(rt, 'get_roi_mask_by_name'):
-                        m3d = rt.get_roi_mask_by_name(roi)
+                        from .rtstruct_geometry import rtstruct_roi_mask
+                        m3d = rtstruct_roi_mask(rt, roi)
                     else:
                         m3d = None
                 except Exception:
                     m3d = None
                 if m3d is None:
                     continue
-                ct_z, ct_y, ct_x = ct_arr.shape
-                if m3d.shape != (ct_z, ct_y, ct_x):
-                    if m3d.shape == (ct_y, ct_x, ct_z):
-                        m3d = np.transpose(m3d, (2, 0, 1))
-                    elif m3d.shape == (ct_x, ct_y, ct_z):
-                        m3d = np.transpose(m3d, (2, 1, 0))
-                m3d = m3d.astype(bool)
+                from .rtstruct_geometry import rtstruct_mask_to_image
+
+                m3d = sitk.GetArrayFromImage(
+                    rtstruct_mask_to_image(m3d, rt.series_data, ct_img)
+                ).astype(bool)
                 pal = _roi_palette([roi])
                 color = pal[roi]
                 slmap = {}

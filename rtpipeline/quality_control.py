@@ -370,31 +370,15 @@ class DICOMValidator:
         if not ct_files:
             info["status"] = "SKIP"
             return info
-        ct_num_slices = len(ct_files)
-
-        def _axis_name_map(z_axis: int | None) -> dict[int, str]:
-            # rt_utils masks are typically either [z, y, x] or [y, x, z]. We identify the
-            # z axis by matching the CT slice count; if ambiguous, we fall back to axisN.
-            if z_axis == 0:
-                return {0: "z", 1: "y", 2: "x"}
-            if z_axis == 2:
-                return {0: "y", 1: "x", 2: "z"}
-            if z_axis == 1:
-                return {0: "y", 1: "z", 2: "x"}
-            return {0: "axis0", 1: "axis1", 2: "axis2"}
-
         def _cropping_sides(mask: np.ndarray) -> tuple[list[str], bool]:
             """Return (cropped_sides, inplane_cropped) for a binary mask."""
             arr = np.asarray(mask).astype(bool)
             if arr.ndim != 3 or not arr.any():
                 return [], False
 
-            z_axis: int | None = None
-            candidates = [i for i, dim in enumerate(arr.shape) if dim == ct_num_slices]
-            if len(candidates) == 1:
-                z_axis = candidates[0]
-
-            names = _axis_name_map(z_axis)
+            # rt-utils defines axis 2 as slice, including cubic volumes.
+            z_axis = 2
+            names = {0: "y", 1: "x", 2: "z"}
             touched_axes: set[int] = set()
             sides: list[str] = []
             for axis in range(arr.ndim):
@@ -434,7 +418,8 @@ class DICOMValidator:
             roi_names = builder.get_roi_names()
             for roi_name in roi_names:
                 try:
-                    mask = builder.get_roi_mask_by_name(roi_name)
+                    from .rtstruct_geometry import rtstruct_roi_mask
+                    mask = rtstruct_roi_mask(builder, roi_name)
                 except Exception:
                     # Skip ROIs that fail to load
                     continue

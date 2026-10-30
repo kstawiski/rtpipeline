@@ -185,6 +185,8 @@ def test_derive_anchor_from_reference_glob_unions_gtv_masks(tmp_path):
     ref_dir.mkdir(parents=True)
     sitk.WriteImage(img, str(ref_dir / "GTV-a.nii.gz"))
 
+    from test_s9c_repairs import bind_export
+    bind_export(tmp_path, list(ref_dir.glob('*.nii.gz')))
     anchor = derive_anchor_from_reference(str(tmp_path / "Segmentation_Original" / "CT_*" / "GTV-*.nii.gz"))
 
     assert anchor is not None
@@ -209,6 +211,8 @@ def test_derive_anchor_from_reference_indexed_glob_excludes_second_lesion(tmp_pa
     write_box("GTV-2vis-1.nii.gz", 17, 17)
     write_box("GTV-2auto-3.nii.gz", 18, 18)
 
+    from test_s9c_repairs import bind_export
+    bind_export(tmp_path, list(ref_dir.glob('*.nii.gz')))
     mixed_anchor = derive_anchor_from_reference(
         str(tmp_path / "Segmentation_Original" / "CT_*" / "GTV-*.nii.gz")
     )

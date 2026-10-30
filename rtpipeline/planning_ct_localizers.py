@@ -295,12 +295,12 @@ def validate_selection(ct_dir: Path, rtstruct: Path | None, evidence: dict[str, 
         repair = evidence.get("nifti_repair")
         if repair is not None:
             expected_outputs = {
-                "preserved": "unchanged_grid_original_masks_rebound",
-                "rederived": "stale_left_in_place",
+                "preserved": {"unchanged_grid_original_masks_rebound", "original_exports_quarantined_organize_invalidated"},
+                "rederived": {"stale_left_in_place", "original_exports_quarantined_organize_invalidated"},
             }
             previous = repair.get("previous_nifti_sha256", "")
             if (repair.get("status") not in expected_outputs
-                    or repair.get("segmentation_outputs") != expected_outputs[repair["status"]]
+                    or repair.get("segmentation_outputs") not in expected_outputs[repair["status"]]
                     or not isinstance(previous, str) or len(previous) != 64
                     or any(c not in "0123456789abcdef" for c in previous)):
                 raise ValueError("inconsistent repair evidence")

@@ -60,6 +60,8 @@ _COMMON_CODE_SOURCES = (
     "__init__.py",
     "cli.py",
     "stage_completion.py",
+    "original_segmentation.py",
+    "radiomics_rasterizer.py",
     "workflow_delegate.py",
     "workflow/scripts/run_course_stage.py",
     "Snakefile",
@@ -80,6 +82,8 @@ _STAGE_DEFINITIONS: dict[str, StageDefinition] = {
             ArtifactRule("organized_related_dicom", "DICOM_related/**/*", "inventory"),
             ArtifactRule("organized_nifti", "NIFTI/**/*", "inventory"),
             ArtifactRule("original_segmentation", "Segmentation_Original/**/*", "inventory"),
+            ArtifactRule("original_segmentation", "Segmentation_Original/**/metadata.json", "content_sha256"),
+            ArtifactRule("original_segmentation", "Segmentation_Original/**/provenance.json", "content_sha256"),
             ArtifactRule("selected_plan_alias", "RP.dcm", "inventory"),
             ArtifactRule("selected_dose_alias", "RD.dcm", "inventory"),
             ArtifactRule("selected_rtstruct_alias", "RS.dcm", "inventory"),
@@ -89,6 +93,7 @@ _STAGE_DEFINITIONS: dict[str, StageDefinition] = {
             *_COMMON_CODE_SOURCES,
             "workflow/scripts/organize_courses.py",
             "organize.py",
+            "rtstruct_geometry.py",
             "course_contract.py",
             "prescription.py",
             "clinical_prescription.py",
@@ -137,6 +142,10 @@ _STAGE_DEFINITIONS: dict[str, StageDefinition] = {
         code_sources=(
             *_COMMON_CODE_SOURCES,
             "custom_models.py",
+            "organize.py",
+            "rtstruct_geometry.py",
+            "segmenters/postprocessing.py",
+            "segmenters/medsam_boxprompt.py",
             "custom_structures_rtstruct.py",
             "course_contract.py",
             "rtsegmentator.py",
@@ -161,7 +170,7 @@ _STAGE_DEFINITIONS: dict[str, StageDefinition] = {
             ArtifactRule("cropping_metadata", "cropping_metadata.json", "content_sha256"),
         ),
         required_roles=frozenset({"cropped_image_or_mask", "cropping_metadata"}),
-        code_sources=(*_COMMON_CODE_SOURCES, "anatomical_cropping.py", "course_contract.py"),
+        code_sources=(*_COMMON_CODE_SOURCES, "anatomical_cropping.py", "rtstruct_geometry.py", "course_contract.py"),
         environment_packages=("numpy", "pydicom", "SimpleITK", "rt-utils"),
     ),
     "dvh": StageDefinition(
@@ -180,6 +189,7 @@ _STAGE_DEFINITIONS: dict[str, StageDefinition] = {
         code_sources=(
             *_COMMON_CODE_SOURCES,
             "dvh.py",
+            "rtstruct_geometry.py",
             "dvh_support.py",
             "dvh_rotation.py",
             "planning_dose_selection.py",
@@ -199,7 +209,7 @@ _STAGE_DEFINITIONS: dict[str, StageDefinition] = {
         binding_policy="qc-content-v1",
         rules=(ArtifactRule("qc_report", "qc_reports/**/*.json", "content_sha256"),),
         required_roles=frozenset({"qc_report"}),
-        code_sources=(*_COMMON_CODE_SOURCES, "quality_control.py", "course_contract.py"),
+        code_sources=(*_COMMON_CODE_SOURCES, "quality_control.py", "rtstruct_geometry.py", "course_contract.py"),
         environment_packages=("numpy", "pydicom", "SimpleITK"),
     ),
 }
@@ -417,8 +427,30 @@ def _rule_manifest_paths(root: Path, rule: ArtifactRule) -> set[str] | None:
     return allowed
 
 
+def _stale_original_exports(course_dir: Path, definition: StageDefinition) -> list[dict[str, str]]:
+    """Record retained stale exports without certifying them as organize outputs."""
+    if definition.name != "organize":
+        return []
+    from .original_segmentation import original_export_entries, require_current_original_export
+
+    root = Path(course_dir)
+    stale = []
+    for entry in original_export_entries(root / "Segmentation_Original"):
+        try:
+            if not entry.is_dir():
+                raise ValueError("loose file outside an export directory")
+            require_current_original_export(entry)
+        except ValueError as exc:
+            stale.append({"path": entry.relative_to(root).as_posix(),
+                          "status": "stale", "reason": str(exc)})
+    return stale
+
+
 def _discover_outputs(course_dir: Path, definition: StageDefinition) -> list[dict[str, Any]]:
     root = Path(course_dir)
+    stale = _stale_original_exports(root, definition)
+    if stale:
+        raise ValueError("Original segmentation is stale: producer export required")
     selected: dict[str, tuple[Path, str, str]] = {}
     for rule in definition.rules:
         allowed = _rule_manifest_paths(root, rule)
@@ -467,6 +499,19 @@ def _validate_stage_specific_outcome(
     status: str,
     outputs: Sequence[Mapping[str, Any]],
 ) -> str | None:
+    if definition.name == "segmentation" and status == "ok":
+        from .original_segmentation import original_export_entries, require_current_original_export
+
+        for original in Path(course_dir).rglob("Segmentation_Original"):
+            # Validate per export: shared sources once, then every declared mask.
+            for entry in original_export_entries(original):
+                if not entry.is_dir():
+                    raise ValueError("Original segmentation is stale: loose file outside an export directory")
+                require_current_original_export(entry)
+            for path in original.rglob("metadata.json"):
+                metadata = json.loads(path.read_text())
+                if metadata.get("geometry_status") == "MASK_GRID_NOT_EQUIVALENT":
+                    raise ValueError("Original segmentation geometry was rejected")
     if definition.name != "dvh" or status != "ok":
         return
     roles = {str(item.get("role") or "") for item in outputs}
@@ -533,6 +578,8 @@ def stage_completion_payload(
 
         runtime_provenance["opencv_runtime"] = opencv_runtime_provenance()
     return {
+        **({"stale_original_exports": _stale_original_exports(root, definition)}
+           if definition.name == "organize" and terminal_status == "ok" else {}),
         **({"measurement_outcome": measurement_outcome} if measurement_outcome else {}),
         "schema": STAGE_COMPLETION_SCHEMA,
         "status": terminal_status,
@@ -591,6 +638,9 @@ def write_stage_completion_sentinel(
         raise ValueError(
             f"Completion sentinel path mismatch: expected {expected}, got {destination}"
         )
+    if stage_definition(stage).name == "organize" and status == "ok":
+        from .original_segmentation import quarantine_stale_original_exports
+        quarantine_stale_original_exports(Path(course_dir) / "Segmentation_Original")
     payload = stage_completion_payload(
         root,
         stage=stage,
@@ -722,6 +772,9 @@ def validate_stage_completion_payload(
     expected_outputs = [] if status == "disabled" else _discover_outputs(root, definition)
     if expected_outputs != outputs:
         raise ValueError("Stage completion no longer declares the complete output set")
+    if definition.name == "organize" and status == "ok":
+        if payload.get("stale_original_exports", []) != _stale_original_exports(root, definition):
+            raise ValueError("Stage completion stale original exports changed")
     if payload.get("output_set_sha256") != content_sha256(outputs):
         raise ValueError("Stage completion output-set digest is invalid")
     if payload.get("content_closure_sha256") != _content_closure(outputs):

@@ -209,3 +209,42 @@ def synthetic_ct_conversion(config, dicom_dir, nifti_out, **kwargs):
     path = nifti_out / 'synthetic.nii.gz'
     sitk.WriteImage(reader.Execute(), str(path))
     return path
+
+
+def upgrade_original_export_schema(old, monkeypatch):
+    """Account only for the deliberate clinical export schema change in parity.
+
+    These fixtures use identity DICOM grids: preserve the pinned rasterizer and
+    compare its mask bytes. Only schema fields and their workbook embedding
+    change; physical placement is covered by the asymmetric geometry tests.
+    """
+    from rtpipeline.organize import ORIGINAL_SEGMENTATION_SCHEMA, ORIGINAL_PROVENANCE_SCHEMA
+    from rtpipeline.radiomics_rasterizer import opencv_runtime_provenance
+    export = old._export_original_segmentation_from_paths
+    provenance = old._original_segmentation_provenance
+
+    def current_provenance(*args, **kwargs):
+        result = provenance(*args, **kwargs)
+        if result is not None:
+            result = {'schema': ORIGINAL_PROVENANCE_SCHEMA,
+                      'opencv_runtime': opencv_runtime_provenance(),
+                      **{key: value for key, value in result.items() if key != 'schema'}}
+        return result
+
+    def current_metadata(**kwargs):
+        result = export(**kwargs)
+        if result is not None:
+            result = dict(schema=ORIGINAL_SEGMENTATION_SCHEMA,
+                          geometry_status='exact_physical_mapping',
+                          opencv_runtime=opencv_runtime_provenance(), **result)
+            import hashlib
+            for structure in result['structures']:
+                mask = kwargs['segmentation_original_dir'] / structure['mask']
+                structure['sha256'] = hashlib.sha256(mask.read_bytes()).hexdigest()
+                structure['size_bytes'] = mask.stat().st_size
+            path = kwargs['segmentation_original_dir'] / old._strip_nifti_base(kwargs['primary_nifti']) / 'metadata.json'
+            path.write_text(json.dumps(result, indent=2), encoding='utf-8')
+        return result
+
+    monkeypatch.setattr(old, '_original_segmentation_provenance', current_provenance)
+    monkeypatch.setattr(old, '_export_original_segmentation_from_paths', current_metadata)

@@ -53,6 +53,12 @@ def _rt_utils_roi_mask(rtstruct, roi_name: str) -> np.ndarray:
     """
     from rt_utils import ds_helper, image_helper
 
+    from .rtstruct_geometry import rtutils_requires_geometry_adapter, rtstruct_roi_mask
+
+    series = getattr(rtstruct, "series_data", None)
+    if series and rtutils_requires_geometry_adapter(series):
+        return rtstruct_roi_mask(rtstruct, roi_name)
+
     method = getattr(getattr(rtstruct, "get_roi_mask_by_name", None), "__func__", None)
     if (getattr(method, "__module__", None), getattr(method, "__qualname__", None)) != (
         "rt_utils.rtstruct",

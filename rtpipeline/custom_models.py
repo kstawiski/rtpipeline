@@ -625,7 +625,10 @@ def run_custom_models_for_course(
     skipped_models: Dict[str, str] = {}
 
     for model in models:
-        if force or not _model_outputs_ready(course.dirs.root, model):
+        if (not force and _model_outputs_ready(course.dirs.root, model)
+                and not _model_outputs_ready(course.dirs.root, model, ct_dir=ct_dir)):
+            _rebuild_model_rtstruct_from_masks(course.dirs.root, model, ct_dir)
+        if force or not _model_outputs_ready(course.dirs.root, model, ct_dir=ct_dir):
             # Check body region eligibility before adding to run list
             eligible, reason = _check_custom_model_eligibility(cfg, course.dirs.root, model)
             if not eligible:
@@ -677,12 +680,31 @@ def run_custom_models_for_course(
     sentinel_path.write_text(sentinel_content, encoding="utf-8")
 
 
-def _model_outputs_ready(course_root: Path, model: CustomModelDefinition) -> bool:
+def _rebuild_model_rtstruct_from_masks(course_root: Path, model: CustomModelDefinition, ct_dir: Path) -> None:
+    """Refresh only the writer artifact, retaining all recorded model masks."""
+    output_dir = course_root / "Segmentation_CustomModels" / model.name
+    manifest = json.loads((output_dir / "manifest.json").read_text(encoding="utf-8"))
+    paths = {}
+    for entry in manifest["structures"]:
+        path = output_dir / entry["file"]
+        if path.parent != output_dir or not path.is_file():
+            raise ValueError("Custom model manifest names a missing or external mask")
+        paths[entry["name"]] = path
+    if not set(model.expected_structures()).issubset(paths):
+        raise ValueError("Custom model manifest omits expected masks")
+    masks = {name: sitk.ReadImage(str(path)) for name, path in paths.items()}
+    _build_rtstruct(ct_dir, masks, output_dir, paths)
+
+
+def _model_outputs_ready(course_root: Path, model: CustomModelDefinition, *, ct_dir: Path | None = None) -> bool:
     output_dir = course_root / "Segmentation_CustomModels" / model.name
     if not output_dir.exists():
         return False
     rtstruct_path = output_dir / "rtstruct.dcm"
     if not rtstruct_path.exists():
+        return False
+    from .rtstruct_geometry import geometry_adapter_output_current
+    if ct_dir is not None and not geometry_adapter_output_current(rtstruct_path, ct_dir):
         return False
     expected_structures = model.expected_structures()
     for struct_name in expected_structures:
@@ -882,9 +904,12 @@ def _postprocess_structures(
                     "anchor_source": network.anchor_source,
                 }
             else:
+                from .segmenters.postprocessing import anchor_in_reference_geometry
+
+                local_anchor = anchor_in_reference_geometry(anchor, current)
                 current, selection_meta = select_component_nearest_anchor(
                     current,
-                    anchor["centroid_zyx"],
+                    local_anchor["centroid_zyx"],
                     max_distance_cm=network.anchor_max_distance_cm,
                     min_component_volume_cm3=network.min_component_volume_cm3,
                 )
@@ -1282,6 +1307,7 @@ def _build_rtstruct(
         raise RuntimeError(f"Custom segmentation RTSTRUCT for {ct_dir}: {exc}") from exc
 
     rtstruct.save(str(rtstruct_path))
+    from .rtstruct_geometry import record_geometry_adapter
     sanitize_rtstruct(rtstruct_path)
     try:
         summary = fix_rtstruct_rois(ct_dir, rtstruct_path)
@@ -1306,6 +1332,7 @@ def _build_rtstruct(
     }
     (output_dir / "rtstruct_manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
+    record_geometry_adapter(rtstruct_path, ct_dir)
     return rtstruct_path
 
 
