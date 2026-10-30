@@ -28,7 +28,7 @@ _IMAGE = object()
 
 
 def _default_image():
-    return sitk.Image([2, 2, 2], sitk.sitkInt16)
+    return sitk.Image([3, 3, 3], sitk.sitkInt16)
 
 
 class _Extractor:
@@ -97,7 +97,7 @@ def _reader(monkeypatch, names):
         seen.append(name)
         if name != "Target":
             raise AssertionError("Non-volumetric ROI reached rasterizer")
-        return np.ones((2, 2, 2), dtype=bool)
+        return np.ones((3, 3, 3), dtype=bool)
 
     _patch_readers(monkeypatch, names, mask)
     return seen
@@ -129,7 +129,7 @@ def _env(monkeypatch, tmp_path, *, fail_mask_coord=None, image=_IMAGE):
     import rtpipeline.auto_rtstruct as auto_rtstruct
     monkeypatch.setattr(auto_rtstruct, "_load_seg_dicom", None)
     monkeypatch.setattr(auto_rtstruct, "_load_seg_nifti", None)
-    _patch_readers(monkeypatch, ["Target"], lambda _: np.ones((2, 2, 2), dtype=bool))
+    _patch_readers(monkeypatch, ["Target"], lambda _: np.ones((3, 3, 3), dtype=bool))
     config = PipelineConfig(
         dicom_root=tmp_path / "input", output_root=tmp_path,
         logs_root=tmp_path / "logs", max_workers_override=1,

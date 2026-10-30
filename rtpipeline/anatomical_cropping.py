@@ -42,21 +42,23 @@ def _ct_z_extent_mm(course_dir: Path) -> Optional[Tuple[float, float]]:
         size = img.GetSize()  # (x, y, z)
         if len(size) < 3 or size[2] < 1:
             return None
-        origin = img.GetOrigin()
-        spacing = img.GetSpacing()
-        direction = img.GetDirection()
-        z_direction = direction[8] if len(direction) >= 9 else 1.0
+        from itertools import product
 
-        z0 = origin[2]
-        z1 = origin[2] + (size[2] - 1) * spacing[2]
-        if z_direction < 0:
-            z0, z1 = z1, z0
-        superior = float(max(z0, z1))
-        inferior = float(min(z0, z1))
+        z = [img.TransformIndexToPhysicalPoint(tuple(index))[2]
+             for index in product(*[(0, int(n) - 1) for n in size])]
+        superior, inferior = float(max(z)), float(min(z))
         return superior, inferior
     except Exception as exc:
         logger.debug("Failed reading CT extent for %s: %s", course_dir, exc)
         return None
+
+
+def _mask_z_extent(image: sitk.Image, array: np.ndarray) -> tuple[float, float]:
+    """Superior/inferior voxel centers in LPS, including oblique axes."""
+    indices = np.argwhere(array > 0)[:, ::-1]
+    z_basis = np.asarray(image.GetDirection()).reshape(3, 3)[2] * image.GetSpacing()
+    positions = indices @ z_basis + image.GetOrigin()[2]
+    return float(positions.max()), float(positions.min())
 
 
 def extract_vertebrae_boundaries(course_dir: Path) -> Dict[str, Dict[str, float]]:
@@ -115,31 +117,7 @@ def extract_vertebrae_boundaries(course_dir: Path) -> Dict[str, Dict[str, float]
                 logger.debug(f"Vertebra mask is empty: {vertebra}")
                 continue
 
-            # Find superior and inferior extent in physical coordinates
-            z_indices = np.where(mask_array.any(axis=(1, 2)))[0]
-
-            if len(z_indices) == 0:
-                continue
-
-            # Convert indices to physical coordinates
-            origin = mask_img.GetOrigin()
-            spacing = mask_img.GetSpacing()
-
-            # In DICOM/SimpleITK, superior is typically higher z value
-            # But check the direction to be sure
-            direction = mask_img.GetDirection()
-            z_direction = direction[8]  # The [2,2] element of 3x3 direction matrix
-
-            superior_idx = z_indices.max()
-            inferior_idx = z_indices.min()
-
-            # Convert to physical coordinates
-            superior_z = origin[2] + superior_idx * spacing[2]
-            inferior_z = origin[2] + inferior_idx * spacing[2]
-
-            # If z_direction is negative, flip superior/inferior
-            if z_direction < 0:
-                superior_z, inferior_z = inferior_z, superior_z
+            superior_z, inferior_z = _mask_z_extent(mask_img, mask_array)
 
             landmarks[vertebra] = {
                 'superior': float(superior_z),
@@ -198,23 +176,9 @@ def extract_femur_boundaries(course_dir: Path) -> Dict[str, Dict[str, float]]:
             mask_img = sitk.ReadImage(str(mask_path))
             mask_array = sitk.GetArrayFromImage(mask_img)
 
-            z_indices = np.where(mask_array.any(axis=(1, 2)))[0]
-            if len(z_indices) == 0:
+            if not mask_array.any():
                 continue
-
-            origin = mask_img.GetOrigin()
-            spacing = mask_img.GetSpacing()
-            direction = mask_img.GetDirection()
-            z_direction = direction[8]
-
-            superior_idx = z_indices.max()
-            inferior_idx = z_indices.min()
-
-            superior_z = origin[2] + superior_idx * spacing[2]
-            inferior_z = origin[2] + inferior_idx * spacing[2]
-
-            if z_direction < 0:
-                superior_z, inferior_z = inferior_z, superior_z
+            superior_z, inferior_z = _mask_z_extent(mask_img, mask_array)
 
             landmarks[f'femur_{side}'] = {
                 'superior': float(superior_z),
@@ -420,23 +384,9 @@ def extract_organ_boundaries(course_dir: Path, organ_patterns: list) -> Dict[str
                 logger.debug(f"Organ mask is empty: {organ}")
                 continue
 
-            z_indices = np.where(mask_array.any(axis=(1, 2)))[0]
-            if len(z_indices) == 0:
+            if not mask_array.any():
                 continue
-
-            origin = mask_img.GetOrigin()
-            spacing = mask_img.GetSpacing()
-            direction = mask_img.GetDirection()
-            z_direction = direction[8]
-
-            superior_idx = z_indices.max()
-            inferior_idx = z_indices.min()
-
-            superior_z = origin[2] + superior_idx * spacing[2]
-            inferior_z = origin[2] + inferior_idx * spacing[2]
-
-            if z_direction < 0:
-                superior_z, inferior_z = inferior_z, superior_z
+            superior_z, inferior_z = _mask_z_extent(mask_img, mask_array)
 
             landmarks[organ] = {
                 'superior': float(superior_z),
@@ -742,17 +692,18 @@ def crop_image_to_boundaries(
     size = image.GetSize()
     direction = image.GetDirection()
 
-    # Convert physical coordinates to indices
-    # z_physical = origin[2] + index * spacing[2]
-    # index = (z_physical - origin[2]) / spacing[2]
-
-    # Check if requested boundaries are within CT extent
-    requested_superior_idx = int(round((superior_z - origin[2]) / spacing[2]))
-    requested_inferior_idx = int(round((inferior_z - origin[2]) / spacing[2]))
+    z_row = np.asarray(direction).reshape(3, 3)[2]
+    axes = np.flatnonzero(np.abs(z_row) > 1e-6)
+    if len(axes) != 1 or not np.isclose(abs(z_row[axes[0]]), 1.0, atol=1e-6):
+        raise ValueError("Physical superior/inferior cropping requires an axis-aligned grid")
+    axis = int(axes[0])
+    step = spacing[axis] * z_row[axis]
+    requested_superior_idx = int(round((superior_z - origin[2]) / step))
+    requested_inferior_idx = int(round((inferior_z - origin[2]) / step))
 
     # Clamp to valid range
-    clamped_superior_idx = max(0, min(size[2] - 1, requested_superior_idx))
-    clamped_inferior_idx = max(0, min(size[2] - 1, requested_inferior_idx))
+    clamped_superior_idx = max(0, min(size[axis] - 1, requested_superior_idx))
+    clamped_inferior_idx = max(0, min(size[axis] - 1, requested_inferior_idx))
 
     clamp_info: Dict[str, float | bool | Dict[str, float]] = {
         'requested_superior_mm': float(superior_z),
@@ -764,7 +715,7 @@ def crop_image_to_boundaries(
         'ct_extent_mm': None,
     }
 
-    z_extent = [origin[2], origin[2] + (size[2] - 1) * spacing[2]]
+    z_extent = [origin[2], origin[2] + (size[axis] - 1) * step]
     clamp_info['ct_extent_mm'] = {
         'min': float(min(z_extent)),
         'max': float(max(z_extent)),
@@ -782,7 +733,7 @@ def crop_image_to_boundaries(
 
     # Warn if clamping occurred
     if clamped_superior_idx != requested_superior_idx:
-        actual_superior_z = origin[2] + clamped_superior_idx * spacing[2]
+        actual_superior_z = origin[2] + clamped_superior_idx * step
         _warn_once(
             'superior',
             f"Superior boundary ({superior_z:.1f}mm) exceeds CT extent. "
@@ -793,7 +744,7 @@ def crop_image_to_boundaries(
         superior_idx = requested_superior_idx
 
     if clamped_inferior_idx != requested_inferior_idx:
-        actual_inferior_z = origin[2] + clamped_inferior_idx * spacing[2]
+        actual_inferior_z = origin[2] + clamped_inferior_idx * step
         _warn_once(
             'inferior',
             f"Inferior boundary ({inferior_z:.1f}mm) exceeds CT extent. "
@@ -807,7 +758,7 @@ def crop_image_to_boundaries(
     # Ensure superior > inferior in index space (depends on direction)
     # If superior_z > inferior_z in physical space but direction[8] < 0,
     # then superior_idx < inferior_idx in index space
-    z_direction = direction[8]
+    z_direction = step
     if z_direction > 0:
         # Normal orientation: higher z = higher index
         if superior_idx < inferior_idx:
@@ -819,8 +770,10 @@ def crop_image_to_boundaries(
 
     # Extract region using ExtractImageFilter
     extract_filter = sitk.ExtractImageFilter()
-    extract_size = [size[0], size[1], abs(superior_idx - inferior_idx) + 1]
-    extract_index = [0, 0, min(inferior_idx, superior_idx)]
+    extract_size = list(size)
+    extract_size[axis] = abs(superior_idx - inferior_idx) + 1
+    extract_index = [0, 0, 0]
+    extract_index[axis] = min(inferior_idx, superior_idx)
 
     extract_filter.SetSize(extract_size)
     extract_filter.SetIndex(extract_index)
@@ -829,11 +782,11 @@ def crop_image_to_boundaries(
 
     logger.debug(
         f"Cropped image: {size} -> {cropped.GetSize()} "
-        f"(indices: {extract_index[2]} to {extract_index[2] + extract_size[2] - 1})"
+        f"(indices: {extract_index[axis]} to {extract_index[axis] + extract_size[axis] - 1})"
     )
 
-    clamp_info['applied_superior_mm'] = float(origin[2] + superior_idx * spacing[2])
-    clamp_info['applied_inferior_mm'] = float(origin[2] + inferior_idx * spacing[2])
+    clamp_info['applied_superior_mm'] = float(origin[2] + superior_idx * step)
+    clamp_info['applied_inferior_mm'] = float(origin[2] + inferior_idx * step)
 
     return cropped, clamp_info  # type: ignore[return-value]
 
@@ -1142,64 +1095,17 @@ def _create_rtstruct_from_cropped_masks(
             # Read cropped mask
             mask_img = sitk.ReadImage(str(mask_path))
             mask_array = sitk.GetArrayFromImage(mask_img)  # [z, y, x]
-            cropped_origin = mask_img.GetOrigin()
-            cropped_spacing = mask_img.GetSpacing()
-            cropped_size = mask_img.GetSize()  # (x, y, z)
-
             if not np.any(mask_array):
-                continue  # Skip empty masks
-
-            # Calculate where the cropped mask fits within the original CT geometry
-            # The cropped mask's origin tells us where it starts in physical space
-            # Convert to index in original CT space
-            z_offset_physical = cropped_origin[2] - ct_origin[2]
-            z_start_idx = int(round(z_offset_physical / ct_spacing[2]))
-
-            # Clamp to valid range
-            z_start_idx = max(0, z_start_idx)
-            z_end_idx = z_start_idx + cropped_size[2]
-            z_end_idx = min(ct_size[2], z_end_idx)
-
-            # Verify spacing compatibility
-            spacing_tolerance = 0.01  # 0.01mm tolerance
-            if abs(cropped_spacing[2] - ct_spacing[2]) > spacing_tolerance:
-                logger.warning(
-                    f"Cropped mask {roi_name} has different z-spacing "
-                    f"({cropped_spacing[2]:.3f}) than CT ({ct_spacing[2]:.3f}). "
-                    f"Skipping to avoid geometry mismatch."
-                )
                 continue
-
-            # Create full-size mask array matching original CT geometry
-            # rt-utils expects [y, x, z] format (rows, cols, slices)
-            full_mask = np.zeros((ct_size[1], ct_size[0], ct_size[2]), dtype=bool)
-
-            # The cropped mask is [z, y, x], need to convert to [y, x, z]
-            cropped_yxz = np.moveaxis(mask_array, 0, -1)  # [z, y, x] -> [y, x, z]
-
-            # Calculate how many slices we can actually copy (handle edge cases)
-            slices_to_copy = min(cropped_yxz.shape[2], z_end_idx - z_start_idx)
-            if slices_to_copy <= 0:
-                logger.warning(f"Cropped mask {roi_name} falls outside CT z-range. Skipping.")
+            # The mask retains its full physical geometry, including the crop
+            # origin and any NIfTI axis flips. Sample the actual DICOM planes.
+            full_mask = image_array_for_rtstruct(mask_img, rtstruct.series_data) > 0
+            if not full_mask.any():
                 continue
-
-            # Embed cropped mask into full mask at the correct z-position
-            full_mask[:, :, z_start_idx:z_start_idx + slices_to_copy] = (
-                cropped_yxz[:, :, :slices_to_copy] > 0
-            )
-
-            # full_mask lies on SimpleITK's regularized grid; sample it on the
-            # exact planning CT planes rt-utils references.
-            full_image = sitk.GetImageFromArray(np.moveaxis(full_mask, -1, 0).astype(np.uint8))
-            full_image.CopyInformation(ct_img)
-            full_mask = image_array_for_rtstruct(full_image, rtstruct.series_data) > 0
 
             rtstruct.add_roi(mask=full_mask, name=roi_name)
             added_count += 1
-            logger.debug(
-                f"Added cropped ROI {roi_name}: embedded at z-slices "
-                f"[{z_start_idx}:{z_start_idx + slices_to_copy}] of {ct_size[2]} total"
-            )
+
 
         except Exception as e:
             logger.warning(f"Failed to add ROI {roi_name}: {e}")

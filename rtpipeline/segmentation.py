@@ -1116,7 +1116,13 @@ def _ensure_model_rtstruct_from_masks(
     """Materialize a missing model RTSTRUCT from validated masks only."""
     target = seg_dir / f"{base_name}--{model}.dcm"
     if target.is_file():
-        return target
+        from .rtstruct_geometry import geometry_adapter_output_current
+
+        if geometry_adapter_output_current(target, ct_dir):
+            return target
+        # Old rt-utils products cannot certify their in-plane spacing. The
+        # validated NIfTI masks remain reusable; regenerate this derived file.
+        target.unlink()
     try:
         from rt_utils import RTStructBuilder
         from .auto_rtstruct import (
@@ -1183,6 +1189,8 @@ def _ensure_model_rtstruct_from_masks(
         if series_data and getattr(rtstruct, "ds", None) is not None:
             place_added_rois_on_planes(rtstruct.ds, series_data)
         _write_rtstruct_atomic(target, rtstruct.save)
+        from .rtstruct_geometry import record_geometry_adapter
+        record_geometry_adapter(target, ct_dir)
         return target if target.is_file() else None
     except Exception as exc:
         logger.warning("Failed to derive %s from masks: %s", target, exc)
@@ -1799,6 +1807,7 @@ def segment_all_series_for_patient(config: PipelineConfig, patient_id: str, *, f
                         source_ct_sop_hash=source_provenance["source_ct_sop_hash"],
                     )
                     if current:
+                        _ensure_model_rtstruct_from_masks(input_dir, base_dir, base_name, model)
                         ready_entry = _series_model_manifest_entry(base_dir, base_name, model)
                         if ready_entry:
                             manifest_entries.append(ready_entry)
@@ -2203,6 +2212,15 @@ def segment_course(config: PipelineConfig, course_dir: Path, force: bool = False
     """Run TotalSegmentator for a course organised under the new directory layout."""
 
     contract = load_course_contract(course_dir)
+    provenance = (contract.data.get("planning_ct") or {}).get("nifti_provenance") or {}
+    selection = provenance.get("instance_selection") or {}
+    repair = selection.get("nifti_repair") or {}
+    if repair.get("segmentation_outputs") == "original_exports_quarantined_organize_invalidated":
+        from .stage_completion import validate_stage_completion_sentinel
+        try:
+            validate_stage_completion_sentinel(Path(course_dir) / ".organized", expected_stage="organize")
+        except (OSError, ValueError) as exc:
+            raise ValueError("Run organize to export clinical masks after planning CT repair") from exc
     course_dirs = build_course_dirs(course_dir)
     course_dirs.ensure()
 
@@ -2277,35 +2295,26 @@ def segment_course(config: PipelineConfig, course_dir: Path, force: bool = False
                         model,
                         reason,
                     )
-                    if model == "total":
-                        default_named_dicom = base_dir / f"{base_name}--total.dcm"
-                        default_dicom = default_named_dicom if default_named_dicom.exists() else base_dir / "total.dcm"
-                        if default_dicom.exists():
-                            results["dicom_seg"] = str(default_dicom)
-                        else:
-                            derived_dicom = _ensure_model_rtstruct_from_masks(
-                                ct_dir, base_dir, base_name, model
-                            )
-                            decision_key = "RS_auto" if model == "total" else f"{model}_rtstruct"
-                            if derived_dicom is not None:
-                                results["dicom_seg"] = str(derived_dicom)
-                                for entry in manifest_entries:
-                                    if entry.get("model") == model:
-                                        entry["rtstruct_ok"] = True
-                                        entry["rtstruct"] = str(derived_dicom.relative_to(base_dir))
-                                resume_decisions[decision_key] = {
-                                    "action": "rebuilt",
-                                    "model_run": False,
-                                    "artefact": str(derived_dicom.name),
-                                    "reason": "derived from current reusable masks without rerunning the model",
-                                }
-                            else:
-                                resume_decisions[decision_key] = {
-                                    "action": "failed",
-                                    "model_run": False,
-                                    "artefact": str(default_named_dicom.name),
-                                    "reason": "current masks were reusable but the derived RTSTRUCT could not be rebuilt",
-                                }
+                    target = base_dir / f"{base_name}--{model}.dcm"
+                    from .rtstruct_geometry import geometry_adapter_output_current
+                    reusable = target.is_file() and geometry_adapter_output_current(target, ct_dir)
+                    derived_dicom = _ensure_model_rtstruct_from_masks(ct_dir, base_dir, base_name, model)
+                    if derived_dicom is not None:
+                        if model == "total":
+                            results["dicom_seg"] = str(derived_dicom)
+                        for entry in manifest_entries:
+                            if entry.get("model") == model:
+                                entry["rtstruct_ok"] = True
+                                entry["rtstruct"] = str(derived_dicom.relative_to(base_dir))
+                    decision_key = "RS_auto" if model == "total" else f"{model}_rtstruct"
+                    resume_decisions[decision_key] = {
+                        "action": "reused" if reusable else "rebuilt" if derived_dicom else "failed",
+                        "model_run": False,
+                        "artefact": target.name,
+                        "reason": ("current geometry-scoped RTSTRUCT" if reusable else
+                                   "derived from current reusable masks without rerunning the model" if derived_dicom else
+                                   "current masks were reusable but the derived RTSTRUCT could not be rebuilt"),
+                    }
                     continue
                 logger.info(
                     "Segmentation resume course=%s model=%s action=pending model_run=false reason=%s",
@@ -2449,8 +2458,10 @@ def segment_course(config: PipelineConfig, course_dir: Path, force: bool = False
             )
 
     default_dicom = base_dir / "total.dcm"
-    if default_dicom.exists():
-        results["dicom_seg"] = str(default_dicom)
+    if not results["dicom_seg"] and default_dicom.exists():
+        from .rtstruct_geometry import geometry_adapter_output_current
+        if geometry_adapter_output_current(default_dicom, ct_dir):
+            results["dicom_seg"] = str(default_dicom)
 
     manifest_path = base_dir / "manifest.json"
     manifest_needs_update = any(
@@ -2573,8 +2584,11 @@ def segment_course(config: PipelineConfig, course_dir: Path, force: bool = False
             base_dir_mr.mkdir(parents=True, exist_ok=True)
 
             def _mr_ready(model: str) -> bool:
-                rt_path = base_dir_mr / f"{base_name_mr}--{model}.dcm"
-                return rt_path.exists() and _series_segmentation_ready(base_dir_mr, base_name_mr, model)
+                if not _series_segmentation_ready(base_dir_mr, base_name_mr, model):
+                    return False
+                return _ensure_model_rtstruct_from_masks(
+                    source_dir, base_dir_mr, base_name_mr, model,
+                ) is not None
 
             if not force and all(_mr_ready(model) for model in mr_models):
                 continue
@@ -2800,8 +2814,11 @@ def _segment_mr_series_for_course(config: PipelineConfig, course_dirs, course_di
         base_dir_mr.mkdir(parents=True, exist_ok=True)
 
         def _mr_ready(model: str) -> bool:
-            rt_path = base_dir_mr / f"{base_name_mr}--{model}.dcm"
-            return rt_path.exists() and _series_segmentation_ready(base_dir_mr, base_name_mr, model)
+            if not _series_segmentation_ready(base_dir_mr, base_name_mr, model):
+                return False
+            return _ensure_model_rtstruct_from_masks(
+                source_dir, base_dir_mr, base_name_mr, model,
+            ) is not None
 
         if not force and all(_mr_ready(model) for model in mr_models):
             continue

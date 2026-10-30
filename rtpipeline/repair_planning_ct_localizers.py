@@ -29,7 +29,7 @@ from .organize_ledger import read_organize_ledger, STATUS_VALIDATED
 from .planning_ct_localizers import (
     PlanningCTLocalizerError, select_localizers, verify_volume,
 )
-from .stage_completion import validate_stage_completion_sentinel, write_stage_completion_sentinel
+from .stage_completion import validate_stage_completion_sentinel
 
 
 def _refuse(code):
@@ -146,6 +146,7 @@ def _quiet_converter_output():
 
 def _repair_candidate(course, candidate, completion, selection, excluded):
     from .organize import _planning_ct_summary, _original_segmentation_provenance
+    from .original_segmentation import require_current_original_mask
     from .segmentation import _collect_series_metadata, _ensure_ct_nifti
     from .config import PipelineConfig
 
@@ -206,8 +207,7 @@ def _repair_candidate(course, candidate, completion, selection, excluded):
     selection['nifti_repair'] = {
         'status': 'rederived' if rederived else 'preserved',
         'previous_nifti_sha256': old_provenance['nifti_sha256'],
-        'segmentation_outputs': ('stale_left_in_place' if rederived
-                                 else 'unchanged_grid_original_masks_rebound'),
+        'segmentation_outputs': 'original_exports_quarantined_organize_invalidated',
     }
     metadata['instance_selection'] = selection
     _json(sidecar, metadata)
@@ -231,16 +231,30 @@ def _repair_candidate(course, candidate, completion, selection, excluded):
         workbook.unlink()
         pd.DataFrame([case]).to_excel(workbook, index=False)
     # Rebind original masks only when their NIfTI is unchanged. A re-derived
-    # NIfTI makes every existing segmentation output stale; leave those bytes
-    # and their old provenance intact for the workflow rerun via .organized.
+    # NIfTI makes existing masks stale. Their bytes and provenance are retained
+    # outside the active export namespace before organize is invalidated.
     old_masks = _original_segmentation_provenance(original.authoritative_rtstruct_path,
                                                   original.planning_ct_nifti) if not rederived else None
     for path in ([] if rederived else candidate.glob('Segmentation_Original/**/provenance.json')):
+        try:
+            # Check against the pre-repair course, not the candidate's new SOP
+            # set. Legacy, incomplete and stale exports are quarantined below.
+            masks = list(path.parent.glob('*.nii*'))
+            if not masks:
+                continue
+            for mask in masks:
+                require_current_original_mask(course / mask.relative_to(candidate))
+        except ValueError:
+            continue
         record = json.loads(path.read_text(encoding='utf-8'))
         if not old_masks or record != old_masks:
-            _refuse('ct_localizer_original_mask_evidence_mismatch')
+            continue
         record['source_ct_sop_hash'] = metadata['sop_hash']
         _json(path, record)
+    # Original masks belong to organize. Remove all stale exports from its
+    # active namespace; both branches invalidate organize for its next run.
+    from .original_segmentation import quarantine_stale_original_exports
+    quarantine_stale_original_exports(candidate / 'Segmentation_Original')
     # Some organize contracts contain absolute RTRECORD paths within the
     # course. Validate their candidate copies without changing those decisions
     # in the published JSON. External paths still fail the contract resolver.
@@ -254,12 +268,9 @@ def _repair_candidate(course, candidate, completion, selection, excluded):
         return value
     validate_course_contract(CourseContract(candidate, case_path,
                                             staged_paths(case['course_contract'])))
-    # Reuse the already validated embedded configuration record. No shared
-    # configuration file is created, rewritten or timestamped.
-    dependency = candidate.parent.parent / 'organize-config.json'
-    _json(dependency, completion['configuration_dependency'])
-    write_stage_completion_sentinel(candidate, candidate / '.organized', stage='organize',
-                                    status='ok', configuration_dependency=dependency)
+    # Organize owns clinical exports. Both preserved and re-derived NIfTI
+    # branches return to that producer before certifying the course.
+    (candidate / '.organized').unlink(missing_ok=True)
     return rederived
 
 
@@ -268,6 +279,14 @@ def repair_course(course: Path, *, dry_run=False, two_step=False, details=None) 
     leftover = None
     try:
         before = _snapshot(course)
+        if not (course / '.organized').exists():
+            contract = load_course_contract(course)
+            repair = contract.planning_ct.get('nifti_provenance', {}).get('instance_selection', {}).get('nifti_repair', {})
+            if repair.get('segmentation_outputs') == 'original_exports_quarantined_organize_invalidated':
+                excluded, _ = select_localizers(contract.planning_ct_dir, contract.authoritative_rtstruct_path)
+                if not excluded:
+                    return 'unchanged', 0
+            _refuse('ct_localizer_inconsistent_evidence')
         # Use the existing sentinel as the lock inode; no lock file is published.
         # NFS emulates flock with POSIX locks, which need a descriptor opened for
         # writing (EBADF otherwise); opening r+b changes neither bytes nor mtime.

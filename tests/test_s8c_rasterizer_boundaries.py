@@ -121,11 +121,21 @@ def test_rtstruct_guard_precedes_empty_inventory(tmp_path, monkeypatch):
 
 def test_mr_nifti_fallback_records_loader(tmp_path):
     import SimpleITK as sitk
+    from robustness_prep_fixture import write_ct
+
+    series = tmp_path / 'series'
+    write_ct(series, rows=4, columns=5, slices=3)
+    reference = radiomics._load_series_image(series)
+    expected = np.zeros((3, 4, 5), dtype=np.uint8)
+    expected[1, 0:2, 2:4] = 1
+    mask = sitk.GetImageFromArray(expected)
+    mask.CopyInformation(reference)
     seg = tmp_path / 'seg'
     seg.mkdir()
-    sitk.WriteImage(sitk.GetImageFromArray(np.ones((3, 3, 3), dtype=np.uint8)), str(seg / 'total_mr--liver.nii.gz'))
+    sitk.WriteImage(sitk.Flip(mask, [False, True, False]), str(seg / 'total_mr--liver.nii.gz'))
     backend = {}
-    assert radiomics._collect_total_mr_masks(tmp_path, seg, backend_out=backend)
+    masks = radiomics._collect_total_mr_masks(series, seg, backend_out=backend)
+    np.testing.assert_array_equal(masks['liver'], np.moveaxis(expected, 0, -1) > 0)
     assert backend == {'backend': 'nifti/no-polygon-fill'}
 
 

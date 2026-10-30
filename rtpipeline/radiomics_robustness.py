@@ -4480,6 +4480,14 @@ def _prepare_robustness_rois(
     return [results[index] for index in range(len(requests))]
 
 
+def _nifti_mask_in_reference_order(mask_image, reference):
+    """Return image-grid (y, x, z) values after physical NIfTI alignment."""
+    from .radiomics import _resample_to_reference
+
+    aligned = _resample_to_reference(mask_image, reference)
+    return np.moveaxis(sitk.GetArrayFromImage(aligned), 0, -1).astype(bool)
+
+
 def robustness_for_course(
     config: PipelineConfig,
     rob_config: RobustnessConfig,
@@ -4784,11 +4792,7 @@ def robustness_for_course(
                     roi_name = roi_name[len("total--"):]
                 try:
                     mask_img = sitk.ReadImage(str(seg_file))
-                    if mask_img.GetSize() != ct_image.GetSize():
-                        mask_img = sitk.Resample(
-                            mask_img, ct_image, sitk.Transform(),
-                            sitk.sitkNearestNeighbor, 0)
-                    mask_array = sitk.GetArrayFromImage(mask_img).astype(bool)
+                    mask_array = _nifti_mask_in_reference_order(mask_img, ct_image)
                     if mask_array.any() and _register_mask(
                         roi_name, "AutoRTS_total", mask_array
                     ):
@@ -4810,11 +4814,7 @@ def robustness_for_course(
                     roi_name = seg_file.name.replace(".nii.gz", "")
                     try:
                         mask_img = sitk.ReadImage(str(seg_file))
-                        if mask_img.GetSize() != ct_image.GetSize():
-                            mask_img = sitk.Resample(
-                                mask_img, ct_image, sitk.Transform(),
-                                sitk.sitkNearestNeighbor, 0)
-                        mask_array = sitk.GetArrayFromImage(mask_img).astype(bool)
+                        mask_array = _nifti_mask_in_reference_order(mask_img, ct_image)
                         if mask_array.any() and _register_mask(
                             roi_name,
                             f"CustomModel:{model_dir.name}",
@@ -4976,11 +4976,7 @@ def robustness_for_course(
                     roi_name = roi_name[len("total--"):]
                 try:
                     mask_img = sitk.ReadImage(str(seg_file))
-                    if mask_img.GetSize() != ct_image.GetSize():
-                        mask_img = sitk.Resample(
-                            mask_img, ct_image, sitk.Transform(),
-                            sitk.sitkNearestNeighbor, 0)
-                    mask_array = sitk.GetArrayFromImage(mask_img).astype(bool)
+                    mask_array = _nifti_mask_in_reference_order(mask_img, ct_image)
                     if mask_array.any() and _register_mask(
                         roi_name, "AutoRTS_total", mask_array
                     ):

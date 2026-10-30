@@ -150,6 +150,57 @@ class RasterizerContractTests(unittest.TestCase):
                         create.assert_not_called()
 
 
+class GeometryRasterizerIntegrationTests(unittest.TestCase):
+    def test_geometry_routes_enforce_actual_runtime_and_preserve_voxels(self):
+        """Run real fills in the pinned interpreter; reject before reads elsewhere."""
+        from rt_utils import RTStructBuilder
+        from robustness_prep_fixture import write_ct
+        from rtpipeline.radiomics import _rtstruct_masks
+        from rtpipeline.rtstruct_geometry import (
+            place_added_rois_on_planes, create_scoped_rtstruct, rtstruct_roi_mask,
+        )
+        from rtpipeline.roi_fixer import _rt_utils_roi_mask
+
+        try:
+            rasterizer.require_radiomics_rasterizer()
+            supported = True
+        except rasterizer.RadiomicsRasterizerError:
+            supported = False
+        for columns, spacing in ((24, (1., 1., 2.)), (20, (1., 1., 2.)),
+                                 (24, (1.2, 1.7, 2.)), (20, (1.2, 1.7, 2.))):
+            with self.subTest(columns=columns, spacing=spacing), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                ct = root / "CT"
+                write_ct(ct, rows=24, columns=columns, slices=8, spacing=spacing)
+                builder = RTStructBuilder.create_new(str(ct))
+                expected = np.zeros((24, columns, 8), bool)
+                expected[3:9, 12:17, 2:5] = True
+                expected[7:11, 12:14, 2:5] = True
+                builder.add_roi(mask=expected, name="Asymmetric")
+                place_added_rois_on_planes(builder.ds, builder.series_data)
+                rs = root / "RS.dcm"
+                builder.save(str(rs))
+                for scoped in (False, True):
+                    if not supported:
+                        with patch("rtpipeline.rtstruct_geometry.rtstruct_contours_to_mask") as fill:
+                            with self.assertRaises(rasterizer.RadiomicsRasterizerError):
+                                _rtstruct_masks(ct, rs, scoped_reader=scoped)
+                            fill.assert_not_called()
+                        continue
+                    actual = _rtstruct_masks(ct, rs, scoped_reader=scoped)
+                    np.testing.assert_array_equal(actual["Asymmetric"], expected)
+                    streamed = _rtstruct_masks(ct, rs, scoped_reader=scoped, retain_mask=lambda _: False)
+                    self.assertEqual(streamed, {"Asymmetric": None})
+                if supported:
+                    for actual in (rtstruct_roi_mask(builder, "Asymmetric"),
+                                   create_scoped_rtstruct(ct, rs).get_roi_mask_by_name("Asymmetric"),
+                                   _rt_utils_roi_mask(builder, "Asymmetric")):
+                        np.testing.assert_array_equal(actual, expected)
+                    columns_record = _rasterizer_columns()
+                    self.assertEqual(columns_record["rasterizer_backend"], rasterizer.RASTERIZER_BACKEND)
+                    self.assertTrue(rasterizer.recorded_rasterizer_is_current(columns_record))
+
+
 class EnvironmentAndProvenanceTests(unittest.TestCase):
     def test_launchers_force_nousersite_preserve_pythonpath_and_socket_hook(self):
         with patch.dict(os.environ, {"PYTHONNOUSERSITE": "0", "PYTHONPATH": "/custom/lib"}):

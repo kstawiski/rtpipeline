@@ -128,6 +128,10 @@ def run_medsam_boxprompt_prediction(
     }
 
     if source == "anchor_bbox":
+        if anchor is not None:
+            from .postprocessing import anchor_in_reference_geometry
+
+            anchor = anchor_in_reference_geometry(anchor, ct_img)
         prompt_arr = _prompt_from_anchor_bbox(anchor, ct_arr.shape)
         metadata["anchor_centroid_zyx"] = (
             [float(v) for v in anchor.get("centroid_zyx", [])]

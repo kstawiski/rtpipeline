@@ -125,6 +125,8 @@ def test_organize_tree_matches_pinned_baseline(tmp_path, monkeypatch, caplog, co
             return cls(2024, 1, 1, tzinfo=tz)
     monkeypatch.setattr(xlsxwriter.core, 'datetime', FixedWorkbookTime)
     before = baseline()
+    from organize_io_fixture import upgrade_original_export_schema
+    upgrade_original_export_schema(before['organize'], monkeypatch)
     config = PipelineConfig(root, out, tmp_path / 'logs', max_workers_override=course_workers,
                             dicom_copy_use_hardlinks=False)
     monkeypatch.setattr(before['organize'], 'run_dcm2niix', synthetic_ct_conversion)

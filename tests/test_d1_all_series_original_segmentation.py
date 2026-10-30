@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import hashlib
+from test_s9c_repairs import write_sidecar
+from rtpipeline.original_segmentation import require_current_original_mask
 import sqlite3
 import sys
 import types
@@ -42,6 +45,9 @@ class _FakeMaskImage:
 
 def _patch_manual_export_dependencies(monkeypatch, calls: list[dict]) -> None:
     class _FakeBuilder:
+        series_data = [types.SimpleNamespace(Rows=2, Columns=2, PixelSpacing=[1, 1],
+            ImageOrientationPatient=[1, 0, 0, 0, 1, 0], ImagePositionPatient=[0, 0, 0],
+            SliceThickness=1)]
         @classmethod
         def create_from(cls, *, dicom_series_path: str, rt_struct_path: str):
             calls.append(
@@ -56,7 +62,7 @@ def _patch_manual_export_dependencies(monkeypatch, calls: list[dict]) -> None:
             return ["liver"]
 
         def get_roi_mask_by_name(self, roi_name: str):
-            mask = np.zeros((1, 2, 2), dtype=bool)
+            mask = np.zeros((2, 2, 1), dtype=bool)
             mask[0, 0, 0] = True
             return mask
 
@@ -322,13 +328,14 @@ def test_original_segmentation_export_reuses_cached_manifest_on_rerun(tmp_path: 
     rs_path.write_text("rs", encoding="utf-8")
     primary_nifti = tmp_path / "ct.nii.gz"
     primary_nifti.write_text("nifti", encoding="utf-8")
+    write_sidecar(primary_nifti)
     (tmp_path / "ct.metadata.json").write_text(
         json.dumps(
             {
                 "series_instance_uid": "SERIES",
                 "sop_hash": "SOPS",
                 "nifti_geometry": {"shape": [1, 2, 2]},
-                "nifti_sha256": "NIFTI",
+                "nifti_sha256": hashlib.sha256(primary_nifti.read_bytes()).hexdigest(),
             }
         ),
         encoding="utf-8",
@@ -365,7 +372,7 @@ def test_original_segmentation_export_reuses_cached_manifest_on_rerun(tmp_path: 
     assert len(calls) == 1
 
 
-def test_per_course_original_export_keeps_legacy_manifest_schema(tmp_path: Path, monkeypatch) -> None:
+def test_per_course_original_export_records_physical_manifest_schema(tmp_path: Path, monkeypatch) -> None:
     calls: list[dict] = []
     _patch_manual_export_dependencies(monkeypatch, calls)
 
@@ -376,6 +383,7 @@ def test_per_course_original_export_keeps_legacy_manifest_schema(tmp_path: Path,
     rs_path.write_text("rs", encoding="utf-8")
     primary_nifti = dirs.nifti / "ct.nii.gz"
     primary_nifti.write_text("nifti", encoding="utf-8")
+    write_sidecar(primary_nifti)
     (dirs.dicom_ct / "IM_0001.dcm").write_text("ct", encoding="utf-8")
     course = CourseOutput(
         patient_id="P1",
@@ -393,14 +401,22 @@ def test_per_course_original_export_keeps_legacy_manifest_schema(tmp_path: Path,
 
     manifest = organize._export_original_segmentation(course, overwrite=True)
 
+    from rtpipeline.radiomics_rasterizer import opencv_runtime_provenance
+
     expected = {
+        "schema": organize.ORIGINAL_SEGMENTATION_SCHEMA,
+        "geometry_status": "exact_physical_mapping",
+        "opencv_runtime": opencv_runtime_provenance(),
         "model": "manual",
         "source_rtstruct": str(rs_path),
         "source_nifti": str(primary_nifti),
-        "structures": [{"roi_name": "liver", "mask": "ct/liver.nii.gz"}],
+        "structures": [{"roi_name": "liver", "mask": "ct/liver.nii.gz",
+            "sha256": hashlib.sha256((dirs.segmentation_original / "ct/liver.nii.gz").read_bytes()).hexdigest(),
+            "size_bytes": (dirs.segmentation_original / "ct/liver.nii.gz").stat().st_size}],
     }
     assert manifest == expected
     assert json.loads((dirs.segmentation_original / "ct" / "metadata.json").read_text()) == expected
+    require_current_original_mask(dirs.segmentation_original / "ct/liver.nii.gz")
     assert "source" not in manifest
     assert calls == [{"dicom_series_path": dirs.dicom_ct, "rt_struct_path": rs_path}]
 
@@ -463,6 +479,7 @@ def test_all_series_original_export_binds_only_referenced_series_and_keeps_ai_se
         nifti_dir.mkdir(parents=True, exist_ok=True)
         path = nifti_dir / f"{Path(input_dir).name}.nii.gz"
         path.write_text("nifti", encoding="utf-8")
+        write_sidecar(path)
         return path
 
     def fake_totalseg(config, input_path, output_path, output_type, task=None, extra_args=None):
@@ -499,9 +516,11 @@ def test_all_series_original_export_binds_only_referenced_series_and_keeps_ai_se
 
     manual_manifest = json.loads(manual_manifest_path.read_text(encoding="utf-8"))
     assert manual_manifest["model"] == "manual"
-    assert manual_manifest["structures"] == [{"roi_name": "liver", "mask": "plan/liver.nii.gz"}]
+    assert manual_manifest["structures"][0]["roi_name"] == "liver"
+    assert manual_manifest["structures"][0]["mask"] == "plan/liver.nii.gz"
     manual_mask = manual_manifest_path.parent / "liver.nii.gz"
     assert manual_mask.exists()
+    require_current_original_mask(manual_mask)
 
     ai_manifest_path = next((plan_dir.parent / "Segmentation_TotalSegmentator" / "plan").glob("*/manifest.json"))
     ai_manifest = json.loads(ai_manifest_path.read_text(encoding="utf-8"))

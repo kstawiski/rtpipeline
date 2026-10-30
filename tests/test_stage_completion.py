@@ -118,6 +118,46 @@ def test_organized_completion_uses_hybrid_binding(tmp_path: Path) -> None:
         )
 
 
+@pytest.mark.parametrize('metadata', [None, '{', '{}',
+    '{"schema":"rtpipeline-original-segmentation-v2","geometry_status":"MASK_GRID_NOT_EQUIVALENT"}'])
+def test_organized_completion_records_stale_exports_without_certifying_them(tmp_path, metadata):
+    course = _course(tmp_path)
+    contract = course / 'metadata/case_metadata.json'
+    contract.parent.mkdir()
+    contract.write_text('{}')
+    dicom = course / 'DICOM/CT/image.dcm'
+    dicom.parent.mkdir(parents=True)
+    dicom.write_bytes(b'synthetic')
+    export = course / 'Segmentation_Original/series/rtstruct'
+    export.mkdir(parents=True)
+    mask = export / 'mask.nii.gz'
+    mask.write_bytes(b'stale synthetic mask')
+    if metadata is not None:
+        (export / 'metadata.json').write_text(metadata)
+    (export / 'provenance.json').write_text('{}')
+    before = {path: path.read_bytes() for path in export.iterdir()}
+    sentinel = course / '.organized'
+    payload = write_stage_completion_sentinel(course, sentinel, stage='organize', status='ok',
+                                             configuration_dependency=_dependency(tmp_path, 'organize'))
+    # Workflow resume accepts organize, then segmentation completion must work.
+    assert validate_stage_completion_sentinel(sentinel, expected_stage='organize') == payload
+    from rtpipeline.stage_completion import _validate_stage_specific_outcome, stage_definition
+    _validate_stage_specific_outcome(course, stage_definition('segmentation'), 'ok', [])
+    assert not any(item['role'] == 'original_segmentation' for item in payload['outputs'])
+    assert payload['stale_original_exports'] == []
+    assert not export.exists()
+    archived = next((course / 'Segmentation_Quarantine').rglob('export'))
+    assert {p.name: p.read_bytes() for p in archived.iterdir()} == {p.name: v for p,v in before.items()}
+    assert validate_stage_completion_sentinel(sentinel, expected_stage='organize') == payload
+    from rtpipeline.stage_completion import _validate_stage_specific_outcome, stage_definition
+    _validate_stage_specific_outcome(course, stage_definition('segmentation'), 'ok', [])
+    # An active stale mask introduced after publication must invalidate organize.
+    export.mkdir(parents=True)
+    mask.write_bytes(b'new stale mask')
+    with pytest.raises(ValueError, match='stale'):
+        validate_stage_completion_sentinel(sentinel, expected_stage='organize')
+
+
 def test_organized_inventory_detects_missing_declared_output(tmp_path: Path) -> None:
     course = _course(tmp_path)
     contract = course / "metadata" / "case_metadata.json"

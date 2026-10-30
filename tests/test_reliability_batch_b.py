@@ -644,13 +644,14 @@ def test_parallel_worker_empty_mask_raises_region_failure(monkeypatch, tmp_path)
     status row — that would publish a course silently missing a structure.
     """
     import numpy as np
+    import SimpleITK as sitk
 
     class Builder:
         def get_roi_mask_by_name(self, _roi_name):
             return np.zeros((2, 2, 2), dtype=bool)
 
     rp._WORKER_STATE.clear()
-    rp._WORKER_STATE.update({"img": object(), "extractor": object(), "skip_rois": set()})
+    rp._WORKER_STATE.update({"img": sitk.Image([2, 2, 2], sitk.sitkInt16), "extractor": object(), "skip_rois": set()})
     monkeypatch.setattr(rp, "_get_builder", lambda _path: Builder())
     task = _dual_arm_roi_task(tmp_path)
 
@@ -664,6 +665,7 @@ def test_parallel_worker_undersized_mask_returns_observed_status(monkeypatch, tm
     and must be reported as a status row, not raised, so a legitimately tiny structure
     cannot fail an otherwise complete course."""
     import numpy as np
+    import SimpleITK as sitk
 
     mask = np.zeros((4, 4, 4), dtype=bool)
     mask[0, 0, :3] = True  # 3 voxels: non-empty but below the configured minimum
@@ -674,7 +676,7 @@ def test_parallel_worker_undersized_mask_returns_observed_status(monkeypatch, tm
 
     rp._WORKER_STATE.clear()
     rp._WORKER_STATE.update(
-        {"img": object(), "extractor": object(), "skip_rois": set(), "min_voxels": 120}
+        {"img": sitk.Image([4, 4, 4], sitk.sitkInt16), "extractor": object(), "skip_rois": set(), "min_voxels": 120}
     )
     monkeypatch.setattr(rp, "_get_builder", lambda _path: Builder())
     task = _dual_arm_roi_task(tmp_path)
@@ -709,6 +711,7 @@ def test_parallel_worker_declared_skip_returns_status(monkeypatch, tmp_path):
 
 def test_parallel_success_record_uses_public_feature_schema_only(monkeypatch, tmp_path):
     import numpy as np
+    import SimpleITK as sitk
     import rtpipeline.radiomics_ct_contract as contract
 
     class Image:
@@ -748,7 +751,7 @@ def test_parallel_success_record_uses_public_feature_schema_only(monkeypatch, tm
     rp._WORKER_STATE.clear()
     rp._WORKER_STATE.update(
         {
-            "img": Image(),
+            "img": sitk.Image([5, 5, 5], sitk.sitkInt16),
             "extractor": Extractor(),
             "skip_rois": set(),
             "min_voxels": 1,
@@ -758,7 +761,6 @@ def test_parallel_success_record_uses_public_feature_schema_only(monkeypatch, tm
         }
     )
     monkeypatch.setattr(rp, "_get_builder", lambda _path: Builder())
-    monkeypatch.setattr(radiomics_mod, "_mask_from_array_like", lambda *_a: object())
     monkeypatch.setattr(radiomics_mod, "_extractor", lambda *_a, **_k: Extractor())
     monkeypatch.setattr(rp, "mask_is_cropped", lambda _mask: False)
     monkeypatch.setattr(

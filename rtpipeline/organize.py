@@ -29,6 +29,7 @@ from scipy.ndimage import map_coordinates
 
 from .config import DEFAULT_MAX_TOTAL_DOSE_GY, PipelineConfig
 from . import nifti_provenance
+from .original_segmentation import ORIGINAL_SEGMENTATION_SCHEMA, ORIGINAL_PROVENANCE_SCHEMA
 from .clinical_prescription import (
     CLINICAL_RESOLVED_SCOPE,
     adjudicate_clinical_prescription,
@@ -3824,39 +3825,15 @@ def _classify_approved_doses(
     )
 
 
-def _mask_array_to_image(ct_img: sitk.Image, mask: np.ndarray) -> Optional[sitk.Image]:
-    arr = np.asarray(mask)
-    if arr.size == 0:
-        return None
-    try:
-        ct_z, ct_y, ct_x = ct_img.GetSize()[2], ct_img.GetSize()[1], ct_img.GetSize()[0]
-    except Exception:
-        size = ct_img.GetSize()
-        ct_z, ct_y, ct_x = size[2], size[1], size[0]
-    if arr.shape == (ct_z, ct_y, ct_x):
-        zyx = arr
-    elif arr.shape == (ct_y, ct_x, ct_z):
-        zyx = np.transpose(arr, (2, 0, 1))
-    elif arr.shape == (ct_x, ct_y, ct_z):
-        zyx = np.transpose(arr, (2, 1, 0))
-    else:
-        logger.debug("Mask shape %s does not match CT shape (%d,%d,%d)", arr.shape, ct_z, ct_y, ct_x)
-        return None
-    zyx = zyx.astype(np.uint8)
-    img = sitk.GetImageFromArray(zyx)
-    img.SetSpacing(ct_img.GetSpacing())
-    img.SetDirection(ct_img.GetDirection())
-    img.SetOrigin(ct_img.GetOrigin())
-    return img
-
-
 _ORIGINAL_SEGMENTATION_PROVENANCE = "provenance.json"
 _ORIGINAL_PROVENANCE_BOUND_KEYS = (
     "schema",
+    "opencv_runtime",
     "source_rtstruct_sha256",
     "planning_ct_series_instance_uid",
     "source_ct_sop_hash",
     "source_nifti_geometry",
+    "source_nifti_sha256",
 )
 
 
@@ -3864,6 +3841,8 @@ def _original_segmentation_provenance(
     rs_path: Path, primary_nifti: Path
 ) -> Optional[dict]:
     """Return the content identity used to rasterize original ROI masks."""
+    from .radiomics_rasterizer import opencv_runtime_provenance
+
     sidecar = primary_nifti.parent / f"{_strip_nifti_base(primary_nifti)}.metadata.json"
     try:
         data = json.loads(sidecar.read_text(encoding="utf-8"))
@@ -3874,14 +3853,16 @@ def _original_segmentation_provenance(
     series_uid = str(data.get("series_instance_uid") or "").strip()
     sop_hash = str(data.get("sop_hash") or "").strip()
     geometry = data.get("nifti_geometry")
-    if not series_uid or not sop_hash or not isinstance(geometry, dict) or not geometry:
+    if (not series_uid or not sop_hash or not isinstance(geometry, dict) or not geometry
+            or not data.get("nifti_sha256")):
         return None
     try:
         rtstruct_sha256 = hashlib.sha256(rs_path.read_bytes()).hexdigest()
     except OSError:
         return None
     return {
-        "schema": "rtpipeline-original-segmentation-provenance-v1",
+        "schema": ORIGINAL_PROVENANCE_SCHEMA,
+        "opencv_runtime": opencv_runtime_provenance(),
         "source_rtstruct_sha256": rtstruct_sha256,
         "planning_ct_series_instance_uid": series_uid,
         "source_ct_sop_hash": sop_hash,
@@ -3912,6 +3893,15 @@ def _original_masks_reusable(
             return False, f"recorded {key} does not match the current input"
     if not isinstance(manifest, dict):
         return False, "the existing manifest is not an object"
+    if manifest.get("geometry_status") == "MASK_GRID_NOT_EQUIVALENT":
+        from .original_segmentation import require_current_original_export
+        try:
+            require_current_original_export(target_root)
+        except ValueError as exc:
+            return False, str(exc)
+        return True, "unchanged inputs retain the grid rejection record"
+    if manifest.get("schema") != ORIGINAL_SEGMENTATION_SCHEMA or manifest.get("geometry_status") != "exact_physical_mapping":
+        return False, "original export lacks verified physical geometry"
     structures = manifest.get("structures")
     if not isinstance(structures, list) or not structures:
         return False, "the existing manifest lists no structures"
@@ -3930,6 +3920,12 @@ def _original_masks_reusable(
                 return False, f"manifest mask {relative} is missing or empty"
         except OSError as exc:
             return False, f"manifest mask {relative} is unreadable: {exc}"
+    from .original_segmentation import require_current_original_export
+    try:
+        # One pass validates the shared sources once and the full declared inventory.
+        require_current_original_export(target_root)
+    except ValueError as exc:
+        return False, str(exc)
     return True, f"{len(structures)} original ROI mask(s) match the recorded inputs"
 
 
@@ -3942,11 +3938,18 @@ def _export_original_segmentation_from_paths(
     log_root: Path,
     overwrite: bool,
 ) -> Optional[dict]:
+    seg_root = segmentation_original_dir
+    from .original_segmentation import quarantine_stale_original_exports, quarantine_original_export
+    quarantine_stale_original_exports(seg_root)
     if not rs_path or not rs_path.exists() or not primary_nifti or not primary_nifti.exists():
         return None
-    seg_root = segmentation_original_dir
     base_name = _strip_nifti_base(primary_nifti)
     target_root = seg_root / base_name
+    # Each producer owns this root (all-series uses a separate root per CT).
+    # Even a byte-current old stem is superseded by the selected NIfTI stem.
+    for sibling in sorted(seg_root.iterdir()) if seg_root.exists() else []:
+        if sibling.is_dir() and sibling != target_root:
+            quarantine_original_export(sibling, "superseded NIfTI export stem")
     ensure_dir(target_root)
     manifest_path = target_root / "metadata.json"
     provenance = _original_segmentation_provenance(rs_path, primary_nifti)
@@ -3966,6 +3969,13 @@ def _export_original_segmentation_from_paths(
         logger.info(
             "original_segmentation event=re_export root=%s reason=%s", log_root, reason
         )
+    # Keep superseded bytes out of all active consumer globs, including on failure.
+    if any(target_root.iterdir()):
+        quarantine_original_export(target_root, "superseded by producer export")
+        ensure_dir(target_root)
+    if provenance is None:
+        logger.warning("original_segmentation event=provenance_unavailable root=%s", log_root)
+        return None
     try:
         from rt_utils import RTStructBuilder
     except Exception as exc:
@@ -3989,6 +3999,9 @@ def _export_original_segmentation_from_paths(
 
     used_names: dict[str, int] = {}
     manifest = {
+        "schema": ORIGINAL_SEGMENTATION_SCHEMA,
+        "geometry_status": "exact_physical_mapping",
+        "opencv_runtime": provenance["opencv_runtime"],
         "model": "manual",
         "source_rtstruct": str(rs_path),
         "source_nifti": str(primary_nifti),
@@ -3997,7 +4010,8 @@ def _export_original_segmentation_from_paths(
 
     for roi_name in builder.get_roi_names():
         try:
-            mask = builder.get_roi_mask_by_name(roi_name)
+            from .rtstruct_geometry import rtstruct_roi_mask
+            mask = rtstruct_roi_mask(builder, roi_name)
         except Exception:
             mask = None
         if mask is None:
@@ -4005,9 +4019,19 @@ def _export_original_segmentation_from_paths(
         mask_bool = np.asarray(mask).astype(bool)
         if not np.any(mask_bool):
             continue
-        sitk_mask = _mask_array_to_image(ct_img, mask_bool)
-        if sitk_mask is None:
-            continue
+        from .rtstruct_geometry import rtstruct_mask_to_image
+
+        try:
+            sitk_mask = rtstruct_mask_to_image(mask_bool, builder.series_data, ct_img)
+        except (ValueError, AttributeError) as exc:
+            for exported in target_root.glob("*.nii*"):
+                exported.unlink()
+            manifest.update(geometry_status="MASK_GRID_NOT_EQUIVALENT", structures=[], detail=str(exc))
+            manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+            (target_root / _ORIGINAL_SEGMENTATION_PROVENANCE).write_text(
+                json.dumps(provenance, indent=2), encoding="utf-8")
+            logger.warning("original_segmentation event=geometry_rejected: %s", exc)
+            return None
         safe = _sanitize_name(roi_name, "ROI")
         idx = used_names.get(safe, 0)
         used_names[safe] = idx + 1
@@ -4023,6 +4047,8 @@ def _export_original_segmentation_from_paths(
             {
                 "roi_name": roi_name,
                 "mask": str(out_path.relative_to(seg_root)),
+                "sha256": hashlib.sha256(out_path.read_bytes()).hexdigest(),
+                "size_bytes": out_path.stat().st_size,
             }
         )
 
