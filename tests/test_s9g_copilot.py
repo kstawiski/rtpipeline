@@ -308,3 +308,22 @@ def test_branch_dcm2niix_tests_honor_override_and_skip_when_absent(tmp_path, mon
     with pytest.raises(RuntimeError, match="converter invoked"):
         mask_space.test_real_dcm2niix(fake_source, mask_tmp, resolved)
     assert invoked == [str(override_exe), str(override_exe)]
+
+
+def test_segmentation_completion_reads_shared_sources_once_per_export(tmp_path, monkeypatch):
+    from rtpipeline.stage_completion import _STAGE_DEFINITIONS, _validate_stage_specific_outcome
+
+    directory, masks = _export(tmp_path)
+    reads = Counter()
+    read_bytes = Path.read_bytes
+
+    def counted_bytes(path, *args, **kwargs):
+        reads[path] += 1
+        return read_bytes(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_bytes", counted_bytes)
+    _validate_stage_specific_outcome(tmp_path, _STAGE_DEFINITIONS["segmentation"], "ok", [])
+    assert reads == Counter({path: 1 for path in [*masks, tmp_path / "CT.nii.gz", tmp_path / "RS.dcm"]})
+    masks[-1].unlink()
+    with pytest.raises(ValueError, match="missing declared mask"):
+        _validate_stage_specific_outcome(tmp_path, _STAGE_DEFINITIONS["segmentation"], "ok", [])
