@@ -2498,6 +2498,7 @@ def radiomics_for_course_ct_nifti_fallback(
                 f"No CT image matched TotalSegmentator mask series {series_name} in {course_dir}"
             )
         image_path, nifti_path_str, image_spacing, series_uid = image_info
+        reference_img: Optional[sitk.Image] = None
 
         for mask_path in sorted(series_root.glob("*.nii*")):
             roi_name = _totalseg_roi_name(mask_path)
@@ -2518,8 +2519,10 @@ def radiomics_for_course_ct_nifti_fallback(
 
             try:
                 from .auto_rtstruct import _resample_to_reference
+                if reference_img is None:
+                    reference_img = sitk.ReadImage(image_path)
                 mask_img = sitk.ReadImage(str(mask_path))
-                mask_img = _resample_to_reference(mask_img, sitk.ReadImage(image_path))
+                mask_img = _resample_to_reference(mask_img, reference_img)
                 mask_arr = sitk.GetArrayFromImage(mask_img)
             except Exception as exc:
                 _record_preparation_failure(
@@ -2658,6 +2661,7 @@ def radiomics_for_course_ct_nifti_fallback(
 
             tasks[-1]["resource_guard_legacy"] = legacy_rejection(
                 work_estimate, max_bbox_voxels, roi_name)
+        reference_img = None
 
     for failure in preparation_failures:
         tasks.append(

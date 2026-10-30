@@ -1,7 +1,6 @@
 """DICOM/NIfTI boundaries preserve asymmetric voxels in physical LPS space."""
 import copy
 import json
-import shutil
 import subprocess
 
 import numpy as np
@@ -16,6 +15,7 @@ from rtpipeline.rtstruct_geometry import (
     image_array_for_rtstruct, rtstruct_mask_to_image, create_scoped_rtstruct,
     place_added_rois_on_planes,
 )
+from test_nifti_nonuniform_fallback import dcm2niix  # noqa: F401
 
 
 @pytest.fixture(params=[False, True], ids=['axial', 'oblique'])
@@ -128,15 +128,11 @@ def test_stale_export_is_removed_on_geometry_failure(source, tmp_path):
 
 
 @pytest.mark.integration
-def test_real_dcm2niix(source, tmp_path):
-    executable = shutil.which('dcm2niix') or '/home/konrad/micromamba/envs/rtpipeline/bin/dcm2niix'
-    from pathlib import Path
-    if not Path(executable).is_file():
-        pytest.skip('dcm2niix unavailable')
+def test_real_dcm2niix(source, tmp_path, dcm2niix):
     ct, _, rt, _ = source
     out = tmp_path/'converted'
     out.mkdir()
-    subprocess.run([executable, '-z', 'y', '-f', 'reference', '-o', str(out), str(ct)],
+    subprocess.run([dcm2niix, '-z', 'y', '-f', 'reference', '-o', str(out), str(ct)],
                    check=True, capture_output=True)
     ref = sitk.ReadImage(str(next(out.glob('*.nii.gz'))))
     image = rtstruct_mask_to_image(rt.get_roi_mask_by_name('Asymmetric'), rt.series_data, ref)

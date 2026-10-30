@@ -10,6 +10,7 @@ import SimpleITK as sitk
 from rtpipeline import organize
 from rtpipeline.original_segmentation import require_current_original_mask
 from rtpipeline.rtstruct_geometry import rtstruct_mask_to_image, rtstruct_contours_to_mask
+from test_nifti_nonuniform_fallback import dcm2niix  # noqa: F401
 
 
 def bind_export(root, paths):
@@ -396,14 +397,11 @@ def test_f4_every_source_field_is_bound(tmp_path, field):
 
 
 @pytest.mark.parametrize('ipp_decimals', [None, 3])
-def test_f2_real_512_oblique_dcm2niix(tmp_path, ipp_decimals):
-    import shutil
+def test_f2_real_512_oblique_dcm2niix(tmp_path, dcm2niix, ipp_decimals):
     import subprocess
     import pydicom
     from robustness_prep_fixture import write_ct
     from rt_utils import RTStructBuilder
-    executable=shutil.which('dcm2niix')
-    assert executable, 'required validation PATH must include dcm2niix'
     ct=tmp_path/'CT'
     write_ct(ct,rows=512,columns=512,slices=3,spacing=(.931,.931,3.))
     x,y=.25,.37
@@ -418,7 +416,7 @@ def test_f2_real_512_oblique_dcm2niix(tmp_path, ipp_decimals):
         ds.save_as(path,enforce_file_format=True)
     output=tmp_path/'converted'
     output.mkdir()
-    subprocess.run([executable,'-z','y','-f','reference','-o',str(output),str(ct)],check=True,capture_output=True)
+    subprocess.run([dcm2niix,'-z','y','-f','reference','-o',str(output),str(ct)],check=True,capture_output=True)
     reference=sitk.ReadImage(str(next(output.glob('*.nii.gz'))))
     series=RTStructBuilder.create_new(str(ct)).series_data
     mask=np.zeros((512,512,3),dtype=bool)
