@@ -812,7 +812,10 @@ def _validate_nifti_provenance(
         provenance.get("sidecar_path"),
         "planning_ct.nifti_provenance.sidecar_path",
     )
-    assert sidecar is not None
+    if sidecar is None:
+        raise CourseContractError(
+            "course contract field planning_ct.nifti_provenance.sidecar_path is empty"
+        )
     sidecar_data = _read_json(sidecar, "planning_ct.nifti_provenance")
     expected_ct = (
         _ct_provenance_from_headers(ct_dir, ct_headers)
@@ -869,17 +872,39 @@ def _validate_nifti_provenance(
         if conversion != provenance.get("nifti_conversion"):
             raise CourseContractError("stale planning CT conversion evidence: sidecar differs from contract")
     if isinstance(conversion, dict) and conversion.get("method") == CT_HYGIENE_METHOD:
+        from .ct_series_hygiene import (
+            _verify_nifti_voxel_payload,
+            _verify_slice_by_slice_volume,
+            conversion_evidence_matches_expected,
+        )
+
         try:
-            _, expected_selection = select_ct_instances(ct_dir, contract.authoritative_rtstruct_path)
+            selected_files, expected_selection = select_ct_instances(
+                ct_dir,
+                contract.authoritative_rtstruct_path,
+                stack_override=conversion.get("stack_override"),
+            )
+            geometry = expected_selection["selected_geometry"]
+            _verify_nifti_voxel_payload(
+                nifti,
+                geometry["rows"],
+                geometry["columns"],
+                expected_selection["kept_instance_count"],
+                allow_equalized_slices=isinstance(
+                    conversion.get("downstream_conversion"), dict
+                ),
+            )
+            if expected_selection.get("reason_code") == "mixed_image_type_harmonized":
+                _verify_slice_by_slice_volume(selected_files, nifti)
         except CTSeriesHygieneError as exc:
             raise CourseContractError(f"stale planning CT conversion evidence: {exc.reason_code}") from exc
-        expected_selection["status"] = "converted"
-        if any(conversion.get(key) != value for key, value in expected_selection.items()):
+        if not conversion_evidence_matches_expected(conversion, expected_selection):
             raise CourseContractError("stale planning CT conversion evidence: source selection differs")
-    # Geometry and orientation are validated from the conversion sidecar and
-    # source-series provenance above. Downstream image readers remain responsible
-    # for rejecting an unreadable NIfTI before it is used.
-    if provenance.get("nifti_sha256") != _sha256(nifti):
+    # Hygiene outputs have a fully loaded voxel payload above. Other conversion
+    # methods retain their existing provenance and content-hash checks.
+    from .nifti_provenance import content_hash_matches
+
+    if not content_hash_matches(nifti, sidecar_data):
         raise CourseContractError(
             "stale planning CT NIfTI provenance: content hash does not match the NIfTI on disk"
         )

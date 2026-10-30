@@ -199,6 +199,10 @@ class PipelineConfig:
     dicom_copy_use_hardlinks: bool = False      # Avoid hardlinks in outputs by default
     dicom_copy_verify_checksum: bool = False    # Verify MD5 after copy
     dicom_copy_cache_headers: bool = True       # Cache DICOM headers for re-runs
+    # Governed overrides for planning-CT series where RTSTRUCT references span
+    # multiple complete same-geometry reconstruction stacks (Pattern D).
+    # Keyed by "<patient_id>/<course_id>", "<patient_id>/<course_key>", or SeriesInstanceUID.
+    planning_ct_stack_overrides: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     # Inventory-driven all-series discovery.
     inventory_db_path: Path | None = None

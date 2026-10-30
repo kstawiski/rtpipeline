@@ -43,6 +43,21 @@ def nifti_geometry(nifti_path: Path) -> dict[str, Any]:
         return {}
 
 
+def content_hash_matches(nifti_path: Path, metadata: Mapping[str, Any]) -> bool:
+    """Require cached bytes to match their publication's recorded digest."""
+    recorded = metadata.get("nifti_sha256")
+    if not isinstance(recorded, str) or len(recorded) != 64:
+        return False
+    try:
+        digest = hashlib.sha256()
+        with nifti_path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest() == recorded
+    except OSError:
+        return False
+
+
 def annotate(
     metadata: MutableMapping[str, Any],
     nifti_path: Path,
@@ -59,12 +74,20 @@ def annotate(
     forward, because those timestamps describe content and are load-bearing for
     segmentation mask reuse.
     """
+    # Provenance describes one publication and its exact bytes, for every method.
+    # Never repair a stale digest by attaching it to a different cached volume.
+    if not regenerated:
+        if not content_hash_matches(nifti_path, existing_sidecar or {}):
+            raise ValueError("stale planning CT NIfTI provenance: content hash mismatch")
+        published_hash = (existing_sidecar or {})["nifti_sha256"]
+    else:
+        published_hash = hashlib.sha256(nifti_path.read_bytes()).hexdigest()
     metadata.update(
         {
             "nifti_path": str(nifti_path),
             "source_directory": str(source_directory),
             "modality": metadata.get("modality") or default_modality,
-            "nifti_sha256": hashlib.sha256(nifti_path.read_bytes()).hexdigest(),
+            "nifti_sha256": published_hash,
         }
     )
     if regenerated:
