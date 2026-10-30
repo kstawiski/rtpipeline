@@ -4056,10 +4056,10 @@ def _original_masks_reusable(
                 return False, f"manifest mask {relative} is missing or empty"
         except OSError as exc:
             return False, f"manifest mask {relative} is unreadable: {exc}"
-    from .original_segmentation import require_current_original_mask
+    from .original_segmentation import require_current_original_export
     try:
-        for mask in target_root.glob("*.nii*"):
-            require_current_original_mask(mask)
+        # One pass validates the shared sources once and the full declared inventory.
+        require_current_original_export(target_root)
     except ValueError as exc:
         return False, str(exc)
     return True, f"{len(structures)} original ROI mask(s) match the recorded inputs"

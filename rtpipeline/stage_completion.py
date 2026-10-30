@@ -500,11 +500,14 @@ def _validate_stage_specific_outcome(
     outputs: Sequence[Mapping[str, Any]],
 ) -> str | None:
     if definition.name == "segmentation" and status == "ok":
-        from .original_segmentation import require_current_original_mask
+        from .original_segmentation import original_export_entries, require_current_original_export
 
         for original in Path(course_dir).rglob("Segmentation_Original"):
-            for mask in original.rglob("*.nii*"):
-                require_current_original_mask(mask)
+            # Validate per export: shared sources once, then every declared mask.
+            for entry in original_export_entries(original):
+                if not entry.is_dir():
+                    raise ValueError("Original segmentation is stale: loose file outside an export directory")
+                require_current_original_export(entry)
             for path in original.rglob("metadata.json"):
                 metadata = json.loads(path.read_text())
                 if metadata.get("geometry_status") == "MASK_GRID_NOT_EQUIVALENT":
