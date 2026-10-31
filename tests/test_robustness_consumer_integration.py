@@ -263,7 +263,7 @@ def _build_courses(tmp_path, monkeypatch, specs, *, apply_to_structures=("ROI", 
     return Cohort(output_root, config_path, courses)
 
 
-def _run_course(cohort: Cohort, patient: str, course: str = "C1", *, sentinel=True):
+def _run_course(cohort: Cohort, patient: str, course: str = "C1", *, sentinel=True, campaign=False):
     course_dir = cohort.course_dir(patient, course)
     argv = [
         "radiomics-robustness",
@@ -276,6 +276,8 @@ def _run_course(cohort: Cohort, patient: str, course: str = "C1", *, sentinel=Tr
     ]
     if sentinel:
         argv += ["--sentinel", str(course_dir / SENTINEL_NAME)]
+    if campaign:
+        argv.append("--campaign-mode")
     return cli.main(argv)
 
 
@@ -402,21 +404,20 @@ def test_source_only_course_completes_without_fabricating_a_table(tmp_path, monk
     assert rc.read_robustness_completion_sentinel(cohort.sentinel("P2")).measured is False
 
 
-def test_unmatched_selection_blocks_the_step_and_publishes_no_receipt(
-    tmp_path, monkeypatch, caplog
+@pytest.mark.parametrize("campaign", [False, True])
+@pytest.mark.parametrize("sentinel", [False, True])
+def test_unmatched_selection_completes_with_a_nonmeasurement_receipt(
+    tmp_path, monkeypatch, campaign, sentinel
 ):
     cohort = _build_courses(tmp_path, monkeypatch, {("P3", "C1"): "unmatched"})
 
-    assert _run_course(cohort, "P3") == 1
-    _assert_failed_for(
-        caplog,
-        "matched no source structure",
-        "not an anatomical finding",
-    )
+    assert _run_course(cohort, "P3", campaign=campaign, sentinel=sentinel) == 0
 
-    # The step is blocked, but the run's own accounting survives untouched: an
-    # unmatched selection is a configuration fact, not an anatomical exclusion.
-    assert not cohort.sentinel("P3").exists()
+    receipt = rc.read_robustness_completion_sentinel(cohort.sentinel("P3"))
+    assert receipt.measurement_outcome == "not_applicable_selection_unmatched"
+    assert receipt.measured is False
+    assert receipt.measured_output is None
+    assert cohort.receipt("P3")["requested_selection"] == ["Marker*", "ROI"]
     assert not cohort.table("P3").exists()
     payload = json.loads(
         rr.robustness_source_dispositions_path(cohort.course_dir("P3")).read_text(

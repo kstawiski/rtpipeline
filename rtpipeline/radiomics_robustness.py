@@ -61,6 +61,7 @@ from .multiprocessing_utils import configure_multiprocessing_tempdir, get_contex
 from .radiomics_ct_contract import read_authoritative_ct_publication
 from .rt_details import DEFAULT_ROI_FAMILY_NAMES
 from .robustness_completion import (
+    ROBUSTNESS_SELECTION_UNMATCHED_OUTCOME,
     robustness_failed_evidence_path,
     validate_robustness_failed_evidence,
 )
@@ -378,7 +379,7 @@ ROBUSTNESS_SOURCE_ONLY_OUTCOME = "source_only_nonvolumetric"
 # requested. That is an accounting fact about the request; it says nothing
 # about the anatomy of a name that was never found, and it is not a clinical
 # exclusion of anything.
-ROBUSTNESS_UNMATCHED_SELECTION_OUTCOME = "selection_matched_no_source_structure"
+ROBUSTNESS_UNMATCHED_SELECTION_OUTCOME = ROBUSTNESS_SELECTION_UNMATCHED_OUTCOME
 
 # GEC-ESTRO cervix brachytherapy names its clinical target volumes by risk
 # level before the volume type (HR-CTV, IR-CTV). Selection patterns are
@@ -1309,6 +1310,20 @@ def _read_robustness_source_dispositions(
                 "an unmatched request is not non-volumetric anatomy"
             )
         basis = payload.get("source_only_basis")
+        if outcome == ROBUSTNESS_UNMATCHED_SELECTION_OUTCOME:
+            if matched or not isinstance(basis, dict):
+                raise ValueError("selection-unmatched robustness requires a zero-match selection basis")
+            for key in (
+                "selected_structure_count", "unresolved_identity_count",
+                "inventory_only_excluded_count", "selection_matched_nonvolumetric_count",
+            ):
+                if type(basis.get(key)) is not int or basis[key] != 0:
+                    raise ValueError(f"selection-unmatched robustness basis {key} must be zero")
+            for key in ("source_disposition_count", "requested_selection"):
+                if key not in basis:
+                    raise ValueError(f"selection-unmatched robustness basis requires {key}")
+            if not isinstance(basis.get("reason"), str) or not basis["reason"].strip():
+                raise ValueError("selection-unmatched robustness requires a nonmeasurement reason")
         if basis is not None:
             if not isinstance(basis, dict):
                 raise ValueError("robustness source-only basis must be a record")
@@ -5852,22 +5867,11 @@ class RobustnessNotRequestedError(RuntimeError):
     """
 
 
-class RobustnessSelectionUnmatchedError(RuntimeError):
-    """No source ROI matched the requested robustness selection.
-
-    This is a blocking selection/configuration outcome. Nothing was measured
-    and nothing was found to be non-volumetric, so the course has no anatomical
-    finding to publish: an unfound name excludes no anatomy, and no technical
-    geometry may be fabricated to stand in for it. The run's sidecar evidence
-    is preserved, but the course completes nothing and enters no cohort.
-    """
-
-
-# A measured course and a course whose selected source ROIs are all
-# non-volumetric both reached a terminal, non-technical answer. An unmatched
-# selection did not: it stays blocking.
+# These outcomes close the step. Only a measured outcome contributes values;
+# an unmatched selection records a configuration result, with no anatomical claim.
 ROBUSTNESS_STEP_COMPLETING_OUTCOMES = frozenset(
-    {ROBUSTNESS_MEASURED_OUTCOME, ROBUSTNESS_SOURCE_ONLY_OUTCOME}
+    {ROBUSTNESS_MEASURED_OUTCOME, ROBUSTNESS_SOURCE_ONLY_OUTCOME,
+     ROBUSTNESS_UNMATCHED_SELECTION_OUTCOME}
 )
 
 
@@ -5900,7 +5904,7 @@ class RobustnessCourseOutcome:
 
     @property
     def completes_step(self) -> bool:
-        """Measured and source-only are terminal completions; nothing else is."""
+        """Whether this admitted outcome closes the course step."""
         return self.measurement_outcome in ROBUSTNESS_STEP_COMPLETING_OUTCOMES
 
 
@@ -5981,7 +5985,6 @@ def run_robustness_course(
 
     Raises:
         RobustnessNotRequestedError: robustness or its mode is disabled.
-        RobustnessSelectionUnmatchedError: the selection matched no source ROI.
         Exception: any technical failure of the run, unchanged and unswallowed.
     """
     course_dir = Path(course_dir)
@@ -6044,15 +6047,7 @@ def run_robustness_course(
             f"robustness for {course_dir} published no table but its source "
             "dispositions claim a measured outcome"
         )
-    if outcome == ROBUSTNESS_UNMATCHED_SELECTION_OUTCOME:
-        raise RobustnessSelectionUnmatchedError(
-            f"robustness for {course_dir} matched no source structure for the "
-            f"requested selection "
-            f"{sorted(str(p) for p in rob_config.perturbation.apply_to_structures)}; "
-            "this is a selection/configuration outcome, not an anatomical "
-            "finding, and it completes no course"
-        )
-    if outcome != ROBUSTNESS_SOURCE_ONLY_OUTCOME:
+    if outcome not in ROBUSTNESS_STEP_COMPLETING_OUTCOMES:
         raise RuntimeError(
             f"robustness for {course_dir} recorded outcome {outcome!r}, which is "
             "not a terminal course outcome"
@@ -6524,6 +6519,7 @@ ROBUSTNESS_COURSE_OUTCOME_COLUMNS: Tuple[str, ...] = (
     "patient_id",
     "course_id",
     "measurement_outcome",
+    "nonmeasurement_reason",
     "robustness_run_identifier",
     "output_path",
     "table_present",
@@ -6810,6 +6806,11 @@ def _robustness_course_outcome_rows(
                 "patient_id": course.patient_id,
                 "course_id": course.course_id,
                 "measurement_outcome": course.measurement_outcome,
+                "nonmeasurement_reason": (
+                    json.loads(course.sidecar_snapshot)["source_only_basis"]["reason"]
+                    if course.measurement_outcome == ROBUSTNESS_UNMATCHED_SELECTION_OUTCOME
+                    else ""
+                ),
                 "robustness_run_identifier": course.run_identifier,
                 "output_path": course.output_name,
                 "table_present": course.frame is not None,
