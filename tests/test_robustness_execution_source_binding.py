@@ -104,19 +104,20 @@ def _publish_measured(course: Path, rob: RobustnessConfig) -> Path:
 def _publish_zero_measurement_with_receipt(course: Path, rob: RobustnessConfig):
     """Publish a source-only (zero measurement) sidecar and its completion receipt.
 
-    The RTSTRUCT is a synthetic byte file: the source binding is content-hash
-    and identity-string bound, and no DICOM is parsed on this path. The single
-    disposition row names a non-volumetric geometry for a selected ROI family,
-    which is the only zero-measurement outcome that completes the step.
+    A generated DICOM RTSTRUCT carries one selected GTV POINT contour. Source
+    bytes, ROI evidence and the zero-measurement receipt are all revalidated.
     """
-    rtstruct = course / "RS_synthetic.dcm"
-    rtstruct.write_bytes(b"synthetic rtstruct bytes; not DICOM; not clinical\n")
-    binding = {
-        "segmentation_source": "Manual",
-        "source_path": str(rtstruct),
-        "rtstruct_sop_instance_uid": "1.2.826.0.1.3680043.8.498.synthetic.1",
-        "sha256": hashlib.sha256(rtstruct.read_bytes()).hexdigest(),
-    }
+    import pydicom
+    from course_contract_test_utils import write_synthetic_rtstruct
+
+    rtstruct = write_synthetic_rtstruct(course / "RS_synthetic.dcm", roi_names=["GTV"])
+    ds = pydicom.dcmread(rtstruct)
+    contour = ds.ROIContourSequence[0].ContourSequence[0]
+    contour.ContourGeometricType = "POINT"
+    contour.NumberOfContourPoints = 1
+    contour.ContourData = [0.0, 0.0, 0.0]
+    ds.save_as(rtstruct)
+    binding = rr._rtstruct_source_binding("Manual", rtstruct)
     row = {
         "segmentation_source": binding["segmentation_source"],
         "source_path": binding["source_path"],

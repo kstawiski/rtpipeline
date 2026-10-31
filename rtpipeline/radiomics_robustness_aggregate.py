@@ -342,7 +342,9 @@ def aggregate_robustness_cohort(
                             pd.read_parquet(BytesIO(original.table_snapshot)))):
                         raise ValueError("admitted measurement frame was mutated")
 
+        course_outcomes = pd.concat(outcomes, ignore_index=True)
         _publish(staged, output_excel, rob_config,
-                 extra_sheets=[("course_outcomes", pd.concat(outcomes, ignore_index=True)),
+                 extra_sheets=[("course_counts", rr._robustness_course_counts(course_outcomes)),
+                               ("course_outcomes", course_outcomes),
                                ("source_dispositions", rr._robustness_source_disposition_rows(snapshots))],
                  verify_evidence=verify)

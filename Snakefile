@@ -699,9 +699,26 @@ ROBUSTNESS_CONFIG_DEPENDENCY = _dependency_path(
             _radiomics_scientific_config
         ),
         "robustness": ROBUSTNESS_CONFIG,
+        "selection_contract": "robustness-target-selection-v1",
     },
     _radiomics_source_paths,
 )
+
+# Obsolete no-match receipts must be recomputed, including when the dependency
+# cache was removed. Advance the DAG input; never relabel their recorded evidence.
+_legacy_robustness_receipts = []
+for _receipt_path in OUTPUT_DIR.glob("*/*/.radiomics_robustness_done"):
+    try:
+        _receipt_payload = json.loads(_receipt_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        continue
+    if isinstance(_receipt_payload, dict) and _receipt_payload.get("measurement_outcome") == "not_applicable_selection_unmatched":
+        _legacy_robustness_receipts.append(_receipt_path)
+if _legacy_robustness_receipts:
+    advance_dependency_past_unbound_outputs(
+        Path(ROBUSTNESS_CONFIG_DEPENDENCY), _legacy_robustness_receipts,
+        binding_field="configuration_dependency_sha256",
+    )
 
 # Adding a real input changes Snakemake's stored input inventory. The one-time
 # migration below extends only the old metadata for affected outputs, allowing

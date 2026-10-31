@@ -170,6 +170,12 @@ def _build_courses(tmp_path, monkeypatch, specs, *, apply_to_structures=("ROI", 
         course_dir.mkdir(parents=True)
         rs_path = course_dir / "RS.dcm"
         shutil.copyfile(template_rs, rs_path)
+        if kind == "unmatched":
+            import pydicom
+            ds = pydicom.dcmread(rs_path)
+            ds.StructureSetROISequence[0].ROIName = "Unrequested1"
+            ds.RTROIObservationsSequence[0].RTROIInterpretedType = "ORGAN"
+            ds.save_as(rs_path)
         rs_paths[rs_path] = kind
         courses[(patient_id, course_id)] = SimpleNamespace(
             course_dir=course_dir, kind=kind, rs_path=rs_path
@@ -244,7 +250,7 @@ def _build_courses(tmp_path, monkeypatch, specs, *, apply_to_structures=("ROI", 
                 rows.append(
                     {
                         **fields,
-                        "structure": "ROI",
+                        "structure": fields["roi_original_name"],
                         "modality": "CT",
                         "measurement_type": rr.ROBUSTNESS_MEASUREMENT_TYPE,
                         "perturbed_mask_identity": identity,
@@ -252,6 +258,7 @@ def _build_courses(tmp_path, monkeypatch, specs, *, apply_to_structures=("ROI", 
                         "extraction_arm": arm,
                         "run_identifier": kwargs["run_identifier"],
                         "feature_name": "original_firstorder_Mean",
+                        "configured_parameter_hash": f"synthetic-extractor-{arm}",
                         "value": base + 0.01 * offset,
                     }
                 )
@@ -414,7 +421,7 @@ def test_unmatched_selection_completes_with_a_nonmeasurement_receipt(
     assert _run_course(cohort, "P3", campaign=campaign, sentinel=sentinel) == 0
 
     receipt = rc.read_robustness_completion_sentinel(cohort.sentinel("P3"))
-    assert receipt.measurement_outcome == "not_applicable_selection_unmatched"
+    assert receipt.measurement_outcome == "not_applicable_no_target_structure"
     assert receipt.measured is False
     assert receipt.measured_output is None
     assert cohort.receipt("P3")["requested_selection"] == ["Marker*", "ROI"]
@@ -424,7 +431,7 @@ def test_unmatched_selection_completes_with_a_nonmeasurement_receipt(
             encoding="utf-8"
         )
     )
-    assert payload["measurement_outcome"] == rr.ROBUSTNESS_UNMATCHED_SELECTION_OUTCOME
+    assert payload["measurement_outcome"] == rr.ROBUSTNESS_NO_TARGET_OUTCOME
     assert payload["source_only_basis"]["selection_matched_nonvolumetric_count"] == 0
     assert payload["rows"][0]["roi_name"] == "Unrequested1"
 

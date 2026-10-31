@@ -83,7 +83,7 @@ def test_source_only_requires_matching_canonical_nonempty_snapshot(tmp_path, mon
         backup.write_bytes(path.read_bytes())
         receipt["source_dispositions"]["path"] = backup.name
     if tamper in ("backup", "unmatched", "unmatched_empty"):
-        payload["measurement_outcome"] = rr.ROBUSTNESS_UNMATCHED_SELECTION_OUTCOME
+        payload["measurement_outcome"] = rr.ROBUSTNESS_NO_TARGET_OUTCOME
     if tamper in ("empty", "unmatched_empty"):
         payload["rows"] = []
         payload["row_count"] = 0

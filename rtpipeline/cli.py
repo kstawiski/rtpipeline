@@ -1051,7 +1051,7 @@ class _UnsafeStudyPathError(ValueError):
 
 
 _ROBUSTNESS_SECTION_KEYS = frozenset(
-    {"enabled", "modes", "segmentation_perturbation", "metrics", "thresholds"}
+    {"enabled", "modes", "segmentation_perturbation", "metrics", "thresholds", "target_selection"}
 )
 _PERTURBATION_KEYS = frozenset(
     {
@@ -1173,6 +1173,8 @@ def _validate_robustness_section(section: dict) -> None:
     """Check every value RobustnessConfig.from_dict would read from this section."""
     _require_known_keys(section, _ROBUSTNESS_SECTION_KEYS, "radiomics_robustness")
 
+    if section.get("target_selection", "patterns") not in ("patterns", "targets"):
+        raise _RobustnessRequestError("radiomics_robustness.target_selection must be 'patterns' or 'targets'")
     if "modes" in section:
         modes = section["modes"]
         _require_name_list(
@@ -1388,7 +1390,7 @@ def _radiomics_robustness_course(argv: list[str]) -> int:
 
     from .robustness_completion import (
         ROBUSTNESS_COMPLETION_SENTINEL_NAME,
-        ROBUSTNESS_SELECTION_UNMATCHED_OUTCOME,
+        ROBUSTNESS_NO_MATCH_OUTCOMES,
         invalidate_robustness_completion_sentinel,
         write_robustness_completion_sentinel,
     )
@@ -1619,7 +1621,7 @@ def _radiomics_robustness_course(argv: list[str]) -> int:
         )
         return 1
 
-    if outcome.measurement_outcome == ROBUSTNESS_SELECTION_UNMATCHED_OUTCOME:
+    if outcome.measurement_outcome in ROBUSTNESS_NO_MATCH_OUTCOMES:
         sentinel_path = course_dir / ROBUSTNESS_COMPLETION_SENTINEL_NAME
     if sentinel_path is not None:
         try:
