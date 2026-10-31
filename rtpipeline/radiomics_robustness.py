@@ -475,11 +475,14 @@ def _robustness_voxel_target_inventory(bindings: List[Dict[str, Any]]) -> List[D
     rows = []
     for binding in bindings:
         path = Path(binding["source_path"])
-        name = path.name.replace(".nii.gz", "")
+        name = binding.get("roi_name") or path.name.replace(".nii.gz", "")
         if binding["segmentation_source"] == "AutoRTS_total":
             name = name.removeprefix("total--")
         # Re-read the bound bytes: a zero mask is inventory, never a target.
         try:
+            if "Segmentation_Original" in path.parts:
+                from .original_segmentation import require_current_original_mask
+                require_current_original_mask(path)
             has_voxels = bool(sitk.GetArrayFromImage(sitk.ReadImage(str(path))).any())
         except Exception as exc:
             raise RuntimeError(f"Unreadable robustness NIfTI source {path}: {exc}") from exc
@@ -590,6 +593,7 @@ ROBUSTNESS_DISPOSITION_CODE_SOURCES = (
     "radiomics_ct_contract.py",
     "robustness_mcc.py",
     "radiomics_conda.py",
+    "original_segmentation.py",
 )
 
 
@@ -617,7 +621,36 @@ def _current_robustness_code_identity() -> Dict[str, Any]:
     }
 
 
-def _compatible_main_measured_code(payload: Mapping[str, Any], current: Mapping[str, Any]) -> bool:
+def _robustness_nifti_sources(course_dir: Path, *, voxel_only_models: bool = False):
+    """Mirror main's flat-before-nested fallback and model source precedence."""
+    sources = []
+    if not voxel_only_models:
+        seg_dir = course_dir / "Segmentation_TotalSegmentator"
+        files = sorted(seg_dir.glob("*.nii.gz")) or sorted(seg_dir.glob("*/*.nii.gz"))
+        sources.extend(("AutoRTS_total", path) for path in files if "_cropped" not in path.name)
+    sources.extend((f"CustomModel:{path.parent.name}", path)
+                   for path in sorted((course_dir / "Segmentation_CustomModels").glob("*/*.nii.gz"))
+                   if not voxel_only_models or not (path.parent / "rtstruct.dcm").exists())
+    return sources
+
+
+def _current_dicom_robustness_sources(course_dir: Path, contract):
+    """Re-enumerate evaluated sources; a receipt never defines this set."""
+    from .radiomics import _standard_rtstruct_sources
+    from .custom_models import list_custom_model_outputs
+
+    sources = [(source, path) for source, path, _ in _standard_rtstruct_sources(contract, course_dir)]
+    custom = course_dir / "RS_custom.dcm"
+    if custom.exists():
+        sources.append(("Custom", custom))
+    sources.extend((f"CustomModel:{name}", directory / "rtstruct.dcm")
+                   for name, directory in list_custom_model_outputs(course_dir))
+    return sources
+
+
+def _compatible_main_measured_code(
+    payload: Mapping[str, Any], current: Mapping[str, Any], *, course_dir: Optional[Path] = None,
+) -> bool:
     """Admit an unchanged main receipt only for this tested compatibility release.
 
     Keep the original code attribution. The allowlist binds both complete code
@@ -628,13 +661,67 @@ def _compatible_main_measured_code(payload: Mapping[str, Any], current: Mapping[
     except (OSError, ValueError):
         return False
     config = payload.get("effective_configuration", {}).get("robustness", {})
-    return (
+    eligible = (
         payload.get("measurement_outcome") == ROBUSTNESS_MEASURED_OUTCOME
         and config.get("target_selection", "patterns") == "patterns"
         and not config.get("perturbation", {}).get("exclude_structures")
         and payload.get("code_identity", {}).get("sources_sha256") == certificate.get("main_sources_sha256")
         and current.get("sources_sha256") == certificate.get("compatible_sources_sha256")
+        and "dicom_ct_rtstruct" in certificate.get("course_classes", [])
     )
+    if not eligible or course_dir is None:
+        return False
+    try:
+        contract = load_course_contract(course_dir)
+        # Main did not bind RTSTRUCT sources on NIfTI CT, or voxel sources on
+        # fallback courses. Neither class can inherit this exception.
+        if contract.planning_ct_dir is None:
+            return False
+        from .radiomics import _load_series_image
+        if _load_series_image(contract.planning_ct_dir) is None:
+            return False
+        output = payload["measured_output"]
+        table = course_dir / output["path"]
+        if table.name != payload["output_path"] or _file_sha256(table) != output["sha256"]:
+            return False
+        frame = pd.read_parquet(table, columns=["rasterizer_backend"])
+        if frame.empty or not frame.rasterizer_backend.eq("rt-utils/cv2.fillPoly").all():
+            return False
+        sources = _current_dicom_robustness_sources(course_dir, contract)
+        bindings = [{"segmentation_source": source, "source_path": str(path), "sha256": _file_sha256(path)}
+                    for source, path in sources]
+        voxel_bindings = [{"segmentation_source": source, "source_path": str(path), "sha256": _file_sha256(path)}
+                          for source, path in _robustness_nifti_sources(course_dir, voxel_only_models=True)]
+
+        def identities(entries):
+            return sorted((entry["segmentation_source"], entry["source_path"], entry["sha256"])
+                          for entry in entries)
+
+        if (identities(bindings) != identities(payload["source_bindings"])
+                or identities(voxel_bindings) != identities(payload.get("voxel_source_bindings", []))):
+            return False
+        # A newly discovered source, including malformed DICOM, needs a new
+        # producer run. Parse only after equality with the recorded bytes.
+        catalog, _ = _load_main_ct_identity_catalog(
+            course_dir, expected_series_uid=str(contract.planning_ct["series_instance_uid"]),
+        )
+        inventory = []
+        for binding in bindings:
+            if binding["segmentation_source"] == "Custom":
+                declared = {roi["roi_name"] for roi in _robustness_target_inventory(binding)}
+                binding["roi_names"] = sorted(
+                    {name for label, name in catalog if label == "Custom"}
+                    | (declared - {roi["roi_name"] for roi in inventory})
+                )
+            inventory.extend(_robustness_target_inventory(binding))
+        inventory.extend(_robustness_voxel_target_inventory(voxel_bindings))
+        requested = config.get("perturbation", {}).get("apply_to_structures", [])
+        return not any(roi["detector_rules"] and not robustness_selection_matches(
+            roi["roi_name"], requested, interpreted_types=roi["interpreted_types"],
+        ) for roi in inventory)
+    except (OSError, ValueError, KeyError, TypeError, RuntimeError, AttributeError):
+        # An unsupported or changed course is stale work, not a failed run.
+        return False
 
 
 def _capture_robustness_code_identity() -> Dict[str, Any]:
@@ -1121,9 +1208,13 @@ def _write_robustness_source_dispositions(
     if (outcome not in ROBUSTNESS_NO_MATCH_OUTCOMES and not missed_targets
             and effective_configuration["robustness"].get("target_selection", "patterns") == "patterns"
             and not effective_configuration["robustness"].get("perturbation", {}).get("exclude_structures")):
-        # Preserve the established measured artifact schema under default selection.
-        for field in ("target_selection", "voxel_source_bindings", "target_inventory"):
-            payload.pop(field)
+        payload.pop("target_selection")
+        # Historical DICOM artifacts keep their schema. A course that actually
+        # evaluates voxel files must bind them; main's fallback omitted these
+        # inputs, so that class deliberately requires recomputation.
+        if not voxel_bindings:
+            for field in ("voxel_source_bindings", "target_inventory"):
+                payload.pop(field)
         payload["source_bindings"] = [{key: value for key, value in binding.items() if key != "roi_names"}
                                       for binding in source_bindings]
     exclusions = effective_configuration["robustness"].get("perturbation", {}).get("exclude_structures", [])
@@ -1453,7 +1544,7 @@ def _read_robustness_source_dispositions(
             )
     if not isinstance(recorded_code, dict) or recorded_code.get(
         "sources_sha256"
-    ) != current_code["sources_sha256"] and not _compatible_main_measured_code(payload, current_code):
+    ) != current_code["sources_sha256"] and not _compatible_main_measured_code(payload, current_code, course_dir=course_dir):
         raise ValueError(
             "robustness source dispositions were produced by different code "
             f"(recorded {(recorded_code or {}).get('sources_sha256')!r}, current "
@@ -4937,9 +5028,13 @@ def robustness_for_course(
     target_inventory: List[Dict[str, Any]] = []
     voxel_source_bindings: List[Dict[str, Any]] = []
     voxel_mask_keys: set[Tuple[str, str]] = set()
+    physical_rtstruct_mask_keys: set[Tuple[str, str]] = set()
+    inventory_only_unresolved = set()
 
-    def _bind_voxel_source(source: str, path: Path) -> None:
+    def _bind_voxel_source(source: str, path: Path, *, roi_name: Optional[str] = None) -> None:
         binding = {"segmentation_source": source, "source_path": str(path), "sha256": _file_sha256(path)}
+        if roi_name is not None:
+            binding["roi_name"] = roi_name
         voxel_source_bindings.append(binding)
         target_inventory.extend(_robustness_voxel_target_inventory([binding]))
 
@@ -5138,14 +5233,8 @@ def robustness_for_course(
             )
         return False
 
-    def _load_nifti_sources():
-        sources = []
-        seg_dir = course_dir / "Segmentation_TotalSegmentator"
-        files = sorted(seg_dir.glob("*.nii.gz")) + sorted(seg_dir.glob("*/*.nii.gz"))
-        sources.extend(("AutoRTS_total", path) for path in files if "_cropped" not in path.name)
-        sources.extend((f"CustomModel:{path.parent.name}", path)
-                       for path in sorted((course_dir / "Segmentation_CustomModels").glob("*/*.nii.gz")))
-        for source, path in sources:
+    def _load_nifti_sources(*, inventory_only=False):
+        for source, path in _robustness_nifti_sources(course_dir, voxel_only_models=inventory_only):
             try:
                 mask_img = sitk.ReadImage(str(path))
                 mask_array = _nifti_mask_in_reference_order(mask_img, ct_image)
@@ -5155,6 +5244,16 @@ def robustness_for_course(
             name = path.name.removesuffix(".nii.gz")
             if source == "AutoRTS_total":
                 name = name.removeprefix("total--")
+            if inventory_only:
+                if mask_array.any() and _matches_robustness_pattern(name, source):
+                    key = (source, name)
+                    inventory_only_unresolved.add(key)
+                    unresolved_selected_identities[key] = identity_catalog_issues.get(key, {
+                        "reason_code": ("main_radiomics_mask_unavailable" if key in identity_catalog
+                                        else "identity_absent_from_main_radiomics"),
+                        "reason_detail": f"No evaluated RTSTRUCT baseline for {source}/{name}",
+                    })
+                continue
             new_key = (name, source) not in all_masks
             if mask_array.any() and _register_mask(name, source, mask_array) and new_key:
                 voxel_mask_keys.add((name, source))
@@ -5167,12 +5266,51 @@ def robustness_for_course(
         for model_name, model_dir in list_custom_model_outputs(course_dir):
             _bind_rtstruct_source(f"CustomModel:{model_name}", model_dir / "rtstruct.dcm")
         _load_nifti_sources()
-        # A selected RTSTRUCT volume without a usable voxel counterpart cannot
-        # be silently declared absent when DICOM CT geometry is unavailable.
-        for roi in target_inventory:
+        # Main CT radiomics needs DICOM geometry for RTSTRUCT publication. A
+        # staged NIfTI course must not invent that baseline or crash because
+        # a selected clinical contour has no published identity. A retained
+        # identity can use its validated exact physical-space clinical export.
+        for roi in list(target_inventory):
             if roi["source_path"].endswith(".dcm") and roi["volumetric"] and _matches_robustness_pattern(roi["roi_name"], roi["segmentation_source"]):
-                if (roi["roi_name"], roi["segmentation_source"]) not in all_masks:
-                    raise RuntimeError(f"Selected RTSTRUCT ROI has no voxel mask on NIfTI CT: {roi['source_path']}/{roi['roi_name']}")
+                name, source = roi["roi_name"], roi["segmentation_source"]
+                if (name, source) in all_masks:
+                    continue
+                if (source, name) not in identity_catalog:
+                    _register_mask(name, source, None)
+                    continue
+                from .original_segmentation import require_current_original_mask
+                candidates = []
+                for metadata in sorted((course_dir / "Segmentation_Original").glob("*/metadata.json")):
+                    manifest = json.loads(metadata.read_text())
+                    if Path(manifest.get("source_rtstruct", "")).resolve() != Path(roi["source_path"]).resolve():
+                        continue
+                    for entry in manifest.get("structures", []):
+                        if entry.get("roi_name") == name:
+                            path = metadata.parent.parent / entry["mask"]
+                            require_current_original_mask(path)
+                            candidates.append(path)
+                if len(candidates) != 1:
+                    unresolved_selected_identities[(source, name)] = {
+                        "reason_code": "main_radiomics_mask_unavailable",
+                        "reason_detail": f"No unique current physical-space mask for {source}/{name}",
+                    }
+                    continue
+                path = candidates[0]
+                mask_img = sitk.ReadImage(str(path))
+                # The export was placed on the contracted CT grid by the same
+                # physical-space adapter main uses. Refuse a different grid;
+                # interpolation cannot establish the published baseline.
+                if (mask_img.GetSize() != ct_image.GetSize() or any(
+                    not np.allclose(getattr(mask_img, getter)(), getattr(ct_image, getter)(), rtol=0, atol=1e-5)
+                    for getter in ("GetSpacing", "GetOrigin", "GetDirection")
+                )):
+                    raise RuntimeError(f"Published RTSTRUCT mask has a different physical grid: {path}")
+                mask_array = np.moveaxis(sitk.GetArrayFromImage(mask_img), 0, -1).astype(bool)
+                if not mask_array.any():
+                    raise RuntimeError(f"Empty published RTSTRUCT mask: {path}")
+                _bind_voxel_source(source, path, roi_name=name)
+                _register_mask(name, source, mask_array)
+                physical_rtstruct_mask_keys.add((name, source))
     else:
         # Use the same contracted standard-source resolver as main CT radiomics.
         # This includes Manual and a provenance-current AutoRTS source.
@@ -5307,13 +5445,16 @@ def robustness_for_course(
                     model_name,
                 )
 
-    # Evaluate voxel sources even when a DICOM selection already measured.
-    # This keeps the target inventory complete across every available source.
+    # Match main: voxel masks are a fallback only when DICOM loading retained
+    # no identity-matched masks. Models with no RTSTRUCT remain inventoried
+    # from their own voxel files, without adding measurements to a DICOM pass.
     if not _use_nifti_masks:
-        had_dicom_masks = bool(all_masks)
-        _load_nifti_sources()
-        if voxel_mask_keys and not had_dicom_masks:
-            _use_nifti_masks = True
+        if not all_masks:
+            _load_nifti_sources()
+            if voxel_mask_keys:
+                _use_nifti_masks = True
+        else:
+            _load_nifti_sources(inventory_only=True)
 
     logger.info(
         "Total identity-matched masks collected: %d from %d unique sources",
@@ -5437,6 +5578,11 @@ def robustness_for_course(
             selected_count=len(identity_ledger_rows),
             rows=identity_ledger_rows,
         )
+
+    if unresolved_selected_identities and (_use_nifti_masks or inventory_only_unresolved):
+        logger.warning("Voxel source scope has %d unresolved selected identities in %s",
+                       len(unresolved_selected_identities), course_dir)
+        return None
 
     # Reject malformed source dispositions before the expensive perturbation
     # extraction. Publication still revalidates rows and source bindings.
@@ -6104,6 +6250,12 @@ def robustness_for_course(
                           & combined_df["segmentation_source"].eq(source))
             for column, value in _rasterizer_columns("nifti/no-polygon-fill").items():
                 combined_df.loc[voxel_rows, column] = value
+
+    for roi_name, source in physical_rtstruct_mask_keys:
+        rtstruct_rows = (combined_df["roi_original_name"].eq(roi_name)
+                         & combined_df["segmentation_source"].eq(source))
+        for column, value in _rasterizer_columns().items():
+            combined_df.loc[rtstruct_rows, column] = value
 
     if rob_config.target_selection != "patterns" or rob_config.perturbation.exclude_structures:
         combined_df["target_selection"] = getattr(rob_config, "target_selection", "patterns")

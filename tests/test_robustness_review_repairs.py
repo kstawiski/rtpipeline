@@ -502,7 +502,7 @@ def test_measured_roi_does_not_hide_unselected_target(tmp_path, monkeypatch):
     assert ledger_row.detail == 'selection_gap_targets_unselected'
 
 
-def test_mixed_voxel_and_dicom_rows_keep_their_backend(tmp_path, monkeypatch):
+def test_dicom_rows_ignore_redundant_voxel_sources(tmp_path, monkeypatch):
     import pandas as pd
     c = _build_courses(tmp_path, monkeypatch, {('P1', 'C1'): 'measured'}, apply_to_structures=['ROI', 'CTVn'])
     course = c.course_dir('P1')
@@ -520,4 +520,4 @@ def test_mixed_voxel_and_dicom_rows_keep_their_backend(tmp_path, monkeypatch):
     assert _run_course(c, 'P1') == 0
     frame = pd.read_parquet(c.table('P1'))
     assert set(frame.loc[frame.segmentation_source.eq('Manual'), 'rasterizer_backend']) == {'rt-utils/cv2.fillPoly'}
-    assert set(frame.loc[frame.segmentation_source.eq('AutoRTS_total'), 'rasterizer_backend']) == {'nifti/no-polygon-fill'}
+    assert not frame.segmentation_source.eq('AutoRTS_total').any()
