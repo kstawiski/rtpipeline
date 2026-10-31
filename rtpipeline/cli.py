@@ -1185,7 +1185,9 @@ def _validate_robustness_section(section: dict) -> None:
     label = "radiomics_robustness.segmentation_perturbation"
     perturbation = _require_mapping(section.get("segmentation_perturbation", {}), label)
     _require_known_keys(perturbation, _PERTURBATION_KEYS, label)
-    if "apply_to_structures" in perturbation:
+    if "apply_to_structures" in perturbation and not (
+        section.get("target_selection", "patterns") == "targets" and perturbation["apply_to_structures"] == []
+    ):
         _require_name_list(
             perturbation["apply_to_structures"], f"{label}.apply_to_structures"
         )
@@ -1754,6 +1756,9 @@ def _radiomics_robustness_aggregate(argv: list[str]) -> int:
     )
     p.add_argument("--output", required=True, help="Output Excel file")
     p.add_argument("--config", default="config.yaml", help="Path to config YAML")
+    p.add_argument("--campaign-mode", action="store_true")
+    p.add_argument("--campaign-require-all-courses", action="store_true")
+    p.add_argument("--campaign-min-completion-fraction", type=float, default=None)
     p.add_argument("-v", "--verbose", action="store_true", help="Verbose logging")
     args = p.parse_args(argv)
 
@@ -1813,12 +1818,22 @@ def _radiomics_robustness_aggregate(argv: list[str]) -> int:
     # The requested policy, or nothing at all: both modes publish a cohort
     # result, and neither may publish one under an assumed configuration.
     try:
-        _, rob_config_data = _load_requested_robustness_config(config_path)
+        yaml_config, rob_config_data = _load_requested_robustness_config(config_path)
     except _RobustnessRequestError as e:
         return _refuse("Refusing to aggregate radiomics robustness: %s", e)
 
+    args.campaign_mode = args.campaign_mode or bool(yaml_config.get("campaign_mode", False))
+    args.campaign_require_all_courses = args.campaign_require_all_courses or bool(yaml_config.get("campaign_require_all_courses", False))
+    if args.campaign_min_completion_fraction is None:
+        args.campaign_min_completion_fraction = yaml_config.get("campaign_min_completion_fraction", 0.5)
+    if (not isinstance(args.campaign_min_completion_fraction, (int, float))
+            or isinstance(args.campaign_min_completion_fraction, bool)
+            or not 0 <= args.campaign_min_completion_fraction <= 1):
+        return _refuse("campaign minimum completion fraction must be between zero and one")
     rob_config = RobustnessConfig.from_dict(rob_config_data)
 
+    if args.inputs and args.campaign_mode:
+        return _refuse("campaign aggregation requires manifest mode")
     if args.inputs:
         # Historical contract, unchanged: the caller's tables, measured only.
         input_paths = [Path(item) for item in args.inputs]
@@ -1850,7 +1865,10 @@ def _radiomics_robustness_aggregate(argv: list[str]) -> int:
             for patient_id, course_id, course_dir in courses
         ]
         aggregate_robustness_cohort(
-            admitted, output_path, rob_config, cohort=cohort
+            admitted, output_path, rob_config, cohort=cohort,
+            campaign_mode=args.campaign_mode,
+            campaign_require_all_courses=args.campaign_require_all_courses,
+            campaign_min_completion_fraction=args.campaign_min_completion_fraction,
         )
         logger.info(
             "Cohort robustness accounting complete for %d manifest course(s): %s",

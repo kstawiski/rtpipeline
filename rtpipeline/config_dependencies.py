@@ -414,3 +414,36 @@ def radiomics_row_parameter_key(
         except (TypeError, ValueError):
             pass
     return _parameter_key(str(arm), None, large_roi=large_roi)
+
+
+def migrate_legacy_robustness_receipts(output_dir: Path, dependency_path: Path) -> int:
+    """Scan once per dependency content; serialize startup migration.
+
+    New producers cannot emit the obsolete outcome. Importing external legacy
+    receipts requires removing this marker, just as importing workflow metadata
+    requires refreshing its input inventory.
+    """
+    import fcntl
+
+    dependency_path = Path(dependency_path)
+    marker = dependency_path.parent / ".robustness-selection-v2"
+    lock = dependency_path.parent / ".robustness-selection-v2.lock"
+    key = hashlib.sha256(dependency_path.read_bytes()).hexdigest()
+    with lock.open("a") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        if marker.is_file() and marker.read_text() == key:
+            return 0
+        legacy = []
+        for path in Path(output_dir).glob("*/*/.radiomics_robustness_done"):
+            try:
+                payload = json.loads(path.read_text())
+            except (OSError, ValueError):
+                continue
+            if isinstance(payload, dict) and payload.get("measurement_outcome") == "not_applicable_selection_unmatched":
+                legacy.append(path)
+        if legacy:
+            advance_dependency_past_unbound_outputs(
+                dependency_path, legacy, binding_field="configuration_dependency_sha256",
+            )
+        marker.write_text(key)
+        return len(legacy)

@@ -36,6 +36,9 @@ def _append_roi(path, name, kind, number=2):
     roi.ROINumber = number
     roi.ROIName = name
     ds.StructureSetROISequence.append(roi)
+    contour = copy.deepcopy(ds.ROIContourSequence[0])
+    contour.ReferencedROINumber = number
+    ds.ROIContourSequence.append(contour)
     observation = copy.deepcopy(ds.RTROIObservationsSequence[0])
     observation.ObservationNumber = number
     observation.ReferencedROINumber = number
@@ -71,9 +74,9 @@ def test_exclusions_follow_selection_with_whole_name_fnmatch(mode, name, pattern
     assert not rr.robustness_selection_matches('ORGAN', ['PTV*'], target_selection=mode, exclude_structures=[pattern])
 
 
-def test_empty_exclusions_preserve_s11b_configuration_and_parameter_hash_bytes():
-    frozen = json.loads((Path(__file__).parent / 'fixtures/robustness_s11b_default_identity.json').read_text())
-    assert frozen['revision'] == '1a5d1290ad20b7227968e6b3dd078f5d441f0c7e'
+def test_empty_exclusions_preserve_main_configuration_and_parameter_hash_bytes():
+    frozen = json.loads((Path(__file__).parent / 'fixtures/robustness_main_default_identity.json').read_text())
+    assert frozen['revision'] == '072b146'
     for case in frozen['cases']:
         # An absent robustness section has its own pre-existing enabled default.
         for explicit_empty in ([False, True] if case['input'] else [False]):

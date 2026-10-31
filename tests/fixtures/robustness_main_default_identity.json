@@ -1,0 +1,114 @@
+{
+  "revision": "072b146",
+  "module_sha256": "ab03a1ee45681534ff49f618cfe758cb07e9f4a4b5282abd7b71e9e75656a78f",
+  "names": [
+    "GTV",
+    "CTV1",
+    "HR-CTV",
+    "IR-CTV",
+    "PTV-ring",
+    "z_PTV_opt",
+    "RING",
+    "ODBYTNICA",
+    "CTVx",
+    "ptv boost"
+  ],
+  "cases": [
+    {
+      "input": {
+        "enabled": true,
+        "target_selection": "patterns",
+        "segmentation_perturbation": {
+          "apply_to_structures": [
+            "GTV*",
+            "CTV*",
+            "PTV*"
+          ]
+        }
+      },
+      "effective_configuration_json": "{\"measurement_type\": \"segmentation_perturbation\", \"output_name\": \"radiomics_robustness_ct.parquet\", \"robustness\": {\"enabled\": true, \"metrics\": {\"cov_enabled\": true, \"icc\": {\"ci\": true, \"icc_type\": \"ICC3\", \"implementation\": \"pingouin\"}, \"qcd_enabled\": true}, \"modes\": [\"segmentation_perturbation\"], \"perturbation\": {\"apply_to_structures\": [\"GTV*\", \"CTV*\", \"PTV*\"], \"contour_randomization_mm\": 0.0, \"intensity\": \"standard\", \"large_volume_changes\": [-0.3, 0.0, 0.3], \"max_translation_mm\": 4.0, \"n_random_contour_realizations\": 2, \"noise_levels\": [0.0, 10.0, 20.0], \"rotation_angles\": [], \"small_volume_changes\": [-0.15, 0.0, 0.15]}, \"thresholds\": {\"cov_acceptable_pct\": 20.0, \"cov_robust_pct\": 10.0, \"icc_acceptable\": 0.75, \"icc_robust\": 0.9}}}",
+      "effective_configuration_sha256": "6ecf904e8d43549d5dd0aab1843ff3a77e0c1f7475e3d6f039448bbf08a5f29e",
+      "configured_parameter_hash": "synthetic-extractor",
+      "selected_json": "[\"GTV\", \"CTV1\", \"PTV-ring\", \"CTVx\", \"ptv boost\"]"
+    },
+    {
+      "input": {
+        "enabled": true,
+        "target_selection": "patterns",
+        "segmentation_perturbation": {
+          "apply_to_structures": [
+            "HR-CTV*",
+            "R?NG",
+            "[PG]TV*"
+          ]
+        }
+      },
+      "effective_configuration_json": "{\"measurement_type\": \"segmentation_perturbation\", \"output_name\": \"radiomics_robustness_ct.parquet\", \"robustness\": {\"enabled\": true, \"metrics\": {\"cov_enabled\": true, \"icc\": {\"ci\": true, \"icc_type\": \"ICC3\", \"implementation\": \"pingouin\"}, \"qcd_enabled\": true}, \"modes\": [\"segmentation_perturbation\"], \"perturbation\": {\"apply_to_structures\": [\"HR-CTV*\", \"R?NG\", \"[PG]TV*\"], \"contour_randomization_mm\": 0.0, \"intensity\": \"standard\", \"large_volume_changes\": [-0.3, 0.0, 0.3], \"max_translation_mm\": 4.0, \"n_random_contour_realizations\": 2, \"noise_levels\": [0.0, 10.0, 20.0], \"rotation_angles\": [], \"small_volume_changes\": [-0.15, 0.0, 0.15]}, \"thresholds\": {\"cov_acceptable_pct\": 20.0, \"cov_robust_pct\": 10.0, \"icc_acceptable\": 0.75, \"icc_robust\": 0.9}}}",
+      "effective_configuration_sha256": "b17d2394d89cea2a705744624623c32aaabfe9d448fa84f6828105f9ea2a06c2",
+      "configured_parameter_hash": "synthetic-extractor",
+      "selected_json": "[\"GTV\", \"HR-CTV\", \"PTV-ring\", \"RING\", \"ptv boost\"]"
+    },
+    {
+      "input": {},
+      "effective_configuration_json": "{\"measurement_type\": \"segmentation_perturbation\", \"output_name\": \"radiomics_robustness_ct.parquet\", \"robustness\": {\"enabled\": true, \"metrics\": {\"cov_enabled\": true, \"icc\": {\"ci\": true, \"icc_type\": \"ICC3\", \"implementation\": \"pingouin\"}, \"qcd_enabled\": true}, \"modes\": [\"segmentation_perturbation\"], \"perturbation\": {\"apply_to_structures\": [\"GTV\", \"CTV\", \"PTV\", \"BLADDER\", \"RECTUM\"], \"contour_randomization_mm\": 0.0, \"intensity\": \"standard\", \"large_volume_changes\": [-0.3, 0.0, 0.3], \"max_translation_mm\": 4.0, \"n_random_contour_realizations\": 2, \"noise_levels\": [0.0, 10.0, 20.0], \"rotation_angles\": [], \"small_volume_changes\": [-0.15, 0.0, 0.15]}, \"thresholds\": {\"cov_acceptable_pct\": 20.0, \"cov_robust_pct\": 10.0, \"icc_acceptable\": 0.75, \"icc_robust\": 0.9}}}",
+      "effective_configuration_sha256": "7089a983358cc4390d63f38a3294b14d6138482fa05876acc8b6622af7b58fe7",
+      "configured_parameter_hash": "synthetic-extractor",
+      "selected_json": "[\"GTV\"]"
+    },
+    {
+      "input": {
+        "enabled": true,
+        "modes": [
+          "segmentation_perturbation"
+        ],
+        "segmentation_perturbation": {
+          "intensity": "standard",
+          "apply_to_structures": [
+            "GTV*",
+            "CTV*",
+            "PTV*"
+          ],
+          "small_volume_changes": [
+            -0.15,
+            0.0,
+            0.15
+          ],
+          "max_translation_mm": 4.0,
+          "n_random_contour_realizations": 2,
+          "noise_levels": [
+            0.0,
+            10.0,
+            20.0
+          ]
+        },
+        "metrics": {
+          "icc": {
+            "implementation": "pingouin",
+            "icc_type": "ICC3",
+            "ci": true
+          },
+          "cov": {
+            "enabled": true
+          },
+          "qcd": {
+            "enabled": true
+          }
+        },
+        "thresholds": {
+          "icc": {
+            "robust": 0.9,
+            "acceptable": 0.75
+          },
+          "cov": {
+            "robust_pct": 10.0,
+            "acceptable_pct": 20.0
+          }
+        }
+      },
+      "effective_configuration_json": "{\"measurement_type\": \"segmentation_perturbation\", \"output_name\": \"radiomics_robustness_ct.parquet\", \"robustness\": {\"enabled\": true, \"metrics\": {\"cov_enabled\": true, \"icc\": {\"ci\": true, \"icc_type\": \"ICC3\", \"implementation\": \"pingouin\"}, \"qcd_enabled\": true}, \"modes\": [\"segmentation_perturbation\"], \"perturbation\": {\"apply_to_structures\": [\"GTV*\", \"CTV*\", \"PTV*\"], \"contour_randomization_mm\": 0.0, \"intensity\": \"standard\", \"large_volume_changes\": [-0.3, 0.0, 0.3], \"max_translation_mm\": 4.0, \"n_random_contour_realizations\": 2, \"noise_levels\": [0.0, 10.0, 20.0], \"rotation_angles\": [], \"small_volume_changes\": [-0.15, 0.0, 0.15]}, \"thresholds\": {\"cov_acceptable_pct\": 20.0, \"cov_robust_pct\": 10.0, \"icc_acceptable\": 0.75, \"icc_robust\": 0.9}}}",
+      "effective_configuration_sha256": "6ecf904e8d43549d5dd0aab1843ff3a77e0c1f7475e3d6f039448bbf08a5f29e",
+      "configured_parameter_hash": "synthetic-extractor",
+      "selected_json": "[\"GTV\", \"CTV1\", \"PTV-ring\", \"CTVx\", \"ptv boost\"]"
+    }
+  ]
+}
