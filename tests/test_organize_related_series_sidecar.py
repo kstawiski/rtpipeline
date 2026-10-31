@@ -210,7 +210,7 @@ def test_related_conversion_honours_suffix_and_modality(
     assert payload["series_instance_uid"] == uid
 
 
-def test_related_conversion_skip_returns_none_without_resume(
+def test_related_conversion_missing_volume_regenerates_without_resume(
     tmp_path, monkeypatch
 ):
     import json as _json
@@ -220,8 +220,7 @@ def test_related_conversion_skip_returns_none_without_resume(
     nifti_dir.mkdir()
     _stub_converter(monkeypatch)
     config = SimpleNamespace(resume=False)
-    # A present sidecar for the SAME series with resume off skips
-    # conversion entirely and reports no artifact (nothing was produced).
+    # A sidecar alone cannot authorize reuse of a missing volume.
     name = organize._derive_nifti_name(series)
     (nifti_dir / f"{name}.metadata.json").write_text(
         _json.dumps({"series_instance_uid": uid}),
@@ -232,4 +231,4 @@ def test_related_conversion_skip_returns_none_without_resume(
         organize, "run_dcm2niix", lambda *a: calls.append(a) or None
     )
     assert organize._convert_one_related_series(nifti_dir, series, config) is None
-    assert calls == []
+    assert len(calls) == 1
