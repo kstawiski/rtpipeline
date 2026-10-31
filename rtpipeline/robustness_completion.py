@@ -239,7 +239,8 @@ def robustness_completion_payload(
         "effective_configuration_sha256": str(effective_configuration_sha256),
         "environment_fingerprint": source_provenance.get("environment_fingerprint", "unrecorded"),
         "rasterizer": source_provenance.get("rasterizer", {"backend": "unrecorded"}),
-        "target_selection": source_provenance.get("target_selection", "patterns"),
+        **({"target_selection": source_provenance["target_selection"]}
+           if "target_selection" in source_provenance else {}),
         **({key: source_provenance[key] for key in ("exclude_structures", "excluded_by_configuration")}
            if source_provenance.get("exclude_structures") else {}),
         **(

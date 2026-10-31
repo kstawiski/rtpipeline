@@ -821,7 +821,7 @@ def test_a_symlinked_output_root_is_refused(tmp_path, caplog, no_producer):
 
 
 def test_a_valid_configuration_still_routes_manifest_aggregation(tmp_path, monkeypatch):
-    """The manifest course loop and the cohort call shape are unchanged."""
+    """Manifest membership and campaign policy reach the cohort consumer."""
     output_root = tmp_path / "Output"
     course_dir = _course_dir(tmp_path)
     manifest = _write_manifest(tmp_path, output_root)
@@ -846,12 +846,13 @@ def test_a_valid_configuration_still_routes_manifest_aggregation(tmp_path, monke
     monkeypatch.setattr(
         ra,
         "aggregate_robustness_cohort",
-        lambda admitted, out, cfg, *, cohort: calls.append((admitted, out, cfg, cohort)),
+        lambda admitted, out, cfg, *, cohort, **policy: calls.append((admitted, out, cfg, cohort, policy)),
     )
 
     assert _run_aggregate_manifest(manifest, output_root, output, config) == 0
 
-    (admitted, out, cfg, cohort), = calls
+    (admitted, out, cfg, cohort, policy), = calls
+    assert policy == {"campaign_mode": False, "campaign_require_all_courses": False, "campaign_min_completion_fraction": 0.5}
     assert out == output.resolve()
     assert cohort is cohort_metadata
     assert cfg.enabled is True

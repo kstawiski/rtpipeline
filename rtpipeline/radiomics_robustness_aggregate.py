@@ -282,6 +282,8 @@ def aggregate_robustness_results(input_parquets, output_excel, rob_config):
 def aggregate_robustness_cohort(
     courses: Sequence[RobustnessCourseReference | rr.RobustnessCohortCourse],
     output_excel: Path, rob_config: rr.RobustnessConfig, *, cohort: Mapping,
+    campaign_mode: bool = False, campaign_require_all_courses: bool = False,
+    campaign_min_completion_fraction: float = 0.5,
 ):
     """Account for exact manifest membership with one live admitted frame.
 
@@ -302,7 +304,7 @@ def aggregate_robustness_cohort(
         for course in courses:
             fresh = rr.admit_robustness_cohort_course(
                 course.course_dir, patient_id=course.patient_id,
-                course_id=course.course_id, rob_config=rob_config,
+                course_id=course.course_id, rob_config=rob_config, campaign_mode=campaign_mode,
             )
             if isinstance(course, rr.RobustnessCohortCourse):
                 _check_snapshot(course, fresh, check_frame=True)
@@ -324,7 +326,7 @@ def aggregate_robustness_cohort(
             for snapshot in snapshots:
                 fresh = rr.admit_robustness_cohort_course(
                     snapshot.course_dir, patient_id=snapshot.patient_id,
-                    course_id=snapshot.course_id, rob_config=rob_config,
+                    course_id=snapshot.course_id, rob_config=rob_config, campaign_mode=campaign_mode,
                 )
                 _check_snapshot(snapshot, fresh)
                 del fresh
@@ -343,8 +345,13 @@ def aggregate_robustness_cohort(
                         raise ValueError("admitted measurement frame was mutated")
 
         course_outcomes = pd.concat(outcomes, ignore_index=True)
+        if campaign_mode:
+            completed = int((~course_outcomes.technically_missing).sum())
+            fraction = completed / len(course_outcomes)
+            if ((campaign_require_all_courses and completed != len(course_outcomes))
+                    or fraction < campaign_min_completion_fraction):
+                raise RuntimeError(f"Campaign robustness completion gate failed: {completed}/{len(course_outcomes)} courses ({fraction:.3f})")
         _publish(staged, output_excel, rob_config,
-                 extra_sheets=[("course_counts", rr._robustness_course_counts(course_outcomes)),
-                               ("course_outcomes", course_outcomes),
+                 extra_sheets=[*rr._robustness_accounting_sheets(course_outcomes, snapshots),
                                ("source_dispositions", rr._robustness_source_disposition_rows(snapshots))],
                  verify_evidence=verify)

@@ -170,12 +170,17 @@ def _build_courses(tmp_path, monkeypatch, specs, *, apply_to_structures=("ROI", 
         course_dir.mkdir(parents=True)
         rs_path = course_dir / "RS.dcm"
         shutil.copyfile(template_rs, rs_path)
-        if kind == "unmatched":
-            import pydicom
-            ds = pydicom.dcmread(rs_path)
-            ds.StructureSetROISequence[0].ROIName = "Unrequested1"
-            ds.RTROIObservationsSequence[0].RTROIInterpretedType = "ORGAN"
-            ds.save_as(rs_path)
+        import pydicom
+        ds = pydicom.dcmread(rs_path)
+        ds.StructureSetROISequence[0].ROIName = {"measured": "ROI", "source_only": "Marker1", "unmatched": "Unrequested1"}[kind]
+        ds.RTROIObservationsSequence[0].RTROIInterpretedType = "ORGAN"
+        if kind == "source_only":
+            contour = ds.ROIContourSequence[0].ContourSequence[0]
+            contour.ContourGeometricType = "POINT"
+            contour.ContourData = contour.ContourData[:3]
+            contour.NumberOfContourPoints = 1
+            ds.ROIContourSequence[0].ContourSequence = [contour]
+        ds.save_as(rs_path)
         rs_paths[rs_path] = kind
         courses[(patient_id, course_id)] = SimpleNamespace(
             course_dir=course_dir, kind=kind, rs_path=rs_path
