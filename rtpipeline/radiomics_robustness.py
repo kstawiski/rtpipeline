@@ -61,7 +61,9 @@ from .multiprocessing_utils import configure_multiprocessing_tempdir, get_contex
 from .radiomics_ct_contract import read_authoritative_ct_publication
 from .rt_details import DEFAULT_ROI_FAMILY_NAMES
 from .robustness_completion import (
-    ROBUSTNESS_SELECTION_UNMATCHED_OUTCOME,
+    ROBUSTNESS_NO_TARGET_OUTCOME,
+    ROBUSTNESS_SELECTION_GAP_OUTCOME,
+    ROBUSTNESS_NO_MATCH_OUTCOMES,
     robustness_failed_evidence_path,
     validate_robustness_failed_evidence,
 )
@@ -375,12 +377,6 @@ ROBUSTNESS_SOURCE_BINDING_FIELDS = (
 ROBUSTNESS_MEASURED_OUTCOME = "measured"
 # A source ROI that the run actually selected exists and is non-volumetric.
 ROBUSTNESS_SOURCE_ONLY_OUTCOME = "source_only_nonvolumetric"
-# Nothing in the sources matched the requested selection, or nothing was
-# requested. That is an accounting fact about the request; it says nothing
-# about the anatomy of a name that was never found, and it is not a clinical
-# exclusion of anything.
-ROBUSTNESS_UNMATCHED_SELECTION_OUTCOME = ROBUSTNESS_SELECTION_UNMATCHED_OUTCOME
-
 # GEC-ESTRO cervix brachytherapy names its clinical target volumes by risk
 # level before the volume type (HR-CTV, IR-CTV). Selection patterns are
 # matched against the whole ROI name, so the CTV* family pattern misses them
@@ -399,12 +395,88 @@ def with_brachytherapy_ctv_patterns(selection: Any) -> List[str]:
     return patterns
 
 
-def robustness_selection_matches(roi_name: Any, selection: Any) -> bool:
-    """Case-insensitive whole-name selector match shared by every robustness caller."""
+def detect_robustness_target(roi_name: Any, interpreted_types: Any = ()) -> Tuple[str, ...]:
+    """Return the governed target rules; target-token helpers are included.
+
+    A token starts the name or follows space, hyphen, underscore, dot or slash.
+    Its next character must not be a letter (including a Unicode letter).
+    TREATED_VOLUME and ITV interpreted types alone do not establish a target.
+    """
+    import re
+
+    name = str(roi_name or "")
+    rules = []
+    for match in re.finditer(r"(?:^|[ ._/-])(?:GTV|CTV|PTV|ITV)", name, re.IGNORECASE | re.ASCII):
+        if match.end() == len(name) or not name[match.end()].isalpha():
+            rules.append("name_token")
+            break
+    if isinstance(interpreted_types, str):
+        interpreted_types = [interpreted_types]
+    types = {str(kind).strip().upper() for kind in (interpreted_types or [])}
+    rules.extend(f"RTROIInterpretedType:{kind}" for kind in sorted(types & {"GTV", "CTV", "PTV"}))
+    return tuple(rules)
+
+
+def _robustness_target_inventory(binding: Mapping[str, Any]) -> List[Dict[str, Any]]:
+    """Read only ROI names, numbers and interpreted types from a bound source."""
+    import pydicom
+
+    ds = pydicom.dcmread(binding["source_path"], specific_tags=[
+        "StructureSetROISequence", "RTROIObservationsSequence",
+    ])
+    types: Dict[str, set] = {}
+    for observation in getattr(ds, "RTROIObservationsSequence", []):
+        number = str(getattr(observation, "ReferencedROINumber", ""))
+        kind = str(getattr(observation, "RTROIInterpretedType", "")).strip().upper()
+        if kind:
+            types.setdefault(number, set()).add(kind)
+    rows = []
+    for roi in getattr(ds, "StructureSetROISequence", []):
+        name = str(getattr(roi, "ROIName", ""))
+        number = str(getattr(roi, "ROINumber", ""))
+        interpreted = sorted(types.get(number, set()))
+        rows.append({
+            "segmentation_source": binding["segmentation_source"],
+            "source_path": binding["source_path"],
+            "roi_number": number, "roi_name": name,
+            "interpreted_types": interpreted,
+            "detector_rules": list(detect_robustness_target(name, interpreted)),
+        })
+    return sorted(rows, key=lambda row: (row["roi_number"], row["roi_name"]))
+
+
+def _robustness_voxel_target_inventory(bindings: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Name-only evidence for evaluated NIfTI sources, bound to their bytes."""
+    rows = []
+    for binding in bindings:
+        path = Path(binding["source_path"])
+        name = path.name.replace(".nii.gz", "")
+        if binding["segmentation_source"] == "AutoRTS_total":
+            name = name.removeprefix("total--")
+        rows.append({
+            "segmentation_source": binding["segmentation_source"],
+            "source_path": str(path), "roi_number": "", "roi_name": name,
+            "interpreted_types": [], "detector_rules": list(detect_robustness_target(name)),
+        })
+    return rows
+
+
+def _validate_target_selection(mode: Any) -> str:
+    if mode not in ("patterns", "targets"):
+        raise ValueError("robustness.target_selection must be 'patterns' or 'targets'")
+    return mode
+
+
+def robustness_selection_matches(
+    roi_name: Any, selection: Any, *, target_selection: str = "patterns", interpreted_types: Any = (),
+) -> bool:
+    """Whole-name fnmatch; targets mode adds governed name/type detection."""
     from fnmatch import fnmatch
 
+    _validate_target_selection(target_selection)
     name = str(roi_name).upper()
-    return any(fnmatch(name, str(pattern).upper()) for pattern in (selection or []))
+    return (any(fnmatch(name, str(pattern).upper()) for pattern in (selection or []))
+            or (target_selection == "targets" and bool(detect_robustness_target(roi_name, interpreted_types))))
 
 
 # The extraction run itself failed technically (exception inside
@@ -422,7 +494,7 @@ ROBUSTNESS_NOT_APPLICABLE_OUTCOME = "not_applicable_no_planning_ct"
 ROBUSTNESS_NONMEASURED_OUTCOMES = frozenset(
     {
         ROBUSTNESS_SOURCE_ONLY_OUTCOME,
-        ROBUSTNESS_UNMATCHED_SELECTION_OUTCOME,
+        *ROBUSTNESS_NO_MATCH_OUTCOMES,
         ROBUSTNESS_FAILED_OUTCOME,
         ROBUSTNESS_NOT_APPLICABLE_OUTCOME,
     }
@@ -611,11 +683,28 @@ def effective_robustness_configuration(
         "output_name": str(output_name),
         "robustness": _bind_configuration_values(declared),
     }
+    payload["robustness"]["target_selection"] = _validate_target_selection(
+        getattr(rob_config, "target_selection", "patterns")
+    )
     # Normalize through JSON so the digest is stable for equal configurations
     # expressed with different (but equivalent) container types. No ``default``
     # coercion: a value that only survives as ``str(value)`` would let two
     # different settings share one fingerprint.
     return json.loads(json.dumps(payload, sort_keys=True))
+
+
+def _robustness_configured_parameter_hash(extraction_hash: str, mode: str) -> str:
+    """Bind extraction settings and the governed robustness selection mode."""
+    return _content_sha256({
+        "extraction_configured_parameter_hash": str(extraction_hash),
+        "target_selection": _validate_target_selection(mode),
+    })
+
+
+def _selection_bound_parameter_hashes(values: pd.Series, mode: str) -> pd.Series:
+    text = values.astype("string").fillna("")
+    hashes = {value: _robustness_configured_parameter_hash(value, mode) for value in text.unique()}
+    return text.map(hashes)
 
 
 def _rtstruct_source_binding(segmentation_source: str, rtstruct_path: Path) -> Dict[str, str]:
@@ -772,6 +861,7 @@ def _write_robustness_source_dispositions(
     source_only_basis: Optional[Dict[str, Any]] = None,
     tolerated_failures: Optional[List[Dict[str, Any]]] = None,
     failed_evidence: Optional[Path] = None,
+    voxel_source_bindings: Optional[List[Dict[str, Any]]] = None,
 ) -> Path:
     """Atomically publish the terminal RTSTRUCT source dispositions of one run.
 
@@ -800,6 +890,9 @@ def _write_robustness_source_dispositions(
         error=RuntimeError,
         context="refusing to publish robustness source dispositions",
     )
+    voxel_bindings = list(voxel_source_bindings or [])
+    _verify_rtstruct_source_bindings(voxel_bindings, error=RuntimeError,
+                                    context="robustness voxel source changed during processing")
     _validate_source_disposition_rows(
         rows, bindings=source_bindings, error=RuntimeError
     )
@@ -924,6 +1017,10 @@ def _write_robustness_source_dispositions(
         "measured_output": output_entry,
         "failed_evidence": failed_entry,
         "source_only_basis": source_only_basis,
+        "target_selection": effective_configuration["robustness"].get("target_selection", "patterns"),
+        "voxel_source_bindings": voxel_bindings,
+        "target_inventory": ([roi for binding in source_bindings for roi in _robustness_target_inventory(binding)]
+                             + _robustness_voxel_target_inventory(voxel_bindings)),
     }
     fd, temp_name = tempfile.mkstemp(
         dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp"
@@ -1254,6 +1351,22 @@ def _read_robustness_source_dispositions(
         raise ValueError(
             "robustness effective configuration does not match its recorded digest"
         )
+    mode = _validate_target_selection(recorded_configuration.get("robustness", {}).get("target_selection", "patterns"))
+    if payload.get("target_selection", "patterns") != mode:
+        raise ValueError("robustness target_selection differs from effective configuration")
+    voxel_bindings = payload.get("voxel_source_bindings", [])
+    if not isinstance(voxel_bindings, list) or not all(
+        isinstance(binding, dict) and all(_present(binding.get(key))
+                                         for key in ("segmentation_source", "source_path", "sha256"))
+        for binding in voxel_bindings
+    ):
+        raise ValueError("robustness voxel source bindings are invalid")
+    _verify_rtstruct_source_bindings(voxel_bindings, error=ValueError,
+                                    context="robustness voxel source evidence is stale")
+    inventory = ([roi for binding in bindings for roi in _robustness_target_inventory(binding)]
+                 + _robustness_voxel_target_inventory(voxel_bindings))
+    if "target_inventory" in payload and payload["target_inventory"] != inventory:
+        raise ValueError("robustness target inventory differs from bound source evidence")
     configuration_verified = False
     if rob_config is not None:
         expected = effective_robustness_configuration(
@@ -1302,7 +1415,13 @@ def _read_robustness_source_dispositions(
         if not isinstance(selection, list) or not all(isinstance(p, str) for p in selection):
             raise ValueError("robustness dispositions record no readable requested selection")
         matched = sum(
-            robustness_selection_matches(row["roi_name"], selection) for row in rows
+            robustness_selection_matches(
+                row["roi_name"], selection, target_selection=mode,
+                interpreted_types=[kind for roi in inventory
+                                   if roi["segmentation_source"] == row["segmentation_source"]
+                                   and roi["roi_name"] == row["roi_name"]
+                                   for kind in roi["interpreted_types"]],
+            ) for row in rows
         )
         if outcome == ROBUSTNESS_SOURCE_ONLY_OUTCOME and not matched:
             raise ValueError(
@@ -1310,9 +1429,16 @@ def _read_robustness_source_dispositions(
                 "an unmatched request is not non-volumetric anatomy"
             )
         basis = payload.get("source_only_basis")
-        if outcome == ROBUSTNESS_UNMATCHED_SELECTION_OUTCOME:
+        if outcome in ROBUSTNESS_NO_MATCH_OUTCOMES:
             if matched or not isinstance(basis, dict):
                 raise ValueError("selection-unmatched robustness requires a zero-match selection basis")
+            missed = [roi for roi in inventory if roi["detector_rules"]]
+            expected_outcome = ROBUSTNESS_SELECTION_GAP_OUTCOME if missed else ROBUSTNESS_NO_TARGET_OUTCOME
+            if outcome != expected_outcome or basis.get("missed_targets") != missed:
+                raise ValueError("no-match target evidence or outcome does not reconcile")
+            if any(robustness_selection_matches(roi["roi_name"], selection, target_selection=mode,
+                                               interpreted_types=roi["interpreted_types"]) for roi in inventory):
+                raise ValueError("no-match evidence contains a selected source ROI")
             for key in (
                 "selected_structure_count", "unresolved_identity_count",
                 "inventory_only_excluded_count", "selection_matched_nonvolumetric_count",
@@ -1514,6 +1640,10 @@ class RobustnessConfig:
     perturbation: PerturbationConfig = field(default_factory=PerturbationConfig)
     metrics: MetricsConfig = field(default_factory=MetricsConfig)
     thresholds: RobustnessThresholds = field(default_factory=RobustnessThresholds)
+    target_selection: str = "patterns"
+
+    def __post_init__(self) -> None:
+        _validate_target_selection(self.target_selection)
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "RobustnessConfig":
@@ -1566,6 +1696,7 @@ class RobustnessConfig:
 
         return cls(
             enabled=enabled,
+            target_selection=data.get("target_selection", "patterns"),
             modes=modes,
             perturbation=perturbation,
             metrics=metrics,
@@ -4163,7 +4294,8 @@ def model_instability_determinants(
 # ============================================================================
 
 def _robustness_selection_requiredness(
-    rtstruct_path: Path, selection: Any, *, inspect: Optional[Callable[[Path], Any]] = None
+    rtstruct_path: Path, selection: Any, *, inspect: Optional[Callable[[Path], Any]] = None,
+    target_selection: str = "patterns", target_inventory: Optional[List[Dict[str, Any]]] = None,
 ) -> Optional[Dict[str, Any]]:
     """Expand the robustness selection to an exact-name requiredness map.
 
@@ -4178,8 +4310,9 @@ def _robustness_selection_requiredness(
 
     from .roi_requiredness import Requiredness, inspect_rtstruct
 
+    _validate_target_selection(target_selection)
     patterns = [str(p) for p in (selection or [])]
-    if not patterns:
+    if not patterns and target_selection == "patterns":
         # No selection is not a license to tolerate everything: with no
         # required name, every failure would record instead of raise.
         return None
@@ -4193,10 +4326,16 @@ def _robustness_selection_requiredness(
             exc,
         )
         return None
+    inventory = target_inventory if target_inventory is not None else (
+        _robustness_target_inventory({"source_path": str(rtstruct_path), "segmentation_source": ""})
+        if target_selection == "targets" else []
+    )
     requiredness: Dict[str, Any] = {}
     matched_any = False
     for name in names:
-        if robustness_selection_matches(name, patterns):
+        if robustness_selection_matches(name, patterns, target_selection=target_selection,
+                                        interpreted_types=[kind for roi in inventory if roi["roi_name"] == name and roi["source_path"] == str(rtstruct_path)
+                                                           for kind in roi["interpreted_types"]]):
             requiredness[str(name)] = Requiredness.ANALYSIS_REQUIRED
             matched_any = True
         else:
@@ -4592,9 +4731,16 @@ def robustness_for_course(
     # including voxel fallback courses with selected Custom identities.
     rs_custom = course_dir / "RS_custom.dcm"
     custom_cfg = getattr(config, "custom_structures_config", None)
+    custom_target_inventory = (
+        _robustness_target_inventory({"source_path": str(rs_custom), "segmentation_source": "Custom"})
+        if rs_custom.is_file() and getattr(rob_config, "target_selection", "patterns") == "targets" else []
+    )
     custom_selected = any(
         source == "Custom" and robustness_selection_matches(
-            roi_name, rob_config.perturbation.apply_to_structures
+            roi_name, rob_config.perturbation.apply_to_structures,
+            target_selection=getattr(rob_config, "target_selection", "patterns"),
+            interpreted_types=[kind for roi in custom_target_inventory if roi["roi_name"] == roi_name
+                               for kind in roi["interpreted_types"]],
         )
         for source, roi_name in identity_catalog
     )
@@ -4636,6 +4782,13 @@ def robustness_for_course(
     # that readers validate leniently and aggregation never measures.
     tolerated_source_failures: List[Dict[str, Any]] = []
     rtstruct_source_bindings: List[Dict[str, str]] = []
+    target_inventory: List[Dict[str, Any]] = []
+    voxel_source_bindings: List[Dict[str, Any]] = []
+
+    def _bind_voxel_source(source: str, path: Path) -> None:
+        binding = {"segmentation_source": source, "source_path": str(path), "sha256": _file_sha256(path)}
+        voxel_source_bindings.append(binding)
+        target_inventory.extend(_robustness_voxel_target_inventory([binding]))
 
     def _bind_rtstruct_source(
         source: str, rtstruct_path: Path
@@ -4650,6 +4803,7 @@ def robustness_for_course(
             return None
         binding = _rtstruct_source_binding(source, rtstruct_path)
         rtstruct_source_bindings.append(binding)
+        target_inventory.extend(_robustness_target_inventory(binding))
         return binding
 
     def _record_source_dispositions(
@@ -4698,9 +4852,13 @@ def robustness_for_course(
             else:
                 source_disposition_rows.append(outcome)
 
-    def _matches_robustness_pattern(roi_name: str) -> bool:
+    def _matches_robustness_pattern(roi_name: str, source: str) -> bool:
         return robustness_selection_matches(
-            roi_name, rob_config.perturbation.apply_to_structures
+            roi_name, rob_config.perturbation.apply_to_structures,
+            target_selection=getattr(rob_config, "target_selection", "patterns"),
+            interpreted_types=[kind for roi in target_inventory
+                               if roi["roi_name"] == roi_name and roi["segmentation_source"] == source
+                               for kind in roi["interpreted_types"]],
         )
 
     # Each RTSTRUCT used to be inspected two or three times per run (selection
@@ -4726,7 +4884,7 @@ def robustness_for_course(
         its presence are recorded, but its array is never used.
         """
         return lambda roi_name: (
-            _matches_robustness_pattern(roi_name)
+            _matches_robustness_pattern(roi_name, source)
             and (source, roi_name) in identity_catalog
         )
 
@@ -4750,6 +4908,8 @@ def robustness_for_course(
             rtstruct_path,
             rob_config.perturbation.apply_to_structures,
             inspect=_inspect_rtstruct_once,
+            target_selection=getattr(rob_config, "target_selection", "patterns"),
+            target_inventory=target_inventory,
         )
         if requiredness is None:
             return {}
@@ -4777,7 +4937,7 @@ def robustness_for_course(
         if key in identity_catalog:
             all_masks[(roi_name, source)] = mask_array
             return True
-        if report_missing_identity and _matches_robustness_pattern(roi_name):
+        if report_missing_identity and _matches_robustness_pattern(roi_name, source):
             unresolved_selected_identities[key] = identity_catalog_issues.get(
                 key,
                 {
@@ -4805,6 +4965,7 @@ def robustness_for_course(
                 roi_name = seg_file.name.replace(".nii.gz", "")
                 if roi_name.startswith("total--"):
                     roi_name = roi_name[len("total--"):]
+                _bind_voxel_source("AutoRTS_total", seg_file)
                 try:
                     mask_img = sitk.ReadImage(str(seg_file))
                     mask_array = _nifti_mask_in_reference_order(mask_img, ct_image)
@@ -4827,6 +4988,7 @@ def robustness_for_course(
                     continue
                 for seg_file in sorted(model_dir.glob("*.nii.gz")):
                     roi_name = seg_file.name.replace(".nii.gz", "")
+                    _bind_voxel_source(f"CustomModel:{model_dir.name}", seg_file)
                     try:
                         mask_img = sitk.ReadImage(str(seg_file))
                         mask_array = _nifti_mask_in_reference_order(mask_img, ct_image)
@@ -4863,6 +5025,8 @@ def robustness_for_course(
                 rtstruct_path,
                 rob_config.perturbation.apply_to_structures,
                 inspect=_inspect_rtstruct_once,
+                target_selection=getattr(rob_config, "target_selection", "patterns"),
+                target_inventory=target_inventory,
             )
             source_masks = _rtstruct_masks(
                 ct_dir,
@@ -4989,6 +5153,7 @@ def robustness_for_course(
                 # Strip common prefixes (e.g. "total--")
                 if roi_name.startswith("total--"):
                     roi_name = roi_name[len("total--"):]
+                _bind_voxel_source("AutoRTS_total", seg_file)
                 try:
                     mask_img = sitk.ReadImage(str(seg_file))
                     mask_array = _nifti_mask_in_reference_order(mask_img, ct_image)
@@ -5053,7 +5218,7 @@ def robustness_for_course(
         custom_structure_provenance = None
     inventory_only_excluded = 0
     for roi_name, source in all_masks:
-        if not _matches_robustness_pattern(roi_name):
+        if not _matches_robustness_pattern(roi_name, source):
             continue
         # Robustness quantifies the stability of PUBLISHED measurements. An
         # ROI the main radiomics path retains for inventory only (e.g. a
@@ -5158,6 +5323,7 @@ def robustness_for_course(
             nonmeasured_outcome=nonmeasured_outcome,
             source_only_basis=source_only_basis,
             tolerated_failures=tolerated_source_failures,
+            voxel_source_bindings=voxel_source_bindings,
         )
         logger.info(
             "Recorded %d RTSTRUCT source disposition(s) and %d tolerated "
@@ -5198,7 +5364,7 @@ def robustness_for_course(
             selection_matched_dispositions = [
                 row
                 for row in source_disposition_rows
-                if _matches_robustness_pattern(str(row.get("roi_name") or ""))
+                if _matches_robustness_pattern(str(row.get("roi_name") or ""), str(row.get("segmentation_source") or ""))
             ]
             if any(
                 row.get("failure_kind") == "unresolved_source_scope"
@@ -5235,16 +5401,19 @@ def robustness_for_course(
                     "published measurement exists to be robust against"
                 )
             else:
-                nonmeasured_outcome = ROBUSTNESS_UNMATCHED_SELECTION_OUTCOME
+                missed = [roi for roi in target_inventory if roi["detector_rules"]]
+                nonmeasured_outcome = ROBUSTNESS_SELECTION_GAP_OUTCOME if missed else ROBUSTNESS_NO_TARGET_OUTCOME
                 reason = (
                     "no source ROI matched the requested robustness selection; "
-                    "an unmatched selection is not evidence of non-volumetric "
-                    "anatomy and excludes nothing"
+                    + ("detected targets were unselected (technically missing)" if missed
+                       else "no target structure was detected")
                 )
             _publish_source_dispositions(
                 None,
                 nonmeasured_outcome=nonmeasured_outcome,
                 source_only_basis={
+                    **({"missed_targets": [roi for roi in target_inventory if roi["detector_rules"]]}
+                       if nonmeasured_outcome in ROBUSTNESS_NO_MATCH_OUTCOMES else {}),
                     "selected_structure_count": 0,
                     "unresolved_identity_count": 0,
                     "inventory_only_excluded_count": inventory_only_excluded,
@@ -5768,6 +5937,15 @@ def robustness_for_course(
     ):
         combined_df[_col_name] = _col_val
 
+    combined_df["target_selection"] = getattr(rob_config, "target_selection", "patterns")
+    if "configured_parameter_hash" in combined_df:
+        combined_df["extraction_configured_parameter_hash"] = combined_df["configured_parameter_hash"]
+        combined_df["configured_parameter_hash"] = _selection_bound_parameter_hashes(
+            combined_df["extraction_configured_parameter_hash"], rob_config.target_selection,
+        )
+    combined_df["robustness_configuration_sha256"] = _content_sha256(
+        effective_robustness_configuration(rob_config, output_name=output_path.name)
+    )
     combined_df = _order_robustness_rows(combined_df)
 
     # Bind the published rows to the run that produced them: a table carrying a
@@ -5868,10 +6046,10 @@ class RobustnessNotRequestedError(RuntimeError):
 
 
 # These outcomes close the step. Only a measured outcome contributes values;
-# an unmatched selection records a configuration result, with no anatomical claim.
+# a target selection gap completes with explicit technically missing accounting.
 ROBUSTNESS_STEP_COMPLETING_OUTCOMES = frozenset(
     {ROBUSTNESS_MEASURED_OUTCOME, ROBUSTNESS_SOURCE_ONLY_OUTCOME,
-     ROBUSTNESS_UNMATCHED_SELECTION_OUTCOME}
+     *ROBUSTNESS_NO_MATCH_OUTCOMES}
 )
 
 
@@ -6235,6 +6413,17 @@ def _admit_robustness_aggregation_input(
         output_name=path.name,
     )
     _verify_admitted_table_bytes(course_dir, path, table_sha256)
+    mode = getattr(rob_config, "target_selection", "patterns")
+    if "target_selection" in frame and not frame.target_selection.eq(mode).all():
+        raise ValueError("robustness table target_selection differs from its configuration")
+    if "robustness_configuration_sha256" in frame and not frame.robustness_configuration_sha256.eq(
+        _content_sha256(effective_robustness_configuration(rob_config, output_name=path.name))
+    ).all():
+        raise ValueError("robustness table configuration hash differs from its configuration")
+    if "extraction_configured_parameter_hash" in frame:
+        expected_hashes = _selection_bound_parameter_hashes(frame.extraction_configured_parameter_hash, mode)
+        if "configured_parameter_hash" not in frame or not frame.configured_parameter_hash.eq(expected_hashes).all():
+            raise ValueError("robustness configured_parameter_hash does not bind target_selection")
 
     return _AdmittedRobustnessInput(
         path=path,
@@ -6483,6 +6672,10 @@ ROBUSTNESS_RAW_VALUE_COLUMNS: Tuple[str, ...] = (
     "feature_name",
     "value",
     "robustness_status",
+    "target_selection",
+    "robustness_configuration_sha256",
+    "configured_parameter_hash",
+    "extraction_configured_parameter_hash",
 )
 _ROBUSTNESS_RAW_FLOAT_COLUMNS = frozenset({"value"})
 
@@ -6520,6 +6713,9 @@ ROBUSTNESS_COURSE_OUTCOME_COLUMNS: Tuple[str, ...] = (
     "course_id",
     "measurement_outcome",
     "nonmeasurement_reason",
+    "target_selection",
+    "accounting_status",
+    "technically_missing",
     "robustness_run_identifier",
     "output_path",
     "table_present",
@@ -6806,9 +7002,16 @@ def _robustness_course_outcome_rows(
                 "patient_id": course.patient_id,
                 "course_id": course.course_id,
                 "measurement_outcome": course.measurement_outcome,
+                "target_selection": json.loads(course.sidecar_snapshot).get("target_selection", "patterns"),
+                "accounting_status": (
+                    "technically_missing" if course.measurement_outcome in {ROBUSTNESS_SELECTION_GAP_OUTCOME, ROBUSTNESS_FAILED_OUTCOME}
+                    else "not_applicable" if course.measurement_outcome in {ROBUSTNESS_NO_TARGET_OUTCOME, ROBUSTNESS_NOT_APPLICABLE_OUTCOME}
+                    else "measured" if measured_rows else "source_only"
+                ),
+                "technically_missing": course.measurement_outcome in {ROBUSTNESS_SELECTION_GAP_OUTCOME, ROBUSTNESS_FAILED_OUTCOME},
                 "nonmeasurement_reason": (
                     json.loads(course.sidecar_snapshot)["source_only_basis"]["reason"]
-                    if course.measurement_outcome == ROBUSTNESS_UNMATCHED_SELECTION_OUTCOME
+                    if course.measurement_outcome in ROBUSTNESS_NO_MATCH_OUTCOMES
                     else ""
                 ),
                 "robustness_run_identifier": course.run_identifier,
@@ -6826,6 +7029,15 @@ def _robustness_course_outcome_rows(
             }
         )
     return pd.DataFrame(rows, columns=list(ROBUSTNESS_COURSE_OUTCOME_COLUMNS))
+
+
+def _robustness_course_counts(outcomes: pd.DataFrame) -> pd.DataFrame:
+    """Keep technical gaps in the admitted denominator with zero measurements."""
+    return pd.DataFrame([{
+        "courses": len(outcomes),
+        **{status: int(outcomes.accounting_status.eq(status).sum())
+           for status in ("measured", "technically_missing", "not_applicable", "source_only")},
+    }])
 
 
 def _robustness_source_disposition_rows(
@@ -7041,6 +7253,7 @@ def aggregate_robustness_cohort(
     sheets.append(("acceptable_features", acceptable_features))
     if robust_per_source is not None:
         sheets.append(("robust_features_per_source", robust_per_source))
+    sheets.append(("course_counts", _robustness_course_counts(course_outcomes)))
     sheets.append(("course_outcomes", course_outcomes))
     sheets.append(("source_dispositions", source_dispositions))
 

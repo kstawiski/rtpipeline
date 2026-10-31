@@ -28,7 +28,7 @@ from test_robustness_consumer_integration import (
     _write_manifest, _summary_paths, _roi_array,
 )
 
-OUTCOME = "not_applicable_selection_unmatched"
+OUTCOME = "not_applicable_no_target_structure"
 
 
 def _ledger():
@@ -176,10 +176,20 @@ def test_new_attempt_cannot_reuse_an_unmatched_receipt(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("branch", [0, 1], ids=["container-rule", "local-rule"])
 @pytest.mark.parametrize("tamper", [False, True], ids=["valid", "stale-source"])
+@pytest.mark.parametrize("target_present", [False, True], ids=["no-target", "selection-gap"])
 def test_campaign_rule_closes_unmatched_with_real_receipts(
-    tmp_path, monkeypatch, branch, tamper
+    tmp_path, monkeypatch, branch, tamper, target_present
 ):
     cohort = _build_courses(tmp_path, monkeypatch, {("P3", "C1"): "unmatched"})
+    if target_present:
+        import pydicom
+        path = cohort.course_dir("P3") / "RS.dcm"
+        ds = pydicom.dcmread(path)
+        ds.StructureSetROISequence[0].ROIName = "HR-CTV"
+        ds.RTROIObservationsSequence[0].RTROIInterpretedType = "TREATED_VOLUME"
+        ds.save_as(path)
+    expected_outcome = "selection_gap_targets_unselected" if target_present else OUTCOME
+    expected_status = "technically_missing" if target_present else "not_applicable"
     assert _run_course(cohort, "P3", campaign=True) == 0
     course = cohort.course_dir("P3")
     saved = tmp_path / "producer-receipt.json"
@@ -237,16 +247,16 @@ def test_campaign_rule_closes_unmatched_with_real_receipts(
         return
     assert result.returncode == 0, result.stdout + result.stderr
     record = json.loads((cohort.output_root / "_campaign_ledger/records/P3__C1__radiomics_robustness.json").read_text())
-    assert record["status"] == "not_applicable"
-    assert record["detail"] == OUTCOME
+    assert record["status"] == expected_status
+    assert record["detail"] == expected_outcome
     assert record["returncode"] == 0
     assert cohort.sentinel("P3").read_bytes() == saved.read_bytes()
     ledger = _ledger()
     summary = ledger.rollup(cohort.output_root)
-    assert summary["stage_counts"]["radiomics_robustness"] == {"not_applicable": 1}
+    assert summary["stage_counts"]["radiomics_robustness"] == {expected_status: 1}
     # The receipt alone also preserves the reason if a rollup has no record.
     (cohort.output_root / "_campaign_ledger/records/P3__C1__radiomics_robustness.json").unlink()
     ledger.rollup(cohort.output_root)
     rows = pd.read_csv(cohort.output_root / "_campaign_ledger/campaign_ledger.csv")
     row = rows.loc[rows.stage == "radiomics_robustness"].iloc[0]
-    assert row.status == "not_applicable" and row.detail == OUTCOME
+    assert row.status == expected_status and row.detail == expected_outcome

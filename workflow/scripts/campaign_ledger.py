@@ -43,7 +43,9 @@ STATUS_MISSING = "missing"
 # Governed nonmeasurement outcomes close a stage without a measurement.
 STATUS_NOT_APPLICABLE = "not_applicable"
 ROBUSTNESS_NOT_APPLICABLE_RECEIPT_OUTCOME = "not_applicable_no_planning_ct"
-ROBUSTNESS_SELECTION_UNMATCHED_RECEIPT_OUTCOME = "not_applicable_selection_unmatched"
+ROBUSTNESS_NO_TARGET_RECEIPT_OUTCOME = "not_applicable_no_target_structure"
+ROBUSTNESS_SELECTION_GAP_RECEIPT_OUTCOME = "selection_gap_targets_unselected"
+STATUS_TECHNICALLY_MISSING = "technically_missing"
 
 
 def _utcnow() -> str:
@@ -209,11 +211,12 @@ def close_robustness_completion(
         raise RuntimeError("a failed extraction cannot close as a successful robustness stage")
     not_applicable = receipt.measurement_outcome in {
         ROBUSTNESS_NOT_APPLICABLE_RECEIPT_OUTCOME,
-        ROBUSTNESS_SELECTION_UNMATCHED_RECEIPT_OUTCOME,
+        ROBUSTNESS_NO_TARGET_RECEIPT_OUTCOME,
     }
     return record(
         Path(output_dir), patient, course, "radiomics_robustness",
-        STATUS_NOT_APPLICABLE if not_applicable else STATUS_OK,
+        (STATUS_TECHNICALLY_MISSING if receipt.measurement_outcome == ROBUSTNESS_SELECTION_GAP_RECEIPT_OUTCOME
+         else STATUS_NOT_APPLICABLE if not_applicable else STATUS_OK),
         returncode=0, log_path=log_path, detail=receipt.measurement_outcome,
     )
 
@@ -284,13 +287,31 @@ def _sentinel_status(course_path: Path, suffix: str) -> str:
         payload = json.loads(text)
     except json.JSONDecodeError:
         payload = None
+    if (
+        isinstance(payload, dict)
+        and suffix == STAGE_SENTINELS["radiomics_robustness"]
+        and payload.get("measurement_outcome") in {
+            ROBUSTNESS_NO_TARGET_RECEIPT_OUTCOME, ROBUSTNESS_SELECTION_GAP_RECEIPT_OUTCOME,
+            "not_applicable_selection_unmatched",
+        }
+    ):
+        from rtpipeline.robustness_completion import (
+            RobustnessCompletionError, read_robustness_completion_sentinel,
+        )
+        try:
+            receipt = read_robustness_completion_sentinel(sentinel, course_dir=course_path)
+        except RobustnessCompletionError:
+            return STATUS_MISSING
+        return (STATUS_TECHNICALLY_MISSING
+                if receipt.measurement_outcome == ROBUSTNESS_SELECTION_GAP_RECEIPT_OUTCOME
+                else STATUS_NOT_APPLICABLE)
     if isinstance(payload, dict):
         value = str(payload.get("status") or "").strip().lower()
         if (
             value == STATUS_OK
             and payload.get("measurement_outcome")
             in {ROBUSTNESS_NOT_APPLICABLE_RECEIPT_OUTCOME,
-                ROBUSTNESS_SELECTION_UNMATCHED_RECEIPT_OUTCOME}
+                ROBUSTNESS_NO_TARGET_RECEIPT_OUTCOME}
         ):
             return STATUS_NOT_APPLICABLE
     else:
@@ -341,7 +362,7 @@ def rollup(output_dir: Path) -> dict:
                 source = "record"
                 # A record claiming success without a sentinel is not success.
                 if (
-                    status in {STATUS_OK, STATUS_NOT_APPLICABLE}
+                    status in {STATUS_OK, STATUS_NOT_APPLICABLE, STATUS_TECHNICALLY_MISSING}
                     and sentinel_state == STATUS_MISSING
                 ):
                     status = STATUS_FAILED
@@ -349,6 +370,9 @@ def rollup(output_dir: Path) -> dict:
             else:
                 status = sentinel_state
                 source = "sentinel"
+
+            if stage == "radiomics_robustness" and sentinel_state == STATUS_TECHNICALLY_MISSING:
+                status = STATUS_TECHNICALLY_MISSING
 
             rows.append(
                 {
@@ -360,10 +384,10 @@ def rollup(output_dir: Path) -> dict:
                     "sentinel_status": sentinel_state,
                     "returncode": (entry or {}).get("returncode"),
                     "log_path": (entry or {}).get("log_path"),
-                    "detail": (entry or {}).get("detail") or (
+                    "detail": (
                         _robustness_not_applicable_detail(course_path)
-                        if stage == "radiomics_robustness" and sentinel_state == STATUS_NOT_APPLICABLE
-                        else None
+                        if stage == "radiomics_robustness" and sentinel_state in {STATUS_NOT_APPLICABLE, STATUS_TECHNICALLY_MISSING}
+                        else (entry or {}).get("detail")
                     ),
                     "finished_at": (entry or {}).get("finished_at"),
                     "duration_seconds": (entry or {}).get("duration_seconds"),
@@ -423,6 +447,11 @@ def rollup(output_dir: Path) -> dict:
             {"patient": p, "course": c, "stage": s} for p, c, s in failed_units
         ],
         "failed_unit_count": len(failed_units),
+        "technically_missing_unit_count": sum(row["status"] == STATUS_TECHNICALLY_MISSING for row in rows),
+        "technically_missing_units": [
+            {key: row[key] for key in ("patient", "course", "stage", "detail")}
+            for row in rows if row["status"] == STATUS_TECHNICALLY_MISSING
+        ],
         "courses_with_any_failure": len({(p, c) for p, c, _ in failed_units}),
     }
     if organize_ledger is not None:

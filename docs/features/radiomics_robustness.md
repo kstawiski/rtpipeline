@@ -21,23 +21,67 @@ The radiomics robustness module helps you identify stable, reproducible radiomic
 4. **Computing robustness metrics**: ICC(3,1) with analytical 95% CIs (via Pingouin[^pingouin]), plus the cohort median of within-subject CoV and QCD.[^koo2016]
 5. **Classifying features** as "robust", "acceptable", or "poor" based on configurable thresholds informed by radiomics reproducibility literature.[^koo2016]
 
-## Selection with no matching structure
+## Target detection and selection
 
-When no source structure matches `apply_to_structures`, robustness completes as
-`not_applicable_selection_unmatched`. This is a selection or configuration
-outcome; it establishes no anatomical absence and contributes no measurements.
-The CLI returns success in both campaign and individual-course runs and writes
-`.radiomics_robustness_done`. The receipt records the requested patterns and
-binds the evaluated source dispositions, source bytes, code and configuration.
-The canonical receipt is written even when `--sentinel` is omitted for this
-outcome.
+Set `radiomics_robustness.target_selection` to `patterns` (the default) or
+`targets`. Unknown values are rejected. `patterns` retains case-insensitive,
+whole-name fnmatch selection from `segmentation_perturbation.apply_to_structures`.
+`targets` selects the union of those patterns and the governed target detector:
 
-Aggregation reports the outcome and `nonmeasurement_reason` in `course_outcomes`
-and preserves evaluated dispositions in `source_dispositions`. It excludes the
-course from raw measurement rows and stability estimates. A course with at least
-one selected, measurable structure remains eligible for the measurement path.
-Receipt revalidation rejects stale or inconsistent evidence. See
-[campaign accounting](../user_guide/campaigns.md) for workflow closure.
+- A name contains `GTV`, `CTV`, `PTV` or `ITV` at the start or after a space,
+  hyphen, underscore, dot or slash. Matching ignores case. The next character
+  must not be a letter. `HR-CTV`, `IR-CTV`, `LR-CTV`, `CTV_45`, `PTV1` and
+  `ptv boost` qualify; `CTVx` does not.
+- `RTROIInterpretedType` is `GTV`, `CTV` or `PTV`, even without a target token
+  in the name. `TREATED_VOLUME` alone does not qualify. `HR-CTV` and `IR-CTV`
+  typed `TREATED_VOLUME` qualify through their names.
+
+The detector includes helpers with target tokens, including `z_PTV_opt` and
+`PTV-ring`. Detection does not establish that a structure is a clinical target.
+Main-radiomics identity, publication and measurability requirements still apply.
+`ODBYTNICA` and `PECHERZ` do not qualify by name.
+
+```yaml
+radiomics_robustness:
+  enabled: true
+  target_selection: targets
+  segmentation_perturbation:
+    apply_to_structures: ["GTV*", "CTV*", "PTV*"]
+```
+
+When the selection matches no source ROI, every evaluated source structure set
+is checked for target evidence:
+
+- `not_applicable_no_target_structure`: no target is detected; campaign status
+  is `not_applicable`.
+- `selection_gap_targets_unselected`: targets are detected but unselected;
+  campaign status is `technically_missing`. This is a technical measurement gap.
+
+Both outcomes return success, publish a validated `.radiomics_robustness_done`
+receipt and close the workflow stage. Neither contributes measurements or
+ICC, CoV or QCD estimates. The receipt records the selection mode and patterns;
+for a gap it lists every missed ROI name and its detector rules. The sidecar
+binds the evaluated source inventory, source bytes, code and configuration.
+The mode enters the effective configuration hash (`effective_configuration_sha256`)
+for the configured robustness parameters. Measured rows record that hash as
+`robustness_configuration_sha256`, together with `target_selection`. The measured
+`configured_parameter_hash` also binds the mode to the extractor's configured
+hash, retained separately as `extraction_configured_parameter_hash`.
+NIfTI fallback sources use name evidence and bind it to the evaluated file bytes;
+interpreted types are available only from RTSTRUCT sources.
+A canonical receipt is written for either no-match outcome even without
+`--sentinel`.
+
+Aggregation retains every admitted course in `course_outcomes`, with
+`target_selection`, `accounting_status`, `technically_missing` and
+`nonmeasurement_reason`. `course_counts` reports measured, technically missing,
+not-applicable and source-only course counts. Evaluated source dispositions
+remain in `source_dispositions`. Receipts carrying the obsolete
+`not_applicable_selection_unmatched` outcome are stale and require a new run;
+they are never relabelled. Changed sources, code, configuration or receipt
+bindings also require recomputation.
+
+See [campaign accounting](../user_guide/campaigns.md) for workflow closure.
 
 ## Scientific Background
 

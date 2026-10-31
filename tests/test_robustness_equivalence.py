@@ -27,7 +27,10 @@ Runtime rasterizer provenance is checked separately from the
 historical comparison; all existing measurement fields, masks and Arrow field
 types remain exact comparisons. Both runs use the same installed OpenCV.
 The added course-level nonmeasurement reason must be empty for these matching
-courses; the remaining accounting columns retain exact equivalence.
+courses. Target selection mode, source inventory and configuration hashes are
+validated separately before projecting onto the historical schema; every
+pre-existing selection, measurement, accounting field and Arrow type is compared
+exactly.
 
 """
 from __future__ import annotations
@@ -265,7 +268,77 @@ def _in_row_order(frame: pd.DataFrame) -> pd.DataFrame:
     return frame.loc[order].reset_index(drop=True)
 
 
+def _without_target_provenance(base: dict, current: dict) -> dict:
+    """Validate additive selection evidence, then compare every historical field."""
+    from rtpipeline import radiomics_robustness as rr
+    import pyarrow as pa
+
+    current = copy.deepcopy(current)
+    hashes = set()
+    for key, value in current["outputs"].items():
+        if key.endswith("radiomics_robustness_source_dispositions.json"):
+            configuration = value["effective_configuration"]
+            assert configuration["robustness"]["target_selection"] == "patterns"
+            assert value["effective_configuration_sha256"] == rr._content_sha256(configuration)
+            hashes.add(value["effective_configuration_sha256"])
+            assert value["target_inventory"] == [
+                roi for binding in value["source_bindings"] for roi in rr._robustness_target_inventory(binding)
+            ]
+            assert value["voxel_source_bindings"] == []
+    new_columns = {"target_selection", "robustness_configuration_sha256", "extraction_configured_parameter_hash"}
+
+    def strip(value):
+        if isinstance(value, dict):
+            if "target_selection" in value:
+                assert value["target_selection"] == "patterns"
+            return {key: strip(item) for key, item in value.items()
+                    if key not in {"target_selection", "target_inventory", "voxel_source_bindings"}}
+        if isinstance(value, list):
+            return [strip(item) for item in value]
+        return value
+
+    for key, expected in base["outputs"].items():
+        observed = current["outputs"][key]
+        if isinstance(expected, tuple):
+            frame, schema = observed
+            assert frame["target_selection"].eq("patterns").all()
+            assert frame["robustness_configuration_sha256"].isin(hashes).all()
+            if "extraction_configured_parameter_hash" in frame:
+                expected_hashes = rr._selection_bound_parameter_hashes(frame.extraction_configured_parameter_hash, "patterns")
+                assert frame.configured_parameter_hash.eq(expected_hashes).all()
+                frame["configured_parameter_hash"] = frame["extraction_configured_parameter_hash"]
+            metadata = dict(schema.metadata or {})
+            if b"pandas" in metadata:
+                pandas_metadata = json.loads(metadata[b"pandas"])
+                pandas_metadata["columns"] = [c for c in pandas_metadata["columns"] if c["field_name"] not in new_columns]
+                metadata[b"pandas"] = json.dumps(pandas_metadata, sort_keys=True).encode()
+            current["outputs"][key] = (
+                frame.drop(columns=list(new_columns), errors="ignore"),
+                pa.schema([field for field in schema if field.name not in new_columns], metadata=metadata),
+            )
+        elif isinstance(observed, dict) and "course_outcomes" in observed:
+            outcomes = observed["course_outcomes"]
+            assert outcomes.target_selection.eq("patterns").all()
+            assert outcomes.accounting_status.eq("measured").all()
+            assert not outcomes.technically_missing.any()
+            assert outcomes.effective_configuration_sha256.isin(hashes).all()
+            assert observed.pop("course_counts").iloc[0].to_dict() == {
+                "courses": len(outcomes), "measured": len(outcomes),
+                "technically_missing": 0, "not_applicable": 0, "source_only": 0,
+            }
+            outcomes = outcomes.drop(columns=["target_selection", "accounting_status", "technically_missing"])
+            outcomes["effective_configuration_sha256"] = expected["course_outcomes"]["effective_configuration_sha256"]
+            observed["course_outcomes"] = outcomes
+        elif isinstance(observed, dict):
+            if "effective_configuration_sha256" in observed:
+                assert observed["effective_configuration_sha256"] in hashes
+                observed["effective_configuration_sha256"] = expected["effective_configuration_sha256"]
+            current["outputs"][key] = strip(observed)
+    return current
+
+
 def _assert_equivalent(base: dict, current: dict, rob_config) -> None:
+    current = _without_target_provenance(base, current)
     assert current["codes"] == base["codes"]
     assert sorted(current["outputs"]) == sorted(base["outputs"])
     base_ids, current_ids = _run_ids(base["outputs"]), _run_ids(current["outputs"])

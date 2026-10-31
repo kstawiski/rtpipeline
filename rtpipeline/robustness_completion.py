@@ -8,7 +8,7 @@ found. This receipt records the exact identity instead, and every consumer
 re-checks all of it against the artifacts on disk before using a course.
 
 The receipt is a *step* receipt, not a scientific eligibility decision: it says
-a robustness course reached a terminal, non-technical outcome and which one.
+a robustness course reached a terminal outcome and which one.
 Deciding what a measured or source-only outcome means for a cohort stays with
 the aggregation consumer.
 """
@@ -39,16 +39,19 @@ ROBUSTNESS_COMPLETION_SENTINEL_NAME = ".radiomics_robustness_done"
 # It is neither measured nor failed, and it is admitted only while the upstream
 # not-applicable radiomics completion revalidates (added 2026-09-25).
 ROBUSTNESS_NOT_APPLICABLE_OUTCOME = "not_applicable_no_planning_ct"
-# No source ROI matched the configured selection. This closes the stage with
-# zero measurements and makes no claim about the presence of anatomy.
-ROBUSTNESS_SELECTION_UNMATCHED_OUTCOME = "not_applicable_selection_unmatched"
+# Zero-match outcomes are separated by governed target evidence.
+ROBUSTNESS_NO_TARGET_OUTCOME = "not_applicable_no_target_structure"
+ROBUSTNESS_SELECTION_GAP_OUTCOME = "selection_gap_targets_unselected"
+ROBUSTNESS_NO_MATCH_OUTCOMES = frozenset({
+    ROBUSTNESS_NO_TARGET_OUTCOME, ROBUSTNESS_SELECTION_GAP_OUTCOME,
+})
 ROBUSTNESS_COMPLETING_OUTCOMES = frozenset(
     {
         "measured",
         "source_only_nonvolumetric",
         "failed_extraction",
         ROBUSTNESS_NOT_APPLICABLE_OUTCOME,
-        ROBUSTNESS_SELECTION_UNMATCHED_OUTCOME,
+        *ROBUSTNESS_NO_MATCH_OUTCOMES,
     }
 )
 
@@ -83,6 +86,7 @@ class RobustnessCompletionReceipt:
     measured_output_sha256: Optional[str]
     source_disposition_count: int
     effective_configuration_sha256: str
+    target_selection: str = "patterns"
 
     @property
     def measured(self) -> bool:
@@ -234,9 +238,11 @@ def robustness_completion_payload(
         "effective_configuration_sha256": str(effective_configuration_sha256),
         "environment_fingerprint": source_provenance.get("environment_fingerprint", "unrecorded"),
         "rasterizer": source_provenance.get("rasterizer", {"backend": "unrecorded"}),
+        "target_selection": source_provenance.get("target_selection", "patterns"),
         **(
-            {"requested_selection": (source_provenance.get("source_only_basis") or {}).get("requested_selection")}
-            if outcome == ROBUSTNESS_SELECTION_UNMATCHED_OUTCOME else {}
+            {key: (source_provenance.get("source_only_basis") or {}).get(key)
+             for key in ("requested_selection", "missed_targets")}
+            if outcome in ROBUSTNESS_NO_MATCH_OUTCOMES else {}
         ),
     }
 
@@ -365,7 +371,7 @@ def _validate_payload(
         raise RobustnessCompletionError("robustness disposition sidecar is unreadable") from exc
     if not isinstance(disposition_payload, dict):
         raise RobustnessCompletionError("robustness disposition sidecar is not a record")
-    for field in ("environment_fingerprint", "rasterizer"):
+    for field in ("environment_fingerprint", "rasterizer", "target_selection"):
         if field in disposition_payload and payload.get(field) != disposition_payload[field]:
             raise RobustnessCompletionError(
                 f"robustness receipt {field} differs from the measurement sidecar"
@@ -433,8 +439,8 @@ def _validate_payload(
             f"{row_count!r}"
         )
     if (
-        outcome == ROBUSTNESS_SELECTION_UNMATCHED_OUTCOME
-        or disposition_payload.get("measurement_outcome") == ROBUSTNESS_SELECTION_UNMATCHED_OUTCOME
+        outcome in ROBUSTNESS_NO_MATCH_OUTCOMES
+        or disposition_payload.get("measurement_outcome") in ROBUSTNESS_NO_MATCH_OUTCOMES
     ):
         # A no-match closes the workflow only with the producer's complete
         # evidence. Recheck source/code/configuration and the zero-match basis,
@@ -452,15 +458,15 @@ def _validate_payload(
                 "effective_configuration_sha256"
             ):
                 raise ValueError("selection-unmatched receipt configuration differs from sidecar")
-            if payload.get("requested_selection") != disposition_payload["source_only_basis"][
-                "requested_selection"
-            ]:
-                raise ValueError("selection-unmatched receipt requested selection differs from sidecar")
+            for field in ("requested_selection", "missed_targets"):
+                if payload.get(field) != disposition_payload["source_only_basis"][field]:
+                    raise ValueError(f"no-match receipt {field} differs from sidecar")
         except Exception as exc:
             raise RobustnessCompletionError(
                 f"{sentinel_path} has invalid selection-unmatched evidence: {exc}"
             ) from exc
     return RobustnessCompletionReceipt(
+        target_selection=payload.get("target_selection", "patterns"),
         path=sentinel_path,
         course_dir=course_dir,
         patient_id=patient_id,
