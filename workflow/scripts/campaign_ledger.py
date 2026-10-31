@@ -40,10 +40,10 @@ STATUS_OK = "ok"
 STATUS_FAILED = "failed"
 STATUS_DISABLED = "disabled"
 STATUS_MISSING = "missing"
-# A course whose contract declares no planning CT has nothing for the CT
-# stages to process. That is a governed terminal outcome, not a failure.
+# Governed nonmeasurement outcomes close a stage without a measurement.
 STATUS_NOT_APPLICABLE = "not_applicable"
 ROBUSTNESS_NOT_APPLICABLE_RECEIPT_OUTCOME = "not_applicable_no_planning_ct"
+ROBUSTNESS_SELECTION_UNMATCHED_RECEIPT_OUTCOME = "not_applicable_selection_unmatched"
 
 
 def _utcnow() -> str:
@@ -193,6 +193,31 @@ def close_robustness_failed_extraction(
     )
 
 
+def close_robustness_completion(
+    output_dir: Path, patient: str, course: str, sentinel_path: Path,
+    *, log_path: str | None = None,
+) -> Path:
+    """Record a CLI-success outcome only after its receipt revalidates."""
+    from rtpipeline.robustness_completion import read_robustness_completion_sentinel
+
+    receipt = read_robustness_completion_sentinel(
+        Path(sentinel_path), course_dir=Path(sentinel_path).parent
+    )
+    if (receipt.patient_id, receipt.course_id) != (str(patient), str(course)):
+        raise RuntimeError("robustness completion receipt identity differs from campaign course")
+    if receipt.measurement_outcome == ROBUSTNESS_FAILED_RECEIPT_OUTCOME:
+        raise RuntimeError("a failed extraction cannot close as a successful robustness stage")
+    not_applicable = receipt.measurement_outcome in {
+        ROBUSTNESS_NOT_APPLICABLE_RECEIPT_OUTCOME,
+        ROBUSTNESS_SELECTION_UNMATCHED_RECEIPT_OUTCOME,
+    }
+    return record(
+        Path(output_dir), patient, course, "radiomics_robustness",
+        STATUS_NOT_APPLICABLE if not_applicable else STATUS_OK,
+        returncode=0, log_path=log_path, detail=receipt.measurement_outcome,
+    )
+
+
 def record(
     output_dir: Path,
     patient: str,
@@ -264,7 +289,8 @@ def _sentinel_status(course_path: Path, suffix: str) -> str:
         if (
             value == STATUS_OK
             and payload.get("measurement_outcome")
-            == ROBUSTNESS_NOT_APPLICABLE_RECEIPT_OUTCOME
+            in {ROBUSTNESS_NOT_APPLICABLE_RECEIPT_OUTCOME,
+                ROBUSTNESS_SELECTION_UNMATCHED_RECEIPT_OUTCOME}
         ):
             return STATUS_NOT_APPLICABLE
     else:
@@ -272,6 +298,15 @@ def _sentinel_status(course_path: Path, suffix: str) -> str:
     if value in {STATUS_DISABLED, STATUS_NOT_APPLICABLE}:
         return value
     return STATUS_OK if value == STATUS_OK else STATUS_MISSING
+
+
+def _robustness_not_applicable_detail(course_path: Path) -> str | None:
+    """Recover the declared reason for rollup; admission validates evidence."""
+    try:
+        payload = json.loads((course_path / STAGE_SENTINELS["radiomics_robustness"]).read_text())
+    except (OSError, ValueError):
+        return None
+    return payload.get("measurement_outcome") if isinstance(payload, dict) else None
 
 
 def _iter_courses(output_dir: Path):
@@ -325,7 +360,11 @@ def rollup(output_dir: Path) -> dict:
                     "sentinel_status": sentinel_state,
                     "returncode": (entry or {}).get("returncode"),
                     "log_path": (entry or {}).get("log_path"),
-                    "detail": (entry or {}).get("detail"),
+                    "detail": (entry or {}).get("detail") or (
+                        _robustness_not_applicable_detail(course_path)
+                        if stage == "radiomics_robustness" and sentinel_state == STATUS_NOT_APPLICABLE
+                        else None
+                    ),
                     "finished_at": (entry or {}).get("finished_at"),
                     "duration_seconds": (entry or {}).get("duration_seconds"),
                 }
@@ -490,6 +529,15 @@ def main(argv: list[str] | None = None) -> int:
         "names the failure class",
     )
 
+    close_complete = sub.add_parser(
+        "close-robustness-complete", help="verify and record a completed robustness receipt"
+    )
+    close_complete.add_argument("--output-dir", required=True)
+    close_complete.add_argument("--patient", required=True)
+    close_complete.add_argument("--course", required=True)
+    close_complete.add_argument("--sentinel", required=True)
+    close_complete.add_argument("--log-path", default=None)
+
     roll = sub.add_parser("rollup", help="rebuild campaign ledger and summary")
     roll.add_argument("--output-dir", required=True)
 
@@ -517,6 +565,14 @@ def main(argv: list[str] | None = None) -> int:
             Path(args.sentinel),
             log_path=args.log_path,
             upstream=args.upstream,
+        )
+        print(path)
+        return 0
+
+    if args.command == "close-robustness-complete":
+        path = close_robustness_completion(
+            Path(args.output_dir), args.patient, args.course, Path(args.sentinel),
+            log_path=args.log_path,
         )
         print(path)
         return 0

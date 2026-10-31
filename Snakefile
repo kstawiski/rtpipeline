@@ -1483,6 +1483,18 @@ if config.get("container_mode", False):
                     echo "Radiomics robustness returned success without a completion receipt: {output.sentinel}" >&2
                     exit 1
                 fi
+                if [ "{params.campaign_mode}" = "True" ]; then
+                    if ! PYTHONPATH="{params.root_dir}:${{PYTHONPATH:-}}" "{params.python}" "{params.root_dir}/workflow/scripts/campaign_ledger.py" close-robustness-complete \
+                        --output-dir "{params.output_dir}" \
+                        --patient "{wildcards.patient}" \
+                        --course "{wildcards.course}" \
+                        --sentinel "{output.sentinel}" \
+                        --log-path "{log}"; then
+                        rm -f {output.sentinel}
+                        echo "Campaign-mode robustness completion could not be validated and recorded" >&2
+                        exit 1
+                    fi
+                fi
             else
                 # D22b: the CLI publishes a failed-extraction receipt before
                 # exiting 1 in campaign mode. That receipt is evidence the
@@ -1620,6 +1632,18 @@ else:
                 if [ ! -f "{output.sentinel}" ]; then
                     echo "Radiomics robustness returned success without a completion receipt: {output.sentinel}" >&2
                     exit 1
+                fi
+                if [ "{params.campaign_mode}" = "True" ]; then
+                    if ! PYTHONPATH="{params.root_dir}:${{PYTHONPATH:-}}" "{params.python}" "{params.root_dir}/workflow/scripts/campaign_ledger.py" close-robustness-complete \
+                        --output-dir "{params.output_dir}" \
+                        --patient "{wildcards.patient}" \
+                        --course "{wildcards.course}" \
+                        --sentinel "{output.sentinel}" \
+                        --log-path "{log}"; then
+                        rm -f {output.sentinel}
+                        echo "Campaign-mode robustness completion could not be validated and recorded" >&2
+                        exit 1
+                    fi
                 fi
             else
                 # D22b: the CLI publishes a failed-extraction receipt before

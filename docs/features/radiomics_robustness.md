@@ -21,6 +21,24 @@ The radiomics robustness module helps you identify stable, reproducible radiomic
 4. **Computing robustness metrics**: ICC(3,1) with analytical 95% CIs (via Pingouin[^pingouin]), plus the cohort median of within-subject CoV and QCD.[^koo2016]
 5. **Classifying features** as "robust", "acceptable", or "poor" based on configurable thresholds informed by radiomics reproducibility literature.[^koo2016]
 
+## Selection with no matching structure
+
+When no source structure matches `apply_to_structures`, robustness completes as
+`not_applicable_selection_unmatched`. This is a selection or configuration
+outcome; it establishes no anatomical absence and contributes no measurements.
+The CLI returns success in both campaign and individual-course runs and writes
+`.radiomics_robustness_done`. The receipt records the requested patterns and
+binds the evaluated source dispositions, source bytes, code and configuration.
+The canonical receipt is written even when `--sentinel` is omitted for this
+outcome.
+
+Aggregation reports the outcome and `nonmeasurement_reason` in `course_outcomes`
+and preserves evaluated dispositions in `source_dispositions`. It excludes the
+course from raw measurement rows and stability estimates. A course with at least
+one selected, measurable structure remains eligible for the measurement path.
+Receipt revalidation rejects stale or inconsistent evidence. See
+[campaign accounting](../user_guide/campaigns.md) for workflow closure.
+
 ## Scientific Background
 
 This implementation is inspired by the perturbation framework from Zwanenburg et al. (2019)[^zwanenburg2019] and related radiomics reproducibility research:

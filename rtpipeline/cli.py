@@ -1338,7 +1338,9 @@ def _radiomics_robustness_course(argv: list[str]) -> int:
         help=(
             "Optional path to this course's .radiomics_robustness_done completion "
             "receipt. It is invalidated before any work and rewritten only after "
-            "the run's own outcome is admitted."
+            "the run's own outcome is admitted. An unmatched selection always "
+            "writes this receipt in the course directory, including when this "
+            "option is omitted."
         ),
     )
     p.add_argument("--max-workers", type=int, default=None, help="Override automatic worker budget (cores-1)")
@@ -1386,6 +1388,7 @@ def _radiomics_robustness_course(argv: list[str]) -> int:
 
     from .robustness_completion import (
         ROBUSTNESS_COMPLETION_SENTINEL_NAME,
+        ROBUSTNESS_SELECTION_UNMATCHED_OUTCOME,
         invalidate_robustness_completion_sentinel,
         write_robustness_completion_sentinel,
     )
@@ -1414,6 +1417,8 @@ def _radiomics_robustness_course(argv: list[str]) -> int:
         # evidence. This runs before the enabled/disabled branch as well, so a
         # course whose robustness was switched off keeps no success receipt.
         invalidate_robustness_completion_sentinel(sentinel_path)
+    else:
+        invalidate_robustness_completion_sentinel(course_dir / ROBUSTNESS_COMPLETION_SENTINEL_NAME)
 
     # The requested policy, or nothing at all. This runs before the producer
     # and before admission, so a missing, malformed, non-mapping or disabled
@@ -1522,7 +1527,6 @@ def _radiomics_robustness_course(argv: list[str]) -> int:
     # as success, and never as a completed course either.
     from .radiomics_robustness import (
         RobustnessNotRequestedError,
-        RobustnessSelectionUnmatchedError,
         run_robustness_course,
     )
 
@@ -1532,12 +1536,6 @@ def _radiomics_robustness_course(argv: list[str]) -> int:
         )
     except RobustnessNotRequestedError as e:
         logger.error("Robustness was requested for a disabled configuration: %s", e)
-        return 1
-    except RobustnessSelectionUnmatchedError as e:
-        # The sidecar evidence stays on disk, but an unmatched selection is a
-        # selection/configuration outcome: it excludes no anatomy, publishes no
-        # success receipt, and this course enters no cohort.
-        logger.error("Robustness selection matched no source structure: %s", e)
         return 1
     except Exception as e:
         if getattr(e, "code", None) == "RADIOMICS_ENV_PROBE_TIMEOUT":
@@ -1621,6 +1619,8 @@ def _radiomics_robustness_course(argv: list[str]) -> int:
         )
         return 1
 
+    if outcome.measurement_outcome == ROBUSTNESS_SELECTION_UNMATCHED_OUTCOME:
+        sentinel_path = course_dir / ROBUSTNESS_COMPLETION_SENTINEL_NAME
     if sentinel_path is not None:
         try:
             write_robustness_completion_sentinel(

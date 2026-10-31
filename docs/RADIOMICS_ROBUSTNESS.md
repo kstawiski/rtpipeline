@@ -69,6 +69,22 @@ The module supports three intensity levels to balance computational cost and tho
 - **standard**: 81 perturbations with the shipped defaults (complete standard NTCV chain)
 - **aggressive**: 315 perturbations with the shipped defaults (computational stress test)
 
+## Selection with no matching structure
+
+If no source structure matches `apply_to_structures`, the course completes with
+`not_applicable_selection_unmatched`. This records a selection or configuration
+outcome. It does not establish anatomical absence or a non-volumetric target.
+The CLI returns success and publishes `.radiomics_robustness_done`, including
+the requested patterns and a digest of the evaluated source dispositions in
+`metadata/radiomics_robustness_source_dispositions.json`.
+
+The course contributes no measurement rows or stability estimates. Cohort
+aggregation retains it in `course_outcomes` with its `nonmeasurement_reason`,
+and preserves evaluated source dispositions in `source_dispositions`. A course
+with at least one selected, measurable structure follows the measurement path.
+Changed source bytes, code, configuration or receipt bindings require a new run.
+See [campaign accounting](user_guide/campaigns.md) for workflow closure.
+
 ## Quick Start
 
 ### 1. Enable in config.yaml

@@ -26,6 +26,8 @@ feature-set difference).
 Runtime rasterizer provenance is checked separately from the
 historical comparison; all existing measurement fields, masks and Arrow field
 types remain exact comparisons. Both runs use the same installed OpenCV.
+The added course-level nonmeasurement reason must be empty for these matching
+courses; the remaining accounting columns retain exact equivalence.
 
 """
 from __future__ import annotations
@@ -288,8 +290,12 @@ def _assert_equivalent(base: dict, current: dict, rob_config) -> None:
             assert list(observed) == list(expected), key
             for sheet, frame in expected.items():
                 frame = _with_cov_in_table_order(base["outputs"], key, sheet, frame, rob_config)
+                observed_frame = observed[sheet]
+                if sheet == "course_outcomes" and "nonmeasurement_reason" not in frame:
+                    assert observed_frame["nonmeasurement_reason"].fillna("").eq("").all()
+                    observed_frame = observed_frame.drop(columns="nonmeasurement_reason")
                 pd.testing.assert_frame_equal(
-                    _normalize_frame(observed[sheet], current_ids),
+                    _normalize_frame(observed_frame, current_ids),
                     _normalize_frame(frame, base_ids),
                     check_exact=True, obj=f"{key}:{sheet}",
                 )

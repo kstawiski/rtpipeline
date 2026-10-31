@@ -39,12 +39,16 @@ ROBUSTNESS_COMPLETION_SENTINEL_NAME = ".radiomics_robustness_done"
 # It is neither measured nor failed, and it is admitted only while the upstream
 # not-applicable radiomics completion revalidates (added 2026-09-25).
 ROBUSTNESS_NOT_APPLICABLE_OUTCOME = "not_applicable_no_planning_ct"
+# No source ROI matched the configured selection. This closes the stage with
+# zero measurements and makes no claim about the presence of anatomy.
+ROBUSTNESS_SELECTION_UNMATCHED_OUTCOME = "not_applicable_selection_unmatched"
 ROBUSTNESS_COMPLETING_OUTCOMES = frozenset(
     {
         "measured",
         "source_only_nonvolumetric",
         "failed_extraction",
         ROBUSTNESS_NOT_APPLICABLE_OUTCOME,
+        ROBUSTNESS_SELECTION_UNMATCHED_OUTCOME,
     }
 )
 
@@ -230,6 +234,10 @@ def robustness_completion_payload(
         "effective_configuration_sha256": str(effective_configuration_sha256),
         "environment_fingerprint": source_provenance.get("environment_fingerprint", "unrecorded"),
         "rasterizer": source_provenance.get("rasterizer", {"backend": "unrecorded"}),
+        **(
+            {"requested_selection": (source_provenance.get("source_only_basis") or {}).get("requested_selection")}
+            if outcome == ROBUSTNESS_SELECTION_UNMATCHED_OUTCOME else {}
+        ),
     }
 
 
@@ -424,6 +432,34 @@ def _validate_payload(
             f"{sentinel_path} records an unusable source disposition count "
             f"{row_count!r}"
         )
+    if (
+        outcome == ROBUSTNESS_SELECTION_UNMATCHED_OUTCOME
+        or disposition_payload.get("measurement_outcome") == ROBUSTNESS_SELECTION_UNMATCHED_OUTCOME
+    ):
+        # A no-match closes the workflow only with the producer's complete
+        # evidence. Recheck source/code/configuration and the zero-match basis,
+        # including receipt bindings that a sidecar digest alone cannot prove.
+        from .radiomics_robustness import _read_robustness_source_dispositions
+
+        try:
+            inspection = _read_robustness_source_dispositions(
+                course_dir, run_identifier=run_identifier, rob_config=None, output_name=output_name,
+                snapshot=disposition_bytes,
+            )
+            if inspection.measurement_outcome != outcome or len(inspection.rows) != row_count:
+                raise ValueError("selection-unmatched receipt outcome or row count differs from sidecar")
+            if payload.get("effective_configuration_sha256") != disposition_payload.get(
+                "effective_configuration_sha256"
+            ):
+                raise ValueError("selection-unmatched receipt configuration differs from sidecar")
+            if payload.get("requested_selection") != disposition_payload["source_only_basis"][
+                "requested_selection"
+            ]:
+                raise ValueError("selection-unmatched receipt requested selection differs from sidecar")
+        except Exception as exc:
+            raise RobustnessCompletionError(
+                f"{sentinel_path} has invalid selection-unmatched evidence: {exc}"
+            ) from exc
     return RobustnessCompletionReceipt(
         path=sentinel_path,
         course_dir=course_dir,
