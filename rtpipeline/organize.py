@@ -1116,7 +1116,22 @@ def _ensure_planning_ct_nifti(config, ct_dir, nifti_dir, **kwargs):
     from .planning_ct_localizers import (
         METHOD, PlanningCTLocalizerError, select_localizers, verify_volume,
     )
+    from .segmentation import _collect_series_metadata, _resolve_planning_ct_stack_override
     evidence = kwargs.get("conversion_evidence")
+    override = _resolve_planning_ct_stack_override(
+        config,
+        ct_dir,
+        _collect_series_metadata(ct_dir) if getattr(config, "planning_ct_stack_overrides", None) else {},
+        course_key=kwargs.get("course_key"),
+        stack_override=kwargs.get("stack_override"),
+    )
+    if override is not None:
+        call_kwargs = dict(kwargs)
+        call_kwargs["stack_override"] = override
+        call_kwargs["require_hygiene"] = True
+        return _ensure_ct_nifti(
+            config, ct_dir, nifti_dir, **call_kwargs
+        )
     try:
         excluded, selection = select_localizers(ct_dir, kwargs.get("authoritative_rtstruct"))
         if selection is None:
@@ -1133,6 +1148,12 @@ def _ensure_planning_ct_nifti(config, ct_dir, nifti_dir, **kwargs):
         sidecar.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
         return result
     except PlanningCTLocalizerError as exc:
+        if exc.reason_code != "ct_localizer_referenced_by_rtstruct":
+            call_kwargs = dict(kwargs)
+            call_kwargs["require_hygiene"] = True
+            return _ensure_ct_nifti(
+                config, ct_dir, nifti_dir, **call_kwargs
+            )
         if evidence is not None:
             evidence.update(method=METHOD, status="refused", reason_code=exc.reason_code)
         logger.error("Planning CT publication refused: %s", exc.reason_code)
@@ -2949,9 +2970,10 @@ def _delivered_remainder_chain(
     of each source grid. The classifier retains all contributing plans so the
     course grid can be resampled and weighted by delivered divided by planned
     fractions. The ``< 0.60`` ratio only separates observed early replacement
-    chains from independent overlapping phases. Beam-dose equality partitions
-    replacement plans from independent phases but never collapses delivered
-    plan membership.
+    chains from independent overlapping phases and is evaluated over the anchor
+    and its same-fraction-dose replacement candidates when independent phases
+    are present. Beam-dose equality partitions replacement plans from
+    independent phases but never collapses delivered plan membership.
     """
 
     def evidence(plan: dict) -> tuple[set[str], int, int]:
@@ -2966,7 +2988,7 @@ def _delivered_remainder_chain(
         return None
     planned_total = sum(evidence(plan)[2] for plan in supported)
     delivered_total = sum(evidence(plan)[1] for plan in supported)
-    if planned_total <= 0 or delivered_total <= 0 or delivered_total / planned_total >= 0.60:
+    if planned_total <= 0 or delivered_total <= 0:
         return None
     anchor = max(
         supported,
@@ -2982,26 +3004,71 @@ def _delivered_remainder_chain(
     later = [plan for plan in supported if plan is not anchor]
     if not later:
         return None
-    replacement_plans: List[dict] = []
-    independent_phases: List[dict] = []
+    if delivered_total / planned_total < 0.60:
+        replacement_plans: List[dict] = []
+        independent_phases: List[dict] = []
+        represented_fractions = anchor_delivered
+        # Preserve the release partition for chains already below the threshold.
+        for plan in sorted(later, key=lambda item: str(item.get("sop_uid") or "")):
+            planned = evidence(plan)[2]
+            if (
+                _same_fraction_dose(plan, anchor)
+                and represented_fractions + planned <= anchor_planned
+            ):
+                replacement_plans.append(plan)
+                represented_fractions += planned
+            else:
+                independent_phases.append(plan)
+        if replacement_plans:
+            return anchor, later, [anchor] + independent_phases, represented_fractions
+        if represented_fractions + sum(
+            evidence(plan)[2] for plan in independent_phases
+        ) <= anchor_planned:
+            return anchor, later, [], represented_fractions
+        return None
+    if any(
+        other is not plan
+        and dates
+        and other_dates
+        and (
+            dates < other_dates
+            or (min(dates) < max(other_dates) and min(other_dates) < max(dates))
+        )
+        for plan in supported
+        for dates in (evidence(plan)[0],)
+        for other in supported
+        for other_dates in (evidence(other)[0],)
+    ):
+        return None
+    replacement_plans = []
+    independent_phases = []
     represented_fractions = anchor_delivered
-    for plan in sorted(later, key=lambda item: str(item.get("sop_uid") or "")):
-        planned = evidence(plan)[2]
+    for plan in sorted(
+        later,
+        key=lambda item: (
+            min(evidence(item)[0]) if evidence(item)[0] else "",
+            -evidence(item)[2],
+            str(item.get("sop_uid") or ""),
+        ),
+    ):
+        plan_dates, _, planned = evidence(plan)
         if (
             _same_fraction_dose(plan, anchor)
             and represented_fractions + planned <= anchor_planned
+            and not (anchor_dates and plan_dates and min(plan_dates) < max(anchor_dates))
         ):
             replacement_plans.append(plan)
             represented_fractions += planned
         else:
             independent_phases.append(plan)
-    if replacement_plans:
-        return anchor, later, [anchor] + independent_phases, represented_fractions
-    if represented_fractions + sum(
-        evidence(plan)[2] for plan in independent_phases
-    ) <= anchor_planned:
-        return anchor, later, [], represented_fractions
-    return None
+    if not replacement_plans or not independent_phases:
+        return None
+    chain_plans = [anchor] + replacement_plans
+    chain_planned = sum(evidence(plan)[2] for plan in chain_plans)
+    chain_delivered = sum(evidence(plan)[1] for plan in chain_plans)
+    if chain_planned <= 0 or chain_delivered <= 0 or chain_delivered / chain_planned >= 0.60:
+        return None
+    return anchor, later, [anchor] + independent_phases, represented_fractions
 
 
 def _replacement_partition(plans: List[dict]) -> tuple[int, tuple[int, ...]] | None:
@@ -3361,6 +3428,7 @@ def _classify_approved_doses(
     plan_sum_doses = [meta for meta in dose_meta if meta["summation_type"] == "PLAN_SUM"]
     remainder_chain = None
     prescription_components: List[dict] = []
+    component_plausibility = False
     if plan_sum_doses:
         best_sum = max(
             plan_sum_doses,
@@ -3720,6 +3788,11 @@ def _classify_approved_doses(
         if remainder_chain is not None:
             anchor, later, prescription_components, represented_fractions = remainder_chain
             selected_representatives = list(supported_candidates)
+            # Component-based warnings apply only to the added >=0.60 branch.
+            # Existing low-ratio chains keep the release warning basis.
+            planned_total = sum(int(plan.get("fractions_planned") or 0) for plan in supported_candidates)
+            delivered_total = sum(len(plan_records(plan)) for plan in supported_candidates)
+            component_plausibility = planned_total > 0 and delivered_total / planned_total >= 0.60
             classification = DELIVERED_REMAINDER_CHAIN
             should_sum = len(selected_representatives) > 1
             warnings.append(
@@ -3791,7 +3864,12 @@ def _classify_approved_doses(
         for plan in paired_plans
         if dose_for_plan[str(plan["sop_uid"])]["path"] not in selected_dose_set
     ]
-    selected_total_rx = sum(float(plan.get("total_rx_gy") or 0.0) for plan in selected_representatives)
+    prescription_basis = (
+        prescription_components
+        if component_plausibility and prescription_components
+        else selected_representatives
+    )
+    selected_total_rx = sum(float(plan.get("total_rx_gy") or 0.0) for plan in prescription_basis)
     if should_sum and selected_total_rx > max_total_dose_gy:
         warnings.append(
             f"PLAUSIBILITY WARNING: selected prescription total {selected_total_rx:.1f} Gy exceeds {max_total_dose_gy:.1f} Gy"
@@ -3834,6 +3912,8 @@ _ORIGINAL_PROVENANCE_BOUND_KEYS = (
     "source_ct_sop_hash",
     "source_nifti_geometry",
     "source_nifti_sha256",
+    "source_nifti_generated_at",
+    "source_nifti_conversion",
 )
 
 
@@ -3856,6 +3936,8 @@ def _original_segmentation_provenance(
     if (not series_uid or not sop_hash or not isinstance(geometry, dict) or not geometry
             or not data.get("nifti_sha256")):
         return None
+    if not nifti_provenance.content_hash_matches(primary_nifti, data):
+        return None
     try:
         rtstruct_sha256 = hashlib.sha256(rs_path.read_bytes()).hexdigest()
     except OSError:
@@ -3868,7 +3950,61 @@ def _original_segmentation_provenance(
         "source_ct_sop_hash": sop_hash,
         "source_nifti_geometry": geometry,
         "source_nifti_sha256": str(data.get("nifti_sha256") or ""),
+        "source_nifti_generated_at": data.get("nifti_generated_at"),
+        "source_nifti_conversion": data.get("nifti_conversion"),
     }
+
+
+def _bind_original_builder_to_planning_ct(builder, ct_dir: Path, rs_path: Path, nifti: Path):
+    """Rasterize the validated conversion stack, retaining source DICOM bytes."""
+    sidecar = nifti.with_name(f"{_strip_nifti_base(nifti)}.metadata.json")
+    metadata = json.loads(sidecar.read_text(encoding="utf-8"))
+    conversion = metadata.get("nifti_conversion")
+    if not isinstance(conversion, dict):
+        return builder
+    from .ct_series_hygiene import (
+        METHOD, select_ct_instances, conversion_evidence_matches_expected,
+    )
+
+    if conversion.get("method") != METHOD:
+        return builder
+    paths, expected = select_ct_instances(
+        ct_dir, rs_path, stack_override=conversion.get("stack_override"),
+    )
+    if not conversion_evidence_matches_expected(conversion, expected):
+        raise ValueError("stale planning CT conversion selection")
+    kept = set(expected["kept_sop_instance_uids"])
+    images = list(builder.series_data)
+    selected = [image for image in images if str(image.SOPInstanceUID) in kept]
+    if {str(image.SOPInstanceUID) for image in selected} != kept or len(selected) != len(paths):
+        raise ValueError("planning CT export stack is incomplete")
+    if len(selected) != len(images):
+        # References can name an equivalent duplicate or the counterpart of a
+        # governed reconstruction. Map only exact physical counterparts in a
+        # private RTSTRUCT copy; never drop a referenced excluded plane.
+        import copy
+
+        def geometry(image):
+            return (int(image.Rows), int(image.Columns),
+                    tuple(image.ImagePositionPatient), tuple(image.ImageOrientationPatient),
+                    tuple(image.PixelSpacing), str(image.FrameOfReferenceUID))
+
+        by_geometry = {geometry(image): str(image.SOPInstanceUID) for image in selected}
+        replacements = {}
+        for image in images:
+            uid = str(image.SOPInstanceUID)
+            if uid not in kept and geometry(image) in by_geometry:
+                replacements[uid] = by_geometry[geometry(image)]
+        builder.ds = copy.deepcopy(builder.ds)
+        for element in builder.ds.iterall():
+            if element.keyword == "ReferencedSOPInstanceUID" and str(element.value) in replacements:
+                element.value = replacements[str(element.value)]
+        excluded = {str(image.SOPInstanceUID) for image in images} - kept
+        if any(element.keyword == "ReferencedSOPInstanceUID" and str(element.value) in excluded
+               for element in builder.ds.iterall()):
+            raise ValueError("excluded CT reference has no exact physical counterpart")
+    builder.series_data = selected
+    return builder
 
 
 def _original_masks_reusable(
@@ -3992,6 +4128,9 @@ def _export_original_segmentation_from_paths(
         builder = RTStructBuilder.create_from(
             dicom_series_path=str(dicom_ct_dir),
             rt_struct_path=str(rs_path),
+        )
+        builder = _bind_original_builder_to_planning_ct(
+            builder, dicom_ct_dir, rs_path, primary_nifti,
         )
     except Exception as exc:
         logger.warning("Failed to load RTSTRUCT for segmentation export (%s): %s", rs_path, exc)
@@ -5107,8 +5246,8 @@ def _convert_one_related_series(
     mirroring _ensure_ct_nifti. Overwriting would corrupt the planning-CT
     artifact and fail the next contract gate with stale provenance instead.
 
-    Returns the NIfTI path, or None when conversion produced nothing (or
-    when a previous sidecar is reused and resume is off).
+    Reuse requires bytes matching the sidecar's publication digest. Returns
+    the NIfTI path, or None when conversion produced nothing.
     """
     base_name = _derive_nifti_name(series_subdir)
     if name_suffix and not base_name.endswith(name_suffix):
@@ -5125,9 +5264,9 @@ def _convert_one_related_series(
                 existing = json.loads(meta_path.read_text(encoding="utf-8"))
             except Exception:
                 existing = {}
-            if existing.get("series_instance_uid") == series_uid:
-                if not config.resume:
-                    return target if target.exists() else None
+            if isinstance(existing, dict) and existing.get("series_instance_uid") == series_uid:
+                if not config.resume and nifti_provenance.content_hash_matches(target, existing):
+                    return target
                 break
         if not target.exists():
             break
@@ -5929,6 +6068,7 @@ def organize_and_merge(
                     force=bool(config.resume),
                     authoritative_rtstruct=struct_path,
                     conversion_evidence=planning_ct_conversion,
+                    course_key=f"{patient_id}/{course_id}",
                 )
             except Exception as exc:
                 logger.warning("CT NIfTI conversion failed for %s: %s", course_dir, exc)
@@ -6251,6 +6391,7 @@ def organize_and_merge(
                         force=bool(config.resume),
                         authoritative_rtstruct=primary_struct,
                         conversion_evidence=planning_ct_conversion,
+                        course_key=f"{patient_id}/{course_id}",
                     )
                 except Exception as exc:
                     logger.warning("CT NIfTI conversion failed (RS-only) for %s: %s", course_dir, exc)
@@ -7194,7 +7335,10 @@ def organize_and_merge(
                     co.delivery_status = clinical_delivery["delivery_status"]
                     co.delivery_method = clinical_delivery["delivery_method"]
                     if clinical_delivery["independently_established"]:
-                        assert isinstance(phase_classification, dict)
+                        if not isinstance(phase_classification, dict):
+                            raise CourseContractError(
+                                "clinical_prescription_evidence.fractionation_classification must be a JSON object when clinical delivery is independently established"
+                            )
                         dose_classification_contract[
                             "dicom_reason"
                         ] = dose_classification_contract.get("reason")

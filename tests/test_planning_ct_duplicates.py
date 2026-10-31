@@ -20,13 +20,13 @@ from rtpipeline.nifti_provenance import annotate
 from rtpipeline.planning_ct_localizers import PlanningCTLocalizerError, select_localizers, verify_volume
 from rtpipeline.repair_planning_ct_localizers import repair_output
 from rtpipeline.stage_completion import write_stage_completion_sentinel
-from test_ct_series_hygiene import _duplicate, _localizer, _rtstruct
+from test_ct_series_hygiene import _duplicate, _localizer, _rtstruct, _rtstruct_dual
 from test_nifti_nonuniform_fallback import _config, _tree_digest, dcm2niix
 from test_planning_ct_localizers import _files_and_mtimes, _load, _organized_course
 from synthetic_ct_series import write_ct_series, uniform_z_positions
 
 
-def _refresh(course):
+def _refresh(course, *, regenerated=False):
     """Bind intentional synthetic input changes before exercising repair."""
     case_path = course / 'metadata/case_metadata.json'
     case = json.loads(case_path.read_text())
@@ -39,7 +39,7 @@ def _refresh(course):
     nifti = next((course / 'NIFTI').glob('*.nii*'))
     metadata.update(segmentation._collect_series_metadata(ct))
     metadata.update(_ct_provenance(ct))
-    annotate(metadata, nifti, ct, regenerated=False, existing_sidecar=metadata.copy())
+    annotate(metadata, nifti, ct, regenerated=regenerated, existing_sidecar=metadata.copy())
     sidecar.write_text(json.dumps(metadata))
     provenance.update(metadata)
     case_path.write_text(json.dumps(case))
@@ -157,7 +157,7 @@ def test_mismatched_nifti_rederived_and_old_masks_stay_stale(tmp_path, dcm2niix,
     values = np.asanyarray(image.dataobj).copy()
     values = np.stack([values, values], axis=-1) if kind == '4d' else values + 1
     nib.save(nib.Nifti1Image(values, image.affine), nifti)
-    contract = _refresh(course)
+    contract = _refresh(course, regenerated=True)
     masks = course / 'Segmentation_Original/rtstruct'
     masks.mkdir(parents=True)
     sitk.WriteImage(sitk.Image([20, 16, 12], sitk.sitkUInt8), str(masks / 'mask.nii.gz'))
@@ -290,7 +290,7 @@ def _make_4d(course):
     image = nib.load(contract.planning_ct_nifti)
     values = np.asanyarray(image.dataobj).copy()
     nib.save(nib.Nifti1Image(np.stack([values, values], axis=-1), image.affine), contract.planning_ct_nifti)
-    return _refresh(course)
+    return _refresh(course, regenerated=True)
 
 
 @pytest.mark.parametrize('failure,reason', [
@@ -362,7 +362,7 @@ def test_repair_differing_duplicates_from_complete_references(tmp_path, dcm2niix
     course = _organized_course(root, dcm2niix, localizer=localizers)
     paths, added = _copies(course, copies, differing=True)
     refs = added[:12] if referenced_copy else paths
-    _rtstruct(course / 'RS.dcm', refs)
+    _rtstruct_dual(course / 'RS.dcm', refs, refs)
     _refresh(course)
     expected_pixels = {str(pydicom.dcmread(p).SOPInstanceUID): hashlib.sha256(_pixels(p)).hexdigest()
                        for p in paths + added}
@@ -408,6 +408,8 @@ def test_differing_duplicates_refuse_incomplete_or_ambiguous_authority(tmp_path,
         from course_contract_test_utils import write_synthetic_rtstruct
         write_synthetic_rtstruct(course / 'RS.dcm', referenced_series_uid=str(pydicom.dcmread(paths[0]).SeriesInstanceUID))
     if mode == 'irregular':
+        # Complete image authority isolates the irregular-geometry refusal.
+        _rtstruct_dual(course / 'RS.dcm', refs, refs)
         for path in (paths[-1], added[-1]):
             ds = pydicom.dcmread(path)
             ds.ImagePositionPatient[2] += 1
@@ -445,7 +447,8 @@ def test_orientation_partition_selection_and_reference_refusal(tmp_path, dcm2nii
     added = _orientation_partition(paths)
     if duplicates:
         _copies(course, differing=True)
-    _rtstruct(course / 'RS.dcm', paths + added[:1] if spanning else paths)
+    refs = paths + added[:1] if spanning else paths
+    _rtstruct_dual(course / 'RS.dcm', refs, refs)
     _refresh(course)
     before = _files_and_mtimes(root)
     dry = repair_output(root, dry_run=True)
@@ -472,6 +475,7 @@ def test_contract_reverifies_reference_authorized_exclusions(tmp_path, dcm2niix,
     course = _organized_course(root, dcm2niix, localizer=False)
     paths, _ = _copies(course, differing=True)
     _orientation_partition(paths)
+    _rtstruct_dual(course / 'RS.dcm', paths, paths)
     _refresh(course)
     assert repair_output(root)['repaired'] == 1
     contract = load_course_contract(course)

@@ -56,7 +56,9 @@ BASE_FUNCTION_AST_SHA256 = {
 # remain pinned above; test_planning_ct_localizers.py covers the new CT gate and
 # proves clean organize output bytes equal 879f225 with fixed clocks.
 BASE_MODULE_SHA256 = {
-    "course_contract.py": "a4ff08edb868a58bf457a9fc88da38e8e15f0d66c1ad81f3c8e2c5022772902f",
+    # Planning-CT gate validates governed selection, complete voxel payloads
+    # and publication digests. The dose/delivery AST pins above remain fixed.
+    "course_contract.py": "b6890effa50da4387a27dba70a4811da40cab4ab24faa01612b7274e651b0c1a",
     "prescription.py": "723c8657c60f48c50b0d31decf0eb458c93d435f597c56724ee748c1b264ce7a",
     "plan_approval.py": "fc213a8ef85e9ec2698c6bfec7bee3877df61b6b7d835257038cd2a470c21aed",
 }

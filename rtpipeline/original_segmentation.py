@@ -112,6 +112,14 @@ def _require_current_sources(directory: Path, metadata: dict, provenance: dict) 
     }
     if not all(expected.values()) or any(provenance.get(k) != v for k, v in expected.items()):
         raise ValueError("source inputs changed")
+    stem = source_nifti.name.removesuffix('.gz').removesuffix('.nii')
+    publication = json.loads(source_nifti.with_name(stem + '.metadata.json').read_text())
+    for source_key, export_key in (
+        ("nifti_generated_at", "source_nifti_generated_at"),
+        ("nifti_conversion", "source_nifti_conversion"),
+    ):
+        if provenance.get(export_key) != publication.get(source_key):
+            raise ValueError("source CT publication or selection changed")
     if hashlib.sha256(source_nifti.read_bytes()).hexdigest() != expected["source_nifti_sha256"]:
         raise ValueError("source NIfTI content changed")
 

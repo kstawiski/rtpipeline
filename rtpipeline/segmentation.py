@@ -26,12 +26,16 @@ import pydicom
 import numpy as np
 
 
-from .nifti_provenance import annotate as annotate_nifti_provenance
+from .nifti_provenance import annotate as annotate_nifti_provenance, content_hash_matches
 from .nonuniform_ct_conversion import convert_nonuniform_unsigned_ct
 from .ct_series_hygiene import (
     CTSeriesHygieneError,
     METHOD as CT_HYGIENE_METHOD,
+    _verify_nifti_voxel_payload,
+    _verify_slice_by_slice_volume,
+    conversion_evidence_matches_expected,
     convert_ct_series_hygiene,
+    select_ct_instances,
 )
 from .config import PipelineConfig
 from .course_contract import load_course_contract
@@ -930,6 +934,35 @@ def _collect_series_metadata(ct_dir: Path) -> dict:
     return metadata
 
 
+def _resolve_planning_ct_stack_override(
+    config: PipelineConfig,
+    ct_dir: Path,
+    metadata: dict[str, Any],
+    *,
+    course_key: str | None = None,
+    stack_override: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    if stack_override is not None:
+        return stack_override
+    overrides = getattr(config, "planning_ct_stack_overrides", None)
+    if not isinstance(overrides, dict) or not overrides:
+        return None
+    candidate_keys: list[str] = []
+    if course_key:
+        candidate_keys.append(str(course_key).strip())
+    if ct_dir.name == "CT" and ct_dir.parent.name == "DICOM" and len(ct_dir.parents) >= 4:
+        inferred = f"{ct_dir.parents[2].name}/{ct_dir.parents[1].name}"
+        if inferred not in candidate_keys:
+            candidate_keys.append(inferred)
+    series_uid = str(metadata.get("series_instance_uid") or "").strip()
+    if series_uid and series_uid not in candidate_keys:
+        candidate_keys.append(series_uid)
+    for key in candidate_keys:
+        if key in overrides:
+            return overrides[key]
+    return None
+
+
 def _ensure_ct_nifti(
     config: PipelineConfig,
     ct_dir: Path,
@@ -938,6 +971,10 @@ def _ensure_ct_nifti(
     dcm2niix_depth: int | None = None,
     authoritative_rtstruct: Path | None = None,
     conversion_evidence: dict[str, Any] | None = None,
+    *,
+    course_key: str | None = None,
+    stack_override: dict[str, Any] | None = None,
+    require_hygiene: bool = False,
 ) -> Optional[Path]:
     nifti_dir.mkdir(parents=True, exist_ok=True)
     metadata = _collect_series_metadata(ct_dir)
@@ -952,7 +989,7 @@ def _ensure_ct_nifti(
                 existing = json.loads(meta_path.read_text(encoding='utf-8'))
             except Exception:
                 existing = {}
-            if existing.get("series_instance_uid") == metadata["series_instance_uid"]:
+            if isinstance(existing, dict) and existing.get("series_instance_uid") == metadata["series_instance_uid"]:
                 base = candidate
                 break
         if not target.exists():
@@ -972,7 +1009,78 @@ def _ensure_ct_nifti(
         except Exception:
             existing_sidecar = {}
 
+    effective_stack_override = _resolve_planning_ct_stack_override(
+        config,
+        ct_dir,
+        metadata,
+        course_key=course_key,
+        stack_override=stack_override,
+    )
     regenerated = not target.exists() or force
+    existing_conversion = (
+        existing_sidecar.get("nifti_conversion")
+        if isinstance(existing_sidecar.get("nifti_conversion"), dict)
+        else None
+    )
+    if not regenerated:
+        if (
+            existing_sidecar.get("sop_hash") != metadata["sop_hash"]
+            or not content_hash_matches(target, existing_sidecar)
+        ):
+            regenerated = True
+        elif (
+            require_hygiene
+            or effective_stack_override is not None
+            or (
+                existing_conversion is not None
+                and existing_conversion.get("method") == CT_HYGIENE_METHOD
+            )
+        ):
+            try:
+                selected_files, expected_selection = select_ct_instances(
+                    ct_dir,
+                    authoritative_rtstruct,
+                    stack_override=effective_stack_override,
+                )
+            except CTSeriesHygieneError as exc:
+                if (
+                    not (require_hygiene or effective_stack_override is not None)
+                    and authoritative_rtstruct is not None
+                    and exc.reason_code == "ct_hygiene_no_safe_exclusions"
+                ):
+                    regenerated = True
+                else:
+                    if conversion_evidence is not None:
+                        conversion_evidence.update(
+                            method=CT_HYGIENE_METHOD,
+                            status="refused",
+                            reason_code=exc.reason_code,
+                            **exc.evidence,
+                        )
+                    logger.error("CT conversion refused: %s", exc.reason_code)
+                    return None
+            else:
+                if (
+                    existing_conversion is None
+                    or not conversion_evidence_matches_expected(existing_conversion, expected_selection)
+                ):
+                    regenerated = True
+                else:
+                    try:
+                        expected_geom = expected_selection["selected_geometry"]
+                        _verify_nifti_voxel_payload(
+                            target,
+                            expected_geom["rows"],
+                            expected_geom["columns"],
+                            expected_selection["kept_instance_count"],
+                            allow_equalized_slices=isinstance(
+                                existing_conversion.get("downstream_conversion"), dict
+                            ),
+                        )
+                        if expected_selection.get("reason_code") == "mixed_image_type_harmonized":
+                            _verify_slice_by_slice_volume(selected_files, target)
+                    except CTSeriesHygieneError:
+                        regenerated = True
     conversion: Optional[dict[str, Any]] = None
     if regenerated:
         tmp_dir = nifti_dir / ".tmp_dcm2niix"
@@ -980,8 +1088,14 @@ def _ensure_ct_nifti(
             shutil.rmtree(tmp_dir)
         tmp_dir.mkdir(parents=True, exist_ok=True)
         try:
-            generated = run_dcm2niix(config, ct_dir, tmp_dir, recursive_depth=dcm2niix_depth)
-            if generated is None:
+            skip_native = require_hygiene or effective_stack_override is not None
+            generated = (
+                None
+                if skip_native
+                else run_dcm2niix(config, ct_dir, tmp_dir, recursive_depth=dcm2niix_depth)
+            )
+            prefer_hygiene = skip_native or authoritative_rtstruct is not None
+            if generated is None and not prefer_hygiene:
                 fallback = convert_nonuniform_unsigned_ct(
                     ct_dir,
                     tmp_dir,
@@ -992,17 +1106,38 @@ def _ensure_ct_nifti(
             if generated is None:
                 try:
                     generated, conversion = convert_ct_series_hygiene(
-                        ct_dir, tmp_dir,
+                        ct_dir,
+                        tmp_dir,
                         lambda source, out: run_dcm2niix(config, source, out, recursive_depth=0),
                         authoritative_rtstruct,
+                        stack_override=effective_stack_override,
                     )
                 except CTSeriesHygieneError as exc:
-                    if conversion_evidence is not None:
-                        conversion_evidence.update(
-                            method=CT_HYGIENE_METHOD, status="refused", reason_code=exc.reason_code,
+                    if (
+                        not skip_native
+                        and prefer_hygiene
+                        and exc.reason_code == "ct_hygiene_no_safe_exclusions"
+                    ):
+                        fallback = convert_nonuniform_unsigned_ct(
+                            ct_dir,
+                            tmp_dir,
+                            lambda source, out: run_dcm2niix(config, source, out, recursive_depth=0),
                         )
-                    logger.error("CT conversion refused: %s", exc.reason_code)
-                    return None
+                        if fallback is not None:
+                            generated, conversion = fallback
+                    if generated is None:
+                        if conversion_evidence is not None:
+                            conversion_evidence.update(
+                                method=CT_HYGIENE_METHOD,
+                                status="refused",
+                                reason_code=exc.reason_code,
+                                **exc.evidence,
+                            )
+                        logger.error("CT conversion refused: %s", exc.reason_code)
+                        return None
+            # The sidecar digest commits this publication. If its later write
+            # is interrupted, the old digest cannot authorize the new bytes;
+            # the next request must regenerate them, for every conversion method.
             if target.exists():
                 target.unlink()
             shutil.move(str(generated), str(target))
