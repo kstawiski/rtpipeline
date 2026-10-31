@@ -1056,6 +1056,7 @@ _ROBUSTNESS_SECTION_KEYS = frozenset(
 _PERTURBATION_KEYS = frozenset(
     {
         "apply_to_structures",
+        "exclude_structures",
         "small_volume_changes",
         "large_volume_changes",
         "n_random_contour_realizations",
@@ -1188,6 +1189,12 @@ def _validate_robustness_section(section: dict) -> None:
         _require_name_list(
             perturbation["apply_to_structures"], f"{label}.apply_to_structures"
         )
+    if "exclude_structures" in perturbation:
+        exclusions = perturbation["exclude_structures"]
+        if not isinstance(exclusions, list):
+            raise _RobustnessRequestError(f"{label}.exclude_structures must be a list of non-empty strings")
+        for index, pattern in enumerate(exclusions):
+            _require_name(pattern, f"{label}.exclude_structures[{index}]")
     for key in ("small_volume_changes", "large_volume_changes", "noise_levels"):
         if key in perturbation:
             _require_number_list(perturbation[key], f"{label}.{key}")

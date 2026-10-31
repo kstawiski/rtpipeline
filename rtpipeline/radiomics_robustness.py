@@ -467,16 +467,37 @@ def _validate_target_selection(mode: Any) -> str:
     return mode
 
 
+def _validate_exclude_structures(patterns: Any) -> List[str]:
+    if not isinstance(patterns, list) or any(
+        not isinstance(pattern, str) or not pattern.strip() for pattern in patterns
+    ):
+        raise ValueError("robustness.segmentation_perturbation.exclude_structures must be a list of non-empty strings")
+    return patterns
+
+
+def _robustness_exclusion_matches(roi_name: Any, patterns: Any = ()) -> bool:
+    """Case-insensitive whole-name fnmatch, without changing source names."""
+    from fnmatch import fnmatch
+
+    return any(fnmatch(str(roi_name).upper(), pattern.upper()) for pattern in patterns)
+
+
+def _excluded_robustness_inventory(inventory: List[Dict[str, Any]], patterns: Any) -> List[Dict[str, Any]]:
+    return [roi for roi in inventory if _robustness_exclusion_matches(roi["roi_name"], patterns)]
+
+
 def robustness_selection_matches(
     roi_name: Any, selection: Any, *, target_selection: str = "patterns", interpreted_types: Any = (),
+    exclude_structures: Any = (),
 ) -> bool:
-    """Whole-name fnmatch; targets mode adds governed name/type detection."""
+    """Select by patterns and optional target detection, then apply exclusions."""
     from fnmatch import fnmatch
 
     _validate_target_selection(target_selection)
     name = str(roi_name).upper()
-    return (any(fnmatch(name, str(pattern).upper()) for pattern in (selection or []))
-            or (target_selection == "targets" and bool(detect_robustness_target(roi_name, interpreted_types))))
+    selected = (any(fnmatch(name, str(pattern).upper()) for pattern in (selection or []))
+                or (target_selection == "targets" and bool(detect_robustness_target(roi_name, interpreted_types))))
+    return selected and not _robustness_exclusion_matches(roi_name, exclude_structures)
 
 
 # The extraction run itself failed technically (exception inside
@@ -686,6 +707,12 @@ def effective_robustness_configuration(
     payload["robustness"]["target_selection"] = _validate_target_selection(
         getattr(rob_config, "target_selection", "patterns")
     )
+    declared_perturbation = declared.get("perturbation")
+    if isinstance(declared_perturbation, Mapping):
+        exclusions = _validate_exclude_structures(declared_perturbation.get("exclude_structures", []))
+        if not exclusions:
+            # Empty and absent retain the exact configuration bytes of S11b.
+            payload["robustness"]["perturbation"].pop("exclude_structures", None)
     # Normalize through JSON so the digest is stable for equal configurations
     # expressed with different (but equivalent) container types. No ``default``
     # coercion: a value that only survives as ``str(value)`` would let two
@@ -693,17 +720,20 @@ def effective_robustness_configuration(
     return json.loads(json.dumps(payload, sort_keys=True))
 
 
-def _robustness_configured_parameter_hash(extraction_hash: str, mode: str) -> str:
-    """Bind extraction settings and the governed robustness selection mode."""
-    return _content_sha256({
+def _robustness_configured_parameter_hash(extraction_hash: str, mode: str, exclude_structures: Any = ()) -> str:
+    """Bind extraction settings, selection mode and non-empty exclusions."""
+    payload = {
         "extraction_configured_parameter_hash": str(extraction_hash),
         "target_selection": _validate_target_selection(mode),
-    })
+    }
+    if exclude_structures:
+        payload["exclude_structures"] = list(exclude_structures)
+    return _content_sha256(payload)
 
 
-def _selection_bound_parameter_hashes(values: pd.Series, mode: str) -> pd.Series:
+def _selection_bound_parameter_hashes(values: pd.Series, mode: str, exclude_structures: Any = ()) -> pd.Series:
     text = values.astype("string").fillna("")
-    hashes = {value: _robustness_configured_parameter_hash(value, mode) for value in text.unique()}
+    hashes = {value: _robustness_configured_parameter_hash(value, mode, exclude_structures) for value in text.unique()}
     return text.map(hashes)
 
 
@@ -1022,6 +1052,10 @@ def _write_robustness_source_dispositions(
         "target_inventory": ([roi for binding in source_bindings for roi in _robustness_target_inventory(binding)]
                              + _robustness_voxel_target_inventory(voxel_bindings)),
     }
+    exclusions = effective_configuration["robustness"].get("perturbation", {}).get("exclude_structures", [])
+    if exclusions:
+        payload["exclude_structures"] = exclusions
+        payload["excluded_by_configuration"] = _excluded_robustness_inventory(payload["target_inventory"], exclusions)
     fd, temp_name = tempfile.mkstemp(
         dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp"
     )
@@ -1354,6 +1388,11 @@ def _read_robustness_source_dispositions(
     mode = _validate_target_selection(recorded_configuration.get("robustness", {}).get("target_selection", "patterns"))
     if payload.get("target_selection", "patterns") != mode:
         raise ValueError("robustness target_selection differs from effective configuration")
+    exclusions = _validate_exclude_structures(
+        recorded_configuration.get("robustness", {}).get("perturbation", {}).get("exclude_structures", [])
+    )
+    if payload.get("exclude_structures", []) != exclusions:
+        raise ValueError("robustness exclude_structures differs from effective configuration")
     voxel_bindings = payload.get("voxel_source_bindings", [])
     if not isinstance(voxel_bindings, list) or not all(
         isinstance(binding, dict) and all(_present(binding.get(key))
@@ -1367,6 +1406,9 @@ def _read_robustness_source_dispositions(
                  + _robustness_voxel_target_inventory(voxel_bindings))
     if "target_inventory" in payload and payload["target_inventory"] != inventory:
         raise ValueError("robustness target inventory differs from bound source evidence")
+    excluded = _excluded_robustness_inventory(inventory, exclusions)
+    if payload.get("excluded_by_configuration", []) != excluded:
+        raise ValueError("robustness excluded_by_configuration differs from bound source evidence")
     configuration_verified = False
     if rob_config is not None:
         expected = effective_robustness_configuration(
@@ -1417,6 +1459,7 @@ def _read_robustness_source_dispositions(
         matched = sum(
             robustness_selection_matches(
                 row["roi_name"], selection, target_selection=mode,
+                exclude_structures=exclusions,
                 interpreted_types=[kind for roi in inventory
                                    if roi["segmentation_source"] == row["segmentation_source"]
                                    and roi["roi_name"] == row["roi_name"]
@@ -1432,11 +1475,13 @@ def _read_robustness_source_dispositions(
         if outcome in ROBUSTNESS_NO_MATCH_OUTCOMES:
             if matched or not isinstance(basis, dict):
                 raise ValueError("selection-unmatched robustness requires a zero-match selection basis")
-            missed = [roi for roi in inventory if roi["detector_rules"]]
+            missed = [roi for roi in inventory if roi["detector_rules"]
+                      and not _robustness_exclusion_matches(roi["roi_name"], exclusions)]
             expected_outcome = ROBUSTNESS_SELECTION_GAP_OUTCOME if missed else ROBUSTNESS_NO_TARGET_OUTCOME
             if outcome != expected_outcome or basis.get("missed_targets") != missed:
                 raise ValueError("no-match target evidence or outcome does not reconcile")
             if any(robustness_selection_matches(roi["roi_name"], selection, target_selection=mode,
+                                               exclude_structures=exclusions,
                                                interpreted_types=roi["interpreted_types"]) for roi in inventory):
                 raise ValueError("no-match evidence contains a selected source ROI")
             for key in (
@@ -1605,6 +1650,10 @@ class PerturbationConfig:
     noise_levels: List[float] = field(default_factory=lambda: [0.0, 10.0, 20.0])  # Gaussian noise std dev in HU
     intensity: str = "standard"  # "mild", "standard", "aggressive" - controls perturbation count
     rotation_angles: List[float] = field(default_factory=list)  # Rotation sensitivity: e.g., [1, -1, 3, -3] degrees
+    exclude_structures: List[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        _validate_exclude_structures(self.exclude_structures)
 
 
 @dataclass
@@ -1659,6 +1708,7 @@ class RobustnessConfig:
         # Perturbation config
         pert_data = data.get("segmentation_perturbation", {})
         perturbation = PerturbationConfig(
+            exclude_structures=pert_data.get("exclude_structures", []),
             apply_to_structures=pert_data.get(
                 "apply_to_structures", list(DEFAULT_ROI_FAMILY_NAMES)
             ),
@@ -4296,6 +4346,7 @@ def model_instability_determinants(
 def _robustness_selection_requiredness(
     rtstruct_path: Path, selection: Any, *, inspect: Optional[Callable[[Path], Any]] = None,
     target_selection: str = "patterns", target_inventory: Optional[List[Dict[str, Any]]] = None,
+    exclude_structures: Any = (),
 ) -> Optional[Dict[str, Any]]:
     """Expand the robustness selection to an exact-name requiredness map.
 
@@ -4334,6 +4385,7 @@ def _robustness_selection_requiredness(
     matched_any = False
     for name in names:
         if robustness_selection_matches(name, patterns, target_selection=target_selection,
+                                        exclude_structures=exclude_structures,
                                         interpreted_types=[kind for roi in inventory if roi["roi_name"] == name and roi["source_path"] == str(rtstruct_path)
                                                            for kind in roi["interpreted_types"]]):
             requiredness[str(name)] = Requiredness.ANALYSIS_REQUIRED
@@ -4739,6 +4791,7 @@ def robustness_for_course(
         source == "Custom" and robustness_selection_matches(
             roi_name, rob_config.perturbation.apply_to_structures,
             target_selection=getattr(rob_config, "target_selection", "patterns"),
+            exclude_structures=rob_config.perturbation.exclude_structures,
             interpreted_types=[kind for roi in custom_target_inventory if roi["roi_name"] == roi_name
                                for kind in roi["interpreted_types"]],
         )
@@ -4856,6 +4909,7 @@ def robustness_for_course(
         return robustness_selection_matches(
             roi_name, rob_config.perturbation.apply_to_structures,
             target_selection=getattr(rob_config, "target_selection", "patterns"),
+            exclude_structures=rob_config.perturbation.exclude_structures,
             interpreted_types=[kind for roi in target_inventory
                                if roi["roi_name"] == roi_name and roi["segmentation_source"] == source
                                for kind in roi["interpreted_types"]],
@@ -4909,6 +4963,7 @@ def robustness_for_course(
             rob_config.perturbation.apply_to_structures,
             inspect=_inspect_rtstruct_once,
             target_selection=getattr(rob_config, "target_selection", "patterns"),
+            exclude_structures=rob_config.perturbation.exclude_structures,
             target_inventory=target_inventory,
         )
         if requiredness is None:
@@ -5026,6 +5081,7 @@ def robustness_for_course(
                 rob_config.perturbation.apply_to_structures,
                 inspect=_inspect_rtstruct_once,
                 target_selection=getattr(rob_config, "target_selection", "patterns"),
+                exclude_structures=rob_config.perturbation.exclude_structures,
                 target_inventory=target_inventory,
             )
             source_masks = _rtstruct_masks(
@@ -5401,18 +5457,23 @@ def robustness_for_course(
                     "published measurement exists to be robust against"
                 )
             else:
-                missed = [roi for roi in target_inventory if roi["detector_rules"]]
+                missed = [roi for roi in target_inventory if roi["detector_rules"]
+                          and not _robustness_exclusion_matches(roi["roi_name"], rob_config.perturbation.exclude_structures)]
                 nonmeasured_outcome = ROBUSTNESS_SELECTION_GAP_OUTCOME if missed else ROBUSTNESS_NO_TARGET_OUTCOME
                 reason = (
-                    "no source ROI matched the requested robustness selection; "
+                    ("no source ROI remained selected after configured exclusions; "
+                     if rob_config.perturbation.exclude_structures
+                     else "no source ROI matched the requested robustness selection; ")
                     + ("detected targets were unselected (technically missing)" if missed
+                       else "no unexcluded target structure was detected"
+                       if rob_config.perturbation.exclude_structures
                        else "no target structure was detected")
                 )
             _publish_source_dispositions(
                 None,
                 nonmeasured_outcome=nonmeasured_outcome,
                 source_only_basis={
-                    **({"missed_targets": [roi for roi in target_inventory if roi["detector_rules"]]}
+                    **({"missed_targets": missed}
                        if nonmeasured_outcome in ROBUSTNESS_NO_MATCH_OUTCOMES else {}),
                     "selected_structure_count": 0,
                     "unresolved_identity_count": 0,
@@ -5938,10 +5999,13 @@ def robustness_for_course(
         combined_df[_col_name] = _col_val
 
     combined_df["target_selection"] = getattr(rob_config, "target_selection", "patterns")
+    if rob_config.perturbation.exclude_structures:
+        combined_df["exclude_structures"] = json.dumps(rob_config.perturbation.exclude_structures)
     if "configured_parameter_hash" in combined_df:
         combined_df["extraction_configured_parameter_hash"] = combined_df["configured_parameter_hash"]
         combined_df["configured_parameter_hash"] = _selection_bound_parameter_hashes(
             combined_df["extraction_configured_parameter_hash"], rob_config.target_selection,
+            rob_config.perturbation.exclude_structures,
         )
     combined_df["robustness_configuration_sha256"] = _content_sha256(
         effective_robustness_configuration(rob_config, output_name=output_path.name)
@@ -6414,16 +6478,24 @@ def _admit_robustness_aggregation_input(
     )
     _verify_admitted_table_bytes(course_dir, path, table_sha256)
     mode = getattr(rob_config, "target_selection", "patterns")
-    if "target_selection" in frame and not frame.target_selection.eq(mode).all():
+    if "target_selection" in frame and not frame.target_selection.eq(mode).fillna(False).all():
         raise ValueError("robustness table target_selection differs from its configuration")
+    exclusions = rob_config.perturbation.exclude_structures
+    if "exclude_structures" in frame:
+        if not frame.exclude_structures.eq(json.dumps(exclusions)).fillna(False).all():
+            raise ValueError("robustness table exclude_structures differs from its configuration")
+    elif exclusions:
+        raise ValueError("robustness table records no exclude_structures provenance")
+    if exclusions and frame.roi_original_name.map(lambda name: _robustness_exclusion_matches(name, exclusions)).any():
+        raise ValueError("robustness table contains an ROI excluded by configuration")
     if "robustness_configuration_sha256" in frame and not frame.robustness_configuration_sha256.eq(
         _content_sha256(effective_robustness_configuration(rob_config, output_name=path.name))
-    ).all():
+    ).fillna(False).all():
         raise ValueError("robustness table configuration hash differs from its configuration")
     if "extraction_configured_parameter_hash" in frame:
-        expected_hashes = _selection_bound_parameter_hashes(frame.extraction_configured_parameter_hash, mode)
-        if "configured_parameter_hash" not in frame or not frame.configured_parameter_hash.eq(expected_hashes).all():
-            raise ValueError("robustness configured_parameter_hash does not bind target_selection")
+        expected_hashes = _selection_bound_parameter_hashes(frame.extraction_configured_parameter_hash, mode, exclusions)
+        if "configured_parameter_hash" not in frame or not frame.configured_parameter_hash.eq(expected_hashes).fillna(False).all():
+            raise ValueError("robustness configured_parameter_hash does not bind target_selection/exclude_structures")
 
     return _AdmittedRobustnessInput(
         path=path,
