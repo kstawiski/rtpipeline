@@ -89,18 +89,40 @@ The detector includes helpers with target tokens, including `z_PTV_opt` and
 Main-radiomics identity, publication and measurability requirements still apply.
 `ODBYTNICA` and `PECHERZ` do not qualify by name.
 
+`segmentation_perturbation.exclude_structures` removes structures after selection
+in both modes. It accepts a list of non-empty, case-insensitive whole-name
+fnmatch patterns. The default is `[]`. For example, `"RING"` excludes a structure
+named RING even when its interpreted type is PTV; it does not exclude RING_extra.
+Use `"z_PTV_*"` or `"PTV-ring"` to exclude those helper names. Each evaluated
+source retains its own ROI identity and interpreted-type evidence.
+
+When exclusions remove every selected ROI, the detector checks the remaining
+ROIs. If no target remains, the outcome is
+`not_applicable_no_target_structure`. An unexcluded target that the selection
+missed gives `selection_gap_targets_unselected`. Excluded targets never count
+as missed targets. The receipt and sidecar list `excluded_by_configuration`
+with source, ROI number, name, interpreted types and detector rules.
+
+Non-empty exclusion lists enter the effective configuration hash, the measured
+`configured_parameter_hash`, sidecars, receipts and measured-row provenance
+(`exclude_structures`, encoded as a JSON list). Admission rechecks the list,
+hashes and source evidence. A receipt from a different exclusion list requires
+recomputation. An absent key and `[]` retain the same configuration bytes,
+hashes and selections as the default configuration without exclusions.
+
 ```yaml
 radiomics_robustness:
   enabled: true
   target_selection: targets
   segmentation_perturbation:
     apply_to_structures: ["GTV*", "CTV*", "PTV*"]
+    exclude_structures: ["z_PTV_*", "PTV-ring", "RING"]  # Optional
 ```
 
 When the selection matches no source ROI, every evaluated source structure set
-is checked for target evidence:
+is checked for target evidence after configured exclusions:
 
-- `not_applicable_no_target_structure`: no target is detected; campaign status
+- `not_applicable_no_target_structure`: no unexcluded target is detected; campaign status
   is `not_applicable`.
 - `selection_gap_targets_unselected`: targets are detected but unselected;
   campaign status is `technically_missing`. This is a technical measurement gap.
@@ -280,6 +302,11 @@ radiomics_robustness:
       - "BLADDER"
       - "RECTUM"
       - "PROSTATE"
+
+    # Exclusions apply after selection in both target_selection modes.
+    # Whole-name fnmatch, case-insensitive; [] or absent preserves defaults.
+    exclude_structures: []
+    # exclude_structures: ["z_PTV_*", "PTV-ring", "RING"]
 
     # V: Volume changes (τ parameter from Lo Iacono 2024)
     small_volume_changes: [-0.15, 0.0, 0.15]   # ±15% volume change (standard)

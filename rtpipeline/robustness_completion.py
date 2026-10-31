@@ -87,6 +87,7 @@ class RobustnessCompletionReceipt:
     source_disposition_count: int
     effective_configuration_sha256: str
     target_selection: str = "patterns"
+    exclude_structures: tuple[str, ...] = ()
 
     @property
     def measured(self) -> bool:
@@ -239,6 +240,8 @@ def robustness_completion_payload(
         "environment_fingerprint": source_provenance.get("environment_fingerprint", "unrecorded"),
         "rasterizer": source_provenance.get("rasterizer", {"backend": "unrecorded"}),
         "target_selection": source_provenance.get("target_selection", "patterns"),
+        **({key: source_provenance[key] for key in ("exclude_structures", "excluded_by_configuration")}
+           if source_provenance.get("exclude_structures") else {}),
         **(
             {key: (source_provenance.get("source_only_basis") or {}).get(key)
              for key in ("requested_selection", "missed_targets")}
@@ -376,6 +379,9 @@ def _validate_payload(
             raise RobustnessCompletionError(
                 f"robustness receipt {field} differs from the measurement sidecar"
             )
+    for field in ("exclude_structures", "excluded_by_configuration"):
+        if payload.get(field, []) != disposition_payload.get(field, []):
+            raise RobustnessCompletionError(f"robustness receipt {field} differs from the measurement sidecar")
     if disposition_payload.get("failed_evidence") is not None:
         for field, expected in (
             ("measurement_outcome", outcome),
@@ -467,6 +473,7 @@ def _validate_payload(
             ) from exc
     return RobustnessCompletionReceipt(
         target_selection=payload.get("target_selection", "patterns"),
+        exclude_structures=tuple(payload.get("exclude_structures", [])),
         path=sentinel_path,
         course_dir=course_dir,
         patient_id=patient_id,
