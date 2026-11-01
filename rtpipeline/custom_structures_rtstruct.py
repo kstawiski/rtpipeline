@@ -67,21 +67,6 @@ def rs_custom_generator_sha256() -> Optional[str]:
         return _RS_CUSTOM_GENERATOR_SHA256
     from .stage_completion import content_sha256, file_sha256
 
-    # VALIDATION_ONLY_BEGIN
-    # These delimited additions only validate reuse; they do not generate
-    # contours. Retain the existing generator identity so metadata without a
-    # configuration digest does not force an otherwise unchanged rebuild.
-    import re
-    raw_file_sha256 = file_sha256
-
-    def file_sha256(path):
-        if Path(path).name != "custom_structures_rtstruct.py":
-            return raw_file_sha256(path)
-        content = Path(path).read_bytes()
-        content = re.sub(rb"(?m)^[ \t]*# VALIDATION_ONLY_BEGIN\n.*?^[ \t]*# VALIDATION_ONLY_END\n",
-                         b"", content, flags=re.DOTALL)
-        return hashlib.sha256(content).hexdigest()
-    # VALIDATION_ONLY_END
     package_root = Path(__file__).resolve().parent
     digest: Optional[str] = None
     try:
@@ -645,15 +630,6 @@ def _is_rs_custom_stale(
                 )
                 return True
 
-        # VALIDATION_ONLY_BEGIN
-        # Older metadata did not bind configuration content. Preserve its
-        # historical mtime checks; compare content only when it was recorded.
-        if rs_custom_meta.exists() and "custom_config_sha256" in recorded:
-            from .stage_completion import file_sha256
-            expected = file_sha256(Path(config_path)) if config_path else ""
-            if recorded["custom_config_sha256"] != expected:
-                return True
-        # VALIDATION_ONLY_END
         rs_custom_mtime = rs_custom_path.stat().st_mtime
 
         if contract is not None:
