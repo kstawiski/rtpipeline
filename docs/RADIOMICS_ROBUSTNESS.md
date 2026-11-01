@@ -92,7 +92,9 @@ The interpreted types `GTV`, `CTV`, `PTV` and `ITV` also qualify unmapped names.
 
 A target must carry volumetric contour data or nonzero voxels. Template slots,
 POINT markers and zero masks remain in the source inventory but are not missed
-targets. Inventory-only helpers cannot enter the measurement base. In `targets`
+targets. Inventory-only helpers cannot enter the measurement base. Classification uses the source label and records the
+custom-structure provenance. A Custom ROI is copied support only when a standard
+source declares the same name with contours; a contourless slot cannot hide it. In `targets`
 mode, `apply_to_structures: []` requests detected targets alone.
 
 `segmentation_perturbation.exclude_structures` removes structures after selection
@@ -142,9 +144,15 @@ Non-default selection mode and nonempty exclusions enter configuration and
 parameter hashes. Default `patterns` selection with no exclusions retains the
 measured schema and configuration hashes from main `072b146`. An allowlist
 binds that release's complete code digest to this compatibility release so
-unchanged measured receipts can be admitted without rewriting their receipt,
-sidecar or Parquet. An edit to the producer invalidates that exception. New
-runs retain their actual code digest and run identifier.
+unchanged measured DICOM-CT/RTSTRUCT receipts can be admitted without rewriting
+their receipt, sidecar or Parquet. Admission requires current source bindings,
+no selection gaps and matching disposition rows. Custom sources also require a
+current generator publication and a known custom-structure configuration; a
+configured historical publication with no recorded configuration path requires
+a new run. Benign voxel-only models with no selected ROI or detected target do
+not invalidate this class. NIfTI-CT and voxel-fallback courses require a new run.
+An edit to the producer invalidates the exception. New runs retain their actual
+code digest and run identifier.
 
 Every evaluated source is inventoried regardless of the CT source format:
 Manual, independent Custom structures, model RTSTRUCTs and NIfTI masks. Copied
@@ -152,8 +160,16 @@ Manual ROIs in `RS_custom.dcm` are not independent Custom targets. The separate
 `metadata/radiomics_robustness_target_inventory.json` records contour presence,
 measurement eligibility and the deciding classification rule without entering
 historical receipt hashes. No-match sidecars carry the full selection evidence.
-Unreadable NIfTI masks fail technically. Selected RTSTRUCT volumes without a
-usable voxel counterpart on NIfTI-only CT fail technically.
+Voxel-only model inventories check presence on the stored grid without
+resampling. An unreadable inventory-only file whose name is neither selected
+nor a detected target is recorded as a tolerated source failure. Unreadable
+selected masks and candidate targets fail technically. On NIfTI-only CT, a
+retained main-radiomics identity uses its current `Segmentation_Original` mask
+on the same physical grid. Export validation resolves sources through the
+course-relative contract and skips stale sibling exports. The voxel file is
+bound as provenance without adding a second inventory row for the Manual ROI.
+A selected RTSTRUCT volume without a published identity or usable physical
+export remains unresolved and the course cannot close as complete.
 
 Aggregation retains every manifest course. A selected marker cannot hide an
 unselected volumetric target. A measured course with missed targets retains its

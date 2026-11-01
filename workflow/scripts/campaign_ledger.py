@@ -289,7 +289,9 @@ def _sentinel_status(course_path: Path, suffix: str) -> str:
         payload = json.loads(text)
     except json.JSONDecodeError:
         payload = None
-    if suffix == STAGE_SENTINELS["radiomics_robustness"] and isinstance(payload, dict):
+    if suffix == STAGE_SENTINELS["radiomics_robustness"]:
+        if not isinstance(payload, dict):
+            return text.lower() if text.lower() in {STATUS_DISABLED, STATUS_FAILED} else STATUS_MISSING
         from rtpipeline.robustness_completion import (
             RobustnessCompletionError, read_robustness_completion_sentinel,
         )
@@ -381,8 +383,7 @@ def rollup(output_dir: Path) -> dict:
             receipt_wins = False
             if stage == "radiomics_robustness" and sentinel_state != STATUS_MISSING:
                 if entry is None or (
-                    status != sentinel_state
-                    and (course_path / suffix).stat().st_mtime_ns >= entry["_record_mtime_ns"]
+                    (course_path / suffix).stat().st_mtime_ns >= entry["_record_mtime_ns"]
                 ):
                     receipt_wins = True
                     status, source = sentinel_state, "sentinel"
@@ -398,15 +399,15 @@ def rollup(output_dir: Path) -> dict:
                     "status_source": source,
                     "sentinel_status": sentinel_state,
                     "returncode": (1 if source == "record-sentinel-conflict" else int(status == STATUS_FAILED) if receipt_wins else (entry or {}).get("returncode")),
-                    "log_path": (entry or {}).get("log_path"),
+                    "log_path": None if receipt_wins else (entry or {}).get("log_path"),
                     "detail": (
                         _robustness_not_applicable_detail(course_path)
                         if receipt_wins
                         else "record-sentinel-conflict" if source == "record-sentinel-conflict"
                         else (entry or {}).get("detail")
                     ),
-                    "finished_at": (entry or {}).get("finished_at"),
-                    "duration_seconds": (entry or {}).get("duration_seconds"),
+                    "finished_at": None if receipt_wins else (entry or {}).get("finished_at"),
+                    "duration_seconds": None if receipt_wins else (entry or {}).get("duration_seconds"),
                 }
             )
 

@@ -109,6 +109,10 @@ def _build_course(course: Path, spec: dict) -> None:
     ds.save_as(course / "RS.dcm")
     if spec.get("custom"):
         custom = copy.deepcopy(ds)
+        # This historical control has no duplicate copied-point disposition;
+        # that changed accounting is exercised by the review2 regressions.
+        custom.StructureSetROISequence = [r for r in custom.StructureSetROISequence if int(r.ROINumber) != 50]
+        custom.ROIContourSequence = [r for r in custom.ROIContourSequence if int(r.ReferencedROINumber) != 50]
         _append_roi(custom, 60, "GTV_empty", [])
         custom.SOPInstanceUID = pydicom.uid.generate_uid()
         custom.file_meta.MediaStorageSOPInstanceUID = custom.SOPInstanceUID
@@ -338,7 +342,7 @@ def test_non_triggering_courses_match_base_revision(tmp_path):
     p1 = base["outputs"]["P1/C1/metadata/radiomics_robustness_source_dispositions.json"]
     assert [t["roi_name"] for t in p1["tolerated_source_failures"]] == ["Bad"]
     assert {(r["segmentation_source"], r["roi_name"]) for r in p1["rows"]} == {
-        ("Manual", "Marker1"), ("Custom", "Marker1")}
+        ("Manual", "Marker1")}
     assert any(k.startswith("_RESULTS/radiomics_robustness_summary") for k in base["outputs"])
     p4, _ = base["outputs"]["P4/C1/radiomics_robustness_ct.parquet"]
     assert not p4.feature_name[p4.extraction_arm == "primary_resegmented"].str.contains(

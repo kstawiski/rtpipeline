@@ -417,33 +417,44 @@ def radiomics_row_parameter_key(
 
 
 def migrate_legacy_robustness_receipts(output_dir: Path, dependency_path: Path) -> int:
-    """Scan once per dependency content; serialize startup migration.
+    """Quarantine obsolete receipts once per resolved cohort and dependency.
 
-    New producers cannot emit the obsolete outcome. Importing external legacy
-    receipts requires removing this marker, just as importing workflow metadata
-    requires refreshing its input inventory.
+    The shared dependency keeps its original mtime. Only courses whose receipt
+    is absent after quarantine need a new DAG job. Imported legacy receipts
+    require removing that cohort's marker to request another scan.
     """
     import fcntl
+    import uuid
 
     dependency_path = Path(dependency_path)
-    marker = dependency_path.parent / ".robustness-selection-v2"
+    output_dir = Path(output_dir).resolve()
+    root_digest = hashlib.sha256(str(output_dir).encode()).hexdigest()
+    marker = dependency_path.parent / f".robustness-selection-v2-{root_digest}"
     lock = dependency_path.parent / ".robustness-selection-v2.lock"
     key = hashlib.sha256(dependency_path.read_bytes()).hexdigest()
     with lock.open("a") as handle:
         fcntl.flock(handle, fcntl.LOCK_EX)
         if marker.is_file() and marker.read_text() == key:
             return 0
-        legacy = []
-        for path in Path(output_dir).glob("*/*/.radiomics_robustness_done"):
+        migrated = 0
+        for path in output_dir.glob("*/*/.radiomics_robustness_done"):
             try:
-                payload = json.loads(path.read_text())
+                content = path.read_bytes()
+                payload = json.loads(content)
             except (OSError, ValueError):
                 continue
-            if isinstance(payload, dict) and payload.get("measurement_outcome") == "not_applicable_selection_unmatched":
-                legacy.append(path)
-        if legacy:
-            advance_dependency_past_unbound_outputs(
-                dependency_path, legacy, binding_field="configuration_dependency_sha256",
-            )
+            if not isinstance(payload, dict) or payload.get("measurement_outcome") != "not_applicable_selection_unmatched":
+                continue
+            destination = output_dir / "_ROBUSTNESS_RECEIPT_QUARANTINE" / uuid.uuid4().hex
+            destination.mkdir(parents=True)
+            record = {
+                "original_path": path.relative_to(output_dir).as_posix(),
+                "sha256": hashlib.sha256(content).hexdigest(),
+                "reason": "obsolete_not_applicable_selection_unmatched",
+                "dependency_sha256": key,
+            }
+            (destination / "record.json").write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
+            path.rename(destination / "receipt.json")
+            migrated += 1
         marker.write_text(key)
-        return len(legacy)
+        return migrated
